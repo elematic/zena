@@ -52,7 +52,7 @@ suite('TypeChecker', () => {
   });
 
   test('should check arrow function', () => {
-    const input = 'const add = (a: i32, b: i32) => a + b;';
+    const input = 'let add = (a: i32, b: i32) => a + b;';
     const parser = new Parser(input);
     const ast = parser.parse();
     const checker = new TypeChecker(ast);
@@ -73,7 +73,7 @@ suite('TypeChecker', () => {
   });
 
   test('should detect type mismatch between i32 and f32', () => {
-    const input = 'const add = (a: i32, b: f32) => a + b;';
+    const input = 'let add = (a: i32, b: f32) => a + b;';
     const parser = new Parser(input);
     const ast = parser.parse();
     const checker = new TypeChecker(ast);

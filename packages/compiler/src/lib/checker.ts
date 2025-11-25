@@ -9,8 +9,13 @@ import {
 } from './ast.js';
 import {TypeKind, Types, type Type, type FunctionType} from './types.js';
 
+interface SymbolInfo {
+  type: Type;
+  kind: 'let' | 'var';
+}
+
 export class TypeChecker {
-  #scopes: Map<string, Type>[] = [];
+  #scopes: Map<string, SymbolInfo>[] = [];
   #errors: string[] = [];
 
   #program: Program;
@@ -38,20 +43,20 @@ export class TypeChecker {
     this.#scopes.pop();
   }
 
-  #declare(name: string, type: Type) {
+  #declare(name: string, type: Type, kind: 'let' | 'var' = 'let') {
     const scope = this.#scopes[this.#scopes.length - 1];
     if (scope.has(name)) {
       this.#errors.push(
         `Variable '${name}' is already declared in this scope.`,
       );
     }
-    scope.set(name, type);
+    scope.set(name, {type, kind});
   }
 
   #resolve(name: string): Type | undefined {
     for (let i = this.#scopes.length - 1; i >= 0; i--) {
       if (this.#scopes[i].has(name)) {
-        return this.#scopes[i].get(name);
+        return this.#scopes[i].get(name)!.type;
       }
     }
     return undefined;
@@ -77,7 +82,7 @@ export class TypeChecker {
 
   #checkVariableDeclaration(decl: VariableDeclaration) {
     const initType = this.#checkExpression(decl.init);
-    this.#declare(decl.identifier.name, initType);
+    this.#declare(decl.identifier.name, initType, decl.kind);
   }
 
   #checkExpression(expr: Expression): Type {
@@ -94,6 +99,11 @@ export class TypeChecker {
         }
         return type;
       }
+      // TODO: Implement AssignmentExpression check
+      // When checking assignment, verify that the variable is not 'let' (immutable).
+      // const symbol = this.#resolveSymbol(expr.left.name);
+      // if (symbol.kind === 'let') error("Cannot reassign immutable variable");
+      
       case NodeType.BinaryExpression:
         return this.#checkBinaryExpression(expr);
       case NodeType.FunctionExpression:

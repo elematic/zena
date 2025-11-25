@@ -2,7 +2,6 @@ export const TokenType = {
   // Keywords
   Let: 'Let',
   Var: 'Var',
-  Const: 'Const',
   Class: 'Class',
   Import: 'Import',
   Export: 'Export',
@@ -47,7 +46,6 @@ export interface Token {
 const KEYWORDS: Record<string, TokenType> = {
   let: TokenType.Let,
   var: TokenType.Var,
-  const: TokenType.Const,
   class: TokenType.Class,
   import: TokenType.Import,
   export: TokenType.Export,

@@ -5,7 +5,7 @@ import {CodeGenerator} from '../lib/codegen.js';
 
 suite('CodeGenerator', () => {
   test('should compile and run a simple add function', async () => {
-    const input = 'export const add = (a: i32, b: i32) => a + b;';
+    const input = 'export let add = (a: i32, b: i32) => a + b;';
     const parser = new Parser(input);
     const ast = parser.parse();
 
@@ -21,7 +21,7 @@ suite('CodeGenerator', () => {
   });
 
   test('should compile and run a nested math expression', async () => {
-    const input = 'export const calc = (a: i32, b: i32) => (a + b) * 2;';
+    const input = 'export let calc = (a: i32, b: i32) => (a + b) * 2;';
     const parser = new Parser(input);
     const ast = parser.parse();
 

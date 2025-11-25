@@ -23,14 +23,14 @@ suite('Parser', () => {
   });
 
   test('should parse exported variable declaration', () => {
-    const input = 'export const x = 1;';
+    const input = 'export let x = 1;';
     const parser = new Parser(input);
     const ast = parser.parse();
 
     const decl = ast.body[0];
     assert.strictEqual(decl.type, NodeType.VariableDeclaration);
     if (decl.type === NodeType.VariableDeclaration) {
-      assert.strictEqual(decl.kind, 'const');
+      assert.strictEqual(decl.kind, 'let');
       assert.strictEqual(decl.identifier.name, 'x');
       assert.strictEqual(decl.exported, true);
     }
@@ -48,7 +48,7 @@ suite('Parser', () => {
   });
 
   test('should parse arrow function', () => {
-    const input = 'const add = (a: i32, b: i32) => a + b;';
+    const input = 'let add = (a: i32, b: i32) => a + b;';
     const parser = new Parser(input);
     const ast = parser.parse();
 

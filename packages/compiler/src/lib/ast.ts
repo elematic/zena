@@ -31,7 +31,7 @@ export type Statement =
 
 export interface VariableDeclaration extends Node {
   type: typeof NodeType.VariableDeclaration;
-  kind: 'let' | 'const' | 'var';
+  kind: 'let' | 'var';
   identifier: Identifier;
   init: Expression;
   exported: boolean;

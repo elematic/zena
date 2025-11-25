@@ -52,11 +52,11 @@ suite('Lexer', () => {
   });
 
   test('should tokenize arrow functions', () => {
-    const input = 'const add = (a: i32, b: i32) => a + b;';
+    const input = 'let add = (a: i32, b: i32) => a + b;';
     const tokens = tokenize(input);
 
     assertTokens(tokens, [
-      TokenType.Const,
+      TokenType.Let,
       [TokenType.Identifier, 'add'],
       TokenType.Equals,
       TokenType.LParen,

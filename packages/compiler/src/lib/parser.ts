@@ -34,11 +34,7 @@ export class Parser {
     if (this.#match(TokenType.Export)) {
       return this.#parseVariableDeclaration(true);
     }
-    if (
-      this.#match(TokenType.Let) ||
-      this.#match(TokenType.Const) ||
-      this.#match(TokenType.Var)
-    ) {
+    if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
       return this.#parseVariableDeclaration(false);
     }
     return this.#parseExpressionStatement();
@@ -47,25 +43,16 @@ export class Parser {
   #parseVariableDeclaration(exported: boolean): VariableDeclaration {
     let kindToken: Token;
     if (exported) {
-      if (
-        this.#match(TokenType.Let) ||
-        this.#match(TokenType.Const) ||
-        this.#match(TokenType.Var)
-      ) {
+      if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
         kindToken = this.#previous();
       } else {
-        throw new Error("Expected 'let', 'const', or 'var' after 'export'.");
+        throw new Error("Expected 'let' or 'var' after 'export'.");
       }
     } else {
       kindToken = this.#previous();
     }
 
-    const kind =
-      kindToken.type === TokenType.Let
-        ? 'let'
-        : kindToken.type === TokenType.Const
-          ? 'const'
-          : 'var';
+    const kind = kindToken.type === TokenType.Let ? 'let' : 'var';
 
     const identifier = this.#parseIdentifier();
     this.#consume(TokenType.Equals, "Expected '=' after variable name.");
