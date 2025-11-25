@@ -340,6 +340,10 @@ export class Parser {
           object: expr,
           index,
         };
+      } else if (this.#check(TokenType.Less) && this.#isGenericCall()) {
+        const typeArguments = this.#parseTypeArguments();
+        this.#consume(TokenType.LParen, "Expected '(' after type arguments.");
+        expr = this.#finishCall(expr, typeArguments);
       } else {
         break;
       }
@@ -348,7 +352,50 @@ export class Parser {
     return expr;
   }
 
-  #finishCall(callee: Expression): CallExpression {
+  #isGenericCall(): boolean {
+    let depth = 0;
+    let i = 0;
+    if (this.#peek(i).type !== TokenType.Less) return false;
+    i++;
+    depth++;
+
+    while (depth > 0 && this.#peek(i).type !== TokenType.EOF) {
+      const type = this.#peek(i).type;
+      if (type === TokenType.Less) {
+        depth++;
+      } else if (type === TokenType.Greater) {
+        depth--;
+      } else if (type === TokenType.GreaterEquals) {
+        // Treat >= as > followed by =? No, just assume it's not part of valid type args for now
+        // or if it closes the generic?
+        // In `List<T>=`, >= is GreaterEquals.
+        // But we are looking for `> (`.
+        // If we encounter GreaterEquals, it's likely a comparison, so not a generic call.
+        return false;
+      } else if (
+        type === TokenType.Semi ||
+        type === TokenType.LBrace ||
+        type === TokenType.RBrace ||
+        type === TokenType.RParen
+      ) {
+        // Optimization: these tokens shouldn't appear in type args (except nested generics)
+        // If we see them at top level of scan, abort.
+        // But we might be inside `Map<K, V>`.
+        // Just rely on depth.
+      }
+      i++;
+    }
+
+    if (depth === 0 && this.#peek(i).type === TokenType.LParen) {
+      return true;
+    }
+    return false;
+  }
+
+  #finishCall(
+    callee: Expression,
+    typeArguments?: TypeAnnotation[],
+  ): CallExpression {
     const args: Expression[] = [];
     if (!this.#check(TokenType.RParen)) {
       do {
@@ -360,6 +407,7 @@ export class Parser {
     return {
       type: NodeType.CallExpression,
       callee,
+      typeArguments,
       arguments: args,
     };
   }

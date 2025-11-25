@@ -107,4 +107,62 @@ suite('CodeGenerator - Generics', () => {
     const {test} = (await compile(input)) as {test: () => number};
     assert.strictEqual(test(), 100);
   });
+
+  test('should support multiple type parameters', async () => {
+    const input = `
+      class Pair<K, V> {
+        first: K;
+        second: V;
+        #new(a: K, b: V) {
+          this.first = a;
+          this.second = b;
+        }
+        getFirst(): K {
+          return this.first;
+        }
+        getSecond(): V {
+          return this.second;
+        }
+      }
+      
+      export let test = (): f32 => {
+        let p = new Pair<i32, f32>(10, 20.5);
+        return p.getSecond();
+      };
+    `;
+    const {test} = (await compile(input)) as {test: () => number};
+    assert.strictEqual(Math.fround(test()), Math.fround(20.5));
+  });
+
+  test('should compile and run a generic function', async () => {
+    const input = `
+      let identity = <T>(x: T): T => x;
+      
+      export let test = (): i32 => {
+        return identity<i32>(42);
+      };
+    `;
+    const {test} = (await compile(input)) as {test: () => number};
+    assert.strictEqual(test(), 42);
+  });
+
+  test('should compile and run a generic function with multiple types', async () => {
+    const input = `
+      let identity = <T>(x: T): T => x;
+      
+      export let testI32 = (): i32 => {
+        return identity<i32>(123);
+      };
+      
+      export let testF32 = (): f32 => {
+        return identity<f32>(4.56);
+      };
+    `;
+    const exports = (await compile(input)) as {
+      testI32: () => number;
+      testF32: () => number;
+    };
+    assert.strictEqual(exports.testI32(), 123);
+    assert.strictEqual(Math.fround(exports.testF32()), Math.fround(4.56));
+  });
 });

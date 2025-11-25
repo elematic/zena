@@ -55,6 +55,7 @@ export class CodeGenerator {
   #concatFunctionIndex = -1;
   #strEqFunctionIndex = -1;
   #genericClasses = new Map<string, ClassDeclaration>();
+  #genericFunctions = new Map<string, FunctionExpression>();
   #pendingMethodGenerations: (() => void)[] = [];
   #bodyGenerators: (() => void)[] = [];
   #currentTypeContext: Map<string, TypeAnnotation> | undefined;
@@ -177,6 +178,11 @@ export class CodeGenerator {
   }
 
   #registerFunction(name: string, func: FunctionExpression, exported: boolean) {
+    if (func.typeParameters && func.typeParameters.length > 0) {
+      this.#genericFunctions.set(name, func);
+      return;
+    }
+
     const params = func.params.map((p) => this.#mapType(p.typeAnnotation));
     const results = func.returnType
       ? [this.#mapType(func.returnType)]
@@ -581,6 +587,22 @@ export class CodeGenerator {
       // 2. Resolve function
       if (expr.callee.type === NodeType.Identifier) {
         const name = (expr.callee as Identifier).name;
+
+        if (this.#genericFunctions.has(name)) {
+          if (!expr.typeArguments || expr.typeArguments.length === 0) {
+            throw new Error(
+              `Generic function '${name}' requires type arguments.`,
+            );
+          }
+          const funcIndex = this.#instantiateGenericFunction(
+            name,
+            expr.typeArguments,
+          );
+          body.push(Opcode.call);
+          body.push(...WasmModule.encodeSignedLEB128(funcIndex));
+          return;
+        }
+
         const funcIndex = this.#functions.get(name);
         if (funcIndex !== undefined) {
           body.push(Opcode.call);
@@ -985,9 +1007,16 @@ export class CodeGenerator {
     // TODO: Handle global variables
   }
 
-  #generateFunctionBody(name: string, func: FunctionExpression) {
+  #generateFunctionBody(
+    name: string,
+    func: FunctionExpression,
+    typeContext?: Map<string, TypeAnnotation>,
+  ) {
     // Function is already registered in Pass 1
     // We just need to generate the code now.
+
+    const oldContext = this.#currentTypeContext;
+    this.#currentTypeContext = typeContext;
 
     this.#scopes = [new Map()];
     this.#extraLocals = [];
@@ -997,7 +1026,7 @@ export class CodeGenerator {
       const index = this.#nextLocalIndex++;
       this.#scopes[0].set(p.name.name, {
         index,
-        type: this.#mapType(p.typeAnnotation),
+        type: this.#mapType(p.typeAnnotation, typeContext),
       });
     });
 
@@ -1010,6 +1039,8 @@ export class CodeGenerator {
     body.push(Opcode.end);
 
     this.#module.addCode(this.#extraLocals, body);
+
+    this.#currentTypeContext = oldContext;
   }
 
   #enterScope() {
@@ -1400,6 +1431,52 @@ export class CodeGenerator {
     // So this helper should return body, and #generateMethodBody calls addCode with #extraLocals.
 
     return body;
+  }
+
+  #instantiateGenericFunction(
+    name: string,
+    typeArgs: TypeAnnotation[],
+  ): number {
+    const funcDecl = this.#genericFunctions.get(name);
+    if (!funcDecl) throw new Error(`Generic function ${name} not found`);
+
+    const key = `${name}<${typeArgs
+      .map((t) => this.#getTypeKey(t, this.#currentTypeContext))
+      .join(',')}>`;
+
+    if (this.#functions.has(key)) {
+      return this.#functions.get(key)!;
+    }
+
+    const typeContext = new Map<string, TypeAnnotation>();
+    if (funcDecl.typeParameters) {
+      if (funcDecl.typeParameters.length !== typeArgs.length) {
+        throw new Error(
+          `Expected ${funcDecl.typeParameters.length} type arguments, got ${typeArgs.length}`,
+        );
+      }
+      for (let i = 0; i < funcDecl.typeParameters.length; i++) {
+        typeContext.set(funcDecl.typeParameters[i].name, typeArgs[i]);
+      }
+    }
+
+    const params = funcDecl.params.map((p) =>
+      this.#mapType(p.typeAnnotation, typeContext),
+    );
+    const results = funcDecl.returnType
+      ? [this.#mapType(funcDecl.returnType, typeContext)]
+      : [[ValType.i32]];
+
+    const typeIndex = this.#module.addType(params, results);
+    const funcIndex = this.#module.addFunction(typeIndex);
+
+    this.#functions.set(key, funcIndex);
+
+    this.#bodyGenerators.push(() => {
+      this.#generateFunctionBody(key, funcDecl, typeContext);
+    });
+
+    return funcIndex;
   }
 
   #getHeapTypeIndex(type: number[]): number {
