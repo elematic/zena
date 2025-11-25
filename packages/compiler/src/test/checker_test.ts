@@ -125,4 +125,59 @@ suite('TypeChecker', () => {
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0], /Expected boolean condition in if statement/);
   });
+
+  test('should check valid function call', () => {
+    const input = `
+      let add = (a: i32, b: i32) => a + b;
+      let result = add(1, 2);
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 0);
+  });
+
+  test('should detect argument count mismatch', () => {
+    const input = `
+      let add = (a: i32, b: i32) => a + b;
+      let result = add(1);
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0], /Expected 2 arguments, got 1/);
+  });
+
+  test('should detect argument type mismatch', () => {
+    const input = `
+      let add = (a: i32, b: i32) => a + b;
+      let result = add(1, '2');
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0], /Type mismatch in argument 2/);
+  });
+
+  test('should detect calling a non-function', () => {
+    const input = `
+      let x = 1;
+      let result = x(1);
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0], /Type mismatch: expected function/);
+  });
 });

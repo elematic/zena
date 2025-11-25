@@ -2,6 +2,7 @@ import {
   NodeType,
   type AssignmentExpression,
   type BlockStatement,
+  type CallExpression,
   type Expression,
   type FunctionExpression,
   type Identifier,
@@ -246,11 +247,11 @@ export class Parser {
   }
 
   #parseFactor(): Expression {
-    let left = this.#parsePrimary();
+    let left = this.#parseCall();
 
     while (this.#match(TokenType.Star, TokenType.Slash)) {
       const operator = this.#previous().value;
-      const right = this.#parsePrimary();
+      const right = this.#parseCall();
       left = {
         type: NodeType.BinaryExpression,
         left,
@@ -260,6 +261,36 @@ export class Parser {
     }
 
     return left;
+  }
+
+  #parseCall(): Expression {
+    let expr = this.#parsePrimary();
+
+    while (true) {
+      if (this.#match(TokenType.LParen)) {
+        expr = this.#finishCall(expr);
+      } else {
+        break;
+      }
+    }
+
+    return expr;
+  }
+
+  #finishCall(callee: Expression): CallExpression {
+    const args: Expression[] = [];
+    if (!this.#check(TokenType.RParen)) {
+      do {
+        args.push(this.#parseExpression());
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RParen, "Expected ')' after arguments.");
+
+    return {
+      type: NodeType.CallExpression,
+      callee,
+      arguments: args,
+    };
   }
 
   #parsePrimary(): Expression {

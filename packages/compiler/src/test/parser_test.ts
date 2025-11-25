@@ -86,4 +86,95 @@ suite('Parser', () => {
       }
     }
   });
+
+  test('should parse while loop', () => {
+    const input = 'let main = () => { while (true) { } };';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const func = ast.body[0];
+    assert.strictEqual(func.type, NodeType.VariableDeclaration);
+    if (func.type === NodeType.VariableDeclaration) {
+      const body = func.init;
+      assert.strictEqual(body.type, NodeType.FunctionExpression);
+      if (body.type === NodeType.FunctionExpression) {
+        assert.strictEqual(body.body.type, NodeType.BlockStatement);
+        if (body.body.type === NodeType.BlockStatement) {
+          assert.strictEqual(body.body.body.length, 1);
+          const loop = body.body.body[0];
+          assert.strictEqual(loop.type, NodeType.WhileStatement);
+          if (loop.type === NodeType.WhileStatement) {
+            assert.strictEqual(loop.test.type, NodeType.BooleanLiteral);
+            assert.strictEqual(loop.body.type, NodeType.BlockStatement);
+          }
+        }
+      }
+    }
+  });
+
+  test('should parse assignment', () => {
+    const input = 'let main = () => { var x = 1; x = 2; };';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const func = ast.body[0];
+    assert.strictEqual(func.type, NodeType.VariableDeclaration);
+    if (func.type === NodeType.VariableDeclaration) {
+      const body = func.init;
+      assert.strictEqual(body.type, NodeType.FunctionExpression);
+      if (body.type === NodeType.FunctionExpression) {
+        assert.strictEqual(body.body.type, NodeType.BlockStatement);
+        if (body.body.type === NodeType.BlockStatement) {
+          assert.strictEqual(body.body.body.length, 2);
+          const assignment = body.body.body[1];
+          assert.strictEqual(assignment.type, NodeType.ExpressionStatement);
+          if (assignment.type === NodeType.ExpressionStatement) {
+            assert.strictEqual(
+              assignment.expression.type,
+              NodeType.AssignmentExpression,
+            );
+            const expr = assignment.expression;
+            if (expr.type === NodeType.AssignmentExpression) {
+              assert.strictEqual(expr.name.type, NodeType.Identifier);
+              assert.strictEqual(expr.name.name, 'x');
+              assert.strictEqual(expr.value.type, NodeType.NumberLiteral);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test('should parse function call', () => {
+    const input = 'let main = () => { add(1, 2); };';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const func = ast.body[0];
+    assert.strictEqual(func.type, NodeType.VariableDeclaration);
+    if (func.type === NodeType.VariableDeclaration) {
+      const body = func.init;
+      assert.strictEqual(body.type, NodeType.FunctionExpression);
+      if (body.type === NodeType.FunctionExpression) {
+        assert.strictEqual(body.body.type, NodeType.BlockStatement);
+        if (body.body.type === NodeType.BlockStatement) {
+          assert.strictEqual(body.body.body.length, 1);
+          const callStmt = body.body.body[0];
+          assert.strictEqual(callStmt.type, NodeType.ExpressionStatement);
+          if (callStmt.type === NodeType.ExpressionStatement) {
+            assert.strictEqual(
+              callStmt.expression.type,
+              NodeType.CallExpression,
+            );
+            const call = callStmt.expression;
+            if (call.type === NodeType.CallExpression) {
+              assert.strictEqual(call.callee.type, NodeType.Identifier);
+              assert.strictEqual((call.callee as any).name, 'add');
+              assert.strictEqual(call.arguments.length, 2);
+            }
+          }
+        }
+      }
+    }
+  });
 });

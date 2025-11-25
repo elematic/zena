@@ -76,4 +76,48 @@ suite('Lexer', () => {
       TokenType.EOF,
     ]);
   });
+
+  test('should tokenize while loop', () => {
+    const input = 'while (true) { }';
+    const tokens = tokenize(input);
+
+    assertTokens(tokens, [
+      TokenType.While,
+      TokenType.LParen,
+      TokenType.True,
+      TokenType.RParen,
+      TokenType.LBrace,
+      TokenType.RBrace,
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should tokenize assignment', () => {
+    const input = 'x = 1;';
+    const tokens = tokenize(input);
+
+    assertTokens(tokens, [
+      [TokenType.Identifier, 'x'],
+      TokenType.Equals,
+      [TokenType.Number, '1'],
+      TokenType.Semi,
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should tokenize function call', () => {
+    const input = 'add(1, 2);';
+    const tokens = tokenize(input);
+
+    assertTokens(tokens, [
+      [TokenType.Identifier, 'add'],
+      TokenType.LParen,
+      [TokenType.Number, '1'],
+      TokenType.Comma,
+      [TokenType.Number, '2'],
+      TokenType.RParen,
+      TokenType.Semi,
+      TokenType.EOF,
+    ]);
+  });
 });

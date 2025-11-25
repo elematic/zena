@@ -14,6 +14,7 @@ import {
   type IfStatement,
   type WhileStatement,
   type AssignmentExpression,
+  type CallExpression,
 } from './ast.js';
 import {WasmModule} from './emitter.js';
 import {ValType, Opcode, ExportDesc} from './wasm.js';
@@ -24,6 +25,7 @@ export class CodeGenerator {
   #scopes: Map<string, number>[] = [];
   #extraLocals: number[] = [];
   #nextLocalIndex = 0;
+  #functions = new Map<string, number>();
 
   constructor(program: Program) {
     this.#program = program;
@@ -31,10 +33,39 @@ export class CodeGenerator {
   }
 
   public generate(): Uint8Array {
+    // Pass 1: Register all functions
+    for (const statement of this.#program.body) {
+      if (
+        statement.type === NodeType.VariableDeclaration &&
+        statement.init.type === NodeType.FunctionExpression
+      ) {
+        this.#registerFunction(
+          statement.identifier.name,
+          statement.init as FunctionExpression,
+          statement.exported,
+        );
+      }
+    }
+
+    // Pass 2: Generate bodies
     for (const statement of this.#program.body) {
       this.#generateStatement(statement);
     }
     return this.#module.toBytes();
+  }
+
+  #registerFunction(name: string, func: FunctionExpression, exported: boolean) {
+    const params = func.params.map(() => ValType.i32);
+    const results = [ValType.i32]; // TODO: Infer or read return type
+
+    const typeIndex = this.#module.addType(params, results);
+    const funcIndex = this.#module.addFunction(typeIndex);
+
+    if (exported) {
+      this.#module.addExport(name, ExportDesc.Func, funcIndex);
+    }
+
+    this.#functions.set(name, funcIndex);
   }
 
   #generateStatement(stmt: Statement) {
@@ -54,25 +85,18 @@ export class CodeGenerator {
 
   #generateVariableDeclaration(decl: VariableDeclaration) {
     if (decl.init.type === NodeType.FunctionExpression) {
-      this.#generateFunction(decl.identifier.name, decl.init, decl.exported);
+      this.#generateFunctionBody(
+        decl.identifier.name,
+        decl.init as FunctionExpression,
+      );
     }
     // TODO: Handle global variables
   }
 
-  #generateFunction(name: string, func: FunctionExpression, exported: boolean) {
-    // 1. Build Type
-    // TODO: Map Rhea types to WASM types. For now assume i32.
-    const params = func.params.map(() => ValType.i32);
-    const results = [ValType.i32]; // TODO: Infer or read return type
+  #generateFunctionBody(name: string, func: FunctionExpression) {
+    // Function is already registered in Pass 1
+    // We just need to generate the code now.
 
-    const typeIndex = this.#module.addType(params, results);
-    const funcIndex = this.#module.addFunction(typeIndex);
-
-    if (exported) {
-      this.#module.addExport(name, ExportDesc.Func, funcIndex);
-    }
-
-    // 2. Build Body
     this.#scopes = [new Map()];
     this.#extraLocals = [];
     this.#nextLocalIndex = 0;
@@ -223,6 +247,9 @@ export class CodeGenerator {
       case NodeType.AssignmentExpression:
         this.#generateAssignmentExpression(expr as AssignmentExpression, body);
         break;
+      case NodeType.CallExpression:
+        this.#generateCallExpression(expr as CallExpression, body);
+        break;
       case NodeType.NumberLiteral:
         this.#generateNumberLiteral(expr, body);
         break;
@@ -233,6 +260,27 @@ export class CodeGenerator {
         this.#generateIdentifier(expr, body);
         break;
       // TODO: Handle other expressions
+    }
+  }
+
+  #generateCallExpression(expr: CallExpression, body: number[]) {
+    // 1. Generate arguments
+    for (const arg of expr.arguments) {
+      this.#generateExpression(arg, body);
+    }
+
+    // 2. Resolve function
+    if (expr.callee.type === NodeType.Identifier) {
+      const name = (expr.callee as Identifier).name;
+      const funcIndex = this.#functions.get(name);
+      if (funcIndex !== undefined) {
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(funcIndex));
+      } else {
+        throw new Error(`Function '${name}' not found.`);
+      }
+    } else {
+      throw new Error('Indirect calls not supported yet.');
     }
   }
 

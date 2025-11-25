@@ -118,4 +118,32 @@ suite('CodeGenerator', () => {
     assert.strictEqual(sum(5), 15); // 1+2+3+4+5 = 15
     assert.strictEqual(sum(0), 0);
   });
+
+  test('should compile and run function calls', async () => {
+    const input = `
+      let double = (x: i32) => x * 2;
+      export let main = (a: i32) => {
+        return double(a) + 1;
+      };
+    `;
+    const {main} = (await compile(input)) as {main: (a: number) => number};
+    assert.strictEqual(main(10), 21);
+    assert.strictEqual(main(5), 11);
+  });
+
+  test('should compile and run recursive function calls', async () => {
+    const input = `
+      export let fib = (n: i32) => {
+        if (n < 2) {
+          return n;
+        }
+        return fib(n - 1) + fib(n - 2);
+      };
+    `;
+    const {fib} = (await compile(input)) as {fib: (n: number) => number};
+    assert.strictEqual(fib(0), 0);
+    assert.strictEqual(fib(1), 1);
+    assert.strictEqual(fib(5), 5);
+    assert.strictEqual(fib(10), 55);
+  });
 });

@@ -10,6 +10,7 @@ import {
   type IfStatement,
   type WhileStatement,
   type AssignmentExpression,
+  type CallExpression,
 } from './ast.js';
 import {TypeKind, Types, type Type, type FunctionType} from './types.js';
 
@@ -189,11 +190,51 @@ export class TypeChecker {
       case NodeType.FunctionExpression:
         return this.#checkFunctionExpression(expr);
       case NodeType.CallExpression:
-        // TODO: Implement call expression checking
-        return Types.Unknown;
+        return this.#checkCallExpression(expr as CallExpression);
       default:
         return Types.Unknown;
     }
+  }
+
+  #checkCallExpression(expr: CallExpression): Type {
+    const calleeType = this.#checkExpression(expr.callee);
+
+    if (calleeType.kind !== TypeKind.Function) {
+      this.#errors.push(
+        `Type mismatch: expected function, got ${this.#typeToString(calleeType)}`,
+      );
+      return Types.Unknown;
+    }
+
+    const funcType = calleeType as FunctionType;
+
+    if (expr.arguments.length !== funcType.parameters.length) {
+      this.#errors.push(
+        `Expected ${funcType.parameters.length} arguments, got ${expr.arguments.length}`,
+      );
+    }
+
+    for (
+      let i = 0;
+      i < Math.min(expr.arguments.length, funcType.parameters.length);
+      i++
+    ) {
+      const argType = this.#checkExpression(expr.arguments[i]);
+      const paramType = funcType.parameters[i];
+
+      if (
+        argType.kind !== paramType.kind &&
+        argType.kind !== Types.Unknown.kind
+      ) {
+        if (this.#typeToString(argType) !== this.#typeToString(paramType)) {
+          this.#errors.push(
+            `Type mismatch in argument ${i + 1}: expected ${this.#typeToString(paramType)}, got ${this.#typeToString(argType)}`,
+          );
+        }
+      }
+    }
+
+    return funcType.returnType;
   }
 
   #checkAssignmentExpression(expr: AssignmentExpression): Type {

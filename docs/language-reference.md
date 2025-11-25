@@ -109,6 +109,14 @@ let c = a + b; // Valid
 // let d = a + "string"; // Error: Type mismatch
 ```
 
+### Function Calls
+
+Functions can be called using parentheses `()`.
+
+```typescript
+let result = add(1, 2);
+```
+
 ### Assignment
 
 Mutable variables (declared with `var`) can be reassigned.
@@ -192,9 +200,11 @@ IfStatement ::= "if" "(" Expression ")" Statement ("else" Statement)?
 
 WhileStatement ::= "while" "(" Expression ")" Statement
 
-Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression
+Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression | CallExpression
 
 AssignmentExpression ::= Identifier "=" Expression
+
+CallExpression ::= Expression "(" (Expression ("," Expression)*)? ")"
 
 ArrowFunction ::= "(" ParameterList? ")" (":" TypeAnnotation)? "=>" Expression
 
