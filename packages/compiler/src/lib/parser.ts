@@ -1,10 +1,12 @@
 import {
   NodeType,
+  type AssignmentExpression,
   type BlockStatement,
   type Expression,
   type FunctionExpression,
   type Identifier,
   type IfStatement,
+  type WhileStatement,
   type Parameter,
   type Program,
   type ReturnStatement,
@@ -45,6 +47,9 @@ export class Parser {
     }
     if (this.#match(TokenType.If)) {
       return this.#parseIfStatement();
+    }
+    if (this.#match(TokenType.While)) {
+      return this.#parseWhileStatement();
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseBlockStatement();
@@ -90,7 +95,25 @@ export class Parser {
   }
 
   #parseExpression(): Expression {
-    return this.#parseArrowFunction();
+    return this.#parseAssignment();
+  }
+
+  #parseAssignment(): Expression {
+    const expr = this.#parseArrowFunction();
+
+    if (this.#match(TokenType.Equals)) {
+      const value = this.#parseAssignment();
+      if (expr.type === NodeType.Identifier) {
+        return {
+          type: NodeType.AssignmentExpression,
+          name: expr as Identifier,
+          value,
+        };
+      }
+      throw new Error('Invalid assignment target.');
+    }
+
+    return expr;
   }
 
   #parseArrowFunction(): Expression {
@@ -302,6 +325,20 @@ export class Parser {
       test,
       consequent,
       alternate,
+    };
+  }
+
+  #parseWhileStatement(): WhileStatement {
+    this.#consume(TokenType.LParen, "Expected '(' after 'while'.");
+    const test = this.#parseExpression();
+    this.#consume(TokenType.RParen, "Expected ')' after while condition.");
+
+    const body = this.#parseStatement();
+
+    return {
+      type: NodeType.WhileStatement,
+      test,
+      body,
     };
   }
 

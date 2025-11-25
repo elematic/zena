@@ -101,4 +101,21 @@ suite('CodeGenerator', () => {
     assert.strictEqual(getTrue(), 1);
     assert.strictEqual(getFalse(), 0);
   });
+
+  test('should compile and run while loop with assignment', async () => {
+    const input = `
+      export let sum = (n: i32) => {
+        var i = 0;
+        var s = 0;
+        while (i < n) {
+          i = i + 1;
+          s = s + i;
+        }
+        return s;
+      };
+    `;
+    const {sum} = (await compile(input)) as {sum: (n: number) => number};
+    assert.strictEqual(sum(5), 15); // 1+2+3+4+5 = 15
+    assert.strictEqual(sum(0), 0);
+  });
 });

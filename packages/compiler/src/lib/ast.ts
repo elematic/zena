@@ -3,6 +3,7 @@ export const NodeType = {
   VariableDeclaration: 'VariableDeclaration',
   ExpressionStatement: 'ExpressionStatement',
   BinaryExpression: 'BinaryExpression',
+  AssignmentExpression: 'AssignmentExpression',
   NumberLiteral: 'NumberLiteral',
   StringLiteral: 'StringLiteral',
   BooleanLiteral: 'BooleanLiteral',
@@ -12,6 +13,7 @@ export const NodeType = {
   BlockStatement: 'BlockStatement',
   ReturnStatement: 'ReturnStatement',
   IfStatement: 'IfStatement',
+  WhileStatement: 'WhileStatement',
   Parameter: 'Parameter',
   TypeAnnotation: 'TypeAnnotation',
 } as const;
@@ -32,7 +34,8 @@ export type Statement =
   | ExpressionStatement
   | BlockStatement
   | ReturnStatement
-  | IfStatement;
+  | IfStatement
+  | WhileStatement;
 
 export interface VariableDeclaration extends Node {
   type: typeof NodeType.VariableDeclaration;
@@ -54,6 +57,7 @@ export interface BlockStatement extends Node {
 
 export type Expression =
   | BinaryExpression
+  | AssignmentExpression
   | NumberLiteral
   | StringLiteral
   | BooleanLiteral
@@ -63,9 +67,15 @@ export type Expression =
 
 export interface BinaryExpression extends Node {
   type: typeof NodeType.BinaryExpression;
-  left: Expression;
   operator: string;
+  left: Expression;
   right: Expression;
+}
+
+export interface AssignmentExpression extends Node {
+  type: typeof NodeType.AssignmentExpression;
+  name: Identifier;
+  value: Expression;
 }
 
 export interface NumberLiteral extends Node {
@@ -122,4 +132,10 @@ export interface IfStatement extends Node {
   test: Expression;
   consequent: Statement;
   alternate?: Statement;
+}
+
+export interface WhileStatement extends Node {
+  type: typeof NodeType.WhileStatement;
+  test: Expression;
+  body: Statement;
 }

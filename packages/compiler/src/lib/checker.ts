@@ -8,6 +8,8 @@ import {
   type FunctionExpression,
   type ReturnStatement,
   type IfStatement,
+  type WhileStatement,
+  type AssignmentExpression,
 } from './ast.js';
 import {TypeKind, Types, type Type, type FunctionType} from './types.js';
 
@@ -65,6 +67,15 @@ export class TypeChecker {
     return undefined;
   }
 
+  #resolveInfo(name: string): SymbolInfo | undefined {
+    for (let i = this.#scopes.length - 1; i >= 0; i--) {
+      if (this.#scopes[i].has(name)) {
+        return this.#scopes[i].get(name)!;
+      }
+    }
+    return undefined;
+  }
+
   #checkStatement(stmt: Statement) {
     switch (stmt.type) {
       case NodeType.VariableDeclaration:
@@ -86,6 +97,9 @@ export class TypeChecker {
       case NodeType.IfStatement:
         this.#checkIfStatement(stmt as IfStatement);
         break;
+      case NodeType.WhileStatement:
+        this.#checkWhileStatement(stmt as WhileStatement);
+        break;
     }
   }
 
@@ -104,6 +118,20 @@ export class TypeChecker {
     if (stmt.alternate) {
       this.#checkStatement(stmt.alternate);
     }
+  }
+
+  #checkWhileStatement(stmt: WhileStatement) {
+    const testType = this.#checkExpression(stmt.test);
+    if (
+      testType.kind !== TypeKind.Boolean &&
+      testType.kind !== TypeKind.Unknown
+    ) {
+      this.#errors.push(
+        `Expected boolean condition in while statement, got ${this.#typeToString(testType)}`,
+      );
+    }
+
+    this.#checkStatement(stmt.body);
   }
 
   #checkReturnStatement(stmt: ReturnStatement) {
@@ -154,11 +182,8 @@ export class TypeChecker {
         }
         return type;
       }
-      // TODO: Implement AssignmentExpression check
-      // When checking assignment, verify that the variable is not 'let' (immutable).
-      // const symbol = this.#resolveSymbol(expr.left.name);
-      // if (symbol.kind === 'let') error("Cannot reassign immutable variable");
-
+      case NodeType.AssignmentExpression:
+        return this.#checkAssignmentExpression(expr as AssignmentExpression);
       case NodeType.BinaryExpression:
         return this.#checkBinaryExpression(expr);
       case NodeType.FunctionExpression:
@@ -169,6 +194,34 @@ export class TypeChecker {
       default:
         return Types.Unknown;
     }
+  }
+
+  #checkAssignmentExpression(expr: AssignmentExpression): Type {
+    const varName = expr.name.name;
+    const symbol = this.#resolveInfo(varName);
+
+    if (!symbol) {
+      this.#errors.push(`Variable '${varName}' is not defined.`);
+      return Types.Unknown;
+    }
+
+    if (symbol.kind !== 'var') {
+      this.#errors.push(`Cannot assign to immutable variable '${varName}'.`);
+    }
+
+    const valueType = this.#checkExpression(expr.value);
+    if (
+      symbol.type.kind !== valueType.kind &&
+      symbol.type.kind !== Types.Unknown.kind
+    ) {
+      if (this.#typeToString(symbol.type) !== this.#typeToString(valueType)) {
+        this.#errors.push(
+          `Type mismatch in assignment: expected ${this.#typeToString(symbol.type)}, got ${this.#typeToString(valueType)}`,
+        );
+      }
+    }
+
+    return valueType;
   }
 
   #checkBinaryExpression(expr: BinaryExpression): Type {

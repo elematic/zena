@@ -8,6 +8,7 @@ export const TokenType = {
   Return: 'Return',
   If: 'If',
   Else: 'Else',
+  While: 'While',
   True: 'True',
   False: 'False',
 
@@ -62,6 +63,7 @@ const KEYWORDS: Record<string, TokenType> = {
   return: TokenType.Return,
   if: TokenType.If,
   else: TokenType.Else,
+  while: TokenType.While,
   true: TokenType.True,
   false: TokenType.False,
 };

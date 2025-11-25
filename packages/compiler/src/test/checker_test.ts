@@ -103,4 +103,26 @@ suite('TypeChecker', () => {
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0], /Type mismatch/);
   });
+
+  test('should detect non-boolean condition in while loop', () => {
+    const input = 'while (1) { }';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0], /Expected boolean condition in while statement/);
+  });
+
+  test('should detect non-boolean condition in if statement', () => {
+    const input = 'if (1) { }';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0], /Expected boolean condition in if statement/);
+  });
 });

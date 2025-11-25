@@ -15,6 +15,7 @@ export const SectionId = {
 } as const;
 
 export const ValType = {
+  void: 0x40,
   i32: 0x7f,
   i64: 0x7e,
   f32: 0x7d,

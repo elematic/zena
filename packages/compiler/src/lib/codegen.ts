@@ -12,6 +12,8 @@ import {
   type BlockStatement,
   type ReturnStatement,
   type IfStatement,
+  type WhileStatement,
+  type AssignmentExpression,
 } from './ast.js';
 import {WasmModule} from './emitter.js';
 import {ValType, Opcode, ExportDesc} from './wasm.js';
@@ -146,22 +148,52 @@ export class CodeGenerator {
       case NodeType.IfStatement:
         this.#generateIfStatement(stmt as IfStatement, body);
         break;
+      case NodeType.WhileStatement:
+        this.#generateWhileStatement(stmt as WhileStatement, body);
+        break;
     }
   }
 
   #generateIfStatement(stmt: IfStatement, body: number[]) {
     this.#generateExpression(stmt.test, body);
     body.push(Opcode.if);
-    body.push(0x40); // block type: void
-
+    body.push(ValType.void);
     this.#generateFunctionStatement(stmt.consequent, body);
-
     if (stmt.alternate) {
       body.push(Opcode.else);
       this.#generateFunctionStatement(stmt.alternate, body);
     }
-
     body.push(Opcode.end);
+  }
+
+  #generateWhileStatement(stmt: WhileStatement, body: number[]) {
+    // block $break
+    //   loop $continue
+    //     condition
+    //     i32.eqz
+    //     br_if $break
+    //     body
+    //     br $continue
+    //   end
+    // end
+
+    body.push(Opcode.block);
+    body.push(ValType.void);
+    body.push(Opcode.loop);
+    body.push(ValType.void);
+
+    this.#generateExpression(stmt.test, body);
+    body.push(Opcode.i32_eqz); // Invert condition
+    body.push(Opcode.br_if);
+    body.push(...WasmModule.encodeSignedLEB128(1)); // Break to block (depth 1)
+
+    this.#generateFunctionStatement(stmt.body, body);
+
+    body.push(Opcode.br);
+    body.push(...WasmModule.encodeSignedLEB128(0)); // Continue to loop (depth 0)
+
+    body.push(Opcode.end); // End loop
+    body.push(Opcode.end); // End block
   }
 
   #generateLocalVariableDeclaration(decl: VariableDeclaration, body: number[]) {
@@ -188,6 +220,9 @@ export class CodeGenerator {
       case NodeType.BinaryExpression:
         this.#generateBinaryExpression(expr, body);
         break;
+      case NodeType.AssignmentExpression:
+        this.#generateAssignmentExpression(expr as AssignmentExpression, body);
+        break;
       case NodeType.NumberLiteral:
         this.#generateNumberLiteral(expr, body);
         break;
@@ -199,6 +234,15 @@ export class CodeGenerator {
         break;
       // TODO: Handle other expressions
     }
+  }
+
+  #generateAssignmentExpression(expr: AssignmentExpression, body: number[]) {
+    this.#generateExpression(expr.value, body);
+    const index = this.#resolveLocal(expr.name.name);
+    // Assignment is an expression that evaluates to the assigned value.
+    // So we use local.tee to set the local and keep the value on the stack.
+    body.push(Opcode.local_tee);
+    body.push(...WasmModule.encodeSignedLEB128(index));
   }
 
   #generateBinaryExpression(expr: BinaryExpression, body: number[]) {

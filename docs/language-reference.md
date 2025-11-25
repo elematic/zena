@@ -109,6 +109,15 @@ let c = a + b; // Valid
 // let d = a + "string"; // Error: Type mismatch
 ```
 
+### Assignment
+
+Mutable variables (declared with `var`) can be reassigned.
+
+```typescript
+var x = 1;
+x = 2;
+```
+
 ### Grouping
 
 Parentheses `( )` can be used to group expressions and control precedence.
@@ -142,6 +151,16 @@ if (condition) {
 }
 ```
 
+### While Statement
+
+Rhea supports `while` loops.
+
+```typescript
+while (condition) {
+  // body
+}
+```
+
 ## 7. Modules & Exports
 
 ### Exports
@@ -157,7 +176,7 @@ export const add = (a: i32, b: i32) => a + b;
 ```ebnf
 Program ::= Statement*
 
-Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement | BlockStatement | ReturnStatement | IfStatement
+Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement | BlockStatement | ReturnStatement | IfStatement | WhileStatement
 
 ExportStatement ::= "export" VariableDeclaration
 
@@ -171,7 +190,11 @@ ReturnStatement ::= "return" Expression? ";"
 
 IfStatement ::= "if" "(" Expression ")" Statement ("else" Statement)?
 
-Expression ::= ArrowFunction | BinaryExpression
+WhileStatement ::= "while" "(" Expression ")" Statement
+
+Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression
+
+AssignmentExpression ::= Identifier "=" Expression
 
 ArrowFunction ::= "(" ParameterList? ")" (":" TypeAnnotation)? "=>" Expression
 
