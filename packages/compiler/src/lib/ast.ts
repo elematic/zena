@@ -126,6 +126,7 @@ export interface Identifier extends Node {
 export interface ClassDeclaration extends Node {
   type: typeof NodeType.ClassDeclaration;
   name: Identifier;
+  typeParameters?: Identifier[];
   body: (FieldDefinition | MethodDefinition)[];
 }
 
@@ -147,6 +148,7 @@ export interface MethodDefinition extends Node {
 export interface NewExpression extends Node {
   type: typeof NodeType.NewExpression;
   callee: Identifier;
+  typeArguments?: TypeAnnotation[];
   arguments: Expression[];
 }
 
@@ -162,6 +164,7 @@ export interface ThisExpression extends Node {
 
 export interface FunctionExpression extends Node {
   type: typeof NodeType.FunctionExpression;
+  typeParameters?: Identifier[];
   params: Parameter[];
   returnType?: TypeAnnotation;
   body: Expression | BlockStatement;
@@ -170,6 +173,7 @@ export interface FunctionExpression extends Node {
 export interface CallExpression extends Node {
   type: typeof NodeType.CallExpression;
   callee: Expression;
+  typeArguments?: TypeAnnotation[];
   arguments: Expression[];
 }
 
@@ -200,4 +204,5 @@ export interface Parameter extends Node {
 export interface TypeAnnotation extends Node {
   type: typeof NodeType.TypeAnnotation;
   name: string;
+  typeArguments?: TypeAnnotation[];
 }

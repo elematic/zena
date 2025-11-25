@@ -136,6 +136,11 @@ export class Parser {
     // () => ...
     // (a: i32) => ...
     // (a: i32, b: i32) => ...
+    // <T>(a: T) => ...
+
+    if (this.#check(TokenType.Less)) {
+      return this.#parseArrowFunctionDefinition();
+    }
 
     if (this.#check(TokenType.LParen)) {
       // Lookahead to distinguish between parenthesized expression and arrow function
@@ -164,17 +169,18 @@ export class Parser {
   }
 
   #parseArrowFunctionDefinition(): FunctionExpression {
+    const typeParameters = this.#parseTypeParameters();
     this.#consume(TokenType.LParen, "Expected '('");
     const params: Parameter[] = [];
     if (!this.#check(TokenType.RParen)) {
       do {
         const name = this.#parseIdentifier();
         this.#consume(TokenType.Colon, "Expected ':' for type annotation");
-        const typeName = this.#parseIdentifier();
+        const typeAnnotation = this.#parseTypeAnnotation();
         params.push({
           type: NodeType.Parameter,
           name,
-          typeAnnotation: {type: NodeType.TypeAnnotation, name: typeName.name},
+          typeAnnotation,
         });
       } while (this.#match(TokenType.Comma));
     }
@@ -183,8 +189,7 @@ export class Parser {
     // Optional return type
     let returnType: TypeAnnotation | undefined;
     if (this.#match(TokenType.Colon)) {
-      const typeName = this.#parseIdentifier();
-      returnType = {type: NodeType.TypeAnnotation, name: typeName.name};
+      returnType = this.#parseTypeAnnotation();
     }
 
     this.#consume(TokenType.Arrow, "Expected '=>'");
@@ -198,6 +203,7 @@ export class Parser {
 
     return {
       type: NodeType.FunctionExpression,
+      typeParameters,
       params,
       returnType,
       body,
@@ -282,6 +288,7 @@ export class Parser {
   #parseCall(): Expression {
     if (this.#match(TokenType.New)) {
       const callee = this.#parseIdentifier();
+      const typeArguments = this.#parseTypeArguments();
       this.#consume(TokenType.LParen, "Expected '(' after class name.");
       const args: Expression[] = [];
       if (!this.#check(TokenType.RParen)) {
@@ -294,6 +301,7 @@ export class Parser {
       let expr: Expression = {
         type: NodeType.NewExpression,
         callee,
+        typeArguments,
         arguments: args,
       };
 
@@ -454,6 +462,7 @@ export class Parser {
 
   #parseClassDeclaration(): ClassDeclaration {
     const name = this.#parseIdentifier();
+    const typeParameters = this.#parseTypeParameters();
     this.#consume(TokenType.LBrace, "Expected '{' before class body.");
 
     const body: (FieldDefinition | MethodDefinition)[] = [];
@@ -466,6 +475,7 @@ export class Parser {
     return {
       type: NodeType.ClassDeclaration,
       name,
+      typeParameters,
       body,
     };
   }
@@ -490,14 +500,11 @@ export class Parser {
         do {
           const paramName = this.#parseIdentifier();
           this.#consume(TokenType.Colon, "Expected ':' for type annotation");
-          const typeName = this.#parseIdentifier();
+          const typeAnnotation = this.#parseTypeAnnotation();
           params.push({
             type: NodeType.Parameter,
             name: paramName,
-            typeAnnotation: {
-              type: NodeType.TypeAnnotation,
-              name: typeName.name,
-            },
+            typeAnnotation,
           });
         } while (this.#match(TokenType.Comma));
       }
@@ -505,8 +512,7 @@ export class Parser {
 
       let returnType: TypeAnnotation | undefined;
       if (this.#match(TokenType.Colon)) {
-        const typeName = this.#parseIdentifier();
-        returnType = {type: NodeType.TypeAnnotation, name: typeName.name};
+        returnType = this.#parseTypeAnnotation();
       }
 
       this.#consume(TokenType.LBrace, "Expected '{' before method body.");
@@ -523,11 +529,7 @@ export class Parser {
 
     // Field: name: Type; or name: Type = value;
     this.#consume(TokenType.Colon, "Expected ':' after field name.");
-    const typeName = this.#parseIdentifier();
-    const typeAnnotation: TypeAnnotation = {
-      type: NodeType.TypeAnnotation,
-      name: typeName.name,
-    };
+    const typeAnnotation = this.#parseTypeAnnotation();
 
     let value: Expression | undefined;
     if (this.#match(TokenType.Equals)) {
@@ -544,6 +546,39 @@ export class Parser {
     };
   }
 
+  #parseTypeParameters(): Identifier[] | undefined {
+    if (this.#match(TokenType.Less)) {
+      const params: Identifier[] = [];
+      do {
+        params.push(this.#parseIdentifier());
+      } while (this.#match(TokenType.Comma));
+      this.#consume(TokenType.Greater, "Expected '>' after type parameters.");
+      return params;
+    }
+    return undefined;
+  }
+
+  #parseTypeArguments(): TypeAnnotation[] | undefined {
+    if (this.#match(TokenType.Less)) {
+      const args: TypeAnnotation[] = [];
+      do {
+        args.push(this.#parseTypeAnnotation());
+      } while (this.#match(TokenType.Comma));
+      this.#consume(TokenType.Greater, "Expected '>' after type arguments.");
+      return args;
+    }
+    return undefined;
+  }
+
+  #parseTypeAnnotation(): TypeAnnotation {
+    const name = this.#parseIdentifier().name;
+    const typeArguments = this.#parseTypeArguments();
+    return {
+      type: NodeType.TypeAnnotation,
+      name,
+      typeArguments,
+    };
+  }
   #parseBlockStatement(): BlockStatement {
     const body: Statement[] = [];
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {

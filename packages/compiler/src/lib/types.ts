@@ -6,6 +6,7 @@ export const TypeKind = {
   Function: 'Function',
   Class: 'Class',
   Array: 'Array',
+  TypeParameter: 'TypeParameter',
   Unknown: 'Unknown',
 } as const;
 
@@ -13,6 +14,11 @@ export type TypeKind = (typeof TypeKind)[keyof typeof TypeKind];
 
 export interface Type {
   kind: TypeKind;
+}
+
+export interface TypeParameter extends Type {
+  kind: typeof TypeKind.TypeParameter;
+  name: string;
 }
 
 export interface ArrayType extends Type {
@@ -27,6 +33,7 @@ export interface NumberType extends Type {
 
 export interface FunctionType extends Type {
   kind: typeof TypeKind.Function;
+  typeParameters?: TypeParameter[];
   parameters: Type[];
   returnType: Type;
 }
@@ -34,6 +41,8 @@ export interface FunctionType extends Type {
 export interface ClassType extends Type {
   kind: typeof TypeKind.Class;
   name: string;
+  typeParameters?: TypeParameter[];
+  typeArguments?: Type[];
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
   constructorType?: FunctionType;

@@ -51,7 +51,7 @@ build complex data structures and allows for better optimization.
 ## Challenges
 
 - **Generics**: Implementing a reusable `Map` requires Generics (e.g., `Map<K,
-  V>`) or a top-type (`any` / `eqref`) with runtime casting.
+V>`) or a top-type (`any` / `eqref`) with runtime casting.
   - _Recommendation_: Prioritize a basic Generics implementation or Templates to
     allow type-safe, specialized collections without runtime overhead
     (monomorphization).
