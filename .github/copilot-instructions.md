@@ -143,9 +143,11 @@ This project is an **npm monorepo** managed with **Wireit**.
   - `if` statements.
   - Variable assignment (`var`).
   - Function calls and recursion.
+- [x] Implement Structs & Classes (WASM-GC structs).
+- [x] Implement Arrays (WASM-GC arrays).
 
 ### Planned
 
-1.  **Structs & Classes**: Implement WASM-GC structs (`struct.new`, `struct.get`, `struct.set`) to support objects and classes.
-2.  **Arrays**: Implement support for arrays using WASM GC `array` types.
+1.  **Strings**: Implement strings as arrays of bytes/chars (UTF-8).
+2.  **Maps**: Implement mutable maps (`#{ key: value }`).
 3.  **Standard Library**: Begin building a small standard library (math, string manipulation).
