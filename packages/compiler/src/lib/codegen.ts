@@ -24,6 +24,7 @@ import {
   type StringLiteral,
   type TypeAnnotation,
   type MethodDefinition,
+  type Parameter,
 } from './ast.js';
 import {WasmModule} from './emitter.js';
 import {ValType, Opcode, ExportDesc, GcOpcode} from './wasm.js';
@@ -442,12 +443,34 @@ export class CodeGenerator {
 
   #generateNewExpression(expr: NewExpression, body: number[]) {
     let className = expr.callee.name;
+    let typeArguments = expr.typeArguments;
 
-    if (expr.typeArguments && expr.typeArguments.length > 0) {
+    if (
+      (!typeArguments || typeArguments.length === 0) &&
+      this.#genericClasses.has(className)
+    ) {
+      const classDecl = this.#genericClasses.get(className)!;
+      const ctor = classDecl.body.find(
+        (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
+      ) as MethodDefinition | undefined;
+      if (ctor) {
+        typeArguments = this.#inferTypeArgs(
+          classDecl.typeParameters!,
+          ctor.params,
+          expr.arguments,
+        );
+      } else {
+        throw new Error(
+          `Cannot infer type arguments for ${className}: no constructor found.`,
+        );
+      }
+    }
+
+    if (typeArguments && typeArguments.length > 0) {
       const annotation: TypeAnnotation = {
         type: NodeType.TypeAnnotation,
         name: className,
-        typeArguments: expr.typeArguments,
+        typeArguments: typeArguments,
       };
       // Ensure the class is instantiated
       this.#mapType(annotation, this.#currentTypeContext);
@@ -589,14 +612,20 @@ export class CodeGenerator {
         const name = (expr.callee as Identifier).name;
 
         if (this.#genericFunctions.has(name)) {
-          if (!expr.typeArguments || expr.typeArguments.length === 0) {
-            throw new Error(
-              `Generic function '${name}' requires type arguments.`,
+          let typeArguments = expr.typeArguments;
+
+          if (!typeArguments || typeArguments.length === 0) {
+            const funcDecl = this.#genericFunctions.get(name)!;
+            typeArguments = this.#inferTypeArgs(
+              funcDecl.typeParameters!,
+              funcDecl.params,
+              expr.arguments,
             );
           }
+
           const funcIndex = this.#instantiateGenericFunction(
             name,
-            expr.typeArguments,
+            typeArguments!,
           );
           body.push(Opcode.call);
           body.push(...WasmModule.encodeSignedLEB128(funcIndex));
@@ -857,12 +886,32 @@ export class CodeGenerator {
       }
       case NodeType.NewExpression: {
         const newExpr = expr as NewExpression;
-        const className = newExpr.callee.name;
-        if (newExpr.typeArguments && newExpr.typeArguments.length > 0) {
+        let className = newExpr.callee.name;
+        let typeArguments = newExpr.typeArguments;
+
+        if (
+          (!typeArguments || typeArguments.length === 0) &&
+          this.#genericClasses.has(className)
+        ) {
+          const classDecl = this.#genericClasses.get(className)!;
+          const ctor = classDecl.body.find(
+            (m) =>
+              m.type === NodeType.MethodDefinition && m.name.name === '#new',
+          ) as MethodDefinition | undefined;
+          if (ctor) {
+            typeArguments = this.#inferTypeArgs(
+              classDecl.typeParameters!,
+              ctor.params,
+              newExpr.arguments,
+            );
+          }
+        }
+
+        if (typeArguments && typeArguments.length > 0) {
           const annotation: TypeAnnotation = {
             type: NodeType.TypeAnnotation,
             name: className,
-            typeArguments: newExpr.typeArguments,
+            typeArguments: typeArguments,
           };
           return this.#mapType(annotation, this.#currentTypeContext);
         }
@@ -901,12 +950,22 @@ export class CodeGenerator {
           const name = (callExpr.callee as Identifier).name;
           if (this.#genericFunctions.has(name)) {
             const funcDecl = this.#genericFunctions.get(name)!;
-            if (callExpr.typeArguments && callExpr.typeArguments.length > 0) {
+            let typeArguments = callExpr.typeArguments;
+
+            if (!typeArguments || typeArguments.length === 0) {
+              typeArguments = this.#inferTypeArgs(
+                funcDecl.typeParameters!,
+                funcDecl.params,
+                callExpr.arguments,
+              );
+            }
+
+            if (typeArguments && typeArguments.length > 0) {
               const typeContext = new Map<string, TypeAnnotation>();
               for (let i = 0; i < funcDecl.typeParameters!.length; i++) {
                 typeContext.set(
                   funcDecl.typeParameters![i].name,
-                  callExpr.typeArguments[i],
+                  typeArguments[i],
                 );
               }
               if (funcDecl.returnType) {
@@ -1516,5 +1575,119 @@ export class CodeGenerator {
       i++;
     }
     return result;
+  }
+
+  #inferTypeArgs(
+    typeParameters: Identifier[],
+    params: Parameter[],
+    args: Expression[],
+  ): TypeAnnotation[] {
+    const inferred = new Map<string, TypeAnnotation>();
+    const typeParamsSet = new Set(typeParameters.map((p) => p.name));
+
+    for (let i = 0; i < Math.min(params.length, args.length); i++) {
+      const paramType = params[i].typeAnnotation;
+      const argType = this.#inferType(args[i]);
+      const argAnnotation = this.#typeToAnnotation(argType);
+      if (argAnnotation) {
+        this.#unify(paramType, argAnnotation, inferred, typeParamsSet);
+      }
+    }
+
+    const result: TypeAnnotation[] = [];
+    for (const param of typeParameters) {
+      if (!inferred.has(param.name)) {
+        throw new Error(`Could not infer type for ${param.name}`);
+      }
+      result.push(inferred.get(param.name)!);
+    }
+    return result;
+  }
+
+  #unify(
+    param: TypeAnnotation,
+    arg: TypeAnnotation,
+    inferred: Map<string, TypeAnnotation>,
+    typeParams: Set<string>,
+  ) {
+    if (typeParams.has(param.name)) {
+      // It's a type variable we need to infer
+      if (inferred.has(param.name)) {
+        // Check for conflict? For now, ignore.
+      } else {
+        inferred.set(param.name, arg);
+      }
+    } else if (
+      param.name === arg.name &&
+      param.typeArguments &&
+      arg.typeArguments &&
+      param.typeArguments.length === arg.typeArguments.length
+    ) {
+      // Recurse
+      for (let i = 0; i < param.typeArguments.length; i++) {
+        this.#unify(
+          param.typeArguments[i],
+          arg.typeArguments[i],
+          inferred,
+          typeParams,
+        );
+      }
+    }
+  }
+
+  #typeToAnnotation(type: number[]): TypeAnnotation | null {
+    if (type.length === 1) {
+      if (type[0] === ValType.i32)
+        return {type: NodeType.TypeAnnotation, name: 'i32'};
+      if (type[0] === ValType.f32)
+        return {type: NodeType.TypeAnnotation, name: 'f32'};
+    }
+    if (type[0] === ValType.ref_null && type.length > 1) {
+      // Decode LEB128
+      let index = 0;
+      let shift = 0;
+      let i = 1;
+      while (i < type.length) {
+        const byte = type[i];
+        index |= (byte & 0x7f) << shift;
+        if ((byte & 0x80) === 0) break;
+        shift += 7;
+        i++;
+      }
+
+      // Check if it's string
+      if (index === this.#stringTypeIndex) {
+        return {type: NodeType.TypeAnnotation, name: 'string'};
+      }
+
+      // Check classes
+      for (const [name, info] of this.#classes) {
+        if (info.structTypeIndex === index) {
+          // If name is "Box<i32>", parse it
+          if (name.includes('<')) {
+            const match = name.match(/^(.+)<(.+)>$/);
+            if (match) {
+              const className = match[1];
+              const argsStr = match[2];
+              // TODO: Better parsing for nested generics
+              const args = argsStr.split(',').map(
+                (s) =>
+                  ({
+                    type: NodeType.TypeAnnotation,
+                    name: s.trim(),
+                  }) as TypeAnnotation,
+              );
+              return {
+                type: NodeType.TypeAnnotation,
+                name: className,
+                typeArguments: args,
+              };
+            }
+          }
+          return {type: NodeType.TypeAnnotation, name: name};
+        }
+      }
+    }
+    return null;
   }
 }

@@ -209,4 +209,57 @@ suite('CodeGenerator - Generics', () => {
     const {test} = (await compile(input)) as {test: () => number};
     assert.strictEqual(test(), 5);
   });
+
+  test('should infer type arguments for generic class instantiation', async () => {
+    const input = `
+      class Box<T> {
+        value: T;
+        #new(v: T) {
+          this.value = v;
+        }
+        getValue(): T {
+          return this.value;
+        }
+      }
+      
+      export let test = (): i32 => {
+        let b = new Box(42);
+        return b.getValue();
+      };
+    `;
+    const {test} = (await compile(input)) as {test: () => number};
+    assert.strictEqual(test(), 42);
+  });
+
+  test('should infer type arguments for generic function call', async () => {
+    const input = `
+      let identity = <T>(x: T): T => x;
+      
+      export let test = (): i32 => {
+        return identity(42);
+      };
+    `;
+    const {test} = (await compile(input)) as {test: () => number};
+    assert.strictEqual(test(), 42);
+  });
+
+  test('should fail when adding incompatible inferred types', async () => {
+    const input = `
+      class Box<T> {
+        value: T;
+        #new(v: T) {
+          this.value = v;
+        }
+      }
+      
+      export let test = (): i32 => {
+        let a = new Box(10);
+        let b = new Box('hello');
+        return a.value + b.value;
+      };
+    `;
+    await assert.rejects(async () => {
+      await compile(input);
+    });
+  });
 });

@@ -159,13 +159,11 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Generic Classes (`class Box<T>`).
   - Multiple Type Parameters (`class Pair<K, V>`).
   - Generic Functions (`<T>(x: T) => x`).
+  - Type Inference (`new Box(10)` -> `Box<i32>`).
 
 ### Planned
 
 1.  **Generics Enhancements** (Immediate Priority):
-    - **Type Inference**:
-      - _Goal_: Allow `new Box(10)` to infer `Box<i32>`.
-      - _Tasks_: Implement unification algorithm in TypeChecker to deduce type arguments from constructor arguments.
     - **Default Type Parameters**: Support `class Box<T = i32>`.
     - **Constraints**: Support `T extends Animal`.
 
