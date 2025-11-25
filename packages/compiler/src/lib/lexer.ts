@@ -1,0 +1,249 @@
+export const TokenType = {
+  // Keywords
+  Let: 'Let',
+  Var: 'Var',
+  Const: 'Const',
+  Class: 'Class',
+  Import: 'Import',
+  Export: 'Export',
+  Return: 'Return',
+
+  // Identifiers & Literals
+  Identifier: 'Identifier',
+  Number: 'Number',
+  String: 'String',
+
+  // Operators
+  Equals: 'Equals',
+  Arrow: 'Arrow',
+  Plus: 'Plus',
+  Minus: 'Minus',
+  Star: 'Star',
+  Slash: 'Slash',
+
+  // Punctuation
+  LParen: 'LParen',
+  RParen: 'RParen',
+  LBrace: 'LBrace',
+  RBrace: 'RBrace',
+  Colon: 'Colon',
+  Semi: 'Semi',
+  Comma: 'Comma',
+  Dot: 'Dot',
+
+  EOF: 'EOF',
+  Unknown: 'Unknown',
+} as const;
+
+export type TokenType = (typeof TokenType)[keyof typeof TokenType];
+
+export interface Token {
+  type: TokenType;
+  value: string;
+  line: number;
+  column: number;
+}
+
+const KEYWORDS: Record<string, TokenType> = {
+  let: TokenType.Let,
+  var: TokenType.Var,
+  const: TokenType.Const,
+  class: TokenType.Class,
+  import: TokenType.Import,
+  export: TokenType.Export,
+  return: TokenType.Return,
+};
+
+export const tokenize = (source: string): Token[] => {
+  const tokens: Token[] = [];
+  let current = 0;
+  let line = 1;
+  let column = 1;
+
+  const advance = () => {
+    const char = source[current];
+    current++;
+    if (char === '\n') {
+      line++;
+      column = 1;
+    } else {
+      column++;
+    }
+    return char;
+  };
+
+  const peek = () => source[current];
+
+  while (current < source.length) {
+    const startColumn = column;
+    const char = peek();
+
+    // Whitespace
+    if (/\s/.test(char)) {
+      advance();
+      continue;
+    }
+
+    // Numbers
+    if (/[0-9]/.test(char)) {
+      let value = '';
+      while (current < source.length && /[0-9]/.test(peek())) {
+        value += advance();
+      }
+      tokens.push({type: TokenType.Number, value, line, column: startColumn});
+      continue;
+    }
+
+    // Identifiers & Keywords
+    if (/[a-zA-Z_]/.test(char)) {
+      let value = '';
+      while (current < source.length && /[a-zA-Z0-9_]/.test(peek())) {
+        value += advance();
+      }
+      const type = KEYWORDS[value] || TokenType.Identifier;
+      tokens.push({type, value, line, column: startColumn});
+      continue;
+    }
+
+    // Strings (simple single quote support)
+    if (char === "'") {
+      advance(); // Skip opening quote
+      let value = '';
+      while (current < source.length && peek() !== "'") {
+        value += advance();
+      }
+      if (current < source.length) advance(); // Skip closing quote
+      tokens.push({type: TokenType.String, value, line, column: startColumn});
+      continue;
+    }
+
+    // Operators & Punctuation
+    const c = advance();
+    switch (c) {
+      case '=':
+        if (peek() === '>') {
+          advance();
+          tokens.push({
+            type: TokenType.Arrow,
+            value: '=>',
+            line,
+            column: startColumn,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Equals,
+            value: '=',
+            line,
+            column: startColumn,
+          });
+        }
+        break;
+      case '+':
+        tokens.push({
+          type: TokenType.Plus,
+          value: '+',
+          line,
+          column: startColumn,
+        });
+        break;
+      case '-':
+        tokens.push({
+          type: TokenType.Minus,
+          value: '-',
+          line,
+          column: startColumn,
+        });
+        break;
+      case '*':
+        tokens.push({
+          type: TokenType.Star,
+          value: '*',
+          line,
+          column: startColumn,
+        });
+        break;
+      case '/':
+        tokens.push({
+          type: TokenType.Slash,
+          value: '/',
+          line,
+          column: startColumn,
+        });
+        break;
+      case '(':
+        tokens.push({
+          type: TokenType.LParen,
+          value: '(',
+          line,
+          column: startColumn,
+        });
+        break;
+      case ')':
+        tokens.push({
+          type: TokenType.RParen,
+          value: ')',
+          line,
+          column: startColumn,
+        });
+        break;
+      case '{':
+        tokens.push({
+          type: TokenType.LBrace,
+          value: '{',
+          line,
+          column: startColumn,
+        });
+        break;
+      case '}':
+        tokens.push({
+          type: TokenType.RBrace,
+          value: '}',
+          line,
+          column: startColumn,
+        });
+        break;
+      case ':':
+        tokens.push({
+          type: TokenType.Colon,
+          value: ':',
+          line,
+          column: startColumn,
+        });
+        break;
+      case ';':
+        tokens.push({
+          type: TokenType.Semi,
+          value: ';',
+          line,
+          column: startColumn,
+        });
+        break;
+      case ',':
+        tokens.push({
+          type: TokenType.Comma,
+          value: ',',
+          line,
+          column: startColumn,
+        });
+        break;
+      case '.':
+        tokens.push({
+          type: TokenType.Dot,
+          value: '.',
+          line,
+          column: startColumn,
+        });
+        break;
+      default:
+        tokens.push({
+          type: TokenType.Unknown,
+          value: c,
+          line,
+          column: startColumn,
+        });
+    }
+  }
+
+  tokens.push({type: TokenType.EOF, value: '', line, column});
+  return tokens;
+};
