@@ -306,7 +306,7 @@ class Pair<K, V> {
   }
 }
 
-let p = new Pair<i32, string>(1, "one");
+let p = new Pair<i32, string>(1, 'one');
 ```
 
 ### Generic Functions
