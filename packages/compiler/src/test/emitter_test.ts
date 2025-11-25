@@ -23,7 +23,10 @@ suite('WasmEmitter', () => {
     const module = new WasmModule();
 
     // (param i32 i32) (result i32)
-    const typeIndex = module.addType([ValType.i32, ValType.i32], [ValType.i32]);
+    const typeIndex = module.addType(
+      [[ValType.i32], [ValType.i32]],
+      [[ValType.i32]],
+    );
 
     const funcIndex = module.addFunction(typeIndex);
 

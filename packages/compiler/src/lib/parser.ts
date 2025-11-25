@@ -138,12 +138,14 @@ export class Parser {
     if (this.#check(TokenType.LParen)) {
       // Lookahead to distinguish between parenthesized expression and arrow function
 
-      // Case 1: () => ...
-      if (
-        this.#peek(1).type === TokenType.RParen &&
-        this.#peek(2).type === TokenType.Arrow
-      ) {
-        return this.#parseArrowFunctionDefinition();
+      // Case 1: () => ... or (): Type => ...
+      if (this.#peek(1).type === TokenType.RParen) {
+        if (
+          this.#peek(2).type === TokenType.Arrow ||
+          this.#peek(2).type === TokenType.Colon
+        ) {
+          return this.#parseArrowFunctionDefinition();
+        }
       }
 
       // Case 2: (param: type ...

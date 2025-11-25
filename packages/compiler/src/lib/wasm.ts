@@ -23,6 +23,20 @@ export const ValType = {
   v128: 0x7b,
   funcref: 0x70,
   externref: 0x6f,
+  anyref: 0x6e,
+  eqref: 0x6d,
+  optref: 0x6c,
+  ref: 0x64,
+  ref_null: 0x63,
+} as const;
+
+export const GcOpcode = {
+  struct_new: 0x00,
+  struct_new_default: 0x01,
+  struct_get: 0x02,
+  struct_get_s: 0x03,
+  struct_get_u: 0x04,
+  struct_set: 0x05,
 } as const;
 
 export const Opcode = {
@@ -39,6 +53,8 @@ export const Opcode = {
   return: 0x0f,
   call: 0x10,
   call_indirect: 0x11,
+  drop: 0x1a,
+  select: 0x1b,
 
   local_get: 0x20,
   local_set: 0x21,

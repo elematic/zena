@@ -136,6 +136,18 @@ export const tokenize = (source: string): Token[] => {
       continue;
     }
 
+    // Strings (double quote support)
+    if (char === '"') {
+      advance(); // Skip opening quote
+      let value = '';
+      while (current < source.length && peek() !== '"') {
+        value += advance();
+      }
+      if (current < source.length) advance(); // Skip closing quote
+      tokens.push({type: TokenType.String, value, line, column: startColumn});
+      continue;
+    }
+
     // Operators & Punctuation
     const c = advance();
     switch (c) {

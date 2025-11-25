@@ -15,27 +15,78 @@ import {
   type WhileStatement,
   type AssignmentExpression,
   type CallExpression,
+  type ClassDeclaration,
+  type NewExpression,
+  type MemberExpression,
+  type ThisExpression,
 } from './ast.js';
 import {WasmModule} from './emitter.js';
-import {ValType, Opcode, ExportDesc} from './wasm.js';
+import {ValType, Opcode, ExportDesc, GcOpcode} from './wasm.js';
+
+interface ClassInfo {
+  structTypeIndex: number;
+  fields: Map<string, {index: number; type: number}>;
+  methods: Map<string, number>; // name -> funcIndex
+}
 
 export class CodeGenerator {
   #module: WasmModule;
   #program: Program;
   #scopes: Map<string, number>[] = [];
-  #extraLocals: number[] = [];
+  #extraLocals: number[][] = [];
   #nextLocalIndex = 0;
   #functions = new Map<string, number>();
+  #classes = new Map<string, ClassInfo>();
+  #currentClass: ClassInfo | null = null;
 
   constructor(program: Program) {
     this.#program = program;
     this.#module = new WasmModule();
   }
+  // ...
+  #generateClassMethods(decl: ClassDeclaration) {
+    const classInfo = this.#classes.get(decl.name.name)!;
+    this.#currentClass = classInfo;
+
+    for (const member of decl.body) {
+      if (member.type === NodeType.MethodDefinition) {
+        const funcIndex = classInfo.methods.get(member.name.name)!;
+
+        this.#scopes = [new Map()];
+        this.#extraLocals = [];
+        this.#nextLocalIndex = 0;
+
+        // 'this' is local 0
+        this.#nextLocalIndex++;
+
+        // Params
+        for (const param of member.params) {
+          this.#scopes[0].set(param.name.name, this.#nextLocalIndex++);
+        }
+
+        const body: number[] = [];
+
+        // Generate body statements
+        for (const stmt of member.body.body) {
+          this.#generateFunctionStatement(stmt, body);
+        }
+
+        // Implicit return 0 if not void (for now assuming i32 return)
+        // TODO: Check if last statement is return
+        body.push(Opcode.i32_const, 0, Opcode.end);
+
+        this.#module.addCode(this.#extraLocals, body);
+      }
+    }
+    this.#currentClass = null;
+  }
 
   public generate(): Uint8Array {
-    // Pass 1: Register all functions
+    // Pass 1: Register classes and functions
     for (const statement of this.#program.body) {
-      if (
+      if (statement.type === NodeType.ClassDeclaration) {
+        this.#registerClass(statement as ClassDeclaration);
+      } else if (
         statement.type === NodeType.VariableDeclaration &&
         statement.init.type === NodeType.FunctionExpression
       ) {
@@ -54,9 +105,62 @@ export class CodeGenerator {
     return this.#module.toBytes();
   }
 
+  #registerClass(decl: ClassDeclaration) {
+    const fields = new Map<string, {index: number; type: number}>();
+    const fieldTypes: {type: number[]; mutable: boolean}[] = [];
+
+    let fieldIndex = 0;
+    for (const member of decl.body) {
+      if (member.type === NodeType.FieldDefinition) {
+        // TODO: Map AST type to WASM type properly. For now assume i32.
+        const wasmType = ValType.i32;
+        fields.set(member.name.name, {index: fieldIndex++, type: wasmType});
+        fieldTypes.push({type: [wasmType], mutable: true}); // All fields mutable for now
+      }
+    }
+
+    const structTypeIndex = this.#module.addStructType(fieldTypes);
+    const classInfo: ClassInfo = {
+      structTypeIndex,
+      fields,
+      methods: new Map(),
+    };
+    this.#classes.set(decl.name.name, classInfo);
+
+    // Register methods
+    for (const member of decl.body) {
+      if (member.type === NodeType.MethodDefinition) {
+        const methodName = member.name.name;
+
+        // 'this' type: (ref null $structTypeIndex)
+        const thisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+
+        const params = [thisType];
+        for (const param of member.params) {
+          params.push([ValType.i32]); // Assume i32 for now
+        }
+
+        const results = [[ValType.i32]]; // Assume i32 return
+
+        const typeIndex = this.#module.addType(params, results);
+        const funcIndex = this.#module.addFunction(typeIndex);
+
+        classInfo.methods.set(methodName, funcIndex);
+
+        // Store method info for generation
+        // We'll use a mangled name to store it in #functions map if we want to reuse logic,
+        // but methods have 'this' param so we need special handling.
+        // Let's just store it in a separate list to process in Pass 2.
+      }
+    }
+  }
+
   #registerFunction(name: string, func: FunctionExpression, exported: boolean) {
-    const params = func.params.map(() => ValType.i32);
-    const results = [ValType.i32]; // TODO: Infer or read return type
+    const params = func.params.map(() => [ValType.i32]);
+    const results = [[ValType.i32]]; // TODO: Infer or read return type
 
     const typeIndex = this.#module.addType(params, results);
     const funcIndex = this.#module.addFunction(typeIndex);
@@ -70,6 +174,9 @@ export class CodeGenerator {
 
   #generateStatement(stmt: Statement) {
     switch (stmt.type) {
+      case NodeType.ClassDeclaration:
+        this.#generateClassMethods(stmt as ClassDeclaration);
+        break;
       case NodeType.VariableDeclaration:
         this.#generateVariableDeclaration(stmt);
         break;
@@ -81,55 +188,6 @@ export class CodeGenerator {
         // Not supported at top level yet
         break;
     }
-  }
-
-  #generateVariableDeclaration(decl: VariableDeclaration) {
-    if (decl.init.type === NodeType.FunctionExpression) {
-      this.#generateFunctionBody(
-        decl.identifier.name,
-        decl.init as FunctionExpression,
-      );
-    }
-    // TODO: Handle global variables
-  }
-
-  #generateFunctionBody(name: string, func: FunctionExpression) {
-    // Function is already registered in Pass 1
-    // We just need to generate the code now.
-
-    this.#scopes = [new Map()];
-    this.#extraLocals = [];
-    this.#nextLocalIndex = 0;
-
-    func.params.forEach((p) => {
-      const index = this.#nextLocalIndex++;
-      this.#scopes[0].set(p.name.name, index);
-    });
-
-    const body: number[] = [];
-    if (func.body.type === NodeType.BlockStatement) {
-      this.#generateBlockStatement(func.body, body);
-    } else {
-      this.#generateExpression(func.body as Expression, body);
-    }
-    body.push(Opcode.end);
-
-    this.#module.addCode(this.#extraLocals, body);
-  }
-
-  #enterScope() {
-    this.#scopes.push(new Map());
-  }
-
-  #exitScope() {
-    this.#scopes.pop();
-  }
-
-  #declareLocal(name: string): number {
-    const index = this.#nextLocalIndex++;
-    this.#scopes[this.#scopes.length - 1].set(name, index);
-    this.#extraLocals.push(ValType.i32); // Assume i32 for now
-    return index;
   }
 
   #resolveLocal(name: string): number {
@@ -156,9 +214,8 @@ export class CodeGenerator {
         break;
       case NodeType.ExpressionStatement:
         this.#generateExpression(stmt.expression, body);
-        // If expression returns a value but statement shouldn't, we might need to drop it?
-        // For now, assume expression statements are void or we don't care about stack pollution yet (bad assumption for WASM)
-        // TODO: Drop value if expression has a return value
+        // Drop the result of the expression statement
+        body.push(Opcode.drop);
         break;
       case NodeType.VariableDeclaration:
         this.#generateLocalVariableDeclaration(
@@ -222,7 +279,20 @@ export class CodeGenerator {
 
   #generateLocalVariableDeclaration(decl: VariableDeclaration, body: number[]) {
     this.#generateExpression(decl.init, body);
-    const index = this.#declareLocal(decl.identifier.name);
+
+    let type: number[] = [ValType.i32];
+    if (decl.init.type === NodeType.NewExpression) {
+      const className = (decl.init as NewExpression).callee.name;
+      const classInfo = this.#classes.get(className);
+      if (classInfo) {
+        type = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+        ];
+      }
+    }
+
+    const index = this.#declareLocal(decl.identifier.name, type);
     body.push(Opcode.local_set);
     body.push(...WasmModule.encodeSignedLEB128(index));
   }
@@ -259,33 +329,165 @@ export class CodeGenerator {
       case NodeType.Identifier:
         this.#generateIdentifier(expr, body);
         break;
+      case NodeType.NewExpression:
+        this.#generateNewExpression(expr as NewExpression, body);
+        break;
+      case NodeType.MemberExpression:
+        this.#generateMemberExpression(expr as MemberExpression, body);
+        break;
+      case NodeType.ThisExpression:
+        this.#generateThisExpression(expr as ThisExpression, body);
+        break;
       // TODO: Handle other expressions
     }
   }
 
-  #generateCallExpression(expr: CallExpression, body: number[]) {
-    // 1. Generate arguments
+  #generateNewExpression(expr: NewExpression, body: number[]) {
+    const className = expr.callee.name;
+    const classInfo = this.#classes.get(className);
+    if (!classInfo) throw new Error(`Class ${className} not found`);
+
+    // Allocate struct with default values
+    body.push(0xfb, GcOpcode.struct_new_default);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+
+    // Store ref in temp local to return it later and pass to constructor
+    const type = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+    ];
+    const tempLocal = this.#declareLocal('$$temp_new', type);
+    body.push(Opcode.local_tee);
+    body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+    // Prepare args for constructor: [this, args...]
     for (const arg of expr.arguments) {
       this.#generateExpression(arg, body);
     }
 
-    // 2. Resolve function
-    if (expr.callee.type === NodeType.Identifier) {
-      const name = (expr.callee as Identifier).name;
-      const funcIndex = this.#functions.get(name);
-      if (funcIndex !== undefined) {
-        body.push(Opcode.call);
-        body.push(...WasmModule.encodeSignedLEB128(funcIndex));
-      } else {
-        throw new Error(`Function '${name}' not found.`);
+    // Call constructor
+    const ctorIndex = classInfo.methods.get('#new');
+    if (ctorIndex !== undefined) {
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(ctorIndex));
+    }
+
+    // Return the ref
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+  }
+
+  #generateMemberExpression(expr: MemberExpression, body: number[]) {
+    this.#generateExpression(expr.object, body);
+
+    const fieldName = expr.property.name;
+    let foundClass: ClassInfo | undefined;
+    let fieldInfo: {index: number; type: number} | undefined;
+
+    for (const info of this.#classes.values()) {
+      if (info.fields.has(fieldName)) {
+        foundClass = info;
+        fieldInfo = info.fields.get(fieldName);
+        break;
       }
+    }
+
+    if (!foundClass || !fieldInfo) {
+      throw new Error(`Field ${fieldName} not found in any class`);
+    }
+
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+  }
+
+  #generateThisExpression(expr: ThisExpression, body: number[]) {
+    body.push(Opcode.local_get);
+    body.push(0);
+  }
+
+  #generateCallExpression(expr: CallExpression, body: number[]) {
+    if (expr.callee.type === NodeType.MemberExpression) {
+      const memberExpr = expr.callee as MemberExpression;
+      const methodName = memberExpr.property.name;
+
+      let foundClass: ClassInfo | undefined;
+      let methodIndex: number | undefined;
+
+      for (const info of this.#classes.values()) {
+        if (info.methods.has(methodName)) {
+          foundClass = info;
+          methodIndex = info.methods.get(methodName);
+          break;
+        }
+      }
+
+      if (methodIndex === undefined) {
+        throw new Error(`Method ${methodName} not found`);
+      }
+
+      this.#generateExpression(memberExpr.object, body);
+
+      for (const arg of expr.arguments) {
+        this.#generateExpression(arg, body);
+      }
+
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(methodIndex));
     } else {
-      throw new Error('Indirect calls not supported yet.');
+      // 1. Generate arguments
+      for (const arg of expr.arguments) {
+        this.#generateExpression(arg, body);
+      }
+
+      // 2. Resolve function
+      if (expr.callee.type === NodeType.Identifier) {
+        const name = (expr.callee as Identifier).name;
+        const funcIndex = this.#functions.get(name);
+        if (funcIndex !== undefined) {
+          body.push(Opcode.call);
+          body.push(...WasmModule.encodeSignedLEB128(funcIndex));
+        } else {
+          throw new Error(`Function '${name}' not found.`);
+        }
+      } else {
+        throw new Error('Indirect calls not supported yet.');
+      }
     }
   }
 
   #generateAssignmentExpression(expr: AssignmentExpression, body: number[]) {
-    if (expr.left.type === NodeType.Identifier) {
+    if (expr.left.type === NodeType.MemberExpression) {
+      const memberExpr = expr.left as MemberExpression;
+      const fieldName = memberExpr.property.name;
+
+      let foundClass: ClassInfo | undefined;
+      let fieldInfo: {index: number; type: number} | undefined;
+
+      for (const info of this.#classes.values()) {
+        if (info.fields.has(fieldName)) {
+          foundClass = info;
+          fieldInfo = info.fields.get(fieldName);
+          break;
+        }
+      }
+
+      if (!fieldInfo) throw new Error(`Field ${fieldName} not found`);
+
+      this.#generateExpression(memberExpr.object, body);
+      this.#generateExpression(expr.value, body);
+
+      const tempVal = this.#declareLocal('$$temp_assign', [fieldInfo.type]);
+      body.push(Opcode.local_tee);
+      body.push(...WasmModule.encodeSignedLEB128(tempVal));
+
+      body.push(0xfb, GcOpcode.struct_set);
+      body.push(...WasmModule.encodeSignedLEB128(foundClass!.structTypeIndex));
+      body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(tempVal));
+    } else if (expr.left.type === NodeType.Identifier) {
       this.#generateExpression(expr.value, body);
       const index = this.#resolveLocal(expr.left.name);
       // Assignment is an expression that evaluates to the assigned value.
@@ -293,7 +495,7 @@ export class CodeGenerator {
       body.push(Opcode.local_tee);
       body.push(...WasmModule.encodeSignedLEB128(index));
     } else {
-      throw new Error('Member assignment not implemented yet.');
+      throw new Error('Invalid assignment target');
     }
   }
 
@@ -349,5 +551,54 @@ export class CodeGenerator {
     const index = this.#resolveLocal(expr.name);
     body.push(Opcode.local_get);
     body.push(...WasmModule.encodeSignedLEB128(index));
+  }
+
+  #generateVariableDeclaration(decl: VariableDeclaration) {
+    if (decl.init.type === NodeType.FunctionExpression) {
+      this.#generateFunctionBody(
+        decl.identifier.name,
+        decl.init as FunctionExpression,
+      );
+    }
+    // TODO: Handle global variables
+  }
+
+  #generateFunctionBody(name: string, func: FunctionExpression) {
+    // Function is already registered in Pass 1
+    // We just need to generate the code now.
+
+    this.#scopes = [new Map()];
+    this.#extraLocals = [];
+    this.#nextLocalIndex = 0;
+
+    func.params.forEach((p) => {
+      const index = this.#nextLocalIndex++;
+      this.#scopes[0].set(p.name.name, index);
+    });
+
+    const body: number[] = [];
+    if (func.body.type === NodeType.BlockStatement) {
+      this.#generateBlockStatement(func.body, body);
+    } else {
+      this.#generateExpression(func.body as Expression, body);
+    }
+    body.push(Opcode.end);
+
+    this.#module.addCode(this.#extraLocals, body);
+  }
+
+  #enterScope() {
+    this.#scopes.push(new Map());
+  }
+
+  #exitScope() {
+    this.#scopes.pop();
+  }
+
+  #declareLocal(name: string, type: number[] = [ValType.i32]): number {
+    const index = this.#nextLocalIndex++;
+    this.#scopes[this.#scopes.length - 1].set(name, index);
+    this.#extraLocals.push(type);
+    return index;
   }
 }

@@ -6,14 +6,36 @@ export class WasmModule {
   #exports: {name: string; kind: number; index: number}[] = [];
   #codes: number[][] = [];
 
-  public addType(params: number[], results: number[]): number {
+  public addType(params: number[][], results: number[][]): number {
     // Function type: 0x60 + vec(params) + vec(results)
     const buffer: number[] = [];
     buffer.push(0x60);
-    this.#writeVector(buffer, params);
-    this.#writeVector(buffer, results);
+
+    this.#writeUnsignedLEB128(buffer, params.length);
+    for (const param of params) {
+      buffer.push(...param);
+    }
+
+    this.#writeUnsignedLEB128(buffer, results.length);
+    for (const result of results) {
+      buffer.push(...result);
+    }
 
     // Simple deduplication could go here, but for now just push
+    this.#types.push(buffer);
+    return this.#types.length - 1;
+  }
+
+  public addStructType(fields: {type: number[]; mutable: boolean}[]): number {
+    // Struct type: 0x5F + vec(field_type)
+    // field_type: val_type + mutability
+    const buffer: number[] = [];
+    buffer.push(0x5f);
+    this.#writeUnsignedLEB128(buffer, fields.length);
+    for (const field of fields) {
+      buffer.push(...field.type);
+      buffer.push(field.mutable ? 1 : 0);
+    }
     this.#types.push(buffer);
     return this.#types.length - 1;
   }
@@ -27,22 +49,18 @@ export class WasmModule {
     this.#exports.push({name, kind, index});
   }
 
-  public addCode(locals: number[], body: number[]) {
+  public addCode(locals: number[][], body: number[]) {
     // Code entry: size (u32) + code
     // code: vec(locals) + expr
     // locals: vec(local)
     // local: n (u32) + type (valtype)
 
-    // We need to group locals by type for compression, but for simplicity:
-    // We assume `locals` input is just a list of types.
-    // We need to compress them into runs of same types.
-
-    const compressedLocals: {count: number; type: number}[] = [];
+    const compressedLocals: {count: number; type: number[]}[] = [];
     if (locals.length > 0) {
       let currentType = locals[0];
       let count = 1;
       for (let i = 1; i < locals.length; i++) {
-        if (locals[i] === currentType) {
+        if (this.#areTypesEqual(locals[i], currentType)) {
           count++;
         } else {
           compressedLocals.push({count, type: currentType});
@@ -57,11 +75,19 @@ export class WasmModule {
     this.#writeUnsignedLEB128(codeBuffer, compressedLocals.length); // vec(locals) length
     for (const local of compressedLocals) {
       this.#writeUnsignedLEB128(codeBuffer, local.count);
-      codeBuffer.push(local.type);
+      codeBuffer.push(...local.type);
     }
     codeBuffer.push(...body);
 
     this.#codes.push(codeBuffer);
+  }
+
+  #areTypesEqual(a: number[], b: number[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
   }
 
   public toBytes(): Uint8Array {

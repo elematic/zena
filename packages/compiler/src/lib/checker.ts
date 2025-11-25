@@ -11,8 +11,20 @@ import {
   type WhileStatement,
   type AssignmentExpression,
   type CallExpression,
+  type ClassDeclaration,
+  type NewExpression,
+  type MemberExpression,
+  type ThisExpression,
+  type FieldDefinition,
+  type MethodDefinition,
 } from './ast.js';
-import {TypeKind, Types, type Type, type FunctionType} from './types.js';
+import {
+  TypeKind,
+  Types,
+  type Type,
+  type FunctionType,
+  type ClassType,
+} from './types.js';
 
 interface SymbolInfo {
   type: Type;
@@ -23,6 +35,7 @@ export class TypeChecker {
   #scopes: Map<string, SymbolInfo>[] = [];
   #errors: string[] = [];
   #currentFunctionReturnType: Type | null = null;
+  #currentClass: ClassType | null = null;
 
   #program: Program;
 
@@ -100,6 +113,9 @@ export class TypeChecker {
         break;
       case NodeType.WhileStatement:
         this.#checkWhileStatement(stmt as WhileStatement);
+        break;
+      case NodeType.ClassDeclaration:
+        this.#checkClassDeclaration(stmt as ClassDeclaration);
         break;
     }
   }
@@ -191,6 +207,12 @@ export class TypeChecker {
         return this.#checkFunctionExpression(expr);
       case NodeType.CallExpression:
         return this.#checkCallExpression(expr as CallExpression);
+      case NodeType.NewExpression:
+        return this.#checkNewExpression(expr as NewExpression);
+      case NodeType.MemberExpression:
+        return this.#checkMemberExpression(expr as MemberExpression);
+      case NodeType.ThisExpression:
+        return this.#checkThisExpression(expr as ThisExpression);
       default:
         return Types.Unknown;
     }
@@ -265,8 +287,41 @@ export class TypeChecker {
 
       return valueType;
     } else if (expr.left.type === NodeType.MemberExpression) {
-      // TODO: Implement member assignment checking
-      return this.#checkExpression(expr.value);
+      const memberExpr = expr.left as MemberExpression;
+      const objectType = this.#checkExpression(memberExpr.object);
+
+      if (objectType.kind !== TypeKind.Class) {
+        if (objectType.kind !== Types.Unknown.kind) {
+          this.#errors.push(
+            `Property assignment on non-class type '${this.#typeToString(objectType)}'.`,
+          );
+        }
+        return Types.Unknown;
+      }
+
+      const classType = objectType as ClassType;
+      const memberName = memberExpr.property.name;
+
+      if (!classType.fields.has(memberName)) {
+        this.#errors.push(
+          `Field '${memberName}' does not exist on type '${classType.name}'.`,
+        );
+        return Types.Unknown;
+      }
+
+      const fieldType = classType.fields.get(memberName)!;
+      const valueType = this.#checkExpression(expr.value);
+
+      if (
+        valueType.kind !== fieldType.kind &&
+        valueType.kind !== Types.Unknown.kind
+      ) {
+        this.#errors.push(
+          `Type mismatch in assignment: expected ${this.#typeToString(fieldType)}, got ${this.#typeToString(valueType)}`,
+        );
+      }
+
+      return valueType;
     }
     return Types.Unknown;
   }
@@ -315,6 +370,9 @@ export class TypeChecker {
   #typeToString(type: Type): string {
     if (type.kind === TypeKind.Number) {
       return (type as any).name;
+    }
+    if (type.kind === TypeKind.Class) {
+      return (type as ClassType).name;
     }
     return type.kind;
   }
@@ -378,5 +436,223 @@ export class TypeChecker {
       parameters: paramTypes,
       returnType: bodyType,
     } as FunctionType;
+  }
+
+  #checkClassDeclaration(decl: ClassDeclaration) {
+    const className = decl.name.name;
+    const fields = new Map<string, Type>();
+    const methods = new Map<string, FunctionType>();
+    let constructorType: FunctionType | undefined;
+
+    // 1. First pass: Collect members to build the ClassType
+    for (const member of decl.body) {
+      if (member.type === NodeType.FieldDefinition) {
+        const fieldType = this.#resolveType(member.typeAnnotation.name);
+        if (fields.has(member.name.name)) {
+          this.#errors.push(
+            `Duplicate field '${member.name.name}' in class '${className}'.`,
+          );
+        }
+        fields.set(member.name.name, fieldType);
+      } else if (member.type === NodeType.MethodDefinition) {
+        const paramTypes = member.params.map((p) =>
+          this.#resolveType(p.typeAnnotation.name),
+        );
+        const returnType = member.returnType
+          ? this.#resolveType(member.returnType.name)
+          : Types.Void;
+
+        const methodType: FunctionType = {
+          kind: TypeKind.Function,
+          parameters: paramTypes,
+          returnType,
+        };
+
+        if (member.name.name === '#new') {
+          if (constructorType) {
+            this.#errors.push(`Duplicate constructor in class '${className}'.`);
+          }
+          constructorType = methodType;
+        } else {
+          if (methods.has(member.name.name)) {
+            this.#errors.push(
+              `Duplicate method '${member.name.name}' in class '${className}'.`,
+            );
+          }
+          methods.set(member.name.name, methodType);
+        }
+      }
+    }
+
+    const classType: ClassType = {
+      kind: TypeKind.Class,
+      name: className,
+      fields,
+      methods,
+      constructorType,
+    };
+
+    this.#declare(className, classType);
+
+    // 2. Second pass: Check method bodies
+    const previousClass = this.#currentClass;
+    this.#currentClass = classType;
+
+    for (const member of decl.body) {
+      if (member.type === NodeType.MethodDefinition) {
+        this.#checkMethodDefinition(member);
+      } else if (member.type === NodeType.FieldDefinition) {
+        if (member.value) {
+          const valueType = this.#checkExpression(member.value);
+          const fieldType = fields.get(member.name.name)!;
+          if (
+            valueType.kind !== fieldType.kind &&
+            valueType.kind !== Types.Unknown.kind
+          ) {
+            this.#errors.push(
+              `Type mismatch for field '${member.name.name}': expected ${this.#typeToString(fieldType)}, got ${this.#typeToString(valueType)}`,
+            );
+          }
+        }
+      }
+    }
+
+    this.#currentClass = previousClass;
+  }
+
+  #checkMethodDefinition(method: MethodDefinition) {
+    this.#enterScope();
+
+    // Declare parameters
+    for (const param of method.params) {
+      const type = this.#resolveType(param.typeAnnotation.name);
+      this.#declare(param.name.name, type, 'let');
+    }
+
+    const returnType = method.returnType
+      ? this.#resolveType(method.returnType.name)
+      : Types.Void;
+    const previousReturnType = this.#currentFunctionReturnType;
+    this.#currentFunctionReturnType = returnType;
+
+    // Check body
+    for (const stmt of method.body.body) {
+      this.#checkStatement(stmt);
+    }
+
+    this.#currentFunctionReturnType = previousReturnType;
+    this.#exitScope();
+  }
+
+  #resolveType(name: string): Type {
+    switch (name) {
+      case 'i32':
+        return Types.I32;
+      case 'f32':
+        return Types.F32;
+      case 'boolean':
+        return Types.Boolean;
+      case 'string':
+        return Types.String;
+      case 'void':
+        return Types.Void;
+      default: {
+        // Check if it's a class type
+        const type = this.#resolve(name);
+        if (type) return type;
+        this.#errors.push(`Unknown type '${name}'.`);
+        return Types.Unknown;
+      }
+    }
+  }
+
+  #checkNewExpression(expr: NewExpression): Type {
+    const className = expr.callee.name;
+    const type = this.#resolve(className);
+
+    if (!type || type.kind !== TypeKind.Class) {
+      this.#errors.push(`'${className}' is not a class.`);
+      return Types.Unknown;
+    }
+
+    const classType = type as ClassType;
+    const constructor = classType.constructorType;
+
+    if (!constructor) {
+      if (expr.arguments.length > 0) {
+        this.#errors.push(
+          `Class '${className}' has no constructor but arguments were provided.`,
+        );
+      }
+      return classType;
+    }
+
+    // Check arguments against constructor parameters
+    if (expr.arguments.length !== constructor.parameters.length) {
+      this.#errors.push(
+        `Expected ${constructor.parameters.length} arguments, got ${expr.arguments.length}`,
+      );
+    }
+
+    for (
+      let i = 0;
+      i < Math.min(expr.arguments.length, constructor.parameters.length);
+      i++
+    ) {
+      const argType = this.#checkExpression(expr.arguments[i]);
+      const paramType = constructor.parameters[i];
+
+      if (
+        argType.kind !== paramType.kind &&
+        argType.kind !== Types.Unknown.kind
+      ) {
+        if (this.#typeToString(argType) !== this.#typeToString(paramType)) {
+          this.#errors.push(
+            `Type mismatch in argument ${i + 1}: expected ${this.#typeToString(paramType)}, got ${this.#typeToString(argType)}`,
+          );
+        }
+      }
+    }
+
+    return classType;
+  }
+
+  #checkMemberExpression(expr: MemberExpression): Type {
+    const objectType = this.#checkExpression(expr.object);
+
+    if (objectType.kind !== TypeKind.Class) {
+      if (objectType.kind !== Types.Unknown.kind) {
+        this.#errors.push(
+          `Property access on non-class type '${this.#typeToString(objectType)}'.`,
+        );
+      }
+      return Types.Unknown;
+    }
+
+    const classType = objectType as ClassType;
+    const memberName = expr.property.name;
+
+    // Check fields
+    if (classType.fields.has(memberName)) {
+      return classType.fields.get(memberName)!;
+    }
+
+    // Check methods
+    if (classType.methods.has(memberName)) {
+      return classType.methods.get(memberName)!;
+    }
+
+    this.#errors.push(
+      `Property '${memberName}' does not exist on type '${classType.name}'.`,
+    );
+    return Types.Unknown;
+  }
+
+  #checkThisExpression(expr: ThisExpression): Type {
+    if (!this.#currentClass) {
+      this.#errors.push(`'this' can only be used inside a class.`);
+      return Types.Unknown;
+    }
+    return this.#currentClass;
   }
 }

@@ -4,6 +4,7 @@ export const TypeKind = {
   Boolean: 'Boolean',
   Void: 'Void',
   Function: 'Function',
+  Class: 'Class',
   Unknown: 'Unknown',
 } as const;
 
@@ -22,6 +23,14 @@ export interface FunctionType extends Type {
   kind: typeof TypeKind.Function;
   parameters: Type[];
   returnType: Type;
+}
+
+export interface ClassType extends Type {
+  kind: typeof TypeKind.Class;
+  name: string;
+  fields: Map<string, Type>;
+  methods: Map<string, FunctionType>;
+  constructorType?: FunctionType;
 }
 
 export const Types = {
