@@ -5,6 +5,7 @@ export const TypeKind = {
   Void: 'Void',
   Function: 'Function',
   Class: 'Class',
+  Array: 'Array',
   Unknown: 'Unknown',
 } as const;
 
@@ -12,6 +13,11 @@ export type TypeKind = (typeof TypeKind)[keyof typeof TypeKind];
 
 export interface Type {
   kind: TypeKind;
+}
+
+export interface ArrayType extends Type {
+  kind: typeof TypeKind.Array;
+  elementType: Type;
 }
 
 export interface NumberType extends Type {

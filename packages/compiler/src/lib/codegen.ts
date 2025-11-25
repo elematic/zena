@@ -19,6 +19,8 @@ import {
   type NewExpression,
   type MemberExpression,
   type ThisExpression,
+  type ArrayLiteral,
+  type IndexExpression,
 } from './ast.js';
 import {WasmModule} from './emitter.js';
 import {ValType, Opcode, ExportDesc, GcOpcode} from './wasm.js';
@@ -29,15 +31,21 @@ interface ClassInfo {
   methods: Map<string, number>; // name -> funcIndex
 }
 
+interface LocalInfo {
+  index: number;
+  type: number[];
+}
+
 export class CodeGenerator {
   #module: WasmModule;
   #program: Program;
-  #scopes: Map<string, number>[] = [];
+  #scopes: Map<string, LocalInfo>[] = [];
   #extraLocals: number[][] = [];
   #nextLocalIndex = 0;
   #functions = new Map<string, number>();
   #classes = new Map<string, ClassInfo>();
   #currentClass: ClassInfo | null = null;
+  #arrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
 
   constructor(program: Program) {
     this.#program = program;
@@ -61,9 +69,12 @@ export class CodeGenerator {
 
         // Params
         for (const param of member.params) {
-          this.#scopes[0].set(param.name.name, this.#nextLocalIndex++);
+          // TODO: Map type annotation to WASM type
+          this.#scopes[0].set(param.name.name, {
+            index: this.#nextLocalIndex++,
+            type: [ValType.i32],
+          });
         }
-
         const body: number[] = [];
 
         // Generate body statements
@@ -193,6 +204,15 @@ export class CodeGenerator {
   #resolveLocal(name: string): number {
     for (let i = this.#scopes.length - 1; i >= 0; i--) {
       if (this.#scopes[i].has(name)) {
+        return this.#scopes[i].get(name)!.index;
+      }
+    }
+    throw new Error(`Unknown identifier: ${name}`);
+  }
+
+  #resolveLocalInfo(name: string): LocalInfo {
+    for (let i = this.#scopes.length - 1; i >= 0; i--) {
+      if (this.#scopes[i].has(name)) {
         return this.#scopes[i].get(name)!;
       }
     }
@@ -290,6 +310,10 @@ export class CodeGenerator {
           ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
         ];
       }
+    } else if (decl.init.type === NodeType.ArrayLiteral) {
+      // TODO: Infer array type correctly. Assuming i32 for now.
+      const typeIndex = this.#getArrayTypeIndex([ValType.i32]);
+      type = [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
     }
 
     const index = this.#declareLocal(decl.identifier.name, type);
@@ -338,8 +362,72 @@ export class CodeGenerator {
       case NodeType.ThisExpression:
         this.#generateThisExpression(expr as ThisExpression, body);
         break;
+      case NodeType.ArrayLiteral:
+        this.#generateArrayLiteral(expr as ArrayLiteral, body);
+        break;
+      case NodeType.IndexExpression:
+        this.#generateIndexExpression(expr as IndexExpression, body);
+        break;
       // TODO: Handle other expressions
     }
+  }
+
+  #getArrayTypeIndex(elementType: number[]): number {
+    const key = elementType.join(',');
+    if (this.#arrayTypes.has(key)) {
+      return this.#arrayTypes.get(key)!;
+    }
+    const index = this.#module.addArrayType(elementType, true);
+    this.#arrayTypes.set(key, index);
+    return index;
+  }
+
+  #generateArrayLiteral(expr: ArrayLiteral, body: number[]) {
+    if (expr.elements.length === 0) {
+      const typeIndex = this.#getArrayTypeIndex([ValType.i32]);
+      body.push(0xfb, GcOpcode.array_new_fixed);
+      body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+      body.push(...WasmModule.encodeSignedLEB128(0));
+      return;
+    }
+
+    // TODO: Infer type correctly. Assuming i32 for now.
+    const elementType = [ValType.i32];
+    const typeIndex = this.#getArrayTypeIndex(elementType);
+
+    for (const element of expr.elements) {
+      this.#generateExpression(element, body);
+    }
+
+    body.push(0xfb, GcOpcode.array_new_fixed);
+    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(expr.elements.length));
+  }
+
+  #generateIndexExpression(expr: IndexExpression, body: number[]) {
+    let arrayTypeIndex = -1;
+    if (expr.object.type === NodeType.Identifier) {
+      const localInfo = this.#resolveLocalInfo(
+        (expr.object as Identifier).name,
+      );
+      if (
+        localInfo.type.length > 1 &&
+        (localInfo.type[0] === ValType.ref_null ||
+          localInfo.type[0] === ValType.ref)
+      ) {
+        arrayTypeIndex = localInfo.type[1];
+      }
+    }
+
+    if (arrayTypeIndex === -1) {
+      arrayTypeIndex = this.#getArrayTypeIndex([ValType.i32]);
+    }
+
+    this.#generateExpression(expr.object, body);
+    this.#generateExpression(expr.index, body);
+
+    body.push(0xfb, GcOpcode.array_get);
+    body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
   }
 
   #generateNewExpression(expr: NewExpression, body: number[]) {
@@ -457,6 +545,38 @@ export class CodeGenerator {
   }
 
   #generateAssignmentExpression(expr: AssignmentExpression, body: number[]) {
+    if (expr.left.type === NodeType.IndexExpression) {
+      const indexExpr = expr.left as IndexExpression;
+      let arrayTypeIndex = -1;
+      if (indexExpr.object.type === NodeType.Identifier) {
+        const localInfo = this.#resolveLocalInfo(
+          (indexExpr.object as Identifier).name,
+        );
+        if (localInfo.type.length > 1) {
+          arrayTypeIndex = localInfo.type[1];
+        }
+      }
+      if (arrayTypeIndex === -1) {
+        arrayTypeIndex = this.#getArrayTypeIndex([ValType.i32]);
+      }
+
+      this.#generateExpression(indexExpr.object, body);
+      this.#generateExpression(indexExpr.index, body);
+      this.#generateExpression(expr.value, body);
+
+      const tempLocal = this.#declareLocal('$$temp_array_set', [ValType.i32]);
+
+      body.push(Opcode.local_tee);
+      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+      body.push(0xfb, GcOpcode.array_set);
+      body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+      return;
+    }
+
     if (expr.left.type === NodeType.MemberExpression) {
       const memberExpr = expr.left as MemberExpression;
       const fieldName = memberExpr.property.name;
@@ -573,7 +693,8 @@ export class CodeGenerator {
 
     func.params.forEach((p) => {
       const index = this.#nextLocalIndex++;
-      this.#scopes[0].set(p.name.name, index);
+      // TODO: Map type annotation to WASM type
+      this.#scopes[0].set(p.name.name, {index, type: [ValType.i32]});
     });
 
     const body: number[] = [];
@@ -597,7 +718,7 @@ export class CodeGenerator {
 
   #declareLocal(name: string, type: number[] = [ValType.i32]): number {
     const index = this.#nextLocalIndex++;
-    this.#scopes[this.#scopes.length - 1].set(name, index);
+    this.#scopes[this.#scopes.length - 1].set(name, {index, type});
     this.#extraLocals.push(type);
     return index;
   }

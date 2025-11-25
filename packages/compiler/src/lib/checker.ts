@@ -17,6 +17,8 @@ import {
   type ThisExpression,
   type FieldDefinition,
   type MethodDefinition,
+  type ArrayLiteral,
+  type IndexExpression,
 } from './ast.js';
 import {
   TypeKind,
@@ -24,6 +26,8 @@ import {
   type Type,
   type FunctionType,
   type ClassType,
+  type ArrayType,
+  type NumberType,
 } from './types.js';
 
 interface SymbolInfo {
@@ -213,6 +217,10 @@ export class TypeChecker {
         return this.#checkMemberExpression(expr as MemberExpression);
       case NodeType.ThisExpression:
         return this.#checkThisExpression(expr as ThisExpression);
+      case NodeType.ArrayLiteral:
+        return this.#checkArrayLiteral(expr as ArrayLiteral);
+      case NodeType.IndexExpression:
+        return this.#checkIndexExpression(expr as IndexExpression);
       default:
         return Types.Unknown;
     }
@@ -373,6 +381,9 @@ export class TypeChecker {
     }
     if (type.kind === TypeKind.Class) {
       return (type as ClassType).name;
+    }
+    if (type.kind === TypeKind.Array) {
+      return `[${this.#typeToString((type as ArrayType).elementType)}]`;
     }
     return type.kind;
   }
@@ -654,5 +665,45 @@ export class TypeChecker {
       return Types.Unknown;
     }
     return this.#currentClass;
+  }
+
+  #checkArrayLiteral(expr: ArrayLiteral): Type {
+    if (expr.elements.length === 0) {
+      return {kind: TypeKind.Array, elementType: Types.Unknown} as ArrayType;
+    }
+
+    const firstType = this.#checkExpression(expr.elements[0]);
+    for (let i = 1; i < expr.elements.length; i++) {
+      const type = this.#checkExpression(expr.elements[i]);
+      if (this.#typeToString(type) !== this.#typeToString(firstType)) {
+        this.#errors.push(
+          `Array elements must be of the same type. Expected ${this.#typeToString(firstType)}, got ${this.#typeToString(type)}`,
+        );
+      }
+    }
+    return {kind: TypeKind.Array, elementType: firstType} as ArrayType;
+  }
+
+  #checkIndexExpression(expr: IndexExpression): Type {
+    const objectType = this.#checkExpression(expr.object);
+    const indexType = this.#checkExpression(expr.index);
+
+    if (
+      indexType.kind !== TypeKind.Number ||
+      (indexType as NumberType).name !== 'i32'
+    ) {
+      this.#errors.push(
+        `Array index must be i32, got ${this.#typeToString(indexType)}`,
+      );
+    }
+
+    if (objectType.kind !== TypeKind.Array) {
+      this.#errors.push(
+        `Index expression only supported on arrays, got ${this.#typeToString(objectType)}`,
+      );
+      return Types.Unknown;
+    }
+
+    return (objectType as ArrayType).elementType;
   }
 }

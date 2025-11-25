@@ -20,6 +20,7 @@ import {
   type ThisExpression,
   type TypeAnnotation,
   type VariableDeclaration,
+  type IndexExpression,
 } from './ast.js';
 import {TokenType, tokenize, type Token} from './lexer.js';
 
@@ -115,11 +116,12 @@ export class Parser {
       const value = this.#parseAssignment();
       if (
         expr.type === NodeType.Identifier ||
-        expr.type === NodeType.MemberExpression
+        expr.type === NodeType.MemberExpression ||
+        expr.type === NodeType.IndexExpression
       ) {
         return {
           type: NodeType.AssignmentExpression,
-          left: expr as Identifier | MemberExpression,
+          left: expr as Identifier | MemberExpression | IndexExpression,
           value,
         };
       }
@@ -322,6 +324,14 @@ export class Parser {
           object: expr,
           property,
         };
+      } else if (this.#match(TokenType.LBracket)) {
+        const index = this.#parseExpression();
+        this.#consume(TokenType.RBracket, "Expected ']' after index.");
+        expr = {
+          type: NodeType.IndexExpression,
+          object: expr,
+          index,
+        };
       } else {
         break;
       }
@@ -349,6 +359,19 @@ export class Parser {
   #parsePrimary(): Expression {
     if (this.#match(TokenType.This)) {
       return {type: NodeType.ThisExpression};
+    }
+    if (this.#match(TokenType.Hash)) {
+      if (this.#match(TokenType.LBracket)) {
+        const elements: Expression[] = [];
+        if (!this.#check(TokenType.RBracket)) {
+          do {
+            elements.push(this.#parseExpression());
+          } while (this.#match(TokenType.Comma));
+        }
+        this.#consume(TokenType.RBracket, "Expected ']' after array elements.");
+        return {type: NodeType.ArrayLiteral, elements};
+      }
+      throw new Error("Expected '[' after '#'.");
     }
     if (this.#match(TokenType.Number)) {
       return {type: NodeType.NumberLiteral, value: this.#previous().value};

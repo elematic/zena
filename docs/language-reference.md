@@ -271,7 +271,35 @@ class A {
 }
 ```
 
-## 7. Grammar (Simplified)
+## 9. Arrays
+
+Rhea supports mutable arrays backed by WASM GC arrays.
+
+### Array Literal
+
+Arrays are created using the `#[ ... ]` syntax.
+
+```typescript
+let arr = #[1, 2, 3];
+```
+
+### Index Access
+
+Array elements are accessed using square brackets `[]`.
+
+```typescript
+let x = arr[0];
+```
+
+### Assignment
+
+Array elements can be modified using assignment.
+
+```typescript
+arr[0] = 10;
+```
+
+## 10. Grammar (Simplified)
 
 ```ebnf
 Program ::= Statement*
@@ -292,15 +320,19 @@ IfStatement ::= "if" "(" Expression ")" Statement ("else" Statement)?
 
 WhileStatement ::= "while" "(" Expression ")" Statement
 
-Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression | CallExpression | NewExpression | MemberExpression
+Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression | CallExpression | NewExpression | MemberExpression | ArrayLiteral | IndexExpression
 
-AssignmentExpression ::= (Identifier | MemberExpression) "=" Expression
+AssignmentExpression ::= (Identifier | MemberExpression | IndexExpression) "=" Expression
 
 CallExpression ::= Expression "(" (Expression ("," Expression)*)? ")"
 
 NewExpression ::= "new" Identifier "(" (Expression ("," Expression)*)? ")"
 
 MemberExpression ::= Expression "." Identifier
+
+ArrayLiteral ::= "#[" (Expression ("," Expression)*)? "]"
+
+IndexExpression ::= Expression "[" Expression "]"
 
 ArrowFunction ::= "(" ParameterList? ")" (":" TypeAnnotation)? "=>" Expression
 

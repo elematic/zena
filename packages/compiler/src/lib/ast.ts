@@ -22,6 +22,8 @@ export const NodeType = {
   NewExpression: 'NewExpression',
   MemberExpression: 'MemberExpression',
   ThisExpression: 'ThisExpression',
+  ArrayLiteral: 'ArrayLiteral',
+  IndexExpression: 'IndexExpression',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -62,6 +64,17 @@ export interface BlockStatement extends Node {
   body: Statement[];
 }
 
+export interface ArrayLiteral extends Node {
+  type: typeof NodeType.ArrayLiteral;
+  elements: Expression[];
+}
+
+export interface IndexExpression extends Node {
+  type: typeof NodeType.IndexExpression;
+  object: Expression;
+  index: Expression;
+}
+
 export type Expression =
   | BinaryExpression
   | AssignmentExpression
@@ -73,7 +86,9 @@ export type Expression =
   | CallExpression
   | NewExpression
   | MemberExpression
-  | ThisExpression;
+  | ThisExpression
+  | ArrayLiteral
+  | IndexExpression;
 
 export interface BinaryExpression extends Node {
   type: typeof NodeType.BinaryExpression;
@@ -84,7 +99,7 @@ export interface BinaryExpression extends Node {
 
 export interface AssignmentExpression extends Node {
   type: typeof NodeType.AssignmentExpression;
-  left: Identifier | MemberExpression;
+  left: Identifier | MemberExpression | IndexExpression;
   value: Expression;
 }
 

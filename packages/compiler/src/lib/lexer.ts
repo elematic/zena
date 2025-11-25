@@ -38,6 +38,8 @@ export const TokenType = {
   RParen: 'RParen',
   LBrace: 'LBrace',
   RBrace: 'RBrace',
+  LBracket: 'LBracket',
+  RBracket: 'RBracket',
   Colon: 'Colon',
   Semi: 'Semi',
   Comma: 'Comma',
@@ -291,6 +293,22 @@ export const tokenize = (source: string): Token[] => {
         tokens.push({
           type: TokenType.RBrace,
           value: '}',
+          line,
+          column: startColumn,
+        });
+        break;
+      case '[':
+        tokens.push({
+          type: TokenType.LBracket,
+          value: '[',
+          line,
+          column: startColumn,
+        });
+        break;
+      case ']':
+        tokens.push({
+          type: TokenType.RBracket,
+          value: ']',
           line,
           column: startColumn,
         });

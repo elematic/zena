@@ -40,6 +40,17 @@ export class WasmModule {
     return this.#types.length - 1;
   }
 
+  public addArrayType(elementType: number[], mutable: boolean): number {
+    // Array type: 0x5E + field_type
+    // field_type: val_type + mutability
+    const buffer: number[] = [];
+    buffer.push(0x5e);
+    buffer.push(...elementType);
+    buffer.push(mutable ? 1 : 0);
+    this.#types.push(buffer);
+    return this.#types.length - 1;
+  }
+
   public addFunction(typeIndex: number): number {
     this.#functions.push(typeIndex);
     return this.#functions.length - 1;

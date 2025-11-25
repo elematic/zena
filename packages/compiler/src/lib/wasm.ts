@@ -37,6 +37,16 @@ export const GcOpcode = {
   struct_get_s: 0x03,
   struct_get_u: 0x04,
   struct_set: 0x05,
+  array_new: 0x06,
+  array_new_default: 0x07,
+  array_new_fixed: 0x08,
+  array_new_data: 0x09,
+  array_new_elem: 0x0a,
+  array_get: 0x0b,
+  array_get_s: 0x0c,
+  array_get_u: 0x0d,
+  array_set: 0x0e,
+  array_len: 0x0f,
 } as const;
 
 export const Opcode = {

@@ -7,3 +7,21 @@ export * from './checker.js';
 export * from './wasm.js';
 export * from './emitter.js';
 export * from './codegen.js';
+
+import {Parser} from './parser.js';
+import {CodeGenerator} from './codegen.js';
+import {TypeChecker} from './checker.js';
+
+export function compile(source: string): Uint8Array {
+  const parser = new Parser(source);
+  const ast = parser.parse();
+
+  const checker = new TypeChecker(ast);
+  const errors = checker.check();
+  if (errors.length > 0) {
+    throw new Error(errors.join('\n'));
+  }
+
+  const codegen = new CodeGenerator(ast);
+  return codegen.generate();
+}
