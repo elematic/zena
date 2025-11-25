@@ -37,4 +37,35 @@ suite('CodeGenerator', () => {
 
     assert.strictEqual(calc(2, 3), 10); // (2 + 3) * 2 = 10
   });
+
+  test('should compile and run a function with block body and return', async () => {
+    const input = 'export let add = (a: i32, b: i32) => { return a + b; };';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const codegen = new CodeGenerator(ast);
+    const bytes = codegen.generate();
+
+    const result = await WebAssembly.instantiate(bytes);
+    // @ts-ignore
+    const add = result.instance.exports.add as (a: number, b: number) => number;
+
+    assert.strictEqual(add(10, 20), 30);
+  });
+
+  test('should compile and run a function with local variables', async () => {
+    const input =
+      'export let addOne = (a: i32) => { let x = 1; return a + x; };';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const codegen = new CodeGenerator(ast);
+    const bytes = codegen.generate();
+
+    const result = await WebAssembly.instantiate(bytes);
+    // @ts-ignore
+    const addOne = result.instance.exports.addOne as (a: number) => number;
+
+    assert.strictEqual(addOne(10), 11);
+  });
 });

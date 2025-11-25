@@ -6,6 +6,7 @@ import {
   type VariableDeclaration,
   type BinaryExpression,
   type FunctionExpression,
+  type ReturnStatement,
 } from './ast.js';
 import {TypeKind, Types, type Type, type FunctionType} from './types.js';
 
@@ -17,6 +18,7 @@ interface SymbolInfo {
 export class TypeChecker {
   #scopes: Map<string, SymbolInfo>[] = [];
   #errors: string[] = [];
+  #currentFunctionReturnType: Type | null = null;
 
   #program: Program;
 
@@ -77,6 +79,36 @@ export class TypeChecker {
         }
         this.#exitScope();
         break;
+      case NodeType.ReturnStatement:
+        this.#checkReturnStatement(stmt as ReturnStatement);
+        break;
+    }
+  }
+
+  #checkReturnStatement(stmt: ReturnStatement) {
+    if (!this.#currentFunctionReturnType) {
+      this.#errors.push('Return statement outside of function.');
+      return;
+    }
+
+    const argType = stmt.argument
+      ? this.#checkExpression(stmt.argument)
+      : Types.Void;
+
+    if (this.#currentFunctionReturnType.kind !== Types.Unknown.kind) {
+      // If we know the expected return type, check against it
+      // TODO: Better type equality check
+      if (this.#currentFunctionReturnType.kind !== argType.kind) {
+        // Allow i32/f32 mismatch check if we had better type equality
+        if (
+          this.#typeToString(this.#currentFunctionReturnType) !==
+          this.#typeToString(argType)
+        ) {
+          this.#errors.push(
+            `Type mismatch: expected return type ${this.#typeToString(this.#currentFunctionReturnType)}, got ${this.#typeToString(argType)}`,
+          );
+        }
+      }
     }
   }
 
@@ -103,7 +135,7 @@ export class TypeChecker {
       // When checking assignment, verify that the variable is not 'let' (immutable).
       // const symbol = this.#resolveSymbol(expr.left.name);
       // if (symbol.kind === 'let') error("Cannot reassign immutable variable");
-      
+
       case NodeType.BinaryExpression:
         return this.#checkBinaryExpression(expr);
       case NodeType.FunctionExpression:
@@ -159,26 +191,42 @@ export class TypeChecker {
       paramTypes.push(type);
     }
 
-    // Currently parser only supports expression body
-    const bodyType = this.#checkExpression(expr.body as Expression);
-
     // Check return type if annotated
+    let expectedType: Type = Types.Unknown;
     if (expr.returnType) {
       const returnTypeName = expr.returnType.name;
-      let expectedType: Type = Types.Unknown;
       if (returnTypeName === 'i32') expectedType = Types.I32;
       else if (returnTypeName === 'f32') expectedType = Types.F32;
+      else if (returnTypeName === 'void') expectedType = Types.Void;
+    }
+
+    const previousReturnType = this.#currentFunctionReturnType;
+    this.#currentFunctionReturnType = expectedType;
+
+    let bodyType: Type = Types.Unknown;
+    if (expr.body.type === NodeType.BlockStatement) {
+      this.#checkStatement(expr.body);
+      // TODO: How to determine body type of block?
+      // For now, we rely on return statements checking against expectedType.
+      // If expectedType is Unknown (inferred), we need to infer from returns.
+      // That's complex. Let's assume for now block bodies MUST have explicit return type or be void.
+      bodyType = expectedType;
+    } else {
+      bodyType = this.#checkExpression(expr.body as Expression);
 
       if (
         expectedType.kind !== Types.Unknown.kind &&
         bodyType.kind !== expectedType.kind
       ) {
-        this.#errors.push(
-          `Type mismatch: expected return type ${expectedType.kind}, got ${bodyType.kind}`,
-        );
+        if (this.#typeToString(expectedType) !== this.#typeToString(bodyType)) {
+          this.#errors.push(
+            `Type mismatch: expected return type ${this.#typeToString(expectedType)}, got ${this.#typeToString(bodyType)}`,
+          );
+        }
       }
     }
 
+    this.#currentFunctionReturnType = previousReturnType;
     this.#exitScope();
 
     return {

@@ -71,7 +71,17 @@ const add = (a: i32, b: i32): i32 => a + b;
 
 ### Function Body
 
-Currently, function bodies must be a single expression. Block bodies (`{ ... }`) are not yet supported in the parser.
+Function bodies can be a single expression or a block statement.
+
+```typescript
+// Expression body
+let add = (a: i32, b: i32) => a + b;
+
+// Block body
+let add = (a: i32, b: i32) => {
+  return a + b;
+};
+```
 
 ## 5. Expressions & Operators
 
@@ -121,13 +131,17 @@ export const add = (a: i32, b: i32) => a + b;
 ```ebnf
 Program ::= Statement*
 
-Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement
+Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement | BlockStatement | ReturnStatement
 
 ExportStatement ::= "export" VariableDeclaration
 
-VariableDeclaration ::= ("let" | "const" | "var") Identifier "=" Expression ";"
+VariableDeclaration ::= ("let" | "var") Identifier "=" Expression ";"
 
 ExpressionStatement ::= Expression ";"
+
+BlockStatement ::= "{" Statement* "}"
+
+ReturnStatement ::= "return" Expression? ";"
 
 Expression ::= ArrowFunction | BinaryExpression
 

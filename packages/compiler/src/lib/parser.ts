@@ -1,10 +1,12 @@
 import {
   NodeType,
+  type BlockStatement,
   type Expression,
   type FunctionExpression,
   type Identifier,
   type Parameter,
   type Program,
+  type ReturnStatement,
   type Statement,
   type TypeAnnotation,
   type VariableDeclaration,
@@ -36,6 +38,12 @@ export class Parser {
     }
     if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
       return this.#parseVariableDeclaration(false);
+    }
+    if (this.#match(TokenType.Return)) {
+      return this.#parseReturnStatement();
+    }
+    if (this.#match(TokenType.LBrace)) {
+      return this.#parseBlockStatement();
     }
     return this.#parseExpressionStatement();
   }
@@ -137,7 +145,12 @@ export class Parser {
 
     this.#consume(TokenType.Arrow, "Expected '=>'");
 
-    const body = this.#parseExpression(); // For now only expression bodies
+    let body: Expression | BlockStatement;
+    if (this.#match(TokenType.LBrace)) {
+      body = this.#parseBlockStatement();
+    } else {
+      body = this.#parseExpression();
+    }
 
     return {
       type: NodeType.FunctionExpression,
@@ -197,6 +210,30 @@ export class Parser {
       return {type: NodeType.Identifier, name: this.#previous().value};
     }
     throw new Error(`Expected identifier, got ${this.#peek().type}`);
+  }
+
+  #parseReturnStatement(): ReturnStatement {
+    let argument: Expression | undefined;
+    if (!this.#check(TokenType.Semi)) {
+      argument = this.#parseExpression();
+    }
+    this.#consume(TokenType.Semi, "Expected ';' after return value.");
+    return {
+      type: NodeType.ReturnStatement,
+      argument,
+    };
+  }
+
+  #parseBlockStatement(): BlockStatement {
+    const body: Statement[] = [];
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      body.push(this.#parseStatement());
+    }
+    this.#consume(TokenType.RBrace, "Expected '}' after block.");
+    return {
+      type: NodeType.BlockStatement,
+      body,
+    };
   }
 
   // Helper methods

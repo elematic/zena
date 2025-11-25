@@ -82,4 +82,25 @@ suite('TypeChecker', () => {
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0], /Type mismatch/);
   });
+
+  test('should check arrow function with block body and return', () => {
+    const input = 'let add = (a: i32, b: i32): i32 => { return a + b; };';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 0);
+  });
+
+  test('should detect return type mismatch in block body', () => {
+    const input = "let add = (a: i32, b: i32): i32 => { return 'hello'; };";
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0], /Type mismatch/);
+  });
 });

@@ -9,6 +9,7 @@ export const NodeType = {
   FunctionExpression: 'FunctionExpression',
   CallExpression: 'CallExpression',
   BlockStatement: 'BlockStatement',
+  ReturnStatement: 'ReturnStatement',
   Parameter: 'Parameter',
   TypeAnnotation: 'TypeAnnotation',
 } as const;
@@ -27,7 +28,8 @@ export interface Program extends Node {
 export type Statement =
   | VariableDeclaration
   | ExpressionStatement
-  | BlockStatement;
+  | BlockStatement
+  | ReturnStatement;
 
 export interface VariableDeclaration extends Node {
   type: typeof NodeType.VariableDeclaration;
@@ -99,4 +101,9 @@ export interface CallExpression extends Node {
   type: typeof NodeType.CallExpression;
   callee: Expression;
   arguments: Expression[];
+}
+
+export interface ReturnStatement extends Node {
+  type: typeof NodeType.ReturnStatement;
+  argument?: Expression;
 }

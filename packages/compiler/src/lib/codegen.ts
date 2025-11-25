@@ -8,6 +8,8 @@ import {
   type BinaryExpression,
   type Identifier,
   type NumberLiteral,
+  type BlockStatement,
+  type ReturnStatement,
 } from './ast.js';
 import {WasmModule} from './emitter.js';
 import {ValType, Opcode, ExportDesc} from './wasm.js';
@@ -15,7 +17,9 @@ import {ValType, Opcode, ExportDesc} from './wasm.js';
 export class CodeGenerator {
   #module: WasmModule;
   #program: Program;
-  #locals: Map<string, number> = new Map();
+  #scopes: Map<string, number>[] = [];
+  #extraLocals: number[] = [];
+  #nextLocalIndex = 0;
 
   constructor(program: Program) {
     this.#program = program;
@@ -65,14 +69,98 @@ export class CodeGenerator {
     }
 
     // 2. Build Body
-    this.#locals.clear();
-    func.params.forEach((p, i) => this.#locals.set(p.name.name, i));
+    this.#scopes = [new Map()];
+    this.#extraLocals = [];
+    this.#nextLocalIndex = 0;
+
+    func.params.forEach((p) => {
+      const index = this.#nextLocalIndex++;
+      this.#scopes[0].set(p.name.name, index);
+    });
 
     const body: number[] = [];
-    this.#generateExpression(func.body as Expression, body);
+    if (func.body.type === NodeType.BlockStatement) {
+      this.#generateBlockStatement(func.body, body);
+    } else {
+      this.#generateExpression(func.body as Expression, body);
+    }
     body.push(Opcode.end);
 
-    this.#module.addCode([], body); // No extra locals for now
+    this.#module.addCode(this.#extraLocals, body);
+  }
+
+  #enterScope() {
+    this.#scopes.push(new Map());
+  }
+
+  #exitScope() {
+    this.#scopes.pop();
+  }
+
+  #declareLocal(name: string): number {
+    const index = this.#nextLocalIndex++;
+    this.#scopes[this.#scopes.length - 1].set(name, index);
+    this.#extraLocals.push(ValType.i32); // Assume i32 for now
+    return index;
+  }
+
+  #resolveLocal(name: string): number {
+    for (let i = this.#scopes.length - 1; i >= 0; i--) {
+      if (this.#scopes[i].has(name)) {
+        return this.#scopes[i].get(name)!;
+      }
+    }
+    throw new Error(`Unknown identifier: ${name}`);
+  }
+
+  #generateBlockStatement(block: BlockStatement, body: number[]) {
+    this.#enterScope();
+    for (const stmt of block.body) {
+      this.#generateFunctionStatement(stmt, body);
+    }
+    this.#exitScope();
+  }
+
+  #generateFunctionStatement(stmt: Statement, body: number[]) {
+    switch (stmt.type) {
+      case NodeType.ReturnStatement:
+        this.#generateReturnStatement(stmt as ReturnStatement, body);
+        break;
+      case NodeType.ExpressionStatement:
+        this.#generateExpression(stmt.expression, body);
+        // If expression returns a value but statement shouldn't, we might need to drop it?
+        // For now, assume expression statements are void or we don't care about stack pollution yet (bad assumption for WASM)
+        // TODO: Drop value if expression has a return value
+        break;
+      case NodeType.VariableDeclaration:
+        this.#generateLocalVariableDeclaration(
+          stmt as VariableDeclaration,
+          body,
+        );
+        break;
+      case NodeType.BlockStatement:
+        this.#generateBlockStatement(stmt, body);
+        break;
+    }
+  }
+
+  #generateLocalVariableDeclaration(decl: VariableDeclaration, body: number[]) {
+    this.#generateExpression(decl.init, body);
+    const index = this.#declareLocal(decl.identifier.name);
+    body.push(Opcode.local_set);
+    body.push(...WasmModule.encodeSignedLEB128(index));
+  }
+
+  #generateReturnStatement(stmt: ReturnStatement, body: number[]) {
+    if (stmt.argument) {
+      this.#generateExpression(stmt.argument, body);
+    }
+    // We don't strictly need 'return' opcode if it's the last statement,
+    // but for now let's not optimize and assume implicit return at end of function
+    // or explicit return.
+    // If we are in a block, we might need 'return'.
+    // Let's use 'return' opcode for explicit return statements.
+    body.push(Opcode.return);
   }
 
   #generateExpression(expr: Expression, body: number[]) {
@@ -117,10 +205,7 @@ export class CodeGenerator {
   }
 
   #generateIdentifier(expr: Identifier, body: number[]) {
-    const index = this.#locals.get(expr.name);
-    if (index === undefined) {
-      throw new Error(`Unknown identifier: ${expr.name}`);
-    }
+    const index = this.#resolveLocal(expr.name);
     body.push(Opcode.local_get);
     body.push(...WasmModule.encodeSignedLEB128(index));
   }
