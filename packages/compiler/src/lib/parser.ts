@@ -246,6 +246,12 @@ export class Parser {
     if (this.#match(TokenType.String)) {
       return {type: NodeType.StringLiteral, value: this.#previous().value};
     }
+    if (this.#match(TokenType.True)) {
+      return {type: NodeType.BooleanLiteral, value: true};
+    }
+    if (this.#match(TokenType.False)) {
+      return {type: NodeType.BooleanLiteral, value: false};
+    }
     if (this.#match(TokenType.Identifier)) {
       return {type: NodeType.Identifier, name: this.#previous().value};
     }

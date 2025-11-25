@@ -5,6 +5,7 @@ export const NodeType = {
   BinaryExpression: 'BinaryExpression',
   NumberLiteral: 'NumberLiteral',
   StringLiteral: 'StringLiteral',
+  BooleanLiteral: 'BooleanLiteral',
   Identifier: 'Identifier',
   FunctionExpression: 'FunctionExpression',
   CallExpression: 'CallExpression',
@@ -55,6 +56,7 @@ export type Expression =
   | BinaryExpression
   | NumberLiteral
   | StringLiteral
+  | BooleanLiteral
   | Identifier
   | FunctionExpression
   | CallExpression;
@@ -74,6 +76,11 @@ export interface NumberLiteral extends Node {
 export interface StringLiteral extends Node {
   type: typeof NodeType.StringLiteral;
   value: string;
+}
+
+export interface BooleanLiteral extends Node {
+  type: typeof NodeType.BooleanLiteral;
+  value: boolean;
 }
 
 export interface Identifier extends Node {

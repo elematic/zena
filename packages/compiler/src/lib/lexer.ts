@@ -8,6 +8,8 @@ export const TokenType = {
   Return: 'Return',
   If: 'If',
   Else: 'Else',
+  True: 'True',
+  False: 'False',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -60,6 +62,8 @@ const KEYWORDS: Record<string, TokenType> = {
   return: TokenType.Return,
   if: TokenType.If,
   else: TokenType.Else,
+  true: TokenType.True,
+  false: TokenType.False,
 };
 
 export const tokenize = (source: string): Token[] => {

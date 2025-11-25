@@ -144,6 +144,8 @@ export class TypeChecker {
         return Types.I32; // Default to i32 for now
       case NodeType.StringLiteral:
         return Types.String;
+      case NodeType.BooleanLiteral:
+        return Types.Boolean;
       case NodeType.Identifier: {
         const type = this.#resolve(expr.name);
         if (!type) {

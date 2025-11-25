@@ -8,6 +8,7 @@ import {
   type BinaryExpression,
   type Identifier,
   type NumberLiteral,
+  type BooleanLiteral,
   type BlockStatement,
   type ReturnStatement,
   type IfStatement,
@@ -190,6 +191,9 @@ export class CodeGenerator {
       case NodeType.NumberLiteral:
         this.#generateNumberLiteral(expr, body);
         break;
+      case NodeType.BooleanLiteral:
+        this.#generateBooleanLiteral(expr as BooleanLiteral, body);
+        break;
       case NodeType.Identifier:
         this.#generateIdentifier(expr, body);
         break;
@@ -238,6 +242,11 @@ export class CodeGenerator {
   #generateNumberLiteral(expr: NumberLiteral, body: number[]) {
     body.push(Opcode.i32_const);
     body.push(...WasmModule.encodeSignedLEB128(parseInt(expr.value, 10)));
+  }
+
+  #generateBooleanLiteral(expr: BooleanLiteral, body: number[]) {
+    body.push(Opcode.i32_const);
+    body.push(...WasmModule.encodeSignedLEB128(expr.value ? 1 : 0));
   }
 
   #generateIdentifier(expr: Identifier, body: number[]) {

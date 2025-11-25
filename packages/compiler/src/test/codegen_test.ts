@@ -116,6 +116,32 @@ suite('CodeGenerator', () => {
 
     assert.strictEqual(abs(-10), 10);
     assert.strictEqual(abs(10), 10);
+    assert.strictEqual(abs(-5), 5);
     assert.strictEqual(abs(0), 0);
+  });
+
+  test('should compile and run boolean literals', async () => {
+    const input = `
+      export let getTrue = () => {
+        return true;
+      };
+      export let getFalse = () => {
+        return false;
+      };
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const codegen = new CodeGenerator(ast);
+    const bytes = codegen.generate();
+
+    const result = await WebAssembly.instantiate(bytes);
+    // @ts-ignore
+    const getTrue = result.instance.exports.getTrue as () => number;
+    // @ts-ignore
+    const getFalse = result.instance.exports.getFalse as () => number;
+
+    assert.strictEqual(getTrue(), 1);
+    assert.strictEqual(getFalse(), 0);
   });
 });

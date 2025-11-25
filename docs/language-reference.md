@@ -14,6 +14,7 @@ Rhea is strongly typed. All expressions have a type determined at compile time.
 
 - **`i32`**: 32-bit signed integer. This is the default type for integer literals.
 - **`f32`**: 32-bit floating-point number.
+- **`boolean`**: Boolean value (`true` or `false`).
 - **`string`**: UTF-8 string.
 
 ### Type Inference
