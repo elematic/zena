@@ -158,6 +158,31 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 ### Planned
 
-1.  **Maps**: Implement mutable maps (`#{ key: value }`).
-2.  **Standard Library**: Begin building a small standard library (math, string manipulation).
-3.  **Self-Hosting**: Rewrite the compiler in Rhea.
+1.  **Generics Enhancements** (Immediate Priority):
+    -   **Multiple Type Parameters**:
+        -   *Goal*: Support `class Pair<K, V> { ... }` and `new Pair<i32, f32>(1, 2.0)`.
+        -   *Status*: Parser and Codegen likely support this, but it needs verification with a test case (e.g., `Pair<K, V>`).
+        -   *Tasks*: Add test case. Verify TypeChecker enforces arity (argument count matches parameter count).
+    -   **Type Inference**:
+        -   *Goal*: Allow `new Box(10)` to infer `Box<i32>`.
+        -   *Tasks*: Implement unification algorithm in TypeChecker to deduce type arguments from constructor arguments.
+    -   **Default Type Parameters**: Support `class Box<T = i32>`.
+    -   **Constraints**: Support `T extends Animal`.
+
+2.  **Object-Oriented Features**:
+    -   **Inheritance**: Implement `class Dog extends Animal`.
+    -   **Interfaces**: Implement `interface Runnable { run(): void; }` and `implements`.
+    -   **Abstract Classes**: Support `abstract class`.
+    -   **Access Control**: Enforce `#` private fields strictly.
+
+3.  **Data Structures**:
+    -   **Maps**: Implement mutable maps (`#{ key: value }`).
+    -   **Sets**: Implement mutable sets.
+
+4.  **Standard Library**:
+    -   Math functions (`sqrt`, `abs`, etc.).
+    -   String manipulation (`substring`, `indexOf`).
+    -   Console I/O (`console.log`).
+
+5.  **Self-Hosting**:
+    -   Rewrite the compiler in Rhea.
