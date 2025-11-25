@@ -11,6 +11,7 @@ Rhea is a statically typed language targeting WASM-GC. It uses a TypeScript-like
 1.  **Performance**: Generated WASM should be small and fast. Avoid runtime overhead where possible (e.g., prefer flat arguments over object allocation for named parameters).
 2.  **Simplicity**: The language should be easy to parse and analyze.
 3.  **Safety**: Strong static typing with a sound type system. No implicit type coercion.
+4.  **Minimal Output**: The compiler should produce the smallest possible WASM binary. Standard library components (like `Map`) should only be included in the output if they are actually used by the program.
 
 ## Language Specification
 
@@ -150,9 +151,10 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Function calls and recursion.
 - [x] Implement Structs & Classes (WASM-GC structs).
 - [x] Implement Arrays (WASM-GC arrays).
+- [x] Implement Strings (UTF-8 bytes, concatenation, equality).
 
 ### Planned
 
-1.  **Strings**: Implement strings as arrays of bytes/chars (UTF-8).
-2.  **Maps**: Implement mutable maps (`#{ key: value }`).
-3.  **Standard Library**: Begin building a small standard library (math, string manipulation).
+1.  **Maps**: Implement mutable maps (`#{ key: value }`).
+2.  **Standard Library**: Begin building a small standard library (math, string manipulation).
+3.  **Self-Hosting**: Rewrite the compiler in Rhea.
