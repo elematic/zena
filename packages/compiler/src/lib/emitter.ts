@@ -1,0 +1,170 @@
+import {SectionId, ValType, ExportDesc} from './wasm.js';
+
+export class WasmModule {
+  #types: number[][] = [];
+  #functions: number[] = [];
+  #exports: {name: string; kind: number; index: number}[] = [];
+  #codes: number[][] = [];
+
+  public addType(params: number[], results: number[]): number {
+    // Function type: 0x60 + vec(params) + vec(results)
+    const buffer: number[] = [];
+    buffer.push(0x60);
+    this.#writeVector(buffer, params);
+    this.#writeVector(buffer, results);
+
+    // Simple deduplication could go here, but for now just push
+    this.#types.push(buffer);
+    return this.#types.length - 1;
+  }
+
+  public addFunction(typeIndex: number): number {
+    this.#functions.push(typeIndex);
+    return this.#functions.length - 1;
+  }
+
+  public addExport(name: string, kind: number, index: number) {
+    this.#exports.push({name, kind, index});
+  }
+
+  public addCode(locals: number[], body: number[]) {
+    // Code entry: size (u32) + code
+    // code: vec(locals) + expr
+    // locals: vec(local)
+    // local: n (u32) + type (valtype)
+
+    // We need to group locals by type for compression, but for simplicity:
+    // We assume `locals` input is just a list of types.
+    // We need to compress them into runs of same types.
+
+    const compressedLocals: {count: number; type: number}[] = [];
+    if (locals.length > 0) {
+      let currentType = locals[0];
+      let count = 1;
+      for (let i = 1; i < locals.length; i++) {
+        if (locals[i] === currentType) {
+          count++;
+        } else {
+          compressedLocals.push({count, type: currentType});
+          currentType = locals[i];
+          count = 1;
+        }
+      }
+      compressedLocals.push({count, type: currentType});
+    }
+
+    const codeBuffer: number[] = [];
+    this.#writeUnsignedLEB128(codeBuffer, compressedLocals.length); // vec(locals) length
+    for (const local of compressedLocals) {
+      this.#writeUnsignedLEB128(codeBuffer, local.count);
+      codeBuffer.push(local.type);
+    }
+    codeBuffer.push(...body);
+
+    this.#codes.push(codeBuffer);
+  }
+
+  public toBytes(): Uint8Array {
+    const buffer: number[] = [];
+
+    // Magic & Version
+    buffer.push(0x00, 0x61, 0x73, 0x6d);
+    buffer.push(0x01, 0x00, 0x00, 0x00);
+
+    // Type Section
+    if (this.#types.length > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#types.length);
+      for (const type of this.#types) {
+        sectionBuffer.push(...type);
+      }
+      this.#writeSection(buffer, SectionId.Type, sectionBuffer);
+    }
+
+    // Function Section
+    if (this.#functions.length > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#functions.length);
+      for (const typeIndex of this.#functions) {
+        this.#writeUnsignedLEB128(sectionBuffer, typeIndex);
+      }
+      this.#writeSection(buffer, SectionId.Function, sectionBuffer);
+    }
+
+    // Export Section
+    if (this.#exports.length > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#exports.length);
+      for (const exp of this.#exports) {
+        this.#writeString(sectionBuffer, exp.name);
+        sectionBuffer.push(exp.kind);
+        this.#writeUnsignedLEB128(sectionBuffer, exp.index);
+      }
+      this.#writeSection(buffer, SectionId.Export, sectionBuffer);
+    }
+
+    // Code Section
+    if (this.#codes.length > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#codes.length);
+      for (const code of this.#codes) {
+        const entryBuffer: number[] = [];
+        entryBuffer.push(...code);
+
+        this.#writeUnsignedLEB128(sectionBuffer, entryBuffer.length);
+        sectionBuffer.push(...entryBuffer);
+      }
+      this.#writeSection(buffer, SectionId.Code, sectionBuffer);
+    }
+
+    return new Uint8Array(buffer);
+  }
+
+  #writeSection(buffer: number[], id: number, content: number[]) {
+    buffer.push(id);
+    this.#writeUnsignedLEB128(buffer, content.length);
+    buffer.push(...content);
+  }
+
+  #writeVector(buffer: number[], data: number[]) {
+    this.#writeUnsignedLEB128(buffer, data.length);
+    buffer.push(...data);
+  }
+
+  #writeString(buffer: number[], str: string) {
+    const bytes = new TextEncoder().encode(str);
+    this.#writeUnsignedLEB128(buffer, bytes.length);
+    bytes.forEach((b) => buffer.push(b));
+  }
+
+  #writeUnsignedLEB128(buffer: number[], value: number) {
+    value |= 0;
+    do {
+      let byte = value & 0x7f;
+      value >>>= 7;
+      if (value !== 0) {
+        byte |= 0x80;
+      }
+      buffer.push(byte);
+    } while (value !== 0);
+  }
+
+  public static encodeSignedLEB128(value: number): number[] {
+    const buffer: number[] = [];
+    value |= 0;
+    while (true) {
+      let byte = value & 0x7f;
+      value >>= 7;
+      if (
+        (value === 0 && (byte & 0x40) === 0) ||
+        (value === -1 && (byte & 0x40) !== 0)
+      ) {
+        buffer.push(byte);
+        break;
+      } else {
+        buffer.push(byte | 0x80);
+      }
+    }
+    return buffer;
+  }
+}
