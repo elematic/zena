@@ -118,10 +118,11 @@ This project is an **npm monorepo** managed with **Wireit**.
   - No spaces around object literals and imports (e.g., `import {suite, test} from 'node:test';`).
 - **Naming**:
   - File names should be `kebab-case`.
-  - Test files should end in `_test.ts` (e.g., `lexer_test.ts`).
+  - Test files should end in `_test.ts`. The prefix should be `kebab-case` (e.g., `generics-parser_test.ts`, not `generics_parser_test.ts`).
 - **Testing**:
   - Use `suite` and `test` syntax from `node:test`.
   - Write tests for each compiler stage (Lexer, Parser, Codegen).
+  - New syntax features MUST have dedicated parser tests (and lexer tests, if new tokens are introduced).
 - **Paradigm**: Prefer functional patterns where appropriate.
 - **Package Management**: Prefer installing npm packages with `npm i <package>` instead of manually editing `package.json` to ensure valid versions.
 - **Documentation**:
