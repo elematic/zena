@@ -114,6 +114,21 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 ## Next Steps
 
-1.  Initialize npm project with TypeScript.
-2.  Set up project structure (`src`, `tests`).
-3.  Implement the Lexer.
+### Completed
+- [x] Initialize npm project with TypeScript.
+- [x] Set up project structure (`src`, `tests`).
+- [x] Implement the Lexer.
+- [x] Implement Parser (AST generation).
+- [x] Implement Type Checker (Basic).
+- [x] Implement Code Generator (WASM-GC) for:
+  - `i32` arithmetic.
+  - Function parameters.
+  - `while` loops.
+  - `if` statements.
+  - Variable assignment (`var`).
+  - Function calls and recursion.
+
+### Planned
+1.  **Structs & Classes**: Implement WASM-GC structs (`struct.new`, `struct.get`, `struct.set`) to support objects and classes.
+2.  **Arrays**: Implement support for arrays using WASM GC `array` types.
+3.  **Standard Library**: Begin building a small standard library (math, string manipulation).
