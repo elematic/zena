@@ -95,7 +95,7 @@ let add = (a: i32, b: i32) => {
 
 Supported arithmetic operators for numeric types (`i32`, `f32`):
 
-- `+` (Addition)
+- `+` (Addition / String Concatenation)
 - `-` (Subtraction)
 - `*` (Multiplication)
 - `/` (Division)
@@ -106,6 +106,7 @@ Operands must be of the same type. Implicit coercion is not supported.
 let a = 10;
 let b = 20;
 let c = a + b; // Valid
+let s = 'Hello' + ' World'; // Valid (String Concatenation)
 // let d = a + "string"; // Error: Type mismatch
 ```
 
@@ -136,8 +137,8 @@ let result = (1 + 2) * 3;
 
 ### Comparison Operators
 
-- `==` (Equal)
-- `!=` (Not Equal)
+- `==` (Equal) - Supports value equality for strings.
+- `!=` (Not Equal) - Supports value equality for strings.
 - `<` (Less Than)
 - `<=` (Less Than or Equal)
 - `>` (Greater Than)
@@ -299,7 +300,60 @@ Array elements can be modified using assignment.
 arr[0] = 10;
 ```
 
-## 10. Grammar (Simplified)
+## 10. Strings
+
+Rhea supports UTF-8 encoded strings.
+
+### Type
+
+The type of a string is `string`. Strings are immutable.
+
+### Literals
+
+String literals can be enclosed in double quotes `"` or single quotes `'`.
+
+```typescript
+let s1 = 'Hello';
+let s2 = 'World';
+```
+
+### Concatenation
+
+Strings can be concatenated using the `+` operator.
+
+```typescript
+let s3 = s1 + ' ' + s2;
+```
+
+### Equality
+
+The `==` and `!=` operators perform value equality checks. Two strings are considered equal if they have the same length and identical byte content.
+
+```typescript
+let a = 'foo';
+let b = 'f' + 'oo';
+if (a == b) {
+  // This block executes
+}
+```
+
+### Length
+
+The length of a string (in bytes) can be accessed using the `.length` property.
+
+```typescript
+let len = 'hello'.length; // 5
+```
+
+### Indexing
+
+Individual bytes (characters) of a string can be accessed using the index operator `[]`. This returns the byte value as an `i32`.
+
+```typescript
+let charCode = 'ABC'[0]; // 65
+```
+
+## 11. Grammar (Simplified)
 
 ```ebnf
 Program ::= Statement*

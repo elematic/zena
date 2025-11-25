@@ -5,6 +5,7 @@ export class WasmModule {
   #functions: number[] = [];
   #exports: {name: string; kind: number; index: number}[] = [];
   #codes: number[][] = [];
+  #datas: number[][] = [];
 
   public addType(params: number[][], results: number[][]): number {
     // Function type: 0x60 + vec(params) + vec(results)
@@ -93,6 +94,18 @@ export class WasmModule {
     this.#codes.push(codeBuffer);
   }
 
+  public addData(bytes: Uint8Array): number {
+    // Passive data segment: 0x01 + vec(bytes)
+    const buffer: number[] = [];
+    buffer.push(0x01); // Passive
+    this.#writeUnsignedLEB128(buffer, bytes.length);
+    for (const byte of bytes) {
+      buffer.push(byte);
+    }
+    this.#datas.push(buffer);
+    return this.#datas.length - 1;
+  }
+
   #areTypesEqual(a: number[], b: number[]): boolean {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
@@ -140,6 +153,13 @@ export class WasmModule {
       this.#writeSection(buffer, SectionId.Export, sectionBuffer);
     }
 
+    // DataCount Section
+    if (this.#datas.length > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#datas.length);
+      this.#writeSection(buffer, SectionId.DataCount, sectionBuffer);
+    }
+
     // Code Section
     if (this.#codes.length > 0) {
       const sectionBuffer: number[] = [];
@@ -152,6 +172,16 @@ export class WasmModule {
         sectionBuffer.push(...entryBuffer);
       }
       this.#writeSection(buffer, SectionId.Code, sectionBuffer);
+    }
+
+    // Data Section
+    if (this.#datas.length > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#datas.length);
+      for (const data of this.#datas) {
+        sectionBuffer.push(...data);
+      }
+      this.#writeSection(buffer, SectionId.Data, sectionBuffer);
     }
 
     return new Uint8Array(buffer);

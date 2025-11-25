@@ -126,6 +126,11 @@ This project is an **npm monorepo** managed with **Wireit**.
 - **Documentation**:
   - Record any new coding preferences, design choices, or architecture decisions in this file (`.github/copilot-instructions.md`).
   - Update `docs/language-reference.md` when language syntax or semantics change.
+  - Maintain design documents in `docs/design/` for complex features (e.g., `docs/design/strings.md`).
+
+## Future Considerations
+
+- **Strings & Unicode**: Currently, strings are UTF-8 bytes. We may want to change single-quotes `'` to represent a character/code-point type in the future, distinct from string literals. Unicode handling needs careful design.
 
 ## Next Steps
 

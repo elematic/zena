@@ -394,12 +394,7 @@ export class TypeChecker {
 
     for (const param of expr.params) {
       // Resolve type annotation
-      const typeName = param.typeAnnotation.name;
-      let type: Type = Types.Unknown;
-      if (typeName === 'i32') type = Types.I32;
-      else if (typeName === 'f32') type = Types.F32;
-      // ... other types
-
+      const type = this.#resolveType(param.typeAnnotation.name);
       this.#declare(param.name.name, type);
       paramTypes.push(type);
     }
@@ -407,10 +402,7 @@ export class TypeChecker {
     // Check return type if annotated
     let expectedType: Type = Types.Unknown;
     if (expr.returnType) {
-      const returnTypeName = expr.returnType.name;
-      if (returnTypeName === 'i32') expectedType = Types.I32;
-      else if (returnTypeName === 'f32') expectedType = Types.F32;
-      else if (returnTypeName === 'void') expectedType = Types.Void;
+      expectedType = this.#resolveType(expr.returnType.name);
     }
 
     const previousReturnType = this.#currentFunctionReturnType;
@@ -631,6 +623,15 @@ export class TypeChecker {
   #checkMemberExpression(expr: MemberExpression): Type {
     const objectType = this.#checkExpression(expr.object);
 
+    if (
+      objectType.kind === TypeKind.Array ||
+      objectType.kind === TypeKind.String
+    ) {
+      if (expr.property.name === 'length') {
+        return Types.I32;
+      }
+    }
+
     if (objectType.kind !== TypeKind.Class) {
       if (objectType.kind !== Types.Unknown.kind) {
         this.#errors.push(
@@ -697,11 +698,18 @@ export class TypeChecker {
       );
     }
 
-    if (objectType.kind !== TypeKind.Array) {
+    if (
+      objectType.kind !== TypeKind.Array &&
+      objectType.kind !== TypeKind.String
+    ) {
       this.#errors.push(
-        `Index expression only supported on arrays, got ${this.#typeToString(objectType)}`,
+        `Index expression only supported on arrays or strings, got ${this.#typeToString(objectType)}`,
       );
       return Types.Unknown;
+    }
+
+    if (objectType.kind === TypeKind.String) {
+      return Types.I32;
     }
 
     return (objectType as ArrayType).elementType;

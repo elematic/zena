@@ -28,6 +28,8 @@ export const ValType = {
   optref: 0x6c,
   ref: 0x64,
   ref_null: 0x63,
+  i8: 0x78,
+  i16: 0x77,
 } as const;
 
 export const GcOpcode = {
@@ -47,6 +49,7 @@ export const GcOpcode = {
   array_get_u: 0x0d,
   array_set: 0x0e,
   array_len: 0x0f,
+  array_copy: 0x11,
 } as const;
 
 export const Opcode = {

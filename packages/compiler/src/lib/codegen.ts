@@ -21,6 +21,8 @@ import {
   type ThisExpression,
   type ArrayLiteral,
   type IndexExpression,
+  type StringLiteral,
+  type TypeAnnotation,
 } from './ast.js';
 import {WasmModule} from './emitter.js';
 import {ValType, Opcode, ExportDesc, GcOpcode} from './wasm.js';
@@ -46,10 +48,17 @@ export class CodeGenerator {
   #classes = new Map<string, ClassInfo>();
   #currentClass: ClassInfo | null = null;
   #arrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
+  #stringTypeIndex = -1;
+  #stringLiterals = new Map<string, number>(); // content -> dataIndex
+  #pendingHelperFunctions: (() => void)[] = [];
+  #concatFunctionIndex = -1;
+  #strEqFunctionIndex = -1;
 
   constructor(program: Program) {
     this.#program = program;
     this.#module = new WasmModule();
+    // Define string type: array<i8> (mutable for construction)
+    this.#stringTypeIndex = this.#module.addArrayType([ValType.i8], true);
   }
   // ...
   #generateClassMethods(decl: ClassDeclaration) {
@@ -113,6 +122,12 @@ export class CodeGenerator {
     for (const statement of this.#program.body) {
       this.#generateStatement(statement);
     }
+
+    // Generate pending helper functions
+    for (const generator of this.#pendingHelperFunctions) {
+      generator();
+    }
+
     return this.#module.toBytes();
   }
 
@@ -170,8 +185,10 @@ export class CodeGenerator {
   }
 
   #registerFunction(name: string, func: FunctionExpression, exported: boolean) {
-    const params = func.params.map(() => [ValType.i32]);
-    const results = [[ValType.i32]]; // TODO: Infer or read return type
+    const params = func.params.map((p) => this.#mapType(p.typeAnnotation));
+    const results = func.returnType
+      ? [this.#mapType(func.returnType)]
+      : [[ValType.i32]];
 
     const typeIndex = this.#module.addType(params, results);
     const funcIndex = this.#module.addFunction(typeIndex);
@@ -300,22 +317,7 @@ export class CodeGenerator {
   #generateLocalVariableDeclaration(decl: VariableDeclaration, body: number[]) {
     this.#generateExpression(decl.init, body);
 
-    let type: number[] = [ValType.i32];
-    if (decl.init.type === NodeType.NewExpression) {
-      const className = (decl.init as NewExpression).callee.name;
-      const classInfo = this.#classes.get(className);
-      if (classInfo) {
-        type = [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-        ];
-      }
-    } else if (decl.init.type === NodeType.ArrayLiteral) {
-      // TODO: Infer array type correctly. Assuming i32 for now.
-      const typeIndex = this.#getArrayTypeIndex([ValType.i32]);
-      type = [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
-    }
-
+    const type = this.#inferType(decl.init);
     const index = this.#declareLocal(decl.identifier.name, type);
     body.push(Opcode.local_set);
     body.push(...WasmModule.encodeSignedLEB128(index));
@@ -367,6 +369,9 @@ export class CodeGenerator {
         break;
       case NodeType.IndexExpression:
         this.#generateIndexExpression(expr as IndexExpression, body);
+        break;
+      case NodeType.StringLiteral:
+        this.#generateStringLiteral(expr as StringLiteral, body);
         break;
       // TODO: Handle other expressions
     }
@@ -426,7 +431,11 @@ export class CodeGenerator {
     this.#generateExpression(expr.object, body);
     this.#generateExpression(expr.index, body);
 
-    body.push(0xfb, GcOpcode.array_get);
+    if (arrayTypeIndex === this.#stringTypeIndex) {
+      body.push(0xfb, GcOpcode.array_get_u);
+    } else {
+      body.push(0xfb, GcOpcode.array_get);
+    }
     body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
   }
 
@@ -466,6 +475,22 @@ export class CodeGenerator {
   }
 
   #generateMemberExpression(expr: MemberExpression, body: number[]) {
+    const objectType = this.#inferType(expr.object);
+
+    // Handle array/string length
+    if (expr.property.name === 'length') {
+      const isString = this.#isStringType(objectType);
+      const isArray = Array.from(this.#arrayTypes.values()).includes(
+        objectType[1],
+      );
+
+      if (isString || isArray) {
+        this.#generateExpression(expr.object, body);
+        body.push(0xfb, GcOpcode.array_len);
+        return;
+      }
+    }
+
     this.#generateExpression(expr.object, body);
 
     const fieldName = expr.property.name;
@@ -619,9 +644,92 @@ export class CodeGenerator {
     }
   }
 
+  #mapType(annotation?: TypeAnnotation): number[] {
+    if (!annotation) return [ValType.i32];
+    if (annotation.name === 'i32') return [ValType.i32];
+    if (annotation.name === 'string') {
+      return [ValType.ref_null, this.#stringTypeIndex];
+    }
+    const classInfo = this.#classes.get(annotation.name);
+    if (classInfo) {
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+      ];
+    }
+    return [ValType.i32];
+  }
+
+  #inferType(expr: Expression): number[] {
+    switch (expr.type) {
+      case NodeType.StringLiteral:
+        return [ValType.ref_null, this.#stringTypeIndex];
+      case NodeType.NumberLiteral:
+        return [ValType.i32];
+      case NodeType.Identifier: {
+        const info = this.#resolveLocalInfo((expr as Identifier).name);
+        return info.type;
+      }
+      case NodeType.BinaryExpression: {
+        const binExpr = expr as BinaryExpression;
+        if (binExpr.operator === '+') {
+          const leftType = this.#inferType(binExpr.left);
+          const rightType = this.#inferType(binExpr.right);
+          if (this.#isStringType(leftType) && this.#isStringType(rightType)) {
+            return [ValType.ref_null, this.#stringTypeIndex];
+          }
+        }
+        return [ValType.i32];
+      }
+      case NodeType.NewExpression: {
+        const className = (expr as NewExpression).callee.name;
+        const classInfo = this.#classes.get(className);
+        if (classInfo) {
+          return [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          ];
+        }
+        return [ValType.i32];
+      }
+      case NodeType.ArrayLiteral: {
+        // TODO: Infer array type correctly. Assuming i32 for now.
+        const typeIndex = this.#getArrayTypeIndex([ValType.i32]);
+        return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+      }
+      default:
+        return [ValType.i32];
+    }
+  }
+
+  #isStringType(type: number[]): boolean {
+    return (
+      type.length > 1 &&
+      (type[0] === ValType.ref_null || type[0] === ValType.ref) &&
+      type[1] === this.#stringTypeIndex
+    );
+  }
+
   #generateBinaryExpression(expr: BinaryExpression, body: number[]) {
+    const leftType = this.#inferType(expr.left);
+    const rightType = this.#inferType(expr.right);
+
     this.#generateExpression(expr.left, body);
     this.#generateExpression(expr.right, body);
+
+    if (this.#isStringType(leftType) && this.#isStringType(rightType)) {
+      if (expr.operator === '+') {
+        this.#generateStringConcat(body);
+        return;
+      } else if (expr.operator === '==') {
+        this.#generateStringEq(body);
+        return;
+      } else if (expr.operator === '!=') {
+        this.#generateStringEq(body);
+        body.push(Opcode.i32_eqz); // Invert result
+        return;
+      }
+    }
 
     switch (expr.operator) {
       case '+':
@@ -693,8 +801,10 @@ export class CodeGenerator {
 
     func.params.forEach((p) => {
       const index = this.#nextLocalIndex++;
-      // TODO: Map type annotation to WASM type
-      this.#scopes[0].set(p.name.name, {index, type: [ValType.i32]});
+      this.#scopes[0].set(p.name.name, {
+        index,
+        type: this.#mapType(p.typeAnnotation),
+      });
     });
 
     const body: number[] = [];
@@ -721,5 +831,217 @@ export class CodeGenerator {
     this.#scopes[this.#scopes.length - 1].set(name, {index, type});
     this.#extraLocals.push(type);
     return index;
+  }
+
+  #generateStringLiteral(expr: StringLiteral, body: number[]) {
+    let dataIndex: number;
+    if (this.#stringLiterals.has(expr.value)) {
+      dataIndex = this.#stringLiterals.get(expr.value)!;
+    } else {
+      const bytes = new TextEncoder().encode(expr.value);
+      dataIndex = this.#module.addData(bytes);
+      this.#stringLiterals.set(expr.value, dataIndex);
+    }
+
+    const length = new TextEncoder().encode(expr.value).length;
+
+    // Push offset (0)
+    body.push(Opcode.i32_const);
+    body.push(...WasmModule.encodeSignedLEB128(0));
+
+    // Push length
+    body.push(Opcode.i32_const);
+    body.push(...WasmModule.encodeSignedLEB128(length));
+
+    // array.new_data $stringType $dataIndex
+    body.push(0xfb, GcOpcode.array_new_data);
+    body.push(...WasmModule.encodeSignedLEB128(this.#stringTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(dataIndex));
+  }
+
+  #generateStringEq(body: number[]) {
+    if (this.#strEqFunctionIndex === -1) {
+      this.#strEqFunctionIndex = this.#generateStrEqFunction();
+    }
+    body.push(Opcode.call);
+    body.push(...WasmModule.encodeSignedLEB128(this.#strEqFunctionIndex));
+  }
+
+  #generateStringConcat(body: number[]) {
+    if (this.#concatFunctionIndex === -1) {
+      this.#concatFunctionIndex = this.#generateConcatFunction();
+    }
+    body.push(Opcode.call);
+    body.push(...WasmModule.encodeSignedLEB128(this.#concatFunctionIndex));
+  }
+
+  #generateConcatFunction(): number {
+    const stringType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(this.#stringTypeIndex),
+    ];
+    const typeIndex = this.#module.addType(
+      [stringType, stringType],
+      [stringType],
+    );
+
+    const funcIndex = this.#module.addFunction(typeIndex);
+
+    this.#pendingHelperFunctions.push(() => {
+      const locals: number[][] = [
+        [ValType.i32], // len1 (local 0)
+        [ValType.i32], // len2 (local 1)
+        [ValType.i32], // newLen (local 2)
+        [ValType.ref_null, this.#stringTypeIndex], // newStr (local 3)
+      ];
+      const body: number[] = [];
+
+      // Params: s1 (local 0 in params -> local 0 relative to frame? No, params are locals 0 and 1)
+      // Locals start after params.
+      // Params: s1 (0), s2 (1)
+      // Locals: len1 (2), len2 (3), newLen (4), newStr (5)
+
+      // len1 = array.len(s1)
+      body.push(Opcode.local_get, 0);
+      body.push(0xfb, GcOpcode.array_len);
+      body.push(Opcode.local_set, 2);
+
+      // len2 = array.len(s2)
+      body.push(Opcode.local_get, 1);
+      body.push(0xfb, GcOpcode.array_len);
+      body.push(Opcode.local_set, 3);
+
+      // newLen = len1 + len2
+      body.push(Opcode.local_get, 2);
+      body.push(Opcode.local_get, 3);
+      body.push(Opcode.i32_add);
+      body.push(Opcode.local_set, 4);
+
+      // newStr = array.new_default(newLen)
+      body.push(Opcode.local_get, 4);
+      body.push(0xfb, GcOpcode.array_new_default);
+      body.push(...WasmModule.encodeSignedLEB128(this.#stringTypeIndex));
+      body.push(Opcode.local_set, 5);
+
+      // array.copy(dest=newStr, destOffset=0, src=s1, srcOffset=0, len=len1)
+      body.push(Opcode.local_get, 5); // dest
+      body.push(Opcode.i32_const, 0); // destOffset
+      body.push(Opcode.local_get, 0); // src
+      body.push(Opcode.i32_const, 0); // srcOffset
+      body.push(Opcode.local_get, 2); // len
+      body.push(0xfb, GcOpcode.array_copy);
+      body.push(...WasmModule.encodeSignedLEB128(this.#stringTypeIndex));
+      body.push(...WasmModule.encodeSignedLEB128(this.#stringTypeIndex));
+
+      // array.copy(dest=newStr, destOffset=len1, src=s2, srcOffset=0, len=len2)
+      body.push(Opcode.local_get, 5); // dest
+      body.push(Opcode.local_get, 2); // destOffset
+      body.push(Opcode.local_get, 1); // src
+      body.push(Opcode.i32_const, 0); // srcOffset
+      body.push(Opcode.local_get, 3); // len
+      body.push(0xfb, GcOpcode.array_copy);
+      body.push(...WasmModule.encodeSignedLEB128(this.#stringTypeIndex));
+      body.push(...WasmModule.encodeSignedLEB128(this.#stringTypeIndex));
+
+      // return newStr
+      body.push(Opcode.local_get, 5);
+      body.push(Opcode.end);
+
+      this.#module.addCode(locals, body);
+    });
+
+    return funcIndex;
+  }
+
+  #generateStrEqFunction(): number {
+    const stringType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(this.#stringTypeIndex),
+    ];
+    const typeIndex = this.#module.addType(
+      [stringType, stringType],
+      [[ValType.i32]],
+    );
+
+    const funcIndex = this.#module.addFunction(typeIndex);
+
+    this.#pendingHelperFunctions.push(() => {
+      const locals: number[][] = [
+        [ValType.i32], // len1 (local 0)
+        [ValType.i32], // len2 (local 1)
+        [ValType.i32], // i (local 2)
+      ];
+      const body: number[] = [];
+
+      // Params: s1 (0), s2 (1)
+      // Locals: len1 (2), len2 (3), i (4)
+
+      // len1 = array.len(s1)
+      body.push(Opcode.local_get, 0);
+      body.push(0xfb, GcOpcode.array_len);
+      body.push(Opcode.local_set, 2);
+
+      // len2 = array.len(s2)
+      body.push(Opcode.local_get, 1);
+      body.push(0xfb, GcOpcode.array_len);
+      body.push(Opcode.local_set, 3);
+
+      // if len1 != len2 return 0
+      body.push(Opcode.local_get, 2);
+      body.push(Opcode.local_get, 3);
+      body.push(Opcode.i32_ne);
+      body.push(Opcode.if, ValType.void);
+      body.push(Opcode.i32_const, 0);
+      body.push(Opcode.return);
+      body.push(Opcode.end);
+
+      // loop i from 0 to len1
+      body.push(Opcode.i32_const, 0);
+      body.push(Opcode.local_set, 4); // i = 0
+
+      body.push(Opcode.block, ValType.void);
+      body.push(Opcode.loop, ValType.void);
+
+      // if i == len1 break
+      body.push(Opcode.local_get, 4);
+      body.push(Opcode.local_get, 2);
+      body.push(Opcode.i32_ge_u);
+      body.push(Opcode.br_if, 1); // break to block
+
+      // if s1[i] != s2[i] return 0
+      body.push(Opcode.local_get, 0);
+      body.push(Opcode.local_get, 4);
+      body.push(0xfb, GcOpcode.array_get_u);
+      body.push(...WasmModule.encodeSignedLEB128(this.#stringTypeIndex));
+
+      body.push(Opcode.local_get, 1);
+      body.push(Opcode.local_get, 4);
+      body.push(0xfb, GcOpcode.array_get_u);
+      body.push(...WasmModule.encodeSignedLEB128(this.#stringTypeIndex));
+
+      body.push(Opcode.i32_ne);
+      body.push(Opcode.if, ValType.void);
+      body.push(Opcode.i32_const, 0);
+      body.push(Opcode.return);
+      body.push(Opcode.end);
+
+      // i++
+      body.push(Opcode.local_get, 4);
+      body.push(Opcode.i32_const, 1);
+      body.push(Opcode.i32_add);
+      body.push(Opcode.local_set, 4);
+
+      body.push(Opcode.br, 0); // continue loop
+      body.push(Opcode.end); // end loop
+      body.push(Opcode.end); // end block
+
+      // return 1
+      body.push(Opcode.i32_const, 1);
+      body.push(Opcode.end);
+
+      this.#module.addCode(locals, body);
+    });
+
+    return funcIndex;
   }
 }
