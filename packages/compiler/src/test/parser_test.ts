@@ -18,9 +18,23 @@ suite('Parser', () => {
       assert.strictEqual(decl.kind, 'let');
       assert.strictEqual(decl.identifier.name, 'x');
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
+      assert.strictEqual(decl.exported, false);
     }
   });
 
+  test('should parse exported variable declaration', () => {
+    const input = 'export const x = 1;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0];
+    assert.strictEqual(decl.type, NodeType.VariableDeclaration);
+    if (decl.type === NodeType.VariableDeclaration) {
+      assert.strictEqual(decl.kind, 'const');
+      assert.strictEqual(decl.identifier.name, 'x');
+      assert.strictEqual(decl.exported, true);
+    }
+  });
   test('should parse binary expression', () => {
     const input = 'x + 1;';
     const parser = new Parser(input);

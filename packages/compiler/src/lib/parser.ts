@@ -31,22 +31,39 @@ export class Parser {
   }
 
   #parseStatement(): Statement {
+    if (this.#match(TokenType.Export)) {
+      return this.#parseVariableDeclaration(true);
+    }
     if (
       this.#match(TokenType.Let) ||
       this.#match(TokenType.Const) ||
       this.#match(TokenType.Var)
     ) {
-      return this.#parseVariableDeclaration();
+      return this.#parseVariableDeclaration(false);
     }
     return this.#parseExpressionStatement();
   }
 
-  #parseVariableDeclaration(): VariableDeclaration {
-    const keyword = this.#previous();
+  #parseVariableDeclaration(exported: boolean): VariableDeclaration {
+    let kindToken: Token;
+    if (exported) {
+      if (
+        this.#match(TokenType.Let) ||
+        this.#match(TokenType.Const) ||
+        this.#match(TokenType.Var)
+      ) {
+        kindToken = this.#previous();
+      } else {
+        throw new Error("Expected 'let', 'const', or 'var' after 'export'.");
+      }
+    } else {
+      kindToken = this.#previous();
+    }
+
     const kind =
-      keyword.type === TokenType.Let
+      kindToken.type === TokenType.Let
         ? 'let'
-        : keyword.type === TokenType.Const
+        : kindToken.type === TokenType.Const
           ? 'const'
           : 'var';
 
@@ -60,6 +77,7 @@ export class Parser {
       kind,
       identifier,
       init,
+      exported,
     };
   }
 

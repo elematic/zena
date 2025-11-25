@@ -34,6 +34,7 @@ export interface VariableDeclaration extends Node {
   kind: 'let' | 'const' | 'var';
   identifier: Identifier;
   init: Expression;
+  exported: boolean;
 }
 
 export interface ExpressionStatement extends Node {
