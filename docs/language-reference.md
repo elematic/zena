@@ -272,7 +272,56 @@ class A {
 }
 ```
 
-## 9. Arrays
+## 9. Generics
+
+Rhea supports generic classes and functions, allowing code reuse across different types.
+
+### Generic Classes
+
+Classes can be parameterized with one or more type variables.
+
+```typescript
+class Box<T> {
+  value: T;
+  #new(v: T) {
+    this.value = v;
+  }
+}
+
+let b1 = new Box<i32>(10);
+let b2 = new Box<f32>(3.14);
+```
+
+### Multiple Type Parameters
+
+Classes can have multiple type parameters.
+
+```typescript
+class Pair<K, V> {
+  key: K;
+  value: V;
+  #new(k: K, v: V) {
+    this.key = k;
+    this.value = v;
+  }
+}
+
+let p = new Pair<i32, string>(1, "one");
+```
+
+### Generic Functions
+
+Functions can also be generic.
+
+```typescript
+const identity = <T>(x: T): T => x;
+```
+
+### Monomorphization
+
+Rhea implements generics via monomorphization. This means a separate version of the class or function is generated for each unique combination of type arguments. This ensures high performance (no boxing) but may increase binary size.
+
+## 10. Arrays
 
 Rhea supports mutable arrays backed by WASM GC arrays.
 
@@ -300,7 +349,7 @@ Array elements can be modified using assignment.
 arr[0] = 10;
 ```
 
-## 10. Strings
+## 11. Strings
 
 Rhea supports UTF-8 encoded strings.
 
@@ -353,7 +402,7 @@ Individual bytes (characters) of a string can be accessed using the index operat
 let charCode = 'ABC'[0]; // 65
 ```
 
-## 11. Grammar (Simplified)
+## 12. Grammar (Simplified)
 
 ```ebnf
 Program ::= Statement*
