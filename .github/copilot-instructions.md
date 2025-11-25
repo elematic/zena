@@ -51,10 +51,16 @@ Rhea is a statically typed language targeting WASM-GC. It uses a TypeScript-like
 - **Language**: TypeScript (running on Node.js).
 - **Goal**: Build a parser and a basic code generator that outputs WASM text format (WAT) or binary.
 - **Components**:
-  - Lexer/Tokenizer
-  - Parser (AST generation)
-  - Type Checker (Basic)
+  - Lexer/Tokenizer (Done)
+  - Parser (AST generation) (Done)
+  - Type Checker (Basic) (Done)
   - Code Generator (WASM-GC)
+    - **Strategy**: End-to-End Execution Testing.
+    - **Steps**:
+      1.  **Parser Update**: Support `export` keyword for top-level declarations to expose functions to the host.
+      2.  **WASM Emitter**: Implement a low-level `emitter.ts` to construct WASM binary sections (Type, Function, Export, Code).
+      3.  **Code Generator**: Implement `codegen.ts` to traverse AST and drive the emitter. Initial scope: `i32` arithmetic and function parameters.
+      4.  **Testing**: Compile Rhea source to `Uint8Array`, instantiate with `WebAssembly.instantiate`, and assert results in Node.js.
 
 ### Phase 2: Self-Hosting
 
