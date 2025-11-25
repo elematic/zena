@@ -155,14 +155,14 @@ This project is an **npm monorepo** managed with **Wireit**.
 - [x] Implement Structs & Classes (WASM-GC structs).
 - [x] Implement Arrays (WASM-GC arrays).
 - [x] Implement Strings (UTF-8 bytes, concatenation, equality).
+- [x] Implement Generics:
+  - Generic Classes (`class Box<T>`).
+  - Multiple Type Parameters (`class Pair<K, V>`).
+  - Generic Functions (`<T>(x: T) => x`).
 
 ### Planned
 
 1.  **Generics Enhancements** (Immediate Priority):
-    - **Multiple Type Parameters**:
-      - _Goal_: Support `class Pair<K, V> { ... }` and `new Pair<i32, f32>(1, 2.0)`.
-      - _Status_: Parser and Codegen likely support this, but it needs verification with a test case (e.g., `Pair<K, V>`).
-      - _Tasks_: Add test case. Verify TypeChecker enforces arity (argument count matches parameter count).
     - **Type Inference**:
       - _Goal_: Allow `new Box(10)` to infer `Box<i32>`.
       - _Tasks_: Implement unification algorithm in TypeChecker to deduce type arguments from constructor arguments.
