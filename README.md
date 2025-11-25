@@ -21,6 +21,10 @@ Rhea is a new programming language targeting WebAssembly (WASM) and WASM-GC. It 
 - **Module System**: Similar to ES Modules. Standard library available via built-in modules.
 - **Named Parameters**: First-class support for named parameters to avoid object allocation overhead.
 
+## Documentation
+
+- [Language Reference](docs/language-reference.md): Detailed guide on syntax and semantics.
+
 ## Getting Started
 
 This project is currently in the bootstrapping phase. The initial compiler/parser is being written in TypeScript.

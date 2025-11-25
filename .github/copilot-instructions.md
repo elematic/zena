@@ -12,7 +12,10 @@ Rhea is a statically typed language targeting WASM-GC. It uses a TypeScript-like
 2.  **Simplicity**: The language should be easy to parse and analyze.
 3.  **Safety**: Strong static typing with a sound type system. No implicit type coercion.
 
-## Language Specification (Draft)
+## Language Specification
+
+The official language reference is maintained in `docs/language-reference.md`.
+**Instruction**: When adding or modifying language features, you MUST update `docs/language-reference.md` to reflect the changes.
 
 ### Type System
 
@@ -105,7 +108,9 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Write tests for each compiler stage (Lexer, Parser, Codegen).
 - **Paradigm**: Prefer functional patterns where appropriate.
 - **Package Management**: Prefer installing npm packages with `npm i <package>` instead of manually editing `package.json` to ensure valid versions.
-- **Documentation**: Record any new coding preferences, design choices, or architecture decisions in this file (`.github/copilot-instructions.md`).
+- **Documentation**:
+  - Record any new coding preferences, design choices, or architecture decisions in this file (`.github/copilot-instructions.md`).
+  - Update `docs/language-reference.md` when language syntax or semantics change.
 
 ## Next Steps
 

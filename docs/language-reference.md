@@ -1,0 +1,145 @@
+# Rhea Language Reference
+
+This document describes the syntax and semantics of the Rhea programming language.
+
+## 1. Introduction
+
+Rhea is a statically typed language targeting WebAssembly (WASM-GC). It features a TypeScript-like syntax with strict static typing and no implicit coercion.
+
+## 2. Types
+
+Rhea is strongly typed. All expressions have a type determined at compile time.
+
+### Primitive Types
+
+- **`i32`**: 32-bit signed integer. This is the default type for integer literals.
+- **`f32`**: 32-bit floating-point number.
+- **`string`**: UTF-8 string.
+
+### Type Inference
+
+Local variable types are inferred from their initializer expression.
+
+```typescript
+let x = 10; // Inferred as i32
+let s = 'hello'; // Inferred as string
+```
+
+## 3. Variables
+
+Variables are declared using `let` or `var`.
+
+- **`let`**: Declares a block-scoped immutable binding.
+- **`var`**: Declares a block-scoped mutable binding.
+
+### Syntax
+
+```typescript
+let name = expression;
+var name = expression;
+```
+
+### Scoping
+
+Variables declared with `let` and `var` are block-scoped. Redeclaring a variable in the same scope is a compile-time error.
+
+## 4. Functions
+
+Rhea currently supports functions using arrow syntax.
+
+### Syntax
+
+```typescript
+(param1: Type, param2: Type) => expression;
+```
+
+### Parameters
+
+Function parameters must have explicit type annotations.
+
+```typescript
+const add = (a: i32, b: i32) => a + b;
+```
+
+### Return Type
+
+The return type is inferred from the body expression. It can also be explicitly annotated.
+
+```typescript
+const add = (a: i32, b: i32): i32 => a + b;
+```
+
+### Function Body
+
+Currently, function bodies must be a single expression. Block bodies (`{ ... }`) are not yet supported in the parser.
+
+## 5. Expressions & Operators
+
+### Literals
+
+- **Numbers**: `123`, `0`, `-5` (Parsed as `i32` by default).
+- **Strings**: `"text"`.
+
+### Binary Operators
+
+Supported arithmetic operators for numeric types (`i32`, `f32`):
+
+- `+` (Addition)
+- `-` (Subtraction)
+- `*` (Multiplication)
+- `/` (Division)
+
+Operands must be of the same type. Implicit coercion is not supported.
+
+```typescript
+let a = 10;
+let b = 20;
+let c = a + b; // Valid
+// let d = a + "string"; // Error: Type mismatch
+```
+
+### Grouping
+
+Parentheses `( )` can be used to group expressions and control precedence.
+
+```typescript
+let result = (1 + 2) * 3;
+```
+
+## 6. Modules & Exports
+
+### Exports
+
+Top-level variable declarations can be exported using the `export` keyword. This exposes the variable (or function) to the host environment or other modules.
+
+```typescript
+export const add = (a: i32, b: i32) => a + b;
+```
+
+## 7. Grammar (Simplified)
+
+```ebnf
+Program ::= Statement*
+
+Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement
+
+ExportStatement ::= "export" VariableDeclaration
+
+VariableDeclaration ::= ("let" | "const" | "var") Identifier "=" Expression ";"
+
+ExpressionStatement ::= Expression ";"
+
+Expression ::= ArrowFunction | BinaryExpression
+
+ArrowFunction ::= "(" ParameterList? ")" (":" TypeAnnotation)? "=>" Expression
+
+ParameterList ::= Parameter ("," Parameter)*
+
+Parameter ::= Identifier ":" TypeAnnotation
+
+BinaryExpression ::= PrimaryExpression (Operator PrimaryExpression)*
+
+PrimaryExpression ::= NumberLiteral | StringLiteral | Identifier | "(" Expression ")"
+
+Operator ::= "+" | "-" | "*" | "/"
+```
