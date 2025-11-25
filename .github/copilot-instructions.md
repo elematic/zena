@@ -37,10 +37,25 @@ The official language reference is maintained in `docs/language-reference.md`.
 
 ### Classes
 
+- **Implementation**: Classes are backed by WASM GC Structs (fixed layout, typed fields).
+- **Syntax**: Standard class syntax defines the struct layout.
+- **Instantiation**: Class instances are created using constructors (e.g., `new Point(1, 2)`). Object literals `{ ... }` are reserved for Records.
 - Classical inheritance model.
 - No mutable prototype chain.
 - Classes are expressions.
 - Fields imply auto-accessors.
+
+### Records & Tuples (Immutable - Default)
+
+- **Records**: `{ x: 1, y: 2 }`. Creates an **immutable** anonymous struct. This is the default for object literals.
+- **Tuples**: `[ 1, "hello" ]`. Creates an **immutable** fixed-length struct with indexed fields. This is the default for array literals.
+- **Implementation**: Backed by immutable WASM GC Structs.
+
+### Mutable Collections (Maps & Arrays)
+
+- **Maps**: `#{ key: value }`. Creates a mutable Map (Hash Map).
+- **Arrays**: `#[ 1, 2, 3 ]`. Creates a mutable Array (WASM GC Array).
+- **Implementation**: Backed by Hash Maps and WASM GC Arrays respectively.
 
 ### Modules
 
