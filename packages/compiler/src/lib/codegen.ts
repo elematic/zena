@@ -897,6 +897,23 @@ export class CodeGenerator {
           if (methodInfo) {
             return methodInfo.returnType;
           }
+        } else if (callExpr.callee.type === NodeType.Identifier) {
+          const name = (callExpr.callee as Identifier).name;
+          if (this.#genericFunctions.has(name)) {
+            const funcDecl = this.#genericFunctions.get(name)!;
+            if (callExpr.typeArguments && callExpr.typeArguments.length > 0) {
+              const typeContext = new Map<string, TypeAnnotation>();
+              for (let i = 0; i < funcDecl.typeParameters!.length; i++) {
+                typeContext.set(
+                  funcDecl.typeParameters![i].name,
+                  callExpr.typeArguments[i],
+                );
+              }
+              if (funcDecl.returnType) {
+                return this.#mapType(funcDecl.returnType, typeContext);
+              }
+            }
+          }
         }
         return [ValType.i32];
       }

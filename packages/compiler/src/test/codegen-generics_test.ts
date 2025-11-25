@@ -165,4 +165,48 @@ suite('CodeGenerator - Generics', () => {
     assert.strictEqual(exports.testI32(), 123);
     assert.strictEqual(Math.fround(exports.testF32()), Math.fround(4.56));
   });
+
+  test('should support generic function with multiple type parameters', async () => {
+    const input = `
+      let pickSecond = <A, B>(a: A, b: B): B => b;
+      
+      export let test = (): f32 => {
+        return pickSecond<i32, f32>(10, 20.5);
+      };
+    `;
+    const {test} = (await compile(input)) as {test: () => number};
+    assert.strictEqual(Math.fround(test()), Math.fround(20.5));
+  });
+
+  test('should support generic function with class reference type', async () => {
+    const input = `
+      class Container {
+        val: i32;
+        #new(v: i32) { this.val = v; }
+      }
+
+      let identity = <T>(x: T): T => x;
+
+      export let test = (): i32 => {
+        let c = new Container(42);
+        let c2 = identity<Container>(c);
+        return c2.val;
+      };
+    `;
+    const {test} = (await compile(input)) as {test: () => number};
+    assert.strictEqual(test(), 42);
+  });
+
+  test('should support generic function with string reference type', async () => {
+    const input = `
+      let identity = <T>(x: T): T => x;
+
+      export let test = (): i32 => {
+        let s = identity<string>('hello');
+        return s.length;
+      };
+    `;
+    const {test} = (await compile(input)) as {test: () => number};
+    assert.strictEqual(test(), 5);
+  });
 });
