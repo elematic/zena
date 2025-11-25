@@ -11,6 +11,8 @@ export const TokenType = {
   While: 'While',
   True: 'True',
   False: 'False',
+  New: 'New',
+  This: 'This',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -40,6 +42,7 @@ export const TokenType = {
   Semi: 'Semi',
   Comma: 'Comma',
   Dot: 'Dot',
+  Hash: 'Hash',
 
   EOF: 'EOF',
   Unknown: 'Unknown',
@@ -54,7 +57,7 @@ export interface Token {
   column: number;
 }
 
-const KEYWORDS: Record<string, TokenType> = {
+const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   let: TokenType.Let,
   var: TokenType.Var,
   class: TokenType.Class,
@@ -66,7 +69,9 @@ const KEYWORDS: Record<string, TokenType> = {
   while: TokenType.While,
   true: TokenType.True,
   false: TokenType.False,
-};
+  new: TokenType.New,
+  this: TokenType.This,
+});
 
 export const tokenize = (source: string): Token[] => {
   const tokens: Token[] = [];
@@ -306,6 +311,14 @@ export const tokenize = (source: string): Token[] => {
         tokens.push({
           type: TokenType.Dot,
           value: '.',
+          line,
+          column: startColumn,
+        });
+        break;
+      case '#':
+        tokens.push({
+          type: TokenType.Hash,
+          value: '#',
           line,
           column: startColumn,
         });

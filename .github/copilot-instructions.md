@@ -130,6 +130,7 @@ This project is an **npm monorepo** managed with **Wireit**.
 ## Next Steps
 
 ### Completed
+
 - [x] Initialize npm project with TypeScript.
 - [x] Set up project structure (`src`, `tests`).
 - [x] Implement the Lexer.
@@ -144,6 +145,7 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Function calls and recursion.
 
 ### Planned
+
 1.  **Structs & Classes**: Implement WASM-GC structs (`struct.new`, `struct.get`, `struct.set`) to support objects and classes.
 2.  **Arrays**: Implement support for arrays using WASM GC `array` types.
 3.  **Standard Library**: Begin building a small standard library (math, string manipulation).

@@ -16,6 +16,12 @@ export const NodeType = {
   WhileStatement: 'WhileStatement',
   Parameter: 'Parameter',
   TypeAnnotation: 'TypeAnnotation',
+  ClassDeclaration: 'ClassDeclaration',
+  FieldDefinition: 'FieldDefinition',
+  MethodDefinition: 'MethodDefinition',
+  NewExpression: 'NewExpression',
+  MemberExpression: 'MemberExpression',
+  ThisExpression: 'ThisExpression',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -35,7 +41,8 @@ export type Statement =
   | BlockStatement
   | ReturnStatement
   | IfStatement
-  | WhileStatement;
+  | WhileStatement
+  | ClassDeclaration;
 
 export interface VariableDeclaration extends Node {
   type: typeof NodeType.VariableDeclaration;
@@ -63,7 +70,10 @@ export type Expression =
   | BooleanLiteral
   | Identifier
   | FunctionExpression
-  | CallExpression;
+  | CallExpression
+  | NewExpression
+  | MemberExpression
+  | ThisExpression;
 
 export interface BinaryExpression extends Node {
   type: typeof NodeType.BinaryExpression;
@@ -74,7 +84,7 @@ export interface BinaryExpression extends Node {
 
 export interface AssignmentExpression extends Node {
   type: typeof NodeType.AssignmentExpression;
-  name: Identifier;
+  left: Identifier | MemberExpression;
   value: Expression;
 }
 
@@ -98,15 +108,41 @@ export interface Identifier extends Node {
   name: string;
 }
 
-export interface TypeAnnotation extends Node {
-  type: typeof NodeType.TypeAnnotation;
-  name: string;
+export interface ClassDeclaration extends Node {
+  type: typeof NodeType.ClassDeclaration;
+  name: Identifier;
+  body: (FieldDefinition | MethodDefinition)[];
 }
 
-export interface Parameter extends Node {
-  type: typeof NodeType.Parameter;
+export interface FieldDefinition extends Node {
+  type: typeof NodeType.FieldDefinition;
   name: Identifier;
   typeAnnotation: TypeAnnotation;
+  value?: Expression;
+}
+
+export interface MethodDefinition extends Node {
+  type: typeof NodeType.MethodDefinition;
+  name: Identifier;
+  params: Parameter[];
+  returnType?: TypeAnnotation;
+  body: BlockStatement;
+}
+
+export interface NewExpression extends Node {
+  type: typeof NodeType.NewExpression;
+  callee: Identifier;
+  arguments: Expression[];
+}
+
+export interface MemberExpression extends Node {
+  type: typeof NodeType.MemberExpression;
+  object: Expression;
+  property: Identifier;
+}
+
+export interface ThisExpression extends Node {
+  type: typeof NodeType.ThisExpression;
 }
 
 export interface FunctionExpression extends Node {
@@ -138,4 +174,15 @@ export interface WhileStatement extends Node {
   type: typeof NodeType.WhileStatement;
   test: Expression;
   body: Statement;
+}
+
+export interface Parameter extends Node {
+  type: typeof NodeType.Parameter;
+  name: Identifier;
+  typeAnnotation: TypeAnnotation;
+}
+
+export interface TypeAnnotation extends Node {
+  type: typeof NodeType.TypeAnnotation;
+  name: string;
 }

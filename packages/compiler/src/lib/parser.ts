@@ -3,15 +3,21 @@ import {
   type AssignmentExpression,
   type BlockStatement,
   type CallExpression,
+  type ClassDeclaration,
   type Expression,
+  type FieldDefinition,
   type FunctionExpression,
   type Identifier,
   type IfStatement,
+  type MemberExpression,
+  type MethodDefinition,
+  type NewExpression,
   type WhileStatement,
   type Parameter,
   type Program,
   type ReturnStatement,
   type Statement,
+  type ThisExpression,
   type TypeAnnotation,
   type VariableDeclaration,
 } from './ast.js';
@@ -51,6 +57,9 @@ export class Parser {
     }
     if (this.#match(TokenType.While)) {
       return this.#parseWhileStatement();
+    }
+    if (this.#match(TokenType.Class)) {
+      return this.#parseClassDeclaration();
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseBlockStatement();
@@ -104,10 +113,13 @@ export class Parser {
 
     if (this.#match(TokenType.Equals)) {
       const value = this.#parseAssignment();
-      if (expr.type === NodeType.Identifier) {
+      if (
+        expr.type === NodeType.Identifier ||
+        expr.type === NodeType.MemberExpression
+      ) {
         return {
           type: NodeType.AssignmentExpression,
-          name: expr as Identifier,
+          left: expr as Identifier | MemberExpression,
           value,
         };
       }
@@ -264,11 +276,50 @@ export class Parser {
   }
 
   #parseCall(): Expression {
+    if (this.#match(TokenType.New)) {
+      const callee = this.#parseIdentifier();
+      this.#consume(TokenType.LParen, "Expected '(' after class name.");
+      const args: Expression[] = [];
+      if (!this.#check(TokenType.RParen)) {
+        do {
+          args.push(this.#parseExpression());
+        } while (this.#match(TokenType.Comma));
+      }
+      this.#consume(TokenType.RParen, "Expected ')' after arguments.");
+
+      let expr: Expression = {
+        type: NodeType.NewExpression,
+        callee,
+        arguments: args,
+      };
+
+      while (true) {
+        if (this.#match(TokenType.Dot)) {
+          const property = this.#parseIdentifier();
+          expr = {
+            type: NodeType.MemberExpression,
+            object: expr,
+            property,
+          };
+        } else {
+          break;
+        }
+      }
+      return expr;
+    }
+
     let expr = this.#parsePrimary();
 
     while (true) {
       if (this.#match(TokenType.LParen)) {
         expr = this.#finishCall(expr);
+      } else if (this.#match(TokenType.Dot)) {
+        const property = this.#parseIdentifier();
+        expr = {
+          type: NodeType.MemberExpression,
+          object: expr,
+          property,
+        };
       } else {
         break;
       }
@@ -294,6 +345,9 @@ export class Parser {
   }
 
   #parsePrimary(): Expression {
+    if (this.#match(TokenType.This)) {
+      return {type: NodeType.ThisExpression};
+    }
     if (this.#match(TokenType.Number)) {
       return {type: NodeType.NumberLiteral, value: this.#previous().value};
     }
@@ -370,6 +424,98 @@ export class Parser {
       type: NodeType.WhileStatement,
       test,
       body,
+    };
+  }
+
+  #parseClassDeclaration(): ClassDeclaration {
+    const name = this.#parseIdentifier();
+    this.#consume(TokenType.LBrace, "Expected '{' before class body.");
+
+    const body: (FieldDefinition | MethodDefinition)[] = [];
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      body.push(this.#parseClassMember());
+    }
+
+    this.#consume(TokenType.RBrace, "Expected '}' after class body.");
+
+    return {
+      type: NodeType.ClassDeclaration,
+      name,
+      body,
+    };
+  }
+
+  #parseClassMember(): FieldDefinition | MethodDefinition {
+    let name: Identifier;
+    if (this.#match(TokenType.Hash)) {
+      if (this.#match(TokenType.New)) {
+        name = {type: NodeType.Identifier, name: '#new'};
+      } else {
+        const id = this.#parseIdentifier();
+        name = {type: NodeType.Identifier, name: '#' + id.name};
+      }
+    } else {
+      name = this.#parseIdentifier();
+    }
+
+    // Method: name(params) { ... }
+    if (this.#match(TokenType.LParen)) {
+      const params: Parameter[] = [];
+      if (!this.#check(TokenType.RParen)) {
+        do {
+          const paramName = this.#parseIdentifier();
+          this.#consume(TokenType.Colon, "Expected ':' for type annotation");
+          const typeName = this.#parseIdentifier();
+          params.push({
+            type: NodeType.Parameter,
+            name: paramName,
+            typeAnnotation: {
+              type: NodeType.TypeAnnotation,
+              name: typeName.name,
+            },
+          });
+        } while (this.#match(TokenType.Comma));
+      }
+      this.#consume(TokenType.RParen, "Expected ')' after parameters.");
+
+      let returnType: TypeAnnotation | undefined;
+      if (this.#match(TokenType.Colon)) {
+        const typeName = this.#parseIdentifier();
+        returnType = {type: NodeType.TypeAnnotation, name: typeName.name};
+      }
+
+      this.#consume(TokenType.LBrace, "Expected '{' before method body.");
+      const body = this.#parseBlockStatement();
+
+      return {
+        type: NodeType.MethodDefinition,
+        name,
+        params,
+        returnType,
+        body,
+      };
+    }
+
+    // Field: name: Type; or name: Type = value;
+    this.#consume(TokenType.Colon, "Expected ':' after field name.");
+    const typeName = this.#parseIdentifier();
+    const typeAnnotation: TypeAnnotation = {
+      type: NodeType.TypeAnnotation,
+      name: typeName.name,
+    };
+
+    let value: Expression | undefined;
+    if (this.#match(TokenType.Equals)) {
+      value = this.#parseExpression();
+    }
+
+    this.#consume(TokenType.Semi, "Expected ';' after field declaration.");
+
+    return {
+      type: NodeType.FieldDefinition,
+      name,
+      typeAnnotation,
+      value,
     };
   }
 

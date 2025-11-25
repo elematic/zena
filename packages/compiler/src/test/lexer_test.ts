@@ -120,4 +120,16 @@ suite('Lexer', () => {
       TokenType.EOF,
     ]);
   });
+
+  test('should tokenize nested braces', () => {
+    const input = '{ { } }';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      TokenType.LBrace,
+      TokenType.LBrace,
+      TokenType.RBrace,
+      TokenType.RBrace,
+      TokenType.EOF,
+    ]);
+  });
 });

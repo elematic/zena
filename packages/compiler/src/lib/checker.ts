@@ -238,31 +238,37 @@ export class TypeChecker {
   }
 
   #checkAssignmentExpression(expr: AssignmentExpression): Type {
-    const varName = expr.name.name;
-    const symbol = this.#resolveInfo(varName);
+    if (expr.left.type === NodeType.Identifier) {
+      const varName = expr.left.name;
+      const symbol = this.#resolveInfo(varName);
 
-    if (!symbol) {
-      this.#errors.push(`Variable '${varName}' is not defined.`);
-      return Types.Unknown;
-    }
-
-    if (symbol.kind !== 'var') {
-      this.#errors.push(`Cannot assign to immutable variable '${varName}'.`);
-    }
-
-    const valueType = this.#checkExpression(expr.value);
-    if (
-      symbol.type.kind !== valueType.kind &&
-      symbol.type.kind !== Types.Unknown.kind
-    ) {
-      if (this.#typeToString(symbol.type) !== this.#typeToString(valueType)) {
-        this.#errors.push(
-          `Type mismatch in assignment: expected ${this.#typeToString(symbol.type)}, got ${this.#typeToString(valueType)}`,
-        );
+      if (!symbol) {
+        this.#errors.push(`Variable '${varName}' is not defined.`);
+        return Types.Unknown;
       }
-    }
 
-    return valueType;
+      if (symbol.kind !== 'var') {
+        this.#errors.push(`Cannot assign to immutable variable '${varName}'.`);
+      }
+
+      const valueType = this.#checkExpression(expr.value);
+      if (
+        symbol.type.kind !== valueType.kind &&
+        symbol.type.kind !== Types.Unknown.kind
+      ) {
+        if (this.#typeToString(symbol.type) !== this.#typeToString(valueType)) {
+          this.#errors.push(
+            `Type mismatch in assignment: expected ${this.#typeToString(symbol.type)}, got ${this.#typeToString(valueType)}`,
+          );
+        }
+      }
+
+      return valueType;
+    } else if (expr.left.type === NodeType.MemberExpression) {
+      // TODO: Implement member assignment checking
+      return this.#checkExpression(expr.value);
+    }
+    return Types.Unknown;
   }
 
   #checkBinaryExpression(expr: BinaryExpression): Type {

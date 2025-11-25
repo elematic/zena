@@ -179,6 +179,98 @@ Top-level variable declarations can be exported using the `export` keyword. This
 export const add = (a: i32, b: i32) => a + b;
 ```
 
+## 8. Classes
+
+Rhea supports classes with fields, methods, and constructors.
+
+### Class Declaration
+
+Classes are declared using the `class` keyword.
+
+```typescript
+class Point {
+  x: i32;
+  y: i32;
+
+  #new(x: i32, y: i32) {
+    this.x = x;
+    this.y = y;
+  }
+
+  distance(): i32 {
+    // ...
+    return 0;
+  }
+}
+```
+
+### Fields
+
+Fields are declared with a name and a type annotation. They define the layout of the underlying WASM struct.
+
+```typescript
+class User {
+  id: i32;
+  name: string;
+}
+```
+
+### Constructor
+
+The constructor is a special method named `#new`. It is called when a new instance of the class is created.
+
+```typescript
+class Box {
+  value: i32;
+  #new(v: i32) {
+    this.value = v;
+  }
+}
+```
+
+### Methods
+
+Methods are functions defined within the class body.
+
+```typescript
+class Counter {
+  count: i32;
+  increment() {
+    this.count = this.count + 1;
+  }
+}
+```
+
+### Instantiation
+
+Classes are instantiated using the `new` keyword.
+
+```typescript
+let p = new Point(10, 20);
+```
+
+### Member Access
+
+Fields and methods are accessed using the dot `.` operator.
+
+```typescript
+let x = p.x;
+p.distance();
+```
+
+### `this` Keyword
+
+Inside methods and the constructor, `this` refers to the current instance of the class.
+
+```typescript
+class A {
+  x: i32;
+  setX(v: i32) {
+    this.x = v;
+  }
+}
+```
+
 ## 7. Grammar (Simplified)
 
 ```ebnf
@@ -200,11 +292,15 @@ IfStatement ::= "if" "(" Expression ")" Statement ("else" Statement)?
 
 WhileStatement ::= "while" "(" Expression ")" Statement
 
-Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression | CallExpression
+Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression | CallExpression | NewExpression | MemberExpression
 
-AssignmentExpression ::= Identifier "=" Expression
+AssignmentExpression ::= (Identifier | MemberExpression) "=" Expression
 
 CallExpression ::= Expression "(" (Expression ("," Expression)*)? ")"
+
+NewExpression ::= "new" Identifier "(" (Expression ("," Expression)*)? ")"
+
+MemberExpression ::= Expression "." Identifier
 
 ArrowFunction ::= "(" ParameterList? ")" (":" TypeAnnotation)? "=>" Expression
 

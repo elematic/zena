@@ -285,12 +285,16 @@ export class CodeGenerator {
   }
 
   #generateAssignmentExpression(expr: AssignmentExpression, body: number[]) {
-    this.#generateExpression(expr.value, body);
-    const index = this.#resolveLocal(expr.name.name);
-    // Assignment is an expression that evaluates to the assigned value.
-    // So we use local.tee to set the local and keep the value on the stack.
-    body.push(Opcode.local_tee);
-    body.push(...WasmModule.encodeSignedLEB128(index));
+    if (expr.left.type === NodeType.Identifier) {
+      this.#generateExpression(expr.value, body);
+      const index = this.#resolveLocal(expr.left.name);
+      // Assignment is an expression that evaluates to the assigned value.
+      // So we use local.tee to set the local and keep the value on the stack.
+      body.push(Opcode.local_tee);
+      body.push(...WasmModule.encodeSignedLEB128(index));
+    } else {
+      throw new Error('Member assignment not implemented yet.');
+    }
   }
 
   #generateBinaryExpression(expr: BinaryExpression, body: number[]) {

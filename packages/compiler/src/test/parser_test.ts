@@ -135,8 +135,10 @@ suite('Parser', () => {
             );
             const expr = assignment.expression;
             if (expr.type === NodeType.AssignmentExpression) {
-              assert.strictEqual(expr.name.type, NodeType.Identifier);
-              assert.strictEqual(expr.name.name, 'x');
+              assert.strictEqual(expr.left.type, NodeType.Identifier);
+              if (expr.left.type === NodeType.Identifier) {
+                assert.strictEqual(expr.left.name, 'x');
+              }
               assert.strictEqual(expr.value.type, NodeType.NumberLiteral);
             }
           }
@@ -173,6 +175,87 @@ suite('Parser', () => {
               assert.strictEqual(call.arguments.length, 2);
             }
           }
+        }
+      }
+    }
+  });
+
+  test('should parse class with fields', () => {
+    const input = `class Point { x: i32; }`;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    assert.strictEqual(ast.body.length, 1);
+  });
+
+  test('should parse class with method', () => {
+    const input = `class Point { distance(): i32 { return 0; } }`;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    assert.strictEqual(ast.body.length, 1);
+  });
+
+  test('should parse class with constructor', () => {
+    const input = `class Point { #new() { this.x = 1; } }`;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    assert.strictEqual(ast.body.length, 1);
+  });
+
+  test('should parse full class declaration', () => {
+    const input = `
+      class Point {
+        x: i32;
+        y: i32;
+        #new(x: i32, y: i32) {
+          this.x = x;
+          this.y = y;
+        }
+        distance(): i32 {
+          return 0;
+        }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    assert.strictEqual(ast.body.length, 1);
+    const cls = ast.body[0];
+    assert.strictEqual(cls.type, NodeType.ClassDeclaration);
+    if (cls.type === NodeType.ClassDeclaration) {
+      assert.strictEqual(cls.name.name, 'Point');
+      assert.strictEqual(cls.body.length, 4);
+
+      const fieldX = cls.body[0];
+      assert.strictEqual(fieldX.type, NodeType.FieldDefinition);
+      if (fieldX.type === NodeType.FieldDefinition) {
+        assert.strictEqual(fieldX.name.name, 'x');
+        assert.strictEqual(fieldX.typeAnnotation.name, 'i32');
+      }
+
+      const ctor = cls.body[2];
+      assert.strictEqual(ctor.type, NodeType.MethodDefinition);
+      if (ctor.type === NodeType.MethodDefinition) {
+        assert.strictEqual(ctor.name.name, '#new');
+      }
+    }
+  });
+
+  test('should parse new expression and member access', () => {
+    const input = 'new Point(1, 2).x;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const stmt = ast.body[0];
+    assert.strictEqual(stmt.type, NodeType.ExpressionStatement);
+    if (stmt.type === NodeType.ExpressionStatement) {
+      const expr = stmt.expression;
+      assert.strictEqual(expr.type, NodeType.MemberExpression);
+      if (expr.type === NodeType.MemberExpression) {
+        assert.strictEqual(expr.property.name, 'x');
+        assert.strictEqual(expr.object.type, NodeType.NewExpression);
+        if (expr.object.type === NodeType.NewExpression) {
+          assert.strictEqual(expr.object.callee.name, 'Point');
+          assert.strictEqual(expr.object.arguments.length, 2);
         }
       }
     }
