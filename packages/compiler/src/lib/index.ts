@@ -6,4 +6,4 @@ export * from './types.js';
 export * from './checker.js';
 export * from './wasm.js';
 export * from './emitter.js';
-
+export * from './codegen.js';
