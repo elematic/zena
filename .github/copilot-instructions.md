@@ -8,10 +8,12 @@ Rhea is a statically typed language targeting WASM-GC. It uses a TypeScript-like
 
 ## Design Principles
 
-1.  **Performance**: Generated WASM should be small and fast. Avoid runtime overhead where possible (e.g., prefer flat arguments over object allocation for named parameters).
-2.  **Simplicity**: The language should be easy to parse and analyze.
-3.  **Safety**: Strong static typing with a sound type system. No implicit type coercion.
-4.  **Minimal Output**: The compiler should produce the smallest possible WASM binary. Standard library components (like `Map`) should only be included in the output if they are actually used by the program.
+1.  **Performance**: Generated WASM should be fast. Avoid runtime overhead where possible (e.g., prefer flat arguments over object allocation for named parameters).
+2.  **Binary Size**: The compiler should produce the smallest possible WASM binary. This is critical for network delivery.
+    - _Trade-off_: When Performance and Binary Size conflict (e.g., Monomorphization vs Erasure), we currently favor **Performance**, but this is a tunable design choice.
+3.  **Simplicity**: The language should be easy to parse and analyze.
+4.  **Safety**: Strong static typing with a sound type system. No implicit type coercion.
+5.  **Minimal Output**: Standard library components (like `Map`) should only be included in the output if they are actually used by the program (Dead Code Elimination).
 
 ## Language Specification
 

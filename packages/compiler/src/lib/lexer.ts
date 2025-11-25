@@ -111,6 +111,15 @@ export const tokenize = (source: string): Token[] => {
       while (current < source.length && /[0-9]/.test(peek())) {
         value += advance();
       }
+
+      // Fractional part
+      if (peek() === '.' && /[0-9]/.test(source[current + 1])) {
+        value += advance(); // Consume '.'
+        while (current < source.length && /[0-9]/.test(peek())) {
+          value += advance();
+        }
+      }
+
       tokens.push({type: TokenType.Number, value, line, column: startColumn});
       continue;
     }

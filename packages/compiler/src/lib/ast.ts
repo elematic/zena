@@ -105,7 +105,7 @@ export interface AssignmentExpression extends Node {
 
 export interface NumberLiteral extends Node {
   type: typeof NodeType.NumberLiteral;
-  value: string;
+  value: number;
 }
 
 export interface StringLiteral extends Node {

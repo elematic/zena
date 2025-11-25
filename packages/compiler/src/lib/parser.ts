@@ -382,7 +382,10 @@ export class Parser {
       throw new Error("Expected '[' after '#'.");
     }
     if (this.#match(TokenType.Number)) {
-      return {type: NodeType.NumberLiteral, value: this.#previous().value};
+      return {
+        type: NodeType.NumberLiteral,
+        value: parseFloat(this.#previous().value),
+      };
     }
     if (this.#match(TokenType.String)) {
       return {type: NodeType.StringLiteral, value: this.#previous().value};

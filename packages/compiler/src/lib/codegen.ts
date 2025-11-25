@@ -23,14 +23,15 @@ import {
   type IndexExpression,
   type StringLiteral,
   type TypeAnnotation,
+  type MethodDefinition,
 } from './ast.js';
 import {WasmModule} from './emitter.js';
 import {ValType, Opcode, ExportDesc, GcOpcode} from './wasm.js';
 
 interface ClassInfo {
   structTypeIndex: number;
-  fields: Map<string, {index: number; type: number}>;
-  methods: Map<string, number>; // name -> funcIndex
+  fields: Map<string, {index: number; type: number[]}>;
+  methods: Map<string, {index: number; returnType: number[]}>; // name -> {funcIndex, returnType}
 }
 
 interface LocalInfo {
@@ -53,6 +54,10 @@ export class CodeGenerator {
   #pendingHelperFunctions: (() => void)[] = [];
   #concatFunctionIndex = -1;
   #strEqFunctionIndex = -1;
+  #genericClasses = new Map<string, ClassDeclaration>();
+  #pendingMethodGenerations: (() => void)[] = [];
+  #bodyGenerators: (() => void)[] = [];
+  #currentTypeContext: Map<string, TypeAnnotation> | undefined;
 
   constructor(program: Program) {
     this.#program = program;
@@ -67,34 +72,7 @@ export class CodeGenerator {
 
     for (const member of decl.body) {
       if (member.type === NodeType.MethodDefinition) {
-        const funcIndex = classInfo.methods.get(member.name.name)!;
-
-        this.#scopes = [new Map()];
-        this.#extraLocals = [];
-        this.#nextLocalIndex = 0;
-
-        // 'this' is local 0
-        this.#nextLocalIndex++;
-
-        // Params
-        for (const param of member.params) {
-          // TODO: Map type annotation to WASM type
-          this.#scopes[0].set(param.name.name, {
-            index: this.#nextLocalIndex++,
-            type: [ValType.i32],
-          });
-        }
-        const body: number[] = [];
-
-        // Generate body statements
-        for (const stmt of member.body.body) {
-          this.#generateFunctionStatement(stmt, body);
-        }
-
-        // Implicit return 0 if not void (for now assuming i32 return)
-        // TODO: Check if last statement is return
-        body.push(Opcode.i32_const, 0, Opcode.end);
-
+        const body = this.#generateMethodBodyCode(member, new Map());
         this.#module.addCode(this.#extraLocals, body);
       }
     }
@@ -118,9 +96,9 @@ export class CodeGenerator {
       }
     }
 
-    // Pass 2: Generate bodies
-    for (const statement of this.#program.body) {
-      this.#generateStatement(statement);
+    // Generate bodies
+    for (const generator of this.#bodyGenerators) {
+      generator();
     }
 
     // Generate pending helper functions
@@ -128,20 +106,31 @@ export class CodeGenerator {
       generator();
     }
 
+    // Generate pending generic methods
+    while (this.#pendingMethodGenerations.length > 0) {
+      const generator = this.#pendingMethodGenerations.shift()!;
+      generator();
+    }
+
     return this.#module.toBytes();
   }
 
   #registerClass(decl: ClassDeclaration) {
-    const fields = new Map<string, {index: number; type: number}>();
+    if (decl.typeParameters && decl.typeParameters.length > 0) {
+      this.#genericClasses.set(decl.name.name, decl);
+      return;
+    }
+
+    const fields = new Map<string, {index: number; type: number[]}>();
     const fieldTypes: {type: number[]; mutable: boolean}[] = [];
 
     let fieldIndex = 0;
     for (const member of decl.body) {
       if (member.type === NodeType.FieldDefinition) {
         // TODO: Map AST type to WASM type properly. For now assume i32.
-        const wasmType = ValType.i32;
+        const wasmType = [ValType.i32];
         fields.set(member.name.name, {index: fieldIndex++, type: wasmType});
-        fieldTypes.push({type: [wasmType], mutable: true}); // All fields mutable for now
+        fieldTypes.push({type: wasmType, mutable: true}); // All fields mutable for now
       }
     }
 
@@ -169,19 +158,22 @@ export class CodeGenerator {
           params.push([ValType.i32]); // Assume i32 for now
         }
 
-        const results = [[ValType.i32]]; // Assume i32 return
+        let results = [[ValType.i32]]; // Assume i32 return
+        if (methodName === '#new') {
+          results = [];
+        }
 
         const typeIndex = this.#module.addType(params, results);
         const funcIndex = this.#module.addFunction(typeIndex);
 
-        classInfo.methods.set(methodName, funcIndex);
-
-        // Store method info for generation
-        // We'll use a mangled name to store it in #functions map if we want to reuse logic,
-        // but methods have 'this' param so we need special handling.
-        // Let's just store it in a separate list to process in Pass 2.
+        const returnType = results.length > 0 ? results[0] : [];
+        classInfo.methods.set(methodName, {index: funcIndex, returnType});
       }
     }
+
+    this.#bodyGenerators.push(() => {
+      this.#generateClassMethods(decl);
+    });
   }
 
   #registerFunction(name: string, func: FunctionExpression, exported: boolean) {
@@ -198,6 +190,9 @@ export class CodeGenerator {
     }
 
     this.#functions.set(name, funcIndex);
+    this.#bodyGenerators.push(() => {
+      this.#generateFunctionBody(name, func);
+    });
   }
 
   #generateStatement(stmt: Statement) {
@@ -440,7 +435,20 @@ export class CodeGenerator {
   }
 
   #generateNewExpression(expr: NewExpression, body: number[]) {
-    const className = expr.callee.name;
+    let className = expr.callee.name;
+
+    if (expr.typeArguments && expr.typeArguments.length > 0) {
+      const annotation: TypeAnnotation = {
+        type: NodeType.TypeAnnotation,
+        name: className,
+        typeArguments: expr.typeArguments,
+      };
+      // Ensure the class is instantiated
+      this.#mapType(annotation, this.#currentTypeContext);
+      // Get the specialized name
+      className = this.#getTypeKey(annotation, this.#currentTypeContext);
+    }
+
     const classInfo = this.#classes.get(className);
     if (!classInfo) throw new Error(`Class ${className} not found`);
 
@@ -463,13 +471,13 @@ export class CodeGenerator {
     }
 
     // Call constructor
-    const ctorIndex = classInfo.methods.get('#new');
-    if (ctorIndex !== undefined) {
+    const ctorInfo = classInfo.methods.get('#new');
+    if (ctorInfo !== undefined) {
       body.push(Opcode.call);
-      body.push(...WasmModule.encodeSignedLEB128(ctorIndex));
+      body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
     }
 
-    // Return the ref
+    // Return the instance
     body.push(Opcode.local_get);
     body.push(...WasmModule.encodeSignedLEB128(tempLocal));
   }
@@ -494,19 +502,27 @@ export class CodeGenerator {
     this.#generateExpression(expr.object, body);
 
     const fieldName = expr.property.name;
-    let foundClass: ClassInfo | undefined;
-    let fieldInfo: {index: number; type: number} | undefined;
 
+    const structTypeIndex = this.#getHeapTypeIndex(objectType);
+    if (structTypeIndex === -1) {
+      throw new Error(`Invalid object type for field access: ${fieldName}`);
+    }
+
+    let foundClass: ClassInfo | undefined;
     for (const info of this.#classes.values()) {
-      if (info.fields.has(fieldName)) {
+      if (info.structTypeIndex === structTypeIndex) {
         foundClass = info;
-        fieldInfo = info.fields.get(fieldName);
         break;
       }
     }
 
-    if (!foundClass || !fieldInfo) {
-      throw new Error(`Field ${fieldName} not found in any class`);
+    if (!foundClass) {
+      throw new Error(`Class not found for object type ${structTypeIndex}`);
+    }
+
+    const fieldInfo = foundClass.fields.get(fieldName);
+    if (!fieldInfo) {
+      throw new Error(`Field ${fieldName} not found in class`);
     }
 
     body.push(0xfb, GcOpcode.struct_get);
@@ -524,19 +540,28 @@ export class CodeGenerator {
       const memberExpr = expr.callee as MemberExpression;
       const methodName = memberExpr.property.name;
 
-      let foundClass: ClassInfo | undefined;
-      let methodIndex: number | undefined;
+      const objectType = this.#inferType(memberExpr.object);
+      const structTypeIndex = this.#getHeapTypeIndex(objectType);
 
+      if (structTypeIndex === -1) {
+        throw new Error(`Invalid object type for method call: ${methodName}`);
+      }
+
+      let foundClass: ClassInfo | undefined;
       for (const info of this.#classes.values()) {
-        if (info.methods.has(methodName)) {
+        if (info.structTypeIndex === structTypeIndex) {
           foundClass = info;
-          methodIndex = info.methods.get(methodName);
           break;
         }
       }
 
-      if (methodIndex === undefined) {
-        throw new Error(`Method ${methodName} not found`);
+      if (!foundClass) {
+        throw new Error(`Class not found for object type ${structTypeIndex}`);
+      }
+
+      const methodInfo = foundClass.methods.get(methodName);
+      if (methodInfo === undefined) {
+        throw new Error(`Method ${methodName} not found in class`);
       }
 
       this.#generateExpression(memberExpr.object, body);
@@ -546,7 +571,7 @@ export class CodeGenerator {
       }
 
       body.push(Opcode.call);
-      body.push(...WasmModule.encodeSignedLEB128(methodIndex));
+      body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
     } else {
       // 1. Generate arguments
       for (const arg of expr.arguments) {
@@ -606,28 +631,56 @@ export class CodeGenerator {
       const memberExpr = expr.left as MemberExpression;
       const fieldName = memberExpr.property.name;
 
-      let foundClass: ClassInfo | undefined;
-      let fieldInfo: {index: number; type: number} | undefined;
+      const objectType = this.#inferType(memberExpr.object);
+      const structTypeIndex = this.#getHeapTypeIndex(objectType);
+      if (structTypeIndex === -1) {
+        throw new Error(
+          `Invalid object type for field assignment: ${fieldName}`,
+        );
+      }
 
+      let foundClass: ClassInfo | undefined;
       for (const info of this.#classes.values()) {
-        if (info.fields.has(fieldName)) {
+        if (info.structTypeIndex === structTypeIndex) {
           foundClass = info;
-          fieldInfo = info.fields.get(fieldName);
           break;
         }
       }
 
+      if (!foundClass) {
+        throw new Error(`Class not found for object type ${structTypeIndex}`);
+      }
+
+      const fieldInfo = foundClass.fields.get(fieldName);
       if (!fieldInfo) throw new Error(`Field ${fieldName} not found`);
 
       this.#generateExpression(memberExpr.object, body);
       this.#generateExpression(expr.value, body);
 
-      const tempVal = this.#declareLocal('$$temp_assign', [fieldInfo.type]);
+      // Assignment is an expression that evaluates to the assigned value.
+      // So we use local.tee to set the local and keep the value on the stack.
+      // But struct.set consumes the value.
+      // So we need to duplicate the value.
+      // Stack: [object, value]
+      // We want: [object, value] -> struct.set -> [value]
+      // But struct.set consumes both.
+      // So we need: [object, value, value] -> struct.set -> [value] NO.
+      // struct.set takes [ref, value].
+      // We want the result of assignment to be 'value'.
+
+      // Strategy:
+      // 1. Evaluate object -> [ref]
+      // 2. Evaluate value -> [ref, value]
+      // 3. Store value in temp -> [ref, value] (local.tee temp)
+      // 4. struct.set -> []
+      // 5. local.get temp -> [value]
+
+      const tempVal = this.#declareLocal('$$temp_field_set', fieldInfo.type);
       body.push(Opcode.local_tee);
       body.push(...WasmModule.encodeSignedLEB128(tempVal));
 
       body.push(0xfb, GcOpcode.struct_set);
-      body.push(...WasmModule.encodeSignedLEB128(foundClass!.structTypeIndex));
+      body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
       body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
 
       body.push(Opcode.local_get);
@@ -644,12 +697,54 @@ export class CodeGenerator {
     }
   }
 
-  #mapType(annotation?: TypeAnnotation): number[] {
+  #mapType(
+    annotation?: TypeAnnotation,
+    typeContext?: Map<string, TypeAnnotation>,
+  ): number[] {
     if (!annotation) return [ValType.i32];
-    if (annotation.name === 'i32') return [ValType.i32];
-    if (annotation.name === 'string') {
-      return [ValType.ref_null, this.#stringTypeIndex];
+
+    // Check type context first
+    if (typeContext && typeContext.has(annotation.name)) {
+      return this.#mapType(typeContext.get(annotation.name)!, typeContext);
     }
+
+    if (annotation.name === 'i32') return [ValType.i32];
+    if (annotation.name === 'f32') return [ValType.f32];
+    if (annotation.name === 'boolean') return [ValType.i32];
+    if (annotation.name === 'string') {
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(this.#stringTypeIndex),
+      ];
+    }
+    if (annotation.name === 'void') return [];
+
+    // Handle generics
+    if (annotation.typeArguments && annotation.typeArguments.length > 0) {
+      const typeArgKeys = annotation.typeArguments.map((arg) =>
+        this.#getTypeKey(arg, typeContext),
+      );
+      const specializedName = `${annotation.name}<${typeArgKeys.join(',')}>`;
+
+      if (!this.#classes.has(specializedName)) {
+        const decl = this.#genericClasses.get(annotation.name);
+        if (!decl)
+          throw new Error(`Generic class ${annotation.name} not found`);
+        this.#instantiateClass(
+          decl,
+          specializedName,
+          annotation.typeArguments,
+          typeContext,
+        );
+      }
+
+      const info = this.#classes.get(specializedName)!;
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(info.structTypeIndex),
+      ];
+    }
+
     const classInfo = this.#classes.get(annotation.name);
     if (classInfo) {
       return [
@@ -660,15 +755,72 @@ export class CodeGenerator {
     return [ValType.i32];
   }
 
+  #getTypeKey(
+    annotation: TypeAnnotation,
+    typeContext?: Map<string, TypeAnnotation>,
+  ): string {
+    if (typeContext && typeContext.has(annotation.name)) {
+      return this.#getTypeKey(typeContext.get(annotation.name)!, typeContext);
+    }
+
+    if (annotation.typeArguments && annotation.typeArguments.length > 0) {
+      const args = annotation.typeArguments.map((a) =>
+        this.#getTypeKey(a, typeContext),
+      );
+      return `${annotation.name}<${args.join(',')}>`;
+    }
+    return annotation.name;
+  }
+
   #inferType(expr: Expression): number[] {
     switch (expr.type) {
       case NodeType.StringLiteral:
-        return [ValType.ref_null, this.#stringTypeIndex];
+        return [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(this.#stringTypeIndex),
+        ];
       case NodeType.NumberLiteral:
         return [ValType.i32];
       case NodeType.Identifier: {
         const info = this.#resolveLocalInfo((expr as Identifier).name);
         return info.type;
+      }
+      case NodeType.ThisExpression: {
+        if (!this.#currentClass) {
+          throw new Error("'this' used outside of class");
+        }
+        return [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(this.#currentClass.structTypeIndex),
+        ];
+      }
+      case NodeType.MemberExpression: {
+        const memberExpr = expr as MemberExpression;
+        const objectType = this.#inferType(memberExpr.object);
+        const structTypeIndex = this.#getHeapTypeIndex(objectType);
+        if (structTypeIndex === -1) {
+          return [ValType.i32];
+        }
+
+        let foundClass: ClassInfo | undefined;
+        for (const info of this.#classes.values()) {
+          if (info.structTypeIndex === structTypeIndex) {
+            foundClass = info;
+            break;
+          }
+        }
+
+        if (!foundClass) return [ValType.i32];
+
+        const fieldName = memberExpr.property.name;
+        const field = foundClass.fields.get(fieldName);
+        if (field) {
+          return field.type;
+        }
+        // Method?
+        // If it's a method, we might return a function reference or something?
+        // For now, let's assume it's a field access.
+        return [ValType.i32];
       }
       case NodeType.BinaryExpression: {
         const binExpr = expr as BinaryExpression;
@@ -682,13 +834,47 @@ export class CodeGenerator {
         return [ValType.i32];
       }
       case NodeType.NewExpression: {
-        const className = (expr as NewExpression).callee.name;
+        const newExpr = expr as NewExpression;
+        const className = newExpr.callee.name;
+        if (newExpr.typeArguments && newExpr.typeArguments.length > 0) {
+          const annotation: TypeAnnotation = {
+            type: NodeType.TypeAnnotation,
+            name: className,
+            typeArguments: newExpr.typeArguments,
+          };
+          return this.#mapType(annotation, this.#currentTypeContext);
+        }
         const classInfo = this.#classes.get(className);
         if (classInfo) {
           return [
             ValType.ref_null,
             ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
           ];
+        }
+        return [ValType.i32];
+      }
+      case NodeType.CallExpression: {
+        const callExpr = expr as CallExpression;
+        if (callExpr.callee.type === NodeType.MemberExpression) {
+          const memberExpr = callExpr.callee as MemberExpression;
+          const objectType = this.#inferType(memberExpr.object);
+          const structTypeIndex = this.#getHeapTypeIndex(objectType);
+          if (structTypeIndex === -1) return [ValType.i32];
+
+          let foundClass: ClassInfo | undefined;
+          for (const info of this.#classes.values()) {
+            if (info.structTypeIndex === structTypeIndex) {
+              foundClass = info;
+              break;
+            }
+          }
+          if (!foundClass) return [ValType.i32];
+
+          const methodName = memberExpr.property.name;
+          const methodInfo = foundClass.methods.get(methodName);
+          if (methodInfo) {
+            return methodInfo.returnType;
+          }
         }
         return [ValType.i32];
       }
@@ -703,11 +889,14 @@ export class CodeGenerator {
   }
 
   #isStringType(type: number[]): boolean {
-    return (
-      type.length > 1 &&
-      (type[0] === ValType.ref_null || type[0] === ValType.ref) &&
-      type[1] === this.#stringTypeIndex
-    );
+    if (
+      type.length < 2 ||
+      (type[0] !== ValType.ref_null && type[0] !== ValType.ref)
+    ) {
+      return false;
+    }
+    const index = this.#getHeapTypeIndex(type);
+    return index === this.#stringTypeIndex;
   }
 
   #generateBinaryExpression(expr: BinaryExpression, body: number[]) {
@@ -766,8 +955,13 @@ export class CodeGenerator {
   }
 
   #generateNumberLiteral(expr: NumberLiteral, body: number[]) {
-    body.push(Opcode.i32_const);
-    body.push(...WasmModule.encodeSignedLEB128(parseInt(expr.value, 10)));
+    if (Number.isInteger(expr.value)) {
+      body.push(Opcode.i32_const);
+      body.push(...WasmModule.encodeSignedLEB128(expr.value));
+    } else {
+      body.push(Opcode.f32_const);
+      body.push(...WasmModule.encodeF32(expr.value));
+    }
   }
 
   #generateBooleanLiteral(expr: BooleanLiteral, body: number[]) {
@@ -1043,5 +1237,190 @@ export class CodeGenerator {
     });
 
     return funcIndex;
+  }
+
+  #instantiateClass(
+    decl: ClassDeclaration,
+    specializedName: string,
+    typeArguments: TypeAnnotation[],
+    parentContext?: Map<string, TypeAnnotation>,
+  ) {
+    const context = new Map<string, TypeAnnotation>();
+    if (decl.typeParameters) {
+      decl.typeParameters.forEach((param, index) => {
+        const arg = typeArguments[index];
+        context.set(param.name, this.#resolveAnnotation(arg, parentContext));
+      });
+    }
+
+    const fields = new Map<string, {index: number; type: number[]}>();
+    const fieldTypes: {type: number[]; mutable: boolean}[] = [];
+
+    let fieldIndex = 0;
+    for (const member of decl.body) {
+      if (member.type === NodeType.FieldDefinition) {
+        const wasmType = this.#mapType(member.typeAnnotation, context);
+        fields.set(member.name.name, {index: fieldIndex++, type: wasmType});
+        fieldTypes.push({type: wasmType, mutable: true});
+      }
+    }
+
+    const structTypeIndex = this.#module.addStructType(fieldTypes);
+    const classInfo: ClassInfo = {
+      structTypeIndex,
+      fields,
+      methods: new Map(),
+    };
+    this.#classes.set(specializedName, classInfo);
+
+    for (const member of decl.body) {
+      if (member.type === NodeType.MethodDefinition) {
+        const methodName = member.name.name;
+
+        const thisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+
+        const params = [thisType];
+        for (const param of member.params) {
+          params.push(this.#mapType(param.typeAnnotation, context));
+        }
+
+        let resultTypes: number[][] = [[ValType.i32]];
+        if (methodName === '#new') {
+          resultTypes = [];
+        } else if (member.returnType) {
+          const mapped = this.#mapType(member.returnType, context);
+          if (mapped.length === 0) resultTypes = [];
+          else resultTypes = [mapped];
+        }
+
+        const typeIndex = this.#module.addType(params, resultTypes);
+        const funcIndex = this.#module.addFunction(typeIndex);
+
+        const returnType = resultTypes.length > 0 ? resultTypes[0] : [];
+        classInfo.methods.set(methodName, {index: funcIndex, returnType});
+
+        this.#pendingMethodGenerations.push(() => {
+          this.#generateMethodBody(member, classInfo, context);
+        });
+      }
+    }
+  }
+
+  #resolveAnnotation(
+    annotation: TypeAnnotation,
+    context?: Map<string, TypeAnnotation>,
+  ): TypeAnnotation {
+    if (!context) return annotation;
+
+    if (context.has(annotation.name)) {
+      return context.get(annotation.name)!;
+    }
+
+    if (annotation.typeArguments) {
+      return {
+        ...annotation,
+        typeArguments: annotation.typeArguments.map((a) =>
+          this.#resolveAnnotation(a, context),
+        ),
+      };
+    }
+
+    return annotation;
+  }
+
+  #generateMethodBody(
+    method: MethodDefinition,
+    classInfo: ClassInfo,
+    typeContext: Map<string, TypeAnnotation>,
+  ) {
+    const funcIndex = classInfo.methods.get(method.name.name)!;
+
+    const prevClass = this.#currentClass;
+    const prevContext = this.#currentTypeContext;
+
+    this.#currentClass = classInfo;
+    this.#currentTypeContext = typeContext;
+
+    const body = this.#generateMethodBodyCode(method, typeContext);
+    this.#module.addCode(this.#extraLocals, body);
+
+    this.#currentClass = prevClass;
+    this.#currentTypeContext = prevContext;
+  }
+
+  #generateMethodBodyCode(
+    method: MethodDefinition,
+    typeContext: Map<string, TypeAnnotation>,
+  ): number[] {
+    const body: number[] = [];
+    this.#scopes = [new Map()];
+    this.#extraLocals = [];
+    this.#nextLocalIndex = 0;
+
+    // 'this' is local 0
+    this.#nextLocalIndex++;
+
+    // Params
+    for (const param of method.params) {
+      this.#scopes[0].set(param.name.name, {
+        index: this.#nextLocalIndex++,
+        type: this.#mapType(param.typeAnnotation, typeContext),
+      });
+    }
+
+    // Generate statements
+    for (const stmt of method.body.body) {
+      this.#generateFunctionStatement(stmt, body);
+    }
+
+    // Implicit return 0 if i32 return and no return stmt?
+    let returnType: number[] = [ValType.i32];
+    if (method.name.name === '#new') {
+      returnType = [];
+    } else if (method.returnType) {
+      returnType = this.#mapType(method.returnType, typeContext);
+    }
+    if (returnType.length > 0 && returnType[0] === ValType.i32) {
+      // Check if last instruction is return or end of block that returns?
+      // For now, just push 0. If it's unreachable, WASM validator might complain or optimize.
+      // But if we have explicit return, this is unreachable code.
+      // Let's assume we need it for now.
+      body.push(Opcode.i32_const, 0);
+    }
+    body.push(Opcode.end);
+
+    // Prepend locals
+    // We need to construct the full code buffer including locals
+    // But addCode takes locals separately.
+    // So we return body, and addCode handles locals.
+    // But wait, #generateMethodBody calls addCode.
+    // So this helper should return body, and #generateMethodBody calls addCode with #extraLocals.
+
+    return body;
+  }
+
+  #getHeapTypeIndex(type: number[]): number {
+    if (
+      type.length < 2 ||
+      (type[0] !== ValType.ref_null && type[0] !== ValType.ref)
+    ) {
+      return -1;
+    }
+    // Decode LEB128 starting at index 1
+    let result = 0;
+    let shift = 0;
+    let i = 1;
+    while (true) {
+      if (i >= type.length) break;
+      const byte = type[i];
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+      i++;
+    }
+    return result;
   }
 }

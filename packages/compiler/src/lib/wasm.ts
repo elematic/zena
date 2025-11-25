@@ -77,6 +77,7 @@ export const Opcode = {
 
   i32_load: 0x28,
   i32_const: 0x41,
+  f32_const: 0x43,
 
   i32_eqz: 0x45,
   i32_eq: 0x46,

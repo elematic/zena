@@ -19,6 +19,7 @@ import {
   type MethodDefinition,
   type ArrayLiteral,
   type IndexExpression,
+  type TypeAnnotation,
 } from './ast.js';
 import {
   TypeKind,
@@ -28,6 +29,7 @@ import {
   type ClassType,
   type ArrayType,
   type NumberType,
+  type TypeParameter,
 } from './types.js';
 
 interface SymbolInfo {
@@ -376,25 +378,58 @@ export class TypeChecker {
   }
 
   #typeToString(type: Type): string {
-    if (type.kind === TypeKind.Number) {
-      return (type as any).name;
+    switch (type.kind) {
+      case TypeKind.Number:
+        return (type as NumberType).name;
+      case TypeKind.String:
+        return 'string';
+      case TypeKind.Boolean:
+        return 'boolean';
+      case TypeKind.Void:
+        return 'void';
+      case TypeKind.TypeParameter:
+        return (type as TypeParameter).name;
+      case TypeKind.Function: {
+        const fn = type as FunctionType;
+        const params = fn.parameters
+          .map((p) => this.#typeToString(p))
+          .join(', ');
+        return `(${params}) => ${this.#typeToString(fn.returnType)}`;
+      }
+      case TypeKind.Class: {
+        const ct = type as ClassType;
+        if (ct.typeArguments && ct.typeArguments.length > 0) {
+          return `${ct.name}<${ct.typeArguments.map((t) => this.#typeToString(t)).join(', ')}>`;
+        }
+        return ct.name;
+      }
+      case TypeKind.Array:
+        return `[${this.#typeToString((type as ArrayType).elementType)}]`;
+      default:
+        return type.kind;
     }
-    if (type.kind === TypeKind.Class) {
-      return (type as ClassType).name;
-    }
-    if (type.kind === TypeKind.Array) {
-      return `[${this.#typeToString((type as ArrayType).elementType)}]`;
-    }
-    return type.kind;
   }
 
   #checkFunctionExpression(expr: FunctionExpression): Type {
     this.#enterScope();
+
+    const typeParameters: TypeParameter[] = [];
+    if (expr.typeParameters) {
+      for (const param of expr.typeParameters) {
+        const tp: TypeParameter = {
+          kind: TypeKind.TypeParameter,
+          name: param.name,
+        };
+        typeParameters.push(tp);
+        this.#declare(param.name, tp, 'let');
+      }
+    }
+
     const paramTypes: Type[] = [];
 
     for (const param of expr.params) {
       // Resolve type annotation
-      const type = this.#resolveType(param.typeAnnotation.name);
+      const type = this.#resolveTypeAnnotation(param.typeAnnotation);
       this.#declare(param.name.name, type);
       paramTypes.push(type);
     }
@@ -402,7 +437,7 @@ export class TypeChecker {
     // Check return type if annotated
     let expectedType: Type = Types.Unknown;
     if (expr.returnType) {
-      expectedType = this.#resolveType(expr.returnType.name);
+      expectedType = this.#resolveTypeAnnotation(expr.returnType);
     }
 
     const previousReturnType = this.#currentFunctionReturnType;
@@ -436,6 +471,7 @@ export class TypeChecker {
 
     return {
       kind: TypeKind.Function,
+      typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
       parameters: paramTypes,
       returnType: bodyType,
     } as FunctionType;
@@ -443,26 +479,49 @@ export class TypeChecker {
 
   #checkClassDeclaration(decl: ClassDeclaration) {
     const className = decl.name.name;
-    const fields = new Map<string, Type>();
-    const methods = new Map<string, FunctionType>();
-    let constructorType: FunctionType | undefined;
+
+    const typeParameters: TypeParameter[] = [];
+    if (decl.typeParameters) {
+      for (const param of decl.typeParameters) {
+        typeParameters.push({
+          kind: TypeKind.TypeParameter,
+          name: param.name,
+        });
+      }
+    }
+
+    const classType: ClassType = {
+      kind: TypeKind.Class,
+      name: className,
+      typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+      fields: new Map(),
+      methods: new Map(),
+      constructorType: undefined,
+    };
+
+    this.#declare(className, classType);
+
+    this.#enterScope();
+    for (const tp of typeParameters) {
+      this.#declare(tp.name, tp, 'let');
+    }
 
     // 1. First pass: Collect members to build the ClassType
     for (const member of decl.body) {
       if (member.type === NodeType.FieldDefinition) {
-        const fieldType = this.#resolveType(member.typeAnnotation.name);
-        if (fields.has(member.name.name)) {
+        const fieldType = this.#resolveTypeAnnotation(member.typeAnnotation);
+        if (classType.fields.has(member.name.name)) {
           this.#errors.push(
             `Duplicate field '${member.name.name}' in class '${className}'.`,
           );
         }
-        fields.set(member.name.name, fieldType);
+        classType.fields.set(member.name.name, fieldType);
       } else if (member.type === NodeType.MethodDefinition) {
         const paramTypes = member.params.map((p) =>
-          this.#resolveType(p.typeAnnotation.name),
+          this.#resolveTypeAnnotation(p.typeAnnotation),
         );
         const returnType = member.returnType
-          ? this.#resolveType(member.returnType.name)
+          ? this.#resolveTypeAnnotation(member.returnType)
           : Types.Void;
 
         const methodType: FunctionType = {
@@ -472,30 +531,20 @@ export class TypeChecker {
         };
 
         if (member.name.name === '#new') {
-          if (constructorType) {
+          if (classType.constructorType) {
             this.#errors.push(`Duplicate constructor in class '${className}'.`);
           }
-          constructorType = methodType;
+          classType.constructorType = methodType;
         } else {
-          if (methods.has(member.name.name)) {
+          if (classType.methods.has(member.name.name)) {
             this.#errors.push(
               `Duplicate method '${member.name.name}' in class '${className}'.`,
             );
           }
-          methods.set(member.name.name, methodType);
+          classType.methods.set(member.name.name, methodType);
         }
       }
     }
-
-    const classType: ClassType = {
-      kind: TypeKind.Class,
-      name: className,
-      fields,
-      methods,
-      constructorType,
-    };
-
-    this.#declare(className, classType);
 
     // 2. Second pass: Check method bodies
     const previousClass = this.#currentClass;
@@ -507,20 +556,25 @@ export class TypeChecker {
       } else if (member.type === NodeType.FieldDefinition) {
         if (member.value) {
           const valueType = this.#checkExpression(member.value);
-          const fieldType = fields.get(member.name.name)!;
+          const fieldType = classType.fields.get(member.name.name)!;
           if (
             valueType.kind !== fieldType.kind &&
             valueType.kind !== Types.Unknown.kind
           ) {
-            this.#errors.push(
-              `Type mismatch for field '${member.name.name}': expected ${this.#typeToString(fieldType)}, got ${this.#typeToString(valueType)}`,
-            );
+            if (
+              this.#typeToString(valueType) !== this.#typeToString(fieldType)
+            ) {
+              this.#errors.push(
+                `Type mismatch for field '${member.name.name}': expected ${this.#typeToString(fieldType)}, got ${this.#typeToString(valueType)}`,
+              );
+            }
           }
         }
       }
     }
 
     this.#currentClass = previousClass;
+    this.#exitScope();
   }
 
   #checkMethodDefinition(method: MethodDefinition) {
@@ -528,12 +582,12 @@ export class TypeChecker {
 
     // Declare parameters
     for (const param of method.params) {
-      const type = this.#resolveType(param.typeAnnotation.name);
+      const type = this.#resolveTypeAnnotation(param.typeAnnotation);
       this.#declare(param.name.name, type, 'let');
     }
 
     const returnType = method.returnType
-      ? this.#resolveType(method.returnType.name)
+      ? this.#resolveTypeAnnotation(method.returnType)
       : Types.Void;
     const previousReturnType = this.#currentFunctionReturnType;
     this.#currentFunctionReturnType = returnType;
@@ -547,7 +601,8 @@ export class TypeChecker {
     this.#exitScope();
   }
 
-  #resolveType(name: string): Type {
+  #resolveTypeAnnotation(annotation: TypeAnnotation): Type {
+    const name = annotation.name;
     switch (name) {
       case 'i32':
         return Types.I32;
@@ -559,14 +614,98 @@ export class TypeChecker {
         return Types.String;
       case 'void':
         return Types.Void;
-      default: {
-        // Check if it's a class type
-        const type = this.#resolve(name);
-        if (type) return type;
-        this.#errors.push(`Unknown type '${name}'.`);
-        return Types.Unknown;
-      }
     }
+
+    const type = this.#resolve(name);
+    if (!type) {
+      this.#errors.push(`Unknown type '${name}'.`);
+      return Types.Unknown;
+    }
+
+    if (annotation.typeArguments && annotation.typeArguments.length > 0) {
+      if (type.kind !== TypeKind.Class) {
+        this.#errors.push(`Type '${name}' is not generic.`);
+        return type;
+      }
+      const classType = type as ClassType;
+      if (!classType.typeParameters || classType.typeParameters.length === 0) {
+        this.#errors.push(`Type '${name}' is not generic.`);
+        return type;
+      }
+      if (classType.typeParameters.length !== annotation.typeArguments.length) {
+        this.#errors.push(
+          `Expected ${classType.typeParameters.length} type arguments, got ${annotation.typeArguments.length}.`,
+        );
+        return type;
+      }
+
+      const typeArguments = annotation.typeArguments.map((arg) =>
+        this.#resolveTypeAnnotation(arg),
+      );
+      return this.#instantiateGenericClass(classType, typeArguments);
+    }
+
+    return type;
+  }
+
+  #instantiateGenericClass(
+    genericClass: ClassType,
+    typeArguments: Type[],
+  ): ClassType {
+    const typeMap = new Map<string, Type>();
+    genericClass.typeParameters!.forEach((param, index) => {
+      typeMap.set(param.name, typeArguments[index]);
+    });
+
+    const substitute = (type: Type): Type => {
+      if (type.kind === TypeKind.TypeParameter) {
+        return typeMap.get((type as TypeParameter).name) || type;
+      }
+      if (type.kind === TypeKind.Array) {
+        return {
+          ...type,
+          elementType: substitute((type as ArrayType).elementType),
+        } as ArrayType;
+      }
+      if (type.kind === TypeKind.Class) {
+        const ct = type as ClassType;
+        if (ct.typeArguments) {
+          return {
+            ...ct,
+            typeArguments: ct.typeArguments.map(substitute),
+          } as ClassType;
+        }
+      }
+      return type;
+    };
+
+    const substituteFunction = (fn: FunctionType): FunctionType => {
+      return {
+        ...fn,
+        parameters: fn.parameters.map(substitute),
+        returnType: substitute(fn.returnType),
+      };
+    };
+
+    const newFields = new Map<string, Type>();
+    for (const [name, type] of genericClass.fields) {
+      newFields.set(name, substitute(type));
+    }
+
+    const newMethods = new Map<string, FunctionType>();
+    for (const [name, fn] of genericClass.methods) {
+      newMethods.set(name, substituteFunction(fn));
+    }
+
+    return {
+      ...genericClass,
+      typeArguments,
+      fields: newFields,
+      methods: newMethods,
+      constructorType: genericClass.constructorType
+        ? substituteFunction(genericClass.constructorType)
+        : undefined,
+    };
   }
 
   #checkNewExpression(expr: NewExpression): Type {
@@ -578,7 +717,30 @@ export class TypeChecker {
       return Types.Unknown;
     }
 
-    const classType = type as ClassType;
+    let classType = type as ClassType;
+
+    if (expr.typeArguments && expr.typeArguments.length > 0) {
+      if (!classType.typeParameters || classType.typeParameters.length === 0) {
+        this.#errors.push(`Type '${className}' is not generic.`);
+      } else if (
+        classType.typeParameters.length !== expr.typeArguments.length
+      ) {
+        this.#errors.push(
+          `Expected ${classType.typeParameters.length} type arguments, got ${expr.typeArguments.length}.`,
+        );
+      } else {
+        const typeArguments = expr.typeArguments.map((arg) =>
+          this.#resolveTypeAnnotation(arg),
+        );
+        classType = this.#instantiateGenericClass(classType, typeArguments);
+      }
+    } else if (
+      classType.typeParameters &&
+      classType.typeParameters.length > 0
+    ) {
+      this.#errors.push(`Generic type '${className}' requires type arguments.`);
+    }
+
     const constructor = classType.constructorType;
 
     if (!constructor) {

@@ -234,4 +234,10 @@ export class WasmModule {
     }
     return buffer;
   }
+
+  public static encodeF32(value: number): number[] {
+    const buffer = new ArrayBuffer(4);
+    new DataView(buffer).setFloat32(0, value, true); // Little endian
+    return Array.from(new Uint8Array(buffer));
+  }
 }
