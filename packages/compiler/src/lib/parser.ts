@@ -4,6 +4,7 @@ import {
   type Expression,
   type FunctionExpression,
   type Identifier,
+  type IfStatement,
   type Parameter,
   type Program,
   type ReturnStatement,
@@ -41,6 +42,9 @@ export class Parser {
     }
     if (this.#match(TokenType.Return)) {
       return this.#parseReturnStatement();
+    }
+    if (this.#match(TokenType.If)) {
+      return this.#parseIfStatement();
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseBlockStatement();
@@ -116,7 +120,7 @@ export class Parser {
       }
     }
 
-    return this.#parseBinaryExpression();
+    return this.#parseEquality();
   }
 
   #parseArrowFunctionDefinition(): FunctionExpression {
@@ -160,17 +164,68 @@ export class Parser {
     };
   }
 
-  #parseBinaryExpression(): Expression {
-    let left = this.#parsePrimary();
+  #parseEquality(): Expression {
+    let left = this.#parseComparison();
+
+    while (this.#match(TokenType.EqualsEquals, TokenType.BangEquals)) {
+      const operator = this.#previous().value;
+      const right = this.#parseComparison();
+      left = {
+        type: NodeType.BinaryExpression,
+        left,
+        operator,
+        right,
+      };
+    }
+
+    return left;
+  }
+
+  #parseComparison(): Expression {
+    let left = this.#parseTerm();
 
     while (
       this.#match(
-        TokenType.Plus,
-        TokenType.Minus,
-        TokenType.Star,
-        TokenType.Slash,
+        TokenType.Less,
+        TokenType.LessEquals,
+        TokenType.Greater,
+        TokenType.GreaterEquals,
       )
     ) {
+      const operator = this.#previous().value;
+      const right = this.#parseTerm();
+      left = {
+        type: NodeType.BinaryExpression,
+        left,
+        operator,
+        right,
+      };
+    }
+
+    return left;
+  }
+
+  #parseTerm(): Expression {
+    let left = this.#parseFactor();
+
+    while (this.#match(TokenType.Plus, TokenType.Minus)) {
+      const operator = this.#previous().value;
+      const right = this.#parseFactor();
+      left = {
+        type: NodeType.BinaryExpression,
+        left,
+        operator,
+        right,
+      };
+    }
+
+    return left;
+  }
+
+  #parseFactor(): Expression {
+    let left = this.#parsePrimary();
+
+    while (this.#match(TokenType.Star, TokenType.Slash)) {
       const operator = this.#previous().value;
       const right = this.#parsePrimary();
       left = {
@@ -221,6 +276,26 @@ export class Parser {
     return {
       type: NodeType.ReturnStatement,
       argument,
+    };
+  }
+
+  #parseIfStatement(): IfStatement {
+    this.#consume(TokenType.LParen, "Expected '(' after 'if'.");
+    const test = this.#parseExpression();
+    this.#consume(TokenType.RParen, "Expected ')' after if condition.");
+
+    const consequent = this.#parseStatement();
+    let alternate: Statement | undefined;
+
+    if (this.#match(TokenType.Else)) {
+      alternate = this.#parseStatement();
+    }
+
+    return {
+      type: NodeType.IfStatement,
+      test,
+      consequent,
+      alternate,
     };
   }
 

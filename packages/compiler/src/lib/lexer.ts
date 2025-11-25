@@ -6,6 +6,8 @@ export const TokenType = {
   Import: 'Import',
   Export: 'Export',
   Return: 'Return',
+  If: 'If',
+  Else: 'Else',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -14,6 +16,12 @@ export const TokenType = {
 
   // Operators
   Equals: 'Equals',
+  EqualsEquals: 'EqualsEquals',
+  BangEquals: 'BangEquals',
+  Less: 'Less',
+  LessEquals: 'LessEquals',
+  Greater: 'Greater',
+  GreaterEquals: 'GreaterEquals',
   Arrow: 'Arrow',
   Plus: 'Plus',
   Minus: 'Minus',
@@ -50,6 +58,8 @@ const KEYWORDS: Record<string, TokenType> = {
   import: TokenType.Import,
   export: TokenType.Export,
   return: TokenType.Return,
+  if: TokenType.If,
+  else: TokenType.Else,
 };
 
 export const tokenize = (source: string): Token[] => {
@@ -127,10 +137,72 @@ export const tokenize = (source: string): Token[] => {
             line,
             column: startColumn,
           });
+        } else if (peek() === '=') {
+          advance();
+          tokens.push({
+            type: TokenType.EqualsEquals,
+            value: '==',
+            line,
+            column: startColumn,
+          });
         } else {
           tokens.push({
             type: TokenType.Equals,
             value: '=',
+            line,
+            column: startColumn,
+          });
+        }
+        break;
+      case '!':
+        if (peek() === '=') {
+          advance();
+          tokens.push({
+            type: TokenType.BangEquals,
+            value: '!=',
+            line,
+            column: startColumn,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Unknown,
+            value: '!',
+            line,
+            column: startColumn,
+          });
+        }
+        break;
+      case '<':
+        if (peek() === '=') {
+          advance();
+          tokens.push({
+            type: TokenType.LessEquals,
+            value: '<=',
+            line,
+            column: startColumn,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Less,
+            value: '<',
+            line,
+            column: startColumn,
+          });
+        }
+        break;
+      case '>':
+        if (peek() === '=') {
+          advance();
+          tokens.push({
+            type: TokenType.GreaterEquals,
+            value: '>=',
+            line,
+            column: startColumn,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Greater,
+            value: '>',
             line,
             column: startColumn,
           });

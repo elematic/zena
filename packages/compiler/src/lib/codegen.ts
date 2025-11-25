@@ -10,6 +10,7 @@ import {
   type NumberLiteral,
   type BlockStatement,
   type ReturnStatement,
+  type IfStatement,
 } from './ast.js';
 import {WasmModule} from './emitter.js';
 import {ValType, Opcode, ExportDesc} from './wasm.js';
@@ -141,7 +142,25 @@ export class CodeGenerator {
       case NodeType.BlockStatement:
         this.#generateBlockStatement(stmt, body);
         break;
+      case NodeType.IfStatement:
+        this.#generateIfStatement(stmt as IfStatement, body);
+        break;
     }
+  }
+
+  #generateIfStatement(stmt: IfStatement, body: number[]) {
+    this.#generateExpression(stmt.test, body);
+    body.push(Opcode.if);
+    body.push(0x40); // block type: void
+
+    this.#generateFunctionStatement(stmt.consequent, body);
+
+    if (stmt.alternate) {
+      body.push(Opcode.else);
+      this.#generateFunctionStatement(stmt.alternate, body);
+    }
+
+    body.push(Opcode.end);
   }
 
   #generateLocalVariableDeclaration(decl: VariableDeclaration, body: number[]) {
@@ -195,7 +214,24 @@ export class CodeGenerator {
       case '/':
         body.push(Opcode.i32_div_s);
         break;
-      // TODO: Other operators
+      case '==':
+        body.push(Opcode.i32_eq);
+        break;
+      case '!=':
+        body.push(Opcode.i32_ne);
+        break;
+      case '<':
+        body.push(Opcode.i32_lt_s);
+        break;
+      case '<=':
+        body.push(Opcode.i32_le_s);
+        break;
+      case '>':
+        body.push(Opcode.i32_gt_s);
+        break;
+      case '>=':
+        body.push(Opcode.i32_ge_s);
+        break;
     }
   }
 

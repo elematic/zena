@@ -116,7 +116,32 @@ Parentheses `( )` can be used to group expressions and control precedence.
 let result = (1 + 2) * 3;
 ```
 
-## 6. Modules & Exports
+### Comparison Operators
+
+- `==` (Equal)
+- `!=` (Not Equal)
+- `<` (Less Than)
+- `<=` (Less Than or Equal)
+- `>` (Greater Than)
+- `>=` (Greater Than or Equal)
+
+These operators return a boolean value.
+
+## 6. Control Flow
+
+### If Statement
+
+Rhea supports `if` and `else` for conditional execution.
+
+```typescript
+if (condition) {
+  // consequent
+} else {
+  // alternate
+}
+```
+
+## 7. Modules & Exports
 
 ### Exports
 
@@ -131,7 +156,7 @@ export const add = (a: i32, b: i32) => a + b;
 ```ebnf
 Program ::= Statement*
 
-Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement | BlockStatement | ReturnStatement
+Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement | BlockStatement | ReturnStatement | IfStatement
 
 ExportStatement ::= "export" VariableDeclaration
 
@@ -142,6 +167,8 @@ ExpressionStatement ::= Expression ";"
 BlockStatement ::= "{" Statement* "}"
 
 ReturnStatement ::= "return" Expression? ";"
+
+IfStatement ::= "if" "(" Expression ")" Statement ("else" Statement)?
 
 Expression ::= ArrowFunction | BinaryExpression
 

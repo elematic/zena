@@ -7,6 +7,7 @@ import {
   type BinaryExpression,
   type FunctionExpression,
   type ReturnStatement,
+  type IfStatement,
 } from './ast.js';
 import {TypeKind, Types, type Type, type FunctionType} from './types.js';
 
@@ -82,6 +83,26 @@ export class TypeChecker {
       case NodeType.ReturnStatement:
         this.#checkReturnStatement(stmt as ReturnStatement);
         break;
+      case NodeType.IfStatement:
+        this.#checkIfStatement(stmt as IfStatement);
+        break;
+    }
+  }
+
+  #checkIfStatement(stmt: IfStatement) {
+    const testType = this.#checkExpression(stmt.test);
+    if (
+      testType.kind !== TypeKind.Boolean &&
+      testType.kind !== TypeKind.Unknown
+    ) {
+      this.#errors.push(
+        `Expected boolean condition in if statement, got ${this.#typeToString(testType)}`,
+      );
+    }
+
+    this.#checkStatement(stmt.consequent);
+    if (stmt.alternate) {
+      this.#checkStatement(stmt.alternate);
     }
   }
 
@@ -152,20 +173,41 @@ export class TypeChecker {
     const left = this.#checkExpression(expr.left);
     const right = this.#checkExpression(expr.right);
 
+    let typesMatch = false;
     if (left === right) {
-      return left;
-    }
-
-    if (left.kind === TypeKind.Number && right.kind === TypeKind.Number) {
+      typesMatch = true;
+    } else if (
+      left.kind === TypeKind.Number &&
+      right.kind === TypeKind.Number
+    ) {
       if ((left as any).name === (right as any).name) {
-        return left;
+        typesMatch = true;
       }
     }
 
-    this.#errors.push(
-      `Type mismatch: cannot apply operator '${expr.operator}' to ${this.#typeToString(left)} and ${this.#typeToString(right)}`,
-    );
-    return Types.Unknown;
+    if (!typesMatch) {
+      this.#errors.push(
+        `Type mismatch: cannot apply operator '${expr.operator}' to ${this.#typeToString(left)} and ${this.#typeToString(right)}`,
+      );
+      return Types.Unknown;
+    }
+
+    switch (expr.operator) {
+      case '==':
+      case '!=':
+      case '<':
+      case '<=':
+      case '>':
+      case '>=':
+        return Types.Boolean;
+      case '+':
+      case '-':
+      case '*':
+      case '/':
+        return left;
+      default:
+        return Types.Unknown;
+    }
   }
 
   #typeToString(type: Type): string {

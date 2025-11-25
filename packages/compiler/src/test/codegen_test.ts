@@ -68,4 +68,54 @@ suite('CodeGenerator', () => {
 
     assert.strictEqual(addOne(10), 11);
   });
+
+  test('should compile and run if statement', async () => {
+    const input = `
+      export let check = (a: i32) => {
+        if (a > 10) {
+          return 1;
+        } else {
+          return 0;
+        }
+        return 0;
+      };
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const codegen = new CodeGenerator(ast);
+    const bytes = codegen.generate();
+
+    const result = await WebAssembly.instantiate(bytes);
+    // @ts-ignore
+    const check = result.instance.exports.check as (a: number) => number;
+
+    assert.strictEqual(check(11), 1);
+    assert.strictEqual(check(10), 0);
+    assert.strictEqual(check(5), 0);
+  });
+
+  test('should compile and run if statement without else', async () => {
+    const input = `
+      export let abs = (a: i32) => {
+        if (a < 0) {
+          return 0 - a;
+        }
+        return a;
+      };
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const codegen = new CodeGenerator(ast);
+    const bytes = codegen.generate();
+
+    const result = await WebAssembly.instantiate(bytes);
+    // @ts-ignore
+    const abs = result.instance.exports.abs as (a: number) => number;
+
+    assert.strictEqual(abs(-10), 10);
+    assert.strictEqual(abs(10), 10);
+    assert.strictEqual(abs(0), 0);
+  });
 });

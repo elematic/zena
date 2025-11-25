@@ -10,6 +10,7 @@ export const NodeType = {
   CallExpression: 'CallExpression',
   BlockStatement: 'BlockStatement',
   ReturnStatement: 'ReturnStatement',
+  IfStatement: 'IfStatement',
   Parameter: 'Parameter',
   TypeAnnotation: 'TypeAnnotation',
 } as const;
@@ -29,7 +30,8 @@ export type Statement =
   | VariableDeclaration
   | ExpressionStatement
   | BlockStatement
-  | ReturnStatement;
+  | ReturnStatement
+  | IfStatement;
 
 export interface VariableDeclaration extends Node {
   type: typeof NodeType.VariableDeclaration;
@@ -106,4 +108,11 @@ export interface CallExpression extends Node {
 export interface ReturnStatement extends Node {
   type: typeof NodeType.ReturnStatement;
   argument?: Expression;
+}
+
+export interface IfStatement extends Node {
+  type: typeof NodeType.IfStatement;
+  test: Expression;
+  consequent: Statement;
+  alternate?: Statement;
 }
