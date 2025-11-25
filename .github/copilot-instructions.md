@@ -73,6 +73,10 @@ This project is an **npm monorepo** managed with **Wireit**.
 ## Coding Standards
 
 - **TypeScript**: Use strict TypeScript. Write very modern (ES2024) TypeScript.
+- **Erasable Syntax**: Do not use non-erasable syntax.
+  - No `enum` (use `const` objects with `as const`).
+  - No `namespace` (use ES modules).
+  - No constructor parameter properties (e.g. `constructor(public x: number)`).
 - **Variables**: Prefer `const`, then `let`. Avoid `var`.
 - **Functions**: Always use arrow functions, unless a `this` binding is strictly required.
 - **Formatting**:
