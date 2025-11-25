@@ -10,13 +10,20 @@ Rhea is a statically typed language targeting WASM-GC. It uses a TypeScript-like
 
 1.  **Performance**: Generated WASM should be small and fast. Avoid runtime overhead where possible (e.g., prefer flat arguments over object allocation for named parameters).
 2.  **Simplicity**: The language should be easy to parse and analyze.
-3.  **Safety**: Strong static typing.
+3.  **Safety**: Strong static typing with a sound type system. No implicit type coercion.
 
 ## Language Specification (Draft)
 
+### Type System
+
+- **Strongly Typed**: All expressions have a static type determined at compile time.
+- **Soundness**: The type system is sound; if a program type-checks, it will not exhibit type errors at runtime (barring unsafe blocks, if added later).
+- **No Coercion**: Unlike JavaScript, Rhea does not perform implicit type coercion. Operations between mismatched types (e.g., adding an integer to a string) result in a compile-time error.
+- **Inference**: Local variable types are inferred from their initializer.
+
 ### Variables
 
-- `let x = 1;` // Immutable binding (const in JS)
+- `let x = 1;` // Immutable binding (const in JS). Type inferred as `i32`.
 - `var y = 1;` // Mutable binding
 - Block scoping applies to both.
 
@@ -77,6 +84,7 @@ This project is an **npm monorepo** managed with **Wireit**.
   - No `enum` (use `const` objects with `as const`).
   - No `namespace` (use ES modules).
   - No constructor parameter properties (e.g. `constructor(public x: number)`).
+  - No `private` keyword (use `#` private fields).
 - **Variables**: Prefer `const`, then `let`. Avoid `var`.
 - **Functions**: Always use arrow functions, unless a `this` binding is strictly required.
 - **Formatting**:

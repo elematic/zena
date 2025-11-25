@@ -7,6 +7,8 @@ Rhea is a new programming language targeting WebAssembly (WASM) and WASM-GC. It 
 - **WASM-First**: The primary and initial backend is WASM/WASM-GC.
 - **Familiar Syntax**: Heavily inspired by TypeScript, making it easy to pick up for web developers.
 - **Static & Optimizable**: Breaks away from JavaScript's dynamic semantics to allow for efficient AOT compilation and small binary sizes.
+- **Sound Type System**: Rhea is strongly typed with a sound type system, similar to Dart. It does not perform implicit type coercion (e.g., `1 + "1"` is a type error).
+- **Type Inference**: Supports local type inference, allowing for concise code without sacrificing type safety.
 - **Functional & Object-Oriented**: Supports immutable classes, classical inheritance, and functional programming patterns.
 - **Self-Hosted**: The long-term goal is for Rhea to be written in Rhea.
 
