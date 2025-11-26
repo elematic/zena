@@ -110,10 +110,10 @@ suite('CodeGenerator - Mixins', () => {
   test('should compile and run mixin with accessors', async () => {
     const source = `
       mixin M {
-        _val: i32 = 0;
+        #val: i32 = 0;
         val: i32 {
-          get { return this._val; }
-          set(v) { this._val = v; }
+          get { return this.#val; }
+          set(v) { this.#val = v; }
         }
       }
       class C with M {}

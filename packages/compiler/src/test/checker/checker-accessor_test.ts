@@ -7,18 +7,18 @@ suite('TypeChecker - Accessors', () => {
   test('should check valid accessor declaration', () => {
     const input = `
       class Box {
-        _value: i32;
+        #value: i32;
         
         #new(v: i32) {
-          this._value = v;
+          this.#value = v;
         }
 
         value: i32 {
           get {
-            return this._value;
+            return this.#value;
           }
           set(v) {
-            this._value = v;
+            this.#value = v;
           }
         }
       }
@@ -56,7 +56,7 @@ suite('TypeChecker - Accessors', () => {
   test('should detect setter parameter usage mismatch', () => {
     const input = `
       class Box {
-        _value: i32;
+        #value: i32;
         value: i32 {
           set(v) {
              let s: string = v; // Error: v is i32
