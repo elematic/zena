@@ -1,5 +1,6 @@
 import {
   NodeType,
+  type AccessorDeclaration,
   type BlockStatement,
   type CallExpression,
   type ClassDeclaration,
@@ -565,7 +566,8 @@ export class Parser {
 
     this.#consume(TokenType.LBrace, "Expected '{' before class body.");
 
-    const body: (FieldDefinition | MethodDefinition)[] = [];
+    const body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[] =
+      [];
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       body.push(this.#parseClassMember());
     }
@@ -583,7 +585,10 @@ export class Parser {
     };
   }
 
-  #parseClassMember(): FieldDefinition | MethodDefinition {
+  #parseClassMember():
+    | FieldDefinition
+    | MethodDefinition
+    | AccessorDeclaration {
     let name: Identifier;
     if (this.#match(TokenType.Hash)) {
       if (this.#match(TokenType.New)) {
@@ -634,6 +639,10 @@ export class Parser {
     this.#consume(TokenType.Colon, "Expected ':' after field name.");
     const typeAnnotation = this.#parseTypeAnnotation();
 
+    if (this.#match(TokenType.LBrace)) {
+      return this.#parseAccessorDeclaration(name, typeAnnotation);
+    }
+
     let value: Expression | undefined;
     if (this.#match(TokenType.Equals)) {
       value = this.#parseExpression();
@@ -646,6 +655,50 @@ export class Parser {
       name,
       typeAnnotation,
       value,
+    };
+  }
+
+  #parseAccessorDeclaration(
+    name: Identifier,
+    typeAnnotation: TypeAnnotation,
+  ): AccessorDeclaration {
+    let getter: BlockStatement | undefined;
+    let setter: {param: Identifier; body: BlockStatement} | undefined;
+
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      if (this.#match(TokenType.Identifier)) {
+        const keyword = this.#previous().value;
+        if (keyword === 'get') {
+          if (getter) throw new Error('Duplicate getter');
+          this.#consume(TokenType.LBrace, "Expected '{' after get");
+          getter = this.#parseBlockStatement();
+        } else if (keyword === 'set') {
+          if (setter) throw new Error('Duplicate setter');
+          this.#consume(TokenType.LParen, "Expected '(' after set");
+          const param = this.#parseIdentifier();
+          this.#consume(TokenType.RParen, "Expected ')' after set parameter");
+          this.#consume(TokenType.LBrace, "Expected '{' after set");
+          const body = this.#parseBlockStatement();
+          setter = {param, body};
+        } else {
+          throw new Error("Expected 'get' or 'set' in accessor block");
+        }
+      } else {
+        throw new Error("Expected 'get' or 'set'");
+      }
+    }
+    this.#consume(TokenType.RBrace, "Expected '}' after accessor body");
+
+    if (!getter && !setter) {
+      throw new Error('Accessor must have at least a getter or a setter');
+    }
+
+    return {
+      type: NodeType.AccessorDeclaration,
+      name,
+      typeAnnotation,
+      getter,
+      setter,
     };
   }
 

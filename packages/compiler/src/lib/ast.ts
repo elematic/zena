@@ -29,6 +29,7 @@ export const NodeType = {
   InterfaceDeclaration: 'InterfaceDeclaration',
   MethodSignature: 'MethodSignature',
   UnionTypeAnnotation: 'UnionTypeAnnotation',
+  AccessorDeclaration: 'AccessorDeclaration',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -142,8 +143,19 @@ export interface ClassDeclaration extends Node {
   typeParameters?: TypeParameter[];
   superClass?: Identifier;
   implements?: TypeAnnotation[];
-  body: (FieldDefinition | MethodDefinition)[];
+  body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[];
   exported: boolean;
+}
+
+export interface AccessorDeclaration extends Node {
+  type: typeof NodeType.AccessorDeclaration;
+  name: Identifier;
+  typeAnnotation: TypeAnnotation;
+  getter?: BlockStatement;
+  setter?: {
+    param: Identifier;
+    body: BlockStatement;
+  };
 }
 
 export interface InterfaceDeclaration extends Node {
