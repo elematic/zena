@@ -148,6 +148,31 @@ Accessors are invoked using standard property access syntax (`obj.prop`), not me
 
 The compiler rewrites these property accesses into method calls to the underlying getter/setter functions.
 
+### 3.4. Overriding Fields with Accessors
+
+Zena supports overriding a plain field in a base class with an accessor in a subclass (and vice-versa). To support this uniformly, **all public fields are treated as virtual properties**.
+
+#### Codegen Strategy
+
+1.  **Base Class (`Base`)**:
+    *   Declaring a field `x: i32` generates:
+        *   A struct field (storage).
+        *   A default **getter method** that reads the struct field.
+        *   A default **setter method** that writes the struct field.
+    *   These accessor methods are added to the VTable.
+2.  **Subclass (`Sub`)**:
+    *   Declaring an accessor `x: i32 { get { ... } }` generates:
+        *   A getter method with the custom logic.
+    *   The VTable for `Sub` is constructed using `Sub`'s getter instead of `Base`'s default getter.
+    *   **Note**: The storage slot for `x` (inherited from `Base`) still exists in `Sub`'s struct layout to maintain layout compatibility, even if the subclass accessor doesn't use it.
+
+#### Performance Implication
+
+Accessing a public field (`obj.x`) becomes a virtual call (`call_ref` via VTable) rather than a direct struct access (`struct.get`).
+
+*   **Optimization**: If the compiler can prove a class is `final` or the field is never overridden (e.g., via Whole Program Optimization), it can devirtualize the access to a direct `struct.get`.
+*   **Private Fields**: Private fields (`#x`) are never virtual and are always accessed directly.
+
 ## 4. Method Dispatch
 
 ### 4.1. Static vs. Dynamic Dispatch
