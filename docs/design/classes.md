@@ -139,6 +139,15 @@ class Circle {
 - **Grouping**: Allows decorators to apply to the property as a whole.
 - **Implementation**: Compiled to methods (e.g., `Circle_get_radius`, `Circle_set_radius`).
 
+### 3.3. Usage (Property Access)
+
+Accessors are invoked using standard property access syntax (`obj.prop`), not method call syntax.
+
+- **Read**: `let r = c.radius;` (Invokes the getter)
+- **Write**: `c.radius = 10.0;` (Invokes the setter)
+
+The compiler rewrites these property accesses into method calls to the underlying getter/setter functions.
+
 ## 4. Method Dispatch
 
 ### 4.1. Static vs. Dynamic Dispatch
