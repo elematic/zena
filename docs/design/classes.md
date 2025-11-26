@@ -97,37 +97,51 @@ We introduce a first-class `mixin` syntax that acts like a function taking a bas
 // Define a mixin
 mixin Timestamped(Base: Constructor) extends Base {
   timestamp: i32 = Date.now();
-
-  getTimestamp(): i32 {
-    return this.timestamp;
-  }
 }
-
-class User {
-  name: string;
-}
-
-// Apply the mixin
-class TimestampedUser extends Timestamped(User) {}
 ```
 
-**Implementation Strategy:**
-Mixins fit into the single-inheritance model by generating intermediate classes.
+## 3. Accessors (Getters & Setters)
 
-1.  **Compilation**: When `Timestamped(User)` is applied, the compiler generates a new concrete class (e.g., `$User_Timestamped`).
-2.  **Struct Layout**: This new class struct contains all fields of `User` followed by fields of `Timestamped`.
-3.  **Subtyping**: `$User_Timestamped` is declared as a subtype of `$User`.
-    ```wat
-    (type $User_Timestamped (sub $User (struct
-       (field ... user fields ...)
-       (field i32) ; timestamp
-    )))
-    ```
-4.  **Chaining**: Multiple mixins (`A(B(C))`) create a linear inheritance chain `C -> B_C -> A_B_C`.
+Zena uses a grouped accessor syntax, similar to C# or Swift. This groups the `get` and `set` operations under a single property declaration.
 
-## 3. Method Dispatch
+### 3.1. Syntax
 
-### 3.1. Static vs. Dynamic Dispatch
+Accessors are defined like fields but followed by a block `{}` containing `get` and/or `set` clauses.
+
+```typescript
+class Circle {
+  #radius: f64 = 0.0;
+
+  // Grouped Accessor
+  radius: f64 {
+    get {
+      return this.#radius;
+    }
+    set(v) {
+      this.#radius = v;
+    }
+  }
+
+  // Read-only accessor
+  area: f64 {
+    get {
+      return this.#radius * this.#radius * 3.14159;
+    }
+  }
+}
+```
+
+### 3.2. Semantics
+
+- **Type Safety**: The property type (e.g., `radius: f64`) is the source of truth.
+  - The `get` block must return a value of this type.
+  - The `set` block receives a value of this type.
+- **Grouping**: Allows decorators to apply to the property as a whole.
+- **Implementation**: Compiled to methods (e.g., `Circle_get_radius`, `Circle_set_radius`).
+
+## 4. Method Dispatch
+
+### 4.1. Static vs. Dynamic Dispatch
 
 - **Static Dispatch**: The compiler hardcodes the function index to call (e.g., `call $Dog_speak`).
   - **Pros**: Fastest performance (direct jump, inlineable).
@@ -136,7 +150,7 @@ Mixins fit into the single-inheritance model by generating intermediate classes.
   - **Pros**: Enables polymorphism (`animal.speak()` calls `Dog.speak()` if it's a Dog).
   - **Cons**: Slower (indirect jump via `call_ref`), harder to optimize.
 
-### 3.2. VTables (Virtual Method Tables)
+### 4.2. VTables (Virtual Method Tables)
 
 We will implement dynamic dispatch using VTables.
 
@@ -176,7 +190,7 @@ class Dog extends Animal {
 ))
 ```
 
-### 3.3. Method Call Process
+### 4.3. Method Call Process
 
 To call `animal.speak()`:
 
@@ -184,7 +198,7 @@ To call `animal.speak()`:
 2.  **Load Function**: Get the function reference from the VTable at the method's index (e.g., index 0 for `speak`).
 3.  **Call**: Execute `call_ref` with the function reference, passing `animal` as `this`.
 
-### 3.4. Devirtualization (Optimization)
+### 4.4. Devirtualization (Optimization)
 
 The compiler will attempt to optimize dynamic dispatch to static dispatch whenever possible using **Static Analysis** and **Type Inference**.
 
@@ -192,7 +206,7 @@ The compiler will attempt to optimize dynamic dispatch to static dispatch whenev
 - **Final Classes**: If a class is marked `final` (cannot be extended), all calls on it can be static.
 - **Sealed Classes**: If we know all subclasses, we might optimize.
 
-### 3.5. Construction
+### 4.5. Construction
 
 When `new Dog()` is called:
 
@@ -200,11 +214,11 @@ When `new Dog()` is called:
 2.  Initialize the VTable field with the singleton instance of `$Dog_VTable`.
 3.  Run the constructor.
 
-## 4. Interfaces (Future)
+## 5. Interfaces (Future)
 
 Interfaces allow polymorphism across unrelated class hierarchies. Since a class can implement multiple interfaces, we cannot rely on a single linear VTable (the method indices would conflict).
 
-### 4.1. Implementation: Fat Pointers
+### 5.1. Implementation: Fat Pointers
 
 We will likely use **Fat Pointers** to represent interface references.
 
@@ -213,7 +227,7 @@ We will likely use **Fat Pointers** to represent interface references.
   - `itable_ref`: A reference to an **Interface Table (ITable)** specific to that class's implementation of the interface.
 - **ITable**: A struct containing function references for the interface's methods, mapped to the concrete class's implementations.
 
-### 4.2. Dispatch
+### 5.2. Dispatch
 
 Interface calls are always **dynamically dispatched** (unless devirtualized).
 
@@ -223,15 +237,15 @@ Interface calls are always **dynamically dispatched** (unless devirtualized).
 
 This approach avoids the "diamond problem" of multiple inheritance and keeps the object layout simple (only one VTable pointer).
 
-## 5. Private Fields
+## 6. Private Fields
 
 Zena supports private fields using the `#` prefix (e.g., `#count`).
 
-### 5.1. Access Control
+### 6.1. Access Control
 
 Private fields are only accessible within the class body where they are defined. This is enforced at compile-time by the Type Checker. Accessing a private field from outside the class or from a subclass results in a compilation error.
 
-### 5.2. Implementation
+### 6.2. Implementation
 
 Private fields are implemented using **Name Mangling** to ensure uniqueness and prevent collisions with fields in subclasses.
 
@@ -252,13 +266,13 @@ TODO: Once we allow type aliasing and support modules we could have
 multiple classes with the same name in a inheritance chain and get
 private name collisions.
 
-## 6. Protected Members
+## 7. Protected Members
 
 > **Note**: This feature is currently in the design phase and has not been implemented yet.
 
 Zena supports protected members using the `_` prefix (e.g., `_render`).
 
-### 6.1. Access Control Rules
+### 7.1. Access Control Rules
 
 Protected members are accessible in:
 
@@ -268,20 +282,20 @@ Protected members are accessible in:
 
 This "Module + Subclass" visibility allows framework code within the same module to orchestrate calls to protected methods (e.g., lifecycle hooks) without exposing them to the public API.
 
-### 6.2. Inheritance & Namespaces
+### 7.2. Inheritance & Namespaces
 
 - **Shared Namespace**: Unlike private fields (`#`), protected fields (`_`) share the same namespace down the inheritance chain. A subclass can override a protected method.
 - **No Collision**: Protected names in unrelated classes do not collide because access is resolved via the type system.
 - **Mangling**: Protected members are **not** name-mangled like private fields. They behave like public fields but with restricted visibility during type checking.
 
-### 6.3. Interfaces
+### 7.3. Interfaces
 
 Interfaces can declare protected methods.
 
 - Implementing classes must provide the method (marked with `_`).
 - The method is callable only by code with protected access to the interface (e.g., code in the same module as the interface definition).
 
-### 6.4. Collision Handling (Qualified Names)
+### 7.4. Collision Handling (Qualified Names)
 
 To avoid name collisions (e.g., when using Mixins or Interfaces that define the same protected name), Zena supports **Qualified Method Definitions**.
 
@@ -303,7 +317,7 @@ let w = new Widget();
 (w as Component)._render(); // Calls the Component._render implementation
 ```
 
-### 6.5. Super Calls
+### 7.5. Super Calls
 
 When overriding a protected method, you can call the superclass implementation using `super`. If the method is qualified (to resolve ambiguity), use a cast on `super` to specify which base class implementation to invoke.
 
@@ -322,6 +336,6 @@ class Widget extends Component {
   - _Pros_: Explicitly distinguishes "static ancestor call" from "cast".
   - _Cons_: Inconsistent with instance access. We cannot use `instance<T>.method()` for instances because it creates parsing ambiguities with comparison operators (e.g., `a < b`).
 
-### 6.6. Static Symbols (Alternative Considered)
+### 7.6. Static Symbols (Alternative Considered)
 
 We considered using "Static Symbols" (similar to JavaScript Symbols or private declarations) to allow capability-based access control (e.g., `[_render]() { ... }`). However, we chose the `_` sigil for simplicity and performance, avoiding the need for computed property syntax or symbol management. The "Module Visibility" rule sufficiently covers the use case where a framework needs privileged access to a method it defines.
