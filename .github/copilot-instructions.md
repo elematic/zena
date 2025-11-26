@@ -160,18 +160,32 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Multiple Type Parameters (`class Pair<K, V>`).
   - Generic Functions (`<T>(x: T) => x`).
   - Type Inference (`new Box(10)` -> `Box<i32>`).
+  - Default Type Parameters (`class Box<T = i32>`).
 
 ### Planned
 
-1.  **Generics Enhancements** (Immediate Priority):
-    - **Default Type Parameters**: Support `class Box<T = i32>`.
-    - **Constraints**: Support `T extends Animal`.
-
-2.  **Object-Oriented Features**:
+1.  **Object-Oriented Features** (Immediate Priority):
     - **Inheritance**: Implement `class Dog extends Animal`.
+        - **Parser**:
+            - Update `ClassDeclaration` AST to include `superClass?: Identifier`.
+            - Update grammar to handle `class Name extends SuperName { ... }`.
+            - Add tests in `parser_test.ts`.
+        - **Type Checker**:
+            - Resolve `superClass` identifier.
+            - Validate superclass existence and type (must be a class).
+            - Detect inheritance cycles.
+            - Validate method overrides (signatures must match or be covariant).
+            - Update `isAssignableTo` for subtyping.
+        - **Code Generator (WASM-GC)**:
+            - **Struct Layout**: Ensure subclass struct starts with superclass fields (types and order).
+            - **WASM Subtyping**: Generate `(sub $Super (struct ...))` definitions.
+            - **Casting**: Implement upcasting (implicit) and downcasting (explicit).
     - **Interfaces**: Implement `interface Runnable { run(): void; }` and `implements`.
     - **Abstract Classes**: Support `abstract class`.
     - **Access Control**: Enforce `#` private fields strictly.
+
+2.  **Generics Enhancements**:
+    - **Constraints**: Support `T extends Animal` (Requires Inheritance).
 
 3.  **Data Structures**:
     - **Maps**: Implement mutable maps (`#{ key: value }`).
