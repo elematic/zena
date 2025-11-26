@@ -3,6 +3,7 @@ import {
   type ClassDeclaration,
   type FunctionExpression,
   type InterfaceDeclaration,
+  type MixinDeclaration,
   type Program,
 } from '../ast.js';
 import {registerClass, registerInterface} from './classes.js';
@@ -44,6 +45,9 @@ export class CodeGenerator {
       if (statement.type === NodeType.ClassDeclaration) {
         // console.log('Registering class:', (statement as any).name.name);
         registerClass(this.#ctx, statement as ClassDeclaration);
+      } else if (statement.type === NodeType.MixinDeclaration) {
+        const mixinDecl = statement as MixinDeclaration;
+        this.#ctx.mixins.set(mixinDecl.name.name, mixinDecl);
       } else if (statement.type === NodeType.InterfaceDeclaration) {
         registerInterface(this.#ctx, statement as InterfaceDeclaration);
       } else if (
