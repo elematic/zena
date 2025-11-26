@@ -1,33 +1,76 @@
 # Rhea Programming Language
 
-Rhea is a new programming language targeting WebAssembly (WASM) and WASM-GC. It aims to be a familiar, statically-typed language similar to TypeScript but designed for ahead-of-time (AOT) compilation and high performance.
+Rhea is a new programming language targeting WebAssembly (WASM) and WASM-GC. It
+is designed to be the **best way to write WASM**: offering a familiar, ergonomic
+syntax similar to TypeScript, but with the performance and predictability of a
+statically-typed, ahead-of-time (AOT) compiled language.
 
-## Goals
+## Vision & Goals
 
-- **WASM-First**: The primary and initial backend is WASM/WASM-GC.
-- **Familiar Syntax**: Heavily inspired by TypeScript, making it easy to pick up for web developers.
-- **Static & Optimizable**: Breaks away from JavaScript's dynamic semantics to allow for efficient AOT compilation and small binary sizes.
-- **Sound Type System**: Rhea is strongly typed with a sound type system, similar to Dart. It does not perform implicit type coercion (e.g., `1 + "1"` is a type error).
-- **Type Inference**: Supports local type inference, allowing for concise code without sacrificing type safety.
-- **Functional & Object-Oriented**: Supports immutable classes, classical inheritance, and functional programming patterns.
-- **Self-Hosted**: The long-term goal is for Rhea to be written in Rhea.
+Rhea aims to be an extremely nice and familiar way to write high-performance
+WASM. It balances familiar functional and OOP syntax with a strict orientation
+around efficient WASM output.
+
+- **WASM-First & High Performance**: The primary backend is WASM-GC. We aim for
+  **no-cost to low-cost abstractions**, balancing performance with familiar OOP
+  patterns. While we use vtables for polymorphism (a necessary tradeoff), we
+  also aim to offer zero-cost alternatives where possible.
+- **Familiar yet AOT**: While Rhea looks like TypeScript, it is entirely
+  designed for **ahead-of-time (AOT) compilation**. It breaks away from
+  JavaScript's dynamic semantics to allow for efficient compilation and small
+  binary sizes.
+- **Modern Inspiration**: Rhea aims to take inspiration and the best features
+  from **TypeScript, Dart, C#, Kotlin, and Swift**.
+- **Vibe Coding Experiment**: Rhea is also an experiment in "vibe coding" a new
+  programming language! We wouldn't have started a new language—it typically
+  requires immense time and expertise—except that modern LLMs (like Gemini 3)
+  are surprisingly adept at building them. We are exploring how far we can go
+  with coding agents doing the heavy lifting.
+- **Sound Type System**: Rhea is strongly typed with a sound type system. It
+  does not perform implicit type coercion (e.g., `1 + "1"` is a type error).
+- **Correctness & Safety**: We prefer immutable data by default. Future plans
+  include "branded types" for numeric values with units (e.g., `1m` or `10px`)
+  to prevent logical errors.
 
 ## Key Features
 
-- **Variables**: `let` for immutable bindings, `var` for mutable bindings. Both are block-scoped.
+> **Note**: Rhea is in active development. Many of the features listed below are
+> currently being implemented or are in the design phase.
+
+- **Clean-Slate OOP**:
+  - **JS-style private namespaces** (using `#`).
+  - **Dart-style constructors** with initializer lists.
+  - **Powerful mixins** for code reuse.
+  - **Classical inheritance** with immutable instances by default.
+- **Rich Type System**:
+  - **Generics** and **Interfaces**.
+  - **Future**: Union and intersection types, discriminated unions, and
+    potentially mapped types.
+- **High-Level Features**:
+  - **Native JSX-like builder syntax**.
+  - **Pattern matching**.
+  - **Operator overloading** (possibly via extension methods) to support numeric
+    programming (similar to R).
+- **Variables**: `let` for immutable bindings, `var` for mutable bindings. Both
+  are block-scoped.
 - **Functions**: Arrow functions only (`=>`). No `function` keyword.
-- **Classes**: Classical inheritance, immutable instances by default. Classes can be expressions.
-- **Auto-Accessors**: Class fields generate auto-accessors backed by private storage by default.
-- **Module System**: Similar to ES Modules. Standard library available via built-in modules.
-- **Named Parameters**: First-class support for named parameters to avoid object allocation overhead.
+- **Auto-Accessors**: Class fields generate auto-accessors backed by private
+  storage by default.
+- **Efficient Standard Library**: A rich standard library that doesn't bloat
+  binaries. Most features are opt-in via module imports, ensuring you only pay
+  for what you use.
+- **Named Parameters**: First-class support for named parameters to avoid object
+  allocation overhead.
 
 ## Documentation
 
-- [Language Reference](docs/language-reference.md): Detailed guide on syntax and semantics.
+- [Language Reference](docs/language-reference.md): Detailed guide on syntax and
+  semantics.
 
 ## Getting Started
 
-This project is currently in the bootstrapping phase. The initial compiler/parser is being written in TypeScript.
+This project is currently in the bootstrapping phase. The initial
+compiler/parser is being written in TypeScript.
 
 ### Prerequisites
 
