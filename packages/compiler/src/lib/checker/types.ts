@@ -148,8 +148,6 @@ export function typeToString(type: Type): string {
   switch (type.kind) {
     case TypeKind.Number:
       return (type as NumberType).name;
-    case TypeKind.String:
-      return 'string';
     case TypeKind.Boolean:
       return 'boolean';
     case TypeKind.Void:

@@ -13,9 +13,9 @@ around efficient WASM output.
 
 - **WASM-First & High Performance**: The primary backend is WASM-GC. We aim for
   **no-cost to low-cost abstractions**.
-    - **Generics** are fully monomorphized (like C++ templates or Rust), meaning `List<i32>` stores raw integers with zero boxing overhead.
-    - **Classes** map directly to WASM GC structs.
-    - **Polymorphism** uses vtables where necessary (interfaces), but we prefer static dispatch when possible.
+  - **Generics** are fully monomorphized (like C++ templates or Rust), meaning `List<i32>` stores raw integers with zero boxing overhead.
+  - **Classes** map directly to WASM GC structs.
+  - **Polymorphism** uses vtables where necessary (interfaces), but we prefer static dispatch when possible.
 - **Familiar yet AOT**: While Zena looks like TypeScript, it is entirely
   designed for **ahead-of-time (AOT) compilation**. It breaks away from
   JavaScript's dynamic semantics to allow for efficient compilation and small
@@ -37,7 +37,7 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 
 - **Breaking the larrier to entry**: I've had ideas for a programming language for a long time, but I never had the time or deep expertise to pull it off. I worked on the Dart team (mostly on tools, not the VM) and have written parsers before (like for Polymer expressions), but building a full compiler and ecosystem is a massive investment. Without AI, my only hope of building this would have been winning the lottery.
 - **Gemini 3 & greenfield development**: I was trying Gemini 3 and noticed how far it could get with basic instructions, so I wondered how far it could go on a greenfield project. It turns out, quite far! I'm already blown away by how well it's working.
-- **The bootstraping paradox**: People worry that LLMs will discourage new languages because models only know languages in their training sets. That's a real concern, but there might be an opposite effect too: AI might make it drastically cheaper to build the language and the *ecosystem*—IDEs, docs, examples, and tools—needed to launch a language and get it into the next generation of training cycles.
+- **The bootstraping paradox**: People worry that LLMs will discourage new languages because models only know languages in their training sets. That's a real concern, but there might be an opposite effect too: AI might make it drastically cheaper to build the language and the _ecosystem_—IDEs, docs, examples, and tools—needed to launch a language and get it into the next generation of training cycles.
 - **Ethical use of AI in open source?**: There are definite ethical and moral questions around generative AI, but using it to create public goods like open source software feels like one of the least exploitive ways to use the technology.
 - **Controlling quality and reducing slop**: I haven't been a huge AI booster—I'm skeptical of a lot of the hype—but it's clearly useful for coding if you hold it right. I wanted to see if I could nudge an AI to build well-constructed, reliable software rather than unmaintainable cruft. I'm performing a lot of oversight: reviewing code and tests, "discussing" design ideas, and planning next steps. Is that enough?
 - **Why Zena itself?**: I wanted a nice language for building WASM modules that uses modern features like WASM-GC out of the box. I didn't see another language I loved for this—even including Rust, Go, or AssemblyScript—so I decided to try building one.

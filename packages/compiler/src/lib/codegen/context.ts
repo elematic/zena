@@ -28,6 +28,7 @@ export class CodegenContext {
   // Type management
   public arrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
   public stringTypeIndex = -1;
+  public byteArrayTypeIndex = -1;
   public stringLiterals = new Map<string, number>(); // content -> dataIndex
 
   // Deferred generation
@@ -43,8 +44,15 @@ export class CodegenContext {
   constructor(program: Program) {
     this.program = program;
     this.module = new WasmModule();
-    // Define string type: array<i8> (mutable for construction)
-    this.stringTypeIndex = this.module.addArrayType([ValType.i8], true);
+    // Define backing array type: array<i8> (mutable for construction)
+    this.byteArrayTypeIndex = this.module.addArrayType([ValType.i8], true);
+
+    // Define String class struct
+    // Fields: bytes (ref to byteArray), length (i32)
+    this.stringTypeIndex = this.module.addStructType([
+      {type: [ValType.ref, this.byteArrayTypeIndex], mutable: false}, // bytes
+      {type: [ValType.i32], mutable: false}, // length
+    ]);
   }
 
   public pushScope() {

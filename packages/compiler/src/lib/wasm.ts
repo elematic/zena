@@ -88,6 +88,12 @@ export const Opcode = {
   drop: 0x1a,
   select: 0x1b,
 
+  ref_null: 0xd0,
+  ref_is_null: 0xd1,
+  ref_func: 0xd2,
+  ref_eq: 0xd3,
+  ref_as_non_null: 0xd4,
+
   local_get: 0x20,
   local_set: 0x21,
   local_tee: 0x22,
@@ -97,9 +103,6 @@ export const Opcode = {
   i32_load: 0x28,
   i32_const: 0x41,
   f32_const: 0x43,
-
-  ref_null: 0xd0,
-  ref_func: 0xd2,
 
   gc_prefix: 0xfb,
 

@@ -388,10 +388,7 @@ function checkMemberExpression(
 ): Type {
   const objectType = checkExpression(ctx, expr.object);
 
-  if (
-    objectType.kind === TypeKind.Array ||
-    objectType.kind === TypeKind.String
-  ) {
+  if (objectType.kind === TypeKind.Array) {
     if (expr.property.name === 'length') {
       return Types.I32;
     }
@@ -504,10 +501,7 @@ function checkIndexExpression(
     );
   }
 
-  if (
-    objectType.kind !== TypeKind.Array &&
-    objectType.kind !== TypeKind.String
-  ) {
+  if (objectType.kind !== TypeKind.Array && objectType !== Types.String) {
     ctx.diagnostics.reportError(
       `Index expression only supported on arrays or strings, got ${typeToString(objectType)}`,
       DiagnosticCode.NotIndexable,
@@ -515,7 +509,7 @@ function checkIndexExpression(
     return Types.Unknown;
   }
 
-  if (objectType.kind === TypeKind.String) {
+  if (objectType === Types.String) {
     return Types.I32;
   }
 
