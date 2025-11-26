@@ -7,6 +7,7 @@ export const NodeType = {
   NumberLiteral: 'NumberLiteral',
   StringLiteral: 'StringLiteral',
   BooleanLiteral: 'BooleanLiteral',
+  NullLiteral: 'NullLiteral',
   Identifier: 'Identifier',
   FunctionExpression: 'FunctionExpression',
   CallExpression: 'CallExpression',
@@ -27,6 +28,7 @@ export const NodeType = {
   TypeParameter: 'TypeParameter',
   InterfaceDeclaration: 'InterfaceDeclaration',
   MethodSignature: 'MethodSignature',
+  UnionTypeAnnotation: 'UnionTypeAnnotation',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -86,6 +88,7 @@ export type Expression =
   | NumberLiteral
   | StringLiteral
   | BooleanLiteral
+  | NullLiteral
   | Identifier
   | FunctionExpression
   | CallExpression
@@ -121,6 +124,10 @@ export interface StringLiteral extends Node {
 export interface BooleanLiteral extends Node {
   type: typeof NodeType.BooleanLiteral;
   value: boolean;
+}
+
+export interface NullLiteral extends Node {
+  type: typeof NodeType.NullLiteral;
 }
 
 export interface Identifier extends Node {
@@ -228,8 +235,15 @@ export interface TypeParameter extends Node {
   default?: TypeAnnotation;
 }
 
-export interface TypeAnnotation extends Node {
+export type TypeAnnotation = NamedTypeAnnotation | UnionTypeAnnotation;
+
+export interface NamedTypeAnnotation extends Node {
   type: typeof NodeType.TypeAnnotation;
   name: string;
   typeArguments?: TypeAnnotation[];
+}
+
+export interface UnionTypeAnnotation extends Node {
+  type: typeof NodeType.UnionTypeAnnotation;
+  types: TypeAnnotation[];
 }

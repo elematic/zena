@@ -13,12 +13,14 @@ import {
   type MemberExpression,
   type MethodDefinition,
   type MethodSignature,
+  type NamedTypeAnnotation,
   type Parameter,
   type Program,
   type ReturnStatement,
   type Statement,
   type TypeAnnotation,
   type TypeParameter,
+  type UnionTypeAnnotation,
   type VariableDeclaration,
   type WhileStatement,
 } from './ast.js';
@@ -454,6 +456,9 @@ export class Parser {
     if (this.#match(TokenType.False)) {
       return {type: NodeType.BooleanLiteral, value: false};
     }
+    if (this.#match(TokenType.Null)) {
+      return {type: NodeType.NullLiteral};
+    }
     if (this.#match(TokenType.Identifier)) {
       return {type: NodeType.Identifier, name: this.#previous().value};
     }
@@ -725,7 +730,30 @@ export class Parser {
   }
 
   #parseTypeAnnotation(): TypeAnnotation {
-    const name = this.#parseIdentifier().name;
+    const left = this.#parseNamedTypeAnnotation();
+
+    if (this.#match(TokenType.Pipe)) {
+      const types: TypeAnnotation[] = [left];
+      do {
+        types.push(this.#parseNamedTypeAnnotation());
+      } while (this.#match(TokenType.Pipe));
+
+      return {
+        type: NodeType.UnionTypeAnnotation,
+        types,
+      };
+    }
+
+    return left;
+  }
+
+  #parseNamedTypeAnnotation(): NamedTypeAnnotation {
+    let name: string;
+    if (this.#match(TokenType.Null)) {
+      name = 'null';
+    } else {
+      name = this.#parseIdentifier().name;
+    }
     const typeArguments = this.#parseTypeArguments();
     return {
       type: NodeType.TypeAnnotation,

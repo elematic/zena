@@ -1,5 +1,6 @@
 import {
   NodeType,
+  type BlockStatement,
   type ClassDeclaration,
   type IfStatement,
   type InterfaceDeclaration,
@@ -21,7 +22,7 @@ import {
 } from '../types.js';
 import type {CheckerContext} from './context.js';
 import {checkExpression} from './expressions.js';
-import {resolveTypeAnnotation, typeToString} from './types.js';
+import {isAssignableTo, resolveTypeAnnotation, typeToString} from './types.js';
 
 export function checkStatement(ctx: CheckerContext, stmt: Statement) {
   switch (stmt.type) {
@@ -104,17 +105,11 @@ function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {
 
   if (ctx.currentFunctionReturnType.kind !== Types.Unknown.kind) {
     // If we know the expected return type, check against it
-    // TODO: Better type equality check
-    if (ctx.currentFunctionReturnType.kind !== argType.kind) {
-      // Allow i32/f32 mismatch check if we had better type equality
-      if (
-        typeToString(ctx.currentFunctionReturnType) !== typeToString(argType)
-      ) {
-        ctx.diagnostics.reportError(
-          `Type mismatch: expected return type ${typeToString(ctx.currentFunctionReturnType)}, got ${typeToString(argType)}`,
-          DiagnosticCode.TypeMismatch,
-        );
-      }
+    if (!isAssignableTo(argType, ctx.currentFunctionReturnType)) {
+      ctx.diagnostics.reportError(
+        `Type mismatch: expected return type ${typeToString(ctx.currentFunctionReturnType)}, got ${typeToString(argType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
     }
   }
 }
@@ -123,8 +118,20 @@ function checkVariableDeclaration(
   ctx: CheckerContext,
   decl: VariableDeclaration,
 ) {
-  const initType = checkExpression(ctx, decl.init);
-  ctx.declare(decl.identifier.name, initType, decl.kind);
+  let type = checkExpression(ctx, decl.init);
+
+  if (decl.typeAnnotation) {
+    const explicitType = resolveTypeAnnotation(ctx, decl.typeAnnotation);
+    if (!isAssignableTo(type, explicitType)) {
+      ctx.diagnostics.reportError(
+        `Type mismatch: expected ${typeToString(explicitType)}, got ${typeToString(type)}`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+    type = explicitType;
+  }
+
+  ctx.declare(decl.identifier.name, type, decl.kind);
 }
 
 function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
@@ -266,8 +273,10 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     for (const impl of decl.implements) {
       const type = resolveTypeAnnotation(ctx, impl);
       if (type.kind !== TypeKind.Interface) {
+        const name =
+          impl.type === NodeType.TypeAnnotation ? impl.name : '<union>';
         ctx.diagnostics.reportError(
-          `Type '${impl.name}' is not an interface.`,
+          `Type '${name}' is not an interface.`,
           DiagnosticCode.TypeMismatch,
         );
         continue;

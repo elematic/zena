@@ -11,6 +11,7 @@ export const TokenType = {
   While: 'While',
   True: 'True',
   False: 'False',
+  Null: 'Null',
   New: 'New',
   This: 'This',
   Extends: 'Extends',
@@ -35,6 +36,7 @@ export const TokenType = {
   Minus: 'Minus',
   Star: 'Star',
   Slash: 'Slash',
+  Pipe: 'Pipe',
 
   // Punctuation
   LParen: 'LParen',
@@ -74,6 +76,7 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   while: TokenType.While,
   true: TokenType.True,
   false: TokenType.False,
+  null: TokenType.Null,
   new: TokenType.New,
   this: TokenType.This,
   extends: TokenType.Extends,
@@ -276,6 +279,14 @@ export const tokenize = (source: string): Token[] => {
         tokens.push({
           type: TokenType.Slash,
           value: '/',
+          line,
+          column: startColumn,
+        });
+        break;
+      case '|':
+        tokens.push({
+          type: TokenType.Pipe,
+          value: '|',
           line,
           column: startColumn,
         });

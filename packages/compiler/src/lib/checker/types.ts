@@ -1,4 +1,4 @@
-import type {TypeAnnotation} from '../ast.js';
+import {NodeType, type TypeAnnotation} from '../ast.js';
 import {DiagnosticCode} from '../diagnostics.js';
 import {
   TypeKind,
@@ -9,6 +9,8 @@ import {
   type ArrayType,
   type FunctionType,
   type NumberType,
+  type UnionType,
+  type InterfaceType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
 
@@ -16,6 +18,14 @@ export function resolveTypeAnnotation(
   ctx: CheckerContext,
   annotation: TypeAnnotation,
 ): Type {
+  if (annotation.type === NodeType.UnionTypeAnnotation) {
+    const types = annotation.types.map((t) => resolveTypeAnnotation(ctx, t));
+    return {
+      kind: TypeKind.Union,
+      types,
+    } as UnionType;
+  }
+
   const name = annotation.name;
   switch (name) {
     case 'i32':
@@ -28,6 +38,8 @@ export function resolveTypeAnnotation(
       return Types.String;
     case 'void':
       return Types.Void;
+    case 'null':
+      return Types.Null;
   }
 
   const type = ctx.resolve(name);
@@ -142,6 +154,10 @@ export function typeToString(type: Type): string {
       return 'boolean';
     case TypeKind.Void:
       return 'void';
+    case TypeKind.Null:
+      return 'null';
+    case TypeKind.Union:
+      return (type as UnionType).types.map((t) => typeToString(t)).join(' | ');
     case TypeKind.TypeParameter:
       return (type as TypeParameterType).name;
     case TypeKind.Function: {
@@ -156,9 +172,57 @@ export function typeToString(type: Type): string {
       }
       return ct.name;
     }
+    case TypeKind.Interface: {
+      const it = type as InterfaceType;
+      if (it.typeArguments && it.typeArguments.length > 0) {
+        return `${it.name}<${it.typeArguments.map((t) => typeToString(t)).join(', ')}>`;
+      }
+      return it.name;
+    }
     case TypeKind.Array:
       return `[${typeToString((type as ArrayType).elementType)}]`;
     default:
       return type.kind;
   }
+}
+
+export function isAssignableTo(source: Type, target: Type): boolean {
+  if (source === target) return true;
+  if (source.kind === TypeKind.Unknown || target.kind === TypeKind.Unknown) {
+    return true;
+  }
+
+  if (target.kind === TypeKind.Union) {
+    return (target as UnionType).types.some((t) => isAssignableTo(source, t));
+  }
+
+  if (source.kind === TypeKind.Union) {
+    return (source as UnionType).types.every((t) => isAssignableTo(t, target));
+  }
+
+  if (source.kind === TypeKind.Null) {
+    return target.kind === TypeKind.Null;
+  }
+
+  if (source.kind === TypeKind.Class && target.kind === TypeKind.Class) {
+    let current: ClassType | undefined = source as ClassType;
+    while (current) {
+      if (typeToString(current) === typeToString(target)) return true;
+      current = current.superType;
+    }
+    return false;
+  }
+
+  if (source.kind === TypeKind.Class && target.kind === TypeKind.Interface) {
+    let current: ClassType | undefined = source as ClassType;
+    while (current) {
+      if (current.implements.some((impl) => isAssignableTo(impl, target))) {
+        return true;
+      }
+      current = current.superType;
+    }
+    return false;
+  }
+
+  return typeToString(source) === typeToString(target);
 }

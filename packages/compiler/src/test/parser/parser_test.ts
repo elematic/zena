@@ -60,7 +60,7 @@ suite('Parser', () => {
       if (fn.type === NodeType.FunctionExpression) {
         assert.strictEqual(fn.params.length, 2);
         assert.strictEqual(fn.params[0].name.name, 'a');
-        assert.strictEqual(fn.params[0].typeAnnotation.name, 'i32');
+        assert.strictEqual((fn.params[0].typeAnnotation as any).name, 'i32');
         assert.strictEqual(fn.body.type, NodeType.BinaryExpression);
       }
     }
@@ -229,7 +229,7 @@ suite('Parser', () => {
       assert.strictEqual(fieldX.type, NodeType.FieldDefinition);
       if (fieldX.type === NodeType.FieldDefinition) {
         assert.strictEqual(fieldX.name.name, 'x');
-        assert.strictEqual(fieldX.typeAnnotation.name, 'i32');
+        assert.strictEqual((fieldX.typeAnnotation as any).name, 'i32');
       }
 
       const ctor = cls.body[2];

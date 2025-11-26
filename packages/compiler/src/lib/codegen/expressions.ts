@@ -13,12 +13,13 @@ import {
   type MethodDefinition,
   type NewExpression,
   type NumberLiteral,
+  type NullLiteral,
   type StringLiteral,
   type ThisExpression,
   type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {GcOpcode, Opcode, ValType} from '../wasm.js';
+import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
@@ -76,10 +77,22 @@ export function generateExpression(
     case NodeType.StringLiteral:
       generateStringLiteral(ctx, expression as StringLiteral, body);
       break;
+    case NodeType.NullLiteral:
+      generateNullLiteral(ctx, expression as NullLiteral, body);
+      break;
     default:
       // TODO: Handle other expressions
       break;
   }
+}
+
+function generateNullLiteral(
+  ctx: CodegenContext,
+  expr: NullLiteral,
+  body: number[],
+) {
+  body.push(Opcode.ref_null);
+  body.push(HeapType.none);
 }
 
 export function inferType(ctx: CodegenContext, expr: Expression): number[] {
@@ -247,6 +260,8 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       if (local) return local.type;
       return [ValType.i32];
     }
+    case NodeType.NullLiteral:
+      return [ValType.ref_null, HeapType.none];
     default:
       return [ValType.i32];
   }

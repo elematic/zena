@@ -2,11 +2,13 @@ export const TypeKind = {
   Number: 'Number',
   String: 'String',
   Boolean: 'Boolean',
+  Null: 'Null',
   Void: 'Void',
   Function: 'Function',
   Class: 'Class',
   Interface: 'Interface',
   Array: 'Array',
+  Union: 'Union',
   TypeParameter: 'TypeParameter',
   Unknown: 'Unknown',
 } as const;
@@ -15,6 +17,11 @@ export type TypeKind = (typeof TypeKind)[keyof typeof TypeKind];
 
 export interface Type {
   kind: TypeKind;
+}
+
+export interface UnionType extends Type {
+  kind: typeof TypeKind.Union;
+  types: Type[];
 }
 
 export interface TypeParameterType extends Type {
@@ -63,6 +70,7 @@ export interface ClassType extends Type {
 
 export const Types = {
   Void: {kind: TypeKind.Void} as Type,
+  Null: {kind: TypeKind.Null} as Type,
   String: {kind: TypeKind.String} as Type,
   Boolean: {kind: TypeKind.Boolean} as Type,
   Unknown: {kind: TypeKind.Unknown} as Type,

@@ -17,6 +17,7 @@ import {
   Types,
   type ArrayType,
   type ClassType,
+  type InterfaceType,
   type FunctionType,
   type NumberType,
   type Type,
@@ -27,6 +28,7 @@ import {
   instantiateGenericClass,
   resolveTypeAnnotation,
   typeToString,
+  isAssignableTo,
 } from './types.js';
 import {checkStatement} from './statements.js';
 
@@ -38,6 +40,8 @@ export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
       return Types.String;
     case NodeType.BooleanLiteral:
       return Types.Boolean;
+    case NodeType.NullLiteral:
+      return Types.Null;
     case NodeType.Identifier: {
       const type = ctx.resolve(expr.name);
       if (!type) {
@@ -100,16 +104,11 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     const argType = checkExpression(ctx, expr.arguments[i]);
     const paramType = funcType.parameters[i];
 
-    if (
-      argType.kind !== paramType.kind &&
-      argType.kind !== Types.Unknown.kind
-    ) {
-      if (typeToString(argType) !== typeToString(paramType)) {
-        ctx.diagnostics.reportError(
-          `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
-          DiagnosticCode.TypeMismatch,
-        );
-      }
+    if (!isAssignableTo(argType, paramType)) {
+      ctx.diagnostics.reportError(
+        `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
     }
   }
 
@@ -140,16 +139,11 @@ function checkAssignmentExpression(
     }
 
     const valueType = checkExpression(ctx, expr.value);
-    if (
-      symbol.type.kind !== valueType.kind &&
-      symbol.type.kind !== Types.Unknown.kind
-    ) {
-      if (typeToString(symbol.type) !== typeToString(valueType)) {
-        ctx.diagnostics.reportError(
-          `Type mismatch in assignment: expected ${typeToString(symbol.type)}, got ${typeToString(valueType)}`,
-          DiagnosticCode.TypeMismatch,
-        );
-      }
+    if (!isAssignableTo(valueType, symbol.type)) {
+      ctx.diagnostics.reportError(
+        `Type mismatch in assignment: expected ${typeToString(symbol.type)}, got ${typeToString(valueType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
     }
 
     return valueType;
@@ -181,10 +175,7 @@ function checkAssignmentExpression(
     const fieldType = classType.fields.get(memberName)!;
     const valueType = checkExpression(ctx, expr.value);
 
-    if (
-      valueType.kind !== fieldType.kind &&
-      valueType.kind !== Types.Unknown.kind
-    ) {
+    if (!isAssignableTo(valueType, fieldType)) {
       ctx.diagnostics.reportError(
         `Type mismatch in assignment: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
         DiagnosticCode.TypeMismatch,
@@ -406,7 +397,10 @@ function checkMemberExpression(
     }
   }
 
-  if (objectType.kind !== TypeKind.Class) {
+  if (
+    objectType.kind !== TypeKind.Class &&
+    objectType.kind !== TypeKind.Interface
+  ) {
     if (objectType.kind !== Types.Unknown.kind) {
       ctx.diagnostics.reportError(
         `Property access on non-class type '${typeToString(objectType)}'.`,
@@ -416,7 +410,7 @@ function checkMemberExpression(
     return Types.Unknown;
   }
 
-  const classType = objectType as ClassType;
+  const classType = objectType as ClassType | InterfaceType;
   const memberName = expr.property.name;
 
   // Check fields

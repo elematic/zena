@@ -132,7 +132,7 @@ See [Strings Design](./strings.md) for details on string implementation.
 
 ## 5. Nullability
 
-**Status: Planned**
+**Status: Implemented**
 
 Rhea is **Non-Nullable by Default**.
 
@@ -151,9 +151,11 @@ Rhea is **Non-Nullable by Default**.
 
 ## 6. Algebraic Data Types
 
-**Status: Planned**
+**Status: Partially Implemented**
 
 ### Union Types (`A | B`)
+
+**Status: Implemented**
 
 Rhea supports union types, primarily for classes and nullability.
 

@@ -20,7 +20,13 @@ export function compile(source: string): Uint8Array {
   const checker = new TypeChecker(ast);
   const errors = checker.check();
   if (errors.length > 0) {
-    throw new Error(errors.join('\n'));
+    const errorMessage = errors
+      .map(
+        (e) =>
+          `${e.message} at line ${e.location?.line}, column ${e.location?.column}`,
+      )
+      .join('\n');
+    throw new Error(errorMessage);
   }
 
   const codegen = new CodeGenerator(ast);

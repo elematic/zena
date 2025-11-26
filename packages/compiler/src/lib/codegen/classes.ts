@@ -1,12 +1,13 @@
 import {
   NodeType,
   type ClassDeclaration,
+  type FieldDefinition,
   type InterfaceDeclaration,
   type MethodDefinition,
   type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {ValType, Opcode, GcOpcode} from '../wasm.js';
+import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
 import type {CodegenContext} from './context.js';
 import type {ClassInfo, InterfaceInfo} from './types.js';
 import {generateBlockStatement} from './statements.js';
@@ -131,6 +132,9 @@ export function generateInterfaceVTable(
   if (!classInfo.implements) classInfo.implements = new Map();
 
   for (const impl of decl.implements) {
+    if (impl.type !== NodeType.TypeAnnotation) {
+      throw new Error('Interfaces cannot be union types');
+    }
     const interfaceName = impl.name;
     const interfaceInfo = ctx.interfaces.get(interfaceName)!;
 
@@ -462,6 +466,11 @@ export function mapType(
 ): number[] {
   if (!annotation) return [ValType.i32];
 
+  if (annotation.type === NodeType.UnionTypeAnnotation) {
+    // TODO: Proper union type mapping
+    return [ValType.ref_null, HeapType.any];
+  }
+
   // Check type context first
   if (typeContext && typeContext.has(annotation.name)) {
     return mapType(ctx, typeContext.get(annotation.name)!, typeContext);
@@ -528,6 +537,12 @@ export function getTypeKey(
   annotation: TypeAnnotation,
   typeContext?: Map<string, TypeAnnotation>,
 ): string {
+  if (annotation.type === NodeType.UnionTypeAnnotation) {
+    return annotation.types
+      .map((t) => getTypeKey(ctx, t, typeContext))
+      .join('|');
+  }
+
   if (typeContext && typeContext.has(annotation.name)) {
     return getTypeKey(ctx, typeContext.get(annotation.name)!, typeContext);
   }
@@ -545,6 +560,13 @@ function resolveAnnotation(
   annotation: TypeAnnotation,
   context?: Map<string, TypeAnnotation>,
 ): TypeAnnotation {
+  if (annotation.type === NodeType.UnionTypeAnnotation) {
+    return {
+      type: NodeType.UnionTypeAnnotation,
+      types: annotation.types.map((t) => resolveAnnotation(t, context)),
+    };
+  }
+
   if (context && context.has(annotation.name)) {
     return resolveAnnotation(context.get(annotation.name)!, context);
   }

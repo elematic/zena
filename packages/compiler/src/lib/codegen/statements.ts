@@ -1,6 +1,7 @@
 import {
   NodeType,
   type BlockStatement,
+  type ClassDeclaration,
   type IfStatement,
   type ReturnStatement,
   type Statement,
@@ -8,7 +9,7 @@ import {
   type WhileStatement,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {GcOpcode, Opcode, ValType} from '../wasm.js';
+import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
 import {decodeTypeIndex, getClassFromTypeIndex, mapType} from './classes.js';
 import type {CodegenContext} from './context.js';
 import {generateExpression, inferType} from './expressions.js';
@@ -137,13 +138,28 @@ export function generateLocalVariableDeclaration(
   body: number[],
 ) {
   generateExpression(ctx, decl.init, body);
+  const exprType = inferType(ctx, decl.init);
 
   let type: number[];
   if (decl.typeAnnotation) {
     type = mapType(ctx, decl.typeAnnotation, ctx.currentTypeContext);
 
+    // Union boxing (i32 -> anyref)
+    if (
+      type.length === 2 &&
+      type[0] === ValType.ref_null &&
+      type[1] === HeapType.any &&
+      exprType.length === 1 &&
+      exprType[0] === ValType.i32
+    ) {
+      body.push(Opcode.gc_prefix, GcOpcode.ref_i31);
+    }
+
     // Check for interface boxing
-    if (ctx.interfaces.has(decl.typeAnnotation.name)) {
+    if (
+      decl.typeAnnotation.type === NodeType.TypeAnnotation &&
+      ctx.interfaces.has(decl.typeAnnotation.name)
+    ) {
       const initType = inferType(ctx, decl.init);
       const typeIndex = decodeTypeIndex(initType);
       const classInfo = getClassFromTypeIndex(ctx, typeIndex);

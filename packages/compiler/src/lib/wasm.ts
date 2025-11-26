@@ -32,6 +32,19 @@ export const ValType = {
   i16: 0x77,
 } as const;
 
+export const HeapType = {
+  func: 0x70,
+  extern: 0x6f,
+  any: 0x6e,
+  eq: 0x6d,
+  struct: 0x6b,
+  array: 0x6a,
+  i31: 0x6c,
+  none: 0x71,
+  noextern: 0x72,
+  nofunc: 0x73,
+} as const;
+
 export const GcOpcode = {
   struct_new: 0x00,
   struct_new_default: 0x01,
@@ -52,6 +65,9 @@ export const GcOpcode = {
   array_copy: 0x11,
   ref_cast: 0x16,
   ref_cast_null: 0x17,
+  ref_i31: 0x1c,
+  i31_get_s: 0x1d,
+  i31_get_u: 0x1e,
 } as const;
 
 export const Opcode = {
@@ -84,6 +100,8 @@ export const Opcode = {
 
   ref_null: 0xd0,
   ref_func: 0xd2,
+
+  gc_prefix: 0xfb,
 
   i32_eqz: 0x45,
   i32_eq: 0x46,

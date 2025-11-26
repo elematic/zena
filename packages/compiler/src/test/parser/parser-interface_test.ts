@@ -24,7 +24,7 @@ suite('Parser - Interfaces', () => {
       if (method.type === NodeType.MethodSignature) {
         assert.strictEqual(method.name.name, 'run');
         assert.strictEqual(method.params.length, 0);
-        assert.strictEqual(method.returnType?.name, 'void');
+        assert.strictEqual((method.returnType as any)?.name, 'void');
       }
     }
   });
@@ -46,7 +46,7 @@ suite('Parser - Interfaces', () => {
       assert.strictEqual(field1.type, NodeType.FieldDefinition);
       if (field1.type === NodeType.FieldDefinition) {
         assert.strictEqual(field1.name.name, 'x');
-        assert.strictEqual(field1.typeAnnotation.name, 'i32');
+        assert.strictEqual((field1.typeAnnotation as any).name, 'i32');
       }
     }
   });
@@ -66,7 +66,7 @@ suite('Parser - Interfaces', () => {
       assert.strictEqual(decl.name.name, 'Task');
       assert.ok(decl.implements);
       assert.strictEqual(decl.implements.length, 1);
-      assert.strictEqual(decl.implements[0].name, 'Runnable');
+      assert.strictEqual((decl.implements[0] as any).name, 'Runnable');
     }
   });
 
@@ -83,8 +83,8 @@ suite('Parser - Interfaces', () => {
     if (decl.type === NodeType.ClassDeclaration) {
       assert.ok(decl.implements);
       assert.strictEqual(decl.implements.length, 2);
-      assert.strictEqual(decl.implements[0].name, 'Runnable');
-      assert.strictEqual(decl.implements[1].name, 'Stoppable');
+      assert.strictEqual((decl.implements[0] as any).name, 'Runnable');
+      assert.strictEqual((decl.implements[1] as any).name, 'Stoppable');
     }
   });
 

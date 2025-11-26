@@ -34,7 +34,7 @@ suite('Parser (Generics)', () => {
         assert.ok(fn.typeParameters);
         assert.strictEqual(fn.typeParameters.length, 1);
         assert.strictEqual(fn.typeParameters[0].name, 'T');
-        assert.strictEqual(fn.params[0].typeAnnotation.name, 'T');
+        assert.strictEqual((fn.params[0].typeAnnotation as any).name, 'T');
       }
     }
   });
@@ -53,8 +53,8 @@ suite('Parser (Generics)', () => {
         assert.strictEqual(expr.callee.name, 'Map');
         assert.ok(expr.typeArguments);
         assert.strictEqual(expr.typeArguments.length, 2);
-        assert.strictEqual(expr.typeArguments[0].name, 'i32');
-        assert.strictEqual(expr.typeArguments[1].name, 'string');
+        assert.strictEqual((expr.typeArguments[0] as any).name, 'i32');
+        assert.strictEqual((expr.typeArguments[1] as any).name, 'string');
       }
     }
   });
@@ -70,7 +70,7 @@ suite('Parser (Generics)', () => {
       const field = decl.body[0];
       assert.strictEqual(field.type, NodeType.FieldDefinition);
       if (field.type === NodeType.FieldDefinition) {
-        const type = field.typeAnnotation;
+        const type = field.typeAnnotation as any;
         assert.strictEqual(type.name, 'Map');
         assert.ok(type.typeArguments);
         assert.strictEqual(type.typeArguments.length, 2);
