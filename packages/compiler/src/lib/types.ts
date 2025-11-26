@@ -43,6 +43,7 @@ export interface ClassType extends Type {
   name: string;
   typeParameters?: TypeParameterType[];
   typeArguments?: Type[];
+  superType?: ClassType;
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
   constructorType?: FunctionType;

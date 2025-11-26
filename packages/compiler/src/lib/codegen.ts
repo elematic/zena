@@ -130,18 +130,44 @@ export class CodeGenerator {
 
     const fields = new Map<string, {index: number; type: number[]}>();
     const fieldTypes: {type: number[]; mutable: boolean}[] = [];
-
     let fieldIndex = 0;
+
+    let superTypeIndex: number | undefined;
+    if (decl.superClass) {
+      const superClassInfo = this.#classes.get(decl.superClass.name);
+      if (!superClassInfo) {
+        throw new Error(`Unknown superclass ${decl.superClass.name}`);
+      }
+      superTypeIndex = superClassInfo.structTypeIndex;
+
+      // Inherit fields
+      // We must iterate in order of index to ensure layout compatibility
+      const sortedSuperFields = Array.from(
+        superClassInfo.fields.entries(),
+      ).sort((a, b) => a[1].index - b[1].index);
+
+      for (const [name, info] of sortedSuperFields) {
+        fields.set(name, {index: fieldIndex++, type: info.type});
+        fieldTypes.push({type: info.type, mutable: true});
+      }
+    }
+
     for (const member of decl.body) {
       if (member.type === NodeType.FieldDefinition) {
         // TODO: Map AST type to WASM type properly. For now assume i32.
         const wasmType = [ValType.i32];
-        fields.set(member.name.name, {index: fieldIndex++, type: wasmType});
-        fieldTypes.push({type: wasmType, mutable: true}); // All fields mutable for now
+        // Skip if already inherited (shadowing not allowed by checker, but good to be safe)
+        if (!fields.has(member.name.name)) {
+          fields.set(member.name.name, {index: fieldIndex++, type: wasmType});
+          fieldTypes.push({type: wasmType, mutable: true}); // All fields mutable for now
+        }
       }
     }
 
-    const structTypeIndex = this.#module.addStructType(fieldTypes);
+    const structTypeIndex = this.#module.addStructType(
+      fieldTypes,
+      superTypeIndex,
+    );
     const classInfo: ClassInfo = {
       structTypeIndex,
       fields,
@@ -150,6 +176,14 @@ export class CodeGenerator {
     this.#classes.set(decl.name.name, classInfo);
 
     // Register methods
+    // Inherit methods from superclass
+    if (decl.superClass) {
+      const superClassInfo = this.#classes.get(decl.superClass.name)!;
+      for (const [name, info] of superClassInfo.methods) {
+        classInfo.methods.set(name, info);
+      }
+    }
+
     for (const member of decl.body) {
       if (member.type === NodeType.MethodDefinition) {
         const methodName = member.name.name;

@@ -260,4 +260,18 @@ suite('Parser', () => {
       }
     }
   });
+
+  test('should parse class inheritance', () => {
+    const input = 'class Dog extends Animal { }';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const cls = ast.body[0];
+    assert.strictEqual(cls.type, NodeType.ClassDeclaration);
+    if (cls.type === NodeType.ClassDeclaration) {
+      assert.strictEqual(cls.name.name, 'Dog');
+      assert.ok(cls.superClass);
+      assert.strictEqual(cls.superClass.name, 'Animal');
+    }
+  });
 });

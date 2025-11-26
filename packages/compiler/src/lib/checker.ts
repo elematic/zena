@@ -490,14 +490,40 @@ export class TypeChecker {
       }
     }
 
+    let superType: ClassType | undefined;
+    if (decl.superClass) {
+      const type = this.#resolve(decl.superClass.name);
+      if (!type) {
+        this.#errors.push(`Unknown superclass '${decl.superClass.name}'.`);
+      } else if (type.kind !== TypeKind.Class) {
+        this.#errors.push(
+          `Superclass '${decl.superClass.name}' must be a class.`,
+        );
+      } else {
+        superType = type as ClassType;
+      }
+    }
+
     const classType: ClassType = {
       kind: TypeKind.Class,
       name: className,
       typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+      superType,
       fields: new Map(),
       methods: new Map(),
       constructorType: undefined,
     };
+
+    if (superType) {
+      // Inherit fields
+      for (const [name, type] of superType.fields) {
+        classType.fields.set(name, type);
+      }
+      // Inherit methods
+      for (const [name, type] of superType.methods) {
+        classType.methods.set(name, type);
+      }
+    }
 
     this.#declare(className, classType);
 
@@ -511,9 +537,18 @@ export class TypeChecker {
       if (member.type === NodeType.FieldDefinition) {
         const fieldType = this.#resolveTypeAnnotation(member.typeAnnotation);
         if (classType.fields.has(member.name.name)) {
-          this.#errors.push(
-            `Duplicate field '${member.name.name}' in class '${className}'.`,
-          );
+          // Check if it's a redeclaration of an inherited field
+          if (superType && superType.fields.has(member.name.name)) {
+            // For now, allow shadowing if types match? Or disallow?
+            // Let's disallow field shadowing for simplicity and safety.
+            this.#errors.push(
+              `Cannot redeclare field '${member.name.name}' in subclass '${className}'.`,
+            );
+          } else {
+            this.#errors.push(
+              `Duplicate field '${member.name.name}' in class '${className}'.`,
+            );
+          }
         }
         classType.fields.set(member.name.name, fieldType);
       } else if (member.type === NodeType.MethodDefinition) {
@@ -537,9 +572,25 @@ export class TypeChecker {
           classType.constructorType = methodType;
         } else {
           if (classType.methods.has(member.name.name)) {
-            this.#errors.push(
-              `Duplicate method '${member.name.name}' in class '${className}'.`,
-            );
+            // Check for override
+            if (superType && superType.methods.has(member.name.name)) {
+              // Validate override
+              const superMethod = superType.methods.get(member.name.name)!;
+              // TODO: Check signature compatibility (covariant return, contravariant params)
+              // For now, require exact match
+              if (
+                this.#typeToString(methodType) !==
+                this.#typeToString(superMethod)
+              ) {
+                this.#errors.push(
+                  `Method '${member.name.name}' in '${className}' incorrectly overrides method in '${superType.name}'.`,
+                );
+              }
+            } else {
+              this.#errors.push(
+                `Duplicate method '${member.name.name}' in class '${className}'.`,
+              );
+            }
           }
           classType.methods.set(member.name.name, methodType);
         }

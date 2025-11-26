@@ -512,6 +512,12 @@ export class Parser {
   #parseClassDeclaration(): ClassDeclaration {
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
+
+    let superClass: Identifier | undefined;
+    if (this.#match(TokenType.Extends)) {
+      superClass = this.#parseIdentifier();
+    }
+
     this.#consume(TokenType.LBrace, "Expected '{' before class body.");
 
     const body: (FieldDefinition | MethodDefinition)[] = [];
@@ -525,6 +531,7 @@ export class Parser {
       type: NodeType.ClassDeclaration,
       name,
       typeParameters,
+      superClass,
       body,
     };
   }

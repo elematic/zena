@@ -128,6 +128,7 @@ export interface ClassDeclaration extends Node {
   type: typeof NodeType.ClassDeclaration;
   name: Identifier;
   typeParameters?: TypeParameter[];
+  superClass?: Identifier;
   body: (FieldDefinition | MethodDefinition)[];
 }
 

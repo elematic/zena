@@ -28,11 +28,22 @@ export class WasmModule {
     return index;
   }
 
-  public addStructType(fields: {type: number[]; mutable: boolean}[]): number {
+  public addStructType(
+    fields: {type: number[]; mutable: boolean}[],
+    superTypeIndex?: number,
+  ): number {
     // Struct type: 0x5F + vec(field_type)
-    // field_type: val_type + mutability
+    // Wrapped in sub: 0x50 + vec(supertype) + struct_type
     const buffer: number[] = [];
-    buffer.push(0x5f);
+    buffer.push(0x50); // sub
+    if (superTypeIndex !== undefined) {
+      this.#writeUnsignedLEB128(buffer, 1);
+      this.#writeUnsignedLEB128(buffer, superTypeIndex);
+    } else {
+      this.#writeUnsignedLEB128(buffer, 0);
+    }
+
+    buffer.push(0x5f); // struct
     this.#writeUnsignedLEB128(buffer, fields.length);
     for (const field of fields) {
       buffer.push(...field.type);

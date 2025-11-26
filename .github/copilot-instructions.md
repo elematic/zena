@@ -161,40 +161,35 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Generic Functions (`<T>(x: T) => x`).
   - Type Inference (`new Box(10)` -> `Box<i32>`).
   - Default Type Parameters (`class Box<T = i32>`).
+  - Inheritance (Basic):
+    - `extends` keyword.
+    - Struct layout compatibility.
+    - Method/Field inheritance.
+    - Static dispatch for overridden methods.
 
 ### Planned
 
 1.  **Object-Oriented Features** (Immediate Priority):
-    - **Inheritance**: Implement `class Dog extends Animal`.
-        - **Parser**:
-            - Update `ClassDeclaration` AST to include `superClass?: Identifier`.
-            - Update grammar to handle `class Name extends SuperName { ... }`.
-            - Add tests in `parser_test.ts`.
-        - **Type Checker**:
-            - Resolve `superClass` identifier.
-            - Validate superclass existence and type (must be a class).
-            - Detect inheritance cycles.
-            - Validate method overrides (signatures must match or be covariant).
-            - Update `isAssignableTo` for subtyping.
-        - **Code Generator (WASM-GC)**:
-            - **Struct Layout**: Ensure subclass struct starts with superclass fields (types and order).
-            - **WASM Subtyping**: Generate `(sub $Super (struct ...))` definitions.
-            - **Casting**: Implement upcasting (implicit) and downcasting (explicit).
+    - **Inheritance (Advanced)**:
+      - **Dynamic Dispatch**: Implement VTables for polymorphic method calls.
+      - **Casting**: Implement `as` operator and `instanceof` checks.
     - **Interfaces**: Implement `interface Runnable { run(): void; }` and `implements`.
     - **Abstract Classes**: Support `abstract class`.
     - **Access Control**: Enforce `#` private fields strictly.
 
 2.  **Generics Enhancements**:
+
+3.  **Generics Enhancements**:
     - **Constraints**: Support `T extends Animal` (Requires Inheritance).
 
-3.  **Data Structures**:
+4.  **Data Structures**:
     - **Maps**: Implement mutable maps (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
-4.  **Standard Library**:
+5.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
     - String manipulation (`substring`, `indexOf`).
     - Console I/O (`console.log`).
 
-5.  **Self-Hosting**:
+6.  **Self-Hosting**:
     - Rewrite the compiler in Rhea.
