@@ -51,6 +51,7 @@ export const GcOpcode = {
   array_len: 0x0f,
   array_copy: 0x11,
   ref_cast: 0x16,
+  ref_cast_null: 0x17,
 } as const;
 
 export const Opcode = {

@@ -13,6 +13,13 @@ export interface ClassInfo {
   vtable?: string[];
   vtableTypeIndex?: number;
   vtableGlobalIndex?: number;
+  implements?: Map<string, {vtableGlobalIndex: number}>; // interfaceName -> info
+}
+
+export interface InterfaceInfo {
+  structTypeIndex: number;
+  vtableTypeIndex: number;
+  methods: Map<string, {index: number; typeIndex: number}>; // name -> {vtableIndex, typeIndex}
 }
 
 export interface LocalInfo {

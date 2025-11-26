@@ -99,7 +99,9 @@ export class WasmModule {
       this.#writeUnsignedLEB128(codeBuffer, local.count);
       codeBuffer.push(...local.type);
     }
+
     codeBuffer.push(...body);
+    // codeBuffer.push(0x0b); // end - Removed to avoid double end
 
     this.#codes[index] = codeBuffer;
   }
@@ -248,6 +250,20 @@ export class WasmModule {
       }
       buffer.push(byte);
     } while (value !== 0);
+  }
+
+  public static encodeUnsignedLEB128(value: number): number[] {
+    const buffer: number[] = [];
+    value |= 0;
+    do {
+      let byte = value & 0x7f;
+      value >>>= 7;
+      if (value !== 0) {
+        byte |= 0x80;
+      }
+      buffer.push(byte);
+    } while (value !== 0);
+    return buffer;
   }
 
   public static encodeSignedLEB128(value: number): number[] {

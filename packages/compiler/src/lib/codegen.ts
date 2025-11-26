@@ -26,10 +26,11 @@ import {
   type MethodDefinition,
   type Parameter,
   type TypeParameter,
+  type InterfaceDeclaration,
 } from './ast.js';
 import {WasmModule} from './emitter.js';
 import {ValType, Opcode, ExportDesc, GcOpcode} from './wasm.js';
-import type {ClassInfo, LocalInfo} from './codegen-types.js';
+import type {ClassInfo, LocalInfo, InterfaceInfo} from './codegen-types.js';
 
 export class CodeGenerator {
   #module: WasmModule;
@@ -39,6 +40,7 @@ export class CodeGenerator {
   #nextLocalIndex = 0;
   #functions = new Map<string, number>();
   #classes = new Map<string, ClassInfo>();
+  #interfaces = new Map<string, InterfaceInfo>();
   #currentClass: ClassInfo | null = null;
   #arrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
   #stringTypeIndex = -1;
@@ -65,10 +67,24 @@ export class CodeGenerator {
     const classInfo = this.#classes.get(decl.name.name)!;
     this.#currentClass = classInfo;
 
-    for (const member of decl.body) {
+    const members = [...decl.body];
+    const hasConstructor = members.some(
+      (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
+    );
+    if (!hasConstructor) {
+      members.push({
+        type: NodeType.MethodDefinition,
+        name: {type: NodeType.Identifier, name: '#new'},
+        params: [],
+        body: {type: NodeType.BlockStatement, body: []},
+      } as MethodDefinition);
+    }
+
+    for (const member of members) {
       if (member.type === NodeType.MethodDefinition) {
-        const methodInfo = classInfo.methods.get(member.name.name)!;
-        const body = this.#generateMethodBodyCode(member, new Map());
+        const methodName = member.name.name;
+        const methodInfo = classInfo.methods.get(methodName)!;
+        const body = this.#generateMethodBodyCode(member, new Map(), decl);
         this.#module.addCode(methodInfo.index, this.#extraLocals, body);
       }
     }
@@ -80,6 +96,8 @@ export class CodeGenerator {
     for (const statement of this.#program.body) {
       if (statement.type === NodeType.ClassDeclaration) {
         this.#registerClass(statement as ClassDeclaration);
+      } else if (statement.type === NodeType.InterfaceDeclaration) {
+        this.#registerInterface(statement as InterfaceDeclaration);
       } else if (
         statement.type === NodeType.VariableDeclaration &&
         statement.init.type === NodeType.FunctionExpression
@@ -111,6 +129,184 @@ export class CodeGenerator {
     }
 
     return this.#module.toBytes();
+  }
+
+  #registerInterface(decl: InterfaceDeclaration) {
+    // 1. Create VTable Struct Type
+    // (struct (field (ref (func (param any) ...))) ...)
+    const vtableFields: {type: number[]; mutable: boolean}[] = [];
+    const methodIndices = new Map<string, {index: number; typeIndex: number}>();
+
+    let methodIndex = 0;
+    for (const member of decl.body) {
+      if (member.type === NodeType.MethodSignature) {
+        // Function type: (param any, ...params) -> result
+        const params: number[][] = [[ValType.ref_null, ValType.anyref]]; // 'this' is (ref null any)
+        for (const param of member.params) {
+          params.push(this.#mapType(param.typeAnnotation));
+        }
+        const results: number[][] = [];
+        if (member.returnType) {
+          const mapped = this.#mapType(member.returnType);
+          if (mapped.length > 0) results.push(mapped);
+        }
+
+        const funcTypeIndex = this.#module.addType(params, results);
+
+        // Field in VTable: (ref funcType)
+        vtableFields.push({
+          type: [ValType.ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex)],
+          mutable: false, // VTables are immutable
+        });
+
+        methodIndices.set(member.name.name, {
+          index: methodIndex++,
+          typeIndex: funcTypeIndex,
+        });
+      }
+    }
+
+    const vtableTypeIndex = this.#module.addStructType(vtableFields);
+
+    // 2. Create Interface Struct Type (Fat Pointer)
+    // (struct (field (ref null any)) (field (ref vtable)))
+    const interfaceFields = [
+      {type: [ValType.ref_null, ValType.anyref], mutable: true}, // instance
+      {
+        type: [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
+        mutable: true,
+      }, // vtable
+    ];
+    const structTypeIndex = this.#module.addStructType(interfaceFields);
+
+    this.#interfaces.set(decl.name.name, {
+      structTypeIndex,
+      vtableTypeIndex,
+      methods: methodIndices,
+    });
+  }
+
+  #generateTrampoline(
+    classInfo: ClassInfo,
+    methodName: string,
+    typeIndex: number,
+  ): number {
+    const classMethod = classInfo.methods.get(methodName)!;
+    const trampolineIndex = this.#module.addFunction(typeIndex);
+
+    const body: number[] = [];
+
+    // Locals:
+    // 0..N: Params (Param 0 is 'any', 1..N are args)
+    // N+1: Casted 'this'
+
+    const paramCount = classMethod.paramTypes.length;
+    const castedThisLocal = paramCount;
+    const locals = [
+      [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+      ],
+    ];
+
+    // local.set $castedThis (ref.cast $Task (local.get 0))
+    body.push(Opcode.local_get, 0);
+    body.push(
+      0xfb,
+      GcOpcode.ref_cast_null,
+      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+    );
+    body.push(
+      Opcode.local_set,
+      ...WasmModule.encodeSignedLEB128(castedThisLocal),
+    );
+
+    // Call class method
+    body.push(
+      Opcode.local_get,
+      ...WasmModule.encodeSignedLEB128(castedThisLocal),
+    );
+    for (let i = 1; i < classMethod.paramTypes.length; i++) {
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(i));
+    }
+    body.push(Opcode.call, ...WasmModule.encodeSignedLEB128(classMethod.index));
+    body.push(Opcode.end);
+
+    this.#module.addCode(trampolineIndex, locals, body);
+    return trampolineIndex;
+  }
+
+  #generateInterfaceVTable(classInfo: ClassInfo, decl: ClassDeclaration) {
+    if (!decl.implements) return;
+
+    if (!classInfo.implements) classInfo.implements = new Map();
+
+    for (const impl of decl.implements) {
+      const interfaceName = impl.name;
+      const interfaceInfo = this.#interfaces.get(interfaceName)!;
+
+      const vtableEntries: number[] = [];
+
+      for (const [methodName, methodInfo] of interfaceInfo.methods) {
+        const trampolineIndex = this.#generateTrampoline(
+          classInfo,
+          methodName,
+          methodInfo.typeIndex,
+        );
+        vtableEntries.push(trampolineIndex);
+      }
+
+      const initExpr: number[] = [];
+      for (const funcIndex of vtableEntries) {
+        initExpr.push(
+          Opcode.ref_func,
+          ...WasmModule.encodeSignedLEB128(funcIndex),
+        );
+      }
+      initExpr.push(
+        0xfb,
+        GcOpcode.struct_new,
+        ...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex),
+      );
+
+      const globalIndex = this.#module.addGlobal(
+        [
+          ValType.ref,
+          ...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex),
+        ],
+        false,
+        initExpr,
+      );
+
+      classInfo.implements.set(interfaceName, {vtableGlobalIndex: globalIndex});
+    }
+  }
+
+  #getClassFromTypeIndex(index: number): ClassInfo | undefined {
+    for (const info of this.#classes.values()) {
+      if (info.structTypeIndex === index) return info;
+    }
+    return undefined;
+  }
+
+  #getInterfaceFromTypeIndex(index: number): InterfaceInfo | undefined {
+    for (const info of this.#interfaces.values()) {
+      if (info.structTypeIndex === index) return info;
+    }
+    return undefined;
+  }
+
+  #decodeTypeIndex(type: number[]): number {
+    if (type.length < 2) return -1;
+    let typeIndex = 0;
+    let shift = 0;
+    for (let i = 1; i < type.length; i++) {
+      const byte = type[i];
+      typeIndex |= (byte & 0x7f) << shift;
+      shift += 7;
+      if ((byte & 0x80) === 0) break;
+    }
+    return typeIndex;
   }
 
   #registerClass(decl: ClassDeclaration) {
@@ -181,7 +377,20 @@ export class CodeGenerator {
     );
 
     // Register methods
-    for (const member of decl.body) {
+    const members = [...decl.body];
+    const hasConstructor = members.some(
+      (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
+    );
+    if (!hasConstructor) {
+      members.push({
+        type: NodeType.MethodDefinition,
+        name: {type: NodeType.Identifier, name: '#new'},
+        params: [],
+        body: {type: NodeType.BlockStatement, body: []},
+      } as MethodDefinition);
+    }
+
+    for (const member of members) {
       if (member.type === NodeType.MethodDefinition) {
         const methodName = member.name.name;
 
@@ -274,6 +483,8 @@ export class CodeGenerator {
       vtableGlobalIndex,
     };
     this.#classes.set(decl.name.name, classInfo);
+
+    this.#generateInterfaceVTable(classInfo, decl);
 
     this.#bodyGenerators.push(() => {
       this.#generateClassMethods(decl);
@@ -427,6 +638,33 @@ export class CodeGenerator {
     let type: number[];
     if (decl.typeAnnotation) {
       type = this.#mapType(decl.typeAnnotation, this.#currentTypeContext);
+
+      // Check for interface boxing
+      if (this.#interfaces.has(decl.typeAnnotation.name)) {
+        const initType = this.#inferType(decl.init);
+        const typeIndex = this.#decodeTypeIndex(initType);
+        const classInfo = this.#getClassFromTypeIndex(typeIndex);
+
+        if (
+          classInfo &&
+          classInfo.implements &&
+          classInfo.implements.has(decl.typeAnnotation.name)
+        ) {
+          const interfaceName = decl.typeAnnotation.name;
+          const interfaceInfo = this.#interfaces.get(interfaceName)!;
+          const implInfo = classInfo.implements.get(interfaceName)!;
+
+          body.push(
+            Opcode.global_get,
+            ...WasmModule.encodeSignedLEB128(implInfo.vtableGlobalIndex),
+          );
+          body.push(
+            0xfb,
+            GcOpcode.struct_new,
+            ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+          );
+        }
+      }
     } else {
       type = this.#inferType(decl.init);
     }
@@ -718,6 +956,97 @@ export class CodeGenerator {
       const methodName = memberExpr.property.name;
 
       const objectType = this.#inferType(memberExpr.object);
+      const typeIndex = this.#decodeTypeIndex(objectType);
+
+      // Check if interface
+      const interfaceInfo = this.#getInterfaceFromTypeIndex(typeIndex);
+      if (interfaceInfo) {
+        const methodInfo = interfaceInfo.methods.get(methodName);
+        if (!methodInfo)
+          throw new Error(`Method ${methodName} not found in interface`);
+
+        // Evaluate object -> Stack: [InterfaceStruct]
+        this.#generateExpression(memberExpr.object, body);
+
+        // Store in temp local
+        const tempLocal = this.#declareLocal('$$interface_temp', objectType);
+        body.push(
+          Opcode.local_tee,
+          ...WasmModule.encodeSignedLEB128(tempLocal),
+        );
+
+        // Load VTable
+        body.push(
+          0xfb,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+          ...WasmModule.encodeSignedLEB128(1),
+        );
+
+        // Load Function Pointer
+        body.push(
+          0xfb,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex),
+          ...WasmModule.encodeSignedLEB128(methodInfo.index),
+        );
+
+        // Cast to specific function type
+        if (methodInfo.typeIndex > 10) {
+          // throw new Error(`Type index too high: ${methodInfo.typeIndex}`);
+        }
+        // Try ref.cast_null (0x17) instead of ref.cast (0x16)
+        body.push(
+          0xfb,
+          GcOpcode.ref_cast_null,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        );
+
+        // Store function ref in temp local
+        const funcRefType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        ];
+        const funcRefLocal = this.#declareLocal(
+          '$$interface_func',
+          funcRefType,
+        );
+        body.push(
+          Opcode.local_set,
+          ...WasmModule.encodeSignedLEB128(funcRefLocal),
+        );
+
+        // Load Instance (this)
+        body.push(
+          Opcode.local_get,
+          ...WasmModule.encodeSignedLEB128(tempLocal),
+        );
+        body.push(
+          0xfb,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+          ...WasmModule.encodeSignedLEB128(0),
+        );
+
+        // Args
+        for (const arg of expr.arguments) {
+          this.#generateExpression(arg, body);
+        }
+
+        // Load function ref
+        body.push(
+          Opcode.local_get,
+          ...WasmModule.encodeSignedLEB128(funcRefLocal),
+        );
+
+        // Call Ref
+        body.push(
+          Opcode.call_ref,
+          ...WasmModule.encodeUnsignedLEB128(methodInfo.typeIndex),
+        );
+        return;
+      }
+
       const structTypeIndex = this.#getHeapTypeIndex(objectType);
 
       if (structTypeIndex === -1) {
@@ -760,7 +1089,7 @@ export class CodeGenerator {
         body.push(...WasmModule.encodeSignedLEB128(0));
 
         // Cast vtable
-        body.push(0xfb, GcOpcode.ref_cast);
+        body.push(0xfb, GcOpcode.ref_cast_null);
         body.push(...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex));
 
         // Get function from vtable
@@ -769,7 +1098,7 @@ export class CodeGenerator {
         body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
 
         // Cast function to specific type
-        body.push(0xfb, GcOpcode.ref_cast);
+        body.push(0xfb, GcOpcode.ref_cast_null);
         body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
 
         // Save function to temp
@@ -985,6 +1314,14 @@ export class CodeGenerator {
     // Check type context first
     if (typeContext && typeContext.has(annotation.name)) {
       return this.#mapType(typeContext.get(annotation.name)!, typeContext);
+    }
+
+    if (this.#interfaces.has(annotation.name)) {
+      const info = this.#interfaces.get(annotation.name)!;
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(info.structTypeIndex),
+      ];
     }
 
     if (annotation.name === 'i32') return [ValType.i32];
@@ -1669,7 +2006,7 @@ export class CodeGenerator {
         });
 
         this.#pendingMethodGenerations.push(() => {
-          this.#generateMethodBody(member, classInfo, context);
+          this.#generateMethodBody(member, classInfo, context, decl);
         });
       }
     }
@@ -1727,6 +2064,7 @@ export class CodeGenerator {
     method: MethodDefinition,
     classInfo: ClassInfo,
     typeContext: Map<string, TypeAnnotation>,
+    classDecl: ClassDeclaration,
   ) {
     const methodInfo = classInfo.methods.get(method.name.name)!;
 
@@ -1736,7 +2074,7 @@ export class CodeGenerator {
     this.#currentClass = classInfo;
     this.#currentTypeContext = typeContext;
 
-    const body = this.#generateMethodBodyCode(method, typeContext);
+    const body = this.#generateMethodBodyCode(method, typeContext, classDecl);
     this.#module.addCode(methodInfo.index, this.#extraLocals, body);
 
     this.#currentClass = prevClass;
@@ -1746,6 +2084,7 @@ export class CodeGenerator {
   #generateMethodBodyCode(
     method: MethodDefinition,
     typeContext: Map<string, TypeAnnotation>,
+    classDecl: ClassDeclaration,
   ): number[] {
     const body: number[] = [];
     this.#scopes = [new Map()];
@@ -1784,7 +2123,7 @@ export class CodeGenerator {
           const newLocal = this.#declareLocal('$$this_casted', castedType);
 
           body.push(Opcode.local_get, 0);
-          body.push(0xfb, GcOpcode.ref_cast);
+          body.push(0xfb, GcOpcode.ref_cast_null);
           body.push(
             ...WasmModule.encodeSignedLEB128(
               this.#currentClass.structTypeIndex,
@@ -1794,6 +2133,31 @@ export class CodeGenerator {
           body.push(...WasmModule.encodeSignedLEB128(newLocal));
 
           this.#thisLocalIndex = newLocal;
+        }
+      }
+    }
+
+    // Initialize fields if constructor
+    if (method.name.name === '#new') {
+      for (const member of classDecl.body) {
+        if (member.type === NodeType.FieldDefinition && member.value) {
+          // Generate assignment: this.field = value
+          // Load this
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(this.#thisLocalIndex));
+
+          // Generate value
+          this.#generateExpression(member.value, body);
+
+          // Set field
+          const fieldInfo = this.#currentClass!.fields.get(member.name.name)!;
+          body.push(0xfb, GcOpcode.struct_set);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(
+              this.#currentClass!.structTypeIndex,
+            ),
+          );
+          body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
         }
       }
     }
