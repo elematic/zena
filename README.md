@@ -42,36 +42,66 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 - **Controlling quality and reducing slop**: I haven't been a huge AI booster—I'm skeptical of a lot of the hype—but it's clearly useful for coding if you hold it right. I wanted to see if I could nudge an AI to build well-constructed, reliable software rather than unmaintainable cruft. I'm performing a lot of oversight: reviewing code and tests, "discussing" design ideas, and planning next steps. Is that enough?
 - **Why Zena itself?**: I wanted a nice language for building WASM modules that uses modern features like WASM-GC out of the box. I didn't see another language I loved for this—even including Rust, Go, or AssemblyScript—so I decided to try building one.
 
-## Key Features
+## Feature Status
 
-> **Note**: Zena is in active development. Many of the features listed below are
-> currently being implemented or are in the design phase.
+### Language Features
 
-- **Clean-Slate OOP**:
-  - **JS-style private namespaces** (using `#`).
-  - **Dart-style constructors** (named `#new`) with initializer lists.
-  - **Powerful mixins** for code reuse (subclass factories).
-  - **Classical inheritance** with immutable instances by default.
-- **Rich Type System**:
-  - **Zero-Cost Generics**: Fully monomorphized, allowing for specialized, high-performance code for every type instantiation.
-  - **Interfaces**: Implemented via "Fat Pointers" (Instance + VTable), allowing for true dynamic dispatch across disjoint class hierarchies.
-  - **Future**: Union and intersection types, discriminated unions.
-- **High-Level Features**:
-  - **Native JSX-like builder syntax**.
-  - **Pattern matching**.
-  - **Operator overloading** (possibly via extension methods) to support numeric
-    programming (similar to R).
-- **Variables**: `let` for immutable bindings, `var` for mutable bindings. Both
-  are block-scoped.
-- **Functions**: Arrow functions only (`=>`). No `function` keyword.
-- **Auto-Accessors**: Class fields generate auto-accessors backed by private
-  storage by default.
-- **Efficient Standard Library**:
-  - **Strings**: Immutable UTF-8 byte arrays with value equality semantics.
-  - **Maps & Arrays**: Mutable collections designed for performance.
-  - Most features are opt-in via module imports to prevent binary bloat.
-- **Named Parameters**: First-class support for named parameters to avoid object
-  allocation overhead.
+- [x] `let` and `var` variables for immutable and mutable variable bindings
+- [x] Type annotations with non-nullable by default types
+- [x] Basic types: `i32`, `f32`, `boolean`, `null`, `void`
+- [x] String type and built-in class
+- [x] Function declarations and calling
+- [x] Operators: `+`, `-`, `*`, `/`, `==`, `!=`, `<`, `<=`, `>`, `>=`
+- [x] Exports
+- [x] Classes with inheritance, constructors, fields, and methods
+- [x] Virtual public class members, including fields
+- [x] Private fields
+- [x] `final` classes and class members
+- [x] Interfaces (with nominal typing)
+- [x] Mixins, with composition support and constraints
+- [x] Generics on function, classes, interfaces, and mixins, with constraints and defaults
+- [x] Union types
+- [x] Accessors
+- [x] Mutable Arrays and array literals (`#[...]`)
+- [ ] Record and tuple literal syntax (`{...}` and `[ ... ]`)
+- [ ] Mutable Maps and map literals (`#{...}`)
+- [ ] More primitive types
+- [ ] Modules and imports
+- [ ] Blocks
+- [ ] For and do/while loops
+- [ ] Pattern matching
+- [ ] For/of loops
+- [ ] Iterators
+- [ ] More operators: ternary, not, exponentiation
+- [ ] String escapes
+- [ ] Standard library
+- [ ] Numeric unit types
+- [ ] Extension methods
+- [ ] Operator overloading
+- [ ] Intersection types
+- [ ] Abstract classes and members
+- [ ] Mixin constructors
+- [ ] Async functions
+- [ ] Regexes
+- [ ] Console built-in
+- [ ] Tagged template literals
+- [ ] Decorators
+- [ ] JSX-like builder syntax
+- [ ] Enums
+- [ ] Workers
+
+### Tools
+
+- [x] Compiler implemented in TypeScript
+- [x] CLI
+- [x] Website
+- [ ] Self-hosted compiler written in Zena
+- [ ] VS Code extension
+- [ ] Syntax highlighter plugins
+- [ ] Online playground
+- [ ] WIT generator
+- [ ] WASI support in CLI
+- [ ] Package manager
 
 ## Syntax Example
 

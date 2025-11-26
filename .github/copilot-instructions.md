@@ -230,3 +230,27 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 6.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
+
+7.  **Future Features**:
+    - **Syntax**:
+      - Record and tuple literal syntax (`{...}` and `[ ... ]`).
+      - Blocks.
+      - Pattern matching.
+      - For/of loops.
+      - Iterators.
+      - Tagged template literals.
+      - JSX-like builder syntax.
+    - **Type System**:
+      - Numeric unit types.
+      - Intersection types.
+      - Enums.
+    - **OOP & Functions**:
+      - Extension methods.
+      - Operator overloading.
+      - Mixin constructors.
+      - Async functions.
+    - **Standard Library & Runtime**:
+      - More operators: ternary, not, exponentiation.
+      - Regexes.
+      - Console built-in.
+      - Workers.
