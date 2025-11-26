@@ -102,7 +102,11 @@ This project is an **npm monorepo** managed with **Wireit**.
 - **Scripts**:
   - `npm test`: Runs tests across the workspace using Wireit.
   - `npm run build`: Builds packages using Wireit.
-  - Use `npm test -w @rhea-lang/compiler` to run tests for a specific package.
+  - **Wireit Caching**: Wireit caches script results and only re-runs scripts when inputs change. Remember this when debugging or running tasks repeatedly.
+  - **Running Tests**:
+    - Use `npm test` or `npm test -w @rhea-lang/compiler`.
+    - **NEVER** use `npm test packages/compiler` or `npm test -- some/path/some_test.ts`.
+    - Packages are always referred to by **package name** (e.g., `@rhea-lang/compiler`), not package path.
 
 ## Coding Standards
 
@@ -125,6 +129,7 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Use `suite` and `test` syntax from `node:test`.
   - Write tests for each compiler stage (Lexer, Parser, Codegen).
   - New syntax features MUST have dedicated parser tests (and lexer tests, if new tokens are introduced).
+  - **Isolating Tests**: To isolate tests, pass the `--test-only` flag to Node and use `test.only()` in the test file.
 - **Paradigm**: Prefer functional patterns where appropriate.
 - **Package Management**: Prefer installing npm packages with `npm i <package>` instead of manually editing `package.json` to ensure valid versions.
 - **Documentation**:
