@@ -19,7 +19,7 @@ import {
   type ThisExpression,
   type TypeAnnotation,
   type VariableDeclaration,
-  type WhileStatement
+  type WhileStatement,
 } from './ast.js';
 import {DiagnosticBag, DiagnosticCode, type Diagnostic} from './diagnostics.js';
 import {
