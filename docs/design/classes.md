@@ -409,3 +409,59 @@ class Widget extends Component {
 ### 9.6. Static Symbols (Alternative Considered)
 
 We considered using "Static Symbols" (similar to JavaScript Symbols or private declarations) to allow capability-based access control (e.g., `[_render]() { ... }`). However, we chose the `_` sigil for simplicity and performance, avoiding the need for computed property syntax or symbol management. The "Module Visibility" rule sufficiently covers the use case where a framework needs privileged access to a method it defines.
+
+## 10. Initialization & Safety
+
+### 10.1. Initialization Hazards
+
+A common issue in object-oriented languages is the "Initialization Hazard". This occurs when a superclass constructor calls a virtual method that is overridden by a subclass. If the subclass implementation accesses fields that haven't been initialized yet (because the subclass constructor hasn't run), the program may crash or behave unpredictably.
+
+```typescript
+class Base {
+  #new() {
+    this.setup(); // Virtual call
+  }
+  setup() {}
+}
+
+class Sub extends Base {
+  data: string;
+  #new() {
+    super();
+    this.data = 'hello';
+  }
+  override setup() {
+    console.log(this.data.length); // CRASH: this.data is uninitialized!
+  }
+}
+```
+
+### 10.2. Potential Solutions
+
+#### Dart-style Initializer Lists
+
+Dart solves this by allowing fields to be initialized _before_ the super constructor runs, using an initializer list.
+
+```dart
+// Dart example
+Sub() : data = "hello", super() { ... }
+```
+
+#### Two-Phase Initialization
+
+Enforce a separation between "allocation/construction" and "initialization".
+
+1.  Constructors only initialize fields.
+2.  Virtual methods are banned in constructors (enforced by compiler).
+3.  Users must call an `init()` method manually or via a factory.
+
+#### Null Safety / Definite Assignment
+
+The type system could track initialization state. Fields are `Uninitialized<T>` until assigned. Accessing them is a compile error. This is complex to implement across method boundaries.
+
+### 10.3. Future Direction
+
+We aim to find a solution that prevents these hazards without being overly restrictive.
+
+- **Short Term**: Allow the hazard but rely on strict null checks (if `data` was nullable, the user would be forced to check). Since Zena is non-nullable by default, `this.data` contains garbage or zero-value before initialization, which is dangerous.
+- **Long Term**: Investigate a simplified version of initializer lists or strict constructor rules (e.g., "cannot access `this` before `super()`" + "cannot call virtual methods on `this` in constructor").
