@@ -300,6 +300,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
       name: {type: NodeType.Identifier, name: '#new'},
       params: [],
       body: {type: NodeType.BlockStatement, body: []},
+      isFinal: false,
     } as MethodDefinition);
   }
 
@@ -421,6 +422,7 @@ export function generateClassMethods(
       name: {type: NodeType.Identifier, name: '#new'},
       params: [],
       body: {type: NodeType.BlockStatement, body: []},
+      isFinal: false,
     } as MethodDefinition);
   }
 
@@ -671,6 +673,7 @@ export function instantiateClass(
       name: {type: NodeType.Identifier, name: '#new'},
       params: [],
       body: {type: NodeType.BlockStatement, body: []},
+      isFinal: false,
     } as MethodDefinition);
   }
 

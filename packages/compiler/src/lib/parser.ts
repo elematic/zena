@@ -48,6 +48,10 @@ export class Parser {
 
   #parseStatement(): Statement {
     if (this.#match(TokenType.Export)) {
+      if (this.#match(TokenType.Final)) {
+        this.#consume(TokenType.Class, "Expected 'class' after 'final'.");
+        return this.#parseClassDeclaration(true, true);
+      }
       if (this.#match(TokenType.Class)) {
         return this.#parseClassDeclaration(true);
       }
@@ -67,6 +71,10 @@ export class Parser {
     }
     if (this.#match(TokenType.While)) {
       return this.#parseWhileStatement();
+    }
+    if (this.#match(TokenType.Final)) {
+      this.#consume(TokenType.Class, "Expected 'class' after 'final'.");
+      return this.#parseClassDeclaration(false, true);
     }
     if (this.#match(TokenType.Class)) {
       return this.#parseClassDeclaration(false);
@@ -547,7 +555,10 @@ export class Parser {
     };
   }
 
-  #parseClassDeclaration(exported: boolean): ClassDeclaration {
+  #parseClassDeclaration(
+    exported: boolean,
+    isFinal: boolean = false,
+  ): ClassDeclaration {
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
 
@@ -582,6 +593,7 @@ export class Parser {
       implements: implementsList,
       body,
       exported,
+      isFinal,
     };
   }
 
@@ -589,6 +601,11 @@ export class Parser {
     | FieldDefinition
     | MethodDefinition
     | AccessorDeclaration {
+    let isFinal = false;
+    if (this.#match(TokenType.Final)) {
+      isFinal = true;
+    }
+
     let name: Identifier;
     if (this.#match(TokenType.Hash)) {
       if (this.#match(TokenType.New)) {
@@ -632,6 +649,7 @@ export class Parser {
         params,
         returnType,
         body,
+        isFinal,
       };
     }
 
@@ -640,7 +658,7 @@ export class Parser {
     const typeAnnotation = this.#parseTypeAnnotation();
 
     if (this.#match(TokenType.LBrace)) {
-      return this.#parseAccessorDeclaration(name, typeAnnotation);
+      return this.#parseAccessorDeclaration(name, typeAnnotation, isFinal);
     }
 
     let value: Expression | undefined;
@@ -655,12 +673,14 @@ export class Parser {
       name,
       typeAnnotation,
       value,
+      isFinal,
     };
   }
 
   #parseAccessorDeclaration(
     name: Identifier,
     typeAnnotation: TypeAnnotation,
+    isFinal: boolean,
   ): AccessorDeclaration {
     let getter: BlockStatement | undefined;
     let setter: {param: Identifier; body: BlockStatement} | undefined;
@@ -699,6 +719,7 @@ export class Parser {
       typeAnnotation,
       getter,
       setter,
+      isFinal,
     };
   }
 
@@ -768,6 +789,7 @@ export class Parser {
       type: NodeType.FieldDefinition,
       name,
       typeAnnotation,
+      isFinal: false, // Interfaces don't support final fields yet
     };
   }
 

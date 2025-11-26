@@ -145,6 +145,7 @@ export interface ClassDeclaration extends Node {
   implements?: TypeAnnotation[];
   body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[];
   exported: boolean;
+  isFinal: boolean;
 }
 
 export interface AccessorDeclaration extends Node {
@@ -156,6 +157,7 @@ export interface AccessorDeclaration extends Node {
     param: Identifier;
     body: BlockStatement;
   };
+  isFinal: boolean;
 }
 
 export interface InterfaceDeclaration extends Node {
@@ -178,6 +180,7 @@ export interface FieldDefinition extends Node {
   name: Identifier;
   typeAnnotation: TypeAnnotation;
   value?: Expression;
+  isFinal: boolean;
 }
 
 export interface MethodDefinition extends Node {
@@ -186,6 +189,7 @@ export interface MethodDefinition extends Node {
   params: Parameter[];
   returnType?: TypeAnnotation;
   body: BlockStatement;
+  isFinal: boolean;
 }
 
 export interface NewExpression extends Node {

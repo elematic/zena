@@ -17,6 +17,7 @@ export const TokenType = {
   Extends: 'Extends',
   Interface: 'Interface',
   Implements: 'Implements',
+  Final: 'Final',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -68,6 +69,7 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   let: TokenType.Let,
   var: TokenType.Var,
   class: TokenType.Class,
+  final: TokenType.Final,
   import: TokenType.Import,
   export: TokenType.Export,
   return: TokenType.Return,
