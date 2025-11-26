@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {WasmModule} from '../lib/emitter.js';
-import {ValType, Opcode, ExportDesc} from '../lib/wasm.js';
+import {WasmModule} from '../../lib/emitter.js';
+import {ValType, Opcode, ExportDesc} from '../../lib/wasm.js';
 
 suite('WasmEmitter', () => {
   test('should emit a valid empty module', async () => {

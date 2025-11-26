@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Parser} from '../lib/parser.js';
-import {TypeChecker} from '../lib/checker.js';
+import {Parser} from '../../lib/parser.js';
+import {TypeChecker} from '../../lib/checker.js';
 
 suite('TypeChecker - Inheritance', () => {
   test('should check valid inheritance', () => {

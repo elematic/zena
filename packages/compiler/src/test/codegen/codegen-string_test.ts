@@ -1,6 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compile} from '../lib/index.js';
+import {compile} from '../../lib/index.js';
 
 suite('CodeGenerator - Strings', () => {
   test('should compile and run string literal', async () => {

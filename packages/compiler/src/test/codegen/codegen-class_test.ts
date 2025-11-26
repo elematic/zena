@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Parser} from '../lib/parser.js';
-import {CodeGenerator} from '../lib/codegen/index.js';
+import {Parser} from '../../lib/parser.js';
+import {CodeGenerator} from '../../lib/codegen/index.js';
 
 suite('CodeGenerator - Classes', () => {
   test('should compile and run class instantiation and field access', async () => {

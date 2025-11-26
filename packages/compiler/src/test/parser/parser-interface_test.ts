@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Parser} from '../lib/parser.js';
-import {NodeType} from '../lib/ast.js';
+import {Parser} from '../../lib/parser.js';
+import {NodeType} from '../../lib/ast.js';
 
 suite('Parser - Interfaces', () => {
   test('should parse interface declaration', () => {

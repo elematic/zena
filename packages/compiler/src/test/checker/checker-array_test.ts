@@ -1,9 +1,9 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {Parser} from '../lib/parser.js';
-import {TypeChecker} from '../lib/checker.js';
+import {Parser} from '../../lib/parser.js';
+import {TypeChecker} from '../../lib/checker.js';
 
-import type {Diagnostic} from '../lib/diagnostics.js';
+import type {Diagnostic} from '../../lib/diagnostics.js';
 
 suite('TypeChecker - Arrays', () => {
   function check(source: string): Diagnostic[] {

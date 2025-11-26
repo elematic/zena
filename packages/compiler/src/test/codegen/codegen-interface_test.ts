@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {compile} from '../lib/index.js';
+import {compile} from '../../lib/index.js';
 
 suite('CodeGenerator - Interfaces', () => {
   test('should compile and run interface method call', async () => {
