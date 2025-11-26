@@ -198,7 +198,12 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Optimization (`final`)**:
       - [x] Implement Type Checker for `final` (prevent overrides/subclassing).
       - [x] Implement Code Generator for `final` (devirtualization).
+    - **Super Calls**:
+      - [x] Implement `super(...)` constructor calls.
+      - [x] Implement `super.method()` calls (static dispatch).
+      - [x] Implement `super.field` access.
     - **Inheritance (Advanced)**:
+      - **Virtual Fields**: Implement Uniform Access Principle (treat public fields as virtual properties with default accessors).
       - **Dynamic Dispatch**: Implement VTables for polymorphic method calls.
       - **Casting**: Implement `as` operator and `instanceof` checks.
     - **Interfaces**: Implement `interface Runnable { run(): void; }` and `implements`.
