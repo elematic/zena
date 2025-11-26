@@ -1,6 +1,6 @@
-# Rhea Compiler Architecture
+# Zena Compiler Architecture
 
-This document describes the high-level architecture of the Rhea compiler.
+This document describes the high-level architecture of the Zena compiler.
 
 ## Overview
 

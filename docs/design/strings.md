@@ -2,7 +2,7 @@
 
 ## Overview
 
-Strings in Rhea are immutable sequences of UTF-8 bytes. They are implemented
+Strings in Zena are immutable sequences of UTF-8 bytes. They are implemented
 using WASM GC arrays.
 
 ## Representation

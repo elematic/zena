@@ -1,10 +1,10 @@
 # Classes & Inheritance Design
 
-This document details the implementation of Classes, Inheritance, and Polymorphism in Rhea, targeting WASM-GC.
+This document details the implementation of Classes, Inheritance, and Polymorphism in Zena, targeting WASM-GC.
 
 ## 1. Class Representation
 
-Classes in Rhea are backed directly by **WASM GC Structs**.
+Classes in Zena are backed directly by **WASM GC Structs**.
 
 ### 1.1. Struct Layout
 
@@ -46,11 +46,11 @@ Compiles to:
 
 ## 2. Inheritance
 
-Rhea supports single inheritance using the `extends` keyword.
+Zena supports single inheritance using the `extends` keyword.
 
 ### 2.1. Struct Subtyping
 
-To support efficient casting and access, Rhea ensures **Layout Compatibility**. A subclass struct must begin with the exact same fields (types and order) as its superclass.
+To support efficient casting and access, Zena ensures **Layout Compatibility**. A subclass struct must begin with the exact same fields (types and order) as its superclass.
 
 ```typescript
 class Point3D extends Point {
@@ -79,7 +79,7 @@ Because of layout compatibility, accessing `p.x` works identically whether `p` i
 
 ### 2.3. Mixins
 
-Rhea supports Mixins as "Subclass Factories". This allows a class to inherit behavior from multiple sources by linearizing the inheritance chain.
+Zena supports Mixins as "Subclass Factories". This allows a class to inherit behavior from multiple sources by linearizing the inheritance chain.
 
 We introduce a first-class `mixin` syntax that acts like a function taking a base class constructor.
 

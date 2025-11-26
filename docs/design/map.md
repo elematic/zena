@@ -3,7 +3,7 @@
 ## Overview
 
 The `Map` type provides a mutable key-value store. It should be implemented as a
-class in the Rhea Standard Library.
+class in the Zena Standard Library.
 
 ## Data Structure
 
@@ -54,7 +54,7 @@ Keys must be comparable for equality.
 
 ## Generics Requirement
 
-To implement `Map` in Rhea, we strongly need **Generics**.
+To implement `Map` in Zena, we strongly need **Generics**.
 
 Without generics, we would have to:
 

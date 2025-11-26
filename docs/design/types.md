@@ -1,12 +1,12 @@
 # Type System Design
 
-This document outlines the core design decisions for the Rhea type system.
+This document outlines the core design decisions for the Zena type system.
 
 ## 1. Nominal Typing
 
 **Status: Implemented (Classes)**
 
-Rhea uses a **Nominal Type System**. Types are compatible if and only if they
+Zena uses a **Nominal Type System**. Types are compatible if and only if they
 are explicitly declared to be compatible (e.g., via inheritance or interface
 implementation), not just because they share the same structure.
 
@@ -38,7 +38,7 @@ class Car {
 - **WASM-GC Alignment**: WASM's GC type system is nominal. `struct A` and
   `struct B` are distinct types even if they have identical fields. Mapping a
   structural system (like TypeScript) to WASM requires complex boxing or runtime
-  overhead.
+  ovezenad.
 - **Safety**: Prevents accidental compatibility between semantically different
   but structurally identical types (e.g., `User` vs `Product`).
 - **Performance**: Type checks (`ref.test`) are O(1) and map directly to WASM
@@ -59,7 +59,7 @@ class Car {
 
 **Status: Implemented**
 
-Rhea uses a **Split Namespace** model, similar to TypeScript.
+Zena uses a **Split Namespace** model, similar to TypeScript.
 
 ### Decision
 
@@ -73,14 +73,14 @@ Rhea uses a **Split Namespace** model, similar to TypeScript.
 ### Rationale
 
 - **Simplicity**: Matches the mental model of TypeScript developers.
-- **Performance**: Avoids the overhead of Reified Generics or runtime type
+- **Performance**: Avoids the ovezenad of Reified Generics or runtime type
   information (RTTI) for every type.
 
 ## 3. Interfaces
 
 **Status: Implemented**
 
-Interfaces are contracts that define a set of methods/fields. In Rhea, they exist at runtime using a **Fat Pointer** representation.
+Interfaces are contracts that define a set of methods/fields. In Zena, they exist at runtime using a **Fat Pointer** representation.
 
 See [Interfaces Design](./interfaces.md) for implementation details.
 
@@ -110,7 +110,7 @@ See [Interfaces Design](./interfaces.md) for implementation details.
 - `i32`, `f32`, `boolean`, `string`: **Implemented**
 - `i64`, `f64`: **Planned**
 
-Rhea maps its primitive types directly to WebAssembly value types to ensure maximum performance and zero overhead.
+Zena maps its primitive types directly to WebAssembly value types to ensure maximum performance and zero ovezenad.
 
 See [Strings Design](./strings.md) for details on string implementation.
 
@@ -134,7 +134,7 @@ See [Strings Design](./strings.md) for details on string implementation.
 
 **Status: Implemented**
 
-Rhea is **Non-Nullable by Default**.
+Zena is **Non-Nullable by Default**.
 
 ### Decision
 
@@ -157,13 +157,13 @@ Rhea is **Non-Nullable by Default**.
 
 **Status: Implemented**
 
-Rhea supports union types, primarily for classes and nullability.
+Zena supports union types, primarily for classes and nullability.
 
 - **Implementation**:
   - If `A` and `B` share a common ancestor class `Base`, `A | B` is treated as `Base`.
   - If they are unrelated, they are treated as `any` (WASM `anyref` or `eqref`).
 - **Discrimination**:
-  - Rhea encourages **Type-Based Discrimination** (using classes) over **Tag-Based Discrimination** (string literals).
+  - Zena encourages **Type-Based Discrimination** (using classes) over **Tag-Based Discrimination** (string literals).
   - **Pattern Matching**:
 
     ```typescript
@@ -211,4 +211,4 @@ type Handler = (event: string) => void;
 ### Rationale
 
 - **Clarity**: Separates "naming a thing" (type) from "defining the structure of a thing" (interface/class).
-- **Simplicity**: Avoids the TypeScript confusion of "Should I use type or interface?". In Rhea: if it has fields/methods, it's an interface. If it's a combination of other types, it's a type alias.
+- **Simplicity**: Avoids the TypeScript confusion of "Should I use type or interface?". In Zena: if it has fields/methods, it's an interface. If it's a combination of other types, it's a type alias.

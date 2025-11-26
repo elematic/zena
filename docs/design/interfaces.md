@@ -1,12 +1,12 @@
 # Interface Design & Implementation
 
-This document details the implementation of Interfaces in Rhea, specifically
+This document details the implementation of Interfaces in Zena, specifically
 focusing on the runtime representation and dispatch mechanism using **Fat
 Pointers**.
 
 ## 1. Overview
 
-Rhea uses a **Nominal Type System** where interfaces are explicit contracts.
+Zena uses a **Nominal Type System** where interfaces are explicit contracts.
 While classes map directly to WASM structs, interfaces require a different
 runtime representation because WASM-GC does not natively support "protocol" or
 "trait" types that span across disjoint class hierarchies.
@@ -149,7 +149,7 @@ r.run();
 2.  **Performance**: Dispatch is fast (Load -> Load -> Call). It is constant
     time O(1).
 3.  **Simplicity**: The compiler logic is straightforward. Classes remain simple
-    structs without extra overhead if they don't use interfaces.
+    structs without extra ovezenad if they don't use interfaces.
 4.  **Decoupling**: The object layout is independent of the interfaces it
     implements.
 

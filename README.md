@@ -1,13 +1,13 @@
-# Rhea Programming Language
+# Zena Programming Language
 
-Rhea is a new programming language targeting WebAssembly (WASM) and WASM-GC. It
+Zena is a new programming language targeting WebAssembly (WASM) and WASM-GC. It
 is designed to be the **best way to write WASM**: offering a familiar, ergonomic
 syntax similar to TypeScript, but with the performance and predictability of a
 statically-typed, ahead-of-time (AOT) compiled language.
 
 ## Vision & Goals
 
-Rhea aims to be an extremely nice and familiar way to write high-performance
+Zena aims to be an extremely nice and familiar way to write high-performance
 WASM. It balances familiar functional and OOP syntax with a strict orientation
 around efficient WASM output.
 
@@ -15,18 +15,18 @@ around efficient WASM output.
   **no-cost to low-cost abstractions**, balancing performance with familiar OOP
   patterns. While we use vtables for polymorphism (a necessary tradeoff), we
   also aim to offer zero-cost alternatives where possible.
-- **Familiar yet AOT**: While Rhea looks like TypeScript, it is entirely
+- **Familiar yet AOT**: While Zena looks like TypeScript, it is entirely
   designed for **ahead-of-time (AOT) compilation**. It breaks away from
   JavaScript's dynamic semantics to allow for efficient compilation and small
   binary sizes.
-- **Modern Inspiration**: Rhea aims to take inspiration and the best features
+- **Modern Inspiration**: Zena aims to take inspiration and the best features
   from **TypeScript, Dart, C#, Kotlin, and Swift**.
-- **Vibe Coding Experiment**: Rhea is also an experiment in "vibe coding" a new
+- **Vibe Coding Experiment**: Zena is also an experiment in "vibe coding" a new
   programming language! We wouldn't have started a new language—it typically
   requires immense time and expertise—except that modern LLMs (like Gemini 3)
   are surprisingly adept at building them. We are exploring how far we can go
   with coding agents doing the heavy lifting.
-- **Sound Type System**: Rhea is strongly typed with a sound type system. It
+- **Sound Type System**: Zena is strongly typed with a sound type system. It
   does not perform implicit type coercion (e.g., `1 + "1"` is a type error).
 - **Correctness & Safety**: We prefer immutable data by default. Future plans
   include "branded types" for numeric values with units (e.g., `1m` or `10px`)
@@ -34,7 +34,7 @@ around efficient WASM output.
 
 ## Key Features
 
-> **Note**: Rhea is in active development. Many of the features listed below are
+> **Note**: Zena is in active development. Many of the features listed below are
 > currently being implemented or are in the design phase.
 
 - **Clean-Slate OOP**:
@@ -60,7 +60,7 @@ around efficient WASM output.
   binaries. Most features are opt-in via module imports, ensuring you only pay
   for what you use.
 - **Named Parameters**: First-class support for named parameters to avoid object
-  allocation overhead.
+  allocation ovezenad.
 
 ## Documentation
 

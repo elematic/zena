@@ -7,7 +7,7 @@ variety of types while maintaining type safety.
 
 ## Goals
 
-1.  **Performance**: Zero-overhead abstractions. `List<i32>` should store raw
+1.  **Performance**: Zero-ovezenad abstractions. `List<i32>` should store raw
     `i32` values, not boxed objects.
 2.  **Type Safety**: Compile-time checks for type correctness.
 3.  **Simplicity**: Easy to understand syntax and semantics.
@@ -16,7 +16,7 @@ variety of types while maintaining type safety.
 
 There are several approaches to implementing generics. Understanding the
 distinction between **Erasure**, **Reification**, and **Monomorphization** is
-key to Rhea's design.
+key to Zena's design.
 
 ### Terminology
 
@@ -28,7 +28,7 @@ key to Rhea's design.
       (`Integer`) to be stored. Casts are inserted automatically when retrieving
       values.
     - **Pros**: Shared code (smaller binary), backward compatibility.
-    - **Cons**: Performance overhead (boxing/casting), no runtime type
+    - **Cons**: Performance ovezenad (boxing/casting), no runtime type
       information for `T`.
 
 2.  **Reification (C#)**:
@@ -42,7 +42,7 @@ key to Rhea's design.
         and `List<object>` share the same machine code (since all references are
         pointers), but maintain distinct type metadata tables.
 
-3.  **Monomorphization (C++, Rust, Rhea)**:
+3.  **Monomorphization (C++, Rust, Zena)**:
     - **Concept**: The compiler generates a completely new copy of the function
       or class for _each_ concrete set of type arguments.
     - **Implication**: `Box<i32>` and `Box<f32>` are compiled as if the user
@@ -51,20 +51,20 @@ key to Rhea's design.
       field vs `(ref Object)`). No boxing, no casting.
     - **Cons**: "Code Bloat". Larger binary size because code is duplicated.
 
-### Rhea's Decision: Full Monomorphization
+### Zena's Decision: Full Monomorphization
 
-Given Rhea's goal of targeting WASM-GC efficiently:
+Given Zena's goal of targeting WASM-GC efficiently:
 
 - **WASM Primitives**: `i32`, `f64`, etc., are not objects. They cannot be
   stored in a `(ref any)` field without allocation (boxing). To avoid this
-  overhead, we **must** monomorphize value types.
+  ovezenad, we **must** monomorphize value types.
 - **Reference Types**: We have chosen to monomorphize reference types as well
   (e.g., `Box<Foo>` vs `Box<Bar>`).
   - _Why?_ In WASM-GC, fields are typed. A field of type `(ref Foo)` allows the
     engine to optimize access better than `(ref any)`. It also avoids the need
     for `ref.cast` instructions when reading fields, which improves runtime
     performance.
-- **Result**: Rhea generics are effectively **Reified** via Monomorphization.
+- **Result**: Zena generics are effectively **Reified** via Monomorphization.
   `Box<Foo>` is a distinct WASM struct type from `Box<Bar>`.
 
 ### Reference Types (Classes) Detail
@@ -82,7 +82,7 @@ choices:
     - _Pros_: Reduced binary size (like Java/C# for references).
     - _Cons_: Requires `ref.cast` (runtime check) when retrieving values.
 
-**Decision**: Rhea currently uses **Full Monomorphization** for all types,
+**Decision**: Zena currently uses **Full Monomorphization** for all types,
 including classes. This aligns with our performance goal by avoiding runtime
 casts. Future optimizations could implement code sharing for references if
 binary size becomes a concern.
@@ -127,9 +127,9 @@ between their components.
 C# allows explicit variance annotations on **interfaces** and **delegates**
 (e.g., `interface IEnumerable<out T>`). Classes are always invariant.
 
-### Rhea Approach
+### Zena Approach
 
-To start, Rhea should enforce **Invariance** for all generic classes.
+To start, Zena should enforce **Invariance** for all generic classes.
 
 - `Box<String>` is NOT a subtype of `Box<Object>`.
 - This is simple, safe, and sufficient for `Map` and `Array`.
@@ -188,9 +188,9 @@ Trait>` (erased/shared).
 3.  **C#**: As mentioned, automatically switches strategies based on the type
     argument (Monomorphization for `int`, Code Sharing for `string`).
 
-### Potential Options for Rhea
+### Potential Options for Zena
 
-To balance these priorities, Rhea could adopt one of the following strategies in
+To balance these priorities, Zena could adopt one of the following strategies in
 the future:
 
 1.  **Compiler Optimization Levels**:

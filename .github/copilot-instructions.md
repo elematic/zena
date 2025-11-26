@@ -1,14 +1,14 @@
-# Rhea Project Instructions & Design
+# Zena Project Instructions & Design
 
-This document serves as a guide for the development of the Rhea programming language.
+This document serves as a guide for the development of the Zena programming language.
 
 ## Project Overview
 
-Rhea is a statically typed language targeting WASM-GC. It uses a TypeScript-like syntax but enforces static semantics for better optimization.
+Zena is a statically typed language targeting WASM-GC. It uses a TypeScript-like syntax but enforces static semantics for better optimization.
 
 ## Design Principles
 
-1.  **Performance**: Generated WASM should be fast. Avoid runtime overhead where possible (e.g., prefer flat arguments over object allocation for named parameters).
+1.  **Performance**: Generated WASM should be fast. Avoid runtime ovezenad where possible (e.g., prefer flat arguments over object allocation for named parameters).
 2.  **Binary Size**: The compiler should produce the smallest possible WASM binary. This is critical for network delivery.
     - _Trade-off_: When Performance and Binary Size conflict (e.g., Monomorphization vs Erasure), we currently favor **Performance**, but this is a tunable design choice.
 3.  **Simplicity**: The language should be easy to parse and analyze.
@@ -24,7 +24,7 @@ The official language reference is maintained in `docs/language-reference.md`.
 
 - **Strongly Typed**: All expressions have a static type determined at compile time.
 - **Soundness**: The type system is sound; if a program type-checks, it will not exhibit type errors at runtime (barring unsafe blocks, if added later).
-- **No Coercion**: Unlike JavaScript, Rhea does not perform implicit type coercion. Operations between mismatched types (e.g., adding an integer to a string) result in a compile-time error.
+- **No Coercion**: Unlike JavaScript, Zena does not perform implicit type coercion. Operations between mismatched types (e.g., adding an integer to a string) result in a compile-time error.
 - **Inference**: Local variable types are inferred from their initializer.
 
 ### Variables
@@ -81,12 +81,12 @@ The official language reference is maintained in `docs/language-reference.md`.
       1.  **Parser Update**: Support `export` keyword for top-level declarations to expose functions to the host.
       2.  **WASM Emitter**: Implement a low-level `emitter.ts` to construct WASM binary sections (Type, Function, Export, Code).
       3.  **Code Generator**: Implement `codegen.ts` to traverse AST and drive the emitter. Initial scope: `i32` arithmetic and function parameters.
-      4.  **Testing**: Compile Rhea source to `Uint8Array`, instantiate with `WebAssembly.instantiate`, and assert results in Node.js.
+      4.  **Testing**: Compile Zena source to `Uint8Array`, instantiate with `WebAssembly.instantiate`, and assert results in Node.js.
 
 ### Phase 2: Self-Hosting
 
-- Rewrite the compiler in Rhea.
-- Compile the Rhea compiler using the Phase 1 TypeScript compiler.
+- Rewrite the compiler in Zena.
+- Compile the Zena compiler using the Phase 1 TypeScript compiler.
 
 ### Phase 3: Ecosystem
 
@@ -98,15 +98,15 @@ The official language reference is maintained in `docs/language-reference.md`.
 This project is an **npm monorepo** managed with **Wireit**.
 
 - **Root**: Contains the workspace configuration and global scripts.
-- **packages/compiler**: The core compiler implementation (`@rhea-lang/compiler`).
+- **packages/compiler**: The core compiler implementation (`@zena-lang/compiler`).
 - **Scripts**:
   - `npm test`: Runs tests across the workspace using Wireit.
   - `npm run build`: Builds packages using Wireit.
   - **Wireit Caching**: Wireit caches script results and only re-runs scripts when inputs change. Remember this when debugging or running tasks repeatedly.
   - **Running Tests**:
-    - Use `npm test` or `npm test -w @rhea-lang/compiler`.
+    - Use `npm test` or `npm test -w @zena-lang/compiler`.
     - **NEVER** use `npm test packages/compiler` or `npm test -- some/path/some_test.ts`.
-    - Packages are always referred to by **package name** (e.g., `@rhea-lang/compiler`), not package path.
+    - Packages are always referred to by **package name** (e.g., `@zena-lang/compiler`), not package path.
 
 ## Coding Standards
 
@@ -205,4 +205,4 @@ This project is an **npm monorepo** managed with **Wireit**.
     - Console I/O (`console.log`).
 
 6.  **Self-Hosting**:
-    - Rewrite the compiler in Rhea.
+    - Rewrite the compiler in Zena.

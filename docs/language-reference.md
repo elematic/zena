@@ -1,14 +1,14 @@
-# Rhea Language Reference
+# Zena Language Reference
 
-This document describes the syntax and semantics of the Rhea programming language.
+This document describes the syntax and semantics of the Zena programming language.
 
 ## 1. Introduction
 
-Rhea is a statically typed language targeting WebAssembly (WASM-GC). It features a TypeScript-like syntax with strict static typing and no implicit coercion.
+Zena is a statically typed language targeting WebAssembly (WASM-GC). It features a TypeScript-like syntax with strict static typing and no implicit coercion.
 
 ## 2. Types
 
-Rhea is strongly typed. All expressions have a type determined at compile time.
+Zena is strongly typed. All expressions have a type determined at compile time.
 
 ### Primitive Types
 
@@ -46,7 +46,7 @@ Variables declared with `let` and `var` are block-scoped. Redeclaring a variable
 
 ## 4. Functions
 
-Rhea currently supports functions using arrow syntax.
+Zena currently supports functions using arrow syntax.
 
 ### Syntax
 
@@ -150,7 +150,7 @@ These operators return a boolean value.
 
 ### If Statement
 
-Rhea supports `if` and `else` for conditional execution.
+Zena supports `if` and `else` for conditional execution.
 
 ```typescript
 if (condition) {
@@ -162,7 +162,7 @@ if (condition) {
 
 ### While Statement
 
-Rhea supports `while` loops.
+Zena supports `while` loops.
 
 ```typescript
 while (condition) {
@@ -182,7 +182,7 @@ export const add = (a: i32, b: i32) => a + b;
 
 ## 8. Classes
 
-Rhea supports classes with fields, methods, and constructors.
+Zena supports classes with fields, methods, and constructors.
 
 ### Class Declaration
 
@@ -292,7 +292,7 @@ class Dog extends Animal {
 
 #### Method Overriding
 
-Subclasses can override methods defined in the superclass. Rhea supports dynamic dispatch, meaning the method implementation corresponding to the runtime type of the object will be called.
+Subclasses can override methods defined in the superclass. Zena supports dynamic dispatch, meaning the method implementation corresponding to the runtime type of the object will be called.
 
 ```typescript
 let a: Animal = new Dog();
@@ -301,7 +301,7 @@ a.speak(); // Returns 1 (Dog's implementation)
 
 ## 9. Generics
 
-Rhea supports generic classes and functions, allowing code reuse across different types.
+Zena supports generic classes and functions, allowing code reuse across different types.
 
 ### Generic Classes
 
@@ -368,11 +368,11 @@ let c = new Container(); // T is i32
 
 ### Monomorphization
 
-Rhea implements generics via monomorphization. This means a separate version of the class or function is generated for each unique combination of type arguments. This ensures high performance (no boxing) but may increase binary size.
+Zena implements generics via monomorphization. This means a separate version of the class or function is generated for each unique combination of type arguments. This ensures high performance (no boxing) but may increase binary size.
 
 ## 10. Arrays
 
-Rhea supports mutable arrays backed by WASM GC arrays.
+Zena supports mutable arrays backed by WASM GC arrays.
 
 ### Array Literal
 
@@ -400,7 +400,7 @@ arr[0] = 10;
 
 ## 11. Strings
 
-Rhea supports UTF-8 encoded strings.
+Zena supports UTF-8 encoded strings.
 
 ### Type
 

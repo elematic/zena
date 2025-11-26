@@ -2,14 +2,14 @@
 
 ## Overview
 
-The Rhea Standard Library (stdlib) should be implemented primarily in Rhea
+The Zena Standard Library (stdlib) should be implemented primarily in Zena
 itself ("self-hosted"). This ensures that the language is capable enough to
 build complex data structures and allows for better optimization.
 
 ## Goals
 
-1.  **Self-Hosting**: Implement core types (`Map`, `Set`, `List`, etc.) in Rhea.
-2.  **Zero-Overhead Inclusion**: The compiler must perform **Dead Code
+1.  **Self-Hosting**: Implement core types (`Map`, `Set`, `List`, etc.) in Zena.
+2.  **Zero-Ovezenad Inclusion**: The compiler must perform **Dead Code
     Elimination (DCE)** or **Reachability Analysis**. Code from the stdlib (or
     any module) should only be emitted into the final WASM binary if it is
     transitively reachable from the program's entry point (exports or main
@@ -53,7 +53,7 @@ build complex data structures and allows for better optimization.
 - **Generics**: Implementing a reusable `Map` requires Generics (e.g., `Map<K,
 V>`) or a top-type (`any` / `eqref`) with runtime casting.
   - _Recommendation_: Prioritize a basic Generics implementation or Templates to
-    allow type-safe, specialized collections without runtime overhead
+    allow type-safe, specialized collections without runtime ovezenad
     (monomorphization).
 - **Circular Dependencies**: The stdlib might depend on itself (e.g., `Map` uses
   `Array`). The compiler must handle circular references gracefully.
