@@ -22,7 +22,7 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Variable 'y' not found/);
+    assert.match(errors[0].message, /Variable 'y' not found/);
   });
 
   test('should check binary expression types', () => {
@@ -48,7 +48,7 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Type mismatch/);
+    assert.match(errors[0].message, /Type mismatch/);
   });
 
   test('should check arrow function', () => {
@@ -69,7 +69,7 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /already declared/);
+    assert.match(errors[0].message, /already declared/);
   });
 
   test('should detect type mismatch between i32 and f32', () => {
@@ -80,7 +80,7 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Type mismatch/);
+    assert.match(errors[0].message, /Type mismatch/);
   });
 
   test('should check arrow function with block body and return', () => {
@@ -101,7 +101,7 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Type mismatch/);
+    assert.match(errors[0].message, /Type mismatch/);
   });
 
   test('should detect non-boolean condition in while loop', () => {
@@ -112,7 +112,10 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Expected boolean condition in while statement/);
+    assert.match(
+      errors[0].message,
+      /Expected boolean condition in while statement/,
+    );
   });
 
   test('should detect non-boolean condition in if statement', () => {
@@ -123,7 +126,10 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Expected boolean condition in if statement/);
+    assert.match(
+      errors[0].message,
+      /Expected boolean condition in if statement/,
+    );
   });
 
   test('should check valid function call', () => {
@@ -150,7 +156,7 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Expected 2 arguments, got 1/);
+    assert.match(errors[0].message, /Expected 2 arguments, got 1/);
   });
 
   test('should detect argument type mismatch', () => {
@@ -164,7 +170,7 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Type mismatch in argument 2/);
+    assert.match(errors[0].message, /Type mismatch in argument 2/);
   });
 
   test('should detect calling a non-function', () => {
@@ -178,6 +184,6 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Type mismatch: expected function/);
+    assert.match(errors[0].message, /Type mismatch: expected function/);
   });
 });

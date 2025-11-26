@@ -42,7 +42,7 @@ suite('TypeChecker - Classes', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Duplicate field 'x'/);
+    assert.match(errors[0].message, /Duplicate field 'x'/);
   });
 
   test('should detect type mismatch in field assignment', () => {
@@ -60,7 +60,7 @@ suite('TypeChecker - Classes', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Type mismatch in assignment/);
+    assert.match(errors[0].message, /Type mismatch in assignment/);
   });
 
   test('should detect invalid constructor arguments', () => {
@@ -76,7 +76,7 @@ suite('TypeChecker - Classes', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Expected 1 arguments, got 2/);
+    assert.match(errors[0].message, /Expected 1 arguments, got 2/);
   });
 
   test('should detect invalid member access', () => {
@@ -93,7 +93,7 @@ suite('TypeChecker - Classes', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Property 'y' does not exist/);
+    assert.match(errors[0].message, /Property 'y' does not exist/);
   });
 
   test('should detect this usage outside class', () => {
@@ -106,6 +106,6 @@ suite('TypeChecker - Classes', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /'this' can only be used inside a class/);
+    assert.match(errors[0].message, /'this' can only be used inside a class/);
   });
 });

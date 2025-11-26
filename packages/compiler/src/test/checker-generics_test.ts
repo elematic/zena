@@ -56,7 +56,7 @@ suite('TypeChecker - Generics', () => {
     const checker = new TypeChecker(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Type mismatch/);
+    assert.match(errors[0].message, /Type mismatch/);
   });
 
   test('should check field access on generic instance', () => {
@@ -94,7 +94,7 @@ suite('TypeChecker - Generics', () => {
     const checker = new TypeChecker(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Type mismatch/);
+    assert.match(errors[0].message, /Type mismatch/);
   });
 
   test('should check generic function', () => {

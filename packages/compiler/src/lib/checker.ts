@@ -1,37 +1,36 @@
 import {
   NodeType,
-  type Program,
-  type Statement,
-  type Expression,
-  type VariableDeclaration,
-  type BinaryExpression,
-  type FunctionExpression,
-  type ReturnStatement,
-  type IfStatement,
-  type WhileStatement,
+  type ArrayLiteral,
   type AssignmentExpression,
+  type BinaryExpression,
   type CallExpression,
   type ClassDeclaration,
-  type NewExpression,
-  type MemberExpression,
-  type ThisExpression,
-  type FieldDefinition,
-  type MethodDefinition,
-  type ArrayLiteral,
+  type Expression,
+  type FunctionExpression,
+  type IfStatement,
   type IndexExpression,
-  type TypeAnnotation,
   type InterfaceDeclaration,
-  type MethodSignature,
+  type MemberExpression,
+  type MethodDefinition,
+  type NewExpression,
+  type Program,
+  type ReturnStatement,
+  type Statement,
+  type ThisExpression,
+  type TypeAnnotation,
+  type VariableDeclaration,
+  type WhileStatement
 } from './ast.js';
+import {DiagnosticBag, DiagnosticCode, type Diagnostic} from './diagnostics.js';
 import {
   TypeKind,
   Types,
-  type Type,
-  type FunctionType,
-  type ClassType,
-  type InterfaceType,
   type ArrayType,
+  type ClassType,
+  type FunctionType,
+  type InterfaceType,
   type NumberType,
+  type Type,
   type TypeParameterType,
 } from './types.js';
 
@@ -42,7 +41,7 @@ interface SymbolInfo {
 
 export class TypeChecker {
   #scopes: Map<string, SymbolInfo>[] = [];
-  #errors: string[] = [];
+  #diagnostics = new DiagnosticBag();
   #currentFunctionReturnType: Type | null = null;
   #currentClass: ClassType | null = null;
 
@@ -52,15 +51,15 @@ export class TypeChecker {
     this.#program = program;
   }
 
-  public check(): string[] {
-    this.#errors = [];
+  public check(): Diagnostic[] {
+    this.#diagnostics.clear();
     this.#scopes = [new Map()]; // Global scope
 
     for (const statement of this.#program.body) {
       this.#checkStatement(statement);
     }
 
-    return this.#errors;
+    return [...this.#diagnostics.diagnostics];
   }
 
   #enterScope() {
@@ -74,8 +73,9 @@ export class TypeChecker {
   #declare(name: string, type: Type, kind: 'let' | 'var' = 'let') {
     const scope = this.#scopes[this.#scopes.length - 1];
     if (scope.has(name)) {
-      this.#errors.push(
+      this.#diagnostics.reportError(
         `Variable '${name}' is already declared in this scope.`,
+        DiagnosticCode.DuplicateDeclaration,
       );
     }
     scope.set(name, {type, kind});
@@ -138,8 +138,9 @@ export class TypeChecker {
       testType.kind !== TypeKind.Boolean &&
       testType.kind !== TypeKind.Unknown
     ) {
-      this.#errors.push(
+      this.#diagnostics.reportError(
         `Expected boolean condition in if statement, got ${this.#typeToString(testType)}`,
+        DiagnosticCode.TypeMismatch,
       );
     }
 
@@ -155,8 +156,9 @@ export class TypeChecker {
       testType.kind !== TypeKind.Boolean &&
       testType.kind !== TypeKind.Unknown
     ) {
-      this.#errors.push(
+      this.#diagnostics.reportError(
         `Expected boolean condition in while statement, got ${this.#typeToString(testType)}`,
+        DiagnosticCode.TypeMismatch,
       );
     }
 
@@ -165,7 +167,10 @@ export class TypeChecker {
 
   #checkReturnStatement(stmt: ReturnStatement) {
     if (!this.#currentFunctionReturnType) {
-      this.#errors.push('Return statement outside of function.');
+      this.#diagnostics.reportError(
+        'Return statement outside of function.',
+        DiagnosticCode.ReturnOutsideFunction,
+      );
       return;
     }
 
@@ -182,8 +187,9 @@ export class TypeChecker {
           this.#typeToString(this.#currentFunctionReturnType) !==
           this.#typeToString(argType)
         ) {
-          this.#errors.push(
+          this.#diagnostics.reportError(
             `Type mismatch: expected return type ${this.#typeToString(this.#currentFunctionReturnType)}, got ${this.#typeToString(argType)}`,
+            DiagnosticCode.TypeMismatch,
           );
         }
       }
@@ -206,7 +212,10 @@ export class TypeChecker {
       case NodeType.Identifier: {
         const type = this.#resolve(expr.name);
         if (!type) {
-          this.#errors.push(`Variable '${expr.name}' not found.`);
+          this.#diagnostics.reportError(
+            `Variable '${expr.name}' not found.`,
+            DiagnosticCode.SymbolNotFound,
+          );
           return Types.Unknown;
         }
         return type;
@@ -238,8 +247,9 @@ export class TypeChecker {
     const calleeType = this.#checkExpression(expr.callee);
 
     if (calleeType.kind !== TypeKind.Function) {
-      this.#errors.push(
+      this.#diagnostics.reportError(
         `Type mismatch: expected function, got ${this.#typeToString(calleeType)}`,
+        DiagnosticCode.TypeMismatch,
       );
       return Types.Unknown;
     }
@@ -247,8 +257,9 @@ export class TypeChecker {
     const funcType = calleeType as FunctionType;
 
     if (expr.arguments.length !== funcType.parameters.length) {
-      this.#errors.push(
+      this.#diagnostics.reportError(
         `Expected ${funcType.parameters.length} arguments, got ${expr.arguments.length}`,
+        DiagnosticCode.ArgumentCountMismatch,
       );
     }
 
@@ -265,8 +276,9 @@ export class TypeChecker {
         argType.kind !== Types.Unknown.kind
       ) {
         if (this.#typeToString(argType) !== this.#typeToString(paramType)) {
-          this.#errors.push(
+          this.#diagnostics.reportError(
             `Type mismatch in argument ${i + 1}: expected ${this.#typeToString(paramType)}, got ${this.#typeToString(argType)}`,
+            DiagnosticCode.TypeMismatch,
           );
         }
       }
@@ -281,12 +293,18 @@ export class TypeChecker {
       const symbol = this.#resolveInfo(varName);
 
       if (!symbol) {
-        this.#errors.push(`Variable '${varName}' is not defined.`);
+        this.#diagnostics.reportError(
+          `Variable '${varName}' is not defined.`,
+          DiagnosticCode.SymbolNotFound,
+        );
         return Types.Unknown;
       }
 
       if (symbol.kind !== 'var') {
-        this.#errors.push(`Cannot assign to immutable variable '${varName}'.`);
+        this.#diagnostics.reportError(
+          `Cannot assign to immutable variable '${varName}'.`,
+          DiagnosticCode.InvalidAssignment,
+        );
       }
 
       const valueType = this.#checkExpression(expr.value);
@@ -295,8 +313,9 @@ export class TypeChecker {
         symbol.type.kind !== Types.Unknown.kind
       ) {
         if (this.#typeToString(symbol.type) !== this.#typeToString(valueType)) {
-          this.#errors.push(
+          this.#diagnostics.reportError(
             `Type mismatch in assignment: expected ${this.#typeToString(symbol.type)}, got ${this.#typeToString(valueType)}`,
+            DiagnosticCode.TypeMismatch,
           );
         }
       }
@@ -308,8 +327,9 @@ export class TypeChecker {
 
       if (objectType.kind !== TypeKind.Class) {
         if (objectType.kind !== Types.Unknown.kind) {
-          this.#errors.push(
+          this.#diagnostics.reportError(
             `Property assignment on non-class type '${this.#typeToString(objectType)}'.`,
+            DiagnosticCode.TypeMismatch,
           );
         }
         return Types.Unknown;
@@ -319,8 +339,9 @@ export class TypeChecker {
       const memberName = memberExpr.property.name;
 
       if (!classType.fields.has(memberName)) {
-        this.#errors.push(
+        this.#diagnostics.reportError(
           `Field '${memberName}' does not exist on type '${classType.name}'.`,
+          DiagnosticCode.PropertyNotFound,
         );
         return Types.Unknown;
       }
@@ -332,8 +353,9 @@ export class TypeChecker {
         valueType.kind !== fieldType.kind &&
         valueType.kind !== Types.Unknown.kind
       ) {
-        this.#errors.push(
+        this.#diagnostics.reportError(
           `Type mismatch in assignment: expected ${this.#typeToString(fieldType)}, got ${this.#typeToString(valueType)}`,
+          DiagnosticCode.TypeMismatch,
         );
       }
 
@@ -359,8 +381,9 @@ export class TypeChecker {
     }
 
     if (!typesMatch) {
-      this.#errors.push(
+      this.#diagnostics.reportError(
         `Type mismatch: cannot apply operator '${expr.operator}' to ${this.#typeToString(left)} and ${this.#typeToString(right)}`,
+        DiagnosticCode.TypeMismatch,
       );
       return Types.Unknown;
     }
@@ -465,8 +488,9 @@ export class TypeChecker {
         bodyType.kind !== expectedType.kind
       ) {
         if (this.#typeToString(expectedType) !== this.#typeToString(bodyType)) {
-          this.#errors.push(
+          this.#diagnostics.reportError(
             `Type mismatch: expected return type ${this.#typeToString(expectedType)}, got ${this.#typeToString(bodyType)}`,
+            DiagnosticCode.TypeMismatch,
           );
         }
       }
@@ -500,10 +524,14 @@ export class TypeChecker {
     if (decl.superClass) {
       const type = this.#resolve(decl.superClass.name);
       if (!type) {
-        this.#errors.push(`Unknown superclass '${decl.superClass.name}'.`);
+        this.#diagnostics.reportError(
+          `Unknown superclass '${decl.superClass.name}'.`,
+          DiagnosticCode.SymbolNotFound,
+        );
       } else if (type.kind !== TypeKind.Class) {
-        this.#errors.push(
+        this.#diagnostics.reportError(
           `Superclass '${decl.superClass.name}' must be a class.`,
+          DiagnosticCode.TypeMismatch,
         );
       } else {
         superType = type as ClassType;
@@ -549,12 +577,14 @@ export class TypeChecker {
           if (superType && superType.fields.has(member.name.name)) {
             // For now, allow shadowing if types match? Or disallow?
             // Let's disallow field shadowing for simplicity and safety.
-            this.#errors.push(
+            this.#diagnostics.reportError(
               `Cannot redeclare field '${member.name.name}' in subclass '${className}'.`,
+              DiagnosticCode.DuplicateDeclaration,
             );
           } else {
-            this.#errors.push(
+            this.#diagnostics.reportError(
               `Duplicate field '${member.name.name}' in class '${className}'.`,
+              DiagnosticCode.DuplicateDeclaration,
             );
           }
         }
@@ -575,7 +605,10 @@ export class TypeChecker {
 
         if (member.name.name === '#new') {
           if (classType.constructorType) {
-            this.#errors.push(`Duplicate constructor in class '${className}'.`);
+            this.#diagnostics.reportError(
+              `Duplicate constructor in class '${className}'.`,
+              DiagnosticCode.DuplicateDeclaration,
+            );
           }
           classType.constructorType = methodType;
         } else {
@@ -594,13 +627,15 @@ export class TypeChecker {
                 this.#typeToString(methodType) !==
                 this.#typeToString(superMethod)
               ) {
-                this.#errors.push(
+                this.#diagnostics.reportError(
                   `Method '${member.name.name}' in '${className}' incorrectly overrides method in '${superType.name}'.`,
+                  DiagnosticCode.TypeMismatch,
                 );
               }
             } else {
-              this.#errors.push(
+              this.#diagnostics.reportError(
                 `Duplicate method '${member.name.name}' in class '${className}'.`,
+                DiagnosticCode.DuplicateDeclaration,
               );
             }
           }
@@ -614,7 +649,10 @@ export class TypeChecker {
       for (const impl of decl.implements) {
         const type = this.#resolveTypeAnnotation(impl);
         if (type.kind !== TypeKind.Interface) {
-          this.#errors.push(`Type '${impl.name}' is not an interface.`);
+          this.#diagnostics.reportError(
+            `Type '${impl.name}' is not an interface.`,
+            DiagnosticCode.TypeMismatch,
+          );
           continue;
         }
         const interfaceType = type as InterfaceType;
@@ -623,14 +661,16 @@ export class TypeChecker {
         // Check fields
         for (const [name, type] of interfaceType.fields) {
           if (!classType.fields.has(name)) {
-            this.#errors.push(
+            this.#diagnostics.reportError(
               `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Property '${name}' is missing.`,
+              DiagnosticCode.PropertyNotFound,
             );
           } else {
             const fieldType = classType.fields.get(name)!;
             if (this.#typeToString(fieldType) !== this.#typeToString(type)) {
-              this.#errors.push(
+              this.#diagnostics.reportError(
                 `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Property '${name}' is type '${this.#typeToString(fieldType)}' but expected '${this.#typeToString(type)}'.`,
+                DiagnosticCode.TypeMismatch,
               );
             }
           }
@@ -639,14 +679,16 @@ export class TypeChecker {
         // Check methods
         for (const [name, type] of interfaceType.methods) {
           if (!classType.methods.has(name)) {
-            this.#errors.push(
+            this.#diagnostics.reportError(
               `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Method '${name}' is missing.`,
+              DiagnosticCode.PropertyNotFound,
             );
           } else {
             const methodType = classType.methods.get(name)!;
             if (this.#typeToString(methodType) !== this.#typeToString(type)) {
-              this.#errors.push(
+              this.#diagnostics.reportError(
                 `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Method '${name}' is type '${this.#typeToString(methodType)}' but expected '${this.#typeToString(type)}'.`,
+                DiagnosticCode.TypeMismatch,
               );
             }
           }
@@ -672,8 +714,9 @@ export class TypeChecker {
             if (
               this.#typeToString(valueType) !== this.#typeToString(fieldType)
             ) {
-              this.#errors.push(
+              this.#diagnostics.reportError(
                 `Type mismatch for field '${member.name.name}': expected ${this.#typeToString(fieldType)}, got ${this.#typeToString(valueType)}`,
+                DiagnosticCode.TypeMismatch,
               );
             }
           }
@@ -737,8 +780,9 @@ export class TypeChecker {
         };
 
         if (interfaceType.methods.has(member.name.name)) {
-          this.#errors.push(
+          this.#diagnostics.reportError(
             `Duplicate method '${member.name.name}' in interface '${interfaceName}'.`,
+            DiagnosticCode.DuplicateDeclaration,
           );
         } else {
           interfaceType.methods.set(member.name.name, methodType);
@@ -746,8 +790,9 @@ export class TypeChecker {
       } else if (member.type === NodeType.FieldDefinition) {
         const type = this.#resolveTypeAnnotation(member.typeAnnotation);
         if (interfaceType.fields.has(member.name.name)) {
-          this.#errors.push(
+          this.#diagnostics.reportError(
             `Duplicate field '${member.name.name}' in interface '${interfaceName}'.`,
+            DiagnosticCode.DuplicateDeclaration,
           );
         } else {
           interfaceType.fields.set(member.name.name, type);
@@ -799,23 +844,33 @@ export class TypeChecker {
 
     const type = this.#resolve(name);
     if (!type) {
-      this.#errors.push(`Unknown type '${name}'.`);
+      this.#diagnostics.reportError(
+        `Unknown type '${name}'.`,
+        DiagnosticCode.SymbolNotFound,
+      );
       return Types.Unknown;
     }
 
     if (annotation.typeArguments && annotation.typeArguments.length > 0) {
       if (type.kind !== TypeKind.Class) {
-        this.#errors.push(`Type '${name}' is not generic.`);
+        this.#diagnostics.reportError(
+          `Type '${name}' is not generic.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
+        );
         return type;
       }
       const classType = type as ClassType;
       if (!classType.typeParameters || classType.typeParameters.length === 0) {
-        this.#errors.push(`Type '${name}' is not generic.`);
+        this.#diagnostics.reportError(
+          `Type '${name}' is not generic.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
+        );
         return type;
       }
       if (classType.typeParameters.length !== annotation.typeArguments.length) {
-        this.#errors.push(
+        this.#diagnostics.reportError(
           `Expected ${classType.typeParameters.length} type arguments, got ${annotation.typeArguments.length}.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
         );
         return type;
       }
@@ -894,7 +949,10 @@ export class TypeChecker {
     const type = this.#resolve(className);
 
     if (!type || type.kind !== TypeKind.Class) {
-      this.#errors.push(`'${className}' is not a class.`);
+      this.#diagnostics.reportError(
+        `'${className}' is not a class.`,
+        DiagnosticCode.SymbolNotFound,
+      );
       return Types.Unknown;
     }
 
@@ -902,12 +960,16 @@ export class TypeChecker {
 
     if (expr.typeArguments && expr.typeArguments.length > 0) {
       if (!classType.typeParameters || classType.typeParameters.length === 0) {
-        this.#errors.push(`Type '${className}' is not generic.`);
+        this.#diagnostics.reportError(
+          `Type '${className}' is not generic.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
+        );
       } else if (
         classType.typeParameters.length !== expr.typeArguments.length
       ) {
-        this.#errors.push(
+        this.#diagnostics.reportError(
           `Expected ${classType.typeParameters.length} type arguments, got ${expr.typeArguments.length}.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
         );
       } else {
         const typeArguments = expr.typeArguments.map((arg) =>
@@ -919,15 +981,19 @@ export class TypeChecker {
       classType.typeParameters &&
       classType.typeParameters.length > 0
     ) {
-      this.#errors.push(`Generic type '${className}' requires type arguments.`);
+      this.#diagnostics.reportError(
+        `Generic type '${className}' requires type arguments.`,
+        DiagnosticCode.GenericTypeArgumentMismatch,
+      );
     }
 
     const constructor = classType.constructorType;
 
     if (!constructor) {
       if (expr.arguments.length > 0) {
-        this.#errors.push(
+        this.#diagnostics.reportError(
           `Class '${className}' has no constructor but arguments were provided.`,
+          DiagnosticCode.ArgumentCountMismatch,
         );
       }
       return classType;
@@ -935,8 +1001,9 @@ export class TypeChecker {
 
     // Check arguments against constructor parameters
     if (expr.arguments.length !== constructor.parameters.length) {
-      this.#errors.push(
+      this.#diagnostics.reportError(
         `Expected ${constructor.parameters.length} arguments, got ${expr.arguments.length}`,
+        DiagnosticCode.ArgumentCountMismatch,
       );
     }
 
@@ -953,8 +1020,9 @@ export class TypeChecker {
         argType.kind !== Types.Unknown.kind
       ) {
         if (this.#typeToString(argType) !== this.#typeToString(paramType)) {
-          this.#errors.push(
+          this.#diagnostics.reportError(
             `Type mismatch in argument ${i + 1}: expected ${this.#typeToString(paramType)}, got ${this.#typeToString(argType)}`,
+            DiagnosticCode.TypeMismatch,
           );
         }
       }
@@ -977,8 +1045,9 @@ export class TypeChecker {
 
     if (objectType.kind !== TypeKind.Class) {
       if (objectType.kind !== Types.Unknown.kind) {
-        this.#errors.push(
+        this.#diagnostics.reportError(
           `Property access on non-class type '${this.#typeToString(objectType)}'.`,
+          DiagnosticCode.TypeMismatch,
         );
       }
       return Types.Unknown;
@@ -997,15 +1066,19 @@ export class TypeChecker {
       return classType.methods.get(memberName)!;
     }
 
-    this.#errors.push(
+    this.#diagnostics.reportError(
       `Property '${memberName}' does not exist on type '${classType.name}'.`,
+      DiagnosticCode.PropertyNotFound,
     );
     return Types.Unknown;
   }
 
   #checkThisExpression(expr: ThisExpression): Type {
     if (!this.#currentClass) {
-      this.#errors.push(`'this' can only be used inside a class.`);
+      this.#diagnostics.reportError(
+        `'this' can only be used inside a class.`,
+        DiagnosticCode.UnknownError,
+      );
       return Types.Unknown;
     }
     return this.#currentClass;
@@ -1020,8 +1093,9 @@ export class TypeChecker {
     for (let i = 1; i < expr.elements.length; i++) {
       const type = this.#checkExpression(expr.elements[i]);
       if (this.#typeToString(type) !== this.#typeToString(firstType)) {
-        this.#errors.push(
+        this.#diagnostics.reportError(
           `Array elements must be of the same type. Expected ${this.#typeToString(firstType)}, got ${this.#typeToString(type)}`,
+          DiagnosticCode.TypeMismatch,
         );
       }
     }
@@ -1036,8 +1110,9 @@ export class TypeChecker {
       indexType.kind !== TypeKind.Number ||
       (indexType as NumberType).name !== 'i32'
     ) {
-      this.#errors.push(
+      this.#diagnostics.reportError(
         `Array index must be i32, got ${this.#typeToString(indexType)}`,
+        DiagnosticCode.TypeMismatch,
       );
     }
 
@@ -1045,8 +1120,9 @@ export class TypeChecker {
       objectType.kind !== TypeKind.Array &&
       objectType.kind !== TypeKind.String
     ) {
-      this.#errors.push(
+      this.#diagnostics.reportError(
         `Index expression only supported on arrays or strings, got ${this.#typeToString(objectType)}`,
+        DiagnosticCode.NotIndexable,
       );
       return Types.Unknown;
     }

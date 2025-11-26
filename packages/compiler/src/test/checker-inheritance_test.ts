@@ -36,7 +36,7 @@ suite('TypeChecker - Inheritance', () => {
     const checker = new TypeChecker(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Unknown superclass 'Animal'/);
+    assert.match(errors[0].message, /Unknown superclass 'Animal'/);
   });
 
   test('should detect non-class superclass', () => {
@@ -49,7 +49,7 @@ suite('TypeChecker - Inheritance', () => {
     const checker = new TypeChecker(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Superclass 'Animal' must be a class/);
+    assert.match(errors[0].message, /Superclass 'Animal' must be a class/);
   });
 
   test('should detect field redeclaration', () => {
@@ -66,7 +66,10 @@ suite('TypeChecker - Inheritance', () => {
     const checker = new TypeChecker(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Cannot redeclare field 'name' in subclass 'Dog'/);
+    assert.match(
+      errors[0].message,
+      /Cannot redeclare field 'name' in subclass 'Dog'/,
+    );
   });
 
   test('should allow valid method override', () => {
@@ -100,7 +103,7 @@ suite('TypeChecker - Inheritance', () => {
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(
-      errors[0],
+      errors[0].message,
       /Method 'speak' in 'Dog' incorrectly overrides method in 'Animal'/,
     );
   });

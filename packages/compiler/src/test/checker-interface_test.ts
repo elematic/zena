@@ -35,7 +35,7 @@ suite('TypeChecker - Interfaces', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Method 'run' is missing/);
+    assert.match(errors[0].message, /Method 'run' is missing/);
   });
 
   test('should detect incorrect method signature', () => {
@@ -53,7 +53,7 @@ suite('TypeChecker - Interfaces', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Method 'run' is type .* but expected .*/);
+    assert.match(errors[0].message, /Method 'run' is type .* but expected .*/);
   });
 
   test('should check valid interface with fields', () => {
@@ -91,7 +91,7 @@ suite('TypeChecker - Interfaces', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Property 'y' is missing/);
+    assert.match(errors[0].message, /Property 'y' is missing/);
   });
 
   test('should detect incorrect field type', () => {
@@ -109,7 +109,10 @@ suite('TypeChecker - Interfaces', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Property 'x' is type 'f32' but expected 'i32'/);
+    assert.match(
+      errors[0].message,
+      /Property 'x' is type 'f32' but expected 'i32'/,
+    );
   });
 
   test('should check multiple interfaces', () => {

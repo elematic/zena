@@ -3,8 +3,10 @@ import assert from 'node:assert';
 import {Parser} from '../lib/parser.js';
 import {TypeChecker} from '../lib/checker.js';
 
+import type {Diagnostic} from '../lib/diagnostics.js';
+
 suite('TypeChecker - Arrays', () => {
-  function check(source: string): string[] {
+  function check(source: string): Diagnostic[] {
     const parser = new Parser(source);
     const ast = parser.parse();
     const checker = new TypeChecker(ast);
@@ -23,7 +25,7 @@ suite('TypeChecker - Arrays', () => {
       let arr = #[1, "hello"];
     `);
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Array elements must be of the same type/);
+    assert.match(errors[0].message, /Array elements must be of the same type/);
   });
 
   test('should check valid index access', () => {
@@ -40,7 +42,7 @@ suite('TypeChecker - Arrays', () => {
       let x = arr["0"];
     `);
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Array index must be i32/);
+    assert.match(errors[0].message, /Array index must be i32/);
   });
 
   test('should detect index access on non-array', () => {
@@ -49,7 +51,10 @@ suite('TypeChecker - Arrays', () => {
       let y = x[0];
     `);
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Index expression only supported on arrays/);
+    assert.match(
+      errors[0].message,
+      /Index expression only supported on arrays/,
+    );
   });
 
   test('should allow operation with array element of correct type', () => {
@@ -66,6 +71,6 @@ suite('TypeChecker - Arrays', () => {
       let sum = 10 + arr[0];
     `);
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Type mismatch/);
+    assert.match(errors[0].message, /Type mismatch/);
   });
 });

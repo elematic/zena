@@ -6,6 +6,7 @@ export * from './types.js';
 export * from './checker.js';
 export * from './wasm.js';
 export * from './emitter.js';
+export * from './diagnostics.js';
 export * from './codegen/index.js';
 
 import {Parser} from './parser.js';
