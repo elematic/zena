@@ -155,23 +155,23 @@ Zena supports overriding a plain field in a base class with an accessor in a sub
 #### Codegen Strategy
 
 1.  **Base Class (`Base`)**:
-    *   Declaring a field `x: i32` generates:
-        *   A struct field (storage).
-        *   A default **getter method** that reads the struct field.
-        *   A default **setter method** that writes the struct field.
-    *   These accessor methods are added to the VTable.
+    - Declaring a field `x: i32` generates:
+      - A struct field (storage).
+      - A default **getter method** that reads the struct field.
+      - A default **setter method** that writes the struct field.
+    - These accessor methods are added to the VTable.
 2.  **Subclass (`Sub`)**:
-    *   Declaring an accessor `x: i32 { get { ... } }` generates:
-        *   A getter method with the custom logic.
-    *   The VTable for `Sub` is constructed using `Sub`'s getter instead of `Base`'s default getter.
-    *   **Note**: The storage slot for `x` (inherited from `Base`) still exists in `Sub`'s struct layout to maintain layout compatibility, even if the subclass accessor doesn't use it.
+    - Declaring an accessor `x: i32 { get { ... } }` generates:
+      - A getter method with the custom logic.
+    - The VTable for `Sub` is constructed using `Sub`'s getter instead of `Base`'s default getter.
+    - **Note**: The storage slot for `x` (inherited from `Base`) still exists in `Sub`'s struct layout to maintain layout compatibility, even if the subclass accessor doesn't use it.
 
 #### Performance Implication
 
 Accessing a public field (`obj.x`) becomes a virtual call (`call_ref` via VTable) rather than a direct struct access (`struct.get`).
 
-*   **Optimization**: If the compiler can prove a class is `final` or the field is never overridden (e.g., via Whole Program Optimization), it can devirtualize the access to a direct `struct.get`.
-*   **Private Fields**: Private fields (`#x`) are never virtual and are always accessed directly.
+- **Optimization**: If the compiler can prove a class is `final` or the field is never overridden (e.g., via Whole Program Optimization), it can devirtualize the access to a direct `struct.get`.
+- **Private Fields**: Private fields (`#x`) are never virtual and are always accessed directly.
 
 ## 4. Method Dispatch
 
@@ -240,7 +240,43 @@ The compiler will attempt to optimize dynamic dispatch to static dispatch whenev
 - **Final Classes**: If a class is marked `final` (cannot be extended), all calls on it can be static.
 - **Sealed Classes**: If we know all subclasses, we might optimize.
 
-### 4.5. Construction
+## 5. The `final` Modifier
+
+To support manual optimization and enforce design intent, Zena supports the `final` modifier.
+
+### 5.1. Final Classes
+
+```typescript
+final class Point { ... }
+```
+
+- **Semantics**: `Point` cannot be subclassed.
+- **Optimization**: All method calls on `Point` are statically dispatched (devirtualized).
+
+### 5.2. Final Methods
+
+```typescript
+class Base {
+  final compute(): i32 { ... }
+}
+```
+
+- **Semantics**: `compute` cannot be overridden in subclasses.
+- **Optimization**: Calls to `compute` on `Base` (or subclasses) are statically dispatched.
+
+### 5.3. Final Fields
+
+```typescript
+class Base {
+  final x: i32;
+}
+```
+
+- **Semantics**: The virtual property `x` cannot be overridden by an accessor in a subclass.
+- **Optimization**: Accessing `obj.x` is compiled to a direct struct field access (`struct.get`), bypassing the VTable getter/setter.
+- **Note**: This does **not** mean the field is immutable (read-only). It means the _implementation_ of the field access is final. (Use `const` or `readonly` for immutability, if added).
+
+## 6. Construction
 
 When `new Dog()` is called:
 
@@ -248,11 +284,11 @@ When `new Dog()` is called:
 2.  Initialize the VTable field with the singleton instance of `$Dog_VTable`.
 3.  Run the constructor.
 
-## 5. Interfaces (Future)
+## 7. Interfaces (Future)
 
 Interfaces allow polymorphism across unrelated class hierarchies. Since a class can implement multiple interfaces, we cannot rely on a single linear VTable (the method indices would conflict).
 
-### 5.1. Implementation: Fat Pointers
+### 7.1. Implementation: Fat Pointers
 
 We will likely use **Fat Pointers** to represent interface references.
 
@@ -261,7 +297,7 @@ We will likely use **Fat Pointers** to represent interface references.
   - `itable_ref`: A reference to an **Interface Table (ITable)** specific to that class's implementation of the interface.
 - **ITable**: A struct containing function references for the interface's methods, mapped to the concrete class's implementations.
 
-### 5.2. Dispatch
+### 7.2. Dispatch
 
 Interface calls are always **dynamically dispatched** (unless devirtualized).
 
@@ -271,15 +307,15 @@ Interface calls are always **dynamically dispatched** (unless devirtualized).
 
 This approach avoids the "diamond problem" of multiple inheritance and keeps the object layout simple (only one VTable pointer).
 
-## 6. Private Fields
+## 8. Private Fields
 
 Zena supports private fields using the `#` prefix (e.g., `#count`).
 
-### 6.1. Access Control
+### 8.1. Access Control
 
 Private fields are only accessible within the class body where they are defined. This is enforced at compile-time by the Type Checker. Accessing a private field from outside the class or from a subclass results in a compilation error.
 
-### 6.2. Implementation
+### 8.2. Implementation
 
 Private fields are implemented using **Name Mangling** to ensure uniqueness and prevent collisions with fields in subclasses.
 
@@ -300,13 +336,13 @@ TODO: Once we allow type aliasing and support modules we could have
 multiple classes with the same name in a inheritance chain and get
 private name collisions.
 
-## 7. Protected Members
+## 9. Protected Members
 
 > **Note**: This feature is currently in the design phase and has not been implemented yet.
 
 Zena supports protected members using the `_` prefix (e.g., `_render`).
 
-### 7.1. Access Control Rules
+### 9.1. Access Control Rules
 
 Protected members are accessible in:
 
@@ -316,20 +352,20 @@ Protected members are accessible in:
 
 This "Module + Subclass" visibility allows framework code within the same module to orchestrate calls to protected methods (e.g., lifecycle hooks) without exposing them to the public API.
 
-### 7.2. Inheritance & Namespaces
+### 9.2. Inheritance & Namespaces
 
 - **Shared Namespace**: Unlike private fields (`#`), protected fields (`_`) share the same namespace down the inheritance chain. A subclass can override a protected method.
 - **No Collision**: Protected names in unrelated classes do not collide because access is resolved via the type system.
 - **Mangling**: Protected members are **not** name-mangled like private fields. They behave like public fields but with restricted visibility during type checking.
 
-### 7.3. Interfaces
+### 9.3. Interfaces
 
 Interfaces can declare protected methods.
 
 - Implementing classes must provide the method (marked with `_`).
 - The method is callable only by code with protected access to the interface (e.g., code in the same module as the interface definition).
 
-### 7.4. Collision Handling (Qualified Names)
+### 9.4. Collision Handling (Qualified Names)
 
 To avoid name collisions (e.g., when using Mixins or Interfaces that define the same protected name), Zena supports **Qualified Method Definitions**.
 
@@ -351,7 +387,7 @@ let w = new Widget();
 (w as Component)._render(); // Calls the Component._render implementation
 ```
 
-### 7.5. Super Calls
+### 9.5. Super Calls
 
 When overriding a protected method, you can call the superclass implementation using `super`. If the method is qualified (to resolve ambiguity), use a cast on `super` to specify which base class implementation to invoke.
 
@@ -370,6 +406,6 @@ class Widget extends Component {
   - _Pros_: Explicitly distinguishes "static ancestor call" from "cast".
   - _Cons_: Inconsistent with instance access. We cannot use `instance<T>.method()` for instances because it creates parsing ambiguities with comparison operators (e.g., `a < b`).
 
-### 7.6. Static Symbols (Alternative Considered)
+### 9.6. Static Symbols (Alternative Considered)
 
 We considered using "Static Symbols" (similar to JavaScript Symbols or private declarations) to allow capability-based access control (e.g., `[_render]() { ... }`). However, we chose the `_` sigil for simplicity and performance, avoiding the need for computed property syntax or symbol management. The "Module Visibility" rule sufficiently covers the use case where a framework needs privileged access to a method it defines.
