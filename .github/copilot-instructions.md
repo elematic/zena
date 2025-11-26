@@ -104,7 +104,11 @@ This project is an **npm monorepo** managed with **Wireit**.
   - `npm run build`: Builds packages using Wireit.
   - **Wireit Caching**: Wireit caches script results and only re-runs scripts when inputs change. Remember this when debugging or running tasks repeatedly.
   - **Running Tests**:
-    - Use `npm test` or `npm test -w @zena-lang/compiler`.
+    - Use `npm test` or `npm test -w @zena-lang/compiler` to run all tests.
+    - **Running Specific Tests**:
+      - To run a specific test file, you MUST use the package workspace flag and pass the file path after `--`.
+      - Example: `npm test -w @zena-lang/compiler -- test/checker/checker_test.js`
+      - Do NOT try to pass arguments to the root `npm test` command (e.g. `npm test packages/compiler/...`), as they are ignored.
     - **NEVER** use `npm test packages/compiler` or `npm test -- some/path/some_test.ts`.
     - Packages are always referred to by **package name** (e.g., `@zena-lang/compiler`), not package path.
 
