@@ -3,6 +3,7 @@ import {suite, test} from 'node:test';
 import {main} from '../lib/index.js';
 import {fileURLToPath} from 'node:url';
 import {dirname, join} from 'node:path';
+import {tmpdir} from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // From test/ go up to cli/ then into test-files/
@@ -64,7 +65,7 @@ suite('CLI with test files', () => {
       'build',
       join(testFilesDir, 'valid.zena'),
       '-o',
-      '/tmp/valid-test.wasm',
+      join(tmpdir(), 'valid-test.wasm'),
     ]);
     assert.strictEqual(exitCode, 0);
   });

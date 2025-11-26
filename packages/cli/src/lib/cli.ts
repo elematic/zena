@@ -3,7 +3,12 @@
 import {readFile, writeFile} from 'node:fs/promises';
 import {resolve, basename} from 'node:path';
 import {parseArgs} from 'node:util';
-import {compile, Parser, TypeChecker} from '@zena-lang/compiler';
+import {
+  compile,
+  Parser,
+  TypeChecker,
+  type Diagnostic,
+} from '@zena-lang/compiler';
 
 const Commands = {
   build: 'build',
@@ -44,6 +49,29 @@ const readSourceFile = async (filePath: string): Promise<string> => {
   return readFile(absolutePath, 'utf-8');
 };
 
+/**
+ * Parse and type-check source code, returning any errors found.
+ */
+const checkSource = (source: string): Diagnostic[] => {
+  const parser = new Parser(source);
+  const ast = parser.parse();
+  const checker = new TypeChecker(ast);
+  return checker.check();
+};
+
+/**
+ * Output errors to stderr in a formatted way.
+ */
+const printErrors = (file: string, errors: Diagnostic[]): void => {
+  console.error(`${file}:`);
+  for (const error of errors) {
+    const loc = error.location
+      ? ` at line ${error.location.line}, column ${error.location.column}`
+      : '';
+    console.error(`  ${error.message}${loc}`);
+  }
+};
+
 const buildCommand = async (
   files: string[],
   output?: string,
@@ -58,22 +86,11 @@ const buildCommand = async (
   for (const file of files) {
     try {
       const source = await readSourceFile(file);
-
-      // Parse and check for errors first
-      const parser = new Parser(source);
-      const ast = parser.parse();
-      const checker = new TypeChecker(ast);
-      const errors = checker.check();
+      const errors = checkSource(source);
 
       if (errors.length > 0) {
         hasErrors = true;
-        console.error(`${file}:`);
-        for (const error of errors) {
-          const loc = error.location
-            ? ` at line ${error.location.line}, column ${error.location.column}`
-            : '';
-          console.error(`  ${error.message}${loc}`);
-        }
+        printErrors(file, errors);
         continue;
       }
 
@@ -111,20 +128,11 @@ const checkCommand = async (files: string[]): Promise<number> => {
   for (const file of files) {
     try {
       const source = await readSourceFile(file);
-      const parser = new Parser(source);
-      const ast = parser.parse();
-      const checker = new TypeChecker(ast);
-      const errors = checker.check();
+      const errors = checkSource(source);
 
       if (errors.length > 0) {
         hasErrors = true;
-        console.error(`${file}:`);
-        for (const error of errors) {
-          const loc = error.location
-            ? ` at line ${error.location.line}, column ${error.location.column}`
-            : '';
-          console.error(`  ${error.message}${loc}`);
-        }
+        printErrors(file, errors);
       } else {
         console.log(`${file}: OK`);
       }
@@ -150,22 +158,11 @@ const runCommand = async (files: string[]): Promise<number> => {
   for (const file of files) {
     try {
       const source = await readSourceFile(file);
-
-      // Parse and check for errors first
-      const parser = new Parser(source);
-      const ast = parser.parse();
-      const checker = new TypeChecker(ast);
-      const errors = checker.check();
+      const errors = checkSource(source);
 
       if (errors.length > 0) {
         hasErrors = true;
-        console.error(`${file}:`);
-        for (const error of errors) {
-          const loc = error.location
-            ? ` at line ${error.location.line}, column ${error.location.column}`
-            : '';
-          console.error(`  ${error.message}${loc}`);
-        }
+        printErrors(file, errors);
         continue;
       }
 
