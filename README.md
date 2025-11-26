@@ -12,25 +12,35 @@ WASM. It balances familiar functional and OOP syntax with a strict orientation
 around efficient WASM output.
 
 - **WASM-First & High Performance**: The primary backend is WASM-GC. We aim for
-  **no-cost to low-cost abstractions**, balancing performance with familiar OOP
-  patterns. While we use vtables for polymorphism (a necessary tradeoff), we
-  also aim to offer zero-cost alternatives where possible.
+  **no-cost to low-cost abstractions**.
+    - **Generics** are fully monomorphized (like C++ templates or Rust), meaning `List<i32>` stores raw integers with zero boxing overhead.
+    - **Classes** map directly to WASM GC structs.
+    - **Polymorphism** uses vtables where necessary (interfaces), but we prefer static dispatch when possible.
 - **Familiar yet AOT**: While Zena looks like TypeScript, it is entirely
   designed for **ahead-of-time (AOT) compilation**. It breaks away from
   JavaScript's dynamic semantics to allow for efficient compilation and small
   binary sizes.
 - **Modern Inspiration**: Zena aims to take inspiration and the best features
   from **TypeScript, Dart, C#, Kotlin, and Swift**.
-- **Vibe Coding Experiment**: Zena is also an experiment in "vibe coding" a new
-  programming language! We wouldn't have started a new language—it typically
-  requires immense time and expertise—except that modern LLMs (like Gemini 3)
-  are surprisingly adept at building them. We are exploring how far we can go
-  with coding agents doing the heavy lifting.
 - **Sound Type System**: Zena is strongly typed with a sound type system. It
   does not perform implicit type coercion (e.g., `1 + "1"` is a type error).
-- **Correctness & Safety**: We prefer immutable data by default. Future plans
-  include "branded types" for numeric values with units (e.g., `1m` or `10px`)
-  to prevent logical errors.
+- **Correctness & Safety**: Zena is designed to make invalid states unrepresentable.
+  - **Immutable by Default**: Data structures and bindings are immutable unless explicitly opted-out, reducing classes of bugs related to shared mutable state.
+  - **Nominal Typing**: Enforces strict semantic boundaries between types, preventing accidental structural compatibility.
+  - **Advanced Safety Features**: Future plans include **Exhaustiveness Checking** for pattern matching and **Branded Types** (Opaque Types) to enforce unit correctness at compile time (e.g., preventing `Meters + Seconds`).
+
+## Zena and Generative AI
+
+Zena so far is implemented almost entirely by generative AI (Gemini 3 for now). I must be honest about this, even if it might be controversial if anyone ever cares about this project. Zena started as, and still is, an experiment. A kind of "what would happen if we asked AI to build a new programming language?" kind of challenge.
+
+Why do this though? Will anyone use this language? What's the point? Here are some of my thoughts and motivations at the moment:
+
+- **Breaking the larrier to entry**: I've had ideas for a programming language for a long time, but I never had the time or deep expertise to pull it off. I worked on the Dart team (mostly on tools, not the VM) and have written parsers before (like for Polymer expressions), but building a full compiler and ecosystem is a massive investment. Without AI, my only hope of building this would have been winning the lottery.
+- **Gemini 3 & greenfield development**: I was trying Gemini 3 and noticed how far it could get with basic instructions, so I wondered how far it could go on a greenfield project. It turns out, quite far! I'm already blown away by how well it's working.
+- **The bootstraping paradox**: People worry that LLMs will discourage new languages because models only know languages in their training sets. That's a real concern, but there might be an opposite effect too: AI might make it drastically cheaper to build the language and the *ecosystem*—IDEs, docs, examples, and tools—needed to launch a language and get it into the next generation of training cycles.
+- **Ethical use of AI in open source?**: There are definite ethical and moral questions around generative AI, but using it to create public goods like open source software feels like one of the least exploitive ways to use the technology.
+- **Controlling quality and reducing slop**: I haven't been a huge AI booster—I'm skeptical of a lot of the hype—but it's clearly useful for coding if you hold it right. I wanted to see if I could nudge an AI to build well-constructed, reliable software rather than unmaintainable cruft. I'm performing a lot of oversight: reviewing code and tests, "discussing" design ideas, and planning next steps. Is that enough?
+- **Why Zena itself?**: I wanted a nice language for building WASM modules that uses modern features like WASM-GC out of the box. I didn't see another language I loved for this—even including Rust, Go, or AssemblyScript—so I decided to try building one.
 
 ## Key Features
 
@@ -39,13 +49,13 @@ around efficient WASM output.
 
 - **Clean-Slate OOP**:
   - **JS-style private namespaces** (using `#`).
-  - **Dart-style constructors** with initializer lists.
-  - **Powerful mixins** for code reuse.
+  - **Dart-style constructors** (named `#new`) with initializer lists.
+  - **Powerful mixins** for code reuse (subclass factories).
   - **Classical inheritance** with immutable instances by default.
 - **Rich Type System**:
-  - **Generics** and **Interfaces**.
-  - **Future**: Union and intersection types, discriminated unions, and
-    potentially mapped types.
+  - **Zero-Cost Generics**: Fully monomorphized, allowing for specialized, high-performance code for every type instantiation.
+  - **Interfaces**: Implemented via "Fat Pointers" (Instance + VTable), allowing for true dynamic dispatch across disjoint class hierarchies.
+  - **Future**: Union and intersection types, discriminated unions.
 - **High-Level Features**:
   - **Native JSX-like builder syntax**.
   - **Pattern matching**.
@@ -56,11 +66,41 @@ around efficient WASM output.
 - **Functions**: Arrow functions only (`=>`). No `function` keyword.
 - **Auto-Accessors**: Class fields generate auto-accessors backed by private
   storage by default.
-- **Efficient Standard Library**: A rich standard library that doesn't bloat
-  binaries. Most features are opt-in via module imports, ensuring you only pay
-  for what you use.
+- **Efficient Standard Library**:
+  - **Strings**: Immutable UTF-8 byte arrays with value equality semantics.
+  - **Maps & Arrays**: Mutable collections designed for performance.
+  - Most features are opt-in via module imports to prevent binary bloat.
 - **Named Parameters**: First-class support for named parameters to avoid object
-  allocation ovezenad.
+  allocation overhead.
+
+## Syntax Example
+
+Here is a small example of what Zena looks like today:
+
+```typescript
+// A simple class representing a 2D point
+class Point {
+  x: i32;
+  y: i32;
+
+  // Constructor
+  #new(x: i32, y: i32) {
+    this.x = x;
+    this.y = y;
+  }
+
+  // Method to calculate distance squared
+  distanceSquared(): i32 {
+    return this.x * this.x + this.y * this.y;
+  }
+}
+
+// Exported function callable from the host
+export let main = (): i32 => {
+  let p = new Point(3, 4);
+  return p.distanceSquared(); // Returns 25
+};
+```
 
 ## Documentation
 
