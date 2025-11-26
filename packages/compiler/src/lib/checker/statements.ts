@@ -1,6 +1,6 @@
 import {
   NodeType,
-  type BlockStatement,
+  type AccessorDeclaration,
   type ClassDeclaration,
   type IfStatement,
   type InterfaceDeclaration,
@@ -8,7 +8,7 @@ import {
   type ReturnStatement,
   type Statement,
   type VariableDeclaration,
-  type WhileStatement,
+  type WhileStatement
 } from '../ast.js';
 import {DiagnosticCode} from '../diagnostics.js';
 import {
@@ -231,6 +231,22 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
       }
       classType.fields.set(member.name.name, fieldType);
+    } else if (member.type === NodeType.AccessorDeclaration) {
+      const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      if (classType.fields.has(member.name.name)) {
+        if (superType && superType.fields.has(member.name.name)) {
+          ctx.diagnostics.reportError(
+            `Cannot redeclare field '${member.name.name}' in subclass '${className}'.`,
+            DiagnosticCode.DuplicateDeclaration,
+          );
+        } else {
+          ctx.diagnostics.reportError(
+            `Duplicate field '${member.name.name}' in class '${className}'.`,
+            DiagnosticCode.DuplicateDeclaration,
+          );
+        }
+      }
+      classType.fields.set(member.name.name, fieldType);
     } else if (member.type === NodeType.MethodDefinition) {
       const paramTypes = member.params.map((p) =>
         resolveTypeAnnotation(ctx, p.typeAnnotation),
@@ -360,6 +376,8 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           }
         }
       }
+    } else if (member.type === NodeType.AccessorDeclaration) {
+      checkAccessorDeclaration(ctx, member);
     }
   }
 
@@ -467,4 +485,42 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
 
   ctx.currentFunctionReturnType = previousReturnType;
   ctx.exitScope();
+}
+
+function checkAccessorDeclaration(
+  ctx: CheckerContext,
+  decl: AccessorDeclaration,
+) {
+  const propertyType = resolveTypeAnnotation(ctx, decl.typeAnnotation);
+
+  // Check getter
+  if (decl.getter) {
+    ctx.enterScope();
+    const previousReturnType = ctx.currentFunctionReturnType;
+    ctx.currentFunctionReturnType = propertyType;
+
+    for (const stmt of decl.getter.body) {
+      checkStatement(ctx, stmt);
+    }
+
+    ctx.currentFunctionReturnType = previousReturnType;
+    ctx.exitScope();
+  }
+
+  // Check setter
+  if (decl.setter) {
+    ctx.enterScope();
+    const previousReturnType = ctx.currentFunctionReturnType;
+    ctx.currentFunctionReturnType = Types.Void;
+
+    // Declare parameter
+    ctx.declare(decl.setter.param.name, propertyType, 'let');
+
+    for (const stmt of decl.setter.body.body) {
+      checkStatement(ctx, stmt);
+    }
+
+    ctx.currentFunctionReturnType = previousReturnType;
+    ctx.exitScope();
+  }
 }
