@@ -44,6 +44,16 @@ Compiles to:
 )
 ```
 
+### 1.3. Member Access (`this`)
+
+Accessing instance members (fields and methods) within a class requires the explicit `this` keyword (e.g., `this.x`).
+
+**Rationale:**
+
+- **Disambiguation**: It clearly differentiates instance members from local variables and module-scoped identifiers.
+- **Shadowing**: It allows local variables to shadow fields without making the field inaccessible.
+- **Module Access**: Crucially, it ensures that module-level variables are always accessible as bare identifiers. If `this` were optional, a class field named `log` would shadow an imported `log` function, making the import unreachable.
+
 ## 2. Inheritance
 
 Zena supports single inheritance using the `extends` keyword.
@@ -251,6 +261,7 @@ Zena supports protected members using the `_` prefix (e.g., `_render`).
 ### 6.1. Access Control Rules
 
 Protected members are accessible in:
+
 1.  **The defining class**.
 2.  **Subclasses** (transitively).
 3.  **The defining module** (file).
@@ -259,15 +270,16 @@ This "Module + Subclass" visibility allows framework code within the same module
 
 ### 6.2. Inheritance & Namespaces
 
-*   **Shared Namespace**: Unlike private fields (`#`), protected fields (`_`) share the same namespace down the inheritance chain. A subclass can override a protected method.
-*   **No Collision**: Protected names in unrelated classes do not collide because access is resolved via the type system.
-*   **Mangling**: Protected members are **not** name-mangled like private fields. They behave like public fields but with restricted visibility during type checking.
+- **Shared Namespace**: Unlike private fields (`#`), protected fields (`_`) share the same namespace down the inheritance chain. A subclass can override a protected method.
+- **No Collision**: Protected names in unrelated classes do not collide because access is resolved via the type system.
+- **Mangling**: Protected members are **not** name-mangled like private fields. They behave like public fields but with restricted visibility during type checking.
 
 ### 6.3. Interfaces
 
 Interfaces can declare protected methods.
-*   Implementing classes must provide the method (marked with `_`).
-*   The method is callable only by code with protected access to the interface (e.g., code in the same module as the interface definition).
+
+- Implementing classes must provide the method (marked with `_`).
+- The method is callable only by code with protected access to the interface (e.g., code in the same module as the interface definition).
 
 ### 6.4. Collision Handling (Qualified Names)
 
@@ -305,11 +317,11 @@ class Widget extends Component {
 ```
 
 **Note on Syntax**: We chose `(super as T).method()` to maintain symmetry with instance access `(this as T).method()`.
-*   **Alternative Considered**: `super<T>.method()`.
-    *   *Pros*: Explicitly distinguishes "static ancestor call" from "cast".
-    *   *Cons*: Inconsistent with instance access. We cannot use `instance<T>.method()` for instances because it creates parsing ambiguities with comparison operators (e.g., `a < b`).
+
+- **Alternative Considered**: `super<T>.method()`.
+  - _Pros_: Explicitly distinguishes "static ancestor call" from "cast".
+  - _Cons_: Inconsistent with instance access. We cannot use `instance<T>.method()` for instances because it creates parsing ambiguities with comparison operators (e.g., `a < b`).
 
 ### 6.6. Static Symbols (Alternative Considered)
 
 We considered using "Static Symbols" (similar to JavaScript Symbols or private declarations) to allow capability-based access control (e.g., `[_render]() { ... }`). However, we chose the `_` sigil for simplicity and performance, avoiding the need for computed property syntax or symbol management. The "Module Visibility" rule sufficiently covers the use case where a framework needs privileged access to a method it defines.
-

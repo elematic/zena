@@ -8,15 +8,55 @@ build complex data structures and allows for better optimization.
 
 ## Goals
 
-1.  **Self-Hosting**: Implement core types (`Map`, `Set`, `List`, etc.) in Zena.
-2.  **Zero-Ovezenad Inclusion**: The compiler must perform **Dead Code
-    Elimination (DCE)** or **Reachability Analysis**. Code from the stdlib (or
-    any module) should only be emitted into the final WASM binary if it is
-    transitively reachable from the program's entry point (exports or main
-    function).
-3.  **Implicit Availability**: Core stdlib types (like `Map`) should be
-    available in the global scope without explicit `import` statements, similar
-    to `Array` or `String` in JavaScript.
+1.  **Self-Hosting**: Implement core types (`Map`, `Array`, `String`, etc.) in Zena.
+2.  **Zero-Overhead Inclusion**: The compiler must perform **Dead Code Elimination (DCE)**. Code from the stdlib (especially the implicitly imported classes) should only be emitted into the final WASM binary if it is actually used. This allows us to hang many utility methods on `String` or `Array` without bloating the binary size of simple programs.
+3.  **Implicit Availability**: Core stdlib types (`String`, `Array`, `Map`) must be available in the global scope without explicit `import` statements, as they back language literals.
+4.  **Compiler Intrinsics**: Some methods on core classes (e.g., `Array.length`, `String.concat`) cannot be implemented purely in Zena or require direct mapping to WASM instructions. We need a mechanism to mark these methods as intrinsics.
+
+## Core Classes
+
+The following classes are the foundation of the standard library and have special compiler support:
+
+### 1. String
+
+- **Backing**: UTF-8 bytes (WASM array or struct).
+- **Literal**: `"hello world"`
+- **Intrinsics**: Length, concatenation, equality.
+
+### 2. Array<T>
+
+- **Backing**: WASM GC Array.
+- **Literal**: `#[1, 2, 3]`
+- **Intrinsics**: `get`, `set`, `length`, `push` (if dynamic).
+
+### 3. Map<K, V>
+
+- **Backing**: Hash Map implementation (likely open addressing or chaining).
+- **Literal**: `#{ "key": "value" }`
+- **Intrinsics**: Hashing helpers (if not pure Zena).
+
+## Compiler Intrinsics
+
+To implement low-level operations or map directly to WASM instructions, we need a way to declare "native" or "intrinsic" methods in Zena source files.
+
+**Proposal: Decorator or Keyword**
+
+```typescript
+class Array<T> {
+  // Maps to array.len instruction
+  @intrinsic('array.len')
+  length(): i32 {
+    return 0;
+  } // Body is ignored or used as fallback/stub
+
+  // Implemented in Zena
+  isEmpty(): boolean {
+    return this.length() == 0;
+  }
+}
+```
+
+The compiler's code generator will detect the `@intrinsic` marker (or similar mechanism) and emit the corresponding WASM instruction instead of compiling the function body.
 
 ## Implementation Strategy
 
@@ -50,10 +90,5 @@ build complex data structures and allows for better optimization.
 
 ## Challenges
 
-- **Generics**: Implementing a reusable `Map` requires Generics (e.g., `Map<K,
-V>`) or a top-type (`any` / `eqref`) with runtime casting.
-  - _Recommendation_: Prioritize a basic Generics implementation or Templates to
-    allow type-safe, specialized collections without runtime ovezenad
-    (monomorphization).
 - **Circular Dependencies**: The stdlib might depend on itself (e.g., `Map` uses
   `Array`). The compiler must handle circular references gracefully.
