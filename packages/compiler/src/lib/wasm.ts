@@ -79,6 +79,11 @@ export const Opcode = {
   i32_const: 0x41,
   f32_const: 0x43,
 
+  ref_null: 0xd0,
+  ref_func: 0xd2,
+  ref_cast: 0x16, // GC opcode 0xfb 0x16
+  call_ref: 0x14,
+
   i32_eqz: 0x45,
   i32_eq: 0x46,
   i32_ne: 0x47,

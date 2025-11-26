@@ -4,6 +4,7 @@ export class WasmModule {
   #types: number[][] = [];
   #functions: number[] = [];
   #exports: {name: string; kind: number; index: number}[] = [];
+  #globals: number[][] = [];
   #codes: number[][] = [];
   #datas: number[][] = [];
 
@@ -119,6 +120,16 @@ export class WasmModule {
     this.#exports.push({name, kind, index});
   }
 
+  public addGlobal(type: number[], mutable: boolean, init: number[]): number {
+    const buffer: number[] = [];
+    buffer.push(...type);
+    buffer.push(mutable ? 1 : 0);
+    buffer.push(...init);
+    buffer.push(0x0b); // end
+    this.#globals.push(buffer);
+    return this.#globals.length - 1;
+  }
+
   #areTypesEqual(a: number[], b: number[]): boolean {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
@@ -152,6 +163,16 @@ export class WasmModule {
         this.#writeUnsignedLEB128(sectionBuffer, typeIndex);
       }
       this.#writeSection(buffer, SectionId.Function, sectionBuffer);
+    }
+
+    // Global Section
+    if (this.#globals.length > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#globals.length);
+      for (const global of this.#globals) {
+        sectionBuffer.push(...global);
+      }
+      this.#writeSection(buffer, SectionId.Global, sectionBuffer);
     }
 
     // Export Section

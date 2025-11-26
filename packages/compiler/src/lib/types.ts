@@ -47,6 +47,7 @@ export interface ClassType extends Type {
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
   constructorType?: FunctionType;
+  vtable: string[]; // Ordered list of method names
 }
 
 export const Types = {

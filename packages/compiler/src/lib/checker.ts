@@ -512,6 +512,7 @@ export class TypeChecker {
       fields: new Map(),
       methods: new Map(),
       constructorType: undefined,
+      vtable: superType ? [...superType.vtable] : [],
     };
 
     if (superType) {
@@ -571,6 +572,10 @@ export class TypeChecker {
           }
           classType.constructorType = methodType;
         } else {
+          if (!classType.methods.has(member.name.name)) {
+            classType.vtable.push(member.name.name);
+          }
+
           if (classType.methods.has(member.name.name)) {
             // Check for override
             if (superType && superType.methods.has(member.name.name)) {

@@ -29,17 +29,7 @@ import {
 } from './ast.js';
 import {WasmModule} from './emitter.js';
 import {ValType, Opcode, ExportDesc, GcOpcode} from './wasm.js';
-
-interface ClassInfo {
-  structTypeIndex: number;
-  fields: Map<string, {index: number; type: number[]}>;
-  methods: Map<string, {index: number; returnType: number[]}>; // name -> {funcIndex, returnType}
-}
-
-interface LocalInfo {
-  index: number;
-  type: number[];
-}
+import type {ClassInfo, LocalInfo} from './codegen-types.js';
 
 export class CodeGenerator {
   #module: WasmModule;
@@ -133,6 +123,9 @@ export class CodeGenerator {
     let fieldIndex = 0;
 
     let superTypeIndex: number | undefined;
+    const methods = new Map<string, {index: number; returnType: number[]}>();
+    const vtable: string[] = [];
+
     if (decl.superClass) {
       const superClassInfo = this.#classes.get(decl.superClass.name);
       if (!superClassInfo) {
@@ -141,7 +134,6 @@ export class CodeGenerator {
       superTypeIndex = superClassInfo.structTypeIndex;
 
       // Inherit fields
-      // We must iterate in order of index to ensure layout compatibility
       const sortedSuperFields = Array.from(
         superClassInfo.fields.entries(),
       ).sort((a, b) => a[1].index - b[1].index);
@@ -150,16 +142,22 @@ export class CodeGenerator {
         fields.set(name, {index: fieldIndex++, type: info.type});
         fieldTypes.push({type: info.type, mutable: true});
       }
+
+      // Inherit methods and vtable
+      if (superClassInfo.vtable) {
+        vtable.push(...superClassInfo.vtable);
+      }
+      for (const [name, info] of superClassInfo.methods) {
+        methods.set(name, info);
+      }
     }
 
     for (const member of decl.body) {
       if (member.type === NodeType.FieldDefinition) {
-        // TODO: Map AST type to WASM type properly. For now assume i32.
         const wasmType = [ValType.i32];
-        // Skip if already inherited (shadowing not allowed by checker, but good to be safe)
         if (!fields.has(member.name.name)) {
           fields.set(member.name.name, {index: fieldIndex++, type: wasmType});
-          fieldTypes.push({type: wasmType, mutable: true}); // All fields mutable for now
+          fieldTypes.push({type: wasmType, mutable: true});
         }
       }
     }
@@ -168,27 +166,16 @@ export class CodeGenerator {
       fieldTypes,
       superTypeIndex,
     );
-    const classInfo: ClassInfo = {
-      structTypeIndex,
-      fields,
-      methods: new Map(),
-    };
-    this.#classes.set(decl.name.name, classInfo);
 
     // Register methods
-    // Inherit methods from superclass
-    if (decl.superClass) {
-      const superClassInfo = this.#classes.get(decl.superClass.name)!;
-      for (const [name, info] of superClassInfo.methods) {
-        classInfo.methods.set(name, info);
-      }
-    }
-
     for (const member of decl.body) {
       if (member.type === NodeType.MethodDefinition) {
         const methodName = member.name.name;
+        
+        if (methodName !== '#new' && !vtable.includes(methodName)) {
+          vtable.push(methodName);
+        }
 
-        // 'this' type: (ref null $structTypeIndex)
         const thisType = [
           ValType.ref_null,
           ...WasmModule.encodeSignedLEB128(structTypeIndex),
@@ -196,10 +183,10 @@ export class CodeGenerator {
 
         const params = [thisType];
         for (const param of member.params) {
-          params.push([ValType.i32]); // Assume i32 for now
+          params.push([ValType.i32]);
         }
 
-        let results = [[ValType.i32]]; // Assume i32 return
+        let results = [[ValType.i32]];
         if (methodName === '#new') {
           results = [];
         }
@@ -208,9 +195,41 @@ export class CodeGenerator {
         const funcIndex = this.#module.addFunction(typeIndex);
 
         const returnType = results.length > 0 ? results[0] : [];
-        classInfo.methods.set(methodName, {index: funcIndex, returnType});
+        methods.set(methodName, {index: funcIndex, returnType});
       }
     }
+
+    // Create VTable Struct Type
+    const vtableTypeIndex = this.#module.addStructType(
+      vtable.map(() => ({type: [ValType.funcref], mutable: false})),
+    );
+
+    // Create VTable Global
+    const vtableInit: number[] = [];
+    for (const methodName of vtable) {
+      const methodInfo = methods.get(methodName);
+      if (!methodInfo) throw new Error(`Method ${methodName} not found`);
+      vtableInit.push(Opcode.ref_func);
+      vtableInit.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+    }
+    vtableInit.push(0xfb, GcOpcode.struct_new);
+    vtableInit.push(...WasmModule.encodeSignedLEB128(vtableTypeIndex));
+
+    const vtableGlobalIndex = this.#module.addGlobal(
+      [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
+      false,
+      vtableInit,
+    );
+
+    const classInfo: ClassInfo = {
+      structTypeIndex,
+      fields,
+      methods,
+      vtable,
+      vtableTypeIndex,
+      vtableGlobalIndex,
+    };
+    this.#classes.set(decl.name.name, classInfo);
 
     this.#bodyGenerators.push(() => {
       this.#generateClassMethods(decl);
@@ -1468,16 +1487,23 @@ export class CodeGenerator {
     }
 
     const structTypeIndex = this.#module.addStructType(fieldTypes);
+    const methods = new Map<string, {index: number; returnType: number[]}>();
+    const vtable: string[] = [];
+
     const classInfo: ClassInfo = {
       structTypeIndex,
       fields,
-      methods: new Map(),
+      methods,
     };
     this.#classes.set(specializedName, classInfo);
 
     for (const member of decl.body) {
       if (member.type === NodeType.MethodDefinition) {
         const methodName = member.name.name;
+
+        if (methodName !== '#new' && !vtable.includes(methodName)) {
+          vtable.push(methodName);
+        }
 
         const thisType = [
           ValType.ref_null,
@@ -1502,13 +1528,39 @@ export class CodeGenerator {
         const funcIndex = this.#module.addFunction(typeIndex);
 
         const returnType = resultTypes.length > 0 ? resultTypes[0] : [];
-        classInfo.methods.set(methodName, {index: funcIndex, returnType});
+        methods.set(methodName, {index: funcIndex, returnType});
 
         this.#pendingMethodGenerations.push(() => {
           this.#generateMethodBody(member, classInfo, context);
         });
       }
     }
+
+    // Create VTable Struct Type
+    const vtableTypeIndex = this.#module.addStructType(
+      vtable.map(() => ({type: [ValType.funcref], mutable: false})),
+    );
+
+    // Create VTable Global
+    const vtableInit: number[] = [];
+    for (const methodName of vtable) {
+      const methodInfo = methods.get(methodName);
+      if (!methodInfo) throw new Error(`Method ${methodName} not found`);
+      vtableInit.push(Opcode.ref_func);
+      vtableInit.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+    }
+    vtableInit.push(0xfb, GcOpcode.struct_new);
+    vtableInit.push(...WasmModule.encodeSignedLEB128(vtableTypeIndex));
+
+    const vtableGlobalIndex = this.#module.addGlobal(
+      [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
+      false,
+      vtableInit,
+    );
+
+    classInfo.vtable = vtable;
+    classInfo.vtableTypeIndex = vtableTypeIndex;
+    classInfo.vtableGlobalIndex = vtableGlobalIndex;
   }
 
   #resolveAnnotation(
