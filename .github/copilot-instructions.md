@@ -43,6 +43,8 @@ The official language reference is maintained in `docs/language-reference.md`.
 - **Implementation**: Classes are backed by WASM GC Structs (fixed layout, typed fields).
 - **Syntax**: Standard class syntax defines the struct layout.
 - **Instantiation**: Class instances are created using constructors (e.g., `new Point(1, 2)`). Object literals `{ ... }` are reserved for Records.
+- **Constructors**: Constructors are named `#new`, NOT `constructor`.
+  - Example: `class Point { x: i32; y: i32; #new(x: i32, y: i32) { this.x = x; this.y = y; } }`
 - Classical inheritance model.
 - No mutable prototype chain.
 - Classes are expressions.
