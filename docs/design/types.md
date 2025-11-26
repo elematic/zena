@@ -4,9 +4,13 @@ This document outlines the core design decisions for the Rhea type system.
 
 ## 1. Nominal Typing
 
+**Status: Implemented (Classes)**
+
 Rhea uses a **Nominal Type System**. Types are compatible if and only if they
 are explicitly declared to be compatible (e.g., via inheritance or interface
 implementation), not just because they share the same structure.
+
+See [Classes Design](./classes.md) for more details.
 
 ### Decision
 
@@ -53,6 +57,8 @@ class Car {
 
 ## 2. Split Namespace (Types vs Values)
 
+**Status: Implemented**
+
 Rhea uses a **Split Namespace** model, similar to TypeScript.
 
 ### Decision
@@ -72,27 +78,135 @@ Rhea uses a **Split Namespace** model, similar to TypeScript.
 
 ## 3. Interfaces
 
-Interfaces are **Compile-Time Only** contracts.
+**Status: Implemented**
+
+Interfaces are contracts that define a set of methods/fields. In Rhea, they exist at runtime using a **Fat Pointer** representation.
+
+See [Interfaces Design](./interfaces.md) for implementation details.
 
 ### Decision
 
 - Interfaces define a set of methods/fields that a class must implement.
-- They do **not** exist at runtime.
-- `instanceof MyInterface` is **not supported** (initially).
+- **Runtime Representation**: An interface value is a struct containing the instance reference and a VTable (Fat Pointer).
+- **Performance**: Dispatch is O(1) but requires an allocation when casting an object to an interface (boxing).
 
 ### Rationale
 
-- **WASM Limitations**: WASM-GC does not yet have native support for interfaces
-  (protocol/trait types). Implementing runtime interfaces requires "fat
-  pointers" or complex vtable lookups, which impacts performance and binary
-  size.
-- **MVP Scope**: Compile-time checks cover 90% of use cases.
+- **WASM Limitations**: WASM-GC does not natively support traits. Fat pointers provide a robust way to support polymorphism across disjoint hierarchies.
 
 ### Pros
 
-- No runtime overhead.
-- Simplifies compiler implementation.
+- Supports true polymorphism.
+- O(1) dispatch.
 
 ### Cons
 
-- Cannot check if an arbitrary object implements an interface at runtime.
+- Requires allocation (boxing) when converting a class instance to an interface.
+
+## 4. Primitive Types
+
+**Status: Partially Implemented**
+
+- `i32`, `f32`, `boolean`, `string`: **Implemented**
+- `i64`, `f64`: **Planned**
+
+Rhea maps its primitive types directly to WebAssembly value types to ensure maximum performance and zero overhead.
+
+See [Strings Design](./strings.md) for details on string implementation.
+
+### Numeric Types
+
+- **`i32`**: 32-bit signed integer. Default for integer literals.
+- **`i64`**: 64-bit signed integer. Essential for large numbers and memory addressing.
+- **`f32`**: 32-bit floating point.
+- **`f64`**: 64-bit floating point. Default for float literals (to match JS precision).
+
+### Other Primitives
+
+- **`boolean`**: Maps to `i32` (0 or 1).
+- **`void`**: Represents the absence of a value (for function returns).
+
+### Future Consideration: SIMD
+
+- **`v128`**: 128-bit vector type for SIMD operations.
+
+## 5. Nullability
+
+**Status: Planned**
+
+Rhea is **Non-Nullable by Default**.
+
+### Decision
+
+- All types `T` are non-nullable. A variable of type `String` cannot hold `null`.
+- Nullability is opt-in via Union Types: `String | null`.
+
+### Rationale
+
+- **Safety**: Eliminates "Null Reference Exceptions" for the vast majority of code.
+- **WASM Mapping**:
+  - `T` maps to `(ref $T)` (Non-nullable reference).
+  - `T | null` maps to `(ref null $T)` (Nullable reference).
+- **Optimization**: Non-nullable references allow the WASM engine to elide null checks.
+
+## 6. Algebraic Data Types
+
+**Status: Planned**
+
+### Union Types (`A | B`)
+
+Rhea supports union types, primarily for classes and nullability.
+
+- **Implementation**:
+  - If `A` and `B` share a common ancestor class `Base`, `A | B` is treated as `Base`.
+  - If they are unrelated, they are treated as `any` (WASM `anyref` or `eqref`).
+- **Discrimination**:
+  - Rhea encourages **Type-Based Discrimination** (using classes) over **Tag-Based Discrimination** (string literals).
+  - **Pattern Matching**:
+
+    ```typescript
+    type Shape = Circle | Square;
+
+    function area(s: Shape) {
+      if (s instanceof Circle) return s.radius * s.radius * 3.14;
+      if (s instanceof Square) return s.side * s.side;
+    }
+    ```
+
+  - **WASM Optimization**: `instanceof` checks compile directly to `br_on_cast` or `ref.test` instructions, which are extremely fast.
+
+### Intersection Types (`A & B`)
+
+- **Usage**: Primarily for combining Interfaces.
+  - `function process(item: Runnable & Disposable) { ... }`
+- **Implementation**: The value is treated as a reference that satisfies both contracts.
+
+## 7. Type Aliases (`type`)
+
+**Status: Planned**
+
+The `type` keyword is used to create aliases for types, not to define new shapes.
+
+### Decision
+
+- **`interface`**: Defines a **Shape** (contract).
+- **`class`**: Defines an **Implementation** + **Shape**.
+- **`type`**: Defines an **Alias** or **Composition**.
+
+### Examples
+
+```typescript
+// ✅ Valid: Union Alias
+type ID = i32 | string;
+
+// ✅ Valid: Function Signature
+type Handler = (event: string) => void;
+
+// ❌ Invalid: Object Literal Shape (Use Interface instead)
+// type Point = { x: i32, y: i32 };
+```
+
+### Rationale
+
+- **Clarity**: Separates "naming a thing" (type) from "defining the structure of a thing" (interface/class).
+- **Simplicity**: Avoids the TypeScript confusion of "Should I use type or interface?". In Rhea: if it has fields/methods, it's an interface. If it's a combination of other types, it's a type alias.
