@@ -299,7 +299,70 @@ let a: Animal = new Dog();
 a.speak(); // Returns 1 (Dog's implementation)
 ```
 
-## 9. Generics
+## 9. Mixins
+
+Mixins provide a way to reuse code across multiple class hierarchies. They act as "subclass factories" that can be applied to various base classes.
+
+### Defining a Mixin
+
+Mixins are defined using the `mixin` keyword. They look similar to classes but cannot be instantiated directly.
+
+```typescript
+mixin Timestamped {
+  timestamp: i32 = 0;
+
+  getAge(): i32 {
+    return 100; // Placeholder
+  }
+}
+```
+
+### Applying Mixins
+
+Mixins are applied to a class using the `with` keyword in the `class` declaration.
+
+```typescript
+class User {
+  name: string;
+}
+
+class RegisteredUser extends User with Timestamped {
+  // ...
+}
+```
+
+This creates a new class `RegisteredUser` that extends `User` and includes the members of `Timestamped`.
+
+### Constraining Mixins (`on` clause)
+
+A mixin can restrict which classes it can be applied to using the `on` keyword. This allows the mixin to call methods on `super` or access properties that are guaranteed to exist on the base class.
+
+```typescript
+class Entity {
+  id: i32;
+  save(): void { /* ... */ }
+}
+
+mixin Syncable on Entity {
+  sync(): void {
+    this.save(); // OK because of 'on Entity'
+  }
+}
+```
+
+### Composition
+
+Multiple mixins can be applied in a single declaration.
+
+```typescript
+class MyClass extends Base with MixinA, MixinB {
+  // ...
+}
+```
+
+The application order is linear: `Base` -> `Base+MixinA` -> `Base+MixinA+MixinB` -> `MyClass`.
+
+## 10. Generics
 
 Zena supports generic classes and functions, allowing code reuse across different types.
 
@@ -370,7 +433,7 @@ let c = new Container(); // T is i32
 
 Zena implements generics via monomorphization. This means a separate version of the class or function is generated for each unique combination of type arguments. This ensures high performance (no boxing) but may increase binary size.
 
-## 10. Arrays
+## 11. Arrays
 
 Zena supports mutable arrays backed by WASM GC arrays.
 
@@ -398,7 +461,7 @@ Array elements can be modified using assignment.
 arr[0] = 10;
 ```
 
-## 11. Strings
+## 12. Strings
 
 Zena supports UTF-8 encoded strings.
 
@@ -451,7 +514,7 @@ Individual bytes (characters) of a string can be accessed using the index operat
 let charCode = 'ABC'[0]; // 65
 ```
 
-## 12. Grammar (Simplified)
+## 13. Grammar (Simplified)
 
 ```ebnf
 Program ::= Statement*
