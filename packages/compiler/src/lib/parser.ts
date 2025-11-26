@@ -1,6 +1,5 @@
 import {
   NodeType,
-  type AssignmentExpression,
   type BlockStatement,
   type CallExpression,
   type ClassDeclaration,
@@ -9,18 +8,17 @@ import {
   type FunctionExpression,
   type Identifier,
   type IfStatement,
+  type IndexExpression,
   type MemberExpression,
   type MethodDefinition,
-  type NewExpression,
-  type WhileStatement,
   type Parameter,
   type Program,
   type ReturnStatement,
   type Statement,
-  type ThisExpression,
   type TypeAnnotation,
+  type TypeParameter,
   type VariableDeclaration,
-  type IndexExpression,
+  type WhileStatement,
 } from './ast.js';
 import {TokenType, tokenize, type Token} from './lexer.js';
 
@@ -597,11 +595,20 @@ export class Parser {
     };
   }
 
-  #parseTypeParameters(): Identifier[] | undefined {
+  #parseTypeParameters(): TypeParameter[] | undefined {
     if (this.#match(TokenType.Less)) {
-      const params: Identifier[] = [];
+      const params: TypeParameter[] = [];
       do {
-        params.push(this.#parseIdentifier());
+        const name = this.#parseIdentifier().name;
+        let defaultValue: TypeAnnotation | undefined;
+        if (this.#match(TokenType.Equals)) {
+          defaultValue = this.#parseTypeAnnotation();
+        }
+        params.push({
+          type: NodeType.TypeParameter,
+          name,
+          default: defaultValue,
+        });
       } while (this.#match(TokenType.Comma));
       this.#consume(TokenType.Greater, "Expected '>' after type parameters.");
       return params;

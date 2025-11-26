@@ -262,4 +262,56 @@ suite('CodeGenerator - Generics', () => {
       await compile(input);
     });
   });
+
+  test('should use default type parameter when inference is not possible', async () => {
+    const input = `
+      class Holder<T = i32> {
+        value: T;
+        #new() {}
+        set(v: T) { this.value = v; }
+        get(): T { return this.value; }
+      }
+      export let test = (): i32 => {
+        let h = new Holder();
+        h.set(123);
+        return h.get();
+      };
+    `;
+    const {test} = (await compile(input)) as {test: () => number};
+    assert.strictEqual(test(), 123);
+  });
+
+  test('should use default type parameter in generic function', async () => {
+    const input = `
+      class Container<T> {
+        val: T;
+        #new() {}
+      }
+
+      let createContainer = <T = i32>(): Container<T> => new Container<T>();
+
+      export let test = (): i32 => {
+        let c = createContainer();
+        return 0;
+      };
+    `;
+    const {test} = (await compile(input)) as {test: () => number};
+    assert.strictEqual(test(), 0);
+  });
+
+  test('should compile and run non-generic function returning class', async () => {
+    const input = `
+      class Box {
+        val: i32;
+        #new() { this.val = 0; }
+      }
+      let createBox = (): Box => new Box();
+      export let test = (): i32 => {
+        let b = createBox();
+        return b.val;
+      };
+    `;
+    const {test} = (await compile(input)) as {test: () => number};
+    assert.strictEqual(test(), 0);
+  });
 });

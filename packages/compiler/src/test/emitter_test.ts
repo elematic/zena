@@ -37,6 +37,7 @@ suite('WasmEmitter', () => {
     // i32.add
     // end
     module.addCode(
+      funcIndex,
       [],
       [Opcode.local_get, 0, Opcode.local_get, 1, Opcode.i32_add, Opcode.end],
     );

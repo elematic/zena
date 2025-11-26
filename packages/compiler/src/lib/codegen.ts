@@ -25,6 +25,7 @@ import {
   type TypeAnnotation,
   type MethodDefinition,
   type Parameter,
+  type TypeParameter,
 } from './ast.js';
 import {WasmModule} from './emitter.js';
 import {ValType, Opcode, ExportDesc, GcOpcode} from './wasm.js';
@@ -57,6 +58,7 @@ export class CodeGenerator {
   #strEqFunctionIndex = -1;
   #genericClasses = new Map<string, ClassDeclaration>();
   #genericFunctions = new Map<string, FunctionExpression>();
+  #functionReturnTypes = new Map<string, number[]>();
   #pendingMethodGenerations: (() => void)[] = [];
   #bodyGenerators: (() => void)[] = [];
   #currentTypeContext: Map<string, TypeAnnotation> | undefined;
@@ -74,8 +76,9 @@ export class CodeGenerator {
 
     for (const member of decl.body) {
       if (member.type === NodeType.MethodDefinition) {
+        const methodInfo = classInfo.methods.get(member.name.name)!;
         const body = this.#generateMethodBodyCode(member, new Map());
-        this.#module.addCode(this.#extraLocals, body);
+        this.#module.addCode(methodInfo.index, this.#extraLocals, body);
       }
     }
     this.#currentClass = null;
@@ -98,20 +101,22 @@ export class CodeGenerator {
       }
     }
 
-    // Generate bodies
-    for (const generator of this.#bodyGenerators) {
-      generator();
-    }
-
-    // Generate pending helper functions
-    for (const generator of this.#pendingHelperFunctions) {
-      generator();
-    }
-
-    // Generate pending generic methods
-    while (this.#pendingMethodGenerations.length > 0) {
-      const generator = this.#pendingMethodGenerations.shift()!;
-      generator();
+    // Generate bodies and pending functions
+    while (
+      this.#bodyGenerators.length > 0 ||
+      this.#pendingHelperFunctions.length > 0 ||
+      this.#pendingMethodGenerations.length > 0
+    ) {
+      if (this.#bodyGenerators.length > 0) {
+        const generator = this.#bodyGenerators.shift()!;
+        generator();
+      } else if (this.#pendingHelperFunctions.length > 0) {
+        const generator = this.#pendingHelperFunctions.shift()!;
+        generator();
+      } else if (this.#pendingMethodGenerations.length > 0) {
+        const generator = this.#pendingMethodGenerations.shift()!;
+        generator();
+      }
     }
 
     return this.#module.toBytes();
@@ -185,9 +190,10 @@ export class CodeGenerator {
     }
 
     const params = func.params.map((p) => this.#mapType(p.typeAnnotation));
-    const results = func.returnType
-      ? [this.#mapType(func.returnType)]
-      : [[ValType.i32]];
+    const mappedReturn = func.returnType
+      ? this.#mapType(func.returnType)
+      : [ValType.i32];
+    const results = mappedReturn.length > 0 ? [mappedReturn] : [];
 
     const typeIndex = this.#module.addType(params, results);
     const funcIndex = this.#module.addFunction(typeIndex);
@@ -197,8 +203,10 @@ export class CodeGenerator {
     }
 
     this.#functions.set(name, funcIndex);
+    this.#functionReturnTypes.set(name, mappedReturn);
     this.#bodyGenerators.push(() => {
-      this.#generateFunctionBody(name, func);
+      const body = this.#generateFunctionBody(name, func);
+      this.#module.addCode(funcIndex, this.#extraLocals, body);
     });
   }
 
@@ -467,6 +475,30 @@ export class CodeGenerator {
     }
 
     if (typeArguments && typeArguments.length > 0) {
+      // Check for partial type arguments and fill with defaults
+      if (this.#genericClasses.has(className)) {
+        const classDecl = this.#genericClasses.get(className)!;
+        if (
+          classDecl.typeParameters &&
+          typeArguments.length < classDecl.typeParameters.length
+        ) {
+          const newArgs = [...typeArguments];
+          for (
+            let i = typeArguments.length;
+            i < classDecl.typeParameters.length;
+            i++
+          ) {
+            const param = classDecl.typeParameters[i];
+            if (param.default) {
+              newArgs.push(param.default);
+            } else {
+              throw new Error(`Missing type argument for ${param.name}`);
+            }
+          }
+          typeArguments = newArgs;
+        }
+      }
+
       const annotation: TypeAnnotation = {
         type: NodeType.TypeAnnotation,
         name: className,
@@ -621,6 +653,28 @@ export class CodeGenerator {
               funcDecl.params,
               expr.arguments,
             );
+          } else {
+            // Check for partial type arguments
+            const funcDecl = this.#genericFunctions.get(name)!;
+            if (
+              funcDecl.typeParameters &&
+              typeArguments.length < funcDecl.typeParameters.length
+            ) {
+              const newArgs = [...typeArguments];
+              for (
+                let i = typeArguments.length;
+                i < funcDecl.typeParameters.length;
+                i++
+              ) {
+                const param = funcDecl.typeParameters[i];
+                if (param.default) {
+                  newArgs.push(param.default);
+                } else {
+                  throw new Error(`Missing type argument for ${param.name}`);
+                }
+              }
+              typeArguments = newArgs;
+            }
           }
 
           const funcIndex = this.#instantiateGenericFunction(
@@ -972,6 +1026,8 @@ export class CodeGenerator {
                 return this.#mapType(funcDecl.returnType, typeContext);
               }
             }
+          } else if (this.#functionReturnTypes.has(name)) {
+            return this.#functionReturnTypes.get(name)!;
           }
         }
         return [ValType.i32];
@@ -1114,9 +1170,14 @@ export class CodeGenerator {
     }
     body.push(Opcode.end);
 
-    this.#module.addCode(this.#extraLocals, body);
+    // Prepend locals
+    // We need to construct the full code buffer including locals
+    // But addCode takes locals separately.
+    // So we return body, and addCode handles locals.
+    // But wait, #generateMethodBody calls addCode.
+    // So this helper should return body, and #generateMethodBody calls addCode with #extraLocals.
 
-    this.#currentTypeContext = oldContext;
+    return body;
   }
 
   #enterScope() {
@@ -1248,7 +1309,7 @@ export class CodeGenerator {
       body.push(Opcode.local_get, 5);
       body.push(Opcode.end);
 
-      this.#module.addCode(locals, body);
+      this.#module.addCode(funcIndex, locals, body);
     });
 
     return funcIndex;
@@ -1340,7 +1401,7 @@ export class CodeGenerator {
       body.push(Opcode.i32_const, 1);
       body.push(Opcode.end);
 
-      this.#module.addCode(locals, body);
+      this.#module.addCode(funcIndex, locals, body);
     });
 
     return funcIndex;
@@ -1443,7 +1504,7 @@ export class CodeGenerator {
     classInfo: ClassInfo,
     typeContext: Map<string, TypeAnnotation>,
   ) {
-    const funcIndex = classInfo.methods.get(method.name.name)!;
+    const methodInfo = classInfo.methods.get(method.name.name)!;
 
     const prevClass = this.#currentClass;
     const prevContext = this.#currentTypeContext;
@@ -1452,7 +1513,7 @@ export class CodeGenerator {
     this.#currentTypeContext = typeContext;
 
     const body = this.#generateMethodBodyCode(method, typeContext);
-    this.#module.addCode(this.#extraLocals, body);
+    this.#module.addCode(methodInfo.index, this.#extraLocals, body);
 
     this.#currentClass = prevClass;
     this.#currentTypeContext = prevContext;
@@ -1539,9 +1600,10 @@ export class CodeGenerator {
     const params = funcDecl.params.map((p) =>
       this.#mapType(p.typeAnnotation, typeContext),
     );
-    const results = funcDecl.returnType
-      ? [this.#mapType(funcDecl.returnType, typeContext)]
-      : [[ValType.i32]];
+    const mappedReturn = funcDecl.returnType
+      ? this.#mapType(funcDecl.returnType, typeContext)
+      : [ValType.i32];
+    const results = mappedReturn.length > 0 ? [mappedReturn] : [];
 
     const typeIndex = this.#module.addType(params, results);
     const funcIndex = this.#module.addFunction(typeIndex);
@@ -1549,7 +1611,8 @@ export class CodeGenerator {
     this.#functions.set(key, funcIndex);
 
     this.#bodyGenerators.push(() => {
-      this.#generateFunctionBody(key, funcDecl, typeContext);
+      const body = this.#generateFunctionBody(key, funcDecl, typeContext);
+      this.#module.addCode(funcIndex, this.#extraLocals, body);
     });
 
     return funcIndex;
@@ -1578,7 +1641,7 @@ export class CodeGenerator {
   }
 
   #inferTypeArgs(
-    typeParameters: Identifier[],
+    typeParameters: TypeParameter[],
     params: Parameter[],
     args: Expression[],
   ): TypeAnnotation[] {
@@ -1597,9 +1660,14 @@ export class CodeGenerator {
     const result: TypeAnnotation[] = [];
     for (const param of typeParameters) {
       if (!inferred.has(param.name)) {
-        throw new Error(`Could not infer type for ${param.name}`);
+        if (param.default) {
+          result.push(param.default);
+        } else {
+          throw new Error(`Could not infer type for ${param.name}`);
+        }
+      } else {
+        result.push(inferred.get(param.name)!);
       }
-      result.push(inferred.get(param.name)!);
     }
     return result;
   }

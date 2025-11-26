@@ -317,6 +317,28 @@ Functions can also be generic.
 const identity = <T>(x: T): T => x;
 ```
 
+### Type Inference
+
+Type arguments for generic classes and functions can often be inferred from the arguments passed to the constructor or function.
+
+```typescript
+let b = new Box(10); // Infers Box<i32>
+let i = identity(42); // Infers T = i32
+```
+
+### Default Type Parameters
+
+Generic type parameters can specify a default type, which is used if no type argument is provided and inference is not possible.
+
+```typescript
+class Container<T = i32> {
+  value: T;
+  // ...
+}
+
+let c = new Container(); // T is i32
+```
+
 ### Monomorphization
 
 Rhea implements generics via monomorphization. This means a separate version of the class or function is generated for each unique combination of type arguments. This ensures high performance (no boxing) but may increase binary size.

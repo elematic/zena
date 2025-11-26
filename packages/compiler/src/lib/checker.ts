@@ -29,7 +29,7 @@ import {
   type ClassType,
   type ArrayType,
   type NumberType,
-  type TypeParameter,
+  type TypeParameterType,
 } from './types.js';
 
 interface SymbolInfo {
@@ -388,7 +388,7 @@ export class TypeChecker {
       case TypeKind.Void:
         return 'void';
       case TypeKind.TypeParameter:
-        return (type as TypeParameter).name;
+        return (type as TypeParameterType).name;
       case TypeKind.Function: {
         const fn = type as FunctionType;
         const params = fn.parameters
@@ -413,10 +413,10 @@ export class TypeChecker {
   #checkFunctionExpression(expr: FunctionExpression): Type {
     this.#enterScope();
 
-    const typeParameters: TypeParameter[] = [];
+    const typeParameters: TypeParameterType[] = [];
     if (expr.typeParameters) {
       for (const param of expr.typeParameters) {
-        const tp: TypeParameter = {
+        const tp: TypeParameterType = {
           kind: TypeKind.TypeParameter,
           name: param.name,
         };
@@ -480,7 +480,7 @@ export class TypeChecker {
   #checkClassDeclaration(decl: ClassDeclaration) {
     const className = decl.name.name;
 
-    const typeParameters: TypeParameter[] = [];
+    const typeParameters: TypeParameterType[] = [];
     if (decl.typeParameters) {
       for (const param of decl.typeParameters) {
         typeParameters.push({
@@ -659,7 +659,7 @@ export class TypeChecker {
 
     const substitute = (type: Type): Type => {
       if (type.kind === TypeKind.TypeParameter) {
-        return typeMap.get((type as TypeParameter).name) || type;
+        return typeMap.get((type as TypeParameterType).name) || type;
       }
       if (type.kind === TypeKind.Array) {
         return {

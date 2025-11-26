@@ -24,7 +24,8 @@ export class WasmModule {
 
     // Simple deduplication could go here, but for now just push
     this.#types.push(buffer);
-    return this.#types.length - 1;
+    const index = this.#types.length - 1;
+    return index;
   }
 
   public addStructType(fields: {type: number[]; mutable: boolean}[]): number {
@@ -54,14 +55,11 @@ export class WasmModule {
 
   public addFunction(typeIndex: number): number {
     this.#functions.push(typeIndex);
+    this.#codes.push([]); // Reserve slot
     return this.#functions.length - 1;
   }
 
-  public addExport(name: string, kind: number, index: number) {
-    this.#exports.push({name, kind, index});
-  }
-
-  public addCode(locals: number[][], body: number[]) {
+  public addCode(index: number, locals: number[][], body: number[]) {
     // Code entry: size (u32) + code
     // code: vec(locals) + expr
     // locals: vec(local)
@@ -91,7 +89,7 @@ export class WasmModule {
     }
     codeBuffer.push(...body);
 
-    this.#codes.push(codeBuffer);
+    this.#codes[index] = codeBuffer;
   }
 
   public addData(bytes: Uint8Array): number {
@@ -104,6 +102,10 @@ export class WasmModule {
     }
     this.#datas.push(buffer);
     return this.#datas.length - 1;
+  }
+
+  public addExport(name: string, kind: number, index: number) {
+    this.#exports.push({name, kind, index});
   }
 
   #areTypesEqual(a: number[], b: number[]): boolean {

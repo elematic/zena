@@ -24,6 +24,7 @@ export const NodeType = {
   ThisExpression: 'ThisExpression',
   ArrayLiteral: 'ArrayLiteral',
   IndexExpression: 'IndexExpression',
+  TypeParameter: 'TypeParameter',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -126,7 +127,7 @@ export interface Identifier extends Node {
 export interface ClassDeclaration extends Node {
   type: typeof NodeType.ClassDeclaration;
   name: Identifier;
-  typeParameters?: Identifier[];
+  typeParameters?: TypeParameter[];
   body: (FieldDefinition | MethodDefinition)[];
 }
 
@@ -164,7 +165,7 @@ export interface ThisExpression extends Node {
 
 export interface FunctionExpression extends Node {
   type: typeof NodeType.FunctionExpression;
-  typeParameters?: Identifier[];
+  typeParameters?: TypeParameter[];
   params: Parameter[];
   returnType?: TypeAnnotation;
   body: Expression | BlockStatement;
@@ -199,6 +200,12 @@ export interface Parameter extends Node {
   type: typeof NodeType.Parameter;
   name: Identifier;
   typeAnnotation: TypeAnnotation;
+}
+
+export interface TypeParameter extends Node {
+  type: typeof NodeType.TypeParameter;
+  name: string;
+  default?: TypeAnnotation;
 }
 
 export interface TypeAnnotation extends Node {

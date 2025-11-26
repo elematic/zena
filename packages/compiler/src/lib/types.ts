@@ -16,7 +16,7 @@ export interface Type {
   kind: TypeKind;
 }
 
-export interface TypeParameter extends Type {
+export interface TypeParameterType extends Type {
   kind: typeof TypeKind.TypeParameter;
   name: string;
 }
@@ -33,7 +33,7 @@ export interface NumberType extends Type {
 
 export interface FunctionType extends Type {
   kind: typeof TypeKind.Function;
-  typeParameters?: TypeParameter[];
+  typeParameters?: TypeParameterType[];
   parameters: Type[];
   returnType: Type;
 }
@@ -41,7 +41,7 @@ export interface FunctionType extends Type {
 export interface ClassType extends Type {
   kind: typeof TypeKind.Class;
   name: string;
-  typeParameters?: TypeParameter[];
+  typeParameters?: TypeParameterType[];
   typeArguments?: Type[];
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
