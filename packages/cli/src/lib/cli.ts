@@ -53,9 +53,31 @@ const buildCommand = async (
     return 1;
   }
 
-  try {
-    for (const file of files) {
+  let hasErrors = false;
+
+  for (const file of files) {
+    try {
       const source = await readSourceFile(file);
+
+      // Parse and check for errors first
+      const parser = new Parser(source);
+      const ast = parser.parse();
+      const checker = new TypeChecker(ast);
+      const errors = checker.check();
+
+      if (errors.length > 0) {
+        hasErrors = true;
+        console.error(`${file}:`);
+        for (const error of errors) {
+          const loc = error.location
+            ? ` at line ${error.location.line}, column ${error.location.column}`
+            : '';
+          console.error(`  ${error.message}${loc}`);
+        }
+        continue;
+      }
+
+      // Compile only if no errors
       const bytes = compile(source);
 
       // Replace .zena extension or append .wasm if different extension
@@ -67,14 +89,15 @@ const buildCommand = async (
           : baseName + '.wasm');
       await writeFile(outputPath, bytes);
       console.log(`Compiled ${file} -> ${outputPath}`);
+    } catch (error) {
+      hasErrors = true;
+      console.error(
+        `${file}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-    return 0;
-  } catch (error) {
-    console.error(
-      `Error: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return 1;
   }
+
+  return hasErrors ? 1 : 0;
 };
 
 const checkCommand = async (files: string[]): Promise<number> => {
@@ -122,14 +145,37 @@ const runCommand = async (files: string[]): Promise<number> => {
     return 1;
   }
 
-  try {
-    for (const file of files) {
+  let hasErrors = false;
+
+  for (const file of files) {
+    try {
       const source = await readSourceFile(file);
+
+      // Parse and check for errors first
+      const parser = new Parser(source);
+      const ast = parser.parse();
+      const checker = new TypeChecker(ast);
+      const errors = checker.check();
+
+      if (errors.length > 0) {
+        hasErrors = true;
+        console.error(`${file}:`);
+        for (const error of errors) {
+          const loc = error.location
+            ? ` at line ${error.location.line}, column ${error.location.column}`
+            : '';
+          console.error(`  ${error.message}${loc}`);
+        }
+        continue;
+      }
+
+      // Compile and run only if no errors
       const bytes = compile(source);
 
       // WebAssembly.instantiate returns WebAssemblyInstantiatedSource for buffer input
       const result = await WebAssembly.instantiate(bytes, {});
-      const {instance} = result as unknown as WebAssembly.WebAssemblyInstantiatedSource;
+      const {instance} =
+        result as unknown as WebAssembly.WebAssemblyInstantiatedSource;
       const exports = instance.exports;
 
       // Look for a main function and call it
@@ -140,14 +186,15 @@ const runCommand = async (files: string[]): Promise<number> => {
           console.log(mainResult);
         }
       }
+    } catch (error) {
+      hasErrors = true;
+      console.error(
+        `${file}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-    return 0;
-  } catch (error) {
-    console.error(
-      `Error: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return 1;
   }
+
+  return hasErrors ? 1 : 0;
 };
 
 export const main = async (args: string[]): Promise<number> => {
