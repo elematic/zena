@@ -452,6 +452,9 @@ export class Parser {
   }
 
   #parsePrimary(): Expression {
+    if (this.#match(TokenType.Super)) {
+      return {type: NodeType.SuperExpression};
+    }
     if (this.#match(TokenType.This)) {
       return {type: NodeType.ThisExpression};
     }

@@ -12,6 +12,7 @@ export class CheckerContext {
   diagnostics = new DiagnosticBag();
   currentFunctionReturnType: Type | null = null;
   currentClass: ClassType | null = null;
+  currentMethod: string | null = null;
   program: Program;
 
   constructor(program: Program) {

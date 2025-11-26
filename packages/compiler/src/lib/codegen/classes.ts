@@ -1,18 +1,16 @@
 import {
   NodeType,
-  type AccessorDeclaration,
   type ClassDeclaration,
-  type FieldDefinition,
   type InterfaceDeclaration,
   type MethodDefinition,
   type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
+import {GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import type {CodegenContext} from './context.js';
-import type {ClassInfo, InterfaceInfo} from './types.js';
-import {generateBlockStatement} from './statements.js';
 import {generateExpression} from './expressions.js';
+import {generateBlockStatement} from './statements.js';
+import type {ClassInfo, InterfaceInfo} from './types.js';
 
 export function registerInterface(
   ctx: CodegenContext,
@@ -285,6 +283,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
   const classInfo: ClassInfo = {
     name: decl.name.name,
     structTypeIndex,
+    superClass: decl.superClass?.name,
     fields,
     methods,
     vtable,
@@ -297,11 +296,22 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
   );
   if (!hasConstructor) {
+    const bodyStmts: any[] = [];
+    if (decl.superClass) {
+      bodyStmts.push({
+        type: NodeType.ExpressionStatement,
+        expression: {
+          type: NodeType.CallExpression,
+          callee: {type: NodeType.SuperExpression},
+          arguments: [],
+        },
+      });
+    }
     members.push({
       type: NodeType.MethodDefinition,
       name: {type: NodeType.Identifier, name: '#new'},
       params: [],
-      body: {type: NodeType.BlockStatement, body: []},
+      body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
     } as MethodDefinition);
   }
@@ -517,11 +527,22 @@ export function generateClassMethods(
     (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
   );
   if (!hasConstructor) {
+    const bodyStmts: any[] = [];
+    if (decl.superClass) {
+      bodyStmts.push({
+        type: NodeType.ExpressionStatement,
+        expression: {
+          type: NodeType.CallExpression,
+          callee: {type: NodeType.SuperExpression},
+          arguments: [],
+        },
+      });
+    }
     members.push({
       type: NodeType.MethodDefinition,
       name: {type: NodeType.Identifier, name: '#new'},
       params: [],
-      body: {type: NodeType.BlockStatement, body: []},
+      body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
     } as MethodDefinition);
   }
@@ -549,16 +570,6 @@ export function generateClassMethods(
       }
 
       if (member.name.name === '#new') {
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          const superCtor = superClassInfo.methods.get('#new');
-          if (superCtor) {
-            body.push(Opcode.local_get, 0);
-            body.push(Opcode.call);
-            body.push(...WasmModule.encodeSignedLEB128(superCtor.index));
-          }
-        }
-
         for (const m of decl.body) {
           if (m.type === NodeType.FieldDefinition && m.value) {
             const fieldName = manglePrivateName(decl.name.name, m.name.name);
@@ -807,6 +818,7 @@ export function instantiateClass(
   const classInfo: ClassInfo = {
     name: specializedName,
     structTypeIndex,
+    superClass: decl.superClass?.name,
     fields,
     methods,
     vtable, // TODO: Populate vtable for generics
@@ -819,11 +831,22 @@ export function instantiateClass(
     (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
   );
   if (!hasConstructor) {
+    const bodyStmts: any[] = [];
+    if (decl.superClass) {
+      bodyStmts.push({
+        type: NodeType.ExpressionStatement,
+        expression: {
+          type: NodeType.CallExpression,
+          callee: {type: NodeType.SuperExpression},
+          arguments: [],
+        },
+      });
+    }
     members.push({
       type: NodeType.MethodDefinition,
       name: {type: NodeType.Identifier, name: '#new'},
       params: [],
-      body: {type: NodeType.BlockStatement, body: []},
+      body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
     } as MethodDefinition);
   }

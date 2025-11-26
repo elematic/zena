@@ -6,20 +6,19 @@ import {
   type BooleanLiteral,
   type CallExpression,
   type Expression,
-  type FunctionExpression,
   type Identifier,
   type IndexExpression,
   type MemberExpression,
   type MethodDefinition,
   type NewExpression,
-  type NumberLiteral,
   type NullLiteral,
+  type NumberLiteral,
   type StringLiteral,
   type ThisExpression,
   type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
+import {GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
@@ -67,6 +66,10 @@ export function generateExpression(
       break;
     case NodeType.ThisExpression:
       generateThisExpression(ctx, expression as ThisExpression, body);
+      break;
+    case NodeType.SuperExpression:
+      // SuperExpression is just 'this' at runtime
+      body.push(Opcode.local_get, 0);
       break;
     case NodeType.ArrayLiteral:
       generateArrayLiteral(ctx, expression as ArrayLiteral, body);
@@ -261,6 +264,8 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
         } else if (ctx.functionReturnTypes.has(name)) {
           return ctx.functionReturnTypes.get(name)!;
         }
+      } else if (callExpr.callee.type === NodeType.SuperExpression) {
+        return [];
       }
       return [ValType.i32];
     }
@@ -278,6 +283,16 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       const local = ctx.getLocal('this');
       if (local) return local.type;
       return [ValType.i32];
+    }
+    case NodeType.SuperExpression: {
+      if (!ctx.currentClass || !ctx.currentClass.superClass) {
+        throw new Error('Super expression outside of class with superclass');
+      }
+      const superClassInfo = ctx.classes.get(ctx.currentClass.superClass)!;
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(superClassInfo.structTypeIndex),
+      ];
     }
     case NodeType.NullLiteral:
       return [ValType.ref_null, HeapType.none];
@@ -707,6 +722,31 @@ function generateCallExpression(
     const memberExpr = expr.callee as MemberExpression;
     const methodName = memberExpr.property.name;
 
+    if (memberExpr.object.type === NodeType.SuperExpression) {
+      // Super method call (Static Dispatch)
+      if (!ctx.currentClass || !ctx.currentClass.superClass) {
+        throw new Error('Super call outside of class with superclass');
+      }
+      const superClassInfo = ctx.classes.get(ctx.currentClass.superClass)!;
+      const methodInfo = superClassInfo.methods.get(methodName);
+      if (!methodInfo) {
+        throw new Error(`Method ${methodName} not found in superclass`);
+      }
+
+      // Load 'this'
+      body.push(Opcode.local_get, 0);
+
+      // Args
+      for (const arg of expr.arguments) {
+        generateExpression(ctx, arg, body);
+      }
+
+      // Static Call
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+      return;
+    }
+
     const objectType = inferType(ctx, memberExpr.object);
     const typeIndex = decodeTypeIndex(objectType);
 
@@ -879,6 +919,31 @@ function generateCallExpression(
       body.push(Opcode.call);
       body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
     }
+  } else if (expr.callee.type === NodeType.SuperExpression) {
+    // Super constructor call
+    if (!ctx.currentClass || !ctx.currentClass.superClass) {
+      throw new Error(
+        'Super constructor call outside of class with superclass',
+      );
+    }
+    const superClassInfo = ctx.classes.get(ctx.currentClass.superClass)!;
+    const methodInfo = superClassInfo.methods.get('#new');
+    if (!methodInfo) {
+      throw new Error(`Constructor not found in superclass`);
+    }
+
+    // Load 'this'
+    body.push(Opcode.local_get, 0);
+
+    // Args
+    for (const arg of expr.arguments) {
+      generateExpression(ctx, arg, body);
+    }
+
+    // Static Call
+    body.push(Opcode.call);
+    body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+    return;
   } else {
     // 1. Generate arguments
     for (const arg of expr.arguments) {

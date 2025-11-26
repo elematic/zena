@@ -1,6 +1,7 @@
 export interface ClassInfo {
   name: string;
   structTypeIndex: number;
+  superClass?: string;
   fields: Map<string, {index: number; type: number[]}>;
   methods: Map<
     string,

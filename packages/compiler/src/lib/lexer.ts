@@ -18,6 +18,7 @@ export const TokenType = {
   Interface: 'Interface',
   Implements: 'Implements',
   Final: 'Final',
+  Super: 'Super',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -84,6 +85,7 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   extends: TokenType.Extends,
   interface: TokenType.Interface,
   implements: TokenType.Implements,
+  super: TokenType.Super,
 });
 
 export const tokenize = (source: string): Token[] => {

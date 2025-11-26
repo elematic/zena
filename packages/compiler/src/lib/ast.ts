@@ -30,6 +30,7 @@ export const NodeType = {
   MethodSignature: 'MethodSignature',
   UnionTypeAnnotation: 'UnionTypeAnnotation',
   AccessorDeclaration: 'AccessorDeclaration',
+  SuperExpression: 'SuperExpression',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -97,7 +98,8 @@ export type Expression =
   | MemberExpression
   | ThisExpression
   | ArrayLiteral
-  | IndexExpression;
+  | IndexExpression
+  | SuperExpression;
 
 export interface BinaryExpression extends Node {
   type: typeof NodeType.BinaryExpression;
@@ -265,4 +267,8 @@ export interface NamedTypeAnnotation extends Node {
 export interface UnionTypeAnnotation extends Node {
   type: typeof NodeType.UnionTypeAnnotation;
   types: TypeAnnotation[];
+}
+
+export interface SuperExpression extends Node {
+  type: typeof NodeType.SuperExpression;
 }

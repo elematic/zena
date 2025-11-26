@@ -535,6 +535,9 @@ function checkInterfaceDeclaration(
 }
 
 function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
+  const previousMethod = ctx.currentMethod;
+  ctx.currentMethod = method.name.name;
+
   ctx.enterScope();
 
   // Declare parameters
@@ -550,12 +553,11 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   ctx.currentFunctionReturnType = returnType;
 
   // Check body
-  for (const stmt of method.body.body) {
-    checkStatement(ctx, stmt);
-  }
+  checkStatement(ctx, method.body);
 
   ctx.currentFunctionReturnType = previousReturnType;
   ctx.exitScope();
+  ctx.currentMethod = previousMethod;
 }
 
 function checkAccessorDeclaration(

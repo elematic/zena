@@ -9,6 +9,7 @@ import {
   type IndexExpression,
   type MemberExpression,
   type NewExpression,
+  type SuperExpression,
   type ThisExpression,
 } from '../ast.js';
 import {DiagnosticCode} from '../diagnostics.js';
@@ -75,6 +76,8 @@ export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
       return checkMemberExpression(ctx, expr as MemberExpression);
     case NodeType.ThisExpression:
       return checkThisExpression(ctx, expr as ThisExpression);
+    case NodeType.SuperExpression:
+      return checkSuperExpression(ctx, expr as SuperExpression);
     case NodeType.ArrayLiteral:
       return checkArrayLiteral(ctx, expr as ArrayLiteral);
     case NodeType.IndexExpression:
@@ -85,6 +88,68 @@ export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
 }
 
 function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
+  if (expr.callee.type === NodeType.SuperExpression) {
+    if (!ctx.currentClass) {
+      ctx.diagnostics.reportError(
+        `'super' call can only be used inside a class constructor.`,
+        DiagnosticCode.UnknownError,
+      );
+      return Types.Unknown;
+    }
+    if (ctx.currentMethod !== '#new') {
+      ctx.diagnostics.reportError(
+        `'super' call can only be used inside a class constructor.`,
+        DiagnosticCode.UnknownError,
+      );
+      return Types.Unknown;
+    }
+    if (!ctx.currentClass.superType) {
+      ctx.diagnostics.reportError(
+        `Class '${ctx.currentClass.name}' does not have a superclass.`,
+        DiagnosticCode.UnknownError,
+      );
+      return Types.Unknown;
+    }
+
+    const superClass = ctx.currentClass.superType;
+    const constructor = superClass.constructorType;
+
+    if (!constructor) {
+      if (expr.arguments.length > 0) {
+        ctx.diagnostics.reportError(
+          `Superclass '${superClass.name}' has no constructor but arguments were provided.`,
+          DiagnosticCode.ArgumentCountMismatch,
+        );
+      }
+      return Types.Void;
+    }
+
+    if (expr.arguments.length !== constructor.parameters.length) {
+      ctx.diagnostics.reportError(
+        `Expected ${constructor.parameters.length} arguments, got ${expr.arguments.length}.`,
+        DiagnosticCode.ArgumentCountMismatch,
+      );
+    }
+
+    for (
+      let i = 0;
+      i < Math.min(expr.arguments.length, constructor.parameters.length);
+      i++
+    ) {
+      const argType = checkExpression(ctx, expr.arguments[i]);
+      const paramType = constructor.parameters[i];
+
+      if (!isAssignableTo(argType, paramType)) {
+        ctx.diagnostics.reportError(
+          `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
+          DiagnosticCode.TypeMismatch,
+        );
+      }
+    }
+
+    return Types.Void;
+  }
+
   const calleeType = checkExpression(ctx, expr.callee);
 
   if (calleeType.kind !== TypeKind.Function) {
@@ -654,4 +719,27 @@ function checkIndexExpression(
   }
 
   return (objectType as ArrayType).elementType;
+}
+
+function checkSuperExpression(
+  ctx: CheckerContext,
+  expr: SuperExpression,
+): Type {
+  if (!ctx.currentClass) {
+    ctx.diagnostics.reportError(
+      `'super' can only be used inside a class.`,
+      DiagnosticCode.UnknownError,
+    );
+    return Types.Unknown;
+  }
+
+  if (!ctx.currentClass.superType) {
+    ctx.diagnostics.reportError(
+      `Class '${ctx.currentClass.name}' does not have a superclass.`,
+      DiagnosticCode.UnknownError,
+    );
+    return Types.Unknown;
+  }
+
+  return ctx.currentClass.superType;
 }
