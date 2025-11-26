@@ -2,6 +2,7 @@ import {
   type Program,
   type ClassDeclaration,
   type FunctionExpression,
+  type MixinDeclaration,
   type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
@@ -18,6 +19,7 @@ export class CodegenContext {
   public nextLocalIndex = 0;
   public functions = new Map<string, number>();
   public classes = new Map<string, ClassInfo>();
+  public mixins = new Map<string, MixinDeclaration>();
   public interfaces = new Map<string, InterfaceInfo>();
 
   // Current state

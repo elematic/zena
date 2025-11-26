@@ -4,6 +4,7 @@ import {
   type InterfaceDeclaration,
   type MethodDefinition,
   type TypeAnnotation,
+  type MixinDeclaration,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
@@ -232,17 +233,31 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
   >();
   const vtable: string[] = [];
 
+  let currentSuperClassInfo: ClassInfo | undefined;
   if (decl.superClass) {
-    const superClassInfo = ctx.classes.get(decl.superClass.name);
-    if (!superClassInfo) {
+    currentSuperClassInfo = ctx.classes.get(decl.superClass.name);
+    if (!currentSuperClassInfo) {
       throw new Error(`Unknown superclass ${decl.superClass.name}`);
     }
-    superTypeIndex = superClassInfo.structTypeIndex;
+  }
+
+  if (decl.mixins && decl.mixins.length > 0) {
+    for (const mixinId of decl.mixins) {
+      const mixinDecl = ctx.mixins.get(mixinId.name);
+      if (!mixinDecl) {
+        throw new Error(`Unknown mixin ${mixinId.name}`);
+      }
+      currentSuperClassInfo = applyMixin(ctx, currentSuperClassInfo, mixinDecl);
+    }
+  }
+
+  if (currentSuperClassInfo) {
+    superTypeIndex = currentSuperClassInfo.structTypeIndex;
 
     // Inherit fields
-    const sortedSuperFields = Array.from(superClassInfo.fields.entries()).sort(
-      (a, b) => a[1].index - b[1].index,
-    );
+    const sortedSuperFields = Array.from(
+      currentSuperClassInfo.fields.entries(),
+    ).sort((a, b) => a[1].index - b[1].index);
 
     for (const [name, info] of sortedSuperFields) {
       fields.set(name, {index: fieldIndex++, type: info.type});
@@ -250,10 +265,10 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     }
 
     // Inherit methods and vtable
-    if (superClassInfo.vtable) {
-      vtable.push(...superClassInfo.vtable);
+    if (currentSuperClassInfo.vtable) {
+      vtable.push(...currentSuperClassInfo.vtable);
     }
-    for (const [name, info] of superClassInfo.methods) {
+    for (const [name, info] of currentSuperClassInfo.methods) {
       methods.set(name, info);
     }
   } else {
@@ -283,7 +298,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
   const classInfo: ClassInfo = {
     name: decl.name.name,
     structTypeIndex,
-    superClass: decl.superClass?.name,
+    superClass: currentSuperClassInfo?.name,
     fields,
     methods,
     vtable,
@@ -297,7 +312,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
   );
   if (!hasConstructor) {
     const bodyStmts: any[] = [];
-    if (decl.superClass) {
+    if (currentSuperClassInfo) {
       bodyStmts.push({
         type: NodeType.ExpressionStatement,
         expression: {
@@ -329,10 +344,13 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
         ...WasmModule.encodeSignedLEB128(structTypeIndex),
       ];
 
-      if (decl.superClass) {
-        const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-        if (methodName !== '#new' && superClassInfo.methods.has(methodName)) {
-          thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
+      if (currentSuperClassInfo) {
+        if (
+          methodName !== '#new' &&
+          currentSuperClassInfo.methods.has(methodName)
+        ) {
+          thisType =
+            currentSuperClassInfo.methods.get(methodName)!.paramTypes[0];
         }
       }
 
@@ -353,10 +371,12 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
 
       let typeIndex: number;
       let isOverride = false;
-      if (decl.superClass) {
-        const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-        if (methodName !== '#new' && superClassInfo.methods.has(methodName)) {
-          typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
+      if (currentSuperClassInfo) {
+        if (
+          methodName !== '#new' &&
+          currentSuperClassInfo.methods.has(methodName)
+        ) {
+          typeIndex = currentSuperClassInfo.methods.get(methodName)!.typeIndex;
           isOverride = true;
         }
       }
@@ -391,10 +411,10 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
           ...WasmModule.encodeSignedLEB128(structTypeIndex),
         ];
 
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(methodName)) {
-            thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
+        if (currentSuperClassInfo) {
+          if (currentSuperClassInfo.methods.has(methodName)) {
+            thisType =
+              currentSuperClassInfo.methods.get(methodName)!.paramTypes[0];
           }
         }
 
@@ -403,10 +423,10 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
 
         let typeIndex: number;
         let isOverride = false;
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(methodName)) {
-            typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
+        if (currentSuperClassInfo) {
+          if (currentSuperClassInfo.methods.has(methodName)) {
+            typeIndex =
+              currentSuperClassInfo.methods.get(methodName)!.typeIndex;
             isOverride = true;
           }
         }
@@ -438,10 +458,10 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
           ...WasmModule.encodeSignedLEB128(structTypeIndex),
         ];
 
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(methodName)) {
-            thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
+        if (currentSuperClassInfo) {
+          if (currentSuperClassInfo.methods.has(methodName)) {
+            thisType =
+              currentSuperClassInfo.methods.get(methodName)!.paramTypes[0];
           }
         }
 
@@ -450,10 +470,10 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
 
         let typeIndex: number;
         let isOverride = false;
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(methodName)) {
-            typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
+        if (currentSuperClassInfo) {
+          if (currentSuperClassInfo.methods.has(methodName)) {
+            typeIndex =
+              currentSuperClassInfo.methods.get(methodName)!.typeIndex;
             isOverride = true;
           }
         }
@@ -489,10 +509,10 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
           ...WasmModule.encodeSignedLEB128(structTypeIndex),
         ];
 
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(getterName)) {
-            thisType = superClassInfo.methods.get(getterName)!.paramTypes[0];
+        if (currentSuperClassInfo) {
+          if (currentSuperClassInfo.methods.has(getterName)) {
+            thisType =
+              currentSuperClassInfo.methods.get(getterName)!.paramTypes[0];
           }
         }
 
@@ -501,10 +521,10 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
 
         let typeIndex: number;
         let isOverride = false;
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(getterName)) {
-            typeIndex = superClassInfo.methods.get(getterName)!.typeIndex;
+        if (currentSuperClassInfo) {
+          if (currentSuperClassInfo.methods.has(getterName)) {
+            typeIndex =
+              currentSuperClassInfo.methods.get(getterName)!.typeIndex;
             isOverride = true;
           }
         }
@@ -535,11 +555,10 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
 
           let setterTypeIndex: number;
           let isSetterOverride = false;
-          if (decl.superClass) {
-            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-            if (superClassInfo.methods.has(setterName)) {
+          if (currentSuperClassInfo) {
+            if (currentSuperClassInfo.methods.has(setterName)) {
               setterTypeIndex =
-                superClassInfo.methods.get(setterName)!.typeIndex;
+                currentSuperClassInfo.methods.get(setterName)!.typeIndex;
               isSetterOverride = true;
             }
           }
@@ -563,9 +582,8 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
   }
   // Create VTable Struct Type
   let vtableSuperTypeIndex: number | undefined;
-  if (decl.superClass) {
-    const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-    vtableSuperTypeIndex = superClassInfo.vtableTypeIndex;
+  if (currentSuperClassInfo) {
+    vtableSuperTypeIndex = currentSuperClassInfo.vtableTypeIndex;
   }
 
   const vtableTypeIndex = ctx.module.addStructType(
@@ -595,8 +613,15 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
 
   generateInterfaceVTable(ctx, classInfo, decl);
 
+  const declForGen = {
+    ...decl,
+    superClass: currentSuperClassInfo
+      ? {type: NodeType.Identifier, name: currentSuperClassInfo.name}
+      : decl.superClass,
+  } as ClassDeclaration;
+
   ctx.bodyGenerators.push(() => {
-    generateClassMethods(ctx, decl);
+    generateClassMethods(ctx, declForGen);
   });
 }
 
@@ -1109,4 +1134,422 @@ function manglePrivateName(className: string, memberName: string): string {
     return `${className}::${memberName}`;
   }
   return memberName;
+}
+
+function applyMixin(
+  ctx: CodegenContext,
+  baseClassInfo: ClassInfo | undefined,
+  mixinDecl: MixinDeclaration,
+): ClassInfo {
+  const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
+  const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+
+  if (ctx.classes.has(intermediateName)) {
+    return ctx.classes.get(intermediateName)!;
+  }
+
+  const fields = new Map<string, {index: number; type: number[]}>();
+  const fieldTypes: {type: number[]; mutable: boolean}[] = [];
+  let fieldIndex = 0;
+  let superTypeIndex: number | undefined;
+  const methods = new Map<string, any>();
+  const vtable: string[] = [];
+
+  if (baseClassInfo) {
+    superTypeIndex = baseClassInfo.structTypeIndex;
+    // Inherit fields
+    const sortedSuperFields = Array.from(baseClassInfo.fields.entries()).sort(
+      (a, b) => a[1].index - b[1].index,
+    );
+    for (const [name, info] of sortedSuperFields) {
+      fields.set(name, {index: fieldIndex++, type: info.type});
+      fieldTypes.push({type: info.type, mutable: true});
+    }
+    // Inherit methods and vtable
+    if (baseClassInfo.vtable) {
+      vtable.push(...baseClassInfo.vtable);
+    }
+    for (const [name, info] of baseClassInfo.methods) {
+      methods.set(name, info);
+    }
+  } else {
+    // Root mixin application
+    fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
+    fieldTypes.push({type: [ValType.eqref], mutable: true});
+  }
+
+  // Add mixin fields
+  for (const member of mixinDecl.body) {
+    if (member.type === NodeType.FieldDefinition) {
+      const wasmType = mapType(ctx, member.typeAnnotation);
+      const fieldName = manglePrivateName(intermediateName, member.name.name);
+
+      if (!fields.has(fieldName)) {
+        fields.set(fieldName, {index: fieldIndex++, type: wasmType});
+        fieldTypes.push({type: wasmType, mutable: true});
+      }
+    }
+  }
+
+  const structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
+
+  const classInfo: ClassInfo = {
+    name: intermediateName,
+    structTypeIndex,
+    superClass: baseClassInfo?.name,
+    fields,
+    methods,
+    vtable,
+  };
+  ctx.classes.set(intermediateName, classInfo);
+
+  // Register mixin methods (similar to registerClass logic)
+  // We use a synthesized ClassDeclaration to reuse logic if possible,
+  // but we need to register methods in the map first before generation.
+
+  // We can reuse the logic from registerClass by extracting it, but for now let's duplicate/adapt
+  // the registration part.
+
+  // Synthesize a ClassDeclaration for registration
+  const decl: ClassDeclaration = {
+    type: NodeType.ClassDeclaration,
+    name: {type: NodeType.Identifier, name: intermediateName},
+    superClass: baseClassInfo
+      ? {type: NodeType.Identifier, name: baseClassInfo.name}
+      : undefined,
+    body: mixinDecl.body as any,
+    exported: false,
+    isFinal: false,
+  };
+
+  // Register methods
+  const members = [...decl.body];
+  const hasConstructor = members.some(
+    (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
+  );
+  if (!hasConstructor) {
+    const bodyStmts: any[] = [];
+    if (decl.superClass) {
+      bodyStmts.push({
+        type: NodeType.ExpressionStatement,
+        expression: {
+          type: NodeType.CallExpression,
+          callee: {type: NodeType.SuperExpression},
+          arguments: [],
+        },
+      });
+    }
+    members.push({
+      type: NodeType.MethodDefinition,
+      name: {type: NodeType.Identifier, name: '#new'},
+      params: [],
+      body: {type: NodeType.BlockStatement, body: bodyStmts},
+      isFinal: false,
+    } as MethodDefinition);
+  }
+
+  for (const member of members) {
+    if (member.type === NodeType.MethodDefinition) {
+      const methodName = member.name.name;
+
+      if (methodName !== '#new' && !vtable.includes(methodName)) {
+        vtable.push(methodName);
+      }
+
+      let thisType = [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(structTypeIndex),
+      ];
+
+      if (decl.superClass) {
+        const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+        if (methodName !== '#new' && superClassInfo.methods.has(methodName)) {
+          thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
+        }
+      }
+
+      const params = [thisType];
+      for (const param of member.params) {
+        params.push(mapType(ctx, param.typeAnnotation));
+      }
+
+      let results: number[][] = [];
+      if (methodName === '#new') {
+        results = [];
+      } else if (member.returnType) {
+        const mapped = mapType(ctx, member.returnType);
+        if (mapped.length > 0) results = [mapped];
+      } else {
+        results = [];
+      }
+
+      let typeIndex: number;
+      let isOverride = false;
+      if (decl.superClass) {
+        const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+        if (methodName !== '#new' && superClassInfo.methods.has(methodName)) {
+          typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
+          isOverride = true;
+        }
+      }
+
+      if (!isOverride) {
+        typeIndex = ctx.module.addType(params, results);
+      }
+
+      const funcIndex = ctx.module.addFunction(typeIndex!);
+
+      const returnType = results.length > 0 ? results[0] : [];
+      methods.set(methodName, {
+        index: funcIndex,
+        returnType,
+        typeIndex: typeIndex!,
+        paramTypes: params,
+        isFinal: member.isFinal,
+      });
+    } else if (member.type === NodeType.AccessorDeclaration) {
+      // ... Accessor logic similar to registerClass ...
+      // For brevity, assuming mixins use methods mostly, but we should support accessors.
+      // Copying accessor logic from registerClass:
+      const propName = member.name.name;
+      const propType = mapType(ctx, member.typeAnnotation);
+
+      // Getter
+      if (member.getter) {
+        const methodName = `get_${propName}`;
+        if (!vtable.includes(methodName)) {
+          vtable.push(methodName);
+        }
+
+        let thisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(methodName)) {
+            thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
+          }
+        }
+
+        const params = [thisType];
+        const results = propType.length > 0 ? [propType] : [];
+
+        let typeIndex: number;
+        let isOverride = false;
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(methodName)) {
+            typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
+            isOverride = true;
+          }
+        }
+
+        if (!isOverride) {
+          typeIndex = ctx.module.addType(params, results);
+        }
+
+        const funcIndex = ctx.module.addFunction(typeIndex!);
+
+        methods.set(methodName, {
+          index: funcIndex,
+          returnType: propType,
+          typeIndex: typeIndex!,
+          paramTypes: params,
+          isFinal: member.isFinal,
+        });
+      }
+
+      // Setter
+      if (member.setter) {
+        const methodName = `set_${propName}`;
+        if (!vtable.includes(methodName)) {
+          vtable.push(methodName);
+        }
+
+        let thisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(methodName)) {
+            thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
+          }
+        }
+
+        const params = [thisType, propType];
+        const results: number[][] = [];
+
+        let typeIndex: number;
+        let isOverride = false;
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(methodName)) {
+            typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
+            isOverride = true;
+          }
+        }
+
+        if (!isOverride) {
+          typeIndex = ctx.module.addType(params, results);
+        }
+
+        const funcIndex = ctx.module.addFunction(typeIndex!);
+
+        methods.set(methodName, {
+          index: funcIndex,
+          returnType: [],
+          typeIndex: typeIndex!,
+          paramTypes: params,
+          isFinal: member.isFinal,
+        });
+      }
+    } else if (member.type === NodeType.FieldDefinition) {
+      // Implicit accessors
+      if (!member.name.name.startsWith('#')) {
+        const propName = member.name.name;
+        const propType = mapType(ctx, member.typeAnnotation);
+
+        // Getter
+        const getterName = `get_${propName}`;
+        if (!vtable.includes(getterName)) {
+          vtable.push(getterName);
+        }
+
+        let thisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(getterName)) {
+            thisType = superClassInfo.methods.get(getterName)!.paramTypes[0];
+          }
+        }
+
+        const params = [thisType];
+        const results = [propType];
+
+        let typeIndex: number;
+        let isOverride = false;
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(getterName)) {
+            typeIndex = superClassInfo.methods.get(getterName)!.typeIndex;
+            isOverride = true;
+          }
+        }
+
+        if (!isOverride) {
+          typeIndex = ctx.module.addType(params, results);
+        }
+
+        const funcIndex = ctx.module.addFunction(typeIndex!);
+
+        methods.set(getterName, {
+          index: funcIndex,
+          returnType: results[0],
+          typeIndex: typeIndex!,
+          paramTypes: params,
+          isFinal: member.isFinal,
+        });
+
+        // Setter (if mutable)
+        if (!member.isFinal) {
+          const setterName = `set_${propName}`;
+          if (!vtable.includes(setterName)) {
+            vtable.push(setterName);
+          }
+
+          const setterParams = [thisType, propType];
+          const setterResults: number[][] = [];
+
+          let setterTypeIndex: number;
+          let isSetterOverride = false;
+          if (decl.superClass) {
+            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+            if (superClassInfo.methods.has(setterName)) {
+              setterTypeIndex =
+                superClassInfo.methods.get(setterName)!.typeIndex;
+              isSetterOverride = true;
+            }
+          }
+
+          if (!isSetterOverride) {
+            setterTypeIndex = ctx.module.addType(setterParams, setterResults);
+          }
+
+          const setterFuncIndex = ctx.module.addFunction(setterTypeIndex!);
+
+          methods.set(setterName, {
+            index: setterFuncIndex,
+            returnType: [],
+            typeIndex: setterTypeIndex!,
+            paramTypes: setterParams,
+            isFinal: member.isFinal,
+          });
+        }
+      }
+    }
+  }
+
+  // Create VTable Struct Type
+  let vtableSuperTypeIndex: number | undefined;
+  if (baseClassInfo) {
+    vtableSuperTypeIndex = baseClassInfo.vtableTypeIndex;
+  }
+
+  const vtableTypeIndex = ctx.module.addStructType(
+    vtable.map(() => ({type: [ValType.funcref], mutable: false})),
+    vtableSuperTypeIndex,
+  );
+
+  // Create VTable Global
+  const vtableInit: number[] = [];
+  for (const methodName of vtable) {
+    const methodInfo = methods.get(methodName);
+    if (!methodInfo) throw new Error(`Method ${methodName} not found`);
+    vtableInit.push(Opcode.ref_func);
+    vtableInit.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+  }
+  vtableInit.push(0xfb, GcOpcode.struct_new);
+  vtableInit.push(...WasmModule.encodeSignedLEB128(vtableTypeIndex));
+
+  const vtableGlobalIndex = ctx.module.addGlobal(
+    [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
+    false,
+    vtableInit,
+  );
+
+  classInfo.vtableTypeIndex = vtableTypeIndex;
+  classInfo.vtableGlobalIndex = vtableGlobalIndex;
+
+  ctx.bodyGenerators.push(() => {
+    generateMixinMethods(ctx, mixinDecl, classInfo);
+  });
+
+  return classInfo;
+}
+
+function generateMixinMethods(
+  ctx: CodegenContext,
+  mixinDecl: MixinDeclaration,
+  classInfo: ClassInfo,
+) {
+  const decl: ClassDeclaration = {
+    type: NodeType.ClassDeclaration,
+    name: {type: NodeType.Identifier, name: classInfo.name},
+    superClass: classInfo.superClass
+      ? {type: NodeType.Identifier, name: classInfo.superClass}
+      : undefined,
+    body: mixinDecl.body as any,
+    exported: false,
+    isFinal: false,
+  };
+
+  generateClassMethods(ctx, decl, classInfo.name);
 }
