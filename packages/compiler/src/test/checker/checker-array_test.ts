@@ -1,7 +1,7 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
 import {Parser} from '../../lib/parser.js';
-import {TypeChecker} from '../../lib/checker.js';
+import {TypeChecker} from '../../lib/checker/index.js';
 
 import type {Diagnostic} from '../../lib/diagnostics.js';
 

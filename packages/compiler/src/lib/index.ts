@@ -3,7 +3,7 @@ export * from './lexer.js';
 export * from './ast.js';
 export * from './parser.js';
 export * from './types.js';
-export * from './checker.js';
+export * from './checker/index.js';
 export * from './wasm.js';
 export * from './emitter.js';
 export * from './diagnostics.js';
@@ -11,7 +11,7 @@ export * from './codegen/index.js';
 
 import {Parser} from './parser.js';
 import {CodeGenerator} from './codegen/index.js';
-import {TypeChecker} from './checker.js';
+import {TypeChecker} from './checker/index.js';
 
 export function compile(source: string): Uint8Array {
   const parser = new Parser(source);

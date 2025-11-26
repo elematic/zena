@@ -66,21 +66,27 @@ The compiler is implemented in TypeScript and follows a standard pipeline:
 
 ## Future Refactoring
 
-The `CodeGenerator` and `TypeChecker` classes are currently monolithic. Future work involves splitting them into smaller, feature-specific modules.
+The `TypeChecker` class is currently monolithic. Future work involves splitting it into smaller, feature-specific modules.
 
-### 1. Split `CodeGenerator`
+### 1. Split `TypeChecker`
 
-- Extract a `CodegenContext` class to hold shared state (WASM module, symbol tables, etc.).
+- Extract a `CheckerContext` class to hold shared state (scopes, diagnostics, etc.).
 - Break down logic into smaller modules:
-  - `codegen/classes.ts`: Class layout and method generation.
-  - `codegen/functions.ts`: Function body generation.
-  - `codegen/statements.ts`: Statement generation.
-  - `codegen/expressions.ts`: Expression generation.
+  - `checker/statements.ts`: Statement checking.
+  - `checker/expressions.ts`: Expression checking.
+  - `checker/types.ts`: Type resolution.
 
-### 2. Split `TypeChecker`
-
-- Similar to `CodeGenerator`, split into `StatementChecker`, `ExpressionChecker`, and `TypeResolver`.
-
-### 3. Standardize Error Handling
+### 2. Standardize Error Handling
 
 - Implement a unified `Diagnostic` system instead of ad-hoc error collection/throwing.
+
+## Completed Refactoring
+
+### Split `CodeGenerator`
+
+- Extracted `CodegenContext` class.
+- Broken down logic into:
+  - `codegen/classes.ts`
+  - `codegen/functions.ts`
+  - `codegen/statements.ts`
+  - `codegen/expressions.ts`

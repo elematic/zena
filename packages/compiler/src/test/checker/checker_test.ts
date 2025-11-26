@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
 import {Parser} from '../../lib/parser.js';
-import {TypeChecker} from '../../lib/checker.js';
+import {TypeChecker} from '../../lib/checker/index.js';
 
 suite('TypeChecker', () => {
   test('should check variable declaration', () => {
