@@ -162,6 +162,12 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       );
     } else {
       superType = type as ClassType;
+      if (superType.isFinal) {
+        ctx.diagnostics.reportError(
+          `Cannot extend final class '${superType.name}'.`,
+          DiagnosticCode.TypeMismatch,
+        );
+      }
     }
   }
 
@@ -175,6 +181,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     methods: new Map(),
     constructorType: undefined,
     vtable: superType ? [...superType.vtable] : [],
+    isFinal: decl.isFinal,
   };
 
   if (superType) {
@@ -247,6 +254,61 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
       }
       classType.fields.set(member.name.name, fieldType);
+
+      // Register getter/setter methods
+      if (member.getter) {
+        const getterName = `get_${member.name.name}`;
+        const methodType: FunctionType = {
+          kind: TypeKind.Function,
+          parameters: [],
+          returnType: fieldType,
+          isFinal: member.isFinal,
+        };
+
+        if (!classType.methods.has(getterName)) {
+          classType.vtable.push(getterName);
+        }
+
+        if (classType.methods.has(getterName)) {
+          if (superType && superType.methods.has(getterName)) {
+            const superMethod = superType.methods.get(getterName)!;
+            if (superMethod.isFinal) {
+              ctx.diagnostics.reportError(
+                `Cannot override final method '${getterName}'.`,
+                DiagnosticCode.TypeMismatch,
+              );
+            }
+          }
+        }
+        classType.methods.set(getterName, methodType);
+      }
+
+      if (member.setter) {
+        const setterName = `set_${member.name.name}`;
+        const methodType: FunctionType = {
+          kind: TypeKind.Function,
+          parameters: [fieldType],
+          returnType: Types.Void,
+          isFinal: member.isFinal,
+        };
+
+        if (!classType.methods.has(setterName)) {
+          classType.vtable.push(setterName);
+        }
+
+        if (classType.methods.has(setterName)) {
+          if (superType && superType.methods.has(setterName)) {
+            const superMethod = superType.methods.get(setterName)!;
+            if (superMethod.isFinal) {
+              ctx.diagnostics.reportError(
+                `Cannot override final method '${setterName}'.`,
+                DiagnosticCode.TypeMismatch,
+              );
+            }
+          }
+        }
+        classType.methods.set(setterName, methodType);
+      }
     } else if (member.type === NodeType.MethodDefinition) {
       const paramTypes = member.params.map((p) =>
         resolveTypeAnnotation(ctx, p.typeAnnotation),
@@ -259,6 +321,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         kind: TypeKind.Function,
         parameters: paramTypes,
         returnType,
+        isFinal: member.isFinal,
       };
 
       if (member.name.name === '#new') {
@@ -279,6 +342,14 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           if (superType && superType.methods.has(member.name.name)) {
             // Validate override
             const superMethod = superType.methods.get(member.name.name)!;
+
+            if (superMethod.isFinal) {
+              ctx.diagnostics.reportError(
+                `Cannot override final method '${member.name.name}'.`,
+                DiagnosticCode.TypeMismatch,
+              );
+            }
+
             // TODO: Check signature compatibility (covariant return, contravariant params)
             // For now, require exact match
             if (typeToString(methodType) !== typeToString(superMethod)) {

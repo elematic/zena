@@ -229,6 +229,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
       returnType: number[];
       typeIndex: number;
       paramTypes: number[][];
+      isFinal?: boolean;
     }
   >();
   const vtable: string[] = [];
@@ -362,6 +363,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
         returnType,
         typeIndex: typeIndex!,
         paramTypes: params,
+        isFinal: member.isFinal,
       });
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = member.name.name;
@@ -410,6 +412,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
           returnType: propType,
           typeIndex: typeIndex!,
           paramTypes: params,
+          isFinal: member.isFinal,
         });
       }
 
@@ -456,6 +459,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
           returnType: [],
           typeIndex: typeIndex!,
           paramTypes: params,
+          isFinal: member.isFinal,
         });
       }
     }
@@ -795,6 +799,7 @@ export function instantiateClass(
       returnType: number[];
       typeIndex: number;
       paramTypes: number[][];
+      isFinal?: boolean;
     }
   >();
   const vtable: string[] = [];

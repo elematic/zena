@@ -179,8 +179,8 @@ This project is an **npm monorepo** managed with **Wireit**.
     - Struct layout compatibility.
     - Method/Field inheritance.
     - Static dispatch for overridden methods.
-- [x] Implement Accessors (Parser only).
-- [x] Implement `final` modifier (Parser only).
+- [x] Implement Accessors (Parser, Checker, Codegen).
+- [x] Implement `final` modifier (Parser, Checker, Codegen).
 
 ### Planned
 
@@ -190,8 +190,8 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Implement Code Generator for accessors (emit methods).
       - [x] Implement Property Access syntax (rewrite `obj.prop` to method calls).
     - **Optimization (`final`)**:
-      - Implement Type Checker for `final` (prevent overrides/subclassing).
-      - Implement Code Generator for `final` (devirtualization).
+      - [x] Implement Type Checker for `final` (prevent overrides/subclassing).
+      - [x] Implement Code Generator for `final` (devirtualization).
     - **Inheritance (Advanced)**:
       - **Dynamic Dispatch**: Implement VTables for polymorphic method calls.
       - **Casting**: Implement `as` operator and `instanceof` checks.

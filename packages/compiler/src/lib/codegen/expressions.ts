@@ -813,7 +813,11 @@ function generateCallExpression(
       ? foundClass.vtable.indexOf(methodName)
       : -1;
 
-    if (vtableIndex !== -1 && foundClass.vtableTypeIndex !== undefined) {
+    if (
+      vtableIndex !== -1 &&
+      foundClass.vtableTypeIndex !== undefined &&
+      !methodInfo.isFinal
+    ) {
       // Dynamic Dispatch
       generateExpression(ctx, memberExpr.object, body);
 

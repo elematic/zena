@@ -49,6 +49,7 @@ export interface FunctionType extends Type {
   typeParameters?: TypeParameterType[];
   parameters: Type[];
   returnType: Type;
+  isFinal?: boolean;
 }
 
 export interface InterfaceType extends Type {
@@ -71,6 +72,7 @@ export interface ClassType extends Type {
   methods: Map<string, FunctionType>;
   constructorType?: FunctionType;
   vtable: string[]; // Ordered list of method names
+  isFinal?: boolean;
 }
 
 const I32 = {kind: TypeKind.Number, name: 'i32'} as NumberType;

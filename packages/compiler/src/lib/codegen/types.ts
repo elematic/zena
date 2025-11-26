@@ -9,8 +9,9 @@ export interface ClassInfo {
       returnType: number[];
       typeIndex: number;
       paramTypes: number[][];
+      isFinal?: boolean;
     }
-  >; // name -> {funcIndex, returnType, typeIndex, paramTypes}
+  >; // name -> {funcIndex, returnType, typeIndex, paramTypes, isFinal}
   vtable?: string[];
   vtableTypeIndex?: number;
   vtableGlobalIndex?: number;
