@@ -25,6 +25,8 @@ export const NodeType = {
   ArrayLiteral: 'ArrayLiteral',
   IndexExpression: 'IndexExpression',
   TypeParameter: 'TypeParameter',
+  InterfaceDeclaration: 'InterfaceDeclaration',
+  MethodSignature: 'MethodSignature',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -45,7 +47,8 @@ export type Statement =
   | ReturnStatement
   | IfStatement
   | WhileStatement
-  | ClassDeclaration;
+  | ClassDeclaration
+  | InterfaceDeclaration;
 
 export interface VariableDeclaration extends Node {
   type: typeof NodeType.VariableDeclaration;
@@ -130,7 +133,22 @@ export interface ClassDeclaration extends Node {
   name: Identifier;
   typeParameters?: TypeParameter[];
   superClass?: Identifier;
+  implements?: TypeAnnotation[];
   body: (FieldDefinition | MethodDefinition)[];
+}
+
+export interface InterfaceDeclaration extends Node {
+  type: typeof NodeType.InterfaceDeclaration;
+  name: Identifier;
+  typeParameters?: TypeParameter[];
+  body: (FieldDefinition | MethodSignature)[];
+}
+
+export interface MethodSignature extends Node {
+  type: typeof NodeType.MethodSignature;
+  name: Identifier;
+  params: Parameter[];
+  returnType?: TypeAnnotation;
 }
 
 export interface FieldDefinition extends Node {

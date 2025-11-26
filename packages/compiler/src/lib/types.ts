@@ -5,6 +5,7 @@ export const TypeKind = {
   Void: 'Void',
   Function: 'Function',
   Class: 'Class',
+  Interface: 'Interface',
   Array: 'Array',
   TypeParameter: 'TypeParameter',
   Unknown: 'Unknown',
@@ -38,12 +39,22 @@ export interface FunctionType extends Type {
   returnType: Type;
 }
 
+export interface InterfaceType extends Type {
+  kind: typeof TypeKind.Interface;
+  name: string;
+  typeParameters?: TypeParameterType[];
+  typeArguments?: Type[];
+  fields: Map<string, Type>;
+  methods: Map<string, FunctionType>;
+}
+
 export interface ClassType extends Type {
   kind: typeof TypeKind.Class;
   name: string;
   typeParameters?: TypeParameterType[];
   typeArguments?: Type[];
   superType?: ClassType;
+  implements: InterfaceType[];
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
   constructorType?: FunctionType;

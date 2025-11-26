@@ -9,8 +9,10 @@ import {
   type Identifier,
   type IfStatement,
   type IndexExpression,
+  type InterfaceDeclaration,
   type MemberExpression,
   type MethodDefinition,
+  type MethodSignature,
   type Parameter,
   type Program,
   type ReturnStatement,
@@ -59,6 +61,9 @@ export class Parser {
     }
     if (this.#match(TokenType.Class)) {
       return this.#parseClassDeclaration();
+    }
+    if (this.#match(TokenType.Interface)) {
+      return this.#parseInterfaceDeclaration();
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseBlockStatement();
@@ -525,6 +530,14 @@ export class Parser {
       superClass = this.#parseIdentifier();
     }
 
+    let implementsList: TypeAnnotation[] | undefined;
+    if (this.#match(TokenType.Implements)) {
+      implementsList = [];
+      do {
+        implementsList.push(this.#parseTypeAnnotation());
+      } while (this.#match(TokenType.Comma));
+    }
+
     this.#consume(TokenType.LBrace, "Expected '{' before class body.");
 
     const body: (FieldDefinition | MethodDefinition)[] = [];
@@ -539,6 +552,7 @@ export class Parser {
       name,
       typeParameters,
       superClass,
+      implements: implementsList,
       body,
     };
   }
@@ -606,6 +620,74 @@ export class Parser {
       name,
       typeAnnotation,
       value,
+    };
+  }
+
+  #parseInterfaceDeclaration(): InterfaceDeclaration {
+    const name = this.#parseIdentifier();
+    const typeParameters = this.#parseTypeParameters();
+
+    this.#consume(TokenType.LBrace, "Expected '{' before interface body.");
+
+    const body: (FieldDefinition | MethodSignature)[] = [];
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      body.push(this.#parseInterfaceMember());
+    }
+
+    this.#consume(TokenType.RBrace, "Expected '}' after interface body.");
+
+    return {
+      type: NodeType.InterfaceDeclaration,
+      name,
+      typeParameters,
+      body,
+    };
+  }
+
+  #parseInterfaceMember(): FieldDefinition | MethodSignature {
+    const name = this.#parseIdentifier();
+
+    // Method: name(params): ReturnType;
+    if (this.#match(TokenType.LParen)) {
+      const params: Parameter[] = [];
+      if (!this.#check(TokenType.RParen)) {
+        do {
+          const paramName = this.#parseIdentifier();
+          this.#consume(TokenType.Colon, "Expected ':' for type annotation");
+          const typeAnnotation = this.#parseTypeAnnotation();
+          params.push({
+            type: NodeType.Parameter,
+            name: paramName,
+            typeAnnotation,
+          });
+        } while (this.#match(TokenType.Comma));
+      }
+      this.#consume(TokenType.RParen, "Expected ')' after parameters.");
+
+      let returnType: TypeAnnotation | undefined;
+      if (this.#match(TokenType.Colon)) {
+        returnType = this.#parseTypeAnnotation();
+      }
+
+      this.#consume(TokenType.Semi, "Expected ';' after method signature.");
+
+      return {
+        type: NodeType.MethodSignature,
+        name,
+        params,
+        returnType,
+      };
+    }
+
+    // Field: name: Type;
+    this.#consume(TokenType.Colon, "Expected ':' after field name.");
+    const typeAnnotation = this.#parseTypeAnnotation();
+    this.#consume(TokenType.Semi, "Expected ';' after field declaration.");
+
+    return {
+      type: NodeType.FieldDefinition,
+      name,
+      typeAnnotation,
     };
   }
 

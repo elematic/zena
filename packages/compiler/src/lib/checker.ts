@@ -20,6 +20,8 @@ import {
   type ArrayLiteral,
   type IndexExpression,
   type TypeAnnotation,
+  type InterfaceDeclaration,
+  type MethodSignature,
 } from './ast.js';
 import {
   TypeKind,
@@ -27,6 +29,7 @@ import {
   type Type,
   type FunctionType,
   type ClassType,
+  type InterfaceType,
   type ArrayType,
   type NumberType,
   type TypeParameterType,
@@ -122,6 +125,9 @@ export class TypeChecker {
         break;
       case NodeType.ClassDeclaration:
         this.#checkClassDeclaration(stmt as ClassDeclaration);
+        break;
+      case NodeType.InterfaceDeclaration:
+        this.#checkInterfaceDeclaration(stmt as InterfaceDeclaration);
         break;
     }
   }
@@ -509,6 +515,7 @@ export class TypeChecker {
       name: className,
       typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
       superType,
+      implements: [],
       fields: new Map(),
       methods: new Map(),
       constructorType: undefined,
@@ -602,6 +609,51 @@ export class TypeChecker {
       }
     }
 
+    // Check interface implementation
+    if (decl.implements) {
+      for (const impl of decl.implements) {
+        const type = this.#resolveTypeAnnotation(impl);
+        if (type.kind !== TypeKind.Interface) {
+          this.#errors.push(`Type '${impl.name}' is not an interface.`);
+          continue;
+        }
+        const interfaceType = type as InterfaceType;
+        classType.implements.push(interfaceType);
+
+        // Check fields
+        for (const [name, type] of interfaceType.fields) {
+          if (!classType.fields.has(name)) {
+            this.#errors.push(
+              `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Property '${name}' is missing.`,
+            );
+          } else {
+            const fieldType = classType.fields.get(name)!;
+            if (this.#typeToString(fieldType) !== this.#typeToString(type)) {
+              this.#errors.push(
+                `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Property '${name}' is type '${this.#typeToString(fieldType)}' but expected '${this.#typeToString(type)}'.`,
+              );
+            }
+          }
+        }
+
+        // Check methods
+        for (const [name, type] of interfaceType.methods) {
+          if (!classType.methods.has(name)) {
+            this.#errors.push(
+              `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Method '${name}' is missing.`,
+            );
+          } else {
+            const methodType = classType.methods.get(name)!;
+            if (this.#typeToString(methodType) !== this.#typeToString(type)) {
+              this.#errors.push(
+                `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Method '${name}' is type '${this.#typeToString(methodType)}' but expected '${this.#typeToString(type)}'.`,
+              );
+            }
+          }
+        }
+      }
+    }
+
     // 2. Second pass: Check method bodies
     const previousClass = this.#currentClass;
     this.#currentClass = classType;
@@ -630,6 +682,79 @@ export class TypeChecker {
     }
 
     this.#currentClass = previousClass;
+    this.#exitScope();
+  }
+
+  #checkInterfaceDeclaration(decl: InterfaceDeclaration) {
+    const interfaceName = decl.name.name;
+
+    const typeParameters: TypeParameterType[] = [];
+    if (decl.typeParameters) {
+      for (const param of decl.typeParameters) {
+        typeParameters.push({
+          kind: TypeKind.TypeParameter,
+          name: param.name,
+        });
+      }
+    }
+
+    const interfaceType: InterfaceType = {
+      kind: TypeKind.Interface,
+      name: interfaceName,
+      typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+      fields: new Map(),
+      methods: new Map(),
+    };
+
+    // Register interface in current scope
+    this.#declare(interfaceName, interfaceType);
+
+    // Enter scope for type parameters
+    this.#enterScope();
+    if (interfaceType.typeParameters) {
+      for (const param of interfaceType.typeParameters) {
+        this.#declare(param.name, param);
+      }
+    }
+
+    for (const member of decl.body) {
+      if (member.type === NodeType.MethodSignature) {
+        const paramTypes: Type[] = [];
+        for (const param of member.params) {
+          const type = this.#resolveTypeAnnotation(param.typeAnnotation);
+          paramTypes.push(type);
+        }
+
+        let returnType: Type = Types.Void;
+        if (member.returnType) {
+          returnType = this.#resolveTypeAnnotation(member.returnType);
+        }
+
+        const methodType: FunctionType = {
+          kind: TypeKind.Function,
+          parameters: paramTypes,
+          returnType,
+        };
+
+        if (interfaceType.methods.has(member.name.name)) {
+          this.#errors.push(
+            `Duplicate method '${member.name.name}' in interface '${interfaceName}'.`,
+          );
+        } else {
+          interfaceType.methods.set(member.name.name, methodType);
+        }
+      } else if (member.type === NodeType.FieldDefinition) {
+        const type = this.#resolveTypeAnnotation(member.typeAnnotation);
+        if (interfaceType.fields.has(member.name.name)) {
+          this.#errors.push(
+            `Duplicate field '${member.name.name}' in interface '${interfaceName}'.`,
+          );
+        } else {
+          interfaceType.fields.set(member.name.name, type);
+        }
+      }
+    }
+
     this.#exitScope();
   }
 
