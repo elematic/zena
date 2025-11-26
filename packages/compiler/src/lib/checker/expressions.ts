@@ -26,6 +26,7 @@ import {
 import type {CheckerContext} from './context.js';
 import {
   instantiateGenericClass,
+  instantiateGenericFunction,
   resolveTypeAnnotation,
   typeToString,
   isAssignableTo,
@@ -34,10 +35,17 @@ import {checkStatement} from './statements.js';
 
 export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
   switch (expr.type) {
-    case NodeType.NumberLiteral:
-      return Types.I32; // Default to i32 for now
-    case NodeType.StringLiteral:
-      return Types.String;
+    case NodeType.NumberLiteral: {
+      const lit = expr as any; // Cast to access raw if needed, or update AST type definition
+      if (lit.raw && lit.raw.includes('.')) {
+        return Types.F32;
+      }
+      return Types.I32;
+    }
+    case NodeType.StringLiteral: {
+      const stringType = ctx.resolve('String');
+      return stringType || Types.String;
+    }
     case NodeType.BooleanLiteral:
       return Types.Boolean;
     case NodeType.NullLiteral:
@@ -87,7 +95,42 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     return Types.Unknown;
   }
 
-  const funcType = calleeType as FunctionType;
+  let funcType = calleeType as FunctionType;
+  const argTypes = expr.arguments.map((arg) => checkExpression(ctx, arg));
+
+  if (funcType.typeParameters && funcType.typeParameters.length > 0) {
+    let typeArguments: Type[] = [];
+
+    if (expr.typeArguments && expr.typeArguments.length > 0) {
+      if (expr.typeArguments.length !== funcType.typeParameters.length) {
+        ctx.diagnostics.reportError(
+          `Expected ${funcType.typeParameters.length} type arguments, got ${expr.typeArguments.length}`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
+        );
+        return Types.Unknown;
+      }
+      typeArguments = expr.typeArguments.map((arg) =>
+        resolveTypeAnnotation(ctx, arg),
+      );
+    } else {
+      const inferred = inferTypeArguments(
+        funcType.typeParameters,
+        funcType.parameters,
+        argTypes,
+      );
+
+      if (!inferred) {
+        ctx.diagnostics.reportError(
+          `Could not infer type arguments for generic function.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
+        );
+        return Types.Unknown;
+      }
+      typeArguments = inferred;
+    }
+
+    funcType = instantiateGenericFunction(funcType, typeArguments);
+  }
 
   if (expr.arguments.length !== funcType.parameters.length) {
     ctx.diagnostics.reportError(
@@ -101,7 +144,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     i < Math.min(expr.arguments.length, funcType.parameters.length);
     i++
   ) {
-    const argType = checkExpression(ctx, expr.arguments[i]);
+    const argType = argTypes[i];
     const paramType = funcType.parameters[i];
 
     if (!isAssignableTo(argType, paramType)) {
@@ -113,6 +156,67 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
   }
 
   return funcType.returnType;
+}
+
+function inferTypeArguments(
+  typeParameters: TypeParameterType[],
+  paramTypes: Type[],
+  argTypes: Type[],
+): Type[] | null {
+  const inferred = new Map<string, Type>();
+
+  function infer(paramType: Type, argType: Type) {
+    if (paramType.kind === TypeKind.TypeParameter) {
+      const name = (paramType as TypeParameterType).name;
+      if (typeParameters.some((tp) => tp.name === name)) {
+        const existing = inferred.get(name);
+        if (!existing) {
+          inferred.set(name, argType);
+        }
+      }
+    } else if (
+      paramType.kind === TypeKind.Array &&
+      argType.kind === TypeKind.Array
+    ) {
+      infer(
+        (paramType as ArrayType).elementType,
+        (argType as ArrayType).elementType,
+      );
+    } else if (
+      paramType.kind === TypeKind.Class &&
+      argType.kind === TypeKind.Class
+    ) {
+      const pt = paramType as ClassType;
+      const at = argType as ClassType;
+      if (pt.name === at.name && pt.typeArguments && at.typeArguments) {
+        for (
+          let i = 0;
+          i < Math.min(pt.typeArguments.length, at.typeArguments.length);
+          i++
+        ) {
+          infer(pt.typeArguments[i], at.typeArguments[i]);
+        }
+      }
+    }
+  }
+
+  for (let i = 0; i < Math.min(paramTypes.length, argTypes.length); i++) {
+    infer(paramTypes[i], argTypes[i]);
+  }
+
+  const result: Type[] = [];
+  for (const tp of typeParameters) {
+    let type = inferred.get(tp.name);
+    if (!type) {
+      if (tp.defaultType) {
+        type = tp.defaultType;
+      } else {
+        return null;
+      }
+    }
+    result.push(type);
+  }
+  return result;
 }
 
 function checkAssignmentExpression(
@@ -245,6 +349,17 @@ function checkFunctionExpression(
       typeParameters.push(tp);
       ctx.declare(param.name, tp, 'let');
     }
+
+    // Resolve defaults
+    for (let i = 0; i < expr.typeParameters.length; i++) {
+      const param = expr.typeParameters[i];
+      if (param.default) {
+        typeParameters[i].defaultType = resolveTypeAnnotation(
+          ctx,
+          param.default,
+        );
+      }
+    }
   }
 
   const paramTypes: Type[] = [];
@@ -332,10 +447,30 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
       classType = instantiateGenericClass(classType, typeArguments);
     }
   } else if (classType.typeParameters && classType.typeParameters.length > 0) {
-    ctx.diagnostics.reportError(
-      `Generic type '${className}' requires type arguments.`,
-      DiagnosticCode.GenericTypeArgumentMismatch,
-    );
+    // Try inference
+    const constructor = classType.constructorType;
+    let inferred: Type[] | null = null;
+
+    if (constructor) {
+      const argTypes = expr.arguments.map((arg) => checkExpression(ctx, arg));
+      inferred = inferTypeArguments(
+        classType.typeParameters,
+        constructor.parameters,
+        argTypes,
+      );
+    } else {
+      // No constructor, try defaults only
+      inferred = inferTypeArguments(classType.typeParameters, [], []);
+    }
+
+    if (inferred) {
+      classType = instantiateGenericClass(classType, inferred);
+    } else {
+      ctx.diagnostics.reportError(
+        `Generic type '${className}' requires type arguments.`,
+        DiagnosticCode.GenericTypeArgumentMismatch,
+      );
+    }
   }
 
   const constructor = classType.constructorType;
@@ -501,7 +636,12 @@ function checkIndexExpression(
     );
   }
 
-  if (objectType.kind !== TypeKind.Array && objectType !== Types.String) {
+  const isString =
+    objectType === Types.String ||
+    (objectType.kind === TypeKind.Class &&
+      (objectType as ClassType).name === 'String');
+
+  if (objectType.kind !== TypeKind.Array && !isString) {
     ctx.diagnostics.reportError(
       `Index expression only supported on arrays or strings, got ${typeToString(objectType)}`,
       DiagnosticCode.NotIndexable,
@@ -509,7 +649,7 @@ function checkIndexExpression(
     return Types.Unknown;
   }
 
-  if (objectType === Types.String) {
+  if (isString) {
     return Types.I32;
   }
 

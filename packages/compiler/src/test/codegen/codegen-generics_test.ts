@@ -1,13 +1,9 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Parser} from '../../lib/parser.js';
-import {CodeGenerator} from '../../lib/codegen/index.js';
+import {compile as compilerCompile} from '../../lib/index.js';
 
 async function compile(input: string) {
-  const parser = new Parser(input);
-  const ast = parser.parse();
-  let codegen = new CodeGenerator(ast);
-  let bytes = codegen.generate();
+  const bytes = compilerCompile(input);
   const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);
   return result.instance.exports;
 }

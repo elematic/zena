@@ -36,9 +36,13 @@ export class CodeGenerator {
    * @returns The generated WASM binary as a Uint8Array.
    */
   public generate(): Uint8Array {
-    // Pass 1: Register classes and functions
-    for (const statement of this.#ctx.program.body) {
+    const {program} = this.#ctx;
+
+    // 1. Register all classes and interfaces (First pass)
+    for (const statement of program.body) {
+      // console.log('Statement type:', statement.type);
       if (statement.type === NodeType.ClassDeclaration) {
+        // console.log('Registering class:', (statement as any).name.name);
         registerClass(this.#ctx, statement as ClassDeclaration);
       } else if (statement.type === NodeType.InterfaceDeclaration) {
         registerInterface(this.#ctx, statement as InterfaceDeclaration);

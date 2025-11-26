@@ -197,6 +197,19 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     ctx.declare(tp.name, tp, 'let');
   }
 
+  // Resolve default type parameters
+  if (decl.typeParameters) {
+    for (let i = 0; i < decl.typeParameters.length; i++) {
+      const param = decl.typeParameters[i];
+      if (param.default) {
+        typeParameters[i].defaultType = resolveTypeAnnotation(
+          ctx,
+          param.default,
+        );
+      }
+    }
+  }
+
   // 1. First pass: Collect members to build the ClassType
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {

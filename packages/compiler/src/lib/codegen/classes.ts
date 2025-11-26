@@ -210,6 +210,7 @@ export function decodeTypeIndex(type: number[]): number {
 }
 
 export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
+  // console.log(`Registering class ${decl.name.name}`);
   if (decl.typeParameters && decl.typeParameters.length > 0) {
     ctx.genericClasses.set(decl.name.name, decl);
     return;
@@ -263,7 +264,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
 
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
-      const wasmType = [ValType.i32];
+      const wasmType = mapType(ctx, member.typeAnnotation);
       const fieldName = manglePrivateName(decl.name.name, member.name.name);
 
       if (!fields.has(fieldName)) {
@@ -274,6 +275,10 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
   }
 
   const structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
+
+  if (decl.name.name === 'String') {
+    ctx.stringTypeIndex = structTypeIndex;
+  }
 
   const classInfo: ClassInfo = {
     name: decl.name.name,
@@ -511,6 +516,12 @@ export function mapType(
     return [
       ValType.ref_null,
       ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+    ];
+  }
+  if (annotation.name === 'ByteArray') {
+    return [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
     ];
   }
   if (annotation.name === 'void') return [];

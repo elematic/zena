@@ -1,6 +1,7 @@
 export const TypeKind = {
   Number: 'Number',
   Boolean: 'Boolean',
+  ByteArray: 'ByteArray',
   Null: 'Null',
   Void: 'Void',
   Function: 'Function',
@@ -26,11 +27,16 @@ export interface UnionType extends Type {
 export interface TypeParameterType extends Type {
   kind: typeof TypeKind.TypeParameter;
   name: string;
+  defaultType?: Type;
 }
 
 export interface ArrayType extends Type {
   kind: typeof TypeKind.Array;
   elementType: Type;
+}
+
+export interface ByteArrayType extends Type {
+  kind: typeof TypeKind.ByteArray;
 }
 
 export interface NumberType extends Type {
@@ -82,6 +88,7 @@ export const Types = {
   Void: {kind: TypeKind.Void} as Type,
   Null: {kind: TypeKind.Null} as Type,
   String: StringClass,
+  ByteArray: {kind: TypeKind.ByteArray} as Type,
   Boolean: {kind: TypeKind.Boolean} as Type,
   Unknown: {kind: TypeKind.Unknown} as Type,
   I32: I32,

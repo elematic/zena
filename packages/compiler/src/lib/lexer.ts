@@ -276,12 +276,19 @@ export const tokenize = (source: string): Token[] => {
         });
         break;
       case '/':
-        tokens.push({
-          type: TokenType.Slash,
-          value: '/',
-          line,
-          column: startColumn,
-        });
+        if (peek() === '/') {
+          // Single-line comment
+          while (current < source.length && peek() !== '\n') {
+            advance();
+          }
+        } else {
+          tokens.push({
+            type: TokenType.Slash,
+            value: '/',
+            line,
+            column: startColumn,
+          });
+        }
         break;
       case '|':
         tokens.push({

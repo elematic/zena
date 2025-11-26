@@ -12,12 +12,25 @@ export * from './codegen/index.js';
 import {Parser} from './parser.js';
 import {CodeGenerator} from './codegen/index.js';
 import {TypeChecker} from './checker/index.js';
+import {prelude} from './prelude.js';
+import {NodeType, type Program} from './ast.js';
 
 export function compile(source: string): Uint8Array {
+  // Parse prelude
+  const preludeParser = new Parser(prelude);
+  const preludeAst = preludeParser.parse();
+
+  // Parse user code
   const parser = new Parser(source);
   const ast = parser.parse();
 
-  const checker = new TypeChecker(ast);
+  // Merge ASTs
+  const program: Program = {
+    type: NodeType.Program,
+    body: [...preludeAst.body, ...ast.body],
+  };
+
+  const checker = new TypeChecker(program);
   const errors = checker.check();
   if (errors.length > 0) {
     const errorMessage = errors
@@ -29,6 +42,6 @@ export function compile(source: string): Uint8Array {
     throw new Error(errorMessage);
   }
 
-  const codegen = new CodeGenerator(ast);
+  const codegen = new CodeGenerator(program);
   return codegen.generate();
 }

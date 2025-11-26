@@ -47,6 +47,12 @@ export class Parser {
 
   #parseStatement(): Statement {
     if (this.#match(TokenType.Export)) {
+      if (this.#match(TokenType.Class)) {
+        return this.#parseClassDeclaration(true);
+      }
+      if (this.#match(TokenType.Interface)) {
+        return this.#parseInterfaceDeclaration(true);
+      }
       return this.#parseVariableDeclaration(true);
     }
     if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
@@ -62,10 +68,10 @@ export class Parser {
       return this.#parseWhileStatement();
     }
     if (this.#match(TokenType.Class)) {
-      return this.#parseClassDeclaration();
+      return this.#parseClassDeclaration(false);
     }
     if (this.#match(TokenType.Interface)) {
-      return this.#parseInterfaceDeclaration();
+      return this.#parseInterfaceDeclaration(false);
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseBlockStatement();
@@ -454,9 +460,11 @@ export class Parser {
       throw new Error("Expected '[' after '#'.");
     }
     if (this.#match(TokenType.Number)) {
+      const token = this.#previous();
       return {
         type: NodeType.NumberLiteral,
-        value: parseFloat(this.#previous().value),
+        value: parseFloat(token.value),
+        raw: token.value,
       };
     }
     if (this.#match(TokenType.String)) {
@@ -538,7 +546,7 @@ export class Parser {
     };
   }
 
-  #parseClassDeclaration(): ClassDeclaration {
+  #parseClassDeclaration(exported: boolean): ClassDeclaration {
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
 
@@ -571,6 +579,7 @@ export class Parser {
       superClass,
       implements: implementsList,
       body,
+      exported,
     };
   }
 
@@ -640,7 +649,7 @@ export class Parser {
     };
   }
 
-  #parseInterfaceDeclaration(): InterfaceDeclaration {
+  #parseInterfaceDeclaration(exported: boolean): InterfaceDeclaration {
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
 
@@ -658,6 +667,7 @@ export class Parser {
       name,
       typeParameters,
       body,
+      exported,
     };
   }
 

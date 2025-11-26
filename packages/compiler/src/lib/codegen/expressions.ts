@@ -425,7 +425,7 @@ function generateIndexExpression(
     // It's a string struct. Get the bytes array.
     body.push(0xfb, GcOpcode.struct_get);
     body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(0)); // bytes field
+    body.push(...WasmModule.encodeSignedLEB128(1)); // bytes field
 
     generateExpression(ctx, expr.index, body);
 
@@ -564,10 +564,10 @@ function generateMemberExpression(
 
     if (isString) {
       generateExpression(ctx, expr.object, body);
-      // struct.get $stringType 1 (length)
+      // struct.get $stringType 2 (length)
       body.push(0xfb, GcOpcode.struct_get);
       body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-      body.push(...WasmModule.encodeSignedLEB128(1));
+      body.push(...WasmModule.encodeSignedLEB128(2));
       return;
     }
 
@@ -1069,6 +1069,9 @@ function generateStringLiteral(
     ctx.stringLiterals.set(expr.value, dataIndex);
   }
 
+  // Push vtable (null for now)
+  body.push(Opcode.ref_null, HeapType.eq);
+
   // array.new_data $byteArrayType $dataIndex
   // Stack: [offset, length] -> [ref]
   body.push(Opcode.i32_const, 0); // offset
@@ -1133,14 +1136,14 @@ function generateConcatFunction(ctx: CodegenContext): number {
     body.push(Opcode.local_get, 0);
     body.push(0xfb, GcOpcode.struct_get);
     body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(1)); // length
+    body.push(...WasmModule.encodeSignedLEB128(2)); // length
     body.push(Opcode.local_set, 2);
 
     // len2 = s2.length
     body.push(Opcode.local_get, 1);
     body.push(0xfb, GcOpcode.struct_get);
     body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(1)); // length
+    body.push(...WasmModule.encodeSignedLEB128(2)); // length
     body.push(Opcode.local_set, 3);
 
     // newLen = len1 + len2
@@ -1163,7 +1166,7 @@ function generateConcatFunction(ctx: CodegenContext): number {
     body.push(Opcode.local_get, 0);
     body.push(0xfb, GcOpcode.struct_get);
     body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(0)); // bytes
+    body.push(...WasmModule.encodeSignedLEB128(1)); // bytes
 
     body.push(Opcode.i32_const, 0); // srcOffset
     body.push(Opcode.local_get, 2); // len
@@ -1179,7 +1182,7 @@ function generateConcatFunction(ctx: CodegenContext): number {
     body.push(Opcode.local_get, 1);
     body.push(0xfb, GcOpcode.struct_get);
     body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(0)); // bytes
+    body.push(...WasmModule.encodeSignedLEB128(1)); // bytes
 
     body.push(Opcode.i32_const, 0); // srcOffset
     body.push(Opcode.local_get, 3); // len
@@ -1188,6 +1191,7 @@ function generateConcatFunction(ctx: CodegenContext): number {
     body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
 
     // return new String(newBytes, newLen)
+    body.push(Opcode.ref_null, HeapType.eq); // vtable
     body.push(Opcode.local_get, 5);
     body.push(Opcode.ref_as_non_null);
     body.push(Opcode.local_get, 4);
@@ -1229,14 +1233,14 @@ function generateStrEqFunction(ctx: CodegenContext): number {
     body.push(Opcode.local_get, 0);
     body.push(0xfb, GcOpcode.struct_get);
     body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(1)); // length
+    body.push(...WasmModule.encodeSignedLEB128(2)); // length
     body.push(Opcode.local_set, 2);
 
     // len2 = s2.length
     body.push(Opcode.local_get, 1);
     body.push(0xfb, GcOpcode.struct_get);
     body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(1)); // length
+    body.push(...WasmModule.encodeSignedLEB128(2)); // length
     body.push(Opcode.local_set, 3);
 
     // if len1 != len2 return 0
@@ -1267,7 +1271,7 @@ function generateStrEqFunction(ctx: CodegenContext): number {
     body.push(Opcode.local_get, 0);
     body.push(0xfb, GcOpcode.struct_get);
     body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(0)); // bytes
+    body.push(...WasmModule.encodeSignedLEB128(1)); // bytes
 
     body.push(Opcode.local_get, 4); // i
     body.push(0xfb, GcOpcode.array_get_u);
@@ -1277,7 +1281,7 @@ function generateStrEqFunction(ctx: CodegenContext): number {
     body.push(Opcode.local_get, 1);
     body.push(0xfb, GcOpcode.struct_get);
     body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(0)); // bytes
+    body.push(...WasmModule.encodeSignedLEB128(1)); // bytes
 
     body.push(Opcode.local_get, 4); // i
     body.push(0xfb, GcOpcode.array_get_u);

@@ -34,8 +34,12 @@ export function resolveTypeAnnotation(
       return Types.F32;
     case 'boolean':
       return Types.Boolean;
-    case 'string':
-      return Types.String;
+    case 'string': {
+      const stringType = ctx.resolve('String');
+      return stringType || Types.String;
+    }
+    case 'ByteArray':
+      return Types.ByteArray;
     case 'void':
       return Types.Void;
     case 'null':
@@ -112,6 +116,14 @@ export function instantiateGenericClass(
         } as ClassType;
       }
     }
+    if (type.kind === TypeKind.Function) {
+      const ft = type as FunctionType;
+      return {
+        ...ft,
+        parameters: ft.parameters.map(substitute),
+        returnType: substitute(ft.returnType),
+      } as FunctionType;
+    }
     return type;
   };
 
@@ -144,12 +156,61 @@ export function instantiateGenericClass(
   };
 }
 
+export function instantiateGenericFunction(
+  genericFunc: FunctionType,
+  typeArguments: Type[],
+): FunctionType {
+  const typeMap = new Map<string, Type>();
+  genericFunc.typeParameters!.forEach((param, index) => {
+    typeMap.set(param.name, typeArguments[index]);
+  });
+
+  const substitute = (type: Type): Type => {
+    if (type.kind === TypeKind.TypeParameter) {
+      return typeMap.get((type as TypeParameterType).name) || type;
+    }
+    if (type.kind === TypeKind.Array) {
+      return {
+        ...type,
+        elementType: substitute((type as ArrayType).elementType),
+      } as ArrayType;
+    }
+    if (type.kind === TypeKind.Class) {
+      const ct = type as ClassType;
+      if (ct.typeArguments) {
+        return {
+          ...ct,
+          typeArguments: ct.typeArguments.map(substitute),
+        } as ClassType;
+      }
+    }
+    if (type.kind === TypeKind.Function) {
+      const ft = type as FunctionType;
+      return {
+        ...ft,
+        parameters: ft.parameters.map(substitute),
+        returnType: substitute(ft.returnType),
+      } as FunctionType;
+    }
+    return type;
+  };
+
+  return {
+    ...genericFunc,
+    typeParameters: undefined,
+    parameters: genericFunc.parameters.map(substitute),
+    returnType: substitute(genericFunc.returnType),
+  };
+}
+
 export function typeToString(type: Type): string {
   switch (type.kind) {
     case TypeKind.Number:
       return (type as NumberType).name;
     case TypeKind.Boolean:
       return 'boolean';
+    case TypeKind.ByteArray:
+      return 'ByteArray';
     case TypeKind.Void:
       return 'void';
     case TypeKind.Null:

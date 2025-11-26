@@ -114,6 +114,7 @@ export interface AssignmentExpression extends Node {
 export interface NumberLiteral extends Node {
   type: typeof NodeType.NumberLiteral;
   value: number;
+  raw?: string;
 }
 
 export interface StringLiteral extends Node {
@@ -142,6 +143,7 @@ export interface ClassDeclaration extends Node {
   superClass?: Identifier;
   implements?: TypeAnnotation[];
   body: (FieldDefinition | MethodDefinition)[];
+  exported: boolean;
 }
 
 export interface InterfaceDeclaration extends Node {
@@ -149,6 +151,7 @@ export interface InterfaceDeclaration extends Node {
   name: Identifier;
   typeParameters?: TypeParameter[];
   body: (FieldDefinition | MethodSignature)[];
+  exported: boolean;
 }
 
 export interface MethodSignature extends Node {
