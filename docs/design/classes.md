@@ -212,3 +212,32 @@ Interface calls are always **dynamically dispatched** (unless devirtualized).
 3.  **Call**: Execute `call_ref`.
 
 This approach avoids the "diamond problem" of multiple inheritance and keeps the object layout simple (only one VTable pointer).
+
+## 5. Private Fields
+
+Zena supports private fields using the `#` prefix (e.g., `#count`).
+
+### 5.1. Access Control
+
+Private fields are only accessible within the class body where they are defined. This is enforced at compile-time by the Type Checker. Accessing a private field from outside the class or from a subclass results in a compilation error.
+
+### 5.2. Implementation
+
+Private fields are implemented using **Name Mangling** to ensure uniqueness and prevent collisions with fields in subclasses.
+
+- **Mangling Scheme**: A private field `#x` in class `Point` is internally mapped to the name `Point::#x`.
+- **Struct Layout**: In the generated WASM struct, private fields are laid out alongside public fields. The mangled name is used only during compilation to resolve the correct field index.
+
+```typescript
+class A {
+  #x: i32; // Mapped to "A::#x"
+}
+
+class B extends A {
+  #x: i32; // Mapped to "B::#x" - No collision with A's #x
+}
+```
+
+TODO: Once we allow type aliasing and support modules we could have
+multiple classes with the same name in a inheritance chain and get
+private name collisions.

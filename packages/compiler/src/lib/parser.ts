@@ -319,7 +319,13 @@ export class Parser {
 
       while (true) {
         if (this.#match(TokenType.Dot)) {
-          const property = this.#parseIdentifier();
+          let property: Identifier;
+          if (this.#match(TokenType.Hash)) {
+            const id = this.#parseIdentifier();
+            property = {type: NodeType.Identifier, name: '#' + id.name};
+          } else {
+            property = this.#parseIdentifier();
+          }
           expr = {
             type: NodeType.MemberExpression,
             object: expr,
@@ -338,7 +344,13 @@ export class Parser {
       if (this.#match(TokenType.LParen)) {
         expr = this.#finishCall(expr);
       } else if (this.#match(TokenType.Dot)) {
-        const property = this.#parseIdentifier();
+        let property: Identifier;
+        if (this.#match(TokenType.Hash)) {
+          const id = this.#parseIdentifier();
+          property = {type: NodeType.Identifier, name: '#' + id.name};
+        } else {
+          property = this.#parseIdentifier();
+        }
         expr = {
           type: NodeType.MemberExpression,
           object: expr,

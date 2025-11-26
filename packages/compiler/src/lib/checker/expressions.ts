@@ -413,6 +413,34 @@ function checkMemberExpression(
   const classType = objectType as ClassType | InterfaceType;
   const memberName = expr.property.name;
 
+  if (memberName.startsWith('#')) {
+    if (!ctx.currentClass) {
+      ctx.diagnostics.reportError(
+        `Private field '${memberName}' can only be accessed within a class.`,
+        DiagnosticCode.UnknownError,
+      );
+      return Types.Unknown;
+    }
+
+    if (!ctx.currentClass.fields.has(memberName)) {
+      ctx.diagnostics.reportError(
+        `Private field '${memberName}' is not defined in class '${ctx.currentClass.name}'.`,
+        DiagnosticCode.PropertyNotFound,
+      );
+      return Types.Unknown;
+    }
+
+    if (!isAssignableTo(objectType, ctx.currentClass)) {
+      ctx.diagnostics.reportError(
+        `Type '${typeToString(objectType)}' does not have private field '${memberName}' from class '${ctx.currentClass.name}'.`,
+        DiagnosticCode.TypeMismatch,
+      );
+      return Types.Unknown;
+    }
+
+    return ctx.currentClass.fields.get(memberName)!;
+  }
+
   // Check fields
   if (classType.fields.has(memberName)) {
     return classType.fields.get(memberName)!;

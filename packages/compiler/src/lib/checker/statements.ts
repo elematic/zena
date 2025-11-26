@@ -180,7 +180,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   if (superType) {
     // Inherit fields
     for (const [name, type] of superType.fields) {
-      classType.fields.set(name, type);
+      if (!name.startsWith('#')) {
+        classType.fields.set(name, type);
+      }
     }
     // Inherit methods
     for (const [name, type] of superType.methods) {

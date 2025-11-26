@@ -264,14 +264,25 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
       const wasmType = [ValType.i32];
-      if (!fields.has(member.name.name)) {
-        fields.set(member.name.name, {index: fieldIndex++, type: wasmType});
+      const fieldName = manglePrivateName(decl.name.name, member.name.name);
+
+      if (!fields.has(fieldName)) {
+        fields.set(fieldName, {index: fieldIndex++, type: wasmType});
         fieldTypes.push({type: wasmType, mutable: true});
       }
     }
   }
 
   const structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
+
+  const classInfo: ClassInfo = {
+    name: decl.name.name,
+    structTypeIndex,
+    fields,
+    methods,
+    vtable,
+  };
+  ctx.classes.set(decl.name.name, classInfo);
 
   // Register methods
   const members = [...decl.body];
@@ -309,11 +320,16 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
 
       const params = [thisType];
       for (const param of member.params) {
-        params.push([ValType.i32]);
+        params.push(mapType(ctx, param.typeAnnotation));
       }
 
-      let results = [[ValType.i32]];
+      let results: number[][] = [];
       if (methodName === '#new') {
+        results = [];
+      } else if (member.returnType) {
+        const mapped = mapType(ctx, member.returnType);
+        if (mapped.length > 0) results = [mapped];
+      } else {
         results = [];
       }
 
@@ -371,15 +387,8 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     vtableInit,
   );
 
-  const classInfo: ClassInfo = {
-    structTypeIndex,
-    fields,
-    methods,
-    vtable,
-    vtableTypeIndex,
-    vtableGlobalIndex,
-  };
-  ctx.classes.set(decl.name.name, classInfo);
+  classInfo.vtableTypeIndex = vtableTypeIndex;
+  classInfo.vtableGlobalIndex = vtableGlobalIndex;
 
   generateInterfaceVTable(ctx, classInfo, decl);
 
@@ -433,9 +442,20 @@ export function generateClassMethods(
       }
 
       if (member.name.name === '#new') {
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          const superCtor = superClassInfo.methods.get('#new');
+          if (superCtor) {
+            body.push(Opcode.local_get, 0);
+            body.push(Opcode.call);
+            body.push(...WasmModule.encodeSignedLEB128(superCtor.index));
+          }
+        }
+
         for (const m of decl.body) {
           if (m.type === NodeType.FieldDefinition && m.value) {
-            const fieldInfo = classInfo.fields.get(m.name.name)!;
+            const fieldName = manglePrivateName(decl.name.name, m.name.name);
+            const fieldInfo = classInfo.fields.get(fieldName)!;
             body.push(Opcode.local_get, 0);
             generateExpression(ctx, m.value, body);
             body.push(0xfb, GcOpcode.struct_set);
@@ -528,6 +548,9 @@ export function mapType(
       ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
     ];
   }
+  console.log(
+    `Class ${annotation.name} not found in ctx.classes. Available: ${Array.from(ctx.classes.keys()).join(', ')}`,
+  );
 
   return [ValType.i32];
 }
@@ -599,7 +622,8 @@ export function instantiateClass(
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
       const wasmType = mapType(ctx, member.typeAnnotation, context);
-      fields.set(member.name.name, {index: fieldIndex++, type: wasmType});
+      const fieldName = manglePrivateName(specializedName, member.name.name);
+      fields.set(fieldName, {index: fieldIndex++, type: wasmType});
       fieldTypes.push({type: wasmType, mutable: true});
     }
   }
@@ -617,6 +641,7 @@ export function instantiateClass(
   const vtable: string[] = [];
 
   const classInfo: ClassInfo = {
+    name: specializedName,
     structTypeIndex,
     fields,
     methods,
@@ -703,4 +728,11 @@ export function instantiateClass(
     generateClassMethods(ctx, decl, specializedName);
     ctx.currentTypeContext = oldContext;
   });
+}
+
+function manglePrivateName(className: string, memberName: string): string {
+  if (memberName.startsWith('#')) {
+    return `${className}::${memberName}`;
+  }
+  return memberName;
 }

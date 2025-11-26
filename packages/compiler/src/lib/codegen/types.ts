@@ -1,4 +1,5 @@
 export interface ClassInfo {
+  name: string;
   structTypeIndex: number;
   fields: Map<string, {index: number; type: number[]}>;
   methods: Map<

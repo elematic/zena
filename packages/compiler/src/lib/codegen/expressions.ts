@@ -97,6 +97,10 @@ function generateNullLiteral(
 
 export function inferType(ctx: CodegenContext, expr: Expression): number[] {
   switch (expr.type) {
+    case NodeType.AssignmentExpression: {
+      const assignExpr = expr as AssignmentExpression;
+      return inferType(ctx, assignExpr.value);
+    }
     case NodeType.Identifier: {
       const name = (expr as Identifier).name;
       const local = ctx.getLocal(name);
@@ -131,7 +135,14 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       if (!foundClass) return [ValType.i32];
 
       const fieldName = memberExpr.property.name;
-      const fieldInfo = foundClass.fields.get(fieldName);
+      let lookupName = fieldName;
+      if (fieldName.startsWith('#')) {
+        if (ctx.currentClass) {
+          lookupName = `${ctx.currentClass.name}::${fieldName}`;
+        }
+      }
+
+      const fieldInfo = foundClass.fields.get(lookupName);
       if (fieldInfo) {
         return fieldInfo.type;
       }
@@ -153,6 +164,11 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
     case NodeType.NewExpression: {
       const newExpr = expr as NewExpression;
       let className = newExpr.callee.name;
+      if (!ctx.classes.has(className) && !ctx.genericClasses.has(className)) {
+        throw new Error(
+          `Class ${className} not found in inferType(NewExpression). Available: ${Array.from(ctx.classes.keys()).join(', ')}`,
+        );
+      }
       let typeArguments = newExpr.typeArguments;
 
       if (
@@ -188,6 +204,9 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
           ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
         ];
       }
+      throw new Error(
+        `Class ${className} not found in inferType(NewExpression) after checks. Available: ${Array.from(ctx.classes.keys()).join(', ')}`,
+      );
       return [ValType.i32];
     }
     case NodeType.CallExpression: {
@@ -563,9 +582,17 @@ function generateMemberExpression(
     throw new Error(`Class not found for object type ${structTypeIndex}`);
   }
 
-  const fieldInfo = foundClass.fields.get(fieldName);
+  let lookupName = fieldName;
+  if (fieldName.startsWith('#')) {
+    if (!ctx.currentClass) {
+      throw new Error('Private field access outside class');
+    }
+    lookupName = `${ctx.currentClass.name}::${fieldName}`;
+  }
+
+  const fieldInfo = foundClass.fields.get(lookupName);
   if (!fieldInfo) {
-    throw new Error(`Field ${fieldName} not found in class`);
+    throw new Error(`Field ${lookupName} not found in class`);
   }
 
   body.push(0xfb, GcOpcode.struct_get);
@@ -880,8 +907,16 @@ function generateAssignmentExpression(
       throw new Error(`Class not found for object type ${structTypeIndex}`);
     }
 
-    const fieldInfo = foundClass.fields.get(fieldName);
-    if (!fieldInfo) throw new Error(`Field ${fieldName} not found`);
+    let lookupName = fieldName;
+    if (fieldName.startsWith('#')) {
+      if (!ctx.currentClass) {
+        throw new Error('Private field assignment outside class');
+      }
+      lookupName = `${ctx.currentClass.name}::${fieldName}`;
+    }
+
+    const fieldInfo = foundClass.fields.get(lookupName);
+    if (!fieldInfo) throw new Error(`Field ${lookupName} not found`);
 
     generateExpression(ctx, memberExpr.object, body);
     generateExpression(ctx, expr.value, body);
