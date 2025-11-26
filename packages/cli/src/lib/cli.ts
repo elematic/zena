@@ -58,8 +58,13 @@ const buildCommand = async (
       const source = await readSourceFile(file);
       const bytes = compile(source);
 
+      // Replace .zena extension or append .wasm if different extension
+      const baseName = basename(file);
       const outputPath =
-        output ?? basename(file).replace(/\.zena$/, '.wasm');
+        output ??
+        (baseName.endsWith('.zena')
+          ? baseName.slice(0, -5) + '.wasm'
+          : baseName + '.wasm');
       await writeFile(outputPath, bytes);
       console.log(`Compiled ${file} -> ${outputPath}`);
     }
@@ -122,13 +127,15 @@ const runCommand = async (files: string[]): Promise<number> => {
       const source = await readSourceFile(file);
       const bytes = compile(source);
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = (await WebAssembly.instantiate(bytes, {})) as any;
-      const exports = result.instance.exports as Record<string, unknown>;
+      // WebAssembly.instantiate returns WebAssemblyInstantiatedSource for buffer input
+      const result = await WebAssembly.instantiate(bytes, {});
+      const {instance} = result as unknown as WebAssembly.WebAssemblyInstantiatedSource;
+      const exports = instance.exports;
 
       // Look for a main function and call it
-      if (typeof exports['main'] === 'function') {
-        const mainResult = (exports['main'] as () => unknown)();
+      const mainFn = exports.main;
+      if (typeof mainFn === 'function') {
+        const mainResult = (mainFn as () => unknown)();
         if (mainResult !== undefined) {
           console.log(mainResult);
         }
