@@ -241,3 +241,75 @@ class B extends A {
 TODO: Once we allow type aliasing and support modules we could have
 multiple classes with the same name in a inheritance chain and get
 private name collisions.
+
+## 6. Protected Members
+
+> **Note**: This feature is currently in the design phase and has not been implemented yet.
+
+Zena supports protected members using the `_` prefix (e.g., `_render`).
+
+### 6.1. Access Control Rules
+
+Protected members are accessible in:
+1.  **The defining class**.
+2.  **Subclasses** (transitively).
+3.  **The defining module** (file).
+
+This "Module + Subclass" visibility allows framework code within the same module to orchestrate calls to protected methods (e.g., lifecycle hooks) without exposing them to the public API.
+
+### 6.2. Inheritance & Namespaces
+
+*   **Shared Namespace**: Unlike private fields (`#`), protected fields (`_`) share the same namespace down the inheritance chain. A subclass can override a protected method.
+*   **No Collision**: Protected names in unrelated classes do not collide because access is resolved via the type system.
+*   **Mangling**: Protected members are **not** name-mangled like private fields. They behave like public fields but with restricted visibility during type checking.
+
+### 6.3. Interfaces
+
+Interfaces can declare protected methods.
+*   Implementing classes must provide the method (marked with `_`).
+*   The method is callable only by code with protected access to the interface (e.g., code in the same module as the interface definition).
+
+### 6.4. Collision Handling (Qualified Names)
+
+To avoid name collisions (e.g., when using Mixins or Interfaces that define the same protected name), Zena supports **Qualified Method Definitions**.
+
+```typescript
+class Widget extends Component {
+  // Standard override (ambiguous if multiple bases have _render)
+  override _render() { ... }
+
+  // Qualified override (targets specific base/interface)
+  Component._render() { ... }
+}
+```
+
+**Accessing Qualified Members**:
+To access a specific qualified member, use casting to the defining type.
+
+```typescript
+let w = new Widget();
+(w as Component)._render(); // Calls the Component._render implementation
+```
+
+### 6.5. Super Calls
+
+When overriding a protected method, you can call the superclass implementation using `super`. If the method is qualified (to resolve ambiguity), use a cast on `super` to specify which base class implementation to invoke.
+
+```typescript
+class Widget extends Component {
+  Component._render() {
+    // Call the specific base implementation
+    (super as Component)._render();
+  }
+}
+```
+
+**Note on Syntax**: We chose `(super as T).method()` to maintain symmetry with instance access `(this as T).method()`.
+*   **Alternative Considered**: `super<T>.method()`.
+    *   *Pros*: Explicitly distinguishes "static ancestor call" from "cast".
+    *   *Cons*: Inconsistent with instance access. We cannot use `instance<T>.method()` for instances because it creates parsing ambiguities with comparison operators (e.g., `a < b`).
+
+### 6.6. Static Symbols (Alternative Considered)
+
+We considered using "Static Symbols" (similar to JavaScript Symbols or private declarations) to allow capability-based access control (e.g., `[_render]() { ... }`). However, we chose the `_` sigil for simplicity and performance, avoiding the need for computed property syntax or symbol management. The "Module Visibility" rule sufficiently covers the use case where a framework needs privileged access to a method it defines.
+
