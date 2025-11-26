@@ -206,6 +206,10 @@ This project is an **npm monorepo** managed with **Wireit**.
       - **Virtual Fields**: Implement Uniform Access Principle (treat public fields as virtual properties with default accessors).
       - **Dynamic Dispatch**: Implement VTables for polymorphic method calls.
       - **Casting**: Implement `as` operator and `instanceof` checks.
+      - **Mixins**:
+        - [x] Implement Mixin Parser.
+        - [x] Implement Mixin Type Checker.
+        - [x] Implement Mixin Code Generator (Application, Composition, Overrides).
     - **Interfaces**: Implement `interface Runnable { run(): void; }` and `implements`.
     - **Abstract Classes**: Support `abstract class`.
     - **Access Control**: Enforce `#` private fields strictly.
