@@ -52,6 +52,7 @@ export class CodeGenerator {
   #pendingMethodGenerations: (() => void)[] = [];
   #bodyGenerators: (() => void)[] = [];
   #currentTypeContext: Map<string, TypeAnnotation> | undefined;
+  #thisLocalIndex = 0;
 
   constructor(program: Program) {
     this.#program = program;
@@ -123,7 +124,15 @@ export class CodeGenerator {
     let fieldIndex = 0;
 
     let superTypeIndex: number | undefined;
-    const methods = new Map<string, {index: number; returnType: number[]}>();
+    const methods = new Map<
+      string,
+      {
+        index: number;
+        returnType: number[];
+        typeIndex: number;
+        paramTypes: number[][];
+      }
+    >();
     const vtable: string[] = [];
 
     if (decl.superClass) {
@@ -150,6 +159,10 @@ export class CodeGenerator {
       for (const [name, info] of superClassInfo.methods) {
         methods.set(name, info);
       }
+    } else {
+      // Root class: Add vtable field
+      fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
+      fieldTypes.push({type: [ValType.eqref], mutable: true});
     }
 
     for (const member of decl.body) {
@@ -171,15 +184,22 @@ export class CodeGenerator {
     for (const member of decl.body) {
       if (member.type === NodeType.MethodDefinition) {
         const methodName = member.name.name;
-        
+
         if (methodName !== '#new' && !vtable.includes(methodName)) {
           vtable.push(methodName);
         }
 
-        const thisType = [
+        let thisType = [
           ValType.ref_null,
           ...WasmModule.encodeSignedLEB128(structTypeIndex),
         ];
+
+        if (decl.superClass) {
+          const superClassInfo = this.#classes.get(decl.superClass.name)!;
+          if (methodName !== '#new' && superClassInfo.methods.has(methodName)) {
+            thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
+          }
+        }
 
         const params = [thisType];
         for (const param of member.params) {
@@ -191,17 +211,41 @@ export class CodeGenerator {
           results = [];
         }
 
-        const typeIndex = this.#module.addType(params, results);
-        const funcIndex = this.#module.addFunction(typeIndex);
+        let typeIndex: number;
+        let isOverride = false;
+        if (decl.superClass) {
+          const superClassInfo = this.#classes.get(decl.superClass.name)!;
+          if (methodName !== '#new' && superClassInfo.methods.has(methodName)) {
+            typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
+            isOverride = true;
+          }
+        }
+
+        if (!isOverride) {
+          typeIndex = this.#module.addType(params, results);
+        }
+
+        const funcIndex = this.#module.addFunction(typeIndex!);
 
         const returnType = results.length > 0 ? results[0] : [];
-        methods.set(methodName, {index: funcIndex, returnType});
+        methods.set(methodName, {
+          index: funcIndex,
+          returnType,
+          typeIndex: typeIndex!,
+          paramTypes: params,
+        });
       }
     }
-
     // Create VTable Struct Type
+    let vtableSuperTypeIndex: number | undefined;
+    if (decl.superClass) {
+      const superClassInfo = this.#classes.get(decl.superClass.name)!;
+      vtableSuperTypeIndex = superClassInfo.vtableTypeIndex;
+    }
+
     const vtableTypeIndex = this.#module.addStructType(
       vtable.map(() => ({type: [ValType.funcref], mutable: false})),
+      vtableSuperTypeIndex,
     );
 
     // Create VTable Global
@@ -380,7 +424,13 @@ export class CodeGenerator {
   #generateLocalVariableDeclaration(decl: VariableDeclaration, body: number[]) {
     this.#generateExpression(decl.init, body);
 
-    const type = this.#inferType(decl.init);
+    let type: number[];
+    if (decl.typeAnnotation) {
+      type = this.#mapType(decl.typeAnnotation, this.#currentTypeContext);
+    } else {
+      type = this.#inferType(decl.init);
+    }
+
     const index = this.#declareLocal(decl.identifier.name, type);
     body.push(Opcode.local_set);
     body.push(...WasmModule.encodeSignedLEB128(index));
@@ -579,6 +629,19 @@ export class CodeGenerator {
     body.push(Opcode.local_tee);
     body.push(...WasmModule.encodeSignedLEB128(tempLocal));
 
+    // Initialize vtable
+    if (classInfo.vtableGlobalIndex !== undefined) {
+      body.push(Opcode.global_get);
+      body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex));
+      body.push(0xfb, GcOpcode.struct_set);
+      body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+      body.push(...WasmModule.encodeSignedLEB128(0)); // vtable is always at index 0
+
+      // Restore object for constructor
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+    }
+
     // Prepare args for constructor: [this, args...]
     for (const arg of expr.arguments) {
       this.#generateExpression(arg, body);
@@ -646,7 +709,7 @@ export class CodeGenerator {
 
   #generateThisExpression(expr: ThisExpression, body: number[]) {
     body.push(Opcode.local_get);
-    body.push(0);
+    body.push(...WasmModule.encodeSignedLEB128(this.#thisLocalIndex));
   }
 
   #generateCallExpression(expr: CallExpression, body: number[]) {
@@ -678,14 +741,72 @@ export class CodeGenerator {
         throw new Error(`Method ${methodName} not found in class`);
       }
 
-      this.#generateExpression(memberExpr.object, body);
+      const vtableIndex = foundClass.vtable
+        ? foundClass.vtable.indexOf(methodName)
+        : -1;
 
-      for (const arg of expr.arguments) {
-        this.#generateExpression(arg, body);
+      if (vtableIndex !== -1 && foundClass.vtableTypeIndex !== undefined) {
+        // Dynamic Dispatch
+        this.#generateExpression(memberExpr.object, body);
+
+        // Save object to temp
+        const tempObj = this.#declareLocal('$$temp_dispatch_obj', objectType);
+        body.push(Opcode.local_tee);
+        body.push(...WasmModule.encodeSignedLEB128(tempObj));
+
+        // Get vtable (field 0)
+        body.push(0xfb, GcOpcode.struct_get);
+        body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
+        body.push(...WasmModule.encodeSignedLEB128(0));
+
+        // Cast vtable
+        body.push(0xfb, GcOpcode.ref_cast);
+        body.push(...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex));
+
+        // Get function from vtable
+        body.push(0xfb, GcOpcode.struct_get);
+        body.push(...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex));
+        body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
+
+        // Cast function to specific type
+        body.push(0xfb, GcOpcode.ref_cast);
+        body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+        // Save function to temp
+        const funcType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        ];
+        const tempFunc = this.#declareLocal('$$temp_dispatch_func', funcType);
+        body.push(Opcode.local_set);
+        body.push(...WasmModule.encodeSignedLEB128(tempFunc));
+
+        // Restore object (this)
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(tempObj));
+
+        // Generate arguments
+        for (const arg of expr.arguments) {
+          this.#generateExpression(arg, body);
+        }
+
+        // Get function
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(tempFunc));
+
+        // Call ref
+        body.push(Opcode.call_ref);
+        body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+      } else {
+        this.#generateExpression(memberExpr.object, body);
+
+        for (const arg of expr.arguments) {
+          this.#generateExpression(arg, body);
+        }
+
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
       }
-
-      body.push(Opcode.call);
-      body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
     } else {
       // 1. Generate arguments
       for (const arg of expr.arguments) {
@@ -1478,6 +1599,10 @@ export class CodeGenerator {
     const fieldTypes: {type: number[]; mutable: boolean}[] = [];
 
     let fieldIndex = 0;
+    // Add vtable field
+    fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
+    fieldTypes.push({type: [ValType.eqref], mutable: true});
+
     for (const member of decl.body) {
       if (member.type === NodeType.FieldDefinition) {
         const wasmType = this.#mapType(member.typeAnnotation, context);
@@ -1487,7 +1612,15 @@ export class CodeGenerator {
     }
 
     const structTypeIndex = this.#module.addStructType(fieldTypes);
-    const methods = new Map<string, {index: number; returnType: number[]}>();
+    const methods = new Map<
+      string,
+      {
+        index: number;
+        returnType: number[];
+        typeIndex: number;
+        paramTypes: number[][];
+      }
+    >();
     const vtable: string[] = [];
 
     const classInfo: ClassInfo = {
@@ -1528,7 +1661,12 @@ export class CodeGenerator {
         const funcIndex = this.#module.addFunction(typeIndex);
 
         const returnType = resultTypes.length > 0 ? resultTypes[0] : [];
-        methods.set(methodName, {index: funcIndex, returnType});
+        methods.set(methodName, {
+          index: funcIndex,
+          returnType,
+          typeIndex,
+          paramTypes: params,
+        });
 
         this.#pendingMethodGenerations.push(() => {
           this.#generateMethodBody(member, classInfo, context);
@@ -1616,6 +1754,49 @@ export class CodeGenerator {
 
     // 'this' is local 0
     this.#nextLocalIndex++;
+    this.#thisLocalIndex = 0;
+
+    // Check if we need to cast 'this'
+    if (this.#currentClass) {
+      const methodInfo = this.#currentClass.methods.get(method.name.name);
+      if (methodInfo) {
+        const thisType = methodInfo.paramTypes[0];
+        // Decode LEB128 index
+        let index = 0;
+        let shift = 0;
+        let i = 1; // Skip ref_null
+        while (i < thisType.length) {
+          const byte = thisType[i];
+          index |= (byte & 0x7f) << shift;
+          if ((byte & 0x80) === 0) break;
+          shift += 7;
+          i++;
+        }
+
+        if (index !== this.#currentClass.structTypeIndex) {
+          // Cast needed
+          const castedType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(
+              this.#currentClass.structTypeIndex,
+            ),
+          ];
+          const newLocal = this.#declareLocal('$$this_casted', castedType);
+
+          body.push(Opcode.local_get, 0);
+          body.push(0xfb, GcOpcode.ref_cast);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(
+              this.#currentClass.structTypeIndex,
+            ),
+          );
+          body.push(Opcode.local_set);
+          body.push(...WasmModule.encodeSignedLEB128(newLocal));
+
+          this.#thisLocalIndex = newLocal;
+        }
+      }
+    }
 
     // Params
     for (const param of method.params) {

@@ -272,6 +272,33 @@ class A {
 }
 ```
 
+### Inheritance
+
+Classes can inherit from other classes using the `extends` keyword. Subclasses inherit all fields and methods from the superclass.
+
+```typescript
+class Animal {
+  speak(): i32 {
+    return 0;
+  }
+}
+
+class Dog extends Animal {
+  speak(): i32 {
+    return 1;
+  }
+}
+```
+
+#### Method Overriding
+
+Subclasses can override methods defined in the superclass. Rhea supports dynamic dispatch, meaning the method implementation corresponding to the runtime type of the object will be called.
+
+```typescript
+let a: Animal = new Dog();
+a.speak(); // Returns 1 (Dog's implementation)
+```
+
 ## 9. Generics
 
 Rhea supports generic classes and functions, allowing code reuse across different types.

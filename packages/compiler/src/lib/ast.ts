@@ -51,6 +51,7 @@ export interface VariableDeclaration extends Node {
   type: typeof NodeType.VariableDeclaration;
   kind: 'let' | 'var';
   identifier: Identifier;
+  typeAnnotation?: TypeAnnotation;
   init: Expression;
   exported: boolean;
 }

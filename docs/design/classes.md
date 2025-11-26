@@ -69,6 +69,7 @@ Compiles to:
 ```
 
 The `(sub $Point ...)` declaration tells the WASM runtime that `$Point3D` is a subtype of `$Point`. This enables:
+
 1.  Passing a `$Point3D` reference where a `$Point` is expected.
 2.  Using `ref.cast` and `ref.test` for downcasting.
 
@@ -86,7 +87,7 @@ We introduce a first-class `mixin` syntax that acts like a function taking a bas
 // Define a mixin
 mixin Timestamped(Base: Constructor) extends Base {
   timestamp: i32 = Date.now();
-  
+
   getTimestamp(): i32 {
     return this.timestamp;
   }
@@ -102,6 +103,7 @@ class TimestampedUser extends Timestamped(User) {}
 
 **Implementation Strategy:**
 Mixins fit into the single-inheritance model by generating intermediate classes.
+
 1.  **Compilation**: When `Timestamped(User)` is applied, the compiler generates a new concrete class (e.g., `$User_Timestamped`).
 2.  **Struct Layout**: This new class struct contains all fields of `User` followed by fields of `Timestamped`.
 3.  **Subtyping**: `$User_Timestamped` is declared as a subtype of `$User`.
@@ -117,12 +119,12 @@ Mixins fit into the single-inheritance model by generating intermediate classes.
 
 ### 3.1. Static vs. Dynamic Dispatch
 
-*   **Static Dispatch**: The compiler hardcodes the function index to call (e.g., `call $Dog_speak`).
-    *   **Pros**: Fastest performance (direct jump, inlineable).
-    *   **Cons**: Cannot support polymorphism (overriding).
-*   **Dynamic Dispatch**: The function to call is determined at runtime based on the object's type.
-    *   **Pros**: Enables polymorphism (`animal.speak()` calls `Dog.speak()` if it's a Dog).
-    *   **Cons**: Slower (indirect jump via `call_ref`), harder to optimize.
+- **Static Dispatch**: The compiler hardcodes the function index to call (e.g., `call $Dog_speak`).
+  - **Pros**: Fastest performance (direct jump, inlineable).
+  - **Cons**: Cannot support polymorphism (overriding).
+- **Dynamic Dispatch**: The function to call is determined at runtime based on the object's type.
+  - **Pros**: Enables polymorphism (`animal.speak()` calls `Dog.speak()` if it's a Dog).
+  - **Cons**: Slower (indirect jump via `call_ref`), harder to optimize.
 
 ### 3.2. VTables (Virtual Method Tables)
 
@@ -176,13 +178,14 @@ To call `animal.speak()`:
 
 The compiler will attempt to optimize dynamic dispatch to static dispatch whenever possible using **Static Analysis** and **Type Inference**.
 
-*   **Exact Type Known**: `let d = new Dog(); d.speak();` -> The compiler infers `d` is exactly `Dog` (not a subclass). Emits `call $Dog_speak`.
-*   **Final Classes**: If a class is marked `final` (cannot be extended), all calls on it can be static.
-*   **Sealed Classes**: If we know all subclasses, we might optimize.
+- **Exact Type Known**: `let d = new Dog(); d.speak();` -> The compiler infers `d` is exactly `Dog` (not a subclass). Emits `call $Dog_speak`.
+- **Final Classes**: If a class is marked `final` (cannot be extended), all calls on it can be static.
+- **Sealed Classes**: If we know all subclasses, we might optimize.
 
 ### 3.5. Construction
 
 When `new Dog()` is called:
+
 1.  Allocate the `$Dog` struct.
 2.  Initialize the VTable field with the singleton instance of `$Dog_VTable`.
 3.  Run the constructor.
@@ -195,10 +198,10 @@ Interfaces allow polymorphism across unrelated class hierarchies. Since a class 
 
 We will likely use **Fat Pointers** to represent interface references.
 
-*   **Structure**: A tuple `(object_ref, itable_ref)`.
-    *   `object_ref`: The actual object instance.
-    *   `itable_ref`: A reference to an **Interface Table (ITable)** specific to that class's implementation of the interface.
-*   **ITable**: A struct containing function references for the interface's methods, mapped to the concrete class's implementations.
+- **Structure**: A tuple `(object_ref, itable_ref)`.
+  - `object_ref`: The actual object instance.
+  - `itable_ref`: A reference to an **Interface Table (ITable)** specific to that class's implementation of the interface.
+- **ITable**: A struct containing function references for the interface's methods, mapped to the concrete class's implementations.
 
 ### 4.2. Dispatch
 

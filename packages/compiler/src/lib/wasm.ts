@@ -50,6 +50,7 @@ export const GcOpcode = {
   array_set: 0x0e,
   array_len: 0x0f,
   array_copy: 0x11,
+  ref_cast: 0x16,
 } as const;
 
 export const Opcode = {
@@ -66,6 +67,7 @@ export const Opcode = {
   return: 0x0f,
   call: 0x10,
   call_indirect: 0x11,
+  call_ref: 0x14,
   drop: 0x1a,
   select: 0x1b,
 
@@ -81,8 +83,6 @@ export const Opcode = {
 
   ref_null: 0xd0,
   ref_func: 0xd2,
-  ref_cast: 0x16, // GC opcode 0xfb 0x16
-  call_ref: 0x14,
 
   i32_eqz: 0x45,
   i32_eq: 0x46,

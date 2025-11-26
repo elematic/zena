@@ -81,6 +81,12 @@ export class Parser {
     const kind = kindToken.type === TokenType.Let ? 'let' : 'var';
 
     const identifier = this.#parseIdentifier();
+
+    let typeAnnotation: TypeAnnotation | undefined;
+    if (this.#match(TokenType.Colon)) {
+      typeAnnotation = this.#parseTypeAnnotation();
+    }
+
     this.#consume(TokenType.Equals, "Expected '=' after variable name.");
     const init = this.#parseExpression();
     this.#consume(TokenType.Semi, "Expected ';' after variable declaration.");
@@ -89,6 +95,7 @@ export class Parser {
       type: NodeType.VariableDeclaration,
       kind,
       identifier,
+      typeAnnotation,
       init,
       exported,
     };
