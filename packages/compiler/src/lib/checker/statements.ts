@@ -224,12 +224,17 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       if (classType.fields.has(member.name.name)) {
         // Check if it's a redeclaration of an inherited field
         if (superType && superType.fields.has(member.name.name)) {
-          // For now, allow shadowing if types match? Or disallow?
-          // Let's disallow field shadowing for simplicity and safety.
-          ctx.diagnostics.reportError(
-            `Cannot redeclare field '${member.name.name}' in subclass '${className}'.`,
-            DiagnosticCode.DuplicateDeclaration,
-          );
+          // Allow shadowing/overriding of fields
+          // Check type compatibility
+          const superFieldType = superType.fields.get(member.name.name)!;
+          // If mutable, types should be invariant (identical). If immutable, covariant.
+          // For now, we enforce covariance (fieldType extends superFieldType).
+          if (!isAssignableTo(fieldType, superFieldType)) {
+            ctx.diagnostics.reportError(
+              `Field '${member.name.name}' in subclass '${className}' must be compatible with inherited field.`,
+              DiagnosticCode.TypeMismatch,
+            );
+          }
         } else {
           ctx.diagnostics.reportError(
             `Duplicate field '${member.name.name}' in class '${className}'.`,
@@ -238,14 +243,49 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
       }
       classType.fields.set(member.name.name, fieldType);
+
+      // Register implicit accessors for public fields
+      if (!member.name.name.startsWith('#')) {
+        const getterName = `get_${member.name.name}`;
+        const setterName = `set_${member.name.name}`;
+
+        // Getter
+        if (!classType.methods.has(getterName)) {
+          classType.vtable.push(getterName);
+        }
+        classType.methods.set(getterName, {
+          kind: TypeKind.Function,
+          parameters: [],
+          returnType: fieldType,
+          isFinal: false,
+        });
+
+        // Setter (if mutable)
+        if (!member.isFinal) {
+          if (!classType.methods.has(setterName)) {
+            classType.vtable.push(setterName);
+          }
+          classType.methods.set(setterName, {
+            kind: TypeKind.Function,
+            parameters: [fieldType],
+            returnType: Types.Void,
+            isFinal: false,
+          });
+        }
+      }
     } else if (member.type === NodeType.AccessorDeclaration) {
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
       if (classType.fields.has(member.name.name)) {
         if (superType && superType.fields.has(member.name.name)) {
-          ctx.diagnostics.reportError(
-            `Cannot redeclare field '${member.name.name}' in subclass '${className}'.`,
-            DiagnosticCode.DuplicateDeclaration,
-          );
+          // Allow overriding field with accessor
+          // Check type compatibility
+          const superFieldType = superType.fields.get(member.name.name)!;
+          if (!isAssignableTo(fieldType, superFieldType)) {
+            ctx.diagnostics.reportError(
+              `Accessor '${member.name.name}' in subclass '${className}' must be compatible with inherited field.`,
+              DiagnosticCode.TypeMismatch,
+            );
+          }
         } else {
           ctx.diagnostics.reportError(
             `Duplicate field '${member.name.name}' in class '${className}'.`,

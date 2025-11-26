@@ -472,6 +472,93 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
           isFinal: member.isFinal,
         });
       }
+    } else if (member.type === NodeType.FieldDefinition) {
+      // Register implicit accessors for public fields
+      if (!member.name.name.startsWith('#')) {
+        const propName = member.name.name;
+        const propType = mapType(ctx, member.typeAnnotation);
+
+        // Getter
+        const getterName = `get_${propName}`;
+        if (!vtable.includes(getterName)) {
+          vtable.push(getterName);
+        }
+
+        let thisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(getterName)) {
+            thisType = superClassInfo.methods.get(getterName)!.paramTypes[0];
+          }
+        }
+
+        const params = [thisType];
+        const results = [propType];
+
+        let typeIndex: number;
+        let isOverride = false;
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(getterName)) {
+            typeIndex = superClassInfo.methods.get(getterName)!.typeIndex;
+            isOverride = true;
+          }
+        }
+
+        if (!isOverride) {
+          typeIndex = ctx.module.addType(params, results);
+        }
+
+        const funcIndex = ctx.module.addFunction(typeIndex!);
+
+        methods.set(getterName, {
+          index: funcIndex,
+          returnType: results[0],
+          typeIndex: typeIndex!,
+          paramTypes: params,
+          isFinal: member.isFinal,
+        });
+
+        // Setter (if mutable)
+        if (!member.isFinal) {
+          const setterName = `set_${propName}`;
+          if (!vtable.includes(setterName)) {
+            vtable.push(setterName);
+          }
+
+          const setterParams = [thisType, propType];
+          const setterResults: number[][] = [];
+
+          let setterTypeIndex: number;
+          let isSetterOverride = false;
+          if (decl.superClass) {
+            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+            if (superClassInfo.methods.has(setterName)) {
+              setterTypeIndex =
+                superClassInfo.methods.get(setterName)!.typeIndex;
+              isSetterOverride = true;
+            }
+          }
+
+          if (!isSetterOverride) {
+            setterTypeIndex = ctx.module.addType(setterParams, setterResults);
+          }
+
+          const setterFuncIndex = ctx.module.addFunction(setterTypeIndex!);
+
+          methods.set(setterName, {
+            index: setterFuncIndex,
+            returnType: [],
+            typeIndex: setterTypeIndex!,
+            paramTypes: setterParams,
+            isFinal: member.isFinal,
+          });
+        }
+      }
     }
   }
   // Create VTable Struct Type
@@ -641,6 +728,57 @@ export function generateClassMethods(
 
         ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
         ctx.popScope();
+      }
+    } else if (member.type === NodeType.FieldDefinition) {
+      if (!member.name.name.startsWith('#')) {
+        const propName = member.name.name;
+        const fieldName = manglePrivateName(className, propName);
+        const fieldInfo = classInfo.fields.get(fieldName);
+        if (!fieldInfo) {
+          console.error(
+            `Field ${fieldName} not found in class ${decl.name.name}`,
+          );
+          console.error(
+            'Available fields:',
+            Array.from(classInfo.fields.keys()),
+          );
+          throw new Error(`Field ${fieldName} not found`);
+        }
+
+        // Getter
+        const getterName = `get_${propName}`;
+        const getterInfo = classInfo.methods.get(getterName)!;
+        const getterBody: number[] = [];
+
+        // this.field
+        getterBody.push(Opcode.local_get, 0); // this
+        getterBody.push(0xfb, GcOpcode.struct_get);
+        getterBody.push(
+          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+        );
+        getterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+        getterBody.push(Opcode.end);
+
+        ctx.module.addCode(getterInfo.index, [], getterBody);
+
+        // Setter
+        if (!member.isFinal) {
+          const setterName = `set_${propName}`;
+          const setterInfo = classInfo.methods.get(setterName)!;
+          const setterBody: number[] = [];
+
+          // this.field = val
+          setterBody.push(Opcode.local_get, 0); // this
+          setterBody.push(Opcode.local_get, 1); // val
+          setterBody.push(0xfb, GcOpcode.struct_set);
+          setterBody.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+          setterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+          setterBody.push(Opcode.end);
+
+          ctx.module.addCode(setterInfo.index, [], setterBody);
+        }
       }
     }
   }
@@ -883,6 +1021,54 @@ export function instantiateClass(
         typeIndex,
         paramTypes: params,
       });
+    }
+  }
+
+  // Add implicit accessors to methods map
+  for (const member of decl.body) {
+    if (
+      member.type === NodeType.FieldDefinition &&
+      !member.name.name.startsWith('#')
+    ) {
+      const propName = member.name.name;
+      const getterName = `get_${propName}`;
+      const setterName = `set_${propName}`;
+
+      // Getter
+      vtable.push(getterName);
+      const getterParams = [
+        [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
+      ];
+      const fieldType = mapType(ctx, member.typeAnnotation, context);
+      const getterResults = [fieldType];
+      const getterTypeIndex = ctx.module.addType(getterParams, getterResults);
+      const getterFuncIndex = ctx.module.addFunction(getterTypeIndex);
+
+      methods.set(getterName, {
+        index: getterFuncIndex,
+        returnType: fieldType,
+        typeIndex: getterTypeIndex,
+        paramTypes: getterParams,
+      });
+
+      // Setter
+      if (!member.isFinal) {
+        vtable.push(setterName);
+        const setterParams = [
+          [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
+          fieldType,
+        ];
+        const setterResults: number[][] = [];
+        const setterTypeIndex = ctx.module.addType(setterParams, setterResults);
+        const setterFuncIndex = ctx.module.addFunction(setterTypeIndex);
+
+        methods.set(setterName, {
+          index: setterFuncIndex,
+          returnType: [],
+          typeIndex: setterTypeIndex,
+          paramTypes: setterParams,
+        });
+      }
     }
   }
 

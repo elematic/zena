@@ -622,9 +622,8 @@ function generateMemberExpression(
     lookupName = `${ctx.currentClass.name}::${fieldName}`;
   }
 
-  const fieldInfo = foundClass.fields.get(lookupName);
-  if (!fieldInfo) {
-    // Check for accessor getter
+  // Check for virtual property access (public fields or accessors)
+  if (!fieldName.startsWith('#')) {
     const getterName = `get_${fieldName}`;
     const methodInfo = foundClass.methods.get(getterName);
     if (methodInfo) {
@@ -695,7 +694,10 @@ function generateMemberExpression(
       );
       return;
     }
+  }
 
+  const fieldInfo = foundClass.fields.get(lookupName);
+  if (!fieldInfo) {
     throw new Error(`Field ${lookupName} not found in class`);
   }
 
@@ -1073,9 +1075,8 @@ function generateAssignmentExpression(
       lookupName = `${ctx.currentClass.name}::${fieldName}`;
     }
 
-    const fieldInfo = foundClass.fields.get(lookupName);
-    if (!fieldInfo) {
-      // Check for accessor setter
+    // Check for virtual property assignment (public fields or accessors)
+    if (!fieldName.startsWith('#')) {
       const setterName = `set_${fieldName}`;
       const methodInfo = foundClass.methods.get(setterName);
       if (methodInfo) {
@@ -1156,7 +1157,10 @@ function generateAssignmentExpression(
         body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempVal));
         return;
       }
+    }
 
+    const fieldInfo = foundClass.fields.get(lookupName);
+    if (!fieldInfo) {
       throw new Error(`Field ${lookupName} not found`);
     }
 

@@ -52,7 +52,27 @@ suite('TypeChecker - Inheritance', () => {
     assert.match(errors[0].message, /Superclass 'Animal' must be a class/);
   });
 
-  test('should detect field redeclaration', () => {
+  test('should detect field redeclaration with incompatible type', () => {
+    const input = `
+      class Animal {
+        name: string;
+      }
+      class Dog extends Animal {
+        name: i32;
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.strictEqual(errors.length, 1);
+    assert.match(
+      errors[0].message,
+      /Field 'name' in subclass 'Dog' must be compatible with inherited field/,
+    );
+  });
+
+  test('should allow field redeclaration with compatible type', () => {
     const input = `
       class Animal {
         name: string;
@@ -65,11 +85,7 @@ suite('TypeChecker - Inheritance', () => {
     const ast = parser.parse();
     const checker = new TypeChecker(ast);
     const errors = checker.check();
-    assert.strictEqual(errors.length, 1);
-    assert.match(
-      errors[0].message,
-      /Cannot redeclare field 'name' in subclass 'Dog'/,
-    );
+    assert.strictEqual(errors.length, 0);
   });
 
   test('should allow valid method override', () => {
