@@ -27,11 +27,26 @@ import {
   type Parameter,
   type TypeParameter,
   type InterfaceDeclaration,
-} from './ast.js';
-import {WasmModule} from './emitter.js';
-import {ValType, Opcode, ExportDesc, GcOpcode} from './wasm.js';
-import type {ClassInfo, LocalInfo, InterfaceInfo} from './codegen-types.js';
+} from '../ast.js';
+import {WasmModule} from '../emitter.js';
+import {ValType, Opcode, ExportDesc, GcOpcode} from '../wasm.js';
+import type {ClassInfo, LocalInfo, InterfaceInfo} from './types.js';
 
+/**
+ * The CodeGenerator class is responsible for traversing the AST and generating
+ * WebAssembly (WASM) binary code.
+ *
+ * It manages:
+ * - The WASM module structure (types, functions, exports, etc.)
+ * - Symbol tables for variables and functions.
+ * - Class and Interface layouts (structs and vtables).
+ * - String and Array memory management.
+ *
+ * The generation process is typically:
+ * 1. Register all classes and interfaces (to handle forward references).
+ * 2. Generate method bodies and function bodies.
+ * 3. Emit the final WASM binary.
+ */
 export class CodeGenerator {
   #module: WasmModule;
   #program: Program;
@@ -62,35 +77,11 @@ export class CodeGenerator {
     // Define string type: array<i8> (mutable for construction)
     this.#stringTypeIndex = this.#module.addArrayType([ValType.i8], true);
   }
-  // ...
-  #generateClassMethods(decl: ClassDeclaration) {
-    const classInfo = this.#classes.get(decl.name.name)!;
-    this.#currentClass = classInfo;
 
-    const members = [...decl.body];
-    const hasConstructor = members.some(
-      (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
-    );
-    if (!hasConstructor) {
-      members.push({
-        type: NodeType.MethodDefinition,
-        name: {type: NodeType.Identifier, name: '#new'},
-        params: [],
-        body: {type: NodeType.BlockStatement, body: []},
-      } as MethodDefinition);
-    }
-
-    for (const member of members) {
-      if (member.type === NodeType.MethodDefinition) {
-        const methodName = member.name.name;
-        const methodInfo = classInfo.methods.get(methodName)!;
-        const body = this.#generateMethodBodyCode(member, new Map(), decl);
-        this.#module.addCode(methodInfo.index, this.#extraLocals, body);
-      }
-    }
-    this.#currentClass = null;
-  }
-
+  /**
+   * Main entry point for code generation.
+   * @returns The generated WASM binary as a Uint8Array.
+   */
   public generate(): Uint8Array {
     // Pass 1: Register classes and functions
     for (const statement of this.#program.body) {
@@ -130,6 +121,10 @@ export class CodeGenerator {
 
     return this.#module.toBytes();
   }
+
+  // ---------------------------------------------------------------------------
+  // Class & Interface Registration
+  // ---------------------------------------------------------------------------
 
   #registerInterface(decl: InterfaceDeclaration) {
     // 1. Create VTable Struct Type
@@ -491,6 +486,34 @@ export class CodeGenerator {
     });
   }
 
+  #generateClassMethods(decl: ClassDeclaration) {
+    const classInfo = this.#classes.get(decl.name.name)!;
+    this.#currentClass = classInfo;
+
+    const members = [...decl.body];
+    const hasConstructor = members.some(
+      (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
+    );
+    if (!hasConstructor) {
+      members.push({
+        type: NodeType.MethodDefinition,
+        name: {type: NodeType.Identifier, name: '#new'},
+        params: [],
+        body: {type: NodeType.BlockStatement, body: []},
+      } as MethodDefinition);
+    }
+
+    for (const member of members) {
+      if (member.type === NodeType.MethodDefinition) {
+        const methodName = member.name.name;
+        const methodInfo = classInfo.methods.get(methodName)!;
+        const body = this.#generateMethodBodyCode(member, new Map(), decl);
+        this.#module.addCode(methodInfo.index, this.#extraLocals, body);
+      }
+    }
+    this.#currentClass = null;
+  }
+
   #registerFunction(name: string, func: FunctionExpression, exported: boolean) {
     if (func.typeParameters && func.typeParameters.length > 0) {
       this.#genericFunctions.set(name, func);
@@ -518,13 +541,14 @@ export class CodeGenerator {
     });
   }
 
-  #generateStatement(stmt: Statement) {
-    switch (stmt.type) {
-      case NodeType.ClassDeclaration:
-        this.#generateClassMethods(stmt as ClassDeclaration);
-        break;
+  // ---------------------------------------------------------------------------
+  // Statement Generation
+  // ---------------------------------------------------------------------------
+
+  #generateStatement(statement: Statement) {
+    switch (statement.type) {
       case NodeType.VariableDeclaration:
-        this.#generateVariableDeclaration(stmt);
+        this.#generateVariableDeclaration(statement);
         break;
       case NodeType.ExpressionStatement:
         // Top level expressions not really supported in WASM module structure directly without a start function or similar
@@ -686,45 +710,54 @@ export class CodeGenerator {
     body.push(Opcode.return);
   }
 
-  #generateExpression(expr: Expression, body: number[]) {
-    switch (expr.type) {
+  // ---------------------------------------------------------------------------
+  // Expression Generation
+  // ---------------------------------------------------------------------------
+
+  #generateExpression(expression: Expression, body: number[]) {
+    switch (expression.type) {
       case NodeType.BinaryExpression:
-        this.#generateBinaryExpression(expr, body);
+        this.#generateBinaryExpression(expression as BinaryExpression, body);
         break;
       case NodeType.AssignmentExpression:
-        this.#generateAssignmentExpression(expr as AssignmentExpression, body);
+        this.#generateAssignmentExpression(
+          expression as AssignmentExpression,
+          body,
+        );
         break;
       case NodeType.CallExpression:
-        this.#generateCallExpression(expr as CallExpression, body);
+        this.#generateCallExpression(expression as CallExpression, body);
         break;
       case NodeType.NumberLiteral:
-        this.#generateNumberLiteral(expr, body);
+        this.#generateNumberLiteral(expression as NumberLiteral, body);
         break;
       case NodeType.BooleanLiteral:
-        this.#generateBooleanLiteral(expr as BooleanLiteral, body);
+        this.#generateBooleanLiteral(expression as BooleanLiteral, body);
         break;
       case NodeType.Identifier:
-        this.#generateIdentifier(expr, body);
+        this.#generateIdentifier(expression as Identifier, body);
         break;
       case NodeType.NewExpression:
-        this.#generateNewExpression(expr as NewExpression, body);
+        this.#generateNewExpression(expression as NewExpression, body);
         break;
       case NodeType.MemberExpression:
-        this.#generateMemberExpression(expr as MemberExpression, body);
+        this.#generateMemberExpression(expression as MemberExpression, body);
         break;
       case NodeType.ThisExpression:
-        this.#generateThisExpression(expr as ThisExpression, body);
+        this.#generateThisExpression(expression as ThisExpression, body);
         break;
       case NodeType.ArrayLiteral:
-        this.#generateArrayLiteral(expr as ArrayLiteral, body);
+        this.#generateArrayLiteral(expression as ArrayLiteral, body);
         break;
       case NodeType.IndexExpression:
-        this.#generateIndexExpression(expr as IndexExpression, body);
+        this.#generateIndexExpression(expression as IndexExpression, body);
         break;
       case NodeType.StringLiteral:
-        this.#generateStringLiteral(expr as StringLiteral, body);
+        this.#generateStringLiteral(expression as StringLiteral, body);
         break;
-      // TODO: Handle other expressions
+      default:
+        // TODO: Handle other expressions
+        break;
     }
   }
 

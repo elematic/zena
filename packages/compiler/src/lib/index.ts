@@ -6,10 +6,10 @@ export * from './types.js';
 export * from './checker.js';
 export * from './wasm.js';
 export * from './emitter.js';
-export * from './codegen.js';
+export * from './codegen/index.js';
 
 import {Parser} from './parser.js';
-import {CodeGenerator} from './codegen.js';
+import {CodeGenerator} from './codegen/index.js';
 import {TypeChecker} from './checker.js';
 
 export function compile(source: string): Uint8Array {

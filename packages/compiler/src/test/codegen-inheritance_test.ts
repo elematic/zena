@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
 import {Parser} from '../lib/parser.js';
-import {CodeGenerator} from '../lib/codegen.js';
+import {CodeGenerator} from '../lib/codegen/index.js';
 import {TypeChecker} from '../lib/checker.js';
 
 async function compileAndRun(source: string): Promise<any> {
