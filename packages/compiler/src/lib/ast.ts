@@ -31,6 +31,7 @@ export const NodeType = {
   UnionTypeAnnotation: 'UnionTypeAnnotation',
   AccessorDeclaration: 'AccessorDeclaration',
   SuperExpression: 'SuperExpression',
+  MixinDeclaration: 'MixinDeclaration',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -52,7 +53,8 @@ export type Statement =
   | IfStatement
   | WhileStatement
   | ClassDeclaration
-  | InterfaceDeclaration;
+  | InterfaceDeclaration
+  | MixinDeclaration;
 
 export interface VariableDeclaration extends Node {
   type: typeof NodeType.VariableDeclaration;
@@ -144,10 +146,21 @@ export interface ClassDeclaration extends Node {
   name: Identifier;
   typeParameters?: TypeParameter[];
   superClass?: Identifier;
+  mixins?: Identifier[];
   implements?: TypeAnnotation[];
   body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[];
   exported: boolean;
   isFinal: boolean;
+}
+
+export interface MixinDeclaration extends Node {
+  type: typeof NodeType.MixinDeclaration;
+  name: Identifier;
+  typeParameters?: TypeParameter[];
+  on?: Identifier;
+  mixins?: Identifier[];
+  body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[];
+  exported: boolean;
 }
 
 export interface AccessorDeclaration extends Node {

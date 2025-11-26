@@ -14,9 +14,19 @@ export class CheckerContext {
   currentClass: ClassType | null = null;
   currentMethod: string | null = null;
   program: Program;
+  #classStack: (ClassType | null)[] = [];
 
   constructor(program: Program) {
     this.program = program;
+  }
+
+  enterClass(classType: ClassType) {
+    this.#classStack.push(this.currentClass);
+    this.currentClass = classType;
+  }
+
+  exitClass() {
+    this.currentClass = this.#classStack.pop() || null;
   }
 
   enterScope() {

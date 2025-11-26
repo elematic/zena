@@ -14,6 +14,7 @@ import {
   type MemberExpression,
   type MethodDefinition,
   type MethodSignature,
+  type MixinDeclaration,
   type NamedTypeAnnotation,
   type Parameter,
   type Program,
@@ -58,6 +59,9 @@ export class Parser {
       if (this.#match(TokenType.Interface)) {
         return this.#parseInterfaceDeclaration(true);
       }
+      if (this.#match(TokenType.Mixin)) {
+        return this.#parseMixinDeclaration(true);
+      }
       return this.#parseVariableDeclaration(true);
     }
     if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
@@ -81,6 +85,9 @@ export class Parser {
     }
     if (this.#match(TokenType.Interface)) {
       return this.#parseInterfaceDeclaration(false);
+    }
+    if (this.#match(TokenType.Mixin)) {
+      return this.#parseMixinDeclaration(false);
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseBlockStatement();
@@ -570,6 +577,13 @@ export class Parser {
       superClass = this.#parseIdentifier();
     }
 
+    const mixins: Identifier[] = [];
+    if (this.#match(TokenType.With)) {
+      do {
+        mixins.push(this.#parseIdentifier());
+      } while (this.#match(TokenType.Comma));
+    }
+
     let implementsList: TypeAnnotation[] | undefined;
     if (this.#match(TokenType.Implements)) {
       implementsList = [];
@@ -593,10 +607,48 @@ export class Parser {
       name,
       typeParameters,
       superClass,
+      mixins: mixins.length > 0 ? mixins : undefined,
       implements: implementsList,
       body,
       exported,
       isFinal,
+    };
+  }
+
+  #parseMixinDeclaration(exported: boolean): MixinDeclaration {
+    const name = this.#parseIdentifier();
+    const typeParameters = this.#parseTypeParameters();
+
+    let on: Identifier | undefined;
+    if (this.#match(TokenType.On)) {
+      on = this.#parseIdentifier();
+    }
+
+    const mixins: Identifier[] = [];
+    if (this.#match(TokenType.With)) {
+      do {
+        mixins.push(this.#parseIdentifier());
+      } while (this.#match(TokenType.Comma));
+    }
+
+    this.#consume(TokenType.LBrace, "Expected '{' before mixin body.");
+
+    const body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[] =
+      [];
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      body.push(this.#parseClassMember());
+    }
+
+    this.#consume(TokenType.RBrace, "Expected '}' after mixin body.");
+
+    return {
+      type: NodeType.MixinDeclaration,
+      name,
+      typeParameters,
+      on,
+      mixins: mixins.length > 0 ? mixins : undefined,
+      body,
+      exported,
     };
   }
 

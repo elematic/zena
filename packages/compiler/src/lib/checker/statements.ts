@@ -5,6 +5,7 @@ import {
   type IfStatement,
   type InterfaceDeclaration,
   type MethodDefinition,
+  type MixinDeclaration,
   type ReturnStatement,
   type Statement,
   type VariableDeclaration,
@@ -17,6 +18,7 @@ import {
   type ClassType,
   type FunctionType,
   type InterfaceType,
+  type MixinType,
   type Type,
   type TypeParameterType,
 } from '../types.js';
@@ -50,6 +52,9 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
       break;
     case NodeType.ClassDeclaration:
       checkClassDeclaration(ctx, stmt as ClassDeclaration);
+      break;
+    case NodeType.MixinDeclaration:
+      checkMixinDeclaration(ctx, stmt as MixinDeclaration);
       break;
     case NodeType.InterfaceDeclaration:
       checkInterfaceDeclaration(ctx, stmt as InterfaceDeclaration);
@@ -168,6 +173,136 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           DiagnosticCode.TypeMismatch,
         );
       }
+    }
+  }
+
+  // Apply Mixins
+  if (decl.mixins) {
+    for (const mixinId of decl.mixins) {
+      const mixinType = ctx.resolve(mixinId.name);
+      if (!mixinType) {
+        ctx.diagnostics.reportError(
+          `Unknown mixin '${mixinId.name}'.`,
+          DiagnosticCode.SymbolNotFound,
+        );
+        continue;
+      }
+      if (mixinType.kind !== TypeKind.Mixin) {
+        ctx.diagnostics.reportError(
+          `'${mixinId.name}' is not a mixin.`,
+          DiagnosticCode.TypeMismatch,
+        );
+        continue;
+      }
+
+      const mixin = mixinType as MixinType;
+
+      // Check 'on' constraint
+      if (mixin.onType) {
+        // If there is no superType, we assume it's Object (or empty struct), which likely fails unless onType is empty.
+        // For now, if no superType, we can't satisfy a specific class constraint.
+        if (!superType) {
+          // TODO: Check if onType is compatible with empty object?
+          // For now, error if onType is present but no super class.
+          ctx.diagnostics.reportError(
+            `Mixin '${mixin.name}' requires superclass to extend '${mixin.onType.name}', but no superclass is defined.`,
+            DiagnosticCode.TypeMismatch,
+          );
+        } else if (!isAssignableTo(superType, mixin.onType)) {
+          ctx.diagnostics.reportError(
+            `Mixin '${mixin.name}' requires superclass to extend '${mixin.onType.name}'.`,
+            DiagnosticCode.TypeMismatch,
+          );
+        }
+      }
+
+      // Create intermediate class type
+      const baseName = superType ? superType.name : 'Object';
+      const intermediateName = `${baseName}_${mixin.name}`;
+
+      const intermediateType: ClassType = {
+        kind: TypeKind.Class,
+        name: intermediateName,
+        superType: superType,
+        implements: [], // TODO: Mixins might implement interfaces
+        fields: new Map(),
+        methods: new Map(),
+        vtable: superType ? [...superType.vtable] : [],
+        isFinal: false, // Intermediate classes are not final
+      };
+
+      // Inherit from superType
+      if (superType) {
+        for (const [name, type] of superType.fields) {
+          intermediateType.fields.set(name, type);
+        }
+        for (const [name, type] of superType.methods) {
+          intermediateType.methods.set(name, type);
+        }
+      }
+
+      // Add mixin members
+      for (const [name, type] of mixin.fields) {
+        if (intermediateType.fields.has(name)) {
+          // Shadowing check?
+          // If it shadows a base field, check compatibility
+          const baseFieldType = intermediateType.fields.get(name)!;
+          if (!isAssignableTo(type, baseFieldType)) {
+            ctx.diagnostics.reportError(
+              `Mixin '${mixin.name}' field '${name}' is incompatible with base class field.`,
+              DiagnosticCode.TypeMismatch,
+            );
+          }
+        }
+        intermediateType.fields.set(name, type);
+      }
+
+      for (const [name, type] of mixin.methods) {
+        if (intermediateType.methods.has(name)) {
+          // Check override compatibility
+          const baseMethod = intermediateType.methods.get(name)!;
+          if (baseMethod.isFinal) {
+            ctx.diagnostics.reportError(
+              `Mixin '${mixin.name}' cannot override final method '${name}'.`,
+              DiagnosticCode.TypeMismatch,
+            );
+          }
+          // Check signature compatibility
+          // 1. Return type must be assignable to base return type (covariant)
+          if (!isAssignableTo(type.returnType, baseMethod.returnType)) {
+            ctx.diagnostics.reportError(
+              `Mixin '${mixin.name}' method '${name}' return type ${typeToString(type.returnType)} is not compatible with base method return type ${typeToString(baseMethod.returnType)}.`,
+              DiagnosticCode.TypeMismatch,
+            );
+          }
+          // 2. Parameter types must be assignable FROM base parameter types (contravariant)
+          // But for now we enforce invariance or simple assignability check
+          if (type.parameters.length !== baseMethod.parameters.length) {
+            ctx.diagnostics.reportError(
+              `Mixin '${mixin.name}' method '${name}' has different number of parameters than base method.`,
+              DiagnosticCode.TypeMismatch,
+            );
+          } else {
+            for (let i = 0; i < type.parameters.length; i++) {
+              // Contravariance: base param must be assignable to override param
+              if (
+                !isAssignableTo(baseMethod.parameters[i], type.parameters[i])
+              ) {
+                ctx.diagnostics.reportError(
+                  `Mixin '${mixin.name}' method '${name}' parameter ${i} type is incompatible with base method.`,
+                  DiagnosticCode.TypeMismatch,
+                );
+              }
+            }
+          }
+        } else {
+          intermediateType.vtable.push(name);
+        }
+        intermediateType.methods.set(name, type);
+      }
+
+      // Update superType to point to this new intermediate type
+      superType = intermediateType;
     }
   }
 
@@ -636,4 +771,273 @@ function checkAccessorDeclaration(
     ctx.currentFunctionReturnType = previousReturnType;
     ctx.exitScope();
   }
+}
+
+function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
+  const mixinName = decl.name.name;
+
+  const typeParameters: TypeParameterType[] = [];
+  if (decl.typeParameters) {
+    for (const param of decl.typeParameters) {
+      typeParameters.push({
+        kind: TypeKind.TypeParameter,
+        name: param.name,
+      });
+    }
+  }
+
+  let onType: ClassType | undefined;
+  if (decl.on) {
+    const type = ctx.resolve(decl.on.name);
+    if (!type) {
+      ctx.diagnostics.reportError(
+        `Unknown type '${decl.on.name}' in 'on' clause.`,
+        DiagnosticCode.SymbolNotFound,
+      );
+    } else if (type.kind !== TypeKind.Class) {
+      ctx.diagnostics.reportError(
+        `Mixin 'on' type must be a class.`,
+        DiagnosticCode.TypeMismatch,
+      );
+    } else {
+      onType = type as ClassType;
+    }
+  }
+
+  const mixinType: MixinType = {
+    kind: TypeKind.Mixin,
+    name: mixinName,
+    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+    onType,
+    fields: new Map(),
+    methods: new Map(),
+  };
+
+  ctx.declare(mixinName, mixinType);
+
+  ctx.enterScope();
+  for (const tp of typeParameters) {
+    ctx.declare(tp.name, tp, 'let');
+  }
+
+  // Apply composed mixins
+  if (decl.mixins) {
+    for (const mixinId of decl.mixins) {
+      const composedMixinType = ctx.resolve(mixinId.name);
+      if (!composedMixinType) {
+        ctx.diagnostics.reportError(
+          `Unknown mixin '${mixinId.name}'.`,
+          DiagnosticCode.SymbolNotFound,
+        );
+        continue;
+      }
+      if (composedMixinType.kind !== TypeKind.Mixin) {
+        ctx.diagnostics.reportError(
+          `'${mixinId.name}' is not a mixin.`,
+          DiagnosticCode.TypeMismatch,
+        );
+        continue;
+      }
+      const composedMixin = composedMixinType as MixinType;
+
+      // Check 'on' compatibility
+      if (composedMixin.onType) {
+        if (!onType) {
+          ctx.diagnostics.reportError(
+            `Mixin '${mixinName}' composes '${composedMixin.name}' which requires 'on ${composedMixin.onType.name}', but '${mixinName}' has no 'on' clause.`,
+            DiagnosticCode.TypeMismatch,
+          );
+        } else if (!isAssignableTo(onType, composedMixin.onType)) {
+          ctx.diagnostics.reportError(
+            `Mixin '${mixinName}' on '${onType.name}' is not compatible with composed mixin '${composedMixin.name}' on '${composedMixin.onType.name}'.`,
+            DiagnosticCode.TypeMismatch,
+          );
+        }
+      }
+
+      // Copy members
+      for (const [name, type] of composedMixin.fields) {
+        if (mixinType.fields.has(name)) {
+          // Shadowing check?
+        }
+        mixinType.fields.set(name, type);
+      }
+      for (const [name, type] of composedMixin.methods) {
+        mixinType.methods.set(name, type);
+      }
+    }
+  }
+
+  // If 'on' type is present, we should probably add its members to the scope so 'super' or 'this' works?
+  // But 'this' in a mixin is polymorphic.
+  // For checking purposes, we can treat 'this' as 'onType' (plus the mixin's own members).
+  // However, we don't have a full class type for 'this' yet.
+  // We can handle this by adding 'onType' members to the scope or handling 'this' resolution specially.
+  // For now, let's just process members.
+
+  // 1. Collect members
+  for (const member of decl.body) {
+    if (
+      member.type === NodeType.MethodDefinition &&
+      member.name.name === '#new'
+    ) {
+      ctx.diagnostics.reportError(
+        `Mixins cannot define constructors.`,
+        DiagnosticCode.ConstructorInMixin,
+      );
+      continue;
+    }
+
+    if (member.type === NodeType.FieldDefinition) {
+      const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      if (mixinType.fields.has(member.name.name)) {
+        ctx.diagnostics.reportError(
+          `Duplicate field '${member.name.name}' in mixin '${mixinName}'.`,
+          DiagnosticCode.DuplicateDeclaration,
+        );
+      }
+      mixinType.fields.set(member.name.name, fieldType);
+
+      // Implicit accessors
+      if (!member.name.name.startsWith('#')) {
+        const getterName = `get_${member.name.name}`;
+        const setterName = `set_${member.name.name}`;
+
+        mixinType.methods.set(getterName, {
+          kind: TypeKind.Function,
+          parameters: [],
+          returnType: fieldType,
+          isFinal: false,
+        });
+
+        if (!member.isFinal) {
+          mixinType.methods.set(setterName, {
+            kind: TypeKind.Function,
+            parameters: [fieldType],
+            returnType: Types.Void,
+            isFinal: false,
+          });
+        }
+      }
+    } else if (member.type === NodeType.MethodDefinition) {
+      const paramTypes: Type[] = [];
+      for (const param of member.params) {
+        const type = resolveTypeAnnotation(ctx, param.typeAnnotation);
+        paramTypes.push(type);
+      }
+
+      let returnType: Type = Types.Void;
+      if (member.returnType) {
+        returnType = resolveTypeAnnotation(ctx, member.returnType);
+      }
+
+      const methodType: FunctionType = {
+        kind: TypeKind.Function,
+        parameters: paramTypes,
+        returnType,
+        isFinal: member.isFinal,
+      };
+
+      mixinType.methods.set(member.name.name, methodType);
+    } else if (member.type === NodeType.AccessorDeclaration) {
+      const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      mixinType.fields.set(member.name.name, fieldType);
+
+      if (member.getter) {
+        mixinType.methods.set(`get_${member.name.name}`, {
+          kind: TypeKind.Function,
+          parameters: [],
+          returnType: fieldType,
+          isFinal: member.isFinal,
+        });
+      }
+      if (member.setter) {
+        mixinType.methods.set(`set_${member.name.name}`, {
+          kind: TypeKind.Function,
+          parameters: [fieldType],
+          returnType: Types.Void,
+          isFinal: member.isFinal,
+        });
+      }
+    }
+  }
+
+  // 2. Check bodies
+  // We need to set up 'this' type.
+  // 'this' should be (OnType & MixinType).
+  // Since we don't have intersection types, we can approximate it by creating a synthetic ClassType
+  // that extends OnType (if any) and has Mixin members.
+
+  const thisType: ClassType = {
+    kind: TypeKind.Class,
+    name: `${mixinName}_This`,
+    superType: onType,
+    implements: [],
+    fields: new Map(mixinType.fields),
+    methods: new Map(mixinType.methods),
+    vtable: onType ? [...onType.vtable] : [],
+    isFinal: false,
+  };
+
+  if (onType) {
+    for (const [name, type] of onType.fields) {
+      if (!name.startsWith('#') && !thisType.fields.has(name)) {
+        thisType.fields.set(name, type);
+      }
+    }
+    for (const [name, type] of onType.methods) {
+      if (!thisType.methods.has(name)) {
+        thisType.methods.set(name, type);
+      }
+    }
+  }
+
+  ctx.enterClass(thisType);
+
+  for (const member of decl.body) {
+    if (member.type === NodeType.MethodDefinition) {
+      if (member.name.name === '#new') continue; // Skip constructor check as it's already reported
+
+      const methodType = mixinType.methods.get(member.name.name);
+      if (!methodType) continue; // Should not happen unless error occurred
+
+      ctx.currentFunctionReturnType = methodType.returnType;
+      ctx.enterScope();
+      member.params.forEach((param, index) => {
+        const type = methodType.parameters[index];
+        ctx.declare(param.name.name, type, 'let');
+      });
+      checkStatement(ctx, member.body);
+      ctx.exitScope();
+      ctx.currentFunctionReturnType = Types.Unknown;
+    } else if (member.type === NodeType.FieldDefinition && member.value) {
+      const fieldType = mixinType.fields.get(member.name.name)!;
+      const valueType = checkExpression(ctx, member.value);
+      if (!isAssignableTo(valueType, fieldType)) {
+        ctx.diagnostics.reportError(
+          `Type mismatch in field initializer: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+          DiagnosticCode.TypeMismatch,
+        );
+      }
+    } else if (member.type === NodeType.AccessorDeclaration) {
+      const fieldType = mixinType.fields.get(member.name.name)!;
+      if (member.getter) {
+        ctx.currentFunctionReturnType = fieldType;
+        ctx.enterScope();
+        checkStatement(ctx, member.getter);
+        ctx.exitScope();
+      }
+      if (member.setter) {
+        ctx.currentFunctionReturnType = Types.Void;
+        ctx.enterScope();
+        ctx.declare(member.setter.param.name, fieldType, 'let');
+        checkStatement(ctx, member.setter.body);
+        ctx.exitScope();
+      }
+      ctx.currentFunctionReturnType = Types.Unknown;
+    }
+  }
+
+  ctx.exitClass();
+  ctx.exitScope();
 }

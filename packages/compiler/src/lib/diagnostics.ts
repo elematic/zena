@@ -23,6 +23,7 @@ export const DiagnosticCode = {
   NotCallable: 2008,
   NotIndexable: 2009,
   GenericTypeArgumentMismatch: 2010,
+  ConstructorInMixin: 2011,
 
   // General
   UnknownError: 9999,

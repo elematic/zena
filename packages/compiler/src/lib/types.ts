@@ -7,6 +7,7 @@ export const TypeKind = {
   Function: 'Function',
   Class: 'Class',
   Interface: 'Interface',
+  Mixin: 'Mixin',
   Array: 'Array',
   Union: 'Union',
   TypeParameter: 'TypeParameter',
@@ -57,6 +58,15 @@ export interface InterfaceType extends Type {
   name: string;
   typeParameters?: TypeParameterType[];
   typeArguments?: Type[];
+  fields: Map<string, Type>;
+  methods: Map<string, FunctionType>;
+}
+
+export interface MixinType extends Type {
+  kind: typeof TypeKind.Mixin;
+  name: string;
+  typeParameters?: TypeParameterType[];
+  onType?: ClassType;
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
 }
