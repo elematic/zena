@@ -1,5 +1,6 @@
 import {
   NodeType,
+  type AccessorDeclaration,
   type ClassDeclaration,
   type FieldDefinition,
   type InterfaceDeclaration,
@@ -362,6 +363,101 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
         typeIndex: typeIndex!,
         paramTypes: params,
       });
+    } else if (member.type === NodeType.AccessorDeclaration) {
+      const propName = member.name.name;
+      const propType = mapType(ctx, member.typeAnnotation);
+
+      // Getter
+      if (member.getter) {
+        const methodName = `get_${propName}`;
+        if (!vtable.includes(methodName)) {
+          vtable.push(methodName);
+        }
+
+        let thisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(methodName)) {
+            thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
+          }
+        }
+
+        const params = [thisType];
+        const results = propType.length > 0 ? [propType] : [];
+
+        let typeIndex: number;
+        let isOverride = false;
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(methodName)) {
+            typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
+            isOverride = true;
+          }
+        }
+
+        if (!isOverride) {
+          typeIndex = ctx.module.addType(params, results);
+        }
+
+        const funcIndex = ctx.module.addFunction(typeIndex!);
+
+        methods.set(methodName, {
+          index: funcIndex,
+          returnType: propType,
+          typeIndex: typeIndex!,
+          paramTypes: params,
+        });
+      }
+
+      // Setter
+      if (member.setter) {
+        const methodName = `set_${propName}`;
+        if (!vtable.includes(methodName)) {
+          vtable.push(methodName);
+        }
+
+        let thisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(methodName)) {
+            thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
+          }
+        }
+
+        const params = [thisType, propType];
+        const results: number[][] = [];
+
+        let typeIndex: number;
+        let isOverride = false;
+        if (decl.superClass) {
+          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassInfo.methods.has(methodName)) {
+            typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
+            isOverride = true;
+          }
+        }
+
+        if (!isOverride) {
+          typeIndex = ctx.module.addType(params, results);
+        }
+
+        const funcIndex = ctx.module.addFunction(typeIndex!);
+
+        methods.set(methodName, {
+          index: funcIndex,
+          returnType: [],
+          typeIndex: typeIndex!,
+          paramTypes: params,
+        });
+      }
     }
   }
   // Create VTable Struct Type
@@ -481,6 +577,56 @@ export function generateClassMethods(
 
       ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
       ctx.popScope();
+    } else if (member.type === NodeType.AccessorDeclaration) {
+      const propName = member.name.name;
+
+      // Getter
+      if (member.getter) {
+        const methodName = `get_${propName}`;
+        const methodInfo = classInfo.methods.get(methodName)!;
+        const body: number[] = [];
+
+        ctx.pushScope();
+        ctx.nextLocalIndex = 0;
+        ctx.extraLocals = [];
+
+        // Params
+        // 0: this
+        ctx.defineLocal('this', ctx.nextLocalIndex++, methodInfo.paramTypes[0]);
+
+        generateBlockStatement(ctx, member.getter, body);
+        body.push(Opcode.end);
+
+        ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+        ctx.popScope();
+      }
+
+      // Setter
+      if (member.setter) {
+        const methodName = `set_${propName}`;
+        const methodInfo = classInfo.methods.get(methodName)!;
+        const body: number[] = [];
+
+        ctx.pushScope();
+        ctx.nextLocalIndex = 0;
+        ctx.extraLocals = [];
+
+        // Params
+        // 0: this
+        ctx.defineLocal('this', ctx.nextLocalIndex++, methodInfo.paramTypes[0]);
+        // 1: value
+        ctx.defineLocal(
+          member.setter.param.name,
+          ctx.nextLocalIndex++,
+          methodInfo.paramTypes[1],
+        );
+
+        generateBlockStatement(ctx, member.setter.body, body);
+        body.push(Opcode.end);
+
+        ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+        ctx.popScope();
+      }
     }
   }
   ctx.currentClass = null;

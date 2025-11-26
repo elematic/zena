@@ -187,8 +187,8 @@ This project is an **npm monorepo** managed with **Wireit**.
 1.  **Object-Oriented Features** (Immediate Priority):
     - **Accessors**:
       - [x] Implement Type Checker for accessors.
-      - [ ] Implement Code Generator for accessors (emit methods).
-      - [ ] Implement Property Access syntax (rewrite `obj.prop` to method calls).
+      - [x] Implement Code Generator for accessors (emit methods).
+      - [x] Implement Property Access syntax (rewrite `obj.prop` to method calls).
     - **Optimization (`final`)**:
       - Implement Type Checker for `final` (prevent overrides/subclassing).
       - Implement Code Generator for `final` (devirtualization).

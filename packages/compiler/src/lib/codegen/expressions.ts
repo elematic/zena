@@ -609,6 +609,78 @@ function generateMemberExpression(
 
   const fieldInfo = foundClass.fields.get(lookupName);
   if (!fieldInfo) {
+    // Check for accessor getter
+    const getterName = `get_${fieldName}`;
+    const methodInfo = foundClass.methods.get(getterName);
+    if (methodInfo) {
+      // Call getter
+      // Stack: [this]
+      // We need to call the method via vtable dispatch (virtual by default)
+
+      // 1. Duplicate 'this' for vtable lookup
+      const tempThis = ctx.declareLocal('$$temp_this', objectType);
+      body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
+
+      // 2. Load VTable
+      if (!foundClass.vtable || foundClass.vtableTypeIndex === undefined) {
+        throw new Error(`Class ${foundClass.name} has no vtable`);
+      }
+
+      body.push(
+        0xfb,
+        GcOpcode.struct_get,
+        ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+        ...WasmModule.encodeSignedLEB128(
+          foundClass.fields.get('__vtable')!.index,
+        ),
+      );
+
+      // Cast VTable to correct type
+      body.push(
+        0xfb,
+        GcOpcode.ref_cast_null,
+        ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
+      );
+
+      // 3. Load Function Pointer from VTable
+      const vtableIndex = foundClass.vtable.indexOf(getterName);
+      if (vtableIndex === -1) {
+        throw new Error(`Method ${getterName} not found in vtable`);
+      }
+
+      body.push(
+        0xfb,
+        GcOpcode.struct_get,
+        ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
+        ...WasmModule.encodeSignedLEB128(vtableIndex),
+      );
+
+      // 4. Cast to specific function type
+      body.push(
+        0xfb,
+        GcOpcode.ref_cast_null,
+        ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+      );
+
+      // Store func_ref
+      const funcRefType = [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+      ];
+      const funcRef = ctx.declareLocal('$$func_ref', funcRefType);
+      body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRef));
+
+      // 5. Call function
+      // Stack: [this, func_ref]
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempThis));
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRef));
+      body.push(
+        Opcode.call_ref,
+        ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+      );
+      return;
+    }
+
     throw new Error(`Field ${lookupName} not found in class`);
   }
 
@@ -933,7 +1005,91 @@ function generateAssignmentExpression(
     }
 
     const fieldInfo = foundClass.fields.get(lookupName);
-    if (!fieldInfo) throw new Error(`Field ${lookupName} not found`);
+    if (!fieldInfo) {
+      // Check for accessor setter
+      const setterName = `set_${fieldName}`;
+      const methodInfo = foundClass.methods.get(setterName);
+      if (methodInfo) {
+        generateExpression(ctx, memberExpr.object, body);
+        const tempObj = ctx.declareLocal('$$temp_obj', objectType);
+        body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempObj));
+
+        generateExpression(ctx, expr.value, body);
+        // Infer type of value to declare temp local correctly
+        const valueType = inferType(ctx, expr.value);
+        const tempVal = ctx.declareLocal('$$temp_val', valueType);
+        body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempVal));
+
+        // Call setter
+        // 1. Load 'this' for vtable lookup
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempObj));
+
+        // 2. Load VTable
+        if (!foundClass.vtable || foundClass.vtableTypeIndex === undefined) {
+          throw new Error(`Class ${foundClass.name} has no vtable`);
+        }
+        body.push(
+          0xfb,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+          ...WasmModule.encodeSignedLEB128(
+            foundClass.fields.get('__vtable')!.index,
+          ),
+        );
+
+        // Cast VTable to correct type
+        body.push(
+          0xfb,
+          GcOpcode.ref_cast_null,
+          ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
+        );
+
+        // 3. Load Function Pointer from VTable
+        const vtableIndex = foundClass.vtable.indexOf(setterName);
+        if (vtableIndex === -1) {
+          throw new Error(`Method ${setterName} not found in vtable`);
+        }
+
+        body.push(
+          0xfb,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
+          ...WasmModule.encodeSignedLEB128(vtableIndex),
+        );
+
+        // 4. Cast to specific function type
+        body.push(
+          0xfb,
+          GcOpcode.ref_cast_null,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        );
+
+        // Store func_ref
+        const funcRefType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        ];
+        const funcRef = ctx.declareLocal('$$func_ref', funcRefType);
+        body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRef));
+
+        // 5. Args: this, value
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempObj));
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempVal));
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRef));
+
+        // 6. Call function
+        body.push(
+          Opcode.call_ref,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        );
+
+        // 7. Return value
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempVal));
+        return;
+      }
+
+      throw new Error(`Field ${lookupName} not found`);
+    }
 
     generateExpression(ctx, memberExpr.object, body);
     generateExpression(ctx, expr.value, body);

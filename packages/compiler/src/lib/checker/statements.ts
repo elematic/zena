@@ -8,7 +8,7 @@ import {
   type ReturnStatement,
   type Statement,
   type VariableDeclaration,
-  type WhileStatement
+  type WhileStatement,
 } from '../ast.js';
 import {DiagnosticCode} from '../diagnostics.js';
 import {
