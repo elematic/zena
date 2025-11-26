@@ -135,7 +135,15 @@ This project is an **npm monorepo** managed with **Wireit**.
 - **Documentation**:
   - Record any new coding preferences, design choices, or architecture decisions in this file (`.github/copilot-instructions.md`).
   - Update `docs/language-reference.md` when language syntax or semantics change.
-  - Maintain design documents in `docs/design/` for complex features (e.g., `docs/design/strings.md`).
+  - Maintain design documents in `docs/design/` for complex features.
+    - **Architecture**: `docs/design/compiler-architecture.md`
+    - **Classes**: `docs/design/classes.md`
+    - **Generics**: `docs/design/generics.md`
+    - **Interfaces**: `docs/design/interfaces.md`
+    - **Maps**: `docs/design/map.md`
+    - **Standard Library**: `docs/design/standard-library.md`
+    - **Strings**: `docs/design/strings.md`
+    - **Types**: `docs/design/types.md`
 
 ## Future Considerations
 
