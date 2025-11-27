@@ -204,15 +204,23 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Implement `super.field` access.
     - **Inheritance (Advanced)**:
       - **Virtual Fields**: Implement Uniform Access Principle (treat public fields as virtual properties with default accessors).
-      - **Dynamic Dispatch**: Implement VTables for polymorphic method calls.
+      - [x] **Dynamic Dispatch**: Implement VTables for polymorphic method calls.
       - **Casting**: Implement `as` operator and `instanceof` checks.
       - **Mixins**:
         - [x] Implement Mixin Parser.
         - [x] Implement Mixin Type Checker.
         - [x] Implement Mixin Code Generator (Application, Composition, Overrides).
-    - **Interfaces**: Implement `interface Runnable { run(): void; }` and `implements`.
-    - **Abstract Classes**: Support `abstract class`.
-    - **Access Control**: Enforce `#` private fields strictly.
+    - **Interfaces**:
+      - [x] Implement Interface Parser & Checker.
+      - [x] Implement Interface Code Generator (Fat Pointers, VTables).
+      - [x] Implement `implements` keyword.
+      - [ ] Implement Interface Properties (Getters in VTable).
+      - [ ] Implement Interface Inheritance (`interface A extends B`).
+    - **Abstract Classes**:
+      - [x] Implement `abstract` keyword.
+      - [x] Implement Abstract Methods.
+    - **Access Control**:
+      - [x] Enforce `#` private fields strictly.
 
 2.  **Generics Enhancements**:
 
