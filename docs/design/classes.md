@@ -416,6 +416,22 @@ We considered using "Static Symbols" (similar to JavaScript Symbols or private d
 
 A common issue in object-oriented languages is the "Initialization Hazard". This occurs when a superclass constructor calls a virtual method that is overridden by a subclass. If the subclass implementation accesses fields that haven't been initialized yet (because the subclass constructor hasn't run), the program may crash or behave unpredictably.
 
+### 10.2. Construction Rules
+
+To mitigate these hazards, Zena enforces strict rules on constructor implementation:
+
+1.  **Mandatory Super Call**: Constructors in derived classes MUST call `super()`.
+2.  **No `this` Before Super**: Accessing `this` (implicitly or explicitly) before the `super()` call is a compile-time error.
+3.  **Field Initialization Order**:
+    - Fields with initializers (e.g., `x: i32 = 10`) are initialized **immediately after** the `super()` call returns.
+    - This ensures that when the constructor body continues after `super()`, the instance is fully initialized (both superclass and subclass fields).
+
+### 10.3. Remaining Hazards
+
+While these rules prevent accessing uninitialized fields _within the subclass constructor_, they do **not** prevent the "Virtual Call from Super Constructor" hazard.
+
+If a superclass constructor calls a virtual method overridden by the subclass, that method will execute _before_ the subclass fields are initialized (because `super()` is still running).
+
 ```typescript
 class Base {
   #new() {
@@ -425,43 +441,14 @@ class Base {
 }
 
 class Sub extends Base {
-  data: string;
+  data: string = 'hello';
   #new() {
-    super();
-    this.data = 'hello';
+    super(); // Calls Base constructor -> calls setup() -> accesses uninitialized data!
   }
   override setup() {
-    console.log(this.data.length); // CRASH: this.data is uninitialized!
+    console.log(this.data.length); // CRASH or Garbage
   }
 }
 ```
 
-### 10.2. Potential Solutions
-
-#### Dart-style Initializer Lists
-
-Dart solves this by allowing fields to be initialized _before_ the super constructor runs, using an initializer list.
-
-```dart
-// Dart example
-Sub() : data = "hello", super() { ... }
-```
-
-#### Two-Phase Initialization
-
-Enforce a separation between "allocation/construction" and "initialization".
-
-1.  Constructors only initialize fields.
-2.  Virtual methods are banned in constructors (enforced by compiler).
-3.  Users must call an `init()` method manually or via a factory.
-
-#### Null Safety / Definite Assignment
-
-The type system could track initialization state. Fields are `Uninitialized<T>` until assigned. Accessing them is a compile error. This is complex to implement across method boundaries.
-
-### 10.3. Future Direction
-
-We aim to find a solution that prevents these hazards without being overly restrictive.
-
-- **Short Term**: Allow the hazard but rely on strict null checks (if `data` was nullable, the user would be forced to check). Since Zena is non-nullable by default, `this.data` contains garbage or zero-value before initialization, which is dangerous.
-- **Long Term**: Investigate a simplified version of initializer lists or strict constructor rules (e.g., "cannot access `this` before `super()`" + "cannot call virtual methods on `this` in constructor").
+Zena currently allows this pattern but warns users to avoid calling virtual methods in constructors. Future versions may introduce stricter checks or "Two-Phase Initialization" to prevent this.

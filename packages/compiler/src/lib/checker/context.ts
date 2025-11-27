@@ -13,6 +13,7 @@ export class CheckerContext {
   currentFunctionReturnType: Type | null = null;
   currentClass: ClassType | null = null;
   currentMethod: string | null = null;
+  isThisInitialized = true;
   program: Program;
   #classStack: (ClassType | null)[] = [];
 

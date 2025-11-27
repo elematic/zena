@@ -3,14 +3,17 @@ import {
   type ClassDeclaration,
   type InterfaceDeclaration,
   type MethodDefinition,
-  type TypeAnnotation,
   type MixinDeclaration,
+  type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import type {CodegenContext} from './context.js';
 import {generateExpression, getHeapTypeIndex} from './expressions.js';
-import {generateBlockStatement} from './statements.js';
+import {
+  generateBlockStatement,
+  generateFunctionStatement,
+} from './statements.js';
 import type {ClassInfo, InterfaceInfo} from './types.js';
 
 export function registerInterface(
@@ -881,23 +884,65 @@ export function generateClassMethods(
       }
 
       if (member.name.name === '#new') {
-        for (const m of decl.body) {
-          if (m.type === NodeType.FieldDefinition && m.value) {
-            const fieldName = manglePrivateName(decl.name.name, m.name.name);
-            const fieldInfo = classInfo.fields.get(fieldName)!;
-            body.push(Opcode.local_get, 0);
-            generateExpression(ctx, m.value, body);
-            body.push(0xfb, GcOpcode.struct_set);
-            body.push(
-              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-            );
-            body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+        const hasSuperClass = !!classInfo.superClass;
+
+        if (!hasSuperClass) {
+          for (const m of decl.body) {
+            if (m.type === NodeType.FieldDefinition && m.value) {
+              const fieldName = manglePrivateName(decl.name.name, m.name.name);
+              const fieldInfo = classInfo.fields.get(fieldName)!;
+              body.push(Opcode.local_get, 0);
+              generateExpression(ctx, m.value, body);
+              body.push(0xfb, GcOpcode.struct_set);
+              body.push(
+                ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+              );
+              body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+            }
           }
         }
-      }
 
-      if (member.body && member.body.type === NodeType.BlockStatement) {
-        generateBlockStatement(ctx, member.body, body);
+        if (member.body && member.body.type === NodeType.BlockStatement) {
+          if (hasSuperClass) {
+            for (const stmt of member.body.body) {
+              generateFunctionStatement(ctx, stmt, body);
+
+              if (
+                stmt.type === NodeType.ExpressionStatement &&
+                stmt.expression.type === NodeType.CallExpression &&
+                (stmt.expression as any).callee.type ===
+                  NodeType.SuperExpression
+              ) {
+                for (const m of decl.body) {
+                  if (m.type === NodeType.FieldDefinition && m.value) {
+                    const fieldName = manglePrivateName(
+                      decl.name.name,
+                      m.name.name,
+                    );
+                    const fieldInfo = classInfo.fields.get(fieldName)!;
+                    body.push(Opcode.local_get, 0);
+                    generateExpression(ctx, m.value, body);
+                    body.push(0xfb, GcOpcode.struct_set);
+                    body.push(
+                      ...WasmModule.encodeSignedLEB128(
+                        classInfo.structTypeIndex,
+                      ),
+                    );
+                    body.push(
+                      ...WasmModule.encodeSignedLEB128(fieldInfo.index),
+                    );
+                  }
+                }
+              }
+            }
+          } else {
+            generateBlockStatement(ctx, member.body, body);
+          }
+        }
+      } else {
+        if (member.body && member.body.type === NodeType.BlockStatement) {
+          generateBlockStatement(ctx, member.body, body);
+        }
       }
       body.push(Opcode.end);
 

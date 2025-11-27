@@ -121,6 +121,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
           DiagnosticCode.ArgumentCountMismatch,
         );
       }
+      ctx.isThisInitialized = true;
       return Types.Void;
     }
 
@@ -146,6 +147,8 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         );
       }
     }
+
+    ctx.isThisInitialized = true;
 
     return Types.Void;
   }
@@ -669,6 +672,12 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
       DiagnosticCode.UnknownError,
     );
     return Types.Unknown;
+  }
+  if (!ctx.isThisInitialized) {
+    ctx.diagnostics.reportError(
+      `'this' cannot be accessed before 'super()' call in a derived class constructor.`,
+      DiagnosticCode.UnknownError,
+    );
   }
   return ctx.currentClass;
 }

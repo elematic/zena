@@ -167,10 +167,7 @@ export function generateLocalVariableDeclaration(
       const typeIndex = decodeTypeIndex(initType);
       const classInfo = getClassFromTypeIndex(ctx, typeIndex);
 
-      if (
-        classInfo &&
-        classInfo.implements
-      ) {
+      if (classInfo && classInfo.implements) {
         const interfaceName = decl.typeAnnotation.name;
         const interfaceInfo = ctx.interfaces.get(interfaceName)!;
         let implInfo = classInfo.implements.get(interfaceName);

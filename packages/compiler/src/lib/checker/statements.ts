@@ -757,6 +757,13 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   const previousMethod = ctx.currentMethod;
   ctx.currentMethod = method.name.name;
 
+  const previousIsThisInitialized = ctx.isThisInitialized;
+  if (method.name.name === '#new' && ctx.currentClass?.superType) {
+    ctx.isThisInitialized = false;
+  } else {
+    ctx.isThisInitialized = true;
+  }
+
   ctx.enterScope();
 
   // Declare parameters
@@ -776,9 +783,21 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
     checkStatement(ctx, method.body);
   }
 
+  if (
+    method.name.name === '#new' &&
+    ctx.currentClass?.superType &&
+    !ctx.isThisInitialized
+  ) {
+    ctx.diagnostics.reportError(
+      `Constructors in derived classes must call 'super()'.`,
+      DiagnosticCode.UnknownError,
+    );
+  }
+
   ctx.currentFunctionReturnType = previousReturnType;
   ctx.exitScope();
   ctx.currentMethod = previousMethod;
+  ctx.isThisInitialized = previousIsThisInitialized;
 }
 
 function checkAccessorDeclaration(

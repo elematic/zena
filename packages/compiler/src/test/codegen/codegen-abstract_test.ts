@@ -14,6 +14,7 @@ suite('CodeGenerator - Abstract Classes', () => {
       class Square extends Shape {
         side: i32;
         #new(side: i32) {
+          super();
           this.side = side;
         }
         area(): i32 {
