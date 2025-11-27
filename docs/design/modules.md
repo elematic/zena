@@ -96,10 +96,10 @@ import {console} from 'zena:console'; // Imported as a read-only binding
 
 Zena distinguishes between immutable and mutable exports, which has significant implications for optimization.
 
-1.  **Immutable Exports (`export const`)**:
+1.  **Immutable Exports (`export let`)**:
     - Maps to an immutable WASM Global (or constant value).
     - **Optimization**: The compiler can inline values and devirtualize method calls (e.g., turning `console.log` into a direct call).
-    - **Default**: Standard library globals like `console` should generally be `const`.
+    - **Default**: Standard library globals like `console` should generally be `let`.
 
 2.  **Mutable Exports (`export var`)**:
     - Maps to a mutable WASM Global.
