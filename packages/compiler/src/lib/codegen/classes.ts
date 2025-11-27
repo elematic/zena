@@ -809,7 +809,8 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     const wrapperTypeIndex = ctx.module.addType(params, results);
     const wrapperFuncIndex = ctx.module.addFunction(wrapperTypeIndex);
 
-    ctx.module.addExport(decl.name.name, ExportDesc.Func, wrapperFuncIndex);
+    const exportName = decl.exportName || decl.name.name;
+    ctx.module.addExport(exportName, ExportDesc.Func, wrapperFuncIndex);
 
     ctx.bodyGenerators.push(() => {
       const body: number[] = [];

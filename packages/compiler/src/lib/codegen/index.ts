@@ -16,7 +16,7 @@ import {
   generateStringGetByteFunction,
   inferType,
 } from './expressions.js';
-import {HeapType, Opcode, ValType, SectionId} from '../wasm.js';
+import {HeapType, Opcode, ValType, SectionId, ExportDesc} from '../wasm.js';
 import {WasmModule} from '../emitter.js';
 
 /**
@@ -83,6 +83,7 @@ export class CodeGenerator {
             varDecl.identifier.name,
             varDecl.init as FunctionExpression,
             varDecl.exported,
+            (varDecl as any).exportName,
           );
         } else {
           // Global variable
@@ -105,6 +106,16 @@ export class CodeGenerator {
           const globalIndex = this.#ctx.module.addGlobal(type, true, initBytes);
           this.#ctx.defineGlobal(varDecl.identifier.name, globalIndex, type);
           globalInitializers.push({index: globalIndex, init: varDecl.init});
+
+          if (varDecl.exported) {
+            const exportName =
+              (varDecl as any).exportName || varDecl.identifier.name;
+            this.#ctx.module.addExport(
+              exportName,
+              ExportDesc.Global,
+              globalIndex,
+            );
+          }
         }
       }
     }

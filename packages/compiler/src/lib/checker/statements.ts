@@ -5,6 +5,7 @@ import {
   type DeclareFunction,
   type ForStatement,
   type IfStatement,
+  type ImportDeclaration,
   type InterfaceDeclaration,
   type MethodDefinition,
   type MixinDeclaration,
@@ -30,6 +31,9 @@ import {isAssignableTo, resolveTypeAnnotation, typeToString} from './types.js';
 
 export function checkStatement(ctx: CheckerContext, stmt: Statement) {
   switch (stmt.type) {
+    case NodeType.ImportDeclaration:
+      checkImportDeclaration(ctx, stmt as ImportDeclaration);
+      break;
     case NodeType.VariableDeclaration:
       checkVariableDeclaration(ctx, stmt as VariableDeclaration);
       break;
@@ -67,6 +71,71 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
     case NodeType.DeclareFunction:
       checkDeclareFunction(ctx, stmt as DeclareFunction);
       break;
+  }
+}
+
+function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
+  if (!ctx.module || !ctx.compiler) {
+    // If we are not in a module context (e.g. simple test), we can't check imports.
+    // Or maybe we should error? For now, let's ignore.
+    return;
+  }
+
+  const specifier = decl.moduleSpecifier.value;
+  const resolvedPath = ctx.module.imports.get(specifier);
+
+  if (!resolvedPath) {
+    ctx.diagnostics.reportError(
+      `Could not resolve module '${specifier}'`,
+      DiagnosticCode.ModuleNotFound,
+    );
+    return;
+  }
+
+  const importedModule = ctx.compiler.getModule(resolvedPath);
+  if (!importedModule) {
+    ctx.diagnostics.reportError(
+      `Module '${specifier}' not found (resolved to '${resolvedPath}')`,
+      DiagnosticCode.ModuleNotFound,
+    );
+    return;
+  }
+
+  // Ensure the imported module is checked (or at least its exports are available)
+  // The compiler should have already loaded it.
+  // But we might need to ensure it's checked?
+  // For now, let's assume the compiler orchestrates checking in order.
+  // If the imported module hasn't been checked, its exports map will be empty.
+  // This implies we need a topological sort or recursive check.
+
+  // Let's assume the compiler handles the order.
+
+  for (const importSpecifier of decl.imports) {
+    const importedName = importSpecifier.imported.name;
+    const localName = importSpecifier.local.name;
+
+    const symbolInfo = importedModule.exports.get(importedName);
+
+    if (!symbolInfo) {
+      ctx.diagnostics.reportError(
+        `Module '${specifier}' does not export '${importedName}'`,
+        DiagnosticCode.ImportError,
+      );
+      continue;
+    }
+
+    // Declare in current scope
+    // Imports are read-only (const), so we force kind to 'let' (which is const in our internal model mostly, or we should add 'const' kind?)
+    // Our VariableDeclaration uses 'let' for immutable and 'var' for mutable.
+    // So 'let' is correct for immutable binding.
+    // However, if the exported symbol was a 'var', should we allow it to be 'var' here?
+    // No, imports are bindings. You can't reassign the binding.
+    // But if it's a mutable object, you can mutate it.
+    // If it's a 'var' export, it means the VALUE can change in the other module.
+    // But locally, the binding is const.
+    // So 'let' is correct.
+
+    ctx.declare(localName, symbolInfo.type, 'let');
   }
 }
 

@@ -1,6 +1,7 @@
 import {DiagnosticBag, DiagnosticCode} from '../diagnostics.js';
 import type {Type, ClassType, FunctionType} from '../types.js';
 import type {Program} from '../ast.js';
+import type {Compiler, Module} from '../compiler.js';
 
 export interface SymbolInfo {
   type: Type;
@@ -15,14 +16,18 @@ export class CheckerContext {
   currentMethod: string | null = null;
   isThisInitialized = true;
   program: Program;
+  module?: Module;
+  compiler?: Compiler;
   #classStack: (ClassType | null)[] = [];
 
   // Field initialization tracking
   isCheckingFieldInitializer = false;
   initializedFields = new Set<string>();
 
-  constructor(program: Program) {
+  constructor(program: Program, compiler?: Compiler, module?: Module) {
     this.program = program;
+    this.compiler = compiler;
+    this.module = module;
   }
 
   enterClass(classType: ClassType) {

@@ -82,6 +82,8 @@ export interface DeclareFunction extends Node {
   returnType: TypeAnnotation;
   externalModule?: string;
   externalName?: string;
+  exported: boolean;
+  exportName?: string;
 }
 
 export interface VariableDeclaration extends Node {
@@ -91,6 +93,7 @@ export interface VariableDeclaration extends Node {
   typeAnnotation?: TypeAnnotation;
   init: Expression;
   exported: boolean;
+  exportName?: string;
 }
 
 export interface ExpressionStatement extends Node {
@@ -178,6 +181,7 @@ export interface ClassDeclaration extends Node {
   implements?: TypeAnnotation[];
   body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[];
   exported: boolean;
+  exportName?: string;
   isFinal: boolean;
   isAbstract: boolean;
 }
@@ -190,6 +194,7 @@ export interface MixinDeclaration extends Node {
   mixins?: Identifier[];
   body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[];
   exported: boolean;
+  exportName?: string;
 }
 
 export interface AccessorDeclaration extends Node {
@@ -211,6 +216,7 @@ export interface InterfaceDeclaration extends Node {
   extends?: TypeAnnotation[];
   body: (FieldDefinition | MethodSignature)[];
   exported: boolean;
+  exportName?: string;
 }
 
 export interface MethodSignature extends Node {

@@ -42,6 +42,7 @@ export function registerFunction(
   name: string,
   func: FunctionExpression,
   exported: boolean,
+  exportName?: string,
 ) {
   if (func.typeParameters && func.typeParameters.length > 0) {
     ctx.genericFunctions.set(name, func);
@@ -80,7 +81,7 @@ export function registerFunction(
   const funcIndex = ctx.module.addFunction(typeIndex);
 
   if (exported) {
-    ctx.module.addExport(name, ExportDesc.Func, funcIndex);
+    ctx.module.addExport(exportName || name, ExportDesc.Func, funcIndex);
   }
 
   ctx.functions.set(name, funcIndex);
@@ -192,6 +193,11 @@ export function registerDeclaredFunction(
     ExportDesc.Func,
     typeIndex,
   );
+
+  if (decl.exported) {
+    const exportName = (decl as any).exportName || decl.name.name;
+    ctx.module.addExport(exportName, ExportDesc.Func, funcIndex);
+  }
 
   // Register as primary function if not exists (for backward compat / simple cases)
   if (!ctx.functions.has(decl.name.name)) {

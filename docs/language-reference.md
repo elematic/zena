@@ -292,6 +292,16 @@ declare function log(val: i32): void;
 
 These declarations map to WebAssembly imports, allowing Zena to call JavaScript functions (or other WASM modules).
 
+### Exports
+
+Top-level declarations can be exported using the `export` keyword. This exposes them to other modules or the host environment.
+
+```typescript
+export const add = (a: i32, b: i32) => a + b;
+export declare function print(s: string): void;
+export class Point { ... }
+```
+
 ## 14. Grammar (Simplified)
 
 ```ebnf
@@ -299,7 +309,7 @@ Program ::= Statement*
 
 Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement | BlockStatement | ReturnStatement | IfStatement | WhileStatement | ForStatement
 
-ExportStatement ::= "export" VariableDeclaration
+ExportStatement ::= "export" (VariableDeclaration | ClassDeclaration | InterfaceDeclaration | MixinDeclaration | DeclareFunction)
 
 VariableDeclaration ::= ("let" | "var") Identifier "=" Expression ";"
 

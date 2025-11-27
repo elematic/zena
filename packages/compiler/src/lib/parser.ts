@@ -85,6 +85,9 @@ export class Parser {
       if (this.#match(TokenType.Mixin)) {
         return this.#parseMixinDeclaration(true);
       }
+      if (this.#match(TokenType.Declare)) {
+        return this.#parseDeclareFunction(undefined, undefined, true);
+      }
       return this.#parseVariableDeclaration(true);
     }
     if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
@@ -1073,6 +1076,7 @@ export class Parser {
   #parseDeclareFunction(
     externalModule?: string,
     externalName?: string,
+    exported = false,
   ): DeclareFunction {
     this.#consume(TokenType.Function, "Expected 'function' after 'declare'");
     const name = this.#parseIdentifier();
@@ -1105,6 +1109,7 @@ export class Parser {
       returnType,
       externalModule,
       externalName,
+      exported,
     };
   }
 

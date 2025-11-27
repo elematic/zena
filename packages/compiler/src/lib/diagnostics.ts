@@ -27,6 +27,8 @@ export const DiagnosticCode = {
   AbstractMethodInConcreteClass: 2012,
   AbstractMethodNotImplemented: 2013,
   CannotInstantiateAbstractClass: 2014,
+  ModuleNotFound: 2015,
+  ImportError: 2016,
 
   // General
   UnknownError: 9999,

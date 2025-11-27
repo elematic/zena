@@ -6,11 +6,14 @@ import {
   Parser,
   TypeChecker,
   type Diagnostic,
+  Compiler,
+  CodeGenerator,
 } from '@zena-lang/compiler';
 import {instantiate} from '@zena-lang/runtime';
 import {readFile, writeFile} from 'node:fs/promises';
 import {basename, resolve} from 'node:path';
 import {parseArgs} from 'node:util';
+import {NodeCompilerHost} from './host.js';
 
 const Commands = {
   build: 'build',
@@ -52,16 +55,6 @@ const readSourceFile = async (filePath: string): Promise<string> => {
 };
 
 /**
- * Parse and type-check source code, returning any errors found.
- */
-const checkSource = (source: string): Diagnostic[] => {
-  const parser = new Parser(source);
-  const ast = parser.parse();
-  const checker = new TypeChecker(ast);
-  return checker.check();
-};
-
-/**
  * Output errors to stderr in a formatted way.
  */
 const printErrors = (file: string, errors: Diagnostic[]): void => {
@@ -83,40 +76,41 @@ const buildCommand = async (
     return 1;
   }
 
-  let hasErrors = false;
+  const host = new NodeCompilerHost();
+  const compiler = new Compiler(host);
 
-  for (const file of files) {
-    try {
-      const source = await readSourceFile(file);
-      const errors = checkSource(source);
+  // For now, assume first file is entry point
+  const entryPoint = resolve(process.cwd(), files[0]);
 
-      if (errors.length > 0) {
+  try {
+    const modules = compiler.compile(entryPoint);
+
+    // Check for errors
+    let hasErrors = false;
+    for (const mod of modules) {
+      if (mod.diagnostics.length > 0) {
         hasErrors = true;
-        printErrors(file, errors);
-        continue;
+        printErrors(mod.path, mod.diagnostics);
       }
-
-      // Compile only if no errors
-      const bytes = compile(source);
-
-      // Replace .zena extension or append .wasm if different extension
-      const baseName = basename(file);
-      const outputPath =
-        output ??
-        (baseName.endsWith('.zena')
-          ? baseName.slice(0, -5) + '.wasm'
-          : baseName + '.wasm');
-      await writeFile(outputPath, bytes);
-      console.log(`Compiled ${file} -> ${outputPath}`);
-    } catch (error) {
-      hasErrors = true;
-      console.error(
-        `${file}: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
-  }
 
-  return hasErrors ? 1 : 0;
+    if (hasErrors) return 1;
+
+    // Bundle
+    const program = compiler.bundle(entryPoint);
+
+    // Generate code
+    const codegen = new CodeGenerator(program);
+    const bytes = codegen.generate();
+
+    const outputPath = output || basename(files[0], '.zena') + '.wasm';
+    await writeFile(outputPath, bytes);
+    console.log(`Built ${outputPath}`);
+    return 0;
+  } catch (e: any) {
+    console.error('Compilation failed:', e.message);
+    return 1;
+  }
 };
 
 const checkCommand = async (files: string[]): Promise<number> => {
@@ -125,28 +119,28 @@ const checkCommand = async (files: string[]): Promise<number> => {
     return 1;
   }
 
-  let hasErrors = false;
+  const host = new NodeCompilerHost();
+  const compiler = new Compiler(host);
 
-  for (const file of files) {
-    try {
-      const source = await readSourceFile(file);
-      const errors = checkSource(source);
+  // For now, assume first file is entry point
+  const entryPoint = resolve(process.cwd(), files[0]);
 
-      if (errors.length > 0) {
+  try {
+    const modules = compiler.compile(entryPoint);
+
+    let hasErrors = false;
+    for (const mod of modules) {
+      if (mod.diagnostics.length > 0) {
         hasErrors = true;
-        printErrors(file, errors);
-      } else {
-        console.log(`${file}: OK`);
+        printErrors(mod.path, mod.diagnostics);
       }
-    } catch (error) {
-      hasErrors = true;
-      console.error(
-        `${file}: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
-  }
 
-  return hasErrors ? 1 : 0;
+    return hasErrors ? 1 : 0;
+  } catch (e: any) {
+    console.error('Check failed:', e.message);
+    return 1;
+  }
 };
 
 const runCommand = async (files: string[]): Promise<number> => {
@@ -155,40 +149,55 @@ const runCommand = async (files: string[]): Promise<number> => {
     return 1;
   }
 
-  let hasErrors = false;
+  const host = new NodeCompilerHost();
+  const compiler = new Compiler(host);
+  const entryPoint = resolve(process.cwd(), files[0]);
 
-  for (const file of files) {
-    try {
-      const source = await readSourceFile(file);
+  try {
+    const modules = compiler.compile(entryPoint);
 
-      // Compile with stdlib - errors are thrown as exceptions
-      const bytes = compileWithStdlib(source);
-
-      // Use the runtime to instantiate with standard library support
-      const result = await instantiate(bytes);
-      const instance =
-        result instanceof WebAssembly.Instance
-          ? result
-          : (result as WebAssembly.WebAssemblyInstantiatedSource).instance;
-      const exports = instance.exports;
-
-      // Look for a main function and call it
-      const mainFn = exports.main;
-      if (typeof mainFn === 'function') {
-        const mainResult = (mainFn as () => unknown)();
-        if (mainResult !== undefined) {
-          console.log(mainResult);
-        }
+    let hasErrors = false;
+    for (const mod of modules) {
+      if (mod.diagnostics.length > 0) {
+        hasErrors = true;
+        printErrors(mod.path, mod.diagnostics);
       }
-    } catch (error) {
-      hasErrors = true;
-      console.error(
-        `${file}: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
-  }
 
-  return hasErrors ? 1 : 0;
+    if (hasErrors) return 1;
+
+    const program = compiler.bundle(entryPoint);
+    const codegen = new CodeGenerator(program);
+    const bytes = codegen.generate();
+
+    // Use the runtime to instantiate with standard library support
+    const result = await instantiate(bytes);
+    const instance =
+      result instanceof WebAssembly.Instance
+        ? result
+        : (result as WebAssembly.WebAssemblyInstantiatedSource).instance;
+    const exports = instance.exports;
+
+    // Look for a main function and call it
+    // The bundler might have renamed main?
+    // If main is exported from entry point, it should be exported as 'main' in WASM?
+    // We need to ensure CodeGenerator respects exports.
+    // Currently CodeGenerator emits exports for all functions? No.
+    // We need to check CodeGenerator.
+
+    // Assuming 'main' is exported from entry point.
+    const mainFn = exports.main;
+    if (typeof mainFn === 'function') {
+      const mainResult = (mainFn as () => unknown)();
+      if (mainResult !== undefined) {
+        console.log(mainResult);
+      }
+    }
+    return 0;
+  } catch (e: any) {
+    console.error('Run failed:', e.message);
+    return 1;
+  }
 };
 
 export const main = async (args: string[]): Promise<number> => {
