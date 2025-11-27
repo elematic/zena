@@ -6,6 +6,30 @@ This document describes the syntax and semantics of the Zena programming languag
 
 Zena is a statically typed language targeting WebAssembly (WASM-GC). It features a TypeScript-like syntax with strict static typing and no implicit coercion.
 
+## 1.1 Comments
+
+Zena supports two styles of comments:
+
+### Single-Line Comments
+
+Single-line comments begin with `//` and continue to the end of the line.
+
+```typescript
+let x = 1; // This is a single-line comment
+```
+
+### Multi-Line Comments
+
+Multi-line comments begin with `/*` and end with `*/`. They can span multiple lines.
+
+```typescript
+/* This is a
+   multi-line comment */
+let x = 1;
+
+let y /* inline comment */ = 2;
+```
+
 ## 2. Types
 
 Zena is strongly typed. All expressions have a type determined at compile time.

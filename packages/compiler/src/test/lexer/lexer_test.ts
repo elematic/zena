@@ -132,4 +132,106 @@ suite('Lexer', () => {
       TokenType.EOF,
     ]);
   });
+
+  test('should skip single-line comments', () => {
+    const input = 'let x = 1; // comment\nlet y = 2;';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      TokenType.Let,
+      [TokenType.Identifier, 'x'],
+      TokenType.Equals,
+      [TokenType.Number, '1'],
+      TokenType.Semi,
+      TokenType.Let,
+      [TokenType.Identifier, 'y'],
+      TokenType.Equals,
+      [TokenType.Number, '2'],
+      TokenType.Semi,
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should skip multi-line comments on single line', () => {
+    const input = 'let x /* comment */ = 1;';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      TokenType.Let,
+      [TokenType.Identifier, 'x'],
+      TokenType.Equals,
+      [TokenType.Number, '1'],
+      TokenType.Semi,
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should skip multi-line comments spanning multiple lines', () => {
+    const input = `let x = 1;
+/* this is
+   a multi-line
+   comment */
+let y = 2;`;
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      TokenType.Let,
+      [TokenType.Identifier, 'x'],
+      TokenType.Equals,
+      [TokenType.Number, '1'],
+      TokenType.Semi,
+      TokenType.Let,
+      [TokenType.Identifier, 'y'],
+      TokenType.Equals,
+      [TokenType.Number, '2'],
+      TokenType.Semi,
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should skip multi-line comments with stars inside', () => {
+    const input = 'let x /* * ** *** */ = 1;';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      TokenType.Let,
+      [TokenType.Identifier, 'x'],
+      TokenType.Equals,
+      [TokenType.Number, '1'],
+      TokenType.Semi,
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should handle unclosed multi-line comment at end of file', () => {
+    const input = 'let x = 1; /* unclosed';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      TokenType.Let,
+      [TokenType.Identifier, 'x'],
+      TokenType.Equals,
+      [TokenType.Number, '1'],
+      TokenType.Semi,
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should handle multi-line comment ending with star at EOF', () => {
+    const input = 'let x = 1; /*comment*';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      TokenType.Let,
+      [TokenType.Identifier, 'x'],
+      TokenType.Equals,
+      [TokenType.Number, '1'],
+      TokenType.Semi,
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should tokenize slash at end of input', () => {
+    const input = '1 /';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.Number, '1'],
+      TokenType.Slash,
+      TokenType.EOF,
+    ]);
+  });
 });

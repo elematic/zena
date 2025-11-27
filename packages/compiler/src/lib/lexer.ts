@@ -302,6 +302,21 @@ export const tokenize = (source: string): Token[] => {
           while (current < source.length && peek() !== '\n') {
             advance();
           }
+        } else if (peek() === '*') {
+          // Multi-line comment
+          advance(); // consume '*'
+          while (current < source.length) {
+            if (
+              peek() === '*' &&
+              current + 1 < source.length &&
+              source[current + 1] === '/'
+            ) {
+              advance(); // consume '*'
+              advance(); // consume '/'
+              break;
+            }
+            advance();
+          }
         } else {
           tokens.push({
             type: TokenType.Slash,
