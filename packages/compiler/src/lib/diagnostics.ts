@@ -24,6 +24,9 @@ export const DiagnosticCode = {
   NotIndexable: 2009,
   GenericTypeArgumentMismatch: 2010,
   ConstructorInMixin: 2011,
+  AbstractMethodInConcreteClass: 2012,
+  AbstractMethodNotImplemented: 2013,
+  CannotInstantiateAbstractClass: 2014,
 
   // General
   UnknownError: 9999,

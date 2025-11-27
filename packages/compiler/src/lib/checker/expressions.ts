@@ -494,6 +494,13 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
 
   let classType = type as ClassType;
 
+  if (classType.isAbstract) {
+    ctx.diagnostics.reportError(
+      `Cannot instantiate abstract class '${className}'.`,
+      DiagnosticCode.CannotInstantiateAbstractClass,
+    );
+  }
+
   if (expr.typeArguments && expr.typeArguments.length > 0) {
     if (!classType.typeParameters || classType.typeParameters.length === 0) {
       ctx.diagnostics.reportError(

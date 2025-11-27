@@ -359,7 +359,7 @@ export function inferTypeArgs(
   });
 }
 
-function getHeapTypeIndex(ctx: CodegenContext, type: number[]): number {
+export function getHeapTypeIndex(ctx: CodegenContext, type: number[]): number {
   if (type.length < 2) return -1;
   if (type[0] !== ValType.ref && type[0] !== ValType.ref_null) return -1;
   return decodeTypeIndex(type);

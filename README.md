@@ -63,6 +63,7 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 - [x] Union types
 - [x] Accessors
 - [x] Mutable Arrays and array literals (`#[...]`)
+- [x] Abstract classes and members
 - [ ] Record and tuple literal syntax (`{...}` and `[ ... ]`)
 - [ ] Mutable Maps and map literals (`#{...}`)
 - [ ] More primitive types
@@ -79,7 +80,6 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 - [ ] Extension methods
 - [ ] Operator overloading
 - [ ] Intersection types
-- [ ] Abstract classes and members
 - [ ] Mixin constructors
 - [ ] Async functions
 - [ ] Regexes

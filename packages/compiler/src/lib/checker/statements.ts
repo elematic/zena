@@ -317,6 +317,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     constructorType: undefined,
     vtable: superType ? [...superType.vtable] : [],
     isFinal: decl.isFinal,
+    isAbstract: decl.isAbstract,
   };
 
   if (superType) {
@@ -333,6 +334,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   }
 
   ctx.declare(className, classType);
+  ctx.enterClass(classType);
 
   ctx.enterScope();
   for (const tp of typeParameters) {
@@ -497,7 +499,15 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         parameters: paramTypes,
         returnType,
         isFinal: member.isFinal,
+        isAbstract: member.isAbstract,
       };
+
+      if (member.isAbstract && !decl.isAbstract) {
+        ctx.diagnostics.reportError(
+          `Abstract method '${member.name.name}' can only appear within an abstract class.`,
+          DiagnosticCode.AbstractMethodInConcreteClass,
+        );
+      }
 
       if (member.name.name === '#new') {
         if (classType.constructorType) {
@@ -599,10 +609,19 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
   }
 
-  // 2. Second pass: Check method bodies
-  const previousClass = ctx.currentClass;
-  ctx.currentClass = classType;
+  // Check abstract methods implementation
+  if (!decl.isAbstract) {
+    for (const [name, method] of classType.methods) {
+      if (method.isAbstract) {
+        ctx.diagnostics.reportError(
+          `Non-abstract class '${className}' does not implement abstract method '${name}'.`,
+          DiagnosticCode.AbstractMethodNotImplemented,
+        );
+      }
+    }
+  }
 
+  // 2. Second pass: Check bodies
   for (const member of decl.body) {
     if (member.type === NodeType.MethodDefinition) {
       checkMethodDefinition(ctx, member);
@@ -627,7 +646,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
   }
 
-  ctx.currentClass = previousClass;
+  ctx.exitClass();
   ctx.exitScope();
 }
 
@@ -728,7 +747,9 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   ctx.currentFunctionReturnType = returnType;
 
   // Check body
-  checkStatement(ctx, method.body);
+  if (method.body) {
+    checkStatement(ctx, method.body);
+  }
 
   ctx.currentFunctionReturnType = previousReturnType;
   ctx.exitScope();
@@ -936,6 +957,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         parameters: paramTypes,
         returnType,
         isFinal: member.isFinal,
+        isAbstract: member.isAbstract,
       };
 
       mixinType.methods.set(member.name.name, methodType);
@@ -1007,7 +1029,9 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         const type = methodType.parameters[index];
         ctx.declare(param.name.name, type, 'let');
       });
-      checkStatement(ctx, member.body);
+      if (member.body) {
+        checkStatement(ctx, member.body);
+      }
       ctx.exitScope();
       ctx.currentFunctionReturnType = Types.Unknown;
     } else if (member.type === NodeType.FieldDefinition && member.value) {

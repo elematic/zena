@@ -9,7 +9,7 @@ import {
 import {WasmModule} from '../emitter.js';
 import {GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import type {CodegenContext} from './context.js';
-import {generateExpression} from './expressions.js';
+import {generateExpression, getHeapTypeIndex} from './expressions.js';
 import {generateBlockStatement} from './statements.js';
 import type {ClassInfo, InterfaceInfo} from './types.js';
 
@@ -328,6 +328,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
       params: [],
       body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
+      isAbstract: false,
     } as MethodDefinition);
   }
 
@@ -656,6 +657,7 @@ export function generateClassMethods(
       params: [],
       body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
+      isAbstract: false,
     } as MethodDefinition);
   }
 
@@ -667,6 +669,7 @@ export function generateClassMethods(
       ctx.pushScope();
       ctx.nextLocalIndex = 0;
       ctx.extraLocals = [];
+      ctx.thisLocalIndex = 0;
 
       // Params
       // 0: this
@@ -679,6 +682,33 @@ export function generateClassMethods(
           ctx.nextLocalIndex++,
           methodInfo.paramTypes[i + 1],
         );
+      }
+
+      // Downcast 'this' if needed (e.g. overriding a method from a superclass)
+      const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
+      if (thisTypeIndex !== -1 && thisTypeIndex !== classInfo.structTypeIndex) {
+        const realThisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+        ];
+        const realThisLocal = ctx.nextLocalIndex++;
+        ctx.extraLocals.push(realThisType);
+
+        body.push(Opcode.local_get, 0);
+        body.push(0xfb, GcOpcode.ref_cast_null);
+        body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+        body.push(Opcode.local_set, realThisLocal);
+
+        ctx.defineLocal('this', realThisLocal, realThisType);
+        ctx.thisLocalIndex = realThisLocal;
+      }
+
+      if (member.isAbstract) {
+        body.push(Opcode.unreachable);
+        body.push(Opcode.end);
+        ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+        ctx.popScope();
+        continue;
       }
 
       if (member.name.name === '#new') {
@@ -697,7 +727,7 @@ export function generateClassMethods(
         }
       }
 
-      if (member.body.type === NodeType.BlockStatement) {
+      if (member.body && member.body.type === NodeType.BlockStatement) {
         generateBlockStatement(ctx, member.body, body);
       }
       body.push(Opcode.end);
@@ -716,10 +746,35 @@ export function generateClassMethods(
         ctx.pushScope();
         ctx.nextLocalIndex = 0;
         ctx.extraLocals = [];
+        ctx.thisLocalIndex = 0;
 
         // Params
         // 0: this
         ctx.defineLocal('this', ctx.nextLocalIndex++, methodInfo.paramTypes[0]);
+
+        // Downcast 'this' if needed
+        const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
+        if (
+          thisTypeIndex !== -1 &&
+          thisTypeIndex !== classInfo.structTypeIndex
+        ) {
+          const realThisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          ];
+          const realThisLocal = ctx.nextLocalIndex++;
+          ctx.extraLocals.push(realThisType);
+
+          body.push(Opcode.local_get, 0);
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+          body.push(Opcode.local_set, realThisLocal);
+
+          ctx.defineLocal('this', realThisLocal, realThisType);
+          ctx.thisLocalIndex = realThisLocal;
+        }
 
         generateBlockStatement(ctx, member.getter, body);
         body.push(Opcode.end);
@@ -737,6 +792,7 @@ export function generateClassMethods(
         ctx.pushScope();
         ctx.nextLocalIndex = 0;
         ctx.extraLocals = [];
+        ctx.thisLocalIndex = 0;
 
         // Params
         // 0: this
@@ -747,6 +803,30 @@ export function generateClassMethods(
           ctx.nextLocalIndex++,
           methodInfo.paramTypes[1],
         );
+
+        // Downcast 'this' if needed
+        const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
+        if (
+          thisTypeIndex !== -1 &&
+          thisTypeIndex !== classInfo.structTypeIndex
+        ) {
+          const realThisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          ];
+          const realThisLocal = ctx.nextLocalIndex++;
+          ctx.extraLocals.push(realThisType);
+
+          body.push(Opcode.local_get, 0);
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+          body.push(Opcode.local_set, realThisLocal);
+
+          ctx.defineLocal('this', realThisLocal, realThisType);
+          ctx.thisLocalIndex = realThisLocal;
+        }
 
         generateBlockStatement(ctx, member.setter.body, body);
         body.push(Opcode.end);
@@ -1011,6 +1091,7 @@ export function instantiateClass(
       params: [],
       body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
+      isAbstract: false,
     } as MethodDefinition);
   }
 
@@ -1220,6 +1301,7 @@ function applyMixin(
     body: mixinDecl.body as any,
     exported: false,
     isFinal: false,
+    isAbstract: false,
   };
 
   // Register methods
@@ -1245,6 +1327,7 @@ function applyMixin(
       params: [],
       body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
+      isAbstract: false,
     } as MethodDefinition);
   }
 
@@ -1549,6 +1632,7 @@ function generateMixinMethods(
     body: mixinDecl.body as any,
     exported: false,
     isFinal: false,
+    isAbstract: false,
   };
 
   generateClassMethods(ctx, decl, classInfo.name);
