@@ -92,3 +92,28 @@ The compiler's code generator will detect the `@intrinsic` marker (or similar me
 
 - **Circular Dependencies**: The stdlib might depend on itself (e.g., `Map` uses
   `Array`). The compiler must handle circular references gracefully.
+
+## Modules
+
+### Console
+
+The `Console` module provides basic I/O operations.
+
+**Implementation**: `packages/compiler/stdlib/console.zena`
+
+**API**:
+
+```typescript
+export let log = (val: i32) => { ... }
+export let logF32 = (val: f32) => { ... }
+```
+
+**Usage**:
+
+```typescript
+// Currently requires manual inclusion or future import system
+log(42);
+```
+
+**Host Requirements**:
+The host environment must provide `console.log` via the import object. The `@zena-lang/runtime` package handles this automatically.
