@@ -44,6 +44,9 @@ export class CodeGenerator {
       // console.log('Statement type:', statement.type);
       if (statement.type === NodeType.ClassDeclaration) {
         // console.log('Registering class:', (statement as any).name.name);
+        if ((statement as ClassDeclaration).name.name === 'Array') {
+          continue;
+        }
         registerClass(this.#ctx, statement as ClassDeclaration);
       } else if (statement.type === NodeType.MixinDeclaration) {
         const mixinDecl = statement as MixinDeclaration;

@@ -77,4 +77,14 @@ export class CodegenContext {
     this.extraLocals.push(type);
     return index;
   }
+
+  public getArrayTypeIndex(elementType: number[]): number {
+    const key = elementType.join(',');
+    if (this.arrayTypes.has(key)) {
+      return this.arrayTypes.get(key)!;
+    }
+    const index = this.module.addArrayType(elementType, true);
+    this.arrayTypes.set(key, index);
+    return index;
+  }
 }

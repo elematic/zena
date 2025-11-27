@@ -40,6 +40,22 @@ export function resolveTypeAnnotation(
     }
     case 'ByteArray':
       return Types.ByteArray;
+    case 'Array': {
+      if (annotation.typeArguments && annotation.typeArguments.length === 1) {
+        const elementType = resolveTypeAnnotation(
+          ctx,
+          annotation.typeArguments[0],
+        );
+        return {
+          kind: TypeKind.Array,
+          elementType,
+        } as ArrayType;
+      }
+      // If used without type arguments, it might be a raw Array or we should error.
+      // For now let's fall through to resolve it as a class (which we will skip in codegen)
+      // or maybe we should error if generic arguments are missing.
+      break;
+    }
     case 'void':
       return Types.Void;
     case 'null':

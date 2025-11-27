@@ -5,8 +5,12 @@ export const prelude = `
 
 // ByteArray is exposed as a built-in type for now.
 
-export class String {
+export final class String {
   bytes: ByteArray;
+  length: i32;
+}
+
+export final class Array<T> {
   length: i32;
 }
 `;

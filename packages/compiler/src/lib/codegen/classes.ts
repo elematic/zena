@@ -1144,6 +1144,20 @@ export function mapType(
       ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
     ];
   }
+  if (annotation.name === 'Array') {
+    if (annotation.typeArguments && annotation.typeArguments.length === 1) {
+      const elementType = mapType(
+        ctx,
+        annotation.typeArguments[0],
+        typeContext,
+      );
+      const arrayTypeIndex = ctx.getArrayTypeIndex(elementType);
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(arrayTypeIndex),
+      ];
+    }
+  }
   if (annotation.name === 'void') return [];
 
   // Handle generics

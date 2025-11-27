@@ -46,4 +46,18 @@ suite('CodeGenerator - Arrays', () => {
       (module.instance.exports.main as Function)();
     }, /out of bounds/);
   });
+
+  test('should support explicit Array type', async () => {
+    const source = `
+      export let main = (): i32 => {
+        let arr: Array<i32> = #[10, 20, 30];
+        return arr.length;
+      };
+    `;
+
+    const wasm = compile(source);
+    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
+    const result = (module.instance.exports.main as Function)();
+    assert.strictEqual(result, 3);
+  });
 });
