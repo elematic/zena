@@ -224,4 +224,14 @@ let y = 2;`;
       TokenType.EOF,
     ]);
   });
+
+  test('should tokenize slash at end of input', () => {
+    const input = '1 /';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.Number, '1'],
+      TokenType.Slash,
+      TokenType.EOF,
+    ]);
+  });
 });
