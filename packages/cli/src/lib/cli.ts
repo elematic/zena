@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 
-import {readFile, writeFile} from 'node:fs/promises';
-import {resolve, basename} from 'node:path';
-import {parseArgs} from 'node:util';
 import {
   compile,
+  compileWithStdlib,
   Parser,
   TypeChecker,
   type Diagnostic,
 } from '@zena-lang/compiler';
+import {instantiate} from '@zena-lang/runtime';
+import {readFile, writeFile} from 'node:fs/promises';
+import {basename, resolve} from 'node:path';
+import {parseArgs} from 'node:util';
 
 const Commands = {
   build: 'build',
@@ -158,21 +160,16 @@ const runCommand = async (files: string[]): Promise<number> => {
   for (const file of files) {
     try {
       const source = await readSourceFile(file);
-      const errors = checkSource(source);
 
-      if (errors.length > 0) {
-        hasErrors = true;
-        printErrors(file, errors);
-        continue;
-      }
+      // Compile with stdlib - errors are thrown as exceptions
+      const bytes = compileWithStdlib(source);
 
-      // Compile and run only if no errors
-      const bytes = compile(source);
-
-      // WebAssembly.instantiate returns WebAssemblyInstantiatedSource for buffer input
-      const result = await WebAssembly.instantiate(bytes, {});
-      const {instance} =
-        result as unknown as WebAssembly.WebAssemblyInstantiatedSource;
+      // Use the runtime to instantiate with standard library support
+      const result = await instantiate(bytes);
+      const instance =
+        result instanceof WebAssembly.Instance
+          ? result
+          : (result as WebAssembly.WebAssemblyInstantiatedSource).instance;
       const exports = instance.exports;
 
       // Look for a main function and call it
