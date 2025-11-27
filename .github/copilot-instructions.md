@@ -200,6 +200,8 @@ This project is an **npm monorepo** managed with **Wireit**.
       - Implement `Console` using host imports.
     - **Runtime**:
       - Create a JS runtime helper for instantiating Zena modules and providing standard imports.
+    - **Function Overloading**:
+      - Support multiple `declare function` signatures with the same name but different parameters.
 
 2.  **Object-Oriented Features**:
     - **Accessors**:
