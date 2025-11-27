@@ -192,8 +192,8 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 1.  **Host Interop** (Immediate Priority):
     - **Imports**:
-      - Implement `declare` keyword for external functions.
-      - Implement `@external` decorator for module/name mapping.
+      - [x] Implement `declare` keyword for external functions.
+      - [x] Implement `@external` decorator for module/name mapping.
     - **Exports**:
       - Ensure `export` works for functions and classes.
     - **Standard Library**:
