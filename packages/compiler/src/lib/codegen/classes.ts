@@ -463,10 +463,18 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     }
   }
 
-  const structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
-
-  if (decl.name.name === 'String') {
-    ctx.stringTypeIndex = structTypeIndex;
+  // Special handling for String class: reuse pre-allocated type index
+  // The String type is created early in CodegenContext to allow declared
+  // functions with string parameters to work correctly.
+  let structTypeIndex: number;
+  if (decl.name.name === 'String' && ctx.stringTypeIndex >= 0) {
+    // Reuse the pre-allocated String type index
+    structTypeIndex = ctx.stringTypeIndex;
+  } else {
+    structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
+    if (decl.name.name === 'String') {
+      ctx.stringTypeIndex = structTypeIndex;
+    }
   }
 
   const classInfo: ClassInfo = {
@@ -476,6 +484,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     fields,
     methods,
     vtable,
+    isFinal: decl.isFinal,
   };
   ctx.classes.set(decl.name.name, classInfo);
 

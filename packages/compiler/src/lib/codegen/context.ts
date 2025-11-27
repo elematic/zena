@@ -41,6 +41,8 @@ export class CodegenContext {
   public pendingHelperFunctions: (() => void)[] = [];
   public concatFunctionIndex = -1;
   public strEqFunctionIndex = -1;
+  public byteArrayGetFunctionIndex = -1; // Exported helper for JS to read ByteArray
+  public stringGetByteFunctionIndex = -1; // Exported helper for JS to read String bytes
   public genericClasses = new Map<string, ClassDeclaration>();
   public genericFunctions = new Map<string, FunctionExpression>();
   public functionReturnTypes = new Map<string, number[]>();
@@ -55,6 +57,24 @@ export class CodegenContext {
     this.module = new WasmModule();
     // Define backing array type: array<i8> (mutable for construction)
     this.byteArrayTypeIndex = this.module.addArrayType([ValType.i8], true);
+
+    // Pre-initialize String struct type so that declared functions can use string params.
+    // The String class definition in the prelude will reuse this type index.
+    // String struct layout (must match registerClass for String):
+    // - __vtable: eqref (root class vtable field)
+    // - bytes: ByteArray (ref to byteArrayTypeIndex)
+    // - length: i32
+    this.stringTypeIndex = this.module.addStructType([
+      {type: [ValType.eqref], mutable: true}, // __vtable
+      {
+        type: [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(this.byteArrayTypeIndex),
+        ],
+        mutable: true,
+      }, // bytes: ByteArray
+      {type: [ValType.i32], mutable: true}, // length: i32
+    ]);
   }
 
   public pushScope() {

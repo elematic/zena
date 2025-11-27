@@ -197,11 +197,16 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Exports**:
       - [x] Ensure `export` works for functions and classes.
     - **Standard Library**:
-      - Implement `Console` using host imports.
+      - [x] Implement `Console` using host imports.
     - **Runtime**:
-      - Create a JS runtime helper for instantiating Zena modules and providing standard imports.
+      - [x] Create a JS runtime helper for instantiating Zena modules and providing standard imports.
     - **Function Overloading**:
       - Support multiple `declare function` signatures with the same name but different parameters.
+    - **WASM GC Interop Notes**:
+      - WASM GC structs and arrays are OPAQUE from JavaScript.
+      - JS cannot access struct fields or iterate GC arrays.
+      - Use byte streaming (start/byte/end pattern) for string I/O.
+      - See `docs/design/host-interop.md` for details.
 
 2.  **Object-Oriented Features**:
     - **Accessors**:

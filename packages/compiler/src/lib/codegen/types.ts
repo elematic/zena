@@ -17,6 +17,7 @@ export interface ClassInfo {
   vtableTypeIndex?: number;
   vtableGlobalIndex?: number;
   implements?: Map<string, {vtableGlobalIndex: number}>; // interfaceName -> info
+  isFinal?: boolean;
 }
 
 export interface InterfaceInfo {

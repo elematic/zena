@@ -11,7 +11,11 @@ import {
 import {registerClass, registerInterface} from './classes.js';
 import {CodegenContext} from './context.js';
 import {registerDeclaredFunction, registerFunction} from './functions.js';
-import {generateExpression, inferType} from './expressions.js';
+import {
+  generateExpression,
+  generateStringGetByteFunction,
+  inferType,
+} from './expressions.js';
 import {HeapType, Opcode, ValType, SectionId} from '../wasm.js';
 import {WasmModule} from '../emitter.js';
 
@@ -86,15 +90,16 @@ export class CodeGenerator {
           let initBytes: number[] = [];
 
           // Default initialization
+          // Note: Do NOT include the 0x0b end opcode here - addGlobal adds it
           if (type[0] === ValType.i32)
-            initBytes = [0x41, 0x00, 0x0b]; // i32.const 0
+            initBytes = [0x41, 0x00]; // i32.const 0
           else if (type[0] === ValType.f32)
-            initBytes = [0x43, 0x00, 0x00, 0x00, 0x00, 0x0b]; // f32.const 0
+            initBytes = [0x43, 0x00, 0x00, 0x00, 0x00]; // f32.const 0
           else if (type[0] === ValType.ref_null || type[0] === ValType.ref) {
-            initBytes = [Opcode.ref_null, HeapType.none, 0x0b];
+            initBytes = [Opcode.ref_null, HeapType.none];
           } else {
             // Default to i32 0 if unknown (e.g. boolean)
-            initBytes = [0x41, 0x00, 0x0b];
+            initBytes = [0x41, 0x00];
           }
 
           const globalIndex = this.#ctx.module.addGlobal(type, true, initBytes);
@@ -110,11 +115,23 @@ export class CodeGenerator {
       generator();
     }
 
-    // Generate pending helper functions (concat, strEq)
-    // Note: These might add more pending functions, so we iterate until empty?
-    // But currently they don't add more.
-    for (const generator of this.#ctx.pendingHelperFunctions) {
-      generator();
+    // Generate pending helper functions (concat, strEq, etc.)
+    // Use while/shift to handle any functions that add more pending functions
+    while (this.#ctx.pendingHelperFunctions.length > 0) {
+      const gen = this.#ctx.pendingHelperFunctions.shift()!;
+      gen();
+    }
+
+    // Generate the $stringGetByte export for JS interop
+    // This allows JavaScript to read bytes from Zena strings via the exported getter
+    // Required for the V8-recommended pattern of reading WASM GC arrays from JS
+    if (this.#ctx.stringTypeIndex >= 0) {
+      generateStringGetByteFunction(this.#ctx);
+      // Execute any newly added pending helper functions
+      while (this.#ctx.pendingHelperFunctions.length > 0) {
+        const gen = this.#ctx.pendingHelperFunctions.shift()!;
+        gen();
+      }
     }
 
     // Generate start function

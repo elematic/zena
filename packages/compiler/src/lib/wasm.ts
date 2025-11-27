@@ -63,6 +63,8 @@ export const GcOpcode = {
   array_set: 0x0e,
   array_len: 0x0f,
   array_copy: 0x11,
+  extern_convert_any: 0x1b, // any.convert_extern (anyref -> externref)
+  any_convert_extern: 0x1a, // extern.convert_any (externref -> anyref)
   ref_cast: 0x16,
   ref_cast_null: 0x17,
   ref_i31: 0x1c,

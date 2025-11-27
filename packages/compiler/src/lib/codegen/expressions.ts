@@ -18,7 +18,7 @@ import {
   type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
+import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
@@ -755,69 +755,79 @@ function generateMemberExpression(
     if (methodInfo) {
       // Call getter
       // Stack: [this]
-      // We need to call the method via vtable dispatch (virtual by default)
 
-      // 1. Duplicate 'this' for vtable lookup
-      const tempThis = ctx.declareLocal('$$temp_this', objectType);
-      body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
+      // Check if we can use static dispatch (final class or final method)
+      const useStaticDispatch = foundClass.isFinal || methodInfo.isFinal;
 
-      // 2. Load VTable
-      if (!foundClass.vtable || foundClass.vtableTypeIndex === undefined) {
-        throw new Error(`Class ${foundClass.name} has no vtable`);
+      if (useStaticDispatch) {
+        // Static dispatch - direct call
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+      } else {
+        // Dynamic dispatch via vtable
+
+        // 1. Duplicate 'this' for vtable lookup
+        const tempThis = ctx.declareLocal('$$temp_this', objectType);
+        body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
+
+        // 2. Load VTable
+        if (!foundClass.vtable || foundClass.vtableTypeIndex === undefined) {
+          throw new Error(`Class ${foundClass.name} has no vtable`);
+        }
+
+        body.push(
+          0xfb,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+          ...WasmModule.encodeSignedLEB128(
+            foundClass.fields.get('__vtable')!.index,
+          ),
+        );
+
+        // Cast VTable to correct type
+        body.push(
+          0xfb,
+          GcOpcode.ref_cast_null,
+          ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
+        );
+
+        // 3. Load Function Pointer from VTable
+        const vtableIndex = foundClass.vtable.indexOf(getterName);
+        if (vtableIndex === -1) {
+          throw new Error(`Method ${getterName} not found in vtable`);
+        }
+
+        body.push(
+          0xfb,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
+          ...WasmModule.encodeSignedLEB128(vtableIndex),
+        );
+
+        // 4. Cast to specific function type
+        body.push(
+          0xfb,
+          GcOpcode.ref_cast_null,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        );
+
+        // Store func_ref
+        const funcRefType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        ];
+        const funcRef = ctx.declareLocal('$$func_ref', funcRefType);
+        body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRef));
+
+        // 5. Call function
+        // Stack: [this, func_ref]
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempThis));
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRef));
+        body.push(
+          Opcode.call_ref,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        );
       }
-
-      body.push(
-        0xfb,
-        GcOpcode.struct_get,
-        ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
-        ...WasmModule.encodeSignedLEB128(
-          foundClass.fields.get('__vtable')!.index,
-        ),
-      );
-
-      // Cast VTable to correct type
-      body.push(
-        0xfb,
-        GcOpcode.ref_cast_null,
-        ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
-      );
-
-      // 3. Load Function Pointer from VTable
-      const vtableIndex = foundClass.vtable.indexOf(getterName);
-      if (vtableIndex === -1) {
-        throw new Error(`Method ${getterName} not found in vtable`);
-      }
-
-      body.push(
-        0xfb,
-        GcOpcode.struct_get,
-        ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
-        ...WasmModule.encodeSignedLEB128(vtableIndex),
-      );
-
-      // 4. Cast to specific function type
-      body.push(
-        0xfb,
-        GcOpcode.ref_cast_null,
-        ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-      );
-
-      // Store func_ref
-      const funcRefType = [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-      ];
-      const funcRef = ctx.declareLocal('$$func_ref', funcRefType);
-      body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRef));
-
-      // 5. Call function
-      // Stack: [this, func_ref]
-      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempThis));
-      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRef));
-      body.push(
-        Opcode.call_ref,
-        ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-      );
       return;
     }
   }
@@ -1786,6 +1796,66 @@ function generateStrEqFunction(ctx: CodegenContext): number {
 
     // return 1
     body.push(Opcode.i32_const, 1);
+    body.push(Opcode.end);
+
+    ctx.module.addCode(funcIndex, locals, body);
+  });
+
+  return funcIndex;
+}
+
+/**
+ * Generates a helper function to get a byte from a string by index.
+ * This function takes a string as externref (for efficient JS interop)
+ * and returns the byte at the given index as i32.
+ *
+ * Generated WASM:
+ * (func $stringGetByte (export "$stringGetByte") (param externref i32) (result i32)
+ *   local.get 0
+ *   any.convert_extern
+ *   ref.cast $String
+ *   struct.get $String 1  ;; bytes
+ *   local.get 1
+ *   array.get_u $ByteArray)
+ */
+export function generateStringGetByteFunction(ctx: CodegenContext): number {
+  // Type: (externref, i32) -> i32
+  const typeIndex = ctx.module.addType(
+    [[ValType.externref], [ValType.i32]],
+    [[ValType.i32]],
+  );
+
+  const funcIndex = ctx.module.addFunction(typeIndex);
+
+  // Export the function as "$stringGetByte"
+  ctx.module.addExport('$stringGetByte', ExportDesc.Func, funcIndex);
+
+  ctx.pendingHelperFunctions.push(() => {
+    const locals: number[][] = [];
+    const body: number[] = [];
+
+    // local.get 0 (externref param)
+    body.push(Opcode.local_get, 0);
+
+    // any.convert_extern (externref -> anyref)
+    body.push(0xfb, GcOpcode.any_convert_extern);
+
+    // ref.cast $String
+    body.push(0xfb, GcOpcode.ref_cast);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+
+    // struct.get $String 1 (bytes field)
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(1)); // bytes field index
+
+    // local.get 1 (index param)
+    body.push(Opcode.local_get, 1);
+
+    // array.get_u $ByteArray
+    body.push(0xfb, GcOpcode.array_get_u);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
+
     body.push(Opcode.end);
 
     ctx.module.addCode(funcIndex, locals, body);
