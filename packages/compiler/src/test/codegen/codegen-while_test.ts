@@ -42,7 +42,9 @@ suite('CodeGenerator - While Loops', () => {
         return i;
       };
     `;
-    const {countTo} = (await compile(input)) as {countTo: (n: number) => number};
+    const {countTo} = (await compile(input)) as {
+      countTo: (n: number) => number;
+    };
     assert.strictEqual(countTo(5), 5);
     assert.strictEqual(countTo(0), 0);
     assert.strictEqual(countTo(100), 100);

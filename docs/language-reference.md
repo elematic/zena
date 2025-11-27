@@ -194,6 +194,7 @@ for (var i = 0; i < 10; i = i + 1) {
 ```
 
 The `for` statement consists of three optional parts:
+
 - **init**: A variable declaration or expression, executed once before the loop starts.
 - **test**: A boolean expression evaluated before each iteration. If false, the loop exits.
 - **update**: An expression executed after each iteration.
@@ -213,7 +214,7 @@ for (; i < 10; i = i + 1) {
 }
 
 // Update omitted (increment in body)
-for (var i = 0; i < 10;) {
+for (var i = 0; i < 10; ) {
   i = i + 1;
 }
 ```

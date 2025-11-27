@@ -6,14 +6,14 @@ export interface ZenaImports {
 
 /**
  * Instantiate a WebAssembly module with Zena default and user-provided imports.
- * 
- * @param wasm 
- * @param userImports 
- * @returns 
+ *
+ * @param wasm
+ * @param userImports
+ * @returns
  */
 export async function instantiate(
   wasm: BufferSource | WebAssembly.Module,
-  userImports: ZenaImports = {}
+  userImports: ZenaImports = {},
 ): Promise<WebAssembly.WebAssemblyInstantiatedSource | WebAssembly.Instance> {
   const defaultImports = {
     env: {
@@ -29,8 +29,8 @@ export async function instantiate(
   const imports = {
     ...defaultImports,
     ...userImports,
-    env: { ...defaultImports.env, ...userImports.env },
-    console: { ...defaultImports.console, ...userImports.console },
+    env: {...defaultImports.env, ...userImports.env},
+    console: {...defaultImports.console, ...userImports.console},
   };
 
   if (wasm instanceof WebAssembly.Module) {

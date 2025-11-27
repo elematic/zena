@@ -40,7 +40,9 @@ suite('CodeGenerator - For Loops', () => {
         return i;
       };
     `;
-    const {countUp} = (await compile(input)) as {countUp: (n: number) => number};
+    const {countUp} = (await compile(input)) as {
+      countUp: (n: number) => number;
+    };
     assert.strictEqual(countUp(5), 5);
     assert.strictEqual(countUp(0), 0);
   });
@@ -59,7 +61,9 @@ suite('CodeGenerator - For Loops', () => {
         return s;
       };
     `;
-    const {countTo} = (await compile(input)) as {countTo: (n: number) => number};
+    const {countTo} = (await compile(input)) as {
+      countTo: (n: number) => number;
+    };
     assert.strictEqual(countTo(5), 10);
     assert.strictEqual(countTo(0), 0);
   });
