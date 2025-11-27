@@ -2,6 +2,7 @@ import {
   NodeType,
   type AccessorDeclaration,
   type ClassDeclaration,
+  type ForStatement,
   type IfStatement,
   type InterfaceDeclaration,
   type MethodDefinition,
@@ -50,6 +51,9 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
     case NodeType.WhileStatement:
       checkWhileStatement(ctx, stmt as WhileStatement);
       break;
+    case NodeType.ForStatement:
+      checkForStatement(ctx, stmt as ForStatement);
+      break;
     case NodeType.ClassDeclaration:
       checkClassDeclaration(ctx, stmt as ClassDeclaration);
       break;
@@ -93,6 +97,43 @@ function checkWhileStatement(ctx: CheckerContext, stmt: WhileStatement) {
   }
 
   checkStatement(ctx, stmt.body);
+}
+
+function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
+  ctx.enterScope();
+
+  // Check init
+  if (stmt.init) {
+    if (stmt.init.type === NodeType.VariableDeclaration) {
+      checkVariableDeclaration(ctx, stmt.init as VariableDeclaration);
+    } else {
+      checkExpression(ctx, stmt.init);
+    }
+  }
+
+  // Check test
+  if (stmt.test) {
+    const testType = checkExpression(ctx, stmt.test);
+    if (
+      testType.kind !== TypeKind.Boolean &&
+      testType.kind !== TypeKind.Unknown
+    ) {
+      ctx.diagnostics.reportError(
+        `Expected boolean condition in for statement, got ${typeToString(testType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+  }
+
+  // Check update
+  if (stmt.update) {
+    checkExpression(ctx, stmt.update);
+  }
+
+  // Check body
+  checkStatement(ctx, stmt.body);
+
+  ctx.exitScope();
 }
 
 function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {

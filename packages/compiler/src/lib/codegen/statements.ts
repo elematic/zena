@@ -2,6 +2,7 @@ import {
   NodeType,
   type BlockStatement,
   type ClassDeclaration,
+  type ForStatement,
   type IfStatement,
   type ReturnStatement,
   type Statement,
@@ -79,6 +80,9 @@ export function generateFunctionStatement(
     case NodeType.WhileStatement:
       generateWhileStatement(ctx, stmt as WhileStatement, body);
       break;
+    case NodeType.ForStatement:
+      generateForStatement(ctx, stmt as ForStatement, body);
+      break;
   }
 }
 
@@ -130,6 +134,87 @@ export function generateWhileStatement(
 
   body.push(Opcode.end); // End loop
   body.push(Opcode.end); // End block
+}
+
+export function generateForStatement(
+  ctx: CodegenContext,
+  stmt: ForStatement,
+  body: number[],
+) {
+  // For loop: for (init; test; update) body
+  // Equivalent to:
+  //   {
+  //     init;
+  //     while (test) {
+  //       body;
+  //       update;
+  //     }
+  //   }
+  //
+  // WASM structure:
+  //   init
+  //   block $break
+  //     loop $continue
+  //       test
+  //       i32.eqz
+  //       br_if $break
+  //       body
+  //       update
+  //       br $continue
+  //     end
+  //   end
+
+  ctx.pushScope();
+
+  // Generate init
+  if (stmt.init) {
+    if (stmt.init.type === NodeType.VariableDeclaration) {
+      generateLocalVariableDeclaration(
+        ctx,
+        stmt.init as VariableDeclaration,
+        body,
+      );
+    } else {
+      generateExpression(ctx, stmt.init, body);
+      const initType = inferType(ctx, stmt.init);
+      if (initType.length > 0) {
+        body.push(Opcode.drop);
+      }
+    }
+  }
+
+  body.push(Opcode.block);
+  body.push(ValType.void);
+  body.push(Opcode.loop);
+  body.push(ValType.void);
+
+  // Generate test
+  if (stmt.test) {
+    generateExpression(ctx, stmt.test, body);
+    body.push(Opcode.i32_eqz); // Invert condition
+    body.push(Opcode.br_if);
+    body.push(...WasmModule.encodeSignedLEB128(1)); // Break to block (depth 1)
+  }
+
+  // Generate body
+  generateFunctionStatement(ctx, stmt.body, body);
+
+  // Generate update
+  if (stmt.update) {
+    generateExpression(ctx, stmt.update, body);
+    const updateType = inferType(ctx, stmt.update);
+    if (updateType.length > 0) {
+      body.push(Opcode.drop);
+    }
+  }
+
+  body.push(Opcode.br);
+  body.push(...WasmModule.encodeSignedLEB128(0)); // Continue to loop (depth 0)
+
+  body.push(Opcode.end); // End loop
+  body.push(Opcode.end); // End block
+
+  ctx.popScope();
 }
 
 export function generateLocalVariableDeclaration(
