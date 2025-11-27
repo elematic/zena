@@ -788,6 +788,70 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
 
   generateInterfaceVTable(ctx, classInfo, decl);
 
+  if (decl.exported) {
+    const ctorInfo = methods.get('#new')!;
+
+    // Wrapper signature: params -> (ref null struct)
+    const params = ctorInfo.paramTypes.slice(1); // Skip 'this'
+    const results = [
+      [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
+    ];
+
+    const wrapperTypeIndex = ctx.module.addType(params, results);
+    const wrapperFuncIndex = ctx.module.addFunction(wrapperTypeIndex);
+
+    ctx.module.addExport(decl.name.name, ExportDesc.Func, wrapperFuncIndex);
+
+    ctx.bodyGenerators.push(() => {
+      const body: number[] = [];
+
+      ctx.pushScope();
+      ctx.nextLocalIndex = params.length; // Params are locals 0..N-1
+      ctx.extraLocals = [];
+
+      // 1. Allocate
+      body.push(0xfb, GcOpcode.struct_new_default);
+      body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+
+      // 2. Store in temp
+      const tempLocal = ctx.declareLocal('$$export_new', results[0]);
+      body.push(Opcode.local_tee);
+      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+      // 3. Init VTable (if needed)
+      if (classInfo.vtableGlobalIndex !== undefined) {
+        body.push(Opcode.global_get);
+        body.push(
+          ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
+        );
+        body.push(0xfb, GcOpcode.struct_set);
+        body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+        body.push(...WasmModule.encodeSignedLEB128(0));
+
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+      }
+
+      // 4. Load args
+      for (let i = 0; i < params.length; i++) {
+        body.push(Opcode.local_get, i);
+      }
+
+      // 5. Call constructor
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+
+      // 6. Return
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+      body.push(Opcode.end);
+
+      ctx.module.addCode(wrapperFuncIndex, ctx.extraLocals, body);
+      ctx.popScope();
+    });
+  }
+
   const declForGen = {
     ...decl,
     superClass: currentSuperClassInfo

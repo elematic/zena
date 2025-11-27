@@ -195,7 +195,7 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Implement `declare` keyword for external functions.
       - [x] Implement `@external` decorator for module/name mapping.
     - **Exports**:
-      - Ensure `export` works for functions and classes.
+      - [x] Ensure `export` works for functions and classes.
     - **Standard Library**:
       - Implement `Console` using host imports.
     - **Runtime**:
