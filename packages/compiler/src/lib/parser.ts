@@ -4,6 +4,7 @@ import {
   type BlockStatement,
   type CallExpression,
   type ClassDeclaration,
+  type DeclareFunction,
   type Expression,
   type FieldDefinition,
   type ForStatement,
@@ -49,6 +50,12 @@ export class Parser {
   }
 
   #parseStatement(): Statement {
+    if (this.#match(TokenType.At)) {
+      return this.#parseDecoratedStatement();
+    }
+    if (this.#match(TokenType.Declare)) {
+      return this.#parseDeclareFunction();
+    }
     if (this.#match(TokenType.Export)) {
       if (this.#match(TokenType.Final)) {
         this.#consume(TokenType.Class, "Expected 'class' after 'final'.");
@@ -1023,6 +1030,70 @@ export class Parser {
     return {
       type: NodeType.BlockStatement,
       body,
+    };
+  }
+
+  #parseDecoratedStatement(): Statement {
+    // We only support @external for now
+    const decoratorName = this.#parseIdentifier().name;
+    if (decoratorName !== 'external') {
+      throw new Error(`Unknown decorator: @${decoratorName}`);
+    }
+
+    this.#consume(TokenType.LParen, "Expected '(' after @external");
+    const moduleName = this.#consume(
+      TokenType.String,
+      'Expected module name string',
+    ).value;
+    this.#consume(TokenType.Comma, "Expected ',' after module name");
+    const externalName = this.#consume(
+      TokenType.String,
+      'Expected external name string',
+    ).value;
+    this.#consume(TokenType.RParen, "Expected ')' after decorator arguments");
+
+    if (this.#match(TokenType.Declare)) {
+      return this.#parseDeclareFunction(moduleName, externalName);
+    }
+
+    throw new Error('Expected declare statement after decorator');
+  }
+
+  #parseDeclareFunction(
+    externalModule?: string,
+    externalName?: string,
+  ): DeclareFunction {
+    this.#consume(TokenType.Function, "Expected 'function' after 'declare'");
+    const name = this.#parseIdentifier();
+
+    this.#consume(TokenType.LParen, "Expected '(' after function name");
+    const params: Parameter[] = [];
+    if (!this.#check(TokenType.RParen)) {
+      do {
+        const paramName = this.#parseIdentifier();
+        this.#consume(TokenType.Colon, "Expected ':' for type annotation");
+        const typeAnnotation = this.#parseTypeAnnotation();
+        params.push({
+          type: NodeType.Parameter,
+          name: paramName,
+          typeAnnotation,
+        });
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RParen, "Expected ')' after parameters");
+
+    this.#consume(TokenType.Colon, "Expected ':' for return type");
+    const returnType = this.#parseTypeAnnotation();
+
+    this.#consume(TokenType.Semi, "Expected ';' after function declaration");
+
+    return {
+      type: NodeType.DeclareFunction,
+      name,
+      params,
+      returnType,
+      externalModule,
+      externalName,
     };
   }
 

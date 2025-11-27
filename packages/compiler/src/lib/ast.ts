@@ -33,6 +33,7 @@ export const NodeType = {
   AccessorDeclaration: 'AccessorDeclaration',
   SuperExpression: 'SuperExpression',
   MixinDeclaration: 'MixinDeclaration',
+  DeclareFunction: 'DeclareFunction',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -56,7 +57,17 @@ export type Statement =
   | ForStatement
   | ClassDeclaration
   | InterfaceDeclaration
-  | MixinDeclaration;
+  | MixinDeclaration
+  | DeclareFunction;
+
+export interface DeclareFunction extends Node {
+  type: typeof NodeType.DeclareFunction;
+  name: Identifier;
+  params: Parameter[];
+  returnType: TypeAnnotation;
+  externalModule?: string;
+  externalName?: string;
+}
 
 export interface VariableDeclaration extends Node {
   type: typeof NodeType.VariableDeclaration;

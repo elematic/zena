@@ -635,7 +635,43 @@ Individual bytes (characters) of a string can be accessed using the index operat
 let charCode = 'ABC'[0]; // 65
 ```
 
-## 13. Grammar (Simplified)
+## 13. Host Interop
+
+Zena allows interacting with the host environment (e.g., JavaScript) by declaring external functions.
+
+### Declare Function
+
+The `declare function` syntax is used to define the signature of a function that exists in the host environment.
+
+```typescript
+declare function log(value: i32): void;
+```
+
+By default, this expects an import from the module `env` with the same name as the function (e.g., `env.log`).
+
+### @external Decorator
+
+The `@external` decorator can be used to specify the module and function name for the import.
+
+```typescript
+@external("console", "log")
+declare function print(value: i32): void;
+```
+
+This will generate a WASM import for `console.log`.
+
+### Usage
+
+Declared functions can be called like normal functions.
+
+```typescript
+export const main = () => {
+  log(42);
+  print(100);
+};
+```
+
+## 14. Grammar (Simplified)
 
 ```ebnf
 Program ::= Statement*

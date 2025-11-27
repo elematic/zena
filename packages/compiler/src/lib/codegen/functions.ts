@@ -1,6 +1,7 @@
 import {
   NodeType,
   type BlockStatement,
+  type DeclareFunction,
   type Expression,
   type FunctionExpression,
   type ReturnStatement,
@@ -170,4 +171,28 @@ export function instantiateGenericFunction(
   });
 
   return funcIndex;
+}
+
+export function registerDeclaredFunction(
+  ctx: CodegenContext,
+  decl: DeclareFunction,
+) {
+  const params = decl.params.map((p) => mapType(ctx, p.typeAnnotation));
+  const returnType = mapType(ctx, decl.returnType);
+  const results = returnType.length > 0 ? [returnType] : [];
+
+  const typeIndex = ctx.module.addType(params, results);
+
+  const moduleName = decl.externalModule || 'env';
+  const functionName = decl.externalName || decl.name.name;
+
+  const funcIndex = ctx.module.addImport(
+    moduleName,
+    functionName,
+    ExportDesc.Func,
+    typeIndex,
+  );
+
+  ctx.functions.set(decl.name.name, funcIndex);
+  ctx.functionReturnTypes.set(decl.name.name, returnType);
 }

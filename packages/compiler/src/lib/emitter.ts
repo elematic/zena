@@ -2,11 +2,15 @@ import {SectionId, ValType, ExportDesc} from './wasm.js';
 
 export class WasmModule {
   #types: number[][] = [];
+  #imports: {module: string; name: string; kind: number; index: number}[] = [];
   #functions: number[] = [];
   #exports: {name: string; kind: number; index: number}[] = [];
   #globals: number[][] = [];
   #codes: number[][] = [];
   #datas: number[][] = [];
+
+  #importedFunctionCount = 0;
+  #startFunctionIndex: number | undefined;
 
   public addType(params: number[][], results: number[][]): number {
     // Function type: 0x60 + vec(params) + vec(results)
@@ -27,6 +31,20 @@ export class WasmModule {
     this.#types.push(buffer);
     const index = this.#types.length - 1;
     return index;
+  }
+
+  public addImport(
+    module: string,
+    name: string,
+    kind: number,
+    index: number,
+  ): number {
+    this.#imports.push({module, name, kind, index});
+    if (kind === ExportDesc.Func) {
+      return this.#importedFunctionCount++;
+    }
+    // TODO: Handle other import kinds for index calculation
+    return -1;
   }
 
   public addStructType(
@@ -67,7 +85,7 @@ export class WasmModule {
   public addFunction(typeIndex: number): number {
     this.#functions.push(typeIndex);
     this.#codes.push([]); // Reserve slot
-    return this.#functions.length - 1;
+    return this.#importedFunctionCount + this.#functions.length - 1;
   }
 
   public addCode(index: number, locals: number[][], body: number[]) {
@@ -75,6 +93,11 @@ export class WasmModule {
     // code: vec(locals) + expr
     // locals: vec(local)
     // local: n (u32) + type (valtype)
+
+    const definedIndex = index - this.#importedFunctionCount;
+    if (definedIndex < 0 || definedIndex >= this.#codes.length) {
+      throw new Error(`Invalid function index for code: ${index}`);
+    }
 
     const compressedLocals: {count: number; type: number[]}[] = [];
     if (locals.length > 0) {
@@ -102,7 +125,7 @@ export class WasmModule {
     codeBuffer.push(...body);
     // codeBuffer.push(0x0b); // end - Removed to avoid double end
 
-    this.#codes[index] = codeBuffer;
+    this.#codes[definedIndex] = codeBuffer;
   }
 
   public addData(bytes: Uint8Array): number {
@@ -156,6 +179,19 @@ export class WasmModule {
       this.#writeSection(buffer, SectionId.Type, sectionBuffer);
     }
 
+    // Import Section
+    if (this.#imports.length > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#imports.length);
+      for (const imp of this.#imports) {
+        this.#writeString(sectionBuffer, imp.module);
+        this.#writeString(sectionBuffer, imp.name);
+        sectionBuffer.push(imp.kind);
+        this.#writeUnsignedLEB128(sectionBuffer, imp.index);
+      }
+      this.#writeSection(buffer, SectionId.Import, sectionBuffer);
+    }
+
     // Function Section
     if (this.#functions.length > 0) {
       const sectionBuffer: number[] = [];
@@ -186,6 +222,13 @@ export class WasmModule {
         this.#writeUnsignedLEB128(sectionBuffer, exp.index);
       }
       this.#writeSection(buffer, SectionId.Export, sectionBuffer);
+    }
+
+    // Start Section
+    if (this.#startFunctionIndex !== undefined) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#startFunctionIndex);
+      this.#writeSection(buffer, SectionId.Start, sectionBuffer);
     }
 
     // DataCount Section
@@ -288,5 +331,9 @@ export class WasmModule {
     const buffer = new ArrayBuffer(4);
     new DataView(buffer).setFloat32(0, value, true); // Little endian
     return Array.from(new Uint8Array(buffer));
+  }
+
+  public setStart(functionIndex: number) {
+    this.#startFunctionIndex = functionIndex;
   }
 }

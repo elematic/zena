@@ -6,7 +6,7 @@ import {
   type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {ValType} from '../wasm.js';
+import {ExportDesc, ValType} from '../wasm.js';
 import type {ClassInfo, InterfaceInfo, LocalInfo} from './types.js';
 
 export class CodegenContext {
@@ -42,6 +42,9 @@ export class CodegenContext {
   public functionReturnTypes = new Map<string, number[]>();
   public pendingMethodGenerations: (() => void)[] = [];
   public bodyGenerators: (() => void)[] = [];
+
+  // Global variables
+  public globals = new Map<string, {index: number; type: number[]}>();
 
   constructor(program: Program) {
     this.program = program;
@@ -86,5 +89,13 @@ export class CodegenContext {
     const index = this.module.addArrayType(elementType, true);
     this.arrayTypes.set(key, index);
     return index;
+  }
+
+  public defineGlobal(name: string, index: number, type: number[]) {
+    this.globals.set(name, {index, type});
+  }
+
+  public getGlobal(name: string): {index: number; type: number[]} | undefined {
+    return this.globals.get(name);
   }
 }

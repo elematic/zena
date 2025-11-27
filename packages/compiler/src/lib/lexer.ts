@@ -25,6 +25,8 @@ export const TokenType = {
   On: 'On',
   Abstract: 'Abstract',
   Operator: 'Operator',
+  Declare: 'Declare',
+  Function: 'Function',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -58,6 +60,7 @@ export const TokenType = {
   Comma: 'Comma',
   Dot: 'Dot',
   Hash: 'Hash',
+  At: 'At',
 
   EOF: 'EOF',
   Unknown: 'Unknown',
@@ -98,6 +101,8 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   on: TokenType.On,
   abstract: TokenType.Abstract,
   operator: TokenType.Operator,
+  declare: TokenType.Declare,
+  function: TokenType.Function,
 });
 
 export const tokenize = (source: string): Token[] => {
@@ -398,6 +403,14 @@ export const tokenize = (source: string): Token[] => {
         tokens.push({
           type: TokenType.Hash,
           value: '#',
+          line,
+          column: startColumn,
+        });
+        break;
+      case '@':
+        tokens.push({
+          type: TokenType.At,
+          value: '@',
           line,
           column: startColumn,
         });

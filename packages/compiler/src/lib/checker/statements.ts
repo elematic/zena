@@ -2,6 +2,7 @@ import {
   NodeType,
   type AccessorDeclaration,
   type ClassDeclaration,
+  type DeclareFunction,
   type ForStatement,
   type IfStatement,
   type InterfaceDeclaration,
@@ -63,7 +64,28 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
     case NodeType.InterfaceDeclaration:
       checkInterfaceDeclaration(ctx, stmt as InterfaceDeclaration);
       break;
+    case NodeType.DeclareFunction:
+      checkDeclareFunction(ctx, stmt as DeclareFunction);
+      break;
   }
+}
+
+function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
+  const paramTypes: Type[] = [];
+  for (const param of decl.params) {
+    const type = resolveTypeAnnotation(ctx, param.typeAnnotation);
+    paramTypes.push(type);
+  }
+
+  const returnType = resolveTypeAnnotation(ctx, decl.returnType);
+
+  const functionType: FunctionType = {
+    kind: TypeKind.Function,
+    parameters: paramTypes,
+    returnType,
+  };
+
+  ctx.declare(decl.name.name, functionType, 'let');
 }
 
 function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {

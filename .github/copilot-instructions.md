@@ -233,24 +233,24 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Access Control**:
       - [x] Enforce `#` private fields strictly.
 
-2.  **Generics Enhancements**:
-
 3.  **Generics Enhancements**:
+
+4.  **Generics Enhancements**:
     - **Constraints**: Support `T extends Animal` (Requires Inheritance).
 
-4.  **Data Structures**:
+5.  **Data Structures**:
     - **Maps**: Implement mutable maps (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
-5.  **Standard Library**:
+6.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
     - String manipulation (`substring`, `indexOf`).
     - Console I/O (`console.log`).
 
-6.  **Self-Hosting**:
+7.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
 
-7.  **Future Features**:
+8.  **Future Features**:
     - **Syntax**:
       - Record and tuple literal syntax (`{...}` and `[ ... ]`).
       - Blocks.

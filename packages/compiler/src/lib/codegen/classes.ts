@@ -7,7 +7,7 @@ import {
   type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
+import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import type {CodegenContext} from './context.js';
 import {generateExpression, getHeapTypeIndex} from './expressions.js';
 import {

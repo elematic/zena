@@ -108,7 +108,8 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       const name = (expr as Identifier).name;
       const local = ctx.getLocal(name);
       if (local) return local.type;
-      // TODO: Check globals
+      const global = ctx.getGlobal(name);
+      if (global) return global.type;
       throw new Error(`Unknown identifier: ${name}`);
     }
     case NodeType.MemberExpression: {
@@ -1473,9 +1474,18 @@ function generateIdentifier(
   body: number[],
 ) {
   const local = ctx.getLocal(expr.name);
-  if (!local) throw new Error(`Unknown identifier: ${expr.name}`);
-  body.push(Opcode.local_get);
-  body.push(...WasmModule.encodeSignedLEB128(local.index));
+  if (local) {
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(local.index));
+    return;
+  }
+  const global = ctx.getGlobal(expr.name);
+  if (global) {
+    body.push(Opcode.global_get);
+    body.push(...WasmModule.encodeSignedLEB128(global.index));
+    return;
+  }
+  throw new Error(`Unknown identifier: ${expr.name}`);
 }
 
 function generateStringLiteral(

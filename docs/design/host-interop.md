@@ -59,19 +59,21 @@ Zena strings are currently implemented as a struct wrapping a `ByteArray` (WASM 
 ```
 
 **Passing Zena String to Host:**
+
 - The host receives a `(ref $String)` (opaque object).
 - **Problem**: JS cannot easily read the fields of a WASM GC struct without Type Imports (which are not widely supported yet).
 - **Solution**:
-    1.  **Helper Export**: Zena exports a helper function `string_get_bytes(s: String) -> ByteArray`.
-    2.  **JS Side**: JS calls the helper to get the `ByteArray`.
-    3.  **ByteArray Access**: JS can access `WebAssembly.Array` (if enabled) or we might need to copy to linear memory if we want broad compatibility (but Zena is GC-native, so we assume a GC-capable host).
-    4.  **TextDecoder**: JS uses `TextDecoder` to decode the bytes.
+  1.  **Helper Export**: Zena exports a helper function `string_get_bytes(s: String) -> ByteArray`.
+  2.  **JS Side**: JS calls the helper to get the `ByteArray`.
+  3.  **ByteArray Access**: JS can access `WebAssembly.Array` (if enabled) or we might need to copy to linear memory if we want broad compatibility (but Zena is GC-native, so we assume a GC-capable host).
+  4.  **TextDecoder**: JS uses `TextDecoder` to decode the bytes.
 
 **Passing Host String to Zena:**
+
 - **Solution**:
-    1.  **Helper Export**: Zena exports `string_from_bytes(bytes: ByteArray) -> String`.
-    2.  **JS Side**: JS allocates a `WebAssembly.Array` (i8) and fills it with UTF-8 encoded bytes from the JS string.
-    3.  **Call**: JS calls `string_from_bytes` to create the Zena String.
+  1.  **Helper Export**: Zena exports `string_from_bytes(bytes: ByteArray) -> String`.
+  2.  **JS Side**: JS allocates a `WebAssembly.Array` (i8) and fills it with UTF-8 encoded bytes from the JS string.
+  3.  **Call**: JS calls `string_from_bytes` to create the Zena String.
 
 ### Objects / Classes
 
@@ -87,7 +89,7 @@ We want `console.log("Hello")` to work.
 
     ```typescript
     // std/console.zena
-    
+
     // Low-level import
     @external("zena:env", "print_string")
     declare function print_string(bytes: ByteArray): void;
@@ -96,10 +98,10 @@ We want `console.log("Hello")` to work.
       log(s: string): void {
         // We might need to access s.bytes directly.
         // If 'bytes' is private/internal, we need a way.
-        print_string(s.bytes); 
+        print_string(s.bytes);
       }
     }
-    
+
     export const console = new Console();
     ```
 
@@ -110,19 +112,19 @@ We want `console.log("Hello")` to work.
     class ZenaRuntime {
       async instantiate(wasmBytes) {
         const imports = {
-          "zena:env": {
+          'zena:env': {
             print_string: (byteArray) => {
               // Assume byteArray is a WebAssembly.Array (i8)
               // Convert to Uint8Array
-              const bytes = new Uint8Array(byteArray); 
-              // Note: Direct view might not work for GC arrays? 
+              const bytes = new Uint8Array(byteArray);
+              // Note: Direct view might not work for GC arrays?
               // We might need to copy element by element if direct access isn't supported.
               // Or use a linear memory approach for I/O buffers.
-              
+
               const text = new TextDecoder().decode(bytes);
               console.log(text);
-            }
-          }
+            },
+          },
         };
         return WebAssembly.instantiate(wasmBytes, imports);
       }
@@ -134,25 +136,31 @@ We want `console.log("Hello")` to work.
 The WebAssembly System Interface (WASI) is a standard for providing system functionality (I/O, Filesystem, Clock) to WASM modules.
 
 ### Can we use it?
+
 Yes, specifically `wasi_snapshot_preview1` is widely supported. It provides `fd_write` which can write to `stdout` (file descriptor 1).
 
 ### Wiring in Node.js
+
 Node.js has a built-in `wasi` module.
+
 ```javascript
-import { WASI } from 'node:wasi';
-const wasi = new WASI({ version: 'preview1' });
+import {WASI} from 'node:wasi';
+const wasi = new WASI({version: 'preview1'});
 // ... instantiate with wasi.getImportObject()
 wasi.start(instance);
 ```
 
 ### Wiring in Browser
+
 Browsers do not support WASI natively. A shim library (like `@bjorn3/browser_wasi_shim` or a custom implementation) is required to map `fd_write` to `console.log`.
 
 ### The Problem: Memory Model Mismatch
+
 WASI (Preview 1) is designed for **Linear Memory**. It expects pointers and lengths pointing to a linear memory buffer.
 Zena is a **WASM-GC** language. Our data (Strings, Arrays) lives on the GC heap, not in linear memory.
 
 To use WASI `fd_write`, we would need to:
+
 1.  Allocate a Linear Memory in the module.
 2.  Copy the Zena String (GC Array) into Linear Memory.
 3.  Construct an `iovec` (struct with pointer/length) in Linear Memory.
