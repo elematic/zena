@@ -180,6 +180,7 @@ export interface InterfaceDeclaration extends Node {
   type: typeof NodeType.InterfaceDeclaration;
   name: Identifier;
   typeParameters?: TypeParameter[];
+  extends?: TypeAnnotation[];
   body: (FieldDefinition | MethodSignature)[];
   exported: boolean;
 }

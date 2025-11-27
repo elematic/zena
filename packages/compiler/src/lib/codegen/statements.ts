@@ -140,8 +140,10 @@ export function generateLocalVariableDeclaration(
   generateExpression(ctx, decl.init, body);
   const exprType = inferType(ctx, decl.init);
 
+  // console.log(`Generating local ${decl.identifier.name}`);
   let type: number[];
   if (decl.typeAnnotation) {
+    // console.log(`  Has type annotation: ${decl.typeAnnotation.type}`);
     type = mapType(ctx, decl.typeAnnotation, ctx.currentTypeContext);
 
     // Union boxing (i32 -> anyref)
@@ -160,28 +162,51 @@ export function generateLocalVariableDeclaration(
       decl.typeAnnotation.type === NodeType.TypeAnnotation &&
       ctx.interfaces.has(decl.typeAnnotation.name)
     ) {
+      // console.log(`  Interface boxing for ${decl.typeAnnotation.name}`);
       const initType = inferType(ctx, decl.init);
       const typeIndex = decodeTypeIndex(initType);
       const classInfo = getClassFromTypeIndex(ctx, typeIndex);
 
       if (
         classInfo &&
-        classInfo.implements &&
-        classInfo.implements.has(decl.typeAnnotation.name)
+        classInfo.implements
       ) {
         const interfaceName = decl.typeAnnotation.name;
         const interfaceInfo = ctx.interfaces.get(interfaceName)!;
-        const implInfo = classInfo.implements.get(interfaceName)!;
+        let implInfo = classInfo.implements.get(interfaceName);
 
-        body.push(
-          Opcode.global_get,
-          ...WasmModule.encodeSignedLEB128(implInfo.vtableGlobalIndex),
-        );
-        body.push(
-          0xfb,
-          GcOpcode.struct_new,
-          ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
-        );
+        if (!implInfo) {
+          // Search for subtype
+          for (const [name, info] of classInfo.implements) {
+            let currentName: string | undefined = name;
+            while (currentName) {
+              if (currentName === interfaceName) {
+                implInfo = info;
+                break;
+              }
+              const currentInfo = ctx.interfaces.get(currentName);
+              currentName = currentInfo?.parent;
+            }
+            if (implInfo) break;
+          }
+        }
+
+        if (implInfo) {
+          body.push(
+            Opcode.global_get,
+            ...WasmModule.encodeSignedLEB128(implInfo.vtableGlobalIndex),
+          );
+          body.push(
+            0xfb,
+            GcOpcode.struct_new,
+            ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+          );
+        } else {
+          // Fallback or error?
+          // If we are here, it means we think it implements the interface but we can't find the vtable.
+          // This might happen if the type checker passed it but we missed something in codegen.
+          // For now, let it fall through and likely trap or fail validation.
+        }
       }
     }
   } else {

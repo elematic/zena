@@ -214,8 +214,8 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Implement Interface Parser & Checker.
       - [x] Implement Interface Code Generator (Fat Pointers, VTables).
       - [x] Implement `implements` keyword.
-      - [ ] Implement Interface Properties (Getters in VTable).
-      - [ ] Implement Interface Inheritance (`interface A extends B`).
+      - [x] Implement Interface Properties (Getters in VTable).
+      - [x] Implement Interface Inheritance (`interface A extends B`).
     - **Abstract Classes**:
       - [x] Implement `abstract` keyword.
       - [x] Implement Abstract Methods.

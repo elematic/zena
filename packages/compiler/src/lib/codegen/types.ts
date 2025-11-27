@@ -23,6 +23,8 @@ export interface InterfaceInfo {
   structTypeIndex: number;
   vtableTypeIndex: number;
   methods: Map<string, {index: number; typeIndex: number}>; // name -> {vtableIndex, typeIndex}
+  fields: Map<string, {index: number; typeIndex: number}>; // name -> {vtableIndex, typeIndex}
+  parent?: string;
 }
 
 export interface LocalInfo {

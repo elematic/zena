@@ -672,6 +672,7 @@ function checkInterfaceDeclaration(
     typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
     fields: new Map(),
     methods: new Map(),
+    extends: [],
   };
 
   // Register interface in current scope
@@ -682,6 +683,30 @@ function checkInterfaceDeclaration(
   if (interfaceType.typeParameters) {
     for (const param of interfaceType.typeParameters) {
       ctx.declare(param.name, param);
+    }
+  }
+
+  // Handle extends
+  if (decl.extends) {
+    for (const ext of decl.extends) {
+      const type = resolveTypeAnnotation(ctx, ext);
+      if (type.kind !== TypeKind.Interface) {
+        ctx.diagnostics.reportError(
+          `Interface '${interfaceName}' can only extend other interfaces.`,
+          DiagnosticCode.TypeMismatch,
+        );
+      } else {
+        const parentInterface = type as InterfaceType;
+        interfaceType.extends!.push(parentInterface);
+
+        // Copy members from parent
+        for (const [name, fieldType] of parentInterface.fields) {
+          interfaceType.fields.set(name, fieldType);
+        }
+        for (const [name, methodType] of parentInterface.methods) {
+          interfaceType.methods.set(name, methodType);
+        }
+      }
     }
   }
 

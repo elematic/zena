@@ -611,7 +611,83 @@ function generateMemberExpression(
   }
 
   if (!foundClass) {
-    throw new Error(`Class not found for object type ${structTypeIndex}`);
+    // Check if it's an interface
+    const interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+    if (interfaceInfo) {
+      // Handle interface field access
+      const fieldInfo = interfaceInfo.fields.get(fieldName);
+      if (!fieldInfo) {
+        throw new Error(`Field ${fieldName} not found in interface`);
+      }
+
+      // Stack: [InterfaceStruct]
+      // We need to call the getter from the VTable.
+
+      // 1. Store interface struct in temp local to access fields
+      const tempLocal = ctx.declareLocal('$$interface_temp', objectType);
+      body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempLocal));
+
+      // 2. Load VTable
+      body.push(
+        0xfb,
+        GcOpcode.struct_get,
+        ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+        ...WasmModule.encodeSignedLEB128(1), // vtable is at index 1
+      );
+
+      // 3. Load Function Pointer from VTable
+      body.push(
+        0xfb,
+        GcOpcode.struct_get,
+        ...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex),
+        ...WasmModule.encodeSignedLEB128(fieldInfo.index),
+      );
+
+      // 4. Cast to specific function type
+      body.push(
+        0xfb,
+        GcOpcode.ref_cast_null,
+        ...WasmModule.encodeSignedLEB128(fieldInfo.typeIndex),
+      );
+
+      // Store funcRef in temp local
+      const funcRefType = [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(fieldInfo.typeIndex),
+      ];
+      const funcRefLocal = ctx.declareLocal('$$interface_getter', funcRefType);
+      body.push(
+        Opcode.local_set,
+        ...WasmModule.encodeSignedLEB128(funcRefLocal),
+      );
+
+      // 5. Load Instance from Interface Struct
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
+      body.push(
+        0xfb,
+        GcOpcode.struct_get,
+        ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+        ...WasmModule.encodeSignedLEB128(0), // instance is at index 0
+      );
+
+      // Load funcRef
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(funcRefLocal),
+      );
+
+      // 6. Call Getter
+      body.push(
+        Opcode.call_ref,
+        ...WasmModule.encodeSignedLEB128(fieldInfo.typeIndex),
+      );
+
+      return;
+    }
+
+    throw new Error(
+      `Class or Interface not found for object type ${structTypeIndex}`,
+    );
   }
 
   let lookupName = fieldName;

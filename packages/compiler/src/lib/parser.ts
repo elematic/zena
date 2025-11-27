@@ -815,6 +815,13 @@ export class Parser {
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
 
+    const extendsList: TypeAnnotation[] = [];
+    if (this.#match(TokenType.Extends)) {
+      do {
+        extendsList.push(this.#parseTypeAnnotation());
+      } while (this.#match(TokenType.Comma));
+    }
+
     this.#consume(TokenType.LBrace, "Expected '{' before interface body.");
 
     const body: (FieldDefinition | MethodSignature)[] = [];
@@ -828,6 +835,7 @@ export class Parser {
       type: NodeType.InterfaceDeclaration,
       name,
       typeParameters,
+      extends: extendsList.length > 0 ? extendsList : undefined,
       body,
       exported,
     };

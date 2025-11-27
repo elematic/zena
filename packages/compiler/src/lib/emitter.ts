@@ -33,9 +33,8 @@ export class WasmModule {
     fields: {type: number[]; mutable: boolean}[],
     superTypeIndex?: number,
   ): number {
-    // Struct type: 0x5F + vec(field_type)
-    // Wrapped in sub: 0x50 + vec(supertype) + struct_type
     const buffer: number[] = [];
+    // Always use sub to allow extensibility
     buffer.push(0x50); // sub
     if (superTypeIndex !== undefined) {
       this.#writeUnsignedLEB128(buffer, 1);

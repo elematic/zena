@@ -283,5 +283,17 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     return false;
   }
 
+  if (
+    source.kind === TypeKind.Interface &&
+    target.kind === TypeKind.Interface
+  ) {
+    if (typeToString(source) === typeToString(target)) return true;
+    const srcInterface = source as InterfaceType;
+    if (srcInterface.extends) {
+      return srcInterface.extends.some((ext) => isAssignableTo(ext, target));
+    }
+    return false;
+  }
+
   return typeToString(source) === typeToString(target);
 }

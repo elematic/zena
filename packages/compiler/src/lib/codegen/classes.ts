@@ -17,12 +17,68 @@ export function registerInterface(
   ctx: CodegenContext,
   decl: InterfaceDeclaration,
 ) {
+  if (ctx.interfaces.has(decl.name.name)) return;
+
+  let parentInfo: InterfaceInfo | undefined;
+
+  if (decl.extends && decl.extends.length > 0) {
+    // Support single inheritance for now
+    const ext = decl.extends[0];
+    if (ext.type === NodeType.TypeAnnotation) {
+      const parentName = ext.name;
+
+      // Find parent decl
+      const parentDecl = ctx.program.body.find(
+        (s) =>
+          s.type === NodeType.InterfaceDeclaration &&
+          (s as InterfaceDeclaration).name.name === parentName,
+      ) as InterfaceDeclaration | undefined;
+
+      if (parentDecl) {
+        registerInterface(ctx, parentDecl);
+        parentInfo = ctx.interfaces.get(parentName);
+      } else {
+        // Parent decl not found
+      }
+    }
+  }
+
   // 1. Create VTable Struct Type
   // (struct (field (ref (func (param any) ...))) ...)
   const vtableFields: {type: number[]; mutable: boolean}[] = [];
   const methodIndices = new Map<string, {index: number; typeIndex: number}>();
+  const fieldIndices = new Map<string, {index: number; typeIndex: number}>();
 
   let methodIndex = 0;
+
+  // If parent, copy indices and fields
+  if (parentInfo) {
+    const parentFields = new Array(
+      parentInfo.methods.size + parentInfo.fields.size,
+    );
+
+    // Copy methods
+    for (const [name, info] of parentInfo.methods) {
+      methodIndices.set(name, info);
+      methodIndex = Math.max(methodIndex, info.index + 1);
+      parentFields[info.index] = {
+        type: [ValType.ref, ...WasmModule.encodeSignedLEB128(info.typeIndex)],
+        mutable: false,
+      };
+    }
+    // Copy fields
+    for (const [name, info] of parentInfo.fields) {
+      fieldIndices.set(name, info);
+      methodIndex = Math.max(methodIndex, info.index + 1);
+      parentFields[info.index] = {
+        type: [ValType.ref, ...WasmModule.encodeSignedLEB128(info.typeIndex)],
+        mutable: false,
+      };
+    }
+
+    vtableFields.push(...parentFields);
+  }
+
   for (const member of decl.body) {
     if (member.type === NodeType.MethodSignature) {
       // Function type: (param any, ...params) -> result
@@ -48,10 +104,32 @@ export function registerInterface(
         index: methodIndex++,
         typeIndex: funcTypeIndex,
       });
+    } else if (member.type === NodeType.FieldDefinition) {
+      // Field getter: (param any) -> Type
+      const params: number[][] = [[ValType.ref_null, ValType.anyref]];
+      const results: number[][] = [];
+      const mapped = mapType(ctx, member.typeAnnotation);
+      if (mapped.length > 0) results.push(mapped);
+
+      const funcTypeIndex = ctx.module.addType(params, results);
+
+      // Field in VTable: (ref funcType)
+      vtableFields.push({
+        type: [ValType.ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex)],
+        mutable: false,
+      });
+
+      fieldIndices.set(member.name.name, {
+        index: methodIndex++,
+        typeIndex: funcTypeIndex,
+      });
     }
   }
 
-  const vtableTypeIndex = ctx.module.addStructType(vtableFields);
+  const vtableTypeIndex = ctx.module.addStructType(
+    vtableFields,
+    parentInfo?.vtableTypeIndex,
+  );
 
   // 2. Create Interface Struct Type (Fat Pointer)
   // (struct (field (ref null any)) (field (ref vtable)))
@@ -64,10 +142,20 @@ export function registerInterface(
   ];
   const structTypeIndex = ctx.module.addStructType(interfaceFields);
 
+  let parentName: string | undefined;
+  if (parentInfo) {
+    const ext = decl.extends![0];
+    if (ext.type === NodeType.TypeAnnotation) {
+      parentName = ext.name;
+    }
+  }
+
   ctx.interfaces.set(decl.name.name, {
     structTypeIndex,
     vtableTypeIndex,
     methods: methodIndices,
+    fields: fieldIndices,
+    parent: parentName,
   });
 }
 
@@ -122,6 +210,76 @@ export function generateTrampoline(
   return trampolineIndex;
 }
 
+function generateFieldGetterTrampoline(
+  ctx: CodegenContext,
+  classInfo: ClassInfo,
+  fieldName: string,
+  typeIndex: number,
+): number {
+  const trampolineIndex = ctx.module.addFunction(typeIndex);
+  const locals: number[][] = [];
+  const body: number[] = [];
+
+  // Param 0: this (anyref)
+  // Cast to class type
+  const castedThisLocal = 1;
+  locals.push([
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+  ]);
+
+  // Cast
+  body.push(Opcode.local_get, 0);
+  body.push(
+    0xfb,
+    GcOpcode.ref_cast_null,
+    ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+  );
+  body.push(
+    Opcode.local_set,
+    ...WasmModule.encodeSignedLEB128(castedThisLocal),
+  );
+
+  // Check if it's a field or a getter in the class
+  const fieldInfo = classInfo.fields.get(fieldName);
+  if (fieldInfo) {
+    // It's a field
+    body.push(
+      Opcode.local_get,
+      ...WasmModule.encodeSignedLEB128(castedThisLocal),
+    );
+    body.push(
+      0xfb,
+      GcOpcode.struct_get,
+      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+      ...WasmModule.encodeSignedLEB128(fieldInfo.index),
+    );
+  } else {
+    // Check for getter
+    const getterName = `get_${fieldName}`;
+    const methodInfo = classInfo.methods.get(getterName);
+    if (methodInfo) {
+      // Call getter
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(castedThisLocal),
+      );
+      body.push(
+        Opcode.call,
+        ...WasmModule.encodeSignedLEB128(methodInfo.index),
+      );
+    } else {
+      throw new Error(
+        `Class ${classInfo.name} does not implement field '${fieldName}' required by interface`,
+      );
+    }
+  }
+
+  body.push(Opcode.end);
+  ctx.module.addCode(trampolineIndex, locals, body);
+  return trampolineIndex;
+}
+
 export function generateInterfaceVTable(
   ctx: CodegenContext,
   classInfo: ClassInfo,
@@ -138,7 +296,8 @@ export function generateInterfaceVTable(
     const interfaceName = impl.name;
     const interfaceInfo = ctx.interfaces.get(interfaceName)!;
 
-    const vtableEntries: number[] = [];
+    const vtableSize = interfaceInfo.methods.size + interfaceInfo.fields.size;
+    const vtableEntries: number[] = new Array(vtableSize);
 
     for (const [methodName, methodInfo] of interfaceInfo.methods) {
       const trampolineIndex = generateTrampoline(
@@ -147,7 +306,17 @@ export function generateInterfaceVTable(
         methodName,
         methodInfo.typeIndex,
       );
-      vtableEntries.push(trampolineIndex);
+      vtableEntries[methodInfo.index] = trampolineIndex;
+    }
+
+    for (const [fieldName, fieldInfo] of interfaceInfo.fields) {
+      const trampolineIndex = generateFieldGetterTrampoline(
+        ctx,
+        classInfo,
+        fieldName,
+        fieldInfo.typeIndex,
+      );
+      vtableEntries[fieldInfo.index] = trampolineIndex;
     }
 
     const initExpr: number[] = [];

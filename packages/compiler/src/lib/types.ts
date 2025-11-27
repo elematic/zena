@@ -59,6 +59,7 @@ export interface InterfaceType extends Type {
   name: string;
   typeParameters?: TypeParameterType[];
   typeArguments?: Type[];
+  extends?: InterfaceType[];
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
 }
