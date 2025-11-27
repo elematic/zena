@@ -425,6 +425,10 @@ To mitigate these hazards, Zena enforces strict rules on constructor implementat
 3.  **Field Initialization Order**:
     - Fields with initializers (e.g., `x: i32 = 10`) are initialized **immediately after** the `super()` call returns.
     - This ensures that when the constructor body continues after `super()`, the instance is fully initialized (both superclass and subclass fields).
+4.  **Field Initializer Safety**:
+    - Initializers are executed in source order.
+    - Accessing a field declared later in the same class is a **compile-time error**.
+    - `this` is accessible, and accessing inherited fields is allowed.
 
 ### 10.3. Remaining Hazards
 
