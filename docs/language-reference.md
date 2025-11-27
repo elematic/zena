@@ -255,6 +255,30 @@ class Counter {
 }
 ```
 
+### Operator Overloading
+
+Classes can define custom behavior for the index operator `[]` by implementing `operator []` and `operator []=`.
+
+- `operator [](index: Type): ReturnType`: Defines the behavior for reading an element (e.g., `obj[i]`).
+- `operator []=(index: Type, value: ValueType): void`: Defines the behavior for writing an element (e.g., `obj[i] = v`).
+
+```typescript
+class List {
+  operator [](index: i32): i32 {
+    // ... return element at index
+    return 0;
+  }
+
+  operator []=(index: i32, value: i32): void {
+    // ... set element at index
+  }
+}
+
+let list = new List();
+let x = list[0]; // Calls operator []
+list[1] = 10;    // Calls operator []=
+```
+
 ### Instantiation
 
 Classes are instantiated using the `new` keyword.

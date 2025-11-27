@@ -676,7 +676,15 @@ export class Parser {
     }
 
     let name: Identifier;
-    if (this.#match(TokenType.Hash)) {
+    if (this.#match(TokenType.Operator)) {
+      this.#consume(TokenType.LBracket, "Expected '[' after 'operator'.");
+      this.#consume(TokenType.RBracket, "Expected ']' after '['.");
+      if (this.#match(TokenType.Equals)) {
+        name = {type: NodeType.Identifier, name: '[]='};
+      } else {
+        name = {type: NodeType.Identifier, name: '[]'};
+      }
+    } else if (this.#match(TokenType.Hash)) {
       if (this.#match(TokenType.New)) {
         name = {type: NodeType.Identifier, name: '#new'};
       } else {

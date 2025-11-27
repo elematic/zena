@@ -417,6 +417,30 @@ function generateIndexExpression(
   expr: IndexExpression,
   body: number[],
 ) {
+  const objectType = inferType(ctx, expr.object);
+  const structTypeIndex = getHeapTypeIndex(ctx, objectType);
+
+  if (structTypeIndex !== -1) {
+    let foundClass: ClassInfo | undefined;
+    for (const info of ctx.classes.values()) {
+      if (info.structTypeIndex === structTypeIndex) {
+        foundClass = info;
+        break;
+      }
+    }
+
+    if (foundClass) {
+      const methodInfo = foundClass.methods.get('[]');
+      if (methodInfo) {
+        generateExpression(ctx, expr.object, body);
+        generateExpression(ctx, expr.index, body);
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+        return;
+      }
+    }
+  }
+
   let arrayTypeIndex = -1;
   if (expr.object.type === NodeType.Identifier) {
     const localInfo = ctx.getLocal((expr.object as Identifier).name);
@@ -431,7 +455,20 @@ function generateIndexExpression(
   }
 
   if (arrayTypeIndex === -1) {
-    arrayTypeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
+    // Try to infer from objectType if it's an array
+    if (
+      objectType.length > 1 &&
+      (objectType[0] === ValType.ref || objectType[0] === ValType.ref_null)
+    ) {
+      // Check if it is a known array type
+      // This is tricky because array types are just indices.
+      // But we can assume if it's not a class struct, it might be an array.
+      // However, we default to i32 array if we can't find it.
+      // Let's just use the type index from objectType if available.
+      arrayTypeIndex = objectType[1];
+    } else {
+      arrayTypeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
+    }
   }
 
   generateExpression(ctx, expr.object, body);
@@ -1097,6 +1134,76 @@ function generateAssignmentExpression(
 ) {
   if (expr.left.type === NodeType.IndexExpression) {
     const indexExpr = expr.left as IndexExpression;
+
+    const objectType = inferType(ctx, indexExpr.object);
+    const structTypeIndex = getHeapTypeIndex(ctx, objectType);
+
+    if (structTypeIndex !== -1) {
+      let foundClass: ClassInfo | undefined;
+      for (const info of ctx.classes.values()) {
+        if (info.structTypeIndex === structTypeIndex) {
+          foundClass = info;
+          break;
+        }
+      }
+
+      if (foundClass) {
+        const methodInfo = foundClass.methods.get('[]=');
+        if (methodInfo) {
+          generateExpression(ctx, indexExpr.object, body);
+          generateExpression(ctx, indexExpr.index, body);
+          generateExpression(ctx, expr.value, body);
+
+          // We need to return the value, so tee it before calling setter?
+          // But setter returns void usually.
+          // Assignment expression evaluates to the value.
+          // So:
+          // 1. Evaluate object
+          // 2. Evaluate index
+          // 3. Evaluate value
+          // 4. Tee value to temp local
+          // 5. Call []= (object, index, value)
+          // 6. Get temp local
+
+          // Wait, stack order for call: object, index, value.
+          // If we tee value, it stays on stack.
+          // Stack: [object, index, value]
+          // Tee value: [object, index, value] (local set value)
+          // Call: consumes [object, index, value]
+          // Push local: [value]
+
+          const valueType = inferType(ctx, expr.value);
+          const tempVal = ctx.declareLocal('$$temp_assign_val', valueType);
+
+          // We need to be careful with stack order.
+          // generateExpression pushes to stack.
+
+          // Actually, we can't easily tee the 3rd argument without shuffling.
+          // Better to evaluate value to local first?
+          // But evaluation order matters (side effects).
+          // Standard order: object, index, value.
+
+          // So:
+          // generate object -> [obj]
+          // generate index -> [obj, idx]
+          // generate value -> [obj, idx, val]
+          // local.tee temp -> [obj, idx, val]
+          // call []= -> [] (assuming void return)
+          // local.get temp -> [val]
+
+          body.push(Opcode.local_tee);
+          body.push(...WasmModule.encodeSignedLEB128(tempVal));
+
+          body.push(Opcode.call);
+          body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(tempVal));
+          return;
+        }
+      }
+    }
+
     let arrayTypeIndex = -1;
     if (indexExpr.object.type === NodeType.Identifier) {
       const localInfo = ctx.getLocal((indexExpr.object as Identifier).name);
@@ -1105,7 +1212,14 @@ function generateAssignmentExpression(
       }
     }
     if (arrayTypeIndex === -1) {
-      arrayTypeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
+      if (
+        objectType.length > 1 &&
+        (objectType[0] === ValType.ref || objectType[0] === ValType.ref_null)
+      ) {
+        arrayTypeIndex = objectType[1];
+      } else {
+        arrayTypeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
+      }
     }
 
     generateExpression(ctx, indexExpr.object, body);

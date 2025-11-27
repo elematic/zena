@@ -727,6 +727,30 @@ function checkIndexExpression(
   const indexType = checkExpression(ctx, expr.index);
 
   if (
+    objectType.kind === TypeKind.Class ||
+    objectType.kind === TypeKind.Interface
+  ) {
+    const classType = objectType as ClassType | InterfaceType;
+    const method = classType.methods.get('[]');
+    if (method) {
+      if (method.parameters.length !== 1) {
+        ctx.diagnostics.reportError(
+          `Operator [] must take exactly one argument.`,
+          DiagnosticCode.ArgumentCountMismatch,
+        );
+      } else {
+        if (!isAssignableTo(indexType, method.parameters[0])) {
+          ctx.diagnostics.reportError(
+            `Type mismatch in index: expected ${typeToString(method.parameters[0])}, got ${typeToString(indexType)}`,
+            DiagnosticCode.TypeMismatch,
+          );
+        }
+      }
+      return method.returnType;
+    }
+  }
+
+  if (
     indexType.kind !== TypeKind.Number ||
     (indexType as NumberType).name !== 'i32'
   ) {
@@ -743,7 +767,7 @@ function checkIndexExpression(
 
   if (objectType.kind !== TypeKind.Array && !isString) {
     ctx.diagnostics.reportError(
-      `Index expression only supported on arrays or strings, got ${typeToString(objectType)}`,
+      `Index expression only supported on arrays, strings, or types with [] operator, got ${typeToString(objectType)}`,
       DiagnosticCode.NotIndexable,
     );
     return Types.Unknown;

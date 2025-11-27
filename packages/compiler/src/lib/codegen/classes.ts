@@ -350,10 +350,12 @@ export function generateInterfaceVTable(
 
 export function getClassFromTypeIndex(
   ctx: CodegenContext,
-  index: number,
+  typeIndex: number,
 ): ClassInfo | undefined {
   for (const info of ctx.classes.values()) {
-    if (info.structTypeIndex === index) return info;
+    if (info.structTypeIndex === typeIndex) {
+      return info;
+    }
   }
   return undefined;
 }
