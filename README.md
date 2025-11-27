@@ -66,7 +66,7 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 - [x] Abstract classes and members
 - [x] Index operator (`[]` and `[]=`) overloading
 - [x] For loops
-- [ ] While loops
+- [x] While loops
 - [ ] Record and tuple literal syntax (`{...}` and `[ ... ]`)
 - [ ] Mutable Maps and map literals (`#{...}`)
 - [ ] More primitive types
