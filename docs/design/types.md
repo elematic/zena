@@ -212,3 +212,19 @@ type Handler = (event: string) => void;
 
 - **Clarity**: Separates "naming a thing" (type) from "defining the structure of a thing" (interface/class).
 - **Simplicity**: Avoids the TypeScript confusion of "Should I use type or interface?". In Zena: if it has fields/methods, it's an interface. If it's a combination of other types, it's a type alias.
+
+## 8. Soundness & Casting
+
+**Status: Policy**
+
+Zena is designed to be a **Sound** language.
+
+### Decision
+
+- **Checked Casts**: All explicit type casts (e.g., `x as T`) are runtime-checked.
+- **No Unsafe Casts**: There is no mechanism to force a cast without a check (except potentially via FFI/Unsafe blocks in the future, which would be explicitly marked).
+
+### Rationale
+
+- **WASM Safety**: WASM-GC enforces type safety at the instruction level. An unchecked cast would require bypassing the WASM type system, which is generally not possible or desirable in safe code.
+- **Reliability**: Guarantees that if a variable has type `T`, it really is a `T`.

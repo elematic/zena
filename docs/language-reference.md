@@ -10,6 +10,12 @@ Zena is a statically typed language targeting WebAssembly (WASM-GC). It features
 
 Zena is strongly typed. All expressions have a type determined at compile time.
 
+### Soundness
+
+Zena features a **sound type system**. This means that the type checker guarantees that a program that compiles successfully will not exhibit type errors at runtime. For example, if a variable is typed as `String`, it is guaranteed to always hold a string value at runtime.
+
+This soundness is enforced by the underlying WASM-GC architecture. Zena does not support "unsafe" blocks or unchecked type assertions that could violate memory safety.
+
 ### Primitive Types
 
 - **`i32`**: 32-bit signed integer. This is the default type for integer literals.
@@ -25,6 +31,12 @@ Local variable types are inferred from their initializer expression.
 let x = 10; // Inferred as i32
 let s = 'hello'; // Inferred as string
 ```
+
+### Type Casting
+
+Zena enforces strict type safety and does not support implicit type coercion.
+
+Explicit type casts (e.g., using an `as` operator) are **checked casts**. This means the validity of the cast is verified at runtime. If the value is not of the target type, a runtime error (trap) is raised. This ensures that the type system remains sound even when downcasting.
 
 ## 3. Variables
 
