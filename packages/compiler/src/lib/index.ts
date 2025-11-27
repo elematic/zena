@@ -8,6 +8,7 @@ export * from './wasm.js';
 export * from './emitter.js';
 export * from './diagnostics.js';
 export * from './codegen/index.js';
+export * from './compiler.js';
 
 import {Parser} from './parser.js';
 import {CodeGenerator} from './codegen/index.js';
