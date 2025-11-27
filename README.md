@@ -65,12 +65,13 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 - [x] Mutable Arrays and array literals (`#[...]`)
 - [x] Abstract classes and members
 - [x] Index operator (`[]` and `[]=`) overloading
+- [x] For loops
 - [ ] Record and tuple literal syntax (`{...}` and `[ ... ]`)
 - [ ] Mutable Maps and map literals (`#{...}`)
 - [ ] More primitive types
 - [ ] Modules and imports
 - [ ] Blocks
-- [ ] For and do/while loops
+- [ ] Do/while loops
 - [ ] Pattern matching
 - [ ] For/of loops
 - [ ] Iterators

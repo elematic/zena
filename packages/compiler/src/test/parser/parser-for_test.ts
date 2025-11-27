@@ -17,37 +17,23 @@ suite('Parser - For Loops', () => {
 
     const func = ast.body[0];
     assert.strictEqual(func.type, NodeType.VariableDeclaration);
-    if (func.type === NodeType.VariableDeclaration) {
-      const fn = func.init;
-      assert.strictEqual(fn.type, NodeType.FunctionExpression);
-      if (fn.type === NodeType.FunctionExpression) {
-        assert.strictEqual(fn.body.type, NodeType.BlockStatement);
-        if (fn.body.type === NodeType.BlockStatement) {
-          assert.strictEqual(fn.body.body.length, 1);
-          const forStmt = fn.body.body[0];
-          assert.strictEqual(forStmt.type, NodeType.ForStatement);
-          if (forStmt.type === NodeType.ForStatement) {
-            // Check init (var declaration)
-            assert.ok(forStmt.init);
-            assert.strictEqual(forStmt.init!.type, NodeType.VariableDeclaration);
-
-            // Check test
-            assert.ok(forStmt.test);
-            assert.strictEqual(forStmt.test!.type, NodeType.BinaryExpression);
-
-            // Check update
-            assert.ok(forStmt.update);
-            assert.strictEqual(
-              forStmt.update!.type,
-              NodeType.AssignmentExpression,
-            );
-
-            // Check body
-            assert.strictEqual(forStmt.body.type, NodeType.BlockStatement);
-          }
-        }
-      }
-    }
+    const fn = func.init;
+    assert.strictEqual(fn.type, NodeType.FunctionExpression);
+    assert.strictEqual(fn.body.type, NodeType.BlockStatement);
+    assert.strictEqual(fn.body.body.length, 1);
+    const forStmt = fn.body.body[0];
+    assert.strictEqual(forStmt.type, NodeType.ForStatement);
+    // Check init (var declaration)
+    assert.ok(forStmt.init);
+    assert.strictEqual(forStmt.init!.type, NodeType.VariableDeclaration);
+    // Check test
+    assert.ok(forStmt.test);
+    assert.strictEqual(forStmt.test!.type, NodeType.BinaryExpression);
+    // Check update
+    assert.ok(forStmt.update);
+    assert.strictEqual(forStmt.update!.type, NodeType.AssignmentExpression);
+    // Check body
+    assert.strictEqual(forStmt.body.type, NodeType.BlockStatement);
   });
 
   test('should parse for loop without init', () => {
@@ -61,20 +47,15 @@ suite('Parser - For Loops', () => {
     const ast = parser.parse();
 
     const func = ast.body[0];
-    if (func.type === NodeType.VariableDeclaration) {
-      const fn = func.init;
-      if (fn.type === NodeType.FunctionExpression) {
-        if (fn.body.type === NodeType.BlockStatement) {
-          const forStmt = fn.body.body[1];
-          assert.strictEqual(forStmt.type, NodeType.ForStatement);
-          if (forStmt.type === NodeType.ForStatement) {
-            assert.strictEqual(forStmt.init, undefined);
-            assert.ok(forStmt.test);
-            assert.ok(forStmt.update);
-          }
-        }
-      }
-    }
+    assert.strictEqual(func.type, NodeType.VariableDeclaration);
+    const fn = func.init;
+    assert.strictEqual(fn.type, NodeType.FunctionExpression);
+    assert.strictEqual(fn.body.type, NodeType.BlockStatement);
+    const forStmt = fn.body.body[1];
+    assert.strictEqual(forStmt.type, NodeType.ForStatement);
+    assert.strictEqual(forStmt.init, undefined);
+    assert.ok(forStmt.test);
+    assert.ok(forStmt.update);
   });
 
   test('should parse for loop without test', () => {
@@ -89,20 +70,15 @@ suite('Parser - For Loops', () => {
     const ast = parser.parse();
 
     const func = ast.body[0];
-    if (func.type === NodeType.VariableDeclaration) {
-      const fn = func.init;
-      if (fn.type === NodeType.FunctionExpression) {
-        if (fn.body.type === NodeType.BlockStatement) {
-          const forStmt = fn.body.body[0];
-          assert.strictEqual(forStmt.type, NodeType.ForStatement);
-          if (forStmt.type === NodeType.ForStatement) {
-            assert.ok(forStmt.init);
-            assert.strictEqual(forStmt.test, undefined);
-            assert.ok(forStmt.update);
-          }
-        }
-      }
-    }
+    assert.strictEqual(func.type, NodeType.VariableDeclaration);
+    const fn = func.init;
+    assert.strictEqual(fn.type, NodeType.FunctionExpression);
+    assert.strictEqual(fn.body.type, NodeType.BlockStatement);
+    const forStmt = fn.body.body[0];
+    assert.strictEqual(forStmt.type, NodeType.ForStatement);
+    assert.ok(forStmt.init);
+    assert.strictEqual(forStmt.test, undefined);
+    assert.ok(forStmt.update);
   });
 
   test('should parse for loop without update', () => {
@@ -117,20 +93,15 @@ suite('Parser - For Loops', () => {
     const ast = parser.parse();
 
     const func = ast.body[0];
-    if (func.type === NodeType.VariableDeclaration) {
-      const fn = func.init;
-      if (fn.type === NodeType.FunctionExpression) {
-        if (fn.body.type === NodeType.BlockStatement) {
-          const forStmt = fn.body.body[0];
-          assert.strictEqual(forStmt.type, NodeType.ForStatement);
-          if (forStmt.type === NodeType.ForStatement) {
-            assert.ok(forStmt.init);
-            assert.ok(forStmt.test);
-            assert.strictEqual(forStmt.update, undefined);
-          }
-        }
-      }
-    }
+    assert.strictEqual(func.type, NodeType.VariableDeclaration);
+    const fn = func.init;
+    assert.strictEqual(fn.type, NodeType.FunctionExpression);
+    assert.strictEqual(fn.body.type, NodeType.BlockStatement);
+    const forStmt = fn.body.body[0];
+    assert.strictEqual(forStmt.type, NodeType.ForStatement);
+    assert.ok(forStmt.init);
+    assert.ok(forStmt.test);
+    assert.strictEqual(forStmt.update, undefined);
   });
 
   test('should parse for loop with expression init', () => {
@@ -144,22 +115,14 @@ suite('Parser - For Loops', () => {
     const ast = parser.parse();
 
     const func = ast.body[0];
-    if (func.type === NodeType.VariableDeclaration) {
-      const fn = func.init;
-      if (fn.type === NodeType.FunctionExpression) {
-        if (fn.body.type === NodeType.BlockStatement) {
-          const forStmt = fn.body.body[1];
-          assert.strictEqual(forStmt.type, NodeType.ForStatement);
-          if (forStmt.type === NodeType.ForStatement) {
-            assert.ok(forStmt.init);
-            assert.strictEqual(
-              forStmt.init!.type,
-              NodeType.AssignmentExpression,
-            );
-          }
-        }
-      }
-    }
+    assert.strictEqual(func.type, NodeType.VariableDeclaration);
+    const fn = func.init;
+    assert.strictEqual(fn.type, NodeType.FunctionExpression);
+    assert.strictEqual(fn.body.type, NodeType.BlockStatement);
+    const forStmt = fn.body.body[1];
+    assert.strictEqual(forStmt.type, NodeType.ForStatement);
+    assert.ok(forStmt.init);
+    assert.strictEqual(forStmt.init!.type, NodeType.AssignmentExpression);
   });
 
   test('should parse empty for loop', () => {
@@ -174,19 +137,14 @@ suite('Parser - For Loops', () => {
     const ast = parser.parse();
 
     const func = ast.body[0];
-    if (func.type === NodeType.VariableDeclaration) {
-      const fn = func.init;
-      if (fn.type === NodeType.FunctionExpression) {
-        if (fn.body.type === NodeType.BlockStatement) {
-          const forStmt = fn.body.body[0];
-          assert.strictEqual(forStmt.type, NodeType.ForStatement);
-          if (forStmt.type === NodeType.ForStatement) {
-            assert.strictEqual(forStmt.init, undefined);
-            assert.strictEqual(forStmt.test, undefined);
-            assert.strictEqual(forStmt.update, undefined);
-          }
-        }
-      }
-    }
+    assert.strictEqual(func.type, NodeType.VariableDeclaration);
+    const fn = func.init;
+    assert.strictEqual(fn.type, NodeType.FunctionExpression);
+    assert.strictEqual(fn.body.type, NodeType.BlockStatement);
+    const forStmt = fn.body.body[0];
+    assert.strictEqual(forStmt.type, NodeType.ForStatement);
+    assert.strictEqual(forStmt.init, undefined);
+    assert.strictEqual(forStmt.test, undefined);
+    assert.strictEqual(forStmt.update, undefined);
   });
 });
