@@ -187,19 +187,15 @@ This project is an **npm monorepo** managed with **Wireit**.
     - Static dispatch for overridden methods.
 - [x] Implement Accessors (Parser, Checker, Codegen).
 - [x] Implement `final` modifier (Parser, Checker, Codegen).
+- [x] Implement Host Interop:
+  - Imports (`declare`, `@external`).
+  - Exports (Functions, Classes).
+  - Standard Library (`Console`).
+  - Runtime Helper.
 
 ### Planned
 
 1.  **Host Interop** (Immediate Priority):
-    - **Imports**:
-      - [x] Implement `declare` keyword for external functions.
-      - [x] Implement `@external` decorator for module/name mapping.
-    - **Exports**:
-      - [x] Ensure `export` works for functions and classes.
-    - **Standard Library**:
-      - [x] Implement `Console` using host imports.
-    - **Runtime**:
-      - [x] Create a JS runtime helper for instantiating Zena modules and providing standard imports.
     - **Function Overloading**:
       - Support multiple `declare function` signatures with the same name but different parameters.
     - **WASM GC Interop Notes**:

@@ -237,27 +237,13 @@ for (var i = 0; i < 10; ) {
 
 ### Exports
 
-Top-level variable declarations can be exported using the `export` keyword. This exposes the variable (or function) to the host environment or other modules.
+Top-level declarations (variables, functions, classes) can be exported using the `export` keyword. This exposes them to the host environment.
 
 ```typescript
+// Export a function
 export const add = (a: i32, b: i32) => a + b;
-```
 
-### Exports
-
-Functions and classes can be exported to the host environment using the `export` keyword.
-
-#### Exporting Functions
-
-```typescript
-export let add = (a: i32, b: i32): i32 => a + b;
-```
-
-This creates a WASM export named `add`.
-
-#### Exporting Classes
-
-```typescript
+// Export a class
 export class Point {
   x: i32;
   y: i32;
@@ -268,7 +254,19 @@ export class Point {
 }
 ```
 
-Exporting a class creates a factory function with the same name as the class (e.g., `Point`). This function allocates a new instance, calls the constructor, and returns the instance.
+### Imports (Host Interop)
+
+Zena allows importing functions from the host environment using the `declare` keyword and the `@external` decorator.
+
+```typescript
+@external("env", "log")
+declare function log(val: i32): void;
+```
+
+- **`@external(module, name)`**: Specifies the WASM import module and name.
+- **`declare function`**: Defines the function signature. The function body is omitted.
+
+These declarations map to WebAssembly imports, allowing Zena to call JavaScript functions (or other WASM modules).
 
 ## 14. Grammar (Simplified)
 
