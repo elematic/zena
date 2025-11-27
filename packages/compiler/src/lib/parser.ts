@@ -53,6 +53,10 @@ export class Parser {
         this.#consume(TokenType.Class, "Expected 'class' after 'final'.");
         return this.#parseClassDeclaration(true, true);
       }
+      if (this.#match(TokenType.Abstract)) {
+        this.#consume(TokenType.Class, "Expected 'class' after 'abstract'.");
+        return this.#parseClassDeclaration(true, false, true);
+      }
       if (this.#match(TokenType.Class)) {
         return this.#parseClassDeclaration(true);
       }
@@ -79,6 +83,10 @@ export class Parser {
     if (this.#match(TokenType.Final)) {
       this.#consume(TokenType.Class, "Expected 'class' after 'final'.");
       return this.#parseClassDeclaration(false, true);
+    }
+    if (this.#match(TokenType.Abstract)) {
+      this.#consume(TokenType.Class, "Expected 'class' after 'abstract'.");
+      return this.#parseClassDeclaration(false, false, true);
     }
     if (this.#match(TokenType.Class)) {
       return this.#parseClassDeclaration(false);
@@ -568,6 +576,7 @@ export class Parser {
   #parseClassDeclaration(
     exported: boolean,
     isFinal: boolean = false,
+    isAbstract: boolean = false,
   ): ClassDeclaration {
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
@@ -584,9 +593,8 @@ export class Parser {
       } while (this.#match(TokenType.Comma));
     }
 
-    let implementsList: TypeAnnotation[] | undefined;
+    const implementsList: TypeAnnotation[] = [];
     if (this.#match(TokenType.Implements)) {
-      implementsList = [];
       do {
         implementsList.push(this.#parseTypeAnnotation());
       } while (this.#match(TokenType.Comma));
@@ -608,10 +616,11 @@ export class Parser {
       typeParameters,
       superClass,
       mixins: mixins.length > 0 ? mixins : undefined,
-      implements: implementsList,
+      implements: implementsList.length > 0 ? implementsList : undefined,
       body,
       exported,
       isFinal,
+      isAbstract,
     };
   }
 
@@ -661,6 +670,11 @@ export class Parser {
       isFinal = true;
     }
 
+    let isAbstract = false;
+    if (this.#match(TokenType.Abstract)) {
+      isAbstract = true;
+    }
+
     let name: Identifier;
     if (this.#match(TokenType.Hash)) {
       if (this.#match(TokenType.New)) {
@@ -695,8 +709,16 @@ export class Parser {
         returnType = this.#parseTypeAnnotation();
       }
 
-      this.#consume(TokenType.LBrace, "Expected '{' before method body.");
-      const body = this.#parseBlockStatement();
+      let body: BlockStatement | undefined;
+      if (isAbstract) {
+        this.#consume(
+          TokenType.Semi,
+          "Expected ';' after abstract method signature.",
+        );
+      } else {
+        this.#consume(TokenType.LBrace, "Expected '{' before method body.");
+        body = this.#parseBlockStatement();
+      }
 
       return {
         type: NodeType.MethodDefinition,
@@ -705,7 +727,18 @@ export class Parser {
         returnType,
         body,
         isFinal,
+        isAbstract,
       };
+    }
+
+    if (isAbstract) {
+      // Abstract fields? Not supported yet, or maybe they are just fields without init?
+      // For now, let's assume abstract is only for methods.
+      // Or maybe abstract fields are allowed?
+      // "Virtual Fields: Implement Uniform Access Principle (treat public fields as virtual properties with default accessors)."
+      // If we have abstract fields, they would be abstract accessors.
+      // For now, let's error if abstract is used on field.
+      throw new Error('Abstract fields are not supported yet.');
     }
 
     // Field: name: Type; or name: Type = value;

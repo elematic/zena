@@ -299,6 +299,55 @@ let a: Animal = new Dog();
 a.speak(); // Returns 1 (Dog's implementation)
 ```
 
+### Abstract Classes
+
+Abstract classes are classes that cannot be instantiated directly. They are used as base classes for other classes.
+
+- Defined using the `abstract` keyword.
+- Can contain abstract methods (methods without a body).
+- Concrete subclasses MUST implement all abstract methods.
+
+```typescript
+abstract class Shape {
+  abstract area(): i32;
+
+  getType(): i32 {
+    return 1;
+  }
+}
+
+class Square extends Shape {
+  side: i32;
+  #new(side: i32) {
+    this.side = side;
+  }
+
+  area(): i32 {
+    return this.side * this.side;
+  }
+}
+```
+
+### Abstract Classes
+
+Classes can be declared as `abstract`. Abstract classes cannot be instantiated directly. They can contain abstract methods, which are methods without a body that must be implemented by concrete subclasses.
+
+```typescript
+abstract class Shape {
+  abstract area(): i32;
+}
+
+class Square extends Shape {
+  side: i32;
+  #new(side: i32) {
+    this.side = side;
+  }
+  area(): i32 {
+    return this.side * this.side;
+  }
+}
+```
+
 ## 9. Mixins
 
 Mixins provide a way to reuse code across multiple class hierarchies. They act as "subclass factories" that can be applied to various base classes.

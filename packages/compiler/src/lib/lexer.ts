@@ -22,6 +22,7 @@ export const TokenType = {
   Mixin: 'Mixin',
   With: 'With',
   On: 'On',
+  Abstract: 'Abstract',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -92,6 +93,7 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   mixin: TokenType.Mixin,
   with: TokenType.With,
   on: TokenType.On,
+  abstract: TokenType.Abstract,
 });
 
 export const tokenize = (source: string): Token[] => {

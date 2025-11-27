@@ -151,6 +151,7 @@ export interface ClassDeclaration extends Node {
   body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[];
   exported: boolean;
   isFinal: boolean;
+  isAbstract: boolean;
 }
 
 export interface MixinDeclaration extends Node {
@@ -203,8 +204,9 @@ export interface MethodDefinition extends Node {
   name: Identifier;
   params: Parameter[];
   returnType?: TypeAnnotation;
-  body: BlockStatement;
+  body?: BlockStatement;
   isFinal: boolean;
+  isAbstract: boolean;
 }
 
 export interface NewExpression extends Node {
