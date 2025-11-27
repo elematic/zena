@@ -198,4 +198,30 @@ let y = 2;`;
       TokenType.EOF,
     ]);
   });
+
+  test('should handle unclosed multi-line comment at end of file', () => {
+    const input = 'let x = 1; /* unclosed';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      TokenType.Let,
+      [TokenType.Identifier, 'x'],
+      TokenType.Equals,
+      [TokenType.Number, '1'],
+      TokenType.Semi,
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should handle multi-line comment ending with star at EOF', () => {
+    const input = 'let x = 1; /*comment*';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      TokenType.Let,
+      [TokenType.Identifier, 'x'],
+      TokenType.Equals,
+      [TokenType.Number, '1'],
+      TokenType.Semi,
+      TokenType.EOF,
+    ]);
+  });
 });

@@ -306,7 +306,11 @@ export const tokenize = (source: string): Token[] => {
           // Multi-line comment
           advance(); // consume '*'
           while (current < source.length) {
-            if (peek() === '*' && source[current + 1] === '/') {
+            if (
+              peek() === '*' &&
+              current + 1 < source.length &&
+              source[current + 1] === '/'
+            ) {
               advance(); // consume '*'
               advance(); // consume '/'
               break;
