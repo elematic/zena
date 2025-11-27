@@ -64,4 +64,42 @@ suite('Codegen - Field Initialization', () => {
     const result = await compileAndRun(source, 'run');
     assert.equal(result, 0);
   });
+
+  test('should demonstrate initialization hazard (virtual call from super constructor)', async () => {
+    // This test confirms the current behavior where virtual calls from super
+    // constructors execute BEFORE subclass field initializers. Base constructor
+    // calls setup() -> Derived.setup() -> accesses this.x At this point,
+    // Derived.x has NOT been initialized yet (it defaults to 0 for i32).
+    const source = `
+      class Base {
+        #new() {
+          this.setup();
+        }
+        setup(): void {}
+      }
+      
+      class Derived extends Base {
+        x: i32 = 100;
+        capturedX: i32;
+
+        setup(): void {
+          // Hazard: this.x is not initialized yet!
+          // In WASM, uninitialized i32 fields are 0.
+          if (this.x == 0) {
+             this.capturedX = 1; // Proof that x was 0
+          } else {
+             this.capturedX = 2; // Proof that x was initialized
+          }
+        }
+      }
+      
+      export let run = (): i32 => {
+        let d = new Derived();
+        // capturedX should be 1 because x was 0 when setup() ran.
+        return d.capturedX;
+      };
+    `;
+    const result = await compileAndRun(source, 'run');
+    assert.equal(result, 1);
+  });
 });
