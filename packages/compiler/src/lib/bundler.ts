@@ -8,6 +8,8 @@ import {
   type ClassDeclaration,
   type Node,
   type ImportDeclaration,
+  type TypeAnnotation,
+  type InterfaceDeclaration,
 } from './ast.js';
 import type {Module} from './compiler.js';
 
@@ -206,15 +208,25 @@ class ASTRewriter {
         break;
       case NodeType.FunctionExpression:
       case NodeType.DeclareFunction: // DeclareFunction usually doesn't have body, but params introduce scope
+        if (
+          node.type === NodeType.DeclareFunction &&
+          this.scopeStack.length === 1
+        ) {
+          (node as any).name.name = this.prefix + (node as any).name.name;
+        }
         this.enterScope();
         // Visit params
         const func = node as any;
+        if (func.typeParameters) {
+          func.typeParameters.forEach((t: any) => this.visit(t));
+        }
         if (func.params) {
           func.params.forEach((p: any) => {
             this.addToScope(p.name.name);
-            // Type annotations?
+            if (p.typeAnnotation) this.visit(p.typeAnnotation);
           });
         }
+        if (func.returnType) this.visit(func.returnType);
         if (func.body) {
           // FunctionExpression has body (BlockStatement)
           // BlockStatement will enter another scope?
@@ -229,24 +241,146 @@ class ASTRewriter {
         this.exitScope();
         break;
       case NodeType.ClassDeclaration:
-        // Class name is top-level (already handled?)
-        // Members?
         const cls = node as ClassDeclaration;
+        if (this.scopeStack.length === 1) {
+          cls.name.name = this.prefix + cls.name.name;
+        }
+
+        if (cls.superClass) this.visitIdentifier(cls.superClass);
+        if (cls.mixins) cls.mixins.forEach((m) => this.visitIdentifier(m));
+        if (cls.implements) cls.implements.forEach((i) => this.visit(i));
+        if (cls.typeParameters)
+          cls.typeParameters.forEach((t) => this.visit(t));
+
         // We need to visit members but NOT rename member names (properties).
         // But we need to visit values (initializers, method bodies).
         cls.body.forEach((member) => {
           if (member.type === NodeType.FieldDefinition) {
             if (member.value) this.visit(member.value);
+            if (member.typeAnnotation) this.visit(member.typeAnnotation);
           } else if (member.type === NodeType.MethodDefinition) {
             this.enterScope();
-            member.params.forEach((p) => this.addToScope(p.name.name));
+            member.params.forEach((p) => {
+              this.addToScope(p.name.name);
+              if (p.typeAnnotation) this.visit(p.typeAnnotation);
+            });
+            if (member.returnType) this.visit(member.returnType);
             if (member.body) {
               member.body.body.forEach((s) => this.visit(s));
             }
             this.exitScope();
+          } else if (member.type === NodeType.AccessorDeclaration) {
+            if (member.typeAnnotation) this.visit(member.typeAnnotation);
+            if (member.getter) {
+              this.enterScope();
+              member.getter.body.forEach((s) => this.visit(s));
+              this.exitScope();
+            }
+            if (member.setter) {
+              this.enterScope();
+              this.addToScope(member.setter.param.name);
+              member.setter.body.body.forEach((s) => this.visit(s));
+              this.exitScope();
+            }
           }
         });
         break;
+
+      case NodeType.InterfaceDeclaration: {
+        const iface = node as InterfaceDeclaration;
+        if (this.scopeStack.length === 1) {
+          iface.name.name = this.prefix + iface.name.name;
+        }
+        if (iface.typeParameters)
+          iface.typeParameters.forEach((t: any) => this.visit(t));
+        if (iface.extends) iface.extends.forEach((e: any) => this.visit(e));
+
+        iface.body.forEach((member: any) => {
+          if (member.type === NodeType.MethodSignature) {
+            this.enterScope();
+            member.params.forEach((p: any) => {
+              this.addToScope(p.name.name);
+              if (p.typeAnnotation) this.visit(p.typeAnnotation);
+            });
+            if (member.returnType) this.visit(member.returnType);
+            this.exitScope();
+          } else if (member.type === NodeType.FieldDefinition) {
+            if (member.typeAnnotation) this.visit(member.typeAnnotation);
+          }
+        });
+        break;
+      }
+
+      case NodeType.TypeAnnotation: {
+        const typeAnn = node as any;
+        const name = typeAnn.name;
+        if (!this.isLocal(name)) {
+          if (this.importMap.has(name)) {
+            typeAnn.name = this.importMap.get(name)!;
+          } else {
+            const key = `${this.module.path}:${name}`;
+            if (this.globalSymbols.has(key)) {
+              typeAnn.name = this.globalSymbols.get(key)!;
+            }
+          }
+        }
+        if (typeAnn.typeArguments) {
+          typeAnn.typeArguments.forEach((t: any) => this.visit(t));
+        }
+        break;
+      }
+
+      case NodeType.UnionTypeAnnotation: {
+        const union = node as any;
+        if (union.types) {
+          union.types.forEach((t: any) => this.visit(t));
+        }
+        break;
+      }
+
+      case NodeType.MixinDeclaration: {
+        const mixin = node as any;
+        if (this.scopeStack.length === 1) {
+          mixin.name.name = this.prefix + mixin.name.name;
+        }
+        if (mixin.typeParameters)
+          mixin.typeParameters.forEach((t: any) => this.visit(t));
+        if (mixin.on) this.visitIdentifier(mixin.on);
+        if (mixin.mixins)
+          mixin.mixins.forEach((m: any) => this.visitIdentifier(m));
+
+        mixin.body.forEach((member: any) => {
+          if (member.type === NodeType.FieldDefinition) {
+            if (member.value) this.visit(member.value);
+            if (member.typeAnnotation) this.visit(member.typeAnnotation);
+          } else if (member.type === NodeType.MethodDefinition) {
+            this.enterScope();
+            member.params.forEach((p: any) => {
+              this.addToScope(p.name.name);
+              if (p.typeAnnotation) this.visit(p.typeAnnotation);
+            });
+            if (member.returnType) this.visit(member.returnType);
+            if (member.body) {
+              member.body.body.forEach((s: any) => this.visit(s));
+            }
+            this.exitScope();
+          } else if (member.type === NodeType.AccessorDeclaration) {
+            if (member.typeAnnotation) this.visit(member.typeAnnotation);
+            if (member.getter) {
+              this.enterScope();
+              member.getter.body.forEach((s: any) => this.visit(s));
+              this.exitScope();
+            }
+            if (member.setter) {
+              this.enterScope();
+              this.addToScope(member.setter.param.name);
+              member.setter.body.body.forEach((s: any) => this.visit(s));
+              this.exitScope();
+            }
+          }
+        });
+        break;
+      }
 
       // ... handle other nodes recursively
       default:
@@ -274,6 +408,10 @@ class ASTRewriter {
     } else {
       // Local variable
       this.addToScope(decl.identifier.name);
+    }
+
+    if (decl.typeAnnotation) {
+      this.visit(decl.typeAnnotation);
     }
 
     // Visit init

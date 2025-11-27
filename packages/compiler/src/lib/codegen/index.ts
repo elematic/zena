@@ -58,24 +58,29 @@ export class CodeGenerator {
       }
     }
 
-    // 1. Register all classes and interfaces (First pass)
+    // 1. Register Interfaces and Mixins (First pass)
     for (const statement of program.body) {
-      // console.log('Statement type:', statement.type);
+      if (statement.type === NodeType.InterfaceDeclaration) {
+        registerInterface(this.#ctx, statement as InterfaceDeclaration);
+      } else if (statement.type === NodeType.MixinDeclaration) {
+        const mixinDecl = statement as MixinDeclaration;
+        this.#ctx.mixins.set(mixinDecl.name.name, mixinDecl);
+      }
+    }
+
+    // 2. Register Classes (Second pass)
+    for (const statement of program.body) {
       if (statement.type === NodeType.ClassDeclaration) {
-        // console.log('Registering class:', (statement as any).name.name);
         if ((statement as ClassDeclaration).name.name === 'Array') {
           continue;
         }
         registerClass(this.#ctx, statement as ClassDeclaration);
-      } else if (statement.type === NodeType.MixinDeclaration) {
-        const mixinDecl = statement as MixinDeclaration;
-        this.#ctx.mixins.set(mixinDecl.name.name, mixinDecl);
-      } else if (statement.type === NodeType.InterfaceDeclaration) {
-        registerInterface(this.#ctx, statement as InterfaceDeclaration);
-      } else if (statement.type === NodeType.DeclareFunction) {
-        // Already handled in Pass 0
-        continue;
-      } else if (statement.type === NodeType.VariableDeclaration) {
+      }
+    }
+
+    // 3. Register Functions and Variables (Third pass)
+    for (const statement of program.body) {
+      if (statement.type === NodeType.VariableDeclaration) {
         const varDecl = statement as VariableDeclaration;
         if (varDecl.init.type === NodeType.FunctionExpression) {
           registerFunction(

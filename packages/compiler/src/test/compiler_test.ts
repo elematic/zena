@@ -20,6 +20,15 @@ class MockHost implements CompilerHost {
     if (this.files.has(path)) {
       return this.files.get(path)!;
     }
+    if (path.startsWith('zena:')) {
+      if (path === 'zena:string')
+        return 'export final class String { bytes: ByteArray; length: i32; }';
+      if (path === 'zena:array')
+        return 'export final class Array<T> { length: i32; }';
+      if (path === 'zena:console')
+        return 'export class Console {} export let console = new Console();';
+      return '';
+    }
     throw new Error(`File not found: ${path}`);
   }
 }
@@ -44,7 +53,8 @@ describe('Compiler', () => {
     const compiler = new Compiler(host);
     const modules = compiler.compile('main.zena');
 
-    assert.strictEqual(modules.length, 2);
+    // 2 user modules + 3 stdlib modules (string, array, console)
+    assert.strictEqual(modules.length, 5);
 
     const main = modules.find((m) => m.path === 'main.zena');
     const math = modules.find((m) => m.path === 'math.zena');
@@ -131,6 +141,7 @@ describe('Compiler', () => {
     const compiler = new Compiler(host);
     const modules = compiler.compile('a.zena');
 
-    assert.strictEqual(modules.length, 2);
+    // 2 user modules + 3 stdlib modules
+    assert.strictEqual(modules.length, 5);
   });
 });

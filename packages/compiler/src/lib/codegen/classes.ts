@@ -384,7 +384,6 @@ export function decodeTypeIndex(type: number[]): number {
 }
 
 export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
-  // console.log(`Registering class ${decl.name.name}`);
   if (decl.typeParameters && decl.typeParameters.length > 0) {
     ctx.genericClasses.set(decl.name.name, decl);
     return;

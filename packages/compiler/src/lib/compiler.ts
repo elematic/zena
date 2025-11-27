@@ -13,6 +13,7 @@ export interface CompilerHost {
 
 export interface Module {
   path: string;
+  isStdlib: boolean;
   source: string;
   ast: Program;
   imports: Map<string, string>; // specifier -> resolvedPath
@@ -45,7 +46,7 @@ export class Compiler {
     return bundler.bundle();
   }
 
-  #loadModule(path: string): Module {
+  #loadModule(path: string, isStdlib = false): Module {
     if (this.#modules.has(path)) {
       return this.#modules.get(path)!;
     }
@@ -54,8 +55,21 @@ export class Compiler {
     const parser = new Parser(source);
     const ast = parser.parse();
 
+    // Inject prelude imports into user modules (not stdlib modules)
+    if (!isStdlib && !path.startsWith('zena:')) {
+      const preludeParser = new Parser(prelude);
+      const preludeAst = preludeParser.parse();
+      // Extract ImportDeclarations from prelude
+      const preludeImports = preludeAst.body.filter(
+        (node): node is ImportDeclaration =>
+          node.type === NodeType.ImportDeclaration,
+      );
+      ast.body.unshift(...preludeImports);
+    }
+
     const module: Module = {
       path,
+      isStdlib,
       source,
       ast,
       imports: new Map(),
@@ -75,10 +89,15 @@ export class Compiler {
       if (stmt.type === NodeType.ImportDeclaration) {
         const specifier = stmt.moduleSpecifier.value;
         const resolvedPath = this.#host.resolve(specifier, module.path);
+
+        const isImportStdlib =
+          specifier.startsWith('zena:') ||
+          (module.isStdlib && specifier.startsWith('.'));
+
         module.imports.set(specifier, resolvedPath);
 
         // Recursively load imported module
-        this.#loadModule(resolvedPath);
+        this.#loadModule(resolvedPath, isImportStdlib);
       }
     }
   }

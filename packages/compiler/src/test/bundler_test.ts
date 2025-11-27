@@ -16,6 +16,7 @@ function createModule(path: string, code: string): Module {
     imports: new Map(),
     exports: new Map(),
     diagnostics: [],
+    isStdlib: false,
   };
 }
 
