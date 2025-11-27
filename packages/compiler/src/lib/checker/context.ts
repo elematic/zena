@@ -17,6 +17,10 @@ export class CheckerContext {
   program: Program;
   #classStack: (ClassType | null)[] = [];
 
+  // Field initialization tracking
+  isCheckingFieldInitializer = false;
+  initializedFields = new Set<string>();
+
   constructor(program: Program) {
     this.program = program;
   }

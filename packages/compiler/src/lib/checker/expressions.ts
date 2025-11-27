@@ -598,6 +598,25 @@ function checkMemberExpression(
 ): Type {
   const objectType = checkExpression(ctx, expr.object);
 
+  if (
+    ctx.isCheckingFieldInitializer &&
+    expr.object.type === NodeType.ThisExpression
+  ) {
+    const memberName = expr.property.name;
+    // Check if we are accessing a field that hasn't been initialized yet
+    if (
+      objectType.kind === TypeKind.Class &&
+      (objectType as ClassType).fields.has(memberName)
+    ) {
+      if (!ctx.initializedFields.has(memberName)) {
+        ctx.diagnostics.reportError(
+          `Cannot access field '${memberName}' before initialization.`,
+          DiagnosticCode.UnknownError,
+        );
+      }
+    }
+  }
+
   if (objectType.kind === TypeKind.Array) {
     if (expr.property.name === 'length') {
       return Types.I32;

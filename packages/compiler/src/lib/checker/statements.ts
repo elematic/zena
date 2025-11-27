@@ -622,12 +622,24 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   }
 
   // 2. Second pass: Check bodies
+  // Initialize tracking for field initialization order
+  const previousInitializedFields = new Set(ctx.initializedFields);
+  ctx.initializedFields.clear();
+  if (superType) {
+    for (const [name] of superType.fields) {
+      ctx.initializedFields.add(name);
+    }
+  }
+
   for (const member of decl.body) {
     if (member.type === NodeType.MethodDefinition) {
       checkMethodDefinition(ctx, member);
     } else if (member.type === NodeType.FieldDefinition) {
       if (member.value) {
+        ctx.isCheckingFieldInitializer = true;
         const valueType = checkExpression(ctx, member.value);
+        ctx.isCheckingFieldInitializer = false;
+
         const fieldType = classType.fields.get(member.name.name)!;
         if (
           valueType.kind !== fieldType.kind &&
@@ -641,10 +653,15 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           }
         }
       }
+      ctx.initializedFields.add(member.name.name);
     } else if (member.type === NodeType.AccessorDeclaration) {
       checkAccessorDeclaration(ctx, member);
+      ctx.initializedFields.add(member.name.name);
     }
   }
+
+  // Restore previous state
+  ctx.initializedFields = previousInitializedFields;
 
   ctx.exitClass();
   ctx.exitScope();
