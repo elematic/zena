@@ -430,11 +430,16 @@ To mitigate these hazards, Zena enforces strict rules on constructor implementat
     - Accessing a field declared later in the same class is a **compile-time error**.
     - `this` is accessible, and accessing inherited fields is allowed.
 
-### 10.3. Remaining Hazards
+### 10.3. Remaining Hazards (Soundness Hole)
 
 While these rules prevent accessing uninitialized fields _within the subclass constructor_, they do **not** prevent the "Virtual Call from Super Constructor" hazard.
 
 If a superclass constructor calls a virtual method overridden by the subclass, that method will execute _before_ the subclass fields are initialized (because `super()` is still running).
+
+**This is a known hole in the type system's soundness.**
+
+- **Violation**: A field declared as non-nullable (e.g., `x: String`) is technically `null` during this window.
+- **Consequence**: If the overridden method accesses `this.x`, it will observe `null`. Attempting to use it (e.g., `this.x.length`) will cause a runtime trap (Null Pointer Exception), violating the static type guarantee.
 
 ```typescript
 class Base {
@@ -445,14 +450,48 @@ class Base {
 }
 
 class Sub extends Base {
-  data: string = 'hello';
+  data: String = 'hello'; // Non-nullable String
   #new() {
     super(); // Calls Base constructor -> calls setup() -> accesses uninitialized data!
   }
   override setup() {
-    console.log(this.data.length); // CRASH or Garbage
+    // Runtime Error: Null Pointer Exception (trap)
+    // despite 'data' being typed as non-nullable String.
+    console.log(this.data.length);
   }
 }
 ```
+
+### 10.4. Potential Solutions
+
+To close this soundness hole, we are considering several approaches:
+
+1.  **Pre-Super Initialization (Dart, Swift)**
+    - **Mechanism**: Initialize subclass fields _before_ calling `super()`.
+    - **Pros**: The subclass fields are fully initialized when the super constructor runs. Virtual calls see valid data.
+    - **Cons**: Field initializers cannot access `this` or inherited fields (because the superclass isn't initialized yet). This restricts patterns like `x = this.y + 1`.
+
+2.  **Ban Virtual Calls in Constructors**
+    - **Mechanism**: Statically prevent calling virtual methods on `this` during construction.
+    - **Pros**: Prevents the hazard entirely.
+    - **Cons**: Difficult to enforce across module boundaries (requires analyzing the call graph of the super constructor).
+
+3.  **Masking / Flow Typing**
+    - **Mechanism**: Treat all fields as potentially `null` within the constructor until they are proven initialized.
+    - **Pros**: Type-safe.
+    - **Cons**: Increases complexity for the user (must handle nulls) and the compiler (flow analysis).
+
+4.  **Object Slicing (C++)**
+    - **Mechanism**: During `Base` construction, the object's VTable points to `Base`, not `Derived`. Virtual calls execute `Base`'s implementation.
+    - **Pros**: Safe (no uninitialized derived fields accessed).
+    - **Cons**: Confusing behavior (polymorphism is temporarily disabled).
+
+5.  **Enhanced Pre-Super Initialization (Hybrid)**
+    - **Mechanism**: Allow initializing fields before `super()`, with restricted access to `this`.
+      - Can read fields that are provably initialized earlier in the same class.
+      - Cannot read inherited fields (super not initialized).
+      - Cannot call virtual methods or pass `this` externally (escape analysis).
+    - **Pros**: Solves the hazard while allowing more expressive initialization than strict pre-super checks.
+    - **Cons**: Complex to implement (requires tracking initialization state and restricted `this` usage).
 
 Zena currently allows this pattern but warns users to avoid calling virtual methods in constructors. Future versions may introduce stricter checks or "Two-Phase Initialization" to prevent this.
