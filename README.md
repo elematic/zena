@@ -67,10 +67,10 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 - [x] Index operator (`[]` and `[]=`) overloading
 - [x] For loops
 - [x] While loops
+- [x] Modules and imports
 - [ ] Record and tuple literal syntax (`{...}` and `[ ... ]`)
 - [ ] Mutable Maps and map literals (`#{...}`)
 - [ ] More primitive types
-- [ ] Modules and imports
 - [ ] Blocks
 - [ ] Do/while loops
 - [ ] Pattern matching
