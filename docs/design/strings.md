@@ -8,7 +8,7 @@ using WASM GC arrays.
 ## Representation
 
 - **WASM Type**: `(ref null $string)` where `$string` is defined as `(array
-(mut i8))`.
+(mut i8))`. This type is exposed in Zena as `ByteArray`.
   - _Note_: While the WASM type definition uses `mut i8` to allow for
     efficient construction (e.g., concatenation), the language semantics
     enforce immutability. User code cannot modify string contents after

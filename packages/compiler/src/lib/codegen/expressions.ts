@@ -446,6 +446,10 @@ function generateIndexExpression(
 
     body.push(0xfb, GcOpcode.array_get_u);
     body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
+  } else if (arrayTypeIndex === ctx.byteArrayTypeIndex) {
+    generateExpression(ctx, expr.index, body);
+    body.push(0xfb, GcOpcode.array_get_u);
+    body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
   } else {
     generateExpression(ctx, expr.index, body);
     body.push(0xfb, GcOpcode.array_get);

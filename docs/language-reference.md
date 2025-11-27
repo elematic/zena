@@ -22,6 +22,7 @@ This soundness is enforced by the underlying WASM-GC architecture. Zena does not
 - **`f32`**: 32-bit floating-point number.
 - **`boolean`**: Boolean value (`true` or `false`).
 - **`string`**: UTF-8 string.
+- **`ByteArray`**: A mutable array of 8-bit integers. This is a low-level type primarily used for implementing strings and binary data manipulation.
 
 ### Type Inference
 

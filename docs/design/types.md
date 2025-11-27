@@ -125,6 +125,7 @@ See [Strings Design](./strings.md) for details on string implementation.
 
 - **`boolean`**: Maps to `i32` (0 or 1).
 - **`void`**: Represents the absence of a value (for function returns).
+- **`ByteArray`**: Maps to `(array (mut i8))`. Used for low-level binary data and string implementation.
 
 ### Future Consideration: SIMD
 
