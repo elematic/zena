@@ -270,6 +270,14 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       }
       return [ValType.i32];
     }
+    case NodeType.NumberLiteral: {
+      const numExpr = expr as NumberLiteral;
+      if (Number.isInteger(numExpr.value)) {
+        return [ValType.i32];
+      } else {
+        return [ValType.f32];
+      }
+    }
     case NodeType.ArrayLiteral: {
       // TODO: Infer array type correctly. Assuming i32 for now.
       const typeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
@@ -1113,6 +1121,46 @@ function generateCallExpression(
         body.push(Opcode.call);
         body.push(...WasmModule.encodeSignedLEB128(funcIndex));
         return;
+      }
+
+      if (ctx.functionOverloads.has(name)) {
+        const overloads = ctx.functionOverloads.get(name)!;
+        const argTypes = expr.arguments.map((arg) => inferType(ctx, arg));
+
+        let bestMatchIndex = -1;
+
+        for (const overload of overloads) {
+          if (overload.params.length !== argTypes.length) continue;
+
+          let match = true;
+          for (let i = 0; i < argTypes.length; i++) {
+            const paramType = overload.params[i];
+            const argType = argTypes[i];
+
+            if (paramType.length !== argType.length) {
+              match = false;
+              break;
+            }
+            for (let j = 0; j < paramType.length; j++) {
+              if (paramType[j] !== argType[j]) {
+                match = false;
+                break;
+              }
+            }
+            if (!match) break;
+          }
+
+          if (match) {
+            bestMatchIndex = overload.index;
+            break;
+          }
+        }
+
+        if (bestMatchIndex !== -1) {
+          body.push(Opcode.call);
+          body.push(...WasmModule.encodeSignedLEB128(bestMatchIndex));
+          return;
+        }
       }
 
       const funcIndex = ctx.functions.get(name);

@@ -166,6 +166,34 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
   let funcType = calleeType as FunctionType;
   const argTypes = expr.arguments.map((arg) => checkExpression(ctx, arg));
 
+  // Overload resolution
+  if (funcType.overloads && funcType.overloads.length > 0) {
+    const candidates = [funcType, ...funcType.overloads];
+    let bestMatch: FunctionType | null = null;
+
+    for (const candidate of candidates) {
+      if (candidate.parameters.length !== argTypes.length) continue;
+
+      let match = true;
+      // TODO: Handle generic overloads
+      for (let i = 0; i < argTypes.length; i++) {
+        if (!isAssignableTo(argTypes[i], candidate.parameters[i])) {
+          match = false;
+          break;
+        }
+      }
+
+      if (match) {
+        bestMatch = candidate;
+        break;
+      }
+    }
+
+    if (bestMatch) {
+      funcType = bestMatch;
+    }
+  }
+
   if (funcType.typeParameters && funcType.typeParameters.length > 0) {
     let typeArguments: Type[] = [];
 

@@ -193,6 +193,18 @@ export function registerDeclaredFunction(
     typeIndex,
   );
 
-  ctx.functions.set(decl.name.name, funcIndex);
-  ctx.functionReturnTypes.set(decl.name.name, returnType);
+  // Register as primary function if not exists (for backward compat / simple cases)
+  if (!ctx.functions.has(decl.name.name)) {
+    ctx.functions.set(decl.name.name, funcIndex);
+    ctx.functionReturnTypes.set(decl.name.name, returnType);
+  }
+
+  // Register in overload list
+  if (!ctx.functionOverloads.has(decl.name.name)) {
+    ctx.functionOverloads.set(decl.name.name, []);
+  }
+  ctx.functionOverloads.get(decl.name.name)!.push({
+    index: funcIndex,
+    params: params,
+  });
 }

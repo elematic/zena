@@ -52,6 +52,7 @@ export interface FunctionType extends Type {
   returnType: Type;
   isFinal?: boolean;
   isAbstract?: boolean;
+  overloads?: FunctionType[];
 }
 
 export interface InterfaceType extends Type {

@@ -1,5 +1,5 @@
 import {DiagnosticBag, DiagnosticCode} from '../diagnostics.js';
-import type {Type, ClassType} from '../types.js';
+import type {Type, ClassType, FunctionType} from '../types.js';
 import type {Program} from '../ast.js';
 
 export interface SymbolInfo {
@@ -45,10 +45,28 @@ export class CheckerContext {
   declare(name: string, type: Type, kind: 'let' | 'var' = 'let') {
     const scope = this.scopes[this.scopes.length - 1];
     if (scope.has(name)) {
+      const existing = scope.get(name)!;
+      // Allow overloading for functions
+      if (
+        existing.kind === 'let' &&
+        kind === 'let' &&
+        existing.type.kind === 'Function' &&
+        type.kind === 'Function'
+      ) {
+        const existingFunc = existing.type as FunctionType;
+        const newFunc = type as FunctionType;
+        if (!existingFunc.overloads) {
+          existingFunc.overloads = [];
+        }
+        existingFunc.overloads.push(newFunc);
+        return;
+      }
+
       this.diagnostics.reportError(
         `Variable '${name}' is already declared in this scope.`,
         DiagnosticCode.DuplicateDeclaration,
       );
+      return;
     }
     scope.set(name, {type, kind});
   }

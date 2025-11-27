@@ -18,6 +18,10 @@ export class CodegenContext {
   public extraLocals: number[][] = [];
   public nextLocalIndex = 0;
   public functions = new Map<string, number>();
+  public functionOverloads = new Map<
+    string,
+    {index: number; params: number[][]}[]
+  >();
   public classes = new Map<string, ClassInfo>();
   public mixins = new Map<string, MixinDeclaration>();
   public interfaces = new Map<string, InterfaceInfo>();

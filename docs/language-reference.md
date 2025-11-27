@@ -97,6 +97,20 @@ let add = (a: i32, b: i32) => {
 };
 ```
 
+### Function Overloading
+
+Zena supports function overloading for declared external functions. This allows you to define multiple signatures for the same function name, provided they have different parameter lists.
+
+```typescript
+declare function print(val: i32): void;
+declare function print(val: f32): void;
+
+print(42); // Calls print(i32)
+print(3.14); // Calls print(f32)
+```
+
+Overload resolution is performed based on the argument types at the call site.
+
 ## 5. Expressions & Operators
 
 ### Literals
