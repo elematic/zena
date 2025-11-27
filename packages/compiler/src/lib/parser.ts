@@ -11,6 +11,8 @@ import {
   type FunctionExpression,
   type Identifier,
   type IfStatement,
+  type ImportDeclaration,
+  type ImportSpecifier,
   type IndexExpression,
   type InterfaceDeclaration,
   type MemberExpression,
@@ -22,6 +24,7 @@ import {
   type Program,
   type ReturnStatement,
   type Statement,
+  type StringLiteral,
   type TypeAnnotation,
   type TypeParameter,
   type UnionTypeAnnotation,
@@ -40,6 +43,11 @@ export class Parser {
 
   public parse(): Program {
     const body: Statement[] = [];
+
+    while (this.#check(TokenType.Import) || this.#check(TokenType.From)) {
+      body.push(this.#parseImportDeclaration());
+    }
+
     while (!this.#isAtEnd()) {
       body.push(this.#parseStatement());
     }
@@ -50,6 +58,9 @@ export class Parser {
   }
 
   #parseStatement(): Statement {
+    if (this.#match(TokenType.Import) || this.#match(TokenType.From)) {
+      throw new Error('Imports must appear at the top of the file.');
+    }
     if (this.#match(TokenType.At)) {
       return this.#parseDecoratedStatement();
     }
@@ -1094,6 +1105,64 @@ export class Parser {
       returnType,
       externalModule,
       externalName,
+    };
+  }
+
+  #parseImportDeclaration(): ImportDeclaration {
+    if (this.#match(TokenType.Import)) {
+      const imports = this.#parseImportSpecifiers();
+      this.#consume(TokenType.From, "Expected 'from'.");
+      const moduleSpecifier = this.#parseStringLiteral();
+      this.#consume(TokenType.Semi, "Expected ';'.");
+      return {
+        type: NodeType.ImportDeclaration,
+        moduleSpecifier,
+        imports,
+      };
+    }
+
+    if (this.#match(TokenType.From)) {
+      const moduleSpecifier = this.#parseStringLiteral();
+      this.#consume(TokenType.Import, "Expected 'import'.");
+      const imports = this.#parseImportSpecifiers();
+      this.#consume(TokenType.Semi, "Expected ';'.");
+      return {
+        type: NodeType.ImportDeclaration,
+        moduleSpecifier,
+        imports,
+      };
+    }
+
+    throw new Error('Expected import declaration.');
+  }
+
+  #parseImportSpecifiers(): ImportSpecifier[] {
+    this.#consume(TokenType.LBrace, "Expected '{'.");
+    const imports: ImportSpecifier[] = [];
+    if (!this.#check(TokenType.RBrace)) {
+      do {
+        const imported = this.#parseIdentifier();
+        let local = imported;
+        if (this.#check(TokenType.Identifier) && this.#peek().value === 'as') {
+          this.#advance();
+          local = this.#parseIdentifier();
+        }
+        imports.push({
+          type: NodeType.ImportSpecifier,
+          imported,
+          local,
+        });
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RBrace, "Expected '}'.");
+    return imports;
+  }
+
+  #parseStringLiteral(): StringLiteral {
+    const token = this.#consume(TokenType.String, 'Expected string literal.');
+    return {
+      type: NodeType.StringLiteral,
+      value: token.value,
     };
   }
 

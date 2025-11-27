@@ -27,6 +27,7 @@ export const TokenType = {
   Operator: 'Operator',
   Declare: 'Declare',
   Function: 'Function',
+  From: 'From',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -103,6 +104,7 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   operator: TokenType.Operator,
   declare: TokenType.Declare,
   function: TokenType.Function,
+  from: TokenType.From,
 });
 
 export const tokenize = (source: string): Token[] => {

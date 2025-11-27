@@ -34,6 +34,8 @@ export const NodeType = {
   SuperExpression: 'SuperExpression',
   MixinDeclaration: 'MixinDeclaration',
   DeclareFunction: 'DeclareFunction',
+  ImportDeclaration: 'ImportDeclaration',
+  ImportSpecifier: 'ImportSpecifier',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -58,7 +60,20 @@ export type Statement =
   | ClassDeclaration
   | InterfaceDeclaration
   | MixinDeclaration
-  | DeclareFunction;
+  | DeclareFunction
+  | ImportDeclaration;
+
+export interface ImportSpecifier extends Node {
+  type: typeof NodeType.ImportSpecifier;
+  imported: Identifier;
+  local: Identifier;
+}
+
+export interface ImportDeclaration extends Node {
+  type: typeof NodeType.ImportDeclaration;
+  moduleSpecifier: StringLiteral;
+  imports: ImportSpecifier[];
+}
 
 export interface DeclareFunction extends Node {
   type: typeof NodeType.DeclareFunction;
