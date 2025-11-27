@@ -190,7 +190,18 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 ### Planned
 
-1.  **Object-Oriented Features** (Immediate Priority):
+1.  **Host Interop** (Immediate Priority):
+    - **Imports**:
+      - Implement `declare` keyword for external functions.
+      - Implement `@external` decorator for module/name mapping.
+    - **Exports**:
+      - Ensure `export` works for functions and classes.
+    - **Standard Library**:
+      - Implement `Console` using host imports.
+    - **Runtime**:
+      - Create a JS runtime helper for instantiating Zena modules and providing standard imports.
+
+2.  **Object-Oriented Features**:
     - **Accessors**:
       - [x] Implement Type Checker for accessors.
       - [x] Implement Code Generator for accessors (emit methods).
