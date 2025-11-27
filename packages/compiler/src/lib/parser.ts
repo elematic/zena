@@ -6,6 +6,7 @@ import {
   type ClassDeclaration,
   type Expression,
   type FieldDefinition,
+  type ForStatement,
   type FunctionExpression,
   type Identifier,
   type IfStatement,
@@ -80,6 +81,9 @@ export class Parser {
     if (this.#match(TokenType.While)) {
       return this.#parseWhileStatement();
     }
+    if (this.#match(TokenType.For)) {
+      return this.#parseForStatement();
+    }
     if (this.#match(TokenType.Final)) {
       this.#consume(TokenType.Class, "Expected 'class' after 'final'.");
       return this.#parseClassDeclaration(false, true);
@@ -103,7 +107,10 @@ export class Parser {
     return this.#parseExpressionStatement();
   }
 
-  #parseVariableDeclaration(exported: boolean): VariableDeclaration {
+  #parseVariableDeclaration(
+    exported: boolean,
+    consumeSemi: boolean = true,
+  ): VariableDeclaration {
     let kindToken: Token;
     if (exported) {
       if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
@@ -126,7 +133,9 @@ export class Parser {
 
     this.#consume(TokenType.Equals, "Expected '=' after variable name.");
     const init = this.#parseExpression();
-    this.#consume(TokenType.Semi, "Expected ';' after variable declaration.");
+    if (consumeSemi) {
+      this.#consume(TokenType.Semi, "Expected ';' after variable declaration.");
+    }
 
     return {
       type: NodeType.VariableDeclaration,
@@ -569,6 +578,49 @@ export class Parser {
     return {
       type: NodeType.WhileStatement,
       test,
+      body,
+    };
+  }
+
+  #parseForStatement(): ForStatement {
+    this.#consume(TokenType.LParen, "Expected '(' after 'for'.");
+
+    // Parse init (optional variable declaration or expression)
+    let init: VariableDeclaration | Expression | undefined;
+    if (!this.#check(TokenType.Semi)) {
+      if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
+        // Variable declaration - don't consume the semicolon
+        init = this.#parseVariableDeclaration(false, false);
+        this.#consume(TokenType.Semi, "Expected ';' after for initializer.");
+      } else {
+        init = this.#parseExpression();
+        this.#consume(TokenType.Semi, "Expected ';' after for initializer.");
+      }
+    } else {
+      this.#consume(TokenType.Semi, "Expected ';' in for statement.");
+    }
+
+    // Parse test (optional)
+    let test: Expression | undefined;
+    if (!this.#check(TokenType.Semi)) {
+      test = this.#parseExpression();
+    }
+    this.#consume(TokenType.Semi, "Expected ';' after for condition.");
+
+    // Parse update (optional)
+    let update: Expression | undefined;
+    if (!this.#check(TokenType.RParen)) {
+      update = this.#parseExpression();
+    }
+    this.#consume(TokenType.RParen, "Expected ')' after for clauses.");
+
+    const body = this.#parseStatement();
+
+    return {
+      type: NodeType.ForStatement,
+      init,
+      test,
+      update,
       body,
     };
   }

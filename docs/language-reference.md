@@ -183,6 +183,41 @@ while (condition) {
 }
 ```
 
+### For Statement
+
+Zena supports C-style `for` loops. The loop variable must be declared with `var` since it is mutable.
+
+```typescript
+for (var i = 0; i < 10; i = i + 1) {
+  // body
+}
+```
+
+The `for` statement consists of three optional parts:
+- **init**: A variable declaration or expression, executed once before the loop starts.
+- **test**: A boolean expression evaluated before each iteration. If false, the loop exits.
+- **update**: An expression executed after each iteration.
+
+Any of these parts can be omitted:
+
+```typescript
+// Infinite loop (test omitted)
+for (;;) {
+  // Use return to exit
+}
+
+// Init omitted
+var i = 0;
+for (; i < 10; i = i + 1) {
+  // ...
+}
+
+// Update omitted (increment in body)
+for (var i = 0; i < 10;) {
+  i = i + 1;
+}
+```
+
 ## 7. Modules & Exports
 
 ### Exports
@@ -605,7 +640,7 @@ let charCode = 'ABC'[0]; // 65
 ```ebnf
 Program ::= Statement*
 
-Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement | BlockStatement | ReturnStatement | IfStatement | WhileStatement
+Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement | BlockStatement | ReturnStatement | IfStatement | WhileStatement | ForStatement
 
 ExportStatement ::= "export" VariableDeclaration
 
@@ -620,6 +655,10 @@ ReturnStatement ::= "return" Expression? ";"
 IfStatement ::= "if" "(" Expression ")" Statement ("else" Statement)?
 
 WhileStatement ::= "while" "(" Expression ")" Statement
+
+ForStatement ::= "for" "(" ForInit? ";" Expression? ";" Expression? ")" Statement
+
+ForInit ::= VariableDeclaration | Expression
 
 Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression | CallExpression | NewExpression | MemberExpression | ArrayLiteral | IndexExpression
 

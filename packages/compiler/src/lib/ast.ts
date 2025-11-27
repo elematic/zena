@@ -15,6 +15,7 @@ export const NodeType = {
   ReturnStatement: 'ReturnStatement',
   IfStatement: 'IfStatement',
   WhileStatement: 'WhileStatement',
+  ForStatement: 'ForStatement',
   Parameter: 'Parameter',
   TypeAnnotation: 'TypeAnnotation',
   ClassDeclaration: 'ClassDeclaration',
@@ -52,6 +53,7 @@ export type Statement =
   | ReturnStatement
   | IfStatement
   | WhileStatement
+  | ForStatement
   | ClassDeclaration
   | InterfaceDeclaration
   | MixinDeclaration;
@@ -257,6 +259,14 @@ export interface IfStatement extends Node {
 export interface WhileStatement extends Node {
   type: typeof NodeType.WhileStatement;
   test: Expression;
+  body: Statement;
+}
+
+export interface ForStatement extends Node {
+  type: typeof NodeType.ForStatement;
+  init?: VariableDeclaration | Expression;
+  test?: Expression;
+  update?: Expression;
   body: Statement;
 }
 
