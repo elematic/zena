@@ -203,7 +203,7 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Implement `super.method()` calls (static dispatch).
       - [x] Implement `super.field` access.
     - **Inheritance (Advanced)**:
-      - **Virtual Fields**: Implement Uniform Access Principle (treat public fields as virtual properties with default accessors).
+      - [x] **Virtual Fields**: Implement Uniform Access Principle (treat public fields as virtual properties with default accessors).
       - [x] **Dynamic Dispatch**: Implement VTables for polymorphic method calls.
       - **Casting**: Implement `as` operator and `instanceof` checks.
       - **Mixins**:
