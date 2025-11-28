@@ -2,12 +2,6 @@ import {suite, test} from 'node:test';
 import * as assert from 'node:assert';
 import {TypeChecker} from '../../lib/checker/index.js';
 import {Parser} from '../../lib/parser.js';
-import {
-  TypeKind,
-  type RecordType,
-  type TupleType,
-  type NumberType,
-} from '../../lib/types.js';
 
 suite('Checker: Records and Tuples', () => {
   function check(source: string) {

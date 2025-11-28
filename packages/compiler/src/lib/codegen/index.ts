@@ -16,7 +16,7 @@ import {
   generateStringGetByteFunction,
   inferType,
 } from './expressions.js';
-import {HeapType, Opcode, ValType, SectionId, ExportDesc} from '../wasm.js';
+import {HeapType, Opcode, ValType, ExportDesc} from '../wasm.js';
 import {WasmModule} from '../emitter.js';
 
 /**

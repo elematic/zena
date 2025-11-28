@@ -1,7 +1,6 @@
 import {
   NodeType,
   type BlockStatement,
-  type ClassDeclaration,
   type ForStatement,
   type IfStatement,
   type Pattern,

@@ -1,7 +1,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert';
 import {Bundler} from '../lib/bundler.js';
-import {NodeType, type Program} from '../lib/ast.js';
+import {NodeType} from '../lib/ast.js';
 import {Compiler, type CompilerHost, type Module} from '../lib/compiler.js';
 import {Parser} from '../lib/parser.js';
 import {CodeGenerator} from '../lib/codegen/index.js';

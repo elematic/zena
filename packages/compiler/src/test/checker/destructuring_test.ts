@@ -3,7 +3,6 @@ import {suite, test} from 'node:test';
 import {TypeChecker} from '../../lib/checker/index.js';
 import {Parser} from '../../lib/parser.js';
 import {DiagnosticCode} from '../../lib/diagnostics.js';
-import {TypeKind} from '../../lib/types.js';
 
 function check(code: string) {
   const parser = new Parser(code);
@@ -86,7 +85,7 @@ suite('Checker: Destructuring', () => {
   });
 
   test('checks defaults in record destructuring', () => {
-    const diagnostics = check(`
+    check(`
       let p = { x: 1 };
       // Defaults not fully supported in runtime yet, but checker should allow if types match
       // Actually, defaults are for optional properties or undefined values.

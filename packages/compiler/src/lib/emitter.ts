@@ -295,11 +295,6 @@ export class WasmModule {
     buffer.push(...content);
   }
 
-  #writeVector(buffer: number[], data: number[]) {
-    this.#writeUnsignedLEB128(buffer, data.length);
-    buffer.push(...data);
-  }
-
   #writeString(buffer: number[], str: string) {
     const bytes = new TextEncoder().encode(str);
     this.#writeUnsignedLEB128(buffer, bytes.length);

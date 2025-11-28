@@ -4,11 +4,9 @@ import {
   type Program,
   type Statement,
   type VariableDeclaration,
-  type FunctionExpression,
   type ClassDeclaration,
   type Node,
   type ImportDeclaration,
-  type TypeAnnotation,
   type InterfaceDeclaration,
 } from './ast.js';
 import type {Module} from './compiler.js';
@@ -90,7 +88,6 @@ export class Bundler {
   }
 
   #rewriteModule(module: Module): Statement[] {
-    const prefix = this.#modulePrefixes.get(module.path)!;
     const statements: Statement[] = [];
 
     // Build import map for this module: localName -> uniqueName
@@ -113,21 +110,6 @@ export class Bundler {
         }
       }
     }
-
-    // Helper to rewrite identifiers
-    const rewriteNode = (node: any, scope: Set<string>) => {
-      if (!node || typeof node !== 'object') return;
-
-      // Handle variable declarations (locals)
-      if (node.type === NodeType.VariableDeclaration) {
-        // If it's top-level (scope is empty? no, we need to know if we are top-level)
-        // Actually, we are iterating statements.
-        // But for nested blocks?
-      }
-
-      // This is getting complicated to do generically.
-      // Let's do a specific traversal.
-    };
 
     // We need a proper visitor that tracks scope.
     // For simplicity, let's assume we clone the AST nodes to avoid mutating the original module AST

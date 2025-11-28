@@ -1,5 +1,5 @@
 import {NodeType, type Program} from '../ast.js';
-import {type Diagnostic, DiagnosticBag} from '../diagnostics.js';
+import {type Diagnostic} from '../diagnostics.js';
 import {CheckerContext} from './context.js';
 import {checkStatement} from './statements.js';
 import type {Compiler, Module} from '../compiler.js';

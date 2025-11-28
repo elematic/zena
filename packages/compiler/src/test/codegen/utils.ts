@@ -47,7 +47,7 @@ export async function compileAndRun(
   // But we should check if there are errors.
   // The Compiler doesn't throw on errors, it stores them in modules.
 
-  const modules = compiler.compile('/main.zena'); // Re-compile to get diagnostics?
+  compiler.compile('/main.zena'); // Re-compile to get diagnostics?
   // bundle calls compile internally.
   // But we don't have access to modules from bundle result easily unless we use compile first.
 

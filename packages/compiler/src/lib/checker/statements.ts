@@ -2,7 +2,6 @@ import {
   NodeType,
   type AccessorDeclaration,
   type AssignmentPattern,
-  type BindingProperty,
   type ClassDeclaration,
   type DeclareFunction,
   type ForStatement,

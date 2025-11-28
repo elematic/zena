@@ -6,7 +6,6 @@ import {
   type VariableDeclaration,
   type RecordPattern,
   type TuplePattern,
-  type BindingProperty,
   type AssignmentPattern,
 } from '../../lib/ast.js';
 
