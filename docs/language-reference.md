@@ -140,7 +140,27 @@ Overload resolution is performed based on the argument types at the call site.
 ### Literals
 
 - **Numbers**: `123`, `0`, `-5` (Parsed as `i32` by default).
-- **Strings**: `"text"`.
+- **Strings**: `"text"` or `'text'`.
+
+### String Escape Sequences
+
+String literals support the following escape sequences:
+
+| Escape | Character |
+|--------|-----------|
+| `\\`   | Backslash (`\`) |
+| `\n`   | Newline |
+| `\r`   | Carriage return |
+| `\t`   | Tab |
+| `\"`   | Double quote |
+| `\'`   | Single quote |
+
+```typescript
+let message = "Hello\nWorld";  // Contains a newline
+let path = "C:\\Users\\file";  // Escaped backslashes
+let quote = "She said \"Hi\""; // Escaped double quotes
+let apostrophe = 'it\'s';      // Escaped single quote
+```
 
 ### Binary Operators
 

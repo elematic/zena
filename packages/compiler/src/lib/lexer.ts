@@ -167,24 +167,41 @@ export const tokenize = (source: string): Token[] => {
       continue;
     }
 
-    // Strings (simple single quote support)
-    if (char === "'") {
-      advance(); // Skip opening quote
+    // Strings (single or double quote)
+    if (char === "'" || char === '"') {
+      const quote = advance(); // Skip opening quote
       let value = '';
-      while (current < source.length && peek() !== "'") {
-        value += advance();
-      }
-      if (current < source.length) advance(); // Skip closing quote
-      tokens.push({type: TokenType.String, value, line, column: startColumn});
-      continue;
-    }
-
-    // Strings (double quote support)
-    if (char === '"') {
-      advance(); // Skip opening quote
-      let value = '';
-      while (current < source.length && peek() !== '"') {
-        value += advance();
+      while (current < source.length && peek() !== quote) {
+        if (peek() === '\\') {
+          advance(); // Skip backslash
+          if (current >= source.length) break;
+          const escaped = advance();
+          switch (escaped) {
+            case 'n':
+              value += '\n';
+              break;
+            case 'r':
+              value += '\r';
+              break;
+            case 't':
+              value += '\t';
+              break;
+            case '\\':
+              value += '\\';
+              break;
+            case "'":
+              value += "'";
+              break;
+            case '"':
+              value += '"';
+              break;
+            default:
+              // Unknown escape sequence - keep backslash and character
+              value += '\\' + escaped;
+          }
+        } else {
+          value += advance();
+        }
       }
       if (current < source.length) advance(); // Skip closing quote
       tokens.push({type: TokenType.String, value, line, column: startColumn});
