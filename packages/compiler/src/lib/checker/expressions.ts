@@ -11,6 +11,8 @@ import {
   type NewExpression,
   type RecordLiteral,
   type SuperExpression,
+  type TaggedTemplateExpression,
+  type TemplateLiteral,
   type ThisExpression,
   type TupleLiteral,
 } from '../ast.js';
@@ -90,6 +92,13 @@ export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
       return checkTupleLiteral(ctx, expr as TupleLiteral);
     case NodeType.IndexExpression:
       return checkIndexExpression(ctx, expr as IndexExpression);
+    case NodeType.TemplateLiteral:
+      return checkTemplateLiteral(ctx, expr as TemplateLiteral);
+    case NodeType.TaggedTemplateExpression:
+      return checkTaggedTemplateExpression(
+        ctx,
+        expr as TaggedTemplateExpression,
+      );
     default:
       return Types.Unknown;
   }
@@ -904,4 +913,72 @@ function checkSuperExpression(
   }
 
   return ctx.currentClass.superType;
+}
+
+/**
+ * Check an untagged template literal like `hello ${name}`.
+ * The type is always String since the expressions are concatenated.
+ */
+function checkTemplateLiteral(
+  ctx: CheckerContext,
+  expr: TemplateLiteral,
+): Type {
+  // Check all embedded expressions
+  for (const subExpr of expr.expressions) {
+    checkExpression(ctx, subExpr);
+    // Note: In the future we might want to verify expressions are convertible to string
+    // For now, we just type-check them.
+  }
+
+  // The result of an untagged template literal is always a String
+  const stringType = ctx.resolve('String');
+  return stringType || Types.String;
+}
+
+/**
+ * Check a tagged template expression like html`<div>${name}</div>`.
+ * The tag must be a function that accepts:
+ *   - strings: TemplateStringsArray (an array with cooked strings and a raw property)
+ *   - values: Array<T> of interpolated values
+ */
+function checkTaggedTemplateExpression(
+  ctx: CheckerContext,
+  expr: TaggedTemplateExpression,
+): Type {
+  // Check all embedded expressions in the template
+  const valueTypes: Type[] = [];
+  for (const subExpr of expr.quasi.expressions) {
+    valueTypes.push(checkExpression(ctx, subExpr));
+  }
+
+  // Check the tag expression
+  const tagType = checkExpression(ctx, expr.tag);
+
+  if (tagType.kind !== TypeKind.Function) {
+    ctx.diagnostics.reportError(
+      `Tagged template tag must be a function, got ${typeToString(tagType)}`,
+      DiagnosticCode.TypeMismatch,
+    );
+    return Types.Unknown;
+  }
+
+  const funcType = tagType as FunctionType;
+
+  // A tag function should accept:
+  // 1. First parameter: TemplateStringsArray (array of strings with raw property)
+  // 2. Second parameter: Array of values (or rest parameter in JS, but we use array)
+  //
+  // For now, we do a lenient check: tag function should have at least 2 parameters
+  // and return something.
+
+  if (funcType.parameters.length < 2) {
+    ctx.diagnostics.reportError(
+      `Tagged template tag function must accept at least 2 parameters (strings and values)`,
+      DiagnosticCode.ArgumentCountMismatch,
+    );
+    return Types.Unknown;
+  }
+
+  // Return the function's return type
+  return funcType.returnType;
 }
