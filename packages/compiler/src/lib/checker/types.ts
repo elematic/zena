@@ -11,10 +11,66 @@ import {
   type RecordType,
   type TupleType,
   type Type,
+  type TypeAliasType,
   type TypeParameterType,
   type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
+
+export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
+  if (type.kind === TypeKind.TypeParameter) {
+    return typeMap.get((type as TypeParameterType).name) || type;
+  }
+  if (type.kind === TypeKind.Array) {
+    return {
+      ...type,
+      elementType: substituteType((type as ArrayType).elementType, typeMap),
+    } as ArrayType;
+  }
+  if (type.kind === TypeKind.Class) {
+    const ct = type as ClassType;
+    if (ct.typeArguments) {
+      return {
+        ...ct,
+        typeArguments: ct.typeArguments.map((t) => substituteType(t, typeMap)),
+      } as ClassType;
+    }
+  }
+  if (type.kind === TypeKind.Function) {
+    const ft = type as FunctionType;
+    return {
+      ...ft,
+      parameters: ft.parameters.map((t) => substituteType(t, typeMap)),
+      returnType: substituteType(ft.returnType, typeMap),
+    } as FunctionType;
+  }
+  if (type.kind === TypeKind.Union) {
+    const ut = type as UnionType;
+    return {
+      ...ut,
+      types: ut.types.map((t) => substituteType(t, typeMap)),
+    } as UnionType;
+  }
+  if (type.kind === TypeKind.Record) {
+    const rt = type as RecordType;
+    const newProperties = new Map<string, Type>();
+    for (const [key, value] of rt.properties) {
+      newProperties.set(key, substituteType(value, typeMap));
+    }
+    return {
+      ...rt,
+      properties: newProperties,
+    } as RecordType;
+  }
+  if (type.kind === TypeKind.Tuple) {
+    const tt = type as TupleType;
+    return {
+      ...tt,
+      elementTypes: tt.elementTypes.map((t) => substituteType(t, typeMap)),
+    } as TupleType;
+  }
+  return type;
+}
 
 export function resolveTypeAnnotation(
   ctx: CheckerContext,
@@ -109,6 +165,39 @@ export function resolveTypeAnnotation(
     return Types.Unknown;
   }
 
+  if (type.kind === TypeKind.TypeAlias) {
+    const alias = type as TypeAliasType;
+    if (alias.typeParameters && alias.typeParameters.length > 0) {
+      if (
+        !annotation.typeArguments ||
+        annotation.typeArguments.length !== alias.typeParameters.length
+      ) {
+        ctx.diagnostics.reportError(
+          `Generic type alias '${name}' requires ${alias.typeParameters.length} type arguments.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
+        );
+        return Types.Unknown;
+      }
+      const typeArguments = annotation.typeArguments.map((arg) =>
+        resolveTypeAnnotation(ctx, arg),
+      );
+      const typeMap = new Map<string, Type>();
+      alias.typeParameters.forEach(
+        (param: TypeParameterType, index: number) => {
+          typeMap.set(param.name, typeArguments[index]);
+        },
+      );
+      return substituteType(alias.target, typeMap);
+    }
+    if (annotation.typeArguments && annotation.typeArguments.length > 0) {
+      ctx.diagnostics.reportError(
+        `Type alias '${name}' is not generic.`,
+        DiagnosticCode.GenericTypeArgumentMismatch,
+      );
+    }
+    return alias.target;
+  }
+
   if (annotation.typeArguments && annotation.typeArguments.length > 0) {
     if (type.kind !== TypeKind.Class) {
       ctx.diagnostics.reportError(
@@ -151,35 +240,7 @@ export function instantiateGenericClass(
     typeMap.set(param.name, typeArguments[index]);
   });
 
-  const substitute = (type: Type): Type => {
-    if (type.kind === TypeKind.TypeParameter) {
-      return typeMap.get((type as TypeParameterType).name) || type;
-    }
-    if (type.kind === TypeKind.Array) {
-      return {
-        ...type,
-        elementType: substitute((type as ArrayType).elementType),
-      } as ArrayType;
-    }
-    if (type.kind === TypeKind.Class) {
-      const ct = type as ClassType;
-      if (ct.typeArguments) {
-        return {
-          ...ct,
-          typeArguments: ct.typeArguments.map(substitute),
-        } as ClassType;
-      }
-    }
-    if (type.kind === TypeKind.Function) {
-      const ft = type as FunctionType;
-      return {
-        ...ft,
-        parameters: ft.parameters.map(substitute),
-        returnType: substitute(ft.returnType),
-      } as FunctionType;
-    }
-    return type;
-  };
+  const substitute = (type: Type) => substituteType(type, typeMap);
 
   const substituteFunction = (fn: FunctionType): FunctionType => {
     return {
@@ -219,35 +280,7 @@ export function instantiateGenericFunction(
     typeMap.set(param.name, typeArguments[index]);
   });
 
-  const substitute = (type: Type): Type => {
-    if (type.kind === TypeKind.TypeParameter) {
-      return typeMap.get((type as TypeParameterType).name) || type;
-    }
-    if (type.kind === TypeKind.Array) {
-      return {
-        ...type,
-        elementType: substitute((type as ArrayType).elementType),
-      } as ArrayType;
-    }
-    if (type.kind === TypeKind.Class) {
-      const ct = type as ClassType;
-      if (ct.typeArguments) {
-        return {
-          ...ct,
-          typeArguments: ct.typeArguments.map(substitute),
-        } as ClassType;
-      }
-    }
-    if (type.kind === TypeKind.Function) {
-      const ft = type as FunctionType;
-      return {
-        ...ft,
-        parameters: ft.parameters.map(substitute),
-        returnType: substitute(ft.returnType),
-      } as FunctionType;
-    }
-    return type;
-  };
+  const substitute = (type: Type) => substituteType(type, typeMap);
 
   return {
     ...genericFunc,

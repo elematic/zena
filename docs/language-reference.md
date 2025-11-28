@@ -63,6 +63,23 @@ Zena enforces strict type safety and does not support implicit type coercion.
 
 Explicit type casts (e.g., using an `as` operator) are **checked casts**. This means the validity of the cast is verified at runtime. If the value is not of the target type, a runtime error (trap) is raised. This ensures that the type system remains sound even when downcasting.
 
+### Type Aliases
+
+Type aliases create a new name for a type. They are defined using the `type` keyword.
+
+```typescript
+type ID = string;
+type Point = {x: i32; y: i32};
+type Callback = (result: string) => void;
+```
+
+Type aliases can be generic:
+
+```typescript
+type Box<T> = {value: T};
+type Result<T> = {success: boolean; data: T};
+```
+
 ## 3. Variables
 
 Variables are declared using `let` or `var`.

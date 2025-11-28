@@ -47,6 +47,7 @@ export const NodeType = {
   BindingProperty: 'BindingProperty',
   AssignmentPattern: 'AssignmentPattern',
   FunctionTypeAnnotation: 'FunctionTypeAnnotation',
+  TypeAliasDeclaration: 'TypeAliasDeclaration',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -77,7 +78,8 @@ export type Statement =
   | InterfaceDeclaration
   | MixinDeclaration
   | DeclareFunction
-  | ImportDeclaration;
+  | ImportDeclaration
+  | TypeAliasDeclaration;
 
 export interface ImportSpecifier extends Node {
   type: typeof NodeType.ImportSpecifier;
@@ -98,8 +100,15 @@ export interface DeclareFunction extends Node {
   returnType: TypeAnnotation;
   externalModule?: string;
   externalName?: string;
+  exported?: boolean;
+}
+
+export interface TypeAliasDeclaration extends Node {
+  type: typeof NodeType.TypeAliasDeclaration;
+  name: Identifier;
+  typeParameters?: TypeParameter[];
+  typeAnnotation: TypeAnnotation;
   exported: boolean;
-  exportName?: string;
 }
 
 export interface VariableDeclaration extends Node {

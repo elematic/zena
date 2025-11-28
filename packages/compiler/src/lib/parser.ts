@@ -37,6 +37,7 @@ import {
   type TupleTypeAnnotation,
   type TypeAnnotation,
   type TypeParameter,
+  type TypeAliasDeclaration,
   type VariableDeclaration,
   type WhileStatement,
 } from './ast.js';
@@ -94,6 +95,9 @@ export class Parser {
       if (this.#match(TokenType.Mixin)) {
         return this.#parseMixinDeclaration(true);
       }
+      if (this.#match(TokenType.Type)) {
+        return this.#parseTypeAliasDeclaration(true);
+      }
       if (this.#match(TokenType.Declare)) {
         return this.#parseDeclareFunction(undefined, undefined, true);
       }
@@ -131,10 +135,28 @@ export class Parser {
     if (this.#match(TokenType.Mixin)) {
       return this.#parseMixinDeclaration(false);
     }
+    if (this.#match(TokenType.Type)) {
+      return this.#parseTypeAliasDeclaration(false);
+    }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseBlockStatement();
     }
     return this.#parseExpressionStatement();
+  }
+
+  #parseTypeAliasDeclaration(exported: boolean): TypeAliasDeclaration {
+    const name = this.#parseIdentifier();
+    const typeParameters = this.#parseTypeParameters();
+    this.#consume(TokenType.Equals, "Expected '=' after type alias name.");
+    const typeAnnotation = this.#parseTypeAnnotation();
+    this.#consume(TokenType.Semi, "Expected ';' after type alias declaration.");
+    return {
+      type: NodeType.TypeAliasDeclaration,
+      name,
+      typeParameters,
+      typeAnnotation,
+      exported,
+    };
   }
 
   #parseVariableDeclaration(

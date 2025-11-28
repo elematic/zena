@@ -5,7 +5,7 @@ import type {Compiler, Module} from '../compiler.js';
 
 export interface SymbolInfo {
   type: Type;
-  kind: 'let' | 'var';
+  kind: 'let' | 'var' | 'type';
 }
 
 export class CheckerContext {
@@ -47,7 +47,7 @@ export class CheckerContext {
     this.scopes.pop();
   }
 
-  declare(name: string, type: Type, kind: 'let' | 'var' = 'let') {
+  declare(name: string, type: Type, kind: 'let' | 'var' | 'type' = 'let') {
     const scope = this.scopes[this.scopes.length - 1];
     if (scope.has(name)) {
       const existing = scope.get(name)!;

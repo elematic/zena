@@ -28,6 +28,7 @@ export const TokenType = {
   Declare: 'Declare',
   Function: 'Function',
   From: 'From',
+  Type: 'Type',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -105,6 +106,7 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   declare: TokenType.Declare,
   function: TokenType.Function,
   from: TokenType.From,
+  type: TokenType.Type,
 });
 
 export const tokenize = (source: string): Token[] => {
