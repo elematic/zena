@@ -33,6 +33,11 @@ export const TokenType = {
   Identifier: 'Identifier',
   Number: 'Number',
   String: 'String',
+  // Template literals
+  NoSubstitutionTemplate: 'NoSubstitutionTemplate',
+  TemplateHead: 'TemplateHead',
+  TemplateMiddle: 'TemplateMiddle',
+  TemplateTail: 'TemplateTail',
 
   // Operators
   Equals: 'Equals',
@@ -72,6 +77,8 @@ export type TokenType = (typeof TokenType)[keyof typeof TokenType];
 export interface Token {
   type: TokenType;
   value: string;
+  /** Raw string value for template literals (before escape processing) */
+  rawValue?: string;
   line: number;
   column: number;
 }
@@ -112,6 +119,8 @@ export const tokenize = (source: string): Token[] => {
   let current = 0;
   let line = 1;
   let column = 1;
+  // Track nesting: when we see ${ we push brace count, when count reaches 0 we pop
+  const templateStack: number[] = [];
 
   const advance = () => {
     const char = source[current];
@@ -126,9 +135,94 @@ export const tokenize = (source: string): Token[] => {
   };
 
   const peek = () => source[current];
+  const peekNext = () => source[current + 1];
+
+  // Process escape sequence and return the cooked character(s)
+  const processEscape = (): string => {
+    if (current >= source.length) return '';
+    const escaped = advance();
+    switch (escaped) {
+      case 'n':
+        return '\n';
+      case 'r':
+        return '\r';
+      case 't':
+        return '\t';
+      case '\\':
+        return '\\';
+      case '`':
+        return '`';
+      case '$':
+        return '$';
+      case '0':
+        return '\0';
+      default:
+        // Unknown escape - keep as is
+        return '\\' + escaped;
+    }
+  };
+
+  // Scan a template literal part (after ` or })
+  // Returns the token type and cooked/raw values
+  const scanTemplatePart = (
+    isMiddleOrTail: boolean,
+  ): {type: TokenType; cooked: string; raw: string} => {
+    let cooked = '';
+    let raw = '';
+
+    while (current < source.length) {
+      const char = peek();
+
+      if (char === '`') {
+        advance(); // consume closing backtick
+        return {
+          type: isMiddleOrTail
+            ? TokenType.TemplateTail
+            : TokenType.NoSubstitutionTemplate,
+          cooked,
+          raw,
+        };
+      }
+
+      if (char === '$' && peekNext() === '{') {
+        advance(); // consume $
+        advance(); // consume {
+        templateStack.push(1); // start tracking braces
+        return {
+          type: isMiddleOrTail
+            ? TokenType.TemplateMiddle
+            : TokenType.TemplateHead,
+          cooked,
+          raw,
+        };
+      }
+
+      if (char === '\\') {
+        raw += advance(); // add backslash to raw
+        if (current < source.length) {
+          raw += peek(); // add next char to raw before processing
+          cooked += processEscape();
+        }
+      } else {
+        const c = advance();
+        cooked += c;
+        raw += c;
+      }
+    }
+
+    // Reached end of source without closing - treat as complete
+    return {
+      type: isMiddleOrTail
+        ? TokenType.TemplateTail
+        : TokenType.NoSubstitutionTemplate,
+      cooked,
+      raw,
+    };
+  };
 
   while (current < source.length) {
     const startColumn = column;
+    const startLine = line;
     const char = peek();
 
     // Whitespace
@@ -205,6 +299,20 @@ export const tokenize = (source: string): Token[] => {
       }
       if (current < source.length) advance(); // Skip closing quote
       tokens.push({type: TokenType.String, value, line, column: startColumn});
+      continue;
+    }
+
+    // Template literals (backtick)
+    if (char === '`') {
+      advance(); // Skip opening backtick
+      const template = scanTemplatePart(false);
+      tokens.push({
+        type: template.type,
+        value: template.cooked,
+        rawValue: template.raw,
+        line,
+        column: startColumn,
+      });
       continue;
     }
 
@@ -370,6 +478,10 @@ export const tokenize = (source: string): Token[] => {
         });
         break;
       case '{':
+        // Track brace depth when inside template expression
+        if (templateStack.length > 0) {
+          templateStack[templateStack.length - 1]++;
+        }
         tokens.push({
           type: TokenType.LBrace,
           value: '{',
@@ -378,12 +490,33 @@ export const tokenize = (source: string): Token[] => {
         });
         break;
       case '}':
-        tokens.push({
-          type: TokenType.RBrace,
-          value: '}',
-          line,
-          column: startColumn,
-        });
+        // Check if this closes a template expression
+        if (
+          templateStack.length > 0 &&
+          templateStack[templateStack.length - 1] === 1
+        ) {
+          // Pop the template stack and continue scanning template
+          templateStack.pop();
+          const template = scanTemplatePart(true);
+          tokens.push({
+            type: template.type,
+            value: template.cooked,
+            rawValue: template.raw,
+            line: startLine,
+            column: startColumn,
+          });
+        } else {
+          // Normal brace handling
+          if (templateStack.length > 0) {
+            templateStack[templateStack.length - 1]--;
+          }
+          tokens.push({
+            type: TokenType.RBrace,
+            value: '}',
+            line,
+            column: startColumn,
+          });
+        }
         break;
       case '[':
         tokens.push({

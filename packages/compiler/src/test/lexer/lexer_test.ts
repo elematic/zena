@@ -299,4 +299,137 @@ let y = 2;`;
     const tokens = tokenize(input);
     assertTokens(tokens, [[TokenType.String, 'test'], TokenType.EOF]);
   });
+
+  test('should tokenize simple template literal', () => {
+    const input = '`hello world`';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.NoSubstitutionTemplate, 'hello world'],
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should tokenize template literal with escape sequences', () => {
+    const input = '`hello\\nworld`';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.NoSubstitutionTemplate, 'hello\nworld'],
+      TokenType.EOF,
+    ]);
+    // Check raw value
+    assert.strictEqual(tokens[0].rawValue, 'hello\\nworld');
+  });
+
+  test('should tokenize template literal with escaped backtick', () => {
+    const input = '`hello\\`world`';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.NoSubstitutionTemplate, 'hello`world'],
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should tokenize template literal with escaped dollar sign', () => {
+    const input = '`price is \\$100`';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.NoSubstitutionTemplate, 'price is $100'],
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should tokenize template literal with single substitution', () => {
+    const input = '`hello ${name}`';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.TemplateHead, 'hello '],
+      [TokenType.Identifier, 'name'],
+      [TokenType.TemplateTail, ''],
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should tokenize template literal with multiple substitutions', () => {
+    const input = '`${a} + ${b} = ${c}`';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.TemplateHead, ''],
+      [TokenType.Identifier, 'a'],
+      [TokenType.TemplateMiddle, ' + '],
+      [TokenType.Identifier, 'b'],
+      [TokenType.TemplateMiddle, ' = '],
+      [TokenType.Identifier, 'c'],
+      [TokenType.TemplateTail, ''],
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should tokenize template literal with expression', () => {
+    const input = '`result is ${a + b}`';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.TemplateHead, 'result is '],
+      [TokenType.Identifier, 'a'],
+      TokenType.Plus,
+      [TokenType.Identifier, 'b'],
+      [TokenType.TemplateTail, ''],
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should tokenize template literal with nested braces in expression', () => {
+    const input = '`value is ${obj.x}`';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.TemplateHead, 'value is '],
+      [TokenType.Identifier, 'obj'],
+      TokenType.Dot,
+      [TokenType.Identifier, 'x'],
+      [TokenType.TemplateTail, ''],
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should tokenize template literal with object literal in expression', () => {
+    const input = '`value is ${{ x: 1 }}`';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.TemplateHead, 'value is '],
+      TokenType.LBrace,
+      [TokenType.Identifier, 'x'],
+      TokenType.Colon,
+      [TokenType.Number, '1'],
+      TokenType.RBrace,
+      [TokenType.TemplateTail, ''],
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should tokenize tagged template literal', () => {
+    const input = 'html`<div>${name}</div>`';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.Identifier, 'html'],
+      [TokenType.TemplateHead, '<div>'],
+      [TokenType.Identifier, 'name'],
+      [TokenType.TemplateTail, '</div>'],
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should preserve raw and cooked values differently', () => {
+    const input = '`line1\\nline2`';
+    const tokens = tokenize(input);
+    assert.strictEqual(tokens[0].value, 'line1\nline2'); // cooked
+    assert.strictEqual(tokens[0].rawValue, 'line1\\nline2'); // raw
+  });
+
+  test('should tokenize empty template literal', () => {
+    const input = '``';
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.NoSubstitutionTemplate, ''],
+      TokenType.EOF,
+    ]);
+  });
 });
