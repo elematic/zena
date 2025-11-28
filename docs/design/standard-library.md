@@ -193,12 +193,13 @@ class ArrayList<T> implements List<T> {
   #size: i32;
 
   #new() {
-    this.#data = #[]; // Initial capacity TBD
+    this.#data = /* array with capacity 16 */;
     this.#size = 0;
   }
 
   #new(capacity: i32) {
-    // Pre-allocate with capacity
+    this.#data = /* array with specified capacity */;
+    this.#size = 0;
   }
 
   // Implementation of List<T> methods...
@@ -258,7 +259,7 @@ class HashMap<K, V> extends Map<K, V> {
   #size: i32;
 
   #new() {
-    this.#buckets = /* array of null with initial capacity */;
+    this.#buckets = /* array of 16 null entries */;
     this.#size = 0;
   }
 
