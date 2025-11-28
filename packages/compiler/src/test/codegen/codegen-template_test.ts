@@ -199,4 +199,38 @@ suite('CodeGenerator - Template Literals', () => {
     const result = (module.instance.exports.main as Function)();
     assert.strictEqual(result, 30);
   });
+
+  test('should preserve template strings array identity across calls', async () => {
+    // The strings array passed to a tag function should be the same reference
+    // every time the same tagged template expression is evaluated.
+    // This is important for caching: the strings array can be used as a cache key.
+    const source = `
+      var savedStrings: Array<string> = #[];
+      var callCount: i32 = 0;
+
+      let captureStrings = (strings: Array<string>, values: Array<i32>): Array<string> => {
+        return strings;
+      };
+
+      let go = (): Array<string> => {
+        return captureStrings\`hello\`;
+      };
+
+      export let main = (): i32 => {
+        let first = go();
+        let second = go();
+        // Return 1 if same reference, 0 if different
+        if (first == second) {
+          return 1;
+        };
+        return 0;
+      };
+    `;
+
+    const wasm = compile(source);
+    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
+    const result = (module.instance.exports.main as Function)();
+    // Should return 1, meaning both calls returned the same strings array reference
+    assert.strictEqual(result, 1);
+  });
 });
