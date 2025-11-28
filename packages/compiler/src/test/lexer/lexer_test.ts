@@ -234,4 +234,67 @@ let y = 2;`;
       TokenType.EOF,
     ]);
   });
+
+  test('should tokenize string with newline escape', () => {
+    const input = `"hello\\nworld"`;
+    const tokens = tokenize(input);
+    assertTokens(tokens, [[TokenType.String, 'hello\nworld'], TokenType.EOF]);
+  });
+
+  test('should tokenize string with tab escape', () => {
+    const input = `"hello\\tworld"`;
+    const tokens = tokenize(input);
+    assertTokens(tokens, [[TokenType.String, 'hello\tworld'], TokenType.EOF]);
+  });
+
+  test('should tokenize string with carriage return escape', () => {
+    const input = `"hello\\rworld"`;
+    const tokens = tokenize(input);
+    assertTokens(tokens, [[TokenType.String, 'hello\rworld'], TokenType.EOF]);
+  });
+
+  test('should tokenize string with backslash escape', () => {
+    const input = `"hello\\\\world"`;
+    const tokens = tokenize(input);
+    assertTokens(tokens, [[TokenType.String, 'hello\\world'], TokenType.EOF]);
+  });
+
+  test('should tokenize string with escaped double quote', () => {
+    const input = `"hello\\"world"`;
+    const tokens = tokenize(input);
+    assertTokens(tokens, [[TokenType.String, 'hello"world'], TokenType.EOF]);
+  });
+
+  test('should tokenize string with escaped single quote', () => {
+    const input = `'hello\\'world'`;
+    const tokens = tokenize(input);
+    assertTokens(tokens, [[TokenType.String, "hello'world"], TokenType.EOF]);
+  });
+
+  test('should tokenize string with multiple escapes', () => {
+    const input = `"line1\\nline2\\ttab"`;
+    const tokens = tokenize(input);
+    assertTokens(tokens, [
+      [TokenType.String, 'line1\nline2\ttab'],
+      TokenType.EOF,
+    ]);
+  });
+
+  test('should keep unknown escape sequence as is', () => {
+    const input = `"hello\\xworld"`;
+    const tokens = tokenize(input);
+    assertTokens(tokens, [[TokenType.String, 'hello\\xworld'], TokenType.EOF]);
+  });
+
+  test('should handle escaped quote inside single-quoted string', () => {
+    const input = `'it\\'s'`;
+    const tokens = tokenize(input);
+    assertTokens(tokens, [[TokenType.String, "it's"], TokenType.EOF]);
+  });
+
+  test('should handle backslash at end of string', () => {
+    const input = `"test\\`;
+    const tokens = tokenize(input);
+    assertTokens(tokens, [[TokenType.String, 'test'], TokenType.EOF]);
+  });
 });
