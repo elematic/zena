@@ -192,12 +192,20 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Exports (Functions, Classes).
   - Standard Library (`Console`).
   - Runtime Helper.
+- [x] Implement Closures:
+  - Parser (Generic Arrow Functions).
+  - Checker (Capture Analysis).
+  - Codegen (Context Structs, \`ref.func\`, Element Section).
 
 ### Planned
 
-1.  **Host Interop** (Immediate Priority):
+1.  **Closures & Arrays Integration** (Immediate Priority):
+    - Fix \`Array\` operations in \`map()\` tests.
+    - Implement \`map()\` fully.
+
+2.  **Host Interop**:
     - **Function Overloading**:
-      - Support multiple `declare function` signatures with the same name but different parameters.
+      - Support multiple \`declare function\` signatures with the same name but different parameters.
     - **WASM GC Interop Notes**:
       - WASM GC structs and arrays are OPAQUE from JavaScript.
       - JS cannot access struct fields or iterate GC arrays.
