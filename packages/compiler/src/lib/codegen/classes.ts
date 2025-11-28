@@ -1191,6 +1191,16 @@ export function mapType(
     return [ValType.ref_null, HeapType.any];
   }
 
+  if (annotation.type === NodeType.RecordTypeAnnotation) {
+    // TODO: Implement record type mapping
+    return [ValType.ref_null, HeapType.any];
+  }
+
+  if (annotation.type === NodeType.TupleTypeAnnotation) {
+    // TODO: Implement tuple type mapping
+    return [ValType.ref_null, HeapType.any];
+  }
+
   // Check type context first
   if (typeContext && typeContext.has(annotation.name)) {
     return mapType(ctx, typeContext.get(annotation.name)!, typeContext);
@@ -1286,6 +1296,23 @@ export function getTypeKey(
       .join('|');
   }
 
+  if (annotation.type === NodeType.RecordTypeAnnotation) {
+    const props = annotation.properties
+      .map(
+        (p) =>
+          `${p.name.name}:${getTypeKey(ctx, p.typeAnnotation, typeContext)}`,
+      )
+      .join(',');
+    return `{${props}}`;
+  }
+
+  if (annotation.type === NodeType.TupleTypeAnnotation) {
+    const elems = annotation.elementTypes
+      .map((t) => getTypeKey(ctx, t, typeContext))
+      .join(',');
+    return `[${elems}]`;
+  }
+
   if (typeContext && typeContext.has(annotation.name)) {
     return getTypeKey(ctx, typeContext.get(annotation.name)!, typeContext);
   }
@@ -1307,6 +1334,25 @@ function resolveAnnotation(
     return {
       type: NodeType.UnionTypeAnnotation,
       types: annotation.types.map((t) => resolveAnnotation(t, context)),
+    };
+  }
+
+  if (annotation.type === NodeType.RecordTypeAnnotation) {
+    return {
+      type: NodeType.RecordTypeAnnotation,
+      properties: annotation.properties.map((p) => ({
+        ...p,
+        typeAnnotation: resolveAnnotation(p.typeAnnotation, context),
+      })),
+    };
+  }
+
+  if (annotation.type === NodeType.TupleTypeAnnotation) {
+    return {
+      type: NodeType.TupleTypeAnnotation,
+      elementTypes: annotation.elementTypes.map((t) =>
+        resolveAnnotation(t, context),
+      ),
     };
   }
 

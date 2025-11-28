@@ -252,9 +252,8 @@ This precedence exists in languages like **Dart** and **Swift**, which are stron
 ## 9. Implementation Plan
 
 ### Phase 1: Parser & AST
-
-- [ ] **AST Nodes**: Add `RecordLiteral`, `TupleLiteral`, `RecordType`, `TupleType`, `PropertyAccess` (update), `ElementAccess` (update).
-- [ ] **Parser**:
+- [x] **AST Nodes**: Add `RecordLiteral`, `TupleLiteral`, `RecordType`, `TupleType`, `PropertyAccess` (update), `ElementAccess` (update).
+- [x] **Parser**:
   - Parse `{ x: 1, y: 2 }` as `RecordLiteral`.
   - Parse `[ 1, 2 ]` as `TupleLiteral`.
   - Parse `{ x: i32 }` as `RecordType`.

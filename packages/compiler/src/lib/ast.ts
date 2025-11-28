@@ -25,6 +25,9 @@ export const NodeType = {
   MemberExpression: 'MemberExpression',
   ThisExpression: 'ThisExpression',
   ArrayLiteral: 'ArrayLiteral',
+  RecordLiteral: 'RecordLiteral',
+  PropertyAssignment: 'PropertyAssignment',
+  TupleLiteral: 'TupleLiteral',
   IndexExpression: 'IndexExpression',
   TypeParameter: 'TypeParameter',
   InterfaceDeclaration: 'InterfaceDeclaration',
@@ -36,6 +39,9 @@ export const NodeType = {
   DeclareFunction: 'DeclareFunction',
   ImportDeclaration: 'ImportDeclaration',
   ImportSpecifier: 'ImportSpecifier',
+  RecordTypeAnnotation: 'RecordTypeAnnotation',
+  PropertySignature: 'PropertySignature',
+  TupleTypeAnnotation: 'TupleTypeAnnotation',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -111,6 +117,22 @@ export interface ArrayLiteral extends Node {
   elements: Expression[];
 }
 
+export interface PropertyAssignment extends Node {
+  type: typeof NodeType.PropertyAssignment;
+  name: Identifier;
+  value: Expression;
+}
+
+export interface RecordLiteral extends Node {
+  type: typeof NodeType.RecordLiteral;
+  properties: PropertyAssignment[];
+}
+
+export interface TupleLiteral extends Node {
+  type: typeof NodeType.TupleLiteral;
+  elements: Expression[];
+}
+
 export interface IndexExpression extends Node {
   type: typeof NodeType.IndexExpression;
   object: Expression;
@@ -131,6 +153,8 @@ export type Expression =
   | MemberExpression
   | ThisExpression
   | ArrayLiteral
+  | RecordLiteral
+  | TupleLiteral
   | IndexExpression
   | SuperExpression;
 
@@ -314,12 +338,32 @@ export interface TypeParameter extends Node {
   default?: TypeAnnotation;
 }
 
-export type TypeAnnotation = NamedTypeAnnotation | UnionTypeAnnotation;
+export type TypeAnnotation =
+  | NamedTypeAnnotation
+  | UnionTypeAnnotation
+  | RecordTypeAnnotation
+  | TupleTypeAnnotation;
 
 export interface NamedTypeAnnotation extends Node {
   type: typeof NodeType.TypeAnnotation;
   name: string;
   typeArguments?: TypeAnnotation[];
+}
+
+export interface PropertySignature extends Node {
+  type: typeof NodeType.PropertySignature;
+  name: Identifier;
+  typeAnnotation: TypeAnnotation;
+}
+
+export interface RecordTypeAnnotation extends Node {
+  type: typeof NodeType.RecordTypeAnnotation;
+  properties: PropertySignature[];
+}
+
+export interface TupleTypeAnnotation extends Node {
+  type: typeof NodeType.TupleTypeAnnotation;
+  elementTypes: TypeAnnotation[];
 }
 
 export interface UnionTypeAnnotation extends Node {

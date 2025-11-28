@@ -26,6 +26,16 @@ export function resolveTypeAnnotation(
     } as UnionType;
   }
 
+  if (annotation.type === NodeType.RecordTypeAnnotation) {
+    // TODO: Implement record type resolution
+    return Types.Unknown;
+  }
+
+  if (annotation.type === NodeType.TupleTypeAnnotation) {
+    // TODO: Implement tuple type resolution
+    return Types.Unknown;
+  }
+
   const name = annotation.name;
   switch (name) {
     case 'i32':

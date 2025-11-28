@@ -21,10 +21,16 @@ import {
   type MixinDeclaration,
   type NamedTypeAnnotation,
   type Parameter,
+  type PropertyAssignment,
+  type PropertySignature,
   type Program,
+  type RecordLiteral,
+  type RecordTypeAnnotation,
   type ReturnStatement,
   type Statement,
   type StringLiteral,
+  type TupleLiteral,
+  type TupleTypeAnnotation,
   type TypeAnnotation,
   type TypeParameter,
   type UnionTypeAnnotation,
@@ -539,6 +545,12 @@ export class Parser {
     if (this.#match(TokenType.Identifier)) {
       return {type: NodeType.Identifier, name: this.#previous().value};
     }
+    if (this.#match(TokenType.LBrace)) {
+      return this.#parseRecordLiteral();
+    }
+    if (this.#match(TokenType.LBracket)) {
+      return this.#parseTupleLiteral();
+    }
     if (this.#match(TokenType.LParen)) {
       const expr = this.#parseExpression();
       this.#consume(TokenType.RParen, "Expected ')' after expression.");
@@ -1004,12 +1016,25 @@ export class Parser {
   }
 
   #parseTypeAnnotation(): TypeAnnotation {
-    const left = this.#parseNamedTypeAnnotation();
+    let left: TypeAnnotation;
+    if (this.#match(TokenType.LBrace)) {
+      left = this.#parseRecordTypeAnnotation();
+    } else if (this.#match(TokenType.LBracket)) {
+      left = this.#parseTupleTypeAnnotation();
+    } else {
+      left = this.#parseNamedTypeAnnotation();
+    }
 
     if (this.#match(TokenType.Pipe)) {
       const types: TypeAnnotation[] = [left];
       do {
-        types.push(this.#parseNamedTypeAnnotation());
+        if (this.#match(TokenType.LBrace)) {
+          types.push(this.#parseRecordTypeAnnotation());
+        } else if (this.#match(TokenType.LBracket)) {
+          types.push(this.#parseTupleTypeAnnotation());
+        } else {
+          types.push(this.#parseNamedTypeAnnotation());
+        }
       } while (this.#match(TokenType.Pipe));
 
       return {
@@ -1019,6 +1044,76 @@ export class Parser {
     }
 
     return left;
+  }
+
+  #parseRecordTypeAnnotation(): RecordTypeAnnotation {
+    const properties: PropertySignature[] = [];
+    if (!this.#check(TokenType.RBrace)) {
+      do {
+        const name = this.#parseIdentifier();
+        this.#consume(TokenType.Colon, "Expected ':'");
+        const typeAnnotation = this.#parseTypeAnnotation();
+        properties.push({
+          type: NodeType.PropertySignature,
+          name,
+          typeAnnotation,
+        });
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RBrace, "Expected '}'");
+    return {
+      type: NodeType.RecordTypeAnnotation,
+      properties,
+    };
+  }
+
+  #parseTupleTypeAnnotation(): TupleTypeAnnotation {
+    const elementTypes: TypeAnnotation[] = [];
+    if (!this.#check(TokenType.RBracket)) {
+      do {
+        elementTypes.push(this.#parseTypeAnnotation());
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RBracket, "Expected ']'");
+    return {
+      type: NodeType.TupleTypeAnnotation,
+      elementTypes,
+    };
+  }
+
+  #parseRecordLiteral(): RecordLiteral {
+    const properties: PropertyAssignment[] = [];
+    if (!this.#check(TokenType.RBrace)) {
+      do {
+        const name = this.#parseIdentifier();
+        this.#consume(TokenType.Colon, "Expected ':'");
+        const value = this.#parseExpression();
+        properties.push({
+          type: NodeType.PropertyAssignment,
+          name,
+          value,
+        });
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RBrace, "Expected '}'");
+    return {
+      type: NodeType.RecordLiteral,
+      properties,
+    };
+  }
+
+  #parseTupleLiteral(): TupleLiteral {
+    const elements: Expression[] = [];
+    if (!this.#check(TokenType.RBracket)) {
+      do {
+        elements.push(this.#parseExpression());
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RBracket, "Expected ']'");
+    return {
+      type: NodeType.TupleLiteral,
+      elements,
+    };
   }
 
   #parseNamedTypeAnnotation(): NamedTypeAnnotation {

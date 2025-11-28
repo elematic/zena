@@ -237,7 +237,7 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Enforce `#` private fields strictly.
 
 3.  **Records & Tuples**:
-    - [ ] **Parser**: Literals (`{...}`, `[...]`) and Types.
+    - [x] **Parser**: Literals (`{...}`, `[...]`) and Types.
     - [ ] **Checker**: Structural typing and inference.
     - [ ] **Codegen (Boxed)**: Canonical WASM structs.
     - [ ] **Codegen (Unboxed)**: Argument explosion and multi-value returns.
