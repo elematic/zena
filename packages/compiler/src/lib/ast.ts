@@ -42,6 +42,10 @@ export const NodeType = {
   RecordTypeAnnotation: 'RecordTypeAnnotation',
   PropertySignature: 'PropertySignature',
   TupleTypeAnnotation: 'TupleTypeAnnotation',
+  RecordPattern: 'RecordPattern',
+  TuplePattern: 'TuplePattern',
+  BindingProperty: 'BindingProperty',
+  AssignmentPattern: 'AssignmentPattern',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -95,7 +99,7 @@ export interface DeclareFunction extends Node {
 export interface VariableDeclaration extends Node {
   type: typeof NodeType.VariableDeclaration;
   kind: 'let' | 'var';
-  identifier: Identifier;
+  pattern: Pattern;
   typeAnnotation?: TypeAnnotation;
   init: Expression;
   exported: boolean;
@@ -138,6 +142,34 @@ export interface IndexExpression extends Node {
   object: Expression;
   index: Expression;
 }
+
+export interface RecordPattern extends Node {
+  type: typeof NodeType.RecordPattern;
+  properties: BindingProperty[];
+}
+
+export interface BindingProperty extends Node {
+  type: typeof NodeType.BindingProperty;
+  name: Identifier;
+  value: Pattern;
+}
+
+export interface TuplePattern extends Node {
+  type: typeof NodeType.TuplePattern;
+  elements: (Pattern | null)[];
+}
+
+export interface AssignmentPattern extends Node {
+  type: typeof NodeType.AssignmentPattern;
+  left: Pattern;
+  right: Expression;
+}
+
+export type Pattern =
+  | Identifier
+  | RecordPattern
+  | TuplePattern
+  | AssignmentPattern;
 
 export type Expression =
   | BinaryExpression

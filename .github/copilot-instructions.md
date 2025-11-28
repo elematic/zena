@@ -241,6 +241,10 @@ This project is an **npm monorepo** managed with **Wireit**.
     - [x] **Checker**: Structural typing and inference.
     - [x] **Codegen (Boxed)**: Canonical WASM structs.
     - [ ] **Codegen (Unboxed)**: Argument explosion and multi-value returns.
+    - **Destructuring**:
+      - [x] Parser.
+      - [ ] Checker.
+      - [ ] Codegen.
 
 4.  **Generics Enhancements**:
     - **Constraints**: Support `T extends Animal` (Requires Inheritance).

@@ -39,11 +39,11 @@ describe('Bundler', () => {
     const decl2 = bundle.body[1] as any;
 
     // Check renaming
-    assert.match(decl1.identifier.name, /^m0_x$/);
-    assert.match(decl2.identifier.name, /^m0_y$/);
+    assert.match(decl1.pattern.name, /^m0_x$/);
+    assert.match(decl2.pattern.name, /^m0_y$/);
 
     // Check reference
-    assert.strictEqual(decl2.init.left.name, decl1.identifier.name);
+    assert.strictEqual(decl2.init.left.name, decl1.pattern.name);
   });
 
   it('renames imports', () => {
@@ -73,20 +73,18 @@ describe('Bundler', () => {
     // Find statements
     const stmtY = bundle.body.find(
       (s: any) =>
-        s.type === NodeType.VariableDeclaration &&
-        s.identifier.name.includes('y'),
+        s.type === NodeType.VariableDeclaration && s.pattern.name.includes('y'),
     ) as any;
     const stmtX = bundle.body.find(
       (s: any) =>
-        s.type === NodeType.VariableDeclaration &&
-        s.identifier.name.includes('x'),
+        s.type === NodeType.VariableDeclaration && s.pattern.name.includes('x'),
     ) as any;
 
     assert.ok(stmtY);
     assert.ok(stmtX);
 
     // Check that y is initialized with x's mangled name
-    assert.strictEqual(stmtY.init.name, stmtX.identifier.name);
+    assert.strictEqual(stmtY.init.name, stmtX.pattern.name);
   });
 
   it('does not rename locals', () => {

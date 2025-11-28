@@ -1,6 +1,8 @@
 import {
   NodeType,
   type AccessorDeclaration,
+  type AssignmentPattern,
+  type BindingProperty,
   type BlockStatement,
   type CallExpression,
   type ClassDeclaration,
@@ -21,15 +23,18 @@ import {
   type MixinDeclaration,
   type NamedTypeAnnotation,
   type Parameter,
+  type Pattern,
   type PropertyAssignment,
   type PropertySignature,
   type Program,
   type RecordLiteral,
+  type RecordPattern,
   type RecordTypeAnnotation,
   type ReturnStatement,
   type Statement,
   type StringLiteral,
   type TupleLiteral,
+  type TuplePattern,
   type TupleTypeAnnotation,
   type TypeAnnotation,
   type TypeParameter,
@@ -151,7 +156,7 @@ export class Parser {
 
     const kind = kindToken.type === TokenType.Let ? 'let' : 'var';
 
-    const identifier = this.#parseIdentifier();
+    const pattern = this.#parsePattern();
 
     let typeAnnotation: TypeAnnotation | undefined;
     if (this.#match(TokenType.Colon)) {
@@ -167,10 +172,80 @@ export class Parser {
     return {
       type: NodeType.VariableDeclaration,
       kind,
-      identifier,
+      pattern,
       typeAnnotation,
       init,
       exported,
+    };
+  }
+
+  #parsePattern(): Pattern {
+    if (this.#match(TokenType.LBrace)) {
+      return this.#parseRecordPattern();
+    }
+    if (this.#match(TokenType.LBracket)) {
+      return this.#parseTuplePattern();
+    }
+    return this.#parseIdentifier();
+  }
+
+  #parseRecordPattern(): RecordPattern {
+    const properties: BindingProperty[] = [];
+    if (!this.#check(TokenType.RBrace)) {
+      do {
+        const name = this.#parseIdentifier();
+        let value: Pattern = name;
+
+        if (this.#check(TokenType.Identifier) && this.#peek().value === 'as') {
+          this.#advance();
+          value = this.#parseIdentifier();
+        } else if (this.#match(TokenType.Colon)) {
+          value = this.#parsePattern();
+        }
+
+        if (this.#match(TokenType.Equals)) {
+          const defaultValue = this.#parseExpression();
+          value = {
+            type: NodeType.AssignmentPattern,
+            left: value,
+            right: defaultValue,
+          };
+        }
+
+        properties.push({
+          type: NodeType.BindingProperty,
+          name,
+          value,
+        });
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RBrace, "Expected '}' after record pattern.");
+    return {
+      type: NodeType.RecordPattern,
+      properties,
+    };
+  }
+
+  #parseTuplePattern(): TuplePattern {
+    const elements: (Pattern | null)[] = [];
+    if (!this.#check(TokenType.RBracket)) {
+      do {
+        let pattern = this.#parsePattern();
+        if (this.#match(TokenType.Equals)) {
+          const defaultValue = this.#parseExpression();
+          pattern = {
+            type: NodeType.AssignmentPattern,
+            left: pattern,
+            right: defaultValue,
+          };
+        }
+        elements.push(pattern);
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RBracket, "Expected ']' after tuple pattern.");
+    return {
+      type: NodeType.TuplePattern,
+      elements,
     };
   }
 

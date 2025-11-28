@@ -295,9 +295,13 @@ export function generateLocalVariableDeclaration(
     type = inferType(ctx, decl.init);
   }
 
-  const index = ctx.declareLocal(decl.identifier.name, type);
-  body.push(Opcode.local_set);
-  body.push(...WasmModule.encodeSignedLEB128(index));
+  if (decl.pattern.type === NodeType.Identifier) {
+    const index = ctx.declareLocal(decl.pattern.name, type);
+    body.push(Opcode.local_set);
+    body.push(...WasmModule.encodeSignedLEB128(index));
+  } else {
+    throw new Error('Destructuring not implemented in Codegen');
+  }
 }
 
 export function generateReturnStatement(

@@ -16,7 +16,10 @@ suite('Parser', () => {
     assert.strictEqual(decl.type, NodeType.VariableDeclaration);
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.kind, 'let');
-      assert.strictEqual(decl.identifier.name, 'x');
+      assert.strictEqual(decl.pattern.type, NodeType.Identifier);
+      if (decl.pattern.type === NodeType.Identifier) {
+        assert.strictEqual(decl.pattern.name, 'x');
+      }
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
       assert.strictEqual(decl.exported, false);
     }
@@ -31,7 +34,10 @@ suite('Parser', () => {
     assert.strictEqual(decl.type, NodeType.VariableDeclaration);
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.kind, 'let');
-      assert.strictEqual(decl.identifier.name, 'x');
+      assert.strictEqual(decl.pattern.type, NodeType.Identifier);
+      if (decl.pattern.type === NodeType.Identifier) {
+        assert.strictEqual(decl.pattern.name, 'x');
+      }
       assert.strictEqual(decl.exported, true);
     }
   });

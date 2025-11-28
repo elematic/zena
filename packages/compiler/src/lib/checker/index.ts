@@ -42,7 +42,9 @@ export class TypeChecker {
 
         switch (stmt.type) {
           case NodeType.VariableDeclaration:
-            name = stmt.identifier.name;
+            if (stmt.pattern.type === NodeType.Identifier) {
+              name = stmt.pattern.name;
+            }
             break;
           case NodeType.ClassDeclaration:
           case NodeType.InterfaceDeclaration:

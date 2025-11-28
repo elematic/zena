@@ -56,7 +56,13 @@ export class Bundler {
     for (const stmt of module.ast.body) {
       let name: string | undefined;
       if (stmt.type === NodeType.VariableDeclaration) {
-        name = stmt.identifier.name;
+        if (stmt.pattern.type === NodeType.Identifier) {
+          name = stmt.pattern.name;
+        } else {
+          throw new Error(
+            'Destructuring not implemented in Bundler symbol collection',
+          );
+        }
       } else if (
         stmt.type === NodeType.ClassDeclaration ||
         stmt.type === NodeType.InterfaceDeclaration ||
@@ -400,14 +406,18 @@ class ASTRewriter {
 
   visitVariableDeclaration(decl: VariableDeclaration) {
     // If we are at top level (scopeStack.length === 1), rename definition
-    if (this.scopeStack.length === 1) {
-      const oldName = decl.identifier.name;
-      const newName = this.prefix + oldName;
-      decl.identifier.name = newName;
-      // Don't add to scope, because we renamed it.
+    if (decl.pattern.type === NodeType.Identifier) {
+      if (this.scopeStack.length === 1) {
+        const oldName = decl.pattern.name;
+        const newName = this.prefix + oldName;
+        decl.pattern.name = newName;
+        // Don't add to scope, because we renamed it.
+      } else {
+        // Local variable
+        this.addToScope(decl.pattern.name);
+      }
     } else {
-      // Local variable
-      this.addToScope(decl.identifier.name);
+      throw new Error('Destructuring not implemented in Bundler');
     }
 
     if (decl.typeAnnotation) {

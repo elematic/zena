@@ -22,10 +22,12 @@ function inferReturnTypeFromBlock(
   for (const stmt of block.body) {
     if (stmt.type === NodeType.VariableDeclaration) {
       const decl = stmt as VariableDeclaration;
-      const type = decl.typeAnnotation
-        ? mapType(ctx, decl.typeAnnotation)
-        : inferType(ctx, decl.init);
-      ctx.defineLocal(decl.identifier.name, ctx.nextLocalIndex++, type);
+      if (decl.pattern.type === NodeType.Identifier) {
+        const type = decl.typeAnnotation
+          ? mapType(ctx, decl.typeAnnotation)
+          : inferType(ctx, decl.init);
+        ctx.defineLocal(decl.pattern.name, ctx.nextLocalIndex++, type);
+      }
     } else if (stmt.type === NodeType.ReturnStatement) {
       const ret = stmt as ReturnStatement;
       if (ret.argument) {

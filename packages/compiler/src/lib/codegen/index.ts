@@ -82,44 +82,50 @@ export class CodeGenerator {
     for (const statement of program.body) {
       if (statement.type === NodeType.VariableDeclaration) {
         const varDecl = statement as VariableDeclaration;
-        if (varDecl.init.type === NodeType.FunctionExpression) {
-          registerFunction(
-            this.#ctx,
-            varDecl.identifier.name,
-            varDecl.init as FunctionExpression,
-            varDecl.exported,
-            (varDecl as any).exportName,
-          );
-        } else {
-          // Global variable
-          const type = inferType(this.#ctx, varDecl.init);
-          let initBytes: number[] = [];
-
-          // Default initialization
-          // Note: Do NOT include the 0x0b end opcode here - addGlobal adds it
-          if (type[0] === ValType.i32)
-            initBytes = [0x41, 0x00]; // i32.const 0
-          else if (type[0] === ValType.f32)
-            initBytes = [0x43, 0x00, 0x00, 0x00, 0x00]; // f32.const 0
-          else if (type[0] === ValType.ref_null || type[0] === ValType.ref) {
-            initBytes = [Opcode.ref_null, HeapType.none];
-          } else {
-            // Default to i32 0 if unknown (e.g. boolean)
-            initBytes = [0x41, 0x00];
-          }
-
-          const globalIndex = this.#ctx.module.addGlobal(type, true, initBytes);
-          this.#ctx.defineGlobal(varDecl.identifier.name, globalIndex, type);
-          globalInitializers.push({index: globalIndex, init: varDecl.init});
-
-          if (varDecl.exported) {
-            const exportName =
-              (varDecl as any).exportName || varDecl.identifier.name;
-            this.#ctx.module.addExport(
-              exportName,
-              ExportDesc.Global,
-              globalIndex,
+        if (varDecl.pattern.type === NodeType.Identifier) {
+          const name = varDecl.pattern.name;
+          if (varDecl.init.type === NodeType.FunctionExpression) {
+            registerFunction(
+              this.#ctx,
+              name,
+              varDecl.init as FunctionExpression,
+              varDecl.exported,
+              (varDecl as any).exportName,
             );
+          } else {
+            // Global variable
+            const type = inferType(this.#ctx, varDecl.init);
+            let initBytes: number[] = [];
+
+            // Default initialization
+            // Note: Do NOT include the 0x0b end opcode here - addGlobal adds it
+            if (type[0] === ValType.i32)
+              initBytes = [0x41, 0x00]; // i32.const 0
+            else if (type[0] === ValType.f32)
+              initBytes = [0x43, 0x00, 0x00, 0x00, 0x00]; // f32.const 0
+            else if (type[0] === ValType.ref_null || type[0] === ValType.ref) {
+              initBytes = [Opcode.ref_null, HeapType.none];
+            } else {
+              // Default to i32 0 if unknown (e.g. boolean)
+              initBytes = [0x41, 0x00];
+            }
+
+            const globalIndex = this.#ctx.module.addGlobal(
+              type,
+              true,
+              initBytes,
+            );
+            this.#ctx.defineGlobal(name, globalIndex, type);
+            globalInitializers.push({index: globalIndex, init: varDecl.init});
+
+            if (varDecl.exported) {
+              const exportName = (varDecl as any).exportName || name;
+              this.#ctx.module.addExport(
+                exportName,
+                ExportDesc.Global,
+                globalIndex,
+              );
+            }
           }
         }
       }

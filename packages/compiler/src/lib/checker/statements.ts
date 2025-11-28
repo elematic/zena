@@ -268,7 +268,14 @@ function checkVariableDeclaration(
     type = explicitType;
   }
 
-  ctx.declare(decl.identifier.name, type, decl.kind);
+  if (decl.pattern.type === NodeType.Identifier) {
+    ctx.declare(decl.pattern.name, type, decl.kind);
+  } else {
+    ctx.diagnostics.reportError(
+      'Destructuring not yet implemented in Checker.',
+      DiagnosticCode.UnknownError,
+    );
+  }
 }
 
 function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
