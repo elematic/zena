@@ -239,7 +239,7 @@ This project is an **npm monorepo** managed with **Wireit**.
 3.  **Records & Tuples**:
     - [x] **Parser**: Literals (`{...}`, `[...]`) and Types.
     - [x] **Checker**: Structural typing and inference.
-    - [ ] **Codegen (Boxed)**: Canonical WASM structs.
+    - [x] **Codegen (Boxed)**: Canonical WASM structs.
     - [ ] **Codegen (Unboxed)**: Argument explosion and multi-value returns.
 
 4.  **Generics Enhancements**:
@@ -259,7 +259,6 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 8.  **Future Features**:
     - **Syntax**:
-      - Record and tuple literal syntax (`{...}` and `[ ... ]`).
       - Blocks.
       - Pattern matching.
       - For/of loops.
