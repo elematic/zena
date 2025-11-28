@@ -129,6 +129,17 @@ function generateAsExpression(
 
   const targetType = mapType(ctx, expr.typeAnnotation, ctx.currentTypeContext);
 
+  let sourceType: number[] | undefined;
+  try {
+    sourceType = inferType(ctx, expr.expression);
+  } catch (e) {
+    // Ignore inference errors, just don't optimize
+  }
+
+  if (sourceType && typesAreEqual(sourceType, targetType)) {
+    return;
+  }
+
   // If target is a reference type (ref null ...)
   if (targetType.length > 1 && targetType[0] === ValType.ref_null) {
     // ref.cast_null
@@ -140,6 +151,14 @@ function generateAsExpression(
 
 export function inferType(ctx: CodegenContext, expr: Expression): number[] {
   switch (expr.type) {
+    case NodeType.StringLiteral:
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+      ];
+    // case NodeType.NumberLiteral removed (duplicate)
+    case NodeType.BooleanLiteral:
+      return [ValType.i32];
     case NodeType.AsExpression: {
       const asExpr = expr as AsExpression;
       return mapType(ctx, asExpr.typeAnnotation, ctx.currentTypeContext);
@@ -2138,8 +2157,6 @@ function generateStrEqFunction(ctx: CodegenContext): number {
     body.push(Opcode.i32_ge_u);
     body.push(Opcode.br_if, 1); // break to block
 
-
-
     // if s1.bytes[i] != s2.bytes[i] return 0
 
     // s1.bytes
@@ -2341,9 +2358,7 @@ function generateFunctionExpression(
   const oldTypeContext = ctx.currentTypeContext;
   ctx.currentTypeContext = typeContext;
 
-  const paramTypes = expr.params.map((p) =>
-    mapType(ctx, p.typeAnnotation),
-  );
+  const paramTypes = expr.params.map((p) => mapType(ctx, p.typeAnnotation));
   let returnType: number[];
   if (expr.returnType) {
     returnType = mapType(ctx, expr.returnType);
@@ -2367,10 +2382,7 @@ function generateFunctionExpression(
         ctx.defineLocal(p.name.name, ctx.nextLocalIndex++, paramTypes[i]);
       });
 
-      returnType = inferReturnTypeFromBlock(
-        ctx,
-        expr.body as BlockStatement,
-      );
+      returnType = inferReturnTypeFromBlock(ctx, expr.body as BlockStatement);
 
       ctx.popScope();
       ctx.nextLocalIndex = oldNextLocalIndex;
@@ -2451,7 +2463,7 @@ function generateFunctionExpression(
     funcBody.push(Opcode.end);
 
     ctx.module.addCode(implFuncIndex, ctx.extraLocals, funcBody);
-    
+
     ctx.currentTypeContext = oldTypeContext;
   });
 
@@ -2531,4 +2543,12 @@ function generateIndirectCall(
 
   // 5. Call Ref
   body.push(Opcode.call_ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex));
+}
+
+function typesAreEqual(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }

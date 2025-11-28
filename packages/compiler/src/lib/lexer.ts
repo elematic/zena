@@ -467,4 +467,4 @@ export function tokenize(source: string): Token[] {
 
   tokens.push({type: TokenType.EOF, value: '', line, column});
   return tokens;
-};
+}

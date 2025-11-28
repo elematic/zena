@@ -146,7 +146,10 @@ export class Parser {
 
   #parseTypeAliasDeclaration(exported: boolean): TypeAliasDeclaration {
     let isDistinct = false;
-    if (this.#check(TokenType.Distinct) || this.#previous().type === TokenType.Distinct) {
+    if (
+      this.#check(TokenType.Distinct) ||
+      this.#previous().type === TokenType.Distinct
+    ) {
       if (this.#check(TokenType.Distinct)) this.#advance();
       this.#consume(TokenType.Type, "Expected 'type' after 'distinct'.");
       isDistinct = true;

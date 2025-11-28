@@ -14,6 +14,7 @@ export const TypeKind = {
   Union: 'Union',
   TypeParameter: 'TypeParameter',
   TypeAlias: 'TypeAlias',
+  AnyRef: 'AnyRef',
   Unknown: 'Unknown',
 } as const;
 
@@ -130,4 +131,5 @@ export const Types = {
   Unknown: {kind: TypeKind.Unknown} as Type,
   I32: I32,
   F32: {kind: TypeKind.Number, name: 'f32'} as NumberType,
+  AnyRef: {kind: TypeKind.AnyRef} as Type,
 } as const;

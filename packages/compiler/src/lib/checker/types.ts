@@ -128,6 +128,8 @@ export function resolveTypeAnnotation(
       return Types.F32;
     case 'boolean':
       return Types.Boolean;
+    case 'anyref':
+      return Types.AnyRef;
     case 'string': {
       const stringType = ctx.resolve('String');
       return stringType || Types.String;
@@ -382,8 +384,30 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     return true;
   }
 
+  if (target.kind === TypeKind.AnyRef) {
+    switch (source.kind) {
+      case TypeKind.Class:
+      case TypeKind.Interface:
+      case TypeKind.Array:
+      case TypeKind.Record:
+      case TypeKind.Tuple:
+      case TypeKind.Function:
+      case TypeKind.Null:
+      case TypeKind.ByteArray:
+      case TypeKind.AnyRef:
+        return true;
+      case TypeKind.TypeAlias:
+        return isAssignableTo((source as TypeAliasType).target, target);
+      default:
+        return false;
+    }
+  }
+
   // Handle Distinct Types
-  if (source.kind === TypeKind.TypeAlias && (source as TypeAliasType).isDistinct) {
+  if (
+    source.kind === TypeKind.TypeAlias &&
+    (source as TypeAliasType).isDistinct
+  ) {
     // Distinct types are only assignable to themselves (handled by source === target check above)
     // or if target is a union containing this type.
     // They are NOT assignable to their underlying type.
@@ -391,22 +415,31 @@ export function isAssignableTo(source: Type, target: Type): boolean {
       return (target as UnionType).types.some((t) => isAssignableTo(source, t));
     }
     // Check if target is the same distinct type (by name/identity)
-    if (target.kind === TypeKind.TypeAlias && (target as TypeAliasType).isDistinct) {
-       // For generic instances, we might have different objects but same "type".
-       // Since we don't store type args on the instance yet, we rely on structural equality of the target?
-       // Or just name?
-       // If we have `type ID<T> = distinct T`, then `ID<i32>` and `ID<f32>` are different.
-       // Our current implementation of `resolveTypeAnnotation` creates a new object for each instantiation.
-       // So `source === target` might fail.
-       // We need to check if they are instantiations of the same alias with compatible targets.
-       const srcAlias = source as TypeAliasType;
-       const tgtAlias = target as TypeAliasType;
-       return srcAlias.name === tgtAlias.name && isAssignableTo(srcAlias.target, tgtAlias.target);
+    if (
+      target.kind === TypeKind.TypeAlias &&
+      (target as TypeAliasType).isDistinct
+    ) {
+      // For generic instances, we might have different objects but same "type".
+      // Since we don't store type args on the instance yet, we rely on structural equality of the target?
+      // Or just name?
+      // If we have `type ID<T> = distinct T`, then `ID<i32>` and `ID<f32>` are different.
+      // Our current implementation of `resolveTypeAnnotation` creates a new object for each instantiation.
+      // So `source === target` might fail.
+      // We need to check if they are instantiations of the same alias with compatible targets.
+      const srcAlias = source as TypeAliasType;
+      const tgtAlias = target as TypeAliasType;
+      return (
+        srcAlias.name === tgtAlias.name &&
+        isAssignableTo(srcAlias.target, tgtAlias.target)
+      );
     }
     return false;
   }
 
-  if (target.kind === TypeKind.TypeAlias && (target as TypeAliasType).isDistinct) {
+  if (
+    target.kind === TypeKind.TypeAlias &&
+    (target as TypeAliasType).isDistinct
+  ) {
     // Nothing is assignable to a distinct type except itself (handled above).
     return false;
   }

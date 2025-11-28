@@ -221,7 +221,7 @@ This project is an **npm monorepo** managed with **Wireit**.
       - Use byte streaming (start/byte/end pattern) for string I/O.
       - See `docs/design/host-interop.md` for details.
 
-2.  **Object-Oriented Features**:
+4.  **Object-Oriented Features**:
     - **Accessors**:
       - [x] Implement Type Checker for accessors.
       - [x] Implement Code Generator for accessors (emit methods).
@@ -253,7 +253,7 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Access Control**:
       - [x] Enforce `#` private fields strictly.
 
-3.  **Records & Tuples**:
+5.  **Records & Tuples**:
     - [x] **Parser**: Literals (`{...}`, `[...]`) and Types.
     - [x] **Checker**: Structural typing and inference.
     - [x] **Codegen (Boxed)**: Canonical WASM structs.
@@ -263,22 +263,22 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [ ] Checker.
       - [ ] Codegen.
 
-4.  **Generics Enhancements**:
+6.  **Generics Enhancements**:
     - **Constraints**: Support `T extends Animal` (Requires Inheritance).
 
-5.  **Data Structures**:
+7.  **Data Structures**:
     - **Maps**: Implement mutable maps (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
-6.  **Standard Library**:
+8.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
     - String manipulation (`substring`, `indexOf`).
     - Console I/O (`console.log`).
 
-7.  **Self-Hosting**:
+9.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
 
-8.  **Future Features**:
+10. **Future Features**:
     - **Syntax**:
       - Blocks.
       - Pattern matching.
