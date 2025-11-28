@@ -236,7 +236,11 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Access Control**:
       - [x] Enforce `#` private fields strictly.
 
-3.  **Generics Enhancements**:
+3.  **Records & Tuples**:
+    - [ ] **Parser**: Literals (`{...}`, `[...]`) and Types.
+    - [ ] **Checker**: Structural typing and inference.
+    - [ ] **Codegen (Boxed)**: Canonical WASM structs.
+    - [ ] **Codegen (Unboxed)**: Argument explosion and multi-value returns.
 
 4.  **Generics Enhancements**:
     - **Constraints**: Support `T extends Animal` (Requires Inheritance).

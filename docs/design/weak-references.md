@@ -47,7 +47,7 @@ const imports = {
     // WeakRef
     weakRefNew: (target) => new WeakRef(target),
     weakRefDeref: (ref) => ref.deref(),
-  }
+  },
 };
 ```
 
@@ -91,7 +91,7 @@ export class WeakMap<K, V> {
 
   get(key: K): V | null {
     const valRef = host_weakMapGet(this.#handle, key as externref);
-    
+
     // Check for null (externref can be null)
     if (valRef == null) { // Assuming null check works on externref
       return null;
@@ -144,12 +144,15 @@ export class WeakRef<T> {
 This design relies heavily on the host environment's capabilities.
 
 ### JavaScript Hosts (V8, SpiderMonkey, JavaScriptCore)
+
 This strategy works **perfectly** in JavaScript environments (Browsers, Node.js, Deno, Bun).
+
 - JS engines integrate Wasm GC with the JS Garbage Collector.
 - A JS `WeakMap` can hold a Wasm GC object (passed as `anyref` -> `externref`) as a key.
 - The JS GC correctly tracks liveness across the boundary and collects the Wasm object when no other references exist.
 
 ### Non-JS Hosts (Wasmtime, Wasmer, WAMR)
+
 Support in standalone Wasm runtimes is **more complex and currently limited**.
 
 1.  **Host Objects (`externref`) as Keys/Targets**:
@@ -160,4 +163,4 @@ Support in standalone Wasm runtimes is **more complex and currently limited**.
     - **Consequence**: If you put a Zena object into a Host Map, the Host holds a **strong reference** to it. The Zena object will never be collected, causing a memory leak.
     - **Future**: As Wasm GC matures, embedding APIs will likely add support for Weak Handles to allow hosts to participate in the Wasm GC cycle.
 
-**Conclusion**: For now, `WeakMap` and `WeakRef` support for *Zena Objects* is effectively limited to JavaScript hosts. Support for *Host Objects* works anywhere the host allows it.
+**Conclusion**: For now, `WeakMap` and `WeakRef` support for _Zena Objects_ is effectively limited to JavaScript hosts. Support for _Host Objects_ works anywhere the host allows it.
