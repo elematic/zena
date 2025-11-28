@@ -6,11 +6,17 @@ This document outlines the design for immutable Records and Tuples in Zena.
 
 ## 1. Overview
 
-Records and Tuples are immutable, structural data types. They are designed to support:
+Records and Tuples are **shallowly immutable**, structural data types. They are designed to support:
 
-- **Named Arguments**: Passing named values to functions.
+- **Named Arguments**: Passing named values to functions (which may be mutable objects).
 - **Multiple Return Values**: Returning multiple values from functions.
 - **Data Grouping**: Simple grouping of related data without the ceremony of Classes.
+
+**Terminology Note**:
+In Zena, "Record" and "Tuple" refer to **shallowly immutable containers**. This aligns with **Dart** and **Swift**.
+- They have **Structural Equality** (two tuples are equal if their fields are equal).
+- They can hold **Mutable References** (e.g., a Tuple containing a mutable Array).
+- This differs from the **TC39 (JavaScript)** proposal, where Records/Tuples are *deeply* immutable.
 
 ## 2. Syntax
 
@@ -61,9 +67,12 @@ const name = p[1];
 
 ## 3. Semantics
 
-- **Immutability**: Fields of records and tuples are deeply immutable (or at least shallowly immutable references).
+- **Immutability**: Fields of records and tuples are **shallowly immutable**. You cannot reassign a field (`r.x = 1` is error), but if a field holds a mutable object (like an Array), you can mutate that object (`r.list.push(1)` is ok).
 - **Structural Typing**: Records and Tuples are structurally typed. `{ x: i32 }` is the same type regardless of where it is defined.
-- **Value Semantics**: Equality (`==`) should ideally compare contents, not reference identity. (Implementation detail: might start with reference identity for v1).
+- **Value Semantics**: Equality (`==`) compares contents (structural equality), not reference identity.
+  - `[1, 2] == [1, 2]` is `true`.
+  - `[a] == [a]` is `true` (where `a` is an object reference).
+  - `[new Obj()] == [new Obj()]` is `false` (because the object references are different).
 
 ## 4. Implementation Strategy
 
@@ -262,11 +271,10 @@ This precedence exists in languages like **Dart** and **Swift**, which are stron
   - Update `[]` access to handle tuples (constant indices only for now?).
 
 ### Phase 2: Type Checker
-
-- [ ] **Type Representation**: Add `RecordType` and `TupleType` to the type system.
-- [ ] **Inference**: Infer types from literals.
-- [ ] **Structural Compatibility**: Implement `isAssignable` logic for structural types.
-- [ ] **Member Access**: Check valid field access on records and index access on tuples.
+- [x] **Type Representation**: Add `RecordType` and `TupleType` to the type system.
+- [x] **Inference**: Infer types from literals.
+- [x] **Structural Compatibility**: Implement `isAssignable` logic for structural types.
+- [x] **Member Access**: Check valid field access on records and index access on tuples.
 
 ### Phase 3: Code Generator (Boxed)
 

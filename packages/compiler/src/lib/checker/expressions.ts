@@ -9,8 +9,10 @@ import {
   type IndexExpression,
   type MemberExpression,
   type NewExpression,
+  type RecordLiteral,
   type SuperExpression,
   type ThisExpression,
+  type TupleLiteral,
 } from '../ast.js';
 import {DiagnosticCode} from '../diagnostics.js';
 import {
@@ -21,6 +23,8 @@ import {
   type InterfaceType,
   type FunctionType,
   type NumberType,
+  type RecordType,
+  type TupleType,
   type Type,
   type TypeParameterType,
 } from '../types.js';
@@ -80,6 +84,10 @@ export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
       return checkSuperExpression(ctx, expr as SuperExpression);
     case NodeType.ArrayLiteral:
       return checkArrayLiteral(ctx, expr as ArrayLiteral);
+    case NodeType.RecordLiteral:
+      return checkRecordLiteral(ctx, expr as RecordLiteral);
+    case NodeType.TupleLiteral:
+      return checkTupleLiteral(ctx, expr as TupleLiteral);
     case NodeType.IndexExpression:
       return checkIndexExpression(ctx, expr as IndexExpression);
     default:
@@ -651,6 +659,19 @@ function checkMemberExpression(
     }
   }
 
+  if (objectType.kind === TypeKind.Record) {
+    const recordType = objectType as RecordType;
+    const memberName = expr.property.name;
+    if (recordType.properties.has(memberName)) {
+      return recordType.properties.get(memberName)!;
+    }
+    ctx.diagnostics.reportError(
+      `Property '${memberName}' does not exist on type '${typeToString(objectType)}'.`,
+      DiagnosticCode.PropertyNotFound,
+    );
+    return Types.Unknown;
+  }
+
   if (
     objectType.kind !== TypeKind.Class &&
     objectType.kind !== TypeKind.Interface
@@ -731,26 +752,57 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
 
 function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
   if (expr.elements.length === 0) {
-    return {kind: TypeKind.Array, elementType: Types.Unknown} as ArrayType;
+    // Empty array literal, infer as Array<Unknown> or similar?
+    // For now, let's assume Array<i32> if empty, or maybe we need a bottom type.
+    // Better: Array<any> (if we had any).
+    // Let's return Array<Unknown> and hope it gets refined or cast.
+    return {
+      kind: TypeKind.Array,
+      elementType: Types.Unknown,
+    } as ArrayType;
   }
 
-  const firstType = checkExpression(ctx, expr.elements[0]);
-  for (let i = 1; i < expr.elements.length; i++) {
-    const type = checkExpression(ctx, expr.elements[i]);
-    if (typeToString(type) !== typeToString(firstType)) {
+  const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
+  // Check if all element types are compatible.
+  // For simplicity, take the first type and check if others are assignable to it.
+  // A better approach would be finding the common supertype.
+  const firstType = elementTypes[0];
+  for (let i = 1; i < elementTypes.length; i++) {
+    if (!isAssignableTo(elementTypes[i], firstType)) {
       ctx.diagnostics.reportError(
-        `Array elements must be of the same type. Expected ${typeToString(firstType)}, got ${typeToString(type)}`,
+        `Array element type mismatch. Expected '${typeToString(firstType)}', got '${typeToString(elementTypes[i])}'.`,
         DiagnosticCode.TypeMismatch,
       );
     }
   }
-  return {kind: TypeKind.Array, elementType: firstType} as ArrayType;
+
+  return {
+    kind: TypeKind.Array,
+    elementType: firstType,
+  } as ArrayType;
 }
 
-function checkIndexExpression(
-  ctx: CheckerContext,
-  expr: IndexExpression,
-): Type {
+function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
+  const properties = new Map<string, Type>();
+  for (const prop of expr.properties) {
+    const type = checkExpression(ctx, prop.value);
+    properties.set(prop.name.name, type);
+  }
+  return {
+    kind: TypeKind.Record,
+    properties,
+  } as RecordType;
+}
+
+function checkTupleLiteral(ctx: CheckerContext, expr: TupleLiteral): Type {
+  const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
+  return {
+    kind: TypeKind.Tuple,
+    elementTypes,
+  } as TupleType;
+}
+
+function checkIndexExpression(ctx: CheckerContext, expr: IndexExpression): Type {
   const objectType = checkExpression(ctx, expr.object);
   const indexType = checkExpression(ctx, expr.index);
 
@@ -776,6 +828,26 @@ function checkIndexExpression(
       }
       return method.returnType;
     }
+  }
+
+  if (objectType.kind === TypeKind.Tuple) {
+    const tupleType = objectType as TupleType;
+    if (expr.index.type !== NodeType.NumberLiteral) {
+      ctx.diagnostics.reportError(
+        `Tuple index must be a number literal.`,
+        DiagnosticCode.TypeMismatch,
+      );
+      return Types.Unknown;
+    }
+    const index = (expr.index as any).value;
+    if (index < 0 || index >= tupleType.elementTypes.length) {
+      ctx.diagnostics.reportError(
+        `Tuple index out of bounds: ${index}`,
+        DiagnosticCode.IndexOutOfBounds,
+      );
+      return Types.Unknown;
+    }
+    return tupleType.elementTypes[index];
   }
 
   if (

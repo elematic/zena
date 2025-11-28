@@ -238,7 +238,7 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 3.  **Records & Tuples**:
     - [x] **Parser**: Literals (`{...}`, `[...]`) and Types.
-    - [ ] **Checker**: Structural typing and inference.
+    - [x] **Checker**: Structural typing and inference.
     - [ ] **Codegen (Boxed)**: Canonical WASM structs.
     - [ ] **Codegen (Unboxed)**: Argument explosion and multi-value returns.
 

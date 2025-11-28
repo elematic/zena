@@ -11,6 +11,8 @@ import {
   type NumberType,
   type UnionType,
   type InterfaceType,
+  type RecordType,
+  type TupleType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
 
@@ -27,13 +29,27 @@ export function resolveTypeAnnotation(
   }
 
   if (annotation.type === NodeType.RecordTypeAnnotation) {
-    // TODO: Implement record type resolution
-    return Types.Unknown;
+    const properties = new Map<string, Type>();
+    for (const prop of annotation.properties) {
+      properties.set(
+        prop.name.name,
+        resolveTypeAnnotation(ctx, prop.typeAnnotation),
+      );
+    }
+    return {
+      kind: TypeKind.Record,
+      properties,
+    } as RecordType;
   }
 
   if (annotation.type === NodeType.TupleTypeAnnotation) {
-    // TODO: Implement tuple type resolution
-    return Types.Unknown;
+    const elementTypes = annotation.elementTypes.map((t) =>
+      resolveTypeAnnotation(ctx, t),
+    );
+    return {
+      kind: TypeKind.Tuple,
+      elementTypes,
+    } as TupleType;
   }
 
   const name = annotation.name;
@@ -265,7 +281,19 @@ export function typeToString(type: Type): string {
       return it.name;
     }
     case TypeKind.Array:
-      return `[${typeToString((type as ArrayType).elementType)}]`;
+      return `Array<${typeToString((type as ArrayType).elementType)}>`;
+    case TypeKind.Record: {
+      const rt = type as RecordType;
+      const props = Array.from(rt.properties.entries())
+        .map(([k, v]) => `${k}: ${typeToString(v)}`)
+        .join(', ');
+      return `{ ${props} }`;
+    }
+    case TypeKind.Tuple: {
+      const tt = type as TupleType;
+      const elems = tt.elementTypes.map((t) => typeToString(t)).join(', ');
+      return `[${elems}]`;
+    }
     default:
       return type.kind;
   }
@@ -319,6 +347,59 @@ export function isAssignableTo(source: Type, target: Type): boolean {
       return srcInterface.extends.some((ext) => isAssignableTo(ext, target));
     }
     return false;
+  }
+
+  if (source.kind === TypeKind.Record && target.kind === TypeKind.Record) {
+    const sourceRecord = source as RecordType;
+    const targetRecord = target as RecordType;
+    // Width subtyping: source must have all properties of target
+    for (const [key, targetType] of targetRecord.properties) {
+      const sourceType = sourceRecord.properties.get(key);
+      if (!sourceType) return false;
+      if (!isAssignableTo(sourceType, targetType)) return false;
+    }
+    return true;
+  }
+
+  if (source.kind === TypeKind.Tuple && target.kind === TypeKind.Tuple) {
+    const sourceTuple = source as TupleType;
+    const targetTuple = target as TupleType;
+    if (sourceTuple.elementTypes.length !== targetTuple.elementTypes.length) {
+      return false;
+    }
+    for (let i = 0; i < sourceTuple.elementTypes.length; i++) {
+      if (
+        !isAssignableTo(
+          sourceTuple.elementTypes[i],
+          targetTuple.elementTypes[i],
+        )
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (source.kind === TypeKind.Class && target.kind === TypeKind.Record) {
+    const targetRecord = target as RecordType;
+    // Check if class has all properties of record
+    for (const [key, targetType] of targetRecord.properties) {
+      let current: ClassType | undefined = source as ClassType;
+      let found = false;
+      while (current) {
+        if (current.fields.has(key)) {
+          const fieldType = current.fields.get(key)!;
+          if (isAssignableTo(fieldType, targetType)) {
+            found = true;
+            break;
+          }
+        }
+        // TODO: Check accessors/methods if records can match them (Records are data, so maybe only getters?)
+        current = current.superType;
+      }
+      if (!found) return false;
+    }
+    return true;
   }
 
   return typeToString(source) === typeToString(target);

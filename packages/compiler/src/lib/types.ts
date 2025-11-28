@@ -9,6 +9,8 @@ export const TypeKind = {
   Interface: 'Interface',
   Mixin: 'Mixin',
   Array: 'Array',
+  Record: 'Record',
+  Tuple: 'Tuple',
   Union: 'Union',
   TypeParameter: 'TypeParameter',
   Unknown: 'Unknown',
@@ -34,6 +36,16 @@ export interface TypeParameterType extends Type {
 export interface ArrayType extends Type {
   kind: typeof TypeKind.Array;
   elementType: Type;
+}
+
+export interface RecordType extends Type {
+  kind: typeof TypeKind.Record;
+  properties: Map<string, Type>;
+}
+
+export interface TupleType extends Type {
+  kind: typeof TypeKind.Tuple;
+  elementTypes: Type[];
 }
 
 export interface ByteArrayType extends Type {

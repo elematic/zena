@@ -28,6 +28,7 @@ export const DiagnosticCode = {
   AbstractMethodNotImplemented: 2013,
   CannotInstantiateAbstractClass: 2014,
   ModuleNotFound: 2015,
+  IndexOutOfBounds: 2016,
   ImportError: 2016,
 
   // General

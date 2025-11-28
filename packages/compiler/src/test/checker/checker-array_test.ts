@@ -25,7 +25,7 @@ suite('TypeChecker - Arrays', () => {
       let arr = #[1, "hello"];
     `);
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /Array elements must be of the same type/);
+    assert.match(errors[0].message, /Array element type mismatch/);
   });
 
   test('should check valid index access', () => {
