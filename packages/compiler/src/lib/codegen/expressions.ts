@@ -2513,21 +2513,10 @@ function generateTemplateLiteral(
     // For now, we assume expressions produce strings or can be converted to strings
     // TODO: Implement proper toString conversion for non-string expressions
     const subExpr = expr.expressions[i];
-    const exprType = inferType(ctx, subExpr);
 
-    // If it's already a string type, use it directly
-    if (
-      exprType.length > 1 &&
-      exprType[0] === ValType.ref_null &&
-      exprType[1] === ctx.stringTypeIndex
-    ) {
-      generateExpression(ctx, subExpr, body);
-    } else {
-      // For non-string types, we need to convert to string
-      // For now, just generate the expression and hope it's a string
-      // TODO: Implement proper type coercion
-      generateExpression(ctx, subExpr, body);
-    }
+    // Generate the expression (we assume it's a string or needs string concatenation)
+    // Proper type coercion to string should be implemented when we have a toString method
+    generateExpression(ctx, subExpr, body);
 
     // Concatenate with previous result
     generateStringConcat(ctx, body);
@@ -2612,18 +2601,19 @@ function generateTaggedTemplateExpression(
   body: number[],
 ) {
   // For tagged templates, we need to:
-  // 1. Create a TemplateStringsArray (an array of strings with a 'raw' property)
-  // 2. Create an array of interpolated values
-  // 3. Call the tag function with these arguments
+  // 1. Generate the tag function reference
+  // 2. Create a TemplateStringsArray (an array of strings with a 'raw' property)
+  // 3. Create an array of interpolated values
+  // 4. Call the tag function with these arguments
 
   // For now, implement a simpler version that:
+  // - Gets the tag function (for simple identifier tags)
   // - Creates an array of cooked strings
   // - Creates an array of values
   // - Calls the tag function
 
-  // Generate the strings array (array of String)
-  // For now, we'll generate an array of the cooked strings
   const quasis = expr.quasi.quasis;
+  const expressions = expr.quasi.expressions;
 
   // Get or create the array type for strings
   const stringArrayTypeIndex = getArrayTypeIndex(ctx, [
@@ -2631,7 +2621,7 @@ function generateTaggedTemplateExpression(
     ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
   ]);
 
-  // Create the strings array
+  // Generate the strings array
   // Push each string element
   for (const quasi of quasis) {
     generateStringLiteralValue(ctx, quasi.value.cooked, body);
@@ -2643,13 +2633,10 @@ function generateTaggedTemplateExpression(
   body.push(...WasmModule.encodeSignedLEB128(quasis.length));
 
   // Generate the values array
-  const expressions = expr.quasi.expressions;
-
   if (expressions.length > 0) {
     // Infer the value type from the first expression
     // For now, assume all values are the same type
     const firstExprType = inferType(ctx, expressions[0]);
-
     const valuesArrayTypeIndex = getArrayTypeIndex(ctx, firstExprType);
 
     // Push each value element
@@ -2669,24 +2656,22 @@ function generateTaggedTemplateExpression(
     body.push(...WasmModule.encodeSignedLEB128(emptyArrayTypeIndex));
   }
 
-  // Now call the tag function with (strings, values)
-  generateExpression(ctx, expr.tag, body);
+  // Now call the tag function with (strings, values) already on the stack
+  // Handle simple identifier tags as direct function calls
+  if (expr.tag.type === NodeType.Identifier) {
+    const tagName = (expr.tag as Identifier).name;
+    const funcIndex = ctx.functions.get(tagName);
+    if (funcIndex !== undefined) {
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(funcIndex));
+      return;
+    }
+  }
 
-  // If the tag is a simple identifier (common case), call it directly
-  // Otherwise, we need to handle it as a closure or method call
-  // For now, assume it's already on the stack from the generateExpression call above
-  // and do a call_ref or call depending on the type
-
-  // Actually, the above isn't quite right. We need to:
-  // 1. Put strings array on stack
-  // 2. Put values array on stack
-  // 3. Get the tag function
-  // 4. Call it
-
-  // Let me reorder: we already generated strings and values, but the tag should be called
-  // with those as arguments. The issue is we generated the arrays, then the tag expression.
-  // We need to generate tag first, then arrays, then call.
-
-  // TODO: For now, this is a simplified implementation that may not work correctly.
-  // A proper implementation would need to handle the calling convention properly.
+  // For complex tag expressions (member expressions, closures, etc.),
+  // we need a more sophisticated calling convention
+  // TODO: Implement proper closure/method call support for tag expressions
+  throw new Error(
+    'Complex tag expressions in tagged templates are not yet supported. Use a simple identifier as the tag.',
+  );
 }

@@ -222,7 +222,6 @@ export const tokenize = (source: string): Token[] => {
 
   while (current < source.length) {
     const startColumn = column;
-    const startLine = line;
     const char = peek();
 
     // Whitespace
@@ -497,13 +496,16 @@ export const tokenize = (source: string): Token[] => {
         ) {
           // Pop the template stack and continue scanning template
           templateStack.pop();
+          // Capture position for the template part (after the closing brace)
+          const templatePartLine = line;
+          const templatePartColumn = column;
           const template = scanTemplatePart(true);
           tokens.push({
             type: template.type,
             value: template.cooked,
             rawValue: template.raw,
-            line: startLine,
-            column: startColumn,
+            line: templatePartLine,
+            column: templatePartColumn,
           });
         } else {
           // Normal brace handling

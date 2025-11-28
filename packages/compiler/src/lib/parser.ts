@@ -684,8 +684,11 @@ export class Parser {
       };
     }
 
-    // Must be a TemplateHead
-    this.#consume(TokenType.TemplateHead, 'Expected template head');
+    // Must be a TemplateHead (template with interpolation like `prefix ${)
+    this.#consume(
+      TokenType.TemplateHead,
+      'Expected template literal with interpolation (starting with backtick and containing ${)',
+    );
     const headToken = this.#previous();
     quasis.push({
       type: NodeType.TemplateElement,
