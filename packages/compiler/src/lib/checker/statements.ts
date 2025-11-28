@@ -116,6 +116,7 @@ function checkTypeAliasDeclaration(
     name,
     typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
     target,
+    isDistinct: decl.isDistinct,
   };
 
   ctx.declare(name, typeAlias, 'type');

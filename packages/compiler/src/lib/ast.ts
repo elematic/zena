@@ -48,6 +48,7 @@ export const NodeType = {
   AssignmentPattern: 'AssignmentPattern',
   FunctionTypeAnnotation: 'FunctionTypeAnnotation',
   TypeAliasDeclaration: 'TypeAliasDeclaration',
+  AsExpression: 'AsExpression',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -109,6 +110,7 @@ export interface TypeAliasDeclaration extends Node {
   typeParameters?: TypeParameter[];
   typeAnnotation: TypeAnnotation;
   exported: boolean;
+  isDistinct: boolean;
 }
 
 export interface VariableDeclaration extends Node {
@@ -203,7 +205,8 @@ export type Expression =
   | RecordLiteral
   | TupleLiteral
   | IndexExpression
-  | SuperExpression;
+  | SuperExpression
+  | AsExpression;
 
 export interface BinaryExpression extends Node {
   type: typeof NodeType.BinaryExpression;
@@ -214,8 +217,14 @@ export interface BinaryExpression extends Node {
 
 export interface AssignmentExpression extends Node {
   type: typeof NodeType.AssignmentExpression;
-  left: Identifier | MemberExpression | IndexExpression;
+  left: Expression | Pattern;
   value: Expression;
+}
+
+export interface AsExpression extends Node {
+  type: typeof NodeType.AsExpression;
+  expression: Expression;
+  typeAnnotation: TypeAnnotation;
 }
 
 export interface NumberLiteral extends Node {

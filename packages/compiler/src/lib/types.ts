@@ -39,6 +39,7 @@ export interface TypeAliasType extends Type {
   name: string;
   typeParameters?: TypeParameterType[];
   target: Type;
+  isDistinct: boolean;
 }
 
 export interface ArrayType extends Type {

@@ -1,6 +1,7 @@
 import {
   NodeType,
   type ArrayLiteral,
+  type AsExpression,
   type AssignmentExpression,
   type BinaryExpression,
   type CallExpression,
@@ -90,9 +91,19 @@ export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
       return checkTupleLiteral(ctx, expr as TupleLiteral);
     case NodeType.IndexExpression:
       return checkIndexExpression(ctx, expr as IndexExpression);
+    case NodeType.AsExpression:
+      return checkAsExpression(ctx, expr as AsExpression);
     default:
       return Types.Unknown;
   }
+}
+
+function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {
+  checkExpression(ctx, expr.expression);
+  // We trust the user knows what they are doing with 'as' for now,
+  // or we could add checks later (e.g. no casting string to int).
+  // For distinct types, this is the primary way to "wrap" a value.
+  return resolveTypeAnnotation(ctx, expr.typeAnnotation);
 }
 
 function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {

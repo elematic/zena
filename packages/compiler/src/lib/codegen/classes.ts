@@ -1308,6 +1308,7 @@ export function mapType(
       ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
     ];
   }
+  
   console.log(
     `Class ${annotation.name} not found in ctx.classes. Available: ${Array.from(ctx.classes.keys()).join(', ')}`,
   );

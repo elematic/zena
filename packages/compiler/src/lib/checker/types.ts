@@ -187,13 +187,38 @@ export function resolveTypeAnnotation(
           typeMap.set(param.name, typeArguments[index]);
         },
       );
-      return substituteType(alias.target, typeMap);
+      const substituted = substituteType(alias.target, typeMap);
+      if (alias.isDistinct) {
+        // Return a new TypeAliasType that is distinct but has the substituted target
+        // This is tricky because TypeAliasType definition assumes generic params are on the alias definition,
+        // but here we have an instantiated alias.
+        // For now, let's just return the alias type itself if it's not generic,
+        // but for generic distinct types, we need to represent the instantiation.
+        // Let's assume distinct types are opaque.
+        // We need to return a type that preserves the "distinctness".
+        // If we return `substituted`, we lose the distinctness.
+        // If we return `alias`, we lose the type arguments.
+        // We probably need `TypeAliasInstance` or similar if we want to support generic distinct types fully.
+        // For now, let's just return the substituted target if it's generic, effectively ignoring distinct on generics?
+        // No, that's bad.
+        // Let's create a specialized TypeAliasType for the instance.
+        return {
+          kind: TypeKind.TypeAlias,
+          name: alias.name,
+          target: substituted,
+          isDistinct: true,
+        } as TypeAliasType;
+      }
+      return substituted;
     }
     if (annotation.typeArguments && annotation.typeArguments.length > 0) {
       ctx.diagnostics.reportError(
         `Type alias '${name}' is not generic.`,
         DiagnosticCode.GenericTypeArgumentMismatch,
       );
+    }
+    if (alias.isDistinct) {
+      return alias;
     }
     return alias.target;
   }
@@ -306,6 +331,13 @@ export function typeToString(type: Type): string {
       return (type as UnionType).types.map((t) => typeToString(t)).join(' | ');
     case TypeKind.TypeParameter:
       return (type as TypeParameterType).name;
+    case TypeKind.TypeAlias: {
+      const alias = type as TypeAliasType;
+      // If it's a distinct alias, we print its name.
+      // If it's a generic instance, we might want to print arguments, but we don't store them on the instance currently.
+      // For now just print the name.
+      return alias.name;
+    }
     case TypeKind.Function: {
       const fn = type as FunctionType;
       const params = fn.parameters.map((p) => typeToString(p)).join(', ');
@@ -348,6 +380,35 @@ export function isAssignableTo(source: Type, target: Type): boolean {
   if (source === target) return true;
   if (source.kind === TypeKind.Unknown || target.kind === TypeKind.Unknown) {
     return true;
+  }
+
+  // Handle Distinct Types
+  if (source.kind === TypeKind.TypeAlias && (source as TypeAliasType).isDistinct) {
+    // Distinct types are only assignable to themselves (handled by source === target check above)
+    // or if target is a union containing this type.
+    // They are NOT assignable to their underlying type.
+    if (target.kind === TypeKind.Union) {
+      return (target as UnionType).types.some((t) => isAssignableTo(source, t));
+    }
+    // Check if target is the same distinct type (by name/identity)
+    if (target.kind === TypeKind.TypeAlias && (target as TypeAliasType).isDistinct) {
+       // For generic instances, we might have different objects but same "type".
+       // Since we don't store type args on the instance yet, we rely on structural equality of the target?
+       // Or just name?
+       // If we have `type ID<T> = distinct T`, then `ID<i32>` and `ID<f32>` are different.
+       // Our current implementation of `resolveTypeAnnotation` creates a new object for each instantiation.
+       // So `source === target` might fail.
+       // We need to check if they are instantiations of the same alias with compatible targets.
+       const srcAlias = source as TypeAliasType;
+       const tgtAlias = target as TypeAliasType;
+       return srcAlias.name === tgtAlias.name && isAssignableTo(srcAlias.target, tgtAlias.target);
+    }
+    return false;
+  }
+
+  if (target.kind === TypeKind.TypeAlias && (target as TypeAliasType).isDistinct) {
+    // Nothing is assignable to a distinct type except itself (handled above).
+    return false;
   }
 
   if (target.kind === TypeKind.Union) {
