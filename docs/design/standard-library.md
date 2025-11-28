@@ -30,32 +30,33 @@ The MVP is organized into four phases, each building on the previous:
 Types that have special compiler support and back language literals. These are
 essential for any Zena program.
 
-| Type        | Description                        | Priority |
-| ----------- | ---------------------------------- | -------- |
-| `String`    | Immutable UTF-8 string             | ✅ Done  |
-| `ByteArray` | Mutable byte array (backs strings) | ✅ Done  |
-| `Array<T>`  | Fixed-length WASM GC array         | ✅ Done  |
-| `boolean`   | Boolean primitive                  | ✅ Done  |
-| `i32`       | 32-bit signed integer              | ✅ Done  |
-| `f32`       | 32-bit float                       | ✅ Done  |
-| `void`      | Unit type                          | ✅ Done  |
-| `Console`   | Basic I/O via host interop         | ✅ Done  |
+| Type            | Description                        | Priority |
+| --------------- | ---------------------------------- | -------- |
+| `String`        | Immutable UTF-8 string             | ✅ Done  |
+| `ByteArray`     | Mutable byte array (backs strings) | ✅ Done  |
+| `FixedArray<T>` | Fixed-length WASM GC array         | ✅ Done  |
+| `boolean`       | Boolean primitive                  | ✅ Done  |
+| `i32`           | 32-bit signed integer              | ✅ Done  |
+| `f32`           | 32-bit float                       | ✅ Done  |
+| `void`          | Unit type                          | ✅ Done  |
+| `Console`       | Basic I/O via host interop         | ✅ Done  |
 
 ### Phase 2: Collections (Essential Data Structures)
 
 Types needed for building real programs. A parser, for example, needs growable
 lists and key-value storage.
 
-| Type           | Description                            | Priority |
-| -------------- | -------------------------------------- | -------- |
-| `List<T>`      | Growable array-backed list (interface) | High     |
-| `ArrayList<T>` | Growable list implementation           | High     |
-| `Map<K, V>`    | Key-value store (interface or class)   | High     |
-| `HashMap<K,V>` | Hash-based Map implementation          | High     |
-| `Set<T>`       | Unique collection (interface or class) | Medium   |
-| `HashSet<T>`   | Hash-based Set implementation          | Medium   |
-| `Option<T>`    | Optional value wrapper (Some/None)     | Medium   |
-| `Result<T,E>`  | Success/Error wrapper                  | Medium   |
+| Type               | Description                              | Priority |
+| ------------------ | ---------------------------------------- | -------- |
+| `Sequence<T>`      | Read-only indexed collection (interface) | High     |
+| `Array<T>`         | Growable array (interface/class)         | High     |
+| `ReadonlyArray<T>` | Immutable fixed-length array             | Medium   |
+| `Map<K, V>`        | Key-value store (interface or class)     | High     |
+| `HashMap<K,V>`     | Hash-based Map implementation            | High     |
+| `Set<T>`           | Unique collection (interface or class)   | Medium   |
+| `HashSet<T>`       | Hash-based Set implementation            | Medium   |
+| `Option<T>`        | Optional value wrapper (Some/None)       | Medium   |
+| `Result<T,E>`      | Success/Error wrapper                    | Medium   |
 
 **Design Decision: Interface vs Class**
 
@@ -65,17 +66,47 @@ For `Map` and `Set`, we follow Dart's pragmatic approach:
 - This allows `new Map()` to work directly while still permitting alternative implementations (e.g., `TreeMap`, `LinkedHashMap`).
 - Alternative: Make them interfaces and use `HashMap`/`HashSet` directly.
 
-**Array vs List Distinction**
+**Indexed Collection Naming**
 
-- `Array<T>`: Fixed-length, maps directly to WASM GC arrays. Non-growable but zero overhead.
-- `List<T>`: Abstract interface for indexed, iterable collections.
-- `ArrayList<T>`: Growable list backed by an `Array<T>` with capacity management.
+JavaScript/TypeScript uses `Array` for growable arrays, and most developers expect this.
+We adopt JS-familiar naming while introducing interfaces for read-only access:
 
-`Array<T>` should NOT implement `List<T>` directly because:
+- `FixedArray<T>`: The WASM GC array primitive. Fixed-length, mutable, zero overhead.
+- `Array<T>`: Growable array (interface or class). The most common collection type.
+- `Sequence<T>`: Read-only indexed access interface. Common abstraction over `Array`, `FixedArray`, and `ReadonlyArray`.
+- `ReadonlyArray<T>`: Immutable, fixed-length array (wrapper around `FixedArray`).
 
-1. WASM GC arrays cannot be subclassed (they're primitives)
-2. `List<T>` may have mutable operations (`add`, `remove`) that don't make sense for fixed arrays
-3. Instead, we can provide `Array.toList()` or `ArrayList.from(array)`
+**Interface Hierarchy**:
+
+```typescript
+interface Sequence<T> extends Iterable<T> {
+  get length(): i32;
+  get(index: i32): T;
+  isEmpty(): boolean;
+  contains(element: T): boolean;
+  indexOf(element: T): i32;
+}
+
+interface Array<T> extends Sequence<T> {
+  // Mutation operations
+  set(index: i32, value: T): void;
+  add(element: T): void;
+  addAll(elements: Iterable<T>): void;
+  insert(index: i32, element: T): void;
+  removeAt(index: i32): T;
+  clear(): void;
+}
+```
+
+**Rationale**:
+
+1. `Sequence<T>` provides a common interface for read-only indexed access, enabling
+   code to work with any indexed collection without caring about mutability.
+2. `FixedArray<T>` is the WASM primitive - useful for performance-critical code
+   and as the backing store for `Array<T>`.
+3. `ReadonlyArray<T>` is useful for APIs that want to return immutable data.
+4. Fixed-length mutable arrays (`FixedArray`) are an edge case; most users want
+   growable (`Array`) or fully immutable (`ReadonlyArray`) collections.
 
 ### Phase 3: Iteration & Utilities
 
@@ -134,12 +165,15 @@ for language completeness.
 
 See `docs/design/strings.md` for full details.
 
-#### 2. Array<T>
+#### 2. FixedArray<T>
 
 - **Backing**: WASM GC Array.
 - **Literal**: `#[1, 2, 3]`
 - **Intrinsics**: `get` (`[]`), `set` (`[]=`), `length`.
-- **Status**: ✅ Implemented
+- **Status**: ✅ Implemented (currently named `Array<T>`, to be renamed)
+
+The low-level WASM GC array primitive. Fixed-length upon creation.
+Most user code should use `Array<T>` (growable) or `ReadonlyArray<T>` (immutable).
 
 See `docs/design/arrays.md` for full details.
 
@@ -155,20 +189,30 @@ See `docs/design/host-interop.md` for full details.
 
 ### Collection Classes (Phase 2)
 
-#### List<T> (Interface)
+#### Sequence<T> (Interface)
 
-An abstract interface for indexed, growable collections.
+A read-only interface for indexed collections. This is the common abstraction
+over `Array<T>`, `FixedArray<T>`, and `ReadonlyArray<T>`.
 
 ```typescript
-interface List<T> extends Iterable<T> {
-  // Read operations
+interface Sequence<T> extends Iterable<T> {
   get length(): i32;
   get(index: i32): T;
   isEmpty(): boolean;
   contains(element: T): boolean;
   indexOf(element: T): i32;
+  first(): T;
+  last(): T;
+}
+```
 
-  // Write operations (mutable)
+#### Array<T> (Interface/Class)
+
+The growable array interface. This is the most commonly used collection type.
+
+```typescript
+interface Array<T> extends Sequence<T> {
+  // Mutation operations
   set(index: i32, value: T): void;
   add(element: T): void;
   addAll(elements: Iterable<T>): void;
@@ -177,32 +221,26 @@ interface List<T> extends Iterable<T> {
   clear(): void;
 
   // Derived operations
-  first(): T;
-  last(): T;
-  sublist(start: i32, end: i32): List<T>;
+  subarray(start: i32, end: i32): Array<T>;
+  join(separator: string): string;
 }
-```
 
-#### ArrayList<T>
-
-A growable list backed by a dynamic array with capacity management.
-
-```typescript
-class ArrayList<T> implements List<T> {
-  #data: Array<T>;
+// Default implementation backed by FixedArray<T>
+class GrowableArray<T> implements Array<T> {
+  #data: FixedArray<T>;
   #size: i32;
 
   #new() {
-    this.#data = /* array with capacity 16 */;
+    this.#data = /* fixed array with capacity 16 */;
     this.#size = 0;
   }
 
   #new(capacity: i32) {
-    this.#data = /* array with specified capacity */;
+    this.#data = /* fixed array with specified capacity */;
     this.#size = 0;
   }
 
-  // Implementation of List<T> methods...
+  // Implementation of Array<T> methods...
 
   // Additional methods
   ensureCapacity(minCapacity: i32): void;
@@ -214,8 +252,25 @@ class ArrayList<T> implements List<T> {
 
 - Start with initial capacity of 16
 - Double capacity when full
-- Use `Array<T>` as backing store
-- Copy to new array when growing
+- Use `FixedArray<T>` as backing store
+- Copy to new fixed array when growing
+
+#### ReadonlyArray<T>
+
+An immutable, fixed-length array wrapper.
+
+```typescript
+class ReadonlyArray<T> implements Sequence<T> {
+  #data: FixedArray<T>;
+
+  #new(data: FixedArray<T>) {
+    this.#data = data;
+  }
+
+  // Read-only Sequence<T> implementation
+  // No mutation methods exposed
+}
+```
 
 #### Map<K, V>
 
@@ -421,47 +476,99 @@ class StringBuilder {
 }
 ```
 
+**Alternatives Considered**:
+
+1. **Rope data structure**: Multiple internal string implementations (like Rope)
+   with optimized `+` operator could make `StringBuilder` unnecessary. Ropes
+   provide O(log n) concatenation but add complexity and may hurt small string
+   performance.
+
+2. **Array.join()**: Using `Array<string>.join(separator)` is a common pattern
+   in JS. This is simpler than `StringBuilder` for many use cases.
+
+**Recommendation**: Start with `StringBuilder` as the simple, explicit approach.
+It's easy to implement and understand. Consider Rope-based strings as a future
+optimization if profiling shows string concatenation is a bottleneck. `Array.join()`
+is already included in the `Array<T>` interface above.
+
 ---
 
 ### Math Module (Phase 4)
 
 Module: `zena:math`
 
+The math module is split into two categories:
+
+#### WASM Intrinsics (Zero-Cost)
+
+These map directly to WASM instructions and have no runtime overhead:
+
 ```typescript
-// Trigonometry
-export const sin = (x: f32): f32 => /* intrinsic */;
-export const cos = (x: f32): f32 => /* intrinsic */;
-export const tan = (x: f32): f32 => /* intrinsic */;
-export const atan2 = (y: f32, x: f32): f32 => /* intrinsic */;
+// Rounding (f32.floor, f32.ceil, f32.trunc, f32.nearest)
+export const floor = (x: f32): f32 => /* @intrinsic f32.floor */;
+export const ceil = (x: f32): f32 => /* @intrinsic f32.ceil */;
+export const trunc = (x: f32): f32 => /* @intrinsic f32.trunc */;
+export const round = (x: f32): f32 => /* @intrinsic f32.nearest */;
 
-// Power & roots
-export const sqrt = (x: f32): f32 => /* intrinsic */;
-export const pow = (base: f32, exp: f32): f32 => /* intrinsic */;
-export const abs = (x: i32): i32 => /* ... */;
-export const absF32 = (x: f32): f32 => /* intrinsic */;
+// Roots & absolute value (f32.sqrt, f32.abs)
+export const sqrt = (x: f32): f32 => /* @intrinsic f32.sqrt */;
+export const absF32 = (x: f32): f32 => /* @intrinsic f32.abs */;
 
-// Min/Max/Clamp
-export const min = (a: i32, b: i32): i32 => /* ... */;
-export const max = (a: i32, b: i32): i32 => /* ... */;
-export const clamp = (value: i32, min: i32, max: i32): i32 => /* ... */;
+// Min/Max (f32.min, f32.max)
+export const minF32 = (a: f32, b: f32): f32 => /* @intrinsic f32.min */;
+export const maxF32 = (a: f32, b: f32): f32 => /* @intrinsic f32.max */;
 
-export const minF32 = (a: f32, b: f32): f32 => /* intrinsic */;
-export const maxF32 = (a: f32, b: f32): f32 => /* intrinsic */;
-export const clampF32 = (value: f32, min: f32, max: f32): f32 => /* ... */;
+// Copysign (f32.copysign)
+export const copysign = (x: f32, y: f32): f32 => /* @intrinsic f32.copysign */;
+```
 
-// Rounding
-export const floor = (x: f32): f32 => /* intrinsic */;
-export const ceil = (x: f32): f32 => /* intrinsic */;
-export const round = (x: f32): f32 => /* intrinsic */;
-export const trunc = (x: f32): f32 => /* intrinsic */;
+#### Library Functions (Implemented in Zena or via Host)
+
+These require implementation, either in pure Zena or via host delegation:
+
+```typescript
+// Trigonometry - require Taylor series or host delegation
+export const sin = (x: f32): f32 => /* library */;
+export const cos = (x: f32): f32 => /* library */;
+export const tan = (x: f32): f32 => /* library */;
+export const asin = (x: f32): f32 => /* library */;
+export const acos = (x: f32): f32 => /* library */;
+export const atan = (x: f32): f32 => /* library */;
+export const atan2 = (y: f32, x: f32): f32 => /* library */;
+
+// Exponentials & logarithms
+export const exp = (x: f32): f32 => /* library */;
+export const log = (x: f32): f32 => /* library */;
+export const log10 = (x: f32): f32 => /* library */;
+export const pow = (base: f32, exp: f32): f32 => /* library */;
+
+// Integer operations (pure Zena)
+export const abs = (x: i32): i32 => if (x < 0) { -x } else { x };
+export const min = (a: i32, b: i32): i32 => if (a < b) { a } else { b };
+export const max = (a: i32, b: i32): i32 => if (a > b) { a } else { b };
+export const clamp = (value: i32, lo: i32, hi: i32): i32 =>
+  min(max(value, lo), hi);
+export const clampF32 = (value: f32, lo: f32, hi: f32): f32 =>
+  minF32(maxF32(value, lo), hi);
 
 // Constants
 export const PI: f32 = 3.14159265358979323846;
 export const E: f32 = 2.71828182845904523536;
+export const TAU: f32 = 6.28318530717958647692; // 2 * PI
 ```
 
-WASM provides many of these as native instructions (`f32.sqrt`, `f32.floor`,
-etc.), making them zero-cost intrinsics.
+**Implementation Strategy**:
+
+For trigonometric and transcendental functions, we have two options:
+
+1. **Host Delegation**: Call JavaScript's `Math.sin()`, etc. via `@external`.
+   Simple but requires host environment.
+
+2. **Pure Zena**: Implement using Taylor series or CORDIC algorithms.
+   Self-contained but adds code size and may have precision tradeoffs.
+
+**Recommendation**: Start with host delegation for MVP. Consider pure Zena
+implementations later for environments without host math support.
 
 ---
 
@@ -591,7 +698,7 @@ import {HashMap} from 'zena:collections';
 ### 3. The "Prelude"
 
 - The compiler automatically imports a "Prelude" module.
-- Prelude exports: `String`, `Array`, `ByteArray`, core primitives.
+- Prelude exports: `String`, `FixedArray`, `Array`, `ByteArray`, core primitives.
 - These are available without explicit import.
 
 ### 4. Compilation Pipeline
@@ -609,7 +716,7 @@ import {HashMap} from 'zena:collections';
 
 ### Immediate (Blocks MVP Programs)
 
-1.  [ ] `ArrayList<T>` - Growable list is essential for parsers
+1.  [ ] `Array<T>` / `GrowableArray<T>` - Growable array is essential for parsers
 2.  [ ] `HashMap<K, V>` - Key-value storage for symbol tables, caches
 3.  [ ] `Iterator<T>` / `Iterable<T>` - Iteration protocol
 4.  [ ] `StringBuilder` - Efficient string construction
@@ -618,22 +725,24 @@ import {HashMap} from 'zena:collections';
 
 5.  [ ] `HashSet<T>` - Unique collections
 6.  [ ] `Option<T>` - Type-safe optionals
-7.  [ ] `zena:math` - Basic math functions
-8.  [ ] `List<T>` interface - Abstract over array types
+7.  [ ] `zena:math` - Basic math functions (intrinsics first, then library)
+8.  [ ] `Sequence<T>` interface - Abstract over indexed collections
+9.  [ ] `ReadonlyArray<T>` - Immutable array wrapper
 
 ### Medium-term (Language Completeness)
 
-9.  [ ] `for...of` loop integration with `Iterable<T>`
-10. [ ] `Comparable<T>` - Enable sorting
-11. [ ] `Result<T, E>` - Error handling
-12. [ ] String methods: `substring`, `indexOf`, `split`, `trim`
+10. [ ] `for...of` loop integration with `Iterable<T>`
+11. [ ] `Comparable<T>` - Enable sorting
+12. [ ] `Result<T, E>` - Error handling
+13. [ ] String methods: `substring`, `indexOf`, `split`, `trim`
 
 ### Long-term (Advanced Features)
 
-13. [ ] Regex support (host delegation initially)
-14. [ ] Date/Time (minimal, host delegation)
-15. [ ] Async primitives (requires language support)
-16. [ ] TreeMap, LinkedHashMap, etc.
+14. [ ] Regex support (host delegation initially)
+15. [ ] Date/Time (minimal, host delegation)
+16. [ ] Async primitives (requires language support)
+17. [ ] TreeMap, LinkedHashMap, etc.
+18. [ ] Rope-based string implementation (optimization)
 
 ---
 
@@ -703,12 +812,15 @@ The host environment must provide `console.log` via the import object. The
 
 The MVP Standard Library focuses on enabling practical programs like parsers and
 data processors. The phased approach ensures we build foundational types first
-(`Array`, `String`), then essential collections (`ArrayList`, `HashMap`),
+(`FixedArray`, `String`), then essential collections (`Array`, `HashMap`),
 followed by iteration utilities and finally advanced features.
 
 Key design decisions:
 
+- **JS-familiar naming**: `Array<T>` is the growable array (like JS), `FixedArray<T>` is the WASM primitive
+- **Interface hierarchy**: `Sequence<T>` provides read-only indexed access across all array types
 - **Dart-inspired**: Clean separation of interfaces and implementations
 - **Zero-overhead**: Dead code elimination ensures unused stdlib code isn't shipped
 - **Pragmatic**: Start simple, expand based on real needs
 - **WASM-native**: Leverage WASM GC primitives directly where possible
+- **Math split**: WASM intrinsics (sqrt, floor, etc.) vs library functions (sin, cos, etc.)
