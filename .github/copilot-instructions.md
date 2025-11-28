@@ -147,6 +147,7 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Generics**: `docs/design/generics.md`
     - **Interfaces**: `docs/design/interfaces.md`
     - **Maps**: `docs/design/map.md`
+    - **Resource Management**: `docs/design/resource-management.md`
     - **Standard Library**: `docs/design/standard-library.md`
     - **Strings**: `docs/design/strings.md`
     - **Types**: `docs/design/types.md`
