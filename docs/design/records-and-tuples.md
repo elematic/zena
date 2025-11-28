@@ -14,9 +14,10 @@ Records and Tuples are **shallowly immutable**, structural data types. They are 
 
 **Terminology Note**:
 In Zena, "Record" and "Tuple" refer to **shallowly immutable containers**. This aligns with **Dart** and **Swift**.
+
 - They have **Structural Equality** (two tuples are equal if their fields are equal).
 - They can hold **Mutable References** (e.g., a Tuple containing a mutable Array).
-- This differs from the **TC39 (JavaScript)** proposal, where Records/Tuples are *deeply* immutable.
+- This differs from the **TC39 (JavaScript)** proposal, where Records/Tuples are _deeply_ immutable.
 
 ## 2. Syntax
 
@@ -261,6 +262,7 @@ This precedence exists in languages like **Dart** and **Swift**, which are stron
 ## 9. Implementation Plan
 
 ### Phase 1: Parser & AST
+
 - [x] **AST Nodes**: Add `RecordLiteral`, `TupleLiteral`, `RecordType`, `TupleType`, `PropertyAccess` (update), `ElementAccess` (update).
 - [x] **Parser**:
   - Parse `{ x: 1, y: 2 }` as `RecordLiteral`.
@@ -271,6 +273,7 @@ This precedence exists in languages like **Dart** and **Swift**, which are stron
   - Update `[]` access to handle tuples (constant indices only for now?).
 
 ### Phase 2: Type Checker
+
 - [x] **Type Representation**: Add `RecordType` and `TupleType` to the type system.
 - [x] **Inference**: Infer types from literals.
 - [x] **Structural Compatibility**: Implement `isAssignable` logic for structural types.

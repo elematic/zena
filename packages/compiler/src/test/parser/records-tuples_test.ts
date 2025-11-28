@@ -61,14 +61,14 @@ suite('Parser: Records and Tuples', () => {
   });
 
   test('parses empty record and tuple', () => {
-      const parser = new Parser('let e = { }; let t = [];');
-      const program = parser.parse();
-      const r = (program.body[0] as any).init;
-      assert.strictEqual(r.type, NodeType.RecordLiteral);
-      assert.strictEqual(r.properties.length, 0);
-      
-      const t = (program.body[1] as any).init;
-      assert.strictEqual(t.type, NodeType.TupleLiteral);
-      assert.strictEqual(t.elements.length, 0);
+    const parser = new Parser('let e = { }; let t = [];');
+    const program = parser.parse();
+    const r = (program.body[0] as any).init;
+    assert.strictEqual(r.type, NodeType.RecordLiteral);
+    assert.strictEqual(r.properties.length, 0);
+
+    const t = (program.body[1] as any).init;
+    assert.strictEqual(t.type, NodeType.TupleLiteral);
+    assert.strictEqual(t.elements.length, 0);
   });
 });

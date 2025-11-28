@@ -5,6 +5,8 @@ import {
   type MethodDefinition,
   type MixinDeclaration,
   type TypeAnnotation,
+  type RecordTypeAnnotation,
+  type TupleTypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
@@ -1192,13 +1194,22 @@ export function mapType(
   }
 
   if (annotation.type === NodeType.RecordTypeAnnotation) {
-    // TODO: Implement record type mapping
-    return [ValType.ref_null, HeapType.any];
+    const recordType = annotation as RecordTypeAnnotation;
+    const fields = recordType.properties.map((f) => ({
+      name: f.name.name,
+      type: mapType(ctx, f.typeAnnotation, typeContext),
+    }));
+    const typeIndex = ctx.getRecordTypeIndex(fields);
+    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
   }
 
   if (annotation.type === NodeType.TupleTypeAnnotation) {
-    // TODO: Implement tuple type mapping
-    return [ValType.ref_null, HeapType.any];
+    const tupleType = annotation as TupleTypeAnnotation;
+    const types = tupleType.elementTypes.map((t) =>
+      mapType(ctx, t, typeContext),
+    );
+    const typeIndex = ctx.getTupleTypeIndex(types);
+    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
   }
 
   // Check type context first

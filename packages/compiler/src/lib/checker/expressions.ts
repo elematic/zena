@@ -802,7 +802,10 @@ function checkTupleLiteral(ctx: CheckerContext, expr: TupleLiteral): Type {
   } as TupleType;
 }
 
-function checkIndexExpression(ctx: CheckerContext, expr: IndexExpression): Type {
+function checkIndexExpression(
+  ctx: CheckerContext,
+  expr: IndexExpression,
+): Type {
   const objectType = checkExpression(ctx, expr.object);
   const indexType = checkExpression(ctx, expr.index);
 

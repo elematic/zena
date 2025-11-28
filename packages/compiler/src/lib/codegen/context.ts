@@ -52,6 +52,10 @@ export class CodegenContext {
   // Global variables
   public globals = new Map<string, {index: number; type: number[]}>();
 
+  // Records and Tuples
+  public recordTypes = new Map<string, number>(); // canonicalKey -> typeIndex
+  public tupleTypes = new Map<string, number>(); // canonicalKey -> typeIndex
+
   constructor(program: Program) {
     this.program = program;
     this.module = new WasmModule();
@@ -121,5 +125,49 @@ export class CodegenContext {
 
   public getGlobal(name: string): {index: number; type: number[]} | undefined {
     return this.globals.get(name);
+  }
+
+  public getRecordTypeIndex(fields: {name: string; type: number[]}[]): number {
+    // Sort fields by name to canonicalize
+    const sortedFields = [...fields].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    const key = sortedFields
+      .map((f) => `${f.name}:${f.type.join(',')}`)
+      .join(';');
+
+    if (this.recordTypes.has(key)) {
+      return this.recordTypes.get(key)!;
+    }
+
+    // Create struct type
+    // (struct (field $name type) ...)
+    const structFields = sortedFields.map((f) => ({
+      type: f.type,
+      mutable: false, // Shallowly immutable
+    }));
+
+    const index = this.module.addStructType(structFields);
+    this.recordTypes.set(key, index);
+    return index;
+  }
+
+  public getTupleTypeIndex(types: number[][]): number {
+    const key = types.map((t) => t.join(',')).join(';');
+
+    if (this.tupleTypes.has(key)) {
+      return this.tupleTypes.get(key)!;
+    }
+
+    // Create struct type
+    // (struct (field type) ...)
+    const structFields = types.map((t) => ({
+      type: t,
+      mutable: false, // Shallowly immutable
+    }));
+
+    const index = this.module.addStructType(structFields);
+    this.tupleTypes.set(key, index);
+    return index;
   }
 }

@@ -16,6 +16,8 @@ import {
   type StringLiteral,
   type ThisExpression,
   type TypeAnnotation,
+  type RecordLiteral,
+  type TupleLiteral,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
@@ -83,6 +85,12 @@ export function generateExpression(
     case NodeType.NullLiteral:
       generateNullLiteral(ctx, expression as NullLiteral, body);
       break;
+    case NodeType.RecordLiteral:
+      generateRecordLiteral(ctx, expression as RecordLiteral, body);
+      break;
+    case NodeType.TupleLiteral:
+      generateTupleLiteral(ctx, expression as TupleLiteral, body);
+      break;
     default:
       // TODO: Handle other expressions
       break;
@@ -128,6 +136,8 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       const structTypeIndex = getHeapTypeIndex(ctx, objectType);
       if (structTypeIndex === -1) return [ValType.i32];
 
+      const fieldName = memberExpr.property.name;
+
       let foundClass: ClassInfo | undefined;
       for (const info of ctx.classes.values()) {
         if (info.structTypeIndex === structTypeIndex) {
@@ -136,9 +146,30 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
         }
       }
 
-      if (!foundClass) return [ValType.i32];
+      if (!foundClass) {
+        // Check Record
+        let recordKey: string | undefined;
+        for (const [key, index] of ctx.recordTypes) {
+          if (index === structTypeIndex) {
+            recordKey = key;
+            break;
+          }
+        }
+        if (recordKey) {
+          const fields = recordKey.split(';').map((s) => {
+            const colonIndex = s.indexOf(':');
+            const name = s.substring(0, colonIndex);
+            const typeStr = s.substring(colonIndex + 1);
+            return {name, typeStr};
+          });
+          const field = fields.find((f) => f.name === fieldName);
+          if (field) {
+            return field.typeStr.split(',').map(Number);
+          }
+        }
+        return [ValType.i32];
+      }
 
-      const fieldName = memberExpr.property.name;
       let lookupName = fieldName;
       if (fieldName.startsWith('#')) {
         if (ctx.currentClass) {
@@ -269,6 +300,59 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
         return [];
       }
       return [ValType.i32];
+    }
+    case NodeType.RecordLiteral: {
+      const recordExpr = expr as RecordLiteral;
+      const fields = recordExpr.properties.map((p) => ({
+        name: p.name.name,
+        type: inferType(ctx, p.value),
+      }));
+      const typeIndex = ctx.getRecordTypeIndex(fields);
+      return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+    }
+    case NodeType.TupleLiteral: {
+      const tupleExpr = expr as TupleLiteral;
+      const types = tupleExpr.elements.map((e) => inferType(ctx, e));
+      const typeIndex = ctx.getTupleTypeIndex(types);
+      return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+    }
+    case NodeType.IndexExpression: {
+      const indexExpr = expr as IndexExpression;
+      const objectType = inferType(ctx, indexExpr.object);
+      const structTypeIndex = getHeapTypeIndex(ctx, objectType);
+
+      // Check Tuple
+      let tupleKey: string | undefined;
+      for (const [key, index] of ctx.tupleTypes) {
+        if (index === structTypeIndex) {
+          tupleKey = key;
+          break;
+        }
+      }
+
+      if (tupleKey) {
+        if (indexExpr.index.type === NodeType.NumberLiteral) {
+          const index = (indexExpr.index as NumberLiteral).value;
+          const types = tupleKey.split(';');
+          if (index >= 0 && index < types.length) {
+            return types[index].split(',').map(Number);
+          }
+        }
+        return [ValType.i32];
+      }
+
+      // Array fallback
+      // Assuming array of i32 for now if we can't infer better
+      // Or check arrayTypes
+      let elementType: number[] = [ValType.i32];
+      for (const [key, index] of ctx.arrayTypes) {
+        if (index === objectType[1]) {
+          // Assuming [ref_null, typeIndex]
+          elementType = key.split(',').map(Number);
+          break;
+        }
+      }
+      return elementType;
     }
     case NodeType.NumberLiteral: {
       const numExpr = expr as NumberLiteral;
@@ -447,6 +531,33 @@ function generateIndexExpression(
         body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
         return;
       }
+    }
+
+    // Check if it's a Tuple
+    let tupleKey: string | undefined;
+    for (const [key, index] of ctx.tupleTypes) {
+      if (index === structTypeIndex) {
+        tupleKey = key;
+        break;
+      }
+    }
+
+    if (tupleKey) {
+      if (expr.index.type !== NodeType.NumberLiteral) {
+        throw new Error('Tuple index must be a constant number');
+      }
+      const index = (expr.index as NumberLiteral).value;
+
+      const types = tupleKey.split(';');
+      if (index < 0 || index >= types.length) {
+        throw new Error(`Tuple index out of bounds: ${index}`);
+      }
+
+      generateExpression(ctx, expr.object, body);
+      body.push(0xfb, GcOpcode.struct_get);
+      body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+      body.push(...WasmModule.encodeSignedLEB128(index));
+      return;
     }
   }
 
@@ -661,6 +772,36 @@ function generateMemberExpression(
   }
 
   if (!foundClass) {
+    // Check if it's a Record
+    let recordKey: string | undefined;
+    for (const [key, index] of ctx.recordTypes) {
+      if (index === structTypeIndex) {
+        recordKey = key;
+        break;
+      }
+    }
+
+    if (recordKey) {
+      // Parse key to find field index
+      // Key format: "name:type;name:type;..." (sorted by name)
+      const fields = recordKey.split(';').map((s) => {
+        // Split by first colon only
+        const colonIndex = s.indexOf(':');
+        const name = s.substring(0, colonIndex);
+        return {name};
+      });
+
+      const fieldIndex = fields.findIndex((f) => f.name === fieldName);
+      if (fieldIndex === -1) {
+        throw new Error(`Field ${fieldName} not found in record`);
+      }
+
+      body.push(0xfb, GcOpcode.struct_get);
+      body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+      body.push(...WasmModule.encodeSignedLEB128(fieldIndex));
+      return;
+    }
+
     // Check if it's an interface
     const interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
     if (interfaceInfo) {
@@ -1862,4 +2003,55 @@ export function generateStringGetByteFunction(ctx: CodegenContext): number {
   });
 
   return funcIndex;
+}
+
+function generateRecordLiteral(
+  ctx: CodegenContext,
+  expr: RecordLiteral,
+  body: number[],
+) {
+  // 1. Infer types of all fields
+  const fields = expr.properties.map((p) => ({
+    name: p.name.name,
+    type: inferType(ctx, p.value),
+    value: p.value,
+  }));
+
+  // 2. Get struct type index
+  const typeIndex = ctx.getRecordTypeIndex(
+    fields.map((f) => ({name: f.name, type: f.type})),
+  );
+
+  // 3. Sort fields to match struct layout
+  fields.sort((a, b) => a.name.localeCompare(b.name));
+
+  // 4. Generate values in order
+  for (const field of fields) {
+    generateExpression(ctx, field.value, body);
+  }
+
+  // 5. struct.new
+  body.push(0xfb, GcOpcode.struct_new);
+  body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+}
+
+function generateTupleLiteral(
+  ctx: CodegenContext,
+  expr: TupleLiteral,
+  body: number[],
+) {
+  // 1. Infer types of all elements
+  const types = expr.elements.map((e) => inferType(ctx, e));
+
+  // 2. Get struct type index
+  const typeIndex = ctx.getTupleTypeIndex(types);
+
+  // 3. Generate values in order
+  for (const element of expr.elements) {
+    generateExpression(ctx, element, body);
+  }
+
+  // 4. struct.new
+  body.push(0xfb, GcOpcode.struct_new);
+  body.push(...WasmModule.encodeSignedLEB128(typeIndex));
 }
