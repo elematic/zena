@@ -205,9 +205,6 @@ suite('CodeGenerator - Template Literals', () => {
     // every time the same tagged template expression is evaluated.
     // This is important for caching: the strings array can be used as a cache key.
     const source = `
-      var savedStrings: Array<string> = #[];
-      var callCount: i32 = 0;
-
       let captureStrings = (strings: Array<string>, values: Array<i32>): Array<string> => {
         return strings;
       };
@@ -222,7 +219,7 @@ suite('CodeGenerator - Template Literals', () => {
         // Return 1 if same reference, 0 if different
         if (first == second) {
           return 1;
-        };
+        }
         return 0;
       };
     `;
