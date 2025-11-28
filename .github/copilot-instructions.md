@@ -203,7 +203,16 @@ This project is an **npm monorepo** managed with **Wireit**.
     - Fix \`Array\` operations in \`map()\` tests.
     - Implement \`map()\` fully.
 
-2.  **Host Interop**:
+2.  **Type System & Robustness**:
+    - **Type Aliases**:
+      - Implement `type` keyword (e.g., `type MyInt = i32`).
+      - Support aliasing built-in types (`type List<T> = Array<T>`).
+    - **Intrinsic Types Refactoring**:
+      - Implement Symbol-based identity for built-in types (`Array`, `String`).
+      - Replace string-based checks in Codegen with Symbol checks.
+      - Support shadowing and aliasing of built-in types.
+
+3.  **Host Interop**:
     - **Function Overloading**:
       - Support multiple \`declare function\` signatures with the same name but different parameters.
     - **WASM GC Interop Notes**:

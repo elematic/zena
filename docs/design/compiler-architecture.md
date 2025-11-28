@@ -80,6 +80,17 @@ The `TypeChecker` class is currently monolithic. Future work involves splitting 
 
 - Implement a unified `Diagnostic` system instead of ad-hoc error collection/throwing.
 
+### 3. Intrinsic Types & Symbol Identity
+
+**Problem**: Currently, the compiler identifies built-in types (like `Array`, `String`) by checking their name (e.g., `name === 'Array'`). This is fragile because:
+1.  **Shadowing**: A user-defined `class Array` will be mistaken for the built-in array.
+2.  **Renaming**: If `Array` is aliased or renamed via imports, the compiler fails to recognize it.
+
+**Solution**:
+1.  **Symbol Identity**: The Type Checker should resolve all identifiers to unique `Symbol` objects.
+2.  **Intrinsic Registry**: The compiler should maintain a registry of "Intrinsic Symbols" (e.g., `intrinsics.Array`, `intrinsics.String`).
+3.  **Robust Checks**: The Code Generator should check `type.symbol === intrinsics.Array` instead of string matching.
+
 ## Completed Refactoring
 
 ### Split `CodeGenerator`
