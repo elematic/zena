@@ -123,7 +123,10 @@ suite('Parser: Template Literals', () => {
           assert.strictEqual(expr.tag.name, 'html');
         }
         assert.strictEqual(expr.quasi.type, NodeType.TemplateLiteral);
-        assert.strictEqual(expr.quasi.quasis[0].value.cooked, '<div>content</div>');
+        assert.strictEqual(
+          expr.quasi.quasis[0].value.cooked,
+          '<div>content</div>',
+        );
       }
     }
   });

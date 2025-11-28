@@ -2679,7 +2679,7 @@ function generateTaggedTemplateExpression(
 
   // Actually, the above isn't quite right. We need to:
   // 1. Put strings array on stack
-  // 2. Put values array on stack  
+  // 2. Put values array on stack
   // 3. Get the tag function
   // 4. Call it
 

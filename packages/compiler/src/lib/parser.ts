@@ -658,7 +658,8 @@ export class Parser {
   #isTemplateStart(): boolean {
     const type = this.#peek().type;
     return (
-      type === TokenType.NoSubstitutionTemplate || type === TokenType.TemplateHead
+      type === TokenType.NoSubstitutionTemplate ||
+      type === TokenType.TemplateHead
     );
   }
 

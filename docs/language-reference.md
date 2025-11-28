@@ -141,6 +141,7 @@ Overload resolution is performed based on the argument types at the call site.
 
 - **Numbers**: `123`, `0`, `-5` (Parsed as `i32` by default).
 - **Strings**: `"text"` or `'text'`.
+- **Template Literals**: `` `text ${expression}` `` (Backtick-delimited with interpolation).
 
 ### String Escape Sequences
 
@@ -160,6 +161,80 @@ let message = 'Hello\nWorld'; // Contains a newline
 let path = 'C:\\Users\\file'; // Escaped backslashes
 let quote = 'She said "Hi"'; // Escaped double quotes
 let apostrophe = "it's"; // Escaped single quote
+```
+
+### Template Literals
+
+Template literals are backtick-delimited strings that support embedded expressions and preserve raw string content.
+
+#### Basic Template Literals
+
+```typescript
+let greeting = `Hello, World!`;
+let multiline = `Line 1
+Line 2`;
+```
+
+#### String Interpolation
+
+Expressions can be embedded using `${}`:
+
+```typescript
+let name = 'Alice';
+let greeting = `Hello, ${name}!`; // "Hello, Alice!"
+
+let a = 5;
+let b = 10;
+let sum = `${a} + ${b} = ${a + b}`; // "5 + 10 = 15"
+```
+
+#### Escape Sequences in Templates
+
+Template literals support the same escape sequences as regular strings, plus:
+
+| Escape   | Character                              |
+| -------- | -------------------------------------- |
+| `` \` `` | Backtick                               |
+| `\$`     | Dollar sign (to prevent interpolation) |
+
+```typescript
+let code = `Use \`backticks\` for templates`;
+let price = `Cost: \$100`; // Prevents ${} interpolation
+```
+
+#### Tagged Template Literals
+
+Tagged templates allow custom processing of template literals by preceding them with a tag function:
+
+```typescript
+let tag = (strings: Array<String>, values: Array<i32>): String => {
+  // strings: array of string literals between expressions
+  // values: array of evaluated expressions
+  return strings[0];
+};
+
+let result = tag`Hello ${42} World`;
+```
+
+The tag function receives:
+
+1. **strings**: An array of the literal string parts. This array has a `raw` property containing the original source strings (before escape processing).
+2. **values**: An array of the interpolated expression values.
+
+The strings array length is always `values.length + 1`.
+
+**Note**: The strings array maintains identity across evaluations of the same template expression, allowing it to be used as a cache key for expensive one-time processing.
+
+```typescript
+// Example: SQL query builder
+let sql = (strings: Array<String>, values: Array<i32>): String => {
+  // Build parameterized query from strings
+  // Use values for parameters
+  return strings[0];
+};
+
+let userId = 123;
+let query = sql`SELECT * FROM users WHERE id = ${userId}`;
 ```
 
 ### Binary Operators
@@ -347,7 +422,7 @@ ForStatement ::= "for" "(" ForInit? ";" Expression? ";" Expression? ")" Statemen
 
 ForInit ::= VariableDeclaration | Expression
 
-Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression | CallExpression | NewExpression | MemberExpression | ArrayLiteral | IndexExpression
+Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression | CallExpression | NewExpression | MemberExpression | ArrayLiteral | IndexExpression | TemplateLiteral | TaggedTemplateExpression
 
 AssignmentExpression ::= (Identifier | MemberExpression | IndexExpression) "=" Expression
 
@@ -360,6 +435,12 @@ MemberExpression ::= Expression "." Identifier
 ArrayLiteral ::= "#[" (Expression ("," Expression)*)? "]"
 
 IndexExpression ::= Expression "[" Expression "]"
+
+TemplateLiteral ::= "`" TemplateSpan* "`"
+
+TemplateSpan ::= TemplateChars | "${" Expression "}"
+
+TaggedTemplateExpression ::= Expression TemplateLiteral
 
 ArrowFunction ::= "(" ParameterList? ")" (":" TypeAnnotation)? "=>" Expression
 

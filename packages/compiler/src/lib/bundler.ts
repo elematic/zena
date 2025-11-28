@@ -57,7 +57,7 @@ export class Bundler {
     // In classes.ts: if (annotation.name === 'ByteArray') ...
     // It seems ByteArray is a special type name that maps to WASM array<i8>.
     // It might not be a class in stdlib.
-    
+
     return {
       type: NodeType.Program,
       body: newBody,
