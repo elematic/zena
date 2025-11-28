@@ -4,8 +4,11 @@ import {
   type ClassDeclaration,
   type ForStatement,
   type IfStatement,
+  type Pattern,
+  type RecordPattern,
   type ReturnStatement,
   type Statement,
+  type TuplePattern,
   type VariableDeclaration,
   type WhileStatement,
 } from '../ast.js';
@@ -300,7 +303,171 @@ export function generateLocalVariableDeclaration(
     body.push(Opcode.local_set);
     body.push(...WasmModule.encodeSignedLEB128(index));
   } else {
-    throw new Error('Destructuring not implemented in Codegen');
+    generatePatternBinding(ctx, decl.pattern, type, body);
+  }
+}
+
+function generatePatternBinding(
+  ctx: CodegenContext,
+  pattern: Pattern,
+  valueType: number[],
+  body: number[],
+) {
+  if (pattern.type === NodeType.Identifier) {
+    const index = ctx.declareLocal(pattern.name, valueType);
+    body.push(Opcode.local_set);
+    body.push(...WasmModule.encodeSignedLEB128(index));
+    return;
+  }
+
+  if (pattern.type === NodeType.AssignmentPattern) {
+    // Ignore default value for now, assume value is present
+    generatePatternBinding(ctx, pattern.left, valueType, body);
+    return;
+  }
+
+  // Complex pattern: store value in temp local
+  const tempIndex = ctx.declareLocal('$$temp_destructure', valueType);
+  body.push(Opcode.local_set);
+  body.push(...WasmModule.encodeSignedLEB128(tempIndex));
+
+  if (pattern.type === NodeType.RecordPattern) {
+    generateRecordPattern(ctx, pattern, valueType, tempIndex, body);
+  } else if (pattern.type === NodeType.TuplePattern) {
+    generateTuplePattern(ctx, pattern, valueType, tempIndex, body);
+  }
+}
+
+function generateRecordPattern(
+  ctx: CodegenContext,
+  pattern: RecordPattern,
+  valueType: number[],
+  tempIndex: number,
+  body: number[],
+) {
+  const typeIndex = decodeTypeIndex(valueType);
+  // Find field indices
+  // We need to find the key in recordTypes that maps to typeIndex
+  let recordKey: string | undefined;
+  for (const [key, index] of ctx.recordTypes) {
+    if (index === typeIndex) {
+      recordKey = key;
+      break;
+    }
+  }
+
+  if (!recordKey) {
+    // Maybe it's a class?
+    const classInfo = getClassFromTypeIndex(ctx, typeIndex);
+    if (classInfo) {
+      for (const prop of pattern.properties) {
+        const fieldName = prop.name.name;
+        const fieldInfo = classInfo.fields.get(fieldName);
+        if (!fieldInfo) {
+          throw new Error(
+            `Field ${fieldName} not found in class ${classInfo.name}`,
+          );
+        }
+
+        // Load temp
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(tempIndex));
+
+        // Get field
+        body.push(0xfb, GcOpcode.struct_get);
+        body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+        body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+        // Recurse
+        const fieldType = fieldInfo.type;
+        generatePatternBinding(ctx, prop.value, fieldType, body);
+      }
+      return;
+    }
+    throw new Error(`Could not find record type for index ${typeIndex}`);
+  }
+
+  // Parse key: "x:127;y:127"
+  const fields = recordKey.split(';').map((s) => {
+    const [name, typeStr] = s.split(':');
+    const type = typeStr.split(',').map(Number);
+    return {name, type};
+  });
+
+  for (const prop of pattern.properties) {
+    const fieldName = prop.name.name;
+    const fieldIndex = fields.findIndex((f) => f.name === fieldName);
+    if (fieldIndex === -1) {
+      throw new Error(`Field ${fieldName} not found in record ${recordKey}`);
+    }
+
+    const fieldWasmType = fields[fieldIndex].type;
+
+    // Load temp
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(tempIndex));
+
+    // Get field
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(fieldIndex));
+
+    // Recurse
+    generatePatternBinding(ctx, prop.value, fieldWasmType, body);
+  }
+}
+
+function generateTuplePattern(
+  ctx: CodegenContext,
+  pattern: TuplePattern,
+  valueType: number[],
+  tempIndex: number,
+  body: number[],
+) {
+  const typeIndex = decodeTypeIndex(valueType);
+  // Find tuple key
+  let tupleKey: string | undefined;
+  for (const [key, index] of ctx.tupleTypes) {
+    if (index === typeIndex) {
+      tupleKey = key;
+      break;
+    }
+  }
+
+  if (!tupleKey) {
+    // Maybe it's an Array?
+    // Arrays are (ref $ArrayType).
+    // We need to check if typeIndex corresponds to an Array type.
+    // For now, assume Tuple.
+    throw new Error(`Could not find tuple type for index ${typeIndex}`);
+  }
+
+  // Parse key: "127;127"
+  const types = tupleKey.split(';').map((t) => t.split(',').map(Number));
+
+  for (let i = 0; i < pattern.elements.length; i++) {
+    const elemPattern = pattern.elements[i];
+    if (!elemPattern) continue; // Skipped
+
+    if (i >= types.length) {
+      throw new Error(
+        `Tuple pattern index ${i} out of bounds for type ${tupleKey}`,
+      );
+    }
+
+    const fieldWasmType = types[i];
+
+    // Load temp
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(tempIndex));
+
+    // Get field
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(i));
+
+    // Recurse
+    generatePatternBinding(ctx, elemPattern, fieldWasmType, body);
   }
 }
 

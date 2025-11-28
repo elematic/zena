@@ -230,16 +230,21 @@ export class Parser {
     const elements: (Pattern | null)[] = [];
     if (!this.#check(TokenType.RBracket)) {
       do {
-        let pattern = this.#parsePattern();
-        if (this.#match(TokenType.Equals)) {
-          const defaultValue = this.#parseExpression();
-          pattern = {
-            type: NodeType.AssignmentPattern,
-            left: pattern,
-            right: defaultValue,
-          };
+        if (this.#check(TokenType.Comma) || this.#check(TokenType.RBracket)) {
+          // Empty element (skipping)
+          elements.push(null);
+        } else {
+          let pattern = this.#parsePattern();
+          if (this.#match(TokenType.Equals)) {
+            const defaultValue = this.#parseExpression();
+            pattern = {
+              type: NodeType.AssignmentPattern,
+              left: pattern,
+              right: defaultValue,
+            };
+          }
+          elements.push(pattern);
         }
-        elements.push(pattern);
       } while (this.#match(TokenType.Comma));
     }
     this.#consume(TokenType.RBracket, "Expected ']' after tuple pattern.");

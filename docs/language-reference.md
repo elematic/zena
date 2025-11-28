@@ -353,3 +353,36 @@ PrimaryExpression ::= NumberLiteral | StringLiteral | Identifier | "(" Expressio
 
 Operator ::= "+" | "-" | "*" | "/"
 ```
+
+### Destructuring
+
+Zena supports destructuring for Records, Tuples, and Classes.
+
+#### Record Destructuring
+
+```typescript
+let p = { x: 10, y: 20 };
+let { x, y } = p;
+let { x as a, y as b } = p; // Renaming
+```
+
+#### Tuple Destructuring
+
+```typescript
+let t = [10, 20];
+let [a, b] = t;
+let [first, , third] = [1, 2, 3]; // Skipping elements
+```
+
+#### Class Destructuring
+
+Class instances can be destructured similar to records.
+
+```typescript
+class Point {
+  x: i32;
+  y: i32;
+}
+let p = new Point(10, 20);
+let {x, y} = p;
+```

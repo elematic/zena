@@ -7,10 +7,18 @@ import {
   type ReturnStatement,
   type TypeAnnotation,
   type VariableDeclaration,
+  type Pattern,
+  type RecordPattern,
+  type TuplePattern,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
-import {getTypeKey, mapType} from './classes.js';
+import {
+  getTypeKey,
+  mapType,
+  decodeTypeIndex,
+  getClassFromTypeIndex,
+} from './classes.js';
 import type {CodegenContext} from './context.js';
 import {generateExpression, inferType} from './expressions.js';
 import {generateBlockStatement} from './statements.js';
@@ -22,11 +30,14 @@ function inferReturnTypeFromBlock(
   for (const stmt of block.body) {
     if (stmt.type === NodeType.VariableDeclaration) {
       const decl = stmt as VariableDeclaration;
+      const type = decl.typeAnnotation
+        ? mapType(ctx, decl.typeAnnotation)
+        : inferType(ctx, decl.init);
+
       if (decl.pattern.type === NodeType.Identifier) {
-        const type = decl.typeAnnotation
-          ? mapType(ctx, decl.typeAnnotation)
-          : inferType(ctx, decl.init);
         ctx.defineLocal(decl.pattern.name, ctx.nextLocalIndex++, type);
+      } else {
+        definePatternLocals(ctx, decl.pattern, type);
       }
     } else if (stmt.type === NodeType.ReturnStatement) {
       const ret = stmt as ReturnStatement;
@@ -37,6 +48,84 @@ function inferReturnTypeFromBlock(
     }
   }
   return [];
+}
+
+function definePatternLocals(
+  ctx: CodegenContext,
+  pattern: Pattern,
+  type: number[],
+) {
+  if (pattern.type === NodeType.Identifier) {
+    ctx.defineLocal(pattern.name, ctx.nextLocalIndex++, type);
+    return;
+  }
+
+  if (pattern.type === NodeType.AssignmentPattern) {
+    definePatternLocals(ctx, pattern.left, type);
+    return;
+  }
+
+  const typeIndex = decodeTypeIndex(type);
+
+  if (pattern.type === NodeType.RecordPattern) {
+    // Find record key
+    let recordKey: string | undefined;
+    for (const [key, index] of ctx.recordTypes) {
+      if (index === typeIndex) {
+        recordKey = key;
+        break;
+      }
+    }
+
+    if (!recordKey) {
+      // Class?
+      const classInfo = getClassFromTypeIndex(ctx, typeIndex);
+      if (classInfo) {
+        for (const prop of pattern.properties) {
+          const fieldInfo = classInfo.fields.get(prop.name.name);
+          if (fieldInfo) {
+            definePatternLocals(ctx, prop.value, fieldInfo.type);
+          }
+        }
+        return;
+      }
+      return; // Unknown type, can't define locals
+    }
+
+    // Record
+    const fields = recordKey.split(';').map((s) => {
+      const [name, typeStr] = s.split(':');
+      const type = typeStr.split(',').map(Number);
+      return {name, type};
+    });
+
+    for (const prop of pattern.properties) {
+      const fieldIndex = fields.findIndex((f) => f.name === prop.name.name);
+      if (fieldIndex !== -1) {
+        definePatternLocals(ctx, prop.value, fields[fieldIndex].type);
+      }
+    }
+  } else if (pattern.type === NodeType.TuplePattern) {
+    // Tuple
+    let tupleKey: string | undefined;
+    for (const [key, index] of ctx.tupleTypes) {
+      if (index === typeIndex) {
+        tupleKey = key;
+        break;
+      }
+    }
+
+    if (!tupleKey) return;
+
+    const types = tupleKey.split(';').map((t) => t.split(',').map(Number));
+    for (let i = 0; i < pattern.elements.length; i++) {
+      const elem = pattern.elements[i];
+      if (!elem) continue;
+      if (i < types.length) {
+        definePatternLocals(ctx, elem, types[i]);
+      }
+    }
+  }
 }
 
 export function registerFunction(

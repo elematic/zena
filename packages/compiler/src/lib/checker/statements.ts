@@ -1,6 +1,8 @@
 import {
   NodeType,
   type AccessorDeclaration,
+  type AssignmentPattern,
+  type BindingProperty,
   type ClassDeclaration,
   type DeclareFunction,
   type ForStatement,
@@ -9,8 +11,11 @@ import {
   type InterfaceDeclaration,
   type MethodDefinition,
   type MixinDeclaration,
+  type Pattern,
+  type RecordPattern,
   type ReturnStatement,
   type Statement,
+  type TuplePattern,
   type VariableDeclaration,
   type WhileStatement,
 } from '../ast.js';
@@ -18,10 +23,13 @@ import {DiagnosticCode} from '../diagnostics.js';
 import {
   TypeKind,
   Types,
+  type ArrayType,
   type ClassType,
   type FunctionType,
   type InterfaceType,
   type MixinType,
+  type RecordType,
+  type TupleType,
   type Type,
   type TypeParameterType,
 } from '../types.js';
@@ -271,10 +279,166 @@ function checkVariableDeclaration(
   if (decl.pattern.type === NodeType.Identifier) {
     ctx.declare(decl.pattern.name, type, decl.kind);
   } else {
+    checkPattern(ctx, decl.pattern, type, decl.kind);
+  }
+}
+
+function checkPattern(
+  ctx: CheckerContext,
+  pattern: Pattern,
+  type: Type,
+  kind: 'let' | 'var',
+) {
+  switch (pattern.type) {
+    case NodeType.Identifier:
+      ctx.declare(pattern.name, type, kind);
+      break;
+
+    case NodeType.RecordPattern:
+      checkRecordPattern(ctx, pattern, type, kind);
+      break;
+
+    case NodeType.TuplePattern:
+      checkTuplePattern(ctx, pattern, type, kind);
+      break;
+
+    case NodeType.AssignmentPattern:
+      checkAssignmentPattern(ctx, pattern, type, kind);
+      break;
+  }
+}
+
+function checkRecordPattern(
+  ctx: CheckerContext,
+  pattern: RecordPattern,
+  type: Type,
+  kind: 'let' | 'var',
+) {
+  // Ensure type has properties
+  // We support RecordType, ClassType, InterfaceType, MixinType
+  // We need a helper to get property type.
+
+  for (const prop of pattern.properties) {
+    const propName = prop.name.name;
+    const propType = getPropertyType(ctx, type, propName);
+
+    if (!propType) {
+      ctx.diagnostics.reportError(
+        `Type '${typeToString(type)}' has no property '${propName}'`,
+        DiagnosticCode.TypeMismatch,
+      );
+      continue;
+    }
+
+    checkPattern(ctx, prop.value, propType, kind);
+  }
+}
+
+function checkTuplePattern(
+  ctx: CheckerContext,
+  pattern: TuplePattern,
+  type: Type,
+  kind: 'let' | 'var',
+) {
+  if (type.kind === TypeKind.Tuple) {
+    const tupleType = type as TupleType;
+    // Check length?
+    // Tuple destructuring can be partial: let [x] = [1, 2];
+    // But cannot exceed: let [x, y, z] = [1, 2];
+    if (pattern.elements.length > tupleType.elementTypes.length) {
+      ctx.diagnostics.reportError(
+        `Tuple pattern has ${pattern.elements.length} elements but type has ${tupleType.elementTypes.length}`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+
+    for (let i = 0; i < pattern.elements.length; i++) {
+      const elemPattern = pattern.elements[i];
+      if (!elemPattern) continue; // Skipped
+
+      if (i >= tupleType.elementTypes.length) break; // Already reported error
+
+      checkPattern(ctx, elemPattern, tupleType.elementTypes[i], kind);
+    }
+  } else if (type.kind === TypeKind.Array) {
+    const arrayType = type as ArrayType;
+    for (const elemPattern of pattern.elements) {
+      if (!elemPattern) continue;
+      checkPattern(ctx, elemPattern, arrayType.elementType, kind);
+    }
+  } else {
     ctx.diagnostics.reportError(
-      'Destructuring not yet implemented in Checker.',
-      DiagnosticCode.UnknownError,
+      `Type '${typeToString(type)}' is not a tuple or array`,
+      DiagnosticCode.TypeMismatch,
     );
+  }
+}
+
+function checkAssignmentPattern(
+  ctx: CheckerContext,
+  pattern: AssignmentPattern,
+  type: Type,
+  kind: 'let' | 'var',
+) {
+  // pattern.right is default value
+  const defaultType = checkExpression(ctx, pattern.right);
+
+  // Ensure default value is assignable to the expected type
+  if (!isAssignableTo(defaultType, type)) {
+    ctx.diagnostics.reportError(
+      `Type mismatch: default value ${typeToString(defaultType)} is not assignable to ${typeToString(type)}`,
+      DiagnosticCode.TypeMismatch,
+    );
+  }
+
+  // Recurse with the expected type (or union?)
+  // If we had optional types, the incoming 'type' might be T | null.
+  // And default value handles the null case.
+  // But Zena doesn't have optional properties yet in the way TS does.
+  // So 'type' is the type of the value being destructured.
+  // The default value is used if the value is undefined?
+  // But we don't have undefined.
+  // So defaults are currently useless unless we support nullable types and treat null as trigger?
+  // Or maybe just for future proofing.
+  // For now, just check the pattern against the type.
+
+  checkPattern(ctx, pattern.left, type, kind);
+}
+
+function getPropertyType(
+  ctx: CheckerContext,
+  type: Type,
+  name: string,
+): Type | undefined {
+  switch (type.kind) {
+    case TypeKind.Record:
+      return (type as RecordType).properties.get(name);
+    case TypeKind.Class: {
+      const classType = type as ClassType;
+      // Check fields
+      if (classType.fields.has(name)) return classType.fields.get(name);
+      // Check methods? Destructuring methods?
+      // Usually we destructure data.
+      // Check super
+      if (classType.superType) {
+        return getPropertyType(ctx, classType.superType, name);
+      }
+      return undefined;
+    }
+    case TypeKind.Interface: {
+      const ifaceType = type as InterfaceType;
+      if (ifaceType.fields.has(name)) return ifaceType.fields.get(name);
+      if (ifaceType.extends) {
+        for (const base of ifaceType.extends) {
+          const t = getPropertyType(ctx, base, name);
+          if (t) return t;
+        }
+      }
+      return undefined;
+    }
+    // TODO: Mixins, etc.
+    default:
+      return undefined;
   }
 }
 
