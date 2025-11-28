@@ -292,7 +292,9 @@ let y = 2;`;
     assertTokens(tokens, [[TokenType.String, "it's"], TokenType.EOF]);
   });
 
-  test('should handle backslash at end of string', () => {
+  test('should handle trailing backslash at end of source', () => {
+    // Tests edge case: source ends mid-escape sequence
+    // The input is: "test\ (6 chars: double-quote, t, e, s, t, backslash)
     const input = `"test\\`;
     const tokens = tokenize(input);
     assertTokens(tokens, [[TokenType.String, 'test'], TokenType.EOF]);
