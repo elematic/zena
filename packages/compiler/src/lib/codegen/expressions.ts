@@ -1,6 +1,7 @@
 import {
   NodeType,
   type ArrayLiteral,
+  type AsExpression,
   type AssignmentExpression,
   type BinaryExpression,
   type BlockStatement,
@@ -98,6 +99,9 @@ export function generateExpression(
     case NodeType.TupleLiteral:
       generateTupleLiteral(ctx, expression as TupleLiteral, body);
       break;
+    case NodeType.AsExpression:
+      generateAsExpression(ctx, expression as AsExpression, body);
+      break;
     case NodeType.FunctionExpression:
       generateFunctionExpression(ctx, expression as FunctionExpression, body);
       break;
@@ -116,8 +120,30 @@ function generateNullLiteral(
   body.push(HeapType.none);
 }
 
+function generateAsExpression(
+  ctx: CodegenContext,
+  expr: AsExpression,
+  body: number[],
+) {
+  generateExpression(ctx, expr.expression, body);
+
+  const targetType = mapType(ctx, expr.typeAnnotation, ctx.currentTypeContext);
+
+  // If target is a reference type (ref null ...)
+  if (targetType.length > 1 && targetType[0] === ValType.ref_null) {
+    // ref.cast_null
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    // The rest of targetType is the LEB128 encoded type index
+    body.push(...targetType.slice(1));
+  }
+}
+
 export function inferType(ctx: CodegenContext, expr: Expression): number[] {
   switch (expr.type) {
+    case NodeType.AsExpression: {
+      const asExpr = expr as AsExpression;
+      return mapType(ctx, asExpr.typeAnnotation, ctx.currentTypeContext);
+    }
     case NodeType.AssignmentExpression: {
       const assignExpr = expr as AssignmentExpression;
       return inferType(ctx, assignExpr.value);
@@ -313,6 +339,22 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
     }
     case NodeType.FunctionExpression: {
       const func = expr as FunctionExpression;
+
+      // Handle generics
+      const typeContext = new Map(ctx.currentTypeContext);
+      if (func.typeParameters) {
+        for (const param of func.typeParameters) {
+          typeContext.set(param.name, {
+            type: NodeType.TypeAnnotation,
+            name: 'anyref',
+          } as any);
+        }
+      }
+
+      // Temporarily override context
+      const oldTypeContext = ctx.currentTypeContext;
+      ctx.currentTypeContext = typeContext;
+
       const paramTypes = func.params.map((p) => mapType(ctx, p.typeAnnotation));
       let returnType: number[];
       if (func.returnType) {
@@ -339,6 +381,9 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
           ctx.nextLocalIndex = oldNextLocalIndex;
         }
       }
+
+      // Restore context
+      ctx.currentTypeContext = oldTypeContext;
 
       const closureTypeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
       return [
@@ -1566,7 +1611,7 @@ function generateAssignmentExpression(
           // Stack: [object, index, value]
           // Tee value: [object, index, value] (local set value)
           // Call: consumes [object, index, value]
-          // Push local: [value]
+          // Push local: [val]
 
           const valueType = inferType(ctx, expr.value);
           const tempVal = ctx.declareLocal('$$temp_assign_val', valueType);
@@ -2093,6 +2138,8 @@ function generateStrEqFunction(ctx: CodegenContext): number {
     body.push(Opcode.i32_ge_u);
     body.push(Opcode.br_if, 1); // break to block
 
+
+
     // if s1.bytes[i] != s2.bytes[i] return 0
 
     // s1.bytes
@@ -2151,7 +2198,7 @@ function generateStrEqFunction(ctx: CodegenContext): number {
  *   local.get 0
  *   any.convert_extern
  *   ref.cast $String
- *   struct.get $String 1  ;; bytes
+ *   struct.get $String 1  ;; bytes field
  *   local.get 1
  *   array.get_u $ByteArray)
  */
@@ -2280,7 +2327,23 @@ function generateFunctionExpression(
   }
 
   // 3. Determine Signature
-  const paramTypes = expr.params.map((p) => mapType(ctx, p.typeAnnotation));
+  const typeContext = new Map(ctx.currentTypeContext);
+  if (expr.typeParameters) {
+    for (const param of expr.typeParameters) {
+      typeContext.set(param.name, {
+        type: NodeType.TypeAnnotation,
+        name: 'anyref',
+      } as any);
+    }
+  }
+
+  // Temporarily override context for signature determination
+  const oldTypeContext = ctx.currentTypeContext;
+  ctx.currentTypeContext = typeContext;
+
+  const paramTypes = expr.params.map((p) =>
+    mapType(ctx, p.typeAnnotation),
+  );
   let returnType: number[];
   if (expr.returnType) {
     returnType = mapType(ctx, expr.returnType);
@@ -2304,12 +2367,17 @@ function generateFunctionExpression(
         ctx.defineLocal(p.name.name, ctx.nextLocalIndex++, paramTypes[i]);
       });
 
-      returnType = inferReturnTypeFromBlock(ctx, expr.body as BlockStatement);
+      returnType = inferReturnTypeFromBlock(
+        ctx,
+        expr.body as BlockStatement,
+      );
 
       ctx.popScope();
       ctx.nextLocalIndex = oldNextLocalIndex;
     }
   }
+
+  ctx.currentTypeContext = oldTypeContext;
 
   //  // 4. Generate Implementation Function
   const implParams = [[ValType.eqref], ...paramTypes];
@@ -2319,6 +2387,9 @@ function generateFunctionExpression(
   ctx.module.declareFunction(implFuncIndex);
 
   ctx.bodyGenerators.push(() => {
+    const oldTypeContext = ctx.currentTypeContext;
+    ctx.currentTypeContext = typeContext;
+
     const funcBody: number[] = [];
 
     // Setup Scope
@@ -2380,6 +2451,8 @@ function generateFunctionExpression(
     funcBody.push(Opcode.end);
 
     ctx.module.addCode(implFuncIndex, ctx.extraLocals, funcBody);
+    
+    ctx.currentTypeContext = oldTypeContext;
   });
 
   // 5. Instantiate Closure

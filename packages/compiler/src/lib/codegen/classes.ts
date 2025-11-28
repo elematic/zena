@@ -1232,8 +1232,13 @@ export function mapType(
   }
 
   // Check type context first
-  if (typeContext && typeContext.has(annotation.name)) {
-    return mapType(ctx, typeContext.get(annotation.name)!, typeContext);
+  const effectiveTypeContext = typeContext || ctx.currentTypeContext;
+  if (effectiveTypeContext && effectiveTypeContext.has(annotation.name)) {
+    return mapType(
+      ctx,
+      effectiveTypeContext.get(annotation.name)!,
+      effectiveTypeContext,
+    );
   }
 
   if (ctx.interfaces.has(annotation.name)) {
@@ -1247,6 +1252,7 @@ export function mapType(
   if (annotation.name === 'i32') return [ValType.i32];
   if (annotation.name === 'f32') return [ValType.f32];
   if (annotation.name === 'boolean') return [ValType.i32];
+  if (annotation.name === 'anyref') return [ValType.ref_null, HeapType.any];
   if (annotation.name === 'string') {
     return [
       ValType.ref_null,
@@ -1308,10 +1314,6 @@ export function mapType(
       ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
     ];
   }
-  
-  console.log(
-    `Class ${annotation.name} not found in ctx.classes. Available: ${Array.from(ctx.classes.keys()).join(', ')}`,
-  );
 
   return [ValType.i32];
 }

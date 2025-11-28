@@ -40,9 +40,12 @@ async function compileAndRun(source: string): Promise<any> {
 suite('Stdlib: Map', () => {
   test('implements generic closure', async () => {
     const source = `
-      export let run = () => {
+      class Box { value: i32; }
+      export let run = (): i32 => {
         let f = <T>(x: T): T => x;
-        return f<i32>(10);
+        let b = new Box();
+        b.value = 10;
+        return (f<Box>(b) as Box).value;
       };
     `;
     const exports = await compileAndRun(source);
