@@ -3,9 +3,11 @@ import {
   type ArrayLiteral,
   type AssignmentExpression,
   type BinaryExpression,
+  type BlockStatement,
   type BooleanLiteral,
   type CallExpression,
   type Expression,
+  type FunctionExpression,
   type Identifier,
   type IndexExpression,
   type MemberExpression,
@@ -13,14 +15,15 @@ import {
   type NewExpression,
   type NullLiteral,
   type NumberLiteral,
+  type RecordLiteral,
   type StringLiteral,
   type ThisExpression,
-  type TypeAnnotation,
-  type RecordLiteral,
   type TupleLiteral,
+  type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
+import {analyzeCaptures} from './captures.js';
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
@@ -29,7 +32,11 @@ import {
   mapType,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
-import {instantiateGenericFunction} from './functions.js';
+import {
+  inferReturnTypeFromBlock,
+  instantiateGenericFunction,
+} from './functions.js';
+import {generateBlockStatement} from './statements.js';
 import type {ClassInfo} from './types.js';
 
 export function generateExpression(
@@ -90,6 +97,9 @@ export function generateExpression(
       break;
     case NodeType.TupleLiteral:
       generateTupleLiteral(ctx, expression as TupleLiteral, body);
+      break;
+    case NodeType.FunctionExpression:
+      generateFunctionExpression(ctx, expression as FunctionExpression, body);
       break;
     default:
       // TODO: Handle other expressions
@@ -300,6 +310,41 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
         return [];
       }
       return [ValType.i32];
+    }
+    case NodeType.FunctionExpression: {
+      const func = expr as FunctionExpression;
+      const paramTypes = func.params.map((p) => mapType(ctx, p.typeAnnotation));
+      let returnType: number[];
+      if (func.returnType) {
+        returnType = mapType(ctx, func.returnType);
+      } else {
+        if (func.body.type !== NodeType.BlockStatement) {
+          returnType = [ValType.i32];
+        } else {
+          // Setup temporary scope for inference
+          ctx.pushScope();
+          const oldNextLocalIndex = ctx.nextLocalIndex;
+          ctx.nextLocalIndex = 0;
+
+          func.params.forEach((p, i) => {
+            ctx.defineLocal(p.name.name, ctx.nextLocalIndex++, paramTypes[i]);
+          });
+
+          returnType = inferReturnTypeFromBlock(
+            ctx,
+            func.body as BlockStatement,
+          );
+
+          ctx.popScope();
+          ctx.nextLocalIndex = oldNextLocalIndex;
+        }
+      }
+
+      const closureTypeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(closureTypeIndex),
+      ];
     }
     case NodeType.RecordLiteral: {
       const recordExpr = expr as RecordLiteral;
@@ -678,6 +723,25 @@ function generateNewExpression(
     mapType(ctx, annotation, ctx.currentTypeContext);
     // Get the specialized name
     className = getTypeKey(ctx, annotation, ctx.currentTypeContext);
+  }
+
+  if (className.startsWith('Array<')) {
+    const annotation: TypeAnnotation = {
+      type: NodeType.TypeAnnotation,
+      name: 'Array',
+      typeArguments: typeArguments,
+    };
+    const type = mapType(ctx, annotation, ctx.currentTypeContext);
+    const typeIndex = decodeTypeIndex(type);
+
+    if (expr.arguments.length !== 1) {
+      throw new Error('Array constructor expects 1 argument (length)');
+    }
+    generateExpression(ctx, expr.arguments[0], body);
+
+    body.push(0xfb, GcOpcode.array_new_default);
+    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+    return;
   }
 
   const classInfo = ctx.classes.get(className);
@@ -1100,7 +1164,7 @@ function generateCallExpression(
       // Call Ref
       body.push(
         Opcode.call_ref,
-        ...WasmModule.encodeUnsignedLEB128(methodInfo.typeIndex),
+        ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
       );
       return;
     }
@@ -1224,13 +1288,27 @@ function generateCallExpression(
     body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
     return;
   } else {
-    // 1. Generate arguments
-    for (const arg of expr.arguments) {
-      generateExpression(ctx, arg, body);
+    // Check if it's a direct call to a global function
+    let isDirectCall = false;
+    if (expr.callee.type === NodeType.Identifier) {
+      const name = (expr.callee as Identifier).name;
+      if (
+        !ctx.getLocal(name) &&
+        (ctx.functions.has(name) ||
+          ctx.genericFunctions.has(name) ||
+          ctx.functionOverloads.has(name))
+      ) {
+        isDirectCall = true;
+      }
     }
 
-    // 2. Resolve function
-    if (expr.callee.type === NodeType.Identifier) {
+    if (isDirectCall) {
+      // 1. Generate arguments
+      for (const arg of expr.arguments) {
+        generateExpression(ctx, arg, body);
+      }
+
+      // 2. Resolve function
       const name = (expr.callee as Identifier).name;
 
       if (ctx.genericFunctions.has(name)) {
@@ -1322,7 +1400,7 @@ function generateCallExpression(
         throw new Error(`Function '${name}' not found.`);
       }
     } else {
-      throw new Error('Indirect calls not supported yet.');
+      generateIndirectCall(ctx, expr, body);
     }
   }
 }
@@ -2054,4 +2132,212 @@ function generateTupleLiteral(
   // 4. struct.new
   body.push(0xfb, GcOpcode.struct_new);
   body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+}
+
+function generateFunctionExpression(
+  ctx: CodegenContext,
+  expr: FunctionExpression,
+  body: number[],
+) {
+  // 1. Analyze captures
+  const captures = analyzeCaptures(expr);
+  const captureList: {name: string; type: number[]}[] = [];
+
+  for (const name of Array.from(captures).sort()) {
+    const local = ctx.getLocal(name);
+    if (local) {
+      captureList.push({name, type: local.type});
+    }
+    // Globals don't need to be captured
+  }
+
+  // 2. Create Context Struct Type
+  let contextStructTypeIndex = -1;
+  if (captureList.length > 0) {
+    const fields = captureList.map((c) => ({
+      type: c.type,
+      mutable: false, // Capture by value (immutable context)
+    }));
+    contextStructTypeIndex = ctx.module.addStructType(fields);
+  }
+
+  // 3. Determine Signature
+  const paramTypes = expr.params.map((p) => mapType(ctx, p.typeAnnotation));
+  let returnType: number[];
+  if (expr.returnType) {
+    returnType = mapType(ctx, expr.returnType);
+  } else {
+    // Simple inference: if body is expression, infer type.
+    // If block, assume void for now or implement block inference.
+    if (expr.body.type !== NodeType.BlockStatement) {
+      // We can't easily infer here without generating the body.
+      // But we need the signature BEFORE generating the body.
+      // This is a circular dependency if we rely on inference.
+      // For now, default to i32 if not specified? Or error?
+      // Let's assume i32 for expression bodies if not annotated, to match simple lambdas.
+      returnType = [ValType.i32];
+    } else {
+      // Setup temporary scope for inference
+      ctx.pushScope();
+      const oldNextLocalIndex = ctx.nextLocalIndex;
+      ctx.nextLocalIndex = 0;
+
+      expr.params.forEach((p, i) => {
+        ctx.defineLocal(p.name.name, ctx.nextLocalIndex++, paramTypes[i]);
+      });
+
+      returnType = inferReturnTypeFromBlock(ctx, expr.body as BlockStatement);
+
+      ctx.popScope();
+      ctx.nextLocalIndex = oldNextLocalIndex;
+    }
+  }
+
+  //  // 4. Generate Implementation Function
+  const implParams = [[ValType.eqref], ...paramTypes];
+  const implResults = returnType.length > 0 ? [returnType] : [];
+  const implTypeIndex = ctx.module.addType(implParams, implResults);
+  const implFuncIndex = ctx.module.addFunction(implTypeIndex);
+  ctx.module.declareFunction(implFuncIndex);
+
+  ctx.bodyGenerators.push(() => {
+    const funcBody: number[] = [];
+
+    // Setup Scope
+    ctx.scopes = [new Map()];
+    ctx.extraLocals = [];
+    ctx.nextLocalIndex = 0;
+
+    // Param 0: Context (eqref)
+    const ctxLocalIndex = ctx.nextLocalIndex++;
+    ctx.defineLocal('$$ctx', ctxLocalIndex, [ValType.eqref]);
+
+    // Params 1..N: Arguments
+    expr.params.forEach((p, i) => {
+      ctx.defineLocal(p.name.name, ctx.nextLocalIndex++, paramTypes[i]);
+    });
+
+    // Unpack Context
+    if (captureList.length > 0) {
+      // Cast context
+      const typedCtxLocal = ctx.nextLocalIndex++;
+      ctx.extraLocals.push([
+        ValType.ref,
+        ...WasmModule.encodeSignedLEB128(contextStructTypeIndex),
+      ]);
+
+      funcBody.push(Opcode.local_get, ctxLocalIndex);
+      funcBody.push(
+        0xfb,
+        GcOpcode.ref_cast,
+        ...WasmModule.encodeSignedLEB128(contextStructTypeIndex),
+      );
+      funcBody.push(Opcode.local_set, typedCtxLocal);
+
+      // Define captured variables as locals
+      captureList.forEach((c, i) => {
+        // We define a new local for the captured variable
+        // and initialize it from the struct.
+        const localIndex = ctx.nextLocalIndex++;
+        ctx.defineLocal(c.name, localIndex, c.type);
+        ctx.extraLocals.push(c.type);
+
+        funcBody.push(Opcode.local_get, typedCtxLocal);
+        funcBody.push(
+          0xfb,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(contextStructTypeIndex),
+          ...WasmModule.encodeSignedLEB128(i),
+        );
+        funcBody.push(Opcode.local_set, localIndex);
+      });
+    }
+
+    // Generate Body
+    if (expr.body.type === NodeType.BlockStatement) {
+      generateBlockStatement(ctx, expr.body as BlockStatement, funcBody);
+    } else {
+      generateExpression(ctx, expr.body as Expression, funcBody);
+    }
+    funcBody.push(Opcode.end);
+
+    ctx.module.addCode(implFuncIndex, ctx.extraLocals, funcBody);
+  });
+
+  // 5. Instantiate Closure
+  // Stack: [FuncRef, Context] -> StructNew
+
+  // Push Func Ref
+  body.push(Opcode.ref_func);
+  body.push(...WasmModule.encodeSignedLEB128(implFuncIndex));
+
+  // Push Context
+  if (captureList.length > 0) {
+    // Push captured values
+    for (const c of captureList) {
+      const local = ctx.getLocal(c.name);
+      if (!local) throw new Error(`Captured variable ${c.name} not found`);
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(local.index));
+    }
+    // Create Context Struct
+    body.push(0xfb, GcOpcode.struct_new);
+    body.push(...WasmModule.encodeSignedLEB128(contextStructTypeIndex));
+  } else {
+    // Null context
+    body.push(Opcode.ref_null, HeapType.eq);
+  }
+
+  // Create Closure Struct
+  // We need the Closure Struct Type Index
+  const closureTypeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
+
+  body.push(0xfb, GcOpcode.struct_new);
+  body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
+}
+
+function generateIndirectCall(
+  ctx: CodegenContext,
+  expr: CallExpression,
+  body: number[],
+) {
+  // 1. Evaluate Callee
+  generateExpression(ctx, expr.callee, body);
+
+  // Stack: [ClosureRef]
+  const calleeType = inferType(ctx, expr.callee);
+  const closureStructIndex = decodeTypeIndex(calleeType);
+
+  if (!ctx.closureStructs.has(closureStructIndex)) {
+    throw new Error(`Type ${closureStructIndex} is not a closure`);
+  }
+  const {funcTypeIndex} = ctx.closureStructs.get(closureStructIndex)!;
+
+  const tempClosure = ctx.declareLocal('$$temp_closure', calleeType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempClosure));
+
+  // 2. Push Context (Field 1)
+  body.push(
+    0xfb,
+    GcOpcode.struct_get,
+    ...WasmModule.encodeSignedLEB128(closureStructIndex),
+    ...WasmModule.encodeSignedLEB128(1), // Field 1 is ctx
+  );
+
+  // 3. Evaluate Arguments
+  for (const arg of expr.arguments) {
+    generateExpression(ctx, arg, body);
+  }
+
+  // 4. Push Func Ref (Field 0)
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempClosure));
+  body.push(
+    0xfb,
+    GcOpcode.struct_get,
+    ...WasmModule.encodeSignedLEB128(closureStructIndex),
+    ...WasmModule.encodeSignedLEB128(0), // Field 0 is func
+  );
+
+  // 5. Call Ref
+  body.push(Opcode.call_ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex));
 }

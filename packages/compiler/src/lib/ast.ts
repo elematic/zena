@@ -46,6 +46,7 @@ export const NodeType = {
   TuplePattern: 'TuplePattern',
   BindingProperty: 'BindingProperty',
   AssignmentPattern: 'AssignmentPattern',
+  FunctionTypeAnnotation: 'FunctionTypeAnnotation',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -374,7 +375,14 @@ export type TypeAnnotation =
   | NamedTypeAnnotation
   | UnionTypeAnnotation
   | RecordTypeAnnotation
-  | TupleTypeAnnotation;
+  | TupleTypeAnnotation
+  | FunctionTypeAnnotation;
+
+export interface FunctionTypeAnnotation extends Node {
+  type: typeof NodeType.FunctionTypeAnnotation;
+  params: TypeAnnotation[];
+  returnType: TypeAnnotation;
+}
 
 export interface NamedTypeAnnotation extends Node {
   type: typeof NodeType.TypeAnnotation;

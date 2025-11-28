@@ -1,12 +1,12 @@
 import {
-  type Program,
   type ClassDeclaration,
   type FunctionExpression,
   type MixinDeclaration,
+  type Program,
   type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {ExportDesc, ValType} from '../wasm.js';
+import {ValType} from '../wasm.js';
 import type {ClassInfo, InterfaceInfo, LocalInfo} from './types.js';
 
 export class CodegenContext {
@@ -55,6 +55,8 @@ export class CodegenContext {
   // Records and Tuples
   public recordTypes = new Map<string, number>(); // canonicalKey -> typeIndex
   public tupleTypes = new Map<string, number>(); // canonicalKey -> typeIndex
+  public closureTypes = new Map<string, number>(); // signature -> structTypeIndex
+  public closureStructs = new Map<number, {funcTypeIndex: number}>(); // structTypeIndex -> info
 
   constructor(program: Program) {
     this.program = program;
@@ -168,6 +170,38 @@ export class CodegenContext {
 
     const index = this.module.addStructType(structFields);
     this.tupleTypes.set(key, index);
+    return index;
+  }
+
+  public getClosureTypeIndex(
+    paramTypes: number[][],
+    returnType: number[],
+  ): number {
+    const key = `(${paramTypes.map((t) => t.join(',')).join(',')})=>${returnType.join(',')}`;
+
+    if (this.closureTypes.has(key)) {
+      return this.closureTypes.get(key)!;
+    }
+
+    // 1. Define the implementation signature type: (ctx: eqref, ...params) -> returnType
+    // We don't need to store this type index globally, just use it for the field.
+    // Actually, we need to add it to the module types.
+    const implParams = [[ValType.eqref], ...paramTypes];
+    const implResults = returnType.length > 0 ? [returnType] : [];
+    const implTypeIndex = this.module.addType(implParams, implResults);
+
+    // 2. Define the closure struct type: (struct (field $func (ref $impl)) (field $ctx (ref eq)))
+    const structFields = [
+      {
+        type: [ValType.ref, ...WasmModule.encodeSignedLEB128(implTypeIndex)],
+        mutable: false,
+      }, // func
+      {type: [ValType.eqref], mutable: false}, // ctx
+    ];
+
+    const index = this.module.addStructType(structFields);
+    this.closureTypes.set(key, index);
+    this.closureStructs.set(index, {funcTypeIndex: implTypeIndex});
     return index;
   }
 }

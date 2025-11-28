@@ -4,26 +4,23 @@ import {
   type DeclareFunction,
   type Expression,
   type FunctionExpression,
+  type Pattern,
   type ReturnStatement,
   type TypeAnnotation,
   type VariableDeclaration,
-  type Pattern,
-  type RecordPattern,
-  type TuplePattern,
 } from '../ast.js';
-import {WasmModule} from '../emitter.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
-  getTypeKey,
-  mapType,
   decodeTypeIndex,
   getClassFromTypeIndex,
+  getTypeKey,
+  mapType,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {generateExpression, inferType} from './expressions.js';
 import {generateBlockStatement} from './statements.js';
 
-function inferReturnTypeFromBlock(
+export function inferReturnTypeFromBlock(
   ctx: CodegenContext,
   block: BlockStatement,
 ): number[] {

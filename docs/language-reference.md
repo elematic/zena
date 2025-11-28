@@ -146,20 +146,20 @@ Overload resolution is performed based on the argument types at the call site.
 
 String literals support the following escape sequences:
 
-| Escape | Character |
-|--------|-----------|
+| Escape | Character       |
+| ------ | --------------- |
 | `\\`   | Backslash (`\`) |
-| `\n`   | Newline |
+| `\n`   | Newline         |
 | `\r`   | Carriage return |
-| `\t`   | Tab |
-| `\"`   | Double quote |
-| `\'`   | Single quote |
+| `\t`   | Tab             |
+| `\"`   | Double quote    |
+| `\'`   | Single quote    |
 
 ```typescript
-let message = "Hello\nWorld";  // Contains a newline
-let path = "C:\\Users\\file";  // Escaped backslashes
-let quote = "She said \"Hi\""; // Escaped double quotes
-let apostrophe = 'it\'s';      // Escaped single quote
+let message = 'Hello\nWorld'; // Contains a newline
+let path = 'C:\\Users\\file'; // Escaped backslashes
+let quote = 'She said "Hi"'; // Escaped double quotes
+let apostrophe = "it's"; // Escaped single quote
 ```
 
 ### Binary Operators

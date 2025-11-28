@@ -1,4 +1,4 @@
-import {SectionId, ValType, ExportDesc} from './wasm.js';
+import {ExportDesc, SectionId} from './wasm.js';
 
 export class WasmModule {
   #types: number[][] = [];
@@ -8,6 +8,7 @@ export class WasmModule {
   #globals: number[][] = [];
   #codes: number[][] = [];
   #datas: number[][] = [];
+  #declaredFunctions: Set<number> = new Set();
 
   #importedFunctionCount = 0;
   #startFunctionIndex: number | undefined;
@@ -154,6 +155,10 @@ export class WasmModule {
     return this.#globals.length - 1;
   }
 
+  public declareFunction(index: number) {
+    this.#declaredFunctions.add(index);
+  }
+
   #areTypesEqual(a: number[], b: number[]): boolean {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
@@ -229,6 +234,25 @@ export class WasmModule {
       const sectionBuffer: number[] = [];
       this.#writeUnsignedLEB128(sectionBuffer, this.#startFunctionIndex);
       this.#writeSection(buffer, SectionId.Start, sectionBuffer);
+    }
+
+    // Element Section (Declarative)
+    if (this.#declaredFunctions.size > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, 1); // 1 segment
+
+      // Segment 0: Declarative, func indices
+      // Flags: 3 (declarative, elemkind 0x00)
+      this.#writeUnsignedLEB128(sectionBuffer, 3);
+      this.#writeUnsignedLEB128(sectionBuffer, 0); // elemkind: func
+
+      const indices = Array.from(this.#declaredFunctions).sort((a, b) => a - b);
+      this.#writeUnsignedLEB128(sectionBuffer, indices.length);
+      for (const index of indices) {
+        this.#writeUnsignedLEB128(sectionBuffer, index);
+      }
+
+      this.#writeSection(buffer, SectionId.Element, sectionBuffer);
     }
 
     // DataCount Section

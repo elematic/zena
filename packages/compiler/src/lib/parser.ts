@@ -1,7 +1,6 @@
 import {
   NodeType,
   type AccessorDeclaration,
-  type AssignmentPattern,
   type BindingProperty,
   type BlockStatement,
   type CallExpression,
@@ -24,9 +23,9 @@ import {
   type NamedTypeAnnotation,
   type Parameter,
   type Pattern,
+  type Program,
   type PropertyAssignment,
   type PropertySignature,
-  type Program,
   type RecordLiteral,
   type RecordPattern,
   type RecordTypeAnnotation,
@@ -38,7 +37,6 @@ import {
   type TupleTypeAnnotation,
   type TypeAnnotation,
   type TypeParameter,
-  type UnionTypeAnnotation,
   type VariableDeclaration,
   type WhileStatement,
 } from './ast.js';
@@ -1097,7 +1095,30 @@ export class Parser {
 
   #parseTypeAnnotation(): TypeAnnotation {
     let left: TypeAnnotation;
-    if (this.#match(TokenType.LBrace)) {
+    if (this.#match(TokenType.LParen)) {
+      const params: TypeAnnotation[] = [];
+      if (!this.#check(TokenType.RParen)) {
+        do {
+          // Check for "Identifier :" (named parameter)
+          if (
+            this.#check(TokenType.Identifier) &&
+            this.#peek(1).type === TokenType.Colon
+          ) {
+            this.#advance(); // consume identifier
+            this.#advance(); // consume colon
+          }
+          params.push(this.#parseTypeAnnotation());
+        } while (this.#match(TokenType.Comma));
+      }
+      this.#consume(TokenType.RParen, "Expected ')'");
+      this.#consume(TokenType.Arrow, "Expected '=>'");
+      const returnType = this.#parseTypeAnnotation();
+      left = {
+        type: NodeType.FunctionTypeAnnotation,
+        params,
+        returnType,
+      };
+    } else if (this.#match(TokenType.LBrace)) {
       left = this.#parseRecordTypeAnnotation();
     } else if (this.#match(TokenType.LBracket)) {
       left = this.#parseTupleTypeAnnotation();

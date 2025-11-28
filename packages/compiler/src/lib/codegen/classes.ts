@@ -4,9 +4,9 @@ import {
   type InterfaceDeclaration,
   type MethodDefinition,
   type MixinDeclaration,
-  type TypeAnnotation,
   type RecordTypeAnnotation,
   type TupleTypeAnnotation,
+  type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
@@ -1212,6 +1212,23 @@ export function mapType(
     return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
   }
 
+  if (annotation.type === NodeType.FunctionTypeAnnotation) {
+    // Actually it is imported as FunctionTypeAnnotation
+    const f = annotation as any; // FunctionTypeAnnotation
+    const paramTypes = f.params.map((p: TypeAnnotation) =>
+      mapType(ctx, p, typeContext),
+    );
+    const returnType = f.returnType
+      ? mapType(ctx, f.returnType, typeContext)
+      : [];
+
+    const closureTypeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
+    return [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(closureTypeIndex),
+    ];
+  }
+
   // Check type context first
   if (typeContext && typeContext.has(annotation.name)) {
     return mapType(ctx, typeContext.get(annotation.name)!, typeContext);
@@ -1324,6 +1341,15 @@ export function getTypeKey(
     return `[${elems}]`;
   }
 
+  if (annotation.type === NodeType.FunctionTypeAnnotation) {
+    const params = annotation.params
+      .map((p) => getTypeKey(ctx, p, typeContext))
+      .join(',');
+    const ret = getTypeKey(ctx, annotation.returnType, typeContext);
+    return `(${params})=>${ret}`;
+  }
+
+  // Check type context first
   if (typeContext && typeContext.has(annotation.name)) {
     return getTypeKey(ctx, typeContext.get(annotation.name)!, typeContext);
   }
@@ -1364,6 +1390,14 @@ function resolveAnnotation(
       elementTypes: annotation.elementTypes.map((t) =>
         resolveAnnotation(t, context),
       ),
+    };
+  }
+
+  if (annotation.type === NodeType.FunctionTypeAnnotation) {
+    return {
+      type: NodeType.FunctionTypeAnnotation,
+      params: annotation.params.map((p) => resolveAnnotation(p, context)),
+      returnType: resolveAnnotation(annotation.returnType, context),
     };
   }
 

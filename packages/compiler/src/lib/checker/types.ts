@@ -3,16 +3,16 @@ import {DiagnosticCode} from '../diagnostics.js';
 import {
   TypeKind,
   Types,
-  type ClassType,
-  type Type,
-  type TypeParameterType,
   type ArrayType,
+  type ClassType,
   type FunctionType,
-  type NumberType,
-  type UnionType,
   type InterfaceType,
+  type NumberType,
   type RecordType,
   type TupleType,
+  type Type,
+  type TypeParameterType,
+  type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
 
@@ -50,6 +50,18 @@ export function resolveTypeAnnotation(
       kind: TypeKind.Tuple,
       elementTypes,
     } as TupleType;
+  }
+
+  if (annotation.type === NodeType.FunctionTypeAnnotation) {
+    const parameters = annotation.params.map((p) =>
+      resolveTypeAnnotation(ctx, p),
+    );
+    const returnType = resolveTypeAnnotation(ctx, annotation.returnType);
+    return {
+      kind: TypeKind.Function,
+      parameters,
+      returnType,
+    } as FunctionType;
   }
 
   const name = annotation.name;
