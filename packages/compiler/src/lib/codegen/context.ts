@@ -52,6 +52,12 @@ export class CodegenContext {
   // Global variables
   public globals = new Map<string, {index: number; type: number[]}>();
 
+  // Well-known types (renamed)
+  public wellKnownTypes: {
+    Array?: string;
+    String?: string;
+  } = {};
+
   // Records and Tuples
   public recordTypes = new Map<string, number>(); // canonicalKey -> typeIndex
   public tupleTypes = new Map<string, number>(); // canonicalKey -> typeIndex
@@ -60,6 +66,9 @@ export class CodegenContext {
 
   constructor(program: Program) {
     this.program = program;
+    if (program.wellKnownTypes) {
+      this.wellKnownTypes = program.wellKnownTypes;
+    }
     this.module = new WasmModule();
     // Define backing array type: array<i8> (mutable for construction)
     this.byteArrayTypeIndex = this.module.addArrayType([ValType.i8], true);
@@ -203,5 +212,19 @@ export class CodegenContext {
     this.closureTypes.set(key, index);
     this.closureStructs.set(index, {funcTypeIndex: implTypeIndex});
     return index;
+  }
+
+  public isArrayType(name: string): boolean {
+    return (
+      name === 'Array' ||
+      (!!this.wellKnownTypes.Array && name === this.wellKnownTypes.Array)
+    );
+  }
+
+  public isStringType(name: string): boolean {
+    return (
+      name === 'String' ||
+      (!!this.wellKnownTypes.String && name === this.wellKnownTypes.String)
+    );
   }
 }

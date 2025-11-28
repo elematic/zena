@@ -48,4 +48,22 @@ suite('Stdlib: Map', () => {
     const exports = await compileAndRun(source);
     assert.strictEqual((exports.run as Function)(), 10);
   });
+
+  test('array map function', async () => {
+    const source = `
+      export let map = <T, U>(arr: Array<T>, f: (item: T) => U): Array<U> => {
+        let x = arr[0];
+        let y = f(x);
+        return #[y];
+      };
+
+      export let run = () => {
+        let arr = #[10];
+        let mapped = map(arr, (x: i32) => x * 2);
+        return mapped[0];
+      };
+    `;
+    const exports = await compileAndRun(source);
+    assert.strictEqual((exports.run as Function)(), 20);
+  });
 });

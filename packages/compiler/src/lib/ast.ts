@@ -58,6 +58,11 @@ export interface Node {
 export interface Program extends Node {
   type: typeof NodeType.Program;
   body: Statement[];
+  wellKnownTypes?: {
+    Array?: string;
+    String?: string;
+    ByteArray?: string;
+  };
 }
 
 export type Statement =

@@ -41,9 +41,27 @@ export class Bundler {
       newBody.push(...rewrittenStatements);
     }
 
+    const wellKnownTypes: Program['wellKnownTypes'] = {};
+    if (this.#globalSymbols.has('zena:array:Array')) {
+      wellKnownTypes.Array = this.#globalSymbols.get('zena:array:Array');
+    }
+    if (this.#globalSymbols.has('zena:string:String')) {
+      wellKnownTypes.String = this.#globalSymbols.get('zena:string:String');
+    }
+    // ByteArray is usually internal or in zena:string?
+    // Let's check where ByteArray is defined.
+    // It seems it is built-in type in CodegenContext, but maybe exposed via stdlib?
+    // In map_test.ts mock host: 'export final class String { bytes: ByteArray; length: i32; }'
+    // So ByteArray is used as a type name.
+    // But is it a class?
+    // In classes.ts: if (annotation.name === 'ByteArray') ...
+    // It seems ByteArray is a special type name that maps to WASM array<i8>.
+    // It might not be a class in stdlib.
+    
     return {
       type: NodeType.Program,
       body: newBody,
+      wellKnownTypes,
     };
   }
 

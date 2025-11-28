@@ -468,12 +468,14 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
   // The String type is created early in CodegenContext to allow declared
   // functions with string parameters to work correctly.
   let structTypeIndex: number;
-  if (decl.name.name === 'String' && ctx.stringTypeIndex >= 0) {
+  const isStringClass = ctx.isStringType(decl.name.name);
+
+  if (isStringClass && ctx.stringTypeIndex >= 0) {
     // Reuse the pre-allocated String type index
     structTypeIndex = ctx.stringTypeIndex;
   } else {
     structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
-    if (decl.name.name === 'String') {
+    if (isStringClass) {
       ctx.stringTypeIndex = structTypeIndex;
     }
   }
@@ -1257,7 +1259,7 @@ export function mapType(
       ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
     ];
   }
-  if (annotation.name === 'Array') {
+  if (ctx.isArrayType(annotation.name)) {
     if (annotation.typeArguments && annotation.typeArguments.length === 1) {
       const elementType = mapType(
         ctx,

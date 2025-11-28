@@ -439,6 +439,43 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
   }
 }
 
+function splitTypeArgs(str: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let depth = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    if (char === '<') depth++;
+    else if (char === '>') depth--;
+    else if (char === ',' && depth === 0) {
+      args.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  if (current) args.push(current);
+  return args;
+}
+
+function getTypeNameFromWasm(
+  ctx: CodegenContext,
+  type: number[],
+): string | undefined {
+  if (type.length === 1 && type[0] === ValType.i32) return 'i32';
+  if (type.length === 1 && type[0] === ValType.f32) return 'f32';
+  if (
+    type.length > 1 &&
+    (type[0] === ValType.ref_null || type[0] === ValType.ref)
+  ) {
+    const typeIndex = decodeTypeIndex(type);
+    if (typeIndex === ctx.stringTypeIndex) return 'string';
+    const classInfo = getClassFromTypeIndex(ctx, typeIndex);
+    if (classInfo) return classInfo.name;
+  }
+  return undefined;
+}
+
 export function inferTypeArgs(
   ctx: CodegenContext,
   typeParams: any[], // TypeParameter[]
@@ -457,36 +494,117 @@ export function inferTypeArgs(
       !paramType.typeArguments &&
       typeParams.some((tp) => tp.name === paramType.name)
     ) {
-      // Map WASM type back to TypeAnnotation if possible
-      // This is tricky because we only have WASM types here.
-      // We need a way to map WASM type back to a name or structure.
-      // For now, let's assume we can only infer basic types or classes we know.
+      const typeName = getTypeNameFromWasm(ctx, argType) || 'i32';
+      inferred.set(paramType.name, {
+        type: NodeType.TypeAnnotation,
+        name: typeName,
+      } as TypeAnnotation);
+    }
 
-      let typeName = 'i32';
-      if (argType.length === 1 && argType[0] === ValType.i32) typeName = 'i32';
-      else if (argType.length === 1 && argType[0] === ValType.f32)
-        typeName = 'f32';
-      else if (argType.length > 1 && argType[0] === ValType.ref_null) {
-        const typeIndex = decodeTypeIndex(argType);
-        if (typeIndex === ctx.stringTypeIndex) typeName = 'string';
-        else {
-          const classInfo = getClassFromTypeIndex(ctx, typeIndex);
-          if (classInfo) {
-            // Find class name
-            for (const [name, info] of ctx.classes.entries()) {
-              if (info === classInfo) {
-                typeName = name;
-                break;
-              }
+    // Generic class inference: Array<T> vs Array<i32>
+    if (
+      paramType.type === NodeType.TypeAnnotation &&
+      paramType.typeArguments &&
+      paramType.typeArguments.length > 0 &&
+      argType.length > 1 &&
+      (argType[0] === ValType.ref_null || argType[0] === ValType.ref)
+    ) {
+      const typeIndex = decodeTypeIndex(argType);
+      const classInfo = getClassFromTypeIndex(ctx, typeIndex);
+
+      if (classInfo && classInfo.name.startsWith(paramType.name + '<')) {
+        const typeArgsStr = classInfo.name.substring(
+          paramType.name.length + 1,
+          classInfo.name.length - 1,
+        );
+        const typeArgs = splitTypeArgs(typeArgsStr);
+
+        if (typeArgs.length === paramType.typeArguments.length) {
+          for (let j = 0; j < typeArgs.length; j++) {
+            const paramTypeArg = paramType.typeArguments[j];
+            const argTypeStr = typeArgs[j];
+
+            if (
+              paramTypeArg.type === NodeType.TypeAnnotation &&
+              !paramTypeArg.typeArguments &&
+              typeParams.some((tp) => tp.name === paramTypeArg.name)
+            ) {
+              inferred.set(paramTypeArg.name, {
+                type: NodeType.TypeAnnotation,
+                name: argTypeStr,
+              } as TypeAnnotation);
             }
           }
         }
       }
 
-      inferred.set(paramType.name, {
-        type: NodeType.TypeAnnotation,
-        name: typeName,
-      } as TypeAnnotation);
+      // Array inference: Array<T> vs WASM Array
+      let arrayElementType: number[] | undefined;
+      for (const [key, index] of ctx.arrayTypes) {
+        if (index === typeIndex) {
+          arrayElementType = key.split(',').map(Number);
+          break;
+        }
+      }
+
+      const isArray = ctx.isArrayType(paramType.name);
+
+      if (arrayElementType && isArray) {
+        if (paramType.typeArguments.length === 1) {
+          const paramTypeArg = paramType.typeArguments[0];
+          if (
+            paramTypeArg.type === NodeType.TypeAnnotation &&
+            !paramTypeArg.typeArguments &&
+            typeParams.some((tp) => tp.name === paramTypeArg.name)
+          ) {
+            const typeName =
+              getTypeNameFromWasm(ctx, arrayElementType) || 'i32';
+            inferred.set(paramTypeArg.name, {
+              type: NodeType.TypeAnnotation,
+              name: typeName,
+            } as TypeAnnotation);
+          }
+        }
+      }
+    }
+
+    // Function type inference: (T) => U vs Closure
+    if (
+      paramType.type === NodeType.FunctionTypeAnnotation &&
+      (argType[0] === ValType.ref_null || argType[0] === ValType.ref)
+    ) {
+      const typeIndex = decodeTypeIndex(argType);
+
+      let signature: string | undefined;
+      for (const [key, index] of ctx.closureTypes) {
+        if (index === typeIndex) {
+          signature = key;
+          break;
+        }
+      }
+
+      if (signature) {
+        const parts = signature.split('=>');
+        if (parts.length === 2) {
+          const returnTypeStr = parts[1];
+          if (returnTypeStr) {
+            const returnType = returnTypeStr.split(',').map(Number);
+
+            const retParam = paramType.returnType;
+            if (
+              retParam.type === NodeType.TypeAnnotation &&
+              !retParam.typeArguments &&
+              typeParams.some((tp) => tp.name === retParam.name)
+            ) {
+              const typeName = getTypeNameFromWasm(ctx, returnType) || 'i32';
+              inferred.set(retParam.name, {
+                type: NodeType.TypeAnnotation,
+                name: typeName,
+              } as TypeAnnotation);
+            }
+          }
+        }
+      }
     }
   }
 
