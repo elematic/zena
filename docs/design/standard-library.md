@@ -30,16 +30,16 @@ The MVP is organized into four phases, each building on the previous:
 Types that have special compiler support and back language literals. These are
 essential for any Zena program.
 
-| Type            | Description                        | Priority |
-| --------------- | ---------------------------------- | -------- |
-| `String`        | Immutable UTF-8 string             | ✅ Done  |
-| `ByteArray`     | Mutable byte array (backs strings) | ✅ Done  |
-| `FixedArray<T>` | Fixed-length WASM GC array         | ✅ Done  |
-| `boolean`       | Boolean primitive                  | ✅ Done  |
-| `i32`           | 32-bit signed integer              | ✅ Done  |
-| `f32`           | 32-bit float                       | ✅ Done  |
-| `void`          | Unit type                          | ✅ Done  |
-| `Console`       | Basic I/O via host interop         | ✅ Done  |
+| Type            | Description                        | Priority          |
+| --------------- | ---------------------------------- | ----------------- |
+| `String`        | Immutable UTF-8 string             | ✅ Done           |
+| `ByteArray`     | Mutable byte array (backs strings) | ✅ Done           |
+| `FixedArray<T>` | Fixed-length WASM GC array         | 🔄 Rename pending |
+| `boolean`       | Boolean primitive                  | ✅ Done           |
+| `i32`           | 32-bit signed integer              | ✅ Done           |
+| `f32`           | 32-bit float                       | ✅ Done           |
+| `void`          | Unit type                          | ✅ Done           |
+| `Console`       | Basic I/O via host interop         | ✅ Done           |
 
 ### Phase 2: Collections (Essential Data Structures)
 
@@ -170,7 +170,7 @@ See `docs/design/strings.md` for full details.
 - **Backing**: WASM GC Array.
 - **Literal**: `#[1, 2, 3]`
 - **Intrinsics**: `get` (`[]`), `set` (`[]=`), `length`.
-- **Status**: ✅ Implemented (currently named `Array<T>`, to be renamed)
+- **Status**: 🔄 Implemented as `Array<T>`, rename to `FixedArray<T>` pending
 
 The low-level WASM GC array primitive. Fixed-length upon creation.
 Most user code should use `Array<T>` (growable) or `ReadonlyArray<T>` (immutable).
