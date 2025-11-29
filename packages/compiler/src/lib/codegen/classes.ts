@@ -51,8 +51,14 @@ export function registerInterface(
   // 1. Create VTable Struct Type
   // (struct (field (ref (func (param any) ...))) ...)
   const vtableFields: {type: number[]; mutable: boolean}[] = [];
-  const methodIndices = new Map<string, {index: number; typeIndex: number}>();
-  const fieldIndices = new Map<string, {index: number; typeIndex: number}>();
+  const methodIndices = new Map<
+    string,
+    {index: number; typeIndex: number; returnType: number[]}
+  >();
+  const fieldIndices = new Map<
+    string,
+    {index: number; typeIndex: number; type: number[]}
+  >();
 
   let methodIndex = 0;
 
@@ -92,9 +98,13 @@ export function registerInterface(
         params.push(mapType(ctx, param.typeAnnotation));
       }
       const results: number[][] = [];
+      let returnType: number[] = [];
       if (member.returnType) {
         const mapped = mapType(ctx, member.returnType);
-        if (mapped.length > 0) results.push(mapped);
+        if (mapped.length > 0) {
+          results.push(mapped);
+          returnType = mapped;
+        }
       }
 
       const funcTypeIndex = ctx.module.addType(params, results);
@@ -108,13 +118,18 @@ export function registerInterface(
       methodIndices.set(member.name.name, {
         index: methodIndex++,
         typeIndex: funcTypeIndex,
+        returnType,
       });
     } else if (member.type === NodeType.FieldDefinition) {
       // Field getter: (param any) -> Type
       const params: number[][] = [[ValType.ref_null, ValType.anyref]];
       const results: number[][] = [];
+      let fieldType: number[] = [];
       const mapped = mapType(ctx, member.typeAnnotation);
-      if (mapped.length > 0) results.push(mapped);
+      if (mapped.length > 0) {
+        results.push(mapped);
+        fieldType = mapped;
+      }
 
       const funcTypeIndex = ctx.module.addType(params, results);
 
@@ -127,6 +142,7 @@ export function registerInterface(
       fieldIndices.set(member.name.name, {
         index: methodIndex++,
         typeIndex: funcTypeIndex,
+        type: fieldType,
       });
     }
   }
@@ -391,7 +407,10 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     return;
   }
 
-  const fields = new Map<string, {index: number; type: number[]; intrinsic?: string}>();
+  const fields = new Map<
+    string,
+    {index: number; type: number[]; intrinsic?: string}
+  >();
   const fieldTypes: {type: number[]; mutable: boolean}[] = [];
   let fieldIndex = 0;
 
@@ -1360,7 +1379,7 @@ export function mapType(
     ];
   }
 
-  return [ValType.i32];
+  throw new Error(`Unknown type '${annotation.name}'`);
 }
 
 export function getTypeKey(

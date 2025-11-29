@@ -40,7 +40,7 @@ import {
   instantiateGenericFunction,
 } from './functions.js';
 import {generateBlockStatement} from './statements.js';
-import type {ClassInfo} from './types.js';
+import type {ClassInfo, InterfaceInfo} from './types.js';
 
 export function generateExpression(
   ctx: CodegenContext,
@@ -201,7 +201,11 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       }
 
       const structTypeIndex = getHeapTypeIndex(ctx, objectType);
-      if (structTypeIndex === -1) return [ValType.i32];
+      if (structTypeIndex === -1) {
+        throw new Error(
+          `Cannot access member '${memberExpr.property.name}' on non-heap type.`,
+        );
+      }
 
       const fieldName = memberExpr.property.name;
 
@@ -214,6 +218,25 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       }
 
       if (!foundClass) {
+        // Check Interface
+        let foundInterface: InterfaceInfo | undefined;
+        for (const info of ctx.interfaces.values()) {
+          if (info.structTypeIndex === structTypeIndex) {
+            foundInterface = info;
+            break;
+          }
+        }
+
+        if (foundInterface) {
+          const fieldInfo = foundInterface.fields.get(fieldName);
+          if (fieldInfo) {
+            return fieldInfo.type;
+          }
+          throw new Error(
+            `Field '${fieldName}' not found in interface (or is a method).`,
+          );
+        }
+
         // Check Record
         let recordKey: string | undefined;
         for (const [key, index] of ctx.recordTypes) {
@@ -234,7 +257,7 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
             return field.typeStr.split(',').map(Number);
           }
         }
-        return [ValType.i32];
+        throw new Error(`Unknown struct type for member access: ${fieldName}`);
       }
 
       let lookupName = fieldName;
@@ -250,18 +273,28 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       }
       // If it's a method, we might return a function reference or something?
       // For now, let's assume it's a field access.
-      return [ValType.i32];
+      throw new Error(
+        `Field '${fieldName}' not found in class '${foundClass.name}'`,
+      );
     }
     case NodeType.BinaryExpression: {
       const binExpr = expr as BinaryExpression;
+      const leftType = inferType(ctx, binExpr.left);
+      const rightType = inferType(ctx, binExpr.right);
+
       if (binExpr.operator === '+') {
-        const leftType = inferType(ctx, binExpr.left);
-        const rightType = inferType(ctx, binExpr.right);
         if (isStringType(ctx, leftType) && isStringType(ctx, rightType)) {
           return [ValType.ref_null, ctx.stringTypeIndex];
         }
       }
-      return [ValType.i32];
+
+      if (leftType[0] === ValType.i32 && rightType[0] === ValType.i32) {
+        return [ValType.i32];
+      }
+
+      throw new Error(
+        `Type mismatch or unsupported operator '${binExpr.operator}' for types.`,
+      );
     }
     case NodeType.NewExpression: {
       const newExpr = expr as NewExpression;
@@ -317,7 +350,11 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
         const memberExpr = callExpr.callee as MemberExpression;
         const objectType = inferType(ctx, memberExpr.object);
         const structTypeIndex = getHeapTypeIndex(ctx, objectType);
-        if (structTypeIndex === -1) return [ValType.i32];
+        if (structTypeIndex === -1) {
+          throw new Error(
+            `Cannot call method '${memberExpr.property.name}' on non-heap type.`,
+          );
+        }
 
         let foundClass: ClassInfo | undefined;
         for (const info of ctx.classes.values()) {
@@ -326,7 +363,32 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
             break;
           }
         }
-        if (!foundClass) return [ValType.i32];
+        if (!foundClass) {
+          // Check Interface
+          let foundInterface: InterfaceInfo | undefined;
+          for (const info of ctx.interfaces.values()) {
+            if (info.structTypeIndex === structTypeIndex) {
+              foundInterface = info;
+              break;
+            }
+          }
+
+          if (foundInterface) {
+            const methodInfo = foundInterface.methods.get(
+              memberExpr.property.name,
+            );
+            if (methodInfo) {
+              return methodInfo.returnType;
+            }
+            throw new Error(
+              `Method '${memberExpr.property.name}' not found in interface.`,
+            );
+          }
+
+          throw new Error(
+            `Unknown struct type for method call: ${memberExpr.property.name}`,
+          );
+        }
 
         const methodName = memberExpr.property.name;
         const methodInfo = foundClass.methods.get(methodName);
@@ -476,22 +538,20 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
           if (index >= 0 && index < types.length) {
             return types[index].split(',').map(Number);
           }
+          throw new Error(`Tuple index out of bounds: ${index}`);
         }
-        return [ValType.i32];
+        throw new Error('Tuple index must be a number literal');
       }
 
       // Array fallback
-      // Assuming array of i32 for now if we can't infer better
-      // Or check fixedArrayTypes
-      let elementType: number[] = [ValType.i32];
       for (const [key, index] of ctx.fixedArrayTypes) {
         if (index === objectType[1]) {
           // Assuming [ref_null, typeIndex]
-          elementType = key.split(',').map(Number);
-          break;
+          return key.split(',').map(Number);
         }
       }
-      return elementType;
+
+      throw new Error('Cannot index non-array/non-tuple type');
     }
     case NodeType.NumberLiteral: {
       const numExpr = expr as NumberLiteral;
@@ -2203,8 +2263,6 @@ function generateConcatFunction(ctx: CodegenContext): number {
     // array.copy(dest=newBytes, destOffset=len1, src=s2.bytes, srcOffset=0, len=len2)
     body.push(Opcode.local_get, 5); // dest
     body.push(Opcode.local_get, 2); // destOffset
-
-
 
     // src = s2.bytes
     body.push(Opcode.local_get, 1);

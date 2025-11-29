@@ -26,8 +26,11 @@ export interface ClassInfo {
 export interface InterfaceInfo {
   structTypeIndex: number;
   vtableTypeIndex: number;
-  methods: Map<string, {index: number; typeIndex: number}>; // name -> {vtableIndex, typeIndex}
-  fields: Map<string, {index: number; typeIndex: number}>; // name -> {vtableIndex, typeIndex}
+  methods: Map<
+    string,
+    {index: number; typeIndex: number; returnType: number[]}
+  >; // name -> {vtableIndex, typeIndex, returnType}
+  fields: Map<string, {index: number; typeIndex: number; type: number[]}>; // name -> {vtableIndex, typeIndex, type}
   parent?: string;
 }
 
