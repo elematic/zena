@@ -43,6 +43,20 @@ export class CodeGenerator {
   }
 
   /**
+   * Set the file name used for diagnostic locations.
+   */
+  public setFileName(fileName: string) {
+    this.#ctx.fileName = fileName;
+  }
+
+  /**
+   * Get the diagnostics reported during code generation.
+   */
+  public get diagnostics() {
+    return this.#ctx.diagnostics;
+  }
+
+  /**
    * Main entry point for code generation.
    * @returns The generated WASM binary as a Uint8Array.
    */
