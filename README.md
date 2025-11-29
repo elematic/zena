@@ -68,7 +68,14 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 - [x] For loops
 - [x] While loops
 - [x] Modules and imports
-- [ ] Record and tuple literal syntax (`{...}` and `[ ... ]`)
+- [x] Closures
+- [x] Type aliases
+- [x] Distinct types
+- [x] Function types
+- [x] String escapes
+- [x] Tagged template literals
+- [x] Record and tuple literal syntax (`{...}` and `[ ... ]`)
+- [x] Console built-in
 - [ ] Mutable Maps and map literals (`#{...}`)
 - [ ] More primitive types
 - [ ] Blocks
@@ -77,7 +84,6 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 - [ ] For/of loops
 - [ ] Iterators
 - [ ] More operators: ternary, not, exponentiation
-- [ ] String escapes
 - [ ] Standard library
 - [ ] Numeric unit types
 - [ ] Extension methods
@@ -86,8 +92,6 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 - [ ] Mixin constructors
 - [ ] Async functions
 - [ ] Regexes
-- [ ] Console built-in
-- [ ] Tagged template literals
 - [ ] Decorators
 - [ ] JSX-like builder syntax
 - [ ] Enums

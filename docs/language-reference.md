@@ -87,6 +87,33 @@ type Box<T> = {value: T};
 type Result<T> = {success: boolean; data: T};
 ```
 
+### Distinct Types
+
+Distinct types create a new type that is structurally identical to an existing type but treated as a unique type by the type checker. This is useful for creating type-safe identifiers or units of measure.
+
+```typescript
+distinct type Meters = i32;
+distinct type Seconds = i32;
+
+let m: Meters = 10 as Meters;
+let s: Seconds = 20 as Seconds;
+
+// let x = m + s; // Error: Type mismatch
+```
+
+Distinct types are erased at runtime, so they have no performance overhead. Casting between a distinct type and its underlying type is a zero-cost operation.
+
+### Function Types
+
+Function types describe the signature of a function. They are written using arrow syntax.
+
+```typescript
+type BinaryOp = (a: i32, b: i32) => i32;
+type Callback = () => void;
+
+let add: BinaryOp = (a, b) => a + b;
+```
+
 ## 3. Variables
 
 Variables are declared using `let` or `var`.
@@ -143,6 +170,19 @@ let add = (a: i32, b: i32) => a + b;
 let add = (a: i32, b: i32) => {
   return a + b;
 };
+```
+
+### Closures
+
+Functions in Zena are closures. They can capture variables from their surrounding scope. Captured variables are stored in a heap-allocated context, ensuring they remain available even after the outer scope has returned.
+
+```typescript
+let makeAdder = (x: i32) => {
+  return (y: i32) => x + y;
+};
+
+let add5 = makeAdder(5);
+let result = add5(10); // 15
 ```
 
 ### Function Overloading

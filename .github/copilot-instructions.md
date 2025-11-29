@@ -196,6 +196,15 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Parser (Generic Arrow Functions).
   - Checker (Capture Analysis).
   - Codegen (Context Structs, \`ref.func\`, Element Section).
+- [x] Implement Tagged Template Literals.
+- [x] Implement Type Aliases (`type` keyword).
+- [x] Implement Distinct Types (`distinct type` keyword).
+- [x] Implement Function Types (`(a: i32) => void`).
+- [x] Implement Records & Tuples:
+  - Parser: Literals (`{...}`, `[...]`) and Types.
+  - Checker: Structural typing and inference.
+  - Codegen (Boxed): Canonical WASM structs.
+  - Destructuring: Parser, Checker, Codegen.
 
 ### Planned
 
@@ -203,16 +212,7 @@ This project is an **npm monorepo** managed with **Wireit**.
     - Fix \`Array\` operations in \`map()\` tests.
     - Implement \`map()\` fully.
 
-2.  **Type System & Robustness**:
-    - **Type Aliases**:
-      - Implement `type` keyword (e.g., `type MyInt = i32`).
-      - Support aliasing built-in types (`type List<T> = Array<T>`).
-    - **Intrinsic Types Refactoring**:
-      - Implement Symbol-based identity for built-in types (`Array`, `String`).
-      - Replace string-based checks in Codegen with Symbol checks.
-      - Support shadowing and aliasing of built-in types.
-
-3.  **Host Interop**:
+2.  **Host Interop**:
     - **Function Overloading**:
       - Support multiple \`declare function\` signatures with the same name but different parameters.
     - **WASM GC Interop Notes**:
@@ -221,7 +221,7 @@ This project is an **npm monorepo** managed with **Wireit**.
       - Use byte streaming (start/byte/end pattern) for string I/O.
       - See `docs/design/host-interop.md` for details.
 
-4.  **Object-Oriented Features**:
+3.  **Object-Oriented Features**:
     - **Accessors**:
       - [x] Implement Type Checker for accessors.
       - [x] Implement Code Generator for accessors (emit methods).
@@ -253,38 +253,27 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Access Control**:
       - [x] Enforce `#` private fields strictly.
 
-5.  **Records & Tuples**:
-    - [x] **Parser**: Literals (`{...}`, `[...]`) and Types.
-    - [x] **Checker**: Structural typing and inference.
-    - [x] **Codegen (Boxed)**: Canonical WASM structs.
-    - [ ] **Codegen (Unboxed)**: Argument explosion and multi-value returns.
-    - **Destructuring**:
-      - [x] Parser.
-      - [ ] Checker.
-      - [ ] Codegen.
-
-6.  **Generics Enhancements**:
+4.  **Generics Enhancements**:
     - **Constraints**: Support `T extends Animal` (Requires Inheritance).
 
-7.  **Data Structures**:
+5.  **Data Structures**:
     - **Maps**: Implement mutable maps (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
-8.  **Standard Library**:
+6.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
     - String manipulation (`substring`, `indexOf`).
     - Console I/O (`console.log`).
 
-9.  **Self-Hosting**:
+7.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
 
-10. **Future Features**:
+8.  **Future Features**:
     - **Syntax**:
       - Blocks.
       - Pattern matching.
       - For/of loops.
       - Iterators.
-      - Tagged template literals.
       - JSX-like builder syntax.
     - **Type System**:
       - Numeric unit types.
