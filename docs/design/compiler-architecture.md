@@ -58,6 +58,20 @@ The compiler is implemented in TypeScript and follows a standard pipeline:
 
 - Contains WASM Opcodes, Value Types, and other constants.
 
+### 8. Intrinsics
+
+The compiler supports intrinsics to map Zena methods directly to WASM instructions.
+
+- **Declaration**: Methods are marked with the `@intrinsic("op_name")` decorator.
+- **Restriction**: Only allowed in `zena:` modules.
+- **Processing**:
+  - **Parser**: Parses the decorator.
+  - **Checker**: Validates the decorator usage and ensures it's in a valid module.
+  - **Codegen**:
+    - `registerClass` extracts the intrinsic name and stores it in `ClassInfo`.
+    - `generateCallExpression` checks if the method is intrinsic.
+    - `generateIntrinsic` emits the specific WASM opcodes (e.g., `array.len`, `array.get`).
+
 ## Key Data Structures
 
 - **Program**: The root AST node.
