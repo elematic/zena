@@ -453,7 +453,20 @@ export function isAssignableTo(source: Type, target: Type): boolean {
   }
 
   if (source.kind === TypeKind.Null) {
-    return target.kind === TypeKind.Null;
+    switch (target.kind) {
+      case TypeKind.Class:
+      case TypeKind.Interface:
+      case TypeKind.Array:
+      case TypeKind.Record:
+      case TypeKind.Tuple:
+      case TypeKind.Function:
+      case TypeKind.Null:
+        return true;
+      case TypeKind.TypeAlias:
+        return isAssignableTo(source, (target as TypeAliasType).target);
+      default:
+        return false;
+    }
   }
 
   if (source.kind === TypeKind.Class && target.kind === TypeKind.Class) {

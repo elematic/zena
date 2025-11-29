@@ -423,7 +423,9 @@ function checkBinaryExpression(
   const right = checkExpression(ctx, expr.right);
 
   let typesMatch = false;
-  if (left === right) {
+  if (expr.operator === '==' || expr.operator === '!=') {
+    typesMatch = isAssignableTo(left, right) || isAssignableTo(right, left);
+  } else if (left === right) {
     typesMatch = true;
   } else if (left.kind === TypeKind.Number && right.kind === TypeKind.Number) {
     if ((left as any).name === (right as any).name) {
