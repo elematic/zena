@@ -320,6 +320,7 @@ export interface FieldDefinition extends Node {
   value?: Expression;
   isFinal: boolean;
   isStatic: boolean;
+  isDeclare?: boolean;
   decorators?: Decorator[];
 }
 

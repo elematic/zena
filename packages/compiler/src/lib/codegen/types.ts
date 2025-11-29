@@ -2,7 +2,7 @@ export interface ClassInfo {
   name: string;
   structTypeIndex: number;
   superClass?: string;
-  fields: Map<string, {index: number; type: number[]}>;
+  fields: Map<string, {index: number; type: number[]; intrinsic?: string}>;
   methods: Map<
     string,
     {

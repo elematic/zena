@@ -867,6 +867,18 @@ function generateIndexExpression(
     }
   }
 
+  if (
+    arrayTypeIndex !== -1 &&
+    arrayTypeIndex !== ctx.stringTypeIndex &&
+    arrayTypeIndex !== ctx.byteArrayTypeIndex
+  ) {
+    const intrinsic = findArrayIntrinsic(ctx, '[]');
+    if (intrinsic) {
+      generateIntrinsic(ctx, intrinsic, expr.object, [expr.index], body);
+      return;
+    }
+  }
+
   generateExpression(ctx, expr.object, body);
 
   if (arrayTypeIndex === ctx.stringTypeIndex) {
@@ -884,9 +896,10 @@ function generateIndexExpression(
     body.push(0xfb, GcOpcode.array_get_u);
     body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
   } else {
-    generateExpression(ctx, expr.index, body);
-    body.push(0xfb, GcOpcode.array_get);
-    body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+    // Should be handled by intrinsic above, but if not found (e.g. bootstrapping issues), fallback
+    // Or maybe we should throw?
+    // For now, let's throw if not handled, to ensure we are using intrinsics.
+    throw new Error('Array index access requires intrinsic operator []');
   }
 }
 
@@ -1031,9 +1044,6 @@ function generateMemberExpression(
   // Handle array/string length
   if (expr.property.name === 'length') {
     const isString = isStringType(ctx, objectType);
-    const isArray = Array.from(ctx.fixedArrayTypes.values()).includes(
-      objectType[1],
-    );
 
     if (isString) {
       generateExpression(ctx, expr.object, body);
@@ -1044,10 +1054,17 @@ function generateMemberExpression(
       return;
     }
 
+    const isArray = Array.from(ctx.fixedArrayTypes.values()).includes(
+      objectType[1],
+    );
+
     if (isArray) {
-      generateExpression(ctx, expr.object, body);
-      body.push(0xfb, GcOpcode.array_len);
-      return;
+      const intrinsic = findArrayIntrinsic(ctx, 'length');
+      if (intrinsic) {
+        generateIntrinsic(ctx, intrinsic, expr.object, [], body);
+        return;
+      }
+      throw new Error('Array length access requires intrinsic');
     }
   }
 
@@ -1774,21 +1791,31 @@ function generateAssignmentExpression(
       }
     }
 
-    generateExpression(ctx, indexExpr.object, body);
-    generateExpression(ctx, indexExpr.index, body);
-    generateExpression(ctx, expr.value, body);
+    if (arrayTypeIndex !== -1) {
+      const intrinsic = findArrayIntrinsic(ctx, '[]=');
+      if (intrinsic === 'array.set') {
+        generateExpression(ctx, indexExpr.object, body);
+        generateExpression(ctx, indexExpr.index, body);
+        generateExpression(ctx, expr.value, body);
 
-    const tempLocal = ctx.declareLocal('$$temp_array_set', [ValType.i32]);
+        const valueType = inferType(ctx, expr.value);
+        const tempLocal = ctx.declareLocal('$$temp_array_set', valueType);
 
-    body.push(Opcode.local_tee);
-    body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+        body.push(Opcode.local_tee);
+        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
 
-    body.push(0xfb, GcOpcode.array_set);
-    body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+        body.push(0xfb, GcOpcode.array_set);
+        body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
 
-    body.push(Opcode.local_get);
-    body.push(...WasmModule.encodeSignedLEB128(tempLocal));
-    return;
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+        return;
+      }
+    }
+
+    // Fallback for now, or throw error?
+    // If we strictly require intrinsic, we should throw or do nothing.
+    throw new Error('Array index assignment requires intrinsic operator []=');
   }
 
   if (expr.left.type === NodeType.MemberExpression) {
@@ -2176,6 +2203,8 @@ function generateConcatFunction(ctx: CodegenContext): number {
     // array.copy(dest=newBytes, destOffset=len1, src=s2.bytes, srcOffset=0, len=len2)
     body.push(Opcode.local_get, 5); // dest
     body.push(Opcode.local_get, 2); // destOffset
+
+
 
     // src = s2.bytes
     body.push(Opcode.local_get, 1);
@@ -2913,4 +2942,34 @@ function generateTaggedTemplateExpression(
   throw new Error(
     'Tagged template expression only supports identifier tags for now',
   );
+}
+
+function findArrayIntrinsic(
+  ctx: CodegenContext,
+  memberName: string,
+): string | undefined {
+  if (!ctx.wellKnownTypes.FixedArray) return undefined;
+  const decl = ctx.wellKnownTypes.FixedArray;
+
+  for (const member of decl.body) {
+    if (
+      member.type === NodeType.FieldDefinition &&
+      member.name.name === memberName
+    ) {
+      if (member.decorators) {
+        const d = member.decorators.find((d) => d.name === 'intrinsic');
+        if (d && d.args.length === 1) return d.args[0].value;
+      }
+    }
+    if (
+      member.type === NodeType.MethodDefinition &&
+      member.name.name === memberName
+    ) {
+      if (member.decorators) {
+        const d = member.decorators.find((d) => d.name === 'intrinsic');
+        if (d && d.args.length === 1) return d.args[0].value;
+      }
+    }
+  }
+  return undefined;
 }

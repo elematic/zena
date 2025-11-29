@@ -17,7 +17,16 @@ class MockHost {
     if (path === 'zena:string')
       return 'export final class String { bytes: ByteArray; length: i32; }';
     if (path === 'zena:array')
-      return 'export final class FixedArray<T> { length: i32; }';
+      return `
+        export final extension class FixedArray<T> on array<T> {
+          @intrinsic('array.len')
+          declare length: i32;
+          @intrinsic('array.get')
+          declare operator [](index: i32): T;
+          @intrinsic('array.set')
+          declare operator []=(index: i32, value: T): void;
+        }
+      `;
     if (path === 'zena:console')
       return 'export class Console {} export let console = new Console();';
     throw new Error(`File not found: ${path}`);

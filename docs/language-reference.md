@@ -416,7 +416,70 @@ for (var i = 0; i < 10; ) {
 }
 ```
 
-## 7. Modules & Exports
+## 7. Classes and Objects
+
+Zena supports object-oriented programming with classes.
+
+### Class Declaration
+
+Classes are declared using the `class` keyword.
+
+```typescript
+class Point {
+  x: i32;
+  y: i32;
+
+  #new(x: i32, y: i32) {
+    this.x = x;
+    this.y = y;
+  }
+
+  move(dx: i32, dy: i32) {
+    this.x = this.x + dx;
+    this.y = this.y + dy;
+  }
+}
+```
+
+- **Fields**: Declared with a type annotation.
+- **Constructor**: Named `#new`.
+- **Methods**: Functions defined within the class.
+
+### Extension Classes
+
+Extension classes allow adding methods to existing types. This is useful for extending built-in types or types from other modules without modifying their definition.
+
+```typescript
+extension class ArrayExtensions<T> on array<T> {
+  // Add methods to array<T>
+  last(): T {
+    return this[this.length - 1];
+  }
+}
+```
+
+- **`extension class`**: Keywords to define an extension.
+- **`on Type`**: Specifies the type being extended.
+- **`declare` fields**: Extension classes can declare fields that exist on the underlying type but are not implemented in the extension (e.g., for intrinsics).
+
+```typescript
+export final extension class FixedArray<T> on array<T> {
+  @intrinsic('array.len')
+  declare length: i32;
+}
+```
+
+### Built-in Types
+
+#### `array<T>`
+
+Zena provides a low-level built-in array type `array<T>`. This maps directly to WASM GC arrays.
+
+- **Creation**: `__array_new(length, default_value)` (Intrinsic) or via `FixedArray` wrapper.
+- **Indexing**: `arr[index]`
+- **Length**: `arr.length` (via extension)
+
+## 8. Modules & Exports
 
 ### Exports
 

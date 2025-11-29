@@ -653,11 +653,6 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
   }
 
-  let onType: Type | undefined;
-  if (decl.isExtension && decl.onType) {
-    onType = resolveTypeAnnotation(ctx, decl.onType);
-  }
-
   const classType: ClassType = {
     kind: TypeKind.Class,
     name: className,
@@ -671,7 +666,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     isFinal: decl.isFinal,
     isAbstract: decl.isAbstract,
     isExtension: decl.isExtension,
-    onType,
+    onType: undefined,
   };
 
   if (superType) {
@@ -692,7 +687,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
   ctx.enterScope();
   for (const tp of typeParameters) {
-    ctx.declare(tp.name, tp, 'let');
+    ctx.declare(tp.name, tp, 'type');
+  }
+
+  if (decl.isExtension && decl.onType) {
+    classType.onType = resolveTypeAnnotation(ctx, decl.onType);
   }
 
   // Resolve default type parameters
@@ -711,7 +710,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   // 1. First pass: Collect members to build the ClassType
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
-      if (decl.isExtension && !member.isStatic) {
+      if (decl.isExtension && !member.isStatic && !member.isDeclare) {
         ctx.diagnostics.reportError(
           `Extension classes cannot have instance fields.`,
           DiagnosticCode.ExtensionClassField,

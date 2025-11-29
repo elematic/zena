@@ -391,7 +391,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     return;
   }
 
-  const fields = new Map<string, {index: number; type: number[]}>();
+  const fields = new Map<string, {index: number; type: number[]; intrinsic?: string}>();
   const fieldTypes: {type: number[]; mutable: boolean}[] = [];
   let fieldIndex = 0;
 
@@ -459,7 +459,17 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
       const fieldName = manglePrivateName(decl.name.name, member.name.name);
 
       if (!fields.has(fieldName)) {
-        fields.set(fieldName, {index: fieldIndex++, type: wasmType});
+        let intrinsic: string | undefined;
+        if (member.decorators) {
+          const intrinsicDecorator = member.decorators.find(
+            (d) => d.name === 'intrinsic',
+          );
+          if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
+            intrinsic = intrinsicDecorator.args[0].value;
+          }
+        }
+
+        fields.set(fieldName, {index: fieldIndex++, type: wasmType, intrinsic});
         fieldTypes.push({type: wasmType, mutable: true});
       }
     }

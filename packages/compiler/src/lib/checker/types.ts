@@ -139,6 +139,7 @@ export function resolveTypeAnnotation(
     }
     case 'ByteArray':
       return Types.ByteArray;
+    case 'array':
     case 'FixedArray': {
       if (annotation.typeArguments && annotation.typeArguments.length === 1) {
         const elementType = resolveTypeAnnotation(

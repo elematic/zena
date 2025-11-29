@@ -84,6 +84,10 @@ export class Parser {
     }
     if (this.#match(TokenType.Export)) {
       if (this.#match(TokenType.Final)) {
+        if (this.#match(TokenType.Extension)) {
+          this.#consume(TokenType.Class, "Expected 'class' after 'extension'.");
+          return this.#parseClassDeclaration(true, true, false, true);
+        }
         this.#consume(TokenType.Class, "Expected 'class' after 'final'.");
         return this.#parseClassDeclaration(true, true);
       }
@@ -1135,6 +1139,7 @@ export class Parser {
       value,
       isFinal,
       isStatic,
+      isDeclare,
       decorators,
     };
   }
