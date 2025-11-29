@@ -21,7 +21,7 @@ import {DiagnosticCode} from '../diagnostics.js';
 import {
   TypeKind,
   Types,
-  type ArrayType,
+  type FixedArrayType,
   type ClassType,
   type InterfaceType,
   type FunctionType,
@@ -299,12 +299,12 @@ function inferTypeArguments(
         }
       }
     } else if (
-      paramType.kind === TypeKind.Array &&
-      argType.kind === TypeKind.Array
+      paramType.kind === TypeKind.FixedArray &&
+      argType.kind === TypeKind.FixedArray
     ) {
       infer(
-        (paramType as ArrayType).elementType,
-        (argType as ArrayType).elementType,
+        (paramType as FixedArrayType).elementType,
+        (argType as FixedArrayType).elementType,
       );
     } else if (
       paramType.kind === TypeKind.Class &&
@@ -675,7 +675,7 @@ function checkMemberExpression(
     }
   }
 
-  if (objectType.kind === TypeKind.Array) {
+  if (objectType.kind === TypeKind.FixedArray) {
     // Check for extension methods
     // TODO: Support multiple extensions or lookup by type, not just name 'Array'
     const arraySymbol = ctx.resolveInfo('Array');
@@ -792,9 +792,9 @@ function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
     // Better: Array<any> (if we had any).
     // Let's return Array<Unknown> and hope it gets refined or cast.
     return {
-      kind: TypeKind.Array,
+      kind: TypeKind.FixedArray,
       elementType: Types.Unknown,
-    } as ArrayType;
+    } as FixedArrayType;
   }
 
   const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
@@ -812,9 +812,9 @@ function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
   }
 
   return {
-    kind: TypeKind.Array,
+    kind: TypeKind.FixedArray,
     elementType: firstType,
-  } as ArrayType;
+  } as FixedArrayType;
 }
 
 function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
@@ -903,7 +903,7 @@ function checkIndexExpression(
     (objectType.kind === TypeKind.Class &&
       (objectType as ClassType).name === 'String');
 
-  if (objectType.kind !== TypeKind.Array && !isString) {
+  if (objectType.kind !== TypeKind.FixedArray && !isString) {
     ctx.diagnostics.reportError(
       `Index expression only supported on arrays, strings, or types with [] operator, got ${typeToString(objectType)}`,
       DiagnosticCode.NotIndexable,
@@ -915,7 +915,7 @@ function checkIndexExpression(
     return Types.I32;
   }
 
-  return (objectType as ArrayType).elementType;
+  return (objectType as FixedArrayType).elementType;
 }
 
 function checkSuperExpression(

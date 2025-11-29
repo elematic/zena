@@ -23,7 +23,7 @@ import {DiagnosticCode} from '../diagnostics.js';
 import {
   TypeKind,
   Types,
-  type ArrayType,
+  type FixedArrayType,
   type ClassType,
   type FunctionType,
   type InterfaceType,
@@ -404,8 +404,8 @@ function checkTuplePattern(
 
       checkPattern(ctx, elemPattern, tupleType.elementTypes[i], kind);
     }
-  } else if (type.kind === TypeKind.Array) {
-    const arrayType = type as ArrayType;
+  } else if (type.kind === TypeKind.FixedArray) {
+    const arrayType = type as FixedArrayType;
     for (const elemPattern of pattern.elements) {
       if (!elemPattern) continue;
       checkPattern(ctx, elemPattern, arrayType.elementType, kind);

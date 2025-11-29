@@ -29,14 +29,14 @@ suite('Codegen - Intrinsics', () => {
 
   test('extension method using intrinsic', async () => {
     const input = `
-      extension class Array on array<i32> {
+      extension class Array on FixedArray<i32> {
           @intrinsic("array.len")
-          length(): i32 { return 0; }
+          declare size(): i32;
       }
       
       export let main = (): i32 => {
           let a = __array_new(5, 0);
-          return a.length();
+          return a.size();
       };
     `;
     const result = await compileAndRun(input, {path: 'zena:test'});

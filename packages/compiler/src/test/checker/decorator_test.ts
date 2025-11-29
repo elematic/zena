@@ -29,7 +29,7 @@ function check(input: string, path = 'zena:test') {
 suite('TypeChecker - Decorators', () => {
   test('should allow @intrinsic in zena: module', () => {
     const input = `
-      extension class Array on array<i32> {
+      extension class Array on FixedArray<i32> {
         @intrinsic("array.len")
         length(): i32 {
           return 0;
@@ -42,7 +42,7 @@ suite('TypeChecker - Decorators', () => {
 
   test('should disallow @intrinsic in user module', () => {
     const input = `
-      extension class Array on array<i32> {
+      extension class Array on FixedArray<i32> {
         @intrinsic("array.len")
         length(): i32 {
           return 0;
@@ -59,7 +59,7 @@ suite('TypeChecker - Decorators', () => {
 
   test('should validate intrinsic name', () => {
     const input = `
-      extension class Array on array<i32> {
+      extension class Array on FixedArray<i32> {
         @intrinsic("invalid.name")
         length(): i32 {
           return 0;

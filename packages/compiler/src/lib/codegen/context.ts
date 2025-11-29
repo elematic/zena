@@ -34,7 +34,7 @@ export class CodegenContext {
   public thisLocalIndex = 0;
 
   // Type management
-  public arrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
+  public fixedArrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
   public stringTypeIndex = -1;
   public byteArrayTypeIndex = -1;
   public stringLiterals = new Map<string, number>(); // content -> dataIndex
@@ -56,7 +56,7 @@ export class CodegenContext {
 
   // Well-known types (renamed)
   public wellKnownTypes: {
-    Array?: string;
+    FixedArray?: string;
     String?: string;
   } = {};
 
@@ -125,13 +125,13 @@ export class CodegenContext {
     return index;
   }
 
-  public getArrayTypeIndex(elementType: number[]): number {
+  public getFixedArrayTypeIndex(elementType: number[]): number {
     const key = elementType.join(',');
-    if (this.arrayTypes.has(key)) {
-      return this.arrayTypes.get(key)!;
+    if (this.fixedArrayTypes.has(key)) {
+      return this.fixedArrayTypes.get(key)!;
     }
     const index = this.module.addArrayType(elementType, true);
-    this.arrayTypes.set(key, index);
+    this.fixedArrayTypes.set(key, index);
     return index;
   }
 
@@ -219,11 +219,11 @@ export class CodegenContext {
     return index;
   }
 
-  public isArrayType(name: string): boolean {
+  public isFixedArrayType(name: string): boolean {
     return (
-      name === 'Array' ||
-      name === 'array' ||
-      (!!this.wellKnownTypes.Array && name === this.wellKnownTypes.Array)
+      name === 'FixedArray' ||
+      (!!this.wellKnownTypes.FixedArray &&
+        name === this.wellKnownTypes.FixedArray)
     );
   }
 

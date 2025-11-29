@@ -194,7 +194,7 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       // Handle array/string length
       if (memberExpr.property.name === 'length') {
         const isString = isStringType(ctx, objectType);
-        const isArray = Array.from(ctx.arrayTypes.values()).includes(
+        const isArray = Array.from(ctx.fixedArrayTypes.values()).includes(
           objectType[1],
         );
         if (isString || isArray) return [ValType.i32];
@@ -344,7 +344,7 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
           }
           if (name === '__array_new') {
             const elemType = inferType(ctx, callExpr.arguments[1]);
-            const arrayTypeIndex = getArrayTypeIndex(ctx, elemType);
+            const arrayTypeIndex = getFixedArrayTypeIndex(ctx, elemType);
             return [
               ValType.ref_null,
               ...WasmModule.encodeSignedLEB128(arrayTypeIndex),
@@ -482,9 +482,9 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
 
       // Array fallback
       // Assuming array of i32 for now if we can't infer better
-      // Or check arrayTypes
+      // Or check fixedArrayTypes
       let elementType: number[] = [ValType.i32];
-      for (const [key, index] of ctx.arrayTypes) {
+      for (const [key, index] of ctx.fixedArrayTypes) {
         if (index === objectType[1]) {
           // Assuming [ref_null, typeIndex]
           elementType = key.split(',').map(Number);
@@ -503,7 +503,7 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
     }
     case NodeType.ArrayLiteral: {
       // TODO: Infer array type correctly. Assuming i32 for now.
-      const typeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
+      const typeIndex = getFixedArrayTypeIndex(ctx, [ValType.i32]);
       return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
     }
     case NodeType.StringLiteral:
@@ -649,14 +649,15 @@ export function inferTypeArgs(
 
       // Array inference: Array<T> vs WASM Array
       let arrayElementType: number[] | undefined;
-      for (const [key, index] of ctx.arrayTypes) {
+      for (const [key, index] of ctx.fixedArrayTypes) {
         if (index === typeIndex) {
           arrayElementType = key.split(',').map(Number);
           break;
         }
       }
 
-      const isArray = ctx.isArrayType(paramType.name);
+      const isArray = ctx.isFixedArrayType(paramType.name);
+      // console.log('inferTypeArgs array check:', paramType.name, isArray, arrayElementType);
 
       if (arrayElementType && isArray) {
         if (paramType.typeArguments.length === 1) {
@@ -741,13 +742,13 @@ function isStringType(ctx: CodegenContext, type: number[]): boolean {
   return index === ctx.stringTypeIndex;
 }
 
-function getArrayTypeIndex(ctx: CodegenContext, elementType: number[]): number {
+function getFixedArrayTypeIndex(ctx: CodegenContext, elementType: number[]): number {
   const key = elementType.join(',');
-  if (ctx.arrayTypes.has(key)) {
-    return ctx.arrayTypes.get(key)!;
+  if (ctx.fixedArrayTypes.has(key)) {
+    return ctx.fixedArrayTypes.get(key)!;
   }
   const index = ctx.module.addArrayType(elementType, true);
-  ctx.arrayTypes.set(key, index);
+  ctx.fixedArrayTypes.set(key, index);
   return index;
 }
 
@@ -757,7 +758,7 @@ function generateArrayLiteral(
   body: number[],
 ) {
   if (expr.elements.length === 0) {
-    const typeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
+    const typeIndex = getFixedArrayTypeIndex(ctx, [ValType.i32]);
     body.push(0xfb, GcOpcode.array_new_fixed);
     body.push(...WasmModule.encodeSignedLEB128(typeIndex));
     body.push(...WasmModule.encodeSignedLEB128(0));
@@ -766,7 +767,7 @@ function generateArrayLiteral(
 
   // TODO: Infer type correctly. Assuming i32 for now.
   const elementType = [ValType.i32];
-  const typeIndex = getArrayTypeIndex(ctx, elementType);
+  const typeIndex = getFixedArrayTypeIndex(ctx, elementType);
 
   for (const element of expr.elements) {
     generateExpression(ctx, element, body);
@@ -859,7 +860,7 @@ function generateIndexExpression(
       // Let's just use the type index from objectType if available.
       arrayTypeIndex = objectType[1];
     } else {
-      arrayTypeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
+      arrayTypeIndex = getFixedArrayTypeIndex(ctx, [ValType.i32]);
     }
   }
 
@@ -1027,7 +1028,7 @@ function generateMemberExpression(
   // Handle array/string length
   if (expr.property.name === 'length') {
     const isString = isStringType(ctx, objectType);
-    const isArray = Array.from(ctx.arrayTypes.values()).includes(objectType[1]);
+    const isArray = Array.from(ctx.fixedArrayTypes.values()).includes(objectType[1]);
 
     if (isString) {
       generateExpression(ctx, expr.object, body);
@@ -1764,7 +1765,7 @@ function generateAssignmentExpression(
       ) {
         arrayTypeIndex = objectType[1];
       } else {
-        arrayTypeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
+        arrayTypeIndex = getFixedArrayTypeIndex(ctx, [ValType.i32]);
       }
     }
 
@@ -2684,7 +2685,7 @@ function generateGlobalIntrinsic(
       const defaultValue = args[1];
 
       const elemType = inferType(ctx, defaultValue);
-      const arrayTypeIndex = getArrayTypeIndex(ctx, elemType);
+      const arrayTypeIndex = getFixedArrayTypeIndex(ctx, elemType);
 
       // array.new $type value size
       generateExpression(ctx, defaultValue, body);
@@ -2812,7 +2813,7 @@ function generateTaggedTemplateExpression(
     ValType.ref_null,
     ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
   ];
-  const stringsArrayTypeIndex = getArrayTypeIndex(ctx, stringType);
+  const stringsArrayTypeIndex = getFixedArrayTypeIndex(ctx, stringType);
 
   let globalIndex: number;
   if (ctx.templateLiteralGlobals.has(expr)) {
@@ -2869,7 +2870,7 @@ function generateTaggedTemplateExpression(
     // TODO: Check if all expressions have compatible types.
   }
 
-  const valuesArrayTypeIndex = getArrayTypeIndex(ctx, valueType);
+  const valuesArrayTypeIndex = getFixedArrayTypeIndex(ctx, valueType);
 
   for (const arg of expr.quasi.expressions) {
     generateExpression(ctx, arg, body);

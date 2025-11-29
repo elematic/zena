@@ -42,8 +42,8 @@ export class Bundler {
     }
 
     const wellKnownTypes: Program['wellKnownTypes'] = {};
-    if (this.#globalSymbols.has('zena:array:Array')) {
-      wellKnownTypes.Array = this.#globalSymbols.get('zena:array:Array');
+    if (this.#globalSymbols.has('zena:array:FixedArray')) {
+      wellKnownTypes.FixedArray = this.#globalSymbols.get('zena:array:FixedArray');
     }
     if (this.#globalSymbols.has('zena:string:String')) {
       wellKnownTypes.String = this.#globalSymbols.get('zena:string:String');

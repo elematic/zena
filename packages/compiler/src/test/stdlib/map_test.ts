@@ -17,7 +17,7 @@ class MockHost {
     if (path === 'zena:string')
       return 'export final class String { bytes: ByteArray; length: i32; }';
     if (path === 'zena:array')
-      return 'export final class Array<T> { length: i32; }';
+      return 'export final class FixedArray<T> { length: i32; }';
     if (path === 'zena:console')
       return 'export class Console {} export let console = new Console();';
     throw new Error(`File not found: ${path}`);
@@ -54,7 +54,7 @@ suite('Stdlib: Map', () => {
 
   test('array map function', async () => {
     const source = `
-      export let map = <T, U>(arr: Array<T>, f: (item: T) => U): Array<U> => {
+      export let map = <T, U>(arr: FixedArray<T>, f: (item: T) => U): FixedArray<U> => {
         let x = arr[0];
         let y = f(x);
         return #[y];

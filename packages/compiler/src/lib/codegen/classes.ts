@@ -1216,11 +1216,9 @@ export function generateClassMethods(
 
 export function mapType(
   ctx: CodegenContext,
-  annotation?: TypeAnnotation,
+  annotation: TypeAnnotation,
   typeContext?: Map<string, TypeAnnotation>,
 ): number[] {
-  if (!annotation) return [ValType.i32];
-
   if (annotation.type === NodeType.UnionTypeAnnotation) {
     // TODO: Proper union type mapping
     return [ValType.ref_null, HeapType.any];
@@ -1300,14 +1298,14 @@ export function mapType(
       ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
     ];
   }
-  if (ctx.isArrayType(annotation.name)) {
+  if (ctx.isFixedArrayType(annotation.name)) {
     if (annotation.typeArguments && annotation.typeArguments.length === 1) {
       const elementType = mapType(
         ctx,
         annotation.typeArguments[0],
         typeContext,
       );
-      const arrayTypeIndex = ctx.getArrayTypeIndex(elementType);
+      const arrayTypeIndex = ctx.getFixedArrayTypeIndex(elementType);
       return [
         ValType.ref_null,
         ...WasmModule.encodeSignedLEB128(arrayTypeIndex),
@@ -1818,21 +1816,8 @@ function applyMixin(
         results = [];
       }
 
-      let typeIndex: number;
-      let isOverride = false;
-      if (decl.superClass) {
-        const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-        if (methodName !== '#new' && superClassInfo.methods.has(methodName)) {
-          typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
-          isOverride = true;
-        }
-      }
-
-      if (!isOverride) {
-        typeIndex = ctx.module.addType(params, results);
-      }
-
-      const funcIndex = ctx.module.addFunction(typeIndex!);
+      const typeIndex = ctx.module.addType(params, results);
+      const funcIndex = ctx.module.addFunction(typeIndex);
 
       let intrinsic: string | undefined;
       if (member.decorators) {
@@ -1848,7 +1833,7 @@ function applyMixin(
       methods.set(methodName, {
         index: funcIndex,
         returnType,
-        typeIndex: typeIndex!,
+        typeIndex,
         paramTypes: params,
         isFinal: member.isFinal,
         intrinsic,

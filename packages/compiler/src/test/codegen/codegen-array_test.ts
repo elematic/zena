@@ -50,7 +50,7 @@ suite('CodeGenerator - Arrays', () => {
   test('should support explicit Array type', async () => {
     const source = `
       export let main = (): i32 => {
-        let arr: Array<i32> = #[10, 20, 30];
+        let arr: FixedArray<i32> = #[10, 20, 30];
         return arr.length;
       };
     `;

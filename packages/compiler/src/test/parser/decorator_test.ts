@@ -6,7 +6,7 @@ import {NodeType} from '../../lib/ast.js';
 suite('Parser - Decorators', () => {
   test('should parse @intrinsic decorator on method', () => {
     const input = `
-      extension class Array on array<i32> {
+      extension class Array on FixedArray<i32> {
         @intrinsic("array.len")
         length(): i32 {
           return 0;

@@ -78,9 +78,6 @@ export class CodeGenerator {
     // 2. Register Classes (Second pass)
     for (const statement of program.body) {
       if (statement.type === NodeType.ClassDeclaration) {
-        if ((statement as ClassDeclaration).name.name === 'Array') {
-          continue;
-        }
         registerClass(this.#ctx, statement as ClassDeclaration);
       }
     }

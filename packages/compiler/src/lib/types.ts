@@ -8,7 +8,7 @@ export const TypeKind = {
   Class: 'Class',
   Interface: 'Interface',
   Mixin: 'Mixin',
-  Array: 'Array',
+  FixedArray: 'FixedArray',
   Record: 'Record',
   Tuple: 'Tuple',
   Union: 'Union',
@@ -43,8 +43,8 @@ export interface TypeAliasType extends Type {
   isDistinct: boolean;
 }
 
-export interface ArrayType extends Type {
-  kind: typeof TypeKind.Array;
+export interface FixedArrayType extends Type {
+  kind: typeof TypeKind.FixedArray;
   elementType: Type;
 }
 

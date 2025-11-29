@@ -3,7 +3,7 @@ import {DiagnosticCode} from '../diagnostics.js';
 import {
   TypeKind,
   Types,
-  type ArrayType,
+  type FixedArrayType,
   type ClassType,
   type FunctionType,
   type InterfaceType,
@@ -21,11 +21,11 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
   if (type.kind === TypeKind.TypeParameter) {
     return typeMap.get((type as TypeParameterType).name) || type;
   }
-  if (type.kind === TypeKind.Array) {
+  if (type.kind === TypeKind.FixedArray) {
     return {
       ...type,
-      elementType: substituteType((type as ArrayType).elementType, typeMap),
-    } as ArrayType;
+      elementType: substituteType((type as FixedArrayType).elementType, typeMap),
+    } as FixedArrayType;
   }
   if (type.kind === TypeKind.Class) {
     const ct = type as ClassType;
@@ -136,17 +136,16 @@ export function resolveTypeAnnotation(
     }
     case 'ByteArray':
       return Types.ByteArray;
-    case 'array':
-    case 'Array': {
+    case 'FixedArray': {
       if (annotation.typeArguments && annotation.typeArguments.length === 1) {
         const elementType = resolveTypeAnnotation(
           ctx,
           annotation.typeArguments[0],
         );
         return {
-          kind: TypeKind.Array,
+          kind: TypeKind.FixedArray,
           elementType,
-        } as ArrayType;
+        } as FixedArrayType;
       }
       // If used without type arguments, it might be a raw Array or we should error.
       // For now let's fall through to resolve it as a class (which we will skip in codegen)
@@ -360,8 +359,8 @@ export function typeToString(type: Type): string {
       }
       return it.name;
     }
-    case TypeKind.Array:
-      return `Array<${typeToString((type as ArrayType).elementType)}>`;
+    case TypeKind.FixedArray:
+      return `FixedArray<${typeToString((type as FixedArrayType).elementType)}>`;
     case TypeKind.Record: {
       const rt = type as RecordType;
       const props = Array.from(rt.properties.entries())
@@ -389,7 +388,7 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     switch (source.kind) {
       case TypeKind.Class:
       case TypeKind.Interface:
-      case TypeKind.Array:
+      case TypeKind.FixedArray:
       case TypeKind.Record:
       case TypeKind.Tuple:
       case TypeKind.Function:
@@ -457,7 +456,7 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     switch (target.kind) {
       case TypeKind.Class:
       case TypeKind.Interface:
-      case TypeKind.Array:
+      case TypeKind.FixedArray:
       case TypeKind.Record:
       case TypeKind.Tuple:
       case TypeKind.Function:
