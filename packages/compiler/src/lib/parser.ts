@@ -31,6 +31,7 @@ import {
   type RecordPattern,
   type RecordTypeAnnotation,
   type ReturnStatement,
+  type SourceLocation,
   type Statement,
   type StringLiteral,
   type TaggedTemplateExpression,
@@ -218,6 +219,7 @@ export class Parser {
     if (consumeSemi) {
       this.#consume(TokenType.Semi, "Expected ';' after variable declaration.");
     }
+    const endToken = this.#previous();
 
     return {
       type: NodeType.VariableDeclaration,
@@ -226,6 +228,7 @@ export class Parser {
       typeAnnotation,
       init,
       exported,
+      loc: this.#locFromRange(kindToken, endToken),
     };
   }
 
@@ -656,12 +659,15 @@ export class Parser {
 
   #parsePrimary(): Expression {
     if (this.#match(TokenType.Super)) {
-      return {type: NodeType.SuperExpression};
+      const token = this.#previous();
+      return {type: NodeType.SuperExpression, loc: this.#locFromToken(token)};
     }
     if (this.#match(TokenType.This)) {
-      return {type: NodeType.ThisExpression};
+      const token = this.#previous();
+      return {type: NodeType.ThisExpression, loc: this.#locFromToken(token)};
     }
     if (this.#match(TokenType.Hash)) {
+      const startToken = this.#previous();
       if (this.#match(TokenType.LBracket)) {
         const elements: Expression[] = [];
         if (!this.#check(TokenType.RBracket)) {
@@ -670,7 +676,12 @@ export class Parser {
           } while (this.#match(TokenType.Comma));
         }
         this.#consume(TokenType.RBracket, "Expected ']' after array elements.");
-        return {type: NodeType.ArrayLiteral, elements};
+        const endToken = this.#previous();
+        return {
+          type: NodeType.ArrayLiteral,
+          elements,
+          loc: this.#locFromRange(startToken, endToken),
+        };
       }
       throw new Error("Expected '[' after '#'.");
     }
@@ -680,22 +691,44 @@ export class Parser {
         type: NodeType.NumberLiteral,
         value: parseFloat(token.value),
         raw: token.value,
+        loc: this.#locFromToken(token),
       };
     }
     if (this.#match(TokenType.String)) {
-      return {type: NodeType.StringLiteral, value: this.#previous().value};
+      const token = this.#previous();
+      return {
+        type: NodeType.StringLiteral,
+        value: token.value,
+        loc: this.#locFromToken(token),
+      };
     }
     if (this.#match(TokenType.True)) {
-      return {type: NodeType.BooleanLiteral, value: true};
+      const token = this.#previous();
+      return {
+        type: NodeType.BooleanLiteral,
+        value: true,
+        loc: this.#locFromToken(token),
+      };
     }
     if (this.#match(TokenType.False)) {
-      return {type: NodeType.BooleanLiteral, value: false};
+      const token = this.#previous();
+      return {
+        type: NodeType.BooleanLiteral,
+        value: false,
+        loc: this.#locFromToken(token),
+      };
     }
     if (this.#match(TokenType.Null)) {
-      return {type: NodeType.NullLiteral};
+      const token = this.#previous();
+      return {type: NodeType.NullLiteral, loc: this.#locFromToken(token)};
     }
     if (this.#match(TokenType.Identifier)) {
-      return {type: NodeType.Identifier, name: this.#previous().value};
+      const token = this.#previous();
+      return {
+        type: NodeType.Identifier,
+        name: token.value,
+        loc: this.#locFromToken(token),
+      };
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseRecordLiteral();
@@ -808,7 +841,12 @@ export class Parser {
 
   #parseIdentifier(): Identifier {
     if (this.#match(TokenType.Identifier)) {
-      return {type: NodeType.Identifier, name: this.#previous().value};
+      const token = this.#previous();
+      return {
+        type: NodeType.Identifier,
+        name: token.value,
+        loc: this.#locFromToken(token),
+      };
     }
     throw new Error(`Expected identifier, got ${this.#peek().type}`);
   }
@@ -1643,5 +1681,30 @@ export class Parser {
     throw new Error(
       message + ` Got ${this.#peek().type} at line ${this.#peek().line}`,
     );
+  }
+
+  /**
+   * Create a SourceLocation from a single token.
+   */
+  #locFromToken(token: Token): SourceLocation {
+    return {
+      line: token.line,
+      column: token.column,
+      start: token.start,
+      end: token.end,
+    };
+  }
+
+  /**
+   * Create a SourceLocation spanning from a start token to the previous token
+   * (useful for nodes that have already consumed their end token).
+   */
+  #locFromRange(startToken: Token, endToken: Token): SourceLocation {
+    return {
+      line: startToken.line,
+      column: startToken.column,
+      start: startToken.start,
+      end: endToken.end,
+    };
   }
 }

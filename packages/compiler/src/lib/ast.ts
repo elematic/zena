@@ -57,8 +57,25 @@ export const NodeType = {
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
 
+/**
+ * Source location information for an AST node.
+ * Contains both position (line/column) and range (start/end indices).
+ */
+export interface SourceLocation {
+  /** 1-based line number */
+  line: number;
+  /** 1-based column number */
+  column: number;
+  /** 0-based start index in the source string (inclusive) */
+  start: number;
+  /** 0-based end index in the source string (exclusive) */
+  end: number;
+}
+
 export interface Node {
   type: NodeType;
+  /** Source location information for this node */
+  loc?: SourceLocation;
 }
 
 export interface Program extends Node {

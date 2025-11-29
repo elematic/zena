@@ -36,6 +36,19 @@ export const DiagnosticCode = {
   MissingDecorator: 2020,
   UnexpectedBody: 2021,
 
+  // Codegen Errors (3000-3999)
+  UnknownType: 3001,
+  UnknownClass: 3002,
+  UnknownFunction: 3003,
+  UnknownVariable: 3004,
+  UnknownMethod: 3005,
+  UnknownField: 3006,
+  UnsupportedFeature: 3007,
+  InvalidExpression: 3008,
+
+  // Internal Compiler Errors (9000-9998)
+  InternalCompilerError: 9000,
+
   // General
   UnknownError: 9999,
 } as const;
