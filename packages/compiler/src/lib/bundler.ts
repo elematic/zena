@@ -15,7 +15,15 @@ export class Bundler {
   #modules: Module[];
   #entryPoint: Module;
   #modulePrefixes = new Map<string, string>();
-  #globalSymbols = new Map<string, string>(); // key: "path:name", value: uniqueName
+
+  /**
+   * Maps a fully qualified symbol name (e.g. "path/to/module.zena:ClassName")
+   * to its unique bundled name (e.g. "m1_ClassName").
+   *
+   * Key format: `${modulePath}:${symbolName}`
+   * Value: The unique identifier used in the bundled output.
+   */
+  #globalSymbols = new Map<string, string>();
 
   constructor(modules: Module[], entryPoint: Module) {
     this.#modules = modules;
@@ -23,6 +31,8 @@ export class Bundler {
   }
 
   bundle(): Program {
+    this.#sortModules();
+
     // 1. Assign prefixes
     let counter = 0;
     for (const module of this.#modules) {
@@ -42,11 +52,35 @@ export class Bundler {
     }
 
     const wellKnownTypes: Program['wellKnownTypes'] = {};
+
     if (this.#globalSymbols.has('zena:array:FixedArray')) {
-      wellKnownTypes.FixedArray = this.#globalSymbols.get('zena:array:FixedArray');
+      const name = this.#globalSymbols.get('zena:array:FixedArray')!;
+      const decl = newBody.find(
+        (stmt): stmt is ClassDeclaration =>
+          stmt.type === NodeType.ClassDeclaration && stmt.name.name === name,
+      );
+      if (decl) wellKnownTypes.FixedArray = decl;
     }
+
+    if (!wellKnownTypes.FixedArray && !this.#entryPoint.isStdlib) {
+      throw new Error(
+        'Missing well-known type: FixedArray. The standard library module "zena:array" is required for user modules.',
+      );
+    }
+
     if (this.#globalSymbols.has('zena:string:String')) {
-      wellKnownTypes.String = this.#globalSymbols.get('zena:string:String');
+      const name = this.#globalSymbols.get('zena:string:String')!;
+      const decl = newBody.find(
+        (stmt): stmt is ClassDeclaration =>
+          stmt.type === NodeType.ClassDeclaration && stmt.name.name === name,
+      );
+      if (decl) wellKnownTypes.String = decl;
+    }
+
+    if (!wellKnownTypes.String && !this.#entryPoint.isStdlib) {
+      throw new Error(
+        'Missing well-known type: String. The standard library module "zena:string" is required for user modules.',
+      );
     }
     // ByteArray is usually internal or in zena:string?
     // Let's check where ByteArray is defined.
@@ -63,6 +97,44 @@ export class Bundler {
       body: newBody,
       wellKnownTypes,
     };
+  }
+
+  /**
+   * Topologically sorts modules based on their import dependencies.
+   * This ensures that a module is processed (and its symbols declared)
+   * only after all its dependencies have been processed.
+   * This is critical for the Type Checker, which expects symbols to be
+   * declared before they are used in the bundled output.
+   */
+  #sortModules() {
+    const visited = new Set<string>();
+    const sorted: Module[] = [];
+    const moduleMap = new Map(this.#modules.map((m) => [m.path, m]));
+
+    const visit = (module: Module, stack: Set<string>) => {
+      if (visited.has(module.path)) return;
+      if (stack.has(module.path)) return; // Cycle detected, ignore
+
+      stack.add(module.path);
+
+      // Visit dependencies
+      for (const importedPath of module.imports.values()) {
+        const importedModule = moduleMap.get(importedPath);
+        if (importedModule) {
+          visit(importedModule, stack);
+        }
+      }
+
+      stack.delete(module.path);
+      visited.add(module.path);
+      sorted.push(module);
+    };
+
+    for (const module of this.#modules) {
+      visit(module, new Set());
+    }
+
+    this.#modules = sorted;
   }
 
   #collectModuleSymbols(module: Module) {

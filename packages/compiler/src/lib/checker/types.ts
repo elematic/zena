@@ -24,7 +24,10 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
   if (type.kind === TypeKind.FixedArray) {
     return {
       ...type,
-      elementType: substituteType((type as FixedArrayType).elementType, typeMap),
+      elementType: substituteType(
+        (type as FixedArrayType).elementType,
+        typeMap,
+      ),
     } as FixedArrayType;
   }
   if (type.kind === TypeKind.Class) {

@@ -1,6 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compile} from '../../lib/index.js';
+import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Equality', () => {
   // Helper to compile and run a function that returns a boolean (0 or 1)
@@ -14,9 +14,7 @@ suite('CodeGenerator - Equality', () => {
         ${body}
       };
     `;
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    return (module.instance.exports.main as Function)();
+    return await compileAndRun(source);
   }
 
   function check(expr: string): string {

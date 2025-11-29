@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {compile} from '../../lib/index.js';
+import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Interfaces', () => {
   test('should compile and run interface method call', async () => {
@@ -23,12 +23,8 @@ suite('CodeGenerator - Interfaces', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const result = await WebAssembly.instantiate(wasm, {});
-    const instance = (result as any).instance || result;
-    const main = instance.exports.main as () => number;
-
-    assert.strictEqual(main(), 11);
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 11);
   });
 
   test('should support multiple implementations', async () => {
@@ -56,12 +52,8 @@ suite('CodeGenerator - Interfaces', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const result = await WebAssembly.instantiate(wasm, {});
-    const instance = (result as any).instance || result;
-    const main = instance.exports.main as () => number;
-
-    assert.strictEqual(main(), 20 + 100);
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 120);
   });
 
   test('should support interface with multiple methods', async () => {
@@ -88,11 +80,7 @@ suite('CodeGenerator - Interfaces', () => {
         return i.getX() + i.getY();
       };
     `;
-    const wasm = compile(source);
-    const result = await WebAssembly.instantiate(wasm, {});
-    const instance = (result as any).instance || result;
-    const main = instance.exports.main as () => number;
-
-    assert.strictEqual(main(), 30);
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 30);
   });
 });

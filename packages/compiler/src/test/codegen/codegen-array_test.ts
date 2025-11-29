@@ -1,6 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compile} from '../../lib/index.js';
+import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Arrays', () => {
   test('should compile and run array literal and index access', async () => {
@@ -11,9 +11,7 @@ suite('CodeGenerator - Arrays', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 20);
   });
 
@@ -26,9 +24,7 @@ suite('CodeGenerator - Arrays', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 50);
   });
 
@@ -40,10 +36,8 @@ suite('CodeGenerator - Arrays', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    assert.throws(() => {
-      (module.instance.exports.main as Function)();
+    await assert.rejects(async () => {
+      await compileAndRun(source);
     }, /out of bounds/);
   });
 
@@ -55,9 +49,7 @@ suite('CodeGenerator - Arrays', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 3);
   });
 });

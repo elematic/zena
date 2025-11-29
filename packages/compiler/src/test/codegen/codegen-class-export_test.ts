@@ -2,6 +2,18 @@ import assert from 'node:assert';
 import {suite, test} from 'node:test';
 import {compile} from '../../lib/index.js';
 
+const imports = {
+  console: {
+    log_i32: () => {},
+    log_f32: () => {},
+    log_string: () => {},
+    error_string: () => {},
+    warn_string: () => {},
+    info_string: () => {},
+    debug_string: () => {},
+  },
+};
+
 suite('CodeGenerator - Class Exports', () => {
   test('should export class constructor and allow usage in host', async () => {
     const source = `
@@ -23,7 +35,7 @@ suite('CodeGenerator - Class Exports', () => {
     `;
 
     const wasm = compile(source);
-    const result: any = await WebAssembly.instantiate(wasm);
+    const result: any = await WebAssembly.instantiate(wasm, imports);
     const exports = result.instance.exports;
 
     assert.ok(exports.Point, 'Point should be exported');
@@ -43,7 +55,7 @@ suite('CodeGenerator - Class Exports', () => {
     `;
 
     const wasm = compile(source);
-    const result: any = await WebAssembly.instantiate(wasm);
+    const result: any = await WebAssembly.instantiate(wasm, imports);
     const exports = result.instance.exports;
 
     assert.ok(exports.add, 'add should be exported');

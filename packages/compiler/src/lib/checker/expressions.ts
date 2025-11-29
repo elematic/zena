@@ -51,7 +51,7 @@ export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
       return Types.I32;
     }
     case NodeType.StringLiteral: {
-      const stringType = ctx.resolve('String');
+      const stringType = ctx.getWellKnownType('String');
       return stringType || Types.String;
     }
     case NodeType.BooleanLiteral:
@@ -678,10 +678,10 @@ function checkMemberExpression(
   if (objectType.kind === TypeKind.FixedArray) {
     // Check for extension methods
     // TODO: Support multiple extensions or lookup by type, not just name 'Array'
-    const arraySymbol = ctx.resolveInfo('Array');
-    if (arraySymbol && arraySymbol.type.kind === TypeKind.Class) {
-      const classType = arraySymbol.type as ClassType;
-      if (classType.isExtension && classType.methods.has(expr.property.name)) {
+    const arrayType = ctx.getWellKnownType('FixedArray');
+    if (arrayType && arrayType.kind === TypeKind.Class) {
+      const classType = arrayType as ClassType;
+      if (classType.methods.has(expr.property.name)) {
         return classType.methods.get(expr.property.name)!;
       }
     }
@@ -900,8 +900,7 @@ function checkIndexExpression(
 
   const isString =
     objectType === Types.String ||
-    (objectType.kind === TypeKind.Class &&
-      (objectType as ClassType).name === 'String');
+    objectType === ctx.getWellKnownType('String');
 
   if (objectType.kind !== TypeKind.FixedArray && !isString) {
     ctx.diagnostics.reportError(
@@ -957,7 +956,7 @@ function checkTemplateLiteral(
   }
 
   // The result of an untagged template literal is always a String
-  const stringType = ctx.resolve('String');
+  const stringType = ctx.getWellKnownType('String');
   return stringType || Types.String;
 }
 

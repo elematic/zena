@@ -68,6 +68,7 @@ export class Parser {
     return {
       type: NodeType.Program,
       body,
+      wellKnownTypes: {},
     };
   }
 

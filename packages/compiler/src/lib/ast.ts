@@ -64,10 +64,10 @@ export interface Node {
 export interface Program extends Node {
   type: typeof NodeType.Program;
   body: Statement[];
-  wellKnownTypes?: {
-    FixedArray?: string;
-    String?: string;
-    ByteArray?: string;
+  wellKnownTypes: {
+    FixedArray?: ClassDeclaration;
+    String?: ClassDeclaration;
+    ByteArray?: ClassDeclaration;
   };
 }
 

@@ -28,8 +28,7 @@ export class NodeCompilerHost implements CompilerHost {
 
   resolve(specifier: string, referrer: string): string {
     if (specifier.startsWith('zena:')) {
-      const name = specifier.substring(5); // remove 'zena:'
-      return join(this.#stdlibPath, `${name}.zena`);
+      return specifier;
     }
 
     if (specifier.startsWith('./') || specifier.startsWith('../')) {
@@ -43,6 +42,17 @@ export class NodeCompilerHost implements CompilerHost {
   }
 
   load(path: string): string {
+    if (path.startsWith('zena:')) {
+      const name = path.substring(5); // remove 'zena:'
+      const filePath = join(this.#stdlibPath, `${name}.zena`);
+      if (!existsSync(filePath)) {
+        throw new Error(
+          `Standard library module not found: ${path} at ${filePath}`,
+        );
+      }
+      return readFileSync(filePath, 'utf-8');
+    }
+
     if (!existsSync(path)) {
       throw new Error(`File not found: ${path}`);
     }

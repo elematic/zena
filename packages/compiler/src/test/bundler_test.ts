@@ -16,7 +16,7 @@ function createModule(path: string, code: string): Module {
     imports: new Map(),
     exports: new Map(),
     diagnostics: [],
-    isStdlib: false,
+    isStdlib: true, // Bypass well-known type checks for unit tests
   };
 }
 
@@ -115,6 +115,7 @@ describe('Exports', () => {
         if (path === '/main.zena') {
           return `
               import { add } from './math';
+              import { FixedArray } from 'zena:array';
               export let main = () => add(1, 2);
               export declare function print(s: string): void;
             `;
@@ -124,9 +125,17 @@ describe('Exports', () => {
               export let add = (a: i32, b: i32) => a + b;
             `;
         }
+        if (path === 'zena:array') {
+          return `export class FixedArray<T> {}`;
+        }
+        if (path === 'zena:string') {
+          return `export class String {}`;
+        }
         return '';
       },
       resolve: (specifier: string, referrer: string) => {
+        if (specifier === 'zena:array') return 'zena:array';
+        if (specifier === 'zena:string') return 'zena:string';
         if (specifier.startsWith('./')) {
           return '/' + specifier.substring(2) + '.zena';
         }
@@ -162,6 +171,7 @@ describe('Exports', () => {
       load: (path: string) => {
         if (path === '/main.zena') {
           return `
+              import { FixedArray } from 'zena:array';
               export class Point {
                 x: i32;
                 y: i32;
@@ -172,9 +182,19 @@ describe('Exports', () => {
               }
             `;
         }
+        if (path === 'zena:array') {
+          return `export class FixedArray<T> {}`;
+        }
+        if (path === 'zena:string') {
+          return `export class String {}`;
+        }
         return '';
       },
-      resolve: (specifier: string, referrer: string) => specifier,
+      resolve: (specifier: string) => {
+        if (specifier === 'zena:array') return 'zena:array';
+        if (specifier === 'zena:string') return 'zena:string';
+        return specifier;
+      },
     };
 
     const compiler = new Compiler(host);

@@ -10,110 +10,42 @@ export * from './diagnostics.js';
 export * from './codegen/index.js';
 export * from './compiler.js';
 
-import {Parser} from './parser.js';
+import {Compiler, type CompilerHost} from './compiler.js';
 import {CodeGenerator} from './codegen/index.js';
 import {TypeChecker} from './checker/index.js';
-import {prelude} from './prelude.js';
-import {NodeType, type Program} from './ast.js';
+import {arrayModule, stringModule, consoleModule} from './stdlib.js';
 
-/**
- * Standard library sources.
- * These can be prepended to user code until module system is implemented.
- */
-export const stdlib = {
-  console: `
-// Console Standard Library
-// Provides a JavaScript-like console API for logging
+class InMemoryHost implements CompilerHost {
+  files: Map<string, string>;
 
-// External host functions for each console method and type
-@external("console", "log_i32")
-declare function __console_log_i32(val: i32): void;
-
-@external("console", "log_f32")
-declare function __console_log_f32(val: f32): void;
-
-// For string logging, we pass the string reference and length.
-// The host (JS) uses the exported $stringGetByte function to iterate.
-// This is the V8-recommended pattern for reading GC arrays from JS.
-@external("console", "log_string")
-declare function __console_log_string(s: string, len: i32): void;
-
-@external("console", "error_string")
-declare function __console_error_string(s: string, len: i32): void;
-
-@external("console", "warn_string")
-declare function __console_warn_string(s: string, len: i32): void;
-
-@external("console", "info_string")
-declare function __console_info_string(s: string, len: i32): void;
-
-@external("console", "debug_string")
-declare function __console_debug_string(s: string, len: i32): void;
-
-// Console interface - matches JavaScript's Console API (subset)
-export interface Console {
-  log(message: string): void;
-  error(message: string): void;
-  warn(message: string): void;
-  info(message: string): void;
-  debug(message: string): void;
-}
-
-// HostConsole - implementation that calls external host functions
-export class HostConsole implements Console {
-  log(message: string): void {
-    __console_log_string(message, message.length);
+  constructor(files: Map<string, string>) {
+    this.files = files;
   }
 
-  error(message: string): void {
-    __console_error_string(message, message.length);
+  resolve(specifier: string, referrer: string): string {
+    if (specifier.startsWith('zena:')) return specifier;
+    return specifier;
   }
 
-  warn(message: string): void {
-    __console_warn_string(message, message.length);
-  }
-
-  info(message: string): void {
-    __console_info_string(message, message.length);
-  }
-
-  debug(message: string): void {
-    __console_debug_string(message, message.length);
+  load(path: string): string {
+    if (this.files.has(path)) return this.files.get(path)!;
+    throw new Error(`File not found: ${path}`);
   }
 }
-
-// Global console instance - connected to the host environment
-export let console = new HostConsole();
-
-// Convenience functions for primitive types (overloaded-like API)
-export let log = (val: i32) => {
-  __console_log_i32(val);
-};
-
-export let logF32 = (val: f32) => {
-  __console_log_f32(val);
-};
-
-export let logString = (val: string) => {
-  __console_log_string(val, val.length);
-};
-`,
-};
 
 export function compile(source: string): Uint8Array {
-  // Parse prelude
-  const preludeParser = new Parser(prelude);
-  const preludeAst = preludeParser.parse();
+  // console.log('Compiling source:', fullSource);
+  const host = new InMemoryHost(
+    new Map([
+      ['main.zena', source],
+      ['zena:array', arrayModule],
+      ['zena:string', stringModule],
+      ['zena:console', consoleModule],
+    ]),
+  );
 
-  // Parse user code
-  const parser = new Parser(source);
-  const ast = parser.parse();
-
-  // Merge ASTs
-  const program: Program = {
-    type: NodeType.Program,
-    body: [...preludeAst.body, ...ast.body],
-  };
+  const compiler = new Compiler(host);
+  const program = compiler.bundle('main.zena');
 
   const checker = new TypeChecker(program);
   const errors = checker.check();
@@ -139,6 +71,5 @@ export function compile(source: string): Uint8Array {
  * @returns The compiled WASM binary
  */
 export function compileWithStdlib(source: string): Uint8Array {
-  const fullSource = stdlib.console + source;
-  return compile(fullSource);
+  return compile(source);
 }

@@ -1,5 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
+import {compileAndRun} from './utils.js';
 import {compile} from '../../lib/index.js';
 
 suite('CodeGenerator - Records and Tuples', () => {
@@ -11,9 +12,7 @@ suite('CodeGenerator - Records and Tuples', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 30);
   });
 
@@ -25,38 +24,32 @@ suite('CodeGenerator - Records and Tuples', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 30);
   });
 
   test('should handle nested records', async () => {
     const source = `
       export let main = (): i32 => {
-        let r = { a: { b: 10 } };
-        return r.a.b;
+        let r = { a: { x: 10 }, b: 20 };
+        return r.a.x + r.b;
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
-    assert.strictEqual(result, 10);
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 30);
   });
 
   test('should handle mixed records and tuples', async () => {
     const source = `
       export let main = (): i32 => {
-        let x = { a: [10, 20] };
-        return x.a[1];
+        let x = { a: [10, 20], b: { c: 30 } };
+        return x.a[0] + x.b.c;
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
-    assert.strictEqual(result, 20);
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 40);
   });
 
   test('should canonicalize record types (binary size check)', async () => {

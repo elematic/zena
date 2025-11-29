@@ -1,4 +1,5 @@
 import {
+  NodeType,
   type ClassDeclaration,
   type FunctionExpression,
   type MixinDeclaration,
@@ -56,8 +57,8 @@ export class CodegenContext {
 
   // Well-known types (renamed)
   public wellKnownTypes: {
-    FixedArray?: string;
-    String?: string;
+    FixedArray?: ClassDeclaration;
+    String?: ClassDeclaration;
   } = {};
 
   // Records and Tuples
@@ -219,18 +220,19 @@ export class CodegenContext {
     return index;
   }
 
-  public isFixedArrayType(name: string): boolean {
+  public isFixedArrayType(type: TypeAnnotation): boolean {
+    if (type.type !== NodeType.TypeAnnotation) return false;
     return (
-      name === 'FixedArray' ||
-      (!!this.wellKnownTypes.FixedArray &&
-        name === this.wellKnownTypes.FixedArray)
+      !!this.wellKnownTypes.FixedArray &&
+      (type as any).name === this.wellKnownTypes.FixedArray.name.name
     );
   }
 
-  public isStringType(name: string): boolean {
+  public isStringType(type: TypeAnnotation): boolean {
+    if (type.type !== NodeType.TypeAnnotation) return false;
     return (
-      name === 'String' ||
-      (!!this.wellKnownTypes.String && name === this.wellKnownTypes.String)
+      !!this.wellKnownTypes.String &&
+      (type as any).name === this.wellKnownTypes.String.name.name
     );
   }
 }

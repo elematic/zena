@@ -1,18 +1,17 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compile} from '../../lib/index.js';
+import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Interop', () => {
   test('should call declared external function', async () => {
     const source = `
+      @external("env", "log")
       declare function log(val: i32): void;
 
       export let main = (): void => {
         log(42);
       };
     `;
-
-    const wasm = compile(source);
 
     let loggedValue: number | null = null;
     const imports = {
@@ -23,9 +22,7 @@ suite('CodeGenerator - Interop', () => {
       },
     };
 
-    const module: any = await WebAssembly.instantiate(wasm, imports);
-    const {main} = module.instance.exports as {main: () => void};
-    main();
+    await compileAndRun(source, {imports});
 
     assert.strictEqual(loggedValue, 42);
   });
@@ -40,8 +37,6 @@ suite('CodeGenerator - Interop', () => {
       };
     `;
 
-    const wasm = compile(source);
-
     let loggedValue: number | null = null;
     const imports = {
       custom_env: {
@@ -51,9 +46,7 @@ suite('CodeGenerator - Interop', () => {
       },
     };
 
-    const module: any = await WebAssembly.instantiate(wasm, imports);
-    const {main} = module.instance.exports as {main: () => void};
-    main();
+    await compileAndRun(source, {imports});
 
     assert.strictEqual(loggedValue, 100);
   });

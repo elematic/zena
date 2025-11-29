@@ -93,4 +93,25 @@ export class CheckerContext {
     }
     return undefined;
   }
+
+  getWellKnownType(name: 'String' | 'FixedArray'): Type | undefined {
+    if (!this.compiler) return undefined;
+
+    let modulePath = '';
+    let exportName = '';
+
+    if (name === 'String') {
+      modulePath = 'zena:string';
+      exportName = 'String';
+    } else if (name === 'FixedArray') {
+      modulePath = 'zena:array';
+      exportName = 'FixedArray';
+    }
+
+    const module = this.compiler.getModule(modulePath);
+    if (!module) return undefined;
+
+    const symbol = module.exports.get(exportName);
+    return symbol?.type;
+  }
 }

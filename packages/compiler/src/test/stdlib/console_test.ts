@@ -2,11 +2,6 @@ import {suite, test} from 'node:test';
 import assert from 'node:assert';
 import {compile} from '../../lib/index.js';
 import {instantiate, readByteArray} from '@zena-lang/runtime';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import {fileURLToPath} from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** Helper to get instance from WebAssembly.instantiate result */
 function getInstance(
@@ -67,12 +62,7 @@ function createCapturingConsoleImports(
  * capturing console output for assertions.
  */
 async function runWithConsole(userSource: string) {
-  const stdlibPath = path.join(__dirname, '../../stdlib/console.zena');
-  const stdlibSource = fs.readFileSync(stdlibPath, 'utf-8');
-
-  // Simple concatenation for now until we have modules
-  const source = stdlibSource + userSource;
-  const wasm = compile(source);
+  const wasm = compile(userSource);
 
   // Deferred exports reference for string reading
   let instanceExports: WebAssembly.Exports | undefined;

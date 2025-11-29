@@ -57,7 +57,9 @@ export class TypeChecker {
       {
         kind: TypeKind.Function,
         typeParameters: [T],
-        parameters: [{kind: TypeKind.FixedArray, elementType: T} as FixedArrayType],
+        parameters: [
+          {kind: TypeKind.FixedArray, elementType: T} as FixedArrayType,
+        ],
         returnType: Types.I32,
       } as FunctionType,
       'let',
@@ -101,7 +103,10 @@ export class TypeChecker {
         kind: TypeKind.Function,
         typeParameters: [T],
         parameters: [Types.I32, T],
-        returnType: {kind: TypeKind.FixedArray, elementType: T} as FixedArrayType,
+        returnType: {
+          kind: TypeKind.FixedArray,
+          elementType: T,
+        } as FixedArrayType,
       } as FunctionType,
       'let',
     );

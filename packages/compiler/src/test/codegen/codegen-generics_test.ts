@@ -1,12 +1,6 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {compile as compilerCompile} from '../../lib/index.js';
-
-async function compile(input: string) {
-  const bytes = compilerCompile(input);
-  const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);
-  return result.instance.exports;
-}
+import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Generics', () => {
   test('should compile and run a generic Box class with i32', async () => {
@@ -26,8 +20,8 @@ suite('CodeGenerator - Generics', () => {
         return b.getValue();
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(test(), 42);
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(result, 42);
   });
 
   test('should compile and run a generic Box class with f32', async () => {
@@ -47,8 +41,8 @@ suite('CodeGenerator - Generics', () => {
         return b.getValue();
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(Math.fround(test()), Math.fround(3.14));
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(Math.fround(result), Math.fround(3.14));
   });
 
   test('should support recursive generic types', async () => {
@@ -68,8 +62,8 @@ suite('CodeGenerator - Generics', () => {
         return c.getValue().getValue();
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(test(), 123);
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(result, 123);
   });
 
   test('should support generic class with class type argument', async () => {
@@ -100,8 +94,8 @@ suite('CodeGenerator - Generics', () => {
         return c.getItem().getVal();
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(test(), 100);
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(result, 100);
   });
 
   test('should support multiple type parameters', async () => {
@@ -126,8 +120,8 @@ suite('CodeGenerator - Generics', () => {
         return p.getSecond();
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(Math.fround(test()), Math.fround(20.5));
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(Math.fround(result), Math.fround(20.5));
   });
 
   test('should compile and run a generic function', async () => {
@@ -138,8 +132,8 @@ suite('CodeGenerator - Generics', () => {
         return identity<i32>(42);
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(test(), 42);
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(result, 42);
   });
 
   test('should compile and run a generic function with multiple types', async () => {
@@ -154,12 +148,11 @@ suite('CodeGenerator - Generics', () => {
         return identity<f32>(4.56);
       };
     `;
-    const exports = (await compile(input)) as {
-      testI32: () => number;
-      testF32: () => number;
-    };
-    assert.strictEqual(exports.testI32(), 123);
-    assert.strictEqual(Math.fround(exports.testF32()), Math.fround(4.56));
+    const resultI32 = await compileAndRun(input, 'testI32');
+    assert.strictEqual(resultI32, 123);
+
+    const resultF32 = await compileAndRun(input, 'testF32');
+    assert.strictEqual(Math.fround(resultF32), Math.fround(4.56));
   });
 
   test('should support generic function with multiple type parameters', async () => {
@@ -170,8 +163,8 @@ suite('CodeGenerator - Generics', () => {
         return pickSecond<i32, f32>(10, 20.5);
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(Math.fround(test()), Math.fround(20.5));
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(Math.fround(result), Math.fround(20.5));
   });
 
   test('should support generic function with class reference type', async () => {
@@ -189,8 +182,8 @@ suite('CodeGenerator - Generics', () => {
         return c2.val;
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(test(), 42);
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(result, 42);
   });
 
   test('should support generic function with string reference type', async () => {
@@ -202,8 +195,8 @@ suite('CodeGenerator - Generics', () => {
         return s.length;
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(test(), 5);
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(result, 5);
   });
 
   test('should infer type arguments for generic class instantiation', async () => {
@@ -223,8 +216,8 @@ suite('CodeGenerator - Generics', () => {
         return b.getValue();
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(test(), 42);
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(result, 42);
   });
 
   test('should infer type arguments for generic function call', async () => {
@@ -235,8 +228,8 @@ suite('CodeGenerator - Generics', () => {
         return identity(42);
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(test(), 42);
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(result, 42);
   });
 
   test('should fail when adding incompatible inferred types', async () => {
@@ -255,7 +248,7 @@ suite('CodeGenerator - Generics', () => {
       };
     `;
     await assert.rejects(async () => {
-      await compile(input);
+      await compileAndRun(input, 'test');
     });
   });
 
@@ -273,8 +266,8 @@ suite('CodeGenerator - Generics', () => {
         return h.get();
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(test(), 123);
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(result, 123);
   });
 
   test('should use default type parameter in generic function', async () => {
@@ -291,8 +284,8 @@ suite('CodeGenerator - Generics', () => {
         return 0;
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(test(), 0);
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(result, 0);
   });
 
   test('should compile and run non-generic function returning class', async () => {
@@ -307,8 +300,8 @@ suite('CodeGenerator - Generics', () => {
         return b.val;
       };
     `;
-    const {test} = (await compile(input)) as {test: () => number};
-    assert.strictEqual(test(), 0);
+    const result = await compileAndRun(input, 'test');
+    assert.strictEqual(result, 0);
   });
 
   test('should compile and run a generic closure with reference type', async () => {
@@ -322,7 +315,7 @@ suite('CodeGenerator - Generics', () => {
         return b2.value;
       };
     `;
-    const {run} = (await compile(input)) as {run: () => number};
-    assert.strictEqual(run(), 123);
+    const result = await compileAndRun(input, 'run');
+    assert.strictEqual(result, 123);
   });
 });

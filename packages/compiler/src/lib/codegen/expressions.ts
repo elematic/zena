@@ -656,7 +656,7 @@ export function inferTypeArgs(
         }
       }
 
-      const isArray = ctx.isFixedArrayType(paramType.name);
+      const isArray = ctx.isFixedArrayType(paramType);
       // console.log('inferTypeArgs array check:', paramType.name, isArray, arrayElementType);
 
       if (arrayElementType && isArray) {
@@ -742,7 +742,10 @@ function isStringType(ctx: CodegenContext, type: number[]): boolean {
   return index === ctx.stringTypeIndex;
 }
 
-function getFixedArrayTypeIndex(ctx: CodegenContext, elementType: number[]): number {
+function getFixedArrayTypeIndex(
+  ctx: CodegenContext,
+  elementType: number[],
+): number {
   const key = elementType.join(',');
   if (ctx.fixedArrayTypes.has(key)) {
     return ctx.fixedArrayTypes.get(key)!;
@@ -1028,7 +1031,9 @@ function generateMemberExpression(
   // Handle array/string length
   if (expr.property.name === 'length') {
     const isString = isStringType(ctx, objectType);
-    const isArray = Array.from(ctx.fixedArrayTypes.values()).includes(objectType[1]);
+    const isArray = Array.from(ctx.fixedArrayTypes.values()).includes(
+      objectType[1],
+    );
 
     if (isString) {
       generateExpression(ctx, expr.object, body);

@@ -1,6 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compile} from '../../lib/index.js';
+import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Template Literals', () => {
   test('should compile simple template literal', async () => {
@@ -11,9 +11,7 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 0);
   });
 
@@ -25,9 +23,7 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 0);
   });
 
@@ -40,26 +36,21 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 0);
   });
 
   test('should compile template literal with multiple interpolations', async () => {
     const source = `
       export let main = (): i32 => {
-        let a = "x";
-        let b = "y";
-        let c = "z";
-        let result = \`\${a} and \${b} and \${c}\`;
+        let a = "a";
+        let b = "b";
+        let s = \`\${a} and \${b}\`;
         return 0;
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 0);
   });
 
@@ -70,9 +61,7 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.ok(result); // Should return a non-null string reference
   });
 
@@ -84,9 +73,7 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 0);
   });
 
@@ -101,9 +88,7 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     // Should have 1 string (no interpolations means 1 quasi)
     assert.strictEqual(result, 1);
   });
@@ -119,9 +104,7 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     // Should have 2 strings (before and after the interpolation)
     assert.strictEqual(result, 2);
   });
@@ -139,9 +122,7 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     // Should have 4 strings (before a, between a and b, between b and c, after c)
     assert.strictEqual(result, 4);
   });
@@ -158,9 +139,7 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     // Should have 2 values
     assert.strictEqual(result, 2);
   });
@@ -176,9 +155,7 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 42);
   });
 
@@ -194,9 +171,7 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     assert.strictEqual(result, 30);
   });
 
@@ -222,9 +197,7 @@ suite('CodeGenerator - Template Literals', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const module: any = await WebAssembly.instantiate(wasm.buffer, {});
-    const result = (module.instance.exports.main as Function)();
+    const result = await compileAndRun(source);
     // Should return 1, meaning both calls returned the same strings array reference
     assert.strictEqual(result, 1);
   });

@@ -1,6 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compile} from '../../lib/index.js';
+import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Overloading', () => {
   test('should resolve overloaded functions to different external functions', async () => {
@@ -17,8 +17,6 @@ suite('CodeGenerator - Overloading', () => {
       };
     `;
 
-    const wasm = compile(source);
-
     const logs: string[] = [];
     const imports = {
       env: {
@@ -32,9 +30,7 @@ suite('CodeGenerator - Overloading', () => {
       },
     };
 
-    const module: any = await WebAssembly.instantiate(wasm, imports);
-    const {main} = module.instance.exports as {main: () => void};
-    main();
+    await compileAndRun(source, {imports});
 
     assert.deepStrictEqual(logs, ['i32: 42', 'f32: 3.14']);
   });
@@ -53,8 +49,6 @@ suite('CodeGenerator - Overloading', () => {
       };
     `;
 
-    const wasm = compile(source);
-
     const logs: string[] = [];
     const imports = {
       env: {
@@ -67,9 +61,7 @@ suite('CodeGenerator - Overloading', () => {
       },
     };
 
-    const module: any = await WebAssembly.instantiate(wasm, imports);
-    const {main} = module.instance.exports as {main: () => void};
-    main();
+    await compileAndRun(source, {imports});
 
     assert.deepStrictEqual(logs, ['1: 1', '2: 1, 2']);
   });
