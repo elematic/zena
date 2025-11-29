@@ -51,6 +51,10 @@ export class Compiler {
       return this.#modules.get(path)!;
     }
 
+    if (path.startsWith('zena:')) {
+      isStdlib = true;
+    }
+
     const source = this.#host.load(path);
     const parser = new Parser(source);
     const ast = parser.parse();

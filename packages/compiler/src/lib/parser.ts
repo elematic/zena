@@ -5,6 +5,7 @@ import {
   type BlockStatement,
   type CallExpression,
   type ClassDeclaration,
+  type Decorator,
   type DeclareFunction,
   type Expression,
   type FieldDefinition,
@@ -1003,6 +1004,11 @@ export class Parser {
     | FieldDefinition
     | MethodDefinition
     | AccessorDeclaration {
+    const decorators: Decorator[] = [];
+    while (this.#match(TokenType.At)) {
+      decorators.push(this.#parseDecorator());
+    }
+
     let isStatic = false;
     if (this.#match(TokenType.Static)) {
       isStatic = true;
@@ -1080,6 +1086,7 @@ export class Parser {
         isFinal,
         isAbstract,
         isStatic,
+        decorators,
       };
     }
 
@@ -1103,6 +1110,7 @@ export class Parser {
         typeAnnotation,
         isFinal,
         isStatic,
+        decorators,
       );
     }
 
@@ -1120,6 +1128,7 @@ export class Parser {
       value,
       isFinal,
       isStatic,
+      decorators,
     };
   }
 
@@ -1128,6 +1137,7 @@ export class Parser {
     typeAnnotation: TypeAnnotation,
     isFinal: boolean,
     isStatic: boolean,
+    decorators: Decorator[],
   ): AccessorDeclaration {
     let getter: BlockStatement | undefined;
     let setter: {param: Identifier; body: BlockStatement} | undefined;
@@ -1168,6 +1178,7 @@ export class Parser {
       setter,
       isFinal,
       isStatic,
+      decorators,
     };
   }
 
@@ -1553,6 +1564,28 @@ export class Parser {
     return {
       type: NodeType.StringLiteral,
       value: token.value,
+    };
+  }
+
+  #parseDecorator(): Decorator {
+    const name = this.#parseIdentifier().name;
+    const args: StringLiteral[] = [];
+    if (this.#match(TokenType.LParen)) {
+      if (!this.#check(TokenType.RParen)) {
+        do {
+          const arg = this.#parseExpression();
+          if (arg.type !== NodeType.StringLiteral) {
+            throw new Error('Decorator arguments must be string literals');
+          }
+          args.push(arg as StringLiteral);
+        } while (this.#match(TokenType.Comma));
+      }
+      this.#consume(TokenType.RParen, "Expected ')' after decorator arguments");
+    }
+    return {
+      type: NodeType.Decorator,
+      name,
+      args,
     };
   }
 

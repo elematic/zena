@@ -52,6 +52,7 @@ export const NodeType = {
   TemplateElement: 'TemplateElement',
   TypeAliasDeclaration: 'TypeAliasDeclaration',
   AsExpression: 'AsExpression',
+  Decorator: 'Decorator',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -289,12 +290,10 @@ export interface AccessorDeclaration extends Node {
   name: Identifier;
   typeAnnotation: TypeAnnotation;
   getter?: BlockStatement;
-  setter?: {
-    param: Identifier;
-    body: BlockStatement;
-  };
+  setter?: {param: Identifier; body: BlockStatement};
   isFinal: boolean;
   isStatic: boolean;
+  decorators?: Decorator[];
 }
 
 export interface InterfaceDeclaration extends Node {
@@ -321,6 +320,13 @@ export interface FieldDefinition extends Node {
   value?: Expression;
   isFinal: boolean;
   isStatic: boolean;
+  decorators?: Decorator[];
+}
+
+export interface Decorator extends Node {
+  type: typeof NodeType.Decorator;
+  name: string;
+  args: StringLiteral[];
 }
 
 export interface MethodDefinition extends Node {
@@ -332,6 +338,7 @@ export interface MethodDefinition extends Node {
   isFinal: boolean;
   isAbstract: boolean;
   isStatic: boolean;
+  decorators?: Decorator[];
 }
 
 export interface NewExpression extends Node {

@@ -9,11 +9,29 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Stdlib is in packages/compiler/stdlib
 const stdlibPath = join(__dirname, '../../stdlib');
 
+export interface CompileOptions {
+  entryPoint?: string;
+  imports?: Record<string, any>;
+  path?: string;
+}
+
 export async function compileAndRun(
   input: string,
-  entryPoint: string = 'main',
-  imports: Record<string, any> = {},
+  optionsOrEntryPoint: string | CompileOptions = 'main',
+  importsArg: Record<string, any> = {},
 ): Promise<any> {
+  let entryPoint = 'main';
+  let imports = importsArg;
+  let path = '/main.zena';
+
+  if (typeof optionsOrEntryPoint === 'string') {
+    entryPoint = optionsOrEntryPoint;
+  } else {
+    entryPoint = optionsOrEntryPoint.entryPoint ?? 'main';
+    imports = optionsOrEntryPoint.imports ?? importsArg;
+    path = optionsOrEntryPoint.path ?? '/main.zena';
+  }
+
   // Add default console mock if not present
   if (!imports.console) {
     imports.console = {
@@ -28,26 +46,26 @@ export async function compileAndRun(
   }
 
   const host: CompilerHost = {
-    load: (path: string) => {
-      if (path === '/main.zena') return input;
-      if (path.startsWith('zena:')) {
-        const name = path.substring(5);
+    load: (p: string) => {
+      if (p === path) return input;
+      if (p.startsWith('zena:')) {
+        const name = p.substring(5);
         return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
       }
-      throw new Error(`File not found: ${path}`);
+      throw new Error(`File not found: ${p}`);
     },
     resolve: (specifier: string, referrer: string) => specifier,
   };
 
   const compiler = new Compiler(host);
-  const program = compiler.bundle('/main.zena');
+  const program = compiler.bundle(path);
 
   // Diagnostics are checked during compilation/bundling inside Compiler?
   // No, Compiler.compile calls checkModules.
   // But we should check if there are errors.
   // The Compiler doesn't throw on errors, it stores them in modules.
 
-  compiler.compile('/main.zena'); // Re-compile to get diagnostics?
+  compiler.compile(path); // Re-compile to get diagnostics?
   // bundle calls compile internally.
   // But we don't have access to modules from bundle result easily unless we use compile first.
 
@@ -55,7 +73,7 @@ export async function compileAndRun(
   // But we want to fail fast if checker failed.
 
   // Let's check diagnostics from the entry module.
-  const entryModule = compiler.getModule('/main.zena');
+  const entryModule = compiler.getModule(path);
   if (entryModule && entryModule.diagnostics.length > 0) {
     throw new Error(
       `Type check failed: ${entryModule.diagnostics.map((d) => d.message).join(', ')}`,

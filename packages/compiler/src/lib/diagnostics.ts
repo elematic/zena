@@ -31,6 +31,8 @@ export const DiagnosticCode = {
   IndexOutOfBounds: 2016,
   ImportError: 2016,
   ExtensionClassField: 2017,
+  DecoratorNotAllowed: 2018,
+  UnknownIntrinsic: 2019,
 
   // General
   UnknownError: 9999,

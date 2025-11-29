@@ -355,4 +355,8 @@ export class WasmModule {
   public setStart(functionIndex: number) {
     this.#startFunctionIndex = functionIndex;
   }
+
+  public getType(index: number): number[] {
+    return this.#types[index];
+  }
 }

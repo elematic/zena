@@ -676,6 +676,16 @@ function checkMemberExpression(
   }
 
   if (objectType.kind === TypeKind.Array) {
+    // Check for extension methods
+    // TODO: Support multiple extensions or lookup by type, not just name 'Array'
+    const arraySymbol = ctx.resolveInfo('Array');
+    if (arraySymbol && arraySymbol.type.kind === TypeKind.Class) {
+      const classType = arraySymbol.type as ClassType;
+      if (classType.isExtension && classType.methods.has(expr.property.name)) {
+        return classType.methods.get(expr.property.name)!;
+      }
+    }
+
     if (expr.property.name === 'length') {
       return Types.I32;
     }

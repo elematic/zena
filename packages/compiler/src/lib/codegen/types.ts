@@ -11,13 +11,16 @@ export interface ClassInfo {
       typeIndex: number;
       paramTypes: number[][];
       isFinal?: boolean;
+      intrinsic?: string;
     }
-  >; // name -> {funcIndex, returnType, typeIndex, paramTypes, isFinal}
+  >; // name -> {funcIndex, returnType, typeIndex, paramTypes, isFinal, intrinsic}
   vtable?: string[];
   vtableTypeIndex?: number;
   vtableGlobalIndex?: number;
   implements?: Map<string, {vtableGlobalIndex: number}>; // interfaceName -> info
   isFinal?: boolean;
+  isExtension?: boolean;
+  onType?: number[];
 }
 
 export interface InterfaceInfo {

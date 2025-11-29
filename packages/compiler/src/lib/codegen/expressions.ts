@@ -335,6 +335,24 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
         }
       } else if (callExpr.callee.type === NodeType.Identifier) {
         const name = (callExpr.callee as Identifier).name;
+
+        if (name.startsWith('__array_')) {
+          if (name === '__array_len') return [ValType.i32];
+          if (name === '__array_get') {
+            // TODO: Get actual element type from array type index
+            return [ValType.i32];
+          }
+          if (name === '__array_new') {
+            const elemType = inferType(ctx, callExpr.arguments[1]);
+            const arrayTypeIndex = getArrayTypeIndex(ctx, elemType);
+            return [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(arrayTypeIndex),
+            ];
+          }
+          return [];
+        }
+
         if (ctx.genericFunctions.has(name)) {
           const funcDecl = ctx.genericFunctions.get(name)!;
           let typeArguments = callExpr.typeArguments;
@@ -1380,25 +1398,60 @@ function generateCallExpression(
 
     const structTypeIndex = getHeapTypeIndex(ctx, objectType);
 
-    if (structTypeIndex === -1) {
-      throw new Error(`Invalid object type for method call: ${methodName}`);
-    }
-
     let foundClass: ClassInfo | undefined;
-    for (const info of ctx.classes.values()) {
-      if (info.structTypeIndex === structTypeIndex) {
-        foundClass = info;
-        break;
+    if (structTypeIndex !== -1) {
+      for (const info of ctx.classes.values()) {
+        if (info.structTypeIndex === structTypeIndex) {
+          foundClass = info;
+          break;
+        }
       }
     }
 
     if (!foundClass) {
-      throw new Error(`Class not found for object type ${structTypeIndex}`);
+      // Check for extension classes
+      for (const info of ctx.classes.values()) {
+        if (info.isExtension && info.onType) {
+          if (typesAreEqual(info.onType, objectType)) {
+            foundClass = info;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!foundClass) {
+      throw new Error(
+        `Class not found for object type ${structTypeIndex} (full type: ${objectType})`,
+      );
     }
 
     const methodInfo = foundClass.methods.get(methodName);
     if (methodInfo === undefined) {
       throw new Error(`Method ${methodName} not found in class`);
+    }
+
+    if (methodInfo.intrinsic) {
+      generateIntrinsic(
+        ctx,
+        methodInfo.intrinsic,
+        memberExpr.object,
+        expr.arguments,
+        body,
+      );
+      return;
+    }
+
+    if (foundClass.isExtension) {
+      generateExpression(ctx, memberExpr.object, body);
+      for (const arg of expr.arguments) {
+        generateExpression(ctx, arg, body);
+      }
+      body.push(
+        Opcode.call,
+        ...WasmModule.encodeSignedLEB128(methodInfo.index),
+      );
+      return;
     }
 
     const vtableIndex = foundClass.vtable
@@ -1501,6 +1554,12 @@ function generateCallExpression(
     let isDirectCall = false;
     if (expr.callee.type === NodeType.Identifier) {
       const name = (expr.callee as Identifier).name;
+
+      if (name.startsWith('__array_')) {
+        generateGlobalIntrinsic(ctx, name, expr.arguments, body);
+        return;
+      }
+
       if (
         !ctx.getLocal(name) &&
         (ctx.functions.has(name) ||
@@ -2541,275 +2600,311 @@ function generateFunctionExpression(
   body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
 }
 
+function generateIntrinsic(
+  ctx: CodegenContext,
+  intrinsic: string,
+  object: Expression,
+  args: Expression[],
+  body: number[],
+) {
+  switch (intrinsic) {
+    case 'array.len':
+      generateExpression(ctx, object, body);
+      body.push(0xfb, GcOpcode.array_len);
+      break;
+    case 'array.get': {
+      generateExpression(ctx, object, body);
+      generateExpression(ctx, args[0], body);
+      const objectType = inferType(ctx, object);
+      const typeIndex = decodeTypeIndex(objectType);
+      body.push(
+        0xfb,
+        GcOpcode.array_get,
+        ...WasmModule.encodeSignedLEB128(typeIndex),
+      );
+      break;
+    }
+    case 'array.set': {
+      generateExpression(ctx, object, body);
+      generateExpression(ctx, args[0], body);
+      generateExpression(ctx, args[1], body);
+      const objectType = inferType(ctx, object);
+      const typeIndex = decodeTypeIndex(objectType);
+      body.push(
+        0xfb,
+        GcOpcode.array_set,
+        ...WasmModule.encodeSignedLEB128(typeIndex),
+      );
+      break;
+    }
+    default:
+      throw new Error(`Unsupported intrinsic: ${intrinsic}`);
+  }
+}
+
+function generateGlobalIntrinsic(
+  ctx: CodegenContext,
+  name: string,
+  args: Expression[],
+  body: number[],
+) {
+  switch (name) {
+    case '__array_len':
+      generateExpression(ctx, args[0], body);
+      body.push(0xfb, GcOpcode.array_len);
+      break;
+    case '__array_get': {
+      generateExpression(ctx, args[0], body); // array
+      generateExpression(ctx, args[1], body); // index
+      const arrayType = inferType(ctx, args[0]);
+      const typeIndex = decodeTypeIndex(arrayType);
+      body.push(
+        0xfb,
+        GcOpcode.array_get,
+        ...WasmModule.encodeSignedLEB128(typeIndex),
+      );
+      break;
+    }
+    case '__array_set': {
+      generateExpression(ctx, args[0], body); // array
+      generateExpression(ctx, args[1], body); // index
+      generateExpression(ctx, args[2], body); // value
+      const arrayType = inferType(ctx, args[0]);
+      const typeIndex = decodeTypeIndex(arrayType);
+      body.push(
+        0xfb,
+        GcOpcode.array_set,
+        ...WasmModule.encodeSignedLEB128(typeIndex),
+      );
+      break;
+    }
+    case '__array_new': {
+      // __array_new(size, default_value)
+      const size = args[0];
+      const defaultValue = args[1];
+
+      const elemType = inferType(ctx, defaultValue);
+      const arrayTypeIndex = getArrayTypeIndex(ctx, elemType);
+
+      // array.new $type value size
+      generateExpression(ctx, defaultValue, body);
+      generateExpression(ctx, size, body);
+
+      body.push(
+        0xfb,
+        GcOpcode.array_new,
+        ...WasmModule.encodeSignedLEB128(arrayTypeIndex),
+      );
+      break;
+    }
+    default:
+      throw new Error(`Unsupported global intrinsic: ${name}`);
+  }
+}
+
+function typesAreEqual(t1: number[], t2: number[]): boolean {
+  if (t1.length !== t2.length) return false;
+  for (let i = 0; i < t1.length; i++) {
+    if (t1[i] !== t2[i]) return false;
+  }
+  return true;
+}
+
 function generateIndirectCall(
   ctx: CodegenContext,
   expr: CallExpression,
   body: number[],
 ) {
-  // 1. Evaluate Callee
-  generateExpression(ctx, expr.callee, body);
+  const callee = expr.callee;
+  generateExpression(ctx, callee, body);
 
-  // Stack: [ClosureRef]
-  const calleeType = inferType(ctx, expr.callee);
-  const closureStructIndex = decodeTypeIndex(calleeType);
+  const closureType = inferType(ctx, callee);
+  const closureTypeIndex = decodeTypeIndex(closureType);
+  const closureInfo = ctx.closureStructs.get(closureTypeIndex);
 
-  if (!ctx.closureStructs.has(closureStructIndex)) {
-    throw new Error(`Type ${closureStructIndex} is not a closure`);
+  if (!closureInfo) {
+    throw new Error('Indirect call on non-closure type');
   }
-  const {funcTypeIndex} = ctx.closureStructs.get(closureStructIndex)!;
 
-  const tempClosure = ctx.declareLocal('$$temp_closure', calleeType);
-  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempClosure));
+  // 1. Load closure struct (it's on stack)
+  const closureLocal = ctx.declareLocal('$$closure', closureType);
+  body.push(Opcode.local_tee);
+  body.push(...WasmModule.encodeSignedLEB128(closureLocal));
 
-  // 2. Push Context (Field 1)
-  body.push(
-    0xfb,
-    GcOpcode.struct_get,
-    ...WasmModule.encodeSignedLEB128(closureStructIndex),
-    ...WasmModule.encodeSignedLEB128(1), // Field 1 is ctx
-  );
+  // 2. Load Context
+  body.push(Opcode.local_get);
+  body.push(...WasmModule.encodeSignedLEB128(closureLocal));
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(1)); // context field
 
-  // 3. Evaluate Arguments
+  // 3. Generate Arguments
   for (const arg of expr.arguments) {
     generateExpression(ctx, arg, body);
   }
 
-  // 4. Push Func Ref (Field 0)
-  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempClosure));
-  body.push(
-    0xfb,
-    GcOpcode.struct_get,
-    ...WasmModule.encodeSignedLEB128(closureStructIndex),
-    ...WasmModule.encodeSignedLEB128(0), // Field 0 is func
-  );
+  // 4. Load Function Reference
+  body.push(Opcode.local_get);
+  body.push(...WasmModule.encodeSignedLEB128(closureLocal));
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(0)); // func field
 
   // 5. Call Ref
-  body.push(Opcode.call_ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex));
+  body.push(Opcode.call_ref);
+  body.push(...WasmModule.encodeSignedLEB128(closureInfo.funcTypeIndex));
 }
 
-/**
- * Generate code for an untagged template literal.
- * This concatenates all the string parts and interpolated values into a single string.
- */
 function generateTemplateLiteral(
   ctx: CodegenContext,
   expr: TemplateLiteral,
   body: number[],
 ) {
-  // Special case: no expressions, just return the string
-  if (expr.expressions.length === 0) {
-    // Generate a simple string literal
-    const value = expr.quasis[0].value.cooked;
-    generateStringLiteralValue(ctx, value, body);
+  if (expr.quasis.length === 0) {
+    generateStringLiteral(
+      ctx,
+      {type: NodeType.StringLiteral, value: ''} as StringLiteral,
+      body,
+    );
     return;
   }
 
-  // Build the string by concatenating parts and expressions
-  // Start with the first quasi
-  generateStringLiteralValue(ctx, expr.quasis[0].value.cooked, body);
+  generateStringLiteral(
+    ctx,
+    {
+      type: NodeType.StringLiteral,
+      value: expr.quasis[0].value.raw,
+    } as StringLiteral,
+    body,
+  );
 
   for (let i = 0; i < expr.expressions.length; i++) {
-    // Generate the expression
-    // For now, we assume expressions produce strings or can be converted to strings
-    // TODO: Implement proper toString conversion for non-string expressions
-    const subExpr = expr.expressions[i];
+    const expression = expr.expressions[i];
+    const quasi = expr.quasis[i + 1];
 
-    // Generate the expression (we assume it's a string or needs string concatenation)
-    // Proper type coercion to string should be implemented when we have a toString method
-    generateExpression(ctx, subExpr, body);
+    generateExpression(ctx, expression, body);
 
-    // Concatenate with previous result
+    // Ensure expression is a string.
+    // For now, we assume it is or rely on runtime/implicit behavior if any.
+    // But since we don't have implicit conversion, this might fail at runtime or compile time if types mismatch.
+    // Ideally we should check type and convert.
+    // But for "adding back" support, we'll keep it simple.
+
     generateStringConcat(ctx, body);
 
-    // Concatenate with the next quasi (if non-empty)
-    const nextQuasi = expr.quasis[i + 1].value.cooked;
-    if (nextQuasi.length > 0) {
-      generateStringLiteralValue(ctx, nextQuasi, body);
-      generateStringConcat(ctx, body);
-    }
+    generateStringLiteral(
+      ctx,
+      {type: NodeType.StringLiteral, value: quasi.value.raw} as StringLiteral,
+      body,
+    );
+
+    generateStringConcat(ctx, body);
   }
 }
 
-/**
- * Helper to generate a string literal from a raw value.
- * Used by template literals to generate individual string parts.
- */
-function generateStringLiteralValue(
-  ctx: CodegenContext,
-  value: string,
-  body: number[],
-) {
-  // Empty string optimization
-  if (value.length === 0) {
-    generateEmptyString(ctx, body);
-    return;
-  }
-
-  let dataIndex: number;
-  if (ctx.stringLiterals.has(value)) {
-    dataIndex = ctx.stringLiterals.get(value)!;
-  } else {
-    const bytes = new TextEncoder().encode(value);
-    dataIndex = ctx.module.addData(bytes);
-    ctx.stringLiterals.set(value, dataIndex);
-  }
-
-  // Push vtable (null for now)
-  body.push(Opcode.ref_null, HeapType.eq);
-
-  // array.new_data $byteArrayType $dataIndex
-  body.push(Opcode.i32_const, 0); // offset
-  body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(value.length));
-
-  body.push(0xfb, GcOpcode.array_new_data);
-  body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
-  body.push(...WasmModule.encodeSignedLEB128(dataIndex));
-
-  // struct.new $stringType
-  body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(value.length));
-
-  body.push(0xfb, GcOpcode.struct_new);
-  body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-}
-
-/**
- * Generate an empty string.
- */
-function generateEmptyString(ctx: CodegenContext, body: number[]) {
-  // Push vtable (null for now)
-  body.push(Opcode.ref_null, HeapType.eq);
-
-  // Create empty byte array
-  body.push(Opcode.i32_const, 0); // length 0
-  body.push(0xfb, GcOpcode.array_new_default);
-  body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
-
-  // struct.new $stringType with length 0
-  body.push(Opcode.i32_const, 0);
-
-  body.push(0xfb, GcOpcode.struct_new);
-  body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-}
-
-/**
- * Generate code for a tagged template expression.
- * This creates the strings array and values array, then calls the tag function.
- */
 function generateTaggedTemplateExpression(
   ctx: CodegenContext,
   expr: TaggedTemplateExpression,
   body: number[],
 ) {
-  // For tagged templates, we need to:
-  // 1. Generate the tag function reference
-  // 2. Create a TemplateStringsArray (an array of strings with a 'raw' property)
-  // 3. Create an array of interpolated values
-  // 4. Call the tag function with these arguments
-
-  // For now, implement a simpler version that:
-  // - Gets the tag function (for simple identifier tags)
-  // - Creates an array of cooked strings
-  // - Creates an array of values
-  // - Calls the tag function
-
-  const quasis = expr.quasi.quasis;
-  const expressions = expr.quasi.expressions;
-
-  // Get or create the array type for strings
-  const stringArrayTypeIndex = getArrayTypeIndex(ctx, [
+  // 1. Create strings array (cached)
+  const stringType = [
     ValType.ref_null,
     ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-  ]);
+  ];
+  const stringsArrayTypeIndex = getArrayTypeIndex(ctx, stringType);
 
-  // 1. Handle the strings array (with caching)
-  let globalIndex = ctx.templateLiteralGlobals.get(expr);
-  if (globalIndex === undefined) {
-    // Create a mutable global: (ref null stringArrayType)
-    // Init with ref.null
-    globalIndex = ctx.module.addGlobal(
-      [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(stringArrayTypeIndex),
-      ],
-      true, // mutable
-      [Opcode.ref_null, HeapType.none], // init expression
-    );
+  let globalIndex: number;
+  if (ctx.templateLiteralGlobals.has(expr)) {
+    globalIndex = ctx.templateLiteralGlobals.get(expr)!;
+  } else {
+    // Create global
+    // Type: (ref null $stringsArrayTypeIndex)
+    const globalType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex),
+    ];
+
+    // Initialize with null
+    globalIndex = ctx.module.addGlobal(globalType, true, [
+      Opcode.ref_null,
+      HeapType.none,
+    ]);
     ctx.templateLiteralGlobals.set(expr, globalIndex);
   }
 
-  // Check if global is null
+  // Lazy initialization
   body.push(Opcode.global_get);
   body.push(...WasmModule.encodeSignedLEB128(globalIndex));
   body.push(Opcode.ref_is_null);
   body.push(Opcode.if);
-  body.push(ValType.void); // block type
+  body.push(ValType.void);
 
-  // Create the strings array
-  for (const quasi of quasis) {
-    generateStringLiteralValue(ctx, quasi.value.cooked, body);
+  // Create strings array
+  for (const quasi of expr.quasi.quasis) {
+    generateStringLiteral(
+      ctx,
+      {type: NodeType.StringLiteral, value: quasi.value.raw} as StringLiteral,
+      body,
+    );
   }
   body.push(0xfb, GcOpcode.array_new_fixed);
-  body.push(...WasmModule.encodeSignedLEB128(stringArrayTypeIndex));
-  body.push(...WasmModule.encodeSignedLEB128(quasis.length));
+  body.push(...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(expr.quasi.quasis.length));
 
-  // Store in global
+  // Set global
   body.push(Opcode.global_set);
   body.push(...WasmModule.encodeSignedLEB128(globalIndex));
 
   body.push(Opcode.end); // end if
 
-  // Load the strings array from global
+  // Push strings array
   body.push(Opcode.global_get);
   body.push(...WasmModule.encodeSignedLEB128(globalIndex));
 
-  // Generate the values array
-  if (expressions.length > 0) {
-    // Infer the value type from the first expression
-    // For now, assume all values are the same type
-    const firstExprType = inferType(ctx, expressions[0]);
-    const valuesArrayTypeIndex = getArrayTypeIndex(ctx, firstExprType);
-
-    // Push each value element
-    for (const subExpr of expressions) {
-      generateExpression(ctx, subExpr, body);
-    }
-
-    // array.new_fixed with the number of values
-    body.push(0xfb, GcOpcode.array_new_fixed);
-    body.push(...WasmModule.encodeSignedLEB128(valuesArrayTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(expressions.length));
-  } else {
-    // Create an empty array of i32 (dummy values array)
-    const emptyArrayTypeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
-    body.push(Opcode.i32_const, 0);
-    body.push(0xfb, GcOpcode.array_new_default);
-    body.push(...WasmModule.encodeSignedLEB128(emptyArrayTypeIndex));
+  // 2. Create values array
+  let valueType: number[] = [ValType.i32];
+  if (expr.quasi.expressions.length > 0) {
+    valueType = inferType(ctx, expr.quasi.expressions[0]);
+    // TODO: Check if all expressions have compatible types.
   }
 
-  // Now call the tag function with (strings, values) already on the stack
-  // Handle simple identifier tags as direct function calls
+  const valuesArrayTypeIndex = getArrayTypeIndex(ctx, valueType);
+
+  for (const arg of expr.quasi.expressions) {
+    generateExpression(ctx, arg, body);
+  }
+
+  body.push(0xfb, GcOpcode.array_new_fixed);
+  body.push(...WasmModule.encodeSignedLEB128(valuesArrayTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(expr.quasi.expressions.length));
+
+  // 3. Call tag function
   if (expr.tag.type === NodeType.Identifier) {
-    const tagName = (expr.tag as Identifier).name;
-    const funcIndex = ctx.functions.get(tagName);
-    if (funcIndex !== undefined) {
+    const name = (expr.tag as Identifier).name;
+
+    // Check for local variable (closure/func ref)
+    const local = ctx.getLocal(name);
+    if (local) {
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(local.index));
+
+      const heapTypeIndex = decodeTypeIndex(local.type);
+      body.push(Opcode.call_ref);
+      body.push(...WasmModule.encodeSignedLEB128(heapTypeIndex));
+      return;
+    }
+
+    // Check for global function
+    if (ctx.functions.has(name)) {
+      const funcIndex = ctx.functions.get(name)!;
       body.push(Opcode.call);
       body.push(...WasmModule.encodeSignedLEB128(funcIndex));
       return;
     }
   }
 
-  // For complex tag expressions (member expressions, closures, etc.),
-  // we need a more sophisticated calling convention
-  // TODO: Implement proper closure/method call support for tag expressions
   throw new Error(
-    'Complex tag expressions in tagged templates are not yet supported. Use a simple identifier as the tag.',
+    'Tagged template expression only supports identifier tags for now',
   );
-}
-
-function typesAreEqual(a: number[], b: number[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
 }

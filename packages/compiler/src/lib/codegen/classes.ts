@@ -404,6 +404,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
       typeIndex: number;
       paramTypes: number[][];
       isFinal?: boolean;
+      intrinsic?: string;
     }
   >();
   const vtable: string[] = [];
@@ -480,6 +481,11 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     }
   }
 
+  let onType: number[] | undefined;
+  if (decl.isExtension && decl.onType) {
+    onType = mapType(ctx, decl.onType);
+  }
+
   const classInfo: ClassInfo = {
     name: decl.name.name,
     structTypeIndex,
@@ -488,6 +494,8 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     methods,
     vtable,
     isFinal: decl.isFinal,
+    isExtension: decl.isExtension,
+    onType,
   };
   ctx.classes.set(decl.name.name, classInfo);
 
@@ -575,6 +583,16 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
 
       const funcIndex = ctx.module.addFunction(typeIndex!);
 
+      let intrinsic: string | undefined;
+      if (member.decorators) {
+        const intrinsicDecorator = member.decorators.find(
+          (d) => d.name === 'intrinsic',
+        );
+        if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
+          intrinsic = intrinsicDecorator.args[0].value;
+        }
+      }
+
       const returnType = results.length > 0 ? results[0] : [];
       methods.set(methodName, {
         index: funcIndex,
@@ -582,6 +600,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
         typeIndex: typeIndex!,
         paramTypes: params,
         isFinal: member.isFinal,
+        intrinsic,
       });
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = member.name.name;
@@ -1459,6 +1478,7 @@ export function instantiateClass(
       typeIndex: number;
       paramTypes: number[][];
       isFinal?: boolean;
+      intrinsic?: string;
     }
   >();
   const vtable: string[] = [];
@@ -1526,12 +1546,24 @@ export function instantiateClass(
       const typeIndex = ctx.module.addType(params, results);
       const funcIndex = ctx.module.addFunction(typeIndex);
 
+      let intrinsic: string | undefined;
+      if (member.decorators) {
+        const intrinsicDecorator = member.decorators.find(
+          (d) => d.name === 'intrinsic',
+        );
+        if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
+          intrinsic = intrinsicDecorator.args[0].value;
+        }
+      }
+
       const returnType = results.length > 0 ? results[0] : [];
       methods.set(methodName, {
         index: funcIndex,
         returnType,
         typeIndex,
         paramTypes: params,
+        isFinal: member.isFinal,
+        intrinsic,
       });
     }
   }
@@ -1790,6 +1822,16 @@ function applyMixin(
 
       const funcIndex = ctx.module.addFunction(typeIndex!);
 
+      let intrinsic: string | undefined;
+      if (member.decorators) {
+        const intrinsicDecorator = member.decorators.find(
+          (d) => d.name === 'intrinsic',
+        );
+        if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
+          intrinsic = intrinsicDecorator.args[0].value;
+        }
+      }
+
       const returnType = results.length > 0 ? results[0] : [];
       methods.set(methodName, {
         index: funcIndex,
@@ -1797,6 +1839,7 @@ function applyMixin(
         typeIndex: typeIndex!,
         paramTypes: params,
         isFinal: member.isFinal,
+        intrinsic,
       });
     } else if (member.type === NodeType.AccessorDeclaration) {
       // ... Accessor logic similar to registerClass ...

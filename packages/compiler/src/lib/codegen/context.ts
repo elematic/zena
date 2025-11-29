@@ -222,6 +222,7 @@ export class CodegenContext {
   public isArrayType(name: string): boolean {
     return (
       name === 'Array' ||
+      name === 'array' ||
       (!!this.wellKnownTypes.Array && name === this.wellKnownTypes.Array)
     );
   }

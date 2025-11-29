@@ -1132,6 +1132,52 @@ function checkInterfaceDeclaration(
 }
 
 function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
+  if (method.decorators) {
+    for (const decorator of method.decorators) {
+      if (decorator.name === 'intrinsic') {
+        if (ctx.module && !ctx.module.isStdlib) {
+          ctx.diagnostics.reportError(
+            '@intrinsic is only allowed in zena: modules.',
+            DiagnosticCode.DecoratorNotAllowed,
+          );
+        }
+
+        if (decorator.args.length !== 1) {
+          ctx.diagnostics.reportError(
+            '@intrinsic requires exactly one argument (the intrinsic name).',
+            DiagnosticCode.ArgumentCountMismatch,
+          );
+        } else {
+          const name = decorator.args[0].value;
+          const validIntrinsics = new Set([
+            'array.len',
+            'array.get',
+            'array.set',
+            'array.new',
+            'array.new_default',
+            'array.new_fixed',
+            'array.new_data',
+            'array.copy',
+            'array.fill',
+            'array.init_data',
+            'array.init_elem',
+          ]);
+          if (!validIntrinsics.has(name)) {
+            ctx.diagnostics.reportError(
+              `Unknown intrinsic '${name}'.`,
+              DiagnosticCode.UnknownIntrinsic,
+            );
+          }
+        }
+      } else {
+        ctx.diagnostics.reportError(
+          `Unknown decorator '@${decorator.name}'.`,
+          DiagnosticCode.DecoratorNotAllowed,
+        );
+      }
+    }
+  }
+
   const previousMethod = ctx.currentMethod;
   ctx.currentMethod = method.name.name;
 
