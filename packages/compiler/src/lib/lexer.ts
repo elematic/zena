@@ -28,6 +28,9 @@ export const TokenType = {
   Declare: 'Declare',
   Function: 'Function',
   From: 'From',
+  Type: 'Type',
+  Distinct: 'Distinct',
+  As: 'As',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -112,9 +115,12 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   declare: TokenType.Declare,
   function: TokenType.Function,
   from: TokenType.From,
+  type: TokenType.Type,
+  distinct: TokenType.Distinct,
+  as: TokenType.As,
 });
 
-export const tokenize = (source: string): Token[] => {
+export function tokenize(source: string): Token[] {
   const tokens: Token[] = [];
   let current = 0;
   let line = 1;
@@ -596,4 +602,4 @@ export const tokenize = (source: string): Token[] => {
 
   tokens.push({type: TokenType.EOF, value: '', line, column});
   return tokens;
-};
+}

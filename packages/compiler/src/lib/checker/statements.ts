@@ -15,6 +15,7 @@ import {
   type ReturnStatement,
   type Statement,
   type TuplePattern,
+  type TypeAliasDeclaration,
   type VariableDeclaration,
   type WhileStatement,
 } from '../ast.js';
@@ -30,6 +31,7 @@ import {
   type RecordType,
   type TupleType,
   type Type,
+  type TypeAliasType,
   type TypeParameterType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
@@ -78,6 +80,49 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
     case NodeType.DeclareFunction:
       checkDeclareFunction(ctx, stmt as DeclareFunction);
       break;
+    case NodeType.TypeAliasDeclaration:
+      checkTypeAliasDeclaration(ctx, stmt as TypeAliasDeclaration);
+      break;
+  }
+}
+
+function checkTypeAliasDeclaration(
+  ctx: CheckerContext,
+  decl: TypeAliasDeclaration,
+) {
+  const name = decl.name.name;
+
+  const typeParameters: TypeParameterType[] = [];
+  if (decl.typeParameters) {
+    for (const param of decl.typeParameters) {
+      typeParameters.push({
+        kind: TypeKind.TypeParameter,
+        name: param.name,
+      });
+    }
+  }
+
+  ctx.enterScope();
+  for (const param of typeParameters) {
+    ctx.declare(param.name, param, 'type');
+  }
+
+  const target = resolveTypeAnnotation(ctx, decl.typeAnnotation);
+
+  ctx.exitScope();
+
+  const typeAlias: TypeAliasType = {
+    kind: TypeKind.TypeAlias,
+    name,
+    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+    target,
+    isDistinct: decl.isDistinct,
+  };
+
+  ctx.declare(name, typeAlias, 'type');
+
+  if (decl.exported && ctx.module) {
+    ctx.module.exports.set(name, {type: typeAlias, kind: 'type'});
   }
 }
 

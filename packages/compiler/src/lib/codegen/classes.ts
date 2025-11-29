@@ -1232,8 +1232,13 @@ export function mapType(
   }
 
   // Check type context first
-  if (typeContext && typeContext.has(annotation.name)) {
-    return mapType(ctx, typeContext.get(annotation.name)!, typeContext);
+  const effectiveTypeContext = typeContext || ctx.currentTypeContext;
+  if (effectiveTypeContext && effectiveTypeContext.has(annotation.name)) {
+    return mapType(
+      ctx,
+      effectiveTypeContext.get(annotation.name)!,
+      effectiveTypeContext,
+    );
   }
 
   if (ctx.interfaces.has(annotation.name)) {
@@ -1244,9 +1249,14 @@ export function mapType(
     ];
   }
 
+  if (ctx.typeAliases.has(annotation.name)) {
+    return mapType(ctx, ctx.typeAliases.get(annotation.name)!, typeContext);
+  }
+
   if (annotation.name === 'i32') return [ValType.i32];
   if (annotation.name === 'f32') return [ValType.f32];
   if (annotation.name === 'boolean') return [ValType.i32];
+  if (annotation.name === 'anyref') return [ValType.ref_null, HeapType.any];
   if (annotation.name === 'string') {
     return [
       ValType.ref_null,
@@ -1308,9 +1318,6 @@ export function mapType(
       ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
     ];
   }
-  console.log(
-    `Class ${annotation.name} not found in ctx.classes. Available: ${Array.from(ctx.classes.keys()).join(', ')}`,
-  );
 
   return [ValType.i32];
 }
@@ -1892,10 +1899,10 @@ function applyMixin(
         const propName = member.name.name;
         const propType = mapType(ctx, member.typeAnnotation);
 
-        // Getter
-        const getterName = `get_${propName}`;
-        if (!vtable.includes(getterName)) {
-          vtable.push(getterName);
+        // Register Getter
+        const regGetterName = `get_${propName}`;
+        if (!vtable.includes(regGetterName)) {
+          vtable.push(regGetterName);
         }
 
         let thisType = [
@@ -1905,8 +1912,8 @@ function applyMixin(
 
         if (decl.superClass) {
           const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(getterName)) {
-            thisType = superClassInfo.methods.get(getterName)!.paramTypes[0];
+          if (superClassInfo.methods.has(regGetterName)) {
+            thisType = superClassInfo.methods.get(regGetterName)!.paramTypes[0];
           }
         }
 
@@ -1917,8 +1924,8 @@ function applyMixin(
         let isOverride = false;
         if (decl.superClass) {
           const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(getterName)) {
-            typeIndex = superClassInfo.methods.get(getterName)!.typeIndex;
+          if (superClassInfo.methods.has(regGetterName)) {
+            typeIndex = superClassInfo.methods.get(regGetterName)!.typeIndex;
             isOverride = true;
           }
         }
@@ -1929,7 +1936,7 @@ function applyMixin(
 
         const funcIndex = ctx.module.addFunction(typeIndex!);
 
-        methods.set(getterName, {
+        methods.set(regGetterName, {
           index: funcIndex,
           returnType: results[0],
           typeIndex: typeIndex!,
@@ -1937,11 +1944,11 @@ function applyMixin(
           isFinal: member.isFinal,
         });
 
-        // Setter (if mutable)
+        // Register Setter (if mutable)
         if (!member.isFinal) {
-          const setterName = `set_${propName}`;
-          if (!vtable.includes(setterName)) {
-            vtable.push(setterName);
+          const regSetterName = `set_${propName}`;
+          if (!vtable.includes(regSetterName)) {
+            vtable.push(regSetterName);
           }
 
           const setterParams = [thisType, propType];
@@ -1951,9 +1958,9 @@ function applyMixin(
           let isSetterOverride = false;
           if (decl.superClass) {
             const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-            if (superClassInfo.methods.has(setterName)) {
+            if (superClassInfo.methods.has(regSetterName)) {
               setterTypeIndex =
-                superClassInfo.methods.get(setterName)!.typeIndex;
+                superClassInfo.methods.get(regSetterName)!.typeIndex;
               isSetterOverride = true;
             }
           }
@@ -1964,13 +1971,61 @@ function applyMixin(
 
           const setterFuncIndex = ctx.module.addFunction(setterTypeIndex!);
 
-          methods.set(setterName, {
+          methods.set(regSetterName, {
             index: setterFuncIndex,
             returnType: [],
             typeIndex: setterTypeIndex!,
             paramTypes: setterParams,
             isFinal: member.isFinal,
           });
+        }
+
+        const fieldName = manglePrivateName(intermediateName, propName);
+        const fieldInfo = classInfo.fields.get(fieldName);
+        if (!fieldInfo) {
+          console.error(
+            `Field ${fieldName} not found in class ${decl.name.name}`,
+          );
+          console.error(
+            'Available fields:',
+            Array.from(classInfo.fields.keys()),
+          );
+          throw new Error(`Field ${fieldName} not found`);
+        }
+
+        // Getter
+        const getterName = `get_${propName}`;
+        const getterInfo = classInfo.methods.get(getterName)!;
+        const getterBody: number[] = [];
+
+        // this.field
+        getterBody.push(Opcode.local_get, 0); // this
+        getterBody.push(0xfb, GcOpcode.struct_get);
+        getterBody.push(
+          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+        );
+        getterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+        getterBody.push(Opcode.end);
+
+        ctx.module.addCode(getterInfo.index, [], getterBody);
+
+        // Setter
+        if (!member.isFinal) {
+          const setterName = `set_${propName}`;
+          const setterInfo = classInfo.methods.get(setterName)!;
+          const setterBody: number[] = [];
+
+          // this.field = val
+          setterBody.push(Opcode.local_get, 0); // this
+          setterBody.push(Opcode.local_get, 1); // val
+          setterBody.push(0xfb, GcOpcode.struct_set);
+          setterBody.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+          setterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+          setterBody.push(Opcode.end);
+
+          ctx.module.addCode(setterInfo.index, [], setterBody);
         }
       }
     }

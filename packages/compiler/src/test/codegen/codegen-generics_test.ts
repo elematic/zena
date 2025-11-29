@@ -310,4 +310,19 @@ suite('CodeGenerator - Generics', () => {
     const {test} = (await compile(input)) as {test: () => number};
     assert.strictEqual(test(), 0);
   });
+
+  test('should compile and run a generic closure with reference type', async () => {
+    const input = `
+      class Box { value: i32; }
+      export let run = (): i32 => {
+        let f = <T>(x: T): T => x;
+        let b = new Box();
+        b.value = 123;
+        let b2 = f<Box>(b) as Box;
+        return b2.value;
+      };
+    `;
+    const {run} = (await compile(input)) as {run: () => number};
+    assert.strictEqual(run(), 123);
+  });
 });

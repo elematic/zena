@@ -40,6 +40,7 @@ import {
   type TupleTypeAnnotation,
   type TypeAnnotation,
   type TypeParameter,
+  type TypeAliasDeclaration,
   type VariableDeclaration,
   type WhileStatement,
 } from './ast.js';
@@ -97,6 +98,9 @@ export class Parser {
       if (this.#match(TokenType.Mixin)) {
         return this.#parseMixinDeclaration(true);
       }
+      if (this.#match(TokenType.Type) || this.#match(TokenType.Distinct)) {
+        return this.#parseTypeAliasDeclaration(true);
+      }
       if (this.#match(TokenType.Declare)) {
         return this.#parseDeclareFunction(undefined, undefined, true);
       }
@@ -134,10 +138,41 @@ export class Parser {
     if (this.#match(TokenType.Mixin)) {
       return this.#parseMixinDeclaration(false);
     }
+    if (this.#match(TokenType.Type) || this.#match(TokenType.Distinct)) {
+      return this.#parseTypeAliasDeclaration(false);
+    }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseBlockStatement();
     }
     return this.#parseExpressionStatement();
+  }
+
+  #parseTypeAliasDeclaration(exported: boolean): TypeAliasDeclaration {
+    let isDistinct = false;
+    if (
+      this.#check(TokenType.Distinct) ||
+      this.#previous().type === TokenType.Distinct
+    ) {
+      if (this.#check(TokenType.Distinct)) this.#advance();
+      this.#consume(TokenType.Type, "Expected 'type' after 'distinct'.");
+      isDistinct = true;
+    } else {
+      // Already consumed 'type' in #parseStatement
+    }
+
+    const name = this.#parseIdentifier();
+    const typeParameters = this.#parseTypeParameters();
+    this.#consume(TokenType.Equals, "Expected '=' after type alias name.");
+    const typeAnnotation = this.#parseTypeAnnotation();
+    this.#consume(TokenType.Semi, "Expected ';' after type alias declaration.");
+    return {
+      type: NodeType.TypeAliasDeclaration,
+      name,
+      typeParameters,
+      typeAnnotation,
+      exported,
+      isDistinct,
+    };
   }
 
   #parseVariableDeclaration(
@@ -197,8 +232,7 @@ export class Parser {
         const name = this.#parseIdentifier();
         let value: Pattern = name;
 
-        if (this.#check(TokenType.Identifier) && this.#peek().value === 'as') {
-          this.#advance();
+        if (this.#match(TokenType.As)) {
           value = this.#parseIdentifier();
         } else if (this.#match(TokenType.Colon)) {
           value = this.#parsePattern();
@@ -387,7 +421,7 @@ export class Parser {
   }
 
   #parseComparison(): Expression {
-    let left = this.#parseTerm();
+    let left = this.#parseAs();
 
     while (
       this.#match(
@@ -398,12 +432,27 @@ export class Parser {
       )
     ) {
       const operator = this.#previous().value;
-      const right = this.#parseTerm();
+      const right = this.#parseAs();
       left = {
         type: NodeType.BinaryExpression,
         left,
         operator,
         right,
+      };
+    }
+
+    return left;
+  }
+
+  #parseAs(): Expression {
+    let left = this.#parseTerm();
+
+    while (this.#match(TokenType.As)) {
+      const typeAnnotation = this.#parseTypeAnnotation();
+      left = {
+        type: NodeType.AsExpression,
+        expression: left,
+        typeAnnotation,
       };
     }
 
@@ -1447,8 +1496,7 @@ export class Parser {
       do {
         const imported = this.#parseIdentifier();
         let local = imported;
-        if (this.#check(TokenType.Identifier) && this.#peek().value === 'as') {
-          this.#advance();
+        if (this.#match(TokenType.As)) {
           local = this.#parseIdentifier();
         }
         imports.push({

@@ -25,6 +25,7 @@ export class CodegenContext {
   public classes = new Map<string, ClassInfo>();
   public mixins = new Map<string, MixinDeclaration>();
   public interfaces = new Map<string, InterfaceInfo>();
+  public typeAliases = new Map<string, TypeAnnotation>();
 
   // Current state
   public currentClass: ClassInfo | null = null;

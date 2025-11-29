@@ -50,6 +50,8 @@ export const NodeType = {
   TemplateLiteral: 'TemplateLiteral',
   TaggedTemplateExpression: 'TaggedTemplateExpression',
   TemplateElement: 'TemplateElement',
+  TypeAliasDeclaration: 'TypeAliasDeclaration',
+  AsExpression: 'AsExpression',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -80,7 +82,8 @@ export type Statement =
   | InterfaceDeclaration
   | MixinDeclaration
   | DeclareFunction
-  | ImportDeclaration;
+  | ImportDeclaration
+  | TypeAliasDeclaration;
 
 export interface ImportSpecifier extends Node {
   type: typeof NodeType.ImportSpecifier;
@@ -101,8 +104,16 @@ export interface DeclareFunction extends Node {
   returnType: TypeAnnotation;
   externalModule?: string;
   externalName?: string;
+  exported?: boolean;
+}
+
+export interface TypeAliasDeclaration extends Node {
+  type: typeof NodeType.TypeAliasDeclaration;
+  name: Identifier;
+  typeParameters?: TypeParameter[];
+  typeAnnotation: TypeAnnotation;
   exported: boolean;
-  exportName?: string;
+  isDistinct: boolean;
 }
 
 export interface VariableDeclaration extends Node {
@@ -199,7 +210,8 @@ export type Expression =
   | IndexExpression
   | SuperExpression
   | TemplateLiteral
-  | TaggedTemplateExpression;
+  | TaggedTemplateExpression
+  | AsExpression;
 
 export interface BinaryExpression extends Node {
   type: typeof NodeType.BinaryExpression;
@@ -210,8 +222,14 @@ export interface BinaryExpression extends Node {
 
 export interface AssignmentExpression extends Node {
   type: typeof NodeType.AssignmentExpression;
-  left: Identifier | MemberExpression | IndexExpression;
+  left: Expression | Pattern;
   value: Expression;
+}
+
+export interface AsExpression extends Node {
+  type: typeof NodeType.AsExpression;
+  expression: Expression;
+  typeAnnotation: TypeAnnotation;
 }
 
 export interface NumberLiteral extends Node {

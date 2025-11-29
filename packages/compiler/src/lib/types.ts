@@ -13,6 +13,8 @@ export const TypeKind = {
   Tuple: 'Tuple',
   Union: 'Union',
   TypeParameter: 'TypeParameter',
+  TypeAlias: 'TypeAlias',
+  AnyRef: 'AnyRef',
   Unknown: 'Unknown',
 } as const;
 
@@ -31,6 +33,14 @@ export interface TypeParameterType extends Type {
   kind: typeof TypeKind.TypeParameter;
   name: string;
   defaultType?: Type;
+}
+
+export interface TypeAliasType extends Type {
+  kind: typeof TypeKind.TypeAlias;
+  name: string;
+  typeParameters?: TypeParameterType[];
+  target: Type;
+  isDistinct: boolean;
 }
 
 export interface ArrayType extends Type {
@@ -121,4 +131,5 @@ export const Types = {
   Unknown: {kind: TypeKind.Unknown} as Type,
   I32: I32,
   F32: {kind: TypeKind.Number, name: 'f32'} as NumberType,
+  AnyRef: {kind: TypeKind.AnyRef} as Type,
 } as const;

@@ -6,6 +6,7 @@ import {
   type InterfaceDeclaration,
   type MixinDeclaration,
   type Program,
+  type TypeAliasDeclaration,
   type VariableDeclaration,
 } from '../ast.js';
 import {registerClass, registerInterface} from './classes.js';
@@ -65,6 +66,12 @@ export class CodeGenerator {
       } else if (statement.type === NodeType.MixinDeclaration) {
         const mixinDecl = statement as MixinDeclaration;
         this.#ctx.mixins.set(mixinDecl.name.name, mixinDecl);
+      } else if (statement.type === NodeType.TypeAliasDeclaration) {
+        const aliasDecl = statement as TypeAliasDeclaration;
+        this.#ctx.typeAliases.set(
+          aliasDecl.name.name,
+          aliasDecl.typeAnnotation,
+        );
       }
     }
 
