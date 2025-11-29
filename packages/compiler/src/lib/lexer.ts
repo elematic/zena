@@ -31,6 +31,8 @@ export const TokenType = {
   Type: 'Type',
   Distinct: 'Distinct',
   As: 'As',
+  Extension: 'Extension',
+  Static: 'Static',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -118,6 +120,8 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   type: TokenType.Type,
   distinct: TokenType.Distinct,
   as: TokenType.As,
+  extension: TokenType.Extension,
+  static: TokenType.Static,
 });
 
 export function tokenize(source: string): Token[] {

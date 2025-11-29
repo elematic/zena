@@ -653,6 +653,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
   }
 
+  let onType: Type | undefined;
+  if (decl.isExtension && decl.onType) {
+    onType = resolveTypeAnnotation(ctx, decl.onType);
+  }
+
   const classType: ClassType = {
     kind: TypeKind.Class,
     name: className,
@@ -665,6 +670,8 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     vtable: superType ? [...superType.vtable] : [],
     isFinal: decl.isFinal,
     isAbstract: decl.isAbstract,
+    isExtension: decl.isExtension,
+    onType,
   };
 
   if (superType) {
@@ -704,6 +711,13 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   // 1. First pass: Collect members to build the ClassType
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
+      if (decl.isExtension && !member.isStatic) {
+        ctx.diagnostics.reportError(
+          `Extension classes cannot have instance fields.`,
+          DiagnosticCode.ExtensionClassField,
+        );
+        continue;
+      }
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
       if (classType.fields.has(member.name.name)) {
         // Check if it's a redeclaration of an inherited field

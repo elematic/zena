@@ -515,6 +515,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
       body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
       isAbstract: false,
+      isStatic: false,
     } as MethodDefinition);
   }
 
@@ -909,6 +910,7 @@ export function generateClassMethods(
       body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
       isAbstract: false,
+      isStatic: false,
     } as MethodDefinition);
   }
 
@@ -1495,6 +1497,7 @@ export function instantiateClass(
       body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
       isAbstract: false,
+      isStatic: false,
     } as MethodDefinition);
   }
 
@@ -1705,6 +1708,7 @@ function applyMixin(
     exported: false,
     isFinal: false,
     isAbstract: false,
+    isExtension: false,
   };
 
   // Register methods
@@ -1731,6 +1735,7 @@ function applyMixin(
       body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
       isAbstract: false,
+      isStatic: false,
     } as MethodDefinition);
   }
 
@@ -2084,6 +2089,7 @@ function generateMixinMethods(
     exported: false,
     isFinal: false,
     isAbstract: false,
+    isExtension: false,
   };
 
   generateClassMethods(ctx, decl, classInfo.name);

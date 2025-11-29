@@ -89,6 +89,10 @@ export class Parser {
         this.#consume(TokenType.Class, "Expected 'class' after 'abstract'.");
         return this.#parseClassDeclaration(true, false, true);
       }
+      if (this.#match(TokenType.Extension)) {
+        this.#consume(TokenType.Class, "Expected 'class' after 'extension'.");
+        return this.#parseClassDeclaration(true, false, false, true);
+      }
       if (this.#match(TokenType.Class)) {
         return this.#parseClassDeclaration(true);
       }
@@ -128,6 +132,10 @@ export class Parser {
     if (this.#match(TokenType.Abstract)) {
       this.#consume(TokenType.Class, "Expected 'class' after 'abstract'.");
       return this.#parseClassDeclaration(false, false, true);
+    }
+    if (this.#match(TokenType.Extension)) {
+      this.#consume(TokenType.Class, "Expected 'class' after 'extension'.");
+      return this.#parseClassDeclaration(false, false, false, true);
     }
     if (this.#match(TokenType.Class)) {
       return this.#parseClassDeclaration(false);
@@ -892,12 +900,25 @@ export class Parser {
     exported: boolean,
     isFinal: boolean = false,
     isAbstract: boolean = false,
+    isExtension: boolean = false,
   ): ClassDeclaration {
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
 
+    let onType: TypeAnnotation | undefined;
+    if (isExtension) {
+      this.#consume(
+        TokenType.On,
+        "Expected 'on' in extension class declaration.",
+      );
+      onType = this.#parseTypeAnnotation();
+    }
+
     let superClass: Identifier | undefined;
     if (this.#match(TokenType.Extends)) {
+      if (isExtension) {
+        throw new Error('Extension classes cannot extend other classes.');
+      }
       superClass = this.#parseIdentifier();
     }
 
@@ -936,6 +957,8 @@ export class Parser {
       exported,
       isFinal,
       isAbstract,
+      isExtension,
+      onType,
     };
   }
 
@@ -980,6 +1003,11 @@ export class Parser {
     | FieldDefinition
     | MethodDefinition
     | AccessorDeclaration {
+    let isStatic = false;
+    if (this.#match(TokenType.Static)) {
+      isStatic = true;
+    }
+
     let isFinal = false;
     if (this.#match(TokenType.Final)) {
       isFinal = true;
@@ -1051,6 +1079,7 @@ export class Parser {
         body,
         isFinal,
         isAbstract,
+        isStatic,
       };
     }
 
@@ -1069,7 +1098,12 @@ export class Parser {
     const typeAnnotation = this.#parseTypeAnnotation();
 
     if (this.#match(TokenType.LBrace)) {
-      return this.#parseAccessorDeclaration(name, typeAnnotation, isFinal);
+      return this.#parseAccessorDeclaration(
+        name,
+        typeAnnotation,
+        isFinal,
+        isStatic,
+      );
     }
 
     let value: Expression | undefined;
@@ -1085,6 +1119,7 @@ export class Parser {
       typeAnnotation,
       value,
       isFinal,
+      isStatic,
     };
   }
 
@@ -1092,6 +1127,7 @@ export class Parser {
     name: Identifier,
     typeAnnotation: TypeAnnotation,
     isFinal: boolean,
+    isStatic: boolean,
   ): AccessorDeclaration {
     let getter: BlockStatement | undefined;
     let setter: {param: Identifier; body: BlockStatement} | undefined;
@@ -1131,6 +1167,7 @@ export class Parser {
       getter,
       setter,
       isFinal,
+      isStatic,
     };
   }
 
@@ -1209,6 +1246,7 @@ export class Parser {
       name,
       typeAnnotation,
       isFinal: false, // Interfaces don't support final fields yet
+      isStatic: false,
     };
   }
 

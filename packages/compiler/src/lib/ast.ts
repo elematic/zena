@@ -269,6 +269,8 @@ export interface ClassDeclaration extends Node {
   exportName?: string;
   isFinal: boolean;
   isAbstract: boolean;
+  isExtension: boolean;
+  onType?: TypeAnnotation;
 }
 
 export interface MixinDeclaration extends Node {
@@ -292,6 +294,7 @@ export interface AccessorDeclaration extends Node {
     body: BlockStatement;
   };
   isFinal: boolean;
+  isStatic: boolean;
 }
 
 export interface InterfaceDeclaration extends Node {
@@ -317,6 +320,7 @@ export interface FieldDefinition extends Node {
   typeAnnotation: TypeAnnotation;
   value?: Expression;
   isFinal: boolean;
+  isStatic: boolean;
 }
 
 export interface MethodDefinition extends Node {
@@ -327,6 +331,7 @@ export interface MethodDefinition extends Node {
   body?: BlockStatement;
   isFinal: boolean;
   isAbstract: boolean;
+  isStatic: boolean;
 }
 
 export interface NewExpression extends Node {

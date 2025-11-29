@@ -769,6 +769,9 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
       DiagnosticCode.UnknownError,
     );
   }
+  if (ctx.currentClass.isExtension && ctx.currentClass.onType) {
+    return ctx.currentClass.onType;
+  }
   return ctx.currentClass;
 }
 

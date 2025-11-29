@@ -136,6 +136,7 @@ export function resolveTypeAnnotation(
     }
     case 'ByteArray':
       return Types.ByteArray;
+    case 'array':
     case 'Array': {
       if (annotation.typeArguments && annotation.typeArguments.length === 1) {
         const elementType = resolveTypeAnnotation(
@@ -552,6 +553,14 @@ export function isAssignableTo(source: Type, target: Type): boolean {
       if (!found) return false;
     }
     return true;
+  }
+
+  // Extension Types: Extension is assignable to its underlying type
+  if (source.kind === TypeKind.Class && (source as ClassType).isExtension) {
+    const ext = source as ClassType;
+    if (ext.onType && isAssignableTo(ext.onType, target)) {
+      return true;
+    }
   }
 
   return typeToString(source) === typeToString(target);

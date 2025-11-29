@@ -30,6 +30,7 @@ export const DiagnosticCode = {
   ModuleNotFound: 2015,
   IndexOutOfBounds: 2016,
   ImportError: 2016,
+  ExtensionClassField: 2017,
 
   // General
   UnknownError: 9999,

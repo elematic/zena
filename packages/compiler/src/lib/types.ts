@@ -109,6 +109,8 @@ export interface ClassType extends Type {
   vtable: string[]; // Ordered list of method names
   isFinal?: boolean;
   isAbstract?: boolean;
+  isExtension?: boolean;
+  onType?: Type;
 }
 
 const I32 = {kind: TypeKind.Number, name: 'i32'} as NumberType;
