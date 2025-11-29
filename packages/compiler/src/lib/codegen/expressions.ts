@@ -18,6 +18,8 @@ import {
   type NumberLiteral,
   type RecordLiteral,
   type StringLiteral,
+  type TaggedTemplateExpression,
+  type TemplateLiteral,
   type ThisExpression,
   type TupleLiteral,
   type TypeAnnotation,
@@ -104,6 +106,16 @@ export function generateExpression(
       break;
     case NodeType.FunctionExpression:
       generateFunctionExpression(ctx, expression as FunctionExpression, body);
+      break;
+    case NodeType.TemplateLiteral:
+      generateTemplateLiteral(ctx, expression as TemplateLiteral, body);
+      break;
+    case NodeType.TaggedTemplateExpression:
+      generateTaggedTemplateExpression(
+        ctx,
+        expression as TaggedTemplateExpression,
+        body,
+      );
       break;
     default:
       // TODO: Handle other expressions
@@ -481,6 +493,21 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
         ValType.ref_null,
         ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
       ];
+    case NodeType.TemplateLiteral:
+      // Untagged template literal produces a string
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+      ];
+    case NodeType.TaggedTemplateExpression: {
+      // Tagged template expression's type is the return type of the tag function
+      // For now, assume it returns the string type (common case)
+      // TODO: Actually infer from tag function return type
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+      ];
+    }
     case NodeType.ThisExpression: {
       const local = ctx.getLocal('this');
       if (local) return local.type;
@@ -2543,6 +2570,195 @@ function generateIndirectCall(
 
   // 5. Call Ref
   body.push(Opcode.call_ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex));
+}
+
+/**
+ * Generate code for an untagged template literal.
+ * This concatenates all the string parts and interpolated values into a single string.
+ */
+function generateTemplateLiteral(
+  ctx: CodegenContext,
+  expr: TemplateLiteral,
+  body: number[],
+) {
+  // Special case: no expressions, just return the string
+  if (expr.expressions.length === 0) {
+    // Generate a simple string literal
+    const value = expr.quasis[0].value.cooked;
+    generateStringLiteralValue(ctx, value, body);
+    return;
+  }
+
+  // Build the string by concatenating parts and expressions
+  // Start with the first quasi
+  generateStringLiteralValue(ctx, expr.quasis[0].value.cooked, body);
+
+  for (let i = 0; i < expr.expressions.length; i++) {
+    // Generate the expression
+    // For now, we assume expressions produce strings or can be converted to strings
+    // TODO: Implement proper toString conversion for non-string expressions
+    const subExpr = expr.expressions[i];
+
+    // Generate the expression (we assume it's a string or needs string concatenation)
+    // Proper type coercion to string should be implemented when we have a toString method
+    generateExpression(ctx, subExpr, body);
+
+    // Concatenate with previous result
+    generateStringConcat(ctx, body);
+
+    // Concatenate with the next quasi (if non-empty)
+    const nextQuasi = expr.quasis[i + 1].value.cooked;
+    if (nextQuasi.length > 0) {
+      generateStringLiteralValue(ctx, nextQuasi, body);
+      generateStringConcat(ctx, body);
+    }
+  }
+}
+
+/**
+ * Helper to generate a string literal from a raw value.
+ * Used by template literals to generate individual string parts.
+ */
+function generateStringLiteralValue(
+  ctx: CodegenContext,
+  value: string,
+  body: number[],
+) {
+  // Empty string optimization
+  if (value.length === 0) {
+    generateEmptyString(ctx, body);
+    return;
+  }
+
+  let dataIndex: number;
+  if (ctx.stringLiterals.has(value)) {
+    dataIndex = ctx.stringLiterals.get(value)!;
+  } else {
+    const bytes = new TextEncoder().encode(value);
+    dataIndex = ctx.module.addData(bytes);
+    ctx.stringLiterals.set(value, dataIndex);
+  }
+
+  // Push vtable (null for now)
+  body.push(Opcode.ref_null, HeapType.eq);
+
+  // array.new_data $byteArrayType $dataIndex
+  body.push(Opcode.i32_const, 0); // offset
+  body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(value.length));
+
+  body.push(0xfb, GcOpcode.array_new_data);
+  body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(dataIndex));
+
+  // struct.new $stringType
+  body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(value.length));
+
+  body.push(0xfb, GcOpcode.struct_new);
+  body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+}
+
+/**
+ * Generate an empty string.
+ */
+function generateEmptyString(ctx: CodegenContext, body: number[]) {
+  // Push vtable (null for now)
+  body.push(Opcode.ref_null, HeapType.eq);
+
+  // Create empty byte array
+  body.push(Opcode.i32_const, 0); // length 0
+  body.push(0xfb, GcOpcode.array_new_default);
+  body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
+
+  // struct.new $stringType with length 0
+  body.push(Opcode.i32_const, 0);
+
+  body.push(0xfb, GcOpcode.struct_new);
+  body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+}
+
+/**
+ * Generate code for a tagged template expression.
+ * This creates the strings array and values array, then calls the tag function.
+ */
+function generateTaggedTemplateExpression(
+  ctx: CodegenContext,
+  expr: TaggedTemplateExpression,
+  body: number[],
+) {
+  // For tagged templates, we need to:
+  // 1. Generate the tag function reference
+  // 2. Create a TemplateStringsArray (an array of strings with a 'raw' property)
+  // 3. Create an array of interpolated values
+  // 4. Call the tag function with these arguments
+
+  // For now, implement a simpler version that:
+  // - Gets the tag function (for simple identifier tags)
+  // - Creates an array of cooked strings
+  // - Creates an array of values
+  // - Calls the tag function
+
+  const quasis = expr.quasi.quasis;
+  const expressions = expr.quasi.expressions;
+
+  // Get or create the array type for strings
+  const stringArrayTypeIndex = getArrayTypeIndex(ctx, [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+  ]);
+
+  // Generate the strings array
+  // Push each string element
+  for (const quasi of quasis) {
+    generateStringLiteralValue(ctx, quasi.value.cooked, body);
+  }
+
+  // array.new_fixed with the number of strings
+  body.push(0xfb, GcOpcode.array_new_fixed);
+  body.push(...WasmModule.encodeSignedLEB128(stringArrayTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(quasis.length));
+
+  // Generate the values array
+  if (expressions.length > 0) {
+    // Infer the value type from the first expression
+    // For now, assume all values are the same type
+    const firstExprType = inferType(ctx, expressions[0]);
+    const valuesArrayTypeIndex = getArrayTypeIndex(ctx, firstExprType);
+
+    // Push each value element
+    for (const subExpr of expressions) {
+      generateExpression(ctx, subExpr, body);
+    }
+
+    // array.new_fixed with the number of values
+    body.push(0xfb, GcOpcode.array_new_fixed);
+    body.push(...WasmModule.encodeSignedLEB128(valuesArrayTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(expressions.length));
+  } else {
+    // Create an empty array of i32 (dummy values array)
+    const emptyArrayTypeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
+    body.push(Opcode.i32_const, 0);
+    body.push(0xfb, GcOpcode.array_new_default);
+    body.push(...WasmModule.encodeSignedLEB128(emptyArrayTypeIndex));
+  }
+
+  // Now call the tag function with (strings, values) already on the stack
+  // Handle simple identifier tags as direct function calls
+  if (expr.tag.type === NodeType.Identifier) {
+    const tagName = (expr.tag as Identifier).name;
+    const funcIndex = ctx.functions.get(tagName);
+    if (funcIndex !== undefined) {
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(funcIndex));
+      return;
+    }
+  }
+
+  // For complex tag expressions (member expressions, closures, etc.),
+  // we need a more sophisticated calling convention
+  // TODO: Implement proper closure/method call support for tag expressions
+  throw new Error(
+    'Complex tag expressions in tagged templates are not yet supported. Use a simple identifier as the tag.',
+  );
 }
 
 function typesAreEqual(a: number[], b: number[]): boolean {

@@ -47,6 +47,9 @@ export const NodeType = {
   BindingProperty: 'BindingProperty',
   AssignmentPattern: 'AssignmentPattern',
   FunctionTypeAnnotation: 'FunctionTypeAnnotation',
+  TemplateLiteral: 'TemplateLiteral',
+  TaggedTemplateExpression: 'TaggedTemplateExpression',
+  TemplateElement: 'TemplateElement',
   TypeAliasDeclaration: 'TypeAliasDeclaration',
   AsExpression: 'AsExpression',
 } as const;
@@ -206,6 +209,8 @@ export type Expression =
   | TupleLiteral
   | IndexExpression
   | SuperExpression
+  | TemplateLiteral
+  | TaggedTemplateExpression
   | AsExpression;
 
 export interface BinaryExpression extends Node {
@@ -436,4 +441,39 @@ export interface UnionTypeAnnotation extends Node {
 
 export interface SuperExpression extends Node {
   type: typeof NodeType.SuperExpression;
+}
+
+/**
+ * Represents a single span in a template literal (the text between expressions).
+ * Contains both "cooked" (escape-processed) and "raw" (original source) values.
+ */
+export interface TemplateElement extends Node {
+  type: typeof NodeType.TemplateElement;
+  value: {
+    cooked: string;
+    raw: string;
+  };
+  /** True if this is the last element (tail) */
+  tail: boolean;
+}
+
+/**
+ * Represents an untagged template literal like `hello ${name}`.
+ * quasis contains the string parts, expressions contains the interpolated values.
+ * quasis.length === expressions.length + 1
+ */
+export interface TemplateLiteral extends Node {
+  type: typeof NodeType.TemplateLiteral;
+  quasis: TemplateElement[];
+  expressions: Expression[];
+}
+
+/**
+ * Represents a tagged template literal like html`<div>${name}</div>`.
+ * The tag is called with (strings: TemplateStringsArray, ...values: any[]).
+ */
+export interface TaggedTemplateExpression extends Node {
+  type: typeof NodeType.TaggedTemplateExpression;
+  tag: Expression;
+  quasi: TemplateLiteral;
 }

@@ -32,6 +32,9 @@ import {
   type ReturnStatement,
   type Statement,
   type StringLiteral,
+  type TaggedTemplateExpression,
+  type TemplateElement,
+  type TemplateLiteral,
   type TupleLiteral,
   type TuplePattern,
   type TupleTypeAnnotation,
@@ -561,6 +564,14 @@ export class Parser {
         const typeArguments = this.#parseTypeArguments();
         this.#consume(TokenType.LParen, "Expected '(' after type arguments.");
         expr = this.#finishCall(expr, typeArguments);
+      } else if (this.#isTemplateStart()) {
+        // Tagged template expression: tag`template`
+        const quasi = this.#parseTemplateLiteral();
+        expr = {
+          type: NodeType.TaggedTemplateExpression,
+          tag: expr,
+          quasi,
+        } as TaggedTemplateExpression;
       } else {
         break;
       }
@@ -683,10 +694,102 @@ export class Parser {
       this.#consume(TokenType.RParen, "Expected ')' after expression.");
       return expr;
     }
+    // Template literals (untagged)
+    if (this.#isTemplateStart()) {
+      return this.#parseTemplateLiteral();
+    }
 
     throw new Error(
       `Unexpected token: ${this.#peek().type} at line ${this.#peek().line}`,
     );
+  }
+
+  #isTemplateStart(): boolean {
+    const type = this.#peek().type;
+    return (
+      type === TokenType.NoSubstitutionTemplate ||
+      type === TokenType.TemplateHead
+    );
+  }
+
+  #parseTemplateLiteral(): TemplateLiteral {
+    const quasis: TemplateElement[] = [];
+    const expressions: Expression[] = [];
+
+    if (this.#match(TokenType.NoSubstitutionTemplate)) {
+      const token = this.#previous();
+      quasis.push({
+        type: NodeType.TemplateElement,
+        value: {
+          cooked: token.value,
+          raw: token.rawValue ?? token.value,
+        },
+        tail: true,
+      });
+      return {
+        type: NodeType.TemplateLiteral,
+        quasis,
+        expressions,
+      };
+    }
+
+    // Must be a TemplateHead (template with interpolation like `prefix ${)
+    this.#consume(
+      TokenType.TemplateHead,
+      'Expected template literal with interpolation (starting with backtick and containing ${)',
+    );
+    const headToken = this.#previous();
+    quasis.push({
+      type: NodeType.TemplateElement,
+      value: {
+        cooked: headToken.value,
+        raw: headToken.rawValue ?? headToken.value,
+      },
+      tail: false,
+    });
+
+    // Parse expressions and middle parts
+    while (!this.#isAtEnd()) {
+      // Parse the expression inside ${}
+      expressions.push(this.#parseExpression());
+
+      // After expression, we should see TemplateMiddle or TemplateTail
+      if (this.#match(TokenType.TemplateTail)) {
+        const tailToken = this.#previous();
+        quasis.push({
+          type: NodeType.TemplateElement,
+          value: {
+            cooked: tailToken.value,
+            raw: tailToken.rawValue ?? tailToken.value,
+          },
+          tail: true,
+        });
+        break;
+      }
+
+      if (this.#match(TokenType.TemplateMiddle)) {
+        const middleToken = this.#previous();
+        quasis.push({
+          type: NodeType.TemplateElement,
+          value: {
+            cooked: middleToken.value,
+            raw: middleToken.rawValue ?? middleToken.value,
+          },
+          tail: false,
+        });
+        continue;
+      }
+
+      throw new Error(
+        `Expected template middle or tail, got ${this.#peek().type}`,
+      );
+    }
+
+    return {
+      type: NodeType.TemplateLiteral,
+      quasis,
+      expressions,
+    };
   }
 
   #parseIdentifier(): Identifier {
