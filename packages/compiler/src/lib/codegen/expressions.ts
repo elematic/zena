@@ -1897,6 +1897,21 @@ function generateBinaryExpression(
     }
   }
 
+  // Check for reference equality
+  const isRefType = (t: number[]) =>
+    t.length > 0 && (t[0] === ValType.ref || t[0] === ValType.ref_null);
+
+  if (isRefType(leftType) && isRefType(rightType)) {
+    if (expr.operator === '==') {
+      body.push(Opcode.ref_eq);
+      return;
+    } else if (expr.operator === '!=') {
+      body.push(Opcode.ref_eq);
+      body.push(Opcode.i32_eqz);
+      return;
+    }
+  }
+
   switch (expr.operator) {
     case '+':
       body.push(Opcode.i32_add);
@@ -2706,16 +2721,46 @@ function generateTaggedTemplateExpression(
     ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
   ]);
 
-  // Generate the strings array
-  // Push each string element
+  // 1. Handle the strings array (with caching)
+  let globalIndex = ctx.templateLiteralGlobals.get(expr);
+  if (globalIndex === undefined) {
+    // Create a mutable global: (ref null stringArrayType)
+    // Init with ref.null
+    globalIndex = ctx.module.addGlobal(
+      [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(stringArrayTypeIndex),
+      ],
+      true, // mutable
+      [Opcode.ref_null, HeapType.none], // init expression
+    );
+    ctx.templateLiteralGlobals.set(expr, globalIndex);
+  }
+
+  // Check if global is null
+  body.push(Opcode.global_get);
+  body.push(...WasmModule.encodeSignedLEB128(globalIndex));
+  body.push(Opcode.ref_is_null);
+  body.push(Opcode.if);
+  body.push(ValType.void); // block type
+
+  // Create the strings array
   for (const quasi of quasis) {
     generateStringLiteralValue(ctx, quasi.value.cooked, body);
   }
-
-  // array.new_fixed with the number of strings
   body.push(0xfb, GcOpcode.array_new_fixed);
   body.push(...WasmModule.encodeSignedLEB128(stringArrayTypeIndex));
   body.push(...WasmModule.encodeSignedLEB128(quasis.length));
+
+  // Store in global
+  body.push(Opcode.global_set);
+  body.push(...WasmModule.encodeSignedLEB128(globalIndex));
+
+  body.push(Opcode.end); // end if
+
+  // Load the strings array from global
+  body.push(Opcode.global_get);
+  body.push(...WasmModule.encodeSignedLEB128(globalIndex));
 
   // Generate the values array
   if (expressions.length > 0) {

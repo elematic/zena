@@ -3,6 +3,7 @@ import {
   type FunctionExpression,
   type MixinDeclaration,
   type Program,
+  type TaggedTemplateExpression,
   type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
@@ -64,6 +65,9 @@ export class CodegenContext {
   public tupleTypes = new Map<string, number>(); // canonicalKey -> typeIndex
   public closureTypes = new Map<string, number>(); // signature -> structTypeIndex
   public closureStructs = new Map<number, {funcTypeIndex: number}>(); // structTypeIndex -> info
+
+  // Template Literals
+  public templateLiteralGlobals = new Map<TaggedTemplateExpression, number>();
 
   constructor(program: Program) {
     this.program = program;
