@@ -62,11 +62,11 @@ The compiler is implemented in TypeScript and follows a standard pipeline:
 
 The compiler supports intrinsics to map Zena methods directly to WASM instructions.
 
-- **Declaration**: Methods are marked with the `@intrinsic("op_name")` decorator.
+- **Declaration**: Methods are marked with the `@intrinsic("op_name")` decorator and must be declared using `declare` (no body).
 - **Restriction**: Only allowed in `zena:` modules.
 - **Processing**:
-  - **Parser**: Parses the decorator.
-  - **Checker**: Validates the decorator usage and ensures it's in a valid module.
+  - **Parser**: Parses the decorator and the `declare` keyword.
+  - **Checker**: Validates the decorator usage, ensures it's in a valid module, and enforces that declared methods have no body and are decorated.
   - **Codegen**:
     - `registerClass` extracts the intrinsic name and stores it in `ClassInfo`.
     - `generateCallExpression` checks if the method is intrinsic.

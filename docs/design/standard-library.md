@@ -656,9 +656,7 @@ a way to declare "native" or "intrinsic" methods in Zena source files.
 class Array<T> {
   // Maps to array.len instruction
   @intrinsic('array.len')
-  get length(): i32 {
-    return 0;
-  } // Body is ignored or used as fallback/stub
+  declare get length(): i32;
 
   // Implemented in Zena
   isEmpty(): boolean {
@@ -668,7 +666,8 @@ class Array<T> {
 ```
 
 The compiler's code generator will detect the `@intrinsic` marker and emit the
-corresponding WASM instruction instead of compiling the function body.
+corresponding WASM instruction. Methods marked with `@intrinsic` MUST be declared
+using the `declare` keyword and cannot have a body.
 
 **Note**: The `@intrinsic` decorator is currently restricted to modules within the `zena:` namespace (Standard Library) to prevent unsafe usage in user code.
 
@@ -688,12 +687,12 @@ corresponding WASM instruction instead of compiling the function body.
 
 In addition to the `@intrinsic` decorator, the compiler supports a set of global intrinsic functions. These are primarily used for bootstrapping the standard library and implementing language features. They are identified by the `__array_` prefix.
 
-| Function | Signature | Description | WASM Opcode |
-| :--- | :--- | :--- | :--- |
-| `__array_len` | `(array: Array<T>) => i32` | Returns the length of the array. | `array.len` |
-| `__array_get` | `(array: Array<T>, index: i32) => T` | Gets the element at the specified index. | `array.get` |
-| `__array_set` | `(array: Array<T>, index: i32, value: T) => void` | Sets the element at the specified index. | `array.set` |
-| `__array_new` | `(size: i32, default: T) => Array<T>` | Creates a new array of the specified size, filled with the default value. | `array.new` |
+| Function      | Signature                                         | Description                                                               | WASM Opcode |
+| :------------ | :------------------------------------------------ | :------------------------------------------------------------------------ | :---------- |
+| `__array_len` | `(array: Array<T>) => i32`                        | Returns the length of the array.                                          | `array.len` |
+| `__array_get` | `(array: Array<T>, index: i32) => T`              | Gets the element at the specified index.                                  | `array.get` |
+| `__array_set` | `(array: Array<T>, index: i32, value: T) => void` | Sets the element at the specified index.                                  | `array.set` |
+| `__array_new` | `(size: i32, default: T) => Array<T>`             | Creates a new array of the specified size, filled with the default value. | `array.new` |
 
 ---
 

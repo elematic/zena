@@ -524,6 +524,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
       isFinal: false,
       isAbstract: false,
       isStatic: false,
+      isDeclare: false,
     } as MethodDefinition);
   }
 
@@ -930,6 +931,7 @@ export function generateClassMethods(
       isFinal: false,
       isAbstract: false,
       isStatic: false,
+      isDeclare: false,
     } as MethodDefinition);
   }
 
@@ -976,6 +978,14 @@ export function generateClassMethods(
       }
 
       if (member.isAbstract) {
+        body.push(Opcode.unreachable);
+        body.push(Opcode.end);
+        ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+        ctx.popScope();
+        continue;
+      }
+
+      if (methodInfo.intrinsic) {
         body.push(Opcode.unreachable);
         body.push(Opcode.end);
         ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
@@ -1518,6 +1528,7 @@ export function instantiateClass(
       isFinal: false,
       isAbstract: false,
       isStatic: false,
+      isDeclare: false,
     } as MethodDefinition);
   }
 
@@ -1768,6 +1779,7 @@ function applyMixin(
       isFinal: false,
       isAbstract: false,
       isStatic: false,
+      isDeclare: false,
     } as MethodDefinition);
   }
 

@@ -870,6 +870,25 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         );
       }
 
+      if (member.isDeclare) {
+        const hasIntrinsic = member.decorators?.some(
+          (d) => d.name === 'intrinsic',
+        );
+        if (!hasIntrinsic) {
+          ctx.diagnostics.reportError(
+            `Declared method '${member.name.name}' must be decorated with @intrinsic.`,
+            DiagnosticCode.MissingDecorator,
+          );
+        }
+
+        if (member.body) {
+          ctx.diagnostics.reportError(
+            `Declared method '${member.name.name}' cannot have a body.`,
+            DiagnosticCode.UnexpectedBody,
+          );
+        }
+      }
+
       if (member.name.name === '#new') {
         if (classType.constructorType) {
           ctx.diagnostics.reportError(

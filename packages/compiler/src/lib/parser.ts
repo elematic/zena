@@ -1009,6 +1009,11 @@ export class Parser {
       decorators.push(this.#parseDecorator());
     }
 
+    let isDeclare = false;
+    if (this.#match(TokenType.Declare)) {
+      isDeclare = true;
+    }
+
     let isStatic = false;
     if (this.#match(TokenType.Static)) {
       isStatic = true;
@@ -1067,10 +1072,10 @@ export class Parser {
       }
 
       let body: BlockStatement | undefined;
-      if (isAbstract) {
+      if (isAbstract || isDeclare) {
         this.#consume(
           TokenType.Semi,
-          "Expected ';' after abstract method signature.",
+          `Expected ';' after ${isAbstract ? 'abstract' : 'declared'} method signature.`,
         );
       } else {
         this.#consume(TokenType.LBrace, "Expected '{' before method body.");
@@ -1086,6 +1091,7 @@ export class Parser {
         isFinal,
         isAbstract,
         isStatic,
+        isDeclare,
         decorators,
       };
     }

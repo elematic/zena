@@ -338,6 +338,7 @@ export interface MethodDefinition extends Node {
   isFinal: boolean;
   isAbstract: boolean;
   isStatic: boolean;
+  isDeclare: boolean;
   decorators?: Decorator[];
 }
 

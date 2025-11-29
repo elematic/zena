@@ -33,6 +33,8 @@ export const DiagnosticCode = {
   ExtensionClassField: 2017,
   DecoratorNotAllowed: 2018,
   UnknownIntrinsic: 2019,
+  MissingDecorator: 2020,
+  UnexpectedBody: 2021,
 
   // General
   UnknownError: 9999,
