@@ -3,10 +3,16 @@ import {
   type ClassDeclaration,
   type FunctionExpression,
   type MixinDeclaration,
+  type Node,
   type Program,
   type TaggedTemplateExpression,
   type TypeAnnotation,
 } from '../ast.js';
+import {
+  DiagnosticBag,
+  DiagnosticCode,
+  type DiagnosticLocation,
+} from '../diagnostics.js';
 import {WasmModule} from '../emitter.js';
 import {ValType} from '../wasm.js';
 import type {ClassInfo, InterfaceInfo, LocalInfo} from './types.js';
@@ -14,6 +20,10 @@ import type {ClassInfo, InterfaceInfo, LocalInfo} from './types.js';
 export class CodegenContext {
   public module: WasmModule;
   public program: Program;
+  public diagnostics = new DiagnosticBag();
+
+  /** File name used for diagnostic locations */
+  public fileName = '<anonymous>';
 
   // Symbol tables
   public scopes: Map<string, LocalInfo>[] = [];
@@ -233,6 +243,43 @@ export class CodegenContext {
     return (
       !!this.wellKnownTypes.String &&
       (type as any).name === this.wellKnownTypes.String.name.name
+    );
+  }
+
+  /**
+   * Create a DiagnosticLocation from an AST node's source location.
+   */
+  public locationFromNode(node: Node): DiagnosticLocation | undefined {
+    if (!node.loc) return undefined;
+    return {
+      file: this.fileName,
+      start: node.loc.start,
+      length: node.loc.end - node.loc.start,
+      line: node.loc.line,
+      column: node.loc.column,
+    };
+  }
+
+  /**
+   * Report an error diagnostic, optionally with location from an AST node.
+   */
+  public reportError(message: string, code: DiagnosticCode, node?: Node): void {
+    this.diagnostics.reportError(
+      message,
+      code,
+      node ? this.locationFromNode(node) : undefined,
+    );
+  }
+
+  /**
+   * Report an internal compiler error. This should be used for unexpected
+   * states that indicate a bug in the compiler.
+   */
+  public reportInternalError(message: string, node?: Node): void {
+    this.reportError(
+      `Internal Compiler Error: ${message}`,
+      DiagnosticCode.InternalCompilerError,
+      node,
     );
   }
 }

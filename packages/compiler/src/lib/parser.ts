@@ -31,6 +31,7 @@ import {
   type RecordPattern,
   type RecordTypeAnnotation,
   type ReturnStatement,
+  type SourceLocation,
   type Statement,
   type StringLiteral,
   type TaggedTemplateExpression,
@@ -73,6 +74,8 @@ export class Parser {
   }
 
   #parseStatement(): Statement {
+    const startToken = this.#peek();
+
     if (this.#match(TokenType.Import) || this.#match(TokenType.From)) {
       throw new Error('Imports must appear at the top of the file.');
     }
@@ -80,44 +83,84 @@ export class Parser {
       return this.#parseDecoratedStatement();
     }
     if (this.#match(TokenType.Declare)) {
-      return this.#parseDeclareFunction();
+      return this.#parseDeclareFunction(
+        undefined,
+        undefined,
+        false,
+        startToken,
+      );
     }
     if (this.#match(TokenType.Export)) {
       if (this.#match(TokenType.Final)) {
         if (this.#match(TokenType.Extension)) {
           this.#consume(TokenType.Class, "Expected 'class' after 'extension'.");
-          return this.#parseClassDeclaration(true, true, false, true);
+          return this.#parseClassDeclaration(
+            true,
+            true,
+            false,
+            true,
+            startToken,
+          );
         }
         this.#consume(TokenType.Class, "Expected 'class' after 'final'.");
-        return this.#parseClassDeclaration(true, true);
+        return this.#parseClassDeclaration(
+          true,
+          true,
+          false,
+          false,
+          startToken,
+        );
       }
       if (this.#match(TokenType.Abstract)) {
         this.#consume(TokenType.Class, "Expected 'class' after 'abstract'.");
-        return this.#parseClassDeclaration(true, false, true);
+        return this.#parseClassDeclaration(
+          true,
+          false,
+          true,
+          false,
+          startToken,
+        );
       }
       if (this.#match(TokenType.Extension)) {
         this.#consume(TokenType.Class, "Expected 'class' after 'extension'.");
-        return this.#parseClassDeclaration(true, false, false, true);
+        return this.#parseClassDeclaration(
+          true,
+          false,
+          false,
+          true,
+          startToken,
+        );
       }
       if (this.#match(TokenType.Class)) {
-        return this.#parseClassDeclaration(true);
+        return this.#parseClassDeclaration(
+          true,
+          false,
+          false,
+          false,
+          startToken,
+        );
       }
       if (this.#match(TokenType.Interface)) {
-        return this.#parseInterfaceDeclaration(true);
+        return this.#parseInterfaceDeclaration(true, startToken);
       }
       if (this.#match(TokenType.Mixin)) {
-        return this.#parseMixinDeclaration(true);
+        return this.#parseMixinDeclaration(true, startToken);
       }
       if (this.#match(TokenType.Type) || this.#match(TokenType.Distinct)) {
-        return this.#parseTypeAliasDeclaration(true);
+        return this.#parseTypeAliasDeclaration(true, startToken);
       }
       if (this.#match(TokenType.Declare)) {
-        return this.#parseDeclareFunction(undefined, undefined, true);
+        return this.#parseDeclareFunction(
+          undefined,
+          undefined,
+          true,
+          startToken,
+        );
       }
-      return this.#parseVariableDeclaration(true);
+      return this.#parseVariableDeclaration(true, true, startToken);
     }
     if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
-      return this.#parseVariableDeclaration(false);
+      return this.#parseVariableDeclaration(false, true, startToken);
     }
     if (this.#match(TokenType.Return)) {
       return this.#parseReturnStatement();
@@ -133,27 +176,33 @@ export class Parser {
     }
     if (this.#match(TokenType.Final)) {
       this.#consume(TokenType.Class, "Expected 'class' after 'final'.");
-      return this.#parseClassDeclaration(false, true);
+      return this.#parseClassDeclaration(false, true, false, false, startToken);
     }
     if (this.#match(TokenType.Abstract)) {
       this.#consume(TokenType.Class, "Expected 'class' after 'abstract'.");
-      return this.#parseClassDeclaration(false, false, true);
+      return this.#parseClassDeclaration(false, false, true, false, startToken);
     }
     if (this.#match(TokenType.Extension)) {
       this.#consume(TokenType.Class, "Expected 'class' after 'extension'.");
-      return this.#parseClassDeclaration(false, false, false, true);
+      return this.#parseClassDeclaration(false, false, false, true, startToken);
     }
     if (this.#match(TokenType.Class)) {
-      return this.#parseClassDeclaration(false);
+      return this.#parseClassDeclaration(
+        false,
+        false,
+        false,
+        false,
+        startToken,
+      );
     }
     if (this.#match(TokenType.Interface)) {
-      return this.#parseInterfaceDeclaration(false);
+      return this.#parseInterfaceDeclaration(false, startToken);
     }
     if (this.#match(TokenType.Mixin)) {
-      return this.#parseMixinDeclaration(false);
+      return this.#parseMixinDeclaration(false, startToken);
     }
     if (this.#match(TokenType.Type) || this.#match(TokenType.Distinct)) {
-      return this.#parseTypeAliasDeclaration(false);
+      return this.#parseTypeAliasDeclaration(false, startToken);
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseBlockStatement();
@@ -161,7 +210,11 @@ export class Parser {
     return this.#parseExpressionStatement();
   }
 
-  #parseTypeAliasDeclaration(exported: boolean): TypeAliasDeclaration {
+  #parseTypeAliasDeclaration(
+    exported: boolean,
+    startToken?: Token,
+  ): TypeAliasDeclaration {
+    const actualStartToken = startToken || this.#previous();
     let isDistinct = false;
     if (
       this.#check(TokenType.Distinct) ||
@@ -179,6 +232,7 @@ export class Parser {
     this.#consume(TokenType.Equals, "Expected '=' after type alias name.");
     const typeAnnotation = this.#parseTypeAnnotation();
     this.#consume(TokenType.Semi, "Expected ';' after type alias declaration.");
+    const endToken = this.#previous();
     return {
       type: NodeType.TypeAliasDeclaration,
       name,
@@ -186,12 +240,14 @@ export class Parser {
       typeAnnotation,
       exported,
       isDistinct,
+      loc: this.#loc(actualStartToken, endToken),
     };
   }
 
   #parseVariableDeclaration(
     exported: boolean,
     consumeSemi: boolean = true,
+    startToken?: Token,
   ): VariableDeclaration {
     let kindToken: Token;
     if (exported) {
@@ -203,6 +259,8 @@ export class Parser {
     } else {
       kindToken = this.#previous();
     }
+
+    const actualStartToken = startToken || kindToken;
 
     const kind = kindToken.type === TokenType.Let ? 'let' : 'var';
 
@@ -218,6 +276,7 @@ export class Parser {
     if (consumeSemi) {
       this.#consume(TokenType.Semi, "Expected ';' after variable declaration.");
     }
+    const endToken = this.#previous();
 
     return {
       type: NodeType.VariableDeclaration,
@@ -226,6 +285,7 @@ export class Parser {
       typeAnnotation,
       init,
       exported,
+      loc: this.#loc(actualStartToken, endToken),
     };
   }
 
@@ -304,11 +364,14 @@ export class Parser {
   }
 
   #parseExpressionStatement(): Statement {
+    const startToken = this.#peek();
     const expression = this.#parseExpression();
     this.#consume(TokenType.Semi, "Expected ';' after expression.");
+    const endToken = this.#previous();
     return {
       type: NodeType.ExpressionStatement,
       expression,
+      loc: this.#loc(startToken, endToken),
     };
   }
 
@@ -330,6 +393,7 @@ export class Parser {
           type: NodeType.AssignmentExpression,
           left: expr as Identifier | MemberExpression | IndexExpression,
           value,
+          loc: this.#loc(expr, value),
         };
       }
       throw new Error('Invalid assignment target.');
@@ -376,6 +440,7 @@ export class Parser {
   }
 
   #parseArrowFunctionDefinition(): FunctionExpression {
+    const startToken = this.#peek();
     const typeParameters = this.#parseTypeParameters();
     this.#consume(TokenType.LParen, "Expected '('");
     const params: Parameter[] = [];
@@ -414,6 +479,7 @@ export class Parser {
       params,
       returnType,
       body,
+      loc: this.#loc(startToken, body),
     };
   }
 
@@ -428,6 +494,7 @@ export class Parser {
         left,
         operator,
         right,
+        loc: this.#loc(left, right),
       };
     }
 
@@ -452,6 +519,7 @@ export class Parser {
         left,
         operator,
         right,
+        loc: this.#loc(left, right),
       };
     }
 
@@ -467,6 +535,7 @@ export class Parser {
         type: NodeType.AsExpression,
         expression: left,
         typeAnnotation,
+        loc: this.#loc(left, typeAnnotation),
       };
     }
 
@@ -484,6 +553,7 @@ export class Parser {
         left,
         operator,
         right,
+        loc: this.#loc(left, right),
       };
     }
 
@@ -501,6 +571,7 @@ export class Parser {
         left,
         operator,
         right,
+        loc: this.#loc(left, right),
       };
     }
 
@@ -509,6 +580,7 @@ export class Parser {
 
   #parseCall(): Expression {
     if (this.#match(TokenType.New)) {
+      const startToken = this.#previous();
       const callee = this.#parseIdentifier();
       const typeArguments = this.#parseTypeArguments();
       this.#consume(TokenType.LParen, "Expected '(' after class name.");
@@ -519,12 +591,14 @@ export class Parser {
         } while (this.#match(TokenType.Comma));
       }
       this.#consume(TokenType.RParen, "Expected ')' after arguments.");
+      const endToken = this.#previous();
 
       let expr: Expression = {
         type: NodeType.NewExpression,
         callee,
         typeArguments,
         arguments: args,
+        loc: this.#loc(startToken, endToken),
       };
 
       while (true) {
@@ -532,7 +606,11 @@ export class Parser {
           let property: Identifier;
           if (this.#match(TokenType.Hash)) {
             const id = this.#parseIdentifier();
-            property = {type: NodeType.Identifier, name: '#' + id.name};
+            property = {
+              type: NodeType.Identifier,
+              name: '#' + id.name,
+              loc: id.loc,
+            };
           } else {
             property = this.#parseIdentifier();
           }
@@ -540,6 +618,7 @@ export class Parser {
             type: NodeType.MemberExpression,
             object: expr,
             property,
+            loc: this.#loc(expr, property),
           };
         } else {
           break;
@@ -557,7 +636,11 @@ export class Parser {
         let property: Identifier;
         if (this.#match(TokenType.Hash)) {
           const id = this.#parseIdentifier();
-          property = {type: NodeType.Identifier, name: '#' + id.name};
+          property = {
+            type: NodeType.Identifier,
+            name: '#' + id.name,
+            loc: id.loc,
+          };
         } else {
           property = this.#parseIdentifier();
         }
@@ -565,14 +648,17 @@ export class Parser {
           type: NodeType.MemberExpression,
           object: expr,
           property,
+          loc: this.#loc(expr, property),
         };
       } else if (this.#match(TokenType.LBracket)) {
         const index = this.#parseExpression();
         this.#consume(TokenType.RBracket, "Expected ']' after index.");
+        const endToken = this.#previous();
         expr = {
           type: NodeType.IndexExpression,
           object: expr,
           index,
+          loc: this.#loc(expr, endToken),
         };
       } else if (this.#check(TokenType.Less) && this.#isGenericCall()) {
         const typeArguments = this.#parseTypeArguments();
@@ -585,6 +671,7 @@ export class Parser {
           type: NodeType.TaggedTemplateExpression,
           tag: expr,
           quasi,
+          loc: this.#loc(expr, quasi),
         } as TaggedTemplateExpression;
       } else {
         break;
@@ -645,23 +732,28 @@ export class Parser {
       } while (this.#match(TokenType.Comma));
     }
     this.#consume(TokenType.RParen, "Expected ')' after arguments.");
+    const endToken = this.#previous();
 
     return {
       type: NodeType.CallExpression,
       callee,
       typeArguments,
       arguments: args,
+      loc: this.#loc(callee, endToken),
     };
   }
 
   #parsePrimary(): Expression {
     if (this.#match(TokenType.Super)) {
-      return {type: NodeType.SuperExpression};
+      const token = this.#previous();
+      return {type: NodeType.SuperExpression, loc: this.#locFromToken(token)};
     }
     if (this.#match(TokenType.This)) {
-      return {type: NodeType.ThisExpression};
+      const token = this.#previous();
+      return {type: NodeType.ThisExpression, loc: this.#locFromToken(token)};
     }
     if (this.#match(TokenType.Hash)) {
+      const startToken = this.#previous();
       if (this.#match(TokenType.LBracket)) {
         const elements: Expression[] = [];
         if (!this.#check(TokenType.RBracket)) {
@@ -670,7 +762,12 @@ export class Parser {
           } while (this.#match(TokenType.Comma));
         }
         this.#consume(TokenType.RBracket, "Expected ']' after array elements.");
-        return {type: NodeType.ArrayLiteral, elements};
+        const endToken = this.#previous();
+        return {
+          type: NodeType.ArrayLiteral,
+          elements,
+          loc: this.#locFromRange(startToken, endToken),
+        };
       }
       throw new Error("Expected '[' after '#'.");
     }
@@ -680,22 +777,44 @@ export class Parser {
         type: NodeType.NumberLiteral,
         value: parseFloat(token.value),
         raw: token.value,
+        loc: this.#locFromToken(token),
       };
     }
     if (this.#match(TokenType.String)) {
-      return {type: NodeType.StringLiteral, value: this.#previous().value};
+      const token = this.#previous();
+      return {
+        type: NodeType.StringLiteral,
+        value: token.value,
+        loc: this.#locFromToken(token),
+      };
     }
     if (this.#match(TokenType.True)) {
-      return {type: NodeType.BooleanLiteral, value: true};
+      const token = this.#previous();
+      return {
+        type: NodeType.BooleanLiteral,
+        value: true,
+        loc: this.#locFromToken(token),
+      };
     }
     if (this.#match(TokenType.False)) {
-      return {type: NodeType.BooleanLiteral, value: false};
+      const token = this.#previous();
+      return {
+        type: NodeType.BooleanLiteral,
+        value: false,
+        loc: this.#locFromToken(token),
+      };
     }
     if (this.#match(TokenType.Null)) {
-      return {type: NodeType.NullLiteral};
+      const token = this.#previous();
+      return {type: NodeType.NullLiteral, loc: this.#locFromToken(token)};
     }
     if (this.#match(TokenType.Identifier)) {
-      return {type: NodeType.Identifier, name: this.#previous().value};
+      const token = this.#previous();
+      return {
+        type: NodeType.Identifier,
+        name: token.value,
+        loc: this.#locFromToken(token),
+      };
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseRecordLiteral();
@@ -727,6 +846,7 @@ export class Parser {
   }
 
   #parseTemplateLiteral(): TemplateLiteral {
+    const startToken = this.#peek();
     const quasis: TemplateElement[] = [];
     const expressions: Expression[] = [];
 
@@ -739,11 +859,13 @@ export class Parser {
           raw: token.rawValue ?? token.value,
         },
         tail: true,
+        loc: this.#locFromToken(token),
       });
       return {
         type: NodeType.TemplateLiteral,
         quasis,
         expressions,
+        loc: this.#locFromToken(token),
       };
     }
 
@@ -760,6 +882,7 @@ export class Parser {
         raw: headToken.rawValue ?? headToken.value,
       },
       tail: false,
+      loc: this.#locFromToken(headToken),
     });
 
     // Parse expressions and middle parts
@@ -777,6 +900,7 @@ export class Parser {
             raw: tailToken.rawValue ?? tailToken.value,
           },
           tail: true,
+          loc: this.#locFromToken(tailToken),
         });
         break;
       }
@@ -790,6 +914,7 @@ export class Parser {
             raw: middleToken.rawValue ?? middleToken.value,
           },
           tail: false,
+          loc: this.#locFromToken(middleToken),
         });
         continue;
       }
@@ -799,33 +924,45 @@ export class Parser {
       );
     }
 
+    const endToken = this.#previous();
+
     return {
       type: NodeType.TemplateLiteral,
       quasis,
       expressions,
+      loc: this.#loc(startToken, endToken),
     };
   }
 
   #parseIdentifier(): Identifier {
     if (this.#match(TokenType.Identifier)) {
-      return {type: NodeType.Identifier, name: this.#previous().value};
+      const token = this.#previous();
+      return {
+        type: NodeType.Identifier,
+        name: token.value,
+        loc: this.#locFromToken(token),
+      };
     }
     throw new Error(`Expected identifier, got ${this.#peek().type}`);
   }
 
   #parseReturnStatement(): ReturnStatement {
+    const startToken = this.#previous();
     let argument: Expression | undefined;
     if (!this.#check(TokenType.Semi)) {
       argument = this.#parseExpression();
     }
     this.#consume(TokenType.Semi, "Expected ';' after return value.");
+    const endToken = this.#previous();
     return {
       type: NodeType.ReturnStatement,
       argument,
+      loc: this.#loc(startToken, endToken),
     };
   }
 
   #parseIfStatement(): IfStatement {
+    const startToken = this.#previous();
     this.#consume(TokenType.LParen, "Expected '(' after 'if'.");
     const test = this.#parseExpression();
     this.#consume(TokenType.RParen, "Expected ')' after if condition.");
@@ -842,10 +979,12 @@ export class Parser {
       test,
       consequent,
       alternate,
+      loc: this.#loc(startToken, alternate || consequent),
     };
   }
 
   #parseWhileStatement(): WhileStatement {
+    const startToken = this.#previous();
     this.#consume(TokenType.LParen, "Expected '(' after 'while'.");
     const test = this.#parseExpression();
     this.#consume(TokenType.RParen, "Expected ')' after while condition.");
@@ -856,10 +995,12 @@ export class Parser {
       type: NodeType.WhileStatement,
       test,
       body,
+      loc: this.#loc(startToken, body),
     };
   }
 
   #parseForStatement(): ForStatement {
+    const startToken = this.#previous();
     this.#consume(TokenType.LParen, "Expected '(' after 'for'.");
 
     // Parse init (optional variable declaration or expression)
@@ -899,6 +1040,7 @@ export class Parser {
       test,
       update,
       body,
+      loc: this.#loc(startToken, body),
     };
   }
 
@@ -907,7 +1049,9 @@ export class Parser {
     isFinal: boolean = false,
     isAbstract: boolean = false,
     isExtension: boolean = false,
+    startToken?: Token,
   ): ClassDeclaration {
+    const actualStartToken = startToken || this.#previous();
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
 
@@ -951,6 +1095,7 @@ export class Parser {
     }
 
     this.#consume(TokenType.RBrace, "Expected '}' after class body.");
+    const endToken = this.#previous();
 
     return {
       type: NodeType.ClassDeclaration,
@@ -965,10 +1110,15 @@ export class Parser {
       isAbstract,
       isExtension,
       onType,
+      loc: this.#loc(actualStartToken, endToken),
     };
   }
 
-  #parseMixinDeclaration(exported: boolean): MixinDeclaration {
+  #parseMixinDeclaration(
+    exported: boolean,
+    startToken?: Token,
+  ): MixinDeclaration {
+    const actualStartToken = startToken || this.#previous();
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
 
@@ -993,6 +1143,7 @@ export class Parser {
     }
 
     this.#consume(TokenType.RBrace, "Expected '}' after mixin body.");
+    const endToken = this.#previous();
 
     return {
       type: NodeType.MixinDeclaration,
@@ -1002,6 +1153,7 @@ export class Parser {
       mixins: mixins.length > 0 ? mixins : undefined,
       body,
       exported,
+      loc: this.#loc(actualStartToken, endToken),
     };
   }
 
@@ -1009,8 +1161,9 @@ export class Parser {
     | FieldDefinition
     | MethodDefinition
     | AccessorDeclaration {
+    const startToken = this.#peek();
     const decorators: Decorator[] = [];
-    while (this.#match(TokenType.At)) {
+    while (this.#check(TokenType.At)) {
       decorators.push(this.#parseDecorator());
     }
 
@@ -1066,6 +1219,7 @@ export class Parser {
             type: NodeType.Parameter,
             name: paramName,
             typeAnnotation,
+            loc: this.#loc(paramName, typeAnnotation),
           });
         } while (this.#match(TokenType.Comma));
       }
@@ -1098,6 +1252,7 @@ export class Parser {
         isStatic,
         isDeclare,
         decorators,
+        loc: this.#loc(startToken, body || this.#previous()),
       };
     }
 
@@ -1122,6 +1277,7 @@ export class Parser {
         isFinal,
         isStatic,
         decorators,
+        startToken,
       );
     }
 
@@ -1141,6 +1297,7 @@ export class Parser {
       isStatic,
       isDeclare,
       decorators,
+      loc: this.#loc(startToken, this.#previous()),
     };
   }
 
@@ -1150,6 +1307,7 @@ export class Parser {
     isFinal: boolean,
     isStatic: boolean,
     decorators: Decorator[],
+    startToken: Token,
   ): AccessorDeclaration {
     let getter: BlockStatement | undefined;
     let setter: {param: Identifier; body: BlockStatement} | undefined;
@@ -1191,10 +1349,15 @@ export class Parser {
       isFinal,
       isStatic,
       decorators,
+      loc: this.#loc(startToken, this.#previous()),
     };
   }
 
-  #parseInterfaceDeclaration(exported: boolean): InterfaceDeclaration {
+  #parseInterfaceDeclaration(
+    exported: boolean,
+    startToken?: Token,
+  ): InterfaceDeclaration {
+    const actualStartToken = startToken || this.#previous();
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
 
@@ -1213,6 +1376,7 @@ export class Parser {
     }
 
     this.#consume(TokenType.RBrace, "Expected '}' after interface body.");
+    const endToken = this.#previous();
 
     return {
       type: NodeType.InterfaceDeclaration,
@@ -1221,6 +1385,7 @@ export class Parser {
       extends: extendsList.length > 0 ? extendsList : undefined,
       body,
       exported,
+      loc: this.#loc(actualStartToken, endToken),
     };
   }
 
@@ -1277,7 +1442,8 @@ export class Parser {
     if (this.#match(TokenType.Less)) {
       const params: TypeParameter[] = [];
       do {
-        const name = this.#parseIdentifier().name;
+        const id = this.#parseIdentifier();
+        const name = id.name;
         let defaultValue: TypeAnnotation | undefined;
         if (this.#match(TokenType.Equals)) {
           defaultValue = this.#parseTypeAnnotation();
@@ -1286,6 +1452,7 @@ export class Parser {
           type: NodeType.TypeParameter,
           name,
           default: defaultValue,
+          loc: this.#loc(id, defaultValue || id),
         });
       } while (this.#match(TokenType.Comma));
       this.#consume(TokenType.Greater, "Expected '>' after type parameters.");
@@ -1307,6 +1474,7 @@ export class Parser {
   }
 
   #parseTypeAnnotation(): TypeAnnotation {
+    const startToken = this.#peek();
     let left: TypeAnnotation;
     if (this.#match(TokenType.LParen)) {
       const params: TypeAnnotation[] = [];
@@ -1330,11 +1498,12 @@ export class Parser {
         type: NodeType.FunctionTypeAnnotation,
         params,
         returnType,
+        loc: this.#loc(startToken, returnType),
       };
     } else if (this.#match(TokenType.LBrace)) {
-      left = this.#parseRecordTypeAnnotation();
+      left = this.#parseRecordTypeAnnotation(this.#previous());
     } else if (this.#match(TokenType.LBracket)) {
-      left = this.#parseTupleTypeAnnotation();
+      left = this.#parseTupleTypeAnnotation(this.#previous());
     } else {
       left = this.#parseNamedTypeAnnotation();
     }
@@ -1343,24 +1512,26 @@ export class Parser {
       const types: TypeAnnotation[] = [left];
       do {
         if (this.#match(TokenType.LBrace)) {
-          types.push(this.#parseRecordTypeAnnotation());
+          types.push(this.#parseRecordTypeAnnotation(this.#previous()));
         } else if (this.#match(TokenType.LBracket)) {
-          types.push(this.#parseTupleTypeAnnotation());
+          types.push(this.#parseTupleTypeAnnotation(this.#previous()));
         } else {
           types.push(this.#parseNamedTypeAnnotation());
         }
       } while (this.#match(TokenType.Pipe));
 
+      const lastType = types[types.length - 1];
       return {
         type: NodeType.UnionTypeAnnotation,
         types,
+        loc: this.#loc(left, lastType),
       };
     }
 
     return left;
   }
 
-  #parseRecordTypeAnnotation(): RecordTypeAnnotation {
+  #parseRecordTypeAnnotation(startToken: Token): RecordTypeAnnotation {
     const properties: PropertySignature[] = [];
     if (!this.#check(TokenType.RBrace)) {
       do {
@@ -1371,17 +1542,20 @@ export class Parser {
           type: NodeType.PropertySignature,
           name,
           typeAnnotation,
+          loc: this.#loc(name, typeAnnotation),
         });
       } while (this.#match(TokenType.Comma));
     }
     this.#consume(TokenType.RBrace, "Expected '}'");
+    const endToken = this.#previous();
     return {
       type: NodeType.RecordTypeAnnotation,
       properties,
+      loc: this.#loc(startToken, endToken),
     };
   }
 
-  #parseTupleTypeAnnotation(): TupleTypeAnnotation {
+  #parseTupleTypeAnnotation(startToken: Token): TupleTypeAnnotation {
     const elementTypes: TypeAnnotation[] = [];
     if (!this.#check(TokenType.RBracket)) {
       do {
@@ -1389,9 +1563,11 @@ export class Parser {
       } while (this.#match(TokenType.Comma));
     }
     this.#consume(TokenType.RBracket, "Expected ']'");
+    const endToken = this.#previous();
     return {
       type: NodeType.TupleTypeAnnotation,
       elementTypes,
+      loc: this.#loc(startToken, endToken),
     };
   }
 
@@ -1431,10 +1607,13 @@ export class Parser {
   }
 
   #parseNamedTypeAnnotation(): NamedTypeAnnotation {
+    let startToken: Token;
     let name: string;
     if (this.#match(TokenType.Null)) {
+      startToken = this.#previous();
       name = 'null';
     } else {
+      startToken = this.#peek();
       name = this.#parseIdentifier().name;
     }
     const typeArguments = this.#parseTypeArguments();
@@ -1442,17 +1621,21 @@ export class Parser {
       type: NodeType.TypeAnnotation,
       name,
       typeArguments,
+      loc: this.#loc(startToken, this.#previous()),
     };
   }
   #parseBlockStatement(): BlockStatement {
+    const startToken = this.#previous();
     const body: Statement[] = [];
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       body.push(this.#parseStatement());
     }
     this.#consume(TokenType.RBrace, "Expected '}' after block.");
+    const endToken = this.#previous();
     return {
       type: NodeType.BlockStatement,
       body,
+      loc: this.#loc(startToken, endToken),
     };
   }
 
@@ -1486,7 +1669,9 @@ export class Parser {
     externalModule?: string,
     externalName?: string,
     exported = false,
+    startToken?: Token,
   ): DeclareFunction {
+    const actualStartToken = startToken || this.#previous();
     this.#consume(TokenType.Function, "Expected 'function' after 'declare'");
     const name = this.#parseIdentifier();
 
@@ -1510,6 +1695,7 @@ export class Parser {
     const returnType = this.#parseTypeAnnotation();
 
     this.#consume(TokenType.Semi, "Expected ';' after function declaration");
+    const endToken = this.#previous();
 
     return {
       type: NodeType.DeclareFunction,
@@ -1519,19 +1705,23 @@ export class Parser {
       externalModule,
       externalName,
       exported,
+      loc: this.#loc(actualStartToken, endToken),
     };
   }
 
   #parseImportDeclaration(): ImportDeclaration {
+    const startToken = this.#peek();
     if (this.#match(TokenType.Import)) {
       const imports = this.#parseImportSpecifiers();
       this.#consume(TokenType.From, "Expected 'from'.");
       const moduleSpecifier = this.#parseStringLiteral();
       this.#consume(TokenType.Semi, "Expected ';'.");
+      const endToken = this.#previous();
       return {
         type: NodeType.ImportDeclaration,
         moduleSpecifier,
         imports,
+        loc: this.#loc(startToken, endToken),
       };
     }
 
@@ -1540,10 +1730,12 @@ export class Parser {
       this.#consume(TokenType.Import, "Expected 'import'.");
       const imports = this.#parseImportSpecifiers();
       this.#consume(TokenType.Semi, "Expected ';'.");
+      const endToken = this.#previous();
       return {
         type: NodeType.ImportDeclaration,
         moduleSpecifier,
         imports,
+        loc: this.#loc(startToken, endToken),
       };
     }
 
@@ -1564,6 +1756,7 @@ export class Parser {
           type: NodeType.ImportSpecifier,
           imported,
           local,
+          loc: this.#loc(imported, local),
         });
       } while (this.#match(TokenType.Comma));
     }
@@ -1580,6 +1773,7 @@ export class Parser {
   }
 
   #parseDecorator(): Decorator {
+    const startToken = this.#consume(TokenType.At, "Expected '@'");
     const name = this.#parseIdentifier().name;
     const args: StringLiteral[] = [];
     if (this.#match(TokenType.LParen)) {
@@ -1598,6 +1792,7 @@ export class Parser {
       type: NodeType.Decorator,
       name,
       args,
+      loc: this.#loc(startToken, this.#previous()),
     };
   }
 
@@ -1643,5 +1838,73 @@ export class Parser {
     throw new Error(
       message + ` Got ${this.#peek().type} at line ${this.#peek().line}`,
     );
+  }
+
+  /**
+   * Create a SourceLocation from a single token.
+   */
+  #locFromToken(token: Token): SourceLocation {
+    return {
+      line: token.line,
+      column: token.column,
+      start: token.start,
+      end: token.end,
+    };
+  }
+
+  /**
+   * Create a SourceLocation spanning from a start token to the previous token
+   * (useful for nodes that have already consumed their end token).
+   */
+  #locFromRange(startToken: Token, endToken: Token): SourceLocation {
+    return {
+      line: startToken.line,
+      column: startToken.column,
+      start: startToken.start,
+      end: endToken.end,
+    };
+  }
+
+  /**
+   * Create a SourceLocation spanning from a start token/node to an end token/node.
+   */
+  #loc(
+    start: Token | {loc?: SourceLocation},
+    end: Token | {loc?: SourceLocation},
+  ): SourceLocation | undefined {
+    let startLoc: SourceLocation | undefined;
+    if ('loc' in start) {
+      startLoc = start.loc;
+    } else {
+      const token = start as Token;
+      startLoc = {
+        line: token.line,
+        column: token.column,
+        start: token.start,
+        end: token.end,
+      };
+    }
+
+    let endLoc: SourceLocation | undefined;
+    if ('loc' in end) {
+      endLoc = end.loc;
+    } else {
+      const token = end as Token;
+      endLoc = {
+        line: token.line,
+        column: token.column,
+        start: token.start,
+        end: token.end,
+      };
+    }
+
+    if (!startLoc || !endLoc) return undefined;
+
+    return {
+      line: startLoc.line,
+      column: startLoc.column,
+      start: startLoc.start,
+      end: endLoc.end,
+    };
   }
 }

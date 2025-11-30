@@ -24,6 +24,7 @@ import {
   type TupleLiteral,
   type TypeAnnotation,
 } from '../ast.js';
+import {CompilerError, DiagnosticCode} from '../diagnostics.js';
 import {WasmModule} from '../emitter.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import {analyzeCaptures} from './captures.js';
@@ -180,12 +181,15 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       return inferType(ctx, assignExpr.value);
     }
     case NodeType.Identifier: {
-      const name = (expr as Identifier).name;
+      const idExpr = expr as Identifier;
+      const name = idExpr.name;
       const local = ctx.getLocal(name);
       if (local) return local.type;
       const global = ctx.getGlobal(name);
       if (global) return global.type;
-      throw new Error(`Unknown identifier: ${name}`);
+      const message = `Unknown identifier: ${name}`;
+      ctx.reportError(message, DiagnosticCode.UnknownVariable, idExpr);
+      throw new CompilerError(message);
     }
     case NodeType.MemberExpression: {
       const memberExpr = expr as MemberExpression;
@@ -202,9 +206,9 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
 
       const structTypeIndex = getHeapTypeIndex(ctx, objectType);
       if (structTypeIndex === -1) {
-        throw new Error(
-          `Cannot access member '${memberExpr.property.name}' on non-heap type.`,
-        );
+        const message = `Cannot access member '${memberExpr.property.name}' on non-heap type.`;
+        ctx.reportError(message, DiagnosticCode.InvalidExpression, memberExpr);
+        throw new CompilerError(message);
       }
 
       const fieldName = memberExpr.property.name;
@@ -232,9 +236,9 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
           if (fieldInfo) {
             return fieldInfo.type;
           }
-          throw new Error(
-            `Field '${fieldName}' not found in interface (or is a method).`,
-          );
+          const message = `Field '${fieldName}' not found in interface (or is a method).`;
+          ctx.reportError(message, DiagnosticCode.UnknownField, memberExpr);
+          throw new CompilerError(message);
         }
 
         // Check Record
@@ -257,7 +261,9 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
             return field.typeStr.split(',').map(Number);
           }
         }
-        throw new Error(`Unknown struct type for member access: ${fieldName}`);
+        const message = `Unknown struct type for member access: ${fieldName}`;
+        ctx.reportInternalError(message, memberExpr);
+        throw new CompilerError(message);
       }
 
       let lookupName = fieldName;
@@ -2138,7 +2144,9 @@ function generateIdentifier(
     body.push(...WasmModule.encodeSignedLEB128(global.index));
     return;
   }
-  throw new Error(`Unknown identifier: ${expr.name}`);
+  const message = `Unknown identifier: ${expr.name}`;
+  ctx.reportError(message, DiagnosticCode.UnknownVariable, expr);
+  throw new CompilerError(message);
 }
 
 function generateStringLiteral(

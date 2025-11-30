@@ -86,6 +86,10 @@ export interface Token {
   rawValue?: string;
   line: number;
   column: number;
+  /** Start index in the source string (0-based, inclusive) */
+  start: number;
+  /** End index in the source string (0-based, exclusive) */
+  end: number;
 }
 
 const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
@@ -231,6 +235,7 @@ export function tokenize(source: string): Token[] {
   };
 
   while (current < source.length) {
+    const startIndex = current;
     const startColumn = column;
     const char = peek();
 
@@ -255,7 +260,14 @@ export function tokenize(source: string): Token[] {
         }
       }
 
-      tokens.push({type: TokenType.Number, value, line, column: startColumn});
+      tokens.push({
+        type: TokenType.Number,
+        value,
+        line,
+        column: startColumn,
+        start: startIndex,
+        end: current,
+      });
       continue;
     }
 
@@ -266,7 +278,14 @@ export function tokenize(source: string): Token[] {
         value += advance();
       }
       const type = KEYWORDS[value] || TokenType.Identifier;
-      tokens.push({type, value, line, column: startColumn});
+      tokens.push({
+        type,
+        value,
+        line,
+        column: startColumn,
+        start: startIndex,
+        end: current,
+      });
       continue;
     }
 
@@ -307,7 +326,14 @@ export function tokenize(source: string): Token[] {
         }
       }
       if (current < source.length) advance(); // Skip closing quote
-      tokens.push({type: TokenType.String, value, line, column: startColumn});
+      tokens.push({
+        type: TokenType.String,
+        value,
+        line,
+        column: startColumn,
+        start: startIndex,
+        end: current,
+      });
       continue;
     }
 
@@ -321,6 +347,8 @@ export function tokenize(source: string): Token[] {
         rawValue: template.raw,
         line,
         column: startColumn,
+        start: startIndex,
+        end: current,
       });
       continue;
     }
@@ -336,6 +364,8 @@ export function tokenize(source: string): Token[] {
             value: '=>',
             line,
             column: startColumn,
+            start: startIndex,
+            end: current,
           });
         } else if (peek() === '=') {
           advance();
@@ -344,6 +374,8 @@ export function tokenize(source: string): Token[] {
             value: '==',
             line,
             column: startColumn,
+            start: startIndex,
+            end: current,
           });
         } else {
           tokens.push({
@@ -351,6 +383,8 @@ export function tokenize(source: string): Token[] {
             value: '=',
             line,
             column: startColumn,
+            start: startIndex,
+            end: current,
           });
         }
         break;
@@ -362,6 +396,8 @@ export function tokenize(source: string): Token[] {
             value: '!=',
             line,
             column: startColumn,
+            start: startIndex,
+            end: current,
           });
         } else {
           tokens.push({
@@ -369,6 +405,8 @@ export function tokenize(source: string): Token[] {
             value: '!',
             line,
             column: startColumn,
+            start: startIndex,
+            end: current,
           });
         }
         break;
@@ -380,6 +418,8 @@ export function tokenize(source: string): Token[] {
             value: '<=',
             line,
             column: startColumn,
+            start: startIndex,
+            end: current,
           });
         } else {
           tokens.push({
@@ -387,6 +427,8 @@ export function tokenize(source: string): Token[] {
             value: '<',
             line,
             column: startColumn,
+            start: startIndex,
+            end: current,
           });
         }
         break;
@@ -398,6 +440,8 @@ export function tokenize(source: string): Token[] {
             value: '>=',
             line,
             column: startColumn,
+            start: startIndex,
+            end: current,
           });
         } else {
           tokens.push({
@@ -405,6 +449,8 @@ export function tokenize(source: string): Token[] {
             value: '>',
             line,
             column: startColumn,
+            start: startIndex,
+            end: current,
           });
         }
         break;
@@ -414,6 +460,8 @@ export function tokenize(source: string): Token[] {
           value: '+',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case '-':
@@ -422,6 +470,8 @@ export function tokenize(source: string): Token[] {
           value: '-',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case '*':
@@ -430,6 +480,8 @@ export function tokenize(source: string): Token[] {
           value: '*',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case '/':
@@ -459,6 +511,8 @@ export function tokenize(source: string): Token[] {
             value: '/',
             line,
             column: startColumn,
+            start: startIndex,
+            end: current,
           });
         }
         break;
@@ -468,6 +522,8 @@ export function tokenize(source: string): Token[] {
           value: '|',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case '(':
@@ -476,6 +532,8 @@ export function tokenize(source: string): Token[] {
           value: '(',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case ')':
@@ -484,6 +542,8 @@ export function tokenize(source: string): Token[] {
           value: ')',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case '{':
@@ -496,6 +556,8 @@ export function tokenize(source: string): Token[] {
           value: '{',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case '}':
@@ -509,6 +571,7 @@ export function tokenize(source: string): Token[] {
           // Capture position for the template part (after the closing brace)
           const templatePartLine = line;
           const templatePartColumn = column;
+          const templatePartStart = startIndex;
           const template = scanTemplatePart(true);
           tokens.push({
             type: template.type,
@@ -516,6 +579,8 @@ export function tokenize(source: string): Token[] {
             rawValue: template.raw,
             line: templatePartLine,
             column: templatePartColumn,
+            start: templatePartStart,
+            end: current,
           });
         } else {
           // Normal brace handling
@@ -527,6 +592,8 @@ export function tokenize(source: string): Token[] {
             value: '}',
             line,
             column: startColumn,
+            start: startIndex,
+            end: current,
           });
         }
         break;
@@ -536,6 +603,8 @@ export function tokenize(source: string): Token[] {
           value: '[',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case ']':
@@ -544,6 +613,8 @@ export function tokenize(source: string): Token[] {
           value: ']',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case ':':
@@ -552,6 +623,8 @@ export function tokenize(source: string): Token[] {
           value: ':',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case ';':
@@ -560,6 +633,8 @@ export function tokenize(source: string): Token[] {
           value: ';',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case ',':
@@ -568,6 +643,8 @@ export function tokenize(source: string): Token[] {
           value: ',',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case '.':
@@ -576,6 +653,8 @@ export function tokenize(source: string): Token[] {
           value: '.',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case '#':
@@ -584,6 +663,8 @@ export function tokenize(source: string): Token[] {
           value: '#',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       case '@':
@@ -592,6 +673,8 @@ export function tokenize(source: string): Token[] {
           value: '@',
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
         break;
       default:
@@ -600,10 +683,19 @@ export function tokenize(source: string): Token[] {
           value: c,
           line,
           column: startColumn,
+          start: startIndex,
+          end: current,
         });
     }
   }
 
-  tokens.push({type: TokenType.EOF, value: '', line, column});
+  tokens.push({
+    type: TokenType.EOF,
+    value: '',
+    line,
+    column,
+    start: current,
+    end: current,
+  });
   return tokens;
 }
