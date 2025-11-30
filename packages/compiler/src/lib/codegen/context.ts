@@ -263,11 +263,7 @@ export class CodegenContext {
   /**
    * Report an error diagnostic, optionally with location from an AST node.
    */
-  public reportError(
-    message: string,
-    code: DiagnosticCode,
-    node?: Node,
-  ): void {
+  public reportError(message: string, code: DiagnosticCode, node?: Node): void {
     this.diagnostics.reportError(
       message,
       code,

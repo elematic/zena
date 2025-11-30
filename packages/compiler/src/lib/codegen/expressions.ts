@@ -24,7 +24,7 @@ import {
   type TupleLiteral,
   type TypeAnnotation,
 } from '../ast.js';
-import {DiagnosticCode} from '../diagnostics.js';
+import {CompilerError, DiagnosticCode} from '../diagnostics.js';
 import {WasmModule} from '../emitter.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import {analyzeCaptures} from './captures.js';
@@ -189,7 +189,7 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       if (global) return global.type;
       const message = `Unknown identifier: ${name}`;
       ctx.reportError(message, DiagnosticCode.UnknownVariable, idExpr);
-      throw new Error(message);
+      throw new CompilerError(message);
     }
     case NodeType.MemberExpression: {
       const memberExpr = expr as MemberExpression;
@@ -208,7 +208,7 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       if (structTypeIndex === -1) {
         const message = `Cannot access member '${memberExpr.property.name}' on non-heap type.`;
         ctx.reportError(message, DiagnosticCode.InvalidExpression, memberExpr);
-        throw new Error(message);
+        throw new CompilerError(message);
       }
 
       const fieldName = memberExpr.property.name;
@@ -238,7 +238,7 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
           }
           const message = `Field '${fieldName}' not found in interface (or is a method).`;
           ctx.reportError(message, DiagnosticCode.UnknownField, memberExpr);
-          throw new Error(message);
+          throw new CompilerError(message);
         }
 
         // Check Record
@@ -263,7 +263,7 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
         }
         const message = `Unknown struct type for member access: ${fieldName}`;
         ctx.reportInternalError(message, memberExpr);
-        throw new Error(message);
+        throw new CompilerError(message);
       }
 
       let lookupName = fieldName;
@@ -2146,7 +2146,7 @@ function generateIdentifier(
   }
   const message = `Unknown identifier: ${expr.name}`;
   ctx.reportError(message, DiagnosticCode.UnknownVariable, expr);
-  throw new Error(message);
+  throw new CompilerError(message);
 }
 
 function generateStringLiteral(

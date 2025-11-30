@@ -187,4 +187,85 @@ let y = 2;`;
       }
     }
   });
+
+  test('should attach location to binary expression', () => {
+    const input = '1 + 2;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const stmt = ast.body[0];
+    if (stmt.type === NodeType.ExpressionStatement) {
+      const expr = stmt.expression;
+      assert.strictEqual(expr.type, NodeType.BinaryExpression);
+      assert.ok(expr.loc, 'BinaryExpression should have loc');
+      assert.strictEqual(expr.loc!.start, 0);
+      assert.strictEqual(expr.loc!.end, 5);
+    }
+  });
+
+  test('should attach location to call expression', () => {
+    const input = 'foo();';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const stmt = ast.body[0];
+    if (stmt.type === NodeType.ExpressionStatement) {
+      const expr = stmt.expression;
+      assert.strictEqual(expr.type, NodeType.CallExpression);
+      assert.ok(expr.loc, 'CallExpression should have loc');
+      assert.strictEqual(expr.loc!.start, 0);
+      assert.strictEqual(expr.loc!.end, 5);
+    }
+  });
+
+  test('should attach location to class declaration', () => {
+    const input = 'class Foo {}';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0];
+    assert.strictEqual(decl.type, NodeType.ClassDeclaration);
+    assert.ok(decl.loc, 'ClassDeclaration should have loc');
+    assert.strictEqual(decl.loc!.start, 0);
+    assert.strictEqual(decl.loc!.end, 12);
+  });
+
+  test('should attach location to if statement', () => {
+    const input = 'if (true) {}';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const stmt = ast.body[0];
+    assert.strictEqual(stmt.type, NodeType.IfStatement);
+    assert.ok(stmt.loc, 'IfStatement should have loc');
+    assert.strictEqual(stmt.loc!.start, 0);
+    assert.strictEqual(stmt.loc!.end, 12);
+  });
+
+  test('should attach location to block statement', () => {
+    const input = '{}';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const stmt = ast.body[0];
+    assert.strictEqual(stmt.type, NodeType.BlockStatement);
+    assert.ok(stmt.loc, 'BlockStatement should have loc');
+    assert.strictEqual(stmt.loc!.start, 0);
+    assert.strictEqual(stmt.loc!.end, 2);
+  });
+
+  test('should attach location to template literal', () => {
+    const input = '`hello ${name}`;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const stmt = ast.body[0];
+    if (stmt.type === NodeType.ExpressionStatement) {
+      const expr = stmt.expression;
+      assert.strictEqual(expr.type, NodeType.TemplateLiteral);
+      assert.ok(expr.loc, 'TemplateLiteral should have loc');
+      assert.strictEqual(expr.loc!.start, 0);
+      assert.strictEqual(expr.loc!.end, 15);
+    }
+  });
 });

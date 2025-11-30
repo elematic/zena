@@ -260,7 +260,14 @@ export function tokenize(source: string): Token[] {
         }
       }
 
-      tokens.push({type: TokenType.Number, value, line, column: startColumn, start: startIndex, end: current});
+      tokens.push({
+        type: TokenType.Number,
+        value,
+        line,
+        column: startColumn,
+        start: startIndex,
+        end: current,
+      });
       continue;
     }
 
@@ -271,7 +278,14 @@ export function tokenize(source: string): Token[] {
         value += advance();
       }
       const type = KEYWORDS[value] || TokenType.Identifier;
-      tokens.push({type, value, line, column: startColumn, start: startIndex, end: current});
+      tokens.push({
+        type,
+        value,
+        line,
+        column: startColumn,
+        start: startIndex,
+        end: current,
+      });
       continue;
     }
 
@@ -312,7 +326,14 @@ export function tokenize(source: string): Token[] {
         }
       }
       if (current < source.length) advance(); // Skip closing quote
-      tokens.push({type: TokenType.String, value, line, column: startColumn, start: startIndex, end: current});
+      tokens.push({
+        type: TokenType.String,
+        value,
+        line,
+        column: startColumn,
+        start: startIndex,
+        end: current,
+      });
       continue;
     }
 
@@ -668,6 +689,13 @@ export function tokenize(source: string): Token[] {
     }
   }
 
-  tokens.push({type: TokenType.EOF, value: '', line, column, start: current, end: current});
+  tokens.push({
+    type: TokenType.EOF,
+    value: '',
+    line,
+    column,
+    start: current,
+    end: current,
+  });
   return tokens;
 }
