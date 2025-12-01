@@ -1,7 +1,13 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {Compiler} from '../../lib/compiler.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const stdlibPath = path.resolve(__dirname, '../../stdlib');
 
 class MockHost {
   files = new Map<string, string>();
@@ -12,24 +18,14 @@ class MockHost {
     return specifier;
   }
 
-  load(path: string): string {
-    if (this.files.has(path)) return this.files.get(path)!;
-    if (path === 'zena:string')
-      return 'export final class String { bytes: ByteArray; length: i32; }';
-    if (path === 'zena:array')
-      return `
-        export final extension class FixedArray<T> on array<T> {
-          @intrinsic('array.len')
-          declare length: i32;
-          @intrinsic('array.get')
-          declare operator [](index: i32): T;
-          @intrinsic('array.set')
-          declare operator []=(index: i32, value: T): void;
-        }
-      `;
-    if (path === 'zena:console')
-      return 'export class Console {} export let console = new Console();';
-    throw new Error(`File not found: ${path}`);
+  load(specifier: string): string {
+    if (this.files.has(specifier)) return this.files.get(specifier)!;
+    if (specifier.startsWith('zena:')) {
+      const name = specifier.substring(5);
+      const filePath = path.join(stdlibPath, `${name}.zena`);
+      return fs.readFileSync(filePath, 'utf-8');
+    }
+    throw new Error(`File not found: ${specifier}`);
   }
 }
 
@@ -42,7 +38,19 @@ async function compileAndRun(source: string): Promise<any> {
   const generator = new CodeGenerator(program);
   const wasm = generator.generate();
 
-  const result = await WebAssembly.instantiate(wasm, {});
+  const imports = {
+    console: {
+      log_i32: () => {},
+      log_f32: () => {},
+      log_string: () => {},
+      error_string: () => {},
+      warn_string: () => {},
+      info_string: () => {},
+      debug_string: () => {},
+    },
+  };
+
+  const result = await WebAssembly.instantiate(wasm, imports);
   return (result as any).instance.exports;
 }
 

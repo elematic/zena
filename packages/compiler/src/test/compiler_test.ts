@@ -1,6 +1,12 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {Compiler, type CompilerHost} from '../lib/compiler.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const stdlibPath = path.resolve(__dirname, '../stdlib');
 
 class MockHost implements CompilerHost {
   files = new Map<string, string>();
@@ -16,29 +22,16 @@ class MockHost implements CompilerHost {
     return specifier;
   }
 
-  load(path: string): string {
-    if (this.files.has(path)) {
-      return this.files.get(path)!;
+  load(specifier: string): string {
+    if (this.files.has(specifier)) {
+      return this.files.get(specifier)!;
     }
-    if (path.startsWith('zena:')) {
-      if (path === 'zena:string')
-        return 'export final class String { bytes: ByteArray; length: i32; }';
-      if (path === 'zena:array')
-        return `
-          export final extension class FixedArray<T> on array<T> {
-            @intrinsic('array.len')
-            declare length: i32;
-            @intrinsic('array.get')
-            declare operator [](index: i32): T;
-            @intrinsic('array.set')
-            declare operator []=(index: i32, value: T): void;
-          }
-        `;
-      if (path === 'zena:console')
-        return 'export class Console {} export let console = new Console();';
-      return '';
+    if (specifier.startsWith('zena:')) {
+      const name = specifier.substring(5);
+      const filePath = path.join(stdlibPath, `${name}.zena`);
+      return fs.readFileSync(filePath, 'utf-8');
     }
-    throw new Error(`File not found: ${path}`);
+    throw new Error(`File not found: ${specifier}`);
   }
 }
 

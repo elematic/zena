@@ -1,10 +1,16 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {Bundler} from '../lib/bundler.js';
 import {NodeType} from '../lib/ast.js';
 import {Compiler, type CompilerHost, type Module} from '../lib/compiler.js';
 import {Parser} from '../lib/parser.js';
 import {CodeGenerator} from '../lib/codegen/index.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const stdlibPath = path.resolve(__dirname, '../stdlib');
 
 function createModule(path: string, code: string): Module {
   const parser = new Parser(code);
@@ -111,8 +117,8 @@ describe('Bundler', () => {
 describe('Exports', () => {
   it('should export entry point functions with original names', async () => {
     const host: CompilerHost = {
-      load: (path: string) => {
-        if (path === '/main.zena') {
+      load: (specifier: string) => {
+        if (specifier === '/main.zena') {
           return `
               import { add } from './math';
               import { FixedArray } from 'zena:array';
@@ -120,16 +126,15 @@ describe('Exports', () => {
               export declare function print(s: string): void;
             `;
         }
-        if (path === '/math.zena') {
+        if (specifier === '/math.zena') {
           return `
               export let add = (a: i32, b: i32) => a + b;
             `;
         }
-        if (path === 'zena:array') {
-          return `export class FixedArray<T> {}`;
-        }
-        if (path === 'zena:string') {
-          return `export class String {}`;
+        if (specifier.startsWith('zena:')) {
+          const name = specifier.substring(5);
+          const filePath = path.join(stdlibPath, `${name}.zena`);
+          return fs.readFileSync(filePath, 'utf-8');
         }
         return '';
       },
@@ -168,8 +173,8 @@ describe('Exports', () => {
 
   it('should export class factory', async () => {
     const host: CompilerHost = {
-      load: (path: string) => {
-        if (path === '/main.zena') {
+      load: (specifier: string) => {
+        if (specifier === '/main.zena') {
           return `
               import { FixedArray } from 'zena:array';
               export class Point {
@@ -182,11 +187,10 @@ describe('Exports', () => {
               }
             `;
         }
-        if (path === 'zena:array') {
-          return `export class FixedArray<T> {}`;
-        }
-        if (path === 'zena:string') {
-          return `export class String {}`;
+        if (specifier.startsWith('zena:')) {
+          const name = specifier.substring(5);
+          const filePath = path.join(stdlibPath, `${name}.zena`);
+          return fs.readFileSync(filePath, 'utf-8');
         }
         return '';
       },
