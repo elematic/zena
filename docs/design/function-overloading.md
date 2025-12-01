@@ -21,9 +21,31 @@ declare function print(val: i32): void;
 declare function print(val: f32): void;
 ```
 
-### 2.2 Regular Functions (Future)
+### 2.2 Regular Functions (User-Defined)
 
-For regular Zena functions, overloading might be supported by having a single implementation signature that handles all cases (similar to TypeScript), or by generating name-mangled specialized functions.
+For regular Zena functions, we prefer a **Single Implementation** strategy similar to TypeScript. The author defines multiple _signatures_ but only one _implementation_ that handles all cases using Union Types and pattern matching.
+
+**Key Advantage: Type Correlation**
+This approach allows the type checker to correlate input types with output types, which is not possible with simple Union Types alone.
+
+```typescript
+// Signatures (Overloads)
+// If called with one arg, returns string
+function format(val: i32): string;
+// If called with two args, returns array
+function format(val: i32, width: i32): string[];
+
+// Implementation
+function format(val: i32, width?: i32): string | string[] {
+  if (width == null) {
+    return val.toString();
+  } else {
+    // ... return array ...
+  }
+}
+```
+
+This avoids the complexity of name mangling and static dispatch for user code, while keeping the runtime behavior explicit and predictable.
 
 _Initial scope is limited to `declare function` for interop._
 
