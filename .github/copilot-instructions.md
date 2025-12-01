@@ -192,6 +192,7 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Exports (Functions, Classes).
   - Standard Library (`Console`).
   - Runtime Helper.
+  - Function Overloading.
 - [x] Implement Closures:
   - Parser (Generic Arrow Functions).
   - Checker (Capture Analysis).
@@ -213,8 +214,6 @@ This project is an **npm monorepo** managed with **Wireit**.
     - Implement \`map()\` fully.
 
 2.  **Host Interop**:
-    - **Function Overloading**:
-      - Support multiple \`declare function\` signatures with the same name but different parameters.
     - **WASM GC Interop Notes**:
       - WASM GC structs and arrays are OPAQUE from JavaScript.
       - JS cannot access struct fields or iterate GC arrays.
@@ -236,7 +235,9 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Inheritance (Advanced)**:
       - [x] **Virtual Fields**: Implement Uniform Access Principle (treat public fields as virtual properties with default accessors).
       - [x] **Dynamic Dispatch**: Implement VTables for polymorphic method calls.
-      - **Casting**: Implement `as` operator and `instanceof` checks.
+      - **Casting**:
+        - [x] Implement `as` operator.
+        - [ ] Implement `instanceof` checks.
       - **Mixins**:
         - [x] Implement Mixin Parser.
         - [x] Implement Mixin Type Checker.
