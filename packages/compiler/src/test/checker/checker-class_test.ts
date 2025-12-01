@@ -76,7 +76,7 @@ suite('TypeChecker - Classes', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /Expected 1 arguments, got 2/);
+    assert.match(errors[0].message, /Expected 1-1 arguments, got 2/);
   });
 
   test('should detect invalid member access', () => {

@@ -156,7 +156,7 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /Expected 2 arguments, got 1/);
+    assert.match(errors[0].message, /Expected 2-2 arguments, got 1/);
   });
 
   test('should detect argument type mismatch', () => {

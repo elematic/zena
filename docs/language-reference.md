@@ -209,6 +209,34 @@ let h: Handler | string = (a: i32) => {};
 
 This adaptation incurs a small performance overhead (allocation of a wrapper closure) and is only applied when the arity mismatch is detected at compile time.
 
+### Optional Parameters
+
+Function parameters can be marked as optional using `?`. Optional parameters must come after required parameters.
+
+```typescript
+const greet = (name: string, greeting?: string) => {
+  // greeting is inferred as string | null
+  if (greeting == null) {
+    return `Hello, ${name}`;
+  }
+  return `${greeting}, ${name}`;
+};
+
+greet('Alice'); // "Hello, Alice"
+greet('Bob', 'Hi'); // "Hi, Bob"
+```
+
+Optional parameters can also have default values.
+
+```typescript
+const increment = (x: i32, amount: i32 = 1) => x + amount;
+
+increment(10); // 11
+increment(10, 5); // 15
+```
+
+When a default value is provided, the parameter type in the function body is the non-nullable type (unless the default value itself is null).
+
 ### Calling Union Types
 
 Zena supports calling a function that is typed as a Union of function types, even if those functions have different arities. The compiler generates a runtime dispatch that checks the actual type of the function and calls it with the appropriate number of arguments. Extra arguments are ignored if the runtime function expects fewer.

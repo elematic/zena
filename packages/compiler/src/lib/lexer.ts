@@ -58,6 +58,7 @@ export const TokenType = {
   Star: 'Star',
   Slash: 'Slash',
   Pipe: 'Pipe',
+  Question: 'Question',
 
   // Punctuation
   LParen: 'LParen',
@@ -520,6 +521,16 @@ export function tokenize(source: string): Token[] {
         tokens.push({
           type: TokenType.Pipe,
           value: '|',
+          line,
+          column: startColumn,
+          start: startIndex,
+          end: current,
+        });
+        break;
+      case '?':
+        tokens.push({
+          type: TokenType.Question,
+          value: '?',
           line,
           column: startColumn,
           start: startIndex,

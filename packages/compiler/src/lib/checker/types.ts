@@ -481,12 +481,12 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     return false;
   }
 
-  if (target.kind === TypeKind.Union) {
-    return (target as UnionType).types.some((t) => isAssignableTo(source, t));
-  }
-
   if (source.kind === TypeKind.Union) {
     return (source as UnionType).types.every((t) => isAssignableTo(t, target));
+  }
+
+  if (target.kind === TypeKind.Union) {
+    return (target as UnionType).types.some((t) => isAssignableTo(source, t));
   }
 
   if (source.kind === TypeKind.Null) {

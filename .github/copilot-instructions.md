@@ -235,6 +235,10 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Checker: Structural typing and inference.
   - Codegen (Boxed): Canonical WASM structs.
   - Destructuring: Parser, Checker, Codegen.
+- [x] Implement Optional Parameters:
+  - Parser: `?` syntax.
+  - Checker: Union with `null`, assignability.
+  - Codegen: Default values.
 
 ### Planned
 

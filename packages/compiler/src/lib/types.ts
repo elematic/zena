@@ -76,6 +76,8 @@ export interface FunctionType extends Type {
   isFinal?: boolean;
   isAbstract?: boolean;
   overloads?: FunctionType[];
+  optionalParameters?: boolean[];
+  parameterInitializers?: any[]; // Expression[]
 }
 
 export interface InterfaceType extends Type {

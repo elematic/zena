@@ -426,11 +426,13 @@ export class Parser {
         }
       }
 
-      // Case 2: (param: type ...
+      // Case 2: (param: type ... or (param?: type ...
       // If we see ( identifier :, it must be an arrow function parameter list
       if (
         this.#peek(1).type === TokenType.Identifier &&
-        this.#peek(2).type === TokenType.Colon
+        (this.#peek(2).type === TokenType.Colon ||
+          (this.#peek(2).type === TokenType.Question &&
+            this.#peek(3).type === TokenType.Colon))
       ) {
         return this.#parseArrowFunctionDefinition();
       }
@@ -445,14 +447,37 @@ export class Parser {
     this.#consume(TokenType.LParen, "Expected '('");
     const params: Parameter[] = [];
     if (!this.#check(TokenType.RParen)) {
+      let seenOptional = false;
       do {
         const name = this.#parseIdentifier();
+        let optional = false;
+        if (this.#match(TokenType.Question)) {
+          optional = true;
+          seenOptional = true;
+        }
+
         this.#consume(TokenType.Colon, "Expected ':' for type annotation");
         const typeAnnotation = this.#parseTypeAnnotation();
+
+        let initializer: Expression | undefined;
+        if (this.#match(TokenType.Equals)) {
+          initializer = this.#parseExpression();
+          optional = true;
+          seenOptional = true;
+        }
+
+        if (!optional && seenOptional) {
+          throw new Error(
+            'Required parameter cannot follow an optional parameter.',
+          );
+        }
+
         params.push({
           type: NodeType.Parameter,
           name,
           typeAnnotation,
+          optional,
+          initializer,
         });
       } while (this.#match(TokenType.Comma));
     }
@@ -1237,15 +1262,38 @@ export class Parser {
     if (this.#match(TokenType.LParen)) {
       const params: Parameter[] = [];
       if (!this.#check(TokenType.RParen)) {
+        let seenOptional = false;
         do {
           const paramName = this.#parseIdentifier();
+          let optional = false;
+          if (this.#match(TokenType.Question)) {
+            optional = true;
+            seenOptional = true;
+          }
+
           this.#consume(TokenType.Colon, "Expected ':' for type annotation");
           const typeAnnotation = this.#parseTypeAnnotation();
+
+          let initializer: Expression | undefined;
+          if (this.#match(TokenType.Equals)) {
+            initializer = this.#parseExpression();
+            optional = true;
+            seenOptional = true;
+          }
+
+          if (!optional && seenOptional) {
+            throw new Error(
+              'Required parameter cannot follow an optional parameter.',
+            );
+          }
+
           params.push({
             type: NodeType.Parameter,
             name: paramName,
             typeAnnotation,
-            loc: this.#loc(paramName, typeAnnotation),
+            optional,
+            initializer,
+            loc: this.#loc(paramName, initializer || typeAnnotation),
           });
         } while (this.#match(TokenType.Comma));
       }
@@ -1428,14 +1476,47 @@ export class Parser {
     if (this.#match(TokenType.LParen)) {
       const params: Parameter[] = [];
       if (!this.#check(TokenType.RParen)) {
+        let seenOptional = false;
         do {
           const paramName = this.#parseIdentifier();
+          let optional = false;
+          if (this.#match(TokenType.Question)) {
+            optional = true;
+            seenOptional = true;
+          }
+
           this.#consume(TokenType.Colon, "Expected ':' for type annotation");
           const typeAnnotation = this.#parseTypeAnnotation();
+
+          // Interfaces usually don't have default values, but optional parameters are allowed.
+          // Should we allow defaults in interfaces?
+          // TS allows optional `?` but not defaults `=`.
+          // Zena: "Also add defaults, which marks a parameter as optional."
+          // If I allow defaults in interface, it's just metadata for the implementer?
+          // Or does it mean the caller can omit it?
+          // If the caller omits it, what value is passed?
+          // If the interface defines the default, the caller can use it.
+          // So yes, allow defaults in interfaces.
+
+          let initializer: Expression | undefined;
+          if (this.#match(TokenType.Equals)) {
+            initializer = this.#parseExpression();
+            optional = true;
+            seenOptional = true;
+          }
+
+          if (!optional && seenOptional) {
+            throw new Error(
+              'Required parameter cannot follow an optional parameter.',
+            );
+          }
+
           params.push({
             type: NodeType.Parameter,
             name: paramName,
             typeAnnotation,
+            optional,
+            initializer,
           });
         } while (this.#match(TokenType.Comma));
       }
@@ -1715,14 +1796,41 @@ export class Parser {
     this.#consume(TokenType.LParen, "Expected '(' after function name");
     const params: Parameter[] = [];
     if (!this.#check(TokenType.RParen)) {
+      let seenOptional = false;
       do {
         const paramName = this.#parseIdentifier();
+        let optional = false;
+        if (this.#match(TokenType.Question)) {
+          optional = true;
+          seenOptional = true;
+        }
+
         this.#consume(TokenType.Colon, "Expected ':' for type annotation");
         const typeAnnotation = this.#parseTypeAnnotation();
+
+        // Declare functions (external) might have optional parameters.
+        // But defaults? Defaults in `declare` usually don't make sense unless we inline them.
+        // But for consistency, let's allow them.
+
+        let initializer: Expression | undefined;
+        if (this.#match(TokenType.Equals)) {
+          initializer = this.#parseExpression();
+          optional = true;
+          seenOptional = true;
+        }
+
+        if (!optional && seenOptional) {
+          throw new Error(
+            'Required parameter cannot follow an optional parameter.',
+          );
+        }
+
         params.push({
           type: NodeType.Parameter,
           name: paramName,
           typeAnnotation,
+          optional,
+          initializer,
         });
       } while (this.#match(TokenType.Comma));
     }

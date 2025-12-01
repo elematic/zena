@@ -431,6 +431,8 @@ export interface Parameter extends Node {
   type: typeof NodeType.Parameter;
   name: Identifier;
   typeAnnotation: TypeAnnotation;
+  optional: boolean;
+  initializer?: Expression;
 }
 
 export interface TypeParameter extends Node {

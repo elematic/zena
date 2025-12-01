@@ -10,6 +10,7 @@ import {
   type InterfaceDeclaration,
   type MethodDefinition,
   type MixinDeclaration,
+  type Parameter,
   type Pattern,
   type RecordPattern,
   type ReturnStatement,
@@ -33,6 +34,7 @@ import {
   type Type,
   type TypeAliasType,
   type TypeParameterType,
+  type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
 import {checkExpression} from './expressions.js';
@@ -84,6 +86,24 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
       checkTypeAliasDeclaration(ctx, stmt as TypeAliasDeclaration);
       break;
   }
+}
+
+function resolveParameterType(ctx: CheckerContext, param: Parameter): Type {
+  let type = resolveTypeAnnotation(ctx, param.typeAnnotation);
+  if (param.optional && !param.initializer) {
+    if (type.kind === TypeKind.Union) {
+      type = {
+        kind: TypeKind.Union,
+        types: [...(type as UnionType).types, Types.Null],
+      } as UnionType;
+    } else {
+      type = {
+        kind: TypeKind.Union,
+        types: [type, Types.Null],
+      } as UnionType;
+    }
+  }
+  return type;
 }
 
 function checkTypeAliasDeclaration(
@@ -193,9 +213,14 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
 
 function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
   const paramTypes: Type[] = [];
+  const optionalParameters: boolean[] = [];
+  const parameterInitializers: any[] = [];
+
   for (const param of decl.params) {
-    const type = resolveTypeAnnotation(ctx, param.typeAnnotation);
+    const type = resolveParameterType(ctx, param);
     paramTypes.push(type);
+    optionalParameters.push(param.optional);
+    parameterInitializers.push(param.initializer);
   }
 
   const returnType = resolveTypeAnnotation(ctx, decl.returnType);
@@ -204,6 +229,8 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
     kind: TypeKind.Function,
     parameters: paramTypes,
     returnType,
+    optionalParameters,
+    parameterInitializers,
   };
 
   ctx.declare(decl.name.name, functionType, 'let');
@@ -865,9 +892,10 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         ctx.declare(tp.name, tp, 'type');
       }
 
-      const paramTypes = member.params.map((p) =>
-        resolveTypeAnnotation(ctx, p.typeAnnotation),
-      );
+      const paramTypes = member.params.map((p) => resolveParameterType(ctx, p));
+      const optionalParameters = member.params.map((p) => p.optional);
+      const parameterInitializers = member.params.map((p) => p.initializer);
+
       const returnType = member.returnType
         ? resolveTypeAnnotation(ctx, member.returnType)
         : Types.Void;
@@ -881,6 +909,8 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         returnType,
         isFinal: member.isFinal,
         isAbstract: member.isAbstract,
+        optionalParameters,
+        parameterInitializers,
       };
 
       if (member.isAbstract && !decl.isAbstract) {
@@ -1146,9 +1176,14 @@ function checkInterfaceDeclaration(
       }
 
       const paramTypes: Type[] = [];
+      const optionalParameters: boolean[] = [];
+      const parameterInitializers: any[] = [];
+
       for (const param of member.params) {
-        const type = resolveTypeAnnotation(ctx, param.typeAnnotation);
+        const type = resolveParameterType(ctx, param);
         paramTypes.push(type);
+        optionalParameters.push(param.optional);
+        parameterInitializers.push(param.initializer);
       }
 
       let returnType: Type = Types.Void;
@@ -1163,6 +1198,8 @@ function checkInterfaceDeclaration(
         typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
         parameters: paramTypes,
         returnType,
+        optionalParameters,
+        parameterInitializers,
       };
 
       if (interfaceType.methods.has(member.name.name)) {
@@ -1260,8 +1297,18 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
 
   // Declare parameters
   for (const param of method.params) {
-    const type = resolveTypeAnnotation(ctx, param.typeAnnotation);
+    const type = resolveParameterType(ctx, param);
     ctx.declare(param.name.name, type, 'let');
+
+    if (param.initializer) {
+      const initType = checkExpression(ctx, param.initializer);
+      if (!isAssignableTo(initType, type)) {
+        ctx.diagnostics.reportError(
+          `Type mismatch: default value ${typeToString(initType)} is not assignable to ${typeToString(type)}`,
+          DiagnosticCode.TypeMismatch,
+        );
+      }
+    }
   }
 
   const returnType = method.returnType
@@ -1494,9 +1541,14 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       }
 
       const paramTypes: Type[] = [];
+      const optionalParameters: boolean[] = [];
+      const parameterInitializers: any[] = [];
+
       for (const param of member.params) {
-        const type = resolveTypeAnnotation(ctx, param.typeAnnotation);
+        const type = resolveParameterType(ctx, param);
         paramTypes.push(type);
+        optionalParameters.push(param.optional);
+        parameterInitializers.push(param.initializer);
       }
 
       let returnType: Type = Types.Void;
@@ -1513,6 +1565,8 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         returnType,
         isFinal: member.isFinal,
         isAbstract: member.isAbstract,
+        optionalParameters,
+        parameterInitializers,
       };
 
       mixinType.methods.set(member.name.name, methodType);
