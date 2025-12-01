@@ -35,6 +35,8 @@ import {
   mapCheckerTypeToWasmType,
   typeToTypeAnnotation,
   resolveAnnotation,
+  instantiateClass,
+  getSpecializedName,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {
@@ -238,6 +240,37 @@ function getFixedArrayTypeIndex(
   const index = ctx.module.addArrayType(elementType, true);
   ctx.fixedArrayTypes.set(key, index);
   return index;
+}
+
+function resolveFixedArrayClass(
+  ctx: CodegenContext,
+  checkerType: any,
+): ClassInfo | undefined {
+  if (checkerType && checkerType.kind === TypeKind.FixedArray) {
+    let fixedArrayDecl = ctx.wellKnownTypes.FixedArray;
+    if (!fixedArrayDecl) {
+      fixedArrayDecl = ctx.genericClasses.get('FixedArray');
+    }
+
+    if (fixedArrayDecl) {
+      const elementType = (checkerType as any).elementType;
+      if (elementType) {
+        const elementTypeAnnotation = typeToTypeAnnotation(elementType);
+        const typeArgs = [elementTypeAnnotation];
+        const specializedName = getSpecializedName(
+          fixedArrayDecl.name.name,
+          typeArgs,
+          ctx,
+        );
+
+        if (!ctx.classes.has(specializedName)) {
+          instantiateClass(ctx, fixedArrayDecl, specializedName, typeArgs);
+        }
+        return ctx.classes.get(specializedName);
+      }
+    }
+  }
+  return undefined;
 }
 
 function generateArrayLiteral(
@@ -654,6 +687,10 @@ function generateMemberExpression(
     }
   }
 
+  if (!foundClass) {
+    // Special handling for FixedArray: treat array<T> as FixedArray<T>
+    foundClass = resolveFixedArrayClass(ctx, expr.object.inferredType);
+  }
   if (!foundClass) {
     if (structTypeIndex === -1) {
       throw new Error(`Invalid object type for field access: ${fieldName}`);
@@ -1129,6 +1166,11 @@ function generateCallExpression(
           }
         }
       }
+    }
+
+    if (!foundClass) {
+      // Special handling for FixedArray: treat array<T> as FixedArray<T>
+      foundClass = resolveFixedArrayClass(ctx, expr.callee.object.inferredType);
     }
 
     if (!foundClass) {
