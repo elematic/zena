@@ -1462,7 +1462,8 @@ function getFixedArrayTypeIndex(
 ): number {
   const key = elementType.join(',');
   if (ctx.fixedArrayTypes.has(key)) {
-    return ctx.fixedArrayTypes.get(key)!;
+    const cached = ctx.fixedArrayTypes.get(key)!;
+    return cached;
   }
   const index = ctx.module.addArrayType(elementType, true);
   ctx.fixedArrayTypes.set(key, index);
@@ -1534,7 +1535,6 @@ export function mapType(
         if (type.typeArguments && type.typeArguments.length === 1) {
           const elementType = mapType(ctx, type.typeArguments[0], context);
           const typeIndex = getFixedArrayTypeIndex(ctx, elementType);
-          // console.log(`mapType array<T> -> index ${typeIndex}`);
           return [
             ValType.ref_null,
             ...WasmModule.encodeSignedLEB128(typeIndex),
@@ -1945,12 +1945,14 @@ export function instantiateClass(
       }
       // Implicit accessors
       if (!member.name.name.startsWith('#')) {
-        let intrinsic = false;
-        if (
-          member.decorators &&
-          member.decorators.some((d) => d.name === 'intrinsic')
-        ) {
-          intrinsic = true;
+        let intrinsic: string | undefined;
+        if (member.decorators) {
+          const intrinsicDecorator = member.decorators.find(
+            (d) => d.name === 'intrinsic',
+          );
+          if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
+            intrinsic = intrinsicDecorator.args[0].value;
+          }
         }
 
         const propName = member.name.name;
@@ -2004,6 +2006,7 @@ export function instantiateClass(
           typeIndex: typeIndex!,
           paramTypes: params,
           isFinal: member.isFinal,
+          intrinsic,
         });
 
         // Register Setter (if mutable)
@@ -2041,6 +2044,7 @@ export function instantiateClass(
             typeIndex: setterTypeIndex!,
             paramTypes: setterParams,
             isFinal: member.isFinal,
+            intrinsic,
           });
         }
       }

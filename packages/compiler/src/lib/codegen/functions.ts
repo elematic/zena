@@ -327,8 +327,14 @@ export function instantiateGenericMethod(
   intrinsic?: string;
 } {
   const originalClassName = classInfo.originalName || classInfo.name;
-  const key = `${originalClassName}.${methodName}`;
-  const methodDecl = ctx.genericMethods.get(key);
+  let key = `${originalClassName}.${methodName}`;
+  let methodDecl = ctx.genericMethods.get(key);
+
+  if (!methodDecl && classInfo.originalName) {
+    key = `${classInfo.name}.${methodName}`;
+    methodDecl = ctx.genericMethods.get(key);
+  }
+
   if (!methodDecl) throw new Error(`Generic method ${key} not found`);
 
   const specializedKey = `${methodName}<${typeArgs
@@ -362,10 +368,15 @@ export function instantiateGenericMethod(
   }
 
   // Map types
-  const thisType = [
-    ValType.ref_null,
-    ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-  ];
+  let thisType: number[];
+  if (classInfo.isExtension && classInfo.onType) {
+    thisType = classInfo.onType;
+  } else {
+    thisType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+    ];
+  }
 
   const params: number[][] = [];
   if (!methodDecl.isStatic) {
@@ -422,10 +433,16 @@ function generateMethodBody(
 
   // Params
   if (!method.isStatic) {
-    ctx.defineLocal('this', ctx.nextLocalIndex++, [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-    ]);
+    let thisType: number[];
+    if (classInfo.isExtension && classInfo.onType) {
+      thisType = classInfo.onType;
+    } else {
+      thisType = [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+      ];
+    }
+    ctx.defineLocal('this', ctx.nextLocalIndex++, thisType);
   }
 
   method.params.forEach((p) => {

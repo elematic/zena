@@ -261,10 +261,17 @@ function resolveFixedArrayClass(
           fixedArrayDecl.name.name,
           typeArgs,
           ctx,
+          ctx.currentTypeContext,
         );
 
         if (!ctx.classes.has(specializedName)) {
-          instantiateClass(ctx, fixedArrayDecl, specializedName, typeArgs);
+          instantiateClass(
+            ctx,
+            fixedArrayDecl,
+            specializedName,
+            typeArgs,
+            ctx.currentTypeContext,
+          );
         }
         return ctx.classes.get(specializedName);
       }
@@ -319,6 +326,18 @@ function generateIndexExpression(
       if (info.structTypeIndex === structTypeIndex) {
         foundClass = info;
         break;
+      }
+    }
+
+    if (!foundClass) {
+      // Check for extension classes
+      for (const info of ctx.classes.values()) {
+        if (info.isExtension && info.onType) {
+          if (typesAreEqual(info.onType, objectType)) {
+            foundClass = info;
+            break;
+          }
+        }
       }
     }
 
@@ -840,6 +859,10 @@ function generateMemberExpression(
         foundClass.isFinal || methodInfo.isFinal || foundClass.isExtension;
 
       if (useStaticDispatch) {
+        if (methodInfo.intrinsic) {
+          generateIntrinsic(ctx, methodInfo.intrinsic, expr.object, [], body);
+          return;
+        }
         // Static dispatch - direct call
         // Object is already on stack from generateExpression(ctx, expr.object, body) above
         body.push(Opcode.call);
@@ -1184,7 +1207,11 @@ function generateCallExpression(
     if (methodInfo === undefined) {
       // Check if it's a generic method call
       const originalClassName = foundClass.originalName || foundClass.name;
-      const genericKey = `${originalClassName}.${methodName}`;
+      let genericKey = `${originalClassName}.${methodName}`;
+
+      if (!ctx.genericMethods.has(genericKey) && foundClass.originalName) {
+        genericKey = `${foundClass.name}.${methodName}`;
+      }
 
       if (ctx.genericMethods.has(genericKey)) {
         let typeArguments = expr.typeArguments;
@@ -1506,6 +1533,18 @@ function generateAssignmentExpression(
         if (info.structTypeIndex === structTypeIndex) {
           foundClass = info;
           break;
+        }
+      }
+
+      if (!foundClass) {
+        // Check for extension classes
+        for (const info of ctx.classes.values()) {
+          if (info.isExtension && info.onType) {
+            if (typesAreEqual(info.onType, objectType)) {
+              foundClass = info;
+              break;
+            }
+          }
         }
       }
 

@@ -50,4 +50,63 @@ suite('Stdlib: FixedArray', () => {
     const result = await compileAndRun(source, 'run');
     assert.strictEqual(result, 100);
   });
+
+  test('map', async () => {
+    const source = `
+      export let run = (): i32 => {
+        let arr = new FixedArray<i32>(3, 0);
+        arr[0] = 1;
+        arr[1] = 2;
+        arr[2] = 3;
+        let mapped = arr.map<i32>((x: i32) => x * 2);
+        
+        if (mapped.length != 3) return 0;
+        if (mapped[0] != 2) return 1;
+        if (mapped[1] != 4) return 2;
+        if (mapped[2] != 6) return 3;
+        
+        return 100;
+      };
+    `;
+    const result = await compileAndRun(source, 'run');
+    assert.strictEqual(result, 100);
+  });
+
+  test('map with index', async () => {
+    const source = `
+      export let run = (): i32 => {
+        let arr = new FixedArray<i32>(3, 0);
+        // map to just the index
+        let mapped = arr.map<i32>((x: i32, i: i32) => i);
+        
+        if (mapped[0] != 0) return 1;
+        if (mapped[1] != 1) return 2;
+        if (mapped[2] != 2) return 3;
+        
+        return 100;
+      };
+    `;
+    const result = await compileAndRun(source, 'run');
+    assert.strictEqual(result, 100);
+  });
+
+  test('map with array argument', async () => {
+    const source = `
+      export let run = (): i32 => {
+        let arr = new FixedArray<i32>(1, 10);
+        
+        // Use the array argument to modify the array itself
+        arr.map<i32>((x: i32, i: i32, a: FixedArray<i32>) => {
+          a[0] = 999;
+          return x;
+        });
+        
+        if (arr[0] != 999) return 1;
+        
+        return 100;
+      };
+    `;
+    const result = await compileAndRun(source, 'run');
+    assert.strictEqual(result, 100);
+  });
 });
