@@ -1330,7 +1330,7 @@ function generateCallExpression(
       const name = (expr.callee as Identifier).name;
 
       if (name.startsWith('__array_')) {
-        generateGlobalIntrinsic(ctx, name, expr.arguments, body);
+        generateGlobalIntrinsic(ctx, name, expr, body);
         return;
       }
 
@@ -2488,9 +2488,10 @@ function generateIntrinsic(
 function generateGlobalIntrinsic(
   ctx: CodegenContext,
   name: string,
-  args: Expression[],
+  expr: CallExpression,
   body: number[],
 ) {
+  const args = expr.arguments;
   switch (name) {
     case '__array_len':
       generateExpression(ctx, args[0], body);
@@ -2537,6 +2538,27 @@ function generateGlobalIntrinsic(
       body.push(
         0xfb,
         GcOpcode.array_new,
+        ...WasmModule.encodeSignedLEB128(arrayTypeIndex),
+      );
+      break;
+    }
+    case '__array_new_empty': {
+      // __array_new_empty(size)
+      const size = args[0];
+
+      if (!expr.inferredType) {
+        throw new Error('__array_new_empty requires inferred type');
+      }
+
+      const wasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+      const arrayTypeIndex = decodeTypeIndex(wasmType);
+
+      // array.new_default $type size
+      generateExpression(ctx, size, body);
+
+      body.push(
+        0xfb,
+        GcOpcode.array_new_default,
         ...WasmModule.encodeSignedLEB128(arrayTypeIndex),
       );
       break;

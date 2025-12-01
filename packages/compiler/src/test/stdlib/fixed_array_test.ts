@@ -26,4 +26,28 @@ suite('Stdlib: FixedArray', () => {
     const result = await compileAndRun(source, 'run');
     assert.strictEqual(result, 42);
   });
+
+  test('reverse', async () => {
+    const source = `
+        export let run = (): i32 => {
+          let arr = new FixedArray<i32>(3, 0);
+          arr[0] = 1;
+          arr[1] = 2;
+          arr[2] = 3;
+          let reversed = arr.reverse();
+          
+          if (reversed.length != 3) return 0;
+          if (reversed[0] != 3) return 1;
+          if (reversed[1] != 2) return 2;
+          if (reversed[2] != 1) return 3;
+          
+          // Check original is unchanged
+          if (arr[0] != 1) return 4;
+          
+          return 100;
+        };
+      `;
+    const result = await compileAndRun(source, 'run');
+    assert.strictEqual(result, 100);
+  });
 });

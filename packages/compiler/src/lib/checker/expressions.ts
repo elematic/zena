@@ -39,6 +39,7 @@ import {
   resolveTypeAnnotation,
   typeToString,
   isAssignableTo,
+  substituteType,
 } from './types.js';
 import {checkStatement} from './statements.js';
 
@@ -855,7 +856,23 @@ function checkMemberExpression(
     if (arrayType && arrayType.kind === TypeKind.Class) {
       const classType = arrayType as ClassType;
       if (classType.methods.has(expr.property.name)) {
-        return classType.methods.get(expr.property.name)!;
+        const method = classType.methods.get(expr.property.name)!;
+        if (classType.typeParameters && classType.typeParameters.length > 0) {
+          const typeArgs = [(objectType as FixedArrayType).elementType];
+          const typeMap = new Map<string, Type>();
+          classType.typeParameters.forEach((param, index) => {
+            typeMap.set(param.name, typeArgs[index]);
+          });
+
+          return {
+            ...method,
+            parameters: method.parameters.map((t) =>
+              substituteType(t, typeMap),
+            ),
+            returnType: substituteType(method.returnType, typeMap),
+          } as FunctionType;
+        }
+        return method;
       }
     }
 

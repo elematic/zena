@@ -33,9 +33,38 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
   if (type.kind === TypeKind.Class) {
     const ct = type as ClassType;
     if (ct.typeArguments) {
+      const newTypeArguments = ct.typeArguments.map((t) =>
+        substituteType(t, typeMap),
+      );
+
+      const newFields = new Map<string, Type>();
+      for (const [name, type] of ct.fields) {
+        newFields.set(name, substituteType(type, typeMap));
+      }
+
+      const newMethods = new Map<string, FunctionType>();
+      for (const [name, fn] of ct.methods) {
+        newMethods.set(name, substituteType(fn, typeMap) as FunctionType);
+      }
+
+      const newConstructor = ct.constructorType
+        ? (substituteType(ct.constructorType, typeMap) as FunctionType)
+        : undefined;
+      const newOnType = ct.onType
+        ? substituteType(ct.onType, typeMap)
+        : undefined;
+      const newSuperType = ct.superType
+        ? (substituteType(ct.superType, typeMap) as ClassType)
+        : undefined;
+
       return {
         ...ct,
-        typeArguments: ct.typeArguments.map((t) => substituteType(t, typeMap)),
+        typeArguments: newTypeArguments,
+        fields: newFields,
+        methods: newMethods,
+        constructorType: newConstructor,
+        onType: newOnType,
+        superType: newSuperType,
       } as ClassType;
     }
   }

@@ -113,6 +113,21 @@ export class TypeChecker {
       } as FunctionType,
       'let',
     );
+
+    // __array_new_empty<T>(size: i32): array<T>
+    ctx.declare(
+      '__array_new_empty',
+      {
+        kind: TypeKind.Function,
+        typeParameters: [T],
+        parameters: [Types.I32],
+        returnType: {
+          kind: TypeKind.FixedArray,
+          elementType: T,
+        } as FixedArrayType,
+      } as FunctionType,
+      'let',
+    );
   }
 
   #collectExports(ctx: CheckerContext, module: Module) {
