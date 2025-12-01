@@ -1,5 +1,9 @@
+import type {TypeAnnotation} from '../ast.js';
+
 export interface ClassInfo {
   name: string;
+  originalName?: string;
+  typeArguments?: Map<string, TypeAnnotation>;
   structTypeIndex: number;
   superClass?: string;
   fields: Map<string, {index: number; type: number[]; intrinsic?: string}>;

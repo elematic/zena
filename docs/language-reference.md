@@ -424,7 +424,7 @@ Zena supports object-oriented programming with classes.
 
 Classes are declared using the `class` keyword.
 
-```typescript
+````typescript
 class Point {
   x: i32;
   y: i32;
@@ -439,7 +439,31 @@ class Point {
     this.y = this.y + dy;
   }
 }
+
+### Generic Methods
+
+Classes and Mixins can define generic methods. Type parameters are specified after the method name.
+
+```typescript
+class Container {
+  value: i32;
+
+  map<T>(fn: (val: i32) => T): T {
+    return fn(this.value);
+  }
+}
+````
+
+Generic methods can be called with explicit type arguments or inferred.
+
+```typescript
+let c = new Container();
+c.value = 10;
+let s = c.map<string>((v) => 'Value: ' + v); // Explicit
+let n = c.map((v) => v * 2); // Inferred
 ```
+
+````
 
 - **Fields**: Declared with a type annotation.
 - **Constructor**: Named `#new`.
@@ -456,7 +480,7 @@ extension class ArrayExtensions<T> on array<T> {
     return this[this.length - 1];
   }
 }
-```
+````
 
 - **`extension class`**: Keywords to define an extension.
 - **`on Type`**: Specifies the type being extended.

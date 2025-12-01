@@ -360,6 +360,42 @@ class ASTRewriter {
         if ((node as any).implements) {
           (node as any).implements.forEach((i: any) => this.visit(i));
         }
+        // Visit mixins
+        if ((node as any).mixins) {
+          (node as any).mixins.forEach((m: any) => this.visit(m));
+        }
+        // Visit members
+        (node as any).body.forEach((m: any) => this.visit(m));
+        this.exitScope();
+        break;
+      case NodeType.MixinDeclaration:
+        // Rename mixin
+        if (this.scopeStack.length === 1) {
+          (node as any).name.name = this.prefix + (node as any).name.name;
+        }
+        this.enterScope();
+        // Visit on type
+        if ((node as any).on) {
+          this.visit((node as any).on);
+        }
+        // Visit mixins
+        if ((node as any).mixins) {
+          (node as any).mixins.forEach((m: any) => this.visit(m));
+        }
+        // Visit members
+        (node as any).body.forEach((m: any) => this.visit(m));
+        this.exitScope();
+        break;
+      case NodeType.InterfaceDeclaration:
+        // Rename interface
+        if (this.scopeStack.length === 1) {
+          (node as any).name.name = this.prefix + (node as any).name.name;
+        }
+        this.enterScope();
+        // Visit extends
+        if ((node as any).extends) {
+          (node as any).extends.forEach((e: any) => this.visit(e));
+        }
         // Visit members
         (node as any).body.forEach((m: any) => this.visit(m));
         this.exitScope();

@@ -4,12 +4,14 @@ import {
   type DeclareFunction,
   type Expression,
   type FunctionExpression,
+  type MethodDefinition,
   type Pattern,
   type ReturnStatement,
   type TypeAnnotation,
   type VariableDeclaration,
 } from '../ast.js';
-import {ExportDesc, Opcode} from '../wasm.js';
+import {WasmModule} from '../emitter.js';
+import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
@@ -20,6 +22,7 @@ import {
 import type {CodegenContext} from './context.js';
 import {generateExpression, inferType} from './expressions.js';
 import {generateBlockStatement} from './statements.js';
+import type {ClassInfo} from './types.js';
 
 export function inferReturnTypeFromBlock(
   ctx: CodegenContext,
@@ -308,4 +311,141 @@ export function registerDeclaredFunction(
     index: funcIndex,
     params: params,
   });
+}
+
+export function instantiateGenericMethod(
+  ctx: CodegenContext,
+  classInfo: ClassInfo,
+  methodName: string,
+  typeArgs: TypeAnnotation[],
+): {
+  index: number;
+  returnType: number[];
+  typeIndex: number;
+  paramTypes: number[][];
+  isFinal?: boolean;
+  intrinsic?: string;
+} {
+  const originalClassName = classInfo.originalName || classInfo.name;
+  const key = `${originalClassName}.${methodName}`;
+  const methodDecl = ctx.genericMethods.get(key);
+  if (!methodDecl) throw new Error(`Generic method ${key} not found`);
+
+  const specializedKey = `${methodName}<${typeArgs
+    .map((t) => getTypeKey(resolveAnnotation(t, ctx.currentTypeContext)))
+    .join(',')}>`;
+
+  // Check if already instantiated in the class
+  if (classInfo.methods.has(specializedKey)) {
+    return classInfo.methods.get(specializedKey)!;
+  }
+
+  const typeContext = new Map<string, TypeAnnotation>();
+
+  // Add class type parameters
+  if (classInfo.typeArguments) {
+    for (const [name, type] of classInfo.typeArguments) {
+      typeContext.set(name, type);
+    }
+  }
+
+  // Add method type parameters
+  if (methodDecl.typeParameters) {
+    if (methodDecl.typeParameters.length !== typeArgs.length) {
+      throw new Error(
+        `Expected ${methodDecl.typeParameters.length} type arguments, got ${typeArgs.length}`,
+      );
+    }
+    for (let i = 0; i < methodDecl.typeParameters.length; i++) {
+      typeContext.set(methodDecl.typeParameters[i].name, typeArgs[i]);
+    }
+  }
+
+  // Map types
+  const thisType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+  ];
+
+  const params: number[][] = [];
+  if (!methodDecl.isStatic) {
+    params.push(thisType);
+  }
+
+  for (const param of methodDecl.params) {
+    params.push(mapType(ctx, param.typeAnnotation, typeContext));
+  }
+
+  let results: number[][] = [];
+  if (methodDecl.returnType) {
+    const mapped = mapType(ctx, methodDecl.returnType, typeContext);
+    if (mapped.length > 0) results = [mapped];
+  }
+
+  const typeIndex = ctx.module.addType(params, results);
+  const funcIndex = ctx.module.addFunction(typeIndex);
+
+  const returnType = results.length > 0 ? results[0] : [];
+
+  // Register in class methods so we don't re-instantiate
+  const info = {
+    index: funcIndex,
+    returnType,
+    typeIndex,
+    paramTypes: params,
+    isFinal: methodDecl.isFinal,
+  };
+  classInfo.methods.set(specializedKey, info);
+
+  ctx.bodyGenerators.push(() => {
+    const body = generateMethodBody(ctx, classInfo, methodDecl, typeContext);
+    ctx.module.addCode(funcIndex, ctx.extraLocals, body);
+  });
+
+  return info;
+}
+
+function generateMethodBody(
+  ctx: CodegenContext,
+  classInfo: ClassInfo,
+  method: MethodDefinition,
+  typeContext: Map<string, TypeAnnotation>,
+): number[] {
+  const oldContext = ctx.currentTypeContext;
+  ctx.currentTypeContext = typeContext;
+  ctx.currentClass = classInfo;
+
+  ctx.scopes = [new Map()];
+  ctx.extraLocals = [];
+  ctx.nextLocalIndex = 0;
+  ctx.thisLocalIndex = 0;
+
+  // Params
+  if (!method.isStatic) {
+    ctx.defineLocal('this', ctx.nextLocalIndex++, [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+    ]);
+  }
+
+  method.params.forEach((p) => {
+    const index = ctx.nextLocalIndex++;
+    ctx.scopes[0].set(p.name.name, {
+      index,
+      type: mapType(ctx, p.typeAnnotation, typeContext),
+    });
+  });
+
+  const body: number[] = [];
+  if (method.body && method.body.type === NodeType.BlockStatement) {
+    generateBlockStatement(ctx, method.body as BlockStatement, body);
+  } else {
+    // Should not happen for methods usually, but if expression body supported
+    // generateExpression(ctx, method.body as Expression, body);
+  }
+
+  body.push(Opcode.end);
+
+  ctx.currentTypeContext = oldContext;
+  return body;
 }

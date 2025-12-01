@@ -631,6 +631,13 @@ export function registerClassMethods(
 
   for (const member of members) {
     if (member.type === NodeType.MethodDefinition) {
+      if (member.typeParameters && member.typeParameters.length > 0) {
+        // Store generic method definition for later instantiation
+        const key = `${decl.name.name}.${member.name.name}`;
+        ctx.genericMethods.set(key, member);
+        continue; // Skip generating code for generic method definition
+      }
+
       const methodName = member.name.name;
 
       let intrinsic: string | undefined;
@@ -643,7 +650,12 @@ export function registerClassMethods(
         }
       }
 
-      if (methodName !== '#new' && !intrinsic && !vtable.includes(methodName) && !member.isStatic) {
+      if (
+        methodName !== '#new' &&
+        !intrinsic &&
+        !vtable.includes(methodName) &&
+        !member.isStatic
+      ) {
         vtable.push(methodName);
       }
 
@@ -668,7 +680,10 @@ export function registerClassMethods(
       }
 
       const params: number[][] = [];
-      if (!member.isStatic && !(classInfo.isExtension && methodName === '#new')) {
+      if (
+        !member.isStatic &&
+        !(classInfo.isExtension && methodName === '#new')
+      ) {
         params.push(thisType);
       }
       for (const param of member.params) {
@@ -1069,6 +1084,9 @@ export function generateClassMethods(
 
   for (const member of members) {
     if (member.type === NodeType.MethodDefinition) {
+      if (member.typeParameters && member.typeParameters.length > 0) {
+        continue;
+      }
       const methodInfo = classInfo.methods.get(member.name.name)!;
       const body: number[] = [];
 
@@ -1079,12 +1097,11 @@ export function generateClassMethods(
 
       // Params
       // 0: this
-      if (!member.isStatic && !(classInfo.isExtension && member.name.name === '#new')) {
-        ctx.defineLocal(
-          'this',
-          ctx.nextLocalIndex++,
-          methodInfo.paramTypes[0],
-        );
+      if (
+        !member.isStatic &&
+        !(classInfo.isExtension && member.name.name === '#new')
+      ) {
+        ctx.defineLocal('this', ctx.nextLocalIndex++, methodInfo.paramTypes[0]);
       }
 
       for (let i = 0; i < member.params.length; i++) {
@@ -1092,7 +1109,8 @@ export function generateClassMethods(
         mapType(ctx, param.typeAnnotation!);
         // For extension constructors, params start at 0 (since no implicit this param)
         const paramTypeIndex =
-          member.isStatic || (classInfo.isExtension && member.name.name === '#new')
+          member.isStatic ||
+          (classInfo.isExtension && member.name.name === '#new')
             ? i
             : i + 1;
         ctx.defineLocal(
@@ -1698,6 +1716,8 @@ export function instantiateClass(
 
   const classInfo: ClassInfo = {
     name: specializedName,
+    originalName: decl.name.name,
+    typeArguments: context,
     structTypeIndex,
     superClass: decl.superClass?.name,
     fields,
@@ -1739,6 +1759,12 @@ export function instantiateClass(
 
   for (const member of members) {
     if (member.type === NodeType.MethodDefinition) {
+      if (member.typeParameters && member.typeParameters.length > 0) {
+        const key = `${specializedName}.${member.name.name}`;
+        ctx.genericMethods.set(key, member);
+        continue;
+      }
+
       const methodName = member.name.name;
 
       let intrinsic: string | undefined;

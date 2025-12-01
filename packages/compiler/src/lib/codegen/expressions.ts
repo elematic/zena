@@ -40,6 +40,7 @@ import type {CodegenContext} from './context.js';
 import {
   inferReturnTypeFromBlock,
   instantiateGenericFunction,
+  instantiateGenericMethod,
 } from './functions.js';
 import {generateBlockStatement} from './statements.js';
 import {TypeKind, type FunctionType, type ClassType} from '../types.js';
@@ -1053,7 +1054,33 @@ function generateCallExpression(
       );
     }
 
-    const methodInfo = foundClass.methods.get(methodName);
+    let methodInfo = foundClass.methods.get(methodName);
+
+    if (methodInfo === undefined) {
+      // Check if it's a generic method call
+      const originalClassName = foundClass.originalName || foundClass.name;
+      const genericKey = `${originalClassName}.${methodName}`;
+
+      if (ctx.genericMethods.has(genericKey)) {
+        let typeArguments = expr.typeArguments;
+
+        if (expr.inferredTypeArguments) {
+          typeArguments = expr.inferredTypeArguments.map((t) =>
+            typeToTypeAnnotation(t),
+          );
+        }
+
+        if (typeArguments && typeArguments.length > 0) {
+          methodInfo = instantiateGenericMethod(
+            ctx,
+            foundClass,
+            methodName,
+            typeArguments,
+          );
+        }
+      }
+    }
+
     if (methodInfo === undefined) {
       throw new Error(`Method ${methodName} not found in class`);
     }

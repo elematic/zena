@@ -2,6 +2,7 @@ import {
   NodeType,
   type ClassDeclaration,
   type FunctionExpression,
+  type MethodDefinition,
   type MixinDeclaration,
   type Node,
   type Program,
@@ -58,6 +59,7 @@ export class CodegenContext {
   public stringGetByteFunctionIndex = -1; // Exported helper for JS to read String bytes
   public genericClasses = new Map<string, ClassDeclaration>();
   public genericFunctions = new Map<string, FunctionExpression>();
+  public genericMethods = new Map<string, MethodDefinition>();
   public functionReturnTypes = new Map<string, number[]>();
   public pendingMethodGenerations: (() => void)[] = [];
   public bodyGenerators: (() => void)[] = [];

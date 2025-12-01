@@ -1228,6 +1228,8 @@ export class Parser {
       name = this.#parseIdentifier();
     }
 
+    const typeParameters = this.#parseTypeParameters();
+
     // Method: name(params) { ... }
     if (this.#match(TokenType.LParen)) {
       const params: Parameter[] = [];
@@ -1265,6 +1267,7 @@ export class Parser {
       return {
         type: NodeType.MethodDefinition,
         name,
+        typeParameters,
         params,
         returnType,
         body,
@@ -1285,6 +1288,10 @@ export class Parser {
       // If we have abstract fields, they would be abstract accessors.
       // For now, let's error if abstract is used on field.
       throw new Error('Abstract fields are not supported yet.');
+    }
+
+    if (typeParameters) {
+      throw new Error('Fields cannot have type parameters.');
     }
 
     // Field: name: Type; or name: Type = value;
@@ -1412,6 +1419,7 @@ export class Parser {
 
   #parseInterfaceMember(): FieldDefinition | MethodSignature {
     const name = this.#parseIdentifier();
+    const typeParameters = this.#parseTypeParameters();
 
     // Method: name(params): ReturnType;
     if (this.#match(TokenType.LParen)) {
@@ -1440,9 +1448,14 @@ export class Parser {
       return {
         type: NodeType.MethodSignature,
         name,
+        typeParameters,
         params,
         returnType,
       };
+    }
+
+    if (typeParameters) {
+      throw new Error('Fields cannot have type parameters.');
     }
 
     // Field: name: Type;

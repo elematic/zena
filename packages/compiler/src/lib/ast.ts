@@ -333,6 +333,7 @@ export interface InterfaceDeclaration extends Node {
 export interface MethodSignature extends Node {
   type: typeof NodeType.MethodSignature;
   name: Identifier;
+  typeParameters?: TypeParameter[];
   params: Parameter[];
   returnType?: TypeAnnotation;
 }
@@ -357,6 +358,7 @@ export interface Decorator extends Node {
 export interface MethodDefinition extends Node {
   type: typeof NodeType.MethodDefinition;
   name: Identifier;
+  typeParameters?: TypeParameter[];
   params: Parameter[];
   returnType?: TypeAnnotation;
   body?: BlockStatement;

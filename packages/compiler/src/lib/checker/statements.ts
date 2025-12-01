@@ -850,6 +850,21 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         classType.methods.set(setterName, methodType);
       }
     } else if (member.type === NodeType.MethodDefinition) {
+      const typeParameters: TypeParameterType[] = [];
+      if (member.typeParameters) {
+        for (const param of member.typeParameters) {
+          typeParameters.push({
+            kind: TypeKind.TypeParameter,
+            name: param.name,
+          });
+        }
+      }
+
+      ctx.enterScope();
+      for (const tp of typeParameters) {
+        ctx.declare(tp.name, tp, 'type');
+      }
+
       const paramTypes = member.params.map((p) =>
         resolveTypeAnnotation(ctx, p.typeAnnotation),
       );
@@ -857,8 +872,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         ? resolveTypeAnnotation(ctx, member.returnType)
         : Types.Void;
 
+      ctx.exitScope();
+
       const methodType: FunctionType = {
         kind: TypeKind.Function,
+        typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
         parameters: paramTypes,
         returnType,
         isFinal: member.isFinal,
@@ -1112,6 +1130,21 @@ function checkInterfaceDeclaration(
 
   for (const member of decl.body) {
     if (member.type === NodeType.MethodSignature) {
+      const typeParameters: TypeParameterType[] = [];
+      if (member.typeParameters) {
+        for (const param of member.typeParameters) {
+          typeParameters.push({
+            kind: TypeKind.TypeParameter,
+            name: param.name,
+          });
+        }
+      }
+
+      ctx.enterScope();
+      for (const tp of typeParameters) {
+        ctx.declare(tp.name, tp, 'type');
+      }
+
       const paramTypes: Type[] = [];
       for (const param of member.params) {
         const type = resolveTypeAnnotation(ctx, param.typeAnnotation);
@@ -1123,8 +1156,11 @@ function checkInterfaceDeclaration(
         returnType = resolveTypeAnnotation(ctx, member.returnType);
       }
 
+      ctx.exitScope();
+
       const methodType: FunctionType = {
         kind: TypeKind.Function,
+        typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
         parameters: paramTypes,
         returnType,
       };
@@ -1211,6 +1247,16 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   }
 
   ctx.enterScope();
+
+  if (method.typeParameters) {
+    for (const param of method.typeParameters) {
+      const tp: TypeParameterType = {
+        kind: TypeKind.TypeParameter,
+        name: param.name,
+      };
+      ctx.declare(param.name, tp, 'type');
+    }
+  }
 
   // Declare parameters
   for (const param of method.params) {
@@ -1432,6 +1478,21 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         }
       }
     } else if (member.type === NodeType.MethodDefinition) {
+      const typeParameters: TypeParameterType[] = [];
+      if (member.typeParameters) {
+        for (const param of member.typeParameters) {
+          typeParameters.push({
+            kind: TypeKind.TypeParameter,
+            name: param.name,
+          });
+        }
+      }
+
+      ctx.enterScope();
+      for (const tp of typeParameters) {
+        ctx.declare(tp.name, tp, 'type');
+      }
+
       const paramTypes: Type[] = [];
       for (const param of member.params) {
         const type = resolveTypeAnnotation(ctx, param.typeAnnotation);
@@ -1443,8 +1504,11 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         returnType = resolveTypeAnnotation(ctx, member.returnType);
       }
 
+      ctx.exitScope();
+
       const methodType: FunctionType = {
         kind: TypeKind.Function,
+        typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
         parameters: paramTypes,
         returnType,
         isFinal: member.isFinal,
