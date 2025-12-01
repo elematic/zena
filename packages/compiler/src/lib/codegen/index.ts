@@ -120,7 +120,39 @@ export class CodeGenerator {
 
     // 5. Register Functions and Variables (Fifth pass)
     for (const statement of program.body) {
-      if (statement.type === NodeType.VariableDeclaration) {
+      if (statement.type === NodeType.ClassDeclaration) {
+        const classDecl = statement as ClassDeclaration;
+        for (const member of classDecl.body) {
+          if (
+            member.type === NodeType.FieldDefinition &&
+            member.isStatic &&
+            member.value
+          ) {
+            const name = `${classDecl.name.name}_${member.name.name}`;
+            const type = inferType(this.#ctx, member.value);
+            let initBytes: number[] = [];
+
+            // Default initialization
+            if (type[0] === ValType.i32)
+              initBytes = [0x41, 0x00]; // i32.const 0
+            else if (type[0] === ValType.f32)
+              initBytes = [0x43, 0x00, 0x00, 0x00, 0x00]; // f32.const 0
+            else if (type[0] === ValType.ref_null || type[0] === ValType.ref) {
+              initBytes = [Opcode.ref_null, HeapType.none];
+            } else {
+              initBytes = [0x41, 0x00];
+            }
+
+            const globalIndex = this.#ctx.module.addGlobal(
+              type,
+              true, // Static fields are mutable
+              initBytes,
+            );
+            this.#ctx.defineGlobal(name, globalIndex, type);
+            globalInitializers.push({index: globalIndex, init: member.value});
+          }
+        }
+      } else if (statement.type === NodeType.VariableDeclaration) {
         const varDecl = statement as VariableDeclaration;
         if (varDecl.pattern.type === NodeType.Identifier) {
           const name = varDecl.pattern.name;

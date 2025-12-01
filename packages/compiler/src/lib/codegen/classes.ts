@@ -427,12 +427,17 @@ export function registerClassStruct(
   // Handle extension classes (e.g. FixedArray extends array<T>)
   if (decl.isExtension && decl.onType) {
     const onType = mapType(ctx, decl.onType);
-    console.log(
-      `registerClassStruct: Extension ${decl.name.name} onType=${onType.join(',')}`,
-    );
+    // console.log(
+    //   `registerClassStruct: Extension ${decl.name.name} onType=${onType.join(',')}`,
+    // );
+
+    // Create a dummy struct type for extensions so that we have a valid type index
+    // This is needed because some parts of the compiler might try to reference the class type
+    const structTypeIndex = ctx.module.addStructType([]);
+
     ctx.classes.set(decl.name.name, {
       name: decl.name.name,
-      structTypeIndex: -1, // No struct for extensions
+      structTypeIndex,
       fields: new Map(),
       methods: new Map(),
       isExtension: true,
@@ -600,7 +605,7 @@ export function registerClassMethods(
   const hasConstructor = members.some(
     (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
   );
-  if (!hasConstructor) {
+  if (!hasConstructor && !classInfo.isExtension) {
     const bodyStmts: any[] = [];
     if (currentSuperClassInfo) {
       bodyStmts.push({
@@ -715,10 +720,15 @@ export function registerClassMethods(
           vtable.push(methodName);
         }
 
-        let thisType = [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(structTypeIndex),
-        ];
+        let thisType: number[];
+        if (classInfo.isExtension && classInfo.onType) {
+          thisType = classInfo.onType;
+        } else {
+          thisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(structTypeIndex),
+          ];
+        }
 
         if (currentSuperClassInfo) {
           if (currentSuperClassInfo.methods.has(methodName)) {
@@ -762,10 +772,15 @@ export function registerClassMethods(
           vtable.push(methodName);
         }
 
-        let thisType = [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(structTypeIndex),
-        ];
+        let thisType: number[];
+        if (classInfo.isExtension && classInfo.onType) {
+          thisType = classInfo.onType;
+        } else {
+          thisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(structTypeIndex),
+          ];
+        }
 
         if (currentSuperClassInfo) {
           if (currentSuperClassInfo.methods.has(methodName)) {
@@ -802,6 +817,7 @@ export function registerClassMethods(
         });
       }
     } else if (member.type === NodeType.FieldDefinition) {
+      if (member.isStatic) continue;
       // Register implicit accessors for public fields
       if (!member.name.name.startsWith('#')) {
         const propName = member.name.name;
@@ -1017,7 +1033,7 @@ export function generateClassMethods(
   const hasConstructor = members.some(
     (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
   );
-  if (!hasConstructor) {
+  if (!hasConstructor && !classInfo.isExtension) {
     const bodyStmts: any[] = [];
     if (decl.superClass) {
       bodyStmts.push({
@@ -1108,6 +1124,7 @@ export function generateClassMethods(
         if (!hasSuperClass) {
           for (const m of decl.body) {
             if (m.type === NodeType.FieldDefinition && m.value) {
+              if (m.isStatic) continue;
               const fieldName = manglePrivateName(decl.name.name, m.name.name);
               const fieldInfo = classInfo.fields.get(fieldName)!;
               body.push(Opcode.local_get, 0);
@@ -1134,6 +1151,7 @@ export function generateClassMethods(
               ) {
                 for (const m of decl.body) {
                   if (m.type === NodeType.FieldDefinition && m.value) {
+                    if (m.isStatic) continue;
                     const fieldName = manglePrivateName(
                       decl.name.name,
                       m.name.name,
@@ -1269,6 +1287,7 @@ export function generateClassMethods(
       }
     } else if (member.type === NodeType.FieldDefinition) {
       if (member.isDeclare) continue;
+      if (member.isStatic) continue;
       if (
         member.decorators &&
         member.decorators.some((d) => d.name === 'intrinsic')
@@ -1657,7 +1676,7 @@ export function instantiateClass(
   const hasConstructor = members.some(
     (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
   );
-  if (!hasConstructor) {
+  if (!hasConstructor && !decl.isExtension) {
     const bodyStmts: any[] = [];
     if (decl.superClass) {
       bodyStmts.push({
@@ -1847,6 +1866,9 @@ export function instantiateClass(
         });
       }
     } else if (member.type === NodeType.FieldDefinition) {
+      if (member.isStatic) {
+        continue;
+      }
       // Implicit accessors
       if (!member.name.name.startsWith('#')) {
         let intrinsic = false;
@@ -1952,6 +1974,20 @@ export function instantiateClass(
   }
 
   // Create VTable Struct Type
+  if (classInfo.isExtension) {
+    /*
+    const declForGen = {
+      ...decl,
+      superClass: undefined,
+    } as ClassDeclaration;
+
+    ctx.bodyGenerators.push(() => {
+      generateClassMethods(ctx, declForGen);
+    });
+    */
+    return;
+  }
+
   let vtableSuperTypeIndex: number | undefined;
   const baseClassInfo = decl.superClass
     ? ctx.classes.get(decl.superClass.name)

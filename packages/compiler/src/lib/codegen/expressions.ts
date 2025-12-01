@@ -42,7 +42,7 @@ import {
   instantiateGenericFunction,
 } from './functions.js';
 import {generateBlockStatement} from './statements.js';
-import {TypeKind, type FunctionType} from '../types.js';
+import {TypeKind, type FunctionType, type ClassType} from '../types.js';
 import type {ClassInfo} from './types.js';
 
 export function generateExpression(
@@ -562,6 +562,22 @@ function generateMemberExpression(
   expr: MemberExpression,
   body: number[],
 ) {
+  // Check for static member access
+  if (
+    expr.object.type === NodeType.Identifier &&
+    ctx.classes.has((expr.object as Identifier).name)
+  ) {
+    const className = (expr.object as Identifier).name;
+    const fieldName = expr.property.name;
+    const mangledName = `${className}_${fieldName}`;
+    const global = ctx.getGlobal(mangledName);
+    if (global) {
+      body.push(Opcode.global_get);
+      body.push(...WasmModule.encodeSignedLEB128(global.index));
+      return;
+    }
+  }
+
   const objectType = inferType(ctx, expr.object);
 
   // Handle array/string length
@@ -596,19 +612,34 @@ function generateMemberExpression(
   const fieldName = expr.property.name;
 
   const structTypeIndex = getHeapTypeIndex(ctx, objectType);
-  if (structTypeIndex === -1) {
-    throw new Error(`Invalid object type for field access: ${fieldName}`);
-  }
 
   let foundClass: ClassInfo | undefined;
-  for (const info of ctx.classes.values()) {
-    if (info.structTypeIndex === structTypeIndex) {
-      foundClass = info;
-      break;
+
+  // Try to find class from AST type first
+  if (
+    expr.object.inferredType &&
+    expr.object.inferredType.kind === TypeKind.Class
+  ) {
+    const classType = expr.object.inferredType as ClassType;
+    if (ctx.classes.has(classType.name)) {
+      foundClass = ctx.classes.get(classType.name);
+    }
+  }
+
+  if (!foundClass && structTypeIndex !== -1) {
+    for (const info of ctx.classes.values()) {
+      if (info.structTypeIndex === structTypeIndex) {
+        foundClass = info;
+        break;
+      }
     }
   }
 
   if (!foundClass) {
+    if (structTypeIndex === -1) {
+      throw new Error(`Invalid object type for field access: ${fieldName}`);
+    }
+
     // Check if it's a Record
     let recordKey: string | undefined;
     for (const [key, index] of ctx.recordTypes) {
@@ -735,10 +766,12 @@ function generateMemberExpression(
       // Stack: [this]
 
       // Check if we can use static dispatch (final class or final method)
-      const useStaticDispatch = foundClass.isFinal || methodInfo.isFinal;
+      const useStaticDispatch =
+        foundClass.isFinal || methodInfo.isFinal || foundClass.isExtension;
 
       if (useStaticDispatch) {
         // Static dispatch - direct call
+        // Object is already on stack from generateExpression(ctx, expr.object, body) above
         body.push(Opcode.call);
         body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
       } else {
@@ -948,7 +981,19 @@ function generateCallExpression(
     const structTypeIndex = getHeapTypeIndex(ctx, objectType);
 
     let foundClass: ClassInfo | undefined;
-    if (structTypeIndex !== -1) {
+
+    // Try to find class from AST type first (needed for extension classes on primitives)
+    if (
+      memberExpr.object.inferredType &&
+      memberExpr.object.inferredType.kind === TypeKind.Class
+    ) {
+      const classType = memberExpr.object.inferredType as ClassType;
+      if (ctx.classes.has(classType.name)) {
+        foundClass = ctx.classes.get(classType.name);
+      }
+    }
+
+    if (!foundClass && structTypeIndex !== -1) {
       for (const info of ctx.classes.values()) {
         if (info.structTypeIndex === structTypeIndex) {
           foundClass = info;
