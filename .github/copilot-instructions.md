@@ -23,49 +23,65 @@ The official language reference is maintained in `docs/language-reference.md`.
 ### Type System
 
 - **Strongly Typed**: All expressions have a static type determined at compile time.
-- **Soundness**: The type system is sound; if a program type-checks, it will not exhibit type errors at runtime (barring unsafe blocks, if added later).
-- **No Coercion**: Unlike JavaScript, Zena does not perform implicit type coercion. Operations between mismatched types (e.g., adding an integer to a string) result in a compile-time error.
-- **Inference**: Local variable types are inferred from their initializer.
+- **Soundness**: The type system is sound; if a program type-checks, it will not exhibit type errors at runtime.
+- **No Coercion**: No implicit type coercion.
+- **Inference**: Local variable types are inferred.
+- **Advanced Types**:
+  - **Type Aliases**: `type ID = string;`
+  - **Distinct Types**: `distinct type Meters = i32;` (Nominal typing wrapper).
+  - **Union Types**: `string | i32` (Supported in specific contexts like argument adaptation).
 
 ### Variables
 
-- `let x = 1;` // Immutable binding (const in JS). Type inferred as `i32`.
-- `var y = 1;` // Mutable binding
-- Block scoping applies to both.
+- `let x = 1;` // Immutable binding.
+- `var y = 1;` // Mutable binding.
+- Block scoping.
+- **Destructuring**: Supported for Records, Tuples, and Classes. `let {x, y} = point;`
+
+### Control Flow
+
+- **If**: `if (cond) { ... } else { ... }`
+- **While**: `while (cond) { ... }`
+- **For**: `for (var i = 0; i < 10; i = i + 1) { ... }` (C-style).
 
 ### Functions
 
 - Only arrow syntax: `const add = (a: i32, b: i32) => a + b;`
-- Named parameters should be supported natively in the compiler to map to WASM function signatures efficiently.
+- **Closures**: Functions capture variables from enclosing scopes.
+- **Argument Adaptation**: Can pass functions with fewer arguments than expected.
 
-### Classes
+### Classes & OOP
 
-- **Implementation**: Classes are backed by WASM GC Structs (fixed layout, typed fields).
-- **Syntax**: Standard class syntax defines the struct layout.
-- **Instantiation**: Class instances are created using constructors (e.g., `new Point(1, 2)`). Object literals `{ ... }` are reserved for Records.
-- **Constructors**: Constructors are named `#new`, NOT `constructor`.
-  - Example: `class Point { x: i32; y: i32; #new(x: i32, y: i32) { this.x = x; this.y = y; } }`
-- Classical inheritance model.
-- No mutable prototype chain.
-- Classes are expressions.
-- Fields imply auto-accessors.
+- **Classes**: `class Point { x: i32; #new(x: i32) { this.x = x; } }`
+- **Inheritance**: `class Child extends Parent`.
+- **Interfaces**: `interface Drawable { draw(): void; }`. Classes implement via `implements`.
+- **Mixins**: `mixin Timestamped { time: i32; }`. Used via `class Log extends Base with Timestamped`.
+- **Extension Classes**: `extension class ArrayExt on array<T> { ... }`. Adds methods to existing types.
+- **Accessors**: Getters/Setters supported.
+- **Visibility**: `#` prefix for private fields.
 
-### Records & Tuples (Immutable - Default)
+### Records & Tuples (Immutable)
 
-- **Records**: `{ x: 1, y: 2 }`. Creates an **immutable** anonymous struct. This is the default for object literals.
-- **Tuples**: `[ 1, "hello" ]`. Creates an **immutable** fixed-length struct with indexed fields. This is the default for array literals.
-- **Implementation**: Backed by immutable WASM GC Structs.
+- **Records**: `{ x: 1 }`. Immutable struct.
+- **Tuples**: `[ 1, "a" ]`. Immutable struct.
 
-### Mutable Collections (Maps & Arrays)
+### Mutable Collections
 
-- **Maps**: `#{ key: value }`. Creates a mutable Map (Hash Map).
-- **Arrays**: `#[ 1, 2, 3 ]`. Creates a mutable Array (WASM GC Array).
-- **Implementation**: Backed by Hash Maps and WASM GC Arrays respectively.
+- **Maps**: `#{ key: value }`. Mutable Hash Map. (Not implemented yet)
+- **Arrays**: `#[ 1, 2 ]`. Mutable WASM GC Array. (Not implemented yet)
+
+### Strings
+
+- **Literals**: `'text'` or `"text"`.
+- **Template Literals**: `` `Value: ${x}` ``.
+- **Tagged Templates**:
+  ```
+  tag`template`
+  ```
 
 ### Modules
 
 - ES Module syntax (`import`, `export`).
-- No global namespace pollution; use imports for stdlib.
 
 ## Implementation Plan
 
@@ -141,15 +157,28 @@ This project is an **npm monorepo** managed with **Wireit**.
 - **Documentation**:
   - Record any new coding preferences, design choices, or architecture decisions in this file (`.github/copilot-instructions.md`).
   - Update `docs/language-reference.md` when language syntax or semantics change.
+  - **Compiler Architecture**: Refer to `docs/design/compiler-architecture.md` for a detailed guide on the compiler's internals, key classes, and navigation.
   - Maintain design documents in `docs/design/` for complex features.
     - **Architecture**: `docs/design/compiler-architecture.md`
+    - **Argument Adaptation**: `docs/design/argument-adaptation.md`
+    - **Arrays**: `docs/design/arrays.md`
     - **Classes**: `docs/design/classes.md`
+    - **Decorators**: `docs/design/decorators.md`
+    - **Destructuring**: `docs/design/destructuring.md`
+    - **Diagnostics**: `docs/design/diagnostics.md`
+    - **Function Overloading**: `docs/design/function-overloading.md`
     - **Generics**: `docs/design/generics.md`
+    - **Host Interop**: `docs/design/host-interop.md`
     - **Interfaces**: `docs/design/interfaces.md`
     - **Maps**: `docs/design/map.md`
+    - **Mixins**: `docs/design/mixins.md`
+    - **Modules**: `docs/design/modules.md`
+    - **Optimization**: `docs/design/optimization-strategy.md`
+    - **Records & Tuples**: `docs/design/records-and-tuples.md`
     - **Standard Library**: `docs/design/standard-library.md`
     - **Strings**: `docs/design/strings.md`
     - **Types**: `docs/design/types.md`
+    - **Weak References**: `docs/design/weak-references.md`
 
 ## Future Considerations
 
