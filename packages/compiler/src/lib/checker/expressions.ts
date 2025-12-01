@@ -30,6 +30,7 @@ import {
   type TupleType,
   type Type,
   type TypeParameterType,
+  type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
 import {
@@ -215,6 +216,71 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
 
   // Always check arguments to ensure they have inferred types attached
   const argTypes = expr.arguments.map((arg) => checkExpression(ctx, arg));
+
+  if (calleeType.kind === TypeKind.Union) {
+    const unionType = calleeType as UnionType;
+    // Check if all members are callable with the given arguments
+    // We construct a synthetic target function type based on the arguments
+    // Actually, we just need to check if each member is adaptable/assignable to a call with these args.
+
+    // For now, we require all members to be functions.
+    const allFunctions = unionType.types.every(
+      (t) => t.kind === TypeKind.Function,
+    );
+    if (!allFunctions) {
+      ctx.diagnostics.reportError(
+        `Cannot call union type ${typeToString(calleeType)}: not all members are functions.`,
+        DiagnosticCode.TypeMismatch,
+      );
+      return Types.Unknown;
+    }
+
+    // Check compatibility for each member
+    let returnType: Type | null = null;
+
+    for (const member of unionType.types) {
+      const funcMember = member as FunctionType;
+
+      // Check argument count (allowing for adaptation: member can have fewer args)
+      if (funcMember.parameters.length > argTypes.length) {
+        ctx.diagnostics.reportError(
+          `Union member ${typeToString(member)} requires ${funcMember.parameters.length} arguments, but only ${argTypes.length} were provided.`,
+          DiagnosticCode.ArgumentCountMismatch,
+        );
+        return Types.Unknown;
+      }
+
+      // Check argument types
+      for (let i = 0; i < funcMember.parameters.length; i++) {
+        if (!isAssignableTo(argTypes[i], funcMember.parameters[i])) {
+          ctx.diagnostics.reportError(
+            `Argument ${i + 1} of type ${typeToString(argTypes[i])} is not assignable to parameter of type ${typeToString(funcMember.parameters[i])} in union member ${typeToString(member)}.`,
+            DiagnosticCode.TypeMismatch,
+          );
+          return Types.Unknown;
+        }
+      }
+
+      // Unify return types
+      if (returnType === null) {
+        returnType = funcMember.returnType;
+      } else if (!isAssignableTo(funcMember.returnType, returnType)) {
+        // If not assignable one way, try the other (simple union check)
+        if (isAssignableTo(returnType, funcMember.returnType)) {
+          returnType = funcMember.returnType;
+        } else {
+          // TODO: Create a union of return types? For now, error.
+          ctx.diagnostics.reportError(
+            `Incompatible return types in union call: ${typeToString(returnType)} vs ${typeToString(funcMember.returnType)}.`,
+            DiagnosticCode.TypeMismatch,
+          );
+          return Types.Unknown;
+        }
+      }
+    }
+
+    return returnType || Types.Void;
+  }
 
   if (calleeType.kind !== TypeKind.Function) {
     ctx.diagnostics.reportError(

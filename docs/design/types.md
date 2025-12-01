@@ -158,11 +158,14 @@ Zena is **Non-Nullable by Default**.
 
 **Status: Implemented**
 
-Zena supports union types, primarily for classes and nullability.
+Zena supports union types for classes, nullability, and functions.
 
 - **Implementation**:
   - If `A` and `B` share a common ancestor class `Base`, `A | B` is treated as `Base`.
   - If they are unrelated, they are treated as `any` (WASM `anyref` or `eqref`).
+- **Function Calls**:
+  - Calling a union of function types (e.g., `((a: i32) => void) | ((a: i32, b: i32) => void)`) is supported.
+  - The compiler generates a runtime dispatch sequence that checks the actual type of the function and calls it with the appropriate arguments (adapting/dropping extra arguments if necessary).
 - **Discrimination**:
   - Zena encourages **Type-Based Discrimination** (using classes) over **Tag-Based Discrimination** (string literals).
   - **Pattern Matching**:

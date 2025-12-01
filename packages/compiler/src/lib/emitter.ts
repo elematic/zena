@@ -69,7 +69,8 @@ export class WasmModule {
       buffer.push(field.mutable ? 1 : 0);
     }
     this.#types.push(buffer);
-    return this.#types.length - 1;
+    const index = this.#types.length - 1;
+    return index;
   }
 
   public addArrayType(elementType: number[], mutable: boolean): number {
@@ -359,5 +360,187 @@ export class WasmModule {
 
   public getType(index: number): number[] {
     return this.#types[index];
+  }
+
+  public getFunctionTypeArity(typeIndex: number): number {
+    const typeBytes = this.#types[typeIndex];
+    if (!typeBytes || typeBytes[0] !== 0x60) {
+      throw new Error(`Type ${typeIndex} is not a function type`);
+    }
+
+    let offset = 1;
+    // Read params count (LEB128)
+    let paramCount = 0;
+    let shift = 0;
+    while (true) {
+      const byte = typeBytes[offset++];
+      paramCount |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+    return paramCount;
+  }
+
+  public getFunctionTypeParams(typeIndex: number): number[][] {
+    const typeBytes = this.#types[typeIndex];
+    if (!typeBytes || typeBytes[0] !== 0x60) {
+      throw new Error(`Type ${typeIndex} is not a function type`);
+    }
+
+    let offset = 1;
+    // Read params count (LEB128)
+    let paramCount = 0;
+    let shift = 0;
+    while (true) {
+      const byte = typeBytes[offset++];
+      paramCount |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+
+    const params: number[][] = [];
+    for (let i = 0; i < paramCount; i++) {
+      // Read param type
+      // This is tricky because types can be multi-byte (e.g. ref null <index>).
+      // We need a proper type parser.
+      // For now, let's assume we can read it.
+      // But wait, we don't have a type parser here.
+      // However, we wrote the types, so we know the format.
+      // But reading back is hard without a full parser.
+      // Alternative: Store structured types in WasmModule?
+      // Or just store the params separately?
+      // WasmModule.#types is number[][].
+      // Maybe I should just store the structured info when I add the type?
+      // But I can't change the class structure easily without breaking things?
+      // Actually I can.
+    }
+    // Fallback: Return empty array and fail?
+    // Or implement a simple parser for the types we support.
+    // ValType is simple (1 byte).
+    // Ref types are 0x6B/0x6C + heaptype.
+    // Heap types are simple or LEB128 index.
+
+    // Let's try to parse.
+    const readType = (): number[] => {
+      const start = offset;
+      const opcode = typeBytes[offset++];
+      if (
+        opcode === 0x6b || // ref
+        opcode === 0x6c || // ref_null
+        opcode === 0x63 || // ref_eq
+        opcode === 0x64 // ref_i31
+      ) {
+        // Read heap type
+        // Heap type can be abstract (negative/high bit set) or index (positive)
+        // But in binary format, it's LEB128.
+        let val = 0;
+        let s = 0;
+        while (true) {
+          const b = typeBytes[offset++];
+          val |= (b & 0x7f) << s;
+          if ((b & 0x80) === 0) break;
+          s += 7;
+        }
+        // We just need to advance offset.
+      }
+      // Primitive types are 1 byte.
+      return typeBytes.slice(start, offset);
+    };
+
+    for (let i = 0; i < paramCount; i++) {
+      params.push(readType());
+    }
+    return params;
+  }
+
+  public getFunctionTypeIndex(funcIndex: number): number {
+    const definedIndex = funcIndex - this.#importedFunctionCount;
+    if (definedIndex < 0) {
+      // Imported function
+      // We need to find the import.
+      // This is slow, but okay for now.
+      let count = 0;
+      for (const imp of this.#imports) {
+        if (imp.kind === ExportDesc.Func) {
+          if (count === funcIndex) {
+            // We don't store the type index for imports directly in #imports?
+            // Wait, addImport takes index. Is that the type index?
+            return imp.index;
+          }
+          count++;
+        }
+      }
+      throw new Error(`Imported function ${funcIndex} not found`);
+    }
+    return this.#functions[definedIndex];
+  }
+
+  public getStructFieldType(typeIndex: number, fieldIndex: number): number[] {
+    const typeBytes = this.#types[typeIndex];
+    let offset = 0;
+
+    // Handle 'sub' (0x50) prefix if present
+    if (typeBytes[offset] === 0x50) {
+      offset++;
+      // Read supertype list length
+      let count = 0;
+      let shift = 0;
+      while (true) {
+        const b = typeBytes[offset++];
+        count |= (b & 0x7f) << shift;
+        if ((b & 0x80) === 0) break;
+        shift += 7;
+      }
+      // Skip supertypes (each is a type index)
+      for (let i = 0; i < count; i++) {
+        while (true) {
+          const b = typeBytes[offset++];
+          if ((b & 0x80) === 0) break;
+        }
+      }
+    }
+
+    if (typeBytes[offset] !== 0x5f) {
+      // struct
+      throw new Error(`Type ${typeIndex} is not a struct type`);
+    }
+    offset++;
+
+    // Read field count
+    let fieldCount = 0;
+    let shift = 0;
+    while (true) {
+      const b = typeBytes[offset++];
+      fieldCount |= (b & 0x7f) << shift;
+      if ((b & 0x80) === 0) break;
+      shift += 7;
+    }
+
+    if (fieldIndex >= fieldCount) {
+      throw new Error(
+        `Field index ${fieldIndex} out of bounds for struct type ${typeIndex}`,
+      );
+    }
+
+    const readType = (): number[] => {
+      const start = offset;
+      const opcode = typeBytes[offset++];
+      if (opcode === 0x63 || opcode === 0x64) {
+        // ref null, ref
+        // Read heap type (LEB128)
+        while (true) {
+          const b = typeBytes[offset++];
+          if ((b & 0x80) === 0) break;
+        }
+      }
+      return typeBytes.slice(start, offset);
+    };
+
+    for (let i = 0; i < fieldIndex; i++) {
+      readType();
+      offset++; // Skip mutability byte
+    }
+
+    return readType();
   }
 }

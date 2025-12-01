@@ -43,7 +43,12 @@ import {
   instantiateGenericMethod,
 } from './functions.js';
 import {generateBlockStatement} from './statements.js';
-import {TypeKind, type FunctionType, type ClassType} from '../types.js';
+import {
+  TypeKind,
+  type FunctionType,
+  type ClassType,
+  type UnionType,
+} from '../types.js';
 import type {ClassInfo} from './types.js';
 
 export function generateExpression(
@@ -872,6 +877,18 @@ function generateThisExpression(
   expr: ThisExpression,
   body: number[],
 ) {
+  let local;
+  for (let i = ctx.scopes.length - 1; i >= 0; i--) {
+    if (ctx.scopes[i].has('this')) {
+      local = ctx.scopes[i].get('this');
+      break;
+    }
+  }
+  if (local) {
+    // Found 'this' in scope
+  } else {
+    // Not found in scope, assume it's the implicit 'this' local
+  }
   body.push(Opcode.local_get);
   body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
 }
@@ -994,8 +1011,13 @@ function generateCallExpression(
       );
 
       // Args
-      for (const arg of expr.arguments) {
-        generateExpression(ctx, arg, body);
+      const params = ctx.module.getFunctionTypeParams(methodInfo.typeIndex);
+      // params[0] is 'this' (interface instance)
+
+      for (let i = 0; i < expr.arguments.length; i++) {
+        const arg = expr.arguments[i];
+        const expectedType = params[i + 1];
+        generateAdaptedArgument(ctx, arg, expectedType, body);
       }
 
       // Load function ref
@@ -1098,9 +1120,17 @@ function generateCallExpression(
 
     if (foundClass.isExtension) {
       generateExpression(ctx, memberExpr.object, body);
-      for (const arg of expr.arguments) {
-        generateExpression(ctx, arg, body);
+
+      const funcTypeIndex = ctx.module.getFunctionTypeIndex(methodInfo.index);
+      const params = ctx.module.getFunctionTypeParams(funcTypeIndex);
+      // params[0] is 'this' (the extension object)
+
+      for (let i = 0; i < expr.arguments.length; i++) {
+        const arg = expr.arguments[i];
+        const expectedType = params[i + 1];
+        generateAdaptedArgument(ctx, arg, expectedType, body);
       }
+
       body.push(
         Opcode.call,
         ...WasmModule.encodeSignedLEB128(methodInfo.index),
@@ -1157,8 +1187,13 @@ function generateCallExpression(
       body.push(...WasmModule.encodeSignedLEB128(tempObj));
 
       // Generate arguments
-      for (const arg of expr.arguments) {
-        generateExpression(ctx, arg, body);
+      const params = ctx.module.getFunctionTypeParams(methodInfo.typeIndex);
+      // params[0] is 'this'
+
+      for (let i = 0; i < expr.arguments.length; i++) {
+        const arg = expr.arguments[i];
+        const expectedType = params[i + 1];
+        generateAdaptedArgument(ctx, arg, expectedType, body);
       }
 
       // Get function
@@ -1171,8 +1206,14 @@ function generateCallExpression(
     } else {
       generateExpression(ctx, memberExpr.object, body);
 
-      for (const arg of expr.arguments) {
-        generateExpression(ctx, arg, body);
+      const funcTypeIndex = ctx.module.getFunctionTypeIndex(methodInfo.index);
+      const params = ctx.module.getFunctionTypeParams(funcTypeIndex);
+      // params[0] is 'this'
+
+      for (let i = 0; i < expr.arguments.length; i++) {
+        const arg = expr.arguments[i];
+        const expectedType = params[i + 1];
+        generateAdaptedArgument(ctx, arg, expectedType, body);
       }
 
       body.push(Opcode.call);
@@ -2458,6 +2499,131 @@ function generateIndirectCall(
   body: number[],
 ) {
   const callee = expr.callee;
+  const calleeCheckerType = expr.callee.inferredType;
+
+  if (calleeCheckerType && calleeCheckerType.kind === TypeKind.Union) {
+    // Union Call Dispatch
+    generateExpression(ctx, callee, body);
+    const calleeType = inferType(ctx, callee);
+    const calleeLocal = ctx.declareLocal('$$union_callee', calleeType);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(calleeLocal));
+
+    const unionType = calleeCheckerType as UnionType;
+
+    // Evaluate arguments to locals
+    const argLocals: number[] = [];
+    for (const arg of expr.arguments) {
+      generateExpression(ctx, arg, body);
+      const argType = inferType(ctx, arg);
+      const local = ctx.declareLocal('$$union_arg', argType);
+      body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(local));
+      argLocals.push(local);
+    }
+
+    const resultLocal =
+      expr.inferredType && expr.inferredType.kind !== TypeKind.Void
+        ? ctx.declareLocal(
+            '$$union_result',
+            mapCheckerTypeToWasmType(ctx, expr.inferredType),
+          )
+        : -1;
+
+    // Block to break out of once a match is found
+    body.push(Opcode.block);
+    body.push(0x40);
+
+    for (const member of unionType.types) {
+      if (member.kind !== TypeKind.Function) continue;
+      const wasmType = mapCheckerTypeToWasmType(ctx, member);
+      const typeIndex = decodeTypeIndex(wasmType);
+
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(calleeLocal),
+      );
+      body.push(0xfb, GcOpcode.ref_test);
+      body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+
+      body.push(Opcode.if);
+      body.push(0x40);
+
+      // Cast Callee (we need it multiple times, so maybe tee it? or just get it again)
+      // Actually, we need to push arguments first (context, args...), then func ref.
+
+      // 1. Get Context
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(calleeLocal),
+      );
+      body.push(0xfb, GcOpcode.ref_cast_null);
+      body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+      body.push(0xfb, GcOpcode.struct_get);
+      body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+      body.push(1); // Field 1: context
+
+      // 2. Args
+      const funcRefTypeIndex = ctx.module.getStructFieldType(typeIndex, 0);
+      const funcTypeIndex = decodeTypeIndex(funcRefTypeIndex);
+      const sigParams = ctx.module.getFunctionTypeParams(funcTypeIndex);
+      // sigParams[0] is context
+
+      // Push arguments matching the signature arity
+      // We skip the first param (context) as it's already pushed
+      const arity = sigParams.length - 1;
+
+      for (let i = 0; i < arity; i++) {
+        if (i < argLocals.length) {
+          body.push(
+            Opcode.local_get,
+            ...WasmModule.encodeSignedLEB128(argLocals[i]),
+          );
+        } else {
+          // Should not happen if checker did its job
+          throw new Error(`Not enough arguments for union member call`);
+        }
+      }
+
+      // 3. Get Func Ref
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(calleeLocal),
+      );
+      body.push(0xfb, GcOpcode.ref_cast_null);
+      body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+      body.push(0xfb, GcOpcode.struct_get);
+      body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+      body.push(0); // Field 0: func ref
+
+      // Call
+      body.push(Opcode.call_ref);
+      body.push(...WasmModule.encodeSignedLEB128(funcTypeIndex));
+
+      // Handle Result
+      if (resultLocal !== -1) {
+        body.push(
+          Opcode.local_set,
+          ...WasmModule.encodeSignedLEB128(resultLocal),
+        );
+      }
+
+      body.push(Opcode.br, 1); // Break out of the 'block' (depth 1: if -> block)
+      body.push(Opcode.end); // End of 'if'
+    }
+
+    body.push(Opcode.unreachable); // If no type matched
+    body.push(Opcode.end); // End of block
+
+    // Load result
+    if (resultLocal !== -1) {
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(resultLocal),
+      );
+    }
+
+    return;
+  }
+
   generateExpression(ctx, callee, body);
 
   const closureType = inferType(ctx, callee);
@@ -2470,7 +2636,7 @@ function generateIndirectCall(
 
   // 1. Load closure struct (it's on stack)
   const closureLocal = ctx.declareLocal('$$closure', closureType);
-  body.push(Opcode.local_tee);
+  body.push(Opcode.local_set);
   body.push(...WasmModule.encodeSignedLEB128(closureLocal));
 
   // 2. Load Context
@@ -2769,4 +2935,141 @@ function findArrayIntrinsic(
     }
   }
   return undefined;
+}
+
+export function generateAdaptedArgument(
+  ctx: CodegenContext,
+  arg: Expression,
+  expectedType: number[],
+  body: number[],
+) {
+  // 1. Infer actual type
+  let actualType: number[];
+  try {
+    actualType = inferType(ctx, arg);
+  } catch (e) {
+    // If inference fails, fallback to normal generation
+    generateExpression(ctx, arg, body);
+    return;
+  }
+
+  if (isAdaptable(ctx, actualType, expectedType)) {
+    const expectedIndex = decodeTypeIndex(expectedType);
+    const actualIndex = decodeTypeIndex(actualType);
+    const expectedClosure = ctx.closureStructs.get(expectedIndex)!;
+    const actualClosure = ctx.closureStructs.get(actualIndex)!;
+    const actualArity =
+      ctx.module.getFunctionTypeArity(actualClosure.funcTypeIndex) - 1;
+
+    // Adaptation needed!
+
+    // Generate the argument (the actual closure)
+    generateExpression(ctx, arg, body);
+
+    // Create Adapter
+    // We need to create a new closure that wraps the actual closure.
+    // The wrapper's context will be the actual closure.
+
+    // Wrapper Function Signature: Same as expected function
+    const wrapperFuncIndex = ctx.module.addFunction(
+      expectedClosure.funcTypeIndex,
+    );
+    ctx.module.declareFunction(wrapperFuncIndex);
+
+    ctx.pendingHelperFunctions.push(() => {
+      const locals: number[][] = [];
+      const funcBody: number[] = [];
+
+      // Params: 0=Context(eqref), 1..N=Args
+
+      // 1. Context for wrapped call
+      funcBody.push(Opcode.local_get, 0);
+      funcBody.push(
+        0xfb,
+        GcOpcode.ref_cast,
+        ...WasmModule.encodeSignedLEB128(actualIndex),
+      );
+      funcBody.push(
+        0xfb,
+        GcOpcode.struct_get,
+        ...WasmModule.encodeSignedLEB128(actualIndex),
+        ...WasmModule.encodeSignedLEB128(1),
+      ); // context field
+
+      // 2. Args for wrapped call (subset of wrapper args)
+      for (let i = 0; i < actualArity; i++) {
+        funcBody.push(Opcode.local_get, i + 1);
+      }
+
+      // 3. Func Ref for wrapped call
+      funcBody.push(Opcode.local_get, 0);
+      funcBody.push(
+        0xfb,
+        GcOpcode.ref_cast,
+        ...WasmModule.encodeSignedLEB128(actualIndex),
+      );
+      funcBody.push(
+        0xfb,
+        GcOpcode.struct_get,
+        ...WasmModule.encodeSignedLEB128(actualIndex),
+        ...WasmModule.encodeSignedLEB128(0),
+      ); // func field
+
+      // 4. Call
+      funcBody.push(
+        Opcode.call_ref,
+        ...WasmModule.encodeSignedLEB128(actualClosure.funcTypeIndex),
+      );
+
+      funcBody.push(Opcode.end);
+
+      ctx.module.addCode(wrapperFuncIndex, locals, funcBody);
+    });
+
+    // Instantiate Wrapper Closure
+    // Stack: [ActualClosure] (from generateExpression above)
+
+    // Use a temp local to hold the actual closure while we push the func ref
+    const tempLocal = ctx.declareLocal('$$temp_closure_adapter', actualType);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempLocal));
+
+    body.push(
+      Opcode.ref_func,
+      ...WasmModule.encodeSignedLEB128(wrapperFuncIndex),
+    );
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
+
+    body.push(
+      0xfb,
+      GcOpcode.struct_new,
+      ...WasmModule.encodeSignedLEB128(expectedIndex),
+    );
+    return;
+  }
+
+  generateExpression(ctx, arg, body);
+}
+
+export function isAdaptable(
+  ctx: CodegenContext,
+  actualType: number[],
+  expectedType: number[],
+): boolean {
+  const expectedIndex = decodeTypeIndex(expectedType);
+  const actualIndex = decodeTypeIndex(actualType);
+
+  const expectedClosure = ctx.closureStructs.get(expectedIndex);
+  const actualClosure = ctx.closureStructs.get(actualIndex);
+
+  if (expectedClosure && actualClosure) {
+    const expectedArity =
+      ctx.module.getFunctionTypeArity(expectedClosure.funcTypeIndex) - 1;
+    const actualArity =
+      ctx.module.getFunctionTypeArity(actualClosure.funcTypeIndex) - 1;
+
+    if (actualArity < expectedArity) {
+      return true;
+    }
+  }
+  return false;
 }

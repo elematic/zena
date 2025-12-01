@@ -185,6 +185,49 @@ let add5 = makeAdder(5);
 let result = add5(10); // 15
 ```
 
+### Argument Adaptation
+
+Zena supports passing functions with fewer arguments than expected by the receiver. The compiler automatically generates an adapter to bridge the difference. This applies to function arguments, variable assignments, and union type matching.
+
+```typescript
+// Function expecting a callback with 3 arguments
+let map = (fn: (item: i32, index: i32, array: MyArray) => i32) => { ... };
+
+// You can pass a callback that uses fewer arguments
+map((item) => item * 2); // Ignores index and array
+map((item, index) => item + index); // Ignores array
+
+// Assignment to Union Type
+type Handler = (a: i32, b: i32) => void;
+
+// Target is Union: Handler | string
+// Provided: (a: i32) => void
+// Result: Adapts to Handler
+let h: Handler | string = (a: i32) => {};
+
+```
+
+This adaptation incurs a small performance overhead (allocation of a wrapper closure) and is only applied when the arity mismatch is detected at compile time.
+
+### Calling Union Types
+
+Zena supports calling a function that is typed as a Union of function types, even if those functions have different arities. The compiler generates a runtime dispatch that checks the actual type of the function and calls it with the appropriate number of arguments. Extra arguments are ignored if the runtime function expects fewer.
+
+```typescript
+type Fn1 = (a: i32) => i32;
+type Fn2 = (a: i32, b: i32) => i32;
+type AnyFn = Fn1 | Fn2;
+
+let f1: AnyFn = (a) => a;
+let f2: AnyFn = (a, b) => a + b;
+
+// Call with maximum arguments
+// If f1 is the runtime value, it receives (10). '20' is ignored.
+// If f2 is the runtime value, it receives (10, 20).
+f1(10, 20); // Returns 10
+f2(10, 20); // Returns 30
+```
+
 ### Function Overloading
 
 Zena supports function overloading for declared external functions. This allows you to define multiple signatures for the same function name, provided they have different parameter lists.

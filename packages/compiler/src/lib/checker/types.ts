@@ -578,5 +578,56 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     }
   }
 
+  if (source.kind === TypeKind.Function && target.kind === TypeKind.Function) {
+    const sourceFunc = source as FunctionType;
+    const targetFunc = target as FunctionType;
+
+    // 1. Return type must be assignable (Covariant)
+    if (!isAssignableTo(sourceFunc.returnType, targetFunc.returnType)) {
+      return false;
+    }
+
+    // 2. Parameter count: Source must have <= Target parameters
+    if (sourceFunc.parameters.length > targetFunc.parameters.length) {
+      return false;
+    }
+
+    // 3. Parameter types: Source params must be assignable FROM Target params (Contravariant)
+    for (let i = 0; i < sourceFunc.parameters.length; i++) {
+      if (!isAssignableTo(targetFunc.parameters[i], sourceFunc.parameters[i])) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   return typeToString(source) === typeToString(target);
+}
+
+export function isAdaptable(source: Type, target: Type): boolean {
+  if (source.kind === TypeKind.Function && target.kind === TypeKind.Function) {
+    const sourceFunc = source as FunctionType;
+    const targetFunc = target as FunctionType;
+
+    // 1. Return type must be assignable (Covariant)
+    if (!isAssignableTo(sourceFunc.returnType, targetFunc.returnType)) {
+      return false;
+    }
+
+    // 2. Parameter count: Source must have <= Target parameters
+    if (sourceFunc.parameters.length > targetFunc.parameters.length) {
+      return false;
+    }
+
+    // 3. Parameter types: Source params must be assignable FROM Target params (Contravariant)
+    for (let i = 0; i < sourceFunc.parameters.length; i++) {
+      if (!isAssignableTo(targetFunc.parameters[i], sourceFunc.parameters[i])) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+  return false;
 }

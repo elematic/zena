@@ -684,10 +684,16 @@ export function registerClassMethods(
         !member.isStatic &&
         !(classInfo.isExtension && methodName === '#new')
       ) {
+        console.log(`Method ${methodName} thisType:`, thisType);
         params.push(thisType);
       }
       for (const param of member.params) {
-        params.push(mapType(ctx, param.typeAnnotation));
+        const mapped = mapType(ctx, param.typeAnnotation);
+        console.log(
+          `Method ${methodName} param ${param.name.name} mapped to:`,
+          mapped,
+        );
+        params.push(mapped);
       }
 
       let results: number[][] = [];
@@ -1474,8 +1480,7 @@ export function mapType(
 ): number[] {
   const typeContext = context || ctx.currentTypeContext;
   if (!type) return [ValType.i32];
-
-  // console.log(`mapType: ${type.name}`);
+  console.log('mapType input:', JSON.stringify(type, null, 2));
 
   // Resolve generic type parameters
   if (
@@ -2258,10 +2263,12 @@ export function typeToTypeAnnotation(
   type: Type,
   erasedTypeParams?: Set<string>,
 ): TypeAnnotation {
-  // if (type.kind === TypeKind.Class) {
-  //   const ct = type as ClassType;
-  //   // console.log(`typeToTypeAnnotation: Class ${ct.name}, typeArgs: ${ct.typeArguments?.length}, typeParams: ${ct.typeParameters?.length}`);
-  // }
+  if (type.kind === TypeKind.Class) {
+    const ct = type as ClassType;
+    console.log(
+      `typeToTypeAnnotation: Class ${ct.name}, typeArgs: ${ct.typeArguments?.length}`,
+    );
+  }
   switch (type.kind) {
     case TypeKind.Number:
       return {
@@ -2416,6 +2423,7 @@ export function mapCheckerTypeToWasmType(
   ctx: CodegenContext,
   type: Type,
 ): number[] {
+  console.log(`mapCheckerTypeToWasmType: ${type.kind}`);
   if (type.kind === TypeKind.Number) {
     const name = (type as NumberType).name;
     if (name === 'i32') return [ValType.i32];

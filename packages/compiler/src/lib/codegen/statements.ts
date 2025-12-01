@@ -10,12 +10,18 @@ import {
   type TuplePattern,
   type VariableDeclaration,
   type WhileStatement,
+  type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
 import {decodeTypeIndex, getClassFromTypeIndex, mapType} from './classes.js';
 import type {CodegenContext} from './context.js';
-import {generateExpression, inferType} from './expressions.js';
+import {
+  generateExpression,
+  inferType,
+  generateAdaptedArgument,
+  isAdaptable,
+} from './expressions.js';
 
 export function generateStatement(
   ctx: CodegenContext,
@@ -224,8 +230,47 @@ export function generateLocalVariableDeclaration(
   decl: VariableDeclaration,
   body: number[],
 ) {
-  generateExpression(ctx, decl.init, body);
-  const exprType = inferType(ctx, decl.init);
+  let exprType: number[] = [];
+  let adapted = false;
+
+  // Resolve type alias if necessary
+  let typeAnnotation = decl.typeAnnotation;
+  if (
+    typeAnnotation &&
+    typeAnnotation.type === NodeType.TypeAnnotation &&
+    ctx.typeAliases.has(typeAnnotation.name)
+  ) {
+    typeAnnotation = resolveType(ctx, typeAnnotation);
+  }
+
+  // Check for Union Adaptation
+  if (typeAnnotation && typeAnnotation.type === NodeType.UnionTypeAnnotation) {
+    // Infer actual type of initializer
+    let actualType: number[] = [];
+    try {
+      actualType = inferType(ctx, decl.init);
+    } catch (e) {
+      // Ignore inference errors
+    }
+
+    if (actualType.length > 0) {
+      // Try to find a member type that requires adaptation
+      for (const member of typeAnnotation.types) {
+        const memberWasmType = mapType(ctx, member, ctx.currentTypeContext);
+        if (isAdaptable(ctx, actualType, memberWasmType)) {
+          generateAdaptedArgument(ctx, decl.init, memberWasmType, body);
+          adapted = true;
+          exprType = memberWasmType;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!adapted) {
+    generateExpression(ctx, decl.init, body);
+    exprType = inferType(ctx, decl.init);
+  }
 
   let type: number[];
   if (decl.typeAnnotation) {
@@ -481,4 +526,14 @@ export function generateReturnStatement(
   // If we are in a block, we might need 'return'.
   // Let's use 'return' opcode for explicit return statements.
   body.push(Opcode.return);
+}
+
+function resolveType(
+  ctx: CodegenContext,
+  type: TypeAnnotation,
+): TypeAnnotation {
+  if (type.type === NodeType.TypeAnnotation && ctx.typeAliases.has(type.name)) {
+    return resolveType(ctx, ctx.typeAliases.get(type.name)!);
+  }
+  return type;
 }
