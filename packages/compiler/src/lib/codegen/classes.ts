@@ -643,7 +643,7 @@ export function registerClassMethods(
         }
       }
 
-      if (methodName !== '#new' && !intrinsic && !vtable.includes(methodName)) {
+      if (methodName !== '#new' && !intrinsic && !vtable.includes(methodName) && !member.isStatic) {
         vtable.push(methodName);
       }
 
@@ -667,14 +667,24 @@ export function registerClassMethods(
         }
       }
 
-      const params = [thisType];
+      const params: number[][] = [];
+      if (!member.isStatic && !(classInfo.isExtension && methodName === '#new')) {
+        params.push(thisType);
+      }
       for (const param of member.params) {
         params.push(mapType(ctx, param.typeAnnotation));
       }
 
       let results: number[][] = [];
       if (methodName === '#new') {
-        results = [];
+        if (classInfo.isExtension && classInfo.onType) {
+          results = [classInfo.onType];
+        } else if (member.isStatic && member.returnType) {
+          const mapped = mapType(ctx, member.returnType);
+          if (mapped.length > 0) results = [mapped];
+        } else {
+          results = [];
+        }
       } else if (member.returnType) {
         const mapped = mapType(ctx, member.returnType);
         if (mapped.length > 0) results = [mapped];
@@ -1069,40 +1079,61 @@ export function generateClassMethods(
 
       // Params
       // 0: this
-      ctx.defineLocal('this', ctx.nextLocalIndex++, methodInfo.paramTypes[0]);
+      if (!member.isStatic && !(classInfo.isExtension && member.name.name === '#new')) {
+        ctx.defineLocal(
+          'this',
+          ctx.nextLocalIndex++,
+          methodInfo.paramTypes[0],
+        );
+      }
 
       for (let i = 0; i < member.params.length; i++) {
         const param = member.params[i];
         mapType(ctx, param.typeAnnotation!);
+        // For extension constructors, params start at 0 (since no implicit this param)
+        const paramTypeIndex =
+          member.isStatic || (classInfo.isExtension && member.name.name === '#new')
+            ? i
+            : i + 1;
         ctx.defineLocal(
           param.name.name,
           ctx.nextLocalIndex++,
-          methodInfo.paramTypes[i + 1],
+          methodInfo.paramTypes[paramTypeIndex],
         );
       }
 
-      // Downcast 'this' if needed (e.g. overriding a method from a superclass)
-      const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
-      let targetTypeIndex = classInfo.structTypeIndex;
-      if (classInfo.isExtension && classInfo.onType) {
-        targetTypeIndex = decodeTypeIndex(classInfo.onType);
+      if (classInfo.isExtension && member.name.name === '#new') {
+        // Extension constructor: 'this' is a local variable, not a param
+        const thisLocalIndex = ctx.nextLocalIndex++;
+        ctx.defineLocal('this', thisLocalIndex, classInfo.onType!);
+        ctx.thisLocalIndex = thisLocalIndex;
+        ctx.extraLocals.push(classInfo.onType!);
       }
 
-      if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
-        const realThisType = [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(targetTypeIndex),
-        ];
-        const realThisLocal = ctx.nextLocalIndex++;
-        ctx.extraLocals.push(realThisType);
+      // Downcast 'this' if needed (e.g. overriding a method from a superclass)
+      if (!member.isStatic) {
+        const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
+        let targetTypeIndex = classInfo.structTypeIndex;
+        if (classInfo.isExtension && classInfo.onType) {
+          targetTypeIndex = decodeTypeIndex(classInfo.onType);
+        }
 
-        body.push(Opcode.local_get, 0);
-        body.push(0xfb, GcOpcode.ref_cast_null);
-        body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
-        body.push(Opcode.local_set, realThisLocal);
+        if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
+          const realThisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(targetTypeIndex),
+          ];
+          const realThisLocal = ctx.nextLocalIndex++;
+          ctx.extraLocals.push(realThisType);
 
-        ctx.defineLocal('this', realThisLocal, realThisType);
-        ctx.thisLocalIndex = realThisLocal;
+          body.push(Opcode.local_get, 0);
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
+          body.push(Opcode.local_set, realThisLocal);
+
+          ctx.defineLocal('this', realThisLocal, realThisType);
+          ctx.thisLocalIndex = realThisLocal;
+        }
       }
 
       if (member.isAbstract) {
@@ -1175,6 +1206,12 @@ export function generateClassMethods(
           } else {
             generateBlockStatement(ctx, member.body, body);
           }
+        }
+
+        if (classInfo.isExtension) {
+          // Return 'this'
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
         }
       } else {
         if (member.body && member.body.type === NodeType.BlockStatement) {
@@ -1726,7 +1763,10 @@ export function instantiateClass(
         ];
       }
 
-      const params = [thisType];
+      const params: number[][] = [];
+      if (!member.isStatic) {
+        params.push(thisType);
+      }
       for (const param of member.params) {
         const pType = mapType(ctx, param.typeAnnotation, context);
         params.push(pType);
@@ -1734,7 +1774,12 @@ export function instantiateClass(
 
       let results: number[][] = [];
       if (methodName === '#new') {
-        results = [];
+        if (member.isStatic && member.returnType) {
+          const mapped = mapType(ctx, member.returnType, context);
+          if (mapped.length > 0) results = [mapped];
+        } else {
+          results = [];
+        }
       } else if (member.returnType) {
         const mapped = mapType(ctx, member.returnType, context);
         if (mapped.length > 0) results = [mapped];

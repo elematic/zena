@@ -137,6 +137,30 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       );
       return Types.Unknown;
     }
+    if (ctx.currentClass.isExtension) {
+      if (!ctx.currentClass.onType) {
+        return Types.Unknown;
+      }
+
+      if (expr.arguments.length !== 1) {
+        ctx.diagnostics.reportError(
+          `Extension class constructor must call 'super' with exactly one argument.`,
+          DiagnosticCode.ArgumentCountMismatch,
+        );
+      } else {
+        const argType = checkExpression(ctx, expr.arguments[0]);
+        if (!isAssignableTo(argType, ctx.currentClass.onType)) {
+          ctx.diagnostics.reportError(
+            `Type mismatch in super call: expected ${typeToString(ctx.currentClass.onType)}, got ${typeToString(argType)}`,
+            DiagnosticCode.TypeMismatch,
+          );
+        }
+      }
+
+      ctx.isThisInitialized = true;
+      return Types.Void;
+    }
+
     if (!ctx.currentClass.superType) {
       ctx.diagnostics.reportError(
         `Class '${ctx.currentClass.name}' does not have a superclass.`,

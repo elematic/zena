@@ -1231,11 +1231,11 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
 
   if (
     method.name.name === '#new' &&
-    ctx.currentClass?.superType &&
+    (ctx.currentClass?.superType || ctx.currentClass?.isExtension) &&
     !ctx.isThisInitialized
   ) {
     ctx.diagnostics.reportError(
-      `Constructors in derived classes must call 'super()'.`,
+      `Constructors in derived classes and extensions must call 'super()'.`,
       DiagnosticCode.UnknownError,
     );
   }

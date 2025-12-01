@@ -611,6 +611,13 @@ export class Parser {
               name: '#' + id.name,
               loc: id.loc,
             };
+          } else if (this.#match(TokenType.New)) {
+            const token = this.#previous();
+            property = {
+              type: NodeType.Identifier,
+              name: 'new',
+              loc: this.#locFromToken(token),
+            };
           } else {
             property = this.#parseIdentifier();
           }
@@ -640,6 +647,13 @@ export class Parser {
             type: NodeType.Identifier,
             name: '#' + id.name,
             loc: id.loc,
+          };
+        } else if (this.#match(TokenType.New)) {
+          const token = this.#previous();
+          property = {
+            type: NodeType.Identifier,
+            name: 'new',
+            loc: this.#locFromToken(token),
           };
         } else {
           property = this.#parseIdentifier();
@@ -1203,6 +1217,13 @@ export class Parser {
         const id = this.#parseIdentifier();
         name = {type: NodeType.Identifier, name: '#' + id.name};
       }
+    } else if (this.#match(TokenType.New)) {
+      const token = this.#previous();
+      name = {
+        type: NodeType.Identifier,
+        name: 'new',
+        loc: this.#locFromToken(token),
+      };
     } else {
       name = this.#parseIdentifier();
     }

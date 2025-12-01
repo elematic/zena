@@ -498,6 +498,19 @@ function generateNewExpression(
   if (!classInfo) throw new Error(`Class ${className} not found`);
 
   if (classInfo.isExtension && classInfo.onType) {
+    // Extension class instantiation
+    const ctor = classInfo.methods.get('#new');
+    if (ctor) {
+      for (const arg of expr.arguments) {
+        generateExpression(ctx, arg, body);
+      }
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(ctor.index));
+      return;
+    }
+
+    // Fallback for array extensions without explicit constructor (e.g. new IntArray(10))
+    // This should probably be deprecated in favor of explicit constructors or intrinsics
     const typeIndex = decodeTypeIndex(classInfo.onType);
 
     if (expr.arguments.length !== 1) {
@@ -899,6 +912,26 @@ function generateCallExpression(
       return;
     }
 
+    if (
+      memberExpr.object.type === NodeType.Identifier &&
+      ctx.classes.has((memberExpr.object as Identifier).name) &&
+      !ctx.getLocal((memberExpr.object as Identifier).name)
+    ) {
+      const className = (memberExpr.object as Identifier).name;
+      const classInfo = ctx.classes.get(className)!;
+      const methodInfo = classInfo.methods.get(methodName);
+
+      if (methodInfo) {
+        // Static method call
+        for (const arg of expr.arguments) {
+          generateExpression(ctx, arg, body);
+        }
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+        return;
+      }
+    }
+
     const objectType = inferType(ctx, memberExpr.object);
     const typeIndex = decodeTypeIndex(objectType);
 
@@ -1125,6 +1158,17 @@ function generateCallExpression(
     }
   } else if (expr.callee.type === NodeType.SuperExpression) {
     // Super constructor call
+    if (ctx.currentClass && ctx.currentClass.isExtension) {
+      // Extension class super call: super(value) -> this = value
+      if (expr.arguments.length !== 1) {
+        throw new Error('Extension super call expects 1 argument');
+      }
+      generateExpression(ctx, expr.arguments[0], body);
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
+      return;
+    }
+
     if (!ctx.currentClass || !ctx.currentClass.superClass) {
       throw new Error(
         'Super constructor call outside of class with superclass',
