@@ -26,7 +26,15 @@ async function compile(input: string) {
   const compiler = new Compiler(host);
   const program = compiler.bundle('/main.zena');
 
-  const checker = new TypeChecker(program, compiler);
+  const checker = new TypeChecker(program, compiler, {
+    path: '/main.zena',
+    isStdlib: true,
+    exports: new Map(),
+    source: input,
+    ast: program,
+    imports: new Map(),
+    diagnostics: [],
+  });
   const diagnostics = checker.check();
   if (diagnostics.length > 0) {
     throw new Error(diagnostics.map((d) => d.message).join('\n'));

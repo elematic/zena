@@ -191,18 +191,18 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
     if (global) return global.type;
   }
 
-  // 2. Fallback to Checker's inferred type.
-  // For most expressions, the static type inferred by the checker is correct.
-  if (expr.inferredType) {
-    return mapCheckerTypeToWasmType(ctx, expr.inferredType);
-  }
-
   // Handle synthesized super() calls which are not visited by the checker
   if (expr.type === NodeType.CallExpression) {
     const callExpr = expr as CallExpression;
     if (callExpr.callee.type === NodeType.SuperExpression) {
       return []; // void
     }
+  }
+
+  // 2. Fallback to Checker's inferred type.
+  // For most expressions, the static type inferred by the checker is correct.
+  if (expr.inferredType) {
+    return mapCheckerTypeToWasmType(ctx, expr.inferredType);
   }
 
   throw new Error(
@@ -763,9 +763,23 @@ function generateMemberExpression(
       return;
     }
 
-    throw new Error(
-      `Class or Interface not found for object type ${structTypeIndex}`,
-    );
+    // Check for extension classes
+    for (const info of ctx.classes.values()) {
+      if (info.isExtension && info.onType) {
+        if (typesAreEqual(info.onType, objectType)) {
+          foundClass = info;
+          break;
+        }
+      }
+    }
+
+    if (foundClass) {
+      // Fall through to class member access
+    } else {
+      throw new Error(
+        `Class or Interface not found for object type ${structTypeIndex}`,
+      );
+    }
   }
 
   let lookupName = fieldName;
@@ -867,6 +881,11 @@ function generateMemberExpression(
     throw new Error(`Field ${lookupName} not found in class`);
   }
 
+  if (fieldInfo.intrinsic) {
+    generateIntrinsic(ctx, fieldInfo.intrinsic, expr.object, [], body);
+    return;
+  }
+
   body.push(0xfb, GcOpcode.struct_get);
   body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
   body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
@@ -898,6 +917,48 @@ function generateCallExpression(
   expr: CallExpression,
   body: number[],
 ) {
+  if ((expr.callee as any).type === NodeType.SuperExpression) {
+    if (ctx.currentClass && ctx.currentClass.isExtension) {
+      // Extension class super call: super(array_instance)
+      // Evaluate argument (should be 1 argument)
+      if (expr.arguments.length !== 1) {
+        throw new Error(
+          'Extension class super call must have exactly 1 argument',
+        );
+      }
+      generateExpression(ctx, expr.arguments[0], body);
+      // Set 'this' local
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
+      return;
+    }
+
+    if (ctx.currentClass && ctx.currentClass.superClass) {
+      // Normal class super call
+      // Load 'this'
+      body.push(Opcode.local_get, 0);
+      // Args
+      for (const arg of expr.arguments) {
+        generateExpression(ctx, arg, body);
+      }
+      // Call super constructor
+      const superClassInfo = ctx.classes.get(ctx.currentClass.superClass)!;
+      const ctorInfo = superClassInfo.methods.get('#new');
+      if (!ctorInfo) {
+        // Implicit super call to no-arg constructor?
+        // If explicit super() is called but no constructor exists, it's an error unless implicit one exists.
+        // But here we assume it exists if super() is called.
+        throw new Error(
+          `Super constructor not found for ${ctx.currentClass.name}`,
+        );
+      }
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+      return;
+    }
+    return;
+  }
+
   if (expr.callee.type === NodeType.Identifier) {
   }
 

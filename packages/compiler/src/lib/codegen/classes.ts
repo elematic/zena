@@ -684,15 +684,10 @@ export function registerClassMethods(
         !member.isStatic &&
         !(classInfo.isExtension && methodName === '#new')
       ) {
-        console.log(`Method ${methodName} thisType:`, thisType);
         params.push(thisType);
       }
       for (const param of member.params) {
         const mapped = mapType(ctx, param.typeAnnotation);
-        console.log(
-          `Method ${methodName} param ${param.name.name} mapped to:`,
-          mapped,
-        );
         params.push(mapped);
       }
 
@@ -1093,7 +1088,9 @@ export function generateClassMethods(
       if (member.typeParameters && member.typeParameters.length > 0) {
         continue;
       }
-      const methodInfo = classInfo.methods.get(member.name.name)!;
+      const methodName =
+        member.name.name === 'constructor' ? '#new' : member.name.name;
+      const methodInfo = classInfo.methods.get(methodName)!;
       const body: number[] = [];
 
       ctx.pushScope();
@@ -1105,7 +1102,7 @@ export function generateClassMethods(
       // 0: this
       if (
         !member.isStatic &&
-        !(classInfo.isExtension && member.name.name === '#new')
+        !(classInfo.isExtension && methodName === '#new')
       ) {
         ctx.defineLocal('this', ctx.nextLocalIndex++, methodInfo.paramTypes[0]);
       }
@@ -1115,8 +1112,7 @@ export function generateClassMethods(
         mapType(ctx, param.typeAnnotation!);
         // For extension constructors, params start at 0 (since no implicit this param)
         const paramTypeIndex =
-          member.isStatic ||
-          (classInfo.isExtension && member.name.name === '#new')
+          member.isStatic || (classInfo.isExtension && methodName === '#new')
             ? i
             : i + 1;
         ctx.defineLocal(
@@ -1126,7 +1122,7 @@ export function generateClassMethods(
         );
       }
 
-      if (classInfo.isExtension && member.name.name === '#new') {
+      if (classInfo.isExtension && methodName === '#new') {
         // Extension constructor: 'this' is a local variable, not a param
         const thisLocalIndex = ctx.nextLocalIndex++;
         ctx.defineLocal('this', thisLocalIndex, classInfo.onType!);
@@ -1173,7 +1169,7 @@ export function generateClassMethods(
         continue;
       }
 
-      if (member.name.name === '#new') {
+      if (methodName === '#new') {
         const hasSuperClass = !!classInfo.superClass;
 
         if (!hasSuperClass) {
@@ -1480,7 +1476,6 @@ export function mapType(
 ): number[] {
   const typeContext = context || ctx.currentTypeContext;
   if (!type) return [ValType.i32];
-  console.log('mapType input:', JSON.stringify(type, null, 2));
 
   // Resolve generic type parameters
   if (
@@ -1576,7 +1571,8 @@ export function mapType(
             if (
               typeName === 'Array' ||
               (ctx.wellKnownTypes.FixedArray &&
-                typeName === ctx.wellKnownTypes.FixedArray.name.name)
+                (typeName === 'FixedArray' ||
+                  typeName === ctx.wellKnownTypes.FixedArray.name.name))
             ) {
               genericDecl = ctx.wellKnownTypes.FixedArray;
             }
@@ -1600,7 +1596,6 @@ export function mapType(
             }
             const classInfo = ctx.classes.get(specializedName)!;
             if (classInfo.isExtension && classInfo.onType) {
-              // console.log(`mapType extension ${specializedName} -> onType ${classInfo.onType}`);
               return classInfo.onType;
             }
             return [
@@ -1770,7 +1765,8 @@ export function instantiateClass(
         continue;
       }
 
-      const methodName = member.name.name;
+      const methodName =
+        member.name.name === 'constructor' ? '#new' : member.name.name;
 
       let intrinsic: string | undefined;
       if (member.decorators) {
@@ -1795,7 +1791,7 @@ export function instantiateClass(
       }
 
       const params: number[][] = [];
-      if (!member.isStatic) {
+      if (!member.isStatic && !(decl.isExtension && methodName === '#new')) {
         params.push(thisType);
       }
       for (const param of member.params) {
@@ -1805,7 +1801,9 @@ export function instantiateClass(
 
       let results: number[][] = [];
       if (methodName === '#new') {
-        if (member.isStatic && member.returnType) {
+        if (decl.isExtension && onType) {
+          results = [onType];
+        } else if (member.isStatic && member.returnType) {
           const mapped = mapType(ctx, member.returnType, context);
           if (mapped.length > 0) results = [mapped];
         } else {
@@ -2051,16 +2049,15 @@ export function instantiateClass(
 
   // Create VTable Struct Type
   if (classInfo.isExtension) {
-    /*
     const declForGen = {
       ...decl,
+      name: {type: NodeType.Identifier, name: specializedName},
       superClass: undefined,
     } as ClassDeclaration;
 
     ctx.bodyGenerators.push(() => {
-      generateClassMethods(ctx, declForGen);
+      generateClassMethods(ctx, declForGen, specializedName, context);
     });
-    */
     return;
   }
 
@@ -2263,12 +2260,6 @@ export function typeToTypeAnnotation(
   type: Type,
   erasedTypeParams?: Set<string>,
 ): TypeAnnotation {
-  if (type.kind === TypeKind.Class) {
-    const ct = type as ClassType;
-    console.log(
-      `typeToTypeAnnotation: Class ${ct.name}, typeArgs: ${ct.typeArguments?.length}`,
-    );
-  }
   switch (type.kind) {
     case TypeKind.Number:
       return {
@@ -2423,7 +2414,6 @@ export function mapCheckerTypeToWasmType(
   ctx: CodegenContext,
   type: Type,
 ): number[] {
-  console.log(`mapCheckerTypeToWasmType: ${type.kind}`);
   if (type.kind === TypeKind.Number) {
     const name = (type as NumberType).name;
     if (name === 'i32') return [ValType.i32];

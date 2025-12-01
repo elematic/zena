@@ -47,7 +47,15 @@ export function compile(source: string): Uint8Array {
   const compiler = new Compiler(host);
   const program = compiler.bundle('main.zena');
 
-  const checker = new TypeChecker(program);
+  const checker = new TypeChecker(program, compiler, {
+    path: 'main.zena',
+    isStdlib: true,
+    exports: new Map(),
+    source: '',
+    ast: program,
+    imports: new Map(),
+    diagnostics: [],
+  });
   const errors = checker.check();
   if (errors.length > 0) {
     const errorMessage = errors

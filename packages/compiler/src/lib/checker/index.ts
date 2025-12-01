@@ -27,7 +27,10 @@ export class TypeChecker {
     ctx.enterScope();
 
     // Only register intrinsics for system modules
-    if (this.#module && this.#module.path.startsWith('zena:')) {
+    if (
+      this.#module &&
+      (this.#module.path.startsWith('zena:') || this.#module.isStdlib)
+    ) {
       this.#registerIntrinsics(ctx);
     }
 

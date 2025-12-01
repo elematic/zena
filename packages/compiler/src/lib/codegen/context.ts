@@ -215,7 +215,6 @@ export class CodegenContext {
     // We don't need to store this type index globally, just use it for the field.
     // Actually, we need to add it to the module types.
     const implParams = [[ValType.eqref], ...paramTypes];
-    console.log(`getClosureTypeIndex: implParams for ${key}:`, implParams);
     const implResults = returnType.length > 0 ? [returnType] : [];
     const implTypeIndex = this.module.addType(implParams, implResults);
 
@@ -229,12 +228,6 @@ export class CodegenContext {
     ];
 
     const index = this.module.addStructType(structFields);
-    console.log('getClosureTypeIndex', {
-      key,
-      implTypeIndex,
-      structTypeIndex: index,
-      structFields,
-    });
     this.closureTypes.set(key, index);
     this.closureStructs.set(index, {funcTypeIndex: implTypeIndex});
     return index;
