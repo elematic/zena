@@ -62,7 +62,11 @@ suite('CodeGenerator: Diagnostics', () => {
   });
 
   test('diagnostics should have location info when AST has loc', () => {
-    const source = 'let x = unknownVar;';
+    const source = `
+      let main = () => {
+        unknownVar;
+      };
+    `;
     const parser = new Parser(source);
     const ast = parser.parse();
     const codegen = new CodeGenerator(ast);
@@ -78,7 +82,7 @@ suite('CodeGenerator: Diagnostics', () => {
     const diagnostic = errors.find(
       (d) => d.code === DiagnosticCode.UnknownVariable,
     );
-    assert.ok(diagnostic);
+    assert.ok(diagnostic, 'Should have reported UnknownVariable diagnostic');
     assert.ok(diagnostic!.location, 'Diagnostic should have location');
     assert.ok(diagnostic!.location!.line > 0, 'Location should have line');
     assert.ok(diagnostic!.location!.column > 0, 'Location should have column');

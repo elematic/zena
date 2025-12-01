@@ -227,20 +227,18 @@ export function generateLocalVariableDeclaration(
   generateExpression(ctx, decl.init, body);
   const exprType = inferType(ctx, decl.init);
 
-  // console.log(`Generating local ${decl.identifier.name}`);
   let type: number[];
   if (decl.typeAnnotation) {
-    // console.log(`  Has type annotation: ${decl.typeAnnotation.type}`);
     type = mapType(ctx, decl.typeAnnotation, ctx.currentTypeContext);
 
     // Union boxing (i32 -> anyref)
-    if (
-      type.length === 2 &&
-      type[0] === ValType.ref_null &&
-      type[1] === HeapType.any &&
-      exprType.length === 1 &&
-      exprType[0] === ValType.i32
-    ) {
+    const isAnyRef =
+      (type.length === 1 && type[0] === ValType.anyref) ||
+      (type.length === 2 &&
+        type[0] === ValType.ref_null &&
+        type[1] === HeapType.any);
+
+    if (isAnyRef && exprType.length === 1 && exprType[0] === ValType.i32) {
       body.push(Opcode.gc_prefix, GcOpcode.ref_i31);
     }
 
@@ -249,7 +247,6 @@ export function generateLocalVariableDeclaration(
       decl.typeAnnotation.type === NodeType.TypeAnnotation &&
       ctx.interfaces.has(decl.typeAnnotation.name)
     ) {
-      // console.log(`  Interface boxing for ${decl.typeAnnotation.name}`);
       const initType = inferType(ctx, decl.init);
       const typeIndex = decodeTypeIndex(initType);
       const classInfo = getClassFromTypeIndex(ctx, typeIndex);

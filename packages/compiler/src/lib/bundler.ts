@@ -7,7 +7,12 @@ import {
   type ClassDeclaration,
   type Node,
   type ImportDeclaration,
-  type InterfaceDeclaration,
+  type MethodDefinition,
+  type FieldDefinition,
+  type AccessorDeclaration,
+  type MemberExpression,
+  type MethodSignature,
+  type Parameter,
 } from './ast.js';
 import type {Module} from './compiler.js';
 
@@ -165,6 +170,17 @@ export class Bundler {
         const key = `${module.path}:${name}`;
         this.#globalSymbols.set(key, uniqueName);
 
+        // Rename the type object if it exists
+        const cls = stmt as any;
+        let typeObj = cls.inferredType;
+        if (!typeObj && cls.name && cls.name.inferredType) {
+          typeObj = cls.name.inferredType;
+        }
+
+        if (typeObj?.name) {
+          typeObj.name = uniqueName;
+        }
+
         // Handle exports
         if ('exported' in stmt && (stmt as any).exported) {
           if (isEntry) {
@@ -210,10 +226,9 @@ export class Bundler {
       if (stmt.type === NodeType.ImportDeclaration) continue; // Skip imports in output
 
       // Deep clone statement to avoid side effects?
-      // const clonedStmt = JSON.parse(JSON.stringify(stmt));
-      // JSON clone breaks undefined/circular, but AST is a tree.
-      // It's slow but safe for prototype.
-      const clonedStmt = JSON.parse(JSON.stringify(stmt));
+      // We MUST use a custom clone function because JSON.stringify destroys
+      // the 'inferredType' objects (which contain Maps and circular references).
+      const clonedStmt = cloneAST(stmt);
 
       this.#rewriteStatement(clonedStmt, module, importMap, new Set());
       statements.push(clonedStmt);
@@ -279,6 +294,9 @@ class ASTRewriter {
       case NodeType.Identifier:
         this.visitIdentifier(node as Identifier);
         break;
+      case NodeType.Parameter:
+        this.visitParameter(node as Parameter);
+        break;
       case NodeType.BlockStatement:
         this.enterScope();
         (node as any).body.forEach((s: any) => this.visit(s));
@@ -298,214 +316,129 @@ class ASTRewriter {
         if (func.typeParameters) {
           func.typeParameters.forEach((t: any) => this.visit(t));
         }
-        if (func.params) {
-          func.params.forEach((p: any) => {
-            this.addToScope(p.name.name);
-            if (p.typeAnnotation) this.visit(p.typeAnnotation);
-          });
-        }
+        func.params.forEach((p: any) => this.visit(p));
         if (func.returnType) this.visit(func.returnType);
         if (func.body) {
-          // FunctionExpression has body (BlockStatement)
-          // BlockStatement will enter another scope?
-          // Usually function body IS the scope.
-          // Let's handle body manually to avoid double scope.
-          if (func.body.type === NodeType.BlockStatement) {
-            func.body.body.forEach((s: any) => this.visit(s));
+          if (Array.isArray(func.body)) {
+            func.body.forEach((s: any) => this.visit(s));
           } else {
             this.visit(func.body);
           }
         }
         this.exitScope();
         break;
-      case NodeType.ClassDeclaration:
-        const cls = node as ClassDeclaration;
-        if (this.scopeStack.length === 1) {
-          cls.name.name = this.prefix + cls.name.name;
-        }
-
-        if (cls.superClass) this.visitIdentifier(cls.superClass);
-        if (cls.mixins) cls.mixins.forEach((m) => this.visitIdentifier(m));
-        if (cls.implements) cls.implements.forEach((i) => this.visit(i));
-        if (cls.typeParameters)
-          cls.typeParameters.forEach((t) => this.visit(t));
-
-        // We need to visit members but NOT rename member names (properties).
-        // But we need to visit values (initializers, method bodies).
-        cls.body.forEach((member) => {
-          if (member.type === NodeType.FieldDefinition) {
-            if (member.value) this.visit(member.value);
-            if (member.typeAnnotation) this.visit(member.typeAnnotation);
-          } else if (member.type === NodeType.MethodDefinition) {
-            this.enterScope();
-            member.params.forEach((p) => {
-              this.addToScope(p.name.name);
-              if (p.typeAnnotation) this.visit(p.typeAnnotation);
-            });
-            if (member.returnType) this.visit(member.returnType);
-            if (member.body) {
-              member.body.body.forEach((s) => this.visit(s));
-            }
-            this.exitScope();
-          } else if (member.type === NodeType.AccessorDeclaration) {
-            if (member.typeAnnotation) this.visit(member.typeAnnotation);
-            if (member.getter) {
-              this.enterScope();
-              member.getter.body.forEach((s) => this.visit(s));
-              this.exitScope();
-            }
-            if (member.setter) {
-              this.enterScope();
-              this.addToScope(member.setter.param.name);
-              member.setter.body.body.forEach((s) => this.visit(s));
-              this.exitScope();
-            }
-          }
-        });
-        break;
-
-      case NodeType.InterfaceDeclaration: {
-        const iface = node as InterfaceDeclaration;
-        if (this.scopeStack.length === 1) {
-          iface.name.name = this.prefix + iface.name.name;
-        }
-        if (iface.typeParameters)
-          iface.typeParameters.forEach((t: any) => this.visit(t));
-        if (iface.extends) iface.extends.forEach((e: any) => this.visit(e));
-
-        iface.body.forEach((member: any) => {
-          if (member.type === NodeType.MethodSignature) {
-            this.enterScope();
-            member.params.forEach((p: any) => {
-              this.addToScope(p.name.name);
-              if (p.typeAnnotation) this.visit(p.typeAnnotation);
-            });
-            if (member.returnType) this.visit(member.returnType);
-            this.exitScope();
-          } else if (member.type === NodeType.FieldDefinition) {
-            if (member.typeAnnotation) this.visit(member.typeAnnotation);
-          }
-        });
-        break;
-      }
-
       case NodeType.TypeAnnotation: {
-        const typeAnn = node as any;
-        const name = typeAnn.name;
-        if (!this.isLocal(name)) {
-          if (this.importMap.has(name)) {
-            typeAnn.name = this.importMap.get(name)!;
-          } else {
-            const key = `${this.module.path}:${name}`;
-            if (this.globalSymbols.has(key)) {
-              typeAnn.name = this.globalSymbols.get(key)!;
-            }
+        const typeNode = node as any;
+        const typeName = typeNode.name;
+        // Check imports
+        if (this.importMap.has(typeName)) {
+          typeNode.name = this.importMap.get(typeName)!;
+        } else {
+          // Check global symbols of this module
+          const key = `${this.module.path}:${typeName}`;
+          if (this.globalSymbols.has(key)) {
+            typeNode.name = this.globalSymbols.get(key)!;
           }
         }
-        if (typeAnn.typeArguments) {
-          typeAnn.typeArguments.forEach((t: any) => this.visit(t));
+        // Visit type arguments
+        if (typeNode.typeArguments) {
+          typeNode.typeArguments.forEach((t: any) => this.visit(t));
         }
         break;
       }
-
-      case NodeType.UnionTypeAnnotation: {
-        const union = node as any;
-        if (union.types) {
-          union.types.forEach((t: any) => this.visit(t));
-        }
-        break;
-      }
-
-      case NodeType.MixinDeclaration: {
-        const mixin = node as any;
+      case NodeType.ClassDeclaration:
+        // Rename class
         if (this.scopeStack.length === 1) {
-          mixin.name.name = this.prefix + mixin.name.name;
+          (node as any).name.name = this.prefix + (node as any).name.name;
         }
-        if (mixin.typeParameters)
-          mixin.typeParameters.forEach((t: any) => this.visit(t));
-        if (mixin.on) this.visitIdentifier(mixin.on);
-        if (mixin.mixins)
-          mixin.mixins.forEach((m: any) => this.visitIdentifier(m));
-
-        mixin.body.forEach((member: any) => {
-          if (member.type === NodeType.FieldDefinition) {
-            if (member.value) this.visit(member.value);
-            if (member.typeAnnotation) this.visit(member.typeAnnotation);
-          } else if (member.type === NodeType.MethodDefinition) {
-            this.enterScope();
-            member.params.forEach((p: any) => {
-              this.addToScope(p.name.name);
-              if (p.typeAnnotation) this.visit(p.typeAnnotation);
-            });
-            if (member.returnType) this.visit(member.returnType);
-            if (member.body) {
-              member.body.body.forEach((s: any) => this.visit(s));
-            }
-            this.exitScope();
-          } else if (member.type === NodeType.AccessorDeclaration) {
-            if (member.typeAnnotation) this.visit(member.typeAnnotation);
-            if (member.getter) {
-              this.enterScope();
-              member.getter.body.forEach((s: any) => this.visit(s));
-              this.exitScope();
-            }
-            if (member.setter) {
-              this.enterScope();
-              this.addToScope(member.setter.param.name);
-              member.setter.body.body.forEach((s: any) => this.visit(s));
-              this.exitScope();
-            }
-          }
-        });
+        this.enterScope();
+        // Visit super class
+        if ((node as any).superClass) {
+          this.visit((node as any).superClass);
+        }
+        // Visit implements
+        if ((node as any).implements) {
+          (node as any).implements.forEach((i: any) => this.visit(i));
+        }
+        // Visit members
+        (node as any).body.forEach((m: any) => this.visit(m));
+        this.exitScope();
         break;
-      }
-
-      // ... handle other nodes recursively
+      case NodeType.MethodDefinition:
+        this.visitMethodDefinition(node as MethodDefinition);
+        break;
+      case NodeType.FieldDefinition:
+        this.visitFieldDefinition(node as FieldDefinition);
+        break;
+      case NodeType.AccessorDeclaration:
+        this.visitAccessorDeclaration(node as AccessorDeclaration);
+        break;
+      case NodeType.MemberExpression:
+        this.visitMemberExpression(node as MemberExpression);
+        break;
+      case NodeType.MethodSignature:
+        this.visitMethodSignature(node as MethodSignature);
+        break;
+      // ... handle other nodes
       default:
-        // Generic traversal for other properties
-        Object.keys(node).forEach((key) => {
+        // Generic traversal
+        for (const key in node) {
           const val = (node as any)[key];
           if (Array.isArray(val)) {
-            val.forEach((v) => {
-              if (v && typeof v === 'object' && v.type) this.visit(v);
+            val.forEach((v: any) => {
+              if (v && typeof v === 'object' && 'type' in v) {
+                this.visit(v);
+              }
             });
-          } else if (val && typeof val === 'object' && val.type) {
+          } else if (val && typeof val === 'object' && 'type' in val) {
             this.visit(val);
           }
-        });
+        }
     }
   }
 
-  visitVariableDeclaration(decl: VariableDeclaration) {
+  visitVariableDeclaration(node: VariableDeclaration) {
     // If we are at top level (scopeStack.length === 1), rename definition
-    if (decl.pattern.type === NodeType.Identifier) {
+    if (node.pattern.type === NodeType.Identifier) {
       if (this.scopeStack.length === 1) {
-        const oldName = decl.pattern.name;
+        const oldName = node.pattern.name;
         const newName = this.prefix + oldName;
-        decl.pattern.name = newName;
+        node.pattern.name = newName;
         // Don't add to scope, because we renamed it.
       } else {
         // Local variable
-        this.addToScope(decl.pattern.name);
+        this.addToScope(node.pattern.name);
       }
     } else {
       throw new Error('Destructuring not implemented in Bundler');
     }
 
-    if (decl.typeAnnotation) {
-      this.visit(decl.typeAnnotation);
+    if (node.typeAnnotation) {
+      this.visit(node.typeAnnotation);
     }
 
     // Visit init
-    this.visit(decl.init);
+    this.visit(node.init);
   }
 
-  visitIdentifier(id: Identifier) {
+  visitParameter(node: Parameter) {
+    // 1. Add to scope
+    this.addToScope(node.name.name);
+
+    // 2. Visit type annotation
+    if (node.typeAnnotation) {
+      this.visit(node.typeAnnotation);
+    }
+
+    // 3. Do NOT visit node.name as an Identifier expression
+  }
+
+  visitIdentifier(node: Identifier) {
     // This is a usage (or definition, but definitions usually handled by parent)
     // Wait, visitVariableDeclaration handles definition.
     // But what about `x = 1` (Assignment)? `x` is Identifier.
 
-    const name = id.name;
+    const name = node.name;
 
     // 1. Check local scope
     if (this.isLocal(name)) {
@@ -514,7 +447,7 @@ class ASTRewriter {
 
     // 2. Check imports
     if (this.importMap.has(name)) {
-      id.name = this.importMap.get(name)!;
+      node.name = this.importMap.get(name)!;
       return;
     }
 
@@ -523,7 +456,7 @@ class ASTRewriter {
     // We can check globalSymbols.
     const key = `${this.module.path}:${name}`;
     if (this.globalSymbols.has(key)) {
-      id.name = this.globalSymbols.get(key)!;
+      node.name = this.globalSymbols.get(key)!;
     }
   }
 
@@ -540,16 +473,90 @@ class ASTRewriter {
   }
 
   isLocal(name: string): boolean {
-    // Check all scopes except the first one (which is top-level, and we renamed those)
-    // Wait, if we renamed top-level, then `name` won't match?
-    // If I defined `let x = 1` at top level, it became `m1_x`.
-    // If I use `x` later, `visitIdentifier` sees `x`.
-    // `isLocal` checks scopes.
-    // Top-level scope in `scopeStack` is empty/unused for decls.
-
-    for (let i = this.scopeStack.length - 1; i > 0; i--) {
+    for (let i = this.scopeStack.length - 1; i >= 0; i--) {
       if (this.scopeStack[i].has(name)) return true;
     }
     return false;
   }
+
+  visitMethodDefinition(node: MethodDefinition) {
+    // Do NOT visit node.name (it's a property name)
+    this.enterScope();
+    node.params.forEach((p) => this.visit(p));
+    if (node.returnType) this.visit(node.returnType);
+    if (node.body) this.visit(node.body);
+    if (node.decorators) node.decorators.forEach((d) => this.visit(d));
+    this.exitScope();
+  }
+
+  visitFieldDefinition(node: FieldDefinition) {
+    // Do NOT visit node.name
+    if (node.typeAnnotation) this.visit(node.typeAnnotation);
+    if (node.value) this.visit(node.value);
+    if (node.decorators) node.decorators.forEach((d) => this.visit(d));
+  }
+
+  visitAccessorDeclaration(node: AccessorDeclaration) {
+    // Do NOT visit node.name
+    if (node.typeAnnotation) this.visit(node.typeAnnotation);
+    if (node.getter) {
+      this.enterScope();
+      node.getter.body.forEach((s) => this.visit(s));
+      this.exitScope();
+    }
+    if (node.setter) {
+      this.enterScope();
+      this.visit(node.setter.param);
+      node.setter.body.body.forEach((s) => this.visit(s));
+      this.exitScope();
+    }
+  }
+
+  visitMemberExpression(node: MemberExpression) {
+    this.visit(node.object);
+    // Do NOT visit node.property as it is a property name, not a variable reference
+  }
+
+  visitMethodSignature(node: MethodSignature) {
+    // Do NOT visit node.name
+    this.enterScope();
+    node.params.forEach((p) => this.visit(p));
+    if (node.returnType) this.visit(node.returnType);
+    this.exitScope();
+  }
+}
+
+function cloneAST<T extends Node>(node: T): T {
+  if (!node) return node;
+  if (Array.isArray(node)) {
+    return (node as any[]).map((n) => cloneAST(n)) as any;
+  }
+  if (typeof node !== 'object') return node;
+
+  // Shallow copy
+  const clone = {...node} as T;
+
+  // Recursively clone children
+  for (const key in clone) {
+    if (
+      key === 'inferredType' ||
+      key === 'inferredTypeArguments' ||
+      key === 'loc'
+    ) {
+      // Preserve these references
+      continue;
+    }
+    const value = (clone as any)[key];
+    if (Array.isArray(value)) {
+      (clone as any)[key] = value.map((v: any) => {
+        if (v && typeof v === 'object' && 'type' in v) {
+          return cloneAST(v);
+        }
+        return v;
+      });
+    } else if (value && typeof value === 'object' && 'type' in value) {
+      (clone as any)[key] = cloneAST(value);
+    }
+  }
+  return clone;
 }

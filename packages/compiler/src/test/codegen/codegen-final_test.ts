@@ -1,17 +1,6 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Parser} from '../../lib/parser.js';
-import {CodeGenerator} from '../../lib/codegen/index.js';
-
-async function compileAndRun(input: string): Promise<number> {
-  const parser = new Parser(input);
-  const ast = parser.parse();
-  const codegen = new CodeGenerator(ast);
-  const bytes = codegen.generate();
-  const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);
-  const {main} = result.instance.exports as any;
-  return main();
-}
+import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Final Modifier', () => {
   test('should compile and run final class', async () => {
@@ -34,7 +23,7 @@ suite('CodeGenerator - Final Modifier', () => {
         return p.distanceSquared();
       };
     `;
-    const output = await compileAndRun(input);
+    const output = await compileAndRun(input, 'main');
     assert.strictEqual(output, 25);
   });
 
@@ -65,7 +54,7 @@ suite('CodeGenerator - Final Modifier', () => {
       };
     `;
     // 42 + 42 + 20 = 104
-    const output = await compileAndRun(input);
+    const output = await compileAndRun(input, 'main');
     assert.strictEqual(output, 104);
   });
 
@@ -93,7 +82,7 @@ suite('CodeGenerator - Final Modifier', () => {
         return c.val;
       };
     `;
-    const output = await compileAndRun(input);
+    const output = await compileAndRun(input, 'main');
     assert.strictEqual(output, 20);
   });
 });

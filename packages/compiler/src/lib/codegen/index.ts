@@ -9,7 +9,11 @@ import {
   type TypeAliasDeclaration,
   type VariableDeclaration,
 } from '../ast.js';
-import {registerClass, registerInterface} from './classes.js';
+import {
+  registerClassStruct,
+  registerClassMethods,
+  registerInterface,
+} from './classes.js';
 import {CodegenContext} from './context.js';
 import {registerDeclaredFunction, registerFunction} from './functions.js';
 import {
@@ -65,14 +69,6 @@ export class CodeGenerator {
 
     const globalInitializers: {index: number; init: any}[] = [];
 
-    // Pass 0: Register imports (DeclareFunction)
-    // Imports must be registered before defined functions to ensure correct index space.
-    for (const statement of program.body) {
-      if (statement.type === NodeType.DeclareFunction) {
-        registerDeclaredFunction(this.#ctx, statement as DeclareFunction);
-      }
-    }
-
     // 1. Register Interfaces and Mixins (First pass)
     for (const statement of program.body) {
       if (statement.type === NodeType.InterfaceDeclaration) {
@@ -89,14 +85,40 @@ export class CodeGenerator {
       }
     }
 
-    // 2. Register Classes (Second pass)
+    // 2. Register Class Structs (Second pass)
+    // This ensures types are available for imports and other declarations
     for (const statement of program.body) {
       if (statement.type === NodeType.ClassDeclaration) {
-        registerClass(this.#ctx, statement as ClassDeclaration);
+        registerClassStruct(this.#ctx, statement as ClassDeclaration);
       }
     }
 
-    // 3. Register Functions and Variables (Third pass)
+    // 3. Register Imports (DeclareFunction)
+    // Imports must be registered before defined functions to ensure correct index space.
+    for (const statement of program.body) {
+      if (statement.type === NodeType.DeclareFunction) {
+        registerDeclaredFunction(this.#ctx, statement as DeclareFunction);
+      }
+    }
+
+    // 4. Register Class Methods (Fourth pass)
+    // Execute pending method registrations (e.g. from mixins created in Pass 2)
+    for (const generator of this.#ctx.pendingMethodGenerations) {
+      generator();
+    }
+
+    // Register methods for synthetic classes (mixins)
+    for (const decl of this.#ctx.syntheticClasses) {
+      registerClassMethods(this.#ctx, decl);
+    }
+
+    for (const statement of program.body) {
+      if (statement.type === NodeType.ClassDeclaration) {
+        registerClassMethods(this.#ctx, statement as ClassDeclaration);
+      }
+    }
+
+    // 5. Register Functions and Variables (Fifth pass)
     for (const statement of program.body) {
       if (statement.type === NodeType.VariableDeclaration) {
         const varDecl = statement as VariableDeclaration;

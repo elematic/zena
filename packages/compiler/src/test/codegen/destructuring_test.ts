@@ -2,6 +2,7 @@ import {suite, test} from 'node:test';
 import assert from 'node:assert';
 import {Parser} from '../../lib/parser.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
+import {TypeChecker} from '../../lib/checker/index.js';
 
 async function compileAndRun(
   input: string,
@@ -9,6 +10,8 @@ async function compileAndRun(
 ): Promise<number> {
   const parser = new Parser(input);
   const ast = parser.parse();
+  const checker = new TypeChecker(ast);
+  checker.check();
   const codegen = new CodeGenerator(ast);
   const bytes = codegen.generate();
   const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);

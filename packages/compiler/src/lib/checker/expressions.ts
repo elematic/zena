@@ -42,6 +42,12 @@ import {
 import {checkStatement} from './statements.js';
 
 export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
+  const type = checkExpressionInternal(ctx, expr);
+  expr.inferredType = type;
+  return type;
+}
+
+function checkExpressionInternal(ctx: CheckerContext, expr: Expression): Type {
   switch (expr.type) {
     case NodeType.NumberLiteral: {
       const lit = expr as any; // Cast to access raw if needed, or update AST type definition
@@ -183,6 +189,9 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
 
   const calleeType = checkExpression(ctx, expr.callee);
 
+  // Always check arguments to ensure they have inferred types attached
+  const argTypes = expr.arguments.map((arg) => checkExpression(ctx, arg));
+
   if (calleeType.kind !== TypeKind.Function) {
     ctx.diagnostics.reportError(
       `Type mismatch: expected function, got ${typeToString(calleeType)}`,
@@ -192,7 +201,6 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
   }
 
   let funcType = calleeType as FunctionType;
-  const argTypes = expr.arguments.map((arg) => checkExpression(ctx, arg));
 
   // Overload resolution
   if (funcType.overloads && funcType.overloads.length > 0) {
@@ -236,6 +244,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       typeArguments = expr.typeArguments.map((arg) =>
         resolveTypeAnnotation(ctx, arg),
       );
+      expr.inferredTypeArguments = typeArguments;
     } else {
       const inferred = inferTypeArguments(
         funcType.typeParameters,
@@ -251,6 +260,8 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         return Types.Unknown;
       }
       typeArguments = inferred;
+      // Store inferred type arguments in AST for Codegen
+      expr.inferredTypeArguments = inferred;
     }
 
     funcType = instantiateGenericFunction(funcType, typeArguments);
@@ -321,6 +332,20 @@ function inferTypeArguments(
           infer(pt.typeArguments[i], at.typeArguments[i]);
         }
       }
+    } else if (
+      paramType.kind === TypeKind.Function &&
+      argType.kind === TypeKind.Function
+    ) {
+      const pt = paramType as FunctionType;
+      const at = argType as FunctionType;
+      for (
+        let i = 0;
+        i < Math.min(pt.parameters.length, at.parameters.length);
+        i++
+      ) {
+        infer(pt.parameters[i], at.parameters[i]);
+      }
+      infer(pt.returnType, at.returnType);
     }
   }
 
@@ -406,6 +431,62 @@ function checkAssignmentExpression(
     if (!isAssignableTo(valueType, fieldType)) {
       ctx.diagnostics.reportError(
         `Type mismatch in assignment: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+
+    return valueType;
+  } else if (expr.left.type === NodeType.IndexExpression) {
+    const indexExpr = expr.left as IndexExpression;
+
+    // Check for operator []= on classes/interfaces
+    const objectType = checkExpression(ctx, indexExpr.object);
+    if (
+      objectType.kind === TypeKind.Class ||
+      objectType.kind === TypeKind.Interface
+    ) {
+      const classType = objectType as ClassType | InterfaceType;
+      const setter = classType.methods.get('[]=');
+      if (setter) {
+        const indexType = checkExpression(ctx, indexExpr.index);
+
+        if (setter.parameters.length !== 2) {
+          ctx.diagnostics.reportError(
+            `Operator []= must take exactly two arguments (index and value).`,
+            DiagnosticCode.ArgumentCountMismatch,
+          );
+        } else {
+          if (!isAssignableTo(indexType, setter.parameters[0])) {
+            ctx.diagnostics.reportError(
+              `Type mismatch in index: expected ${typeToString(setter.parameters[0])}, got ${typeToString(indexType)}`,
+              DiagnosticCode.TypeMismatch,
+            );
+          }
+
+          const valueType = checkExpression(ctx, expr.value);
+          if (!isAssignableTo(valueType, setter.parameters[1])) {
+            ctx.diagnostics.reportError(
+              `Type mismatch in assignment: expected ${typeToString(setter.parameters[1])}, got ${typeToString(valueType)}`,
+              DiagnosticCode.TypeMismatch,
+            );
+          }
+
+          // Annotate the index expression with the value type (result of the assignment expression)
+          indexExpr.inferredType = valueType;
+          return valueType;
+        }
+        return Types.Unknown;
+      }
+    }
+
+    // Check the index expression (this will annotate the object and index)
+    const elementType = checkIndexExpression(ctx, indexExpr);
+
+    // Check if value is assignable to element type
+    const valueType = checkExpression(ctx, expr.value);
+    if (!isAssignableTo(valueType, elementType)) {
+      ctx.diagnostics.reportError(
+        `Type mismatch in assignment: expected ${typeToString(elementType)}, got ${typeToString(valueType)}`,
         DiagnosticCode.TypeMismatch,
       );
     }
@@ -578,6 +659,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
         resolveTypeAnnotation(ctx, arg),
       );
       classType = instantiateGenericClass(classType, typeArguments);
+      expr.inferredTypeArguments = typeArguments;
     }
   } else if (classType.typeParameters && classType.typeParameters.length > 0) {
     // Try inference
@@ -598,6 +680,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
 
     if (inferred) {
       classType = instantiateGenericClass(classType, inferred);
+      expr.inferredTypeArguments = inferred;
     } else {
       ctx.diagnostics.reportError(
         `Generic type '${className}' requires type arguments.`,

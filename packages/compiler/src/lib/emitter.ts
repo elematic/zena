@@ -85,8 +85,9 @@ export class WasmModule {
 
   public addFunction(typeIndex: number): number {
     this.#functions.push(typeIndex);
-    this.#codes.push([]); // Reserve slot
-    return this.#importedFunctionCount + this.#functions.length - 1;
+    this.#codes.push([]);
+    const index = this.#importedFunctionCount + this.#functions.length - 1;
+    return index;
   }
 
   public addCode(index: number, locals: number[][], body: number[]) {

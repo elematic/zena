@@ -1,7 +1,6 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Parser} from '../../lib/parser.js';
-import {CodeGenerator} from '../../lib/codegen/index.js';
+import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Dynamic Dispatch', () => {
   test('should support dynamic dispatch for overridden methods', async () => {
@@ -21,14 +20,8 @@ suite('CodeGenerator - Dynamic Dispatch', () => {
         return a.speak();
       };
     `;
-    const parser = new Parser(input);
-    const ast = parser.parse();
-    const codegen = new CodeGenerator(ast);
-    const wasmBuffer = codegen.generate();
-
-    const result = await WebAssembly.instantiate(wasmBuffer);
-    const {main} = (result as any).instance.exports;
-    assert.strictEqual(main(), 2);
+    const result = await compileAndRun(input);
+    assert.strictEqual(result, 2);
   });
 
   test('should support dynamic dispatch for inherited methods', async () => {
@@ -45,13 +38,7 @@ suite('CodeGenerator - Dynamic Dispatch', () => {
         return a.speak();
       };
     `;
-    const parser = new Parser(input);
-    const ast = parser.parse();
-    const codegen = new CodeGenerator(ast);
-    const wasmBuffer = codegen.generate();
-
-    const result = await WebAssembly.instantiate(wasmBuffer);
-    const {main} = (result as any).instance.exports;
-    assert.strictEqual(main(), 1);
+    const result = await compileAndRun(input);
+    assert.strictEqual(result, 1);
   });
 });

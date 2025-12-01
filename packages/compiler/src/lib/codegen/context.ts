@@ -61,6 +61,7 @@ export class CodegenContext {
   public functionReturnTypes = new Map<string, number[]>();
   public pendingMethodGenerations: (() => void)[] = [];
   public bodyGenerators: (() => void)[] = [];
+  public syntheticClasses: ClassDeclaration[] = [];
 
   // Global variables
   public globals = new Map<string, {index: number; type: number[]}>();

@@ -1,6 +1,7 @@
 import {
   NodeType,
   type ClassDeclaration,
+  type FunctionTypeAnnotation,
   type InterfaceDeclaration,
   type MethodDefinition,
   type MixinDeclaration,
@@ -8,6 +9,19 @@ import {
   type TupleTypeAnnotation,
   type TypeAnnotation,
 } from '../ast.js';
+import {
+  TypeKind,
+  type Type,
+  type ClassType,
+  type NumberType,
+  type InterfaceType,
+  type FixedArrayType,
+  type RecordType,
+  type TupleType,
+  type FunctionType,
+  type TypeParameterType,
+  type TypeAliasType,
+} from '../types.js';
 import {WasmModule} from '../emitter.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import type {CodegenContext} from './context.js';
@@ -401,9 +415,29 @@ export function decodeTypeIndex(type: number[]): number {
   return typeIndex;
 }
 
-export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
+export function registerClassStruct(
+  ctx: CodegenContext,
+  decl: ClassDeclaration,
+) {
   if (decl.typeParameters && decl.typeParameters.length > 0) {
     ctx.genericClasses.set(decl.name.name, decl);
+    return;
+  }
+
+  // Handle extension classes (e.g. FixedArray extends array<T>)
+  if (decl.isExtension && decl.onType) {
+    const onType = mapType(ctx, decl.onType);
+    console.log(
+      `registerClassStruct: Extension ${decl.name.name} onType=${onType.join(',')}`,
+    );
+    ctx.classes.set(decl.name.name, {
+      name: decl.name.name,
+      structTypeIndex: -1, // No struct for extensions
+      fields: new Map(),
+      methods: new Map(),
+      isExtension: true,
+      onType,
+    });
     return;
   }
 
@@ -457,14 +491,6 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     for (const [name, info] of sortedSuperFields) {
       fields.set(name, {index: fieldIndex++, type: info.type});
       fieldTypes.push({type: info.type, mutable: true});
-    }
-
-    // Inherit methods and vtable
-    if (currentSuperClassInfo.vtable) {
-      vtable.push(...currentSuperClassInfo.vtable);
-    }
-    for (const [name, info] of currentSuperClassInfo.methods) {
-      methods.set(name, info);
     }
   } else {
     // Root class: Add vtable field
@@ -529,9 +555,48 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     onType,
   };
   ctx.classes.set(decl.name.name, classInfo);
+}
+
+export function registerClassMethods(
+  ctx: CodegenContext,
+  decl: ClassDeclaration,
+) {
+  if (decl.typeParameters && decl.typeParameters.length > 0) {
+    return;
+  }
+
+  const classInfo = ctx.classes.get(decl.name.name);
+  if (!classInfo) throw new Error(`Class ${decl.name.name} not found`);
+
+  // Ensure vtable exists if we are going to use it
+  if (!classInfo.vtable) {
+    classInfo.vtable = [];
+  }
+  const vtable = classInfo.vtable;
+  const methods = classInfo.methods;
+  const structTypeIndex = classInfo.structTypeIndex;
+
+  let currentSuperClassInfo: ClassInfo | undefined;
+  if (classInfo.superClass) {
+    currentSuperClassInfo = ctx.classes.get(classInfo.superClass);
+  } else if (decl.superClass) {
+    currentSuperClassInfo = ctx.classes.get(decl.superClass.name);
+  }
+
+  // Inherit methods and vtable from superclass
+  if (currentSuperClassInfo) {
+    if (currentSuperClassInfo.vtable) {
+      vtable.push(...currentSuperClassInfo.vtable);
+    }
+    for (const [name, info] of currentSuperClassInfo.methods) {
+      methods.set(name, info);
+    }
+  }
 
   // Register methods
   const members = [...decl.body];
+  // ... (rest of the function)
+
   const hasConstructor = members.some(
     (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
   );
@@ -563,14 +628,29 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
     if (member.type === NodeType.MethodDefinition) {
       const methodName = member.name.name;
 
-      if (methodName !== '#new' && !vtable.includes(methodName)) {
+      let intrinsic: string | undefined;
+      if (member.decorators) {
+        const intrinsicDecorator = member.decorators.find(
+          (d) => d.name === 'intrinsic',
+        );
+        if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
+          intrinsic = intrinsicDecorator.args[0].value;
+        }
+      }
+
+      if (methodName !== '#new' && !intrinsic && !vtable.includes(methodName)) {
         vtable.push(methodName);
       }
 
-      let thisType = [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(structTypeIndex),
-      ];
+      let thisType: number[];
+      if (classInfo.isExtension && classInfo.onType) {
+        thisType = classInfo.onType;
+      } else {
+        thisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+      }
 
       if (currentSuperClassInfo) {
         if (
@@ -614,16 +694,6 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
       }
 
       const funcIndex = ctx.module.addFunction(typeIndex!);
-
-      let intrinsic: string | undefined;
-      if (member.decorators) {
-        const intrinsicDecorator = member.decorators.find(
-          (d) => d.name === 'intrinsic',
-        );
-        if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
-          intrinsic = intrinsicDecorator.args[0].value;
-        }
-      }
 
       const returnType = results.length > 0 ? results[0] : [];
       methods.set(methodName, {
@@ -826,7 +896,7 @@ export function registerClass(ctx: CodegenContext, decl: ClassDeclaration) {
   }
 
   const vtableTypeIndex = ctx.module.addStructType(
-    vtable.map(() => ({type: [ValType.funcref], mutable: false})),
+    vtable.map(() => ({type: [HeapType.func], mutable: false})),
     vtableSuperTypeIndex,
   );
 
@@ -933,7 +1003,12 @@ export function generateClassMethods(
   ctx: CodegenContext,
   decl: ClassDeclaration,
   specializedName?: string,
+  typeContext?: Map<string, TypeAnnotation>,
 ) {
+  if (typeContext) {
+    ctx.currentTypeContext = typeContext;
+  }
+
   const className = specializedName || decl.name.name;
   const classInfo = ctx.classes.get(className)!;
   ctx.currentClass = classInfo;
@@ -982,6 +1057,7 @@ export function generateClassMethods(
 
       for (let i = 0; i < member.params.length; i++) {
         const param = member.params[i];
+        mapType(ctx, param.typeAnnotation!);
         ctx.defineLocal(
           param.name.name,
           ctx.nextLocalIndex++,
@@ -991,17 +1067,22 @@ export function generateClassMethods(
 
       // Downcast 'this' if needed (e.g. overriding a method from a superclass)
       const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
-      if (thisTypeIndex !== -1 && thisTypeIndex !== classInfo.structTypeIndex) {
+      let targetTypeIndex = classInfo.structTypeIndex;
+      if (classInfo.isExtension && classInfo.onType) {
+        targetTypeIndex = decodeTypeIndex(classInfo.onType);
+      }
+
+      if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
         const realThisType = [
           ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          ...WasmModule.encodeSignedLEB128(targetTypeIndex),
         ];
         const realThisLocal = ctx.nextLocalIndex++;
         ctx.extraLocals.push(realThisType);
 
         body.push(Opcode.local_get, 0);
         body.push(0xfb, GcOpcode.ref_cast_null);
-        body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+        body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
         body.push(Opcode.local_set, realThisLocal);
 
         ctx.defineLocal('this', realThisLocal, realThisType);
@@ -1017,9 +1098,6 @@ export function generateClassMethods(
       }
 
       if (methodInfo.intrinsic) {
-        body.push(Opcode.unreachable);
-        body.push(Opcode.end);
-        ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
         ctx.popScope();
         continue;
       }
@@ -1109,22 +1187,22 @@ export function generateClassMethods(
 
         // Downcast 'this' if needed
         const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
-        if (
-          thisTypeIndex !== -1 &&
-          thisTypeIndex !== classInfo.structTypeIndex
-        ) {
+        let targetTypeIndex = classInfo.structTypeIndex;
+        if (classInfo.isExtension && classInfo.onType) {
+          targetTypeIndex = decodeTypeIndex(classInfo.onType);
+        }
+
+        if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
           const realThisType = [
             ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ...WasmModule.encodeSignedLEB128(targetTypeIndex),
           ];
           const realThisLocal = ctx.nextLocalIndex++;
           ctx.extraLocals.push(realThisType);
 
           body.push(Opcode.local_get, 0);
           body.push(0xfb, GcOpcode.ref_cast_null);
-          body.push(
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-          );
+          body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
           body.push(Opcode.local_set, realThisLocal);
 
           ctx.defineLocal('this', realThisLocal, realThisType);
@@ -1161,22 +1239,22 @@ export function generateClassMethods(
 
         // Downcast 'this' if needed
         const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
-        if (
-          thisTypeIndex !== -1 &&
-          thisTypeIndex !== classInfo.structTypeIndex
-        ) {
+        let targetTypeIndex = classInfo.structTypeIndex;
+        if (classInfo.isExtension && classInfo.onType) {
+          targetTypeIndex = decodeTypeIndex(classInfo.onType);
+        }
+
+        if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
           const realThisType = [
             ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ...WasmModule.encodeSignedLEB128(targetTypeIndex),
           ];
           const realThisLocal = ctx.nextLocalIndex++;
           ctx.extraLocals.push(realThisType);
 
           body.push(Opcode.local_get, 0);
           body.push(0xfb, GcOpcode.ref_cast_null);
-          body.push(
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-          );
+          body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
           body.push(Opcode.local_set, realThisLocal);
 
           ctx.defineLocal('this', realThisLocal, realThisType);
@@ -1190,6 +1268,13 @@ export function generateClassMethods(
         ctx.popScope();
       }
     } else if (member.type === NodeType.FieldDefinition) {
+      if (member.isDeclare) continue;
+      if (
+        member.decorators &&
+        member.decorators.some((d) => d.name === 'intrinsic')
+      )
+        continue;
+
       if (!member.name.name.startsWith('#')) {
         const propName = member.name.name;
         const fieldName = manglePrivateName(className, propName);
@@ -1242,46 +1327,251 @@ export function generateClassMethods(
       }
     }
   }
-  ctx.currentClass = null;
+}
+
+export function resolveAnnotation(
+  type: TypeAnnotation,
+  context?: Map<string, TypeAnnotation>,
+): TypeAnnotation {
+  if (
+    type.type === NodeType.TypeAnnotation &&
+    context &&
+    context.has(type.name)
+  ) {
+    return resolveAnnotation(context.get(type.name)!, context);
+  }
+  return type;
+}
+
+export function getTypeKey(type: TypeAnnotation): string {
+  if (type.type === NodeType.TypeAnnotation) {
+    let key = type.name;
+    if (type.typeArguments && type.typeArguments.length > 0) {
+      key += `<${type.typeArguments.map(getTypeKey).join(',')}>`;
+    }
+    return key;
+  } else if (type.type === NodeType.RecordTypeAnnotation) {
+    const props = type.properties
+      .map((p) => `${p.name.name}:${getTypeKey(p.typeAnnotation)}`)
+      .sort()
+      .join(',');
+    return `{${props}}`;
+  } else if (type.type === NodeType.TupleTypeAnnotation) {
+    const elements = type.elementTypes.map(getTypeKey).join(',');
+    return `[${elements}]`;
+  } else if (type.type === NodeType.FunctionTypeAnnotation) {
+    const params = type.params.map(getTypeKey).join(',');
+    const ret = type.returnType ? getTypeKey(type.returnType) : 'void';
+    return `(${params})=>${ret}`;
+  }
+  return 'unknown';
+}
+
+export function getSpecializedName(
+  name: string,
+  args: TypeAnnotation[],
+  ctx: CodegenContext,
+  context?: Map<string, TypeAnnotation>,
+): string {
+  const argNames = args.map((arg) => {
+    const resolved = resolveAnnotation(arg, context);
+    return getTypeKey(resolved);
+  });
+  return `${name}<${argNames.join(',')}>`;
+}
+
+function getFixedArrayTypeIndex(
+  ctx: CodegenContext,
+  elementType: number[],
+): number {
+  const key = elementType.join(',');
+  if (ctx.fixedArrayTypes.has(key)) {
+    return ctx.fixedArrayTypes.get(key)!;
+  }
+  const index = ctx.module.addArrayType(elementType, true);
+  ctx.fixedArrayTypes.set(key, index);
+  return index;
 }
 
 export function mapType(
   ctx: CodegenContext,
-  annotation: TypeAnnotation,
-  typeContext?: Map<string, TypeAnnotation>,
+  type: TypeAnnotation,
+  context?: Map<string, TypeAnnotation>,
 ): number[] {
-  if (annotation.type === NodeType.UnionTypeAnnotation) {
-    // TODO: Proper union type mapping
-    return [ValType.ref_null, HeapType.any];
+  const typeContext = context || ctx.currentTypeContext;
+  if (!type) return [ValType.i32];
+
+  // console.log(`mapType: ${type.name}`);
+
+  // Resolve generic type parameters
+  if (
+    type.type === NodeType.TypeAnnotation &&
+    typeContext &&
+    typeContext.has(type.name)
+  ) {
+    return mapType(ctx, typeContext.get(type.name)!, typeContext);
   }
 
-  if (annotation.type === NodeType.RecordTypeAnnotation) {
-    const recordType = annotation as RecordTypeAnnotation;
-    const fields = recordType.properties.map((f) => ({
-      name: f.name.name,
-      type: mapType(ctx, f.typeAnnotation, typeContext),
+  // Check type aliases
+  if (type.type === NodeType.TypeAnnotation && ctx.typeAliases.has(type.name)) {
+    return mapType(ctx, ctx.typeAliases.get(type.name)!, context);
+  }
+
+  if (type.type === NodeType.TypeAnnotation) {
+    switch (type.name) {
+      case 'i32':
+        return [ValType.i32];
+      case 'i64':
+        return [ValType.i64];
+      case 'f32':
+        return [ValType.f32];
+      case 'f64':
+        return [ValType.f64];
+      case 'boolean':
+        return [ValType.i32];
+      case 'string': {
+        if (ctx.stringTypeIndex !== -1) {
+          return [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+          ];
+        }
+        if (ctx.wellKnownTypes.String) {
+          const typeName = ctx.wellKnownTypes.String.name.name;
+          if (ctx.classes.has(typeName)) {
+            const classInfo = ctx.classes.get(typeName)!;
+            return [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ];
+          }
+        }
+        return [ValType.i32];
+      }
+      case 'void':
+        return [];
+      case 'anyref':
+        return [ValType.anyref];
+      case 'eqref':
+        return [ValType.eqref];
+      case 'struct':
+        return [ValType.ref_null, HeapType.struct];
+      case 'array':
+        if (type.typeArguments && type.typeArguments.length === 1) {
+          const elementType = mapType(ctx, type.typeArguments[0], context);
+          const typeIndex = getFixedArrayTypeIndex(ctx, elementType);
+          // console.log(`mapType array<T> -> index ${typeIndex}`);
+          return [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(typeIndex),
+          ];
+        }
+        return [ValType.ref_null, HeapType.array];
+      default: {
+        // Class or Interface
+        // Check for well-known types first (renamed by bundler)
+        let typeName = type.name;
+        if (typeName === 'String' && ctx.wellKnownTypes.String) {
+          typeName = ctx.wellKnownTypes.String.name.name;
+        } else if (typeName === 'Array' && ctx.wellKnownTypes.FixedArray) {
+          // Map Array<T> to FixedArray<T>
+          typeName = ctx.wellKnownTypes.FixedArray.name.name;
+        }
+
+        if (typeName === 'ByteArray') {
+          return [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
+          ];
+        }
+
+        // Check if it's a generic class instantiation
+        if (type.typeArguments && type.typeArguments.length > 0) {
+          // Instantiate generic class
+          // We need to find the generic class declaration
+          // Check genericClasses
+          let genericDecl = ctx.genericClasses.get(typeName);
+
+          // If not found, check if it's a well-known type that was renamed
+          if (!genericDecl) {
+            if (
+              typeName === 'Array' ||
+              (ctx.wellKnownTypes.FixedArray &&
+                typeName === ctx.wellKnownTypes.FixedArray.name.name)
+            ) {
+              genericDecl = ctx.wellKnownTypes.FixedArray;
+            }
+          }
+
+          if (genericDecl) {
+            const specializedName = getSpecializedName(
+              typeName,
+              type.typeArguments,
+              ctx,
+              context,
+            );
+            if (!ctx.classes.has(specializedName)) {
+              instantiateClass(
+                ctx,
+                genericDecl,
+                specializedName,
+                type.typeArguments,
+                context,
+              );
+            }
+            const classInfo = ctx.classes.get(specializedName)!;
+            if (classInfo.isExtension && classInfo.onType) {
+              // console.log(`mapType extension ${specializedName} -> onType ${classInfo.onType}`);
+              return classInfo.onType;
+            }
+            return [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ];
+          }
+        }
+
+        if (ctx.classes.has(typeName)) {
+          const classInfo = ctx.classes.get(typeName)!;
+          if (classInfo.isExtension && classInfo.onType) {
+            return classInfo.onType;
+          }
+          return [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          ];
+        }
+        if (ctx.interfaces.has(typeName)) {
+          const interfaceInfo = ctx.interfaces.get(typeName)!;
+          return [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+          ];
+        }
+
+        return [ValType.i32];
+      }
+    }
+  } else if (type.type === NodeType.RecordTypeAnnotation) {
+    const recordType = type as RecordTypeAnnotation;
+    const fields = recordType.properties.map((p) => ({
+      name: p.name.name,
+      type: mapType(ctx, p.typeAnnotation, context),
     }));
     const typeIndex = ctx.getRecordTypeIndex(fields);
     return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
-  }
-
-  if (annotation.type === NodeType.TupleTypeAnnotation) {
-    const tupleType = annotation as TupleTypeAnnotation;
-    const types = tupleType.elementTypes.map((t) =>
-      mapType(ctx, t, typeContext),
-    );
+  } else if (type.type === NodeType.TupleTypeAnnotation) {
+    const tupleType = type as TupleTypeAnnotation;
+    const types = tupleType.elementTypes.map((t) => mapType(ctx, t, context));
     const typeIndex = ctx.getTupleTypeIndex(types);
     return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
-  }
-
-  if (annotation.type === NodeType.FunctionTypeAnnotation) {
-    // Actually it is imported as FunctionTypeAnnotation
-    const f = annotation as any; // FunctionTypeAnnotation
-    const paramTypes = f.params.map((p: TypeAnnotation) =>
-      mapType(ctx, p, typeContext),
+  } else if (type.type === NodeType.FunctionTypeAnnotation) {
+    const funcType = type as FunctionTypeAnnotation;
+    const paramTypes = funcType.params.map((p: TypeAnnotation) =>
+      mapType(ctx, p, context),
     );
-    const returnType = f.returnType
-      ? mapType(ctx, f.returnType, typeContext)
+    const returnType = funcType.returnType
+      ? mapType(ctx, funcType.returnType, context)
       : [];
 
     const closureTypeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
@@ -1289,191 +1579,11 @@ export function mapType(
       ValType.ref_null,
       ...WasmModule.encodeSignedLEB128(closureTypeIndex),
     ];
+  } else if (type.type === NodeType.UnionTypeAnnotation) {
+    return [ValType.anyref];
   }
 
-  // Check type context first
-  const effectiveTypeContext = typeContext || ctx.currentTypeContext;
-  if (effectiveTypeContext && effectiveTypeContext.has(annotation.name)) {
-    return mapType(
-      ctx,
-      effectiveTypeContext.get(annotation.name)!,
-      effectiveTypeContext,
-    );
-  }
-
-  if (ctx.interfaces.has(annotation.name)) {
-    const info = ctx.interfaces.get(annotation.name)!;
-    return [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(info.structTypeIndex),
-    ];
-  }
-
-  if (ctx.typeAliases.has(annotation.name)) {
-    return mapType(ctx, ctx.typeAliases.get(annotation.name)!, typeContext);
-  }
-
-  if (annotation.name === 'i32') return [ValType.i32];
-  if (annotation.name === 'f32') return [ValType.f32];
-  if (annotation.name === 'boolean') return [ValType.i32];
-  if (annotation.name === 'anyref') return [ValType.ref_null, HeapType.any];
-  if (annotation.name === 'string') {
-    return [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-    ];
-  }
-  if (annotation.name === 'ByteArray') {
-    return [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
-    ];
-  }
-  if (ctx.isFixedArrayType(annotation)) {
-    if (annotation.typeArguments && annotation.typeArguments.length === 1) {
-      const elementType = mapType(
-        ctx,
-        annotation.typeArguments[0],
-        typeContext,
-      );
-      const arrayTypeIndex = ctx.getFixedArrayTypeIndex(elementType);
-      return [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(arrayTypeIndex),
-      ];
-    }
-  }
-  if (annotation.name === 'void') return [];
-
-  // Handle generics
-  if (annotation.typeArguments && annotation.typeArguments.length > 0) {
-    const typeArgKeys = annotation.typeArguments.map((arg) =>
-      getTypeKey(ctx, arg, typeContext),
-    );
-    const specializedName = `${annotation.name}<${typeArgKeys.join(',')}>`;
-
-    if (!ctx.classes.has(specializedName)) {
-      const decl = ctx.genericClasses.get(annotation.name);
-      if (!decl) throw new Error(`Generic class ${annotation.name} not found`);
-      instantiateClass(
-        ctx,
-        decl,
-        specializedName,
-        annotation.typeArguments,
-        typeContext,
-      );
-    }
-
-    const info = ctx.classes.get(specializedName)!;
-    return [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(info.structTypeIndex),
-    ];
-  }
-
-  const classInfo = ctx.classes.get(annotation.name);
-  if (classInfo) {
-    return [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-    ];
-  }
-
-  throw new Error(`Unknown type '${annotation.name}'`);
-}
-
-export function getTypeKey(
-  ctx: CodegenContext,
-  annotation: TypeAnnotation,
-  typeContext?: Map<string, TypeAnnotation>,
-): string {
-  if (annotation.type === NodeType.UnionTypeAnnotation) {
-    return annotation.types
-      .map((t) => getTypeKey(ctx, t, typeContext))
-      .join('|');
-  }
-
-  if (annotation.type === NodeType.RecordTypeAnnotation) {
-    const props = annotation.properties
-      .map(
-        (p) =>
-          `${p.name.name}:${getTypeKey(ctx, p.typeAnnotation, typeContext)}`,
-      )
-      .join(',');
-    return `{${props}}`;
-  }
-
-  if (annotation.type === NodeType.TupleTypeAnnotation) {
-    const elems = annotation.elementTypes
-      .map((t) => getTypeKey(ctx, t, typeContext))
-      .join(',');
-    return `[${elems}]`;
-  }
-
-  if (annotation.type === NodeType.FunctionTypeAnnotation) {
-    const params = annotation.params
-      .map((p) => getTypeKey(ctx, p, typeContext))
-      .join(',');
-    const ret = getTypeKey(ctx, annotation.returnType, typeContext);
-    return `(${params})=>${ret}`;
-  }
-
-  // Check type context first
-  if (typeContext && typeContext.has(annotation.name)) {
-    return getTypeKey(ctx, typeContext.get(annotation.name)!, typeContext);
-  }
-
-  if (annotation.typeArguments && annotation.typeArguments.length > 0) {
-    const args = annotation.typeArguments
-      .map((a) => getTypeKey(ctx, a, typeContext))
-      .join(',');
-    return `${annotation.name}<${args}>`;
-  }
-  return annotation.name;
-}
-
-function resolveAnnotation(
-  annotation: TypeAnnotation,
-  context?: Map<string, TypeAnnotation>,
-): TypeAnnotation {
-  if (annotation.type === NodeType.UnionTypeAnnotation) {
-    return {
-      type: NodeType.UnionTypeAnnotation,
-      types: annotation.types.map((t) => resolveAnnotation(t, context)),
-    };
-  }
-
-  if (annotation.type === NodeType.RecordTypeAnnotation) {
-    return {
-      type: NodeType.RecordTypeAnnotation,
-      properties: annotation.properties.map((p) => ({
-        ...p,
-        typeAnnotation: resolveAnnotation(p.typeAnnotation, context),
-      })),
-    };
-  }
-
-  if (annotation.type === NodeType.TupleTypeAnnotation) {
-    return {
-      type: NodeType.TupleTypeAnnotation,
-      elementTypes: annotation.elementTypes.map((t) =>
-        resolveAnnotation(t, context),
-      ),
-    };
-  }
-
-  if (annotation.type === NodeType.FunctionTypeAnnotation) {
-    return {
-      type: NodeType.FunctionTypeAnnotation,
-      params: annotation.params.map((p) => resolveAnnotation(p, context)),
-      returnType: resolveAnnotation(annotation.returnType, context),
-    };
-  }
-
-  if (context && context.has(annotation.name)) {
-    return resolveAnnotation(context.get(annotation.name)!, context);
-  }
-  return annotation;
+  return [ValType.i32];
 }
 
 export function instantiateClass(
@@ -1495,20 +1605,28 @@ export function instantiateClass(
   const fieldTypes: {type: number[]; mutable: boolean}[] = [];
 
   let fieldIndex = 0;
-  // Add vtable field
-  fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
-  fieldTypes.push({type: [ValType.eqref], mutable: true});
+  let structTypeIndex = -1;
+  let onType: number[] | undefined;
 
-  for (const member of decl.body) {
-    if (member.type === NodeType.FieldDefinition) {
-      const wasmType = mapType(ctx, member.typeAnnotation, context);
-      const fieldName = manglePrivateName(specializedName, member.name.name);
-      fields.set(fieldName, {index: fieldIndex++, type: wasmType});
-      fieldTypes.push({type: wasmType, mutable: true});
+  if (decl.isExtension && decl.onType) {
+    onType = mapType(ctx, decl.onType, context);
+  } else {
+    // Add vtable field
+    fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
+    fieldTypes.push({type: [ValType.eqref], mutable: true});
+
+    for (const member of decl.body) {
+      if (member.type === NodeType.FieldDefinition) {
+        const wasmType = mapType(ctx, member.typeAnnotation, context);
+        const fieldName = manglePrivateName(specializedName, member.name.name);
+        fields.set(fieldName, {index: fieldIndex++, type: wasmType});
+        fieldTypes.push({type: wasmType, mutable: true});
+      }
     }
+
+    structTypeIndex = ctx.module.addStructType(fieldTypes);
   }
 
-  const structTypeIndex = ctx.module.addStructType(fieldTypes);
   const methods = new Map<
     string,
     {
@@ -1528,7 +1646,9 @@ export function instantiateClass(
     superClass: decl.superClass?.name,
     fields,
     methods,
-    vtable, // TODO: Populate vtable for generics
+    vtable,
+    isExtension: decl.isExtension,
+    onType,
   };
   ctx.classes.set(specializedName, classInfo);
 
@@ -1564,13 +1684,33 @@ export function instantiateClass(
   for (const member of members) {
     if (member.type === NodeType.MethodDefinition) {
       const methodName = member.name.name;
-      if (methodName !== '#new') vtable.push(methodName);
 
-      const params = [
-        [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
-      ];
+      let intrinsic: string | undefined;
+      if (member.decorators) {
+        const intrinsicDecorator = member.decorators.find(
+          (d) => d.name === 'intrinsic',
+        );
+        if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
+          intrinsic = intrinsicDecorator.args[0].value;
+        }
+      }
+
+      if (methodName !== '#new' && !intrinsic) vtable.push(methodName);
+
+      let thisType: number[];
+      if (decl.isExtension && onType) {
+        thisType = onType;
+      } else {
+        thisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+      }
+
+      const params = [thisType];
       for (const param of member.params) {
-        params.push(mapType(ctx, param.typeAnnotation, context));
+        const pType = mapType(ctx, param.typeAnnotation, context);
+        params.push(pType);
       }
 
       let results: number[][] = [];
@@ -1584,280 +1724,10 @@ export function instantiateClass(
       }
 
       const typeIndex = ctx.module.addType(params, results);
-      const funcIndex = ctx.module.addFunction(typeIndex);
 
-      let intrinsic: string | undefined;
-      if (member.decorators) {
-        const intrinsicDecorator = member.decorators.find(
-          (d) => d.name === 'intrinsic',
-        );
-        if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
-          intrinsic = intrinsicDecorator.args[0].value;
-        }
-      }
-
-      const returnType = results.length > 0 ? results[0] : [];
-      methods.set(methodName, {
-        index: funcIndex,
-        returnType,
-        typeIndex,
-        paramTypes: params,
-        isFinal: member.isFinal,
-        intrinsic,
-      });
-    }
-  }
-
-  // Add implicit accessors to methods map
-  for (const member of decl.body) {
-    if (
-      member.type === NodeType.FieldDefinition &&
-      !member.name.name.startsWith('#')
-    ) {
-      const propName = member.name.name;
-      const getterName = `get_${propName}`;
-      const setterName = `set_${propName}`;
-
-      // Getter
-      vtable.push(getterName);
-      const getterParams = [
-        [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
-      ];
-      const fieldType = mapType(ctx, member.typeAnnotation, context);
-      const getterResults = [fieldType];
-      const getterTypeIndex = ctx.module.addType(getterParams, getterResults);
-      const getterFuncIndex = ctx.module.addFunction(getterTypeIndex);
-
-      methods.set(getterName, {
-        index: getterFuncIndex,
-        returnType: fieldType,
-        typeIndex: getterTypeIndex,
-        paramTypes: getterParams,
-      });
-
-      // Setter
-      if (!member.isFinal) {
-        vtable.push(setterName);
-        const setterParams = [
-          [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
-          fieldType,
-        ];
-        const setterResults: number[][] = [];
-        const setterTypeIndex = ctx.module.addType(setterParams, setterResults);
-        const setterFuncIndex = ctx.module.addFunction(setterTypeIndex);
-
-        methods.set(setterName, {
-          index: setterFuncIndex,
-          returnType: [],
-          typeIndex: setterTypeIndex,
-          paramTypes: setterParams,
-        });
-      }
-    }
-  }
-
-  // Create VTable Struct Type
-  const vtableTypeIndex = ctx.module.addStructType(
-    vtable.map(() => ({type: [ValType.funcref], mutable: false})),
-  );
-  classInfo.vtableTypeIndex = vtableTypeIndex;
-
-  // Create VTable Global
-  const vtableInit: number[] = [];
-  for (const methodName of vtable) {
-    const methodInfo = methods.get(methodName);
-    if (!methodInfo) throw new Error(`Method ${methodName} not found`);
-    vtableInit.push(Opcode.ref_func);
-    vtableInit.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
-  }
-  vtableInit.push(0xfb, GcOpcode.struct_new);
-  vtableInit.push(...WasmModule.encodeSignedLEB128(vtableTypeIndex));
-
-  const vtableGlobalIndex = ctx.module.addGlobal(
-    [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
-    false,
-    vtableInit,
-  );
-  classInfo.vtableGlobalIndex = vtableGlobalIndex;
-
-  ctx.bodyGenerators.push(() => {
-    const oldContext = ctx.currentTypeContext;
-    ctx.currentTypeContext = context;
-    generateClassMethods(ctx, decl, specializedName);
-    ctx.currentTypeContext = oldContext;
-  });
-}
-
-function manglePrivateName(className: string, memberName: string): string {
-  if (memberName.startsWith('#')) {
-    return `${className}::${memberName}`;
-  }
-  return memberName;
-}
-
-function applyMixin(
-  ctx: CodegenContext,
-  baseClassInfo: ClassInfo | undefined,
-  mixinDecl: MixinDeclaration,
-): ClassInfo {
-  const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
-  const intermediateName = `${baseName}_${mixinDecl.name.name}`;
-
-  if (ctx.classes.has(intermediateName)) {
-    return ctx.classes.get(intermediateName)!;
-  }
-
-  const fields = new Map<string, {index: number; type: number[]}>();
-  const fieldTypes: {type: number[]; mutable: boolean}[] = [];
-  let fieldIndex = 0;
-  let superTypeIndex: number | undefined;
-  const methods = new Map<string, any>();
-  const vtable: string[] = [];
-
-  if (baseClassInfo) {
-    superTypeIndex = baseClassInfo.structTypeIndex;
-    // Inherit fields
-    const sortedSuperFields = Array.from(baseClassInfo.fields.entries()).sort(
-      (a, b) => a[1].index - b[1].index,
-    );
-    for (const [name, info] of sortedSuperFields) {
-      fields.set(name, {index: fieldIndex++, type: info.type});
-      fieldTypes.push({type: info.type, mutable: true});
-    }
-    // Inherit methods and vtable
-    if (baseClassInfo.vtable) {
-      vtable.push(...baseClassInfo.vtable);
-    }
-    for (const [name, info] of baseClassInfo.methods) {
-      methods.set(name, info);
-    }
-  } else {
-    // Root mixin application
-    fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
-    fieldTypes.push({type: [ValType.eqref], mutable: true});
-  }
-
-  // Add mixin fields
-  for (const member of mixinDecl.body) {
-    if (member.type === NodeType.FieldDefinition) {
-      const wasmType = mapType(ctx, member.typeAnnotation);
-      const fieldName = manglePrivateName(intermediateName, member.name.name);
-
-      if (!fields.has(fieldName)) {
-        fields.set(fieldName, {index: fieldIndex++, type: wasmType});
-        fieldTypes.push({type: wasmType, mutable: true});
-      }
-    }
-  }
-
-  const structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
-
-  const classInfo: ClassInfo = {
-    name: intermediateName,
-    structTypeIndex,
-    superClass: baseClassInfo?.name,
-    fields,
-    methods,
-    vtable,
-  };
-  ctx.classes.set(intermediateName, classInfo);
-
-  // Register mixin methods (similar to registerClass logic)
-  // We use a synthesized ClassDeclaration to reuse logic if possible,
-  // but we need to register methods in the map first before generation.
-
-  // We can reuse the logic from registerClass by extracting it, but for now let's duplicate/adapt
-  // the registration part.
-
-  // Synthesize a ClassDeclaration for registration
-  const decl: ClassDeclaration = {
-    type: NodeType.ClassDeclaration,
-    name: {type: NodeType.Identifier, name: intermediateName},
-    superClass: baseClassInfo
-      ? {type: NodeType.Identifier, name: baseClassInfo.name}
-      : undefined,
-    body: mixinDecl.body as any,
-    exported: false,
-    isFinal: false,
-    isAbstract: false,
-    isExtension: false,
-  };
-
-  // Register methods
-  const members = [...decl.body];
-  const hasConstructor = members.some(
-    (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
-  );
-  if (!hasConstructor) {
-    const bodyStmts: any[] = [];
-    if (decl.superClass) {
-      bodyStmts.push({
-        type: NodeType.ExpressionStatement,
-        expression: {
-          type: NodeType.CallExpression,
-          callee: {type: NodeType.SuperExpression},
-          arguments: [],
-        },
-      });
-    }
-    members.push({
-      type: NodeType.MethodDefinition,
-      name: {type: NodeType.Identifier, name: '#new'},
-      params: [],
-      body: {type: NodeType.BlockStatement, body: bodyStmts},
-      isFinal: false,
-      isAbstract: false,
-      isStatic: false,
-      isDeclare: false,
-    } as MethodDefinition);
-  }
-
-  for (const member of members) {
-    if (member.type === NodeType.MethodDefinition) {
-      const methodName = member.name.name;
-
-      if (methodName !== '#new' && !vtable.includes(methodName)) {
-        vtable.push(methodName);
-      }
-
-      let thisType = [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(structTypeIndex),
-      ];
-
-      if (decl.superClass) {
-        const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-        if (methodName !== '#new' && superClassInfo.methods.has(methodName)) {
-          thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
-        }
-      }
-
-      const params = [thisType];
-      for (const param of member.params) {
-        params.push(mapType(ctx, param.typeAnnotation));
-      }
-
-      let results: number[][] = [];
-      if (methodName === '#new') {
-        results = [];
-      } else if (member.returnType) {
-        const mapped = mapType(ctx, member.returnType);
-        if (mapped.length > 0) results = [mapped];
-      } else {
-        results = [];
-      }
-
-      const typeIndex = ctx.module.addType(params, results);
-      const funcIndex = ctx.module.addFunction(typeIndex);
-
-      let intrinsic: string | undefined;
-      if (member.decorators) {
-        const intrinsicDecorator = member.decorators.find(
-          (d) => d.name === 'intrinsic',
-        );
-        if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
-          intrinsic = intrinsicDecorator.args[0].value;
-        }
+      let funcIndex = -1;
+      if (!intrinsic) {
+        funcIndex = ctx.module.addFunction(typeIndex);
       }
 
       const returnType = results.length > 0 ? results[0] : [];
@@ -1870,11 +1740,8 @@ function applyMixin(
         intrinsic,
       });
     } else if (member.type === NodeType.AccessorDeclaration) {
-      // ... Accessor logic similar to registerClass ...
-      // For brevity, assuming mixins use methods mostly, but we should support accessors.
-      // Copying accessor logic from registerClass:
       const propName = member.name.name;
-      const propType = mapType(ctx, member.typeAnnotation);
+      const propType = mapType(ctx, member.typeAnnotation, context);
 
       // Getter
       if (member.getter) {
@@ -1883,10 +1750,15 @@ function applyMixin(
           vtable.push(methodName);
         }
 
-        let thisType = [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(structTypeIndex),
-        ];
+        let thisType: number[];
+        if (decl.isExtension && onType) {
+          thisType = onType;
+        } else {
+          thisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(structTypeIndex),
+          ];
+        }
 
         if (decl.superClass) {
           const superClassInfo = ctx.classes.get(decl.superClass.name)!;
@@ -1930,10 +1802,15 @@ function applyMixin(
           vtable.push(methodName);
         }
 
-        let thisType = [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(structTypeIndex),
-        ];
+        let thisType: number[];
+        if (decl.isExtension && onType) {
+          thisType = onType;
+        } else {
+          thisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(structTypeIndex),
+          ];
+        }
 
         if (decl.superClass) {
           const superClassInfo = ctx.classes.get(decl.superClass.name)!;
@@ -1972,19 +1849,32 @@ function applyMixin(
     } else if (member.type === NodeType.FieldDefinition) {
       // Implicit accessors
       if (!member.name.name.startsWith('#')) {
+        let intrinsic = false;
+        if (
+          member.decorators &&
+          member.decorators.some((d) => d.name === 'intrinsic')
+        ) {
+          intrinsic = true;
+        }
+
         const propName = member.name.name;
-        const propType = mapType(ctx, member.typeAnnotation);
+        const propType = mapType(ctx, member.typeAnnotation, context);
 
         // Register Getter
         const regGetterName = `get_${propName}`;
-        if (!vtable.includes(regGetterName)) {
+        if (!intrinsic && !vtable.includes(regGetterName)) {
           vtable.push(regGetterName);
         }
 
-        let thisType = [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(structTypeIndex),
-        ];
+        let thisType: number[];
+        if (decl.isExtension && onType) {
+          thisType = onType;
+        } else {
+          thisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(structTypeIndex),
+          ];
+        }
 
         if (decl.superClass) {
           const superClassInfo = ctx.classes.get(decl.superClass.name)!;
@@ -2010,7 +1900,7 @@ function applyMixin(
           typeIndex = ctx.module.addType(params, results);
         }
 
-        const funcIndex = ctx.module.addFunction(typeIndex!);
+        const funcIndex = intrinsic ? -1 : ctx.module.addFunction(typeIndex!);
 
         methods.set(regGetterName, {
           index: funcIndex,
@@ -2023,7 +1913,7 @@ function applyMixin(
         // Register Setter (if mutable)
         if (!member.isFinal) {
           const regSetterName = `set_${propName}`;
-          if (!vtable.includes(regSetterName)) {
+          if (!intrinsic && !vtable.includes(regSetterName)) {
             vtable.push(regSetterName);
           }
 
@@ -2045,7 +1935,9 @@ function applyMixin(
             setterTypeIndex = ctx.module.addType(setterParams, setterResults);
           }
 
-          const setterFuncIndex = ctx.module.addFunction(setterTypeIndex!);
+          const setterFuncIndex = intrinsic
+            ? -1
+            : ctx.module.addFunction(setterTypeIndex!);
 
           methods.set(regSetterName, {
             index: setterFuncIndex,
@@ -2055,66 +1947,21 @@ function applyMixin(
             isFinal: member.isFinal,
           });
         }
-
-        const fieldName = manglePrivateName(intermediateName, propName);
-        const fieldInfo = classInfo.fields.get(fieldName);
-        if (!fieldInfo) {
-          console.error(
-            `Field ${fieldName} not found in class ${decl.name.name}`,
-          );
-          console.error(
-            'Available fields:',
-            Array.from(classInfo.fields.keys()),
-          );
-          throw new Error(`Field ${fieldName} not found`);
-        }
-
-        // Getter
-        const getterName = `get_${propName}`;
-        const getterInfo = classInfo.methods.get(getterName)!;
-        const getterBody: number[] = [];
-
-        // this.field
-        getterBody.push(Opcode.local_get, 0); // this
-        getterBody.push(0xfb, GcOpcode.struct_get);
-        getterBody.push(
-          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-        );
-        getterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
-        getterBody.push(Opcode.end);
-
-        ctx.module.addCode(getterInfo.index, [], getterBody);
-
-        // Setter
-        if (!member.isFinal) {
-          const setterName = `set_${propName}`;
-          const setterInfo = classInfo.methods.get(setterName)!;
-          const setterBody: number[] = [];
-
-          // this.field = val
-          setterBody.push(Opcode.local_get, 0); // this
-          setterBody.push(Opcode.local_get, 1); // val
-          setterBody.push(0xfb, GcOpcode.struct_set);
-          setterBody.push(
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-          );
-          setterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
-          setterBody.push(Opcode.end);
-
-          ctx.module.addCode(setterInfo.index, [], setterBody);
-        }
       }
     }
   }
 
   // Create VTable Struct Type
   let vtableSuperTypeIndex: number | undefined;
+  const baseClassInfo = decl.superClass
+    ? ctx.classes.get(decl.superClass.name)
+    : undefined;
   if (baseClassInfo) {
     vtableSuperTypeIndex = baseClassInfo.vtableTypeIndex;
   }
 
   const vtableTypeIndex = ctx.module.addStructType(
-    vtable.map(() => ({type: [ValType.funcref], mutable: false})),
+    vtable.map(() => ({type: [HeapType.func], mutable: false})),
     vtableSuperTypeIndex,
   );
 
@@ -2138,30 +1985,342 @@ function applyMixin(
   classInfo.vtableTypeIndex = vtableTypeIndex;
   classInfo.vtableGlobalIndex = vtableGlobalIndex;
 
+  generateInterfaceVTable(ctx, classInfo, decl);
+
+  if (decl.exported && structTypeIndex !== -1) {
+    const ctorInfo = methods.get('#new')!;
+
+    // Wrapper signature: params -> (ref null struct)
+    const params = ctorInfo.paramTypes.slice(1); // Skip 'this'
+    const results = [
+      [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
+    ];
+
+    const wrapperTypeIndex = ctx.module.addType(params, results);
+    const wrapperFuncIndex = ctx.module.addFunction(wrapperTypeIndex);
+
+    const exportName = decl.exportName || decl.name.name;
+    ctx.module.addExport(exportName, ExportDesc.Func, wrapperFuncIndex);
+
+    ctx.bodyGenerators.push(() => {
+      const body: number[] = [];
+
+      ctx.pushScope();
+      ctx.nextLocalIndex = params.length; // Params are locals 0..N-1
+      ctx.extraLocals = [];
+
+      // 1. Allocate
+      body.push(0xfb, GcOpcode.struct_new_default);
+      body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+
+      // 2. Store in temp
+      const tempLocal = ctx.declareLocal('$$export_new', results[0]);
+      body.push(Opcode.local_tee);
+      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+      // 3. Init VTable (if needed)
+      if (classInfo.vtableGlobalIndex !== undefined) {
+        body.push(Opcode.global_get);
+        body.push(
+          ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
+        );
+        body.push(0xfb, GcOpcode.struct_set);
+        body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+        body.push(...WasmModule.encodeSignedLEB128(0));
+
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+      }
+
+      // 4. Load args
+      for (let i = 0; i < params.length; i++) {
+        body.push(Opcode.local_get, i);
+      }
+
+      // 5. Call constructor
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+
+      // 6. Return
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+      body.push(Opcode.end);
+
+      ctx.module.addCode(wrapperFuncIndex, ctx.extraLocals, body);
+      ctx.popScope();
+    });
+  }
+
+  const declForGen = {
+    ...decl,
+    name: {...decl.name, name: specializedName},
+    superClass: baseClassInfo
+      ? {type: NodeType.Identifier, name: baseClassInfo.name}
+      : decl.superClass,
+  } as ClassDeclaration;
+
   ctx.bodyGenerators.push(() => {
-    generateMixinMethods(ctx, mixinDecl, classInfo);
+    generateClassMethods(ctx, declForGen, specializedName, context);
   });
+}
+
+function manglePrivateName(className: string, memberName: string): string {
+  if (memberName.startsWith('#')) {
+    return `${className}::${memberName}`;
+  }
+  return memberName;
+}
+
+function applyMixin(
+  ctx: CodegenContext,
+  baseClassInfo: ClassInfo | undefined,
+  mixinDecl: MixinDeclaration,
+): ClassInfo {
+  const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
+  const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+
+  if (ctx.classes.has(intermediateName)) {
+    return ctx.classes.get(intermediateName)!;
+  }
+
+  const fields = new Map<string, {index: number; type: number[]}>();
+  const fieldTypes: {type: number[]; mutable: boolean}[] = [];
+  let fieldIndex = 0;
+  let superTypeIndex: number | undefined;
+  const methods = new Map<string, any>();
+  const vtable: string[] = [];
+
+  if (baseClassInfo) {
+    superTypeIndex = baseClassInfo.structTypeIndex;
+    // Inherit fields
+    const sortedSuperFields = Array.from(baseClassInfo.fields.entries()).sort(
+      (a, b) => a[1].index - b[1].index,
+    );
+    for (const [name, info] of sortedSuperFields) {
+      fields.set(name, {index: fieldIndex++, type: info.type});
+      fieldTypes.push({type: info.type, mutable: true});
+    }
+  } else {
+    // Root mixin application
+    fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
+    fieldTypes.push({type: [ValType.eqref], mutable: true});
+  }
+
+  // Add mixin fields
+  for (const member of mixinDecl.body) {
+    if (member.type === NodeType.FieldDefinition) {
+      const wasmType = mapType(ctx, member.typeAnnotation);
+      const fieldName = manglePrivateName(intermediateName, member.name.name);
+
+      if (!fields.has(fieldName)) {
+        fields.set(fieldName, {index: fieldIndex++, type: wasmType});
+        fieldTypes.push({type: wasmType, mutable: true});
+      }
+    }
+  }
+
+  const structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
+
+  const classInfo: ClassInfo = {
+    name: intermediateName,
+    structTypeIndex,
+    superClass: baseClassInfo?.name,
+    fields,
+    methods,
+    vtable,
+  };
+  ctx.classes.set(intermediateName, classInfo);
+
+  const declForGen = {
+    ...mixinDecl,
+    type: NodeType.ClassDeclaration,
+    name: {type: NodeType.Identifier, name: intermediateName},
+    superClass: baseClassInfo
+      ? {type: NodeType.Identifier, name: baseClassInfo.name}
+      : undefined,
+    isAbstract: false,
+  } as unknown as ClassDeclaration;
+
+  ctx.syntheticClasses.push(declForGen);
 
   return classInfo;
 }
 
-function generateMixinMethods(
-  ctx: CodegenContext,
-  mixinDecl: MixinDeclaration,
-  classInfo: ClassInfo,
-) {
-  const decl: ClassDeclaration = {
-    type: NodeType.ClassDeclaration,
-    name: {type: NodeType.Identifier, name: classInfo.name},
-    superClass: classInfo.superClass
-      ? {type: NodeType.Identifier, name: classInfo.superClass}
-      : undefined,
-    body: mixinDecl.body as any,
-    exported: false,
-    isFinal: false,
-    isAbstract: false,
-    isExtension: false,
-  };
+export function typeToTypeAnnotation(
+  type: Type,
+  erasedTypeParams?: Set<string>,
+): TypeAnnotation {
+  // if (type.kind === TypeKind.Class) {
+  //   const ct = type as ClassType;
+  //   // console.log(`typeToTypeAnnotation: Class ${ct.name}, typeArgs: ${ct.typeArguments?.length}, typeParams: ${ct.typeParameters?.length}`);
+  // }
+  switch (type.kind) {
+    case TypeKind.Number:
+      return {
+        type: NodeType.TypeAnnotation,
+        name: (type as NumberType).name,
+      };
+    case TypeKind.Boolean:
+      return {
+        type: NodeType.TypeAnnotation,
+        name: 'boolean',
+      };
+    case TypeKind.Void:
+      return {
+        type: NodeType.TypeAnnotation,
+        name: 'void',
+      };
+    case TypeKind.Class: {
+      const classType = type as ClassType;
+      let args = classType.typeArguments
+        ? classType.typeArguments.map((t) =>
+            typeToTypeAnnotation(t, erasedTypeParams),
+          )
+        : [];
 
-  generateClassMethods(ctx, decl, classInfo.name);
+      if (
+        args.length === 0 &&
+        classType.typeParameters &&
+        classType.typeParameters.length > 0
+      ) {
+        args = classType.typeParameters.map((tp) => ({
+          type: NodeType.TypeAnnotation,
+          name: tp.name,
+        }));
+      }
+
+      return {
+        type: NodeType.TypeAnnotation,
+        name: classType.name,
+        typeArguments: args.length > 0 ? args : undefined,
+      };
+    }
+    case TypeKind.Interface: {
+      const ifaceType = type as InterfaceType;
+      const args = ifaceType.typeArguments
+        ? ifaceType.typeArguments.map((t) =>
+            typeToTypeAnnotation(t, erasedTypeParams),
+          )
+        : [];
+      return {
+        type: NodeType.TypeAnnotation,
+        name: ifaceType.name,
+        typeArguments: args.length > 0 ? args : undefined,
+      };
+    }
+    case TypeKind.FixedArray: {
+      const arrayType = type as FixedArrayType;
+      return {
+        type: NodeType.TypeAnnotation,
+        name: 'array',
+        typeArguments: [
+          typeToTypeAnnotation(arrayType.elementType, erasedTypeParams),
+        ],
+      };
+    }
+    case TypeKind.Record: {
+      const recordType = type as RecordType;
+      const properties: any[] = [];
+      for (const [name, propType] of recordType.properties) {
+        properties.push({
+          type: NodeType.PropertySignature,
+          name: {type: NodeType.Identifier, name},
+          typeAnnotation: typeToTypeAnnotation(propType, erasedTypeParams),
+        });
+      }
+      return {
+        type: NodeType.RecordTypeAnnotation,
+        properties,
+      } as any;
+    }
+    case TypeKind.Tuple: {
+      const tupleType = type as TupleType;
+      return {
+        type: NodeType.TupleTypeAnnotation,
+        elementTypes: tupleType.elementTypes.map((t) =>
+          typeToTypeAnnotation(t, erasedTypeParams),
+        ),
+      } as any;
+    }
+    case TypeKind.Function: {
+      const funcType = type as FunctionType;
+      const newErased = new Set(erasedTypeParams);
+      if (funcType.typeParameters) {
+        for (const p of funcType.typeParameters) {
+          newErased.add(p.name);
+        }
+      }
+      return {
+        type: NodeType.FunctionTypeAnnotation,
+        params: funcType.parameters.map((p) =>
+          typeToTypeAnnotation(p, newErased),
+        ),
+        returnType: typeToTypeAnnotation(funcType.returnType, newErased),
+      } as any;
+    }
+    case TypeKind.TypeParameter: {
+      const name = (type as TypeParameterType).name;
+      if (erasedTypeParams && erasedTypeParams.has(name)) {
+        return {
+          type: NodeType.TypeAnnotation,
+          name: 'anyref',
+        };
+      }
+      return {
+        type: NodeType.TypeAnnotation,
+        name: name,
+      };
+    }
+    case TypeKind.TypeAlias: {
+      const aliasType = type as TypeAliasType;
+      if (aliasType.isDistinct) {
+        return {
+          type: NodeType.TypeAnnotation,
+          name: aliasType.name,
+        };
+      }
+      return typeToTypeAnnotation(aliasType.target, erasedTypeParams);
+    }
+    case TypeKind.ByteArray:
+      return {
+        type: NodeType.TypeAnnotation,
+        name: 'ByteArray',
+      };
+    case TypeKind.AnyRef:
+      return {
+        type: NodeType.TypeAnnotation,
+        name: 'anyref',
+      };
+    case TypeKind.Union:
+      return {
+        type: NodeType.TypeAnnotation,
+        name: 'anyref',
+      };
+    default:
+      return {
+        type: NodeType.TypeAnnotation,
+        name: 'any',
+      };
+  }
+}
+
+export function mapCheckerTypeToWasmType(
+  ctx: CodegenContext,
+  type: Type,
+): number[] {
+  if (type.kind === TypeKind.Number) {
+    const name = (type as NumberType).name;
+    if (name === 'i32') return [ValType.i32];
+    if (name === 'i64') return [ValType.i64];
+    if (name === 'f32') return [ValType.f32];
+    if (name === 'f64') return [ValType.f64];
+    return [ValType.i32];
+  }
+  if (type.kind === TypeKind.Boolean) return [ValType.i32];
+  if (type.kind === TypeKind.Void) return [];
+  if (type.kind === TypeKind.Null) return [ValType.ref_null, HeapType.none];
+
+  const annotation = typeToTypeAnnotation(type);
+  return mapType(ctx, annotation, ctx.currentTypeContext);
 }

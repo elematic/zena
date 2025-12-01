@@ -135,7 +135,10 @@ export function resolveTypeAnnotation(
       return Types.AnyRef;
     case 'string': {
       const stringType = ctx.resolve('String');
-      return stringType || Types.String;
+      if (stringType) return stringType;
+
+      const wellKnown = ctx.getWellKnownType('String');
+      return wellKnown || Types.String;
     }
     case 'ByteArray':
       return Types.ByteArray;
@@ -299,6 +302,7 @@ export function instantiateGenericClass(
     constructorType: genericClass.constructorType
       ? substituteFunction(genericClass.constructorType)
       : undefined,
+    onType: genericClass.onType ? substitute(genericClass.onType) : undefined,
   };
 }
 
@@ -563,6 +567,14 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     const ext = source as ClassType;
     if (ext.onType && isAssignableTo(ext.onType, target)) {
       return true;
+    }
+  }
+
+  // Allow assigning primitive FixedArray to Extension Class wrapping it
+  if (source.kind === TypeKind.FixedArray && target.kind === TypeKind.Class) {
+    const targetClass = target as ClassType;
+    if (targetClass.isExtension && targetClass.onType) {
+      return isAssignableTo(source, targetClass.onType);
     }
   }
 

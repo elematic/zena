@@ -12,7 +12,6 @@ import {
   type Identifier,
   type IndexExpression,
   type MemberExpression,
-  type MethodDefinition,
   type NewExpression,
   type NullLiteral,
   type NumberLiteral,
@@ -30,10 +29,12 @@ import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import {analyzeCaptures} from './captures.js';
 import {
   decodeTypeIndex,
-  getClassFromTypeIndex,
   getInterfaceFromTypeIndex,
   getTypeKey,
   mapType,
+  mapCheckerTypeToWasmType,
+  typeToTypeAnnotation,
+  resolveAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {
@@ -41,7 +42,8 @@ import {
   instantiateGenericFunction,
 } from './functions.js';
 import {generateBlockStatement} from './statements.js';
-import type {ClassInfo, InterfaceInfo} from './types.js';
+import {TypeKind, type FunctionType} from '../types.js';
+import type {ClassInfo} from './types.js';
 
 export function generateExpression(
   ctx: CodegenContext,
@@ -163,632 +165,43 @@ function generateAsExpression(
 }
 
 export function inferType(ctx: CodegenContext, expr: Expression): number[] {
-  switch (expr.type) {
-    case NodeType.StringLiteral:
-      return [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-      ];
-    // case NodeType.NumberLiteral removed (duplicate)
-    case NodeType.BooleanLiteral:
-      return [ValType.i32];
-    case NodeType.AsExpression: {
-      const asExpr = expr as AsExpression;
-      return mapType(ctx, asExpr.typeAnnotation, ctx.currentTypeContext);
-    }
-    case NodeType.AssignmentExpression: {
-      const assignExpr = expr as AssignmentExpression;
-      return inferType(ctx, assignExpr.value);
-    }
-    case NodeType.Identifier: {
-      const idExpr = expr as Identifier;
-      const name = idExpr.name;
-      const local = ctx.getLocal(name);
-      if (local) return local.type;
-      const global = ctx.getGlobal(name);
-      if (global) return global.type;
-      const message = `Unknown identifier: ${name}`;
-      ctx.reportError(message, DiagnosticCode.UnknownVariable, idExpr);
-      throw new CompilerError(message);
-    }
-    case NodeType.MemberExpression: {
-      const memberExpr = expr as MemberExpression;
-      const objectType = inferType(ctx, memberExpr.object);
-
-      // Handle array/string length
-      if (memberExpr.property.name === 'length') {
-        const isString = isStringType(ctx, objectType);
-        const isArray = Array.from(ctx.fixedArrayTypes.values()).includes(
-          objectType[1],
-        );
-        if (isString || isArray) return [ValType.i32];
-      }
-
-      const structTypeIndex = getHeapTypeIndex(ctx, objectType);
-      if (structTypeIndex === -1) {
-        const message = `Cannot access member '${memberExpr.property.name}' on non-heap type.`;
-        ctx.reportError(message, DiagnosticCode.InvalidExpression, memberExpr);
-        throw new CompilerError(message);
-      }
-
-      const fieldName = memberExpr.property.name;
-
-      let foundClass: ClassInfo | undefined;
-      for (const info of ctx.classes.values()) {
-        if (info.structTypeIndex === structTypeIndex) {
-          foundClass = info;
-          break;
-        }
-      }
-
-      if (!foundClass) {
-        // Check Interface
-        let foundInterface: InterfaceInfo | undefined;
-        for (const info of ctx.interfaces.values()) {
-          if (info.structTypeIndex === structTypeIndex) {
-            foundInterface = info;
-            break;
-          }
-        }
-
-        if (foundInterface) {
-          const fieldInfo = foundInterface.fields.get(fieldName);
-          if (fieldInfo) {
-            return fieldInfo.type;
-          }
-          const message = `Field '${fieldName}' not found in interface (or is a method).`;
-          ctx.reportError(message, DiagnosticCode.UnknownField, memberExpr);
-          throw new CompilerError(message);
-        }
-
-        // Check Record
-        let recordKey: string | undefined;
-        for (const [key, index] of ctx.recordTypes) {
-          if (index === structTypeIndex) {
-            recordKey = key;
-            break;
-          }
-        }
-        if (recordKey) {
-          const fields = recordKey.split(';').map((s) => {
-            const colonIndex = s.indexOf(':');
-            const name = s.substring(0, colonIndex);
-            const typeStr = s.substring(colonIndex + 1);
-            return {name, typeStr};
-          });
-          const field = fields.find((f) => f.name === fieldName);
-          if (field) {
-            return field.typeStr.split(',').map(Number);
-          }
-        }
-        const message = `Unknown struct type for member access: ${fieldName}`;
-        ctx.reportInternalError(message, memberExpr);
-        throw new CompilerError(message);
-      }
-
-      let lookupName = fieldName;
-      if (fieldName.startsWith('#')) {
-        if (ctx.currentClass) {
-          lookupName = `${ctx.currentClass.name}::${fieldName}`;
-        }
-      }
-
-      const fieldInfo = foundClass.fields.get(lookupName);
-      if (fieldInfo) {
-        return fieldInfo.type;
-      }
-      // If it's a method, we might return a function reference or something?
-      // For now, let's assume it's a field access.
-      throw new Error(
-        `Field '${fieldName}' not found in class '${foundClass.name}'`,
-      );
-    }
-    case NodeType.BinaryExpression: {
-      const binExpr = expr as BinaryExpression;
-      const leftType = inferType(ctx, binExpr.left);
-      const rightType = inferType(ctx, binExpr.right);
-
-      if (binExpr.operator === '+') {
-        if (isStringType(ctx, leftType) && isStringType(ctx, rightType)) {
-          return [ValType.ref_null, ctx.stringTypeIndex];
-        }
-      }
-
-      if (leftType[0] === ValType.i32 && rightType[0] === ValType.i32) {
-        return [ValType.i32];
-      }
-
-      throw new Error(
-        `Type mismatch or unsupported operator '${binExpr.operator}' for types.`,
-      );
-    }
-    case NodeType.NewExpression: {
-      const newExpr = expr as NewExpression;
-      let className = newExpr.callee.name;
-      if (!ctx.classes.has(className) && !ctx.genericClasses.has(className)) {
-        throw new Error(
-          `Class ${className} not found in inferType(NewExpression). Available: ${Array.from(ctx.classes.keys()).join(', ')}`,
-        );
-      }
-      let typeArguments = newExpr.typeArguments;
-
-      if (
-        (!typeArguments || typeArguments.length === 0) &&
-        ctx.genericClasses.has(className)
-      ) {
-        const classDecl = ctx.genericClasses.get(className)!;
-        const ctor = classDecl.body.find(
-          (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
-        ) as MethodDefinition | undefined;
-        if (ctor) {
-          typeArguments = inferTypeArgs(
-            ctx,
-            classDecl.typeParameters!,
-            ctor.params,
-            newExpr.arguments,
-          );
-        }
-      }
-
-      if (typeArguments && typeArguments.length > 0) {
-        const annotation: TypeAnnotation = {
-          type: NodeType.TypeAnnotation,
-          name: className,
-          typeArguments: typeArguments,
-        };
-        return mapType(ctx, annotation, ctx.currentTypeContext);
-      }
-      const classInfo = ctx.classes.get(className);
-      if (classInfo) {
-        return [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-        ];
-      }
-      throw new Error(
-        `Class ${className} not found in inferType(NewExpression) after checks. Available: ${Array.from(ctx.classes.keys()).join(', ')}`,
-      );
-      return [ValType.i32];
-    }
-    case NodeType.CallExpression: {
-      const callExpr = expr as CallExpression;
-      if (callExpr.callee.type === NodeType.MemberExpression) {
-        const memberExpr = callExpr.callee as MemberExpression;
-        const objectType = inferType(ctx, memberExpr.object);
-        const structTypeIndex = getHeapTypeIndex(ctx, objectType);
-        if (structTypeIndex === -1) {
-          throw new Error(
-            `Cannot call method '${memberExpr.property.name}' on non-heap type.`,
-          );
-        }
-
-        let foundClass: ClassInfo | undefined;
-        for (const info of ctx.classes.values()) {
-          if (info.structTypeIndex === structTypeIndex) {
-            foundClass = info;
-            break;
-          }
-        }
-        if (!foundClass) {
-          // Check Interface
-          let foundInterface: InterfaceInfo | undefined;
-          for (const info of ctx.interfaces.values()) {
-            if (info.structTypeIndex === structTypeIndex) {
-              foundInterface = info;
-              break;
-            }
-          }
-
-          if (foundInterface) {
-            const methodInfo = foundInterface.methods.get(
-              memberExpr.property.name,
-            );
-            if (methodInfo) {
-              return methodInfo.returnType;
-            }
-            throw new Error(
-              `Method '${memberExpr.property.name}' not found in interface.`,
-            );
-          }
-
-          throw new Error(
-            `Unknown struct type for method call: ${memberExpr.property.name}`,
-          );
-        }
-
-        const methodName = memberExpr.property.name;
-        const methodInfo = foundClass.methods.get(methodName);
-        if (methodInfo) {
-          return methodInfo.returnType;
-        }
-      } else if (callExpr.callee.type === NodeType.Identifier) {
-        const name = (callExpr.callee as Identifier).name;
-
-        if (name.startsWith('__array_')) {
-          if (name === '__array_len') return [ValType.i32];
-          if (name === '__array_get') {
-            // TODO: Get actual element type from array type index
-            return [ValType.i32];
-          }
-          if (name === '__array_new') {
-            const elemType = inferType(ctx, callExpr.arguments[1]);
-            const arrayTypeIndex = getFixedArrayTypeIndex(ctx, elemType);
-            return [
-              ValType.ref_null,
-              ...WasmModule.encodeSignedLEB128(arrayTypeIndex),
-            ];
-          }
-          return [];
-        }
-
-        if (ctx.genericFunctions.has(name)) {
-          const funcDecl = ctx.genericFunctions.get(name)!;
-          let typeArguments = callExpr.typeArguments;
-
-          if (!typeArguments || typeArguments.length === 0) {
-            typeArguments = inferTypeArgs(
-              ctx,
-              funcDecl.typeParameters!,
-              funcDecl.params,
-              callExpr.arguments,
-            );
-          }
-
-          if (typeArguments && typeArguments.length > 0) {
-            const typeContext = new Map<string, TypeAnnotation>();
-            for (let i = 0; i < funcDecl.typeParameters!.length; i++) {
-              typeContext.set(
-                funcDecl.typeParameters![i].name,
-                typeArguments[i],
-              );
-            }
-            if (funcDecl.returnType) {
-              return mapType(ctx, funcDecl.returnType, typeContext);
-            }
-          }
-        } else if (ctx.functionReturnTypes.has(name)) {
-          return ctx.functionReturnTypes.get(name)!;
-        }
-      } else if (callExpr.callee.type === NodeType.SuperExpression) {
-        return [];
-      }
-      return [ValType.i32];
-    }
-    case NodeType.FunctionExpression: {
-      const func = expr as FunctionExpression;
-
-      // Handle generics
-      const typeContext = new Map(ctx.currentTypeContext);
-      if (func.typeParameters) {
-        for (const param of func.typeParameters) {
-          typeContext.set(param.name, {
-            type: NodeType.TypeAnnotation,
-            name: 'anyref',
-          } as any);
-        }
-      }
-
-      // Temporarily override context
-      const oldTypeContext = ctx.currentTypeContext;
-      ctx.currentTypeContext = typeContext;
-
-      const paramTypes = func.params.map((p) => mapType(ctx, p.typeAnnotation));
-      let returnType: number[];
-      if (func.returnType) {
-        returnType = mapType(ctx, func.returnType);
-      } else {
-        if (func.body.type !== NodeType.BlockStatement) {
-          returnType = [ValType.i32];
-        } else {
-          // Setup temporary scope for inference
-          ctx.pushScope();
-          const oldNextLocalIndex = ctx.nextLocalIndex;
-          ctx.nextLocalIndex = 0;
-
-          func.params.forEach((p, i) => {
-            ctx.defineLocal(p.name.name, ctx.nextLocalIndex++, paramTypes[i]);
-          });
-
-          returnType = inferReturnTypeFromBlock(
-            ctx,
-            func.body as BlockStatement,
-          );
-
-          ctx.popScope();
-          ctx.nextLocalIndex = oldNextLocalIndex;
-        }
-      }
-
-      // Restore context
-      ctx.currentTypeContext = oldTypeContext;
-
-      const closureTypeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
-      return [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(closureTypeIndex),
-      ];
-    }
-    case NodeType.RecordLiteral: {
-      const recordExpr = expr as RecordLiteral;
-      const fields = recordExpr.properties.map((p) => ({
-        name: p.name.name,
-        type: inferType(ctx, p.value),
-      }));
-      const typeIndex = ctx.getRecordTypeIndex(fields);
-      return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
-    }
-    case NodeType.TupleLiteral: {
-      const tupleExpr = expr as TupleLiteral;
-      const types = tupleExpr.elements.map((e) => inferType(ctx, e));
-      const typeIndex = ctx.getTupleTypeIndex(types);
-      return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
-    }
-    case NodeType.IndexExpression: {
-      const indexExpr = expr as IndexExpression;
-      const objectType = inferType(ctx, indexExpr.object);
-      const structTypeIndex = getHeapTypeIndex(ctx, objectType);
-
-      // Check Tuple
-      let tupleKey: string | undefined;
-      for (const [key, index] of ctx.tupleTypes) {
-        if (index === structTypeIndex) {
-          tupleKey = key;
-          break;
-        }
-      }
-
-      if (tupleKey) {
-        if (indexExpr.index.type === NodeType.NumberLiteral) {
-          const index = (indexExpr.index as NumberLiteral).value;
-          const types = tupleKey.split(';');
-          if (index >= 0 && index < types.length) {
-            return types[index].split(',').map(Number);
-          }
-          throw new Error(`Tuple index out of bounds: ${index}`);
-        }
-        throw new Error('Tuple index must be a number literal');
-      }
-
-      // Array fallback
-      for (const [key, index] of ctx.fixedArrayTypes) {
-        if (index === objectType[1]) {
-          // Assuming [ref_null, typeIndex]
-          return key.split(',').map(Number);
-        }
-      }
-
-      throw new Error('Cannot index non-array/non-tuple type');
-    }
-    case NodeType.NumberLiteral: {
-      const numExpr = expr as NumberLiteral;
-      if (Number.isInteger(numExpr.value)) {
-        return [ValType.i32];
-      } else {
-        return [ValType.f32];
-      }
-    }
-    case NodeType.ArrayLiteral: {
-      // TODO: Infer array type correctly. Assuming i32 for now.
-      const typeIndex = getFixedArrayTypeIndex(ctx, [ValType.i32]);
-      return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
-    }
-    case NodeType.StringLiteral:
-      return [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-      ];
-    case NodeType.TemplateLiteral:
-      // Untagged template literal produces a string
-      return [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-      ];
-    case NodeType.TaggedTemplateExpression: {
-      // Tagged template expression's type is the return type of the tag function
-      // For now, assume it returns the string type (common case)
-      // TODO: Actually infer from tag function return type
-      return [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-      ];
-    }
-    case NodeType.ThisExpression: {
-      const local = ctx.getLocal('this');
-      if (local) return local.type;
-      return [ValType.i32];
-    }
-    case NodeType.SuperExpression: {
-      if (!ctx.currentClass || !ctx.currentClass.superClass) {
-        throw new Error('Super expression outside of class with superclass');
-      }
-      const superClassInfo = ctx.classes.get(ctx.currentClass.superClass)!;
-      return [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(superClassInfo.structTypeIndex),
-      ];
-    }
-    case NodeType.NullLiteral:
-      return [ValType.ref_null, HeapType.none];
-    default:
-      return [ValType.i32];
+  // 1. Check CodegenContext for 'this' and Identifiers.
+  // The CodegenContext reflects the *actual* storage types in the generated WASM,
+  // which may differ from the Checker's inferred types in specific scenarios:
+  // - Mixins: The AST for a mixin method has 'this' typed as the Mixin, but when
+  //   compiled into a class, 'this' must be the Class type.
+  // - Generics/Specialization: The context may have specialized types.
+  // - Casts: We may have shadowed a variable with a downcasted version in the context.
+  if (expr.type === NodeType.ThisExpression) {
+    const local = ctx.getLocal('this');
+    if (local) return local.type;
   }
-}
 
-function splitTypeArgs(str: string): string[] {
-  const args: string[] = [];
-  let current = '';
-  let depth = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str[i];
-    if (char === '<') depth++;
-    else if (char === '>') depth--;
-    else if (char === ',' && depth === 0) {
-      args.push(current);
-      current = '';
-      continue;
-    }
-    current += char;
+  if (expr.type === NodeType.Identifier) {
+    const ident = expr as Identifier;
+    const local = ctx.getLocal(ident.name);
+    if (local) return local.type;
+    const global = ctx.getGlobal(ident.name);
+    if (global) return global.type;
   }
-  if (current) args.push(current);
-  return args;
-}
 
-function getTypeNameFromWasm(
-  ctx: CodegenContext,
-  type: number[],
-): string | undefined {
-  if (type.length === 1 && type[0] === ValType.i32) return 'i32';
-  if (type.length === 1 && type[0] === ValType.f32) return 'f32';
-  if (
-    type.length > 1 &&
-    (type[0] === ValType.ref_null || type[0] === ValType.ref)
-  ) {
-    const typeIndex = decodeTypeIndex(type);
-    if (typeIndex === ctx.stringTypeIndex) return 'string';
-    const classInfo = getClassFromTypeIndex(ctx, typeIndex);
-    if (classInfo) return classInfo.name;
+  // 2. Fallback to Checker's inferred type.
+  // For most expressions, the static type inferred by the checker is correct.
+  if (expr.inferredType) {
+    return mapCheckerTypeToWasmType(ctx, expr.inferredType);
   }
-  return undefined;
-}
 
-export function inferTypeArgs(
-  ctx: CodegenContext,
-  typeParams: any[], // TypeParameter[]
-  params: any[], // Parameter[]
-  args: Expression[],
-): TypeAnnotation[] {
-  const inferred = new Map<string, TypeAnnotation>();
-
-  for (let i = 0; i < Math.min(params.length, args.length); i++) {
-    const paramType = params[i].typeAnnotation;
-    const argType = inferType(ctx, args[i]);
-
-    // Simple inference: if param is T, and arg is Type, then T = Type
-    if (
-      paramType.type === NodeType.TypeAnnotation &&
-      !paramType.typeArguments &&
-      typeParams.some((tp) => tp.name === paramType.name)
-    ) {
-      const typeName = getTypeNameFromWasm(ctx, argType) || 'i32';
-      inferred.set(paramType.name, {
-        type: NodeType.TypeAnnotation,
-        name: typeName,
-      } as TypeAnnotation);
-    }
-
-    // Generic class inference: Array<T> vs Array<i32>
-    if (
-      paramType.type === NodeType.TypeAnnotation &&
-      paramType.typeArguments &&
-      paramType.typeArguments.length > 0 &&
-      argType.length > 1 &&
-      (argType[0] === ValType.ref_null || argType[0] === ValType.ref)
-    ) {
-      const typeIndex = decodeTypeIndex(argType);
-      const classInfo = getClassFromTypeIndex(ctx, typeIndex);
-
-      if (classInfo && classInfo.name.startsWith(paramType.name + '<')) {
-        const typeArgsStr = classInfo.name.substring(
-          paramType.name.length + 1,
-          classInfo.name.length - 1,
-        );
-        const typeArgs = splitTypeArgs(typeArgsStr);
-
-        if (typeArgs.length === paramType.typeArguments.length) {
-          for (let j = 0; j < typeArgs.length; j++) {
-            const paramTypeArg = paramType.typeArguments[j];
-            const argTypeStr = typeArgs[j];
-
-            if (
-              paramTypeArg.type === NodeType.TypeAnnotation &&
-              !paramTypeArg.typeArguments &&
-              typeParams.some((tp) => tp.name === paramTypeArg.name)
-            ) {
-              inferred.set(paramTypeArg.name, {
-                type: NodeType.TypeAnnotation,
-                name: argTypeStr,
-              } as TypeAnnotation);
-            }
-          }
-        }
-      }
-
-      // Array inference: Array<T> vs WASM Array
-      let arrayElementType: number[] | undefined;
-      for (const [key, index] of ctx.fixedArrayTypes) {
-        if (index === typeIndex) {
-          arrayElementType = key.split(',').map(Number);
-          break;
-        }
-      }
-
-      const isArray = ctx.isFixedArrayType(paramType);
-      // console.log('inferTypeArgs array check:', paramType.name, isArray, arrayElementType);
-
-      if (arrayElementType && isArray) {
-        if (paramType.typeArguments.length === 1) {
-          const paramTypeArg = paramType.typeArguments[0];
-          if (
-            paramTypeArg.type === NodeType.TypeAnnotation &&
-            !paramTypeArg.typeArguments &&
-            typeParams.some((tp) => tp.name === paramTypeArg.name)
-          ) {
-            const typeName =
-              getTypeNameFromWasm(ctx, arrayElementType) || 'i32';
-            inferred.set(paramTypeArg.name, {
-              type: NodeType.TypeAnnotation,
-              name: typeName,
-            } as TypeAnnotation);
-          }
-        }
-      }
-    }
-
-    // Function type inference: (T) => U vs Closure
-    if (
-      paramType.type === NodeType.FunctionTypeAnnotation &&
-      (argType[0] === ValType.ref_null || argType[0] === ValType.ref)
-    ) {
-      const typeIndex = decodeTypeIndex(argType);
-
-      let signature: string | undefined;
-      for (const [key, index] of ctx.closureTypes) {
-        if (index === typeIndex) {
-          signature = key;
-          break;
-        }
-      }
-
-      if (signature) {
-        const parts = signature.split('=>');
-        if (parts.length === 2) {
-          const returnTypeStr = parts[1];
-          if (returnTypeStr) {
-            const returnType = returnTypeStr.split(',').map(Number);
-
-            const retParam = paramType.returnType;
-            if (
-              retParam.type === NodeType.TypeAnnotation &&
-              !retParam.typeArguments &&
-              typeParams.some((tp) => tp.name === retParam.name)
-            ) {
-              const typeName = getTypeNameFromWasm(ctx, returnType) || 'i32';
-              inferred.set(retParam.name, {
-                type: NodeType.TypeAnnotation,
-                name: typeName,
-              } as TypeAnnotation);
-            }
-          }
-        }
-      }
+  // Handle synthesized super() calls which are not visited by the checker
+  if (expr.type === NodeType.CallExpression) {
+    const callExpr = expr as CallExpression;
+    if (callExpr.callee.type === NodeType.SuperExpression) {
+      return []; // void
     }
   }
 
-  return typeParams.map((tp) => {
-    if (inferred.has(tp.name)) return inferred.get(tp.name)!;
-    if (tp.default) return tp.default;
-    throw new Error(`Cannot infer type argument for ${tp.name}`);
-  });
+  throw new Error(
+    `Type inference failed: Node ${expr.type} has no inferred type.`,
+  );
 }
 
 export function getHeapTypeIndex(ctx: CodegenContext, type: number[]): number {
@@ -826,17 +239,23 @@ function generateArrayLiteral(
   expr: ArrayLiteral,
   body: number[],
 ) {
+  let typeIndex: number;
+
+  if (expr.inferredType) {
+    const wasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+    typeIndex = decodeTypeIndex(wasmType);
+  } else {
+    // Fallback / Default to i32
+    const elementType = [ValType.i32];
+    typeIndex = getFixedArrayTypeIndex(ctx, elementType);
+  }
+
   if (expr.elements.length === 0) {
-    const typeIndex = getFixedArrayTypeIndex(ctx, [ValType.i32]);
     body.push(0xfb, GcOpcode.array_new_fixed);
     body.push(...WasmModule.encodeSignedLEB128(typeIndex));
     body.push(...WasmModule.encodeSignedLEB128(0));
     return;
   }
-
-  // TODO: Infer type correctly. Assuming i32 for now.
-  const elementType = [ValType.i32];
-  const typeIndex = getFixedArrayTypeIndex(ctx, elementType);
 
   for (const element of expr.elements) {
     generateExpression(ctx, element, body);
@@ -867,6 +286,34 @@ function generateIndexExpression(
     if (foundClass) {
       const methodInfo = foundClass.methods.get('[]');
       if (methodInfo) {
+        if (
+          methodInfo.intrinsic === 'array.get' &&
+          foundClass.isExtension &&
+          foundClass.onType
+        ) {
+          // Decode array type index from onType
+          let arrayTypeIndex = 0;
+          let shift = 0;
+          for (let i = 1; i < foundClass.onType.length; i++) {
+            const byte = foundClass.onType[i];
+            arrayTypeIndex |= (byte & 0x7f) << shift;
+            shift += 7;
+            if ((byte & 0x80) === 0) break;
+          }
+
+          generateExpression(ctx, expr.object, body);
+          generateExpression(ctx, expr.index, body);
+          body.push(0xfb, GcOpcode.array_get);
+          body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+          return;
+        }
+
+        if (methodInfo.index === -1) {
+          throw new Error(
+            `Calling invalid getter index -1 for ${foundClass.name}.[] intrinsic=${methodInfo.intrinsic}`,
+          );
+        }
+
         generateExpression(ctx, expr.object, body);
         generateExpression(ctx, expr.index, body);
         body.push(Opcode.call);
@@ -927,12 +374,11 @@ function generateIndexExpression(
       // But we can assume if it's not a class struct, it might be an array.
       // However, we default to i32 array if we can't find it.
       // Let's just use the type index from objectType if available.
-      arrayTypeIndex = objectType[1];
+      arrayTypeIndex = decodeTypeIndex(objectType);
     } else {
-      arrayTypeIndex = getFixedArrayTypeIndex(ctx, [ValType.i32]);
+      throw new Error('Could not determine array type for index expression');
     }
   }
-
   if (
     arrayTypeIndex !== -1 &&
     arrayTypeIndex !== ctx.stringTypeIndex &&
@@ -977,26 +423,18 @@ function generateNewExpression(
   let className = expr.callee.name;
   let typeArguments = expr.typeArguments;
 
+  if (expr.inferredTypeArguments) {
+    typeArguments = expr.inferredTypeArguments.map((t) => {
+      const res = typeToTypeAnnotation(t);
+      return res;
+    });
+  }
+
   if (
     (!typeArguments || typeArguments.length === 0) &&
     ctx.genericClasses.has(className)
   ) {
-    const classDecl = ctx.genericClasses.get(className)!;
-    const ctor = classDecl.body.find(
-      (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
-    ) as MethodDefinition | undefined;
-    if (ctor) {
-      typeArguments = inferTypeArgs(
-        ctx,
-        classDecl.typeParameters!,
-        ctor.params,
-        expr.arguments,
-      );
-    } else {
-      throw new Error(
-        `Cannot infer type arguments for ${className}: no constructor found.`,
-      );
-    }
+    throw new Error(`Missing inferred type arguments for ${className}`);
   }
 
   if (typeArguments && typeArguments.length > 0) {
@@ -1032,7 +470,9 @@ function generateNewExpression(
     // Ensure the class is instantiated
     mapType(ctx, annotation, ctx.currentTypeContext);
     // Get the specialized name
-    className = getTypeKey(ctx, annotation, ctx.currentTypeContext);
+    className = getTypeKey(
+      resolveAnnotation(annotation, ctx.currentTypeContext),
+    );
   }
 
   if (className.startsWith('Array<')) {
@@ -1056,6 +496,21 @@ function generateNewExpression(
 
   const classInfo = ctx.classes.get(className);
   if (!classInfo) throw new Error(`Class ${className} not found`);
+
+  if (classInfo.isExtension && classInfo.onType) {
+    const typeIndex = decodeTypeIndex(classInfo.onType);
+
+    if (expr.arguments.length !== 1) {
+      throw new Error(
+        `Extension class instantiation expects 1 argument (length)`,
+      );
+    }
+
+    generateExpression(ctx, expr.arguments[0], body);
+    body.push(0xfb, GcOpcode.array_new_default);
+    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+    return;
+  }
 
   // Allocate struct with default values
   body.push(0xfb, GcOpcode.struct_new_default);
@@ -1092,6 +547,8 @@ function generateNewExpression(
   const ctorInfo = classInfo.methods.get('#new');
   if (ctorInfo !== undefined) {
     body.push(Opcode.call);
+    if (ctorInfo.index === -1)
+      throw new Error(`Calling invalid constructor index -1 for ${className}`);
     body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
   }
 
@@ -1377,6 +834,9 @@ function generateCallExpression(
   expr: CallExpression,
   body: number[],
 ) {
+  if (expr.callee.type === NodeType.Identifier) {
+  }
+
   if (expr.callee.type === NodeType.MemberExpression) {
     const memberExpr = expr.callee as MemberExpression;
     const methodName = memberExpr.property.name;
@@ -1611,6 +1071,11 @@ function generateCallExpression(
       }
 
       body.push(Opcode.call);
+      if (methodInfo.index === -1) {
+        throw new Error(
+          `Calling invalid function index -1 for method ${(expr.callee as MemberExpression).property.name}`,
+        );
+      }
       body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
     }
   } else if (expr.callee.type === NodeType.SuperExpression) {
@@ -1636,6 +1101,8 @@ function generateCallExpression(
 
     // Static Call
     body.push(Opcode.call);
+    if (methodInfo.index === -1)
+      throw new Error(`Calling invalid super constructor index -1`);
     body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
     return;
   } else {
@@ -1671,14 +1138,12 @@ function generateCallExpression(
       if (ctx.genericFunctions.has(name)) {
         let typeArguments = expr.typeArguments;
 
-        if (!typeArguments || typeArguments.length === 0) {
-          const funcDecl = ctx.genericFunctions.get(name)!;
-          typeArguments = inferTypeArgs(
-            ctx,
-            funcDecl.typeParameters!,
-            funcDecl.params,
-            expr.arguments,
+        if (expr.inferredTypeArguments) {
+          typeArguments = expr.inferredTypeArguments.map((t) =>
+            typeToTypeAnnotation(t),
           );
+        } else if (!typeArguments || typeArguments.length === 0) {
+          throw new Error(`Missing inferred type arguments for ${name}`);
         } else {
           // Check for partial type arguments
           const funcDecl = ctx.genericFunctions.get(name)!;
@@ -1752,6 +1217,8 @@ function generateCallExpression(
       const funcIndex = ctx.functions.get(name);
       if (funcIndex !== undefined) {
         body.push(Opcode.call);
+        if (funcIndex === -1)
+          throw new Error(`Calling invalid function index -1 for ${name}`);
         body.push(...WasmModule.encodeSignedLEB128(funcIndex));
       } else {
         throw new Error(`Function '${name}' not found.`);
@@ -1785,6 +1252,40 @@ function generateAssignmentExpression(
       if (foundClass) {
         const methodInfo = foundClass.methods.get('[]=');
         if (methodInfo) {
+          if (
+            methodInfo.intrinsic === 'array.set' &&
+            foundClass.isExtension &&
+            foundClass.onType
+          ) {
+            // Decode array type index from onType
+            // onType is [ref_null, ...leb128(index)]
+            let arrayTypeIndex = 0;
+            let shift = 0;
+            for (let i = 1; i < foundClass.onType.length; i++) {
+              const byte = foundClass.onType[i];
+              arrayTypeIndex |= (byte & 0x7f) << shift;
+              shift += 7;
+              if ((byte & 0x80) === 0) break;
+            }
+
+            generateExpression(ctx, indexExpr.object, body);
+            generateExpression(ctx, indexExpr.index, body);
+            generateExpression(ctx, expr.value, body);
+
+            const valueType = inferType(ctx, expr.value);
+            const tempVal = ctx.declareLocal('$$temp_assign_val', valueType);
+
+            body.push(Opcode.local_tee);
+            body.push(...WasmModule.encodeSignedLEB128(tempVal));
+
+            body.push(0xfb, GcOpcode.array_set);
+            body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+
+            body.push(Opcode.local_get);
+            body.push(...WasmModule.encodeSignedLEB128(tempVal));
+            return;
+          }
+
           generateExpression(ctx, indexExpr.object, body);
           generateExpression(ctx, indexExpr.index, body);
           generateExpression(ctx, expr.value, body);
@@ -1851,7 +1352,7 @@ function generateAssignmentExpression(
         objectType.length > 1 &&
         (objectType[0] === ValType.ref || objectType[0] === ValType.ref_null)
       ) {
-        arrayTypeIndex = objectType[1];
+        arrayTypeIndex = decodeTypeIndex(objectType);
       } else {
         arrayTypeIndex = getFixedArrayTypeIndex(ctx, [ValType.i32]);
       }
@@ -2021,6 +1522,7 @@ function generateAssignmentExpression(
     const local = ctx.getLocal(expr.left.name);
     if (!local) throw new Error(`Unknown identifier: ${expr.left.name}`);
     const index = local.index;
+
     // Assignment is an expression that evaluates to the assigned value.
     // So we use local.tee to set the local and keep the value on the stack.
     body.push(Opcode.local_tee);
@@ -2472,24 +1974,32 @@ function generateRecordLiteral(
   expr: RecordLiteral,
   body: number[],
 ) {
-  // 1. Infer types of all fields
-  const fields = expr.properties.map((p) => ({
-    name: p.name.name,
-    type: inferType(ctx, p.value),
-    value: p.value,
-  }));
+  let typeIndex: number;
+  if (expr.inferredType) {
+    const wasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+    typeIndex = decodeTypeIndex(wasmType);
+  } else {
+    // 1. Infer types of all fields
+    const fields = expr.properties.map((p) => ({
+      name: p.name.name,
+      type: inferType(ctx, p.value),
+      value: p.value,
+    }));
 
-  // 2. Get struct type index
-  const typeIndex = ctx.getRecordTypeIndex(
-    fields.map((f) => ({name: f.name, type: f.type})),
+    // 2. Get struct type index
+    typeIndex = ctx.getRecordTypeIndex(
+      fields.map((f) => ({name: f.name, type: f.type})),
+    );
+  }
+
+  // 3. Sort fields to match struct layout (canonical order)
+  const props = [...expr.properties].sort((a, b) =>
+    a.name.name.localeCompare(b.name.name),
   );
 
-  // 3. Sort fields to match struct layout
-  fields.sort((a, b) => a.name.localeCompare(b.name));
-
   // 4. Generate values in order
-  for (const field of fields) {
-    generateExpression(ctx, field.value, body);
+  for (const prop of props) {
+    generateExpression(ctx, prop.value, body);
   }
 
   // 5. struct.new
@@ -2502,11 +2012,17 @@ function generateTupleLiteral(
   expr: TupleLiteral,
   body: number[],
 ) {
-  // 1. Infer types of all elements
-  const types = expr.elements.map((e) => inferType(ctx, e));
+  let typeIndex: number;
+  if (expr.inferredType) {
+    const wasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+    typeIndex = decodeTypeIndex(wasmType);
+  } else {
+    // 1. Infer types of all elements
+    const types = expr.elements.map((e) => inferType(ctx, e));
 
-  // 2. Get struct type index
-  const typeIndex = ctx.getTupleTypeIndex(types);
+    // 2. Get struct type index
+    typeIndex = ctx.getTupleTypeIndex(types);
+  }
 
   // 3. Generate values in order
   for (const element of expr.elements) {
@@ -2564,6 +2080,12 @@ function generateFunctionExpression(
   let returnType: number[];
   if (expr.returnType) {
     returnType = mapType(ctx, expr.returnType);
+  } else if (
+    expr.inferredType &&
+    expr.inferredType.kind === TypeKind.Function
+  ) {
+    const funcType = expr.inferredType as FunctionType;
+    returnType = mapCheckerTypeToWasmType(ctx, funcType.returnType);
   } else {
     // Simple inference: if body is expression, infer type.
     // If block, assume void for now or implement block inference.
@@ -2573,7 +2095,9 @@ function generateFunctionExpression(
       // This is a circular dependency if we rely on inference.
       // For now, default to i32 if not specified? Or error?
       // Let's assume i32 for expression bodies if not annotated, to match simple lambdas.
-      returnType = [ValType.i32];
+      throw new Error(
+        'Missing return type annotation or inference for function expression',
+      );
     } else {
       // Setup temporary scope for inference
       ctx.pushScope();
@@ -2756,6 +2280,7 @@ function generateGlobalIntrinsic(
       break;
     case '__array_get': {
       generateExpression(ctx, args[0], body); // array
+
       generateExpression(ctx, args[1], body); // index
       const arrayType = inferType(ctx, args[0]);
       const typeIndex = decodeTypeIndex(arrayType);
@@ -2854,6 +2379,96 @@ function generateIndirectCall(
   // 5. Call Ref
   body.push(Opcode.call_ref);
   body.push(...WasmModule.encodeSignedLEB128(closureInfo.funcTypeIndex));
+
+  // Check if we need to cast the result (e.g. generic erasure)
+  if (expr.inferredType) {
+    const expectedType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+    const actualType = getReturnTypeFromTypeIndex(
+      ctx,
+      closureInfo.funcTypeIndex,
+    );
+
+    if (actualType.length > 0 && !typesAreEqual(expectedType, actualType)) {
+      // Cast needed
+      if (
+        expectedType.length > 1 &&
+        (expectedType[0] === ValType.ref_null ||
+          expectedType[0] === ValType.ref)
+      ) {
+        body.push(0xfb, GcOpcode.ref_cast_null);
+        body.push(...expectedType.slice(1));
+      }
+    }
+  }
+}
+
+function getReturnTypeFromTypeIndex(
+  ctx: CodegenContext,
+  typeIndex: number,
+): number[] {
+  const typeBytes = ctx.module.getType(typeIndex);
+  if (typeBytes[0] !== 0x60) return []; // Not a function type
+
+  let offset = 1;
+
+  // Helper to read unsigned LEB128
+  const readULEB128 = () => {
+    let result = 0;
+    let shift = 0;
+    while (true) {
+      const byte = typeBytes[offset++];
+      result |= (byte & 0x7f) << shift;
+      shift += 7;
+      if ((byte & 0x80) === 0) break;
+    }
+    return result;
+  };
+
+  // Helper to skip a value type
+  const skipType = () => {
+    const byte = typeBytes[offset++];
+    if (
+      byte === ValType.ref ||
+      byte === ValType.ref_null ||
+      byte === ValType.optref
+    ) {
+      // Skip heap type (LEB128)
+      while (true) {
+        const b = typeBytes[offset++];
+        if ((b & 0x80) === 0) break;
+      }
+    }
+  };
+
+  // Skip params
+  const numParams = readULEB128();
+  for (let i = 0; i < numParams; i++) {
+    skipType();
+  }
+
+  // Read results
+  const numResults = readULEB128();
+  if (numResults === 0) return [];
+
+  // Read first result type
+  const resultType: number[] = [];
+  const byte = typeBytes[offset++];
+  resultType.push(byte);
+
+  if (
+    byte === ValType.ref ||
+    byte === ValType.ref_null ||
+    byte === ValType.optref
+  ) {
+    // Read heap type
+    while (true) {
+      const b = typeBytes[offset++];
+      resultType.push(b);
+      if ((b & 0x80) === 0) break;
+    }
+  }
+
+  return resultType;
 }
 
 function generateTemplateLiteral(

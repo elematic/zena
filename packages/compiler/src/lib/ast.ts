@@ -1,3 +1,5 @@
+import type {Type} from './types.js';
+
 export const NodeType = {
   Program: 'Program',
   VariableDeclaration: 'VariableDeclaration',
@@ -76,6 +78,10 @@ export interface Node {
   type: NodeType;
   /** Source location information for this node */
   loc?: SourceLocation;
+  /** The type inferred for this node by the checker */
+  inferredType?: Type;
+  /** The type arguments inferred for this node (if it's a generic call/instantiation) */
+  inferredTypeArguments?: Type[];
 }
 
 export interface Program extends Node {
@@ -86,6 +92,7 @@ export interface Program extends Node {
     String?: ClassDeclaration;
     ByteArray?: ClassDeclaration;
   };
+  symbolMap?: Map<string, string>;
 }
 
 export type Statement =

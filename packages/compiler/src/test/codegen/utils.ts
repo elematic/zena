@@ -1,5 +1,6 @@
 import {Compiler, type CompilerHost} from '../../lib/compiler.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
+import {TypeChecker} from '../../lib/checker/index.js';
 import {readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -60,35 +61,34 @@ export async function compileAndRun(
   const compiler = new Compiler(host);
   const program = compiler.bundle(path);
 
-  // Diagnostics are checked during compilation/bundling inside Compiler?
-  // No, Compiler.compile calls checkModules.
-  // But we should check if there are errors.
-  // The Compiler doesn't throw on errors, it stores them in modules.
-
-  compiler.compile(path); // Re-compile to get diagnostics?
-  // bundle calls compile internally.
-  // But we don't have access to modules from bundle result easily unless we use compile first.
-
-  // Actually, let's just use bundle. If there are type errors, CodeGenerator might fail or produce bad code.
-  // But we want to fail fast if checker failed.
-
-  // Let's check diagnostics from the entry module.
-  const entryModule = compiler.getModule(path);
-  if (entryModule && entryModule.diagnostics.length > 0) {
+  // Re-run checker on the bundled program to ensure types have correct bundled names
+  const checker = new TypeChecker(program, compiler, {
+    path,
+    exports: new Map(),
+    isStdlib: true,
+  } as any);
+  const diagnostics = checker.check();
+  if (diagnostics.length > 0) {
     throw new Error(
-      `Type check failed: ${entryModule.diagnostics.map((d) => d.message).join(', ')}`,
+      `Bundled program check failed: ${diagnostics.map((d) => d.message).join(', ')}`,
     );
   }
 
   const codegen = new CodeGenerator(program);
   const bytes = codegen.generate();
 
-  const result = await WebAssembly.instantiate(bytes, imports);
-  // @ts-ignore
-  const instance = result.instance;
-  const exports = instance.exports as any;
-  if (exports[entryPoint]) {
-    return exports[entryPoint]();
+  try {
+    const result = await WebAssembly.instantiate(bytes, imports);
+    // @ts-ignore
+    const instance = result.instance;
+    const exports = instance.exports as any;
+    if (exports[entryPoint]) {
+      return exports[entryPoint]();
+    }
+    return null;
+  } catch (e) {
+    console.log('WASM Instantiation Error:', e);
+    console.log('WASM Bytes:', Buffer.from(bytes).toString('hex'));
+    throw e;
   }
-  return null;
 }

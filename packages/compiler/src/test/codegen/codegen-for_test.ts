@@ -1,14 +1,50 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Parser} from '../../lib/parser.js';
+import {Compiler, type CompilerHost} from '../../lib/compiler.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
+import {TypeChecker} from '../../lib/checker/index.js';
+import {readFileSync} from 'node:fs';
+import {join, dirname} from 'node:path';
+import {fileURLToPath} from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const stdlibPath = join(__dirname, '../../stdlib');
 
 async function compile(input: string) {
-  const parser = new Parser(input);
-  const ast = parser.parse();
-  const codegen = new CodeGenerator(ast);
+  const host: CompilerHost = {
+    load: (path) => {
+      if (path === '/main.zena') return input;
+      if (path.startsWith('zena:')) {
+        const name = path.substring(5);
+        return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
+      }
+      throw new Error(`File not found: ${path}`);
+    },
+    resolve: (specifier) => specifier,
+  };
+
+  const compiler = new Compiler(host);
+  const program = compiler.bundle('/main.zena');
+
+  const checker = new TypeChecker(program, compiler);
+  const diagnostics = checker.check();
+  if (diagnostics.length > 0) {
+    throw new Error(diagnostics.map((d) => d.message).join('\n'));
+  }
+
+  const codegen = new CodeGenerator(program);
   const bytes = codegen.generate();
-  const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);
+  const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer, {
+    console: {
+      log_i32: () => {},
+      log_f32: () => {},
+      log_string: () => {},
+      error_string: () => {},
+      warn_string: () => {},
+      info_string: () => {},
+      debug_string: () => {},
+    },
+  });
   return result.instance.exports;
 }
 

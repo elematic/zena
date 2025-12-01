@@ -9,12 +9,13 @@ import {
   type TypeAnnotation,
   type VariableDeclaration,
 } from '../ast.js';
-import {ExportDesc, Opcode, ValType} from '../wasm.js';
+import {ExportDesc, Opcode} from '../wasm.js';
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
   getTypeKey,
   mapType,
+  resolveAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {generateExpression, inferType} from './expressions.js';
@@ -207,6 +208,7 @@ export function generateFunctionBody(
   } else {
     generateExpression(ctx, func.body as Expression, body);
   }
+
   body.push(Opcode.end);
 
   ctx.currentTypeContext = oldContext;
@@ -222,7 +224,7 @@ export function instantiateGenericFunction(
   if (!funcDecl) throw new Error(`Generic function ${name} not found`);
 
   const key = `${name}<${typeArgs
-    .map((t) => getTypeKey(ctx, t, ctx.currentTypeContext))
+    .map((t) => getTypeKey(resolveAnnotation(t, ctx.currentTypeContext)))
     .join(',')}>`;
 
   if (ctx.functions.has(key)) {
@@ -246,7 +248,11 @@ export function instantiateGenericFunction(
   );
   const mappedReturn = funcDecl.returnType
     ? mapType(ctx, funcDecl.returnType, typeContext)
-    : [ValType.i32];
+    : (() => {
+        throw new Error(
+          `Generic function ${name} missing return type annotation`,
+        );
+      })();
   const results = mappedReturn.length > 0 ? [mappedReturn] : [];
 
   const typeIndex = ctx.module.addType(params, results);
@@ -268,6 +274,7 @@ export function registerDeclaredFunction(
 ) {
   const params = decl.params.map((p) => mapType(ctx, p.typeAnnotation));
   const returnType = mapType(ctx, decl.returnType);
+
   const results = returnType.length > 0 ? [returnType] : [];
 
   const typeIndex = ctx.module.addType(params, results);

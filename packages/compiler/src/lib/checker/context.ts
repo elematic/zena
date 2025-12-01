@@ -95,6 +95,20 @@ export class CheckerContext {
   }
 
   getWellKnownType(name: 'String' | 'FixedArray'): Type | undefined {
+    // Check bundled well-known types first
+    if (
+      name === 'String' &&
+      this.program.wellKnownTypes?.String?.inferredType
+    ) {
+      return this.program.wellKnownTypes.String.inferredType;
+    }
+    if (
+      name === 'FixedArray' &&
+      this.program.wellKnownTypes?.FixedArray?.inferredType
+    ) {
+      return this.program.wellKnownTypes.FixedArray.inferredType;
+    }
+
     if (!this.compiler) return undefined;
 
     let modulePath = '';

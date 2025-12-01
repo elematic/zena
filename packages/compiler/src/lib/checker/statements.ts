@@ -569,6 +569,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
       const intermediateType: ClassType = {
         kind: TypeKind.Class,
+        _debugId: Math.floor(Math.random() * 1000000),
         name: intermediateName,
         superType: superType,
         implements: [], // TODO: Mixins might implement interfaces
@@ -655,6 +656,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
   const classType: ClassType = {
     kind: TypeKind.Class,
+    _debugId: Math.floor(Math.random() * 1000000),
     name: className,
     typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
     superType,
@@ -683,6 +685,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   }
 
   ctx.declare(className, classType);
+  decl.inferredType = classType;
   ctx.enterClass(classType);
 
   ctx.enterScope();
@@ -1073,6 +1076,7 @@ function checkInterfaceDeclaration(
 
   // Register interface in current scope
   ctx.declare(interfaceName, interfaceType);
+  decl.inferredType = interfaceType;
 
   // Enter scope for type parameters
   ctx.enterScope();
@@ -1321,6 +1325,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
   };
 
   ctx.declare(mixinName, mixinType);
+  decl.inferredType = mixinType;
 
   ctx.enterScope();
   for (const tp of typeParameters) {

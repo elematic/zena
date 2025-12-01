@@ -4,10 +4,7 @@ import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Equality', () => {
   // Helper to compile and run a function that returns a boolean (0 or 1)
-  async function runEqualityTest(
-    body: string,
-    setup: string = '',
-  ): Promise<number> {
+  async function runEqualityTest(body: string, setup = '') {
     const source = `
       ${setup}
       export let main = (): i32 => {

@@ -22,6 +22,7 @@ export type TypeKind = (typeof TypeKind)[keyof typeof TypeKind];
 
 export interface Type {
   kind: TypeKind;
+  _debugId?: number;
 }
 
 export interface UnionType extends Type {
