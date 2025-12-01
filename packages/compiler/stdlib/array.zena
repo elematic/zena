@@ -34,3 +34,50 @@ export final extension class FixedArray<T> on array<T> {
     return result;
   }
 }
+
+export class Array<T> {
+  #buffer: FixedArray<T>;
+  #length: i32 = 0;
+
+  constructor(capacity: i32) {
+    this.#buffer = __array_new_empty<T>(capacity);
+  }
+
+  length: i32 {
+    get {
+      return this.#length;
+    }
+  }
+
+  push(value: T): void {
+    if (this.#length == this.#buffer.length) {
+      this._grow();
+    }
+    this.#buffer[this.#length] = value;
+    this.#length = this.#length + 1;
+  }
+
+  pop(): T {
+    this.#length = this.#length - 1;
+    return this.#buffer[this.#length];
+  }
+
+  operator [](index: i32): T {
+    return this.#buffer[index];
+  }
+
+  operator []=(index: i32, value: T): void {
+    this.#buffer[index] = value;
+  }
+
+  _grow(): void {
+    let newCapacity = this.#buffer.length * 2;
+    let newBuffer = __array_new_empty<T>(newCapacity);
+    var i = 0;
+    while (i < this.#length) {
+      newBuffer[i] = this.#buffer[i];
+      i = i + 1;
+    }
+    this.#buffer = newBuffer;
+  }
+}
