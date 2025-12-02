@@ -1884,6 +1884,9 @@ function generateBinaryExpression(
     case '/':
       body.push(Opcode.i32_div_s);
       break;
+    case '&':
+      body.push(Opcode.i32_and);
+      break;
     case '==':
       body.push(Opcode.i32_eq);
       break;

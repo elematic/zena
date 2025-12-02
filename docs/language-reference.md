@@ -381,6 +381,10 @@ Supported arithmetic operators for numeric types (`i32`, `f32`):
 - `*` (Multiplication)
 - `/` (Division)
 
+Supported bitwise operators for integer types (`i32`):
+
+- `&` (Bitwise AND)
+
 Operands must be of the same type. Implicit coercion is not supported.
 
 ```typescript
@@ -674,7 +678,7 @@ BinaryExpression ::= PrimaryExpression (Operator PrimaryExpression)*
 
 PrimaryExpression ::= NumberLiteral | StringLiteral | Identifier | "(" Expression ")"
 
-Operator ::= "+" | "-" | "*" | "/"
+Operator ::= "+" | "-" | "*" | "/" | "&"
 ```
 
 ### Destructuring

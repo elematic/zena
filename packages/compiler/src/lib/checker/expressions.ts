@@ -682,6 +682,14 @@ function checkBinaryExpression(
     case '-':
     case '*':
     case '/':
+    case '&':
+      if (expr.operator === '&' && left !== Types.I32) {
+        ctx.diagnostics.reportError(
+          `Operator '&' cannot be applied to type '${typeToString(left)}'.`,
+          DiagnosticCode.TypeMismatch,
+        );
+        return Types.Unknown;
+      }
       return left;
     default:
       return Types.Unknown;
