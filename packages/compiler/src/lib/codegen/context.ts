@@ -55,6 +55,7 @@ export class CodegenContext {
   public pendingHelperFunctions: (() => void)[] = [];
   public concatFunctionIndex = -1;
   public strEqFunctionIndex = -1;
+  public stringHashFunctionIndex = -1;
   public byteArrayGetFunctionIndex = -1; // Exported helper for JS to read ByteArray
   public stringGetByteFunctionIndex = -1; // Exported helper for JS to read String bytes
   public genericClasses = new Map<string, ClassDeclaration>();

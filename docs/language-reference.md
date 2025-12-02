@@ -682,6 +682,23 @@ let p2 = new Point(1, 2);
 // equals(p1, p2) returns true because Point implements operator ==
 ```
 
+### Hash Intrinsic (`hash`)
+
+The `hash` intrinsic computes a hash code for a value, suitable for use in hash maps.
+
+```typescript
+@intrinsic('hash')
+declare function hash<T>(val: T): i32;
+```
+
+The behavior depends on the type `T`:
+
+- **Primitives (`i32`, `boolean`)**: Returns the value itself (or 1/0 for boolean).
+- **Strings**: Computes the FNV-1a hash of the string bytes.
+- **Classes**:
+  - If the class implements a `hashCode(): i32` method, it is called.
+  - Otherwise, returns 0 (fallback).
+
 ## 14. Grammar (Simplified)
 
 ```ebnf

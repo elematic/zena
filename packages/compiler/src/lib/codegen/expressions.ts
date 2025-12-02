@@ -2995,9 +2995,229 @@ function generateGlobalIntrinsic(
       );
       break;
     }
+    case 'hash': {
+      const arg = args[0];
+      generateHash(ctx, arg, body);
+      break;
+    }
     default:
       throw new Error(`Unsupported global intrinsic: ${name}`);
   }
+}
+
+function generateHash(ctx: CodegenContext, expr: Expression, body: number[]) {
+  const type = inferType(ctx, expr);
+
+  // Primitives
+  if (type.length === 1) {
+    if (type[0] === ValType.i32) {
+      generateExpression(ctx, expr, body);
+      return;
+    }
+    // Boolean is i32
+  }
+
+  // String
+  if (isStringType(ctx, type)) {
+    generateExpression(ctx, expr, body);
+    generateStringHash(ctx, body);
+    return;
+  }
+
+  // Structs (Classes)
+  const structTypeIndex = getHeapTypeIndex(ctx, type);
+  if (structTypeIndex !== -1) {
+    // TODO: Support Records and Tuples (structural hashing)
+
+    const classInfo = getClassFromTypeIndex(ctx, structTypeIndex);
+    if (classInfo) {
+      const methodInfo = classInfo.methods.get('hashCode');
+      if (methodInfo) {
+        generateExpression(ctx, expr, body);
+
+        // Call hashCode
+        if (classInfo.isFinal || methodInfo.isFinal) {
+          body.push(
+            Opcode.call,
+            ...WasmModule.encodeSignedLEB128(methodInfo.index),
+          );
+        } else {
+          // Dynamic dispatch
+          // Stack: [this]
+
+          // 1. Tee 'this' for vtable lookup
+          const tempThis = ctx.declareLocal('$$temp_hash_this', type);
+          body.push(
+            Opcode.local_tee,
+            ...WasmModule.encodeSignedLEB128(tempThis),
+          );
+
+          // 2. Load VTable
+          body.push(
+            0xfb,
+            GcOpcode.struct_get,
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ...WasmModule.encodeSignedLEB128(
+              classInfo.fields.get('__vtable')!.index,
+            ),
+          );
+
+          // Cast VTable
+          body.push(
+            0xfb,
+            GcOpcode.ref_cast_null,
+            ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
+          );
+
+          // 3. Load Function Pointer
+          const vtableIndex = classInfo.vtable!.indexOf('hashCode');
+          body.push(
+            0xfb,
+            GcOpcode.struct_get,
+            ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
+            ...WasmModule.encodeSignedLEB128(vtableIndex),
+          );
+
+          // 4. Cast Function
+          body.push(
+            0xfb,
+            GcOpcode.ref_cast_null,
+            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+          );
+
+          // Store funcRef in temp local
+          const funcRefType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+          ];
+          const tempFuncRef = ctx.declareLocal(
+            '$$temp_hash_func',
+            funcRefType,
+          );
+          body.push(
+            Opcode.local_set,
+            ...WasmModule.encodeSignedLEB128(tempFuncRef),
+          );
+
+          // 5. Prepare Stack for Call: [this, funcRef]
+          body.push(
+            Opcode.local_get,
+            ...WasmModule.encodeSignedLEB128(tempThis),
+          );
+          body.push(
+            Opcode.local_get,
+            ...WasmModule.encodeSignedLEB128(tempFuncRef),
+          );
+
+          // 6. Call
+          body.push(
+            Opcode.call_ref,
+            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+          );
+        }
+        return;
+      }
+    }
+  }
+
+  // Fallback: evaluate and drop, return 0
+  generateExpression(ctx, expr, body);
+  body.push(Opcode.drop);
+  body.push(Opcode.i32_const, 0);
+}
+
+function generateStringHash(ctx: CodegenContext, body: number[]) {
+  if (ctx.stringHashFunctionIndex === -1) {
+    ctx.stringHashFunctionIndex = generateStringHashFunction(ctx);
+  }
+  body.push(Opcode.call);
+  body.push(...WasmModule.encodeSignedLEB128(ctx.stringHashFunctionIndex));
+}
+
+function generateStringHashFunction(ctx: CodegenContext): number {
+  const stringType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+  ];
+  const typeIndex = ctx.module.addType([stringType], [[ValType.i32]]);
+
+  const funcIndex = ctx.module.addFunction(typeIndex);
+
+  ctx.pendingHelperFunctions.push(() => {
+    const locals: number[][] = [
+      [ValType.i32], // hash (local 0)
+      [ValType.i32], // i (local 1)
+      [ValType.i32], // len (local 2)
+    ];
+    const body: number[] = [];
+
+    // Params: s (0)
+    // Locals: hash (1), i (2), len (3)
+
+    // hash = 2166136261 (FNV offset basis)
+    body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(2166136261 | 0));
+    body.push(Opcode.local_set, 1);
+
+    // len = s.length
+    body.push(Opcode.local_get, 0);
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(2)); // length
+    body.push(Opcode.local_set, 3);
+
+    // i = 0
+    body.push(Opcode.i32_const, 0);
+    body.push(Opcode.local_set, 2);
+
+    // loop
+    body.push(Opcode.block, ValType.void);
+    body.push(Opcode.loop, ValType.void);
+
+    // if i >= len break
+    body.push(Opcode.local_get, 2);
+    body.push(Opcode.local_get, 3);
+    body.push(Opcode.i32_ge_u);
+    body.push(Opcode.br_if, 1);
+
+    // byte = s.bytes[i]
+    body.push(Opcode.local_get, 0);
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(1)); // bytes
+
+    body.push(Opcode.local_get, 2); // i
+    body.push(0xfb, GcOpcode.array_get_u);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
+
+    // hash ^= byte
+    body.push(Opcode.local_get, 1);
+    body.push(Opcode.i32_xor);
+    body.push(Opcode.local_set, 1);
+
+    // hash *= 16777619 (FNV prime)
+    body.push(Opcode.local_get, 1);
+    body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(16777619));
+    body.push(Opcode.i32_mul);
+    body.push(Opcode.local_set, 1);
+
+    // i++
+    body.push(Opcode.local_get, 2);
+    body.push(Opcode.i32_const, 1);
+    body.push(Opcode.i32_add);
+    body.push(Opcode.local_set, 2);
+
+    body.push(Opcode.br, 0);
+    body.push(Opcode.end); // end loop
+    body.push(Opcode.end); // end block
+
+    // return hash
+    body.push(Opcode.local_get, 1);
+    body.push(Opcode.end);
+
+    ctx.module.addCode(funcIndex, locals, body);
+  });
+
+  return funcIndex;
 }
 
 function typesAreEqual(t1: number[], t2: number[]): boolean {
