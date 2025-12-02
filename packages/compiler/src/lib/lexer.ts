@@ -57,6 +57,7 @@ export const TokenType = {
   Minus: 'Minus',
   Star: 'Star',
   Slash: 'Slash',
+  Percent: 'Percent',
   Pipe: 'Pipe',
   PipePipe: 'PipePipe',
   Ampersand: 'Ampersand',
@@ -529,6 +530,16 @@ export function tokenize(source: string): Token[] {
             end: current,
           });
         }
+        break;
+      case '%':
+        tokens.push({
+          type: TokenType.Percent,
+          value: '%',
+          line,
+          column: startColumn,
+          start: startIndex,
+          end: current,
+        });
         break;
       case '|':
         if (peek() === '|') {

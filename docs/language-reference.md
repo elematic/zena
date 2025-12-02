@@ -380,6 +380,7 @@ Supported arithmetic operators for numeric types (`i32`, `f32`):
 - `-` (Subtraction)
 - `*` (Multiplication)
 - `/` (Division)
+- `%` (Modulo - `i32` only)
 
 Supported bitwise operators for integer types (`i32`):
 
@@ -686,7 +687,7 @@ BinaryExpression ::= PrimaryExpression (Operator PrimaryExpression)*
 
 PrimaryExpression ::= NumberLiteral | StringLiteral | Identifier | "(" Expression ")"
 
-Operator ::= "+" | "-" | "*" | "/" | "&" | "|" | "&&" | "||"
+Operator ::= "+" | "-" | "*" | "/" | "%" | "&" | "|" | "&&" | "||"
 ```
 
 ### Destructuring

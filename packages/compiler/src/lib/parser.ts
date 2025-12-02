@@ -660,7 +660,7 @@ export class Parser {
   #parseFactor(): Expression {
     let left = this.#parseCall();
 
-    while (this.#match(TokenType.Star, TokenType.Slash)) {
+    while (this.#match(TokenType.Star, TokenType.Slash, TokenType.Percent)) {
       const operator = this.#previous().value;
       const right = this.#parseCall();
       left = {
