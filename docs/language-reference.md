@@ -431,6 +431,12 @@ let result = (1 + 2) * 3;
 
 These operators return a boolean value.
 
+### Logical Operators
+
+- `&&` (Logical AND) - Short-circuiting AND. Returns `true` if both operands are `true`.
+
+Operands must be of type `boolean`.
+
 ## 6. Control Flow
 
 ### If Statement
@@ -678,7 +684,7 @@ BinaryExpression ::= PrimaryExpression (Operator PrimaryExpression)*
 
 PrimaryExpression ::= NumberLiteral | StringLiteral | Identifier | "(" Expression ")"
 
-Operator ::= "+" | "-" | "*" | "/" | "&"
+Operator ::= "+" | "-" | "*" | "/" | "&" | "&&"
 ```
 
 ### Destructuring

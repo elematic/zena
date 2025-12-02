@@ -691,6 +691,15 @@ function checkBinaryExpression(
         return Types.Unknown;
       }
       return left;
+    case '&&':
+      if (left !== Types.Boolean || right !== Types.Boolean) {
+        ctx.diagnostics.reportError(
+          `Operator '&&' requires boolean operands, got ${typeToString(left)} and ${typeToString(right)}.`,
+          DiagnosticCode.TypeMismatch,
+        );
+        return Types.Unknown;
+      }
+      return Types.Boolean;
     default:
       return Types.Unknown;
   }

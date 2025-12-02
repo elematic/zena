@@ -438,7 +438,7 @@ export class Parser {
       }
     }
 
-    return this.#parseBitwiseAnd();
+    return this.#parseLogicalAnd();
   }
 
   #parseArrowFunctionDefinition(): FunctionExpression {
@@ -506,6 +506,24 @@ export class Parser {
       body,
       loc: this.#loc(startToken, body),
     };
+  }
+
+  #parseLogicalAnd(): Expression {
+    let left = this.#parseBitwiseAnd();
+
+    while (this.#match(TokenType.AmpersandAmpersand)) {
+      const operator = this.#previous().value;
+      const right = this.#parseBitwiseAnd();
+      left = {
+        type: NodeType.BinaryExpression,
+        left,
+        operator,
+        right,
+        loc: this.#loc(left, right),
+      };
+    }
+
+    return left;
   }
 
   #parseBitwiseAnd(): Expression {

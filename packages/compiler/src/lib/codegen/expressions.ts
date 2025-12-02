@@ -1836,6 +1836,30 @@ function generateBinaryExpression(
   expr: BinaryExpression,
   body: number[],
 ) {
+  if (expr.operator === '&&') {
+    // Short-circuiting Logical AND
+    // left && right
+    // if (left) { return right } else { return false }
+
+    generateExpression(ctx, expr.left, body);
+    // Stack: [left]
+
+    body.push(Opcode.if);
+    body.push(ValType.i32); // Result type: i32 (boolean)
+
+    // Then block (left was true)
+    generateExpression(ctx, expr.right, body);
+    // Stack: [right]
+
+    body.push(Opcode.else);
+
+    // Else block (left was false)
+    body.push(Opcode.i32_const, 0); // false
+
+    body.push(Opcode.end);
+    return;
+  }
+
   const leftType = inferType(ctx, expr.left);
   const rightType = inferType(ctx, expr.right);
 

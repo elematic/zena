@@ -59,6 +59,7 @@ export const TokenType = {
   Slash: 'Slash',
   Pipe: 'Pipe',
   Ampersand: 'Ampersand',
+  AmpersandAmpersand: 'AmpersandAmpersand',
   Question: 'Question',
 
   // Punctuation
@@ -539,14 +540,26 @@ export function tokenize(source: string): Token[] {
         });
         break;
       case '&':
-        tokens.push({
-          type: TokenType.Ampersand,
-          value: '&',
-          line,
-          column: startColumn,
-          start: startIndex,
-          end: current,
-        });
+        if (peek() === '&') {
+          advance();
+          tokens.push({
+            type: TokenType.AmpersandAmpersand,
+            value: '&&',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Ampersand,
+            value: '&',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        }
         break;
       case '?':
         tokens.push({

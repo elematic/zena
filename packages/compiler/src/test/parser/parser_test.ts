@@ -280,4 +280,22 @@ suite('Parser', () => {
       assert.strictEqual(cls.superClass.name, 'Animal');
     }
   });
+
+  test('should parse logical AND', () => {
+    const input = 'a && b;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const stmt = ast.body[0];
+    assert.strictEqual(stmt.type, NodeType.ExpressionStatement);
+    if (stmt.type === NodeType.ExpressionStatement) {
+      const expr = stmt.expression;
+      assert.strictEqual(expr.type, NodeType.BinaryExpression);
+      if (expr.type === NodeType.BinaryExpression) {
+        assert.strictEqual(expr.operator, '&&');
+        assert.strictEqual(expr.left.type, NodeType.Identifier);
+        assert.strictEqual(expr.right.type, NodeType.Identifier);
+      }
+    }
+  });
 });
