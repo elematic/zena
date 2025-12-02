@@ -243,6 +243,7 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Parser: `?` syntax.
   - Checker: Union with `null`, assignability.
   - Codegen: Default values.
+- [x] Implement `eq` intrinsic and `operator ==` overloading.
 
 ### Planned
 

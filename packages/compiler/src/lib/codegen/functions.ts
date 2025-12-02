@@ -293,6 +293,17 @@ export function registerDeclaredFunction(
   ctx: CodegenContext,
   decl: DeclareFunction,
 ) {
+  if (decl.decorators) {
+    const intrinsic = decl.decorators.find((d) => d.name === 'intrinsic');
+    if (intrinsic && intrinsic.args.length === 1) {
+      ctx.globalIntrinsics.set(decl.name.name, intrinsic.args[0].value);
+      // Register as a known function but without an index (or use a sentinel)
+      // However, generateCallExpression needs to know it exists.
+      // We can just return here, and update generateCallExpression to check globalIntrinsics.
+      return;
+    }
+  }
+
   const params = decl.params.map((p) => mapType(ctx, p.typeAnnotation));
   const returnType = mapType(ctx, decl.returnType);
 

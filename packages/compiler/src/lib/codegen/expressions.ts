@@ -37,6 +37,7 @@ import {
   resolveAnnotation,
   instantiateClass,
   getSpecializedName,
+  getClassFromTypeIndex,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {
@@ -1403,6 +1404,16 @@ function generateCallExpression(
         return;
       }
 
+      if (ctx.globalIntrinsics.has(name)) {
+        generateGlobalIntrinsic(
+          ctx,
+          ctx.globalIntrinsics.get(name)!,
+          expr,
+          body,
+        );
+        return;
+      }
+
       if (
         !ctx.getLocal(name) &&
         (ctx.functions.has(name) ||
@@ -2686,6 +2697,133 @@ function generateGlobalIntrinsic(
 ) {
   const args = expr.arguments;
   switch (name) {
+    case 'eq': {
+      const left = args[0];
+      const right = args[1];
+      const leftType = inferType(ctx, left);
+      const rightType = inferType(ctx, right);
+
+      const isI32 = (t: number[]) => t.length === 1 && t[0] === ValType.i32;
+      const isF32 = (t: number[]) => t.length === 1 && t[0] === ValType.f32;
+
+      generateExpression(ctx, left, body);
+      generateExpression(ctx, right, body);
+
+      if (isI32(leftType) && isI32(rightType)) {
+        body.push(Opcode.i32_eq);
+      } else if (isF32(leftType) && isF32(rightType)) {
+        body.push(Opcode.f32_eq);
+      } else if (isStringType(ctx, leftType) && isStringType(ctx, rightType)) {
+        generateStringEq(ctx, body);
+      } else {
+        // Check for operator ==
+        const structTypeIndex = getHeapTypeIndex(ctx, leftType);
+        let foundClass: ClassInfo | undefined;
+        if (structTypeIndex !== -1) {
+          foundClass = getClassFromTypeIndex(ctx, structTypeIndex);
+        }
+
+        let hasOperator = false;
+        if (foundClass) {
+          const methodInfo = foundClass.methods.get('==');
+          if (methodInfo) {
+            hasOperator = true;
+            // Call method
+            // Stack: [left, right]
+
+            if (foundClass.isFinal || methodInfo.isFinal) {
+              body.push(
+                Opcode.call,
+                ...WasmModule.encodeSignedLEB128(methodInfo.index),
+              );
+            } else {
+              // Dynamic dispatch
+              // We need to do the vtable dance.
+              // Stack: [left, right]
+
+              // Store right
+              const tempRight = ctx.declareLocal('$$eq_right', rightType);
+              body.push(
+                Opcode.local_set,
+                ...WasmModule.encodeSignedLEB128(tempRight),
+              );
+
+              // Store left (and keep on stack for vtable lookup)
+              const tempLeft = ctx.declareLocal('$$eq_left', leftType);
+              body.push(
+                Opcode.local_tee,
+                ...WasmModule.encodeSignedLEB128(tempLeft),
+              );
+
+              // Get vtable
+              body.push(0xfb, GcOpcode.struct_get);
+              body.push(
+                ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+              );
+              body.push(
+                ...WasmModule.encodeSignedLEB128(
+                  foundClass.fields.get('__vtable')!.index,
+                ),
+              );
+
+              // Cast vtable
+              body.push(0xfb, GcOpcode.ref_cast_null);
+              body.push(
+                ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex!),
+              );
+
+              // Get function
+              const vtableIndex = foundClass.vtable!.indexOf('==');
+              body.push(0xfb, GcOpcode.struct_get);
+              body.push(
+                ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex!),
+              );
+              body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
+
+              // Cast function
+              body.push(0xfb, GcOpcode.ref_cast_null);
+              body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+              // Store function
+              const funcType = [
+                ValType.ref_null,
+                ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+              ];
+              const tempFunc = ctx.declareLocal('$$eq_func', funcType);
+              body.push(
+                Opcode.local_set,
+                ...WasmModule.encodeSignedLEB128(tempFunc),
+              );
+
+              // Restore args
+              body.push(
+                Opcode.local_get,
+                ...WasmModule.encodeSignedLEB128(tempLeft),
+              );
+              body.push(
+                Opcode.local_get,
+                ...WasmModule.encodeSignedLEB128(tempRight),
+              );
+
+              // Call
+              body.push(
+                Opcode.local_get,
+                ...WasmModule.encodeSignedLEB128(tempFunc),
+              );
+              body.push(
+                Opcode.call_ref,
+                ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+              );
+            }
+          }
+        }
+
+        if (!hasOperator) {
+          body.push(Opcode.ref_eq);
+        }
+      }
+      break;
+    }
     case '__array_len':
       generateExpression(ctx, args[0], body);
       body.push(0xfb, GcOpcode.array_len);

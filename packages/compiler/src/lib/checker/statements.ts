@@ -212,6 +212,21 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
 }
 
 function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
+  const typeParameters: TypeParameterType[] = [];
+  if (decl.typeParameters) {
+    for (const param of decl.typeParameters) {
+      typeParameters.push({
+        kind: TypeKind.TypeParameter,
+        name: param.name,
+      });
+    }
+  }
+
+  ctx.enterScope();
+  for (const tp of typeParameters) {
+    ctx.declare(tp.name, tp, 'type');
+  }
+
   const paramTypes: Type[] = [];
   const optionalParameters: boolean[] = [];
   const parameterInitializers: any[] = [];
@@ -225,8 +240,11 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
 
   const returnType = resolveTypeAnnotation(ctx, decl.returnType);
 
+  ctx.exitScope();
+
   const functionType: FunctionType = {
     kind: TypeKind.Function,
+    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
     parameters: paramTypes,
     returnType,
     optionalParameters,

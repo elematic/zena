@@ -222,4 +222,162 @@ suite('CodeGenerator - Equality', () => {
       0,
     );
   });
+
+  // Intrinsic equals
+  test('equals intrinsic (primitives)', async () => {
+    const setup = `
+      @intrinsic('eq')
+      declare function equals<T>(a: T, b: T): boolean;
+    `;
+    assert.strictEqual(await runEqualityTest(check('equals(1, 1)'), setup), 1);
+    assert.strictEqual(await runEqualityTest(check('equals(1, 2)'), setup), 0);
+    assert.strictEqual(
+      await runEqualityTest(check('equals(true, true)'), setup),
+      1,
+    );
+    assert.strictEqual(
+      await runEqualityTest(check('equals(true, false)'), setup),
+      0,
+    );
+  });
+
+  test('equals intrinsic (strings)', async () => {
+    const setup = `
+      @intrinsic('eq')
+      declare function equals<T>(a: T, b: T): boolean;
+    `;
+    assert.strictEqual(
+      await runEqualityTest(check('equals("a", "a")'), setup),
+      1,
+    );
+    assert.strictEqual(
+      await runEqualityTest(check('equals("a", "b")'), setup),
+      0,
+    );
+  });
+
+  test('equals intrinsic (classes ref equality)', async () => {
+    const setup = `
+      @intrinsic('eq')
+      declare function equals<T>(a: T, b: T): boolean;
+      class A {}
+    `;
+    assert.strictEqual(
+      await runEqualityTest(
+        `
+      let a1 = new A();
+      let a2 = a1;
+      ${check('equals(a1, a2)')}
+    `,
+        setup,
+      ),
+      1,
+    );
+
+    assert.strictEqual(
+      await runEqualityTest(
+        `
+      let a1 = new A();
+      let a2 = new A();
+      ${check('equals(a1, a2)')}
+    `,
+        setup,
+      ),
+      0,
+    );
+  });
+
+  test('equals intrinsic (operator ==)', async () => {
+    const setup = `
+      @intrinsic('eq')
+      declare function equals<T>(a: T, b: T): boolean;
+      class Box {
+        value: i32;
+        #new(value: i32) { this.value = value; }
+        operator ==(other: Box): boolean {
+          return this.value == other.value;
+        }
+      }
+    `;
+    assert.strictEqual(
+      await runEqualityTest(
+        `
+      let b1 = new Box(1);
+      let b2 = new Box(1);
+      ${check('equals(b1, b2)')}
+    `,
+        setup,
+      ),
+      1,
+    );
+
+    assert.strictEqual(
+      await runEqualityTest(
+        `
+      let b1 = new Box(1);
+      let b2 = new Box(2);
+      ${check('equals(b1, b2)')}
+    `,
+        setup,
+      ),
+      0,
+    );
+  });
+
+  test('equals intrinsic (generic context)', async () => {
+    const setup = `
+      @intrinsic('eq')
+      declare function equals<T>(a: T, b: T): boolean;
+      
+      class Box {
+        value: i32;
+        #new(value: i32) { this.value = value; }
+        operator ==(other: Box): boolean {
+          return this.value == other.value;
+        }
+      }
+
+      class A {}
+
+      let testGeneric = <T>(a: T, b: T): boolean => {
+        return equals(a, b);
+      };
+    `;
+
+    // Primitives
+    assert.strictEqual(
+      await runEqualityTest(check('testGeneric(1, 1)'), setup),
+      1,
+    );
+    assert.strictEqual(
+      await runEqualityTest(check('testGeneric(1, 2)'), setup),
+      0,
+    );
+
+    // Classes (Ref Eq)
+    assert.strictEqual(
+      await runEqualityTest(
+        `
+      let a1 = new A();
+      let a2 = new A();
+      ${check('testGeneric(a1, a2)')}
+    `,
+        setup,
+      ),
+      0,
+    );
+
+    // Classes (Operator ==)
+    assert.strictEqual(
+      await runEqualityTest(
+        `
+      let b1 = new Box(10);
+      let b2 = new Box(10);
+      ${check('testGeneric(b1, b2)')}
+    `,
+        setup,
+      ),
+      1,
+    );
+  });
 });

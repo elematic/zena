@@ -125,11 +125,13 @@ export interface ImportDeclaration extends Node {
 export interface DeclareFunction extends Node {
   type: typeof NodeType.DeclareFunction;
   name: Identifier;
+  typeParameters?: TypeParameter[];
   params: Parameter[];
   returnType: TypeAnnotation;
   externalModule?: string;
   externalName?: string;
   exported?: boolean;
+  decorators?: Decorator[];
 }
 
 export interface TypeAliasDeclaration extends Node {

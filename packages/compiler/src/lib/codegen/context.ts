@@ -67,6 +67,7 @@ export class CodegenContext {
 
   // Global variables
   public globals = new Map<string, {index: number; type: number[]}>();
+  public globalIntrinsics = new Map<string, string>();
 
   // Well-known types (renamed)
   public wellKnownTypes: {

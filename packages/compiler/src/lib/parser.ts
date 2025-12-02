@@ -79,7 +79,7 @@ export class Parser {
     if (this.#match(TokenType.Import) || this.#match(TokenType.From)) {
       throw new Error('Imports must appear at the top of the file.');
     }
-    if (this.#match(TokenType.At)) {
+    if (this.#check(TokenType.At)) {
       return this.#parseDecoratedStatement();
     }
     if (this.#match(TokenType.Declare)) {
@@ -1300,12 +1300,16 @@ export class Parser {
 
     let name: Identifier;
     if (this.#match(TokenType.Operator)) {
-      this.#consume(TokenType.LBracket, "Expected '[' after 'operator'.");
-      this.#consume(TokenType.RBracket, "Expected ']' after '['.");
-      if (this.#match(TokenType.Equals)) {
-        name = {type: NodeType.Identifier, name: '[]='};
+      if (this.#match(TokenType.EqualsEquals)) {
+        name = {type: NodeType.Identifier, name: '=='};
       } else {
-        name = {type: NodeType.Identifier, name: '[]'};
+        this.#consume(TokenType.LBracket, "Expected '[' after 'operator'.");
+        this.#consume(TokenType.RBracket, "Expected ']' after '['.");
+        if (this.#match(TokenType.Equals)) {
+          name = {type: NodeType.Identifier, name: '[]='};
+        } else {
+          name = {type: NodeType.Identifier, name: '[]'};
+        }
       }
     } else if (this.#match(TokenType.Hash)) {
       if (this.#match(TokenType.New)) {
@@ -1830,26 +1834,39 @@ export class Parser {
   }
 
   #parseDecoratedStatement(): Statement {
-    // We only support @external for now
-    const decoratorName = this.#parseIdentifier().name;
-    if (decoratorName !== 'external') {
-      throw new Error(`Unknown decorator: @${decoratorName}`);
+    const startToken = this.#peek();
+    const decorators: Decorator[] = [];
+
+    while (this.#check(TokenType.At)) {
+      decorators.push(this.#parseDecorator());
     }
 
-    this.#consume(TokenType.LParen, "Expected '(' after @external");
-    const moduleName = this.#consume(
-      TokenType.String,
-      'Expected module name string',
-    ).value;
-    this.#consume(TokenType.Comma, "Expected ',' after module name");
-    const externalName = this.#consume(
-      TokenType.String,
-      'Expected external name string',
-    ).value;
-    this.#consume(TokenType.RParen, "Expected ')' after decorator arguments");
-
     if (this.#match(TokenType.Declare)) {
-      return this.#parseDeclareFunction(moduleName, externalName);
+      let externalModule: string | undefined;
+      let externalName: string | undefined;
+
+      for (const d of decorators) {
+        if (d.name === 'external') {
+          if (d.args.length !== 2)
+            throw new Error('@external expects 2 arguments');
+          externalModule = d.args[0].value;
+          externalName = d.args[1].value;
+        } else if (d.name === 'intrinsic') {
+          if (d.args.length !== 1)
+            throw new Error('@intrinsic expects 1 argument');
+        } else {
+          throw new Error(`Unknown decorator: @${d.name}`);
+        }
+      }
+
+      const decl = this.#parseDeclareFunction(
+        externalModule,
+        externalName,
+        false,
+        startToken,
+      );
+      decl.decorators = decorators;
+      return decl;
     }
 
     throw new Error('Expected declare statement after decorator');
@@ -1864,6 +1881,7 @@ export class Parser {
     const actualStartToken = startToken || this.#previous();
     this.#consume(TokenType.Function, "Expected 'function' after 'declare'");
     const name = this.#parseIdentifier();
+    const typeParameters = this.#parseTypeParameters();
 
     this.#consume(TokenType.LParen, "Expected '(' after function name");
     const params: Parameter[] = [];
@@ -1917,6 +1935,7 @@ export class Parser {
     return {
       type: NodeType.DeclareFunction,
       name,
+      typeParameters,
       params,
       returnType,
       externalModule,

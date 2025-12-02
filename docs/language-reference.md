@@ -632,6 +632,54 @@ export declare function print(s: string): void;
 export class Point { ... }
 ```
 
+## 9. Intrinsics
+
+Intrinsics are special functions that map directly to compiler-generated code or WebAssembly instructions. They are primarily used to implement the standard library and low-level primitives.
+
+Intrinsics are declared using the `@intrinsic` decorator on a `declare function` statement.
+
+### Equality Intrinsic (`eq`)
+
+The `eq` intrinsic provides a generic equality check that works across all types.
+
+```typescript
+@intrinsic('eq')
+declare function equals<T>(a: T, b: T): boolean;
+```
+
+The behavior depends on the type `T`:
+
+- **Primitives (`i32`, `f32`, `boolean`)**: Performs value equality.
+- **Strings**: Performs value equality (byte-wise comparison).
+- **Reference Types (Classes, Arrays, Records)**:
+  - By default, performs **reference equality** (checks if both operands refer to the same object).
+  - If the type implements `operator ==`, the intrinsic performs a **virtual method call** to that operator.
+
+#### Custom Equality with `operator ==`
+
+Classes can customize equality behavior by implementing `operator ==`.
+
+```typescript
+class Point {
+  x: i32;
+  y: i32;
+
+  #new(x: i32, y: i32) {
+    this.x = x;
+    this.y = y;
+  }
+
+  operator ==(other: Point): boolean {
+    return this.x == other.x && this.y == other.y;
+  }
+}
+
+let p1 = new Point(1, 2);
+let p2 = new Point(1, 2);
+
+// equals(p1, p2) returns true because Point implements operator ==
+```
+
 ## 14. Grammar (Simplified)
 
 ```ebnf
