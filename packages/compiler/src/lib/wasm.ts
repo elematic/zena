@@ -140,6 +140,20 @@ export const Opcode = {
   i32_shr_u: 0x76,
   i32_rotl: 0x77,
   i32_rotr: 0x78,
+
+  f32_eq: 0x5b,
+  f32_ne: 0x5c,
+  f32_lt: 0x5d,
+  f32_gt: 0x5e,
+  f32_le: 0x5f,
+  f32_ge: 0x60,
+
+  f32_add: 0x92,
+  f32_sub: 0x93,
+  f32_mul: 0x94,
+  f32_div: 0x95,
+
+  f32_convert_i32_s: 0xb2,
 } as const;
 
 export const ExportDesc = {

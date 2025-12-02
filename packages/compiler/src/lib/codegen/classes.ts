@@ -1236,6 +1236,9 @@ export function generateClassMethods(
       } else {
         if (member.body && member.body.type === NodeType.BlockStatement) {
           generateBlockStatement(ctx, member.body, body);
+          if (methodInfo.returnType && methodInfo.returnType.length > 0) {
+            body.push(Opcode.unreachable);
+          }
         }
       }
       body.push(Opcode.end);

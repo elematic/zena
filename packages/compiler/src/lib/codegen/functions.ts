@@ -11,11 +11,13 @@ import {
   type VariableDeclaration,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
+import {TypeKind, type FunctionType} from '../types.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
   getTypeKey,
+  mapCheckerTypeToWasmType,
   mapType,
   resolveAnnotation,
 } from './classes.js';
@@ -146,6 +148,12 @@ export function registerFunction(
   let mappedReturn: number[];
   if (func.returnType) {
     mappedReturn = mapType(ctx, func.returnType);
+  } else if (
+    func.inferredType &&
+    func.inferredType.kind === TypeKind.Function
+  ) {
+    const returnType = (func.inferredType as FunctionType).returnType;
+    mappedReturn = mapCheckerTypeToWasmType(ctx, returnType);
   } else {
     // Setup temporary scope for inference
     ctx.pushScope();
@@ -179,7 +187,7 @@ export function registerFunction(
   ctx.functions.set(name, funcIndex);
   ctx.functionReturnTypes.set(name, mappedReturn);
   ctx.bodyGenerators.push(() => {
-    const body = generateFunctionBody(ctx, name, func);
+    const body = generateFunctionBody(ctx, name, func, undefined, mappedReturn);
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
   });
 }
@@ -189,6 +197,7 @@ export function generateFunctionBody(
   name: string,
   func: FunctionExpression,
   typeContext?: Map<string, TypeAnnotation>,
+  returnType?: number[],
 ): number[] {
   const oldContext = ctx.currentTypeContext;
   ctx.currentTypeContext = typeContext;
@@ -208,6 +217,9 @@ export function generateFunctionBody(
   const body: number[] = [];
   if (func.body.type === NodeType.BlockStatement) {
     generateBlockStatement(ctx, func.body as BlockStatement, body);
+    if (returnType && returnType.length > 0) {
+      body.push(Opcode.unreachable);
+    }
   } else {
     generateExpression(ctx, func.body as Expression, body);
   }
@@ -264,7 +276,13 @@ export function instantiateGenericFunction(
   ctx.functions.set(key, funcIndex);
 
   ctx.bodyGenerators.push(() => {
-    const body = generateFunctionBody(ctx, key, funcDecl, typeContext);
+    const body = generateFunctionBody(
+      ctx,
+      key,
+      funcDecl,
+      typeContext,
+      mappedReturn,
+    );
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
   });
 
@@ -409,7 +427,13 @@ export function instantiateGenericMethod(
   classInfo.methods.set(specializedKey, info);
 
   ctx.bodyGenerators.push(() => {
-    const body = generateMethodBody(ctx, classInfo, methodDecl, typeContext);
+    const body = generateMethodBody(
+      ctx,
+      classInfo,
+      methodDecl,
+      typeContext,
+      returnType,
+    );
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
   });
 
@@ -421,6 +445,7 @@ function generateMethodBody(
   classInfo: ClassInfo,
   method: MethodDefinition,
   typeContext: Map<string, TypeAnnotation>,
+  returnType?: number[],
 ): number[] {
   const oldContext = ctx.currentTypeContext;
   ctx.currentTypeContext = typeContext;
@@ -456,6 +481,9 @@ function generateMethodBody(
   const body: number[] = [];
   if (method.body && method.body.type === NodeType.BlockStatement) {
     generateBlockStatement(ctx, method.body as BlockStatement, body);
+    if (returnType && returnType.length > 0) {
+      body.push(Opcode.unreachable);
+    }
   } else {
     // Should not happen for methods usually, but if expression body supported
     // generateExpression(ctx, method.body as Expression, body);

@@ -327,6 +327,9 @@ function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {
         DiagnosticCode.TypeMismatch,
       );
     }
+  } else {
+    // Infer return type
+    ctx.inferredReturnTypes.push(argType);
   }
 }
 

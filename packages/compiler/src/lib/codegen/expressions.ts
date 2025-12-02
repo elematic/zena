@@ -1887,6 +1887,61 @@ function generateBinaryExpression(
   const leftType = inferType(ctx, expr.left);
   const rightType = inferType(ctx, expr.right);
 
+  const isF32 = (t: number[]) => t.length === 1 && t[0] === ValType.f32;
+  const isI32 = (t: number[]) => t.length === 1 && t[0] === ValType.i32;
+
+  if (
+    (isF32(leftType) || isF32(rightType)) &&
+    (isF32(leftType) || isI32(leftType)) &&
+    (isF32(rightType) || isI32(rightType))
+  ) {
+    generateExpression(ctx, expr.left, body);
+    if (isI32(leftType)) {
+      body.push(Opcode.f32_convert_i32_s);
+    }
+
+    generateExpression(ctx, expr.right, body);
+    if (isI32(rightType)) {
+      body.push(Opcode.f32_convert_i32_s);
+    }
+
+    switch (expr.operator) {
+      case '+':
+        body.push(Opcode.f32_add);
+        break;
+      case '-':
+        body.push(Opcode.f32_sub);
+        break;
+      case '*':
+        body.push(Opcode.f32_mul);
+        break;
+      case '/':
+        body.push(Opcode.f32_div);
+        break;
+      case '==':
+        body.push(Opcode.f32_eq);
+        break;
+      case '!=':
+        body.push(Opcode.f32_ne);
+        break;
+      case '<':
+        body.push(Opcode.f32_lt);
+        break;
+      case '<=':
+        body.push(Opcode.f32_le);
+        break;
+      case '>':
+        body.push(Opcode.f32_gt);
+        break;
+      case '>=':
+        body.push(Opcode.f32_ge);
+        break;
+      default:
+        throw new Error(`Unsupported operator for f32: ${expr.operator}`);
+    }
+    return;
+  }
+
   generateExpression(ctx, expr.left, body);
   generateExpression(ctx, expr.right, body);
 

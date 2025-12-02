@@ -652,13 +652,22 @@ function checkBinaryExpression(
   const right = checkExpression(ctx, expr.right);
 
   let typesMatch = false;
+  let resultType = left;
+
   if (expr.operator === '==' || expr.operator === '!=') {
     typesMatch = isAssignableTo(left, right) || isAssignableTo(right, left);
+    resultType = Types.Boolean;
   } else if (left === right) {
     typesMatch = true;
   } else if (left.kind === TypeKind.Number && right.kind === TypeKind.Number) {
-    if ((left as any).name === (right as any).name) {
-      typesMatch = true;
+    typesMatch = true;
+    if (
+      (left as NumberType).name === 'f32' ||
+      (right as NumberType).name === 'f32'
+    ) {
+      resultType = Types.F32;
+    } else {
+      resultType = Types.I32;
     }
   }
 
@@ -682,6 +691,7 @@ function checkBinaryExpression(
     case '-':
     case '*':
     case '/':
+      return resultType;
     case '%':
     case '&':
     case '|':
@@ -689,10 +699,10 @@ function checkBinaryExpression(
         (expr.operator === '&' ||
           expr.operator === '|' ||
           expr.operator === '%') &&
-        left !== Types.I32
+        (left !== Types.I32 || right !== Types.I32)
       ) {
         ctx.diagnostics.reportError(
-          `Operator '${expr.operator}' cannot be applied to type '${typeToString(left)}'.`,
+          `Operator '${expr.operator}' cannot be applied to type '${typeToString(left)}' and '${typeToString(right)}'.`,
           DiagnosticCode.TypeMismatch,
         );
         return Types.Unknown;
@@ -787,14 +797,23 @@ function checkFunctionExpression(
   const previousReturnType = ctx.currentFunctionReturnType;
   ctx.currentFunctionReturnType = expectedType;
 
+  const previousInferredReturns = ctx.inferredReturnTypes;
+  ctx.inferredReturnTypes = [];
+
   let bodyType: Type = Types.Unknown;
   if (expr.body.type === NodeType.BlockStatement) {
     checkStatement(ctx, expr.body);
-    // TODO: How to determine body type of block?
-    // For now, we rely on return statements checking against expectedType.
-    // If expectedType is Unknown (inferred), we need to infer from returns.
-    // That's complex. Let's assume for now block bodies MUST have explicit return type or be void.
-    bodyType = expectedType;
+
+    if (expectedType.kind === Types.Unknown.kind) {
+      if (ctx.inferredReturnTypes.length === 0) {
+        bodyType = Types.Void;
+      } else {
+        // For now, take the first one. Ideally check LUB.
+        bodyType = ctx.inferredReturnTypes[0];
+      }
+    } else {
+      bodyType = expectedType;
+    }
   } else {
     bodyType = checkExpression(ctx, expr.body as Expression);
 
@@ -811,6 +830,7 @@ function checkFunctionExpression(
     }
   }
 
+  ctx.inferredReturnTypes = previousInferredReturns;
   ctx.currentFunctionReturnType = previousReturnType;
   ctx.exitScope();
 

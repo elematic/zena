@@ -23,6 +23,7 @@ export class CheckerContext {
   // Field initialization tracking
   isCheckingFieldInitializer = false;
   initializedFields = new Set<string>();
+  inferredReturnTypes: Type[] = [];
 
   constructor(program: Program, compiler?: Compiler, module?: Module) {
     this.program = program;
