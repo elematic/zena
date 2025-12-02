@@ -1,5 +1,5 @@
 import {suite, test} from 'node:test';
-import {compile} from '../../lib/index.js';
+import {compileAndInstantiate} from './utils.js';
 
 suite('Codegen: Generic Methods', () => {
   test('Generic method on class', async () => {
@@ -21,19 +21,7 @@ suite('Codegen: Generic Methods', () => {
       b.identity<Box>(b);
     `;
 
-    const wasm = compile(source);
-    const imports = {
-      console: {
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
-    };
-    await WebAssembly.instantiate(wasm, imports);
+    await compileAndInstantiate(source);
   });
 
   test('Generic method execution', async () => {
@@ -56,24 +44,14 @@ suite('Codegen: Generic Methods', () => {
       assert((c.generic<i32>(123)) == 123);
      `;
 
-    const wasm = compile(source);
     const imports = {
       env: {
         assert: (condition: number) => {
           if (!condition) throw new Error('Assertion failed');
         },
       },
-      console: {
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
     };
-    await WebAssembly.instantiate(wasm, imports);
+    await compileAndInstantiate(source, {imports});
   });
 
   test('Generic method on mixin', async () => {
@@ -93,24 +71,14 @@ suite('Codegen: Generic Methods', () => {
         assert((app.log<i32>(42)) == 42);
       `;
 
-    const wasm = compile(source);
     const imports = {
       env: {
         assert: (condition: number) => {
           if (!condition) throw new Error('Assertion failed');
         },
       },
-      console: {
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
     };
-    await WebAssembly.instantiate(wasm, imports);
+    await compileAndInstantiate(source, {imports});
   });
 
   test('Generic method inheritance', async () => {
@@ -130,24 +98,14 @@ suite('Codegen: Generic Methods', () => {
         assert((d.identity<i32>(100)) == 100);
       `;
 
-    const wasm = compile(source);
     const imports = {
       env: {
         assert: (condition: number) => {
           if (!condition) throw new Error('Assertion failed');
         },
       },
-      console: {
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
     };
-    await WebAssembly.instantiate(wasm, imports);
+    await compileAndInstantiate(source, {imports});
   });
 
   test('Generic method on generic class', async () => {
@@ -167,23 +125,13 @@ suite('Codegen: Generic Methods', () => {
         assert(box.map<boolean>((x: i32) => x == 10));
       `;
 
-    const wasm = compile(source);
     const imports = {
       env: {
         assert: (condition: number) => {
           if (!condition) throw new Error('Assertion failed');
         },
       },
-      console: {
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
     };
-    await WebAssembly.instantiate(wasm, imports);
+    await compileAndInstantiate(source, {imports});
   });
 });

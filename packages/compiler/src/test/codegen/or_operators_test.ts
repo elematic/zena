@@ -1,31 +1,13 @@
-import {suite, test} from 'node:test';
-import {compile} from '../lib/index.js';
 import assert from 'node:assert';
-
-const imports = {
-  console: {
-    log: (val: any) => console.log(val),
-    log_i32: (val: number) => console.log(val),
-    log_f32: (val: number) => console.log(val),
-    log_string: (ptr: number, len: number) => console.log('string'),
-    error_string: (ptr: number, len: number) => console.error('string'),
-    warn_string: (ptr: number, len: number) => console.warn('string'),
-    info_string: (ptr: number, len: number) => console.info('string'),
-    debug_string: (ptr: number, len: number) => console.debug('string'),
-  },
-  env: {
-    log: (val: number) => console.log(val),
-  },
-};
+import {suite, test} from 'node:test';
+import {compileAndInstantiate} from './utils.js';
 
 suite('OR Operators', () => {
   test('bitwise OR (|)', async () => {
     const source = `
       export let bitwiseOr = (a: i32, b: i32) => a | b;
     `;
-    const wasm = compile(source);
-    const {instance} = (await WebAssembly.instantiate(wasm, imports)) as any;
-    const {bitwiseOr} = instance.exports;
+    const {bitwiseOr} = await compileAndInstantiate(source);
 
     assert.strictEqual(bitwiseOr(5, 3), 7); // 101 | 011 = 111 (7)
     assert.strictEqual(bitwiseOr(12, 10), 14); // 1100 | 1010 = 1110 (14)
@@ -37,9 +19,7 @@ suite('OR Operators', () => {
     const source = `
       export let logicalOr = (a: boolean, b: boolean) => a || b;
     `;
-    const wasm = compile(source);
-    const {instance} = (await WebAssembly.instantiate(wasm, imports)) as any;
-    const {logicalOr} = instance.exports;
+    const {logicalOr} = await compileAndInstantiate(source);
 
     assert.strictEqual(logicalOr(1, 1), 1); // true || true -> true
     assert.strictEqual(logicalOr(1, 0), 1); // true || false -> true
@@ -56,9 +36,7 @@ suite('OR Operators', () => {
       };
     `;
 
-    const wasm = compile(source);
-    const {instance} = (await WebAssembly.instantiate(wasm, imports)) as any;
-    const {testShortCircuit} = instance.exports;
+    const {testShortCircuit} = await compileAndInstantiate(source);
 
     // Short-circuit: 10/0 is skipped
     assert.strictEqual(testShortCircuit(1, 0), 1);
@@ -81,9 +59,7 @@ suite('OR Operators', () => {
     const source = `
       export let precedence = () => true || false && false;
     `;
-    const wasm = compile(source);
-    const {instance} = (await WebAssembly.instantiate(wasm, imports)) as any;
-    const {precedence} = instance.exports;
+    const {precedence} = await compileAndInstantiate(source);
 
     assert.strictEqual(precedence(), 1);
   });
@@ -100,9 +76,7 @@ suite('OR Operators', () => {
     const source = `
       export let mix = (a: i32, b: i32, c: boolean) => (a | b) != 0 || c;
     `;
-    const wasm = compile(source);
-    const {instance} = (await WebAssembly.instantiate(wasm, imports)) as any;
-    const {mix} = instance.exports;
+    const {mix} = await compileAndInstantiate(source);
 
     assert.strictEqual(mix(0, 0, 0), 0); // 0 != 0 -> false || false -> false
     assert.strictEqual(mix(1, 0, 0), 1); // 1 != 0 -> true || false -> true

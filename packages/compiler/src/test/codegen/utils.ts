@@ -16,22 +16,12 @@ export interface CompileOptions {
   path?: string;
 }
 
-export async function compileAndRun(
+export async function compileAndInstantiate(
   input: string,
-  optionsOrEntryPoint: string | CompileOptions = 'main',
-  importsArg: Record<string, any> = {},
+  options: CompileOptions = {},
 ): Promise<any> {
-  let entryPoint = 'main';
-  let imports = importsArg;
-  let path = '/main.zena';
-
-  if (typeof optionsOrEntryPoint === 'string') {
-    entryPoint = optionsOrEntryPoint;
-  } else {
-    entryPoint = optionsOrEntryPoint.entryPoint ?? 'main';
-    imports = optionsOrEntryPoint.imports ?? importsArg;
-    path = optionsOrEntryPoint.path ?? '/main.zena';
-  }
+  const path = options.path ?? '/main.zena';
+  const imports = options.imports ?? {};
 
   // Add default console mock if not present
   if (!imports.console) {
@@ -80,15 +70,38 @@ export async function compileAndRun(
   try {
     const result = await WebAssembly.instantiate(bytes, imports);
     // @ts-ignore
-    const instance = result.instance;
-    const exports = instance.exports as any;
-    if (exports[entryPoint]) {
-      return exports[entryPoint]();
-    }
-    return null;
+    return result.instance.exports;
   } catch (e) {
     console.log('WASM Instantiation Error:', e);
     console.log('WASM Bytes:', Buffer.from(bytes).toString('hex'));
     throw e;
   }
+}
+
+export async function compileAndRun(
+  input: string,
+  optionsOrEntryPoint: string | CompileOptions = 'main',
+  importsArg: Record<string, any> = {},
+): Promise<any> {
+  let entryPoint = 'main';
+  let imports = importsArg;
+  let path = '/main.zena';
+
+  if (typeof optionsOrEntryPoint === 'string') {
+    entryPoint = optionsOrEntryPoint;
+  } else {
+    entryPoint = optionsOrEntryPoint.entryPoint ?? 'main';
+    imports = optionsOrEntryPoint.imports ?? importsArg;
+    path = optionsOrEntryPoint.path ?? '/main.zena';
+  }
+
+  const exports = await compileAndInstantiate(input, {
+    path,
+    imports,
+  });
+
+  if (exports[entryPoint]) {
+    return exports[entryPoint]();
+  }
+  return null;
 }

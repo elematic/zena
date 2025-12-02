@@ -1,31 +1,14 @@
-import {suite, test} from 'node:test';
-import {compile} from '../lib/index.js';
 import assert from 'node:assert';
-
-const imports = {
-  console: {
-    log: (val: any) => console.log(val),
-    log_i32: (val: number) => console.log(val),
-    log_f32: (val: number) => console.log(val),
-    log_string: (ptr: number, len: number) => console.log('string'),
-    error_string: (ptr: number, len: number) => console.error('string'),
-    warn_string: (ptr: number, len: number) => console.warn('string'),
-    info_string: (ptr: number, len: number) => console.info('string'),
-    debug_string: (ptr: number, len: number) => console.debug('string'),
-  },
-  env: {
-    log: (val: number) => console.log(val),
-  },
-};
+import {suite, test} from 'node:test';
+import {compileAndInstantiate} from './utils.js';
+import {compile} from '../../lib/index.js';
 
 suite('Logical Operators', () => {
   test('logical AND (&&)', async () => {
     const source = `
       export let logicalAnd = (a: boolean, b: boolean) => a && b;
     `;
-    const wasm = compile(source);
-    const {instance} = (await WebAssembly.instantiate(wasm, imports)) as any;
-    const {logicalAnd} = instance.exports;
+    const {logicalAnd} = await compileAndInstantiate(source);
 
     assert.strictEqual(logicalAnd(1, 1), 1); // true && true -> true
     assert.strictEqual(logicalAnd(1, 0), 0); // true && false -> false
@@ -49,9 +32,7 @@ suite('Logical Operators', () => {
     const source = `
       export let check = (x: i32) => x > 0 && x < 10;
     `;
-    const wasm = compile(source);
-    const {instance} = (await WebAssembly.instantiate(wasm, imports)) as any;
-    const {check} = instance.exports;
+    const {check} = await compileAndInstantiate(source);
 
     assert.strictEqual(check(5), 1);
     assert.strictEqual(check(0), 0);
@@ -113,9 +94,7 @@ suite('Logical Operators', () => {
     const source2 = `
       export let mix2 = (a: i32, b: i32, c: boolean) => (a & b) != 0 && c;
     `;
-    const wasm = compile(source2);
-    const {instance} = (await WebAssembly.instantiate(wasm, imports)) as any;
-    const {mix2} = instance.exports;
+    const {mix2} = await compileAndInstantiate(source2);
 
     assert.strictEqual(mix2(5, 1, 1), 1); // (101 & 001) != 0 -> true && true -> true
     assert.strictEqual(mix2(5, 2, 1), 0); // (101 & 010) != 0 -> false && true -> false

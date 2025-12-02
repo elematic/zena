@@ -1,6 +1,6 @@
-import {suite, test} from 'node:test';
-import {compileAndRun} from './codegen/utils.js';
 import assert from 'node:assert';
+import {suite, test} from 'node:test';
+import {compileAndRun} from './utils.js';
 
 suite('Modulo Operator', () => {
   test('modulo i32', async () => {

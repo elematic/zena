@@ -686,7 +686,9 @@ function checkBinaryExpression(
     case '&':
     case '|':
       if (
-        (expr.operator === '&' || expr.operator === '|' || expr.operator === '%') &&
+        (expr.operator === '&' ||
+          expr.operator === '|' ||
+          expr.operator === '%') &&
         left !== Types.I32
       ) {
         ctx.diagnostics.reportError(

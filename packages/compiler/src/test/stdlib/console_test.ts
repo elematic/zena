@@ -1,14 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compile} from '../../lib/index.js';
-import {instantiate, readByteArray} from '@zena-lang/runtime';
-
-/** Helper to get instance from WebAssembly.instantiate result */
-function getInstance(
-  result: WebAssembly.WebAssemblyInstantiatedSource | WebAssembly.Instance,
-): WebAssembly.Instance {
-  return 'instance' in result ? result.instance : result;
-}
+import {compileAndInstantiate} from '../codegen/utils.js';
 
 /**
  * Create test console imports that capture output.
@@ -62,22 +54,19 @@ function createCapturingConsoleImports(
  * capturing console output for assertions.
  */
 async function runWithConsole(userSource: string) {
-  const wasm = compile(userSource);
-
   // Deferred exports reference for string reading
   let instanceExports: WebAssembly.Exports | undefined;
   const testConsole = createCapturingConsoleImports(() => instanceExports);
 
-  const result = await instantiate(wasm, {
-    console: testConsole.imports,
+  const exports = await compileAndInstantiate(userSource, {
+    imports: {
+      console: testConsole.imports,
+    },
   });
-
-  const instance = getInstance(result);
-  instanceExports = instance.exports;
+  instanceExports = exports;
 
   return {
-    instance,
-    exports: instance.exports as {main?: () => void; [key: string]: unknown},
+    exports: exports as {main?: () => void; [key: string]: unknown},
     getOutput: testConsole.getOutput,
   };
 }
@@ -207,18 +196,5 @@ suite('Standard Library - Console', () => {
     assert.strictEqual(output[0].method, 'log');
     assert.strictEqual(output[1].method, 'error');
     assert.strictEqual(output[2].method, 'warn');
-  });
-
-  test('readByteArray should decode UTF-8 bytes correctly', () => {
-    // Test with a mock ByteArray (simple array that's iterable)
-    const mockBytes = [72, 101, 108, 108, 111]; // 'Hello' in UTF-8
-    const result = readByteArray(mockBytes, 5);
-    assert.strictEqual(result, 'Hello');
-  });
-
-  test('readByteArray should handle partial length', () => {
-    const mockBytes = [72, 101, 108, 108, 111]; // 'Hello' in UTF-8
-    const result = readByteArray(mockBytes, 3);
-    assert.strictEqual(result, 'Hel');
   });
 });

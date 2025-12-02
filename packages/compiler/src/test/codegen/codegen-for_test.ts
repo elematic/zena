@@ -1,60 +1,6 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Compiler, type CompilerHost} from '../../lib/compiler.js';
-import {CodeGenerator} from '../../lib/codegen/index.js';
-import {TypeChecker} from '../../lib/checker/index.js';
-import {readFileSync} from 'node:fs';
-import {join, dirname} from 'node:path';
-import {fileURLToPath} from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const stdlibPath = join(__dirname, '../../stdlib');
-
-async function compile(input: string) {
-  const host: CompilerHost = {
-    load: (path) => {
-      if (path === '/main.zena') return input;
-      if (path.startsWith('zena:')) {
-        const name = path.substring(5);
-        return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
-      }
-      throw new Error(`File not found: ${path}`);
-    },
-    resolve: (specifier) => specifier,
-  };
-
-  const compiler = new Compiler(host);
-  const program = compiler.bundle('/main.zena');
-
-  const checker = new TypeChecker(program, compiler, {
-    path: '/main.zena',
-    isStdlib: true,
-    exports: new Map(),
-    source: input,
-    ast: program,
-    imports: new Map(),
-    diagnostics: [],
-  });
-  const diagnostics = checker.check();
-  if (diagnostics.length > 0) {
-    throw new Error(diagnostics.map((d) => d.message).join('\n'));
-  }
-
-  const codegen = new CodeGenerator(program);
-  const bytes = codegen.generate();
-  const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer, {
-    console: {
-      log_i32: () => {},
-      log_f32: () => {},
-      log_string: () => {},
-      error_string: () => {},
-      warn_string: () => {},
-      info_string: () => {},
-      debug_string: () => {},
-    },
-  });
-  return result.instance.exports;
-}
+import {compileAndInstantiate} from './utils.js';
 
 suite('CodeGenerator - For Loops', () => {
   test('should compile and run basic for loop', async () => {
@@ -67,7 +13,9 @@ suite('CodeGenerator - For Loops', () => {
         return s;
       };
     `;
-    const {sum} = (await compile(input)) as {sum: (n: number) => number};
+    const {sum} = (await compileAndInstantiate(input)) as {
+      sum: (n: number) => number;
+    };
     assert.strictEqual(sum(5), 10); // 0+1+2+3+4 = 10
     assert.strictEqual(sum(0), 0);
     assert.strictEqual(sum(1), 0);
@@ -84,7 +32,7 @@ suite('CodeGenerator - For Loops', () => {
         return i;
       };
     `;
-    const {countUp} = (await compile(input)) as {
+    const {countUp} = (await compileAndInstantiate(input)) as {
       countUp: (n: number) => number;
     };
     assert.strictEqual(countUp(5), 5);
@@ -105,7 +53,7 @@ suite('CodeGenerator - For Loops', () => {
         return s;
       };
     `;
-    const {countTo} = (await compile(input)) as {
+    const {countTo} = (await compileAndInstantiate(input)) as {
       countTo: (n: number) => number;
     };
     assert.strictEqual(countTo(5), 10);
@@ -123,7 +71,7 @@ suite('CodeGenerator - For Loops', () => {
         return s;
       };
     `;
-    const {sumWithIncrementInBody} = (await compile(input)) as {
+    const {sumWithIncrementInBody} = (await compileAndInstantiate(input)) as {
       sumWithIncrementInBody: (n: number) => number;
     };
     assert.strictEqual(sumWithIncrementInBody(5), 10);
@@ -142,7 +90,7 @@ suite('CodeGenerator - For Loops', () => {
         return s;
       };
     `;
-    const {nestedSum} = (await compile(input)) as {
+    const {nestedSum} = (await compileAndInstantiate(input)) as {
       nestedSum: (n: number) => number;
     };
     assert.strictEqual(nestedSum(3), 9); // 3*3 = 9
@@ -161,7 +109,7 @@ suite('CodeGenerator - For Loops', () => {
         return s;
       };
     `;
-    const {startFrom} = (await compile(input)) as {
+    const {startFrom} = (await compileAndInstantiate(input)) as {
       startFrom: (start: number, end: number) => number;
     };
     assert.strictEqual(startFrom(0, 5), 10); // 0+1+2+3+4 = 10
@@ -179,7 +127,7 @@ suite('CodeGenerator - For Loops', () => {
         return result;
       };
     `;
-    const {factorial} = (await compile(input)) as {
+    const {factorial} = (await compileAndInstantiate(input)) as {
       factorial: (n: number) => number;
     };
     assert.strictEqual(factorial(0), 1);
@@ -204,7 +152,9 @@ suite('CodeGenerator - For Loops', () => {
         return b;
       };
     `;
-    const {fib} = (await compile(input)) as {fib: (n: number) => number};
+    const {fib} = (await compileAndInstantiate(input)) as {
+      fib: (n: number) => number;
+    };
     assert.strictEqual(fib(0), 0);
     assert.strictEqual(fib(1), 1);
     assert.strictEqual(fib(2), 1);

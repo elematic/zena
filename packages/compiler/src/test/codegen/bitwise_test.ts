@@ -1,5 +1,6 @@
 import {suite, test} from 'node:test';
-import {compile} from '../lib/index.js';
+import {compile} from '../../lib/index.js';
+import {compileAndInstantiate} from './utils.js';
 import assert from 'node:assert';
 
 suite('Bitwise Operators', () => {
@@ -7,24 +8,7 @@ suite('Bitwise Operators', () => {
     const source = `
       export let bitwiseAnd = (a: i32, b: i32) => a & b;
     `;
-    const wasm = compile(source);
-    const imports = {
-      console: {
-        log: () => {},
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
-      env: {
-        // Add any other required imports here
-      },
-    };
-    const {instance} = (await WebAssembly.instantiate(wasm, imports)) as any;
-    const {bitwiseAnd} = instance.exports;
+    const {bitwiseAnd} = await compileAndInstantiate(source);
 
     assert.strictEqual(bitwiseAnd(5, 3), 1); // 101 & 011 = 001
     assert.strictEqual(bitwiseAnd(12, 10), 8); // 1100 & 1010 = 1000
@@ -63,21 +47,7 @@ suite('Bitwise Operators', () => {
     const source = `
       export let precedence = (a: i32, b: i32, c: i32) => (a & b) == c;
     `;
-    const wasm = compile(source);
-    const imports = {
-      console: {
-        log: () => {},
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
-    };
-    const {instance} = (await WebAssembly.instantiate(wasm, imports)) as any;
-    const {precedence} = instance.exports;
+    const {precedence} = await compileAndInstantiate(source);
 
     assert.strictEqual(precedence(5, 3, 1), 1); // (5 & 3) == 1 -> 1 == 1 -> true (1)
     assert.strictEqual(precedence(5, 3, 0), 0); // (5 & 3) == 0 -> 1 == 0 -> false (0)

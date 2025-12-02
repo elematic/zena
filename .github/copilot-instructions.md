@@ -152,6 +152,10 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Write tests for each compiler stage (Lexer, Parser, Codegen).
   - New syntax features MUST have dedicated parser tests (and lexer tests, if new tokens are introduced).
   - **Isolating Tests**: To isolate tests, pass the `--test-only` flag to Node and use `test.only()` in the test file.
+  - **Codegen Tests**:
+    - Use `compileAndRun(source, entryPoint?)` from `test/codegen/utils.ts` to compile and execute Zena code. It returns the result of the entry point function.
+    - Use `compileAndInstantiate(source)` from `test/codegen/utils.ts` if you need access to all exports or need to test multiple functions from one source.
+    - These utilities automatically provide standard library imports (like `console`) and handle the instantiation boilerplate.
 - **Paradigm**: Prefer functional patterns where appropriate.
 - **Package Management**: Prefer installing npm packages with `npm i <package>` instead of manually editing `package.json` to ensure valid versions.
 - **Documentation**:
