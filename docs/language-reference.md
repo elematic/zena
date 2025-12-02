@@ -274,7 +274,7 @@ Overload resolution is performed based on the argument types at the call site.
 
 ### Literals
 
-- **Numbers**: `123`, `0`, `-5` (Parsed as `i32` by default).
+- **Numbers**: `123`, `0`, `-5`, `0x1A`, `0xFF` (Parsed as `i32` by default).
 - **Strings**: `"text"` or `'text'`.
 - **Template Literals**: `` `text ${expression}` `` (Backtick-delimited with interpolation).
 

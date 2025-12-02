@@ -249,15 +249,25 @@ export function tokenize(source: string): Token[] {
     // Numbers
     if (/[0-9]/.test(char)) {
       let value = '';
-      while (current < source.length && /[0-9]/.test(peek())) {
-        value += advance();
-      }
 
-      // Fractional part
-      if (peek() === '.' && /[0-9]/.test(source[current + 1])) {
-        value += advance(); // Consume '.'
+      if (char === '0' && (peekNext() === 'x' || peekNext() === 'X')) {
+        value += advance(); // Consume '0'
+        value += advance(); // Consume 'x' or 'X'
+
+        while (current < source.length && /[0-9a-fA-F]/.test(peek())) {
+          value += advance();
+        }
+      } else {
         while (current < source.length && /[0-9]/.test(peek())) {
           value += advance();
+        }
+
+        // Fractional part
+        if (peek() === '.' && /[0-9]/.test(source[current + 1])) {
+          value += advance(); // Consume '.'
+          while (current < source.length && /[0-9]/.test(peek())) {
+            value += advance();
+          }
         }
       }
 

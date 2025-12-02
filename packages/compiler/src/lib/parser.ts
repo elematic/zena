@@ -814,7 +814,7 @@ export class Parser {
       const token = this.#previous();
       return {
         type: NodeType.NumberLiteral,
-        value: parseFloat(token.value),
+        value: Number(token.value),
         raw: token.value,
         loc: this.#locFromToken(token),
       };
