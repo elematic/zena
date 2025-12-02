@@ -683,18 +683,23 @@ function checkBinaryExpression(
     case '*':
     case '/':
     case '&':
-      if (expr.operator === '&' && left !== Types.I32) {
+    case '|':
+      if (
+        (expr.operator === '&' || expr.operator === '|') &&
+        left !== Types.I32
+      ) {
         ctx.diagnostics.reportError(
-          `Operator '&' cannot be applied to type '${typeToString(left)}'.`,
+          `Operator '${expr.operator}' cannot be applied to type '${typeToString(left)}'.`,
           DiagnosticCode.TypeMismatch,
         );
         return Types.Unknown;
       }
       return left;
     case '&&':
+    case '||':
       if (left !== Types.Boolean || right !== Types.Boolean) {
         ctx.diagnostics.reportError(
-          `Operator '&&' requires boolean operands, got ${typeToString(left)} and ${typeToString(right)}.`,
+          `Operator '${expr.operator}' requires boolean operands, got ${typeToString(left)} and ${typeToString(right)}.`,
           DiagnosticCode.TypeMismatch,
         );
         return Types.Unknown;

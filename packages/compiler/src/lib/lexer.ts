@@ -58,6 +58,7 @@ export const TokenType = {
   Star: 'Star',
   Slash: 'Slash',
   Pipe: 'Pipe',
+  PipePipe: 'PipePipe',
   Ampersand: 'Ampersand',
   AmpersandAmpersand: 'AmpersandAmpersand',
   Question: 'Question',
@@ -530,14 +531,26 @@ export function tokenize(source: string): Token[] {
         }
         break;
       case '|':
-        tokens.push({
-          type: TokenType.Pipe,
-          value: '|',
-          line,
-          column: startColumn,
-          start: startIndex,
-          end: current,
-        });
+        if (peek() === '|') {
+          advance();
+          tokens.push({
+            type: TokenType.PipePipe,
+            value: '||',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Pipe,
+            value: '|',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        }
         break;
       case '&':
         if (peek() === '&') {

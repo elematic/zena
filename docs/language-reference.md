@@ -384,6 +384,7 @@ Supported arithmetic operators for numeric types (`i32`, `f32`):
 Supported bitwise operators for integer types (`i32`):
 
 - `&` (Bitwise AND)
+- `|` (Bitwise OR)
 
 Operands must be of the same type. Implicit coercion is not supported.
 
@@ -434,6 +435,7 @@ These operators return a boolean value.
 ### Logical Operators
 
 - `&&` (Logical AND) - Short-circuiting AND. Returns `true` if both operands are `true`.
+- `||` (Logical OR) - Short-circuiting OR. Returns `true` if at least one operand is `true`.
 
 Operands must be of type `boolean`.
 
@@ -684,7 +686,7 @@ BinaryExpression ::= PrimaryExpression (Operator PrimaryExpression)*
 
 PrimaryExpression ::= NumberLiteral | StringLiteral | Identifier | "(" Expression ")"
 
-Operator ::= "+" | "-" | "*" | "/" | "&" | "&&"
+Operator ::= "+" | "-" | "*" | "/" | "&" | "|" | "&&" | "||"
 ```
 
 ### Destructuring

@@ -1860,6 +1860,30 @@ function generateBinaryExpression(
     return;
   }
 
+  if (expr.operator === '||') {
+    // Short-circuiting Logical OR
+    // left || right
+    // if (left) { return true } else { return right }
+
+    generateExpression(ctx, expr.left, body);
+    // Stack: [left]
+
+    body.push(Opcode.if);
+    body.push(ValType.i32); // Result type: i32 (boolean)
+
+    // Then block (left was true)
+    body.push(Opcode.i32_const, 1); // true
+
+    body.push(Opcode.else);
+
+    // Else block (left was false)
+    generateExpression(ctx, expr.right, body);
+    // Stack: [right]
+
+    body.push(Opcode.end);
+    return;
+  }
+
   const leftType = inferType(ctx, expr.left);
   const rightType = inferType(ctx, expr.right);
 
@@ -1910,6 +1934,9 @@ function generateBinaryExpression(
       break;
     case '&':
       body.push(Opcode.i32_and);
+      break;
+    case '|':
+      body.push(Opcode.i32_or);
       break;
     case '==':
       body.push(Opcode.i32_eq);

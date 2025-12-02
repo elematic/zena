@@ -438,7 +438,7 @@ export class Parser {
       }
     }
 
-    return this.#parseLogicalAnd();
+    return this.#parseLogicalOr();
   }
 
   #parseArrowFunctionDefinition(): FunctionExpression {
@@ -508,10 +508,46 @@ export class Parser {
     };
   }
 
+  #parseLogicalOr(): Expression {
+    let left = this.#parseLogicalAnd();
+
+    while (this.#match(TokenType.PipePipe)) {
+      const operator = this.#previous().value;
+      const right = this.#parseLogicalAnd();
+      left = {
+        type: NodeType.BinaryExpression,
+        left,
+        operator,
+        right,
+        loc: this.#loc(left, right),
+      };
+    }
+
+    return left;
+  }
+
   #parseLogicalAnd(): Expression {
-    let left = this.#parseBitwiseAnd();
+    let left = this.#parseBitwiseOr();
 
     while (this.#match(TokenType.AmpersandAmpersand)) {
+      const operator = this.#previous().value;
+      const right = this.#parseBitwiseOr();
+      left = {
+        type: NodeType.BinaryExpression,
+        left,
+        operator,
+        right,
+        loc: this.#loc(left, right),
+      };
+    }
+
+    return left;
+  }
+
+  #parseBitwiseOr(): Expression {
+    let left = this.#parseBitwiseAnd();
+
+    while (this.#match(TokenType.Pipe)) {
       const operator = this.#previous().value;
       const right = this.#parseBitwiseAnd();
       left = {
