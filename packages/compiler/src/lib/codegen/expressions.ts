@@ -1930,9 +1930,11 @@ function generateBinaryExpression(
         body.push(Opcode.f32_div);
         break;
       case '==':
+      case '===':
         body.push(Opcode.f32_eq);
         break;
       case '!=':
+      case '!==':
         body.push(Opcode.f32_ne);
         break;
       case '<':
@@ -1975,12 +1977,109 @@ function generateBinaryExpression(
     t.length > 0 && (t[0] === ValType.ref || t[0] === ValType.ref_null);
 
   if (isRefType(leftType) && isRefType(rightType)) {
-    if (expr.operator === '==') {
+    if (expr.operator === '===') {
       body.push(Opcode.ref_eq);
       return;
-    } else if (expr.operator === '!=') {
+    } else if (expr.operator === '!==') {
       body.push(Opcode.ref_eq);
       body.push(Opcode.i32_eqz);
+      return;
+    }
+
+    if (expr.operator === '==' || expr.operator === '!=') {
+      const structTypeIndex = getHeapTypeIndex(ctx, leftType);
+      let foundClass: ClassInfo | undefined;
+      if (structTypeIndex !== -1) {
+        foundClass = getClassFromTypeIndex(ctx, structTypeIndex);
+      }
+
+      let hasOperator = false;
+      if (foundClass) {
+        const methodInfo = foundClass.methods.get('==');
+        if (methodInfo) {
+          hasOperator = true;
+          if (foundClass.isFinal || methodInfo.isFinal) {
+            body.push(
+              Opcode.call,
+              ...WasmModule.encodeSignedLEB128(methodInfo.index),
+            );
+          } else {
+            // Dynamic dispatch
+            const tempRight = ctx.declareLocal('$$eq_right', rightType);
+            body.push(
+              Opcode.local_set,
+              ...WasmModule.encodeSignedLEB128(tempRight),
+            );
+
+            const tempLeft = ctx.declareLocal('$$eq_left', leftType);
+            body.push(
+              Opcode.local_tee,
+              ...WasmModule.encodeSignedLEB128(tempLeft),
+            );
+
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+            );
+            body.push(
+              ...WasmModule.encodeSignedLEB128(
+                foundClass.fields.get('__vtable')!.index,
+              ),
+            );
+
+            body.push(0xfb, GcOpcode.ref_cast_null);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex!),
+            );
+
+            const vtableIndex = foundClass.vtable!.indexOf('==');
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex!),
+            );
+            body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
+
+            body.push(0xfb, GcOpcode.ref_cast_null);
+            body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+            const funcType = [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+            ];
+            const tempFunc = ctx.declareLocal('$$eq_func', funcType);
+            body.push(
+              Opcode.local_set,
+              ...WasmModule.encodeSignedLEB128(tempFunc),
+            );
+
+            body.push(
+              Opcode.local_get,
+              ...WasmModule.encodeSignedLEB128(tempLeft),
+            );
+            body.push(
+              Opcode.local_get,
+              ...WasmModule.encodeSignedLEB128(tempRight),
+            );
+
+            body.push(
+              Opcode.local_get,
+              ...WasmModule.encodeSignedLEB128(tempFunc),
+            );
+            body.push(
+              Opcode.call_ref,
+              ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+            );
+          }
+        }
+      }
+
+      if (!hasOperator) {
+        body.push(Opcode.ref_eq);
+      }
+
+      if (expr.operator === '!=') {
+        body.push(Opcode.i32_eqz);
+      }
       return;
     }
   }
@@ -2008,9 +2107,11 @@ function generateBinaryExpression(
       body.push(Opcode.i32_or);
       break;
     case '==':
+    case '===':
       body.push(Opcode.i32_eq);
       break;
     case '!=':
+    case '!==':
       body.push(Opcode.i32_ne);
       break;
     case '<':

@@ -426,6 +426,8 @@ let result = (1 + 2) * 3;
 
 - `==` (Equal) - Supports value equality for strings.
 - `!=` (Not Equal) - Supports value equality for strings.
+- `===` (Strict Equal) - Checks for reference equality, bypassing custom `operator ==`.
+- `!==` (Strict Not Equal) - Checks for reference inequality, bypassing custom `operator ==`.
 - `<` (Less Than)
 - `<=` (Less Than or Equal)
 - `>` (Greater Than)

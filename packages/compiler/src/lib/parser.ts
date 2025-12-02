@@ -583,7 +583,14 @@ export class Parser {
   #parseEquality(): Expression {
     let left = this.#parseComparison();
 
-    while (this.#match(TokenType.EqualsEquals, TokenType.BangEquals)) {
+    while (
+      this.#match(
+        TokenType.EqualsEquals,
+        TokenType.BangEquals,
+        TokenType.EqualsEqualsEquals,
+        TokenType.BangEqualsEquals,
+      )
+    ) {
       const operator = this.#previous().value;
       const right = this.#parseComparison();
       left = {

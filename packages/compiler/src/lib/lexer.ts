@@ -47,7 +47,9 @@ export const TokenType = {
   // Operators
   Equals: 'Equals',
   EqualsEquals: 'EqualsEquals',
+  EqualsEqualsEquals: 'EqualsEqualsEquals',
   BangEquals: 'BangEquals',
+  BangEqualsEquals: 'BangEqualsEquals',
   Less: 'Less',
   LessEquals: 'LessEquals',
   Greater: 'Greater',
@@ -384,14 +386,26 @@ export function tokenize(source: string): Token[] {
           });
         } else if (peek() === '=') {
           advance();
-          tokens.push({
-            type: TokenType.EqualsEquals,
-            value: '==',
-            line,
-            column: startColumn,
-            start: startIndex,
-            end: current,
-          });
+          if (peek() === '=') {
+            advance();
+            tokens.push({
+              type: TokenType.EqualsEqualsEquals,
+              value: '===',
+              line,
+              column: startColumn,
+              start: startIndex,
+              end: current,
+            });
+          } else {
+            tokens.push({
+              type: TokenType.EqualsEquals,
+              value: '==',
+              line,
+              column: startColumn,
+              start: startIndex,
+              end: current,
+            });
+          }
         } else {
           tokens.push({
             type: TokenType.Equals,
@@ -406,14 +420,26 @@ export function tokenize(source: string): Token[] {
       case '!':
         if (peek() === '=') {
           advance();
-          tokens.push({
-            type: TokenType.BangEquals,
-            value: '!=',
-            line,
-            column: startColumn,
-            start: startIndex,
-            end: current,
-          });
+          if (peek() === '=') {
+            advance();
+            tokens.push({
+              type: TokenType.BangEqualsEquals,
+              value: '!==',
+              line,
+              column: startColumn,
+              start: startIndex,
+              end: current,
+            });
+          } else {
+            tokens.push({
+              type: TokenType.BangEquals,
+              value: '!=',
+              line,
+              column: startColumn,
+              start: startIndex,
+              end: current,
+            });
+          }
         } else {
           tokens.push({
             type: TokenType.Unknown,

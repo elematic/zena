@@ -657,6 +657,9 @@ function checkBinaryExpression(
   if (expr.operator === '==' || expr.operator === '!=') {
     typesMatch = isAssignableTo(left, right) || isAssignableTo(right, left);
     resultType = Types.Boolean;
+  } else if (expr.operator === '===' || expr.operator === '!==') {
+    typesMatch = isAssignableTo(left, right) || isAssignableTo(right, left);
+    resultType = Types.Boolean;
   } else if (left === right) {
     typesMatch = true;
   } else if (left.kind === TypeKind.Number && right.kind === TypeKind.Number) {
@@ -682,6 +685,8 @@ function checkBinaryExpression(
   switch (expr.operator) {
     case '==':
     case '!=':
+    case '===':
+    case '!==':
     case '<':
     case '<=':
     case '>':
