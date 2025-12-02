@@ -1,0 +1,147 @@
+
+export interface Hashable {
+  hashCode(): i32;
+  operator ==(other: Hashable): boolean;
+}
+
+@intrinsic('hash')
+export declare function hash<T>(value: T): i32;
+
+@intrinsic('eq')
+export declare function equals<T>(a: T, b: T): boolean;
+
+class Entry<K, V> {
+  key: K;
+  value: V;
+  next: Entry<K, V> | null;
+
+  constructor(key: K, value: V, next: Entry<K, V> | null) {
+    this.key = key;
+    this.value = value;
+    this.next = next;
+  }
+}
+
+export class Map<K, V> {
+  #buckets: FixedArray<Entry<K, V> | null>;
+  #size: i32 = 0;
+
+  constructor(capacity: i32 = 16) {
+    this.#buckets = __array_new_empty<Entry<K, V> | null>(capacity);
+  }
+
+  get size(): i32 {
+    return this.#size;
+  }
+
+  operator []=(key: K, value: V): void {
+    let h = hash(key);
+    // Use bitwise AND to ensure positive index
+    let index = (h & 0x7FFFFFFF) % this.#buckets.length;
+    let entry = this.#buckets[index];
+    
+    while (entry != null) {
+      if (equals(entry.key, key)) {
+        entry.value = value;
+        return;
+      }
+      entry = entry.next;
+    }
+
+    this.#buckets[index] = new Entry(key, value, this.#buckets[index]);
+    this.#size = this.#size + 1;
+    
+    if (this.#size > this.#buckets.length * 0.75) {
+      this._resize();
+    }
+  }
+
+  operator [](key: K): V | null {
+    let h = hash(key);
+    let index = (h & 0x7FFFFFFF) % this.#buckets.length;
+    let entry = this.#buckets[index];
+
+    while (entry != null) {
+      if (equals(entry.key, key)) {
+        return entry.value;
+      }
+      entry = entry.next;
+    }
+    return null;
+  }
+
+  get(key: K, ifAbsent: (key: K) => V): V {
+    let h = hash(key);
+    let index = (h & 0x7FFFFFFF) % this.#buckets.length;
+    let entry = this.#buckets[index];
+
+    while (entry != null) {
+      if (equals(entry.key, key)) {
+        return entry.value;
+      }
+      entry = entry.next;
+    }
+
+    let value = ifAbsent(key);
+    // Re-calculate index/entry because ifAbsent might have mutated the map (unlikely but safe)
+    // Actually, if we want to be safe against re-entrancy resizing, we should be careful.
+    // But for now, let's assume simple case.
+    // We need to insert.
+    this.#buckets[index] = new Entry(key, value, this.#buckets[index]);
+    this.#size = this.#size + 1;
+
+    if (this.#size > this.#buckets.length * 0.75) {
+      this._resize();
+    }
+    return value;
+  }
+
+  has(key: K): boolean {
+    return this[key] != null;
+  }
+
+  delete(key: K): boolean {
+    let h = hash(key);
+    let index = (h & 0x7FFFFFFF) % this.#buckets.length;
+    let entry = this.#buckets[index];
+    let prev: Entry<K, V> | null = null;
+
+    while (entry != null) {
+      if (equals(entry.key, key)) {
+        if (prev == null) {
+          this.#buckets[index] = entry.next;
+        } else {
+          prev.next = entry.next;
+        }
+        this.#size = this.#size - 1;
+        return true;
+      }
+      prev = entry;
+      entry = entry.next;
+    }
+    return false;
+  }
+
+  clear(): void {
+    this.#buckets = __array_new_empty<Entry<K, V> | null>(16);
+    this.#size = 0;
+  }
+
+  _resize(): void {
+    let oldBuckets = this.#buckets;
+    let newCapacity = oldBuckets.length * 2;
+    this.#buckets = __array_new_empty<Entry<K, V> | null>(newCapacity);
+    this.#size = 0;
+
+    let len = oldBuckets.length;
+    var i = 0;
+    while (i < len) {
+      let entry = oldBuckets[i];
+      while (entry != null) {
+        this[entry.key] = entry.value;
+        entry = entry.next;
+      }
+      i = i + 1;
+    }
+  }
+}

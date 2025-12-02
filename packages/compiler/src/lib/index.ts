@@ -13,7 +13,12 @@ export * from './compiler.js';
 import {Compiler, type CompilerHost} from './compiler.js';
 import {CodeGenerator} from './codegen/index.js';
 import {TypeChecker} from './checker/index.js';
-import {arrayModule, stringModule, consoleModule} from './stdlib.js';
+import {
+  arrayModule,
+  stringModule,
+  consoleModule,
+  mapModule,
+} from './stdlib.js';
 
 class InMemoryHost implements CompilerHost {
   files: Map<string, string>;
@@ -41,6 +46,7 @@ export function compile(source: string): Uint8Array {
       ['zena:array', arrayModule],
       ['zena:string', stringModule],
       ['zena:console', consoleModule],
+      ['zena:map', mapModule],
     ]),
   );
 

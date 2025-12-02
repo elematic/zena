@@ -1758,26 +1758,39 @@ export class Parser {
   }
 
   #parseDecoratedStatement(): Statement {
-    // We only support @external for now
-    const decoratorName = this.#parseIdentifier().name;
-    if (decoratorName !== 'external') {
-      throw new Error(`Unknown decorator: @${decoratorName}`);
+    const startToken = this.#peek();
+    const decorators: Decorator[] = [];
+
+    while (this.#check(TokenType.At)) {
+      decorators.push(this.#parseDecorator());
     }
 
-    this.#consume(TokenType.LParen, "Expected '(' after @external");
-    const moduleName = this.#consume(
-      TokenType.String,
-      'Expected module name string',
-    ).value;
-    this.#consume(TokenType.Comma, "Expected ',' after module name");
-    const externalName = this.#consume(
-      TokenType.String,
-      'Expected external name string',
-    ).value;
-    this.#consume(TokenType.RParen, "Expected ')' after decorator arguments");
+    let exported = false;
+    if (this.#match(TokenType.Export)) {
+      exported = true;
+    }
 
     if (this.#match(TokenType.Declare)) {
-      return this.#parseDeclareFunction(moduleName, externalName);
+      // Check for @external to extract module/name
+      let externalModule: string | undefined;
+      let externalName: string | undefined;
+
+      const externalDecorator = decorators.find((d) => d.name === 'external');
+      if (externalDecorator) {
+        if (externalDecorator.args.length !== 2) {
+          throw new Error('@external requires 2 arguments');
+        }
+        externalModule = externalDecorator.args[0].value;
+        externalName = externalDecorator.args[1].value;
+      }
+
+      return this.#parseDeclareFunction(
+        externalModule,
+        externalName,
+        exported,
+        startToken,
+        decorators,
+      );
     }
 
     throw new Error('Expected declare statement after decorator');
@@ -1788,10 +1801,12 @@ export class Parser {
     externalName?: string,
     exported = false,
     startToken?: Token,
+    decorators?: Decorator[],
   ): DeclareFunction {
     const actualStartToken = startToken || this.#previous();
     this.#consume(TokenType.Function, "Expected 'function' after 'declare'");
     const name = this.#parseIdentifier();
+    const typeParameters = this.#parseTypeParameters();
 
     this.#consume(TokenType.LParen, "Expected '(' after function name");
     const params: Parameter[] = [];
@@ -1850,6 +1865,7 @@ export class Parser {
       externalModule,
       externalName,
       exported,
+      decorators,
       loc: this.#loc(actualStartToken, endToken),
     };
   }

@@ -1423,6 +1423,18 @@ function generateCallExpression(
       const name = (expr.callee as Identifier).name;
 
       if (ctx.genericFunctions.has(name)) {
+        const funcDecl = ctx.genericFunctions.get(name)!;
+
+        if (funcDecl.decorators) {
+          const intrinsic = funcDecl.decorators.find(
+            (d) => d.name === 'intrinsic',
+          );
+          if (intrinsic && intrinsic.args.length === 1) {
+            generateGlobalIntrinsic(ctx, intrinsic.args[0].value, expr, body);
+            return;
+          }
+        }
+
         let typeArguments = expr.typeArguments;
 
         if (expr.inferredTypeArguments) {
