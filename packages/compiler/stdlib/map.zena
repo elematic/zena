@@ -1,0 +1,155 @@
+
+export interface Hashable {
+  hashCode(): i32;
+  operator ==(other: Hashable): boolean;
+}
+
+@intrinsic('hash')
+export declare function hash<T>(value: T): i32;
+
+@intrinsic('eq')
+export declare function equals<T>(a: T, b: T): boolean;
+
+class Entry<K, V> {
+  key: K;
+  value: V;
+  next: Entry<K, V> | null;
+
+  #new(key: K, value: V, next: Entry<K, V> | null) {
+    this.key = key;
+    this.value = value;
+    this.next = next;
+  }
+}
+
+export class Map<K, V> {
+  #buckets: FixedArray<Entry<K, V> | null>;
+  #size: i32 = 0;
+
+  #new(capacity: i32 = 16) {
+    this.#buckets = __array_new_empty<Entry<K, V> | null>(capacity);
+  }
+
+  size: i32 {
+    get {
+      return this.#size;
+    }
+  }
+
+  operator []=(key: K, value: V): void {
+    if (this.#size * 4 >= this.#buckets.length * 3) {
+      this.#resize();
+    }
+
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    let head = this.#buckets[index];
+    var current = head;
+    while (current != null) {
+      let entry = current as Entry<K, V>;
+      if (equals(entry.key, key)) {
+        entry.value = value;
+        return;
+      }
+      current = entry.next;
+    }
+
+    let newEntry = new Entry(key, value, head);
+    this.#buckets[index] = newEntry;
+    this.#size = this.#size + 1;
+  }
+
+
+
+  get(key: K, defaultValue: V): V {
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    var current = this.#buckets[index];
+    while (current != null) {
+      let entry = current as Entry<K, V>;
+      if (equals(entry.key, key)) {
+        return entry.value;
+      }
+      current = entry.next;
+    }
+    return defaultValue;
+  }
+
+  has(key: K): boolean {
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    var current = this.#buckets[index];
+    while (current != null) {
+      let entry = current as Entry<K, V>;
+      if (equals(entry.key, key)) {
+        return true;
+      }
+      current = entry.next;
+    }
+    return false;
+  }
+
+  delete(key: K): boolean {
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    let head = this.#buckets[index];
+    var current = head;
+    var prev: Entry<K, V> | null = null;
+
+    while (current != null) {
+      let entry = current as Entry<K, V>;
+      if (equals(entry.key, key)) {
+        if (prev == null) {
+          this.#buckets[index] = entry.next;
+        } else {
+          (prev as Entry<K, V>).next = entry.next;
+        }
+        this.#size = this.#size - 1;
+        return true;
+      }
+      prev = current;
+      current = entry.next;
+    }
+    return false;
+  }
+
+  clear(): void {
+    this.#buckets = __array_new_empty<Entry<K, V> | null>(16);
+    this.#size = 0;
+  }
+
+  #resize(): void {
+    let oldBuckets = this.#buckets;
+    let newCapacity = oldBuckets.length * 2;
+    this.#buckets = __array_new_empty<Entry<K, V> | null>(newCapacity);
+    this.#size = 0;
+
+    var i = 0;
+    while (i < oldBuckets.length) {
+      var current = oldBuckets[i];
+      while (current != null) {
+        let entry = current as Entry<K, V>;
+        this[entry.key] = entry.value;
+        current = entry.next;
+      }
+      i = i + 1;
+    }
+  }
+
+  // Add set method for compatibility/convenience
+  set(key: K, value: V): void {
+    this[key] = value;
+  }
+}
