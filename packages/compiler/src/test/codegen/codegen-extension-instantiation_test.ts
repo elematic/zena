@@ -82,4 +82,38 @@ suite('CodeGenerator - Extension Class Instantiation', () => {
     const result = await compileAndRun(input, 'main');
     assert.strictEqual(result, 42);
   });
+
+  test('should support nested generic extension instantiation (regression test)', async () => {
+    const input = `
+      // Generic extension class
+      extension class Wrapper<T> on i32 {
+        #new(val: i32) {
+          super(val);
+        }
+        getValue(): i32 {
+          return this;
+        }
+      }
+
+      // Generic class using the extension
+      class Container<T> {
+        wrapper: Wrapper<T>;
+        
+        #new(val: i32) {
+          this.wrapper = new Wrapper<T>(val);
+        }
+
+        get(): i32 {
+          return this.wrapper.getValue();
+        }
+      }
+
+      export let main = (): i32 => {
+        let c = new Container<i32>(123);
+        return c.get();
+      };
+    `;
+    const result = await compileAndRun(input, 'main');
+    assert.strictEqual(result, 123);
+  });
 });

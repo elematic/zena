@@ -1445,6 +1445,48 @@ export function resolveAnnotation(
   ) {
     return resolveAnnotation(context.get(type.name)!, context);
   }
+
+  if (type.type === NodeType.TypeAnnotation && type.typeArguments) {
+    return {
+      ...type,
+      typeArguments: type.typeArguments.map((arg) =>
+        resolveAnnotation(arg, context),
+      ),
+    };
+  }
+
+  if (type.type === NodeType.RecordTypeAnnotation) {
+    return {
+      ...type,
+      properties: type.properties.map((p) => ({
+        ...p,
+        typeAnnotation: resolveAnnotation(p.typeAnnotation, context),
+      })),
+    };
+  }
+
+  if (type.type === NodeType.TupleTypeAnnotation) {
+    return {
+      ...type,
+      elementTypes: type.elementTypes.map((t) => resolveAnnotation(t, context)),
+    };
+  }
+
+  if (type.type === NodeType.FunctionTypeAnnotation) {
+    return {
+      ...type,
+      params: type.params.map((p) => resolveAnnotation(p, context)),
+      returnType: resolveAnnotation(type.returnType, context),
+    };
+  }
+
+  if (type.type === NodeType.UnionTypeAnnotation) {
+    return {
+      ...type,
+      types: type.types.map((t) => resolveAnnotation(t, context)),
+    };
+  }
+
   return type;
 }
 
@@ -1757,223 +1799,47 @@ export function instantiateClass(
   };
   ctx.classes.set(specializedName, classInfo);
 
-  // Register methods
-  const members = [...decl.body];
-  const hasConstructor = members.some(
-    (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
-  );
-  if (!hasConstructor && !decl.isExtension) {
-    const bodyStmts: any[] = [];
-    if (decl.superClass) {
-      bodyStmts.push({
-        type: NodeType.ExpressionStatement,
-        expression: {
-          type: NodeType.CallExpression,
-          callee: {type: NodeType.SuperExpression},
-          arguments: [],
-        },
-      });
+  const registerMethods = () => {
+    // Register methods
+    const members = [...decl.body];
+    const hasConstructor = members.some(
+      (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
+    );
+    if (!hasConstructor && !decl.isExtension) {
+      const bodyStmts: any[] = [];
+      if (decl.superClass) {
+        bodyStmts.push({
+          type: NodeType.ExpressionStatement,
+          expression: {
+            type: NodeType.CallExpression,
+            callee: {type: NodeType.SuperExpression},
+            arguments: [],
+          },
+        });
+      }
+      members.push({
+        type: NodeType.MethodDefinition,
+        name: {type: NodeType.Identifier, name: '#new'},
+        params: [],
+        body: {type: NodeType.BlockStatement, body: bodyStmts},
+        isFinal: false,
+        isAbstract: false,
+        isStatic: false,
+        isDeclare: false,
+      } as MethodDefinition);
     }
-    members.push({
-      type: NodeType.MethodDefinition,
-      name: {type: NodeType.Identifier, name: '#new'},
-      params: [],
-      body: {type: NodeType.BlockStatement, body: bodyStmts},
-      isFinal: false,
-      isAbstract: false,
-      isStatic: false,
-      isDeclare: false,
-    } as MethodDefinition);
-  }
 
-  for (const member of members) {
-    if (member.type === NodeType.MethodDefinition) {
-      if (member.typeParameters && member.typeParameters.length > 0) {
-        const key = `${specializedName}.${member.name.name}`;
-        ctx.genericMethods.set(key, member);
-        continue;
-      }
-
-      const methodName =
-        member.name.name === 'constructor' ? '#new' : member.name.name;
-
-      let intrinsic: string | undefined;
-      if (member.decorators) {
-        const intrinsicDecorator = member.decorators.find(
-          (d) => d.name === 'intrinsic',
-        );
-        if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
-          intrinsic = intrinsicDecorator.args[0].value;
-        }
-      }
-
-      if (methodName !== '#new' && !intrinsic) vtable.push(methodName);
-
-      let thisType: number[];
-      if (decl.isExtension && onType) {
-        thisType = onType;
-      } else {
-        thisType = [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(structTypeIndex),
-        ];
-      }
-
-      const params: number[][] = [];
-      if (!member.isStatic && !(decl.isExtension && methodName === '#new')) {
-        params.push(thisType);
-      }
-      for (const param of member.params) {
-        const pType = mapType(ctx, param.typeAnnotation, context);
-        params.push(pType);
-      }
-
-      let results: number[][] = [];
-      if (methodName === '#new') {
-        if (decl.isExtension && onType) {
-          results = [onType];
-        } else if (member.isStatic && member.returnType) {
-          const mapped = mapType(ctx, member.returnType, context);
-          if (mapped.length > 0) results = [mapped];
-        } else {
-          results = [];
-        }
-      } else if (member.returnType) {
-        const mapped = mapType(ctx, member.returnType, context);
-        if (mapped.length > 0) results = [mapped];
-      } else {
-        results = [];
-      }
-
-      const typeIndex = ctx.module.addType(params, results);
-
-      let funcIndex = -1;
-      if (!intrinsic) {
-        funcIndex = ctx.module.addFunction(typeIndex);
-      }
-
-      const returnType = results.length > 0 ? results[0] : [];
-      methods.set(methodName, {
-        index: funcIndex,
-        returnType,
-        typeIndex,
-        paramTypes: params,
-        isFinal: member.isFinal,
-        intrinsic,
-      });
-    } else if (member.type === NodeType.AccessorDeclaration) {
-      const propName = member.name.name;
-      const propType = mapType(ctx, member.typeAnnotation, context);
-
-      // Getter
-      if (member.getter) {
-        const methodName = `get_${propName}`;
-        if (!vtable.includes(methodName)) {
-          vtable.push(methodName);
+    for (const member of members) {
+      if (member.type === NodeType.MethodDefinition) {
+        if (member.typeParameters && member.typeParameters.length > 0) {
+          const key = `${specializedName}.${member.name.name}`;
+          ctx.genericMethods.set(key, member);
+          continue;
         }
 
-        let thisType: number[];
-        if (decl.isExtension && onType) {
-          thisType = onType;
-        } else {
-          thisType = [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(structTypeIndex),
-          ];
-        }
+        const methodName =
+          member.name.name === 'constructor' ? '#new' : member.name.name;
 
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(methodName)) {
-            thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
-          }
-        }
-
-        const params = [thisType];
-        const results = propType.length > 0 ? [propType] : [];
-
-        let typeIndex: number;
-        let isOverride = false;
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(methodName)) {
-            typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
-            isOverride = true;
-          }
-        }
-
-        if (!isOverride) {
-          typeIndex = ctx.module.addType(params, results);
-        }
-
-        const funcIndex = ctx.module.addFunction(typeIndex!);
-
-        methods.set(methodName, {
-          index: funcIndex,
-          returnType: propType,
-          typeIndex: typeIndex!,
-          paramTypes: params,
-          isFinal: member.isFinal,
-        });
-      }
-
-      // Setter
-      if (member.setter) {
-        const methodName = `set_${propName}`;
-        if (!vtable.includes(methodName)) {
-          vtable.push(methodName);
-        }
-
-        let thisType: number[];
-        if (decl.isExtension && onType) {
-          thisType = onType;
-        } else {
-          thisType = [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(structTypeIndex),
-          ];
-        }
-
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(methodName)) {
-            thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
-          }
-        }
-
-        const params = [thisType, propType];
-        const results: number[][] = [];
-
-        let typeIndex: number;
-        let isOverride = false;
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(methodName)) {
-            typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
-            isOverride = true;
-          }
-        }
-
-        if (!isOverride) {
-          typeIndex = ctx.module.addType(params, results);
-        }
-
-        const funcIndex = ctx.module.addFunction(typeIndex!);
-
-        methods.set(methodName, {
-          index: funcIndex,
-          returnType: [],
-          typeIndex: typeIndex!,
-          paramTypes: params,
-          isFinal: member.isFinal,
-        });
-      }
-    } else if (member.type === NodeType.FieldDefinition) {
-      if (member.isStatic) {
-        continue;
-      }
-      // Implicit accessors
-      if (!member.name.name.startsWith('#')) {
         let intrinsic: string | undefined;
         if (member.decorators) {
           const intrinsicDecorator = member.decorators.find(
@@ -1984,14 +1850,7 @@ export function instantiateClass(
           }
         }
 
-        const propName = member.name.name;
-        const propType = mapType(ctx, member.typeAnnotation, context);
-
-        // Register Getter
-        const regGetterName = `get_${propName}`;
-        if (!intrinsic && !vtable.includes(regGetterName)) {
-          vtable.push(regGetterName);
-        }
+        if (methodName !== '#new' && !intrinsic) vtable.push(methodName);
 
         let thisType: number[];
         if (decl.isExtension && onType) {
@@ -2003,211 +1862,400 @@ export function instantiateClass(
           ];
         }
 
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(regGetterName)) {
-            thisType = superClassInfo.methods.get(regGetterName)!.paramTypes[0];
+        const params: number[][] = [];
+        if (!member.isStatic && !(decl.isExtension && methodName === '#new')) {
+          params.push(thisType);
+        }
+        for (const param of member.params) {
+          const pType = mapType(ctx, param.typeAnnotation, context);
+          params.push(pType);
+        }
+
+        let results: number[][] = [];
+        if (methodName === '#new') {
+          if (decl.isExtension && onType) {
+            results = [onType];
+          } else if (member.isStatic && member.returnType) {
+            const mapped = mapType(ctx, member.returnType, context);
+            if (mapped.length > 0) results = [mapped];
+          } else {
+            results = [];
           }
+        } else if (member.returnType) {
+          const mapped = mapType(ctx, member.returnType, context);
+          if (mapped.length > 0) results = [mapped];
+        } else {
+          results = [];
         }
 
-        const params = [thisType];
-        const results = [propType];
+        const typeIndex = ctx.module.addType(params, results);
 
-        let typeIndex: number;
-        let isOverride = false;
-        if (decl.superClass) {
-          const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-          if (superClassInfo.methods.has(regGetterName)) {
-            typeIndex = superClassInfo.methods.get(regGetterName)!.typeIndex;
-            isOverride = true;
-          }
+        let funcIndex = -1;
+        if (!intrinsic) {
+          funcIndex = ctx.module.addFunction(typeIndex);
         }
 
-        if (!isOverride) {
-          typeIndex = ctx.module.addType(params, results);
-        }
-
-        const funcIndex = intrinsic ? -1 : ctx.module.addFunction(typeIndex!);
-
-        methods.set(regGetterName, {
+        const returnType = results.length > 0 ? results[0] : [];
+        methods.set(methodName, {
           index: funcIndex,
-          returnType: results[0],
-          typeIndex: typeIndex!,
+          returnType,
+          typeIndex,
           paramTypes: params,
           isFinal: member.isFinal,
           intrinsic,
         });
+      } else if (member.type === NodeType.AccessorDeclaration) {
+        const propName = member.name.name;
+        const propType = mapType(ctx, member.typeAnnotation, context);
 
-        // Register Setter (if mutable)
-        if (!member.isFinal) {
-          const regSetterName = `set_${propName}`;
-          if (!intrinsic && !vtable.includes(regSetterName)) {
-            vtable.push(regSetterName);
+        // Getter
+        if (member.getter) {
+          const methodName = `get_${propName}`;
+          if (!vtable.includes(methodName)) {
+            vtable.push(methodName);
           }
 
-          const setterParams = [thisType, propType];
-          const setterResults: number[][] = [];
+          let thisType: number[];
+          if (decl.isExtension && onType) {
+            thisType = onType;
+          } else {
+            thisType = [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(structTypeIndex),
+            ];
+          }
 
-          let setterTypeIndex: number;
-          let isSetterOverride = false;
           if (decl.superClass) {
             const superClassInfo = ctx.classes.get(decl.superClass.name)!;
-            if (superClassInfo.methods.has(regSetterName)) {
-              setterTypeIndex =
-                superClassInfo.methods.get(regSetterName)!.typeIndex;
-              isSetterOverride = true;
+            if (superClassInfo.methods.has(methodName)) {
+              thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
             }
           }
 
-          if (!isSetterOverride) {
-            setterTypeIndex = ctx.module.addType(setterParams, setterResults);
+          const params = [thisType];
+          const results = propType.length > 0 ? [propType] : [];
+
+          let typeIndex: number;
+          let isOverride = false;
+          if (decl.superClass) {
+            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+            if (superClassInfo.methods.has(methodName)) {
+              typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
+              isOverride = true;
+            }
           }
 
-          const setterFuncIndex = intrinsic
-            ? -1
-            : ctx.module.addFunction(setterTypeIndex!);
+          if (!isOverride) {
+            typeIndex = ctx.module.addType(params, results);
+          }
 
-          methods.set(regSetterName, {
-            index: setterFuncIndex,
+          const funcIndex = ctx.module.addFunction(typeIndex!);
+
+          methods.set(methodName, {
+            index: funcIndex,
+            returnType: propType,
+            typeIndex: typeIndex!,
+            paramTypes: params,
+            isFinal: member.isFinal,
+          });
+        }
+
+        // Setter
+        if (member.setter) {
+          const methodName = `set_${propName}`;
+          if (!vtable.includes(methodName)) {
+            vtable.push(methodName);
+          }
+
+          let thisType: number[];
+          if (decl.isExtension && onType) {
+            thisType = onType;
+          } else {
+            thisType = [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(structTypeIndex),
+            ];
+          }
+
+          if (decl.superClass) {
+            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+            if (superClassInfo.methods.has(methodName)) {
+              thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
+            }
+          }
+
+          const params = [thisType, propType];
+          const results: number[][] = [];
+
+          let typeIndex: number;
+          let isOverride = false;
+          if (decl.superClass) {
+            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+            if (superClassInfo.methods.has(methodName)) {
+              typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
+              isOverride = true;
+            }
+          }
+
+          if (!isOverride) {
+            typeIndex = ctx.module.addType(params, results);
+          }
+
+          const funcIndex = ctx.module.addFunction(typeIndex!);
+
+          methods.set(methodName, {
+            index: funcIndex,
             returnType: [],
-            typeIndex: setterTypeIndex!,
-            paramTypes: setterParams,
+            typeIndex: typeIndex!,
+            paramTypes: params,
+            isFinal: member.isFinal,
+          });
+        }
+      } else if (member.type === NodeType.FieldDefinition) {
+        if (member.isStatic) {
+          continue;
+        }
+        // Implicit accessors
+        if (!member.name.name.startsWith('#')) {
+          let intrinsic: string | undefined;
+          if (member.decorators) {
+            const intrinsicDecorator = member.decorators.find(
+              (d) => d.name === 'intrinsic',
+            );
+            if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
+              intrinsic = intrinsicDecorator.args[0].value;
+            }
+          }
+
+          const propName = member.name.name;
+          const propType = mapType(ctx, member.typeAnnotation, context);
+
+          // Register Getter
+          const regGetterName = `get_${propName}`;
+          if (!intrinsic && !vtable.includes(regGetterName)) {
+            vtable.push(regGetterName);
+          }
+
+          let thisType: number[];
+          if (decl.isExtension && onType) {
+            thisType = onType;
+          } else {
+            thisType = [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(structTypeIndex),
+            ];
+          }
+
+          if (decl.superClass) {
+            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+            if (superClassInfo.methods.has(regGetterName)) {
+              thisType =
+                superClassInfo.methods.get(regGetterName)!.paramTypes[0];
+            }
+          }
+
+          const params = [thisType];
+          const results = [propType];
+
+          let typeIndex: number;
+          let isOverride = false;
+          if (decl.superClass) {
+            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+            if (superClassInfo.methods.has(regGetterName)) {
+              typeIndex = superClassInfo.methods.get(regGetterName)!.typeIndex;
+              isOverride = true;
+            }
+          }
+
+          if (!isOverride) {
+            typeIndex = ctx.module.addType(params, results);
+          }
+
+          const funcIndex = intrinsic ? -1 : ctx.module.addFunction(typeIndex!);
+
+          methods.set(regGetterName, {
+            index: funcIndex,
+            returnType: results[0],
+            typeIndex: typeIndex!,
+            paramTypes: params,
             isFinal: member.isFinal,
             intrinsic,
           });
+
+          // Register Setter (if mutable)
+          if (!member.isFinal) {
+            const regSetterName = `set_${propName}`;
+            if (!intrinsic && !vtable.includes(regSetterName)) {
+              vtable.push(regSetterName);
+            }
+
+            const setterParams = [thisType, propType];
+            const setterResults: number[][] = [];
+
+            let setterTypeIndex: number;
+            let isSetterOverride = false;
+            if (decl.superClass) {
+              const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+              if (superClassInfo.methods.has(regSetterName)) {
+                setterTypeIndex =
+                  superClassInfo.methods.get(regSetterName)!.typeIndex;
+                isSetterOverride = true;
+              }
+            }
+
+            if (!isSetterOverride) {
+              setterTypeIndex = ctx.module.addType(setterParams, setterResults);
+            }
+
+            const setterFuncIndex = intrinsic
+              ? -1
+              : ctx.module.addFunction(setterTypeIndex!);
+
+            methods.set(regSetterName, {
+              index: setterFuncIndex,
+              returnType: [],
+              typeIndex: setterTypeIndex!,
+              paramTypes: setterParams,
+              isFinal: member.isFinal,
+              intrinsic,
+            });
+          }
         }
       }
     }
-  }
 
-  // Create VTable Struct Type
-  if (classInfo.isExtension) {
-    console.error(
-      `instantiateClass: Extension class ${specializedName}, pushing generator`,
+    // Create VTable Struct Type
+    if (classInfo.isExtension) {
+      const declForGen = {
+        ...decl,
+        name: {type: NodeType.Identifier, name: specializedName},
+        superClass: undefined,
+      } as ClassDeclaration;
+
+      ctx.bodyGenerators.push(() => {
+        generateClassMethods(ctx, declForGen, specializedName, context);
+      });
+      return;
+    }
+
+    let vtableSuperTypeIndex: number | undefined;
+    const baseClassInfo = decl.superClass
+      ? ctx.classes.get(decl.superClass.name)
+      : undefined;
+    if (baseClassInfo) {
+      vtableSuperTypeIndex = baseClassInfo.vtableTypeIndex;
+    }
+
+    const vtableTypeIndex = ctx.module.addStructType(
+      vtable.map(() => ({type: [HeapType.func], mutable: false})),
+      vtableSuperTypeIndex,
     );
+
+    // Create VTable Global
+    const vtableInit: number[] = [];
+    for (const methodName of vtable) {
+      const methodInfo = methods.get(methodName);
+      if (!methodInfo) throw new Error(`Method ${methodName} not found`);
+      vtableInit.push(Opcode.ref_func);
+      vtableInit.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+    }
+    vtableInit.push(0xfb, GcOpcode.struct_new);
+    vtableInit.push(...WasmModule.encodeSignedLEB128(vtableTypeIndex));
+
+    const vtableGlobalIndex = ctx.module.addGlobal(
+      [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
+      false,
+      vtableInit,
+    );
+
+    classInfo.vtableTypeIndex = vtableTypeIndex;
+    classInfo.vtableGlobalIndex = vtableGlobalIndex;
+
+    generateInterfaceVTable(ctx, classInfo, decl);
+
+    if (decl.exported && structTypeIndex !== -1) {
+      const ctorInfo = methods.get('#new')!;
+
+      // Wrapper signature: params -> (ref null struct)
+      const params = ctorInfo.paramTypes.slice(1); // Skip 'this'
+      const results = [
+        [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
+      ];
+
+      const wrapperTypeIndex = ctx.module.addType(params, results);
+      const wrapperFuncIndex = ctx.module.addFunction(wrapperTypeIndex);
+
+      const exportName = decl.exportName || decl.name.name;
+      ctx.module.addExport(exportName, ExportDesc.Func, wrapperFuncIndex);
+
+      ctx.bodyGenerators.push(() => {
+        const body: number[] = [];
+
+        ctx.pushScope();
+        ctx.nextLocalIndex = params.length; // Params are locals 0..N-1
+        ctx.extraLocals = [];
+
+        // 1. Allocate
+        body.push(0xfb, GcOpcode.struct_new_default);
+        body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+
+        // 2. Store in temp
+        const tempLocal = ctx.declareLocal('$$export_new', results[0]);
+        body.push(Opcode.local_tee);
+        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+        // 3. Init VTable (if needed)
+        if (classInfo.vtableGlobalIndex !== undefined) {
+          body.push(Opcode.global_get);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
+          );
+          body.push(0xfb, GcOpcode.struct_set);
+          body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+          body.push(...WasmModule.encodeSignedLEB128(0));
+
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+        }
+
+        // 4. Load args
+        for (let i = 0; i < params.length; i++) {
+          body.push(Opcode.local_get, i);
+        }
+
+        // 5. Call constructor
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+
+        // 6. Return
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+        body.push(Opcode.end);
+
+        ctx.module.addCode(wrapperFuncIndex, ctx.extraLocals, body);
+        ctx.popScope();
+      });
+    }
+
     const declForGen = {
       ...decl,
-      name: {type: NodeType.Identifier, name: specializedName},
-      superClass: undefined,
+      name: {...decl.name, name: specializedName},
+      superClass: baseClassInfo
+        ? {type: NodeType.Identifier, name: baseClassInfo.name}
+        : decl.superClass,
     } as ClassDeclaration;
 
     ctx.bodyGenerators.push(() => {
       generateClassMethods(ctx, declForGen, specializedName, context);
     });
-    return;
+  };
+
+  if (ctx.isGeneratingBodies) {
+    registerMethods();
+  } else {
+    ctx.pendingMethodGenerations.push(registerMethods);
   }
-
-  let vtableSuperTypeIndex: number | undefined;
-  const baseClassInfo = decl.superClass
-    ? ctx.classes.get(decl.superClass.name)
-    : undefined;
-  if (baseClassInfo) {
-    vtableSuperTypeIndex = baseClassInfo.vtableTypeIndex;
-  }
-
-  const vtableTypeIndex = ctx.module.addStructType(
-    vtable.map(() => ({type: [HeapType.func], mutable: false})),
-    vtableSuperTypeIndex,
-  );
-
-  // Create VTable Global
-  const vtableInit: number[] = [];
-  for (const methodName of vtable) {
-    const methodInfo = methods.get(methodName);
-    if (!methodInfo) throw new Error(`Method ${methodName} not found`);
-    vtableInit.push(Opcode.ref_func);
-    vtableInit.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
-  }
-  vtableInit.push(0xfb, GcOpcode.struct_new);
-  vtableInit.push(...WasmModule.encodeSignedLEB128(vtableTypeIndex));
-
-  const vtableGlobalIndex = ctx.module.addGlobal(
-    [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
-    false,
-    vtableInit,
-  );
-
-  classInfo.vtableTypeIndex = vtableTypeIndex;
-  classInfo.vtableGlobalIndex = vtableGlobalIndex;
-
-  generateInterfaceVTable(ctx, classInfo, decl);
-
-  if (decl.exported && structTypeIndex !== -1) {
-    const ctorInfo = methods.get('#new')!;
-
-    // Wrapper signature: params -> (ref null struct)
-    const params = ctorInfo.paramTypes.slice(1); // Skip 'this'
-    const results = [
-      [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
-    ];
-
-    const wrapperTypeIndex = ctx.module.addType(params, results);
-    const wrapperFuncIndex = ctx.module.addFunction(wrapperTypeIndex);
-
-    const exportName = decl.exportName || decl.name.name;
-    ctx.module.addExport(exportName, ExportDesc.Func, wrapperFuncIndex);
-
-    ctx.bodyGenerators.push(() => {
-      const body: number[] = [];
-
-      ctx.pushScope();
-      ctx.nextLocalIndex = params.length; // Params are locals 0..N-1
-      ctx.extraLocals = [];
-
-      // 1. Allocate
-      body.push(0xfb, GcOpcode.struct_new_default);
-      body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
-
-      // 2. Store in temp
-      const tempLocal = ctx.declareLocal('$$export_new', results[0]);
-      body.push(Opcode.local_tee);
-      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
-
-      // 3. Init VTable (if needed)
-      if (classInfo.vtableGlobalIndex !== undefined) {
-        body.push(Opcode.global_get);
-        body.push(
-          ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
-        );
-        body.push(0xfb, GcOpcode.struct_set);
-        body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
-        body.push(...WasmModule.encodeSignedLEB128(0));
-
-        body.push(Opcode.local_get);
-        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
-      }
-
-      // 4. Load args
-      for (let i = 0; i < params.length; i++) {
-        body.push(Opcode.local_get, i);
-      }
-
-      // 5. Call constructor
-      body.push(Opcode.call);
-      body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
-
-      // 6. Return
-      body.push(Opcode.local_get);
-      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
-
-      body.push(Opcode.end);
-
-      ctx.module.addCode(wrapperFuncIndex, ctx.extraLocals, body);
-      ctx.popScope();
-    });
-  }
-
-  const declForGen = {
-    ...decl,
-    name: {...decl.name, name: specializedName},
-    superClass: baseClassInfo
-      ? {type: NodeType.Identifier, name: baseClassInfo.name}
-      : decl.superClass,
-  } as ClassDeclaration;
-
-  ctx.bodyGenerators.push(() => {
-    generateClassMethods(ctx, declForGen, specializedName, context);
-  });
 }
 
 function manglePrivateName(className: string, memberName: string): string {

@@ -103,7 +103,9 @@ export class CodeGenerator {
 
     // 4. Register Class Methods (Fourth pass)
     // Execute pending method registrations (e.g. from mixins created in Pass 2)
-    for (const generator of this.#ctx.pendingMethodGenerations) {
+    let pendingIndex = 0;
+    while (pendingIndex < this.#ctx.pendingMethodGenerations.length) {
+      const generator = this.#ctx.pendingMethodGenerations[pendingIndex++];
       generator();
     }
 
@@ -203,9 +205,22 @@ export class CodeGenerator {
       }
     }
 
+
+
+    // Execute any pending method registrations added during Pass 5 (e.g. from type inference)
+    while (pendingIndex < this.#ctx.pendingMethodGenerations.length) {
+      const generator = this.#ctx.pendingMethodGenerations[pendingIndex++];
+      generator();
+    }
+
     // Pass 2: Generate bodies
+    this.#ctx.isGeneratingBodies = true;
+
     // Execute deferred body generators
-    for (const generator of this.#ctx.bodyGenerators) {
+    // Use while loop to handle generators added during generation (e.g. by late instantiation)
+    let bodyIndex = 0;
+    while (bodyIndex < this.#ctx.bodyGenerators.length) {
+      const generator = this.#ctx.bodyGenerators[bodyIndex++];
       generator();
     }
 
@@ -248,6 +263,12 @@ export class CodeGenerator {
       this.#ctx.module.addCode(funcIndex, this.#ctx.extraLocals, body);
       this.#ctx.module.setStart(funcIndex);
       this.#ctx.popScope();
+    }
+
+    // Execute any body generators added during start function generation (e.g. generic instantiation)
+    while (bodyIndex < this.#ctx.bodyGenerators.length) {
+      const generator = this.#ctx.bodyGenerators[bodyIndex++];
+      generator();
     }
 
     return this.#ctx.module.toBytes();
