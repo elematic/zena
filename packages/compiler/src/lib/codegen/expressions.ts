@@ -1884,6 +1884,31 @@ function generateBinaryExpression(
     return;
   }
 
+  // Optimization for null checks
+  if (
+    expr.operator === '==' ||
+    expr.operator === '!=' ||
+    expr.operator === '===' ||
+    expr.operator === '!=='
+  ) {
+    if (expr.right.type === NodeType.NullLiteral) {
+      generateExpression(ctx, expr.left, body);
+      body.push(Opcode.ref_is_null);
+      if (expr.operator === '!=' || expr.operator === '!==') {
+        body.push(Opcode.i32_eqz);
+      }
+      return;
+    }
+    if (expr.left.type === NodeType.NullLiteral) {
+      generateExpression(ctx, expr.right, body);
+      body.push(Opcode.ref_is_null);
+      if (expr.operator === '!=' || expr.operator === '!==') {
+        body.push(Opcode.i32_eqz);
+      }
+      return;
+    }
+  }
+
   const leftType = inferType(ctx, expr.left);
   const rightType = inferType(ctx, expr.right);
 
@@ -1963,7 +1988,13 @@ function generateBinaryExpression(
 
   // Check for reference equality
   const isRefType = (t: number[]) =>
-    t.length > 0 && (t[0] === ValType.ref || t[0] === ValType.ref_null);
+    t.length > 0 &&
+    (t[0] === ValType.ref ||
+      t[0] === ValType.ref_null ||
+      t[0] === ValType.anyref ||
+      t[0] === ValType.eqref ||
+      t[0] === ValType.externref ||
+      t[0] === ValType.funcref);
 
   if (isRefType(leftType) && isRefType(rightType)) {
     if (expr.operator === '===') {
@@ -2962,6 +2993,19 @@ function generateGlobalIntrinsic(
     case 'hash': {
       const arg = args[0];
       generateHash(ctx, arg, body);
+      break;
+    }
+    case 'eq': {
+      generateBinaryExpression(
+        ctx,
+        {
+          type: NodeType.BinaryExpression,
+          operator: '==',
+          left: args[0],
+          right: args[1],
+        } as BinaryExpression,
+        body,
+      );
       break;
     }
     default:
