@@ -1881,6 +1881,11 @@ export class Parser {
       decorators.push(this.#parseDecorator());
     }
 
+    let exported = false;
+    if (this.#match(TokenType.Export)) {
+      exported = true;
+    }
+
     if (this.#match(TokenType.Declare)) {
       let externalModule: string | undefined;
       let externalName: string | undefined;
@@ -1902,7 +1907,7 @@ export class Parser {
       const decl = this.#parseDeclareFunction(
         externalModule,
         externalName,
-        false,
+        exported,
         startToken,
       );
       decl.decorators = decorators;
