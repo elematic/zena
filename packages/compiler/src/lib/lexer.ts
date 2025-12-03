@@ -290,9 +290,9 @@ export function tokenize(source: string): Token[] {
     }
 
     // Identifiers & Keywords
-    if (/[a-zA-Z_]/.test(char)) {
+    if (/[a-zA-Z_$]/.test(char)) {
       let value = '';
-      while (current < source.length && /[a-zA-Z0-9_]/.test(peek())) {
+      while (current < source.length && /[a-zA-Z0-9_$]/.test(peek())) {
         value += advance();
       }
       const type = KEYWORDS[value] || TokenType.Identifier;

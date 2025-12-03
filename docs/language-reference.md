@@ -30,6 +30,20 @@ let x = 1;
 let y /* inline comment */ = 2;
 ```
 
+## 1.2 Identifiers
+
+Identifiers name variables, functions, classes, interfaces, mixins, and other entities.
+
+- Must start with a letter (`a-z`, `A-Z`), underscore (`_`), or dollar sign (`$`).
+- Subsequent characters can be letters, digits (`0-9`), underscores, or dollar signs.
+- Identifiers are case-sensitive.
+
+```typescript
+let _private = 1;
+let $variable = 2;
+let camelCase = 3;
+```
+
 ## 2. Types
 
 Zena is strongly typed. All expressions have a type determined at compile time.
