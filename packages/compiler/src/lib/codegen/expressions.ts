@@ -2724,6 +2724,18 @@ function generateIntrinsic(
       );
       break;
     }
+    case 'array.get_u': {
+      generateExpression(ctx, object, body);
+      generateExpression(ctx, args[0], body);
+      const objectType = inferType(ctx, object);
+      const typeIndex = decodeTypeIndex(objectType);
+      body.push(
+        0xfb,
+        GcOpcode.array_get_u,
+        ...WasmModule.encodeSignedLEB128(typeIndex),
+      );
+      break;
+    }
     case 'array.set': {
       generateExpression(ctx, object, body);
       generateExpression(ctx, args[0], body);

@@ -72,7 +72,20 @@ suite('CodeGenerator - Strings', () => {
     assert.strictEqual(result, 5);
   });
 
-  test('should support string indexing', async () => {
+  test('should support string indexing via getByteAt', async () => {
+    const source = `
+      export let main = (): i32 => {
+        let s = "hello";
+        // 'e' is 101
+        return s.getByteAt(1);
+      };
+    `;
+
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 101);
+  });
+
+  test('should not support string indexing via []]', async () => {
     const source = `
       export let main = (): i32 => {
         let s = "hello";
@@ -81,7 +94,11 @@ suite('CodeGenerator - Strings', () => {
       };
     `;
 
-    const result = await compileAndRun(source);
-    assert.strictEqual(result, 101);
+    try {
+      await compileAndRun(source);
+      assert.fail('Expected compilation to fail');
+    } catch (e) {
+      // Expected error
+    }
   });
 });

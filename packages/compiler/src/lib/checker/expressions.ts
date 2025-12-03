@@ -1263,10 +1263,11 @@ function checkIndexExpression(
   }
 
   if (isString) {
-    // Strings are now extension classes on ByteArray, so they should support indexing
-    // via the operator [] defined in the String class.
-    // If the operator is missing, it will be caught by the class check above.
-    // So we just fall through here.
+    ctx.diagnostics.reportError(
+      `Strings cannot be indexed directly. Use .getByteAt() or convert to array.`,
+      DiagnosticCode.NotIndexable,
+    );
+    return Types.Unknown;
   }
 
   return (objectType as FixedArrayType).elementType;
