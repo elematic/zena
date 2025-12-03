@@ -23,16 +23,28 @@ export async function compileAndInstantiate(
   const path = options.path ?? '/main.zena';
   const imports = options.imports ?? {};
 
+  let capturedExports: any = null;
+
   // Add default console mock if not present
   if (!imports.console) {
+    const logString = (s: any, len: number) => {
+      if (!capturedExports || !capturedExports.$stringGetByte) return;
+      let str = '';
+      for (let i = 0; i < len; i++) {
+        const code = capturedExports.$stringGetByte(s, i);
+        str += String.fromCharCode(code);
+      }
+      console.log(str);
+    };
+
     imports.console = {
-      log_i32: () => {},
-      log_f32: () => {},
-      log_string: () => {},
-      error_string: () => {},
-      warn_string: () => {},
-      info_string: () => {},
-      debug_string: () => {},
+      log_i32: (v: number) => console.log(v),
+      log_f32: (v: number) => console.log(v),
+      log_string: logString,
+      error_string: logString,
+      warn_string: logString,
+      info_string: logString,
+      debug_string: logString,
     };
   }
 
@@ -69,8 +81,9 @@ export async function compileAndInstantiate(
 
   try {
     const result = await WebAssembly.instantiate(bytes, imports);
-    // @ts-ignore
-    return result.instance.exports;
+    const instance = (result as any).instance || result;
+    capturedExports = instance.exports;
+    return instance.exports;
   } catch (e) {
     console.log('WASM Instantiation Error:', e);
     console.log('WASM Bytes:', Buffer.from(bytes).toString('hex'));
