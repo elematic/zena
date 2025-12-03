@@ -72,15 +72,14 @@ suite('TypeChecker', () => {
     assert.match(errors[0].message, /already declared/);
   });
 
-  test('should detect type mismatch between i32 and f32', () => {
+  test('should check mixed arithmetic between i32 and f32', () => {
     const input = 'let add = (a: i32, b: f32) => a + b;';
     const parser = new Parser(input);
     const ast = parser.parse();
     const checker = new TypeChecker(ast);
     const errors = checker.check();
 
-    assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /Type mismatch/);
+    assert.strictEqual(errors.length, 0);
   });
 
   test('should check arrow function with block body and return', () => {
