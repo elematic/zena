@@ -765,6 +765,33 @@ The behavior depends on the type `T`:
   - If the class implements a `hashCode(): i32` method, it is called.
   - Otherwise, returns 0 (fallback).
 
+## 10. Standard Library
+
+Zena includes a small standard library of utility classes. These are automatically imported into every program.
+
+### Map<K, V>
+
+A mutable hash map implementation.
+
+**Note**: Because `Map` accessors return `V | null` to indicate missing keys, the value type `V` must be a reference type. Primitive types (like `i32`) cannot be used directly because they cannot form a union with `null` (see [Union Types](#union-types)). To store primitives, wrap them in `Box<T>`.
+
+```typescript
+let map = new Map<string, Box<i32>>();
+map.set('one', new Box(1));
+map['two'] = new Box(2);
+
+let val = map['one']; // Returns Box<i32> | null
+```
+
+### Box<T>
+
+A wrapper class for holding values. This is particularly useful for using primitive types in contexts that require reference types, such as Union Types.
+
+```typescript
+let b = new Box(42);
+let val: Box<i32> | null = b;
+```
+
 ## 14. Grammar (Simplified)
 
 ```ebnf
