@@ -64,6 +64,7 @@ export const TokenType = {
   PipePipe: 'PipePipe',
   Ampersand: 'Ampersand',
   AmpersandAmpersand: 'AmpersandAmpersand',
+  Caret: 'Caret',
   Question: 'Question',
 
   // Punctuation
@@ -610,6 +611,16 @@ export function tokenize(source: string): Token[] {
             end: current,
           });
         }
+        break;
+      case '^':
+        tokens.push({
+          type: TokenType.Caret,
+          value: '^',
+          line,
+          column: startColumn,
+          start: startIndex,
+          end: current,
+        });
         break;
       case '?':
         tokens.push({

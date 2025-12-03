@@ -700,9 +700,11 @@ function checkBinaryExpression(
     case '%':
     case '&':
     case '|':
+    case '^':
       if (
         (expr.operator === '&' ||
           expr.operator === '|' ||
+          expr.operator === '^' ||
           expr.operator === '%') &&
         (left !== Types.I32 || right !== Types.I32)
       ) {

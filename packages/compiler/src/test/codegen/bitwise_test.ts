@@ -52,4 +52,47 @@ suite('Bitwise Operators', () => {
     assert.strictEqual(precedence(5, 3, 1), 1); // (5 & 3) == 1 -> 1 == 1 -> true (1)
     assert.strictEqual(precedence(5, 3, 0), 0); // (5 & 3) == 0 -> 1 == 0 -> false (0)
   });
+
+  test('bitwise XOR', async () => {
+    const source = `
+      export let bitwiseXor = (a: i32, b: i32) => a ^ b;
+    `;
+    const {bitwiseXor} = await compileAndInstantiate(source);
+
+    assert.strictEqual(bitwiseXor(5, 3), 6); // 101 ^ 011 = 110 (6)
+    assert.strictEqual(bitwiseXor(12, 10), 6); // 1100 ^ 1010 = 0110 (6)
+    assert.strictEqual(bitwiseXor(0, 10), 10);
+    assert.strictEqual(bitwiseXor(-1, 0), -1);
+    assert.strictEqual(bitwiseXor(5, 5), 0);
+  });
+
+  test('bitwise XOR precedence', async () => {
+    const source = `
+      export let precedence1 = (a: i32, b: i32, c: i32) => a | b ^ c;
+      export let precedence2 = (a: i32, b: i32, c: i32) => a ^ b & c;
+    `;
+    const {precedence1, precedence2} = await compileAndInstantiate(source);
+
+    // a | (b ^ c)
+    // 1 | 2 ^ 3 -> 1 | (2 ^ 3) -> 1 | 1 -> 1
+    // (1 | 2) ^ 3 -> 3 ^ 3 -> 0
+    assert.strictEqual(precedence1(1, 2, 3), 1);
+
+    // a ^ (b & c)
+    // 1 ^ 3 & 2 -> 1 ^ (3 & 2) -> 1 ^ 2 -> 3
+    // (1 ^ 3) & 2 -> 2 & 2 -> 2
+    assert.strictEqual(precedence2(1, 3, 2), 3);
+  });
+
+  test('bitwise XOR on booleans should fail', async () => {
+    const source = `
+      export let booleanXor = (a: boolean, b: boolean) => a ^ b;
+    `;
+    try {
+      await compileAndInstantiate(source);
+      assert.fail('Should have thrown type error');
+    } catch (e: any) {
+      assert.match(e.message, /Operator '\^' cannot be applied/);
+    }
+  });
 });

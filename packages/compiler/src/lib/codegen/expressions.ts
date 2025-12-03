@@ -2106,6 +2106,9 @@ function generateBinaryExpression(
     case '|':
       body.push(Opcode.i32_or);
       break;
+    case '^':
+      body.push(Opcode.i32_xor);
+      break;
     case '==':
     case '===':
       body.push(Opcode.i32_eq);
@@ -3090,10 +3093,7 @@ function generateHash(ctx: CodegenContext, expr: Expression, body: number[]) {
             ValType.ref_null,
             ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
           ];
-          const tempFuncRef = ctx.declareLocal(
-            '$$temp_hash_func',
-            funcRefType,
-          );
+          const tempFuncRef = ctx.declareLocal('$$temp_hash_func', funcRefType);
           body.push(
             Opcode.local_set,
             ...WasmModule.encodeSignedLEB128(tempFuncRef),
@@ -3155,7 +3155,10 @@ function generateStringHashFunction(ctx: CodegenContext): number {
     // Locals: hash (1), i (2), len (3)
 
     // hash = 2166136261 (FNV offset basis)
-    body.push(Opcode.i32_const, ...WasmModule.encodeSignedLEB128(2166136261 | 0));
+    body.push(
+      Opcode.i32_const,
+      ...WasmModule.encodeSignedLEB128(2166136261 | 0),
+    );
     body.push(Opcode.local_set, 1);
 
     // len = s.length

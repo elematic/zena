@@ -545,9 +545,27 @@ export class Parser {
   }
 
   #parseBitwiseOr(): Expression {
-    let left = this.#parseBitwiseAnd();
+    let left = this.#parseBitwiseXor();
 
     while (this.#match(TokenType.Pipe)) {
+      const operator = this.#previous().value;
+      const right = this.#parseBitwiseXor();
+      left = {
+        type: NodeType.BinaryExpression,
+        left,
+        operator,
+        right,
+        loc: this.#loc(left, right),
+      };
+    }
+
+    return left;
+  }
+
+  #parseBitwiseXor(): Expression {
+    let left = this.#parseBitwiseAnd();
+
+    while (this.#match(TokenType.Caret)) {
       const operator = this.#previous().value;
       const right = this.#parseBitwiseAnd();
       left = {

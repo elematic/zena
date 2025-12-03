@@ -386,6 +386,7 @@ Supported bitwise operators for integer types (`i32`):
 
 - `&` (Bitwise AND)
 - `|` (Bitwise OR)
+- `^` (Bitwise XOR)
 
 Operands must be of the same type. Implicit coercion is not supported.
 
