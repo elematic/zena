@@ -728,7 +728,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
     // Inherit methods
     for (const [name, type] of superType.methods) {
-      classType.methods.set(name, type);
+      if (!name.startsWith('#')) {
+        classType.methods.set(name, type);
+      }
     }
   }
 
@@ -969,7 +971,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
         classType.constructorType = methodType;
       } else {
-        if (!classType.methods.has(member.name.name)) {
+        if (!member.name.name.startsWith('#') && !classType.methods.has(member.name.name)) {
           classType.vtable.push(member.name.name);
         }
 

@@ -652,6 +652,7 @@ export function registerClassMethods(
 
       if (
         methodName !== '#new' &&
+        !methodName.startsWith('#') &&
         !intrinsic &&
         !vtable.includes(methodName) &&
         !member.isStatic

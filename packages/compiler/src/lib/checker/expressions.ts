@@ -1081,9 +1081,9 @@ function checkMemberExpression(
       return Types.Unknown;
     }
 
-    if (!ctx.currentClass.fields.has(memberName)) {
+    if (!ctx.currentClass.fields.has(memberName) && !ctx.currentClass.methods.has(memberName)) {
       ctx.diagnostics.reportError(
-        `Private field '${memberName}' is not defined in class '${ctx.currentClass.name}'.`,
+        `Private member '${memberName}' is not defined in class '${ctx.currentClass.name}'.`,
         DiagnosticCode.PropertyNotFound,
       );
       return Types.Unknown;
@@ -1091,13 +1091,16 @@ function checkMemberExpression(
 
     if (!isAssignableTo(objectType, ctx.currentClass)) {
       ctx.diagnostics.reportError(
-        `Type '${typeToString(objectType)}' does not have private field '${memberName}' from class '${ctx.currentClass.name}'.`,
+        `Type '${typeToString(objectType)}' does not have private member '${memberName}' from class '${ctx.currentClass.name}'.`,
         DiagnosticCode.TypeMismatch,
       );
       return Types.Unknown;
     }
 
-    return ctx.currentClass.fields.get(memberName)!;
+    if (ctx.currentClass.fields.has(memberName)) {
+      return ctx.currentClass.fields.get(memberName)!;
+    }
+    return ctx.currentClass.methods.get(memberName)!;
   }
 
   // Check fields
