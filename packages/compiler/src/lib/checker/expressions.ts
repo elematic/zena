@@ -1263,7 +1263,10 @@ function checkIndexExpression(
   }
 
   if (isString) {
-    return Types.I32;
+    // Strings are now extension classes on ByteArray, so they should support indexing
+    // via the operator [] defined in the String class.
+    // If the operator is missing, it will be caught by the class check above.
+    // So we just fall through here.
   }
 
   return (objectType as FixedArrayType).elementType;

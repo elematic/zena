@@ -1268,6 +1268,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
           const validIntrinsics = new Set([
             'array.len',
             'array.get',
+            'array.get_u',
             'array.set',
             'array.new',
             'array.new_default',

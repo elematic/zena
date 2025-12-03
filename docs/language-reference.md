@@ -312,6 +312,15 @@ let quote = 'She said "Hi"'; // Escaped double quotes
 let apostrophe = "it's"; // Escaped single quote
 ```
 
+### Strings
+
+Strings are immutable sequences of UTF-8 bytes.
+
+- **Literals**: `'text'` or `"text"`.
+- **Concatenation**: `+` operator.
+- **Indexing**: `str[index]` returns the byte value at the given index as an `i32`.
+- **Length**: `str.length` returns the number of bytes.
+
 ### Template Literals
 
 Template literals are backtick-delimited strings that support embedded expressions and preserve raw string content.

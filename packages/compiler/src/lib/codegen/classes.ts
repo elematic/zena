@@ -724,7 +724,10 @@ export function registerClassMethods(
         typeIndex = ctx.module.addType(params, results);
       }
 
-      const funcIndex = ctx.module.addFunction(typeIndex!);
+      let funcIndex = -1;
+      if (!intrinsic && !member.isDeclare) {
+        funcIndex = ctx.module.addFunction(typeIndex!);
+      }
 
       const returnType = results.length > 0 ? results[0] : [];
       methods.set(methodName, {
@@ -846,12 +849,22 @@ export function registerClassMethods(
       if (member.isStatic) continue;
       // Register implicit accessors for public fields
       if (!member.name.name.startsWith('#')) {
+        let intrinsic: string | undefined;
+        if (member.decorators) {
+          const intrinsicDecorator = member.decorators.find(
+            (d) => d.name === 'intrinsic',
+          );
+          if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
+            intrinsic = intrinsicDecorator.args[0].value;
+          }
+        }
+
         const propName = member.name.name;
         const propType = mapType(ctx, member.typeAnnotation);
 
         // Getter
         const getterName = `get_${propName}`;
-        if (!vtable.includes(getterName)) {
+        if (!intrinsic && !vtable.includes(getterName)) {
           vtable.push(getterName);
         }
 
@@ -884,7 +897,10 @@ export function registerClassMethods(
           typeIndex = ctx.module.addType(params, results);
         }
 
-        const funcIndex = ctx.module.addFunction(typeIndex!);
+        let funcIndex = -1;
+        if (!intrinsic && !member.isDeclare) {
+          funcIndex = ctx.module.addFunction(typeIndex!);
+        }
 
         methods.set(getterName, {
           index: funcIndex,
@@ -892,12 +908,13 @@ export function registerClassMethods(
           typeIndex: typeIndex!,
           paramTypes: params,
           isFinal: member.isFinal,
+          intrinsic,
         });
 
         // Setter (if mutable)
         if (!member.isFinal) {
           const setterName = `set_${propName}`;
-          if (!vtable.includes(setterName)) {
+          if (!intrinsic && !vtable.includes(setterName)) {
             vtable.push(setterName);
           }
 
@@ -918,7 +935,10 @@ export function registerClassMethods(
             setterTypeIndex = ctx.module.addType(setterParams, setterResults);
           }
 
-          const setterFuncIndex = ctx.module.addFunction(setterTypeIndex!);
+          let setterFuncIndex = -1;
+          if (!intrinsic && !member.isDeclare) {
+            setterFuncIndex = ctx.module.addFunction(setterTypeIndex!);
+          }
 
           methods.set(setterName, {
             index: setterFuncIndex,
@@ -926,6 +946,7 @@ export function registerClassMethods(
             typeIndex: setterTypeIndex!,
             paramTypes: setterParams,
             isFinal: member.isFinal,
+            intrinsic,
           });
         }
       }
@@ -1165,6 +1186,11 @@ export function generateClassMethods(
       }
 
       if (methodInfo.intrinsic) {
+        ctx.popScope();
+        continue;
+      }
+
+      if (member.isDeclare) {
         ctx.popScope();
         continue;
       }
@@ -2056,6 +2082,9 @@ export function instantiateClass(
 
   // Create VTable Struct Type
   if (classInfo.isExtension) {
+    console.error(
+      `instantiateClass: Extension class ${specializedName}, pushing generator`,
+    );
     const declForGen = {
       ...decl,
       name: {type: NodeType.Identifier, name: specializedName},

@@ -121,10 +121,12 @@ const I32 = {kind: TypeKind.Number, name: 'i32'} as NumberType;
 export const StringClass: ClassType = {
   kind: TypeKind.Class,
   name: 'String',
-  fields: new Map([['length', I32]]),
+  fields: new Map(),
   methods: new Map(),
   implements: [],
   vtable: [],
+  isExtension: true,
+  onType: {kind: TypeKind.ByteArray} as Type,
 };
 
 export const Types = {

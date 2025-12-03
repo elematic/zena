@@ -96,21 +96,8 @@ export class CodegenContext {
 
     // Pre-initialize String struct type so that declared functions can use string params.
     // The String class definition in the prelude will reuse this type index.
-    // String struct layout (must match registerClass for String):
-    // - __vtable: eqref (root class vtable field)
-    // - bytes: ByteArray (ref to byteArrayTypeIndex)
-    // - length: i32
-    this.stringTypeIndex = this.module.addStructType([
-      {type: [ValType.eqref], mutable: true}, // __vtable
-      {
-        type: [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(this.byteArrayTypeIndex),
-        ],
-        mutable: true,
-      }, // bytes: ByteArray
-      {type: [ValType.i32], mutable: true}, // length: i32
-    ]);
+    // String is now an extension class on ByteArray, so it shares the same type index.
+    this.stringTypeIndex = this.byteArrayTypeIndex;
   }
 
   public pushScope() {
