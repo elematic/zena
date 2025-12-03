@@ -1,6 +1,6 @@
-import { suite, test } from 'node:test';
-import { compileAndRun } from './utils.js';
 import * as assert from 'node:assert';
+import {suite, test} from 'node:test';
+import {compileAndRun} from './utils.js';
 
 suite('Hash Intrinsic', () => {
   test('hash(i32)', async () => {
