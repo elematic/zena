@@ -38,7 +38,12 @@ import {
 } from '../types.js';
 import type {CheckerContext} from './context.js';
 import {checkExpression} from './expressions.js';
-import {isAssignableTo, resolveTypeAnnotation, typeToString} from './types.js';
+import {
+  isAssignableTo,
+  resolveTypeAnnotation,
+  typeToString,
+  validateType,
+} from './types.js';
 
 export function checkStatement(ctx: CheckerContext, stmt: Statement) {
   switch (stmt.type) {
@@ -102,6 +107,7 @@ function resolveParameterType(ctx: CheckerContext, param: Parameter): Type {
         types: [type, Types.Null],
       } as UnionType;
     }
+    validateType(type, ctx);
   }
   return type;
 }
@@ -971,7 +977,10 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
         classType.constructorType = methodType;
       } else {
-        if (!member.name.name.startsWith('#') && !classType.methods.has(member.name.name)) {
+        if (
+          !member.name.name.startsWith('#') &&
+          !classType.methods.has(member.name.name)
+        ) {
           classType.vtable.push(member.name.name);
         }
 

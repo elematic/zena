@@ -1,4 +1,3 @@
-
 import {suite, test} from 'node:test';
 import {compileAndRun} from '../codegen/utils.js';
 import * as fs from 'node:fs';
@@ -15,7 +14,7 @@ suite('Map Tests', () => {
       path.join(__dirname, '../../test-files/map_test.zena'),
       'utf-8',
     );
-    
+
     // Capture console output
     let output = '';
     const originalLog = console.log;
@@ -36,7 +35,7 @@ suite('Map Tests', () => {
     assert.match(output, /has three: false/);
     assert.match(output, /size after delete: 1/);
     assert.match(output, /has one after delete: false/);
-    
+
     assert.match(output, /p1: Point 1/);
     assert.match(output, /p2: Point 2/);
     assert.match(output, /p3 \(equal to p1\): Point 1/);

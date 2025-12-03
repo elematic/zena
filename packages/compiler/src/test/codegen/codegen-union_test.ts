@@ -3,10 +3,11 @@ import {compileAndRun} from './utils.js';
 import assert from 'node:assert';
 
 suite('CodeGenerator - Union Types', () => {
-  test('should compile and run union variable with i32', async () => {
+  test('should compile and run union variable with Box<i32>', async () => {
     const source = `
+      import { Box } from 'zena:box';
       export let main = (): i32 => {
-        let x: i32 | null = 10;
+        let x: Box<i32> | null = new Box(10);
         return 1;
       };
     `;
@@ -16,8 +17,9 @@ suite('CodeGenerator - Union Types', () => {
 
   test('should compile and run union variable with null', async () => {
     const source = `
+      import { Box } from 'zena:box';
       export let main = (): i32 => {
-        let x: i32 | null = null;
+        let x: Box<i32> | null = null;
         return 1;
       };
     `;

@@ -17,6 +17,16 @@ import {
 } from '../types.js';
 import type {CheckerContext} from './context.js';
 
+function isPrimitive(type: Type): boolean {
+  if (type.kind === TypeKind.Number || type.kind === TypeKind.Boolean) {
+    return true;
+  }
+  if (type.kind === TypeKind.TypeAlias) {
+    return isPrimitive((type as TypeAliasType).target);
+  }
+  return false;
+}
+
 export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
   if (type.kind === TypeKind.TypeParameter) {
     return typeMap.get((type as TypeParameterType).name) || type;
@@ -110,6 +120,14 @@ export function resolveTypeAnnotation(
 ): Type {
   if (annotation.type === NodeType.UnionTypeAnnotation) {
     const types = annotation.types.map((t) => resolveTypeAnnotation(ctx, t));
+    for (const t of types) {
+      if (isPrimitive(t)) {
+        ctx.diagnostics.reportError(
+          `Union types cannot contain primitive types like '${typeToString(t)}'. Use 'Box<T>' or a reference type.`,
+          DiagnosticCode.TypeMismatch,
+        );
+      }
+    }
     return {
       kind: TypeKind.Union,
       types,
@@ -288,15 +306,41 @@ export function resolveTypeAnnotation(
     const typeArguments = annotation.typeArguments.map((arg) =>
       resolveTypeAnnotation(ctx, arg),
     );
-    return instantiateGenericClass(classType, typeArguments);
+    return instantiateGenericClass(classType, typeArguments, ctx);
   }
 
   return type;
 }
 
+export function validateType(type: Type, ctx: CheckerContext) {
+  if (type.kind === TypeKind.Union) {
+    const ut = type as UnionType;
+    for (const t of ut.types) {
+      if (isPrimitive(t)) {
+        ctx.diagnostics.reportError(
+          `Union types cannot contain primitive types like '${typeToString(t)}'. Use 'Box<T>' or a reference type.`,
+          DiagnosticCode.TypeMismatch,
+        );
+      }
+      validateType(t, ctx);
+    }
+  } else if (type.kind === TypeKind.FixedArray) {
+    validateType((type as FixedArrayType).elementType, ctx);
+  } else if (type.kind === TypeKind.Function) {
+    const ft = type as FunctionType;
+    ft.parameters.forEach((p) => validateType(p, ctx));
+    validateType(ft.returnType, ctx);
+  } else if (type.kind === TypeKind.Record) {
+    (type as RecordType).properties.forEach((p) => validateType(p, ctx));
+  } else if (type.kind === TypeKind.Tuple) {
+    (type as TupleType).elementTypes.forEach((p) => validateType(p, ctx));
+  }
+}
+
 export function instantiateGenericClass(
   genericClass: ClassType,
   typeArguments: Type[],
+  ctx?: CheckerContext,
 ): ClassType {
   const typeMap = new Map<string, Type>();
   genericClass.typeParameters!.forEach((param, index) => {
@@ -323,7 +367,7 @@ export function instantiateGenericClass(
     newMethods.set(name, substituteFunction(fn));
   }
 
-  return {
+  const newClass = {
     ...genericClass,
     typeArguments,
     fields: newFields,
@@ -333,11 +377,25 @@ export function instantiateGenericClass(
       : undefined,
     onType: genericClass.onType ? substitute(genericClass.onType) : undefined,
   };
+
+  if (ctx) {
+    for (const type of newFields.values()) validateType(type, ctx);
+    for (const method of newMethods.values()) {
+      for (const p of method.parameters) validateType(p, ctx);
+      validateType(method.returnType, ctx);
+    }
+    if (newClass.constructorType) {
+      for (const p of newClass.constructorType.parameters) validateType(p, ctx);
+    }
+  }
+
+  return newClass;
 }
 
 export function instantiateGenericFunction(
   genericFunc: FunctionType,
   typeArguments: Type[],
+  ctx?: CheckerContext,
 ): FunctionType {
   const typeMap = new Map<string, Type>();
   genericFunc.typeParameters!.forEach((param, index) => {
@@ -346,12 +404,19 @@ export function instantiateGenericFunction(
 
   const substitute = (type: Type) => substituteType(type, typeMap);
 
-  return {
+  const newFunc = {
     ...genericFunc,
     typeParameters: undefined,
     parameters: genericFunc.parameters.map(substitute),
     returnType: substitute(genericFunc.returnType),
   };
+
+  if (ctx) {
+    newFunc.parameters.forEach((p) => validateType(p, ctx));
+    validateType(newFunc.returnType, ctx);
+  }
+
+  return newFunc;
 }
 
 export function typeToString(type: Type): string {

@@ -40,6 +40,7 @@ import {
   typeToString,
   isAssignableTo,
   substituteType,
+  validateType,
 } from './types.js';
 import {checkStatement} from './statements.js';
 
@@ -355,7 +356,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       expr.inferredTypeArguments = inferred;
     }
 
-    funcType = instantiateGenericFunction(funcType, typeArguments);
+    funcType = instantiateGenericFunction(funcType, typeArguments, ctx);
   }
 
   if (expr.arguments.length !== funcType.parameters.length) {
@@ -778,6 +779,7 @@ function checkFunctionExpression(
           types: [type, Types.Null],
         } as UnionType;
       }
+      validateType(type, ctx);
     }
     ctx.declare(param.name.name, type);
     paramTypes.push(type);
@@ -887,7 +889,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
       const typeArguments = expr.typeArguments.map((arg) =>
         resolveTypeAnnotation(ctx, arg),
       );
-      classType = instantiateGenericClass(classType, typeArguments);
+      classType = instantiateGenericClass(classType, typeArguments, ctx);
       expr.inferredTypeArguments = typeArguments;
     }
   } else if (classType.typeParameters && classType.typeParameters.length > 0) {
@@ -908,7 +910,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
     }
 
     if (inferred) {
-      classType = instantiateGenericClass(classType, inferred);
+      classType = instantiateGenericClass(classType, inferred, ctx);
       expr.inferredTypeArguments = inferred;
     } else {
       ctx.diagnostics.reportError(
@@ -1081,7 +1083,10 @@ function checkMemberExpression(
       return Types.Unknown;
     }
 
-    if (!ctx.currentClass.fields.has(memberName) && !ctx.currentClass.methods.has(memberName)) {
+    if (
+      !ctx.currentClass.fields.has(memberName) &&
+      !ctx.currentClass.methods.has(memberName)
+    ) {
       ctx.diagnostics.reportError(
         `Private member '${memberName}' is not defined in class '${ctx.currentClass.name}'.`,
         DiagnosticCode.PropertyNotFound,

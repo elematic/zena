@@ -66,9 +66,11 @@ suite('TypeChecker - Type Aliases', () => {
 
   test('should support union type aliases', () => {
     const input = `
-      type ID = string | i32;
-      let x: ID = 'hello';
-      let y: ID = 123;
+      class A {}
+      class B {}
+      type ID = A | B;
+      let x: ID = new A();
+      let y: ID = new B();
     `;
     const parser = new Parser(input);
     const ast = parser.parse();

@@ -14,23 +14,27 @@ function check(source: string) {
 suite('Checker: Union Types', () => {
   test('should support union type annotation', () => {
     const diagnostics = check(`
-      let x: i32 | boolean = 10;
-      let y: i32 | boolean = true;
+      class A {}
+      class B {}
+      let x: A | B = new A();
+      let y: A | B = new B();
     `);
     assert.strictEqual(diagnostics.length, 0);
   });
 
   test('should support null in union', () => {
     const diagnostics = check(`
-      let x: i32 | null = 10;
-      let y: i32 | null = null;
+      let x: string | null = "hello";
+      let y: string | null = null;
     `);
     assert.strictEqual(diagnostics.length, 0);
   });
 
   test('should fail if type is not in union', () => {
     const diagnostics = check(`
-      let x: i32 | boolean = "hello";
+      class A {}
+      class B {}
+      let x: A | B = "hello";
     `);
     assert.strictEqual(diagnostics.length, 1);
     assert.strictEqual(diagnostics[0].code, DiagnosticCode.TypeMismatch);
@@ -38,16 +42,20 @@ suite('Checker: Union Types', () => {
 
   test('should support union in function parameters', () => {
     const diagnostics = check(`
-      let f = (x: i32 | boolean) => {};
-      f(10);
-      f(true);
+      class A {}
+      class B {}
+      let f = (x: A | B) => {};
+      f(new A());
+      f(new B());
     `);
     assert.strictEqual(diagnostics.length, 0);
   });
 
   test('should fail if argument is not in union', () => {
     const diagnostics = check(`
-      let f = (x: i32 | boolean) => {};
+      class A {}
+      class B {}
+      let f = (x: A | B) => {};
       f("hello");
     `);
     assert.strictEqual(diagnostics.length, 1);
@@ -56,11 +64,12 @@ suite('Checker: Union Types', () => {
 
   test('should support union in class fields', () => {
     const diagnostics = check(`
+      class A {}
       class Box {
-        value: i32 | string;
+        value: A | string;
       }
       let b = new Box();
-      b.value = 10;
+      b.value = new A();
       b.value = "hello";
     `);
     assert.strictEqual(diagnostics.length, 0);
@@ -68,8 +77,9 @@ suite('Checker: Union Types', () => {
 
   test('should fail if field assignment is not in union', () => {
     const diagnostics = check(`
+      class A {}
       class Box {
-        value: i32 | string;
+        value: A | string;
       }
       let b = new Box();
       b.value = true;
@@ -80,9 +90,10 @@ suite('Checker: Union Types', () => {
 
   test('should support union return type', () => {
     const diagnostics = check(`
-      let f = (x: boolean): i32 | string => {
+      class A {}
+      let f = (x: boolean): A | string => {
         if (x) {
-          return 10;
+          return new A();
         } else {
           return "hello";
         }
@@ -93,7 +104,8 @@ suite('Checker: Union Types', () => {
 
   test('should fail if return value is not in union', () => {
     const diagnostics = check(`
-      let f = (): i32 | string => {
+      class A {}
+      let f = (): A | string => {
         return true;
       };
     `);

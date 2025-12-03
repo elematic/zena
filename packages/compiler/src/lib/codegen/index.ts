@@ -205,8 +205,6 @@ export class CodeGenerator {
       }
     }
 
-
-
     // Execute any pending method registrations added during Pass 5 (e.g. from type inference)
     while (pendingIndex < this.#ctx.pendingMethodGenerations.length) {
       const generator = this.#ctx.pendingMethodGenerations[pendingIndex++];

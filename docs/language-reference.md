@@ -128,6 +128,32 @@ type Callback = () => void;
 let add: BinaryOp = (a, b) => a + b;
 ```
 
+### Union Types
+
+Union types describe a value that can be one of several types. They are written using the `|` operator.
+
+```typescript
+let x: string | null = null;
+x = 'hello';
+```
+
+#### Constraints
+
+Union types in Zena are restricted to **Reference Types**. You cannot create a union containing a value primitive (`i32`, `f32`, `boolean`).
+
+- **Valid**: `string | null`, `MyClass | MyInterface`, `array<i32> | null`.
+- **Invalid**: `i32 | null`, `boolean | string`.
+
+This restriction exists because value primitives in WASM do not carry runtime type information and cannot be mixed with references without explicit boxing.
+
+To use a primitive in a union (e.g., for a nullable integer), you must wrap it in a `Box<T>`.
+
+```typescript
+import {Box} from 'zena';
+
+let maybeNumber: Box<i32> | null = new Box(42);
+```
+
 ## 3. Variables
 
 Variables are declared using `let` or `var`.
@@ -226,6 +252,22 @@ This adaptation incurs a small performance overhead (allocation of a wrapper clo
 ### Optional Parameters
 
 Function parameters can be marked as optional using `?`. Optional parameters must come after required parameters.
+
+When a parameter is optional and has no default value, its type becomes a union with `null` (e.g., `T | null`). Because unions cannot contain primitive types, **optional primitive parameters must have a default value** or be wrapped in `Box<T>`.
+
+```typescript
+// ✅ Valid: Reference type (string | null)
+const greet = (name?: string) => { ... };
+
+// ✅ Valid: Primitive with default value (type is i32)
+const increment = (amount: i32 = 1) => { ... };
+
+// ✅ Valid: Boxed primitive (Box<i32> | null)
+const process = (val?: Box<i32>) => { ... };
+
+// ❌ Invalid: Primitive without default (would be i32 | null)
+// const invalid = (amount?: i32) => { ... };
+```
 
 ```typescript
 const greet = (name: string, greeting?: string) => {
