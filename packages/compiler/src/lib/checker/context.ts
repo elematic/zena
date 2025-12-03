@@ -25,6 +25,16 @@ export class CheckerContext {
   initializedFields = new Set<string>();
   inferredReturnTypes: Type[] = [];
 
+  // Prelude support
+  preludeExports = new Map<
+    string,
+    {modulePath: string; exportName: string; info: SymbolInfo}
+  >();
+  usedPreludeSymbols = new Map<
+    string,
+    {modulePath: string; exportName: string}
+  >();
+
   constructor(program: Program, compiler?: Compiler, module?: Module) {
     this.program = program;
     this.compiler = compiler;
@@ -83,6 +93,17 @@ export class CheckerContext {
         return this.scopes[i].get(name)!.type;
       }
     }
+
+    // Check prelude
+    if (this.preludeExports.has(name)) {
+      const exportInfo = this.preludeExports.get(name)!;
+      this.usedPreludeSymbols.set(name, {
+        modulePath: exportInfo.modulePath,
+        exportName: exportInfo.exportName,
+      });
+      return exportInfo.info.type;
+    }
+
     return undefined;
   }
 
@@ -92,6 +113,17 @@ export class CheckerContext {
         return this.scopes[i].get(name)!;
       }
     }
+
+    // Check prelude
+    if (this.preludeExports.has(name)) {
+      const exportInfo = this.preludeExports.get(name)!;
+      this.usedPreludeSymbols.set(name, {
+        modulePath: exportInfo.modulePath,
+        exportName: exportInfo.exportName,
+      });
+      return exportInfo.info;
+    }
+
     return undefined;
   }
 
@@ -127,6 +159,14 @@ export class CheckerContext {
     if (!module) return undefined;
 
     const symbol = module.exports.get(exportName);
-    return symbol?.type;
+    if (symbol) {
+      // Record usage so it gets injected/bundled
+      this.usedPreludeSymbols.set(exportName, {
+        modulePath,
+        exportName,
+      });
+      return symbol.type;
+    }
+    return undefined;
   }
 }

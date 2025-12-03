@@ -24,6 +24,8 @@ export interface Module {
 export class Compiler {
   #host: CompilerHost;
   #modules = new Map<string, Module>();
+  #preludeModules: Module[] = [];
+  #preludeLoaded = false;
 
   constructor(host: CompilerHost) {
     this.#host = host;
@@ -31,6 +33,10 @@ export class Compiler {
 
   public getModule(path: string): Module | undefined {
     return this.#modules.get(path);
+  }
+
+  public get preludeModules(): Module[] {
+    return this.#preludeModules;
   }
 
   public compile(entryPoint: string): Module[] {
@@ -46,6 +52,27 @@ export class Compiler {
     return bundler.bundle();
   }
 
+  #loadPrelude() {
+    if (this.#preludeLoaded) return;
+    this.#preludeLoaded = true;
+
+    const parser = new Parser(prelude);
+    const ast = parser.parse();
+
+    for (const stmt of ast.body) {
+      if (stmt.type === NodeType.ImportDeclaration) {
+        const specifier = stmt.moduleSpecifier.value;
+        // We assume prelude imports are zena: modules
+        const resolved = this.#host.resolve(specifier, 'prelude');
+        this.#loadModule(resolved, true);
+        const mod = this.#modules.get(resolved);
+        if (mod) {
+          this.#preludeModules.push(mod);
+        }
+      }
+    }
+  }
+
   #loadModule(path: string, isStdlib = false): Module {
     if (this.#modules.has(path)) {
       return this.#modules.get(path)!;
@@ -58,18 +85,6 @@ export class Compiler {
     const source = this.#host.load(path);
     const parser = new Parser(source);
     const ast = parser.parse();
-
-    // Inject prelude imports into user modules (not stdlib modules)
-    if (!isStdlib && !path.startsWith('zena:')) {
-      const preludeParser = new Parser(prelude);
-      const preludeAst = preludeParser.parse();
-      // Extract ImportDeclarations from prelude
-      const preludeImports = preludeAst.body.filter(
-        (node): node is ImportDeclaration =>
-          node.type === NodeType.ImportDeclaration,
-      );
-      ast.body.unshift(...preludeImports);
-    }
 
     const module: Module = {
       path,
@@ -107,6 +122,8 @@ export class Compiler {
   }
 
   #checkModules() {
+    this.#loadPrelude();
+
     const checked = new Set<string>();
     const checking = new Set<string>();
 
@@ -123,8 +140,31 @@ export class Compiler {
         }
       }
 
+      // Ensure prelude modules are checked
+      // If the current module is a prelude module, we only check prelude modules
+      // that appear BEFORE it in the prelude list. This prevents circular dependencies
+      // and enforces a topological order for the standard library.
+      let preludeLimit = this.#preludeModules.length;
+      const preludeIndex = this.#preludeModules.findIndex(
+        (pm) => pm.path === module.path,
+      );
+
+      if (preludeIndex !== -1) {
+        preludeLimit = preludeIndex;
+      }
+
+      for (let i = 0; i < preludeLimit; i++) {
+        checkModule(this.#preludeModules[i]);
+      }
+
       const checker = new TypeChecker(module.ast, this, module);
+      checker.preludeModules = this.#preludeModules;
       module.diagnostics = checker.check();
+
+      // Inject used prelude imports
+      if (!module.isStdlib && !module.path.startsWith('zena:')) {
+        this.#injectPreludeImports(module, checker.usedPreludeSymbols);
+      }
 
       checking.delete(module.path);
       checked.add(module.path);
@@ -133,5 +173,38 @@ export class Compiler {
     for (const module of this.#modules.values()) {
       checkModule(module);
     }
+  }
+
+  #injectPreludeImports(
+    module: Module,
+    usedSymbols: Map<string, {modulePath: string; exportName: string}>,
+  ) {
+    // Group by module path
+    const importsByModule = new Map<string, Set<string>>();
+    for (const {modulePath, exportName} of usedSymbols.values()) {
+      if (!importsByModule.has(modulePath)) {
+        importsByModule.set(modulePath, new Set());
+      }
+      importsByModule.get(modulePath)!.add(exportName);
+    }
+
+    // Generate ImportDeclarations
+    const newImports: ImportDeclaration[] = [];
+    for (const [modulePath, names] of importsByModule) {
+      // Update module.imports so Bundler can resolve these
+      module.imports.set(modulePath, modulePath);
+
+      newImports.push({
+        type: NodeType.ImportDeclaration,
+        imports: Array.from(names).map((name) => ({
+          type: NodeType.ImportSpecifier,
+          local: {type: NodeType.Identifier, name},
+          imported: {type: NodeType.Identifier, name},
+        })),
+        moduleSpecifier: {type: NodeType.StringLiteral, value: modulePath},
+      } as ImportDeclaration);
+    }
+
+    module.ast.body.unshift(...newImports);
   }
 }

@@ -1,4 +1,4 @@
-import {NodeType, type Program} from '../ast.js';
+import {type Program} from '../ast.js';
 import {type Diagnostic} from '../diagnostics.js';
 import {CheckerContext} from './context.js';
 import {checkStatement} from './statements.js';
@@ -15,6 +15,11 @@ export class TypeChecker {
   #program: Program;
   #compiler?: Compiler;
   #module?: Module;
+  preludeModules: Module[] = [];
+  usedPreludeSymbols = new Map<
+    string,
+    {modulePath: string; exportName: string}
+  >();
 
   constructor(program: Program, compiler?: Compiler, module?: Module) {
     this.#program = program;
@@ -24,6 +29,21 @@ export class TypeChecker {
 
   check(): Diagnostic[] {
     const ctx = new CheckerContext(this.#program, this.#compiler, this.#module);
+
+    // Populate prelude exports
+    for (const mod of this.preludeModules) {
+      for (const [name, info] of mod.exports) {
+        // Don't overwrite if multiple prelude modules export the same name (first wins)
+        if (!ctx.preludeExports.has(name)) {
+          ctx.preludeExports.set(name, {
+            modulePath: mod.path,
+            exportName: name,
+            info,
+          });
+        }
+      }
+    }
+
     ctx.enterScope();
 
     // Only register intrinsics for system modules
@@ -38,12 +58,9 @@ export class TypeChecker {
       checkStatement(ctx, stmt);
     }
 
-    // If we are checking a module, we should populate its exports
-    if (this.#module) {
-      this.#collectExports(ctx, this.#module);
-    }
-
     ctx.exitScope();
+
+    this.usedPreludeSymbols = ctx.usedPreludeSymbols;
 
     return [...ctx.diagnostics.diagnostics];
   }
@@ -128,35 +145,5 @@ export class TypeChecker {
       } as FunctionType,
       'let',
     );
-  }
-
-  #collectExports(ctx: CheckerContext, module: Module) {
-    const scope = ctx.scopes[0]; // Global scope of the module
-
-    for (const stmt of this.#program.body) {
-      if ('exported' in stmt && (stmt as any).exported) {
-        let name: string | undefined;
-
-        switch (stmt.type) {
-          case NodeType.VariableDeclaration:
-            if (stmt.pattern.type === NodeType.Identifier) {
-              name = stmt.pattern.name;
-            }
-            break;
-          case NodeType.ClassDeclaration:
-          case NodeType.InterfaceDeclaration:
-          case NodeType.MixinDeclaration:
-            name = stmt.name.name;
-            break;
-        }
-
-        if (name) {
-          const info = scope.get(name);
-          if (info) {
-            module.exports.set(name, info);
-          }
-        }
-      }
-    }
   }
 }

@@ -17,3 +17,11 @@ export const consoleModule = fs.readFileSync(
   path.join(stdlibDir, 'console.zena'),
   'utf-8',
 );
+export const mapModule = fs.readFileSync(
+  path.join(stdlibDir, 'map.zena'),
+  'utf-8',
+);
+export const boxModule = fs.readFileSync(
+  path.join(stdlibDir, 'box.zena'),
+  'utf-8',
+);

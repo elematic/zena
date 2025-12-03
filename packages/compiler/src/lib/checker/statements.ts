@@ -258,6 +258,10 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
   };
 
   ctx.declare(decl.name.name, functionType, 'let');
+
+  if (decl.exported && ctx.module) {
+    ctx.module.exports.set(decl.name.name, {type: functionType, kind: 'let'});
+  }
 }
 
 function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
@@ -376,6 +380,10 @@ function checkVariableDeclaration(
 
   if (decl.pattern.type === NodeType.Identifier) {
     ctx.declare(decl.pattern.name, type, decl.kind);
+
+    if (decl.exported && ctx.module) {
+      ctx.module.exports.set(decl.pattern.name, {type, kind: decl.kind});
+    }
   } else {
     checkPattern(ctx, decl.pattern, type, decl.kind);
   }
@@ -742,6 +750,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
   ctx.declare(className, classType);
   decl.inferredType = classType;
+
+  if (decl.exported && ctx.module) {
+    ctx.module.exports.set(className, {type: classType, kind: 'type'});
+  }
+
   ctx.enterClass(classType);
 
   ctx.enterScope();
@@ -1158,6 +1171,10 @@ function checkInterfaceDeclaration(
   ctx.declare(interfaceName, interfaceType);
   decl.inferredType = interfaceType;
 
+  if (decl.exported && ctx.module) {
+    ctx.module.exports.set(interfaceName, {type: interfaceType, kind: 'type'});
+  }
+
   // Enter scope for type parameters
   ctx.enterScope();
   if (interfaceType.typeParameters) {
@@ -1452,6 +1469,10 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
   ctx.declare(mixinName, mixinType);
   decl.inferredType = mixinType;
+
+  if (decl.exported && ctx.module) {
+    ctx.module.exports.set(mixinName, {type: mixinType, kind: 'type'});
+  }
 
   ctx.enterScope();
   for (const tp of typeParameters) {
