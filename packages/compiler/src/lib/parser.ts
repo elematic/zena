@@ -1570,7 +1570,22 @@ export class Parser {
   }
 
   #parseInterfaceMember(): FieldDefinition | MethodSignature {
-    const name = this.#parseIdentifier();
+    let name: Identifier;
+    if (this.#match(TokenType.Operator)) {
+      if (this.#match(TokenType.EqualsEquals)) {
+        name = {type: NodeType.Identifier, name: '=='};
+      } else {
+        this.#consume(TokenType.LBracket, "Expected '[' after 'operator'.");
+        this.#consume(TokenType.RBracket, "Expected ']' after '['.");
+        if (this.#match(TokenType.Equals)) {
+          name = {type: NodeType.Identifier, name: '[]='};
+        } else {
+          name = {type: NodeType.Identifier, name: '[]'};
+        }
+      }
+    } else {
+      name = this.#parseIdentifier();
+    }
     const typeParameters = this.#parseTypeParameters();
 
     // Method: name(params): ReturnType;
