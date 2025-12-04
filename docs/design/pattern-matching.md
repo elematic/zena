@@ -224,6 +224,28 @@ Tuple patterns applied to Arrays currently **only check the length** in the init
 1.  **Restrict**: Tuple patterns on arrays should be restricted or disabled until element verification is fully implemented.
 2.  **FixedArray**: Implement element checking using `array.get` intrinsics for the primitive `FixedArray` type.
 3.  **User Classes**: For user-defined classes (like `Array` or `List`), we need a protocol.
-    - **Option A**: `Sequence` interface with `get(index)` and `length`.
-    - **Option B**: Structural convention (duck typing) for `get` and `length`.
+## 9. Future Directions: Guards & Logical Patterns
+
+### 9.1 Guards (`if` clauses)
+
+To support arbitrary boolean tests (like `case x if x > 10:`), Zena should implement **Guards**. This is preferred over "Predicate Patterns" (e.g., `case isEven(x):`) because it cleanly separates the structural pattern match from arbitrary logic.
+
+**Proposed Syntax**:
+```zena
+match (val) {
+  case x if x > 10: ...
+  case Point { x, y } if x == y: ...
+}
+```
+
+### 9.2 Logical Patterns
+
+Logical patterns allow combining patterns.
+
+- **OR (`|`)**: `case 1 | 2:` or `case 'a' | 'b':`. This is high priority for conciseness.
+- **AND (`&`)**: `case Point {x} & {y}`. Useful for checking multiple properties or combining with relational checks (if implemented).
+
+### 9.3 Relational Patterns
+
+Patterns like `case > 10` are syntactic sugar. While nice, they can often be handled by Guards (`case x if x > 10`). Implementing Guards first provides the most flexibility.
 
