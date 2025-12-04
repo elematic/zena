@@ -61,6 +61,7 @@ import {
   type FunctionType,
   type ClassType,
   type UnionType,
+  type NumberType,
 } from '../types.js';
 import type {ClassInfo} from './types.js';
 
@@ -2392,7 +2393,7 @@ function generateBinaryExpression(
   // The WASM type is still i32, but we need to use unsigned instructions
   const isU32 = (e: Expression): boolean => {
     if (e.inferredType && e.inferredType.kind === TypeKind.Number) {
-      return (e.inferredType as any).name === 'u32';
+      return (e.inferredType as NumberType).name === 'u32';
     }
     return false;
   };

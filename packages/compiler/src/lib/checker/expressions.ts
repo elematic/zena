@@ -1114,7 +1114,7 @@ function checkBinaryExpression(
     typesMatch = true;
     if (leftName === 'f32' || rightName === 'f32') {
       resultType = Types.F32;
-    } else if (leftName === 'u32') {
+    } else if (leftName === 'u32' && rightName === 'u32') {
       resultType = Types.U32;
     } else {
       resultType = Types.I32;
@@ -1128,6 +1128,14 @@ function checkBinaryExpression(
     );
     return Types.Unknown;
   }
+
+  // Helper to check if a type is an integer type (i32 or u32)
+  const isIntegerType = (type: Type): boolean =>
+    type === Types.I32 ||
+    type === Types.U32 ||
+    (type.kind === TypeKind.Number &&
+      ((type as NumberType).name === 'i32' ||
+        (type as NumberType).name === 'u32'));
 
   switch (expr.operator) {
     case '==':
@@ -1149,27 +1157,14 @@ function checkBinaryExpression(
     case '|':
     case '^': {
       // Bitwise and modulo operators require integer types (i32 or u32)
-      const isLeftInteger =
-        left === Types.I32 ||
-        left === Types.U32 ||
-        (left.kind === TypeKind.Number &&
-          ((left as NumberType).name === 'i32' ||
-            (left as NumberType).name === 'u32'));
-      const isRightInteger =
-        right === Types.I32 ||
-        right === Types.U32 ||
-        (right.kind === TypeKind.Number &&
-          ((right as NumberType).name === 'i32' ||
-            (right as NumberType).name === 'u32'));
-
-      if (!isLeftInteger || !isRightInteger) {
+      if (!isIntegerType(left) || !isIntegerType(right)) {
         ctx.diagnostics.reportError(
           `Operator '${expr.operator}' cannot be applied to type '${typeToString(left)}' and '${typeToString(right)}'.`,
           DiagnosticCode.TypeMismatch,
         );
         return Types.Unknown;
       }
-      return left;
+      return resultType;
     }
     case '&&':
     case '||':
