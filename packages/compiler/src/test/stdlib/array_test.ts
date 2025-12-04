@@ -87,4 +87,27 @@ suite('Stdlib: Array', () => {
     const result = await compileAndRun(source, 'run');
     assert.strictEqual(result, 100);
   });
+
+  test('map', async () => {
+    const source = `
+      import { Array } from 'zena:array';
+      export let run = (): i32 => {
+        let arr = new Array<i32>(4);
+        arr.push(1);
+        arr.push(2);
+        arr.push(3);
+        
+        let mapped = arr.map<i32>((x: i32) => x * 2);
+        
+        if (mapped.length != 3) return 1;
+        if (mapped[0] != 2) return 2;
+        if (mapped[1] != 4) return 3;
+        if (mapped[2] != 6) return 4;
+        
+        return 100;
+      };
+    `;
+    const result = await compileAndRun(source, 'run');
+    assert.strictEqual(result, 100);
+  });
 });

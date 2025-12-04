@@ -67,8 +67,8 @@ The official language reference is maintained in `docs/language-reference.md`.
 
 ### Mutable Collections
 
-- **Maps**: `#{ key: value }`. Mutable Hash Map. (Not implemented yet)
-- **Arrays**: `#[ 1, 2 ]`. Mutable WASM GC Array. (Not implemented yet)
+- **Maps**: `#{ key: value }`. Mutable Hash Map. (Class implemented, literal syntax `#{}` pending)
+- **Arrays**: `#[ 1, 2 ]`. Mutable WASM GC Array.
 
 ### Strings
 
@@ -244,14 +244,18 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Checker: Union with `null`, assignability.
   - Codegen: Default values.
 - [x] Implement `eq` intrinsic and `operator ==` overloading.
+- [x] Implement `Map` and `Box` in Standard Library.
+- [x] Implement `hash` intrinsic.
+- [x] Implement strict equality (`===`, `!==`).
+- [x] Implement bitwise XOR (`^`), AND (`&`), OR (`|`).
+- [x] Implement modulo operator (`%`).
+- [x] Allow identifiers to contain `$` and `_`.
+- [x] Implement `#[ ... ]` array literal syntax.
+- [x] Implement `map()` for `Array` and `FixedArray`.
 
 ### Planned
 
-1.  **Closures & Arrays Integration** (Immediate Priority):
-    - Fix \`Array\` operations in \`map()\` tests.
-    - Implement \`map()\` fully.
-
-2.  **Host Interop**:
+1.  **Host Interop**:
     - **WASM GC Interop Notes**:
       - WASM GC structs and arrays are OPAQUE from JavaScript.
       - JS cannot access struct fields or iterate GC arrays.
@@ -296,13 +300,12 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Constraints**: Support `T extends Animal` (Requires Inheritance).
 
 5.  **Data Structures**:
-    - **Maps**: Implement mutable maps (`#{ key: value }`).
+    - **Maps**: Implement map literal syntax (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
 6.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
     - String manipulation (`substring`, `indexOf`).
-    - Console I/O (`console.log`).
 
 7.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
