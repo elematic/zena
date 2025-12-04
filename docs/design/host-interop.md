@@ -15,7 +15,7 @@ Zena supports declaring external functions using the `declare` keyword with the 
 
 ### Syntax
 
-```typescript
+```zena
 @external("module_name", "function_name")
 declare function myFunction(a: i32, b: i32): i32;
 ```
@@ -30,8 +30,8 @@ declare function myFunction(a: i32, b: i32): i32;
 
 Top-level functions and classes can be exported using the `export` keyword.
 
-```typescript
-export function add(a: i32, b: i32): i32 {
+```zena
+export add = (a: i32, b: i32): i32 => {
   return a + b;
 }
 ```
@@ -86,7 +86,7 @@ Zena automatically exports a `$stringGetByte(externref, i32) -> i32` function th
 
 Host functions receive the string as `externref` plus its length:
 
-```typescript
+```zena
 // In console.zena
 @external("console", "log_string")
 declare function __console_log_string(s: string, len: i32): void;
@@ -131,7 +131,7 @@ function createStringReader(exports) {
 
 The previous byte-streaming approach is still supported but not recommended:
 
-```typescript
+```zena
 @external("console", "log_string_start")
 declare function __console_log_string_start(len: i32): void;
 
@@ -159,7 +159,7 @@ This makes N+2 host function calls for a string of N bytes, which is slower than
 
 The console standard library (`stdlib/console.zena`) uses the V8-optimized pattern:
 
-```typescript
+```zena
 // External host functions receive string ref + length
 @external("console", "log_string")
 declare function __console_log_string(s: string, len: i32): void;

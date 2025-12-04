@@ -14,7 +14,7 @@ Addressing to minimize allocations.
 
 ### Proposed Layout (Chaining)
 
-```typescript
+```zena
 class Map<K, V> {
   buckets: Array<Entry<K, V> | null>;
   size: i32;
@@ -40,7 +40,7 @@ To support `Map`, we will use a **Protocol-based** approach rather than relying 
 
 We will introduce a standard interface `Hashable` for objects that can be used as keys.
 
-```typescript
+```zena
 interface Hashable {
   hashCode(): i32;
   operator ==(other: Hashable): boolean;
@@ -76,7 +76,7 @@ Equality checks in `Map` will follow the same pattern:
 
 ## API
 
-```typescript
+```zena
 class Map<K, V> {
   // Basic Access
   operator []=(key: K, value: V): void;

@@ -28,7 +28,7 @@ These checks are generally O(1) and extremely fast.
 
 Unlike languages with type erasure (like Java or TypeScript), Zena uses **Monomorphization** for generics. This means generic instantiations are distinct runtime types.
 
-```typescript
+```zena
 class Box<T> {
   value: T;
 }
@@ -51,7 +51,7 @@ Pattern matching is a high-level syntax that desugars into a sequence of `instan
 
 Zena uses `match` as an **expression**.
 
-```typescript
+```zena
 let area = match (shape) {
   case Circle { radius }: Math.PI * radius * radius
   case Square { side }: side * side
@@ -63,7 +63,7 @@ let area = match (shape) {
 
 The compiler transforms the above into:
 
-```typescript
+```zena
 let $$temp = shape;
 let $$result;
 if ($$temp instanceof Circle) {
@@ -154,12 +154,12 @@ Traditional overloading (defining multiple functions with the same name) require
 
 Instead of multiple implementations, an author can define a single function that accepts a Union Type and uses `instanceof` (or pattern matching) to dispatch.
 
-```typescript
+```zena
 // 1. Define the Union Type
 type Input = i32 | string;
 
 // 2. Single Implementation
-const print = (val: Input) => {
+let print = (val: Input) => {
   if (val instanceof i32) {
     // val is narrowed to i32
     console.log_i32(val);
@@ -178,10 +178,10 @@ print('hello'); // Works
 
 Because WASM function references are typed, `instanceof` can even distinguish between function signatures.
 
-```typescript
+```zena
 type Callback = ((i: i32) => void) | ((s: string) => void);
 
-function dispatch(cb: Callback) {
+let dispatch = (cb: Callback) => {
   if (cb instanceof ((i: i32) => void)) {
     cb(123);
   } else {

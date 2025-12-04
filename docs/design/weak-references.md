@@ -57,7 +57,7 @@ We can then implement `WeakMap` and `WeakRef` as wrapper classes in Zena.
 
 #### WeakMap
 
-```typescript
+```zena
 // stdlib/weak-map.zena
 
 // Host declarations
@@ -113,7 +113,7 @@ export class WeakMap<K, V> {
 
 #### WeakRef
 
-```typescript
+```zena
 // stdlib/weak-ref.zena
 
 @external("env", "weakRefNew")

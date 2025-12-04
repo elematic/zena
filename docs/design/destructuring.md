@@ -19,20 +19,20 @@ This document outlines the design for destructuring assignment and variable decl
 
 Tuples are destructured by position using square brackets `[...]`.
 
-```typescript
+```zena
 let point = [10, 20];
 let [x, y] = point; // x: i32, y: i32
 ```
 
 **Skipping Elements**:
 
-```typescript
+```zena
 let [x, , z] = [1, 2, 3]; // Skip the second element
 ```
 
 **Rest/Spread** (Future):
 
-```typescript
+```zena
 let [head, ...tail] = [1, 2, 3, 4]; // tail is [2, 3, 4]
 ```
 
@@ -40,7 +40,7 @@ let [head, ...tail] = [1, 2, 3, 4]; // tail is [2, 3, 4]
 
 Records are destructured by name using curly braces `{...}`.
 
-```typescript
+```zena
 let p = {x: 10, y: 20};
 let {x, y} = p;
 ```
@@ -49,7 +49,7 @@ let {x, y} = p;
 
 In TypeScript/JavaScript, renaming uses `:`:
 
-```typescript
+```zena
 // TypeScript
 const {x: x1} = p; // Renames x to x1
 ```
@@ -58,7 +58,7 @@ This conflicts with type syntax. `const { x: number } = p` attempts to rename `x
 
 **Zena Proposal**: Use `as` for renaming (binding).
 
-```typescript
+```zena
 let { x as x1, y as y1 } = p;
 ```
 
@@ -68,7 +68,7 @@ This reserves `:` for **sub-patterns** or **type guards** in the future.
 
 Nesting uses `:` to indicate "match the value of this field against this inner pattern".
 
-```typescript
+```zena
 let rect = {
   topLeft: { x: 10, y: 20 },
   bottomRight: { x: 100, y: 200 }
@@ -87,7 +87,7 @@ Here, `topLeft:` introduces a sub-pattern.
 
 Default values can be provided using `=`.
 
-```typescript
+```zena
 let {x, z = 0} = {x: 10}; // z is 0
 ```
 
@@ -130,7 +130,7 @@ TuplePattern  ::= '[' (Pattern (',' Pattern)*)? ']'
 
 ## Examples
 
-```typescript
+```zena
 // Simple
 let { x, y } = point;
 

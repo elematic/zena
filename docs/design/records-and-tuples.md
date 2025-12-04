@@ -27,20 +27,20 @@ Records are collections of named fields.
 
 **Type Syntax**:
 
-```typescript
+```zena
 type Point = {x: i32; y: i32};
 ```
 
 **Literal Syntax**:
 
-```typescript
-const p = {x: 10, y: 20};
+```zena
+let p = {x: 10, y: 20};
 ```
 
 **Access Syntax**:
 
-```typescript
-const x = p.x;
+```zena
+let x = p.x;
 ```
 
 ### 2.2 Tuples
@@ -49,21 +49,21 @@ Tuples are fixed-length collections of ordered fields.
 
 **Type Syntax**:
 
-```typescript
+```zena
 type Pair = [i32, string];
 ```
 
 **Literal Syntax**:
 
-```typescript
-const p = [10, 'hello'];
+```zena
+let p = [10, 'hello'];
 ```
 
 **Access Syntax**:
 
-```typescript
-const id = p[0];
-const name = p[1];
+```zena
+let id = p[0];
+let name = p[1];
 ```
 
 ## 3. Semantics
@@ -97,8 +97,8 @@ When a function accepts a Record as an argument, the compiler can "explode" the 
 
 **Source**:
 
-```typescript
-const draw = (opts: { x: i32, y: i32, color: string }) => { ... }
+```zena
+let draw = (opts: { x: i32, y: i32, color: string }) => { ... }
 
 draw({ x: 10, y: 20, color: "red" });
 ```
@@ -121,12 +121,12 @@ When a function returns a Record or Tuple, the compiler can use WASM's **Multi-V
 
 **Source**:
 
-```typescript
-const getPos = () => {
+```zena
+let getPos = () => {
   return {x: 10, y: 20};
 };
 
-const {x, y} = getPos();
+let {x, y} = getPos();
 ```
 
 **WASM Signature**:
@@ -135,8 +135,8 @@ const {x, y} = getPos();
 **Call Site**:
 The caller receives two values on the stack.
 
-- If the caller immediately destructs: `const { x, y } = ...`, the values are bound to locals. No allocation.
-- If the caller assigns to a variable: `const p = getPos()`, the compiler _must_ allocate the struct at that point (box the result) to store it in a single local `p`.
+- If the caller immediately destructs: `let { x, y } = ...`, the values are bound to locals. No allocation.
+- If the caller assigns to a variable: `let p = getPos()`, the compiler _must_ allocate the struct at that point (box the result) to store it in a single local `p`.
 
 ### 4.3 Destructuring
 
@@ -144,14 +144,14 @@ Destructuring is a compile-time transformation that extracts values.
 
 **Record Destructuring**:
 
-```typescript
-const {a, b} = record;
+```zena
+let {a, b} = record;
 ```
 
 **Tuple Destructuring**:
 
-```typescript
-const [x, y] = tuple;
+```zena
+let [x, y] = tuple;
 ```
 
 If the source is an "exploded" return value, destructuring is a no-op (just binding locals).
@@ -174,7 +174,7 @@ Since we use "Explosion" for arguments, we can support **Width Subtyping** for f
 
 We will adopt TypeScript's syntax.
 
-```typescript
+```zena
 // Record Type
 type User = {
   id: i32;
@@ -198,7 +198,7 @@ This ensures that the internal optimization does not break external compatibilit
 
 1.  **Recursive Types**: Can records be recursive? `{ next: Self }`? (Probably yes, via `type` alias).
 2.  **Methods**: Do records have methods? (No, they are data. Use functions).
-3.  **Spread**: `const p2 = { ...p1, z: 3 };` (Essential for immutable updates).
+3.  **Spread**: `let p2 = { ...p1, z: 3 };` (Essential for immutable updates).
 
 ## 8. Comparison with Interfaces & Classes
 
@@ -219,15 +219,15 @@ This ensures that the internal optimization does not break external compatibilit
 
 Because Record types support **Width Subtyping** via argument explosion, a Class instance can be passed to a function expecting a Record, provided it has the required fields.
 
-```typescript
+```zena
 class Vector {
   x: i32 = 0;
   y: i32 = 0;
 }
 
-const printPoint = (p: { x: i32, y: i32 }) => { ... }
+let printPoint = (p: { x: i32, y: i32 }) => { ... }
 
-const v = new Vector();
+let v = new Vector();
 // ✅ Valid: Compiler explodes 'v' into 'v.x' and 'v.y' to pass to 'printPoint'.
 printPoint(v);
 ```
@@ -240,14 +240,14 @@ However, a Class instance **cannot** be assigned to a variable of a Boxed Record
 
 Interfaces in Zena are **Nominal**. A type must explicitly declare that it implements an interface. Since Records are often anonymous and structural, they cannot declare implementation.
 
-```typescript
+```zena
 interface IPoint {
   get x(): i32;
 }
 
-const r = {x: 10};
+let r = {x: 10};
 // ❌ Error: Record does not explicitly implement IPoint.
-const i: IPoint = r;
+let i: IPoint = r;
 ```
 
 ### 8.4 Nominal vs. Structural Philosophy

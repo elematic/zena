@@ -91,7 +91,7 @@ binary size becomes a concern.
 
 ### Generic Classes
 
-```typescript
+```zena
 class Box<T> {
   value: T;
   #new(v: T) {
@@ -104,8 +104,8 @@ let b = new Box<i32>(10);
 
 ### Generic Functions
 
-```typescript
-const identity = <T>(arg: T): T => arg;
+```zena
+let identity = <T>(arg: T): T => arg;
 
 let x = identity<i32>(10);
 ```
@@ -157,7 +157,7 @@ We may need to constrain generic types (e.g., `T extends SomeClass`).
 
 With generics, we can implement `Map` properly:
 
-```typescript
+```zena
 class Map<K, V> {
   buckets: Array<Entry<K, V>>;
   // ...

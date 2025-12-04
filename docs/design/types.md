@@ -17,7 +17,7 @@ See [Classes Design](./classes.md) for more details.
 Classes and Interfaces must be explicitly related. A class `A` is a subtype of
 interface `I` only if `class A implements I` is declared.
 
-```typescript
+```zena
 interface Runnable {
   run(): void;
 }
@@ -204,7 +204,7 @@ Currently, `string` is implemented as a wrapper around `ByteArray` (or directly 
 
 To store a primitive in a union (e.g. a nullable integer), use the standard library `Box<T>` class.
 
-```typescript
+```zena
 let x: Box<i32> | null = new Box(10);
 ```
 
@@ -218,10 +218,10 @@ let x: Box<i32> | null = new Box(10);
   - Zena encourages **Type-Based Discrimination** (using classes) over **Tag-Based Discrimination** (string literals).
   - **Pattern Matching**:
 
-    ```typescript
+    ```zena
     type Shape = Circle | Square;
 
-    function area(s: Shape) {
+    let area = (s: Shape) => {
       if (s instanceof Circle) return s.radius * s.radius * 3.14;
       if (s instanceof Square) return s.side * s.side;
     }
@@ -232,7 +232,7 @@ let x: Box<i32> | null = new Box(10);
 ### Intersection Types (`A & B`)
 
 - **Usage**: Primarily for combining Interfaces.
-  - `function process(item: Runnable & Disposable) { ... }`
+  - `let process = (item: Runnable & Disposable) => { ... }`
 - **Implementation**: The value is treated as a reference that satisfies both contracts.
 
 ## 7. Type Aliases (`type`)
@@ -249,7 +249,7 @@ The `type` keyword is used to create aliases for types, not to define new shapes
 
 ### Examples
 
-```typescript
+```zena
 // ✅ Valid: Union Alias
 type ID = i32 | string;
 

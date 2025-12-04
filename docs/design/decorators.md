@@ -12,7 +12,7 @@ As of now, decorators are implemented as compiler intrinsics. They are not gener
 
 ### 2.1 Syntax
 
-```typescript
+```zena
 @name(arguments)
 declaration
 ```
@@ -30,7 +30,7 @@ The `@external` decorator is used to map a `declare function` statement to a spe
 
 **Example:**
 
-```typescript
+```zena
 @external("console", "log")
 declare function print(value: i32): void;
 ```
@@ -59,7 +59,7 @@ Unlike JavaScript, where decorators are functions applied at runtime that can fr
 
 Decorators that simply attach metadata to a declaration. This metadata can be inspected at runtime via a Reflection API (to be designed).
 
-```typescript
+```zena
 @route("/home")
 class HomeController { ... }
 ```
@@ -70,9 +70,9 @@ class HomeController { ... }
 
 Decorators that wrap a method to add behavior (logging, validation, caching).
 
-```typescript
-function log(target: any, name: string, descriptor: Descriptor) {
-  const original = descriptor.value;
+```zena
+let log = (target: any, name: string, descriptor: Descriptor) => {
+  let original = descriptor.value;
   descriptor.value = (args) => {
     print("Calling " + name);
     return original(args);
@@ -98,7 +98,7 @@ For more advanced use cases (e.g., generating `json` serialization methods), dec
 
 To support type checking, decorators should be defined as functions with specific signatures.
 
-```typescript
+```zena
 // Method Decorator Signature
 type MethodDecorator<T, R> = (
   target: Object,

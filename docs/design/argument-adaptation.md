@@ -78,7 +78,7 @@ This feature introduces overhead compared to a direct matching call.
 
 ### 1. Function Call Adaptation
 
-```typescript
+```zena
 // Expected: (item: i32, index: i32, array: i32[]) => i32
 // Provided: (item: i32) => i32
 [1, 2, 3].map((x) => x * 2);
@@ -86,7 +86,7 @@ This feature introduces overhead compared to a direct matching call.
 
 ### 2. Variable Assignment Adaptation
 
-```typescript
+```zena
 type Handler = (a: i32, b: i32) => void;
 // Provided: (a: i32) => void
 let h: Handler = (a) => console.log(a);
@@ -94,7 +94,7 @@ let h: Handler = (a) => console.log(a);
 
 ### 3. Union Type Assignment Adaptation
 
-```typescript
+```zena
 type Handler2 = (a: i32, b: i32) => void;
 type SimpleHandler = (a: i32) => void;
 

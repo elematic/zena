@@ -8,7 +8,7 @@ Arrays in Zena (`Array<T>`) are implemented as raw WebAssembly GC Arrays (`(arra
 
 The `FixedArray<T>` class represents the raw WASM GC array.
 
-```typescript
+```zena
 export extension class FixedArray<T> on array<T> {
   length: i32;
 }

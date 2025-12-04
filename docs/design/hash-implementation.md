@@ -36,7 +36,7 @@ This means the current implementation is already quite compact for strings. A pu
 
 We define a standard interface that objects can implement.
 
-```typescript
+```zena
 interface Hashable {
   hashCode(): i32;
 }
@@ -46,8 +46,8 @@ interface Hashable {
 
 The `hash` function would be a generic function in the standard library.
 
-```typescript
-export function hash<T>(val: T): i32 {
+```zena
+export let hash = <T>(val: T): i32 => {
   if (val instanceof i32) {
     return val as i32;
   } else if (val instanceof boolean) {
@@ -86,7 +86,7 @@ The compiler **must** perform Dead Code Elimination to remove the unreachable br
 
 **Resulting Code for `hash_i32`:**
 
-```typescript
+```zena
 function hash_i32(val: i32): i32 {
   return val;
 }

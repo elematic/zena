@@ -28,12 +28,12 @@ Zena supports two syntaxes for importing named exports:
 
 1.  **Standard JS Style**:
 
-    ```typescript
+    ```zena
     import {add, subtract as sub} from './math.zena';
     ```
 
 2.  **Flipped Style** (Better for autocomplete):
-    ```typescript
+    ```zena
     from './math.zena' import { add, subtract as sub };
     ```
 
@@ -50,9 +50,9 @@ Zena supports two syntaxes for importing named exports:
 
 Symbols are exported using the `export` keyword on the declaration.
 
-```typescript
+```zena
 // math.zena
-export const add = (a: i32, b: i32) => a + b;
+export let add = (a: i32, b: i32) => a + b;
 
 export class Calculator {
   // ...
@@ -85,7 +85,7 @@ The "Prelude" is a set of declarations injected into the top of every module's s
 
 This is effectively what the compiler injects at the top of every file:
 
-```typescript
+```zena
 import {String} from 'zena:string';
 import {Array} from 'zena:array';
 import {Map} from 'zena:map';
@@ -110,7 +110,7 @@ Zena distinguishes between immutable and mutable exports, which has significant 
 
 Imports are **read-only bindings**. You cannot reassign an imported symbol directly.
 
-```typescript
+```zena
 import {someVar} from './mod.zena';
 someVar = 10; // Error: Cannot assign to imported binding.
 ```

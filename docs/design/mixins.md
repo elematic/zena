@@ -10,7 +10,7 @@ Mixins in Zena provide a way to reuse code across multiple class hierarchies. Th
 
 Mixins are defined using the `mixin` keyword. They look similar to classes but cannot be instantiated directly.
 
-```typescript
+```zena
 mixin Timestamped {
   timestamp: i32 = Date.now();
 
@@ -24,7 +24,7 @@ mixin Timestamped {
 
 Mixins are applied to a class using the `with` keyword in the `class` declaration.
 
-```typescript
+```zena
 class User {
   name: string;
 }
@@ -40,7 +40,7 @@ This is equivalent to creating an intermediate class that extends `User` and add
 
 A mixin can restrict which classes it can be applied to using the `on` keyword. This allows the mixin to call methods on `super` or access properties that are guaranteed to exist on the base.
 
-```typescript
+```zena
 class Entity {
   id: i32;
   save(): void { ... }
@@ -58,7 +58,7 @@ mixin Syncable on Entity {
 
 Mixins can be composed of other mixins.
 
-```typescript
+```zena
 mixin A { ... }
 mixin B { ... }
 
@@ -97,7 +97,7 @@ For every application of a mixin `M` to a base `S`, the compiler generates a new
 
 Given:
 
-```typescript
+```zena
 class S { a: i32 }
 mixin M { b: i32 }
 class C extends S with M {}
@@ -135,7 +135,7 @@ In the generated specialized method, `super` calls are resolved to the actual ba
 
 ## 5. Example
 
-```typescript
+```zena
 mixin Position {
   x: i32 = 0;
   y: i32 = 0;
@@ -182,7 +182,7 @@ Currently, mixins cannot define constructors (`#new`). Initialization logic must
 
 Allow mixins to define a constructor that simply passes arguments through to `super`.
 
-```typescript
+```zena
 mixin M {
   #new(...args: any[]) {
     super(...args);
@@ -198,7 +198,7 @@ _Cons_: `any[]` is not type-safe. Doesn't handle mixins that _add_ constructor p
 
 Use the `on` clause to enforce that the base class has a compatible constructor.
 
-```typescript
+```zena
 class Base {
   #new(id: i32) { ... }
 }

@@ -13,7 +13,7 @@ Overloads are declared by providing multiple function signatures for the same na
 
 ### 2.1 Declare Function (Interop)
 
-```typescript
+```zena
 @external("env", "print_i32")
 declare function print(val: i32): void;
 
@@ -28,21 +28,21 @@ For regular Zena functions, we prefer a **Single Implementation** strategy simil
 **Key Advantage: Type Correlation**
 This approach allows the type checker to correlate input types with output types, which is not possible with simple Union Types alone.
 
-```typescript
-// Signatures (Overloads)
-// If called with one arg, returns string
-function format(val: i32): string;
-// If called with two args, returns array
-function format(val: i32, width: i32): string[];
-
-// Implementation
-function format(val: i32, width?: i32): string | string[] {
-  if (width == null) {
-    return val.toString();
-  } else {
-    // ... return array ...
+```zena
+let format: 
+    // Signatures (Overloads)
+    // If called with one arg, returns string
+    (val: i32) =? string |
+    // If called with two args, returns array
+    (val: i32, width: i32) =? string[]
+  // Implementation
+  = (val: i32, width?: i32): string | string[] => {
+    if (width == null) {
+      return val.toString();
+    } else {
+      // ... return array ...
+    }
   }
-}
 ```
 
 This avoids the complexity of name mangling and static dispatch for user code, while keeping the runtime behavior explicit and predictable.
@@ -98,7 +98,7 @@ If `obj.method` is overloaded (e.g., has signatures `(i32) => void` and `(f32) =
 
 Since Zena is statically typed, we can use the **expected type** of the expression to resolve the ambiguity.
 
-```typescript
+```zena
 // Overloads
 class Printer {
   print(x: i32): void { ... }
@@ -113,7 +113,7 @@ let printInt: (x: i32) => void = p.print;
 
 // Case B: Function Argument
 // The compiler sees expected parameter type (f32) => void, selects the f32 overload.
-function run(callback: (x: f32) => void) { ... }
+let run = (callback: (x: f32) => void) => { ... }
 run(p.print);
 
 // Case C: Untyped / Ambiguous (Error)
@@ -124,7 +124,7 @@ run(p.print);
 
 If the context is insufficient, the user can always resolve ambiguity by wrapping the call in a lambda. This is the "escape hatch".
 
-```typescript
+```zena
 let f = (x: i32) => p.print(x); // Explicitly calls the i32 version
 ```
 
@@ -132,9 +132,9 @@ let f = (x: i32) => p.print(x); // Explicitly calls the i32 version
 
 One could imagine generating a "dispatcher" function that accepts a boxed type (e.g., `anyref` or a union), checks the type at runtime, and calls the correct overload.
 
-```typescript
+```zena
 // Hypothetical generated dispatcher
-function print_dispatcher(val: anyref) {
+let print_dispatcher = (val: anyref) => {
   if (val is i32) print_i32(val as i32);
   else if (val is f32) print_f32(val as f32);
 }

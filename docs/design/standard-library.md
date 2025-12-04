@@ -78,9 +78,11 @@ We adopt JS-familiar naming while introducing interfaces for read-only access:
 
 **Interface Hierarchy**:
 
-```typescript
+```zena
 interface Sequence<T> extends Iterable<T> {
-  get length(): i32;
+  length: i32 {
+    get();
+  };
   get(index: i32): T;
   isEmpty(): boolean;
   contains(element: T): boolean;
@@ -124,7 +126,7 @@ Abstractions that make collection usage ergonomic and enable functional patterns
 
 Inspired by Rust/Java iterators:
 
-```typescript
+```zena
 interface Iterator<T> {
   hasNext(): boolean;
   next(): T; // Or Option<T> if we have it
@@ -194,9 +196,11 @@ See `docs/design/host-interop.md` for full details.
 A read-only interface for indexed collections. This is the common abstraction
 over `Array<T>`, `FixedArray<T>`, and `ReadonlyArray<T>`.
 
-```typescript
+```zena
 interface Sequence<T> extends Iterable<T> {
-  get length(): i32;
+  length: i32 {
+    get();
+  };
   get(index: i32): T;
   isEmpty(): boolean;
   contains(element: T): boolean;
@@ -210,7 +214,7 @@ interface Sequence<T> extends Iterable<T> {
 
 The growable array interface. This is the most commonly used collection type.
 
-```typescript
+```zena
 interface Array<T> extends Sequence<T> {
   // Mutation operations
   set(index: i32, value: T): void;
@@ -259,7 +263,7 @@ class GrowableArray<T> implements Array<T> {
 
 An immutable, fixed-length array wrapper.
 
-```typescript
+```zena
 class ReadonlyArray<T> implements Sequence<T> {
   #data: FixedArray<T>;
 
@@ -276,7 +280,7 @@ class ReadonlyArray<T> implements Sequence<T> {
 
 A key-value store. Can be an abstract class with a factory constructor.
 
-```typescript
+```zena
 abstract class Map<K, V> implements Iterable<Entry<K, V>> {
   // Factory constructor returns HashMap by default
   static #new<K, V>(): Map<K, V> {
@@ -284,7 +288,9 @@ abstract class Map<K, V> implements Iterable<Entry<K, V>> {
   }
 
   // Read operations
-  abstract get length(): i32;
+  abstract length: i32 {
+    get();
+  }
   abstract get(key: K): V | null; // Or Option<V>
   abstract has(key: K): boolean;
   abstract isEmpty(): boolean;
@@ -308,7 +314,7 @@ class Entry<K, V> {
 
 Hash-based Map implementation using open addressing or chaining.
 
-```typescript
+```zena
 class HashMap<K, V> extends Map<K, V> {
   #buckets: Array<Entry<K, V> | null>;
   #size: i32;
@@ -334,14 +340,14 @@ See `docs/design/map.md` for implementation details.
 
 A collection of unique elements.
 
-```typescript
+```zena
 abstract class Set<T> implements Iterable<T> {
   // Factory constructor returns HashSet by default
   static #new<T>(): Set<T> {
     return new HashSet<T>();
   }
 
-  abstract get length(): i32;
+  abstract length: i32 { get(); };
   abstract has(element: T): boolean;
   abstract isEmpty(): boolean;
 
@@ -361,7 +367,7 @@ abstract class Set<T> implements Iterable<T> {
 Hash-based Set implementation. Internally uses `HashMap<T, boolean>` or a
 dedicated structure.
 
-```typescript
+```zena
 class HashSet<T> extends Set<T> {
   #map: HashMap<T, boolean>;
 
@@ -377,7 +383,7 @@ class HashSet<T> extends Set<T> {
 
 A type-safe way to represent optional values (alternative to `null`).
 
-```typescript
+```zena
 abstract class Option<T> {
   abstract isSome(): boolean;
   abstract isNone(): boolean;
@@ -408,7 +414,7 @@ critical but still useful for method chaining.
 
 #### Iterator<T>
 
-```typescript
+```zena
 interface Iterator<T> {
   hasNext(): boolean;
   next(): T;
@@ -417,7 +423,7 @@ interface Iterator<T> {
 
 #### Iterable<T>
 
-```typescript
+```zena
 interface Iterable<T> {
   iterator(): Iterator<T>;
 }
@@ -425,7 +431,7 @@ interface Iterable<T> {
 
 **Future**: When `for...of` is implemented, it will desugar to:
 
-```typescript
+```zena
 // for (let x of collection) { ... }
 // becomes:
 let iter = collection.iterator();
@@ -439,7 +445,7 @@ while (iter.hasNext()) {
 
 For sortable types:
 
-```typescript
+```zena
 interface Comparable<T> {
   compareTo(other: T): i32; // -1, 0, or 1
 }
@@ -449,7 +455,7 @@ interface Comparable<T> {
 
 For types that can be used as Map/Set keys:
 
-```typescript
+```zena
 interface Hashable {
   hashCode(): i32;
   equals(other: Hashable): boolean;
@@ -460,7 +466,7 @@ interface Hashable {
 
 Efficient mutable string building:
 
-```typescript
+```zena
 class StringBuilder {
   #buffer: ByteArray;
   #length: i32;
@@ -503,58 +509,58 @@ The math module is split into two categories:
 
 These map directly to WASM instructions and have no runtime overhead:
 
-```typescript
+```zena
 // Rounding (f32.floor, f32.ceil, f32.trunc, f32.nearest)
-export const floor = (x: f32): f32 => /* @intrinsic f32.floor */;
-export const ceil = (x: f32): f32 => /* @intrinsic f32.ceil */;
-export const trunc = (x: f32): f32 => /* @intrinsic f32.trunc */;
-export const round = (x: f32): f32 => /* @intrinsic f32.nearest */;
+export let floor = (x: f32): f32 => /* @intrinsic f32.floor */;
+export let ceil = (x: f32): f32 => /* @intrinsic f32.ceil */;
+export let trunc = (x: f32): f32 => /* @intrinsic f32.trunc */;
+export let round = (x: f32): f32 => /* @intrinsic f32.nearest */;
 
 // Roots & absolute value (f32.sqrt, f32.abs)
-export const sqrt = (x: f32): f32 => /* @intrinsic f32.sqrt */;
-export const absF32 = (x: f32): f32 => /* @intrinsic f32.abs */;
+export let sqrt = (x: f32): f32 => /* @intrinsic f32.sqrt */;
+export let absF32 = (x: f32): f32 => /* @intrinsic f32.abs */;
 
 // Min/Max (f32.min, f32.max)
-export const minF32 = (a: f32, b: f32): f32 => /* @intrinsic f32.min */;
-export const maxF32 = (a: f32, b: f32): f32 => /* @intrinsic f32.max */;
+export let minF32 = (a: f32, b: f32): f32 => /* @intrinsic f32.min */;
+export let maxF32 = (a: f32, b: f32): f32 => /* @intrinsic f32.max */;
 
 // Copysign (f32.copysign)
-export const copysign = (x: f32, y: f32): f32 => /* @intrinsic f32.copysign */;
+export let copysign = (x: f32, y: f32): f32 => /* @intrinsic f32.copysign */;
 ```
 
 #### Library Functions (Implemented in Zena or via Host)
 
 These require implementation, either in pure Zena or via host delegation:
 
-```typescript
+```zena
 // Trigonometry - require Taylor series or host delegation
-export const sin = (x: f32): f32 => /* library */;
-export const cos = (x: f32): f32 => /* library */;
-export const tan = (x: f32): f32 => /* library */;
-export const asin = (x: f32): f32 => /* library */;
-export const acos = (x: f32): f32 => /* library */;
-export const atan = (x: f32): f32 => /* library */;
-export const atan2 = (y: f32, x: f32): f32 => /* library */;
+export let sin = (x: f32): f32 => /* library */;
+export let cos = (x: f32): f32 => /* library */;
+export let tan = (x: f32): f32 => /* library */;
+export let asin = (x: f32): f32 => /* library */;
+export let acos = (x: f32): f32 => /* library */;
+export let atan = (x: f32): f32 => /* library */;
+export let atan2 = (y: f32, x: f32): f32 => /* library */;
 
 // Exponentials & logarithms
-export const exp = (x: f32): f32 => /* library */;
-export const log = (x: f32): f32 => /* library */;
-export const log10 = (x: f32): f32 => /* library */;
-export const pow = (base: f32, exp: f32): f32 => /* library */;
+export let exp = (x: f32): f32 => /* library */;
+export let log = (x: f32): f32 => /* library */;
+export let log10 = (x: f32): f32 => /* library */;
+export let pow = (base: f32, exp: f32): f32 => /* library */;
 
 // Integer operations (pure Zena)
-export const abs = (x: i32): i32 => if (x < 0) { -x } else { x };
-export const min = (a: i32, b: i32): i32 => if (a < b) { a } else { b };
-export const max = (a: i32, b: i32): i32 => if (a > b) { a } else { b };
-export const clamp = (value: i32, lo: i32, hi: i32): i32 =>
+export let abs = (x: i32): i32 => if (x < 0) { -x } else { x };
+export let min = (a: i32, b: i32): i32 => if (a < b) { a } else { b };
+export let max = (a: i32, b: i32): i32 => if (a > b) { a } else { b };
+export let clamp = (value: i32, lo: i32, hi: i32): i32 =>
   min(max(value, lo), hi);
-export const clampF32 = (value: f32, lo: f32, hi: f32): f32 =>
+export let clampF32 = (value: f32, lo: f32, hi: f32): f32 =>
   minF32(maxF32(value, lo), hi);
 
 // Constants
-export const PI: f32 = 3.14159265358979323846;
-export const E: f32 = 2.71828182845904523536;
-export const TAU: f32 = 6.28318530717958647692; // 2 * PI
+export let PI: f32 = 3.14159265358979323846;
+export let E: f32 = 2.71828182845904523536;
+export let TAU: f32 = 6.28318530717958647692; // 2 * PI
 ```
 
 **Implementation Strategy**:
@@ -613,7 +619,7 @@ Date handling is notoriously complex. Options:
 **Recommendation**: Defer full date support. For MVP, expose host `Date.now()`
 for timestamps.
 
-```typescript
+```zena
 @external("env", "now")
 declare function now(): f64;  // Milliseconds since epoch
 ```
@@ -633,7 +639,7 @@ callback-based APIs can be used for host interop.
 
 For `setTimeout`, `setInterval`, etc.:
 
-```typescript
+```zena
 @external("env", "setTimeout")
 declare function setTimeout(callback: () => void, ms: i32): i32;
 
@@ -652,11 +658,11 @@ a way to declare "native" or "intrinsic" methods in Zena source files.
 
 **Implementation: `@intrinsic` Decorator**
 
-```typescript
+```zena
 class Array<T> {
   // Maps to array.len instruction
   @intrinsic('array.len')
-  declare get length(): i32;
+  declare length: i32 { get(); };
 
   // Implemented in Zena
   isEmpty(): boolean {
@@ -707,7 +713,7 @@ In addition to the `@intrinsic` decorator, the compiler supports a set of global
 
 Standard library modules use the `zena:` prefix:
 
-```typescript
+```zena
 import {sqrt, PI} from 'zena:math';
 import {HashMap} from 'zena:collections';
 ```
@@ -808,14 +814,14 @@ The `Console` module provides basic I/O operations.
 
 **API**:
 
-```typescript
+```zena
 export let log = (val: i32) => { ... };
 export let logF32 = (val: f32) => { ... };
 ```
 
 **Usage**:
 
-```typescript
+```zena
 log(42);
 ```
 

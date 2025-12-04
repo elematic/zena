@@ -28,7 +28,7 @@ heap-allocated struct containing two fields:
 
 For an interface `Runnable`:
 
-```typescript
+```zena
 interface Runnable {
   run(): void;
 }
@@ -69,7 +69,7 @@ specific class type and call the actual method.
 
 **Example:**
 
-```typescript
+```zena
 class Task implements Runnable {
   run(): void { ... }
 }
@@ -95,7 +95,7 @@ class Task implements Runnable {
 When assigning a class instance to an interface variable, we allocate the
 Interface Struct (the Fat Pointer).
 
-```typescript
+```zena
 let t = new Task();
 let r: Runnable = t; // Implicit conversion
 ```
@@ -119,7 +119,7 @@ let r: Runnable = t; // Implicit conversion
 
 To call a method on an interface:
 
-```typescript
+```zena
 r.run();
 ```
 

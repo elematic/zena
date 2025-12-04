@@ -10,7 +10,7 @@ Classes in Zena are backed directly by **WASM GC Structs**.
 
 A class definition maps to a WASM struct type. Fields are laid out sequentially.
 
-```typescript
+```zena
 class Point {
   x: i32;
   y: i32;
@@ -30,7 +30,7 @@ Compiles to:
 
 Methods are compiled as standalone WASM functions. The first parameter is always the instance (`this`).
 
-```typescript
+```zena
 class Point {
   distance(): i32 { ... }
 }
@@ -62,7 +62,7 @@ Zena supports single inheritance using the `extends` keyword.
 
 To support efficient casting and access, Zena ensures **Layout Compatibility**. A subclass struct must begin with the exact same fields (types and order) as its superclass.
 
-```typescript
+```zena
 class Point3D extends Point {
   z: i32;
 }
@@ -93,7 +93,7 @@ Zena supports Mixins as "Subclass Factories". This allows a class to inherit beh
 
 We introduce a first-class `mixin` syntax that acts like a function taking a base class constructor.
 
-```typescript
+```zena
 // Define a mixin
 mixin Timestamped(Base: Constructor) extends Base {
   timestamp: i32 = Date.now();
@@ -108,7 +108,7 @@ Zena uses a grouped accessor syntax, similar to C# or Swift. This groups the `ge
 
 Accessors are defined like fields but followed by a block `{}` containing `get` and/or `set` clauses.
 
-```typescript
+```zena
 class Circle {
   #radius: f64 = 0.0;
 
@@ -193,7 +193,7 @@ We will implement dynamic dispatch using VTables.
 
 #### Example
 
-```typescript
+```zena
 class Animal {
   speak(): void { ... } // Index 0 in VTable
 }
@@ -246,7 +246,7 @@ To support manual optimization and enforce design intent, Zena supports the `fin
 
 ### 5.1. Final Classes
 
-```typescript
+```zena
 final class Point { ... }
 ```
 
@@ -255,7 +255,7 @@ final class Point { ... }
 
 ### 5.2. Final Methods
 
-```typescript
+```zena
 class Base {
   final compute(): i32 { ... }
 }
@@ -266,7 +266,7 @@ class Base {
 
 ### 5.3. Final Fields
 
-```typescript
+```zena
 class Base {
   final x: i32;
 }
@@ -322,7 +322,7 @@ Private fields are implemented using **Name Mangling** to ensure uniqueness and 
 - **Mangling Scheme**: A private field `#x` in class `Point` is internally mapped to the name `Point::#x`.
 - **Struct Layout**: In the generated WASM struct, private fields are laid out alongside public fields. The mangled name is used only during compilation to resolve the correct field index.
 
-```typescript
+```zena
 class A {
   #x: i32; // Mapped to "A::#x"
 }
@@ -369,7 +369,7 @@ Interfaces can declare protected methods.
 
 To avoid name collisions (e.g., when using Mixins or Interfaces that define the same protected name), Zena supports **Qualified Method Definitions**.
 
-```typescript
+```zena
 class Widget extends Component {
   // Standard override (ambiguous if multiple bases have _render)
   override _render() { ... }
@@ -382,7 +382,7 @@ class Widget extends Component {
 **Accessing Qualified Members**:
 To access a specific qualified member, use casting to the defining type.
 
-```typescript
+```zena
 let w = new Widget();
 (w as Component)._render(); // Calls the Component._render implementation
 ```
@@ -391,7 +391,7 @@ let w = new Widget();
 
 When overriding a protected method, you can call the superclass implementation using `super`. If the method is qualified (to resolve ambiguity), use a cast on `super` to specify which base class implementation to invoke.
 
-```typescript
+```zena
 class Widget extends Component {
   Component._render() {
     // Call the specific base implementation
@@ -441,7 +441,7 @@ If a superclass constructor calls a virtual method overridden by the subclass, t
 - **Violation**: A field declared as non-nullable (e.g., `x: String`) is technically `null` during this window.
 - **Consequence**: If the overridden method accesses `this.x`, it will observe `null`. Attempting to use it (e.g., `this.x.length`) will cause a runtime trap (Null Pointer Exception), violating the static type guarantee.
 
-```typescript
+```zena
 class Base {
   #new() {
     this.setup(); // Virtual call
