@@ -36,19 +36,25 @@ import {
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
 import {WasmModule} from '../emitter.js';
+import {
+  TypeKind,
+  type ClassType,
+  type FunctionType,
+  type UnionType,
+} from '../types.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import {analyzeCaptures} from './captures.js';
 import {
   decodeTypeIndex,
-  getInterfaceFromTypeIndex,
-  getTypeKey,
-  mapType,
-  mapCheckerTypeToWasmType,
-  typeToTypeAnnotation,
-  resolveAnnotation,
-  instantiateClass,
-  getSpecializedName,
   getClassFromTypeIndex,
+  getInterfaceFromTypeIndex,
+  getSpecializedName,
+  getTypeKey,
+  instantiateClass,
+  mapCheckerTypeToWasmType,
+  mapType,
+  resolveAnnotation,
+  typeToTypeAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {
@@ -56,13 +62,10 @@ import {
   instantiateGenericFunction,
   instantiateGenericMethod,
 } from './functions.js';
-import {generateBlockStatement, generateFunctionStatement} from './statements.js';
 import {
-  TypeKind,
-  type FunctionType,
-  type ClassType,
-  type UnionType,
-} from '../types.js';
+  generateBlockStatement,
+  generateFunctionStatement,
+} from './statements.js';
 import type {ClassInfo} from './types.js';
 
 export function generateExpression(

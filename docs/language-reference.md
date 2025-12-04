@@ -579,6 +579,7 @@ let max = (a: i32, b: i32) => if (a > b) a else b;
 ```
 
 **Key differences from if statements:**
+
 - When used as an expression, `else` is required
 - Block bodies don't need semicolons after the final expression
 - Both branches must produce compatible types
