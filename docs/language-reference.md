@@ -60,6 +60,7 @@ This soundness is enforced by the underlying WASM-GC architecture. Zena does not
 - **`f32`**: 32-bit floating-point number.
 - **`boolean`**: Boolean value (`true` or `false`).
 - **`string`**: UTF-8 string.
+- **`anyref`**: The top type for all reference types. It can hold any object, array, string, function, or `null`. It cannot hold unboxed primitives (`i32`, `f32`, `boolean`).
 - **`ByteArray`**: A mutable array of 8-bit integers. This is a low-level type primarily used for implementing strings and binary data manipulation.
 
 ### Type Inference
