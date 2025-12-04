@@ -47,7 +47,7 @@ class Car {
 ### Pros
 
 - Zero-cost abstraction over WASM types.
-- Fast `instanceof` checks.
+- Fast `is` checks.
 - Clearer intent in code.
 
 ### Cons
@@ -197,7 +197,7 @@ It is important to distinguish between **Value Primitives** and **Reference Prim
 Currently, `string` is implemented as a wrapper around `ByteArray` (or directly as bytes). If we allow `string | ByteArray`, we must ensure they are distinguishable at runtime.
 
 - If `string` is just a type alias for `ByteArray`, `string | ByteArray` collapses to `ByteArray`.
-- If we want them to be distinct (e.g. to support `instanceof string`), `string` must be a distinct nominal type (likely a class wrapping the bytes) or carry encoding information.
+- If we want them to be distinct (e.g. to support `is string`), `string` must be a distinct nominal type (likely a class wrapping the bytes) or carry encoding information.
 - **Design Goal**: We may eventually disallow unions of types that cannot be distinguished at runtime (e.g. two structurally identical but nominally distinct types, if the nominal distinction is erased at runtime).
 
 #### Solution: `Box<T>`
@@ -222,12 +222,12 @@ let x: Box<i32> | null = new Box(10);
     type Shape = Circle | Square;
 
     let area = (s: Shape) => {
-      if (s instanceof Circle) return s.radius * s.radius * 3.14;
-      if (s instanceof Square) return s.side * s.side;
+      if (s is Circle) return s.radius * s.radius * 3.14;
+      if (s is Square) return s.side * s.side;
     }
     ```
 
-  - **WASM Optimization**: `instanceof` checks compile directly to `br_on_cast` or `ref.test` instructions, which are extremely fast.
+  - **WASM Optimization**: `is` checks compile directly to `br_on_cast` or `ref.test` instructions, which are extremely fast.
 
 ### Intersection Types (`A & B`)
 

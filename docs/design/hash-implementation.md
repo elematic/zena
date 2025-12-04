@@ -48,13 +48,13 @@ The `hash` function would be a generic function in the standard library.
 
 ```zena
 export let hash = <T>(val: T): i32 => {
-  if (val instanceof i32) {
+  if (val is i32) {
     return val as i32;
-  } else if (val instanceof boolean) {
+  } else if (val is boolean) {
     return (val as boolean) ? 1 : 0;
-  } else if (val instanceof string) {
+  } else if (val is string) {
     return stringHash(val as string); // Internal helper
-  } else if (val instanceof Hashable) {
+  } else if (val is Hashable) {
     return (val as Hashable).hashCode();
   } else {
     return 0; // Or identity hash
@@ -66,12 +66,12 @@ export let hash = <T>(val: T): i32 => {
 
 To make this implementation as fast as the intrinsic, Zena needs specific features and optimizations.
 
-### 1. `instanceof` for Primitives
+### 1. `is` for Primitives
 
 We need to be able to check if a generic type `T` is a specific primitive type.
 
-- `val instanceof i32`
-- `val instanceof boolean`
+- `val is i32`
+- `val is boolean`
 
 ### 2. Compile-Time Constant Folding & Dead Code Elimination (DCE)
 
@@ -79,8 +79,8 @@ This is the critical piece. Zena uses **Monomorphization** for generics. When `h
 
 Inside `hash_i32`, `T` is known to be `i32`.
 
-- `val instanceof i32` becomes `true`.
-- `val instanceof string` becomes `false`.
+- `val is i32` becomes `true`.
+- `val is string` becomes `false`.
 
 The compiler **must** perform Dead Code Elimination to remove the unreachable branches _before_ code generation.
 
@@ -94,9 +94,9 @@ function hash_i32(val: i32): i32 {
 
 This can then be **inlined** at the call site, resulting in zero overhead, matching the intrinsic.
 
-### 3. `instanceof` Interface Checks
+### 3. `is` Interface Checks
 
-For `val instanceof Hashable`, the compiler needs to check if the concrete type `T` implements `Hashable`.
+For `val is Hashable`, the compiler needs to check if the concrete type `T` implements `Hashable`.
 
 - If `T` is `Point` (which implements `Hashable`), this check is statically true.
 - The cast `val as Hashable` becomes a no-op (or a simple upcast).
@@ -128,6 +128,6 @@ Implementing `hash` in Zena is **feasible and desirable**, provided that the com
 
 **Next Steps:**
 
-1.  Implement `instanceof` for primitives.
+1.  Implement `is` for primitives.
 2.  Ensure the optimizer runs on monomorphized function bodies to strip dead branches.
 3.  Move `hash` logic to `stdlib/hash.zena`.

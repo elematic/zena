@@ -279,7 +279,7 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] **Dynamic Dispatch**: Implement VTables for polymorphic method calls.
       - **Casting**:
         - [x] Implement `as` operator.
-        - [ ] Implement `instanceof` checks.
+        - [x] Implement `is` checks.
       - **Mixins**:
         - [x] Implement Mixin Parser.
         - [x] Implement Mixin Type Checker.

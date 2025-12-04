@@ -11,6 +11,7 @@ import {
   type FunctionExpression,
   type Identifier,
   type IndexExpression,
+  type IsExpression,
   type MemberExpression,
   type NewExpression,
   type NullLiteral,
@@ -117,6 +118,9 @@ export function generateExpression(
       break;
     case NodeType.AsExpression:
       generateAsExpression(ctx, expression as AsExpression, body);
+      break;
+    case NodeType.IsExpression:
+      generateIsExpression(ctx, expression as IsExpression, body);
       break;
     case NodeType.FunctionExpression:
       generateFunctionExpression(ctx, expression as FunctionExpression, body);
@@ -232,6 +236,84 @@ function generateAsExpression(
     body.push(0xfb, GcOpcode.ref_cast_null);
     // The rest of targetType is the LEB128 encoded type index
     body.push(...targetType.slice(1));
+  }
+}
+
+function generateIsExpression(
+  ctx: CodegenContext,
+  expr: IsExpression,
+  body: number[],
+) {
+  const sourceType = inferType(ctx, expr.expression);
+  const targetType = mapType(ctx, expr.typeAnnotation, ctx.currentTypeContext);
+
+  // Handle primitive source types
+  if (
+    sourceType.length === 1 &&
+    sourceType[0] !== ValType.anyref &&
+    sourceType[0] !== ValType.eqref &&
+    sourceType[0] !== ValType.ref &&
+    sourceType[0] !== ValType.ref_null
+  ) {
+    // Evaluate expression for side effects
+    generateExpression(ctx, expr.expression, body);
+    body.push(Opcode.drop);
+
+    // Check if types match
+    if (typesAreEqual(sourceType, targetType)) {
+      body.push(Opcode.i32_const, 1);
+    } else if (targetType.length === 1 && targetType[0] === ValType.anyref) {
+      // Primitive is assignable to any (via boxing), so 'is any' is true?
+      // But 'is' usually checks exact type or subtype.
+      // '10 is any' -> true.
+      body.push(Opcode.i32_const, 1);
+    } else {
+      body.push(Opcode.i32_const, 0);
+    }
+    return;
+  }
+
+  generateExpression(ctx, expr.expression, body);
+
+  // If target is a reference type (ref null ...)
+  if (targetType.length > 1 && targetType[0] === ValType.ref_null) {
+    const typeIndex = decodeTypeIndex(targetType);
+    body.push(0xfb, GcOpcode.ref_test);
+    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+  } else if (targetType.length > 1 && targetType[0] === ValType.ref) {
+    const typeIndex = decodeTypeIndex(targetType);
+    body.push(0xfb, GcOpcode.ref_test);
+    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+  } else if (targetType.length === 1) {
+    // Primitive type check (e.g. x is i32)
+    // We check if it is an instance of Box<T>
+    const boxDecl = ctx.wellKnownTypes.Box;
+    if (!boxDecl) throw new Error('Box class not found');
+
+    const typeArg = expr.typeAnnotation;
+    const specializedName = getSpecializedName(
+      boxDecl.name.name,
+      [typeArg],
+      ctx,
+      ctx.currentTypeContext,
+    );
+
+    if (!ctx.classes.has(specializedName)) {
+      instantiateClass(
+        ctx,
+        boxDecl,
+        specializedName,
+        [typeArg],
+        ctx.currentTypeContext,
+      );
+    }
+
+    const boxClass = ctx.classes.get(specializedName)!;
+
+    body.push(0xfb, GcOpcode.ref_test_null);
+    body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
+  } else {
+    throw new Error(`Unsupported type for 'is' check: ${targetType}`);
   }
 }
 

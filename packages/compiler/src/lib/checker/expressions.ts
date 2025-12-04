@@ -8,6 +8,7 @@ import {
   type Expression,
   type FunctionExpression,
   type IndexExpression,
+  type IsExpression,
   type MemberExpression,
   type NewExpression,
   type RecordLiteral,
@@ -113,6 +114,8 @@ function checkExpressionInternal(ctx: CheckerContext, expr: Expression): Type {
       );
     case NodeType.AsExpression:
       return checkAsExpression(ctx, expr as AsExpression);
+    case NodeType.IsExpression:
+      return checkIsExpression(ctx, expr as IsExpression);
     case NodeType.UnaryExpression:
       return checkUnaryExpression(ctx, expr as UnaryExpression);
     case NodeType.ThrowExpression:
@@ -171,6 +174,12 @@ function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {
   // or we could add checks later (e.g. no casting string to int).
   // For distinct types, this is the primary way to "wrap" a value.
   return resolveTypeAnnotation(ctx, expr.typeAnnotation);
+}
+
+function checkIsExpression(ctx: CheckerContext, expr: IsExpression): Type {
+  checkExpression(ctx, expr.expression);
+  resolveTypeAnnotation(ctx, expr.typeAnnotation);
+  return Types.Boolean;
 }
 
 function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {

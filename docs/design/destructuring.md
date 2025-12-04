@@ -174,7 +174,7 @@ let { points: [p1, p2] } = polygon;
     Should we allow `let { x: i32 } = p;` to assert that `x` is `i32`?
     - If `:` introduces a sub-pattern, and `i32` is a type, this could be a "Type Pattern" (check type).
     - In a `let` binding (irrefutable), this would be a static type check assertion.
-    - In a `match` (refutable), this would be an `instanceof` check.
+    - In a `match` (refutable), this would be an `is` check.
 
     _Decision_: Reserve `:` for sub-patterns. If we add Type Patterns later, they will naturally fit: `{ x: TypeName }`. This confirms that we should NOT use `:` for renaming.
 

@@ -1,16 +1,16 @@
-# Pattern Matching & `instanceof` Design
+# Pattern Matching & `is` Design
 
 ## 1. Overview
 
 Zena provides runtime type checking capabilities that are backed by the strong guarantees of the WASM-GC type system. While the language is statically typed, it supports runtime introspection of types to enable dynamic dispatch patterns, safe downcasting, and pattern matching.
 
-## 2. `instanceof` Operator
+## 2. `is` Operator
 
-The `instanceof` operator is the primitive mechanism for runtime type checking.
+The `is` operator is the primitive mechanism for runtime type checking.
 
 ### 2.1 Semantics
 
-`expr instanceof Type` evaluates to a `boolean`.
+`expr is Type` evaluates to a `boolean`.
 
 - It returns `true` if the runtime value of `expr` is an instance of `Type` (or a subtype).
 - It returns `false` otherwise.
@@ -37,15 +37,15 @@ let b1 = new Box<i32>(1);
 let b2 = new Box<string>('a');
 
 // These are distinct types at runtime!
-b1 instanceof Box<i32>; // true
-b1 instanceof Box<string>; // false
+b1 is Box<i32>; // true
+b1 is Box<string>; // false
 ```
 
 This allows for powerful runtime differentiation of generic types.
 
 ## 3. Pattern Matching (Future Syntax)
 
-Pattern matching is a high-level syntax that desugars into a sequence of `instanceof` checks and destructuring operations.
+Pattern matching is a high-level syntax that desugars into a sequence of `is` checks and destructuring operations.
 
 ### 3.1 Syntax Proposal
 
@@ -66,10 +66,10 @@ The compiler transforms the above into:
 ```zena
 let $$temp = shape;
 let $$result;
-if ($$temp instanceof Circle) {
+if ($$temp is Circle) {
   let {radius} = $$temp;
   $$result = Math.PI * radius * radius;
-} else if ($$temp instanceof Square) {
+} else if ($$temp is Square) {
   let {side} = $$temp;
   $$result = side * side;
 } else {
@@ -152,7 +152,7 @@ Traditional overloading (defining multiple functions with the same name) require
 
 ### 4.2 The Solution: Single Implementation
 
-Instead of multiple implementations, an author can define a single function that accepts a Union Type and uses `instanceof` (or pattern matching) to dispatch.
+Instead of multiple implementations, an author can define a single function that accepts a Union Type and uses `is` (or pattern matching) to dispatch.
 
 ```zena
 // 1. Define the Union Type
@@ -160,10 +160,10 @@ type Input = i32 | string;
 
 // 2. Single Implementation
 let print = (val: Input) => {
-  if (val instanceof i32) {
+  if (val is i32) {
     // val is narrowed to i32
     console.log_i32(val);
-  } else if (val instanceof string) {
+  } else if (val is string) {
     // val is narrowed to string
     console.log_string(val);
   }
@@ -176,13 +176,13 @@ print('hello'); // Works
 
 ### 4.3 Function Type Checks
 
-Because WASM function references are typed, `instanceof` can even distinguish between function signatures.
+Because WASM function references are typed, `is` can even distinguish between function signatures.
 
 ```zena
 type Callback = ((i: i32) => void) | ((s: string) => void);
 
 let dispatch = (cb: Callback) => {
-  if (cb instanceof ((i: i32) => void)) {
+  if (cb is ((i: i32) => void)) {
     cb(123);
   } else {
     // Compiler knows it must be (s: string) => void
@@ -193,8 +193,8 @@ let dispatch = (cb: Callback) => {
 
 ## 7. Summary
 
-- **`instanceof`** is a fast, primitive WASM check.
-- **Generics are reified**, allowing checks like `instanceof Box<i32>`.
-- **Pattern Matching** is syntactic sugar over `instanceof` + destructuring.
+- **`is`** is a fast, primitive WASM check.
+- **Generics are reified**, allowing checks like `is Box<i32>`.
+- **Pattern Matching** is syntactic sugar over `is` + destructuring.
 - **`match`** is the chosen syntax, replacing `switch`.
 - **Overloading** for user code is best implemented via Union Types and internal pattern matching, providing a flexible and "Zena-idiomatic" approach.

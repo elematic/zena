@@ -503,6 +503,19 @@ export function registerClassStruct(
     fieldTypes.push({type: [ValType.eqref], mutable: true});
   }
 
+  // Add unique brand field to ensure nominal typing
+  const brandId = ctx.classes.size + 1;
+  const brandTypeIndex = generateBrandType(ctx, brandId);
+  const brandFieldName = `__brand_${decl.name.name}`;
+  fields.set(brandFieldName, {
+    index: fieldIndex++,
+    type: [ValType.ref_null, ...WasmModule.encodeSignedLEB128(brandTypeIndex)],
+  });
+  fieldTypes.push({
+    type: [ValType.ref_null, ...WasmModule.encodeSignedLEB128(brandTypeIndex)],
+    mutable: true,
+  });
+
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
       const wasmType = mapType(ctx, member.typeAnnotation);
@@ -2515,4 +2528,26 @@ export function mapCheckerTypeToWasmType(
 
   const annotation = typeToTypeAnnotation(type);
   return mapType(ctx, annotation, ctx.currentTypeContext);
+}
+
+function generateBrandType(ctx: CodegenContext, id: number): number {
+  const fields: {type: number[]; mutable: boolean}[] = [];
+  // Use a mix of i32 and f32 to create unique structures
+  // We use the binary representation of id
+  // 0 -> i32
+  // 1 -> f32
+  if (id === 0) {
+    fields.push({type: [ValType.i32], mutable: false});
+  } else {
+    let n = id;
+    while (n > 0) {
+      if (n & 1) {
+        fields.push({type: [ValType.f32], mutable: false});
+      } else {
+        fields.push({type: [ValType.i32], mutable: false});
+      }
+      n >>>= 1;
+    }
+  }
+  return ctx.module.addStructType(fields);
 }

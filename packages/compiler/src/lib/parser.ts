@@ -17,6 +17,7 @@ import {
   type ImportSpecifier,
   type IndexExpression,
   type InterfaceDeclaration,
+  type IsExpression,
   type MemberExpression,
   type MethodDefinition,
   type MethodSignature,
@@ -651,14 +652,24 @@ export class Parser {
   #parseAs(): Expression {
     let left = this.#parseTerm();
 
-    while (this.#match(TokenType.As)) {
+    while (this.#match(TokenType.As) || this.#match(TokenType.Is)) {
+      const operator = this.#previous().type;
       const typeAnnotation = this.#parseTypeAnnotation();
-      left = {
-        type: NodeType.AsExpression,
-        expression: left,
-        typeAnnotation,
-        loc: this.#loc(left, typeAnnotation),
-      };
+      if (operator === TokenType.As) {
+        left = {
+          type: NodeType.AsExpression,
+          expression: left,
+          typeAnnotation,
+          loc: this.#loc(left, typeAnnotation),
+        } as unknown as Expression; // Cast to Expression to avoid circular type issues if any, or just let it infer
+      } else {
+        left = {
+          type: NodeType.IsExpression,
+          expression: left,
+          typeAnnotation,
+          loc: this.#loc(left, typeAnnotation),
+        } as IsExpression;
+      }
     }
 
     return left;

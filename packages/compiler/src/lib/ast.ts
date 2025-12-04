@@ -54,6 +54,7 @@ export const NodeType = {
   TemplateElement: 'TemplateElement',
   TypeAliasDeclaration: 'TypeAliasDeclaration',
   AsExpression: 'AsExpression',
+  IsExpression: 'IsExpression',
   Decorator: 'Decorator',
   UnaryExpression: 'UnaryExpression',
   ThrowExpression: 'ThrowExpression',
@@ -242,6 +243,7 @@ export type Expression =
   | TemplateLiteral
   | TaggedTemplateExpression
   | AsExpression
+  | IsExpression
   | UnaryExpression
   | ThrowExpression;
 
@@ -260,6 +262,12 @@ export interface AssignmentExpression extends Node {
 
 export interface AsExpression extends Node {
   type: typeof NodeType.AsExpression;
+  expression: Expression;
+  typeAnnotation: TypeAnnotation;
+}
+
+export interface IsExpression extends Node {
+  type: typeof NodeType.IsExpression;
   expression: Expression;
   typeAnnotation: TypeAnnotation;
 }
