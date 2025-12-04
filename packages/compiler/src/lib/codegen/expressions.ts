@@ -1388,7 +1388,7 @@ function generateCallExpression(
     if (expr.callee.type === NodeType.Identifier) {
       const name = (expr.callee as Identifier).name;
 
-      if (name.startsWith('__array_')) {
+      if (name.startsWith('__array_') || name === 'unreachable') {
         generateGlobalIntrinsic(ctx, name, expr, body);
         return;
       }
@@ -2995,17 +2995,8 @@ function generateGlobalIntrinsic(
       generateHash(ctx, arg, body);
       break;
     }
-    case 'eq': {
-      generateBinaryExpression(
-        ctx,
-        {
-          type: NodeType.BinaryExpression,
-          operator: '==',
-          left: args[0],
-          right: args[1],
-        } as BinaryExpression,
-        body,
-      );
+    case 'unreachable': {
+      body.push(Opcode.unreachable);
       break;
     }
     default:

@@ -16,6 +16,7 @@ export const TypeKind = {
   TypeAlias: 'TypeAlias',
   AnyRef: 'AnyRef',
   Unknown: 'Unknown',
+  Never: 'Never',
 } as const;
 
 export type TypeKind = (typeof TypeKind)[keyof typeof TypeKind];
@@ -139,4 +140,5 @@ export const Types = {
   I32: I32,
   F32: {kind: TypeKind.Number, name: 'f32'} as NumberType,
   AnyRef: {kind: TypeKind.AnyRef} as Type,
+  Never: {kind: TypeKind.Never} as Type,
 } as const;

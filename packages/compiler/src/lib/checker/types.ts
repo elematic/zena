@@ -208,6 +208,8 @@ export function resolveTypeAnnotation(
     }
     case 'void':
       return Types.Void;
+    case 'never':
+      return Types.Never;
     case 'null':
       return Types.Null;
   }
@@ -421,6 +423,8 @@ export function instantiateGenericFunction(
 
 export function typeToString(type: Type): string {
   switch (type.kind) {
+    case TypeKind.Never:
+      return 'never';
     case TypeKind.Number:
       return (type as NumberType).name;
     case TypeKind.Boolean:
@@ -482,6 +486,7 @@ export function typeToString(type: Type): string {
 
 export function isAssignableTo(source: Type, target: Type): boolean {
   if (source === target) return true;
+  if (source.kind === TypeKind.Never) return true;
   if (source.kind === TypeKind.Unknown || target.kind === TypeKind.Unknown) {
     return true;
   }

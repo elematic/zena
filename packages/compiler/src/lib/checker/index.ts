@@ -145,5 +145,17 @@ export class TypeChecker {
       } as FunctionType,
       'let',
     );
+
+    // unreachable(): never
+    ctx.declare(
+      'unreachable',
+      {
+        kind: TypeKind.Function,
+        typeParameters: [],
+        parameters: [],
+        returnType: Types.Never,
+      } as FunctionType,
+      'let',
+    );
   }
 }
