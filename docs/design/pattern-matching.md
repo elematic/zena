@@ -198,3 +198,32 @@ let dispatch = (cb: Callback) => {
 - **Pattern Matching** is syntactic sugar over `is` + destructuring.
 - **`match`** is the chosen syntax, replacing `switch`.
 - **Overloading** for user code is best implemented via Union Types and internal pattern matching, providing a flexible and "Zena-idiomatic" approach.
+
+## 8. Implementation Status & Array Considerations
+
+### 8.1 Current Status
+
+- **Basic Matching**: Implemented (`match` expression, identifier patterns, literal patterns).
+- **Object Patterns**: Implemented for Classes and Records.
+- **Tuple Patterns**: Implemented for Tuples (immutable structs).
+- **`as` Patterns**: Implemented for renaming (`case Point { x } as p`).
+
+### 8.2 Array & Sequence Matching
+
+Matching on arrays (e.g., `case [a, b]`) presents a challenge compared to Tuples.
+
+- **Tuples**: Are structs with fixed fields. `[a, b]` compiles to field access `t.0`, `t.1`. This is safe and fast.
+- **Arrays**: Are heap objects (`FixedArray` or `Array` class).
+  - **Length Check**: Easy to check (`array.len() == 2`).
+  - **Element Check**: Requires accessing elements by index (`array.get(0)`).
+
+**Current Limitation**:
+Tuple patterns applied to Arrays currently **only check the length** in the initial implementation (or are restricted). This is unsafe because `[10, 20]` would match `[10, 99]` if only length is checked.
+
+**Recommendation**:
+1.  **Restrict**: Tuple patterns on arrays should be restricted or disabled until element verification is fully implemented.
+2.  **FixedArray**: Implement element checking using `array.get` intrinsics for the primitive `FixedArray` type.
+3.  **User Classes**: For user-defined classes (like `Array` or `List`), we need a protocol.
+    - **Option A**: `Sequence` interface with `get(index)` and `length`.
+    - **Option B**: Structural convention (duck typing) for `get` and `length`.
+

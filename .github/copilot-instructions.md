@@ -252,6 +252,14 @@ This project is an **npm monorepo** managed with **Wireit**.
 - [x] Allow identifiers to contain `$` and `_`.
 - [x] Implement `#[ ... ]` array literal syntax.
 - [x] Implement `map()` for `Array` and `FixedArray`.
+- [x] Implement Pattern Matching (Basic):
+  - `match` expression.
+  - Identifier patterns (binding & wildcards).
+  - Literal patterns (number, string, boolean).
+  - Record patterns (`{x: 1}`).
+  - Tuple patterns (`[1, 2]`) for Tuples.
+  - Class patterns (`Point {x}`).
+  - `as` patterns (`Point {x} as p`).
 
 ### Planned
 
@@ -310,10 +318,14 @@ This project is an **npm monorepo** managed with **Wireit**.
 6.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
 
-7.  **Future Features**:
+7.  **Pattern Matching (Advanced)**:
+    - Array element matching (requires `FixedArray` support or `Sequence` interface).
+    - Rest patterns (`...tail`).
+    - Logical patterns (`|`, `&`).
+
+8.  **Future Features**:
     - **Syntax**:
       - Blocks.
-      - Pattern matching.
       - For/of loops.
       - Iterators.
       - JSX-like builder syntax.
