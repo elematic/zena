@@ -2,6 +2,7 @@ import {
   NodeType,
   type ArrayLiteral,
   type AsExpression,
+  type AsPattern,
   type AssignmentExpression,
   type BinaryExpression,
   type BooleanLiteral,
@@ -18,6 +19,7 @@ import {
   type NumberLiteral,
   type Pattern,
   type RecordLiteral,
+  type RecordPattern,
   type StringLiteral,
   type SuperExpression,
   type TaggedTemplateExpression,
@@ -25,6 +27,7 @@ import {
   type ThisExpression,
   type ThrowExpression,
   type TupleLiteral,
+  type TuplePattern,
   type UnaryExpression,
 } from '../ast.js';
 import {DiagnosticCode} from '../diagnostics.js';
@@ -173,6 +176,12 @@ function checkMatchPattern(
       }
       break;
     }
+    case NodeType.AsPattern: {
+      const asPattern = pattern as AsPattern;
+      ctx.declare(asPattern.name.name, discriminantType);
+      checkMatchPattern(ctx, asPattern.pattern, discriminantType);
+      break;
+    }
     case NodeType.NumberLiteral: {
       if (discriminantType.kind !== TypeKind.Number) {
         // Allow if discriminant is compatible (e.g. any/unknown/union including number)
@@ -301,11 +310,91 @@ function checkMatchPattern(
       break;
     }
     case NodeType.RecordPattern: {
-      // Structural match?
-      // "Object Pattern: Checks the type and destructures fields."
-      // `case { name: 'Alice' }:`
-      // This implies checking if discriminant has these fields and values match.
-      // For now, let's support it if discriminant is Record or Class.
+      const recordPattern = pattern as RecordPattern;
+
+      // If discriminant is a Record, Class, or Interface, check fields
+      if (discriminantType.kind === TypeKind.Record) {
+        const recordType = discriminantType as RecordType;
+        for (const prop of recordPattern.properties) {
+          const propName = prop.name.name;
+          if (!recordType.properties.has(propName)) {
+            ctx.diagnostics.reportError(
+              `Property '${propName}' does not exist on type '${typeToString(discriminantType)}'.`,
+              DiagnosticCode.PropertyNotFound,
+            );
+            continue;
+          }
+          const propType = recordType.properties.get(propName)!;
+          checkMatchPattern(ctx, prop.value, propType);
+        }
+      } else if (discriminantType.kind === TypeKind.Class) {
+        const classType = discriminantType as ClassType;
+        for (const prop of recordPattern.properties) {
+          const propName = prop.name.name;
+          // Check fields and methods (getters)
+          let propType: Type | undefined;
+          if (classType.fields.has(propName)) {
+            propType = classType.fields.get(propName)!;
+          } else if (classType.methods.has(propName)) {
+            // Assuming getter for now, or method reference?
+            // For destructuring, we usually mean property access.
+            // If it's a method, it's a function type.
+            propType = classType.methods.get(propName)!;
+          }
+
+          if (!propType) {
+            ctx.diagnostics.reportError(
+              `Property '${propName}' does not exist on type '${typeToString(discriminantType)}'.`,
+              DiagnosticCode.PropertyNotFound,
+            );
+            continue;
+          }
+          checkMatchPattern(ctx, prop.value, propType);
+        }
+      } else {
+        // Allow if unknown or any?
+        if (discriminantType !== Types.Unknown) {
+          ctx.diagnostics.reportError(
+            `Cannot destructure non-object type '${typeToString(discriminantType)}'.`,
+            DiagnosticCode.TypeMismatch,
+          );
+        }
+      }
+      break;
+    }
+    case NodeType.TuplePattern: {
+      const tuplePattern = pattern as TuplePattern;
+      if (discriminantType.kind === TypeKind.Tuple) {
+        const tupleType = discriminantType as TupleType;
+        if (tuplePattern.elements.length > tupleType.elementTypes.length) {
+          ctx.diagnostics.reportError(
+            `Tuple pattern has ${tuplePattern.elements.length} elements but type has ${tupleType.elementTypes.length}.`,
+            DiagnosticCode.TypeMismatch,
+          );
+        }
+
+        for (let i = 0; i < tuplePattern.elements.length; i++) {
+          const elemPattern = tuplePattern.elements[i];
+          if (elemPattern && i < tupleType.elementTypes.length) {
+            checkMatchPattern(ctx, elemPattern, tupleType.elementTypes[i]);
+          }
+        }
+      } else if (discriminantType.kind === TypeKind.FixedArray) {
+        // Array destructuring?
+        const arrayType = discriminantType as FixedArrayType;
+        for (const elemPattern of tuplePattern.elements) {
+          if (elemPattern) {
+            checkMatchPattern(ctx, elemPattern, arrayType.elementType);
+          }
+        }
+      } else {
+        if (discriminantType !== Types.Unknown) {
+          ctx.diagnostics.reportError(
+            `Cannot destructure non-tuple type '${typeToString(discriminantType)}'.`,
+            DiagnosticCode.TypeMismatch,
+          );
+        }
+      }
       break;
     }
     default:

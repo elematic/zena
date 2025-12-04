@@ -595,6 +595,65 @@ for (var i = 0; i < 10; ) {
 }
 ```
 
+### Match Expression
+
+Zena supports pattern matching using the `match` expression.
+
+```zena
+let x = 1;
+let result = match (x) {
+  case 1: "one"
+  case 2: "two"
+  case _: "other"
+};
+```
+
+#### Patterns
+
+- **Literals**: Match exact values.
+
+  ```zena
+  case 1: ...
+  case 'hello': ...
+  case true: ...
+  case null: ...
+  ```
+
+- **Identifiers**: Bind the matched value to a variable.
+
+  ```zena
+  case x: x + 1
+  ```
+
+- **Wildcard**: `_` matches any value without binding.
+
+  ```zena
+  case _: ...
+  ```
+
+- **Class Patterns**: Match class instances and destructure fields.
+
+  ```zena
+  case Point { x: 0, y }: ... // Matches Point with x=0, binds y
+  ```
+
+- **Record Patterns**: Match records and destructure fields.
+
+  ```zena
+  case { a: 1, b }: ...
+  ```
+
+- **Tuple Patterns**: Match tuples and destructure elements.
+  ```zena
+  case [1, x]: ...
+  ```
+
+Patterns can be nested.
+
+```zena
+case Point { x: 0, y: [1, z] }: ...
+```
+
 ## 7. Classes and Objects
 
 Zena supports object-oriented programming with classes.

@@ -1,6 +1,7 @@
 import {
   NodeType,
   type AccessorDeclaration,
+  type AsPattern,
   type AssignmentPattern,
   type ClassDeclaration,
   type DeclareFunction,
@@ -399,6 +400,13 @@ function checkPattern(
     case NodeType.Identifier:
       ctx.declare(pattern.name, type, kind);
       break;
+
+    case NodeType.AsPattern: {
+      const asPattern = pattern as AsPattern;
+      ctx.declare(asPattern.name.name, type, kind);
+      checkPattern(ctx, asPattern.pattern, type, kind);
+      break;
+    }
 
     case NodeType.RecordPattern:
       checkRecordPattern(ctx, pattern, type, kind);

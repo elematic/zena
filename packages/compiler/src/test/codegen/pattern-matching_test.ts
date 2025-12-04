@@ -61,8 +61,8 @@ suite('CodeGenerator - Pattern Matching', () => {
       export let main = (): i32 => {
         let obj: A | B = new A(10);
         return match (obj) {
-          case A { x: v }: v
-          case B { y: v }: v + 100
+          case A { x as v }: v
+          case B { y as v }: v + 100
           case _: -1
         };
       };
@@ -78,8 +78,8 @@ suite('CodeGenerator - Pattern Matching', () => {
       export let main = (): i32 => {
         let obj: A | B = new B(20);
         return match (obj) {
-          case A { x: v }: v
-          case B { y: v }: v + 100
+          case A { x as v }: v
+          case B { y as v }: v + 100
           case _: -1
         };
       };
@@ -100,5 +100,114 @@ suite('CodeGenerator - Pattern Matching', () => {
       };
     `);
     assert.strictEqual(result, 1);
+  });
+
+  test('should match record pattern', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        let r = { a: 10, b: 20 };
+        return match (r) {
+          case { a: 10, b as y }: y
+          case _: 0
+        };
+      };
+    `);
+    assert.strictEqual(result, 20);
+  });
+
+  test('should match record pattern (nested)', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        let r = { a: { x: 10 }, b: 20 };
+        return match (r) {
+          case { a: { x: 10 }, b as y }: y
+          case _: 0
+        };
+      };
+    `);
+    assert.strictEqual(result, 20);
+  });
+
+  test('should match tuple pattern', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        let t = [10, 20];
+        return match (t) {
+          case [10, y]: y
+          case _: 0
+        };
+      };
+    `);
+    assert.strictEqual(result, 20);
+  });
+
+  test('should match tuple pattern (nested)', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        let t = [10, [20, 30]];
+        return match (t) {
+          case [10, [x, y]]: x + y
+          case _: 0
+        };
+      };
+    `);
+    assert.strictEqual(result, 50);
+  });
+
+  test('should match as pattern', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        let x = 10;
+        return match (x) {
+          case 10 as y: y
+          case _: 0
+        };
+      };
+    `);
+    assert.strictEqual(result, 10);
+  });
+
+  test('should match as pattern with record', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        let r = { a: 10 };
+        return match (r) {
+          case { a: 10 } as y: y.a
+          case _: 0
+        };
+      };
+    `);
+    assert.strictEqual(result, 10);
+  });
+
+  test('should match class pattern with as renaming', async () => {
+    const result = await compileAndRun(`
+      class A { x: i32; #new(x: i32) { this.x = x; } }
+
+      export let main = (): i32 => {
+        let obj = new A(10);
+        return match (obj) {
+          case A { x: _ } as a: a.x
+          case _: 0
+        };
+      };
+    `);
+    assert.strictEqual(result, 10);
+  });
+
+  test('should match class pattern with as renaming (nested)', async () => {
+    const result = await compileAndRun(`
+      class A { x: i32; #new(x: i32) { this.x = x; } }
+      class B { a: A; #new(a: A) { this.a = a; } }
+
+      export let main = (): i32 => {
+        let obj = new B(new A(10));
+        return match (obj) {
+          case B { a: A { x: _ } as inner }: inner.x
+          case _: 0
+        };
+      };
+    `);
+    assert.strictEqual(result, 10);
   });
 });

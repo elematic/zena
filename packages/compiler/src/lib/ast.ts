@@ -48,6 +48,7 @@ export const NodeType = {
   TuplePattern: 'TuplePattern',
   BindingProperty: 'BindingProperty',
   AssignmentPattern: 'AssignmentPattern',
+  AsPattern: 'AsPattern',
   FunctionTypeAnnotation: 'FunctionTypeAnnotation',
   TemplateLiteral: 'TemplateLiteral',
   TaggedTemplateExpression: 'TaggedTemplateExpression',
@@ -223,7 +224,19 @@ export type Pattern =
   | Identifier
   | RecordPattern
   | TuplePattern
-  | AssignmentPattern;
+  | AssignmentPattern
+  | NumberLiteral
+  | StringLiteral
+  | BooleanLiteral
+  | NullLiteral
+  | ClassPattern
+  | AsPattern;
+
+export interface AsPattern extends Node {
+  type: typeof NodeType.AsPattern;
+  pattern: Pattern;
+  name: Identifier;
+}
 
 export type Expression =
   | BinaryExpression

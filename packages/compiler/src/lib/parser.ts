@@ -3,10 +3,8 @@ import {
   type AccessorDeclaration,
   type BindingProperty,
   type BlockStatement,
-  type BooleanLiteral,
   type CallExpression,
   type ClassDeclaration,
-  type ClassPattern,
   type Decorator,
   type DeclareFunction,
   type Expression,
@@ -27,8 +25,6 @@ import {
   type MethodSignature,
   type MixinDeclaration,
   type NamedTypeAnnotation,
-  type NullLiteral,
-  type NumberLiteral,
   type Parameter,
   type Pattern,
   type Program,
@@ -297,13 +293,96 @@ export class Parser {
   }
 
   #parsePattern(): Pattern {
-    if (this.#match(TokenType.LBrace)) {
-      return this.#parseRecordPattern();
+    let pattern: Pattern;
+    if (this.#match(TokenType.Number)) {
+      const token = this.#previous();
+      pattern = {
+        type: NodeType.NumberLiteral,
+        value: Number(token.value),
+        raw: token.value,
+        loc: this.#locFromToken(token),
+      };
+    } else if (this.#match(TokenType.String)) {
+      const token = this.#previous();
+      pattern = {
+        type: NodeType.StringLiteral,
+        value: token.value,
+        loc: this.#locFromToken(token),
+      };
+    } else if (this.#match(TokenType.True)) {
+      const token = this.#previous();
+      pattern = {
+        type: NodeType.BooleanLiteral,
+        value: true,
+        loc: this.#locFromToken(token),
+      };
+    } else if (this.#match(TokenType.False)) {
+      const token = this.#previous();
+      pattern = {
+        type: NodeType.BooleanLiteral,
+        value: false,
+        loc: this.#locFromToken(token),
+      };
+    } else if (this.#match(TokenType.Null)) {
+      const token = this.#previous();
+      pattern = {type: NodeType.NullLiteral, loc: this.#locFromToken(token)};
+    } else if (this.#match(TokenType.LBrace)) {
+      pattern = this.#parseRecordPattern();
+    } else if (this.#match(TokenType.LBracket)) {
+      pattern = this.#parseTuplePattern();
+    } else if (this.#match(TokenType.Identifier)) {
+      const token = this.#previous();
+      const identifier: Identifier = {
+        type: NodeType.Identifier,
+        name: token.value,
+        loc: this.#locFromToken(token),
+      };
+
+      if (this.#match(TokenType.LBrace)) {
+        const recordPattern = this.#parseRecordPattern();
+        pattern = {
+          type: NodeType.ClassPattern,
+          name: identifier,
+          properties: recordPattern.properties,
+          loc: this.#loc(identifier, recordPattern),
+        };
+      } else {
+        pattern = identifier;
+      }
+    } else {
+      throw new Error(`Expected pattern, got ${this.#peek().type}`);
     }
-    if (this.#match(TokenType.LBracket)) {
-      return this.#parseTuplePattern();
+
+    if (this.#match(TokenType.As)) {
+      const name = this.#parseIdentifier();
+      return {
+        type: NodeType.AsPattern,
+        pattern,
+        name,
+        loc: this.#loc(pattern, name),
+      };
     }
-    return this.#parseIdentifier();
+
+    return pattern;
+  }
+
+  #convertIdentifierToClassPattern(pattern: Pattern): Pattern {
+    if (pattern.type === NodeType.Identifier) {
+      if (pattern.name === '_') return pattern;
+      return {
+        type: NodeType.ClassPattern,
+        name: pattern,
+        properties: [],
+        loc: pattern.loc,
+      };
+    }
+    if (pattern.type === NodeType.AsPattern) {
+      return {
+        ...pattern,
+        pattern: this.#convertIdentifierToClassPattern(pattern.pattern),
+      };
+    }
+    return pattern;
   }
 
   #parseRecordPattern(): RecordPattern {
@@ -317,6 +396,7 @@ export class Parser {
           value = this.#parseIdentifier();
         } else if (this.#match(TokenType.Colon)) {
           value = this.#parsePattern();
+          value = this.#convertIdentifierToClassPattern(value);
         }
 
         if (this.#match(TokenType.Equals)) {
@@ -1057,81 +1137,8 @@ export class Parser {
     };
   }
 
-  #parseMatchPattern():
-    | Pattern
-    | ClassPattern
-    | NumberLiteral
-    | StringLiteral
-    | BooleanLiteral
-    | NullLiteral {
-    if (this.#match(TokenType.Number)) {
-      const token = this.#previous();
-      return {
-        type: NodeType.NumberLiteral,
-        value: Number(token.value),
-        raw: token.value,
-        loc: this.#locFromToken(token),
-      };
-    }
-    if (this.#match(TokenType.String)) {
-      const token = this.#previous();
-      return {
-        type: NodeType.StringLiteral,
-        value: token.value,
-        loc: this.#locFromToken(token),
-      };
-    }
-    if (this.#match(TokenType.True)) {
-      const token = this.#previous();
-      return {
-        type: NodeType.BooleanLiteral,
-        value: true,
-        loc: this.#locFromToken(token),
-      };
-    }
-    if (this.#match(TokenType.False)) {
-      const token = this.#previous();
-      return {
-        type: NodeType.BooleanLiteral,
-        value: false,
-        loc: this.#locFromToken(token),
-      };
-    }
-    if (this.#match(TokenType.Null)) {
-      const token = this.#previous();
-      return {type: NodeType.NullLiteral, loc: this.#locFromToken(token)};
-    }
-
-    if (this.#check(TokenType.LBrace)) {
-      return this.#parseRecordPattern();
-    }
-
-    if (this.#check(TokenType.LBracket)) {
-      return this.#parseTuplePattern();
-    }
-
-    if (this.#match(TokenType.Identifier)) {
-      const token = this.#previous();
-      const identifier: Identifier = {
-        type: NodeType.Identifier,
-        name: token.value,
-        loc: this.#locFromToken(token),
-      };
-
-      if (this.#match(TokenType.LBrace)) {
-        const recordPattern = this.#parseRecordPattern();
-        return {
-          type: NodeType.ClassPattern,
-          name: identifier,
-          properties: recordPattern.properties,
-          loc: this.#loc(identifier, recordPattern),
-        };
-      }
-
-      return identifier;
-    }
-
-    throw new Error('Expected pattern.');
+  #parseMatchPattern(): Pattern {
+    return this.#parsePattern();
   }
 
   #isTemplateStart(): boolean {
