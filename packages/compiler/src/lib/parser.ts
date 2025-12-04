@@ -683,11 +683,11 @@ export class Parser {
   }
 
   #parseFactor(): Expression {
-    let left = this.#parseCall();
+    let left = this.#parseUnary();
 
     while (this.#match(TokenType.Star, TokenType.Slash, TokenType.Percent)) {
       const operator = this.#previous().value;
-      const right = this.#parseCall();
+      const right = this.#parseUnary();
       left = {
         type: NodeType.BinaryExpression,
         left,
@@ -698,6 +698,33 @@ export class Parser {
     }
 
     return left;
+  }
+
+  #parseUnary(): Expression {
+    if (this.#match(TokenType.Bang, TokenType.Minus)) {
+      const operator = this.#previous().value;
+      const startToken = this.#previous();
+      const argument = this.#parseUnary();
+      return {
+        type: NodeType.UnaryExpression,
+        operator,
+        argument,
+        prefix: true,
+        loc: this.#loc(startToken, argument),
+      };
+    }
+
+    if (this.#match(TokenType.Throw)) {
+      const startToken = this.#previous();
+      const argument = this.#parseExpression();
+      return {
+        type: NodeType.ThrowExpression,
+        argument,
+        loc: this.#loc(startToken, argument),
+      };
+    }
+
+    return this.#parseCall();
   }
 
   #parseCall(): Expression {

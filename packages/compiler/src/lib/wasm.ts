@@ -12,6 +12,7 @@ export const SectionId = {
   Code: 10,
   Data: 11,
   DataCount: 12,
+  Tag: 13,
 } as const;
 
 export const ValType = {
@@ -81,6 +82,7 @@ export const Opcode = {
   loop: 0x03,
   if: 0x04,
   else: 0x05,
+  throw: 0x08,
   end: 0x0b,
   br: 0x0c,
   br_if: 0x0d,
@@ -152,6 +154,7 @@ export const Opcode = {
   f32_sub: 0x93,
   f32_mul: 0x94,
   f32_div: 0x95,
+  f32_neg: 0x8c,
 
   f32_convert_i32_s: 0xb2,
 } as const;
@@ -161,4 +164,5 @@ export const ExportDesc = {
   Table: 0x01,
   Mem: 0x02,
   Global: 0x03,
+  Tag: 0x04,
 } as const;

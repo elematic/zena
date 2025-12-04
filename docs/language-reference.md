@@ -14,7 +14,7 @@ Zena supports two styles of comments:
 
 Single-line comments begin with `//` and continue to the end of the line.
 
-```typescript
+```zena
 let x = 1; // This is a single-line comment
 ```
 
@@ -22,7 +22,7 @@ let x = 1; // This is a single-line comment
 
 Multi-line comments begin with `/*` and end with `*/`. They can span multiple lines.
 
-```typescript
+```zena
 /* This is a
    multi-line comment */
 let x = 1;
@@ -38,7 +38,7 @@ Identifiers name variables, functions, classes, interfaces, mixins, and other en
 - Subsequent characters can be letters, digits (`0-9`), underscores, or dollar signs.
 - Identifiers are case-sensitive.
 
-```typescript
+```zena
 let _private = 1;
 let $variable = 2;
 let camelCase = 3;
@@ -66,7 +66,7 @@ This soundness is enforced by the underlying WASM-GC architecture. Zena does not
 
 Local variable types are inferred from their initializer expression.
 
-```typescript
+```zena
 let x = 10; // Inferred as i32
 let s = 'hello'; // Inferred as string
 ```
@@ -79,7 +79,7 @@ Explicit type casts (e.g., using an `as` operator) are **checked casts**. This m
 
 However, if the source type and the target type are identical (e.g. casting a value to its own type, or casting between a distinct type and its underlying type), the cast is **elided** at runtime. In these cases, the cast serves purely as a compile-time assertion and incurs no runtime overhead.
 
-```typescript
+```zena
 distinct type ID = i32;
 let id = 1 as ID; // Checked at compile time, elided at runtime
 ```
@@ -88,7 +88,7 @@ let id = 1 as ID; // Checked at compile time, elided at runtime
 
 Type aliases create a new name for a type. They are defined using the `type` keyword.
 
-```typescript
+```zena
 type ID = string;
 type Point = {x: i32; y: i32};
 type Callback = (result: string) => void;
@@ -96,7 +96,7 @@ type Callback = (result: string) => void;
 
 Type aliases can be generic:
 
-```typescript
+```zena
 type Box<T> = {value: T};
 type Result<T> = {success: boolean; data: T};
 ```
@@ -105,7 +105,7 @@ type Result<T> = {success: boolean; data: T};
 
 Distinct types create a new type that is structurally identical to an existing type but treated as a unique type by the type checker. This is useful for creating type-safe identifiers or units of measure.
 
-```typescript
+```zena
 distinct type Meters = i32;
 distinct type Seconds = i32;
 
@@ -121,7 +121,7 @@ Distinct types are erased at runtime, so they have no performance overhead. Cast
 
 Function types describe the signature of a function. They are written using arrow syntax.
 
-```typescript
+```zena
 type BinaryOp = (a: i32, b: i32) => i32;
 type Callback = () => void;
 
@@ -132,7 +132,7 @@ let add: BinaryOp = (a, b) => a + b;
 
 Union types describe a value that can be one of several types. They are written using the `|` operator.
 
-```typescript
+```zena
 let x: string | null = null;
 x = 'hello';
 ```
@@ -148,7 +148,7 @@ This restriction exists because value primitives in WASM do not carry runtime ty
 
 To use a primitive in a union (e.g., for a nullable integer), you must wrap it in a `Box<T>`.
 
-```typescript
+```zena
 import {Box} from 'zena';
 
 let maybeNumber: Box<i32> | null = new Box(42);
@@ -163,7 +163,7 @@ Variables are declared using `let` or `var`.
 
 ### Syntax
 
-```typescript
+```zena
 let name = expression;
 var name = expression;
 ```
@@ -178,7 +178,7 @@ Zena currently supports functions using arrow syntax.
 
 ### Syntax
 
-```typescript
+```zena
 (param1: Type, param2: Type) => expression;
 ```
 
@@ -186,23 +186,23 @@ Zena currently supports functions using arrow syntax.
 
 Function parameters must have explicit type annotations.
 
-```typescript
-const add = (a: i32, b: i32) => a + b;
+```zena
+let add = (a: i32, b: i32) => a + b;
 ```
 
 ### Return Type
 
 The return type is inferred from the body expression. It can also be explicitly annotated.
 
-```typescript
-const add = (a: i32, b: i32): i32 => a + b;
+```zena
+let add = (a: i32, b: i32): i32 => a + b;
 ```
 
 ### Function Body
 
 Function bodies can be a single expression or a block statement.
 
-```typescript
+```zena
 // Expression body
 let add = (a: i32, b: i32) => a + b;
 
@@ -216,7 +216,7 @@ let add = (a: i32, b: i32) => {
 
 Functions in Zena are closures. They can capture variables from their surrounding scope. Captured variables are stored in a heap-allocated context, ensuring they remain available even after the outer scope has returned.
 
-```typescript
+```zena
 let makeAdder = (x: i32) => {
   return (y: i32) => x + y;
 };
@@ -229,7 +229,7 @@ let result = add5(10); // 15
 
 Zena supports passing functions with fewer arguments than expected by the receiver. The compiler automatically generates an adapter to bridge the difference. This applies to function arguments, variable assignments, and union type matching.
 
-```typescript
+```zena
 // Function expecting a callback with 3 arguments
 let map = (fn: (item: i32, index: i32, array: MyArray) => i32) => { ... };
 
@@ -255,22 +255,22 @@ Function parameters can be marked as optional using `?`. Optional parameters mus
 
 When a parameter is optional and has no default value, its type becomes a union with `null` (e.g., `T | null`). Because unions cannot contain primitive types, **optional primitive parameters must have a default value** or be wrapped in `Box<T>`.
 
-```typescript
+```zena
 // ✅ Valid: Reference type (string | null)
-const greet = (name?: string) => { ... };
+let greet = (name?: string) => { ... };
 
 // ✅ Valid: Primitive with default value (type is i32)
-const increment = (amount: i32 = 1) => { ... };
+let increment = (amount: i32 = 1) => { ... };
 
 // ✅ Valid: Boxed primitive (Box<i32> | null)
-const process = (val?: Box<i32>) => { ... };
+let process = (val?: Box<i32>) => { ... };
 
 // ❌ Invalid: Primitive without default (would be i32 | null)
-// const invalid = (amount?: i32) => { ... };
+// let invalid = (amount?: i32) => { ... };
 ```
 
-```typescript
-const greet = (name: string, greeting?: string) => {
+```zena
+let greet = (name: string, greeting?: string) => {
   // greeting is inferred as string | null
   if (greeting == null) {
     return `Hello, ${name}`;
@@ -284,8 +284,8 @@ greet('Bob', 'Hi'); // "Hi, Bob"
 
 Optional parameters can also have default values.
 
-```typescript
-const increment = (x: i32, amount: i32 = 1) => x + amount;
+```zena
+let increment = (x: i32, amount: i32 = 1) => x + amount;
 
 increment(10); // 11
 increment(10, 5); // 15
@@ -297,7 +297,7 @@ When a default value is provided, the parameter type in the function body is the
 
 Zena supports calling a function that is typed as a Union of function types, even if those functions have different arities. The compiler generates a runtime dispatch that checks the actual type of the function and calls it with the appropriate number of arguments. Extra arguments are ignored if the runtime function expects fewer.
 
-```typescript
+```zena
 type Fn1 = (a: i32) => i32;
 type Fn2 = (a: i32, b: i32) => i32;
 type AnyFn = Fn1 | Fn2;
@@ -316,7 +316,7 @@ f2(10, 20); // Returns 30
 
 Zena supports function overloading for declared external functions. This allows you to define multiple signatures for the same function name, provided they have different parameter lists.
 
-```typescript
+```zena
 declare function print(val: i32): void;
 declare function print(val: f32): void;
 
@@ -347,7 +347,7 @@ String literals support the following escape sequences:
 | `\"`   | Double quote    |
 | `\'`   | Single quote    |
 
-```typescript
+```zena
 let message = 'Hello\nWorld'; // Contains a newline
 let path = 'C:\\Users\\file'; // Escaped backslashes
 let quote = 'She said "Hi"'; // Escaped double quotes
@@ -369,7 +369,7 @@ Template literals are backtick-delimited strings that support embedded expressio
 
 #### Basic Template Literals
 
-```typescript
+```zena
 let greeting = `Hello, World!`;
 let multiline = `Line 1
 Line 2`;
@@ -379,7 +379,7 @@ Line 2`;
 
 Expressions can be embedded using `${}`:
 
-```typescript
+```zena
 let name = 'Alice';
 let greeting = `Hello, ${name}!`; // "Hello, Alice!"
 
@@ -397,7 +397,7 @@ Template literals support the same escape sequences as regular strings, plus:
 | `` \` `` | Backtick                               |
 | `\$`     | Dollar sign (to prevent interpolation) |
 
-```typescript
+```zena
 let code = `Use \`backticks\` for templates`;
 let price = `Cost: \$100`; // Prevents ${} interpolation
 ```
@@ -406,7 +406,7 @@ let price = `Cost: \$100`; // Prevents ${} interpolation
 
 Tagged templates allow custom processing of template literals by preceding them with a tag function:
 
-```typescript
+```zena
 let tag = (strings: Array<String>, values: Array<i32>): String => {
   // strings: array of string literals between expressions
   // values: array of evaluated expressions
@@ -425,7 +425,7 @@ The strings array length is always `values.length + 1`.
 
 **Note**: The strings array maintains identity across evaluations of the same template expression, allowing it to be used as a cache key for expensive one-time processing.
 
-```typescript
+```zena
 // Example: SQL query builder
 let sql = (strings: Array<String>, values: Array<i32>): String => {
   // Build parameterized query from strings
@@ -436,6 +436,11 @@ let sql = (strings: Array<String>, values: Array<i32>): String => {
 let userId = 123;
 let query = sql`SELECT * FROM users WHERE id = ${userId}`;
 ```
+
+### Unary Operators
+
+- `!` (Logical NOT) - Inverts a boolean value.
+- `-` (Negation) - Negates a numeric value (`i32` or `f32`).
 
 ### Binary Operators
 
@@ -455,7 +460,7 @@ Supported bitwise operators for integer types (`i32`):
 
 Operands must be of the same type. Implicit coercion is not supported.
 
-```typescript
+```zena
 let a = 10;
 let b = 20;
 let c = a + b; // Valid
@@ -467,7 +472,7 @@ let s = 'Hello' + ' World'; // Valid (String Concatenation)
 
 Functions can be called using parentheses `()`.
 
-```typescript
+```zena
 let result = add(1, 2);
 ```
 
@@ -475,7 +480,7 @@ let result = add(1, 2);
 
 Mutable variables (declared with `var`) can be reassigned.
 
-```typescript
+```zena
 var x = 1;
 x = 2;
 ```
@@ -484,7 +489,7 @@ x = 2;
 
 Parentheses `( )` can be used to group expressions and control precedence.
 
-```typescript
+```zena
 let result = (1 + 2) * 3;
 ```
 
@@ -514,7 +519,7 @@ Operands must be of type `boolean`.
 
 Zena supports `if` and `else` for conditional execution.
 
-```typescript
+```zena
 if (condition) {
   // consequent
 } else {
@@ -526,7 +531,7 @@ if (condition) {
 
 Zena supports `while` loops.
 
-```typescript
+```zena
 while (condition) {
   // body
 }
@@ -536,7 +541,7 @@ while (condition) {
 
 Zena supports C-style `for` loops. The loop variable must be declared with `var` since it is mutable.
 
-```typescript
+```zena
 for (var i = 0; i < 10; i = i + 1) {
   // body
 }
@@ -550,7 +555,7 @@ The `for` statement consists of three optional parts:
 
 Any of these parts can be omitted:
 
-```typescript
+```zena
 // Infinite loop (test omitted)
 for (;;) {
   // Use return to exit
@@ -576,7 +581,7 @@ Zena supports object-oriented programming with classes.
 
 Classes are declared using the `class` keyword.
 
-````typescript
+````zena
 class Point {
   x: i32;
   y: i32;
@@ -596,7 +601,7 @@ class Point {
 
 Classes and Mixins can define generic methods. Type parameters are specified after the method name.
 
-```typescript
+```zena
 class Container {
   value: i32;
 
@@ -608,7 +613,7 @@ class Container {
 
 Generic methods can be called with explicit type arguments or inferred.
 
-```typescript
+```zena
 let c = new Container();
 c.value = 10;
 let s = c.map<string>((v) => 'Value: ' + v); // Explicit
@@ -625,7 +630,7 @@ let n = c.map((v) => v * 2); // Inferred
 
 Extension classes allow adding methods to existing types. This is useful for extending built-in types or types from other modules without modifying their definition.
 
-```typescript
+```zena
 extension class ArrayExtensions<T> on array<T> {
   // Add methods to array<T>
   last(): T {
@@ -638,7 +643,7 @@ extension class ArrayExtensions<T> on array<T> {
 - **`on Type`**: Specifies the type being extended.
 - **`declare` fields**: Extension classes can declare fields that exist on the underlying type but are not implemented in the extension (e.g., for intrinsics).
 
-```typescript
+```zena
 export final extension class FixedArray<T> on array<T> {
   @intrinsic('array.len')
   declare length: i32;
@@ -661,9 +666,9 @@ Zena provides a low-level built-in array type `array<T>`. This maps directly to 
 
 Top-level declarations (variables, functions, classes) can be exported using the `export` keyword. This exposes them to the host environment.
 
-```typescript
+```zena
 // Export a function
-export const add = (a: i32, b: i32) => a + b;
+export let add = (a: i32, b: i32) => a + b;
 
 // Export a class
 export class Point {
@@ -680,7 +685,7 @@ export class Point {
 
 Zena allows importing functions from the host environment using the `declare` keyword and the `@external` decorator.
 
-```typescript
+```zena
 @external("env", "log")
 declare function log(val: i32): void;
 ```
@@ -694,8 +699,8 @@ These declarations map to WebAssembly imports, allowing Zena to call JavaScript 
 
 Top-level declarations can be exported using the `export` keyword. This exposes them to other modules or the host environment.
 
-```typescript
-export const add = (a: i32, b: i32) => a + b;
+```zena
+export let add = (a: i32, b: i32) => a + b;
 export declare function print(s: string): void;
 export class Point { ... }
 ```
@@ -710,7 +715,7 @@ Intrinsics are declared using the `@intrinsic` decorator on a `declare function`
 
 The `eq` intrinsic provides a generic equality check that works across all types.
 
-```typescript
+```zena
 @intrinsic('eq')
 declare function equals<T>(a: T, b: T): boolean;
 ```
@@ -727,7 +732,7 @@ The behavior depends on the type `T`:
 
 Classes can customize equality behavior by implementing `operator ==`.
 
-```typescript
+```zena
 class Point {
   x: i32;
   y: i32;
@@ -752,7 +757,7 @@ let p2 = new Point(1, 2);
 
 The `hash` intrinsic computes a hash code for a value, suitable for use in hash maps.
 
-```typescript
+```zena
 @intrinsic('hash')
 declare function hash<T>(val: T): i32;
 ```
@@ -775,7 +780,7 @@ A mutable hash map implementation.
 
 **Note**: Because `Map` accessors return `V | null` to indicate missing keys, the value type `V` must be a reference type. Primitive types (like `i32`) cannot be used directly because they cannot form a union with `null` (see [Union Types](#union-types)). To store primitives, wrap them in `Box<T>`.
 
-```typescript
+```zena
 let map = new Map<string, Box<i32>>();
 map.set('one', new Box(1));
 map['two'] = new Box(2);
@@ -787,9 +792,36 @@ let val = map['one']; // Returns Box<i32> | null
 
 A wrapper class for holding values. This is particularly useful for using primitive types in contexts that require reference types, such as Union Types.
 
-```typescript
+```zena
 let b = new Box(42);
 let val: Box<i32> | null = b;
+```
+
+## 11. Exception Handling
+
+Zena supports throwing exceptions using the `throw` keyword.
+
+### Throw Expression
+
+The `throw` expression interrupts execution and unwinds the stack. It evaluates to the `never` type, meaning it can be used in any context where a value is expected.
+
+```zena
+throw new Error("Something went wrong");
+
+let x: i32 = throw new Error("Boom"); // Valid, x is never assigned
+```
+
+The expression thrown must be an instance of the `Error` class (or a subclass).
+
+### Error Class
+
+The `Error` class is part of the standard library and is available globally.
+
+```zena
+class Error {
+  message: string;
+  #new(message: string) { this.message = message; }
+}
 ```
 
 ## 14. Grammar (Simplified)
@@ -817,7 +849,7 @@ ForStatement ::= "for" "(" ForInit? ";" Expression? ";" Expression? ")" Statemen
 
 ForInit ::= VariableDeclaration | Expression
 
-Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression | CallExpression | NewExpression | MemberExpression | ArrayLiteral | IndexExpression | TemplateLiteral | TaggedTemplateExpression
+Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression | CallExpression | NewExpression | MemberExpression | ArrayLiteral | IndexExpression | TemplateLiteral | TaggedTemplateExpression | ThrowExpression | UnaryExpression
 
 AssignmentExpression ::= (Identifier | MemberExpression | IndexExpression) "=" Expression
 
@@ -836,6 +868,10 @@ TemplateLiteral ::= "`" TemplateSpan* "`"
 TemplateSpan ::= TemplateChars | "${" Expression "}"
 
 TaggedTemplateExpression ::= Expression TemplateLiteral
+
+ThrowExpression ::= "throw" Expression
+
+UnaryExpression ::= ("!" | "-") Expression
 
 ArrowFunction ::= "(" ParameterList? ")" (":" TypeAnnotation)? "=>" Expression
 
@@ -856,7 +892,7 @@ Zena supports destructuring for Records, Tuples, and Classes.
 
 #### Record Destructuring
 
-```typescript
+```zena
 let p = { x: 10, y: 20 };
 let { x, y } = p;
 let { x as a, y as b } = p; // Renaming
@@ -864,7 +900,7 @@ let { x as a, y as b } = p; // Renaming
 
 #### Tuple Destructuring
 
-```typescript
+```zena
 let t = [10, 20];
 let [a, b] = t;
 let [first, , third] = [1, 2, 3]; // Skipping elements
@@ -874,7 +910,7 @@ let [first, , third] = [1, 2, 3]; // Skipping elements
 
 Class instances can be destructured similar to records.
 
-```typescript
+```zena
 class Point {
   x: i32;
   y: i32;

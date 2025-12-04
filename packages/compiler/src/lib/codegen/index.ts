@@ -67,6 +67,17 @@ export class CodeGenerator {
   public generate(): Uint8Array {
     const {program} = this.#ctx;
 
+    // Initialize exception tag
+    // Tag type: (param eqref) -> void
+    // We use eqref to allow throwing any object (including Error instances)
+    const tagTypeIndex = this.#ctx.module.addType([[ValType.eqref]], []);
+    this.#ctx.exceptionTagIndex = this.#ctx.module.addTag(tagTypeIndex);
+    this.#ctx.module.addExport(
+      'zena_exception',
+      ExportDesc.Tag,
+      this.#ctx.exceptionTagIndex,
+    );
+
     const globalInitializers: {index: number; init: any}[] = [];
 
     // 1. Register Interfaces and Mixins (First pass)

@@ -33,6 +33,7 @@ export const TokenType = {
   As: 'As',
   Extension: 'Extension',
   Static: 'Static',
+  Throw: 'Throw',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -48,6 +49,7 @@ export const TokenType = {
   Equals: 'Equals',
   EqualsEquals: 'EqualsEquals',
   EqualsEqualsEquals: 'EqualsEqualsEquals',
+  Bang: 'Bang',
   BangEquals: 'BangEquals',
   BangEqualsEquals: 'BangEqualsEquals',
   Less: 'Less',
@@ -134,6 +136,7 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   as: TokenType.As,
   extension: TokenType.Extension,
   static: TokenType.Static,
+  throw: TokenType.Throw,
 });
 
 export function tokenize(source: string): Token[] {
@@ -443,7 +446,7 @@ export function tokenize(source: string): Token[] {
           }
         } else {
           tokens.push({
-            type: TokenType.Unknown,
+            type: TokenType.Bang,
             value: '!',
             line,
             column: startColumn,

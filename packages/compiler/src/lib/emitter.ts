@@ -6,6 +6,7 @@ export class WasmModule {
   #functions: number[] = [];
   #exports: {name: string; kind: number; index: number}[] = [];
   #globals: number[][] = [];
+  #tags: number[][] = [];
   #codes: number[][] = [];
   #datas: number[][] = [];
   #declaredFunctions: Set<number> = new Set();
@@ -157,6 +158,14 @@ export class WasmModule {
     return this.#globals.length - 1;
   }
 
+  public addTag(typeIndex: number): number {
+    const buffer: number[] = [];
+    buffer.push(0x00); // attribute 0 (exception)
+    this.#writeUnsignedLEB128(buffer, typeIndex);
+    this.#tags.push(buffer);
+    return this.#tags.length - 1;
+  }
+
   public declareFunction(index: number) {
     this.#declaredFunctions.add(index);
   }
@@ -207,6 +216,16 @@ export class WasmModule {
         this.#writeUnsignedLEB128(sectionBuffer, typeIndex);
       }
       this.#writeSection(buffer, SectionId.Function, sectionBuffer);
+    }
+
+    // Tag Section
+    if (this.#tags.length > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#tags.length);
+      for (const tag of this.#tags) {
+        sectionBuffer.push(...tag);
+      }
+      this.#writeSection(buffer, SectionId.Tag, sectionBuffer);
     }
 
     // Global Section

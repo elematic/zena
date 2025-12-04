@@ -55,6 +55,8 @@ export const NodeType = {
   TypeAliasDeclaration: 'TypeAliasDeclaration',
   AsExpression: 'AsExpression',
   Decorator: 'Decorator',
+  UnaryExpression: 'UnaryExpression',
+  ThrowExpression: 'ThrowExpression',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -238,7 +240,9 @@ export type Expression =
   | SuperExpression
   | TemplateLiteral
   | TaggedTemplateExpression
-  | AsExpression;
+  | AsExpression
+  | UnaryExpression
+  | ThrowExpression;
 
 export interface BinaryExpression extends Node {
   type: typeof NodeType.BinaryExpression;
@@ -257,6 +261,18 @@ export interface AsExpression extends Node {
   type: typeof NodeType.AsExpression;
   expression: Expression;
   typeAnnotation: TypeAnnotation;
+}
+
+export interface UnaryExpression extends Node {
+  type: typeof NodeType.UnaryExpression;
+  operator: string;
+  argument: Expression;
+  prefix: boolean;
+}
+
+export interface ThrowExpression extends Node {
+  type: typeof NodeType.ThrowExpression;
+  argument: Expression;
 }
 
 export interface NumberLiteral extends Node {

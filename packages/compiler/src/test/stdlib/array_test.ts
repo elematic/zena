@@ -111,31 +111,43 @@ suite('Stdlib: Array', () => {
     assert.strictEqual(result, 100);
   });
 
-  test('out of bounds access traps', async () => {
+  test('out of bounds access throws', async () => {
     const source = `
       import { Array } from 'zena:array';
       export let run = (): i32 => {
         let arr = new Array<i32>(4);
         arr.push(1);
-        return arr[1]; // Should trap
+        return arr[1]; // Should throw
       };
     `;
-    await assert.rejects(async () => {
+    try {
       await compileAndRun(source, 'run');
-    }, /RuntimeError/);
+      assert.fail('Should have thrown');
+    } catch (e: any) {
+      assert.ok(
+        e instanceof (WebAssembly as any).Exception,
+        'Should be a WASM exception',
+      );
+    }
   });
 
-  test('out of bounds set traps', async () => {
+  test('out of bounds set throws', async () => {
     const source = `
       import { Array } from 'zena:array';
       export let run = (): void => {
         let arr = new Array<i32>(4);
         arr.push(1);
-        arr[1] = 2; // Should trap
+        arr[1] = 2; // Should throw
       };
     `;
-    await assert.rejects(async () => {
+    try {
       await compileAndRun(source, 'run');
-    }, /RuntimeError/);
+      assert.fail('Should have thrown');
+    } catch (e: any) {
+      assert.ok(
+        e instanceof (WebAssembly as any).Exception,
+        'Should be a WASM exception',
+      );
+    }
   });
 });

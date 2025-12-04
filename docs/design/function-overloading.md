@@ -29,7 +29,7 @@ For regular Zena functions, we prefer a **Single Implementation** strategy simil
 This approach allows the type checker to correlate input types with output types, which is not possible with simple Union Types alone.
 
 ```zena
-let format: 
+let format:
     // Signatures (Overloads)
     // If called with one arg, returns string
     (val: i32) =? string |

@@ -25,3 +25,7 @@ export const boxModule = fs.readFileSync(
   path.join(stdlibDir, 'box.zena'),
   'utf-8',
 );
+export const errorModule = fs.readFileSync(
+  path.join(stdlibDir, 'error.zena'),
+  'utf-8',
+);

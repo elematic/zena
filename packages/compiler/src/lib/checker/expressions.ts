@@ -15,7 +15,9 @@ import {
   type TaggedTemplateExpression,
   type TemplateLiteral,
   type ThisExpression,
+  type ThrowExpression,
   type TupleLiteral,
+  type UnaryExpression,
 } from '../ast.js';
 import {DiagnosticCode} from '../diagnostics.js';
 import {
@@ -111,9 +113,56 @@ function checkExpressionInternal(ctx: CheckerContext, expr: Expression): Type {
       );
     case NodeType.AsExpression:
       return checkAsExpression(ctx, expr as AsExpression);
+    case NodeType.UnaryExpression:
+      return checkUnaryExpression(ctx, expr as UnaryExpression);
+    case NodeType.ThrowExpression:
+      return checkThrowExpression(ctx, expr as ThrowExpression);
     default:
       return Types.Unknown;
   }
+}
+
+function checkUnaryExpression(
+  ctx: CheckerContext,
+  expr: UnaryExpression,
+): Type {
+  const argType = checkExpression(ctx, expr.argument);
+  if (expr.operator === '!') {
+    if (argType !== Types.Boolean) {
+      ctx.diagnostics.reportError(
+        `Operator '!' requires boolean operand, got ${typeToString(argType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+    return Types.Boolean;
+  } else if (expr.operator === '-') {
+    if (argType.kind !== TypeKind.Number) {
+      ctx.diagnostics.reportError(
+        `Operator '-' requires numeric operand, got ${typeToString(argType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
+      return Types.Unknown;
+    }
+    return argType;
+  }
+  return Types.Unknown;
+}
+
+function checkThrowExpression(
+  ctx: CheckerContext,
+  expr: ThrowExpression,
+): Type {
+  const argType = checkExpression(ctx, expr.argument);
+  const errorType = ctx.resolve('Error');
+  if (errorType) {
+    if (!isAssignableTo(argType, errorType)) {
+      ctx.diagnostics.reportError(
+        `Thrown value must be an instance of Error, got ${typeToString(argType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+  }
+  return Types.Never;
 }
 
 function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {
@@ -651,6 +700,10 @@ function checkBinaryExpression(
 ): Type {
   const left = checkExpression(ctx, expr.left);
   const right = checkExpression(ctx, expr.right);
+
+  if (left.kind === TypeKind.Never || right.kind === TypeKind.Never) {
+    return Types.Never;
+  }
 
   let typesMatch = false;
   let resultType = left;

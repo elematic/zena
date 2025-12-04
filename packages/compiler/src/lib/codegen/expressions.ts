@@ -20,8 +20,10 @@ import {
   type TaggedTemplateExpression,
   type TemplateLiteral,
   type ThisExpression,
+  type ThrowExpression,
   type TupleLiteral,
   type TypeAnnotation,
+  type UnaryExpression,
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
 import {WasmModule} from '../emitter.js';
@@ -129,10 +131,55 @@ export function generateExpression(
         body,
       );
       break;
+    case NodeType.ThrowExpression:
+      generateThrowExpression(ctx, expression as ThrowExpression, body);
+      break;
+    case NodeType.UnaryExpression:
+      generateUnaryExpression(ctx, expression as UnaryExpression, body);
+      break;
     default:
       // TODO: Handle other expressions
       break;
   }
+}
+
+function generateThrowExpression(
+  ctx: CodegenContext,
+  expr: ThrowExpression,
+  body: number[],
+) {
+  generateExpression(ctx, expr.argument, body);
+  body.push(Opcode.throw);
+  body.push(...WasmModule.encodeSignedLEB128(ctx.exceptionTagIndex));
+}
+
+function generateUnaryExpression(
+  ctx: CodegenContext,
+  expr: UnaryExpression,
+  body: number[],
+) {
+  if (expr.operator === '!') {
+    generateExpression(ctx, expr.argument, body);
+    // Boolean is i32 (0 or 1). !x is equivalent to x == 0.
+    body.push(Opcode.i32_eqz);
+    return;
+  }
+
+  if (expr.operator === '-') {
+    const type = inferType(ctx, expr.argument);
+    if (type.length === 1 && type[0] === ValType.f32) {
+      generateExpression(ctx, expr.argument, body);
+      body.push(Opcode.f32_neg);
+    } else {
+      // Assume i32
+      body.push(Opcode.i32_const, 0);
+      generateExpression(ctx, expr.argument, body);
+      body.push(Opcode.i32_sub);
+    }
+    return;
+  }
+
+  throw new Error(`Unsupported unary operator: ${expr.operator}`);
 }
 
 function generateNullLiteral(

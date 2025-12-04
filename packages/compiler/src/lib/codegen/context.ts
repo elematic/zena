@@ -40,6 +40,9 @@ export class CodegenContext {
   public interfaces = new Map<string, InterfaceInfo>();
   public typeAliases = new Map<string, TypeAnnotation>();
 
+  // Exception handling
+  public exceptionTagIndex = -1;
+
   // Current state
   public currentClass: ClassInfo | null = null;
   public currentTypeContext: Map<string, TypeAnnotation> | undefined;
