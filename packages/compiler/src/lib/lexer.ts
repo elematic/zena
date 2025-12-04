@@ -35,6 +35,8 @@ export const TokenType = {
   Extension: 'Extension',
   Static: 'Static',
   Throw: 'Throw',
+  Match: 'Match',
+  Case: 'Case',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -139,6 +141,8 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   extension: TokenType.Extension,
   static: TokenType.Static,
   throw: TokenType.Throw,
+  match: TokenType.Match,
+  case: TokenType.Case,
 });
 
 export function tokenize(source: string): Token[] {

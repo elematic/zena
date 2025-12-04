@@ -3,8 +3,10 @@ import {
   type AccessorDeclaration,
   type BindingProperty,
   type BlockStatement,
+  type BooleanLiteral,
   type CallExpression,
   type ClassDeclaration,
+  type ClassPattern,
   type Decorator,
   type DeclareFunction,
   type Expression,
@@ -18,11 +20,15 @@ import {
   type IndexExpression,
   type InterfaceDeclaration,
   type IsExpression,
+  type MatchCase,
+  type MatchExpression,
   type MemberExpression,
   type MethodDefinition,
   type MethodSignature,
   type MixinDeclaration,
   type NamedTypeAnnotation,
+  type NullLiteral,
+  type NumberLiteral,
   type Parameter,
   type Pattern,
   type Program,
@@ -926,6 +932,9 @@ export class Parser {
       const token = this.#previous();
       return {type: NodeType.ThisExpression, loc: this.#locFromToken(token)};
     }
+    if (this.#match(TokenType.Match)) {
+      return this.#parseMatchExpression();
+    }
     if (this.#match(TokenType.Hash)) {
       const startToken = this.#previous();
       if (this.#match(TokenType.LBracket)) {
@@ -1009,6 +1018,120 @@ export class Parser {
     throw new Error(
       `Unexpected token: ${this.#peek().type} at line ${this.#peek().line}`,
     );
+  }
+
+  #parseMatchExpression(): MatchExpression {
+    const startToken = this.#previous();
+    this.#consume(TokenType.LParen, "Expected '(' after 'match'.");
+    const discriminant = this.#parseExpression();
+    this.#consume(TokenType.RParen, "Expected ')' after match discriminant.");
+    this.#consume(TokenType.LBrace, "Expected '{' before match cases.");
+
+    const cases: MatchCase[] = [];
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      cases.push(this.#parseMatchCase());
+    }
+    this.#consume(TokenType.RBrace, "Expected '}' after match cases.");
+    const endToken = this.#previous();
+
+    return {
+      type: NodeType.MatchExpression,
+      discriminant,
+      cases,
+      loc: this.#loc(startToken, endToken),
+    };
+  }
+
+  #parseMatchCase(): MatchCase {
+    this.#consume(TokenType.Case, "Expected 'case'.");
+    const startToken = this.#previous();
+    const pattern = this.#parseMatchPattern();
+    this.#consume(TokenType.Colon, "Expected ':' after case pattern.");
+    const body = this.#parseExpression();
+
+    return {
+      type: NodeType.MatchCase,
+      pattern,
+      body,
+      loc: this.#loc(startToken, body),
+    };
+  }
+
+  #parseMatchPattern():
+    | Pattern
+    | ClassPattern
+    | NumberLiteral
+    | StringLiteral
+    | BooleanLiteral
+    | NullLiteral {
+    if (this.#match(TokenType.Number)) {
+      const token = this.#previous();
+      return {
+        type: NodeType.NumberLiteral,
+        value: Number(token.value),
+        raw: token.value,
+        loc: this.#locFromToken(token),
+      };
+    }
+    if (this.#match(TokenType.String)) {
+      const token = this.#previous();
+      return {
+        type: NodeType.StringLiteral,
+        value: token.value,
+        loc: this.#locFromToken(token),
+      };
+    }
+    if (this.#match(TokenType.True)) {
+      const token = this.#previous();
+      return {
+        type: NodeType.BooleanLiteral,
+        value: true,
+        loc: this.#locFromToken(token),
+      };
+    }
+    if (this.#match(TokenType.False)) {
+      const token = this.#previous();
+      return {
+        type: NodeType.BooleanLiteral,
+        value: false,
+        loc: this.#locFromToken(token),
+      };
+    }
+    if (this.#match(TokenType.Null)) {
+      const token = this.#previous();
+      return {type: NodeType.NullLiteral, loc: this.#locFromToken(token)};
+    }
+
+    if (this.#check(TokenType.LBrace)) {
+      return this.#parseRecordPattern();
+    }
+
+    if (this.#check(TokenType.LBracket)) {
+      return this.#parseTuplePattern();
+    }
+
+    if (this.#match(TokenType.Identifier)) {
+      const token = this.#previous();
+      const identifier: Identifier = {
+        type: NodeType.Identifier,
+        name: token.value,
+        loc: this.#locFromToken(token),
+      };
+
+      if (this.#match(TokenType.LBrace)) {
+        const recordPattern = this.#parseRecordPattern();
+        return {
+          type: NodeType.ClassPattern,
+          name: identifier,
+          properties: recordPattern.properties,
+          loc: this.#loc(identifier, recordPattern),
+        };
+      }
+
+      return identifier;
+    }
+
+    throw new Error('Expected pattern.');
   }
 
   #isTemplateStart(): boolean {

@@ -7,15 +7,18 @@ import {
   type BlockStatement,
   type BooleanLiteral,
   type CallExpression,
+  type ClassPattern,
   type Expression,
   type FunctionExpression,
   type Identifier,
   type IndexExpression,
   type IsExpression,
+  type MatchExpression,
   type MemberExpression,
   type NewExpression,
   type NullLiteral,
   type NumberLiteral,
+  type Pattern,
   type RecordLiteral,
   type StringLiteral,
   type TaggedTemplateExpression,
@@ -140,6 +143,9 @@ export function generateExpression(
       break;
     case NodeType.UnaryExpression:
       generateUnaryExpression(ctx, expression as UnaryExpression, body);
+      break;
+    case NodeType.MatchExpression:
+      generateMatchExpression(ctx, expression as MatchExpression, body);
       break;
     default:
       // TODO: Handle other expressions
@@ -4092,4 +4098,203 @@ export function isAdaptable(
     }
   }
   return false;
+}
+
+function generateMatchExpression(
+  ctx: CodegenContext,
+  expr: MatchExpression,
+  body: number[],
+) {
+  generateExpression(ctx, expr.discriminant, body);
+
+  const discriminantType = inferType(ctx, expr.discriminant);
+  const tempDiscriminant = ctx.declareLocal(
+    '$$match_discriminant',
+    discriminantType,
+  );
+  body.push(
+    Opcode.local_set,
+    ...WasmModule.encodeSignedLEB128(tempDiscriminant),
+  );
+
+  let resultType: number[] = [];
+  if (expr.inferredType) {
+    resultType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+  }
+
+  let openBlocks = 0;
+
+  for (let i = 0; i < expr.cases.length; i++) {
+    const c = expr.cases[i];
+
+    generateMatchPatternCheck(
+      ctx,
+      c.pattern,
+      tempDiscriminant,
+      discriminantType,
+      body,
+    );
+
+    body.push(Opcode.if);
+    if (resultType.length === 0) {
+      body.push(0x40);
+    } else if (resultType.length === 1) {
+      body.push(resultType[0]);
+    } else {
+      const blockTypeIndex = ctx.module.addType([], [resultType]);
+      body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
+    }
+
+    generateMatchPatternBindings(
+      ctx,
+      c.pattern,
+      tempDiscriminant,
+      discriminantType,
+      body,
+    );
+    generateExpression(ctx, c.body, body);
+
+    body.push(Opcode.else);
+    openBlocks++;
+  }
+
+  if (resultType.length > 0) {
+    body.push(Opcode.unreachable);
+  }
+
+  for (let i = 0; i < openBlocks; i++) {
+    body.push(Opcode.end);
+  }
+}
+
+function generateMatchPatternCheck(
+  ctx: CodegenContext,
+  pattern:
+    | Pattern
+    | ClassPattern
+    | NumberLiteral
+    | StringLiteral
+    | BooleanLiteral
+    | NullLiteral,
+  discriminantLocal: number,
+  discriminantType: number[],
+  body: number[],
+) {
+  switch (pattern.type) {
+    case NodeType.Identifier:
+      body.push(Opcode.i32_const, 1);
+      break;
+
+    case NodeType.NumberLiteral: {
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(discriminantLocal),
+      );
+      if (discriminantType[0] === ValType.i32) {
+        body.push(
+          Opcode.i32_const,
+          ...WasmModule.encodeSignedLEB128((pattern as NumberLiteral).value),
+        );
+        body.push(Opcode.i32_eq);
+      } else {
+        body.push(Opcode.drop);
+        body.push(Opcode.i32_const, 0);
+      }
+      break;
+    }
+
+    case NodeType.ClassPattern: {
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(discriminantLocal),
+      );
+
+      const classPattern = pattern as ClassPattern;
+      const className = classPattern.name.name;
+      const classInfo = ctx.classes.get(className);
+      if (!classInfo) throw new Error(`Class ${className} not found`);
+
+      body.push(0xfb, GcOpcode.ref_test_null);
+      body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+      break;
+    }
+
+    default:
+      body.push(Opcode.i32_const, 0);
+      break;
+  }
+}
+
+function generateMatchPatternBindings(
+  ctx: CodegenContext,
+  pattern:
+    | Pattern
+    | ClassPattern
+    | NumberLiteral
+    | StringLiteral
+    | BooleanLiteral
+    | NullLiteral,
+  discriminantLocal: number,
+  discriminantType: number[],
+  body: number[],
+) {
+  if (pattern.type === NodeType.Identifier) {
+    if (pattern.name !== '_') {
+      const localIndex = ctx.declareLocal(pattern.name, discriminantType);
+
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(discriminantLocal),
+      );
+      body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(localIndex));
+    }
+  } else if (pattern.type === NodeType.ClassPattern) {
+    const classPattern = pattern as ClassPattern;
+    const className = classPattern.name.name;
+    const classInfo = ctx.classes.get(className)!;
+
+    // Cast
+    body.push(
+      Opcode.local_get,
+      ...WasmModule.encodeSignedLEB128(discriminantLocal),
+    );
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+
+    const castedType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+    ];
+    const tempCasted = ctx.declareLocal(
+      `$$match_cast_${className}`,
+      castedType,
+    );
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempCasted));
+
+    for (const prop of classPattern.properties) {
+      const fieldName = prop.name.name;
+      const fieldInfo = classInfo.fields.get(fieldName);
+      if (fieldInfo) {
+        body.push(
+          Opcode.local_get,
+          ...WasmModule.encodeSignedLEB128(tempCasted),
+        );
+        body.push(0xfb, GcOpcode.struct_get);
+        body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+        body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+        if (prop.value.type === NodeType.Identifier) {
+          const localName = prop.value.name;
+          const fieldType = (fieldInfo as any).type || [ValType.anyref];
+          const localIndex = ctx.declareLocal(localName, fieldType);
+          body.push(
+            Opcode.local_set,
+            ...WasmModule.encodeSignedLEB128(localIndex),
+          );
+        } else {
+          body.push(Opcode.drop);
+        }
+      }
+    }
+  }
 }

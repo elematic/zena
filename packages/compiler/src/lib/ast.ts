@@ -58,6 +58,9 @@ export const NodeType = {
   Decorator: 'Decorator',
   UnaryExpression: 'UnaryExpression',
   ThrowExpression: 'ThrowExpression',
+  MatchExpression: 'MatchExpression',
+  MatchCase: 'MatchCase',
+  ClassPattern: 'ClassPattern',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -245,7 +248,32 @@ export type Expression =
   | AsExpression
   | IsExpression
   | UnaryExpression
-  | ThrowExpression;
+  | ThrowExpression
+  | MatchExpression;
+
+export interface MatchExpression extends Node {
+  type: typeof NodeType.MatchExpression;
+  discriminant: Expression;
+  cases: MatchCase[];
+}
+
+export interface MatchCase extends Node {
+  type: typeof NodeType.MatchCase;
+  pattern:
+    | Pattern
+    | ClassPattern
+    | NumberLiteral
+    | StringLiteral
+    | BooleanLiteral
+    | NullLiteral;
+  body: Expression;
+}
+
+export interface ClassPattern extends Node {
+  type: typeof NodeType.ClassPattern;
+  name: Identifier;
+  properties: BindingProperty[];
+}
 
 export interface BinaryExpression extends Node {
   type: typeof NodeType.BinaryExpression;
