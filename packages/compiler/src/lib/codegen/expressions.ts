@@ -40,6 +40,7 @@ import {
   TypeKind,
   type ClassType,
   type FunctionType,
+  type NumberType,
   type UnionType,
 } from '../types.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
@@ -2395,6 +2396,16 @@ function generateBinaryExpression(
     }
   }
 
+  // Check if operating on unsigned integers (u32)
+  // The WASM type is still i32, but we need to use unsigned instructions
+  const isU32 = (e: Expression): boolean => {
+    if (e.inferredType && e.inferredType.kind === TypeKind.Number) {
+      return (e.inferredType as NumberType).name === 'u32';
+    }
+    return false;
+  };
+  const useUnsigned = isU32(expr.left) || isU32(expr.right);
+
   switch (expr.operator) {
     case '+':
       body.push(Opcode.i32_add);
@@ -2406,10 +2417,10 @@ function generateBinaryExpression(
       body.push(Opcode.i32_mul);
       break;
     case '/':
-      body.push(Opcode.i32_div_s);
+      body.push(useUnsigned ? Opcode.i32_div_u : Opcode.i32_div_s);
       break;
     case '%':
-      body.push(Opcode.i32_rem_s);
+      body.push(useUnsigned ? Opcode.i32_rem_u : Opcode.i32_rem_s);
       break;
     case '&':
       body.push(Opcode.i32_and);
@@ -2429,16 +2440,16 @@ function generateBinaryExpression(
       body.push(Opcode.i32_ne);
       break;
     case '<':
-      body.push(Opcode.i32_lt_s);
+      body.push(useUnsigned ? Opcode.i32_lt_u : Opcode.i32_lt_s);
       break;
     case '<=':
-      body.push(Opcode.i32_le_s);
+      body.push(useUnsigned ? Opcode.i32_le_u : Opcode.i32_le_s);
       break;
     case '>':
-      body.push(Opcode.i32_gt_s);
+      body.push(useUnsigned ? Opcode.i32_gt_u : Opcode.i32_gt_s);
       break;
     case '>=':
-      body.push(Opcode.i32_ge_s);
+      body.push(useUnsigned ? Opcode.i32_ge_u : Opcode.i32_ge_s);
       break;
   }
 }

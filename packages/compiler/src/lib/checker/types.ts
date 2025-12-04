@@ -174,6 +174,8 @@ export function resolveTypeAnnotation(
   switch (name) {
     case 'i32':
       return Types.I32;
+    case 'u32':
+      return Types.U32;
     case 'f32':
       return Types.F32;
     case 'boolean':

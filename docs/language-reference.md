@@ -57,6 +57,7 @@ This soundness is enforced by the underlying WASM-GC architecture. Zena does not
 ### Primitive Types
 
 - **`i32`**: 32-bit signed integer. This is the default type for integer literals. Operations like division and comparison use signed semantics.
+- **`u32`**: 32-bit unsigned integer. Operations like division, modulo, and comparison use unsigned semantics. `i32` and `u32` cannot be mixed in operations without explicit casting using `as`.
 - **`f32`**: 32-bit floating-point number.
 - **`boolean`**: Boolean value (`true` or `false`).
 - **`string`**: UTF-8 string.
@@ -466,21 +467,21 @@ let query = sql`SELECT * FROM users WHERE id = ${userId}`;
 
 ### Binary Operators
 
-Supported arithmetic operators for numeric types (`i32`, `f32`):
+Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`):
 
 - `+` (Addition / String Concatenation)
 - `-` (Subtraction)
 - `*` (Multiplication)
-- `/` (Division) - Signed division for `i32`.
-- `%` (Modulo - `i32` only) - Signed remainder.
+- `/` (Division) - Signed for `i32`, unsigned for `u32`.
+- `%` (Modulo - integer types only) - Signed for `i32`, unsigned for `u32`.
 
-Supported bitwise operators for integer types (`i32`):
+Supported bitwise operators for integer types (`i32`, `u32`):
 
 - `&` (Bitwise AND)
 - `|` (Bitwise OR)
 - `^` (Bitwise XOR)
 
-Operands must be of the same type. Implicit coercion is not supported.
+Operands must be of the same type. Implicit coercion is not supported. **Mixing `i32` and `u32` is not allowed**; you must explicitly cast using `as`.
 
 ```zena
 let a = 10;
@@ -488,6 +489,17 @@ let b = 20;
 let c = a + b; // Valid
 let s = 'Hello' + ' World'; // Valid (String Concatenation)
 // let d = a + "string"; // Error: Type mismatch
+
+// Unsigned example
+let x: u32 = 10 as u32;
+let y: u32 = 3 as u32;
+let q = x / y;  // u32 division: 10 / 3 = 3
+
+// Mixing i32 and u32 requires explicit cast
+let signed: i32 = 5;
+let unsigned: u32 = 2 as u32;
+// let sum = signed + unsigned; // Error: Cannot mix i32 and u32
+let sum = (signed as u32) + unsigned; // OK
 ```
 
 ### Function Calls
@@ -521,12 +533,12 @@ let result = (1 + 2) * 3;
 - `!=` (Not Equal) - Supports value equality for strings.
 - `===` (Strict Equal) - Checks for reference equality, bypassing custom `operator ==`.
 - `!==` (Strict Not Equal) - Checks for reference inequality, bypassing custom `operator ==`.
-- `<` (Less Than)
-- `<=` (Less Than or Equal)
-- `>` (Greater Than)
-- `>=` (Greater Than or Equal)
+- `<` (Less Than) - Signed comparison for `i32`, unsigned for `u32`.
+- `<=` (Less Than or Equal) - Signed comparison for `i32`, unsigned for `u32`.
+- `>` (Greater Than) - Signed comparison for `i32`, unsigned for `u32`.
+- `>=` (Greater Than or Equal) - Signed comparison for `i32`, unsigned for `u32`.
 
-These operators return a boolean value.
+These operators return a boolean value. **Comparing `i32` and `u32` directly is not allowed**; cast one to the other first.
 
 ### Logical Operators
 
