@@ -148,6 +148,17 @@ function checkMatchExpression(
   for (const c of expr.cases) {
     ctx.enterScope();
     checkMatchPattern(ctx, c.pattern, discriminantType);
+
+    if (c.guard) {
+      const guardType = checkExpression(ctx, c.guard);
+      if (guardType !== Types.Boolean) {
+        ctx.diagnostics.reportError(
+          `Match guard must be a boolean expression, got ${typeToString(guardType)}`,
+          DiagnosticCode.TypeMismatch,
+        );
+      }
+    }
+
     const bodyType = checkExpression(ctx, c.body);
     caseTypes.push(bodyType);
     ctx.exitScope();

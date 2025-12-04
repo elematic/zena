@@ -288,6 +288,7 @@ export interface MatchCase extends Node {
     | StringLiteral
     | BooleanLiteral
     | NullLiteral;
+  guard?: Expression;
   body: Expression;
 }
 

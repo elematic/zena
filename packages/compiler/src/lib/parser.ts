@@ -1167,12 +1167,19 @@ export class Parser {
     this.#consume(TokenType.Case, "Expected 'case'.");
     const startToken = this.#previous();
     const pattern = this.#parseMatchPattern();
+
+    let guard: Expression | undefined;
+    if (this.#match(TokenType.If)) {
+      guard = this.#parseExpression();
+    }
+
     this.#consume(TokenType.Colon, "Expected ':' after case pattern.");
     const body = this.#parseExpression();
 
     return {
       type: NodeType.MatchCase,
       pattern,
+      guard,
       body,
       loc: this.#loc(startToken, body),
     };

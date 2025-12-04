@@ -4126,11 +4126,18 @@ function generateMatchExpression(
     resultType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
   }
 
-  let openBlocks = 0;
+  // Block for the entire match expression (exit when a case succeeds)
+  const matchDoneBlockTypeIndex = ctx.module.addType([], [resultType]);
+  body.push(Opcode.block);
+  body.push(...WasmModule.encodeSignedLEB128(matchDoneBlockTypeIndex));
 
   for (let i = 0; i < expr.cases.length; i++) {
     const c = expr.cases[i];
 
+    // Block for this case (exit if pattern fails or guard fails)
+    body.push(Opcode.block, ValType.void);
+
+    // 1. Check Pattern
     generateMatchPatternCheck(
       ctx,
       c.pattern,
@@ -4139,16 +4146,11 @@ function generateMatchExpression(
       body,
     );
 
-    body.push(Opcode.if);
-    if (resultType.length === 0) {
-      body.push(0x40);
-    } else if (resultType.length === 1) {
-      body.push(resultType[0]);
-    } else {
-      const blockTypeIndex = ctx.module.addType([], [resultType]);
-      body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
-    }
+    // If 0 (false), break to next case (end of this block)
+    body.push(Opcode.i32_eqz);
+    body.push(Opcode.br_if, 0);
 
+    // 2. Bind Variables
     generateMatchPatternBindings(
       ctx,
       c.pattern,
@@ -4156,19 +4158,32 @@ function generateMatchExpression(
       discriminantType,
       body,
     );
+
+    // 3. Check Guard (if exists)
+    if (c.guard) {
+      generateExpression(ctx, c.guard, body);
+      // If 0 (false), break to next case
+      body.push(Opcode.i32_eqz);
+      body.push(Opcode.br_if, 0);
+    }
+
+    // 4. Execute Body
     generateExpression(ctx, c.body, body);
 
-    body.push(Opcode.else);
-    openBlocks++;
+    // 5. Break to match done
+    // We are inside:
+    // match_done (depth 1 relative to here)
+    //   case_block (depth 0)
+    // So br 1 breaks out of match_done.
+    body.push(Opcode.br, 1);
+
+    body.push(Opcode.end); // End case block
   }
 
-  if (resultType.length > 0) {
-    body.push(Opcode.unreachable);
-  }
+  // If we get here, no case matched
+  body.push(Opcode.unreachable);
 
-  for (let i = 0; i < openBlocks; i++) {
-    body.push(Opcode.end);
-  }
+  body.push(Opcode.end); // End match_done block
 }
 
 function generateMatchPatternCheck(

@@ -13,6 +13,8 @@ import {
   type MemberExpression,
   type MethodSignature,
   type Parameter,
+  type MatchCase,
+  type Pattern,
 } from './ast.js';
 import type {Module} from './compiler.js';
 
@@ -424,6 +426,9 @@ class ASTRewriter {
       case NodeType.MethodSignature:
         this.visitMethodSignature(node as MethodSignature);
         break;
+      case NodeType.MatchCase:
+        this.visitMatchCase(node as MatchCase);
+        break;
       // ... handle other nodes
       default:
         // Generic traversal
@@ -568,6 +573,53 @@ class ASTRewriter {
     node.params.forEach((p) => this.visit(p));
     if (node.returnType) this.visit(node.returnType);
     this.exitScope();
+  }
+
+  visitMatchCase(node: MatchCase) {
+    this.enterScope();
+    this.visitPattern(node.pattern);
+    if (node.guard) this.visit(node.guard);
+    this.visit(node.body);
+    this.exitScope();
+  }
+
+  visitPattern(node: Pattern) {
+    switch (node.type) {
+      case NodeType.Identifier:
+        if (node.name !== '_') {
+          this.addToScope(node.name);
+        }
+        break;
+      case NodeType.AsPattern:
+        this.addToScope(node.name.name);
+        this.visitPattern(node.pattern);
+        break;
+      case NodeType.ClassPattern:
+        // Visit class name (it refers to a class, so it should be renamed)
+        this.visit(node.name);
+        // Visit properties
+        node.properties.forEach((p) => {
+          // p.name is property name, DO NOT VISIT
+          this.visitPattern(p.value as Pattern);
+        });
+        break;
+      case NodeType.RecordPattern:
+        node.properties.forEach((p) => {
+          // p.name is property name, DO NOT VISIT
+          this.visitPattern(p.value);
+        });
+        break;
+      case NodeType.TuplePattern:
+        node.elements.forEach((e) => {
+          if (e) this.visitPattern(e);
+        });
+        break;
+      case NodeType.LogicalPattern:
+        this.visitPattern(node.left);
+        this.visitPattern(node.right);
+        break;
+      // Literals don't bind variables
+    }
   }
 }
 

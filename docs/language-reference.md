@@ -662,6 +662,18 @@ Patterns can be nested.
 case Point { x: 0, y: [1, z] }: ...
 ```
 
+#### Guard Patterns
+
+Match cases can include an optional guard expression using `if`. The guard is a boolean expression that must evaluate to `true` for the case to match. The guard can reference variables bound in the pattern.
+
+```zena
+match (x) {
+  case i if i > 10: "greater than 10"
+  case i if i < 0: "negative"
+  case _: "between 0 and 10"
+}
+```
+
 ## 7. Classes and Objects
 
 Zena supports object-oriented programming with classes.
