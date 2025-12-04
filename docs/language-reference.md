@@ -549,6 +549,40 @@ if (condition) {
 }
 ```
 
+### If Expression
+
+Like Rust, Zena's `if/else` can be used as an expression. Each block evaluates to the value of its last expression. When used as an expression, the `else` clause is required.
+
+```zena
+// Simple if expression
+let x = if (condition) 1 else 2;
+
+// With block bodies - the last expression is the value
+let y = if (a > b) {
+  let temp = a * 2;
+  temp + 1
+} else {
+  b
+};
+
+// Chained else-if
+let sign = if (n < 0) {
+  -1
+} else if (n == 0) {
+  0
+} else {
+  1
+};
+
+// As function body
+let max = (a: i32, b: i32) => if (a > b) a else b;
+```
+
+**Key differences from if statements:**
+- When used as an expression, `else` is required
+- Block bodies don't need semicolons after the final expression
+- Both branches must produce compatible types
+
 ### While Statement
 
 Zena supports `while` loops.

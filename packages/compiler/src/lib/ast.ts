@@ -63,6 +63,7 @@ export const NodeType = {
   MatchCase: 'MatchCase',
   ClassPattern: 'ClassPattern',
   LogicalPattern: 'LogicalPattern',
+  IfExpression: 'IfExpression',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -271,7 +272,8 @@ export type Expression =
   | IsExpression
   | UnaryExpression
   | ThrowExpression
-  | MatchExpression;
+  | MatchExpression
+  | IfExpression;
 
 export interface MatchExpression extends Node {
   type: typeof NodeType.MatchExpression;
@@ -296,6 +298,18 @@ export interface ClassPattern extends Node {
   type: typeof NodeType.ClassPattern;
   name: Identifier;
   properties: BindingProperty[];
+}
+
+/**
+ * If expression - like Rust, if/else can be used as an expression.
+ * Both consequent and alternate evaluate to the last expression in their block.
+ * If used as an expression, the alternate is required.
+ */
+export interface IfExpression extends Node {
+  type: typeof NodeType.IfExpression;
+  test: Expression;
+  consequent: Expression | BlockStatement;
+  alternate: Expression | BlockStatement;
 }
 
 export interface BinaryExpression extends Node {
