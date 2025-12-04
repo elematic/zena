@@ -1096,12 +1096,26 @@ function checkBinaryExpression(
   } else if (left === right) {
     typesMatch = true;
   } else if (left.kind === TypeKind.Number && right.kind === TypeKind.Number) {
-    typesMatch = true;
+    const leftName = (left as NumberType).name;
+    const rightName = (right as NumberType).name;
+
+    // Forbid mixing i32 and u32 (they must be cast explicitly)
     if (
-      (left as NumberType).name === 'f32' ||
-      (right as NumberType).name === 'f32'
+      (leftName === 'i32' && rightName === 'u32') ||
+      (leftName === 'u32' && rightName === 'i32')
     ) {
+      ctx.diagnostics.reportError(
+        `Cannot mix signed (i32) and unsigned (u32) integers. Use explicit cast with 'as'.`,
+        DiagnosticCode.TypeMismatch,
+      );
+      return Types.Unknown;
+    }
+
+    typesMatch = true;
+    if (leftName === 'f32' || rightName === 'f32') {
       resultType = Types.F32;
+    } else if (leftName === 'u32') {
+      resultType = Types.U32;
     } else {
       resultType = Types.I32;
     }
@@ -1133,14 +1147,22 @@ function checkBinaryExpression(
     case '%':
     case '&':
     case '|':
-    case '^':
-      if (
-        (expr.operator === '&' ||
-          expr.operator === '|' ||
-          expr.operator === '^' ||
-          expr.operator === '%') &&
-        (left !== Types.I32 || right !== Types.I32)
-      ) {
+    case '^': {
+      // Bitwise and modulo operators require integer types (i32 or u32)
+      const isLeftInteger =
+        left === Types.I32 ||
+        left === Types.U32 ||
+        (left.kind === TypeKind.Number &&
+          ((left as NumberType).name === 'i32' ||
+            (left as NumberType).name === 'u32'));
+      const isRightInteger =
+        right === Types.I32 ||
+        right === Types.U32 ||
+        (right.kind === TypeKind.Number &&
+          ((right as NumberType).name === 'i32' ||
+            (right as NumberType).name === 'u32'));
+
+      if (!isLeftInteger || !isRightInteger) {
         ctx.diagnostics.reportError(
           `Operator '${expr.operator}' cannot be applied to type '${typeToString(left)}' and '${typeToString(right)}'.`,
           DiagnosticCode.TypeMismatch,
@@ -1148,6 +1170,7 @@ function checkBinaryExpression(
         return Types.Unknown;
       }
       return left;
+    }
     case '&&':
     case '||':
       if (left !== Types.Boolean || right !== Types.Boolean) {
@@ -1260,14 +1283,12 @@ function checkFunctionExpression(
 
     if (
       expectedType.kind !== Types.Unknown.kind &&
-      bodyType.kind !== expectedType.kind
+      !isAssignableTo(bodyType, expectedType)
     ) {
-      if (typeToString(expectedType) !== typeToString(bodyType)) {
-        ctx.diagnostics.reportError(
-          `Type mismatch: expected return type ${typeToString(expectedType)}, got ${typeToString(bodyType)}`,
-          DiagnosticCode.TypeMismatch,
-        );
-      }
+      ctx.diagnostics.reportError(
+        `Type mismatch: expected return type ${typeToString(expectedType)}, got ${typeToString(bodyType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
     }
   }
 
