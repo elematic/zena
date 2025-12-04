@@ -21,6 +21,7 @@ import {
   inferType,
   generateAdaptedArgument,
   isAdaptable,
+  boxPrimitive,
 } from './expressions.js';
 
 export function generateStatement(
@@ -283,8 +284,15 @@ export function generateLocalVariableDeclaration(
         type[0] === ValType.ref_null &&
         type[1] === HeapType.any);
 
-    if (isAnyRef && exprType.length === 1 && exprType[0] === ValType.i32) {
-      body.push(Opcode.gc_prefix, GcOpcode.ref_i31);
+    if (
+      isAnyRef &&
+      exprType.length === 1 &&
+      (exprType[0] === ValType.i32 ||
+        exprType[0] === ValType.i64 ||
+        exprType[0] === ValType.f32 ||
+        exprType[0] === ValType.f64)
+    ) {
+      boxPrimitive(ctx, exprType, body);
     }
 
     // Check for interface boxing
@@ -519,6 +527,24 @@ export function generateReturnStatement(
 ) {
   if (stmt.argument) {
     generateExpression(ctx, stmt.argument, body);
+
+    if (ctx.currentReturnType) {
+      const exprType = inferType(ctx, stmt.argument);
+      if (
+        ((ctx.currentReturnType.length > 1 &&
+          ctx.currentReturnType[0] === ValType.ref_null &&
+          ctx.currentReturnType[1] === ValType.anyref) ||
+          (ctx.currentReturnType.length === 1 &&
+            ctx.currentReturnType[0] === ValType.anyref)) &&
+        exprType.length === 1 &&
+        (exprType[0] === ValType.i32 ||
+          exprType[0] === ValType.i64 ||
+          exprType[0] === ValType.f32 ||
+          exprType[0] === ValType.f64)
+      ) {
+        boxPrimitive(ctx, exprType, body);
+      }
+    }
   }
   // We don't strictly need 'return' opcode if it's the last statement,
   // but for now let's not optimize and assume implicit return at end of function

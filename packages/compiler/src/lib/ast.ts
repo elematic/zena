@@ -93,6 +93,7 @@ export interface Program extends Node {
     FixedArray?: ClassDeclaration;
     String?: ClassDeclaration;
     ByteArray?: ClassDeclaration;
+    Box?: ClassDeclaration;
   };
   symbolMap?: Map<string, string>;
 }

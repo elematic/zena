@@ -46,6 +46,7 @@ export class CodegenContext {
   // Current state
   public currentClass: ClassInfo | null = null;
   public currentTypeContext: Map<string, TypeAnnotation> | undefined;
+  public currentReturnType: number[] | undefined;
   public thisLocalIndex = 0;
 
   // Type management
@@ -78,6 +79,7 @@ export class CodegenContext {
   public wellKnownTypes: {
     FixedArray?: ClassDeclaration;
     String?: ClassDeclaration;
+    Box?: ClassDeclaration;
   } = {};
 
   // Records and Tuples

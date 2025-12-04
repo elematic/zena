@@ -1599,6 +1599,8 @@ export function mapType(
         return [];
       case 'anyref':
         return [ValType.anyref];
+      case 'any':
+        return [ValType.anyref];
       case 'eqref':
         return [ValType.eqref];
       case 'struct':

@@ -211,6 +211,21 @@ function generateAsExpression(
     return;
   }
 
+  // Unboxing: Any -> Primitive
+  if (
+    targetType.length === 1 &&
+    (targetType[0] === ValType.i32 ||
+      targetType[0] === ValType.i64 ||
+      targetType[0] === ValType.f32 ||
+      targetType[0] === ValType.f64) &&
+    sourceType &&
+    sourceType.length === 1 &&
+    sourceType[0] === ValType.anyref
+  ) {
+    unboxPrimitive(ctx, targetType, body);
+    return;
+  }
+
   // If target is a reference type (ref null ...)
   if (targetType.length > 1 && targetType[0] === ValType.ref_null) {
     // ref.cast_null
@@ -218,6 +233,114 @@ function generateAsExpression(
     // The rest of targetType is the LEB128 encoded type index
     body.push(...targetType.slice(1));
   }
+}
+
+function wasmTypeToTypeAnnotation(type: number[]): TypeAnnotation {
+  if (type.length === 1) {
+    if (type[0] === ValType.i32)
+      return {type: NodeType.TypeAnnotation, name: 'i32'};
+    if (type[0] === ValType.i64)
+      return {type: NodeType.TypeAnnotation, name: 'i64'};
+    if (type[0] === ValType.f32)
+      return {type: NodeType.TypeAnnotation, name: 'f32'};
+    if (type[0] === ValType.f64)
+      return {type: NodeType.TypeAnnotation, name: 'f64'};
+  }
+  throw new Error(`Unsupported type for boxing: ${type}`);
+}
+
+export function unboxPrimitive(
+  ctx: CodegenContext,
+  targetType: number[],
+  body: number[],
+) {
+  // Stack: [anyref]
+
+  // 1. Get Box<T> class info
+  const boxDecl = ctx.wellKnownTypes.Box;
+  if (!boxDecl) throw new Error('Box class not found');
+
+  const typeArg = wasmTypeToTypeAnnotation(targetType);
+  const specializedName = getSpecializedName(
+    boxDecl.name.name,
+    [typeArg],
+    ctx,
+    ctx.currentTypeContext,
+  );
+
+  if (!ctx.classes.has(specializedName)) {
+    instantiateClass(
+      ctx,
+      boxDecl,
+      specializedName,
+      [typeArg],
+      ctx.currentTypeContext,
+    );
+  }
+
+  const boxClass = ctx.classes.get(specializedName)!;
+
+  // 2. Cast to Box<T>
+  body.push(0xfb, GcOpcode.ref_cast_null);
+  body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
+
+  // 3. Get value
+  const valueField = boxClass.fields.get('value');
+  if (!valueField) throw new Error("Box class missing 'value' field");
+
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(valueField.index));
+}
+
+export function boxPrimitive(
+  ctx: CodegenContext,
+  sourceType: number[],
+  body: number[],
+) {
+  // Stack: [primitive]
+
+  const boxDecl = ctx.wellKnownTypes.Box;
+  if (!boxDecl) throw new Error('Box class not found');
+
+  const typeArg = wasmTypeToTypeAnnotation(sourceType);
+  const specializedName = getSpecializedName(
+    boxDecl.name.name,
+    [typeArg],
+    ctx,
+    ctx.currentTypeContext,
+  );
+
+  if (!ctx.classes.has(specializedName)) {
+    instantiateClass(
+      ctx,
+      boxDecl,
+      specializedName,
+      [typeArg],
+      ctx.currentTypeContext,
+    );
+  }
+
+  const boxClass = ctx.classes.get(specializedName)!;
+
+  // Use a local to save value.
+  const tempVal = ctx.declareLocal('$$box_val', sourceType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempVal));
+
+  // Push vtable
+  if (boxClass.vtableGlobalIndex !== undefined) {
+    body.push(Opcode.global_get);
+    body.push(...WasmModule.encodeSignedLEB128(boxClass.vtableGlobalIndex));
+  } else {
+    body.push(Opcode.ref_null, HeapType.none);
+  }
+
+  // Push value
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempVal));
+
+  // struct.new
+  body.push(0xfb, GcOpcode.struct_new);
+  body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
 }
 
 export function inferType(ctx: CodegenContext, expr: Expression): number[] {
@@ -1461,13 +1584,8 @@ function generateCallExpression(
     }
 
     if (isDirectCall) {
-      // 1. Generate arguments
-      for (const arg of expr.arguments) {
-        generateExpression(ctx, arg, body);
-      }
-
-      // 2. Resolve function
       const name = (expr.callee as Identifier).name;
+      let targetFuncIndex = -1;
 
       if (ctx.genericFunctions.has(name)) {
         let typeArguments = expr.typeArguments;
@@ -1502,13 +1620,8 @@ function generateCallExpression(
           }
         }
 
-        const funcIndex = instantiateGenericFunction(ctx, name, typeArguments!);
-        body.push(Opcode.call);
-        body.push(...WasmModule.encodeSignedLEB128(funcIndex));
-        return;
-      }
-
-      if (ctx.functionOverloads.has(name)) {
+        targetFuncIndex = instantiateGenericFunction(ctx, name, typeArguments!);
+      } else if (ctx.functionOverloads.has(name)) {
         const overloads = ctx.functionOverloads.get(name)!;
         const argTypes = expr.arguments.map((arg) => inferType(ctx, arg));
 
@@ -1540,20 +1653,21 @@ function generateCallExpression(
             break;
           }
         }
-
-        if (bestMatchIndex !== -1) {
-          body.push(Opcode.call);
-          body.push(...WasmModule.encodeSignedLEB128(bestMatchIndex));
-          return;
-        }
+        targetFuncIndex = bestMatchIndex;
+      } else {
+        targetFuncIndex = ctx.functions.get(name) ?? -1;
       }
 
-      const funcIndex = ctx.functions.get(name);
-      if (funcIndex !== undefined) {
+      if (targetFuncIndex !== -1) {
+        const typeIndex = ctx.module.getFunctionTypeIndex(targetFuncIndex);
+        const params = ctx.module.getFunctionTypeParams(typeIndex);
+
+        for (let i = 0; i < expr.arguments.length; i++) {
+          generateAdaptedArgument(ctx, expr.arguments[i], params[i], body);
+        }
+
         body.push(Opcode.call);
-        if (funcIndex === -1)
-          throw new Error(`Calling invalid function index -1 for ${name}`);
-        body.push(...WasmModule.encodeSignedLEB128(funcIndex));
+        body.push(...WasmModule.encodeSignedLEB128(targetFuncIndex));
       } else {
         throw new Error(`Function '${name}' not found.`);
       }
@@ -1853,6 +1967,22 @@ function generateAssignmentExpression(
     generateExpression(ctx, memberExpr.object, body);
     generateExpression(ctx, expr.value, body);
 
+    const valueType = inferType(ctx, expr.value);
+    if (
+      ((fieldInfo.type.length > 1 &&
+        fieldInfo.type[0] === ValType.ref_null &&
+        fieldInfo.type[1] === ValType.anyref) ||
+        (fieldInfo.type.length === 1 &&
+          fieldInfo.type[0] === ValType.anyref)) &&
+      valueType.length === 1 &&
+      (valueType[0] === ValType.i32 ||
+        valueType[0] === ValType.i64 ||
+        valueType[0] === ValType.f32 ||
+        valueType[0] === ValType.f64)
+    ) {
+      boxPrimitive(ctx, valueType, body);
+    }
+
     const tempVal = ctx.declareLocal('$$temp_field_set', fieldInfo.type);
     body.push(Opcode.local_tee);
     body.push(...WasmModule.encodeSignedLEB128(tempVal));
@@ -1868,6 +1998,21 @@ function generateAssignmentExpression(
     const local = ctx.getLocal(expr.left.name);
     if (!local) throw new Error(`Unknown identifier: ${expr.left.name}`);
     const index = local.index;
+
+    const valueType = inferType(ctx, expr.value);
+    if (
+      ((local.type.length > 1 &&
+        local.type[0] === ValType.ref_null &&
+        local.type[1] === ValType.anyref) ||
+        (local.type.length === 1 && local.type[0] === ValType.anyref)) &&
+      valueType.length === 1 &&
+      (valueType[0] === ValType.i32 ||
+        valueType[0] === ValType.i64 ||
+        valueType[0] === ValType.f32 ||
+        valueType[0] === ValType.f64)
+    ) {
+      boxPrimitive(ctx, valueType, body);
+    }
 
     // Assignment is an expression that evaluates to the assigned value.
     // So we use local.tee to set the local and keep the value on the stack.
@@ -3726,6 +3871,23 @@ export function generateAdaptedArgument(
   } catch (e) {
     // If inference fails, fallback to normal generation
     generateExpression(ctx, arg, body);
+    return;
+  }
+
+  // Auto-boxing: Primitive -> Any
+  if (
+    ((expectedType.length > 1 &&
+      expectedType[0] === ValType.ref_null &&
+      expectedType[1] === ValType.anyref) ||
+      (expectedType.length === 1 && expectedType[0] === ValType.anyref)) &&
+    actualType.length === 1 &&
+    (actualType[0] === ValType.i32 ||
+      actualType[0] === ValType.i64 ||
+      actualType[0] === ValType.f32 ||
+      actualType[0] === ValType.f64)
+  ) {
+    generateExpression(ctx, arg, body);
+    boxPrimitive(ctx, actualType, body);
     return;
   }
 

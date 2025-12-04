@@ -180,6 +180,8 @@ export function resolveTypeAnnotation(
       return Types.Boolean;
     case 'anyref':
       return Types.AnyRef;
+    case 'any':
+      return Types.Any;
     case 'string': {
       const stringType = ctx.resolve('String');
       if (stringType) return stringType;
@@ -435,6 +437,8 @@ export function typeToString(type: Type): string {
       return 'void';
     case TypeKind.Null:
       return 'null';
+    case TypeKind.Any:
+      return 'any';
     case TypeKind.Union:
       return (type as UnionType).types.map((t) => typeToString(t)).join(' | ');
     case TypeKind.TypeParameter:
@@ -490,6 +494,9 @@ export function isAssignableTo(source: Type, target: Type): boolean {
   if (source.kind === TypeKind.Unknown || target.kind === TypeKind.Unknown) {
     return true;
   }
+
+  if (target.kind === TypeKind.Any) return true;
+  if (source.kind === TypeKind.Any) return false;
 
   if (target.kind === TypeKind.AnyRef) {
     switch (source.kind) {

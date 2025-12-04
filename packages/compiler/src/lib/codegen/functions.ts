@@ -200,7 +200,9 @@ export function generateFunctionBody(
   returnType?: number[],
 ): number[] {
   const oldContext = ctx.currentTypeContext;
+  const oldReturnType = ctx.currentReturnType;
   ctx.currentTypeContext = typeContext;
+  ctx.currentReturnType = returnType;
 
   ctx.scopes = [new Map()];
   ctx.extraLocals = [];
@@ -227,6 +229,7 @@ export function generateFunctionBody(
   body.push(Opcode.end);
 
   ctx.currentTypeContext = oldContext;
+  ctx.currentReturnType = oldReturnType;
   return body;
 }
 
@@ -459,7 +462,9 @@ function generateMethodBody(
   returnType?: number[],
 ): number[] {
   const oldContext = ctx.currentTypeContext;
+  const oldReturnType = ctx.currentReturnType;
   ctx.currentTypeContext = typeContext;
+  ctx.currentReturnType = returnType;
   ctx.currentClass = classInfo;
 
   ctx.scopes = [new Map()];
@@ -503,5 +508,6 @@ function generateMethodBody(
   body.push(Opcode.end);
 
   ctx.currentTypeContext = oldContext;
+  ctx.currentReturnType = oldReturnType;
   return body;
 }

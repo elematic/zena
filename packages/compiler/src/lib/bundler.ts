@@ -87,6 +87,15 @@ export class Bundler {
         'Missing well-known type: String. The standard library module "zena:string" is required for user modules.',
       );
     }
+
+    if (this.#globalSymbols.has('zena:box:Box')) {
+      const name = this.#globalSymbols.get('zena:box:Box')!;
+      const decl = newBody.find(
+        (stmt): stmt is ClassDeclaration =>
+          stmt.type === NodeType.ClassDeclaration && stmt.name.name === name,
+      );
+      if (decl) wellKnownTypes.Box = decl;
+    }
     // ByteArray is usually internal or in zena:string?
     // Let's check where ByteArray is defined.
     // It seems it is built-in type in CodegenContext, but maybe exposed via stdlib?

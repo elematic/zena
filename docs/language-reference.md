@@ -63,6 +63,27 @@ This soundness is enforced by the underlying WASM-GC architecture. Zena does not
 - **`anyref`**: The top type for all reference types. It can hold any object, array, string, function, or `null`. It cannot hold unboxed primitives (`i32`, `f32`, `boolean`).
 - **`ByteArray`**: A mutable array of 8-bit integers. This is a low-level type primarily used for implementing strings and binary data manipulation.
 
+### The `any` Type
+
+The `any` type is a special type that can hold any value, including primitives. It is similar to `any` in TypeScript or `Object` in Java, but with stricter safety guarantees.
+
+- **Assignment**: Any value (primitive or reference) can be assigned to a variable of type `any`.
+- **Auto-boxing**: Primitive values (`i32`, `f32`, `boolean`) are automatically boxed into a `Box<T>` when assigned to `any`.
+- **Safety**: You cannot perform operations on an `any` value directly. You must explicitly cast it back to a specific type using the `as` operator.
+- **Unboxing**: Casting an `any` value back to a primitive type automatically unboxes it.
+
+```zena
+let x: any = 42;       // Auto-boxed to Box<i32>
+let y: any = "hello";  // Reference type (string)
+
+let n = x as i32;      // Unboxed to 42
+let s = y as string;   // Cast to string
+
+// let z = x + 1;      // Error: Operator '+' cannot be applied to type 'any'
+```
+
+The `any` type is useful for generic data structures or interop scenarios where the type is not known at compile time. Under the hood, it maps to the WASM `anyref` type.
+
 ### Type Inference
 
 Local variable types are inferred from their initializer expression.
