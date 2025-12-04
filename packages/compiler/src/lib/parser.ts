@@ -12,6 +12,7 @@ import {
   type ForStatement,
   type FunctionExpression,
   type Identifier,
+  type IfExpression,
   type IfStatement,
   type ImportDeclaration,
   type ImportSpecifier,
@@ -1056,6 +1057,9 @@ export class Parser {
     if (this.#match(TokenType.Match)) {
       return this.#parseMatchExpression();
     }
+    if (this.#match(TokenType.If)) {
+      return this.#parseIfExpression();
+    }
     if (this.#match(TokenType.Hash)) {
       const startToken = this.#previous();
       if (this.#match(TokenType.LBracket)) {
@@ -1187,6 +1191,105 @@ export class Parser {
 
   #parseMatchPattern(): Pattern {
     return this.#parsePattern();
+  }
+
+  #parseIfExpression(): IfExpression {
+    const startToken = this.#previous();
+    this.#consume(TokenType.LParen, "Expected '(' after 'if'.");
+    const test = this.#parseExpression();
+    this.#consume(TokenType.RParen, "Expected ')' after if condition.");
+
+    let consequent: Expression | BlockStatement;
+    if (this.#match(TokenType.LBrace)) {
+      consequent = this.#parseBlockAsExpression();
+    } else {
+      consequent = this.#parseExpression();
+    }
+
+    this.#consume(
+      TokenType.Else,
+      "Expected 'else' after consequent in if expression.",
+    );
+
+    let alternate: Expression | BlockStatement;
+    if (this.#match(TokenType.LBrace)) {
+      alternate = this.#parseBlockAsExpression();
+    } else if (this.#check(TokenType.If)) {
+      // else if
+      this.#advance();
+      alternate = this.#parseIfExpression();
+    } else {
+      alternate = this.#parseExpression();
+    }
+
+    return {
+      type: NodeType.IfExpression,
+      test,
+      consequent,
+      alternate,
+      loc: this.#loc(startToken, alternate),
+    };
+  }
+
+  /**
+   * Parse a block where the last item can be an expression (without semicolon).
+   * Used for if expressions, match case bodies, etc.
+   */
+  #parseBlockAsExpression(): BlockStatement {
+    const startToken = this.#previous();
+    const body: Statement[] = [];
+
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      // Check for keywords that definitely start statements
+      if (
+        this.#check(TokenType.Let) ||
+        this.#check(TokenType.Var) ||
+        this.#check(TokenType.Return) ||
+        this.#check(TokenType.While) ||
+        this.#check(TokenType.For) ||
+        this.#check(TokenType.Class) ||
+        this.#check(TokenType.Interface) ||
+        this.#check(TokenType.Mixin)
+      ) {
+        body.push(this.#parseStatement());
+        continue;
+      }
+
+      // If we're at a semicolon, parse the statement
+      if (this.#check(TokenType.Semi)) {
+        body.push(this.#parseStatement());
+        continue;
+      }
+
+      // Try to parse as expression
+      const expr = this.#parseExpression();
+
+      // If next token is '}', this is the trailing expression (no semicolon needed)
+      if (this.#check(TokenType.RBrace)) {
+        body.push({
+          type: NodeType.ExpressionStatement,
+          expression: expr,
+          loc: expr.loc,
+        });
+        break;
+      }
+
+      // Otherwise, we expect a semicolon (it's a regular expression statement)
+      this.#consume(TokenType.Semi, "Expected ';' after expression.");
+      body.push({
+        type: NodeType.ExpressionStatement,
+        expression: expr,
+        loc: expr.loc,
+      });
+    }
+
+    this.#consume(TokenType.RBrace, "Expected '}' after block.");
+    const endToken = this.#previous();
+    return {
+      type: NodeType.BlockStatement,
+      body,
+      loc: this.#loc(startToken, endToken),
+    };
   }
 
   #isTemplateStart(): boolean {

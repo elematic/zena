@@ -5,11 +5,13 @@ import {
   type AsPattern,
   type AssignmentExpression,
   type BinaryExpression,
+  type BlockStatement,
   type BooleanLiteral,
   type CallExpression,
   type ClassPattern,
   type Expression,
   type FunctionExpression,
+  type IfExpression,
   type IndexExpression,
   type IsExpression,
   type LogicalPattern,
@@ -133,6 +135,8 @@ function checkExpressionInternal(ctx: CheckerContext, expr: Expression): Type {
       return checkThrowExpression(ctx, expr as ThrowExpression);
     case NodeType.MatchExpression:
       return checkMatchExpression(ctx, expr as MatchExpression);
+    case NodeType.IfExpression:
+      return checkIfExpression(ctx, expr as IfExpression);
     default:
       return Types.Unknown;
   }
@@ -166,6 +170,63 @@ function checkMatchExpression(
 
   if (caseTypes.length === 0) return Types.Void;
   return createUnionType(caseTypes);
+}
+
+function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
+  const testType = checkExpression(ctx, expr.test);
+  if (
+    testType.kind !== TypeKind.Boolean &&
+    testType.kind !== TypeKind.Unknown
+  ) {
+    ctx.diagnostics.reportError(
+      `Expected boolean condition in if expression, got ${typeToString(testType)}`,
+      DiagnosticCode.TypeMismatch,
+    );
+  }
+
+  const consequentType = checkIfBranch(ctx, expr.consequent);
+  const alternateType = checkIfBranch(ctx, expr.alternate);
+
+  // If both branches have the same type, return that type.
+  // Otherwise, create a union type.
+  return createUnionType([consequentType, alternateType]);
+}
+
+function checkIfBranch(
+  ctx: CheckerContext,
+  branch: Expression | BlockStatement,
+): Type {
+  if (branch.type === NodeType.BlockStatement) {
+    return checkBlockExpressionType(ctx, branch as BlockStatement);
+  }
+  return checkExpression(ctx, branch);
+}
+
+function checkBlockExpressionType(
+  ctx: CheckerContext,
+  block: BlockStatement,
+): Type {
+  ctx.enterScope();
+
+  // Check all statements in the block
+  for (let i = 0; i < block.body.length - 1; i++) {
+    checkStatement(ctx, block.body[i]);
+  }
+
+  // The type of the block is the type of the last expression
+  let resultType: Type = Types.Void;
+  if (block.body.length > 0) {
+    const lastStmt = block.body[block.body.length - 1];
+    if (lastStmt.type === NodeType.ExpressionStatement) {
+      resultType = checkExpression(ctx, (lastStmt as any).expression);
+    } else {
+      // For return statements, the type is void since we exit the function
+      checkStatement(ctx, lastStmt);
+    }
+  }
+
+  ctx.exitScope();
+  return resultType;
 }
 
 function checkMatchPattern(
