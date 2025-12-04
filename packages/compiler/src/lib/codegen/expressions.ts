@@ -4205,21 +4205,23 @@ function generateIfExpression(
   generateExpression(ctx, expr.test, body);
 
   // WASM if with result type
+  // For void result, we use ValType.void directly.
+  // For typed results, we create a block type (function signature with no params
+  // and the result type as output) which WASM uses for typed control structures.
   body.push(Opcode.if);
   if (resultType.length === 0) {
     body.push(ValType.void);
   } else {
-    // For typed blocks, we need a block type index
     const blockTypeIndex = ctx.module.addType([], [resultType]);
     body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
   }
 
   // Generate consequent
-  generateIfBranch(ctx, expr.consequent, resultType, body);
+  generateIfBranch(ctx, expr.consequent, body);
 
   // Generate else branch
   body.push(Opcode.else);
-  generateIfBranch(ctx, expr.alternate, resultType, body);
+  generateIfBranch(ctx, expr.alternate, body);
 
   body.push(Opcode.end);
 }
@@ -4227,7 +4229,6 @@ function generateIfExpression(
 function generateIfBranch(
   ctx: CodegenContext,
   branch: Expression | BlockStatement,
-  expectedType: number[],
   body: number[],
 ) {
   if (branch.type === NodeType.BlockStatement) {
