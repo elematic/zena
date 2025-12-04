@@ -56,7 +56,7 @@ This soundness is enforced by the underlying WASM-GC architecture. Zena does not
 
 ### Primitive Types
 
-- **`i32`**: 32-bit signed integer. This is the default type for integer literals.
+- **`i32`**: 32-bit signed integer. This is the default type for integer literals. Operations like division and comparison use signed semantics.
 - **`f32`**: 32-bit floating-point number.
 - **`boolean`**: Boolean value (`true` or `false`).
 - **`string`**: UTF-8 string.
@@ -471,8 +471,8 @@ Supported arithmetic operators for numeric types (`i32`, `f32`):
 - `+` (Addition / String Concatenation)
 - `-` (Subtraction)
 - `*` (Multiplication)
-- `/` (Division)
-- `%` (Modulo - `i32` only)
+- `/` (Division) - Signed division for `i32`.
+- `%` (Modulo - `i32` only) - Signed remainder.
 
 Supported bitwise operators for integer types (`i32`):
 
