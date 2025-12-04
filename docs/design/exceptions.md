@@ -80,13 +80,16 @@ let result = try {
   - If `catch` executes, the result is the `catch` value.
   - If `finally` throws or returns (if allowed), it overrides the previous completion (standard JS/Java behavior).
 
-### Future Direction: Expression-Oriented Control Flow
+### Expression-Oriented Control Flow
 
-This design aligns with a future goal to make `if/else` expressions as well, replacing the ternary operator and allowing for more functional coding styles (similar to Rust or Kotlin).
+Zena supports `if/else` as expressions (like Rust), replacing the need for a ternary operator and allowing for more functional coding styles.
 
 ```typescript
-// Future syntax
+// if expression syntax
 let x = if (cond) { 1 } else { 2 };
+
+// Chained else-if
+let sign = if (n < 0) -1 else if (n == 0) 0 else 1;
 ```
 
 ### Standard Library

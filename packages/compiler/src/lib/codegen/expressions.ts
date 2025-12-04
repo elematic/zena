@@ -12,6 +12,7 @@ import {
   type Expression,
   type FunctionExpression,
   type Identifier,
+  type IfExpression,
   type IndexExpression,
   type IsExpression,
   type LogicalPattern,
@@ -35,19 +36,25 @@ import {
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
 import {WasmModule} from '../emitter.js';
+import {
+  TypeKind,
+  type ClassType,
+  type FunctionType,
+  type UnionType,
+} from '../types.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import {analyzeCaptures} from './captures.js';
 import {
   decodeTypeIndex,
-  getInterfaceFromTypeIndex,
-  getTypeKey,
-  mapType,
-  mapCheckerTypeToWasmType,
-  typeToTypeAnnotation,
-  resolveAnnotation,
-  instantiateClass,
-  getSpecializedName,
   getClassFromTypeIndex,
+  getInterfaceFromTypeIndex,
+  getSpecializedName,
+  getTypeKey,
+  instantiateClass,
+  mapCheckerTypeToWasmType,
+  mapType,
+  resolveAnnotation,
+  typeToTypeAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {
@@ -55,13 +62,10 @@ import {
   instantiateGenericFunction,
   instantiateGenericMethod,
 } from './functions.js';
-import {generateBlockStatement} from './statements.js';
 import {
-  TypeKind,
-  type FunctionType,
-  type ClassType,
-  type UnionType,
-} from '../types.js';
+  generateBlockStatement,
+  generateFunctionStatement,
+} from './statements.js';
 import type {ClassInfo} from './types.js';
 
 export function generateExpression(
@@ -150,6 +154,9 @@ export function generateExpression(
       break;
     case NodeType.MatchExpression:
       generateMatchExpression(ctx, expression as MatchExpression, body);
+      break;
+    case NodeType.IfExpression:
+      generateIfExpression(ctx, expression as IfExpression, body);
       break;
     default:
       // TODO: Handle other expressions
@@ -4184,6 +4191,81 @@ function generateMatchExpression(
   body.push(Opcode.unreachable);
 
   body.push(Opcode.end); // End match_done block
+}
+
+function generateIfExpression(
+  ctx: CodegenContext,
+  expr: IfExpression,
+  body: number[],
+) {
+  // Get result type from inferred type
+  let resultType: number[] = [];
+  if (expr.inferredType) {
+    resultType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+  }
+
+  // Generate condition
+  generateExpression(ctx, expr.test, body);
+
+  // WASM if with result type
+  // For void result, we use ValType.void directly.
+  // For typed results, we create a block type (function signature with no params
+  // and the result type as output) which WASM uses for typed control structures.
+  body.push(Opcode.if);
+  if (resultType.length === 0) {
+    body.push(ValType.void);
+  } else {
+    const blockTypeIndex = ctx.module.addType([], [resultType]);
+    body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
+  }
+
+  // Generate consequent
+  generateIfBranch(ctx, expr.consequent, body);
+
+  // Generate else branch
+  body.push(Opcode.else);
+  generateIfBranch(ctx, expr.alternate, body);
+
+  body.push(Opcode.end);
+}
+
+function generateIfBranch(
+  ctx: CodegenContext,
+  branch: Expression | BlockStatement,
+  body: number[],
+) {
+  if (branch.type === NodeType.BlockStatement) {
+    generateBlockExpressionCode(ctx, branch as BlockStatement, body);
+  } else {
+    generateExpression(ctx, branch, body);
+  }
+}
+
+function generateBlockExpressionCode(
+  ctx: CodegenContext,
+  block: BlockStatement,
+  body: number[],
+) {
+  ctx.pushScope();
+
+  // Generate all statements except the last
+  for (let i = 0; i < block.body.length - 1; i++) {
+    generateFunctionStatement(ctx, block.body[i], body);
+  }
+
+  // The last statement should be an expression statement whose value is the block result
+  if (block.body.length > 0) {
+    const lastStmt = block.body[block.body.length - 1];
+    if (lastStmt.type === NodeType.ExpressionStatement) {
+      // Generate the expression value (don't drop it)
+      generateExpression(ctx, (lastStmt as any).expression, body);
+    } else {
+      // For other statements (like return), just generate them
+      generateFunctionStatement(ctx, lastStmt, body);
+    }
+  }
+
+  ctx.popScope();
 }
 
 function generateMatchPatternCheck(
