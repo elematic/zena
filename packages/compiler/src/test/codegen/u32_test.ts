@@ -1,6 +1,6 @@
+import assert from 'node:assert';
 import {suite, test} from 'node:test';
 import {compileAndInstantiate} from './utils.js';
-import assert from 'node:assert';
 
 suite('Unsigned Integers (u32) - Codegen', () => {
   test('u32 addition', async () => {
@@ -51,7 +51,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
     // Key test: large unsigned numbers that would be negative if signed
     // 0xFFFFFFFF (4294967295) / 2 should be 2147483647 (unsigned division)
     // If signed, -1 / 2 = 0 (signed division)
-    const largeU32 = 0xFFFFFFFF >>> 0; // 4294967295
+    const largeU32 = 0xffffffff >>> 0; // 4294967295
     const result = div(largeU32, 2);
     assert.strictEqual(result >>> 0, 2147483647);
   });
@@ -66,7 +66,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
     assert.strictEqual(rem(100, 7), 2);
 
     // Test with large unsigned number
-    const largeU32 = 0xFFFFFFFF >>> 0; // 4294967295
+    const largeU32 = 0xffffffff >>> 0; // 4294967295
     const result = rem(largeU32, 10);
     // 4294967295 % 10 = 5
     assert.strictEqual(result >>> 0, 5);
@@ -85,7 +85,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
     // Key test: 0xFFFFFFFF (as u32) should be > 1
     // If signed, -1 < 1 would be true
     // If unsigned, 4294967295 < 1 is false
-    const largeU32 = 0xFFFFFFFF >>> 0;
+    const largeU32 = 0xffffffff >>> 0;
     assert.strictEqual(lt(largeU32, 1), 0); // false - large value is NOT less than 1
   });
 
@@ -99,7 +99,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
     assert.strictEqual(le(2, 1), 0);
     assert.strictEqual(le(5, 5), 1);
 
-    const largeU32 = 0xFFFFFFFF >>> 0;
+    const largeU32 = 0xffffffff >>> 0;
     assert.strictEqual(le(largeU32, 1), 0); // false
   });
 
@@ -114,7 +114,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
     assert.strictEqual(gt(5, 5), 0);
 
     // Key test: 0xFFFFFFFF (as u32) should be > 1
-    const largeU32 = 0xFFFFFFFF >>> 0;
+    const largeU32 = 0xffffffff >>> 0;
     assert.strictEqual(gt(largeU32, 1), 1); // true - large value IS greater than 1
   });
 
@@ -128,7 +128,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
     assert.strictEqual(ge(1, 2), 0);
     assert.strictEqual(ge(5, 5), 1);
 
-    const largeU32 = 0xFFFFFFFF >>> 0;
+    const largeU32 = 0xffffffff >>> 0;
     assert.strictEqual(ge(largeU32, 1), 1); // true
   });
 
@@ -158,7 +158,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
     `;
     const {bitwiseAnd} = await compileAndInstantiate(source);
 
-    assert.strictEqual(bitwiseAnd(0xFF, 0x0F), 0x0F);
+    assert.strictEqual(bitwiseAnd(0xff, 0x0f), 0x0f);
     assert.strictEqual(bitwiseAnd(5, 3), 1);
   });
 
@@ -168,7 +168,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
     `;
     const {bitwiseOr} = await compileAndInstantiate(source);
 
-    assert.strictEqual(bitwiseOr(0xF0, 0x0F), 0xFF);
+    assert.strictEqual(bitwiseOr(0xf0, 0x0f), 0xff);
     assert.strictEqual(bitwiseOr(5, 3), 7);
   });
 
@@ -178,7 +178,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
     `;
     const {bitwiseXor} = await compileAndInstantiate(source);
 
-    assert.strictEqual(bitwiseXor(0xFF, 0x0F), 0xF0);
+    assert.strictEqual(bitwiseXor(0xff, 0x0f), 0xf0);
     assert.strictEqual(bitwiseXor(5, 3), 6);
   });
 
@@ -192,7 +192,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
     assert.strictEqual(toU32(42), 42);
     // -1 as u32 should be 0xFFFFFFFF
     const result = toU32(-1);
-    assert.strictEqual(result >>> 0, 0xFFFFFFFF);
+    assert.strictEqual(result >>> 0, 0xffffffff);
   });
 
   test('cast u32 to i32', async () => {
@@ -203,7 +203,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
 
     assert.strictEqual(toI32(42), 42);
     // Large u32 should become negative i32
-    const largeU32 = 0xFFFFFFFF >>> 0;
+    const largeU32 = 0xffffffff >>> 0;
     assert.strictEqual(toI32(largeU32), -1);
   });
 
@@ -224,7 +224,7 @@ suite('Unsigned Integers (u32) - Codegen', () => {
     // Divided by 2:
     // - Signed: -2 / 2 = -1
     // - Unsigned: 4294967294 / 2 = 2147483647
-    const value = 0xFFFFFFFE;
+    const value = 0xfffffffe;
     const signedResult = divI32(value, 2);
     const unsignedResult = divU32(value, 2);
 
