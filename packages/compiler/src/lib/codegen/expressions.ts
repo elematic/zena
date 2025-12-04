@@ -14,6 +14,7 @@ import {
   type Identifier,
   type IndexExpression,
   type IsExpression,
+  type LogicalPattern,
   type MatchExpression,
   type MemberExpression,
   type NewExpression,
@@ -4192,6 +4193,66 @@ function generateMatchPatternCheck(
       );
       break;
 
+    case NodeType.LogicalPattern: {
+      const logicalPattern = pattern as LogicalPattern;
+      if (logicalPattern.operator === '||') {
+        // left || right
+        // Check left
+        generateMatchPatternCheck(
+          ctx,
+          logicalPattern.left,
+          discriminantLocal,
+          discriminantType,
+          body,
+        );
+        // Stack: [left_result]
+
+        // If left is true, we are done (result is 1)
+        body.push(Opcode.if, ValType.i32);
+        body.push(Opcode.i32_const, 1);
+        body.push(Opcode.else);
+
+        // Check right
+        generateMatchPatternCheck(
+          ctx,
+          logicalPattern.right,
+          discriminantLocal,
+          discriminantType,
+          body,
+        );
+
+        body.push(Opcode.end);
+      } else {
+        // left && right
+        // Check left
+        generateMatchPatternCheck(
+          ctx,
+          logicalPattern.left,
+          discriminantLocal,
+          discriminantType,
+          body,
+        );
+        // Stack: [left_result]
+
+        // If left is true, check right
+        body.push(Opcode.if, ValType.i32);
+
+        generateMatchPatternCheck(
+          ctx,
+          logicalPattern.right,
+          discriminantLocal,
+          discriminantType,
+          body,
+        );
+
+        body.push(Opcode.else);
+        // Left failed, so result is 0
+        body.push(Opcode.i32_const, 0);
+        body.push(Opcode.end);
+      }
+      break;
+    }
+
     case NodeType.NumberLiteral: {
       body.push(
         Opcode.local_get,
@@ -4670,7 +4731,16 @@ function generateMatchPatternBindings(
 ) {
   if ((pattern as any).type === NodeType.AsPattern) {
     const asPattern = pattern as AsPattern;
-    const localIndex = ctx.declareLocal(asPattern.name.name, discriminantType);
+    let localIndex: number;
+    const existing = ctx.getLocal(asPattern.name.name);
+    if (
+      existing !== undefined &&
+      typesAreEqual(existing.type, discriminantType)
+    ) {
+      localIndex = existing.index;
+    } else {
+      localIndex = ctx.declareLocal(asPattern.name.name, discriminantType);
+    }
 
     body.push(
       Opcode.local_get,
@@ -4685,9 +4755,72 @@ function generateMatchPatternBindings(
       discriminantType,
       body,
     );
+  } else if (pattern.type === NodeType.LogicalPattern) {
+    const logicalPattern = pattern as LogicalPattern;
+    if (logicalPattern.operator === '||') {
+      // We need to check which one matched to bind correctly.
+      // Since we are here, we know at least one matched.
+
+      generateMatchPatternCheck(
+        ctx,
+        logicalPattern.left,
+        discriminantLocal,
+        discriminantType,
+        body,
+      );
+
+      body.push(Opcode.if, ValType.void);
+
+      // Left matched
+      generateMatchPatternBindings(
+        ctx,
+        logicalPattern.left,
+        discriminantLocal,
+        discriminantType,
+        body,
+      );
+
+      body.push(Opcode.else);
+
+      // Right matched
+      generateMatchPatternBindings(
+        ctx,
+        logicalPattern.right,
+        discriminantLocal,
+        discriminantType,
+        body,
+      );
+
+      body.push(Opcode.end);
+    } else {
+      // && - bind both
+      generateMatchPatternBindings(
+        ctx,
+        logicalPattern.left,
+        discriminantLocal,
+        discriminantType,
+        body,
+      );
+      generateMatchPatternBindings(
+        ctx,
+        logicalPattern.right,
+        discriminantLocal,
+        discriminantType,
+        body,
+      );
+    }
   } else if (pattern.type === NodeType.Identifier) {
     if (pattern.name !== '_') {
-      const localIndex = ctx.declareLocal(pattern.name, discriminantType);
+      let localIndex: number;
+      const existing = ctx.getLocal(pattern.name);
+      if (
+        existing !== undefined &&
+        typesAreEqual(existing.type, discriminantType)
+      ) {
+        localIndex = existing.index;
+      } else {
+        localIndex = ctx.declareLocal(pattern.name, discriminantType);
+      }
 
       body.push(
         Opcode.local_get,
@@ -4840,7 +4973,13 @@ function generateMatchPatternBindings(
     }
   } else if (pattern.type === NodeType.AsPattern) {
     const asPattern = pattern as AsPattern;
-    const localIndex = ctx.declareLocal(asPattern.name.name, discriminantType);
+    let localIndex: number;
+    const existing = ctx.getLocal(asPattern.name.name);
+    if (existing && typesAreEqual(existing.type, discriminantType)) {
+      localIndex = existing.index;
+    } else {
+      localIndex = ctx.declareLocal(asPattern.name.name, discriminantType);
+    }
 
     body.push(
       Opcode.local_get,

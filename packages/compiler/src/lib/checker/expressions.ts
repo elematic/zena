@@ -12,6 +12,7 @@ import {
   type FunctionExpression,
   type IndexExpression,
   type IsExpression,
+  type LogicalPattern,
   type MatchExpression,
   type MemberExpression,
   type NewExpression,
@@ -393,6 +394,55 @@ function checkMatchPattern(
             `Cannot destructure non-tuple type '${typeToString(discriminantType)}'.`,
             DiagnosticCode.TypeMismatch,
           );
+        }
+      }
+      break;
+    }
+    case NodeType.LogicalPattern: {
+      const logicalPattern = pattern as LogicalPattern;
+      if (logicalPattern.operator === '&&') {
+        checkMatchPattern(ctx, logicalPattern.left, discriminantType);
+        checkMatchPattern(ctx, logicalPattern.right, discriminantType);
+      } else {
+        // OR Pattern
+        ctx.enterScope();
+        checkMatchPattern(ctx, logicalPattern.left, discriminantType);
+        const leftScope = ctx.scopes[ctx.scopes.length - 1];
+        const leftVars = new Map(leftScope);
+        ctx.exitScope();
+
+        ctx.enterScope();
+        checkMatchPattern(ctx, logicalPattern.right, discriminantType);
+        const rightScope = ctx.scopes[ctx.scopes.length - 1];
+        const rightVars = new Map(rightScope);
+        ctx.exitScope();
+
+        // Verify variables
+        for (const [name] of leftVars) {
+          if (!rightVars.has(name)) {
+            ctx.diagnostics.reportError(
+              `Variable '${name}' is bound in the left branch of the OR pattern but not the right.`,
+              DiagnosticCode.TypeMismatch,
+            );
+          }
+        }
+
+        for (const [name] of rightVars) {
+          if (!leftVars.has(name)) {
+            ctx.diagnostics.reportError(
+              `Variable '${name}' is bound in the right branch of the OR pattern but not the left.`,
+              DiagnosticCode.TypeMismatch,
+            );
+          }
+        }
+
+        // Declare merged variables
+        for (const [name, leftInfo] of leftVars) {
+          if (rightVars.has(name)) {
+            const rightInfo = rightVars.get(name)!;
+            const mergedType = createUnionType([leftInfo.type, rightInfo.type]);
+            ctx.declare(name, mergedType, leftInfo.kind);
+          }
         }
       }
       break;

@@ -644,8 +644,16 @@ let result = match (x) {
   ```
 
 - **Tuple Patterns**: Match tuples and destructure elements.
+
   ```zena
   case [1, x]: ...
+  ```
+
+- **Logical Patterns**: Combine patterns using `|` (OR) and `&` (AND).
+
+  ```zena
+  case 1 | 2: ... // Matches 1 or 2
+  case Point { x } & { y }: ... // Matches Point and binds x and y
   ```
 
 Patterns can be nested.

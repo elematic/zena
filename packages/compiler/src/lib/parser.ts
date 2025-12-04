@@ -293,6 +293,54 @@ export class Parser {
   }
 
   #parsePattern(): Pattern {
+    return this.#parseLogicalOrPattern();
+  }
+
+  #parseLogicalOrPattern(): Pattern {
+    let left = this.#parseLogicalAndPattern();
+    while (this.#match(TokenType.Pipe)) {
+      const right = this.#parseLogicalAndPattern();
+      left = {
+        type: NodeType.LogicalPattern,
+        operator: '||',
+        left,
+        right,
+        loc: this.#loc(left, right),
+      };
+    }
+    return left;
+  }
+
+  #parseLogicalAndPattern(): Pattern {
+    let left = this.#parseAsPattern();
+    while (this.#match(TokenType.Ampersand)) {
+      const right = this.#parseAsPattern();
+      left = {
+        type: NodeType.LogicalPattern,
+        operator: '&&',
+        left,
+        right,
+        loc: this.#loc(left, right),
+      };
+    }
+    return left;
+  }
+
+  #parseAsPattern(): Pattern {
+    const pattern = this.#parsePrimaryPattern();
+    if (this.#match(TokenType.As)) {
+      const name = this.#parseIdentifier();
+      return {
+        type: NodeType.AsPattern,
+        pattern,
+        name,
+        loc: this.#loc(pattern, name),
+      };
+    }
+    return pattern;
+  }
+
+  #parsePrimaryPattern(): Pattern {
     let pattern: Pattern;
     if (this.#match(TokenType.Number)) {
       const token = this.#previous();
@@ -330,6 +378,9 @@ export class Parser {
       pattern = this.#parseRecordPattern();
     } else if (this.#match(TokenType.LBracket)) {
       pattern = this.#parseTuplePattern();
+    } else if (this.#match(TokenType.LParen)) {
+      pattern = this.#parsePattern();
+      this.#consume(TokenType.RParen, "Expected ')' after pattern.");
     } else if (this.#match(TokenType.Identifier)) {
       const token = this.#previous();
       const identifier: Identifier = {
@@ -351,16 +402,6 @@ export class Parser {
       }
     } else {
       throw new Error(`Expected pattern, got ${this.#peek().type}`);
-    }
-
-    if (this.#match(TokenType.As)) {
-      const name = this.#parseIdentifier();
-      return {
-        type: NodeType.AsPattern,
-        pattern,
-        name,
-        loc: this.#loc(pattern, name),
-      };
     }
 
     return pattern;

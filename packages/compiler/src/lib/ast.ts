@@ -62,6 +62,7 @@ export const NodeType = {
   MatchExpression: 'MatchExpression',
   MatchCase: 'MatchCase',
   ClassPattern: 'ClassPattern',
+  LogicalPattern: 'LogicalPattern',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -230,7 +231,15 @@ export type Pattern =
   | BooleanLiteral
   | NullLiteral
   | ClassPattern
-  | AsPattern;
+  | AsPattern
+  | LogicalPattern;
+
+export interface LogicalPattern extends Node {
+  type: typeof NodeType.LogicalPattern;
+  operator: '||' | '&&';
+  left: Pattern;
+  right: Pattern;
+}
 
 export interface AsPattern extends Node {
   type: typeof NodeType.AsPattern;
