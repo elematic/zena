@@ -4186,7 +4186,7 @@ function generateMatchExpression(
     }
 
     // 4. Execute Body
-    generateExpression(ctx, c.body, body);
+    generateMatchCaseBody(ctx, c.body, body);
 
     // 5. Break to match done
     // We are inside:
@@ -4202,6 +4202,18 @@ function generateMatchExpression(
   body.push(Opcode.unreachable);
 
   body.push(Opcode.end); // End match_done block
+}
+
+function generateMatchCaseBody(
+  ctx: CodegenContext,
+  body_node: Expression | BlockStatement,
+  body: number[],
+) {
+  if (body_node.type === NodeType.BlockStatement) {
+    generateBlockExpressionCode(ctx, body_node as BlockStatement, body);
+  } else {
+    generateExpression(ctx, body_node, body);
+  }
 }
 
 function generateIfExpression(
