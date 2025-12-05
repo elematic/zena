@@ -1178,7 +1178,13 @@ export class Parser {
     }
 
     this.#consume(TokenType.Colon, "Expected ':' after case pattern.");
-    const body = this.#parseExpression();
+
+    let body: Expression | BlockStatement;
+    if (this.#match(TokenType.LBrace)) {
+      body = this.#parseBlockAsExpression();
+    } else {
+      body = this.#parseExpression();
+    }
 
     return {
       type: NodeType.MatchCase,

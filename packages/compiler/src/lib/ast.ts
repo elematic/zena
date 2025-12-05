@@ -291,7 +291,7 @@ export interface MatchCase extends Node {
     | BooleanLiteral
     | NullLiteral;
   guard?: Expression;
-  body: Expression;
+  body: Expression | BlockStatement;
 }
 
 export interface ClassPattern extends Node {

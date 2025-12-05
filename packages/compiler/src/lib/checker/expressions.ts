@@ -163,13 +163,23 @@ function checkMatchExpression(
       }
     }
 
-    const bodyType = checkExpression(ctx, c.body);
+    const bodyType = checkMatchCaseBody(ctx, c.body);
     caseTypes.push(bodyType);
     ctx.exitScope();
   }
 
   if (caseTypes.length === 0) return Types.Void;
   return createUnionType(caseTypes);
+}
+
+function checkMatchCaseBody(
+  ctx: CheckerContext,
+  body: Expression | BlockStatement,
+): Type {
+  if (body.type === NodeType.BlockStatement) {
+    return checkBlockExpressionType(ctx, body as BlockStatement);
+  }
+  return checkExpression(ctx, body);
 }
 
 function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
