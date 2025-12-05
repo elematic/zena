@@ -45,7 +45,7 @@ test('nested blocks create independent scopes', async () => {
   assert.strictEqual(result, 111);
 });
 
-test('block scope variables are not accessible outside the block', async () => {
+test('inner block can modify outer scope variables', async () => {
   const source = `
     export let main = () => {
       var x = 5;
@@ -58,6 +58,6 @@ test('block scope variables are not accessible outside the block', async () => {
   `;
 
   const result = await compileAndRun(source);
-  // x was modified inside block using y, then y goes out of scope
+  // Inner block modifies x from outer scope using local y
   assert.strictEqual(result, 15);
 });
