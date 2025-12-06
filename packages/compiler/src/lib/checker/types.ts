@@ -24,6 +24,9 @@ function isPrimitive(type: Type): boolean {
   if (type.kind === TypeKind.TypeAlias) {
     return isPrimitive((type as TypeAliasType).target);
   }
+  if (type.kind === TypeKind.Class && (type as ClassType).isExtension) {
+    return isPrimitive((type as ClassType).onType!);
+  }
   return false;
 }
 
@@ -128,6 +131,64 @@ export function resolveTypeAnnotation(
         );
       }
     }
+
+    for (let i = 0; i < types.length; i++) {
+      for (let j = i + 1; j < types.length; j++) {
+        const t1 = types[i];
+        const t2 = types[j];
+
+        const ext1 =
+          t1.kind === TypeKind.Class && (t1 as ClassType).isExtension
+            ? (t1 as ClassType)
+            : null;
+        const ext2 =
+          t2.kind === TypeKind.Class && (t2 as ClassType).isExtension
+            ? (t2 as ClassType)
+            : null;
+
+        if (ext1 && ext2 && ext1.onType && ext2.onType) {
+          if (
+            isAssignableTo(ctx, ext1.onType, ext2.onType) &&
+            isAssignableTo(ctx, ext2.onType, ext1.onType)
+          ) {
+            ctx.diagnostics.reportError(
+              `Union types cannot contain multiple extension types on the same underlying type: '${typeToString(t1)}' and '${typeToString(t2)}'.`,
+              DiagnosticCode.TypeMismatch,
+            );
+          }
+        }
+
+        // Check for ambiguous distinct types
+        const dist1 =
+          t1.kind === TypeKind.TypeAlias && (t1 as TypeAliasType).isDistinct
+            ? (t1 as TypeAliasType)
+            : null;
+        const dist2 =
+          t2.kind === TypeKind.TypeAlias && (t2 as TypeAliasType).isDistinct
+            ? (t2 as TypeAliasType)
+            : null;
+
+        if (dist1 && dist2) {
+          // If they are different distinct types (by name) but have the same underlying type (recursively),
+          // they are ambiguous in a union because they erase to the same thing.
+          // Note: We only care if they are DIFFERENT distinct types.
+          // If they are the same, it's just redundancy (which is fine or handled elsewhere).
+          if (dist1.name !== dist2.name) {
+            // Check if underlying types are compatible/same
+            if (
+              isAssignableTo(ctx, dist1.target, dist2.target) &&
+              isAssignableTo(ctx, dist2.target, dist1.target)
+            ) {
+              ctx.diagnostics.reportError(
+                `Union types cannot contain multiple distinct types that erase to the same underlying type: '${typeToString(t1)}' and '${typeToString(t2)}'.`,
+                DiagnosticCode.TypeMismatch,
+              );
+            }
+          }
+        }
+      }
+    }
+
     return {
       kind: TypeKind.Union,
       types,

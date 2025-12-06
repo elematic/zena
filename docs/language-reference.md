@@ -167,7 +167,7 @@ Union types in Zena are restricted to **Reference Types**. You cannot create a u
 - **Valid**: `string | null`, `MyClass | MyInterface`, `array<i32> | null`.
 - **Invalid**: `i32 | null`, `boolean | string`.
 
-This restriction exists because value primitives in WASM do not carry runtime type information and cannot be mixed with references without explicit boxing.
+This restriction exists because value primitives in WASM have a different memory representation (stack/value) than reference types (heap/pointer). Mixing them in a single variable would require implicit boxing or a tagged union representation, which Zena avoids for performance and simplicity.
 
 To use a primitive in a union (e.g., for a nullable integer), you must wrap it in a `Box<T>`.
 
@@ -176,6 +176,8 @@ import {Box} from 'zena';
 
 let maybeNumber: Box<i32> | null = new Box(42);
 ```
+
+**Note**: This is distinct from the "Indistinguishable Types" limitation (see [Distinguishable Types & Erasure](#distinguishable-types--erasure)). Primitives _are_ distinguishable from references, but they are incompatible in storage layout.
 
 ## 3. Variables
 
@@ -797,6 +799,69 @@ export final extension class FixedArray<T> on array<T> {
   declare length: i32;
 }
 ```
+
+### Distinguishable Types & Erasure
+
+Zena uses **type erasure** for certain constructs to maintain zero-cost abstractions. This means that some types which are distinct at compile time are identical at runtime.
+
+Types that are identical at runtime are considered **indistinguishable**. This has implications for:
+
+- **Union Types**: A union cannot contain multiple types that are indistinguishable from each other.
+- **Pattern Matching**: You cannot match against multiple indistinguishable types in the same `match` expression (as the first case would always match).
+- **`is` Checks**: Checking if a value `is T` where `T` is an erased type will check against the underlying runtime type.
+
+#### Indistinguishable Pairs
+
+The following pairs of types are indistinguishable at runtime:
+
+1.  **Extension Classes on the same type**:
+
+    ```zena
+    extension class A on array<i32> {}
+    extension class B on array<i32> {}
+    // A and B are both array<i32> at runtime.
+    ```
+
+2.  **Distinct Types on the same type**:
+
+    ```zena
+    distinct type IdA = string;
+    distinct type IdB = string;
+    // IdA and IdB are both string at runtime.
+    ```
+
+3.  **Generic Instantiations of Erased Types**:
+    ```zena
+    // Box<T> is monomorphized, but if T erases to the same type, Box<T> might be the same struct.
+    // Currently, Box<Meters> and Box<Seconds> (where Meters/Seconds are i32) are indistinguishable.
+    ```
+
+#### Valid Distinguishable Types
+
+- **Classes**: `class A {}` and `class B {}` are always distinguishable.
+- **Reified Generics**: `Box<i32>` and `Box<string>` are distinguishable because `i32` and `string` have different runtime representations.
+- **Primitives**: `i32` and `string` are distinguishable.
+
+### Limitations
+
+Since extension classes and distinct types are erased at runtime, they have some limitations:
+
+1.  **Unions**: You cannot create a union type containing multiple extension classes or distinct types that extend the same underlying type.
+
+    ```zena
+    extension class A on array<i32> {}
+    extension class B on array<i32> {}
+
+    let x: A | B; // Error: Ambiguous union
+    ```
+
+2.  **Pattern Matching**: You cannot have multiple cases in a `match` expression that match against extension classes on the same underlying type.
+    ```zena
+    match (arr) {
+      case A {}: ...
+      case B {}: ... // Error: Ambiguous match
+    }
+    ```
 
 ### Built-in Types
 

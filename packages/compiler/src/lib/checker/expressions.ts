@@ -148,10 +148,39 @@ function checkMatchExpression(
 ): Type {
   const discriminantType = checkExpression(ctx, expr.discriminant);
   const caseTypes: Type[] = [];
+  const matchedTypes: Type[] = [];
 
   for (const c of expr.cases) {
     ctx.enterScope();
     checkMatchPattern(ctx, c.pattern, discriminantType);
+
+    const patternType = getPatternType(ctx, c.pattern);
+    if (patternType) {
+      for (const prev of matchedTypes) {
+        const ext1 =
+          patternType.kind === TypeKind.Class &&
+          (patternType as ClassType).isExtension
+            ? (patternType as ClassType)
+            : null;
+        const ext2 =
+          prev.kind === TypeKind.Class && (prev as ClassType).isExtension
+            ? (prev as ClassType)
+            : null;
+
+        if (ext1 && ext2 && ext1.onType && ext2.onType) {
+          if (
+            isAssignableTo(ctx, ext1.onType, ext2.onType) &&
+            isAssignableTo(ctx, ext2.onType, ext1.onType)
+          ) {
+            ctx.diagnostics.reportError(
+              `Ambiguous match case: '${typeToString(patternType)}' and '${typeToString(prev)}' extend the same underlying type and are indistinguishable at runtime.`,
+              DiagnosticCode.TypeMismatch,
+            );
+          }
+        }
+      }
+      matchedTypes.push(patternType);
+    }
 
     if (c.guard) {
       const guardType = checkExpression(ctx, c.guard);
@@ -1916,4 +1945,28 @@ function checkTaggedTemplateExpression(
 
   // Return the function's return type
   return funcType.returnType;
+}
+
+function getPatternType(
+  ctx: CheckerContext,
+  pattern:
+    | Pattern
+    | ClassPattern
+    | NumberLiteral
+    | StringLiteral
+    | BooleanLiteral
+    | NullLiteral,
+): Type | null {
+  switch (pattern.type) {
+    case NodeType.ClassPattern: {
+      const classPattern = pattern as ClassPattern;
+      const type = ctx.resolve(classPattern.name.name);
+      if (type && type.kind === TypeKind.Class) {
+        return type as ClassType;
+      }
+      return null;
+    }
+    default:
+      return null;
+  }
 }
