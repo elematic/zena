@@ -23,4 +23,23 @@ suite('CodeGenerator - Type Aliases', () => {
     `;
     await compileAndRun(code, 'main');
   });
+
+  test('should compile and run tuple type alias', async () => {
+    const source = `
+      type Foo = [string, i32];
+
+      let f = (x: Foo): i32 => {
+        return x[1];
+      };
+
+      export let main = (): i32 => {
+        let t: Foo = ["hello", 42];
+        return f(t);
+      };
+    `;
+    const result = await compileAndRun(source, 'main');
+    if (result !== 42) {
+      throw new Error(`Expected 42, got ${result}`);
+    }
+  });
 });
