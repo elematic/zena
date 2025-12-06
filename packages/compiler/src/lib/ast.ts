@@ -64,6 +64,7 @@ export const NodeType = {
   ClassPattern: 'ClassPattern',
   LogicalPattern: 'LogicalPattern',
   IfExpression: 'IfExpression',
+  AccessorSignature: 'AccessorSignature',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -417,9 +418,17 @@ export interface InterfaceDeclaration extends Node {
   name: Identifier;
   typeParameters?: TypeParameter[];
   extends?: TypeAnnotation[];
-  body: (FieldDefinition | MethodSignature)[];
+  body: (FieldDefinition | MethodSignature | AccessorSignature)[];
   exported: boolean;
   exportName?: string;
+}
+
+export interface AccessorSignature extends Node {
+  type: typeof NodeType.AccessorSignature;
+  name: Identifier;
+  typeAnnotation: TypeAnnotation;
+  hasGetter: boolean;
+  hasSetter: boolean;
 }
 
 export interface MethodSignature extends Node {

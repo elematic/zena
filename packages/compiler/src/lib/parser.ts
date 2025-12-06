@@ -1,6 +1,7 @@
 import {
   NodeType,
   type AccessorDeclaration,
+  type AccessorSignature,
   type BindingProperty,
   type BlockStatement,
   type CallExpression,
@@ -1875,7 +1876,7 @@ export class Parser {
 
     this.#consume(TokenType.LBrace, "Expected '{' before interface body.");
 
-    const body: (FieldDefinition | MethodSignature)[] = [];
+    const body: (FieldDefinition | MethodSignature | AccessorSignature)[] = [];
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       body.push(this.#parseInterfaceMember());
     }
@@ -1894,7 +1895,10 @@ export class Parser {
     };
   }
 
-  #parseInterfaceMember(): FieldDefinition | MethodSignature {
+  #parseInterfaceMember():
+    | FieldDefinition
+    | MethodSignature
+    | AccessorSignature {
     let name: Identifier;
     if (this.#match(TokenType.Operator)) {
       if (this.#match(TokenType.EqualsEquals)) {
@@ -1986,6 +1990,34 @@ export class Parser {
     // Field: name: Type;
     this.#consume(TokenType.Colon, "Expected ':' after field name.");
     const typeAnnotation = this.#parseTypeAnnotation();
+
+    if (this.#match(TokenType.LBrace)) {
+      let hasGetter = false;
+      let hasSetter = false;
+
+      while (!this.#match(TokenType.RBrace)) {
+        const id = this.#parseIdentifier();
+        if (id.name === 'get') {
+          hasGetter = true;
+        } else if (id.name === 'set') {
+          hasSetter = true;
+        } else {
+          throw new Error(
+            `Expected 'get' or 'set' in accessor signature, got '${id.name}'`,
+          );
+        }
+        this.#consume(TokenType.Semi, "Expected ';' after accessor specifier.");
+      }
+
+      return {
+        type: NodeType.AccessorSignature,
+        name,
+        typeAnnotation,
+        hasGetter,
+        hasSetter,
+      };
+    }
+
     this.#consume(TokenType.Semi, "Expected ';' after field declaration.");
 
     return {

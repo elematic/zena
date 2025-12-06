@@ -90,8 +90,9 @@ suite('TypeChecker - Interfaces', () => {
     const checker = new TypeChecker(ast);
     const errors = checker.check();
 
-    assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /Property 'y' is missing/);
+    assert.strictEqual(errors.length, 2);
+    assert.match(errors[0].message, /Getter for 'y' is missing/);
+    assert.match(errors[1].message, /Setter for 'y' is missing/);
   });
 
   test('should detect incorrect field type', () => {
@@ -108,10 +109,10 @@ suite('TypeChecker - Interfaces', () => {
     const checker = new TypeChecker(ast);
     const errors = checker.check();
 
-    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(errors.length, 2);
     assert.match(
       errors[0].message,
-      /Property 'x' is type 'f32' but expected 'i32'/,
+      /Getter for 'x' is type .* but expected .*/,
     );
   });
 
@@ -126,6 +127,151 @@ suite('TypeChecker - Interfaces', () => {
       class Task implements Runnable, Stoppable {
         run(): void {}
         stop(): void {}
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('should check valid interface accessor implementation', () => {
+    const input = `
+      interface Container {
+        value: i32 { get; set; }
+      }
+      class Box implements Container {
+        _value: i32 = 0;
+        value: i32 {
+          get { return this._value; }
+          set(v) { this._value = v; }
+        }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('should detect missing getter implementation', () => {
+    const input = `
+      interface Container {
+        value: i32 { get; }
+      }
+      class Box implements Container {
+        value: i32 {
+          set(v) {}
+        }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0].message, /Getter for 'value' is missing/);
+  });
+
+  test('should detect missing setter implementation', () => {
+    const input = `
+      interface Container {
+        value: i32 { set; }
+      }
+      class Box implements Container {
+        value: i32 {
+          get { return 0; }
+        }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0].message, /Setter for 'value' is missing/);
+  });
+
+  test('should detect incorrect getter return type', () => {
+    const input = `
+      interface Container {
+        value: i32 { get; }
+      }
+      class Box implements Container {
+        value: f32 {
+          get { return 0.0; }
+        }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(
+      errors[0].message,
+      /Getter for 'value' is type .* but expected .*/,
+    );
+  });
+
+  test('should detect incorrect setter parameter type', () => {
+    const input = `
+      interface Container {
+        value: i32 { set; }
+      }
+      class Box implements Container {
+        value: f32 {
+          set(v) {}
+        }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(
+      errors[0].message,
+      /Setter for 'value' is type .* but expected .*/,
+    );
+  });
+
+  test('should satisfy interface accessor with field', () => {
+    const input = `
+      interface Container {
+        value: i32 { get; set; }
+      }
+      class Box implements Container {
+        value: i32 = 0;
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('should satisfy interface field with accessor', () => {
+    const input = `
+      interface Container {
+        value: i32;
+      }
+      class Box implements Container {
+        _val: i32 = 0;
+        value: i32 {
+          get { return this._val; }
+          set(v) { this._val = v; }
+        }
       }
     `;
     const parser = new Parser(input);

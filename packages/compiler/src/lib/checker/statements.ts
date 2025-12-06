@@ -1054,36 +1054,32 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       const interfaceType = type as InterfaceType;
       classType.implements.push(interfaceType);
 
-      // Check fields
-      for (const [name, type] of interfaceType.fields) {
-        if (!classType.fields.has(name)) {
-          ctx.diagnostics.reportError(
-            `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Property '${name}' is missing.`,
-            DiagnosticCode.PropertyNotFound,
-          );
-        } else {
-          const fieldType = classType.fields.get(name)!;
-          if (typeToString(fieldType) !== typeToString(type)) {
-            ctx.diagnostics.reportError(
-              `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Property '${name}' is type '${typeToString(fieldType)}' but expected '${typeToString(type)}'.`,
-              DiagnosticCode.TypeMismatch,
-            );
-          }
-        }
-      }
-
       // Check methods
       for (const [name, type] of interfaceType.methods) {
         if (!classType.methods.has(name)) {
+          let errorMsg = `Method '${name}' is missing.`;
+          if (name.startsWith('get_')) {
+            errorMsg = `Getter for '${name.slice(4)}' is missing.`;
+          } else if (name.startsWith('set_')) {
+            errorMsg = `Setter for '${name.slice(4)}' is missing.`;
+          }
+
           ctx.diagnostics.reportError(
-            `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Method '${name}' is missing.`,
+            `Class '${className}' incorrectly implements interface '${interfaceType.name}'. ${errorMsg}`,
             DiagnosticCode.PropertyNotFound,
           );
         } else {
           const methodType = classType.methods.get(name)!;
           if (typeToString(methodType) !== typeToString(type)) {
+            let memberName = `Method '${name}'`;
+            if (name.startsWith('get_')) {
+              memberName = `Getter for '${name.slice(4)}'`;
+            } else if (name.startsWith('set_')) {
+              memberName = `Setter for '${name.slice(4)}'`;
+            }
+
             ctx.diagnostics.reportError(
-              `Class '${className}' incorrectly implements interface '${interfaceType.name}'. Method '${name}' is type '${typeToString(methodType)}' but expected '${typeToString(type)}'.`,
+              `Class '${className}' incorrectly implements interface '${interfaceType.name}'. ${memberName} is type '${typeToString(methodType)}' but expected '${typeToString(type)}'.`,
               DiagnosticCode.TypeMismatch,
             );
           }
@@ -1276,6 +1272,54 @@ function checkInterfaceDeclaration(
         );
       } else {
         interfaceType.fields.set(member.name.name, type);
+
+        // Implicit accessors
+        const getterName = `get_${member.name.name}`;
+        const setterName = `set_${member.name.name}`;
+
+        interfaceType.methods.set(getterName, {
+          kind: TypeKind.Function,
+          parameters: [],
+          returnType: type,
+          isFinal: false,
+        });
+
+        interfaceType.methods.set(setterName, {
+          kind: TypeKind.Function,
+          parameters: [type],
+          returnType: Types.Void,
+          isFinal: false,
+        });
+      }
+    } else if (member.type === NodeType.AccessorSignature) {
+      const type = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      if (interfaceType.fields.has(member.name.name)) {
+        ctx.diagnostics.reportError(
+          `Duplicate field '${member.name.name}' in interface '${interfaceName}'.`,
+          DiagnosticCode.DuplicateDeclaration,
+        );
+      } else {
+        interfaceType.fields.set(member.name.name, type);
+      }
+
+      if (member.hasGetter) {
+        const getterName = `get_${member.name.name}`;
+        interfaceType.methods.set(getterName, {
+          kind: TypeKind.Function,
+          parameters: [],
+          returnType: type,
+          isFinal: false,
+        });
+      }
+
+      if (member.hasSetter) {
+        const setterName = `set_${member.name.name}`;
+        interfaceType.methods.set(setterName, {
+          kind: TypeKind.Function,
+          parameters: [type],
+          returnType: Types.Void,
+          isFinal: false,
+        });
       }
     }
   }

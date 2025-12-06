@@ -3,6 +3,7 @@
 This document outlines the content for the Zena Language Tour page. The tour is designed to introduce new users to the language, starting from foundational concepts and progressing to advanced features.
 
 ## Introduction & Philosophy
+
 - **Inspirations**:
   - **TypeScript**: Syntax familiarity, structural typing (where appropriate).
   - **Dart**: Class model, mixins, sound type system.
@@ -15,6 +16,7 @@ This document outlines the content for the Zena Language Tour page. The tour is 
   - **WASM Native**: Designed specifically for the WebAssembly Garbage Collection proposal.
 
 ## 1. Basics & Variables
+
 - **Hello World**: A simple entry point.
 - **Comments**: Single-line `//` and multi-line `/* ... */`.
 - **Variables**:
@@ -23,6 +25,7 @@ This document outlines the content for the Zena Language Tour page. The tour is 
   - Block scoping.
 
 ## 2. Functions
+
 - **Arrow Syntax**: All functions use `(args) => body`.
 - **Type Annotations**: Parameter and return types.
 - **Closures**: Capturing variables from enclosing scopes.
@@ -30,6 +33,7 @@ This document outlines the content for the Zena Language Tour page. The tour is 
 - **Argument Adaptation**: Passing functions with fewer arguments.
 
 ## 3. Data Structures (Immutable)
+
 - **Records**: Immutable structs `{ x: 1, y: 2 }`.
 - **Tuples**: Immutable sequences `[1, "a"]`.
 - **Destructuring**: Extracting values from Records and Tuples.
@@ -37,6 +41,7 @@ This document outlines the content for the Zena Language Tour page. The tour is 
   - `let [a, b] = tuple;`
 
 ## 4. Types System
+
 - **Primitive Types**: `i32`, `u32`, `f32`, `boolean`, `string`.
 - **Type Inference**: `let x = 10;` (inferred as `i32`).
 - **Type Aliases**: `type ID = string;`.
@@ -48,6 +53,7 @@ This document outlines the content for the Zena Language Tour page. The tour is 
   - **Nominal**: Classes, Distinct Types (name/declaration matters).
 
 ## 5. Control Flow
+
 - **Conditionals**:
   - `if` / `else` statements.
   - `if` as an expression: `let x = if (cond) 1 else 2;`.
@@ -57,6 +63,7 @@ This document outlines the content for the Zena Language Tour page. The tour is 
 - **Exceptions**: `throw new Error(...)`.
 
 ## 6. Pattern Matching
+
 - **Match Expression**: `match (x) { ... }`.
 - **Patterns**:
   - Literals (`case 1:`).
@@ -67,6 +74,7 @@ This document outlines the content for the Zena Language Tour page. The tour is 
 - **Guards**: `case x if x > 10:`.
 
 ## 7. Object-Oriented Programming
+
 - **Classes**:
   - Fields and Methods.
   - Constructors (`#new`).
@@ -80,6 +88,7 @@ This document outlines the content for the Zena Language Tour page. The tour is 
 - **Generics**: Generic classes and methods (`class Box<T>`).
 
 ## 8. Collections & Strings
+
 - **Arrays**:
   - Mutable arrays `array<T>`.
   - Literal syntax `#[1, 2, 3]`.
@@ -90,6 +99,7 @@ This document outlines the content for the Zena Language Tour page. The tour is 
   - Tagged Templates.
 
 ## 9. Advanced Features
+
 - **Operator Overloading**:
   - Equality: `operator ==`.
   - Indexing: `operator []` and `operator []=`.

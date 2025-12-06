@@ -1052,7 +1052,10 @@ function checkAssignmentExpression(
     const memberExpr = expr.left as MemberExpression;
     const objectType = checkExpression(ctx, memberExpr.object);
 
-    if (objectType.kind !== TypeKind.Class) {
+    if (
+      objectType.kind !== TypeKind.Class &&
+      objectType.kind !== TypeKind.Interface
+    ) {
       if (objectType.kind !== Types.Unknown.kind) {
         ctx.diagnostics.reportError(
           `Property assignment on non-class type '${typeToString(objectType)}'.`,
@@ -1062,28 +1065,44 @@ function checkAssignmentExpression(
       return Types.Unknown;
     }
 
-    const classType = objectType as ClassType;
+    const classType = objectType as ClassType | InterfaceType;
     const memberName = memberExpr.property.name;
 
-    if (!classType.fields.has(memberName)) {
-      ctx.diagnostics.reportError(
-        `Field '${memberName}' does not exist on type '${classType.name}'.`,
-        DiagnosticCode.PropertyNotFound,
-      );
-      return Types.Unknown;
+    if (classType.fields.has(memberName)) {
+      const fieldType = classType.fields.get(memberName)!;
+      const valueType = checkExpression(ctx, expr.value);
+
+      if (!isAssignableTo(valueType, fieldType)) {
+        ctx.diagnostics.reportError(
+          `Type mismatch in assignment: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+          DiagnosticCode.TypeMismatch,
+        );
+      }
+      return valueType;
     }
 
-    const fieldType = classType.fields.get(memberName)!;
-    const valueType = checkExpression(ctx, expr.value);
+    // Check setters
+    const setterName = `set_${memberName}`;
+    if (classType.methods.has(setterName)) {
+      const setter = classType.methods.get(setterName)!;
+      const valueType = checkExpression(ctx, expr.value);
 
-    if (!isAssignableTo(valueType, fieldType)) {
-      ctx.diagnostics.reportError(
-        `Type mismatch in assignment: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
-        DiagnosticCode.TypeMismatch,
-      );
+      // Setter param type
+      const paramType = setter.parameters[0];
+      if (!isAssignableTo(valueType, paramType)) {
+        ctx.diagnostics.reportError(
+          `Type mismatch in assignment: expected ${typeToString(paramType)}, got ${typeToString(valueType)}`,
+          DiagnosticCode.TypeMismatch,
+        );
+      }
+      return valueType;
     }
 
-    return valueType;
+    ctx.diagnostics.reportError(
+      `Field '${memberName}' does not exist on type '${classType.name}'.`,
+      DiagnosticCode.PropertyNotFound,
+    );
+    return Types.Unknown;
   } else if (expr.left.type === NodeType.IndexExpression) {
     const indexExpr = expr.left as IndexExpression;
 
@@ -1635,6 +1654,12 @@ function checkMemberExpression(
   // Check methods
   if (classType.methods.has(memberName)) {
     return classType.methods.get(memberName)!;
+  }
+
+  // Check getters
+  const getterName = `get_${memberName}`;
+  if (classType.methods.has(getterName)) {
+    return classType.methods.get(getterName)!.returnType;
   }
 
   ctx.diagnostics.reportError(

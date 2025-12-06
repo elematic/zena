@@ -1009,7 +1009,25 @@ function generateMemberExpression(
     const interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
     if (interfaceInfo) {
       // Handle interface field access
-      const fieldInfo = interfaceInfo.fields.get(fieldName);
+      let fieldInfo = interfaceInfo.fields.get(fieldName);
+      let targetTypeIndex = -1;
+
+      if (fieldInfo) {
+        targetTypeIndex = fieldInfo.typeIndex;
+      } else {
+        // Check for getter
+        const getterName = `get_${fieldName}`;
+        const methodInfo = interfaceInfo.methods.get(getterName);
+        if (methodInfo) {
+          fieldInfo = {
+            index: methodInfo.index,
+            typeIndex: methodInfo.typeIndex,
+            type: methodInfo.returnType,
+          };
+          targetTypeIndex = methodInfo.typeIndex;
+        }
+      }
+
       if (!fieldInfo) {
         throw new Error(`Field ${fieldName} not found in interface`);
       }
@@ -1041,13 +1059,13 @@ function generateMemberExpression(
       body.push(
         0xfb,
         GcOpcode.ref_cast_null,
-        ...WasmModule.encodeSignedLEB128(fieldInfo.typeIndex),
+        ...WasmModule.encodeSignedLEB128(targetTypeIndex),
       );
 
       // Store funcRef in temp local
       const funcRefType = [
         ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(fieldInfo.typeIndex),
+        ...WasmModule.encodeSignedLEB128(targetTypeIndex),
       ];
       const funcRefLocal = ctx.declareLocal('$$interface_getter', funcRefType);
       body.push(
@@ -1073,7 +1091,7 @@ function generateMemberExpression(
       // 6. Call Getter
       body.push(
         Opcode.call_ref,
-        ...WasmModule.encodeSignedLEB128(fieldInfo.typeIndex),
+        ...WasmModule.encodeSignedLEB128(targetTypeIndex),
       );
 
       return;
@@ -1964,6 +1982,95 @@ function generateAssignmentExpression(
     }
 
     if (!foundClass) {
+      // Check if it's an interface
+      const interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+      if (interfaceInfo) {
+        const setterName = `set_${fieldName}`;
+        const methodInfo = interfaceInfo.methods.get(setterName);
+        if (!methodInfo) {
+          throw new Error(`Setter for ${fieldName} not found in interface`);
+        }
+
+        // Evaluate object -> Stack: [InterfaceStruct]
+        generateExpression(ctx, memberExpr.object, body);
+
+        // Store in temp local
+        const tempLocal = ctx.declareLocal('$$interface_temp', objectType);
+        body.push(
+          Opcode.local_tee,
+          ...WasmModule.encodeSignedLEB128(tempLocal),
+        );
+
+        // Load VTable
+        body.push(
+          0xfb,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+          ...WasmModule.encodeSignedLEB128(1),
+        );
+
+        // Load Function Pointer
+        body.push(
+          0xfb,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex),
+          ...WasmModule.encodeSignedLEB128(methodInfo.index),
+        );
+
+        // Cast to specific function type
+        body.push(
+          0xfb,
+          GcOpcode.ref_cast_null,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        );
+
+        // Store function ref in temp local
+        const funcRefType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        ];
+        const funcRefLocal = ctx.declareLocal('$$interface_func', funcRefType);
+        body.push(
+          Opcode.local_set,
+          ...WasmModule.encodeSignedLEB128(funcRefLocal),
+        );
+
+        // Load Instance (this)
+        body.push(
+          Opcode.local_get,
+          ...WasmModule.encodeSignedLEB128(tempLocal),
+        );
+        body.push(
+          0xfb,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+          ...WasmModule.encodeSignedLEB128(0),
+        );
+
+        // Evaluate value
+        generateExpression(ctx, expr.value, body);
+
+        const valueType = inferType(ctx, expr.value);
+        const tempVal = ctx.declareLocal('$$temp_assign_val', valueType);
+        body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempVal));
+
+        // Load function ref
+        body.push(
+          Opcode.local_get,
+          ...WasmModule.encodeSignedLEB128(funcRefLocal),
+        );
+
+        // Call Ref
+        body.push(
+          Opcode.call_ref,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        );
+
+        // Return value
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempVal));
+        return;
+      }
+
       throw new Error(`Class not found for object type ${structTypeIndex}`);
     }
 

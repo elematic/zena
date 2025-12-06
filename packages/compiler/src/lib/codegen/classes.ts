@@ -158,6 +158,59 @@ export function registerInterface(
         typeIndex: funcTypeIndex,
         type: fieldType,
       });
+    } else if (member.type === NodeType.AccessorSignature) {
+      const propName = member.name.name;
+      const propType = mapType(ctx, member.typeAnnotation);
+
+      if (member.hasGetter) {
+        const methodName = `get_${propName}`;
+
+        // Function type: (param any) -> result
+        const params: number[][] = [[ValType.ref_null, ValType.anyref]];
+        const results: number[][] = [];
+        if (propType.length > 0) {
+          results.push(propType);
+        }
+
+        const funcTypeIndex = ctx.module.addType(params, results);
+
+        // Field in VTable: (ref funcType)
+        vtableFields.push({
+          type: [ValType.ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex)],
+          mutable: false,
+        });
+
+        methodIndices.set(methodName, {
+          index: methodIndex++,
+          typeIndex: funcTypeIndex,
+          returnType: propType,
+        });
+      }
+
+      if (member.hasSetter) {
+        const methodName = `set_${propName}`;
+
+        // Function type: (param any, value) -> void
+        const params: number[][] = [
+          [ValType.ref_null, ValType.anyref],
+          propType,
+        ];
+        const results: number[][] = [];
+
+        const funcTypeIndex = ctx.module.addType(params, results);
+
+        // Field in VTable: (ref funcType)
+        vtableFields.push({
+          type: [ValType.ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex)],
+          mutable: false,
+        });
+
+        methodIndices.set(methodName, {
+          index: methodIndex++,
+          typeIndex: funcTypeIndex,
+          returnType: [],
+        });
+      }
     }
   }
 

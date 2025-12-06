@@ -1,7 +1,11 @@
-import {describe, it} from 'node:test';
 import assert from 'node:assert';
+import {describe, it} from 'node:test';
+import {
+  NodeType,
+  type BlockStatement,
+  type MatchExpression,
+} from '../../lib/ast.js';
 import {Parser} from '../../lib/parser.js';
-import {NodeType, type MatchExpression, type BlockStatement} from '../../lib/ast.js';
 
 describe('Parser: Match Case with Block', () => {
   it('parses match case with block body', () => {
@@ -68,13 +72,13 @@ describe('Parser: Match Case with Block', () => {
     const fn = decl.init;
     assert.strictEqual(fn.body.type, NodeType.BlockStatement);
     const fnBody = fn.body as BlockStatement;
-    
+
     // Should have: var x = 0; { ... }; return x;
     assert.strictEqual(fnBody.body.length, 3);
     assert.strictEqual(fnBody.body[0].type, NodeType.VariableDeclaration);
     assert.strictEqual(fnBody.body[1].type, NodeType.BlockStatement);
     assert.strictEqual(fnBody.body[2].type, NodeType.ReturnStatement);
-    
+
     // Inner block should have: var x = 10; x = 20;
     const innerBlock = fnBody.body[1] as BlockStatement;
     assert.strictEqual(innerBlock.body.length, 2);
