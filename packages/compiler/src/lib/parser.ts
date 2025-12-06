@@ -2167,8 +2167,12 @@ export class Parser {
     if (!this.#check(TokenType.RBrace)) {
       do {
         const name = this.#parseIdentifier();
-        this.#consume(TokenType.Colon, "Expected ':'");
-        const value = this.#parseExpression();
+        let value: Expression;
+        if (this.#match(TokenType.Colon)) {
+          value = this.#parseExpression();
+        } else {
+          value = name;
+        }
         properties.push({
           type: NodeType.PropertyAssignment,
           name,

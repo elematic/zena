@@ -808,6 +808,36 @@ Zena provides a low-level built-in array type `array<T>`. This maps directly to 
 - **Indexing**: `arr[index]`
 - **Length**: `arr.length` (via extension)
 
+## 7. Data Structures
+
+### Records
+
+Records are immutable, structural types that hold a fixed set of named fields.
+
+```zena
+let p = { x: 1, y: 2 };
+let x = p.x;
+```
+
+#### Shorthand Syntax
+
+If a variable name matches the field name, you can use the shorthand syntax:
+
+```zena
+let x = 1;
+let y = 2;
+let p = { x, y }; // Equivalent to { x: x, y: y }
+```
+
+### Tuples
+
+Tuples are immutable, structural types that hold a fixed sequence of typed elements.
+
+```zena
+let t = [1, "hello"];
+let n = t[0];
+```
+
 ## 8. Modules & Exports
 
 ### Exports

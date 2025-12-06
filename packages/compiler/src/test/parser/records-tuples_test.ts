@@ -71,4 +71,36 @@ suite('Parser: Records and Tuples', () => {
     assert.strictEqual(t.type, NodeType.TupleLiteral);
     assert.strictEqual(t.elements.length, 0);
   });
+
+  test('parses record shorthand', () => {
+    const parser = new Parser('let r = { x, y };');
+    const program = parser.parse();
+    const decl = program.body[0] as any;
+    const init = decl.init;
+    assert.strictEqual(init.type, NodeType.RecordLiteral);
+    assert.strictEqual(init.properties.length, 2);
+
+    assert.strictEqual(init.properties[0].name.name, 'x');
+    assert.strictEqual(init.properties[0].value.type, NodeType.Identifier);
+    assert.strictEqual(init.properties[0].value.name, 'x');
+
+    assert.strictEqual(init.properties[1].name.name, 'y');
+    assert.strictEqual(init.properties[1].value.type, NodeType.Identifier);
+    assert.strictEqual(init.properties[1].value.name, 'y');
+  });
+
+  test('parses mixed shorthand and full syntax', () => {
+    const parser = new Parser('let r = { x, y: 2, z };');
+    const program = parser.parse();
+    const init = (program.body[0] as any).init;
+
+    assert.strictEqual(init.properties[0].name.name, 'x');
+    assert.strictEqual(init.properties[0].value.name, 'x');
+
+    assert.strictEqual(init.properties[1].name.name, 'y');
+    assert.strictEqual(init.properties[1].value.value, 2);
+
+    assert.strictEqual(init.properties[2].name.name, 'z');
+    assert.strictEqual(init.properties[2].value.name, 'z');
+  });
 });
