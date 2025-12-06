@@ -350,7 +350,7 @@ function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {
 
   if (ctx.currentFunctionReturnType.kind !== Types.Unknown.kind) {
     // If we know the expected return type, check against it
-    if (!isAssignableTo(argType, ctx.currentFunctionReturnType)) {
+    if (!isAssignableTo(ctx, argType, ctx.currentFunctionReturnType)) {
       ctx.diagnostics.reportError(
         `Type mismatch: expected return type ${typeToString(ctx.currentFunctionReturnType)}, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
@@ -370,7 +370,7 @@ function checkVariableDeclaration(
 
   if (decl.typeAnnotation) {
     const explicitType = resolveTypeAnnotation(ctx, decl.typeAnnotation);
-    if (!isAssignableTo(type, explicitType)) {
+    if (!isAssignableTo(ctx, type, explicitType)) {
       ctx.diagnostics.reportError(
         `Type mismatch: expected ${typeToString(explicitType)}, got ${typeToString(type)}`,
         DiagnosticCode.TypeMismatch,
@@ -498,7 +498,7 @@ function checkAssignmentPattern(
   const defaultType = checkExpression(ctx, pattern.right);
 
   // Ensure default value is assignable to the expected type
-  if (!isAssignableTo(defaultType, type)) {
+  if (!isAssignableTo(ctx, defaultType, type)) {
     ctx.diagnostics.reportError(
       `Type mismatch: default value ${typeToString(defaultType)} is not assignable to ${typeToString(type)}`,
       DiagnosticCode.TypeMismatch,
@@ -625,7 +625,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             `Mixin '${mixin.name}' requires superclass to extend '${mixin.onType.name}', but no superclass is defined.`,
             DiagnosticCode.TypeMismatch,
           );
-        } else if (!isAssignableTo(superType, mixin.onType)) {
+        } else if (!isAssignableTo(ctx, superType, mixin.onType)) {
           ctx.diagnostics.reportError(
             `Mixin '${mixin.name}' requires superclass to extend '${mixin.onType.name}'.`,
             DiagnosticCode.TypeMismatch,
@@ -665,7 +665,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           // Shadowing check?
           // If it shadows a base field, check compatibility
           const baseFieldType = intermediateType.fields.get(name)!;
-          if (!isAssignableTo(type, baseFieldType)) {
+          if (!isAssignableTo(ctx, type, baseFieldType)) {
             ctx.diagnostics.reportError(
               `Mixin '${mixin.name}' field '${name}' is incompatible with base class field.`,
               DiagnosticCode.TypeMismatch,
@@ -687,7 +687,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           }
           // Check signature compatibility
           // 1. Return type must be assignable to base return type (covariant)
-          if (!isAssignableTo(type.returnType, baseMethod.returnType)) {
+          if (!isAssignableTo(ctx, type.returnType, baseMethod.returnType)) {
             ctx.diagnostics.reportError(
               `Mixin '${mixin.name}' method '${name}' return type ${typeToString(type.returnType)} is not compatible with base method return type ${typeToString(baseMethod.returnType)}.`,
               DiagnosticCode.TypeMismatch,
@@ -704,7 +704,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             for (let i = 0; i < type.parameters.length; i++) {
               // Contravariance: base param must be assignable to override param
               if (
-                !isAssignableTo(baseMethod.parameters[i], type.parameters[i])
+                !isAssignableTo(
+                  ctx,
+                  baseMethod.parameters[i],
+                  type.parameters[i],
+                )
               ) {
                 ctx.diagnostics.reportError(
                   `Mixin '${mixin.name}' method '${name}' parameter ${i} type is incompatible with base method.`,
@@ -806,7 +810,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           const superFieldType = superType.fields.get(member.name.name)!;
           // If mutable, types should be invariant (identical). If immutable, covariant.
           // For now, we enforce covariance (fieldType extends superFieldType).
-          if (!isAssignableTo(fieldType, superFieldType)) {
+          if (!isAssignableTo(ctx, fieldType, superFieldType)) {
             ctx.diagnostics.reportError(
               `Field '${member.name.name}' in subclass '${className}' must be compatible with inherited field.`,
               DiagnosticCode.TypeMismatch,
@@ -857,7 +861,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           // Allow overriding field with accessor
           // Check type compatibility
           const superFieldType = superType.fields.get(member.name.name)!;
-          if (!isAssignableTo(fieldType, superFieldType)) {
+          if (!isAssignableTo(ctx, fieldType, superFieldType)) {
             ctx.diagnostics.reportError(
               `Accessor '${member.name.name}' in subclass '${className}' must be compatible with inherited field.`,
               DiagnosticCode.TypeMismatch,
@@ -1404,7 +1408,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
 
     if (param.initializer) {
       const initType = checkExpression(ctx, param.initializer);
-      if (!isAssignableTo(initType, type)) {
+      if (!isAssignableTo(ctx, initType, type)) {
         ctx.diagnostics.reportError(
           `Type mismatch: default value ${typeToString(initType)} is not assignable to ${typeToString(type)}`,
           DiagnosticCode.TypeMismatch,
@@ -1558,7 +1562,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
             `Mixin '${mixinName}' composes '${composedMixin.name}' which requires 'on ${composedMixin.onType.name}', but '${mixinName}' has no 'on' clause.`,
             DiagnosticCode.TypeMismatch,
           );
-        } else if (!isAssignableTo(onType, composedMixin.onType)) {
+        } else if (!isAssignableTo(ctx, onType, composedMixin.onType)) {
           ctx.diagnostics.reportError(
             `Mixin '${mixinName}' on '${onType.name}' is not compatible with composed mixin '${composedMixin.name}' on '${composedMixin.onType.name}'.`,
             DiagnosticCode.TypeMismatch,
@@ -1752,7 +1756,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     } else if (member.type === NodeType.FieldDefinition && member.value) {
       const fieldType = mixinType.fields.get(member.name.name)!;
       const valueType = checkExpression(ctx, member.value);
-      if (!isAssignableTo(valueType, fieldType)) {
+      if (!isAssignableTo(ctx, valueType, fieldType)) {
         ctx.diagnostics.reportError(
           `Type mismatch in field initializer: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
           DiagnosticCode.TypeMismatch,

@@ -264,11 +264,17 @@ export function generateTrampoline(
 
   const paramCount = classMethod.paramTypes.length;
   const castedThisLocal = paramCount;
+
+  let targetTypeIndex = classInfo.structTypeIndex;
+  if (classInfo.isExtension && classInfo.onType) {
+    targetTypeIndex = decodeTypeIndex(classInfo.onType);
+    console.log(
+      `generateTrampoline: Extension ${classInfo.name} onTypeIndex=${targetTypeIndex}`,
+    );
+  }
+
   const locals = [
-    [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-    ],
+    [ValType.ref_null, ...WasmModule.encodeSignedLEB128(targetTypeIndex)],
   ];
 
   // local.set $castedThis (ref.cast $Task (local.get 0))
@@ -276,7 +282,7 @@ export function generateTrampoline(
   body.push(
     0xfb,
     GcOpcode.ref_cast_null,
-    ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+    ...WasmModule.encodeSignedLEB128(targetTypeIndex),
   );
   body.push(
     Opcode.local_set,
@@ -308,12 +314,17 @@ function generateFieldGetterTrampoline(
   const locals: number[][] = [];
   const body: number[] = [];
 
+  let targetTypeIndex = classInfo.structTypeIndex;
+  if (classInfo.isExtension && classInfo.onType) {
+    targetTypeIndex = decodeTypeIndex(classInfo.onType);
+  }
+
   // Param 0: this (anyref)
   // Cast to class type
   const castedThisLocal = 1;
   locals.push([
     ValType.ref_null,
-    ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+    ...WasmModule.encodeSignedLEB128(targetTypeIndex),
   ]);
 
   // Cast
@@ -321,7 +332,7 @@ function generateFieldGetterTrampoline(
   body.push(
     0xfb,
     GcOpcode.ref_cast_null,
-    ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+    ...WasmModule.encodeSignedLEB128(targetTypeIndex),
   );
   body.push(
     Opcode.local_set,
@@ -339,7 +350,7 @@ function generateFieldGetterTrampoline(
     body.push(
       0xfb,
       GcOpcode.struct_get,
-      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+      ...WasmModule.encodeSignedLEB128(targetTypeIndex),
       ...WasmModule.encodeSignedLEB128(fieldInfo.index),
     );
   } else {
@@ -440,6 +451,13 @@ export function getClassFromTypeIndex(
   for (const info of ctx.classes.values()) {
     if (info.structTypeIndex === typeIndex) {
       return info;
+    }
+    // Check extensions
+    if (info.isExtension && info.onType) {
+      const onTypeIndex = decodeTypeIndex(info.onType);
+      if (onTypeIndex === typeIndex) {
+        return info;
+      }
     }
   }
   return undefined;
@@ -1052,7 +1070,7 @@ export function registerClassMethods(
 
   generateInterfaceVTable(ctx, classInfo, decl);
 
-  if (decl.exported) {
+  if (decl.exported && !decl.isExtension) {
     const ctorInfo = methods.get('#new')!;
 
     // Wrapper signature: params -> (ref null struct)

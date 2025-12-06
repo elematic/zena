@@ -290,8 +290,8 @@ function checkMatchPattern(
     case NodeType.StringLiteral: {
       const stringType = ctx.getWellKnownType('String') || Types.String;
       if (
-        !isAssignableTo(stringType, discriminantType) &&
-        !isAssignableTo(discriminantType, stringType)
+        !isAssignableTo(ctx, stringType, discriminantType) &&
+        !isAssignableTo(ctx, discriminantType, stringType)
       ) {
         ctx.diagnostics.reportError(
           `Type mismatch: cannot match string against ${typeToString(discriminantType)}`,
@@ -333,8 +333,8 @@ function checkMatchPattern(
 
       // Check compatibility
       if (
-        !isAssignableTo(classType, discriminantType) &&
-        !isAssignableTo(discriminantType, classType)
+        !isAssignableTo(ctx, classType, discriminantType) &&
+        !isAssignableTo(ctx, discriminantType, classType)
       ) {
         ctx.diagnostics.reportError(
           `Type mismatch: cannot match class '${className}' against ${typeToString(discriminantType)}`,
@@ -599,7 +599,7 @@ function checkThrowExpression(
   const argType = checkExpression(ctx, expr.argument);
   const errorType = ctx.resolve('Error');
   if (errorType) {
-    if (!isAssignableTo(argType, errorType)) {
+    if (!isAssignableTo(ctx, argType, errorType)) {
       ctx.diagnostics.reportError(
         `Thrown value must be an instance of Error, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
@@ -651,7 +651,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         );
       } else {
         const argType = checkExpression(ctx, expr.arguments[0]);
-        if (!isAssignableTo(argType, ctx.currentClass.onType)) {
+        if (!isAssignableTo(ctx, argType, ctx.currentClass.onType)) {
           ctx.diagnostics.reportError(
             `Type mismatch in super call: expected ${typeToString(ctx.currentClass.onType)}, got ${typeToString(argType)}`,
             DiagnosticCode.TypeMismatch,
@@ -700,7 +700,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       const argType = checkExpression(ctx, expr.arguments[i]);
       const paramType = constructor.parameters[i];
 
-      if (!isAssignableTo(argType, paramType)) {
+      if (!isAssignableTo(ctx, argType, paramType)) {
         ctx.diagnostics.reportError(
           `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
           DiagnosticCode.TypeMismatch,
@@ -753,7 +753,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
 
       // Check argument types
       for (let i = 0; i < funcMember.parameters.length; i++) {
-        if (!isAssignableTo(argTypes[i], funcMember.parameters[i])) {
+        if (!isAssignableTo(ctx, argTypes[i], funcMember.parameters[i])) {
           ctx.diagnostics.reportError(
             `Argument ${i + 1} of type ${typeToString(argTypes[i])} is not assignable to parameter of type ${typeToString(funcMember.parameters[i])} in union member ${typeToString(member)}.`,
             DiagnosticCode.TypeMismatch,
@@ -765,9 +765,9 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       // Unify return types
       if (returnType === null) {
         returnType = funcMember.returnType;
-      } else if (!isAssignableTo(funcMember.returnType, returnType)) {
+      } else if (!isAssignableTo(ctx, funcMember.returnType, returnType)) {
         // If not assignable one way, try the other (simple union check)
-        if (isAssignableTo(returnType, funcMember.returnType)) {
+        if (isAssignableTo(ctx, returnType, funcMember.returnType)) {
           returnType = funcMember.returnType;
         } else {
           // TODO: Create a union of return types? For now, error.
@@ -804,7 +804,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       let match = true;
       // TODO: Handle generic overloads
       for (let i = 0; i < argTypes.length; i++) {
-        if (!isAssignableTo(argTypes[i], candidate.parameters[i])) {
+        if (!isAssignableTo(ctx, argTypes[i], candidate.parameters[i])) {
           match = false;
           break;
         }
@@ -930,7 +930,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     const argType = argTypes[i];
     const paramType = funcType.parameters[i];
 
-    if (!isAssignableTo(argType, paramType)) {
+    if (!isAssignableTo(ctx, argType, paramType)) {
       ctx.diagnostics.reportError(
         `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
@@ -1040,7 +1040,7 @@ function checkAssignmentExpression(
     }
 
     const valueType = checkExpression(ctx, expr.value);
-    if (!isAssignableTo(valueType, symbol.type)) {
+    if (!isAssignableTo(ctx, valueType, symbol.type)) {
       ctx.diagnostics.reportError(
         `Type mismatch in assignment: expected ${typeToString(symbol.type)}, got ${typeToString(valueType)}`,
         DiagnosticCode.TypeMismatch,
@@ -1072,7 +1072,7 @@ function checkAssignmentExpression(
       const fieldType = classType.fields.get(memberName)!;
       const valueType = checkExpression(ctx, expr.value);
 
-      if (!isAssignableTo(valueType, fieldType)) {
+      if (!isAssignableTo(ctx, valueType, fieldType)) {
         ctx.diagnostics.reportError(
           `Type mismatch in assignment: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
           DiagnosticCode.TypeMismatch,
@@ -1089,7 +1089,7 @@ function checkAssignmentExpression(
 
       // Setter param type
       const paramType = setter.parameters[0];
-      if (!isAssignableTo(valueType, paramType)) {
+      if (!isAssignableTo(ctx, valueType, paramType)) {
         ctx.diagnostics.reportError(
           `Type mismatch in assignment: expected ${typeToString(paramType)}, got ${typeToString(valueType)}`,
           DiagnosticCode.TypeMismatch,
@@ -1123,7 +1123,7 @@ function checkAssignmentExpression(
             DiagnosticCode.ArgumentCountMismatch,
           );
         } else {
-          if (!isAssignableTo(indexType, setter.parameters[0])) {
+          if (!isAssignableTo(ctx, indexType, setter.parameters[0])) {
             ctx.diagnostics.reportError(
               `Type mismatch in index: expected ${typeToString(setter.parameters[0])}, got ${typeToString(indexType)}`,
               DiagnosticCode.TypeMismatch,
@@ -1131,7 +1131,7 @@ function checkAssignmentExpression(
           }
 
           const valueType = checkExpression(ctx, expr.value);
-          if (!isAssignableTo(valueType, setter.parameters[1])) {
+          if (!isAssignableTo(ctx, valueType, setter.parameters[1])) {
             ctx.diagnostics.reportError(
               `Type mismatch in assignment: expected ${typeToString(setter.parameters[1])}, got ${typeToString(valueType)}`,
               DiagnosticCode.TypeMismatch,
@@ -1151,7 +1151,7 @@ function checkAssignmentExpression(
 
     // Check if value is assignable to element type
     const valueType = checkExpression(ctx, expr.value);
-    if (!isAssignableTo(valueType, elementType)) {
+    if (!isAssignableTo(ctx, valueType, elementType)) {
       ctx.diagnostics.reportError(
         `Type mismatch in assignment: expected ${typeToString(elementType)}, got ${typeToString(valueType)}`,
         DiagnosticCode.TypeMismatch,
@@ -1178,10 +1178,12 @@ function checkBinaryExpression(
   let resultType = left;
 
   if (expr.operator === '==' || expr.operator === '!=') {
-    typesMatch = isAssignableTo(left, right) || isAssignableTo(right, left);
+    typesMatch =
+      isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
     resultType = Types.Boolean;
   } else if (expr.operator === '===' || expr.operator === '!==') {
-    typesMatch = isAssignableTo(left, right) || isAssignableTo(right, left);
+    typesMatch =
+      isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
     resultType = Types.Boolean;
   } else if (left === right) {
     typesMatch = true;
@@ -1328,7 +1330,7 @@ function checkFunctionExpression(
 
     if (param.initializer) {
       const initType = checkExpression(ctx, param.initializer);
-      if (!isAssignableTo(initType, type)) {
+      if (!isAssignableTo(ctx, initType, type)) {
         ctx.diagnostics.reportError(
           `Type mismatch: default value ${typeToString(initType)} is not assignable to ${typeToString(type)}`,
           DiagnosticCode.TypeMismatch,
@@ -1368,7 +1370,7 @@ function checkFunctionExpression(
 
     if (
       expectedType.kind !== Types.Unknown.kind &&
-      !isAssignableTo(bodyType, expectedType)
+      !isAssignableTo(ctx, bodyType, expectedType)
     ) {
       ctx.diagnostics.reportError(
         `Type mismatch: expected return type ${typeToString(expectedType)}, got ${typeToString(bodyType)}`,
@@ -1515,7 +1517,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
     const argType = checkExpression(ctx, expr.arguments[i]);
     const paramType = constructor.parameters[i];
 
-    if (!isAssignableTo(argType, paramType)) {
+    if (!isAssignableTo(ctx, argType, paramType)) {
       ctx.diagnostics.reportError(
         `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
@@ -1632,7 +1634,7 @@ function checkMemberExpression(
       return Types.Unknown;
     }
 
-    if (!isAssignableTo(objectType, ctx.currentClass)) {
+    if (!isAssignableTo(ctx, objectType, ctx.currentClass)) {
       ctx.diagnostics.reportError(
         `Type '${typeToString(objectType)}' does not have private member '${memberName}' from class '${ctx.currentClass.name}'.`,
         DiagnosticCode.TypeMismatch,
@@ -1707,7 +1709,7 @@ function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
   // A better approach would be finding the common supertype.
   const firstType = elementTypes[0];
   for (let i = 1; i < elementTypes.length; i++) {
-    if (!isAssignableTo(elementTypes[i], firstType)) {
+    if (!isAssignableTo(ctx, elementTypes[i], firstType)) {
       ctx.diagnostics.reportError(
         `Array element type mismatch. Expected '${typeToString(firstType)}', got '${typeToString(elementTypes[i])}'.`,
         DiagnosticCode.TypeMismatch,
@@ -1761,7 +1763,7 @@ function checkIndexExpression(
           DiagnosticCode.ArgumentCountMismatch,
         );
       } else {
-        if (!isAssignableTo(indexType, method.parameters[0])) {
+        if (!isAssignableTo(ctx, indexType, method.parameters[0])) {
           ctx.diagnostics.reportError(
             `Type mismatch in index: expected ${typeToString(method.parameters[0])}, got ${typeToString(indexType)}`,
             DiagnosticCode.TypeMismatch,

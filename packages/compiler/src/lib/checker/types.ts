@@ -490,7 +490,11 @@ export function typeToString(type: Type): string {
   }
 }
 
-export function isAssignableTo(source: Type, target: Type): boolean {
+export function isAssignableTo(
+  ctx: CheckerContext,
+  source: Type,
+  target: Type,
+): boolean {
   if (source === target) return true;
   if (source.kind === TypeKind.Never) return true;
   if (source.kind === TypeKind.Unknown || target.kind === TypeKind.Unknown) {
@@ -513,7 +517,7 @@ export function isAssignableTo(source: Type, target: Type): boolean {
       case TypeKind.AnyRef:
         return true;
       case TypeKind.TypeAlias:
-        return isAssignableTo((source as TypeAliasType).target, target);
+        return isAssignableTo(ctx, (source as TypeAliasType).target, target);
       default:
         return false;
     }
@@ -528,7 +532,9 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     // or if target is a union containing this type.
     // They are NOT assignable to their underlying type.
     if (target.kind === TypeKind.Union) {
-      return (target as UnionType).types.some((t) => isAssignableTo(source, t));
+      return (target as UnionType).types.some((t) =>
+        isAssignableTo(ctx, source, t),
+      );
     }
     // Check if target is the same distinct type (by name/identity)
     if (
@@ -546,7 +552,7 @@ export function isAssignableTo(source: Type, target: Type): boolean {
       const tgtAlias = target as TypeAliasType;
       return (
         srcAlias.name === tgtAlias.name &&
-        isAssignableTo(srcAlias.target, tgtAlias.target)
+        isAssignableTo(ctx, srcAlias.target, tgtAlias.target)
       );
     }
     return false;
@@ -561,11 +567,15 @@ export function isAssignableTo(source: Type, target: Type): boolean {
   }
 
   if (source.kind === TypeKind.Union) {
-    return (source as UnionType).types.every((t) => isAssignableTo(t, target));
+    return (source as UnionType).types.every((t) =>
+      isAssignableTo(ctx, t, target),
+    );
   }
 
   if (target.kind === TypeKind.Union) {
-    return (target as UnionType).types.some((t) => isAssignableTo(source, t));
+    return (target as UnionType).types.some((t) =>
+      isAssignableTo(ctx, source, t),
+    );
   }
 
   if (source.kind === TypeKind.Null) {
@@ -579,7 +589,7 @@ export function isAssignableTo(source: Type, target: Type): boolean {
       case TypeKind.Null:
         return true;
       case TypeKind.TypeAlias:
-        return isAssignableTo(source, (target as TypeAliasType).target);
+        return isAssignableTo(ctx, source, (target as TypeAliasType).target);
       default:
         return false;
     }
@@ -597,7 +607,9 @@ export function isAssignableTo(source: Type, target: Type): boolean {
   if (source.kind === TypeKind.Class && target.kind === TypeKind.Interface) {
     let current: ClassType | undefined = source as ClassType;
     while (current) {
-      if (current.implements.some((impl) => isAssignableTo(impl, target))) {
+      if (
+        current.implements.some((impl) => isAssignableTo(ctx, impl, target))
+      ) {
         return true;
       }
       current = current.superType;
@@ -612,7 +624,9 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     if (typeToString(source) === typeToString(target)) return true;
     const srcInterface = source as InterfaceType;
     if (srcInterface.extends) {
-      return srcInterface.extends.some((ext) => isAssignableTo(ext, target));
+      return srcInterface.extends.some((ext) =>
+        isAssignableTo(ctx, ext, target),
+      );
     }
     return false;
   }
@@ -624,7 +638,7 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     for (const [key, targetType] of targetRecord.properties) {
       const sourceType = sourceRecord.properties.get(key);
       if (!sourceType) return false;
-      if (!isAssignableTo(sourceType, targetType)) return false;
+      if (!isAssignableTo(ctx, sourceType, targetType)) return false;
     }
     return true;
   }
@@ -638,6 +652,7 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     for (let i = 0; i < sourceTuple.elementTypes.length; i++) {
       if (
         !isAssignableTo(
+          ctx,
           sourceTuple.elementTypes[i],
           targetTuple.elementTypes[i],
         )
@@ -657,7 +672,7 @@ export function isAssignableTo(source: Type, target: Type): boolean {
       while (current) {
         if (current.fields.has(key)) {
           const fieldType = current.fields.get(key)!;
-          if (isAssignableTo(fieldType, targetType)) {
+          if (isAssignableTo(ctx, fieldType, targetType)) {
             found = true;
             break;
           }
@@ -673,7 +688,7 @@ export function isAssignableTo(source: Type, target: Type): boolean {
   // Extension Types: Extension is assignable to its underlying type
   if (source.kind === TypeKind.Class && (source as ClassType).isExtension) {
     const ext = source as ClassType;
-    if (ext.onType && isAssignableTo(ext.onType, target)) {
+    if (ext.onType && isAssignableTo(ctx, ext.onType, target)) {
       return true;
     }
   }
@@ -682,7 +697,34 @@ export function isAssignableTo(source: Type, target: Type): boolean {
   if (source.kind === TypeKind.FixedArray && target.kind === TypeKind.Class) {
     const targetClass = target as ClassType;
     if (targetClass.isExtension && targetClass.onType) {
-      return isAssignableTo(source, targetClass.onType);
+      return isAssignableTo(ctx, source, targetClass.onType);
+    }
+  }
+
+  // Check if source type has an extension that implements the target interface
+  if (target.kind === TypeKind.Interface) {
+    // Iterate all classes to find extensions
+    // Classes are in the global scope (index 0)
+    if (ctx.scopes.length > 0) {
+      const globalScope = ctx.scopes[0];
+      for (const info of globalScope.values()) {
+        if (info.type.kind === TypeKind.Class) {
+          const classType = info.type as ClassType;
+          if (classType.isExtension && classType.onType) {
+            // Check if extension applies to source
+            if (isAssignableTo(ctx, source, classType.onType)) {
+              // Check if extension implements target interface
+              if (
+                classType.implements.some((impl) =>
+                  isAssignableTo(ctx, impl, target),
+                )
+              ) {
+                return true;
+              }
+            }
+          }
+        }
+      }
     }
   }
 
@@ -691,7 +733,7 @@ export function isAssignableTo(source: Type, target: Type): boolean {
     const targetFunc = target as FunctionType;
 
     // 1. Return type must be assignable (Covariant)
-    if (!isAssignableTo(sourceFunc.returnType, targetFunc.returnType)) {
+    if (!isAssignableTo(ctx, sourceFunc.returnType, targetFunc.returnType)) {
       return false;
     }
 
@@ -702,7 +744,9 @@ export function isAssignableTo(source: Type, target: Type): boolean {
 
     // 3. Parameter types: Source params must be assignable FROM Target params (Contravariant)
     for (let i = 0; i < sourceFunc.parameters.length; i++) {
-      if (!isAssignableTo(targetFunc.parameters[i], sourceFunc.parameters[i])) {
+      if (
+        !isAssignableTo(ctx, targetFunc.parameters[i], sourceFunc.parameters[i])
+      ) {
         return false;
       }
     }
@@ -713,13 +757,17 @@ export function isAssignableTo(source: Type, target: Type): boolean {
   return typeToString(source) === typeToString(target);
 }
 
-export function isAdaptable(source: Type, target: Type): boolean {
+export function isAdaptable(
+  ctx: CheckerContext,
+  source: Type,
+  target: Type,
+): boolean {
   if (source.kind === TypeKind.Function && target.kind === TypeKind.Function) {
     const sourceFunc = source as FunctionType;
     const targetFunc = target as FunctionType;
 
     // 1. Return type must be assignable (Covariant)
-    if (!isAssignableTo(sourceFunc.returnType, targetFunc.returnType)) {
+    if (!isAssignableTo(ctx, sourceFunc.returnType, targetFunc.returnType)) {
       return false;
     }
 
@@ -730,7 +778,9 @@ export function isAdaptable(source: Type, target: Type): boolean {
 
     // 3. Parameter types: Source params must be assignable FROM Target params (Contravariant)
     for (let i = 0; i < sourceFunc.parameters.length; i++) {
-      if (!isAssignableTo(targetFunc.parameters[i], sourceFunc.parameters[i])) {
+      if (
+        !isAssignableTo(ctx, targetFunc.parameters[i], sourceFunc.parameters[i])
+      ) {
         return false;
       }
     }
