@@ -796,25 +796,6 @@ function generateNewExpression(
     );
   }
 
-  if (className.startsWith('Array<')) {
-    const annotation: TypeAnnotation = {
-      type: NodeType.TypeAnnotation,
-      name: 'Array',
-      typeArguments: typeArguments,
-    };
-    const type = mapType(ctx, annotation, ctx.currentTypeContext);
-    const typeIndex = decodeTypeIndex(type);
-
-    if (expr.arguments.length !== 1) {
-      throw new Error('Array constructor expects 1 argument (length)');
-    }
-    generateExpression(ctx, expr.arguments[0], body);
-
-    body.push(0xfb, GcOpcode.array_new_default);
-    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
-    return;
-  }
-
   const classInfo = ctx.classes.get(className);
   if (!classInfo) throw new Error(`Class ${className} not found`);
 

@@ -1687,9 +1687,6 @@ export function mapType(
         let typeName = type.name;
         if (typeName === 'String' && ctx.wellKnownTypes.String) {
           typeName = ctx.wellKnownTypes.String.name.name;
-        } else if (typeName === 'Array' && ctx.wellKnownTypes.FixedArray) {
-          // Map Array<T> to FixedArray<T>
-          typeName = ctx.wellKnownTypes.FixedArray.name.name;
         }
 
         if (typeName === 'ByteArray') {
@@ -1709,10 +1706,9 @@ export function mapType(
           // If not found, check if it's a well-known type that was renamed
           if (!genericDecl) {
             if (
-              typeName === 'Array' ||
-              (ctx.wellKnownTypes.FixedArray &&
-                (typeName === 'FixedArray' ||
-                  typeName === ctx.wellKnownTypes.FixedArray.name.name))
+              ctx.wellKnownTypes.FixedArray &&
+              (typeName === 'FixedArray' ||
+                typeName === ctx.wellKnownTypes.FixedArray.name.name)
             ) {
               genericDecl = ctx.wellKnownTypes.FixedArray;
             }
