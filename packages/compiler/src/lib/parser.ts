@@ -65,6 +65,12 @@ export class Parser {
     const body: Statement[] = [];
 
     while (this.#check(TokenType.Import) || this.#check(TokenType.From)) {
+      if (
+        this.#check(TokenType.From) &&
+        this.#peek(1).type !== TokenType.String
+      ) {
+        break;
+      }
       body.push(this.#parseImportDeclaration());
     }
 
@@ -81,19 +87,30 @@ export class Parser {
   #parseStatement(): Statement {
     const startToken = this.#peek();
 
-    if (this.#match(TokenType.Import) || this.#match(TokenType.From)) {
+    if (this.#check(TokenType.Import)) {
       throw new Error('Imports must appear at the top of the file.');
+    }
+    if (this.#check(TokenType.From)) {
+      // Disambiguate `from "module" import ...` vs `from + 1`
+      if (this.#peek(1).type === TokenType.String) {
+        throw new Error('Imports must appear at the top of the file.');
+      }
     }
     if (this.#check(TokenType.At)) {
       return this.#parseDecoratedStatement();
     }
     if (this.#match(TokenType.Declare)) {
-      return this.#parseDeclareFunction(
-        undefined,
-        undefined,
-        false,
-        startToken,
-      );
+      // Disambiguate `declare function` vs `declare + 1`
+      if (this.#check(TokenType.Function)) {
+        return this.#parseDeclareFunction(
+          undefined,
+          undefined,
+          false,
+          startToken,
+        );
+      }
+      // Backtrack if not a declare function
+      this.#current--;
     }
     if (this.#match(TokenType.Export)) {
       if (this.#match(TokenType.Final)) {
@@ -180,16 +197,46 @@ export class Parser {
       return this.#parseForStatement();
     }
     if (this.#match(TokenType.Final)) {
-      this.#consume(TokenType.Class, "Expected 'class' after 'final'.");
-      return this.#parseClassDeclaration(false, true, false, false, startToken);
+      // Disambiguate `final class` vs `final + 1`
+      if (this.#check(TokenType.Class)) {
+        this.#consume(TokenType.Class, "Expected 'class' after 'final'.");
+        return this.#parseClassDeclaration(
+          false,
+          true,
+          false,
+          false,
+          startToken,
+        );
+      }
+      this.#current--;
     }
     if (this.#match(TokenType.Abstract)) {
-      this.#consume(TokenType.Class, "Expected 'class' after 'abstract'.");
-      return this.#parseClassDeclaration(false, false, true, false, startToken);
+      // Disambiguate `abstract class` vs `abstract + 1`
+      if (this.#check(TokenType.Class)) {
+        this.#consume(TokenType.Class, "Expected 'class' after 'abstract'.");
+        return this.#parseClassDeclaration(
+          false,
+          false,
+          true,
+          false,
+          startToken,
+        );
+      }
+      this.#current--;
     }
     if (this.#match(TokenType.Extension)) {
-      this.#consume(TokenType.Class, "Expected 'class' after 'extension'.");
-      return this.#parseClassDeclaration(false, false, false, true, startToken);
+      // Disambiguate `extension class` vs `extension + 1`
+      if (this.#check(TokenType.Class)) {
+        this.#consume(TokenType.Class, "Expected 'class' after 'extension'.");
+        return this.#parseClassDeclaration(
+          false,
+          false,
+          false,
+          true,
+          startToken,
+        );
+      }
+      this.#current--;
     }
     if (this.#match(TokenType.Class)) {
       return this.#parseClassDeclaration(
@@ -204,10 +251,27 @@ export class Parser {
       return this.#parseInterfaceDeclaration(false, startToken);
     }
     if (this.#match(TokenType.Mixin)) {
-      return this.#parseMixinDeclaration(false, startToken);
+      // Disambiguate `mixin Name` vs `mixin + 1`
+      // Mixin declaration must be followed by identifier
+      if (this.#isIdentifier(this.#peek().type)) {
+        return this.#parseMixinDeclaration(false, startToken);
+      }
+      this.#current--;
     }
-    if (this.#match(TokenType.Type) || this.#match(TokenType.Distinct)) {
-      return this.#parseTypeAliasDeclaration(false, startToken);
+    if (this.#match(TokenType.Type)) {
+      // Disambiguate `type Name =` vs `type + 1`
+      // Type alias must be followed by identifier
+      if (this.#isIdentifier(this.#peek().type)) {
+        return this.#parseTypeAliasDeclaration(false, startToken);
+      }
+      this.#current--;
+    }
+    if (this.#match(TokenType.Distinct)) {
+      // Disambiguate `distinct type` vs `distinct + 1`
+      if (this.#check(TokenType.Type)) {
+        return this.#parseTypeAliasDeclaration(false, startToken);
+      }
+      this.#current--;
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseBlockStatement();
@@ -383,13 +447,8 @@ export class Parser {
     } else if (this.#match(TokenType.LParen)) {
       pattern = this.#parsePattern();
       this.#consume(TokenType.RParen, "Expected ')' after pattern.");
-    } else if (this.#match(TokenType.Identifier)) {
-      const token = this.#previous();
-      const identifier: Identifier = {
-        type: NodeType.Identifier,
-        name: token.value,
-        loc: this.#locFromToken(token),
-      };
+    } else if (this.#isIdentifier(this.#peek().type)) {
+      const identifier = this.#parseIdentifier();
 
       if (this.#match(TokenType.LBrace)) {
         const recordPattern = this.#parseRecordPattern();
@@ -559,7 +618,7 @@ export class Parser {
       // Case 2: (param: type ... or (param?: type ...
       // If we see ( identifier :, it must be an arrow function parameter list
       if (
-        this.#peek(1).type === TokenType.Identifier &&
+        this.#isIdentifier(this.#peek(1).type) &&
         (this.#peek(2).type === TokenType.Colon ||
           (this.#peek(2).type === TokenType.Question &&
             this.#peek(3).type === TokenType.Colon))
@@ -854,14 +913,26 @@ export class Parser {
       };
     }
 
-    if (this.#match(TokenType.Throw)) {
-      const startToken = this.#previous();
-      const argument = this.#parseExpression();
-      return {
-        type: NodeType.ThrowExpression,
-        argument,
-        loc: this.#loc(startToken, argument),
-      };
+    if (this.#check(TokenType.Throw)) {
+      const next = this.#peek(1).type;
+      if (
+        next !== TokenType.RParen &&
+        next !== TokenType.RBrace &&
+        next !== TokenType.RBracket &&
+        next !== TokenType.Comma &&
+        next !== TokenType.Semi &&
+        next !== TokenType.EOF &&
+        next !== TokenType.Dot
+      ) {
+        this.#advance();
+        const startToken = this.#previous();
+        const argument = this.#parseExpression();
+        return {
+          type: NodeType.ThrowExpression,
+          argument,
+          loc: this.#loc(startToken, argument),
+        };
+      }
     }
 
     return this.#parseCall();
@@ -1055,7 +1126,11 @@ export class Parser {
       const token = this.#previous();
       return {type: NodeType.ThisExpression, loc: this.#locFromToken(token)};
     }
-    if (this.#match(TokenType.Match)) {
+    if (
+      this.#check(TokenType.Match) &&
+      this.#peek(1).type === TokenType.LParen
+    ) {
+      this.#advance();
       return this.#parseMatchExpression();
     }
     if (this.#match(TokenType.If)) {
@@ -1117,13 +1192,8 @@ export class Parser {
       const token = this.#previous();
       return {type: NodeType.NullLiteral, loc: this.#locFromToken(token)};
     }
-    if (this.#match(TokenType.Identifier)) {
-      const token = this.#previous();
-      return {
-        type: NodeType.Identifier,
-        name: token.value,
-        loc: this.#locFromToken(token),
-      };
+    if (this.#isIdentifier(this.#peek().type)) {
+      return this.#parseIdentifier();
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseRecordLiteral();
@@ -1396,9 +1466,34 @@ export class Parser {
     };
   }
 
+  #isIdentifier(type: TokenType): boolean {
+    return (
+      type === TokenType.Identifier ||
+      type === TokenType.From ||
+      type === TokenType.Type ||
+      type === TokenType.As ||
+      type === TokenType.Is ||
+      type === TokenType.On ||
+      type === TokenType.Abstract ||
+      type === TokenType.Declare ||
+      type === TokenType.Mixin ||
+      type === TokenType.Operator ||
+      type === TokenType.Static ||
+      type === TokenType.Extension ||
+      type === TokenType.Distinct ||
+      type === TokenType.Final ||
+      type === TokenType.Extends ||
+      type === TokenType.Implements ||
+      type === TokenType.With ||
+      type === TokenType.Case ||
+      type === TokenType.Match ||
+      type === TokenType.Throw
+    );
+  }
+
   #parseIdentifier(): Identifier {
-    if (this.#match(TokenType.Identifier)) {
-      const token = this.#previous();
+    if (this.#isIdentifier(this.#peek().type)) {
+      const token = this.#advance();
       return {
         type: NodeType.Identifier,
         name: token.value,
@@ -1630,36 +1725,89 @@ export class Parser {
     }
 
     let isDeclare = false;
-    if (this.#match(TokenType.Declare)) {
-      isDeclare = true;
+    if (this.#check(TokenType.Declare)) {
+      // Disambiguate `declare name` vs `declare` as name
+      // If declare is followed by identifier, it's a modifier.
+      // But wait, `declare` can be a field name too.
+      // `declare: i32;`
+      // If it's a modifier, it should be followed by `static`, `final`, `abstract`, or name.
+      // If it's a name, it's followed by `(` or `:`.
+      // But `declare` is optional.
+      // If we have `declare x: i32`, is it `declare` modifier on `x`? Yes.
+      // If we have `declare: i32`, is it field named `declare`? Yes.
+      // So if next token is `:` or `(`, `declare` is the name.
+      if (
+        this.#peek(1).type !== TokenType.Colon &&
+        this.#peek(1).type !== TokenType.LParen &&
+        this.#peek(1).type !== TokenType.Less
+      ) {
+        this.#advance();
+        isDeclare = true;
+      }
     }
 
     let isStatic = false;
-    if (this.#match(TokenType.Static)) {
-      isStatic = true;
+    if (this.#check(TokenType.Static)) {
+      if (
+        this.#peek(1).type !== TokenType.Colon &&
+        this.#peek(1).type !== TokenType.LParen &&
+        this.#peek(1).type !== TokenType.Less
+      ) {
+        this.#advance();
+        isStatic = true;
+      }
     }
 
     let isFinal = false;
-    if (this.#match(TokenType.Final)) {
-      isFinal = true;
+    if (this.#check(TokenType.Final)) {
+      if (
+        this.#peek(1).type !== TokenType.Colon &&
+        this.#peek(1).type !== TokenType.LParen &&
+        this.#peek(1).type !== TokenType.Less
+      ) {
+        this.#advance();
+        isFinal = true;
+      }
     }
 
     let isAbstract = false;
-    if (this.#match(TokenType.Abstract)) {
-      isAbstract = true;
+    if (this.#check(TokenType.Abstract)) {
+      if (
+        this.#peek(1).type !== TokenType.Colon &&
+        this.#peek(1).type !== TokenType.LParen &&
+        this.#peek(1).type !== TokenType.Less
+      ) {
+        this.#advance();
+        isAbstract = true;
+      }
     }
 
     let name: Identifier;
     if (this.#match(TokenType.Operator)) {
-      if (this.#match(TokenType.EqualsEquals)) {
-        name = {type: NodeType.Identifier, name: '=='};
+      // Disambiguate `operator []` vs `operator: i32`
+      if (
+        this.#check(TokenType.Colon) ||
+        this.#check(TokenType.LParen) ||
+        this.#check(TokenType.Less)
+      ) {
+        // It's a field/method named 'operator'
+        const token = this.#previous();
+        name = {
+          type: NodeType.Identifier,
+          name: token.value,
+          loc: this.#locFromToken(token),
+        };
       } else {
-        this.#consume(TokenType.LBracket, "Expected '[' after 'operator'.");
-        this.#consume(TokenType.RBracket, "Expected ']' after '['.");
-        if (this.#match(TokenType.Equals)) {
-          name = {type: NodeType.Identifier, name: '[]='};
+        if (this.#match(TokenType.EqualsEquals)) {
+          name = {type: NodeType.Identifier, name: '=='};
         } else {
-          name = {type: NodeType.Identifier, name: '[]'};
+          this.#consume(TokenType.LBracket, "Expected '[' after 'operator'.");
+          this.#consume(TokenType.RBracket, "Expected ']' after '['.");
+          if (this.#match(TokenType.Equals)) {
+            name = {type: NodeType.Identifier, name: '[]='};
+          } else {
+            name = {type: NodeType.Identifier, name: '[]'};
+          }
         }
       }
     } else if (this.#match(TokenType.Hash)) {
@@ -1901,15 +2049,29 @@ export class Parser {
     | AccessorSignature {
     let name: Identifier;
     if (this.#match(TokenType.Operator)) {
-      if (this.#match(TokenType.EqualsEquals)) {
-        name = {type: NodeType.Identifier, name: '=='};
+      // Disambiguate `operator []` vs `operator: i32`
+      if (
+        this.#check(TokenType.Colon) ||
+        this.#check(TokenType.LParen) ||
+        this.#check(TokenType.Less)
+      ) {
+        const token = this.#previous();
+        name = {
+          type: NodeType.Identifier,
+          name: token.value,
+          loc: this.#locFromToken(token),
+        };
       } else {
-        this.#consume(TokenType.LBracket, "Expected '[' after 'operator'.");
-        this.#consume(TokenType.RBracket, "Expected ']' after '['.");
-        if (this.#match(TokenType.Equals)) {
-          name = {type: NodeType.Identifier, name: '[]='};
+        if (this.#match(TokenType.EqualsEquals)) {
+          name = {type: NodeType.Identifier, name: '=='};
         } else {
-          name = {type: NodeType.Identifier, name: '[]'};
+          this.#consume(TokenType.LBracket, "Expected '[' after 'operator'.");
+          this.#consume(TokenType.RBracket, "Expected ']' after '['.");
+          if (this.#match(TokenType.Equals)) {
+            name = {type: NodeType.Identifier, name: '[]='};
+          } else {
+            name = {type: NodeType.Identifier, name: '[]'};
+          }
         }
       }
     } else {
