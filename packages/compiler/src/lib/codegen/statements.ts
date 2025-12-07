@@ -526,24 +526,10 @@ export function generateReturnStatement(
   body: number[],
 ) {
   if (stmt.argument) {
-    generateExpression(ctx, stmt.argument, body);
-
     if (ctx.currentReturnType) {
-      const exprType = inferType(ctx, stmt.argument);
-      if (
-        ((ctx.currentReturnType.length > 1 &&
-          ctx.currentReturnType[0] === ValType.ref_null &&
-          ctx.currentReturnType[1] === ValType.anyref) ||
-          (ctx.currentReturnType.length === 1 &&
-            ctx.currentReturnType[0] === ValType.anyref)) &&
-        exprType.length === 1 &&
-        (exprType[0] === ValType.i32 ||
-          exprType[0] === ValType.i64 ||
-          exprType[0] === ValType.f32 ||
-          exprType[0] === ValType.f64)
-      ) {
-        boxPrimitive(ctx, exprType, body);
-      }
+      generateAdaptedArgument(ctx, stmt.argument, ctx.currentReturnType, body);
+    } else {
+      generateExpression(ctx, stmt.argument, body);
     }
   }
   // We don't strictly need 'return' opcode if it's the last statement,

@@ -67,7 +67,7 @@ import {
   generateBlockStatement,
   generateFunctionStatement,
 } from './statements.js';
-import type {ClassInfo} from './types.js';
+import type {ClassInfo, InterfaceInfo} from './types.js';
 
 export function generateExpression(
   ctx: CodegenContext,
@@ -654,6 +654,108 @@ function generateIndexExpression(
         body.push(Opcode.call);
         body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
         return;
+      }
+    }
+
+    if (!foundClass) {
+      const interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+      if (interfaceInfo) {
+        const methodInfo = interfaceInfo.methods.get('[]');
+        if (methodInfo) {
+          // Generate interface call
+          // Stack: [InterfaceStruct]
+          generateExpression(ctx, expr.object, body);
+
+          // Store in temp local
+          const tempLocal = ctx.declareLocal(
+            '$$interface_temp_get',
+            objectType,
+          );
+          body.push(
+            Opcode.local_tee,
+            ...WasmModule.encodeSignedLEB128(tempLocal),
+          );
+
+          // Load VTable
+          body.push(
+            0xfb,
+            GcOpcode.struct_get,
+            ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+            ...WasmModule.encodeSignedLEB128(1),
+          );
+
+          // Load Function Pointer
+          body.push(
+            0xfb,
+            GcOpcode.struct_get,
+            ...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex),
+            ...WasmModule.encodeSignedLEB128(methodInfo.index),
+          );
+
+          // Cast to specific function type
+          body.push(
+            0xfb,
+            GcOpcode.ref_cast_null,
+            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+          );
+
+          // Store function ref in temp local
+          const funcRefType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+          ];
+          const funcRefLocal = ctx.declareLocal(
+            '$$interface_func_get',
+            funcRefType,
+          );
+          body.push(
+            Opcode.local_set,
+            ...WasmModule.encodeSignedLEB128(funcRefLocal),
+          );
+
+          // Load Instance (this)
+          body.push(
+            Opcode.local_get,
+            ...WasmModule.encodeSignedLEB128(tempLocal),
+          );
+          body.push(
+            0xfb,
+            GcOpcode.struct_get,
+            ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+            ...WasmModule.encodeSignedLEB128(0),
+          );
+
+          // Evaluate index
+          generateExpression(ctx, expr.index, body);
+
+          // Load function ref
+          body.push(
+            Opcode.local_get,
+            ...WasmModule.encodeSignedLEB128(funcRefLocal),
+          );
+
+          // Call Ref
+          body.push(
+            Opcode.call_ref,
+            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+          );
+
+          // Unbox if needed
+          const expectedType = inferType(ctx, expr);
+          if (
+            methodInfo.returnType.length === 1 &&
+            methodInfo.returnType[0] === ValType.anyref &&
+            expectedType.length === 1 &&
+            (expectedType[0] === ValType.i32 ||
+              expectedType[0] === ValType.i64 ||
+              expectedType[0] === ValType.f32 ||
+              expectedType[0] === ValType.f64)
+          ) {
+            unboxPrimitive(ctx, expectedType, body);
+          }
+
+          return;
+        }
       }
     }
 
@@ -3802,8 +3904,13 @@ function generateIndirectCall(
   body.push(...WasmModule.encodeSignedLEB128(1)); // context field
 
   // 3. Generate Arguments
-  for (const arg of expr.arguments) {
-    generateExpression(ctx, arg, body);
+  const params = ctx.module.getFunctionTypeParams(closureInfo.funcTypeIndex);
+  // params[0] is context
+
+  for (let i = 0; i < expr.arguments.length; i++) {
+    const arg = expr.arguments[i];
+    const expectedType = params[i + 1];
+    generateAdaptedArgument(ctx, arg, expectedType, body);
   }
 
   // 4. Load Function Reference
@@ -4123,6 +4230,85 @@ export function generateAdaptedArgument(
     generateExpression(ctx, arg, body);
     boxPrimitive(ctx, actualType, body);
     return;
+  }
+
+  // Interface Boxing
+  const expectedIndex = decodeTypeIndex(expectedType);
+  let interfaceName: string | undefined;
+  let interfaceInfo: InterfaceInfo | undefined;
+
+  if (expectedIndex !== -1) {
+    for (const [name, info] of ctx.interfaces) {
+      if (info.structTypeIndex === expectedIndex) {
+        interfaceName = name;
+        interfaceInfo = info;
+        break;
+      }
+    }
+  }
+
+  if (interfaceInfo && interfaceName) {
+    const actualIndex = decodeTypeIndex(actualType);
+    let classInfo: ClassInfo | undefined;
+
+    // Check classes
+    if (actualIndex !== -1) {
+      for (const info of ctx.classes.values()) {
+        if (info.structTypeIndex === actualIndex) {
+          classInfo = info;
+          break;
+        }
+      }
+    }
+
+    // Check extensions
+    if (!classInfo) {
+      for (const info of ctx.classes.values()) {
+        if (info.isExtension && info.onType) {
+          // Simple array equality check
+          let match = true;
+          if (info.onType.length !== actualType.length) match = false;
+          else {
+            for (let i = 0; i < info.onType.length; i++) {
+              if (info.onType[i] !== actualType[i]) {
+                match = false;
+                break;
+              }
+            }
+          }
+
+          if (match) {
+            classInfo = info;
+            break;
+          }
+        }
+      }
+    }
+
+    if (
+      classInfo &&
+      classInfo.implements &&
+      classInfo.implements.has(interfaceName)
+    ) {
+      const impl = classInfo.implements.get(interfaceName)!;
+
+      // Box it!
+      // 1. Instance
+      generateExpression(ctx, arg, body);
+
+      // 2. VTable
+      body.push(
+        Opcode.global_get,
+        ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
+      );
+
+      // 3. Struct New
+      body.push(0xfb, GcOpcode.struct_new);
+      body.push(
+        ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+      );
+      return;
+    }
   }
 
   if (isAdaptable(ctx, actualType, expectedType)) {

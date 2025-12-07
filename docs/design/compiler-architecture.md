@@ -75,9 +75,18 @@ Understanding these terms is crucial for working on the compiler:
 - **`codegen/classes.ts`**: Handles class/struct layout, method tables, and interface VTables.
   - `registerClassStruct`: Defines the WASM struct type for a class.
   - `registerClassMethods`: Generates the functions for class methods.
+  - **Trampolines**: Generates bridge functions (`generateTrampoline`) for interface methods. These handle:
+    - Casting `this` from `anyref` (interface view) to the concrete class type.
+    - Unboxing arguments (e.g., `anyref` -> `i32`).
+    - Calling the actual class method.
+    - Boxing the return value (e.g., `i32` -> `anyref`).
 - **`codegen/functions.ts`**: Generates function bodies.
 - **`codegen/statements.ts`**: Generates code for statements (if, while, return).
 - **`codegen/expressions.ts`**: Generates code for expressions (binary ops, calls).
+  - **Adaptation**: Handles argument adaptation during function calls:
+    - **Arity Adaptation**: Drops extra arguments if the target function expects fewer than provided (e.g., in callbacks).
+    - **Boxing/Unboxing**: Automatically boxes primitives to `anyref` and unboxes them when required by the target signature (e.g., generic methods).
+    - **Interface Boxing**: Wraps class instances in interface "fat pointers" when passing to a function expecting an interface.
 
 ### 6. Emitter (`packages/compiler/src/lib/emitter.ts`)
 
@@ -128,6 +137,12 @@ When asked to modify the compiler, look in these files first:
 - **Scope**: A mapping of variable names to their types and indices.
 - **ClassInfo**: Metadata about a class (struct index, field layout, method table). Stored in `CodegenContext.classes`.
 - **InterfaceInfo**: Metadata about an interface (fat pointer layout, vtable layout). Stored in `CodegenContext.interfaces`.
+
+## Debugging Tips
+
+- **Type Registration Logging**: When debugging WASM validation errors (e.g., `expected type (ref null 123), found ...`), it is helpful to log the registration of types in `codegen/classes.ts`.
+  - Add `console.log` in `registerClassStruct` and `registerInterface` to print the Class/Interface name and its assigned `structTypeIndex`.
+  - This allows you to map the numeric Type Index in the error message back to the Zena type name.
 
 ## Future Refactoring
 

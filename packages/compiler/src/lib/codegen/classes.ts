@@ -122,6 +122,9 @@ export function registerInterface(
 
   for (const member of decl.body) {
     if (member.type === NodeType.MethodSignature) {
+      if (member.typeParameters && member.typeParameters.length > 0) {
+        continue;
+      }
       // Function type: (param any, ...params) -> result
       const params: number[][] = [[ValType.ref_null, ValType.anyref]]; // 'this' is (ref null any)
       for (const param of member.params) {
@@ -1716,6 +1719,13 @@ export function mapType(
   const typeContext = context || ctx.currentTypeContext;
   if (!type) return [ValType.i32];
 
+  if (
+    type.type === NodeType.TypeAnnotation &&
+    (type.name === 'FixedArray' || type.name === 'm1_FixedArray')
+  ) {
+    // console.log(`Mapping FixedArray: ${JSON.stringify(type)}`);
+  }
+
   // Resolve generic type parameters
   if (
     type.type === NodeType.TypeAnnotation &&
@@ -2352,7 +2362,7 @@ export function instantiateClass(
       const wrapperTypeIndex = ctx.module.addType(params, results);
       const wrapperFuncIndex = ctx.module.addFunction(wrapperTypeIndex);
 
-      const exportName = decl.exportName || decl.name.name;
+      const exportName = specializedName;
       ctx.module.addExport(exportName, ExportDesc.Func, wrapperFuncIndex);
 
       ctx.bodyGenerators.push(() => {

@@ -4,6 +4,7 @@ import {TypeChecker} from '../../lib/checker/index.js';
 import {readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {execSync} from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // When running compiled tests, we are in packages/compiler/test/codegen
@@ -86,7 +87,25 @@ export async function compileAndInstantiate(
     return instance.exports;
   } catch (e) {
     console.log('WASM Instantiation Error:', e);
-    console.log('WASM Bytes:', Buffer.from(bytes).toString('hex'));
+    try {
+      // Try to convert to WAT using wasm2wat
+      const wat = execSync('wasm2wat - --enable-all', {
+        input: bytes,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      console.log('WASM Text (WAT):');
+      console.log(wat);
+    } catch (watError: any) {
+      // If wasm2wat fails or is not installed, just log that we couldn't convert
+      // We avoid logging the raw bytes to keep the output clean as requested.
+      console.log(
+        'Could not convert WASM to WAT (wasm2wat failed or not found).',
+      );
+      if (watError.stderr) {
+        console.log('wasm2wat stderr:', watError.stderr.toString());
+      }
+    }
     throw e;
   }
 }

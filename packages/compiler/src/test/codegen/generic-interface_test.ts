@@ -70,4 +70,65 @@ suite('CodeGenerator - Generic Interfaces', () => {
     const result = await compileAndRun(source);
     assert.strictEqual(result, 100);
   });
+
+  test('generic method call', async () => {
+    const source = `
+      export interface Sequence<T> {
+        length: i32 { get; }
+        operator [](index: i32): T;
+        map<U>(f: (item: T, index: i32, seq: Sequence<T>) => U): Sequence<U>;
+      }
+
+      export class MyArray<T> implements Sequence<T> {
+        #items: Array<T>;
+
+        length: i32 {
+          get {
+            return this.#items.length;
+          }
+        }
+
+        #new() {
+          this.#items = new Array<T>();
+        }
+
+        map<U>(f: (item: T, index: i32, array: Sequence<T>) => U): Sequence<U> {
+          let len = this.#items.length;
+          let result = new MyArray<U>();
+          var i = 0;
+          while (i < len) {
+            result.push(f(this[i], i, this));
+            i = i + 1;
+          }
+          return result;
+        }
+
+        push(value: T): void {
+          this.#items.push(value);
+        }
+
+        operator [](index: i32) :T {
+          return this.#items[index];
+        }
+
+        operator []=(index: i32, value: T): void {
+          this.#items[index] = value;
+        }
+      }
+
+      export let main = () => {
+        let arr = new MyArray<i32>();
+        arr.push(1);
+        arr.push(2);
+        arr.push(3);
+        
+        let mapped = arr.map<boolean>((item: i32, index: i32, seq: Sequence<i32>): boolean => {
+          return item % 2 == 0;
+        });
+        return mapped[1];
+      };
+    `;
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 1);
+  });
 });
