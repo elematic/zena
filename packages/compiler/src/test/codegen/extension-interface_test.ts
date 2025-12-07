@@ -31,4 +31,74 @@ suite('Extension Class Interfaces', () => {
     const result = exports.runIt(arr);
     assert.strictEqual(result, 3);
   });
+
+  test('extension class implements generic interface', async () => {
+    const source = `
+      export interface HasFirst<T> {
+        getFirst(): T;
+      }
+
+      export extension class ArrayWithFirst on array<i32> implements HasFirst<i32> {
+        getFirst(): i32 {
+          return this[0];
+        }
+      }
+
+      export let createArray = (): ArrayWithFirst => {
+        let a = #[2, 3, 5];
+        return a;
+      };
+
+      export let runIt = (arr: ArrayWithFirst): i32 => {
+        // Get first from the interface
+        let f: HasFirst<i32> = arr;
+        var v = f.getFirst();
+
+        // Get first from the extension class        
+        v = v * arr.getFirst();
+
+        return v;
+      };
+    `;
+
+    const exports = await compileAndInstantiate(source);
+    const arr = exports.createArray();
+    const result = exports.runIt(arr);
+    assert.strictEqual(result, 4);
+  });
+
+  test('generic extension class implements generic interface', async () => {
+    const source = `
+      export interface HasFirst<T> {
+        getFirst(): T;
+      }
+
+      export extension class ArrayWithFirst<T> on array<T> implements HasFirst<T> {
+        getFirst(): T {
+          return this[0];
+        }
+      }
+
+      export let createArray = (): ArrayWithFirst<i32> => {
+        let a = #[2, 3, 5];
+        return a;
+      };
+
+      export let runIt = (arr: ArrayWithFirst<i32>): i32 => {
+        // Get first from the interface
+        let f: HasFirst<i32> = arr;
+        var v = f.getFirst();
+
+        // Get first from the extension class        
+        v = v * arr.getFirst();
+
+        return v;
+      };
+    `;
+
+    const exports = await compileAndInstantiate(source);
+    const arr = exports.createArray();
+    const result = exports.runIt(arr);
+    assert.strictEqual(result, 4);
+  });
 });

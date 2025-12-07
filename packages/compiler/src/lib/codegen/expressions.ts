@@ -1075,6 +1075,24 @@ function generateMemberExpression(
         ...WasmModule.encodeSignedLEB128(targetTypeIndex),
       );
 
+      // Handle return value adaptation (unbox)
+      if (expr.inferredType) {
+        const expectedType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+        const actualType = fieldInfo.type;
+
+        if (
+          actualType.length === 1 &&
+          actualType[0] === ValType.anyref &&
+          expectedType.length === 1 &&
+          (expectedType[0] === ValType.i32 ||
+            expectedType[0] === ValType.i64 ||
+            expectedType[0] === ValType.f32 ||
+            expectedType[0] === ValType.f64)
+        ) {
+          unboxPrimitive(ctx, expectedType, body);
+        }
+      }
+
       return;
     }
 
@@ -1411,6 +1429,24 @@ function generateCallExpression(
         Opcode.call_ref,
         ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
       );
+
+      // Handle return value adaptation (unbox)
+      if (expr.inferredType) {
+        const expectedType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+        const actualType = methodInfo.returnType;
+
+        if (
+          actualType.length === 1 &&
+          actualType[0] === ValType.anyref &&
+          expectedType.length === 1 &&
+          (expectedType[0] === ValType.i32 ||
+            expectedType[0] === ValType.i64 ||
+            expectedType[0] === ValType.f32 ||
+            expectedType[0] === ValType.f64)
+        ) {
+          unboxPrimitive(ctx, expectedType, body);
+        }
+      }
       return;
     }
 

@@ -25,7 +25,12 @@ import {
 import {WasmModule} from '../emitter.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import type {CodegenContext} from './context.js';
-import {generateExpression, getHeapTypeIndex} from './expressions.js';
+import {
+  generateExpression,
+  getHeapTypeIndex,
+  boxPrimitive,
+  unboxPrimitive,
+} from './expressions.js';
 import {
   generateBlockStatement,
   generateFunctionStatement,
@@ -104,17 +109,28 @@ export function registerInterface(
     vtableFields.push(...parentFields);
   }
 
+  // Create type context for generics (erase to anyref)
+  const context = new Map<string, TypeAnnotation>();
+  if (decl.typeParameters) {
+    for (const param of decl.typeParameters) {
+      context.set(param.name, {
+        type: NodeType.TypeAnnotation,
+        name: 'anyref',
+      });
+    }
+  }
+
   for (const member of decl.body) {
     if (member.type === NodeType.MethodSignature) {
       // Function type: (param any, ...params) -> result
       const params: number[][] = [[ValType.ref_null, ValType.anyref]]; // 'this' is (ref null any)
       for (const param of member.params) {
-        params.push(mapType(ctx, param.typeAnnotation));
+        params.push(mapType(ctx, param.typeAnnotation, context));
       }
       const results: number[][] = [];
       let returnType: number[] = [];
       if (member.returnType) {
-        const mapped = mapType(ctx, member.returnType);
+        const mapped = mapType(ctx, member.returnType, context);
         if (mapped.length > 0) {
           results.push(mapped);
           returnType = mapped;
@@ -139,7 +155,7 @@ export function registerInterface(
       const params: number[][] = [[ValType.ref_null, ValType.anyref]];
       const results: number[][] = [];
       let fieldType: number[] = [];
-      const mapped = mapType(ctx, member.typeAnnotation);
+      const mapped = mapType(ctx, member.typeAnnotation, context);
       if (mapped.length > 0) {
         results.push(mapped);
         fieldType = mapped;
@@ -160,7 +176,7 @@ export function registerInterface(
       });
     } else if (member.type === NodeType.AccessorSignature) {
       const propName = member.name.name;
-      const propType = mapType(ctx, member.typeAnnotation);
+      const propType = mapType(ctx, member.typeAnnotation, context);
 
       if (member.hasGetter) {
         const methodName = `get_${propName}`;
@@ -253,29 +269,48 @@ export function generateTrampoline(
   methodName: string,
   typeIndex: number,
 ): number {
-  const classMethod = classInfo.methods.get(methodName)!;
   const trampolineIndex = ctx.module.addFunction(typeIndex);
+
+  // Save context state
+  const prevScopes = ctx.scopes;
+  const prevExtraLocals = ctx.extraLocals;
+  const prevNextLocalIndex = ctx.nextLocalIndex;
+
+  // Initialize new function context
+  ctx.scopes = [new Map()];
+  ctx.extraLocals = [];
+  ctx.nextLocalIndex = 0;
 
   const body: number[] = [];
 
-  // Locals:
-  // 0..N: Params (Param 0 is 'any', 1..N are args)
-  // N+1: Casted 'this'
+  // Register parameters
+  const params = ctx.module.getFunctionTypeParams(typeIndex);
+  // Param 0 is 'this' (anyref)
+  ctx.defineLocal('this', 0, params[0]);
+  ctx.nextLocalIndex++;
 
-  const paramCount = classMethod.paramTypes.length;
-  const castedThisLocal = paramCount;
+  for (let i = 1; i < params.length; i++) {
+    ctx.defineLocal(`arg${i}`, i, params[i]);
+    ctx.nextLocalIndex++;
+  }
+
+  const classMethod = classInfo.methods.get(methodName);
+  if (!classMethod) {
+    throw new Error(
+      `Method ${methodName} not found in class ${classInfo.name} for trampoline generation`,
+    );
+  }
 
   let targetTypeIndex = classInfo.structTypeIndex;
   if (classInfo.isExtension && classInfo.onType) {
     targetTypeIndex = decodeTypeIndex(classInfo.onType);
-    console.log(
-      `generateTrampoline: Extension ${classInfo.name} onTypeIndex=${targetTypeIndex}`,
-    );
   }
 
-  const locals = [
-    [ValType.ref_null, ...WasmModule.encodeSignedLEB128(targetTypeIndex)],
-  ];
+  // Cast 'this' to class type
+  const castedThisLocal = ctx.declareLocal('castedThis', [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(targetTypeIndex),
+  ]);
 
   // local.set $castedThis (ref.cast $Task (local.get 0))
   body.push(Opcode.local_get, 0);
@@ -294,13 +329,60 @@ export function generateTrampoline(
     Opcode.local_get,
     ...WasmModule.encodeSignedLEB128(castedThisLocal),
   );
+
+  const interfaceParams = ctx.module.getFunctionTypeParams(typeIndex);
+  const interfaceResults = ctx.module.getFunctionTypeResults(typeIndex);
+
   for (let i = 1; i < classMethod.paramTypes.length; i++) {
-    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(i));
+    const paramIndex = i;
+    const interfaceParamType = interfaceParams[i];
+    const classParamType = classMethod.paramTypes[i];
+
+    // Load argument
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(paramIndex));
+
+    // Adapt if needed (unbox)
+    if (
+      interfaceParamType.length === 1 &&
+      interfaceParamType[0] === ValType.anyref &&
+      classParamType.length === 1 &&
+      (classParamType[0] === ValType.i32 ||
+        classParamType[0] === ValType.i64 ||
+        classParamType[0] === ValType.f32 ||
+        classParamType[0] === ValType.f64)
+    ) {
+      unboxPrimitive(ctx, classParamType, body);
+    }
   }
+
   body.push(Opcode.call, ...WasmModule.encodeSignedLEB128(classMethod.index));
+
+  // Handle return type adaptation (boxing)
+  const classReturnType = classMethod.returnType;
+
+  if (
+    interfaceResults.length > 0 &&
+    classReturnType.length > 0 &&
+    interfaceResults[0].length === 1 &&
+    interfaceResults[0][0] === ValType.anyref &&
+    classReturnType.length === 1 &&
+    (classReturnType[0] === ValType.i32 ||
+      classReturnType[0] === ValType.i64 ||
+      classReturnType[0] === ValType.f32 ||
+      classReturnType[0] === ValType.f64)
+  ) {
+    boxPrimitive(ctx, classReturnType, body);
+  }
+
   body.push(Opcode.end);
 
-  ctx.module.addCode(trampolineIndex, locals, body);
+  ctx.module.addCode(trampolineIndex, ctx.extraLocals, body);
+
+  // Restore context state
+  ctx.scopes = prevScopes;
+  ctx.extraLocals = prevExtraLocals;
+  ctx.nextLocalIndex = prevNextLocalIndex;
+
   return trampolineIndex;
 }
 
@@ -2214,6 +2296,8 @@ export function instantiateClass(
         name: {type: NodeType.Identifier, name: specializedName},
         superClass: undefined,
       } as ClassDeclaration;
+
+      generateInterfaceVTable(ctx, classInfo, decl);
 
       ctx.bodyGenerators.push(() => {
         generateClassMethods(ctx, declForGen, specializedName, context);

@@ -81,6 +81,36 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
       } as ClassType;
     }
   }
+  if (type.kind === TypeKind.Interface) {
+    const it = type as InterfaceType;
+    if (it.typeArguments) {
+      const newTypeArguments = it.typeArguments.map((t) =>
+        substituteType(t, typeMap),
+      );
+
+      const newFields = new Map<string, Type>();
+      for (const [name, type] of it.fields) {
+        newFields.set(name, substituteType(type, typeMap));
+      }
+
+      const newMethods = new Map<string, FunctionType>();
+      for (const [name, fn] of it.methods) {
+        newMethods.set(name, substituteType(fn, typeMap) as FunctionType);
+      }
+
+      const newExtends = it.extends
+        ? it.extends.map((ext) => substituteType(ext, typeMap) as InterfaceType)
+        : undefined;
+
+      return {
+        ...it,
+        typeArguments: newTypeArguments,
+        fields: newFields,
+        methods: newMethods,
+        extends: newExtends,
+      } as InterfaceType;
+    }
+  }
   if (type.kind === TypeKind.Function) {
     const ft = type as FunctionType;
     return {
@@ -347,33 +377,60 @@ export function resolveTypeAnnotation(
   }
 
   if (annotation.typeArguments && annotation.typeArguments.length > 0) {
-    if (type.kind !== TypeKind.Class) {
-      ctx.diagnostics.reportError(
-        `Type '${name}' is not generic.`,
-        DiagnosticCode.GenericTypeArgumentMismatch,
-      );
-      return type;
-    }
-    const classType = type as ClassType;
-    if (!classType.typeParameters || classType.typeParameters.length === 0) {
-      ctx.diagnostics.reportError(
-        `Type '${name}' is not generic.`,
-        DiagnosticCode.GenericTypeArgumentMismatch,
-      );
-      return type;
-    }
-    if (classType.typeParameters.length !== annotation.typeArguments.length) {
-      ctx.diagnostics.reportError(
-        `Expected ${classType.typeParameters.length} type arguments, got ${annotation.typeArguments.length}.`,
-        DiagnosticCode.GenericTypeArgumentMismatch,
-      );
-      return type;
-    }
+    if (type.kind === TypeKind.Class) {
+      const classType = type as ClassType;
+      if (!classType.typeParameters || classType.typeParameters.length === 0) {
+        ctx.diagnostics.reportError(
+          `Type '${name}' is not generic.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
+        );
+        return type;
+      }
+      if (classType.typeParameters.length !== annotation.typeArguments.length) {
+        ctx.diagnostics.reportError(
+          `Expected ${classType.typeParameters.length} type arguments, got ${annotation.typeArguments.length}.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
+        );
+        return type;
+      }
 
-    const typeArguments = annotation.typeArguments.map((arg) =>
-      resolveTypeAnnotation(ctx, arg),
-    );
-    return instantiateGenericClass(classType, typeArguments, ctx);
+      const typeArguments = annotation.typeArguments.map((arg) =>
+        resolveTypeAnnotation(ctx, arg),
+      );
+      return instantiateGenericClass(classType, typeArguments, ctx);
+    } else if (type.kind === TypeKind.Interface) {
+      const interfaceType = type as InterfaceType;
+      if (
+        !interfaceType.typeParameters ||
+        interfaceType.typeParameters.length === 0
+      ) {
+        ctx.diagnostics.reportError(
+          `Type '${name}' is not generic.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
+        );
+        return type;
+      }
+      if (
+        interfaceType.typeParameters.length !== annotation.typeArguments.length
+      ) {
+        ctx.diagnostics.reportError(
+          `Expected ${interfaceType.typeParameters.length} type arguments, got ${annotation.typeArguments.length}.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
+        );
+        return type;
+      }
+
+      const typeArguments = annotation.typeArguments.map((arg) =>
+        resolveTypeAnnotation(ctx, arg),
+      );
+      return instantiateGenericInterface(interfaceType, typeArguments, ctx);
+    } else {
+      ctx.diagnostics.reportError(
+        `Type '${name}' is not generic.`,
+        DiagnosticCode.GenericTypeArgumentMismatch,
+      );
+      return type;
+    }
   }
 
   return type;
@@ -434,11 +491,16 @@ export function instantiateGenericClass(
     newMethods.set(name, substituteFunction(fn));
   }
 
+  const newImplements = genericClass.implements.map(
+    (impl) => substituteType(impl, typeMap) as InterfaceType,
+  );
+
   const newClass = {
     ...genericClass,
     typeArguments,
     fields: newFields,
     methods: newMethods,
+    implements: newImplements,
     constructorType: genericClass.constructorType
       ? substituteFunction(genericClass.constructorType)
       : undefined,
@@ -457,6 +519,61 @@ export function instantiateGenericClass(
   }
 
   return newClass;
+}
+
+export function instantiateGenericInterface(
+  genericInterface: InterfaceType,
+  typeArguments: Type[],
+  ctx?: CheckerContext,
+): InterfaceType {
+  const typeMap = new Map<string, Type>();
+  genericInterface.typeParameters!.forEach((param, index) => {
+    typeMap.set(param.name, typeArguments[index]);
+  });
+
+  const substitute = (type: Type) => substituteType(type, typeMap);
+
+  const substituteFunction = (fn: FunctionType): FunctionType => {
+    return {
+      ...fn,
+      parameters: fn.parameters.map(substitute),
+      returnType: substitute(fn.returnType),
+    };
+  };
+
+  const newFields = new Map<string, Type>();
+  for (const [name, type] of genericInterface.fields) {
+    newFields.set(name, substitute(type));
+  }
+
+  const newMethods = new Map<string, FunctionType>();
+  for (const [name, fn] of genericInterface.methods) {
+    newMethods.set(name, substituteFunction(fn));
+  }
+
+  const newExtends = genericInterface.extends
+    ? genericInterface.extends.map(
+        (ext) => substituteType(ext, typeMap) as InterfaceType,
+      )
+    : undefined;
+
+  const newInterface = {
+    ...genericInterface,
+    typeArguments,
+    fields: newFields,
+    methods: newMethods,
+    extends: newExtends,
+  };
+
+  if (ctx) {
+    for (const type of newFields.values()) validateType(type, ctx);
+    for (const method of newMethods.values()) {
+      for (const p of method.parameters) validateType(p, ctx);
+      validateType(method.returnType, ctx);
+    }
+  }
+
+  return newInterface;
 }
 
 export function instantiateGenericFunction(

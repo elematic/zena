@@ -472,6 +472,63 @@ export class WasmModule {
     return params;
   }
 
+  public getFunctionTypeResults(typeIndex: number): number[][] {
+    const typeBytes = this.#types[typeIndex];
+    if (!typeBytes || typeBytes[0] !== 0x60) {
+      throw new Error(`Type ${typeIndex} is not a function type`);
+    }
+
+    let offset = 1;
+    // Read params count (LEB128)
+    let paramCount = 0;
+    let shift = 0;
+    while (true) {
+      const byte = typeBytes[offset++];
+      paramCount |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+
+    const readType = (): number[] => {
+      const start = offset;
+      const opcode = typeBytes[offset++];
+      if (
+        opcode === 0x6b || // ref
+        opcode === 0x6c || // ref_null
+        opcode === 0x63 || // ref_eq
+        opcode === 0x64 // ref_i31
+      ) {
+        // Read heap type (LEB128)
+        while (true) {
+          const b = typeBytes[offset++];
+          if ((b & 0x80) === 0) break;
+        }
+      }
+      return typeBytes.slice(start, offset);
+    };
+
+    // Skip params
+    for (let i = 0; i < paramCount; i++) {
+      readType();
+    }
+
+    // Read results count (LEB128)
+    let resultCount = 0;
+    shift = 0;
+    while (true) {
+      const byte = typeBytes[offset++];
+      resultCount |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+
+    const results: number[][] = [];
+    for (let i = 0; i < resultCount; i++) {
+      results.push(readType());
+    }
+    return results;
+  }
+
   public getFunctionTypeIndex(funcIndex: number): number {
     const definedIndex = funcIndex - this.#importedFunctionCount;
     if (definedIndex < 0) {
