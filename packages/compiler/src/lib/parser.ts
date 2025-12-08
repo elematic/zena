@@ -2199,6 +2199,10 @@ export class Parser {
       do {
         const id = this.#parseIdentifier();
         const name = id.name;
+        let constraint: TypeAnnotation | undefined;
+        if (this.#match(TokenType.Extends)) {
+          constraint = this.#parseTypeAnnotation();
+        }
         let defaultValue: TypeAnnotation | undefined;
         if (this.#match(TokenType.Equals)) {
           defaultValue = this.#parseTypeAnnotation();
@@ -2206,8 +2210,9 @@ export class Parser {
         params.push({
           type: NodeType.TypeParameter,
           name,
+          constraint,
           default: defaultValue,
-          loc: this.#loc(id, defaultValue || id),
+          loc: this.#loc(id, defaultValue || constraint || id),
         });
       } while (this.#match(TokenType.Comma));
       this.#consume(TokenType.Greater, "Expected '>' after type parameters.");

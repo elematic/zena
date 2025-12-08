@@ -24,4 +24,61 @@ suite('Codegen: Generics', () => {
       'main',
     );
   });
+
+  test.skip('should compile generic class with constraint', async () => {
+    await compileAndRun(
+      `
+      import { log } from 'zena:console';
+      
+      class Base {
+        #new() {}
+      }
+      
+      class Derived extends Base {
+        #new() {
+          super();
+        }
+      }
+      
+      class Container<T extends Base> {
+        item: T;
+        #new(item: T) {
+          this.item = item;
+        }
+        getItem(): T {
+          return this.item;
+        }
+      }
+      
+      let c1 = new Container<Base>(new Base());
+      log(42);
+    `,
+      'main',
+    );
+  });
+
+  test.skip('should compile generic function with constraint', async () => {
+    await compileAndRun(
+      `
+      import { log } from 'zena:console';
+      
+      class Base {
+        #new() {}
+      }
+      
+      class Derived extends Base {
+        #new() {
+          super();
+        }
+      }
+      
+      let process = <T extends Base>(x: T): T => x;
+      
+      let d = new Derived();
+      let result = process<Derived>(d);
+      log(42);
+    `,
+      'main',
+    );
+  });
 });
