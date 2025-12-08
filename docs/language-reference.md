@@ -994,6 +994,46 @@ export final extension class FixedArray<T> on array<T> {
 }
 ```
 
+### Static Symbols
+
+Static Symbols allow you to define unique identifiers for methods and fields that are distinct from string names. This is useful for defining "protocol" methods (like iterators) or internal APIs that should not collide with public members.
+
+#### Declaration
+
+Symbols are declared using the `symbol` keyword.
+
+```zena
+// Top-level symbol
+export symbol mySymbol;
+
+// Static member symbol (Recommended for Interfaces)
+interface Iterable<T> {
+  static symbol iterator;
+}
+```
+
+#### Usage
+
+To define or call a method using a symbol, use the bracket syntax `[symbol]`.
+
+```zena
+class MyList<T> implements Iterable<T> {
+  // Implementation
+  [Iterable.iterator](): Iterator<T> {
+    // ...
+  }
+}
+
+let list = new MyList();
+let it = list[Iterable.iterator]();
+```
+
+#### Semantics
+
+- **Compile-Time Resolution**: Symbols are resolved at compile time. The expression inside `[...]` must be a constant expression that resolves to a symbol.
+- **No Collisions**: Two interfaces can define methods with the same _name_ but different _symbols_, allowing a class to implement both without conflict.
+- **Access Control**: Visibility is controlled via standard `export` rules. If a symbol is not exported, it cannot be used outside the module.
+
 ### Distinguishable Types & Erasure
 
 Zena uses **type erasure** for certain constructs to maintain zero-cost abstractions. This means that some types which are distinct at compile time are identical at runtime.

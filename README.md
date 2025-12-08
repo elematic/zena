@@ -73,6 +73,7 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 - [x] Distinct types
 - [x] Function types
 - [x] String escapes
+- [x] Static Symbols (Protocol Methods)
 - [x] Tagged template literals
 - [x] Record and tuple literal syntax (`{...}` and `[ ... ]`)
 - [x] Console built-in
