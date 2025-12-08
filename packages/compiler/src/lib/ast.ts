@@ -68,6 +68,7 @@ export const NodeType = {
   LiteralTypeAnnotation: 'LiteralTypeAnnotation',
   SpreadElement: 'SpreadElement',
   ExportAllDeclaration: 'ExportAllDeclaration',
+  ComputedPropertyName: 'ComputedPropertyName',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -416,9 +417,14 @@ export interface MixinDeclaration extends Node {
   exportName?: string;
 }
 
+export interface ComputedPropertyName extends Node {
+  type: typeof NodeType.ComputedPropertyName;
+  expression: Expression;
+}
+
 export interface AccessorDeclaration extends Node {
   type: typeof NodeType.AccessorDeclaration;
-  name: Identifier;
+  name: Identifier | ComputedPropertyName;
   typeAnnotation: TypeAnnotation;
   getter?: BlockStatement;
   setter?: {param: Identifier; body: BlockStatement};
@@ -439,7 +445,7 @@ export interface InterfaceDeclaration extends Node {
 
 export interface AccessorSignature extends Node {
   type: typeof NodeType.AccessorSignature;
-  name: Identifier;
+  name: Identifier | ComputedPropertyName;
   typeAnnotation: TypeAnnotation;
   hasGetter: boolean;
   hasSetter: boolean;
@@ -447,7 +453,7 @@ export interface AccessorSignature extends Node {
 
 export interface MethodSignature extends Node {
   type: typeof NodeType.MethodSignature;
-  name: Identifier;
+  name: Identifier | ComputedPropertyName;
   typeParameters?: TypeParameter[];
   params: Parameter[];
   returnType?: TypeAnnotation;
@@ -455,7 +461,7 @@ export interface MethodSignature extends Node {
 
 export interface FieldDefinition extends Node {
   type: typeof NodeType.FieldDefinition;
-  name: Identifier;
+  name: Identifier | ComputedPropertyName;
   typeAnnotation: TypeAnnotation;
   value?: Expression;
   isFinal: boolean;
@@ -472,7 +478,7 @@ export interface Decorator extends Node {
 
 export interface MethodDefinition extends Node {
   type: typeof NodeType.MethodDefinition;
-  name: Identifier;
+  name: Identifier | ComputedPropertyName;
   typeParameters?: TypeParameter[];
   params: Parameter[];
   returnType?: TypeAnnotation;

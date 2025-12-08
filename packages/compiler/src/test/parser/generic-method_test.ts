@@ -21,7 +21,10 @@ suite('Parser (Generic Methods)', () => {
       const method = decl.body[0];
       assert.strictEqual(method.type, NodeType.MethodDefinition);
       if (method.type === NodeType.MethodDefinition) {
-        assert.strictEqual(method.name.name, 'method');
+        assert.strictEqual(method.name.type, NodeType.Identifier);
+        if (method.name.type === NodeType.Identifier) {
+          assert.strictEqual(method.name.name, 'method');
+        }
         assert.ok(method.typeParameters);
         assert.strictEqual(method.typeParameters.length, 1);
         assert.strictEqual(method.typeParameters[0].name, 'T');
@@ -46,7 +49,10 @@ suite('Parser (Generic Methods)', () => {
       const method = decl.body[0];
       assert.strictEqual(method.type, NodeType.MethodDefinition);
       if (method.type === NodeType.MethodDefinition) {
-        assert.strictEqual(method.name.name, 'method');
+        assert.strictEqual(method.name.type, NodeType.Identifier);
+        if (method.name.type === NodeType.Identifier) {
+          assert.strictEqual(method.name.name, 'method');
+        }
         assert.ok(method.typeParameters);
         assert.strictEqual(method.typeParameters.length, 1);
         assert.strictEqual(method.typeParameters[0].name, 'T');

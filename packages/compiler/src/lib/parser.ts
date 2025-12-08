@@ -6,6 +6,7 @@ import {
   type BlockStatement,
   type CallExpression,
   type ClassDeclaration,
+  type ComputedPropertyName,
   type Decorator,
   type DeclareFunction,
   type Expression,
@@ -1801,8 +1802,40 @@ export class Parser {
       }
     }
 
-    let name: Identifier;
-    if (this.#match(TokenType.Operator)) {
+    if (isStatic && this.#match(TokenType.Symbol)) {
+      const name = this.#parseIdentifier();
+      this.#consume(TokenType.Semi, "Expected ';' after symbol declaration.");
+      return {
+        type: NodeType.FieldDefinition,
+        name,
+        typeAnnotation: {
+          type: NodeType.TypeAnnotation,
+          name: 'symbol',
+          loc: name.loc,
+        },
+        isFinal: true,
+        isStatic: true,
+        isDeclare,
+        decorators,
+        loc: this.#loc(startToken, this.#previous()),
+      };
+    }
+
+    let name: Identifier | ComputedPropertyName;
+    if (this.#match(TokenType.LBracket)) {
+      const start = this.#previous();
+      const expression = this.#parseExpression();
+      this.#consume(
+        TokenType.RBracket,
+        "Expected ']' after computed property name.",
+      );
+      const end = this.#previous();
+      name = {
+        type: NodeType.ComputedPropertyName,
+        expression,
+        loc: this.#loc(start, end),
+      };
+    } else if (this.#match(TokenType.Operator)) {
       // Disambiguate `operator []` vs `operator: i32`
       if (
         this.#check(TokenType.Colon) ||
@@ -1975,7 +2008,7 @@ export class Parser {
   }
 
   #parseAccessorDeclaration(
-    name: Identifier,
+    name: Identifier | ComputedPropertyName,
     typeAnnotation: TypeAnnotation,
     isFinal: boolean,
     isStatic: boolean,

@@ -19,6 +19,7 @@ export const TypeKind = {
   Unknown: 'Unknown',
   Never: 'Never',
   Literal: 'Literal',
+  Symbol: 'Symbol',
 } as const;
 
 export type TypeKind = (typeof TypeKind)[keyof typeof TypeKind];
@@ -26,6 +27,11 @@ export type TypeKind = (typeof TypeKind)[keyof typeof TypeKind];
 export interface Type {
   kind: TypeKind;
   _debugId?: number;
+}
+
+export interface SymbolType extends Type {
+  kind: typeof TypeKind.Symbol;
+  uniqueId?: string;
 }
 
 export interface UnionType extends Type {
@@ -97,6 +103,8 @@ export interface InterfaceType extends Type {
   extends?: InterfaceType[];
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
+  symbolFields?: Map<string, Type>;
+  symbolMethods?: Map<string, FunctionType>;
 }
 
 export interface MixinType extends Type {
@@ -106,6 +114,8 @@ export interface MixinType extends Type {
   onType?: ClassType;
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
+  symbolFields?: Map<string, Type>;
+  symbolMethods?: Map<string, FunctionType>;
 }
 
 export interface ClassType extends Type {
@@ -117,6 +127,9 @@ export interface ClassType extends Type {
   implements: InterfaceType[];
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
+  statics: Map<string, Type>;
+  symbolFields?: Map<string, Type>;
+  symbolMethods?: Map<string, FunctionType>;
   constructorType?: FunctionType;
   vtable: string[]; // Ordered list of method names
   isFinal?: boolean;
@@ -134,6 +147,7 @@ export const StringClass: ClassType = {
   name: 'String',
   fields: new Map(),
   methods: new Map(),
+  statics: new Map(),
   implements: [],
   vtable: [],
   isExtension: true,
@@ -153,4 +167,5 @@ export const Types = {
   AnyRef: {kind: TypeKind.AnyRef} as Type,
   Any: {kind: TypeKind.Any} as Type,
   Never: {kind: TypeKind.Never} as Type,
+  Symbol: {kind: TypeKind.Symbol} as SymbolType,
 } as const;

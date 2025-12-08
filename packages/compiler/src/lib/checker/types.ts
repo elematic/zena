@@ -281,6 +281,8 @@ export function resolveTypeAnnotation(
       return Types.F32;
     case 'boolean':
       return Types.Boolean;
+    case 'symbol':
+      return Types.Symbol;
     case 'anyref':
       return Types.AnyRef;
     case 'any':

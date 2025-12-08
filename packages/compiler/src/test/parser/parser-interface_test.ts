@@ -22,7 +22,10 @@ suite('Parser - Interfaces', () => {
       const method = decl.body[0];
       assert.strictEqual(method.type, NodeType.MethodSignature);
       if (method.type === NodeType.MethodSignature) {
-        assert.strictEqual(method.name.name, 'run');
+        assert.strictEqual(method.name.type, NodeType.Identifier);
+        if (method.name.type === NodeType.Identifier) {
+          assert.strictEqual(method.name.name, 'run');
+        }
         assert.strictEqual(method.params.length, 0);
         assert.strictEqual((method.returnType as any)?.name, 'void');
       }
@@ -45,7 +48,10 @@ suite('Parser - Interfaces', () => {
       const field1 = decl.body[0];
       assert.strictEqual(field1.type, NodeType.FieldDefinition);
       if (field1.type === NodeType.FieldDefinition) {
-        assert.strictEqual(field1.name.name, 'x');
+        assert.strictEqual(field1.name.type, NodeType.Identifier);
+        if (field1.name.type === NodeType.Identifier) {
+          assert.strictEqual(field1.name.name, 'x');
+        }
         assert.strictEqual((field1.typeAnnotation as any).name, 'i32');
       }
     }
@@ -122,7 +128,10 @@ suite('Parser - Interfaces', () => {
       const accessor = decl.body[0];
       assert.strictEqual(accessor.type, NodeType.AccessorSignature);
       if (accessor.type === NodeType.AccessorSignature) {
-        assert.strictEqual(accessor.name.name, 'value');
+        assert.strictEqual(accessor.name.type, NodeType.Identifier);
+        if (accessor.name.type === NodeType.Identifier) {
+          assert.strictEqual(accessor.name.name, 'value');
+        }
         assert.strictEqual((accessor.typeAnnotation as any).name, 'i32');
         assert.strictEqual(accessor.hasGetter, true);
         assert.strictEqual(accessor.hasSetter, true);
