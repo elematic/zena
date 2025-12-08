@@ -8,6 +8,8 @@ import {
   type RecordTypeAnnotation,
   type TupleTypeAnnotation,
   type TypeAnnotation,
+  type Identifier,
+  type ComputedPropertyName,
 } from '../ast.js';
 import {
   TypeKind,
@@ -21,8 +23,25 @@ import {
   type FunctionType,
   type TypeParameterType,
   type TypeAliasType,
+  type SymbolType,
 } from '../types.js';
 import {WasmModule} from '../emitter.js';
+
+export function getMemberName(name: Identifier | ComputedPropertyName): string {
+  if (name.type === NodeType.Identifier) {
+    return name.name;
+  }
+  const symbolType = name.expression.inferredType as SymbolType;
+  if (
+    symbolType &&
+    symbolType.kind === TypeKind.Symbol &&
+    symbolType.uniqueId
+  ) {
+    return symbolType.uniqueId;
+  }
+  throw new Error(`Could not resolve member name for ${name.type}`);
+}
+
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import type {CodegenContext} from './context.js';
 import {
@@ -149,7 +168,7 @@ export function registerInterface(
         mutable: false, // VTables are immutable
       });
 
-      methodIndices.set(member.name.name, {
+      methodIndices.set(getMemberName(member.name), {
         index: methodIndex++,
         typeIndex: funcTypeIndex,
         returnType,
@@ -173,13 +192,13 @@ export function registerInterface(
         mutable: false,
       });
 
-      fieldIndices.set(member.name.name, {
+      fieldIndices.set(getMemberName(member.name), {
         index: methodIndex++,
         typeIndex: funcTypeIndex,
         type: fieldType,
       });
     } else if (member.type === NodeType.AccessorSignature) {
-      const propName = member.name.name;
+      const propName = getMemberName(member.name);
       const propType = mapType(ctx, member.typeAnnotation, context);
 
       if (member.hasGetter) {
@@ -795,7 +814,10 @@ export function registerClassStruct(
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
       const wasmType = mapType(ctx, member.typeAnnotation);
-      const fieldName = manglePrivateName(decl.name.name, member.name.name);
+      const fieldName = manglePrivateName(
+        decl.name.name,
+        getMemberName(member.name),
+      );
 
       if (!fields.has(fieldName)) {
         let intrinsic: string | undefined;
@@ -892,7 +914,8 @@ export function registerClassMethods(
   // ... (rest of the function)
 
   const hasConstructor = members.some(
-    (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
+    (m) =>
+      m.type === NodeType.MethodDefinition && getMemberName(m.name) === '#new',
   );
   if (!hasConstructor && !classInfo.isExtension) {
     const bodyStmts: any[] = [];
@@ -922,12 +945,12 @@ export function registerClassMethods(
     if (member.type === NodeType.MethodDefinition) {
       if (member.typeParameters && member.typeParameters.length > 0) {
         // Store generic method definition for later instantiation
-        const key = `${decl.name.name}.${member.name.name}`;
+        const key = `${decl.name.name}.${getMemberName(member.name)}`;
         ctx.genericMethods.set(key, member);
         continue; // Skip generating code for generic method definition
       }
 
-      const methodName = member.name.name;
+      const methodName = getMemberName(member.name);
 
       let intrinsic: string | undefined;
       if (member.decorators) {
@@ -1029,7 +1052,7 @@ export function registerClassMethods(
         intrinsic,
       });
     } else if (member.type === NodeType.AccessorDeclaration) {
-      const propName = member.name.name;
+      const propName = getMemberName(member.name);
       const propType = mapType(ctx, member.typeAnnotation);
 
       // Getter
@@ -1138,7 +1161,7 @@ export function registerClassMethods(
     } else if (member.type === NodeType.FieldDefinition) {
       if (member.isStatic) continue;
       // Register implicit accessors for public fields
-      if (!member.name.name.startsWith('#')) {
+      if (!getMemberName(member.name).startsWith('#')) {
         let intrinsic: string | undefined;
         if (member.decorators) {
           const intrinsicDecorator = member.decorators.find(
@@ -1149,7 +1172,7 @@ export function registerClassMethods(
           }
         }
 
-        const propName = member.name.name;
+        const propName = getMemberName(member.name);
         const propType = mapType(ctx, member.typeAnnotation);
 
         // Getter
@@ -1368,7 +1391,8 @@ export function generateClassMethods(
 
   const members = [...decl.body];
   const hasConstructor = members.some(
-    (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
+    (m) =>
+      m.type === NodeType.MethodDefinition && getMemberName(m.name) === '#new',
   );
   if (!hasConstructor && !classInfo.isExtension) {
     const bodyStmts: any[] = [];
@@ -1400,7 +1424,9 @@ export function generateClassMethods(
         continue;
       }
       const methodName =
-        member.name.name === 'constructor' ? '#new' : member.name.name;
+        getMemberName(member.name) === 'constructor'
+          ? '#new'
+          : getMemberName(member.name);
       const methodInfo = classInfo.methods.get(methodName)!;
       const body: number[] = [];
 
@@ -1492,7 +1518,10 @@ export function generateClassMethods(
           for (const m of decl.body) {
             if (m.type === NodeType.FieldDefinition && m.value) {
               if (m.isStatic) continue;
-              const fieldName = manglePrivateName(decl.name.name, m.name.name);
+              const fieldName = manglePrivateName(
+                decl.name.name,
+                getMemberName(m.name),
+              );
               const fieldInfo = classInfo.fields.get(fieldName)!;
               body.push(Opcode.local_get, 0);
               generateExpression(ctx, m.value, body);
@@ -1521,7 +1550,7 @@ export function generateClassMethods(
                     if (m.isStatic) continue;
                     const fieldName = manglePrivateName(
                       decl.name.name,
-                      m.name.name,
+                      getMemberName(m.name),
                     );
                     const fieldInfo = classInfo.fields.get(fieldName)!;
                     body.push(Opcode.local_get, 0);
@@ -1562,7 +1591,7 @@ export function generateClassMethods(
       ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
       ctx.popScope();
     } else if (member.type === NodeType.AccessorDeclaration) {
-      const propName = member.name.name;
+      const propName = getMemberName(member.name);
 
       // Getter
       if (member.getter) {
@@ -1670,8 +1699,8 @@ export function generateClassMethods(
       )
         continue;
 
-      if (!member.name.name.startsWith('#')) {
-        const propName = member.name.name;
+      if (!getMemberName(member.name).startsWith('#')) {
+        const propName = getMemberName(member.name);
         const fieldName = manglePrivateName(className, propName);
         const fieldInfo = classInfo.fields.get(fieldName);
         if (!fieldInfo) {
@@ -2058,7 +2087,10 @@ export function instantiateClass(
     for (const member of decl.body) {
       if (member.type === NodeType.FieldDefinition) {
         const wasmType = mapType(ctx, member.typeAnnotation, context);
-        const fieldName = manglePrivateName(specializedName, member.name.name);
+        const fieldName = manglePrivateName(
+          specializedName,
+          getMemberName(member.name),
+        );
         fields.set(fieldName, {index: fieldIndex++, type: wasmType});
         fieldTypes.push({type: wasmType, mutable: true});
       }
@@ -2098,7 +2130,9 @@ export function instantiateClass(
     // Register methods
     const members = [...decl.body];
     const hasConstructor = members.some(
-      (m) => m.type === NodeType.MethodDefinition && m.name.name === '#new',
+      (m) =>
+        m.type === NodeType.MethodDefinition &&
+        getMemberName(m.name) === '#new',
     );
     if (!hasConstructor && !decl.isExtension) {
       const bodyStmts: any[] = [];
@@ -2127,13 +2161,15 @@ export function instantiateClass(
     for (const member of members) {
       if (member.type === NodeType.MethodDefinition) {
         if (member.typeParameters && member.typeParameters.length > 0) {
-          const key = `${specializedName}.${member.name.name}`;
+          const key = `${specializedName}.${getMemberName(member.name)}`;
           ctx.genericMethods.set(key, member);
           continue;
         }
 
         const methodName =
-          member.name.name === 'constructor' ? '#new' : member.name.name;
+          getMemberName(member.name) === 'constructor'
+            ? '#new'
+            : getMemberName(member.name);
 
         let intrinsic: string | undefined;
         if (member.decorators) {
@@ -2200,7 +2236,7 @@ export function instantiateClass(
           intrinsic,
         });
       } else if (member.type === NodeType.AccessorDeclaration) {
-        const propName = member.name.name;
+        const propName = getMemberName(member.name);
         const propType = mapType(ctx, member.typeAnnotation, context);
 
         // Getter
@@ -2311,7 +2347,7 @@ export function instantiateClass(
           continue;
         }
         // Implicit accessors
-        if (!member.name.name.startsWith('#')) {
+        if (!getMemberName(member.name).startsWith('#')) {
           let intrinsic: string | undefined;
           if (member.decorators) {
             const intrinsicDecorator = member.decorators.find(
@@ -2322,7 +2358,7 @@ export function instantiateClass(
             }
           }
 
-          const propName = member.name.name;
+          const propName = getMemberName(member.name);
           const propType = mapType(ctx, member.typeAnnotation, context);
 
           // Register Getter
@@ -2601,7 +2637,10 @@ function applyMixin(
   for (const member of mixinDecl.body) {
     if (member.type === NodeType.FieldDefinition) {
       const wasmType = mapType(ctx, member.typeAnnotation);
-      const fieldName = manglePrivateName(intermediateName, member.name.name);
+      const fieldName = manglePrivateName(
+        intermediateName,
+        getMemberName(member.name),
+      );
 
       if (!fields.has(fieldName)) {
         fields.set(fieldName, {index: fieldIndex++, type: wasmType});

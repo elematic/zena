@@ -13,6 +13,7 @@ import {
   registerClassStruct,
   registerClassMethods,
   registerInterface,
+  getMemberName,
 } from './classes.js';
 import {CodegenContext} from './context.js';
 import {registerDeclaredFunction, registerFunction} from './functions.js';
@@ -141,7 +142,7 @@ export class CodeGenerator {
             member.isStatic &&
             member.value
           ) {
-            const name = `${classDecl.name.name}_${member.name.name}`;
+            const name = `${classDecl.name.name}_${getMemberName(member.name)}`;
             const type = inferType(this.#ctx, member.value);
             let initBytes: number[] = [];
 

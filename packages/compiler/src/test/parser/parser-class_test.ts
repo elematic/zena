@@ -41,7 +41,10 @@ suite('Parser - Classes', () => {
       const accessor = classDecl.body[0];
       assert.strictEqual(accessor.type, NodeType.AccessorDeclaration);
       if (accessor.type === NodeType.AccessorDeclaration) {
-        assert.strictEqual(accessor.name.name, 'radius');
+        assert.strictEqual(accessor.name.type, NodeType.Identifier);
+        if (accessor.name.type === NodeType.Identifier) {
+          assert.strictEqual(accessor.name.name, 'radius');
+        }
         assert.ok(accessor.getter);
         assert.ok(accessor.setter);
         assert.strictEqual(accessor.setter.param.name, 'v');

@@ -234,14 +234,20 @@ suite('Parser', () => {
       const fieldX = cls.body[0];
       assert.strictEqual(fieldX.type, NodeType.FieldDefinition);
       if (fieldX.type === NodeType.FieldDefinition) {
-        assert.strictEqual(fieldX.name.name, 'x');
+        assert.strictEqual(fieldX.name.type, NodeType.Identifier);
+        if (fieldX.name.type === NodeType.Identifier) {
+          assert.strictEqual(fieldX.name.name, 'x');
+        }
         assert.strictEqual((fieldX.typeAnnotation as any).name, 'i32');
       }
 
       const ctor = cls.body[2];
       assert.strictEqual(ctor.type, NodeType.MethodDefinition);
       if (ctor.type === NodeType.MethodDefinition) {
-        assert.strictEqual(ctor.name.name, '#new');
+        assert.strictEqual(ctor.name.type, NodeType.Identifier);
+        if (ctor.name.type === NodeType.Identifier) {
+          assert.strictEqual(ctor.name.name, '#new');
+        }
       }
     }
   });

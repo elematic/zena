@@ -35,7 +35,10 @@ suite('Parser - Abstract Classes', () => {
       assert.strictEqual(method.type, NodeType.MethodDefinition);
       if (method.type === NodeType.MethodDefinition) {
         assert.strictEqual(method.isAbstract, true);
-        assert.strictEqual(method.name.name, 'area');
+        assert.strictEqual(method.name.type, NodeType.Identifier);
+        if (method.name.type === NodeType.Identifier) {
+          assert.strictEqual(method.name.name, 'area');
+        }
         assert.strictEqual(method.body, undefined);
       }
     }
@@ -56,7 +59,10 @@ suite('Parser - Abstract Classes', () => {
       assert.strictEqual(method.type, NodeType.MethodDefinition);
       if (method.type === NodeType.MethodDefinition) {
         assert.strictEqual(method.isAbstract, false);
-        assert.strictEqual(method.name.name, 'getType');
+        assert.strictEqual(method.name.type, NodeType.Identifier);
+        if (method.name.type === NodeType.Identifier) {
+          assert.strictEqual(method.name.name, 'getType');
+        }
         assert.ok(method.body);
       }
     }

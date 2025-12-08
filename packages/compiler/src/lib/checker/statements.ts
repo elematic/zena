@@ -4,10 +4,12 @@ import {
   type AsPattern,
   type AssignmentPattern,
   type ClassDeclaration,
+  type ComputedPropertyName,
   type DeclareFunction,
   type ExportAllDeclaration,
   type Expression,
   type ForStatement,
+  type Identifier,
   type IfStatement,
   type ImportDeclaration,
   type InterfaceDeclaration,
@@ -35,6 +37,7 @@ import {
   type LiteralType,
   type MixinType,
   type RecordType,
+  type SymbolType,
   type TupleType,
   type Type,
   type TypeAliasType,
@@ -634,6 +637,33 @@ function getPropertyType(
   }
 }
 
+function resolveMemberName(
+  ctx: CheckerContext,
+  name: Identifier | ComputedPropertyName,
+): {name: string; isSymbol: boolean; symbolId?: string} {
+  if (name.type === NodeType.Identifier) {
+    return {name: name.name, isSymbol: false};
+  } else {
+    // ComputedPropertyName
+    const type = checkExpression(ctx, name.expression);
+    if (type.kind === TypeKind.Symbol) {
+      const symbolType = type as SymbolType;
+      if (symbolType.uniqueId) {
+        return {
+          name: symbolType.uniqueId,
+          isSymbol: true,
+          symbolId: symbolType.uniqueId,
+        };
+      }
+    }
+    ctx.diagnostics.reportError(
+      `Computed property name must resolve to a unique symbol.`,
+      DiagnosticCode.TypeMismatch,
+    );
+    return {name: '<error>', isSymbol: false};
+  }
+}
+
 function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   const className = decl.name.name;
 
@@ -724,6 +754,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         implements: [], // TODO: Mixins might implement interfaces
         fields: new Map(),
         methods: new Map(),
+        statics: new Map(),
+        symbolFields: new Map(),
+        symbolMethods: new Map(),
         vtable: superType ? [...superType.vtable] : [],
         isFinal: false, // Intermediate classes are not final
       };
@@ -816,6 +849,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     implements: [],
     fields: new Map(),
     methods: new Map(),
+    statics: new Map(),
+    symbolFields: new Map(),
+    symbolMethods: new Map(),
     constructorType: undefined,
     vtable: superType ? [...superType.vtable] : [],
     isFinal: decl.isFinal,
@@ -887,34 +923,61 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         );
         continue;
       }
+
+      // Check for static symbol declaration
+      if (
+        member.isStatic &&
+        member.typeAnnotation.type === NodeType.TypeAnnotation &&
+        member.typeAnnotation.name === 'symbol' &&
+        member.name.type === NodeType.Identifier
+      ) {
+        const symbolName = member.name.name;
+        const uniqueId = `${className}.${symbolName}`;
+        const symbolType: SymbolType = {
+          kind: TypeKind.Symbol,
+          uniqueId,
+        };
+        classType.statics.set(symbolName, symbolType);
+        continue;
+      }
+
+      const memberNameInfo = resolveMemberName(ctx, member.name);
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
-      if (classType.fields.has(member.name.name)) {
+
+      if (memberNameInfo.isSymbol) {
+        classType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);
+        continue;
+      }
+
+      const memberName = memberNameInfo.name;
+
+      if (classType.fields.has(memberName)) {
         // Check if it's a redeclaration of an inherited field
-        if (superType && superType.fields.has(member.name.name)) {
+        if (superType && superType.fields.has(memberName)) {
           // Allow shadowing/overriding of fields
           // Check type compatibility
-          const superFieldType = superType.fields.get(member.name.name)!;
+          const superFieldType = superType.fields.get(memberName)!;
           // If mutable, types should be invariant (identical). If immutable, covariant.
           // For now, we enforce covariance (fieldType extends superFieldType).
           if (!isAssignableTo(ctx, fieldType, superFieldType)) {
             ctx.diagnostics.reportError(
-              `Field '${member.name.name}' in subclass '${className}' must be compatible with inherited field.`,
+              `Field '${memberName}' in subclass '${className}' must be compatible with inherited field.`,
               DiagnosticCode.TypeMismatch,
             );
           }
         } else {
           ctx.diagnostics.reportError(
-            `Duplicate field '${member.name.name}' in class '${className}'.`,
+            `Duplicate field '${memberName}' in class '${className}'.`,
             DiagnosticCode.DuplicateDeclaration,
           );
         }
       }
-      classType.fields.set(member.name.name, fieldType);
+      classType.fields.set(memberName, fieldType);
 
       // Register implicit accessors for public fields
-      if (!member.name.name.startsWith('#')) {
-        const getterName = `get_${member.name.name}`;
-        const setterName = `set_${member.name.name}`;
+      if (!memberName.startsWith('#')) {
+        const getterName = `get_${memberName}`;
+        const setterName = `set_${memberName}`;
 
         // Getter
         if (!classType.methods.has(getterName)) {
@@ -941,30 +1004,47 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
       }
     } else if (member.type === NodeType.AccessorDeclaration) {
+      const memberNameInfo = resolveMemberName(ctx, member.name);
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
-      if (classType.fields.has(member.name.name)) {
-        if (superType && superType.fields.has(member.name.name)) {
+
+      if (memberNameInfo.isSymbol) {
+        classType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);
+        if (member.getter) {
+          classType.symbolMethods!.set(memberNameInfo.symbolId!, {
+            kind: TypeKind.Function,
+            parameters: [],
+            returnType: fieldType,
+            isFinal: member.isFinal,
+          });
+        }
+        continue;
+      }
+
+      const memberName = memberNameInfo.name;
+
+      if (classType.fields.has(memberName)) {
+        if (superType && superType.fields.has(memberName)) {
           // Allow overriding field with accessor
           // Check type compatibility
-          const superFieldType = superType.fields.get(member.name.name)!;
+          const superFieldType = superType.fields.get(memberName)!;
           if (!isAssignableTo(ctx, fieldType, superFieldType)) {
             ctx.diagnostics.reportError(
-              `Accessor '${member.name.name}' in subclass '${className}' must be compatible with inherited field.`,
+              `Accessor '${memberName}' in subclass '${className}' must be compatible with inherited field.`,
               DiagnosticCode.TypeMismatch,
             );
           }
         } else {
           ctx.diagnostics.reportError(
-            `Duplicate field '${member.name.name}' in class '${className}'.`,
+            `Duplicate field '${memberName}' in class '${className}'.`,
             DiagnosticCode.DuplicateDeclaration,
           );
         }
       }
-      classType.fields.set(member.name.name, fieldType);
+      classType.fields.set(memberName, fieldType);
 
       // Register getter/setter methods
       if (member.getter) {
-        const getterName = `get_${member.name.name}`;
+        const getterName = `get_${memberName}`;
         const methodType: FunctionType = {
           kind: TypeKind.Function,
           parameters: [],
@@ -991,7 +1071,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       }
 
       if (member.setter) {
-        const setterName = `set_${member.name.name}`;
+        const setterName = `set_${memberName}`;
         const methodType: FunctionType = {
           kind: TypeKind.Function,
           parameters: [fieldType],
@@ -1041,9 +1121,16 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         parameterInitializers,
       };
 
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (memberNameInfo.isSymbol) {
+        classType.symbolMethods!.set(memberNameInfo.symbolId!, methodType);
+        continue;
+      }
+      const memberName = memberNameInfo.name;
+
       if (member.isAbstract && !decl.isAbstract) {
         ctx.diagnostics.reportError(
-          `Abstract method '${member.name.name}' can only appear within an abstract class.`,
+          `Abstract method '${memberName}' can only appear within an abstract class.`,
           DiagnosticCode.AbstractMethodInConcreteClass,
         );
       }
@@ -1054,20 +1141,20 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         );
         if (!hasIntrinsic) {
           ctx.diagnostics.reportError(
-            `Declared method '${member.name.name}' must be decorated with @intrinsic.`,
+            `Declared method '${memberName}' must be decorated with @intrinsic.`,
             DiagnosticCode.MissingDecorator,
           );
         }
 
         if (member.body) {
           ctx.diagnostics.reportError(
-            `Declared method '${member.name.name}' cannot have a body.`,
+            `Declared method '${memberName}' cannot have a body.`,
             DiagnosticCode.UnexpectedBody,
           );
         }
       }
 
-      if (member.name.name === '#new') {
+      if (memberName === '#new') {
         if (classType.constructorType) {
           ctx.diagnostics.reportError(
             `Duplicate constructor in class '${className}'.`,
@@ -1076,22 +1163,19 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
         classType.constructorType = methodType;
       } else {
-        if (
-          !member.name.name.startsWith('#') &&
-          !classType.methods.has(member.name.name)
-        ) {
-          classType.vtable.push(member.name.name);
+        if (!memberName.startsWith('#') && !classType.methods.has(memberName)) {
+          classType.vtable.push(memberName);
         }
 
-        if (classType.methods.has(member.name.name)) {
+        if (classType.methods.has(memberName)) {
           // Check for override
-          if (superType && superType.methods.has(member.name.name)) {
+          if (superType && superType.methods.has(memberName)) {
             // Validate override
-            const superMethod = superType.methods.get(member.name.name)!;
+            const superMethod = superType.methods.get(memberName)!;
 
             if (superMethod.isFinal) {
               ctx.diagnostics.reportError(
-                `Cannot override final method '${member.name.name}'.`,
+                `Cannot override final method '${memberName}'.`,
                 DiagnosticCode.TypeMismatch,
               );
             }
@@ -1100,18 +1184,18 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             // For now, require exact match
             if (typeToString(methodType) !== typeToString(superMethod)) {
               ctx.diagnostics.reportError(
-                `Method '${member.name.name}' in '${className}' incorrectly overrides method in '${superType.name}'.`,
+                `Method '${memberName}' in '${className}' incorrectly overrides method in '${superType.name}'.`,
                 DiagnosticCode.TypeMismatch,
               );
             }
           } else {
             ctx.diagnostics.reportError(
-              `Duplicate method '${member.name.name}' in class '${className}'.`,
+              `Duplicate method '${memberName}' in class '${className}'.`,
               DiagnosticCode.DuplicateDeclaration,
             );
           }
         }
-        classType.methods.set(member.name.name, methodType);
+        classType.methods.set(memberName, methodType);
       }
     }
   }
@@ -1192,28 +1276,38 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     if (member.type === NodeType.MethodDefinition) {
       checkMethodDefinition(ctx, member);
     } else if (member.type === NodeType.FieldDefinition) {
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (memberNameInfo.isSymbol) {
+        // TODO: Check symbol field initializer
+        continue;
+      }
+      const memberName = memberNameInfo.name;
+
       if (member.value) {
         ctx.isCheckingFieldInitializer = true;
         const valueType = checkExpression(ctx, member.value);
         ctx.isCheckingFieldInitializer = false;
 
-        const fieldType = classType.fields.get(member.name.name)!;
+        const fieldType = classType.fields.get(memberName)!;
         if (
           valueType.kind !== fieldType.kind &&
           valueType.kind !== Types.Unknown.kind
         ) {
           if (typeToString(valueType) !== typeToString(fieldType)) {
             ctx.diagnostics.reportError(
-              `Type mismatch for field '${member.name.name}': expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+              `Type mismatch for field '${memberName}': expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
               DiagnosticCode.TypeMismatch,
             );
           }
         }
       }
-      ctx.initializedFields.add(member.name.name);
+      ctx.initializedFields.add(memberName);
     } else if (member.type === NodeType.AccessorDeclaration) {
       checkAccessorDeclaration(ctx, member);
-      ctx.initializedFields.add(member.name.name);
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (!memberNameInfo.isSymbol) {
+        ctx.initializedFields.add(memberNameInfo.name);
+      }
     }
   }
 
@@ -1246,6 +1340,8 @@ function checkInterfaceDeclaration(
     typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
     fields: new Map(),
     methods: new Map(),
+    symbolFields: new Map(),
+    symbolMethods: new Map(),
     extends: [],
   };
 
@@ -1340,27 +1436,41 @@ function checkInterfaceDeclaration(
         parameterInitializers,
       };
 
-      if (interfaceType.methods.has(member.name.name)) {
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (memberNameInfo.isSymbol) {
+        interfaceType.symbolMethods!.set(memberNameInfo.symbolId!, methodType);
+        continue;
+      }
+      const memberName = memberNameInfo.name;
+
+      if (interfaceType.methods.has(memberName)) {
         ctx.diagnostics.reportError(
-          `Duplicate method '${member.name.name}' in interface '${interfaceName}'.`,
+          `Duplicate method '${memberName}' in interface '${interfaceName}'.`,
           DiagnosticCode.DuplicateDeclaration,
         );
       } else {
-        interfaceType.methods.set(member.name.name, methodType);
+        interfaceType.methods.set(memberName, methodType);
       }
     } else if (member.type === NodeType.FieldDefinition) {
       const type = resolveTypeAnnotation(ctx, member.typeAnnotation);
-      if (interfaceType.fields.has(member.name.name)) {
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (memberNameInfo.isSymbol) {
+        interfaceType.symbolFields!.set(memberNameInfo.symbolId!, type);
+        continue;
+      }
+      const memberName = memberNameInfo.name;
+
+      if (interfaceType.fields.has(memberName)) {
         ctx.diagnostics.reportError(
-          `Duplicate field '${member.name.name}' in interface '${interfaceName}'.`,
+          `Duplicate field '${memberName}' in interface '${interfaceName}'.`,
           DiagnosticCode.DuplicateDeclaration,
         );
       } else {
-        interfaceType.fields.set(member.name.name, type);
+        interfaceType.fields.set(memberName, type);
 
         // Implicit accessors
-        const getterName = `get_${member.name.name}`;
-        const setterName = `set_${member.name.name}`;
+        const getterName = `get_${memberName}`;
+        const setterName = `set_${memberName}`;
 
         interfaceType.methods.set(getterName, {
           kind: TypeKind.Function,
@@ -1378,17 +1488,24 @@ function checkInterfaceDeclaration(
       }
     } else if (member.type === NodeType.AccessorSignature) {
       const type = resolveTypeAnnotation(ctx, member.typeAnnotation);
-      if (interfaceType.fields.has(member.name.name)) {
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (memberNameInfo.isSymbol) {
+        interfaceType.symbolFields!.set(memberNameInfo.symbolId!, type);
+        continue;
+      }
+      const memberName = memberNameInfo.name;
+
+      if (interfaceType.fields.has(memberName)) {
         ctx.diagnostics.reportError(
-          `Duplicate field '${member.name.name}' in interface '${interfaceName}'.`,
+          `Duplicate field '${memberName}' in interface '${interfaceName}'.`,
           DiagnosticCode.DuplicateDeclaration,
         );
       } else {
-        interfaceType.fields.set(member.name.name, type);
+        interfaceType.fields.set(memberName, type);
       }
 
       if (member.hasGetter) {
-        const getterName = `get_${member.name.name}`;
+        const getterName = `get_${memberName}`;
         interfaceType.methods.set(getterName, {
           kind: TypeKind.Function,
           parameters: [],
@@ -1398,7 +1515,7 @@ function checkInterfaceDeclaration(
       }
 
       if (member.hasSetter) {
-        const setterName = `set_${member.name.name}`;
+        const setterName = `set_${memberName}`;
         interfaceType.methods.set(setterName, {
           kind: TypeKind.Function,
           parameters: [type],
@@ -1460,11 +1577,16 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
     }
   }
 
+  const memberNameInfo = resolveMemberName(ctx, method.name);
+  const methodName = memberNameInfo.isSymbol
+    ? memberNameInfo.symbolId!
+    : memberNameInfo.name;
+
   const previousMethod = ctx.currentMethod;
-  ctx.currentMethod = method.name.name;
+  ctx.currentMethod = methodName;
 
   const previousIsThisInitialized = ctx.isThisInitialized;
-  if (method.name.name === '#new' && ctx.currentClass?.superType) {
+  if (methodName === '#new' && ctx.currentClass?.superType) {
     ctx.isThisInitialized = false;
   } else {
     ctx.isThisInitialized = true;
@@ -1510,7 +1632,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   }
 
   if (
-    method.name.name === '#new' &&
+    methodName === '#new' &&
     (ctx.currentClass?.superType || ctx.currentClass?.isExtension) &&
     !ctx.isThisInitialized
   ) {
@@ -1602,6 +1724,8 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     onType,
     fields: new Map(),
     methods: new Map(),
+    symbolFields: new Map(),
+    symbolMethods: new Map(),
   };
 
   ctx.declare(mixinName, mixinType);
@@ -1694,6 +1818,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
   for (const member of decl.body) {
     if (
       member.type === NodeType.MethodDefinition &&
+      member.name.type === NodeType.Identifier &&
       member.name.name === '#new'
     ) {
       ctx.diagnostics.reportError(
@@ -1705,18 +1830,25 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
     if (member.type === NodeType.FieldDefinition) {
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
-      if (mixinType.fields.has(member.name.name)) {
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (memberNameInfo.isSymbol) {
+        mixinType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);
+        continue;
+      }
+      const memberName = memberNameInfo.name;
+
+      if (mixinType.fields.has(memberName)) {
         ctx.diagnostics.reportError(
-          `Duplicate field '${member.name.name}' in mixin '${mixinName}'.`,
+          `Duplicate field '${memberName}' in mixin '${mixinName}'.`,
           DiagnosticCode.DuplicateDeclaration,
         );
       }
-      mixinType.fields.set(member.name.name, fieldType);
+      mixinType.fields.set(memberName, fieldType);
 
       // Implicit accessors
-      if (!member.name.name.startsWith('#')) {
-        const getterName = `get_${member.name.name}`;
-        const setterName = `set_${member.name.name}`;
+      if (!memberName.startsWith('#')) {
+        const getterName = `get_${memberName}`;
+        const setterName = `set_${memberName}`;
 
         mixinType.methods.set(getterName, {
           kind: TypeKind.Function,
@@ -1767,13 +1899,33 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         parameterInitializers,
       };
 
-      mixinType.methods.set(member.name.name, methodType);
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (memberNameInfo.isSymbol) {
+        mixinType.symbolMethods!.set(memberNameInfo.symbolId!, methodType);
+      } else {
+        mixinType.methods.set(memberNameInfo.name, methodType);
+      }
     } else if (member.type === NodeType.AccessorDeclaration) {
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
-      mixinType.fields.set(member.name.name, fieldType);
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (memberNameInfo.isSymbol) {
+        mixinType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);
+        if (member.getter) {
+          mixinType.symbolMethods!.set(memberNameInfo.symbolId!, {
+            kind: TypeKind.Function,
+            parameters: [],
+            returnType: fieldType,
+            isFinal: member.isFinal,
+          });
+        }
+        continue;
+      }
+      const memberName = memberNameInfo.name;
+
+      mixinType.fields.set(memberName, fieldType);
 
       if (member.getter) {
-        mixinType.methods.set(`get_${member.name.name}`, {
+        mixinType.methods.set(`get_${memberName}`, {
           kind: TypeKind.Function,
           parameters: [],
           returnType: fieldType,
@@ -1781,7 +1933,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         });
       }
       if (member.setter) {
-        mixinType.methods.set(`set_${member.name.name}`, {
+        mixinType.methods.set(`set_${memberName}`, {
           kind: TypeKind.Function,
           parameters: [fieldType],
           returnType: Types.Void,
@@ -1804,6 +1956,9 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     implements: [],
     fields: new Map(mixinType.fields),
     methods: new Map(mixinType.methods),
+    statics: new Map(),
+    symbolFields: new Map(mixinType.symbolFields),
+    symbolMethods: new Map(mixinType.symbolMethods),
     vtable: onType ? [...onType.vtable] : [],
     isFinal: false,
   };
@@ -1825,15 +1980,26 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
   for (const member of decl.body) {
     if (member.type === NodeType.MethodDefinition) {
-      if (member.name.name === '#new') continue; // Skip constructor check as it's already reported
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      const methodName = memberNameInfo.isSymbol
+        ? memberNameInfo.symbolId!
+        : memberNameInfo.name;
 
-      const methodType = mixinType.methods.get(member.name.name);
+      if (methodName === '#new') continue; // Skip constructor check as it's already reported
+
+      let methodType: FunctionType | undefined;
+      if (memberNameInfo.isSymbol) {
+        methodType = mixinType.symbolMethods!.get(methodName);
+      } else {
+        methodType = mixinType.methods.get(methodName);
+      }
+
       if (!methodType) continue; // Should not happen unless error occurred
 
       ctx.currentFunctionReturnType = methodType.returnType;
       ctx.enterScope();
       member.params.forEach((param, index) => {
-        const type = methodType.parameters[index];
+        const type = methodType!.parameters[index];
         ctx.declare(param.name.name, type, 'let');
       });
       if (member.body) {
@@ -1842,7 +2008,10 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       ctx.exitScope();
       ctx.currentFunctionReturnType = Types.Unknown;
     } else if (member.type === NodeType.FieldDefinition && member.value) {
-      const fieldType = mixinType.fields.get(member.name.name)!;
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (memberNameInfo.isSymbol) continue; // TODO: Check symbol field initializer
+
+      const fieldType = mixinType.fields.get(memberNameInfo.name)!;
       const valueType = checkExpression(ctx, member.value);
       if (!isAssignableTo(ctx, valueType, fieldType)) {
         ctx.diagnostics.reportError(
@@ -1851,7 +2020,10 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         );
       }
     } else if (member.type === NodeType.AccessorDeclaration) {
-      const fieldType = mixinType.fields.get(member.name.name)!;
+      const memberNameInfo = resolveMemberName(ctx, member.name);
+      if (memberNameInfo.isSymbol) continue; // TODO: Check symbol accessor body
+
+      const fieldType = mixinType.fields.get(memberNameInfo.name)!;
       if (member.getter) {
         ctx.currentFunctionReturnType = fieldType;
         ctx.enterScope();

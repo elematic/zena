@@ -4639,6 +4639,7 @@ function findArrayIntrinsic(
   for (const member of decl.body) {
     if (
       member.type === NodeType.FieldDefinition &&
+      member.name.type === NodeType.Identifier &&
       member.name.name === memberName
     ) {
       if (member.decorators) {
@@ -4648,6 +4649,7 @@ function findArrayIntrinsic(
     }
     if (
       member.type === NodeType.MethodDefinition &&
+      member.name.type === NodeType.Identifier &&
       member.name.name === memberName
     ) {
       if (member.decorators) {
