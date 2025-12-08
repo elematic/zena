@@ -124,6 +124,22 @@ type Box<T> = {value: T};
 type Result<T> = {success: boolean; data: T};
 ```
 
+Generic type parameters can be constrained using the `extends` keyword:
+
+```zena
+class Base {}
+class Derived extends Base {}
+
+type Container<T extends Base> = {value: T};
+let c: Container<Derived> = {value: new Derived()};
+```
+
+Type parameter constraints can reference other type parameters:
+
+```zena
+type Wrapper<T extends Box<V>, V> = {item: T; inner: V};
+```
+
 ### Distinct Types
 
 Distinct types create a new type that is structurally identical to an existing type but treated as a unique type by the type checker. This is useful for creating type-safe identifiers or units of measure.
@@ -248,6 +264,38 @@ let makeAdder = (x: i32) => {
 
 let add5 = makeAdder(5);
 let result = add5(10); // 15
+```
+
+### Generic Functions
+
+Functions can be generic by specifying type parameters before the parameter list:
+
+```zena
+let identity = <T>(x: T): T => x;
+
+let num = identity<i32>(42);
+let str = identity<string>('hello');
+```
+
+Generic type parameters can be constrained:
+
+```zena
+class Printable {
+  toString(): string {
+    return 'object';
+  }
+}
+
+let print = <T extends Printable>(x: T): void => {
+  // Can call methods from Printable constraint
+};
+```
+
+Type arguments are often inferred:
+
+```zena
+let identity = <T>(x: T): T => x;
+let result = identity(42); // T inferred as i32
 ```
 
 ### Argument Adaptation
@@ -746,6 +794,57 @@ class Point {
     this.y = this.y + dy;
   }
 }
+
+### Generic Classes
+
+Classes can be generic by specifying type parameters:
+
+```zena
+class Box<T> {
+  value: T;
+  
+  #new(value: T) {
+    this.value = value;
+  }
+  
+  getValue(): T {
+    return this.value;
+  }
+}
+
+let b = new Box<i32>(42);
+```
+
+Generic type parameters can be constrained using the `extends` keyword:
+
+```zena
+class Animal {
+  name: string;
+  #new(name: string) {
+    this.name = name;
+  }
+}
+
+class Zoo<T extends Animal> {
+  animals: array<T>;
+  
+  #new() {
+    this.animals = #[];
+  }
+}
+```
+
+Multiple type parameters can have constraints that reference other type parameters:
+
+```zena
+class Container<T extends Box<V>, V> {
+  item: T;
+  
+  #new(item: T) {
+    this.item = item;
+  }
+}
+```
 
 ### Generic Methods
 
