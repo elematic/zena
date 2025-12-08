@@ -209,6 +209,7 @@ setMode('append');  // Error: Type '"append"' is not assignable to type '"read" 
 ```
 
 **Key points:**
+
 - Literal types are **singleton types** - they represent exactly one value.
 - Unlike regular primitive types, literal types **can be used in unions** because they are distinguishable at runtime.
 - A literal value is assignable to its literal type and to the corresponding base type (e.g., `'hello'` is assignable to both `'hello'` and `string`).
@@ -927,6 +928,22 @@ If a variable name matches the field name, you can use the shorthand syntax:
 let x = 1;
 let y = 2;
 let p = { x, y }; // Equivalent to { x: x, y: y }
+```
+
+#### Spread Syntax
+
+You can use the spread syntax (`...`) to copy properties from another record into a new record.
+
+```zena
+let p = { x: 1, y: 2 };
+let p3 = { ...p, z: 3 }; // { x: 1, y: 2, z: 3 }
+```
+
+The spread syntax produces the same keys that are available for destructuring. If a property is defined multiple times (e.g., via spread and explicit assignment), the last definition wins.
+
+```zena
+let p = { x: 1, y: 2 };
+let p2 = { ...p, x: 10 }; // { x: 10, y: 2 }
 ```
 
 ### Tuples

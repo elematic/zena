@@ -364,16 +364,25 @@ function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {
   }
 }
 
-function checkLiteralMatch(expr: Expression, literalType: LiteralType): boolean {
+function checkLiteralMatch(
+  expr: Expression,
+  literalType: LiteralType,
+): boolean {
   // Check if the expression is a literal that matches the type
   if (expr.type === NodeType.StringLiteral) {
-    return typeof literalType.value === 'string' && expr.value === literalType.value;
+    return (
+      typeof literalType.value === 'string' && expr.value === literalType.value
+    );
   }
   if (expr.type === NodeType.NumberLiteral) {
-    return typeof literalType.value === 'number' && expr.value === literalType.value;
+    return (
+      typeof literalType.value === 'number' && expr.value === literalType.value
+    );
   }
   if (expr.type === NodeType.BooleanLiteral) {
-    return typeof literalType.value === 'boolean' && expr.value === literalType.value;
+    return (
+      typeof literalType.value === 'boolean' && expr.value === literalType.value
+    );
   }
   return false;
 }
@@ -386,7 +395,7 @@ function checkVariableDeclaration(
 
   if (decl.typeAnnotation) {
     const explicitType = resolveTypeAnnotation(ctx, decl.typeAnnotation);
-    
+
     // Special handling for literal types
     let compatible = isAssignableTo(ctx, type, explicitType);
     if (!compatible) {
@@ -396,7 +405,7 @@ function checkVariableDeclaration(
       } else if (explicitType.kind === TypeKind.Union) {
         // Check if the init expression matches any literal in the union
         const unionType = explicitType as UnionType;
-        compatible = unionType.types.some(t => {
+        compatible = unionType.types.some((t) => {
           if (t.kind === TypeKind.Literal) {
             return checkLiteralMatch(decl.init, t as LiteralType);
           }
@@ -404,7 +413,7 @@ function checkVariableDeclaration(
         });
       }
     }
-    
+
     if (!compatible) {
       ctx.diagnostics.reportError(
         `Type mismatch: expected ${typeToString(explicitType)}, got ${typeToString(type)}`,

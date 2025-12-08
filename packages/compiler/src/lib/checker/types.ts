@@ -713,7 +713,11 @@ export function isAssignableTo(
       // String literals are assignable to string type
       const stringType = ctx.resolve('String');
       if (stringType && target === stringType) return true;
-      if (target.kind === TypeKind.Class && (target as ClassType).name === 'String') return true;
+      if (
+        target.kind === TypeKind.Class &&
+        (target as ClassType).name === 'String'
+      )
+        return true;
     } else if (typeof lit.value === 'number') {
       // Number literals are assignable to i32 (default for integer literals)
       // TODO: Support more flexible literal-to-numeric-type assignment based on value range

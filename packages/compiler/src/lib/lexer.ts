@@ -83,6 +83,7 @@ export const TokenType = {
   Semi: 'Semi',
   Comma: 'Comma',
   Dot: 'Dot',
+  DotDotDot: 'DotDotDot',
   Hash: 'Hash',
   At: 'At',
 
@@ -763,14 +764,27 @@ export function tokenize(source: string): Token[] {
         });
         break;
       case '.':
-        tokens.push({
-          type: TokenType.Dot,
-          value: '.',
-          line,
-          column: startColumn,
-          start: startIndex,
-          end: current,
-        });
+        if (peek() === '.' && peekNext() === '.') {
+          advance();
+          advance();
+          tokens.push({
+            type: TokenType.DotDotDot,
+            value: '...',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Dot,
+            value: '.',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        }
         break;
       case '#':
         tokens.push({

@@ -38,6 +38,7 @@ import {
   type RecordTypeAnnotation,
   type ReturnStatement,
   type SourceLocation,
+  type SpreadElement,
   type Statement,
   type StringLiteral,
   type TaggedTemplateExpression,
@@ -2326,21 +2327,31 @@ export class Parser {
   }
 
   #parseRecordLiteral(): RecordLiteral {
-    const properties: PropertyAssignment[] = [];
+    const properties: (PropertyAssignment | SpreadElement)[] = [];
     if (!this.#check(TokenType.RBrace)) {
       do {
-        const name = this.#parseIdentifier();
-        let value: Expression;
-        if (this.#match(TokenType.Colon)) {
-          value = this.#parseExpression();
+        if (this.#match(TokenType.DotDotDot)) {
+          const startToken = this.#previous();
+          const argument = this.#parseExpression();
+          properties.push({
+            type: NodeType.SpreadElement,
+            argument,
+            loc: this.#loc(startToken, argument),
+          });
         } else {
-          value = name;
+          const name = this.#parseIdentifier();
+          let value: Expression;
+          if (this.#match(TokenType.Colon)) {
+            value = this.#parseExpression();
+          } else {
+            value = name;
+          }
+          properties.push({
+            type: NodeType.PropertyAssignment,
+            name,
+            value,
+          });
         }
-        properties.push({
-          type: NodeType.PropertyAssignment,
-          name,
-          value,
-        });
       } while (this.#match(TokenType.Comma));
     }
     this.#consume(TokenType.RBrace, "Expected '}'");
@@ -2366,7 +2377,7 @@ export class Parser {
 
   #parsePrimaryTypeAnnotation(): TypeAnnotation {
     const startToken = this.#peek();
-    
+
     // Check for literal types
     if (this.#match(TokenType.String)) {
       const token = this.#previous();
@@ -2376,7 +2387,7 @@ export class Parser {
         loc: this.#loc(startToken, token),
       } as LiteralTypeAnnotation;
     }
-    
+
     if (this.#match(TokenType.Number)) {
       const token = this.#previous();
       return {
@@ -2385,7 +2396,7 @@ export class Parser {
         loc: this.#loc(startToken, token),
       } as LiteralTypeAnnotation;
     }
-    
+
     if (this.#match(TokenType.True)) {
       const token = this.#previous();
       return {
@@ -2394,7 +2405,7 @@ export class Parser {
         loc: this.#loc(startToken, token),
       } as LiteralTypeAnnotation;
     }
-    
+
     if (this.#match(TokenType.False)) {
       const token = this.#previous();
       return {
@@ -2403,7 +2414,7 @@ export class Parser {
         loc: this.#loc(startToken, token),
       } as LiteralTypeAnnotation;
     }
-    
+
     // Otherwise parse as named type
     return this.#parseNamedTypeAnnotation();
   }

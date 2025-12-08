@@ -41,6 +41,7 @@ import {
   type ClassType,
   type FunctionType,
   type NumberType,
+  type RecordType,
   type UnionType,
 } from '../types.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
@@ -3257,30 +3258,115 @@ function generateRecordLiteral(
     const wasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
     typeIndex = decodeTypeIndex(wasmType);
   } else {
-    // 1. Infer types of all fields
-    const fields = expr.properties.map((p) => ({
-      name: p.name.name,
-      type: inferType(ctx, p.value),
-      value: p.value,
-    }));
-
-    // 2. Get struct type index
-    typeIndex = ctx.getRecordTypeIndex(
-      fields.map((f) => ({name: f.name, type: f.type})),
-    );
+    throw new Error('Record literal must have inferred type');
   }
 
-  // 3. Sort fields to match struct layout (canonical order)
-  const props = [...expr.properties].sort((a, b) =>
-    a.name.name.localeCompare(b.name.name),
-  );
+  // 1. Evaluate spread expressions and store in locals
+  const spreadLocals = new Map<any, {index: number; typeIndex: number}>();
 
-  // 4. Generate values in order
-  for (const prop of props) {
-    generateExpression(ctx, prop.value, body);
+  for (const prop of expr.properties) {
+    if (prop.type === NodeType.SpreadElement) {
+      generateExpression(ctx, prop.argument, body);
+      const spreadType = inferType(ctx, prop.argument);
+      const spreadTypeIndex = decodeTypeIndex(spreadType);
+
+      // Allocate temp local
+      const localIndex = ctx.declareLocal(
+        `$$spread_${ctx.nextLocalIndex}`,
+        spreadType,
+      );
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeSignedLEB128(localIndex));
+
+      spreadLocals.set(prop, {index: localIndex, typeIndex: spreadTypeIndex});
+    }
   }
 
-  // 5. struct.new
+  // 2. Get target fields from inferred type
+  if (!expr.inferredType || expr.inferredType.kind !== TypeKind.Record) {
+    throw new Error('Invalid record type');
+  }
+
+  const recordType = expr.inferredType as RecordType;
+  // Sort keys to match canonical order
+  const targetKeys = Array.from(recordType.properties.keys()).sort();
+
+  // 3. Generate values for each target field
+  for (const key of targetKeys) {
+    // Find the source for this key
+    // Iterate properties in reverse
+    let found = false;
+    for (let i = expr.properties.length - 1; i >= 0; i--) {
+      const prop = expr.properties[i];
+      if (prop.type === NodeType.PropertyAssignment) {
+        if (prop.name.name === key) {
+          generateExpression(ctx, prop.value, body);
+          found = true;
+          break;
+        }
+      } else if (prop.type === NodeType.SpreadElement) {
+        // Check if spread type has this key
+        const spreadType = prop.argument.inferredType;
+
+        if (spreadType && spreadType.kind === TypeKind.Record) {
+          const recordType = spreadType as RecordType;
+          if (recordType.properties.has(key)) {
+            // Found it in spread
+            const spreadInfo = spreadLocals.get(prop)!;
+
+            // Calculate field index in spread type
+            // Spread type fields are also sorted alphabetically
+            const spreadKeys = Array.from(recordType.properties.keys()).sort();
+            const fieldIndex = spreadKeys.indexOf(key);
+
+            if (fieldIndex !== -1) {
+              body.push(Opcode.local_get);
+              body.push(...WasmModule.encodeSignedLEB128(spreadInfo.index));
+
+              body.push(0xfb, GcOpcode.struct_get);
+              body.push(...WasmModule.encodeSignedLEB128(spreadInfo.typeIndex));
+              body.push(...WasmModule.encodeSignedLEB128(fieldIndex));
+
+              found = true;
+              break;
+            }
+          }
+        } else if (spreadType && spreadType.kind === TypeKind.Class) {
+          const classType = spreadType as ClassType;
+          if (classType.fields.has(key) && !key.startsWith('#')) {
+            const spreadInfo = spreadLocals.get(prop)!;
+            const classInfo = ctx.classes.get(classType.name);
+            if (!classInfo) {
+              throw new Error(`Class info not found for ${classType.name}`);
+            }
+
+            const fieldInfo = classInfo.fields.get(key);
+            if (!fieldInfo) {
+              throw new Error(
+                `Field info not found for ${key} in ${classType.name}`,
+              );
+            }
+
+            body.push(Opcode.local_get);
+            body.push(...WasmModule.encodeSignedLEB128(spreadInfo.index));
+
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(...WasmModule.encodeSignedLEB128(spreadInfo.typeIndex));
+            body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+            found = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!found) {
+      throw new Error(`Missing value for field '${key}' in record literal`);
+    }
+  }
+
+  // 4. struct.new
   body.push(0xfb, GcOpcode.struct_new);
   body.push(...WasmModule.encodeSignedLEB128(typeIndex));
 }

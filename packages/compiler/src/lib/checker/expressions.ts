@@ -653,23 +653,37 @@ function checkIsExpression(ctx: CheckerContext, expr: IsExpression): Type {
   return Types.Boolean;
 }
 
-function checkExpressionAgainstLiteralType(expr: Expression, targetType: Type): boolean {
+function checkExpressionAgainstLiteralType(
+  expr: Expression,
+  targetType: Type,
+): boolean {
   // Check if the expression matches the target literal type
   if (targetType.kind === TypeKind.Literal) {
     const literalType = targetType as LiteralType;
     if (expr.type === NodeType.StringLiteral) {
-      return typeof literalType.value === 'string' && (expr as StringLiteral).value === literalType.value;
+      return (
+        typeof literalType.value === 'string' &&
+        (expr as StringLiteral).value === literalType.value
+      );
     }
     if (expr.type === NodeType.NumberLiteral) {
-      return typeof literalType.value === 'number' && (expr as NumberLiteral).value === literalType.value;
+      return (
+        typeof literalType.value === 'number' &&
+        (expr as NumberLiteral).value === literalType.value
+      );
     }
     if (expr.type === NodeType.BooleanLiteral) {
-      return typeof literalType.value === 'boolean' && (expr as BooleanLiteral).value === literalType.value;
+      return (
+        typeof literalType.value === 'boolean' &&
+        (expr as BooleanLiteral).value === literalType.value
+      );
     }
   } else if (targetType.kind === TypeKind.Union) {
     // Check if the expression matches any literal in the union
     const unionType = targetType as UnionType;
-    return unionType.types.some(t => checkExpressionAgainstLiteralType(expr, t));
+    return unionType.types.some((t) =>
+      checkExpressionAgainstLiteralType(expr, t),
+    );
   }
   return false;
 }
@@ -983,12 +997,12 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     const argExpr = expr.arguments[i];
 
     let compatible = isAssignableTo(ctx, argType, paramType);
-    
+
     // Special handling for literal types
     if (!compatible) {
       compatible = checkExpressionAgainstLiteralType(argExpr, paramType);
     }
-    
+
     if (!compatible) {
       ctx.diagnostics.reportError(
         `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
@@ -1785,8 +1799,36 @@ function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
 function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
   const properties = new Map<string, Type>();
   for (const prop of expr.properties) {
-    const type = checkExpression(ctx, prop.value);
-    properties.set(prop.name.name, type);
+    if (prop.type === NodeType.SpreadElement) {
+      const spreadType = checkExpression(ctx, prop.argument);
+      if (
+        spreadType.kind !== TypeKind.Record &&
+        spreadType.kind !== TypeKind.Class
+      ) {
+        ctx.diagnostics.reportError(
+          `Spread argument must be a record or class, got ${typeToString(
+            spreadType,
+          )}`,
+          DiagnosticCode.TypeMismatch,
+        );
+        continue;
+      }
+      if (spreadType.kind === TypeKind.Record) {
+        for (const [key, type] of (spreadType as RecordType).properties) {
+          properties.set(key, type);
+        }
+      } else {
+        // Class
+        for (const [key, type] of (spreadType as ClassType).fields) {
+          if (!key.startsWith('#')) {
+            properties.set(key, type);
+          }
+        }
+      }
+    } else {
+      const type = checkExpression(ctx, prop.value);
+      properties.set(prop.name.name, type);
+    }
   }
   return {
     kind: TypeKind.Record,

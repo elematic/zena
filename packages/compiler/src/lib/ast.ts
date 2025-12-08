@@ -66,6 +66,7 @@ export const NodeType = {
   IfExpression: 'IfExpression',
   AccessorSignature: 'AccessorSignature',
   LiteralTypeAnnotation: 'LiteralTypeAnnotation',
+  SpreadElement: 'SpreadElement',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -186,9 +187,14 @@ export interface PropertyAssignment extends Node {
   value: Expression;
 }
 
+export interface SpreadElement extends Node {
+  type: typeof NodeType.SpreadElement;
+  argument: Expression;
+}
+
 export interface RecordLiteral extends Node {
   type: typeof NodeType.RecordLiteral;
-  properties: PropertyAssignment[];
+  properties: (PropertyAssignment | SpreadElement)[];
 }
 
 export interface TupleLiteral extends Node {

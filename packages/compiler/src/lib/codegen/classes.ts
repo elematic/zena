@@ -646,6 +646,19 @@ export function registerClassStruct(
       isExtension: true,
       onType,
     });
+
+    // Check if this is the String class
+    const isStringClass =
+      !!ctx.wellKnownTypes.String &&
+      decl.name.name === ctx.wellKnownTypes.String.name.name;
+
+    if (isStringClass) {
+      const typeIndex = getHeapTypeIndex(ctx, onType);
+      if (typeIndex >= 0) {
+        ctx.stringTypeIndex = typeIndex;
+      }
+    }
+
     return;
   }
 
@@ -1844,6 +1857,16 @@ export function mapType(
         let typeName = type.name;
         if (typeName === 'String' && ctx.wellKnownTypes.String) {
           typeName = ctx.wellKnownTypes.String.name.name;
+        }
+
+        // Workaround for console global variable type mismatch
+        // The Checker seems to infer the type name as the variable name 'console' (mangled)
+        // instead of the class name 'HostConsole' (mangled).
+        if (!ctx.classes.has(typeName) && typeName.endsWith('_console')) {
+          const hostConsoleName = typeName.replace(/_console$/, '_HostConsole');
+          if (ctx.classes.has(hostConsoleName)) {
+            typeName = hostConsoleName;
+          }
         }
 
         if (typeName === 'ByteArray') {
