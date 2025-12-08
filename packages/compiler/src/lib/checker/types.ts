@@ -288,7 +288,7 @@ export function resolveTypeAnnotation(
     case 'any':
       return Types.Any;
     case 'string': {
-      const stringType = ctx.resolve('String');
+      const stringType = ctx.resolveType('String');
       if (stringType) return stringType;
 
       const wellKnown = ctx.getWellKnownType('String');
@@ -321,7 +321,7 @@ export function resolveTypeAnnotation(
       return Types.Null;
   }
 
-  const type = ctx.resolve(name);
+  const type = ctx.resolveType(name);
   if (!type) {
     ctx.diagnostics.reportError(
       `Unknown type '${name}'.`,
@@ -714,7 +714,7 @@ export function isAssignableTo(
     const lit = source as LiteralType;
     if (typeof lit.value === 'string') {
       // String literals are assignable to string type
-      const stringType = ctx.resolve('String');
+      const stringType = ctx.resolveType('String');
       if (stringType && target === stringType) return true;
       if (
         target.kind === TypeKind.Class &&

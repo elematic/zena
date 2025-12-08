@@ -87,6 +87,7 @@ export class CodegenContext {
   public tupleTypes = new Map<string, number>(); // canonicalKey -> typeIndex
   public closureTypes = new Map<string, number>(); // signature -> structTypeIndex
   public closureStructs = new Map<number, {funcTypeIndex: number}>(); // structTypeIndex -> info
+  public enums = new Map<number, {members: Map<string, number>}>(); // structTypeIndex -> info
 
   // Template Literals
   public templateLiteralGlobals = new Map<TaggedTemplateExpression, number>();

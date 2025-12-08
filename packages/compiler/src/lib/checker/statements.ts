@@ -6,6 +6,7 @@ import {
   type ClassDeclaration,
   type ComputedPropertyName,
   type DeclareFunction,
+  type EnumDeclaration,
   type ExportAllDeclaration,
   type Expression,
   type ForStatement,
@@ -19,6 +20,7 @@ import {
   type Pattern,
   type RecordPattern,
   type ReturnStatement,
+  type SourceLocation,
   type Statement,
   type TuplePattern,
   type TypeAliasDeclaration,
@@ -26,12 +28,12 @@ import {
   type VariableDeclaration,
   type WhileStatement,
 } from '../ast.js';
-import {DiagnosticCode} from '../diagnostics.js';
+import {DiagnosticCode, type DiagnosticLocation} from '../diagnostics.js';
 import {
   TypeKind,
   Types,
-  type FixedArrayType,
   type ClassType,
+  type FixedArrayType,
   type FunctionType,
   type InterfaceType,
   type LiteralType,
@@ -101,6 +103,9 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
     case NodeType.TypeAliasDeclaration:
       checkTypeAliasDeclaration(ctx, stmt as TypeAliasDeclaration);
       break;
+    case NodeType.EnumDeclaration:
+      checkEnumDeclaration(ctx, stmt as EnumDeclaration);
+      break;
   }
 }
 
@@ -147,7 +152,7 @@ function checkTypeAliasDeclaration(
   ctx.declare(name, typeAlias, 'type');
 
   if (decl.exported && ctx.module) {
-    ctx.module.exports.set(name, {type: typeAlias, kind: 'type'});
+    ctx.module.exports.set(`type:${name}`, {type: typeAlias, kind: 'type'});
   }
 }
 
@@ -241,9 +246,11 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
     const importedName = importSpecifier.imported.name;
     const localName = importSpecifier.local.name;
 
-    const symbolInfo = importedModule.exports.get(importedName);
+    const valueExport = importedModule.exports.get(`value:${importedName}`);
+    const typeExport = importedModule.exports.get(`type:${importedName}`);
+    const legacyExport = importedModule.exports.get(importedName);
 
-    if (!symbolInfo) {
+    if (!valueExport && !typeExport && !legacyExport) {
       ctx.diagnostics.reportError(
         `Module '${specifier}' does not export '${importedName}'`,
         DiagnosticCode.ImportError,
@@ -251,18 +258,15 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
       continue;
     }
 
-    // Declare in current scope
-    // Imports are read-only (const), so we force kind to 'let' (which is const in our internal model mostly, or we should add 'const' kind?)
-    // Our VariableDeclaration uses 'let' for immutable and 'var' for mutable.
-    // So 'let' is correct for immutable binding.
-    // However, if the exported symbol was a 'var', should we allow it to be 'var' here?
-    // No, imports are bindings. You can't reassign the binding.
-    // But if it's a mutable object, you can mutate it.
-    // If it's a 'var' export, it means the VALUE can change in the other module.
-    // But locally, the binding is const.
-    // So 'let' is correct.
-
-    ctx.declare(localName, symbolInfo.type, 'let');
+    if (valueExport) {
+      ctx.declare(localName, valueExport.type, 'let');
+    }
+    if (typeExport) {
+      ctx.declare(localName, typeExport.type, 'type');
+    }
+    if (legacyExport) {
+      ctx.declare(localName, legacyExport.type, legacyExport.kind);
+    }
   }
 }
 
@@ -297,7 +301,10 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
   ctx.declare(decl.name.name, functionType, 'let');
 
   if (decl.exported && ctx.module) {
-    ctx.module.exports.set(decl.name.name, {type: functionType, kind: 'let'});
+    ctx.module.exports.set(`value:${decl.name.name}`, {
+      type: functionType,
+      kind: 'let',
+    });
   }
 }
 
@@ -464,7 +471,10 @@ function checkVariableDeclaration(
     ctx.declare(decl.pattern.name, type, decl.kind);
 
     if (decl.exported && ctx.module) {
-      ctx.module.exports.set(decl.pattern.name, {type, kind: decl.kind});
+      ctx.module.exports.set(`value:${decl.pattern.name}`, {
+        type,
+        kind: decl.kind,
+      });
     }
   } else {
     checkPattern(ctx, decl.pattern, type, decl.kind);
@@ -680,12 +690,21 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
   let superType: ClassType | undefined;
   if (decl.superClass) {
-    const type = ctx.resolve(decl.superClass.name);
+    const type = ctx.resolveType(decl.superClass.name);
     if (!type) {
-      ctx.diagnostics.reportError(
-        `Unknown superclass '${decl.superClass.name}'.`,
-        DiagnosticCode.SymbolNotFound,
-      );
+      // Check if it exists as a value to give a better error message
+      const valueType = ctx.resolveValue(decl.superClass.name);
+      if (valueType) {
+        ctx.diagnostics.reportError(
+          `Superclass '${decl.superClass.name}' must be a class.`,
+          DiagnosticCode.TypeMismatch,
+        );
+      } else {
+        ctx.diagnostics.reportError(
+          `Unknown superclass '${decl.superClass.name}'.`,
+          DiagnosticCode.SymbolNotFound,
+        );
+      }
     } else if (type.kind !== TypeKind.Class) {
       ctx.diagnostics.reportError(
         `Superclass '${decl.superClass.name}' must be a class.`,
@@ -705,7 +724,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   // Apply Mixins
   if (decl.mixins) {
     for (const mixinId of decl.mixins) {
-      const mixinType = ctx.resolve(mixinId.name);
+      const mixinType = ctx.resolveType(mixinId.name);
       if (!mixinType) {
         ctx.diagnostics.reportError(
           `Unknown mixin '${mixinId.name}'.`,
@@ -875,11 +894,19 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
   }
 
-  ctx.declare(className, classType);
+  ctx.declare(className, classType, 'type');
+  ctx.declare(className, classType, 'let');
   decl.inferredType = classType;
 
   if (decl.exported && ctx.module) {
-    ctx.module.exports.set(className, {type: classType, kind: 'type'});
+    ctx.module.exports.set(`type:${className}`, {
+      type: classType,
+      kind: 'type',
+    });
+    ctx.module.exports.set(`value:${className}`, {
+      type: classType,
+      kind: 'let',
+    });
   }
 
   ctx.enterClass(classType);
@@ -1346,18 +1373,21 @@ function checkInterfaceDeclaration(
   };
 
   // Register interface in current scope
-  ctx.declare(interfaceName, interfaceType);
+  ctx.declare(interfaceName, interfaceType, 'type');
   decl.inferredType = interfaceType;
 
   if (decl.exported && ctx.module) {
-    ctx.module.exports.set(interfaceName, {type: interfaceType, kind: 'type'});
+    ctx.module.exports.set(`type:${interfaceName}`, {
+      type: interfaceType,
+      kind: 'type',
+    });
   }
 
   // Enter scope for type parameters
   ctx.enterScope();
   if (interfaceType.typeParameters) {
     for (const param of interfaceType.typeParameters) {
-      ctx.declare(param.name, param);
+      ctx.declare(param.name, param, 'type');
     }
   }
 
@@ -1701,7 +1731,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
   let onType: ClassType | undefined;
   if (decl.on) {
-    const type = ctx.resolve(decl.on.name);
+    const type = ctx.resolveType(decl.on.name);
     if (!type) {
       ctx.diagnostics.reportError(
         `Unknown type '${decl.on.name}' in 'on' clause.`,
@@ -1728,16 +1758,19 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     symbolMethods: new Map(),
   };
 
-  ctx.declare(mixinName, mixinType);
+  ctx.declare(mixinName, mixinType, 'type');
   decl.inferredType = mixinType;
 
   if (decl.exported && ctx.module) {
-    ctx.module.exports.set(mixinName, {type: mixinType, kind: 'type'});
+    ctx.module.exports.set(`type:${mixinName}`, {
+      type: mixinType,
+      kind: 'type',
+    });
   }
 
   ctx.enterScope();
   for (const tp of typeParameters) {
-    ctx.declare(tp.name, tp, 'let');
+    ctx.declare(tp.name, tp, 'type');
   }
 
   // Resolve constraints and defaults (after all type params are in scope)
@@ -1762,7 +1795,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
   // Apply composed mixins
   if (decl.mixins) {
     for (const mixinId of decl.mixins) {
-      const composedMixinType = ctx.resolve(mixinId.name);
+      const composedMixinType = ctx.resolveType(mixinId.name);
       if (!composedMixinType) {
         ctx.diagnostics.reportError(
           `Unknown mixin '${mixinId.name}'.`,
@@ -2091,4 +2124,151 @@ function createTypeParameters(
   }
 
   return typeParameters;
+}
+
+function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
+  const name = decl.name.name;
+
+  // 1. Determine backing type
+  let isStringEnum = false;
+  let isIntegerEnum = true;
+
+  for (const member of decl.members) {
+    if (member.initializer) {
+      if (member.initializer.type === NodeType.StringLiteral) {
+        isStringEnum = true;
+        isIntegerEnum = false;
+        break;
+      } else if (member.initializer.type === NodeType.NumberLiteral) {
+        isIntegerEnum = true;
+        isStringEnum = false;
+        break;
+      }
+    }
+  }
+
+  let nextValue = 0;
+  const memberValues = new Map<string, number | string>();
+
+  for (const member of decl.members) {
+    if (member.initializer) {
+      const initType = checkExpression(ctx, member.initializer);
+
+      if (isIntegerEnum) {
+        if (!isAssignableTo(ctx, initType, Types.I32)) {
+          ctx.diagnostics.reportError(
+            `Enum member initializer must be assignable to 'i32'.`,
+            DiagnosticCode.TypeMismatch,
+            toDiagnosticLocation(member.initializer.loc, ctx),
+          );
+        }
+
+        if (member.initializer.type === NodeType.NumberLiteral) {
+          const val = Number((member.initializer as any).value);
+          member.resolvedValue = val;
+          nextValue = val + 1;
+        } else {
+          ctx.diagnostics.reportError(
+            `Enum member initializer must be a number literal.`,
+            DiagnosticCode.TypeMismatch,
+            toDiagnosticLocation(member.initializer.loc, ctx),
+          );
+        }
+      } else {
+        if (!isAssignableTo(ctx, initType, Types.String)) {
+          ctx.diagnostics.reportError(
+            `Enum member initializer must be assignable to 'string'.`,
+            DiagnosticCode.TypeMismatch,
+            toDiagnosticLocation(member.initializer.loc, ctx),
+          );
+        }
+
+        if (member.initializer.type === NodeType.StringLiteral) {
+          member.resolvedValue = (member.initializer as any).value;
+        } else {
+          ctx.diagnostics.reportError(
+            `Enum member initializer must be a string literal.`,
+            DiagnosticCode.TypeMismatch,
+            toDiagnosticLocation(member.initializer.loc, ctx),
+          );
+        }
+      }
+    } else {
+      if (isStringEnum) {
+        ctx.diagnostics.reportError(
+          `String enum member '${member.name.name}' must have an initializer.`,
+          DiagnosticCode.TypeMismatch,
+          toDiagnosticLocation(member.name.loc, ctx),
+        );
+      } else {
+        member.resolvedValue = nextValue++;
+      }
+    }
+
+    if (member.resolvedValue !== undefined) {
+      memberValues.set(member.name.name, member.resolvedValue);
+    }
+  }
+
+  const backingType = isStringEnum ? Types.String : Types.I32;
+
+  const literalTypes: LiteralType[] = [];
+  for (const val of memberValues.values()) {
+    literalTypes.push({
+      kind: TypeKind.Literal,
+      value: val,
+    });
+  }
+
+  let targetType: Type;
+  if (literalTypes.length === 0) {
+    targetType = backingType;
+  } else if (literalTypes.length === 1) {
+    targetType = literalTypes[0];
+  } else {
+    targetType = {
+      kind: TypeKind.Union,
+      types: literalTypes,
+    } as UnionType;
+  }
+
+  const enumType: TypeAliasType = {
+    kind: TypeKind.TypeAlias,
+    name,
+    target: targetType,
+    isDistinct: true,
+  };
+
+  ctx.declare(name, enumType, 'type');
+
+  const fields = new Map<string, Type>();
+  for (const member of decl.members) {
+    fields.set(member.name.name, enumType);
+  }
+
+  const enumValueType: RecordType = {
+    kind: TypeKind.Record,
+    properties: fields,
+  };
+
+  ctx.declare(name, enumValueType, 'let');
+
+  if (decl.exported && ctx.module) {
+    ctx.module.exports.set(`type:${name}`, {type: enumType, kind: 'type'});
+    ctx.module.exports.set(`value:${name}`, {type: enumValueType, kind: 'let'});
+  }
+}
+
+function toDiagnosticLocation(
+  loc: SourceLocation | undefined,
+  ctx: CheckerContext,
+): DiagnosticLocation | undefined {
+  if (!loc) return undefined;
+  return {
+    file: ctx.module?.path || 'unknown',
+    start: loc.start,
+    length: loc.end - loc.start,
+    line: loc.line,
+    column: loc.column,
+  };
 }

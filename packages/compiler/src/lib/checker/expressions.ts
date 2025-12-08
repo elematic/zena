@@ -85,7 +85,7 @@ function checkExpressionInternal(ctx: CheckerContext, expr: Expression): Type {
     case NodeType.NullLiteral:
       return Types.Null;
     case NodeType.Identifier: {
-      const type = ctx.resolve(expr.name);
+      const type = ctx.resolveValue(expr.name);
       if (!type) {
         ctx.diagnostics.reportError(
           `Variable '${expr.name}' not found.`,
@@ -371,7 +371,7 @@ function checkMatchPattern(
     case NodeType.ClassPattern: {
       const classPattern = pattern as ClassPattern;
       const className = classPattern.name.name;
-      const type = ctx.resolve(className);
+      const type = ctx.resolveType(className);
 
       if (!type || type.kind !== TypeKind.Class) {
         ctx.diagnostics.reportError(
@@ -581,8 +581,9 @@ function checkMatchPattern(
         ctx.exitScope();
 
         // Verify variables
-        for (const [name] of leftVars) {
-          if (!rightVars.has(name)) {
+        for (const [key] of leftVars) {
+          if (!rightVars.has(key)) {
+            const name = key.includes(':') ? key.split(':')[1] : key;
             ctx.diagnostics.reportError(
               `Variable '${name}' is bound in the left branch of the OR pattern but not the right.`,
               DiagnosticCode.TypeMismatch,
@@ -590,8 +591,9 @@ function checkMatchPattern(
           }
         }
 
-        for (const [name] of rightVars) {
-          if (!leftVars.has(name)) {
+        for (const [key] of rightVars) {
+          if (!leftVars.has(key)) {
+            const name = key.includes(':') ? key.split(':')[1] : key;
             ctx.diagnostics.reportError(
               `Variable '${name}' is bound in the right branch of the OR pattern but not the left.`,
               DiagnosticCode.TypeMismatch,
@@ -600,10 +602,11 @@ function checkMatchPattern(
         }
 
         // Declare merged variables
-        for (const [name, leftInfo] of leftVars) {
-          if (rightVars.has(name)) {
-            const rightInfo = rightVars.get(name)!;
+        for (const [key, leftInfo] of leftVars) {
+          if (rightVars.has(key)) {
+            const rightInfo = rightVars.get(key)!;
             const mergedType = createUnionType([leftInfo.type, rightInfo.type]);
+            const name = key.includes(':') ? key.split(':')[1] : key;
             ctx.declare(name, mergedType, leftInfo.kind);
           }
         }
@@ -678,7 +681,7 @@ function checkThrowExpression(
   expr: ThrowExpression,
 ): Type {
   const argType = checkExpression(ctx, expr.argument);
-  const errorType = ctx.resolve('Error');
+  const errorType = ctx.resolveType('Error');
   if (errorType) {
     if (!isAssignableTo(ctx, argType, errorType)) {
       ctx.diagnostics.reportError(
@@ -1418,7 +1421,7 @@ function checkFunctionExpression(
         name: param.name,
       };
       typeParameters.push(tp);
-      ctx.declare(param.name, tp, 'let');
+      ctx.declare(param.name, tp, 'type');
     }
 
     // Resolve constraints and defaults
@@ -1532,7 +1535,7 @@ function checkFunctionExpression(
 
 function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
   const className = expr.callee.name;
-  const type = ctx.resolve(className);
+  const type = ctx.resolveType(className);
 
   if (!type || type.kind !== TypeKind.Class) {
     ctx.diagnostics.reportError(
@@ -2104,7 +2107,7 @@ function getPatternType(
   switch (pattern.type) {
     case NodeType.ClassPattern: {
       const classPattern = pattern as ClassPattern;
-      const type = ctx.resolve(classPattern.name.name);
+      const type = ctx.resolveType(classPattern.name.name);
       if (type && type.kind === TypeKind.Class) {
         return type as ClassType;
       }
@@ -2216,7 +2219,7 @@ function subtractType(
   if (pattern.type === NodeType.ClassPattern) {
     const classPattern = pattern as ClassPattern;
     const className = classPattern.name.name;
-    const patType = ctx.resolve(className);
+    const patType = ctx.resolveType(className);
 
     if (type.kind === TypeKind.Class) {
       if (patType && isAssignableTo(ctx, type, patType)) {

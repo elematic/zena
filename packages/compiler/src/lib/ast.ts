@@ -69,6 +69,8 @@ export const NodeType = {
   SpreadElement: 'SpreadElement',
   ExportAllDeclaration: 'ExportAllDeclaration',
   ComputedPropertyName: 'ComputedPropertyName',
+  EnumDeclaration: 'EnumDeclaration',
+  EnumMember: 'EnumMember',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -124,7 +126,8 @@ export type Statement =
   | DeclareFunction
   | ImportDeclaration
   | ExportAllDeclaration
-  | TypeAliasDeclaration;
+  | TypeAliasDeclaration
+  | EnumDeclaration;
 
 export interface ImportSpecifier extends Node {
   type: typeof NodeType.ImportSpecifier;
@@ -646,4 +649,18 @@ export interface TaggedTemplateExpression extends Node {
   type: typeof NodeType.TaggedTemplateExpression;
   tag: Expression;
   quasi: TemplateLiteral;
+}
+
+export interface EnumMember extends Node {
+  type: typeof NodeType.EnumMember;
+  name: Identifier;
+  initializer?: Expression;
+  resolvedValue?: number | string;
+}
+
+export interface EnumDeclaration extends Node {
+  type: typeof NodeType.EnumDeclaration;
+  name: Identifier;
+  members: EnumMember[];
+  exported: boolean;
 }

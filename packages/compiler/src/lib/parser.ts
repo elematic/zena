@@ -9,6 +9,8 @@ import {
   type ComputedPropertyName,
   type Decorator,
   type DeclareFunction,
+  type EnumDeclaration,
+  type EnumMember,
   type Expression,
   type ExportAllDeclaration,
   type FieldDefinition,
@@ -191,6 +193,9 @@ export class Parser {
       if (this.#match(TokenType.Type) || this.#match(TokenType.Distinct)) {
         return this.#parseTypeAliasDeclaration(true, startToken);
       }
+      if (this.#match(TokenType.Enum)) {
+        return this.#parseEnumDeclaration(true, startToken);
+      }
       if (this.#match(TokenType.Declare)) {
         return this.#parseDeclareFunction(
           undefined,
@@ -267,6 +272,9 @@ export class Parser {
         startToken,
       );
     }
+    if (this.#match(TokenType.Enum)) {
+      return this.#parseEnumDeclaration(false, startToken);
+    }
     if (this.#match(TokenType.Interface)) {
       return this.#parseInterfaceDeclaration(false, startToken);
     }
@@ -285,6 +293,9 @@ export class Parser {
         return this.#parseTypeAliasDeclaration(false, startToken);
       }
       this.#current--;
+    }
+    if (this.#match(TokenType.Enum)) {
+      return this.#parseEnumDeclaration(false, startToken);
     }
     if (this.#match(TokenType.Distinct)) {
       // Disambiguate `distinct type` vs `distinct + 1`
@@ -329,6 +340,85 @@ export class Parser {
       typeAnnotation,
       exported,
       isDistinct,
+      loc: this.#loc(actualStartToken, endToken),
+    };
+  }
+
+  #parseEnumDeclaration(
+    exported: boolean,
+    startToken?: Token,
+  ): EnumDeclaration {
+    const actualStartToken = startToken || this.#previous();
+    const name = this.#parseIdentifier();
+    this.#consume(TokenType.LBrace, "Expected '{' after enum name.");
+    const members: EnumMember[] = [];
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      const memberName = this.#parseIdentifier();
+      let initializer: Expression | undefined;
+      if (this.#match(TokenType.Equals)) {
+        initializer = this.#parseExpression();
+      }
+
+      // Calculate location for member
+      // Start is memberName.loc.start
+      // End is initializer.loc.end if exists, else memberName.loc.end
+      // But we need indices for #loc if we use tokens, or we can construct SourceLocation manually.
+      // this.#loc takes (start: Token | number, end: Token | number)
+
+      // Since memberName is a Node, it has loc.
+      // We can use the tokens we just consumed?
+      // memberName was parsed by #parseIdentifier which consumes a token.
+      // initializer was parsed by #parseExpression.
+
+      // Let's just use the locs from the nodes.
+      const start = memberName.loc!.start;
+      const end = initializer ? initializer.loc!.end : memberName.loc!.end;
+
+      // We need to reconstruct the full SourceLocation object or use a helper that takes indices.
+      // Looking at existing code, #loc takes tokens or indices.
+      // But here we have indices from the child nodes.
+
+      // Let's assume we can just construct it.
+      // Or better, let's track the start token of the member.
+      // But #parseIdentifier consumes the token.
+
+      // Let's look at how other nodes do it.
+      // Usually they pass startToken.
+
+      // For now, I'll just use a simplified loc construction or rely on the fact that I can get the previous token?
+      // If I use `this.#previous()` after parsing identifier, that's the identifier token.
+
+      // Let's try to be precise.
+      // const memberStartToken = this.#peek(); // Before parsing identifier? No, we already parsed it.
+
+      // Actually, #parseIdentifier returns a Node with loc.
+      // I can just use that loc.
+
+      const loc: SourceLocation = {
+        start,
+        end,
+        line: memberName.loc!.line, // Approximate line
+        column: memberName.loc!.column, // Approximate column
+      };
+
+      members.push({
+        type: NodeType.EnumMember,
+        name: memberName,
+        initializer,
+        loc,
+      });
+
+      if (!this.#check(TokenType.RBrace)) {
+        this.#consume(TokenType.Comma, "Expected ',' after enum member.");
+      }
+    }
+    this.#consume(TokenType.RBrace, "Expected '}' after enum body.");
+    const endToken = this.#previous();
+    return {
+      type: NodeType.EnumDeclaration,
+      name,
+      members,
+      exported,
       loc: this.#loc(actualStartToken, endToken),
     };
   }
