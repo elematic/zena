@@ -65,6 +65,7 @@ export const NodeType = {
   LogicalPattern: 'LogicalPattern',
   IfExpression: 'IfExpression',
   AccessorSignature: 'AccessorSignature',
+  LiteralTypeAnnotation: 'LiteralTypeAnnotation',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -547,7 +548,8 @@ export type TypeAnnotation =
   | UnionTypeAnnotation
   | RecordTypeAnnotation
   | TupleTypeAnnotation
-  | FunctionTypeAnnotation;
+  | FunctionTypeAnnotation
+  | LiteralTypeAnnotation;
 
 export interface FunctionTypeAnnotation extends Node {
   type: typeof NodeType.FunctionTypeAnnotation;
@@ -580,6 +582,11 @@ export interface TupleTypeAnnotation extends Node {
 export interface UnionTypeAnnotation extends Node {
   type: typeof NodeType.UnionTypeAnnotation;
   types: TypeAnnotation[];
+}
+
+export interface LiteralTypeAnnotation extends Node {
+  type: typeof NodeType.LiteralTypeAnnotation;
+  value: string | number | boolean;
 }
 
 export interface SuperExpression extends Node {

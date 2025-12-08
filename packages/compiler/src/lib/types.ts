@@ -18,6 +18,7 @@ export const TypeKind = {
   Any: 'Any',
   Unknown: 'Unknown',
   Never: 'Never',
+  Literal: 'Literal',
 } as const;
 
 export type TypeKind = (typeof TypeKind)[keyof typeof TypeKind];
@@ -59,6 +60,11 @@ export interface RecordType extends Type {
 export interface TupleType extends Type {
   kind: typeof TypeKind.Tuple;
   elementTypes: Type[];
+}
+
+export interface LiteralType extends Type {
+  kind: typeof TypeKind.Literal;
+  value: string | number | boolean;
 }
 
 export interface ByteArrayType extends Type {

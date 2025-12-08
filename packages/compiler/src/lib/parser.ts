@@ -20,6 +20,7 @@ import {
   type IndexExpression,
   type InterfaceDeclaration,
   type IsExpression,
+  type LiteralTypeAnnotation,
   type MatchCase,
   type MatchExpression,
   type MemberExpression,
@@ -2258,7 +2259,7 @@ export class Parser {
     } else if (this.#match(TokenType.LBracket)) {
       left = this.#parseTupleTypeAnnotation(this.#previous());
     } else {
-      left = this.#parseNamedTypeAnnotation();
+      left = this.#parsePrimaryTypeAnnotation();
     }
 
     if (this.#match(TokenType.Pipe)) {
@@ -2269,7 +2270,7 @@ export class Parser {
         } else if (this.#match(TokenType.LBracket)) {
           types.push(this.#parseTupleTypeAnnotation(this.#previous()));
         } else {
-          types.push(this.#parseNamedTypeAnnotation());
+          types.push(this.#parsePrimaryTypeAnnotation());
         }
       } while (this.#match(TokenType.Pipe));
 
@@ -2361,6 +2362,50 @@ export class Parser {
       type: NodeType.TupleLiteral,
       elements,
     };
+  }
+
+  #parsePrimaryTypeAnnotation(): TypeAnnotation {
+    const startToken = this.#peek();
+    
+    // Check for literal types
+    if (this.#match(TokenType.String)) {
+      const token = this.#previous();
+      return {
+        type: NodeType.LiteralTypeAnnotation,
+        value: token.value,
+        loc: this.#loc(startToken, token),
+      } as LiteralTypeAnnotation;
+    }
+    
+    if (this.#match(TokenType.Number)) {
+      const token = this.#previous();
+      return {
+        type: NodeType.LiteralTypeAnnotation,
+        value: parseFloat(token.value),
+        loc: this.#loc(startToken, token),
+      } as LiteralTypeAnnotation;
+    }
+    
+    if (this.#match(TokenType.True)) {
+      const token = this.#previous();
+      return {
+        type: NodeType.LiteralTypeAnnotation,
+        value: true,
+        loc: this.#loc(startToken, token),
+      } as LiteralTypeAnnotation;
+    }
+    
+    if (this.#match(TokenType.False)) {
+      const token = this.#previous();
+      return {
+        type: NodeType.LiteralTypeAnnotation,
+        value: false,
+        loc: this.#loc(startToken, token),
+      } as LiteralTypeAnnotation;
+    }
+    
+    // Otherwise parse as named type
+    return this.#parseNamedTypeAnnotation();
   }
 
   #parseNamedTypeAnnotation(): NamedTypeAnnotation {

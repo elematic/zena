@@ -7,6 +7,7 @@ import {
   type ClassType,
   type FunctionType,
   type InterfaceType,
+  type LiteralType,
   type NumberType,
   type RecordType,
   type TupleType,
@@ -18,6 +19,8 @@ import {
 import type {CheckerContext} from './context.js';
 
 function isPrimitive(type: Type): boolean {
+  // Literal types are NOT considered primitives for union validation
+  // because they are singleton types that can be discriminated at runtime
   if (type.kind === TypeKind.Number || type.kind === TypeKind.Boolean) {
     return true;
   }
@@ -151,6 +154,13 @@ export function resolveTypeAnnotation(
   ctx: CheckerContext,
   annotation: TypeAnnotation,
 ): Type {
+  if (annotation.type === NodeType.LiteralTypeAnnotation) {
+    return {
+      kind: TypeKind.Literal,
+      value: annotation.value,
+    } as LiteralType;
+  }
+
   if (annotation.type === NodeType.UnionTypeAnnotation) {
     const types = annotation.types.map((t) => resolveTypeAnnotation(ctx, t));
     for (const t of types) {
@@ -619,6 +629,13 @@ export function typeToString(type: Type): string {
       return 'null';
     case TypeKind.Any:
       return 'any';
+    case TypeKind.Literal: {
+      const lit = type as LiteralType;
+      if (typeof lit.value === 'string') {
+        return `'${lit.value}'`;
+      }
+      return String(lit.value);
+    }
     case TypeKind.Union:
       return (type as UnionType).types.map((t) => typeToString(t)).join(' | ');
     case TypeKind.TypeParameter:
@@ -681,6 +698,32 @@ export function isAssignableTo(
 
   if (target.kind === TypeKind.Any) return true;
   if (source.kind === TypeKind.Any) return false;
+
+  // Literal type assignability
+  if (source.kind === TypeKind.Literal && target.kind === TypeKind.Literal) {
+    const srcLit = source as LiteralType;
+    const tgtLit = target as LiteralType;
+    return srcLit.value === tgtLit.value;
+  }
+
+  // Literal types are assignable to their base types
+  if (source.kind === TypeKind.Literal) {
+    const lit = source as LiteralType;
+    if (typeof lit.value === 'string') {
+      // String literals are assignable to string type
+      const stringType = ctx.resolve('String');
+      if (stringType && target === stringType) return true;
+      if (target.kind === TypeKind.Class && (target as ClassType).name === 'String') return true;
+    } else if (typeof lit.value === 'number') {
+      // Number literals are assignable to i32/f32 (we default to i32)
+      if (target.kind === TypeKind.Number) {
+        return (target as NumberType).name === 'i32';
+      }
+    } else if (typeof lit.value === 'boolean') {
+      // Boolean literals are assignable to boolean type
+      if (target.kind === TypeKind.Boolean) return true;
+    }
+  }
 
   if (target.kind === TypeKind.AnyRef) {
     switch (source.kind) {
