@@ -35,6 +35,7 @@ export interface UnionType extends Type {
 export interface TypeParameterType extends Type {
   kind: typeof TypeKind.TypeParameter;
   name: string;
+  constraint?: Type;
   defaultType?: Type;
 }
 

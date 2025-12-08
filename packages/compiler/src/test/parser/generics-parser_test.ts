@@ -84,4 +84,90 @@ suite('Parser (Generics)', () => {
       }
     }
   });
+
+  test('should parse generic class with constraint', () => {
+    const input = 'class Foo<T extends Bar> { }';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0];
+    assert.strictEqual(decl.type, NodeType.ClassDeclaration);
+    if (decl.type === NodeType.ClassDeclaration) {
+      assert.strictEqual(decl.name.name, 'Foo');
+      assert.ok(decl.typeParameters);
+      assert.strictEqual(decl.typeParameters.length, 1);
+      assert.strictEqual(decl.typeParameters[0].name, 'T');
+      assert.ok(decl.typeParameters[0].constraint);
+      const constraint = decl.typeParameters[0].constraint as any;
+      assert.strictEqual(constraint.name, 'Bar');
+    }
+  });
+
+  test('should parse generic class with multiple constrained parameters', () => {
+    const input = 'class Foo<T extends Bar<V>, V> { }';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0];
+    assert.strictEqual(decl.type, NodeType.ClassDeclaration);
+    if (decl.type === NodeType.ClassDeclaration) {
+      assert.strictEqual(decl.name.name, 'Foo');
+      assert.ok(decl.typeParameters);
+      assert.strictEqual(decl.typeParameters.length, 2);
+
+      // First parameter with generic constraint
+      assert.strictEqual(decl.typeParameters[0].name, 'T');
+      assert.ok(decl.typeParameters[0].constraint);
+      const constraint = decl.typeParameters[0].constraint as any;
+      assert.strictEqual(constraint.name, 'Bar');
+      assert.ok(constraint.typeArguments);
+      assert.strictEqual(constraint.typeArguments.length, 1);
+      assert.strictEqual(constraint.typeArguments[0].name, 'V');
+
+      // Second parameter without constraint
+      assert.strictEqual(decl.typeParameters[1].name, 'V');
+      assert.strictEqual(decl.typeParameters[1].constraint, undefined);
+    }
+  });
+
+  test('should parse generic function with constraint', () => {
+    const input = 'let fn = <T extends Base>(x: T) => x;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0];
+    assert.strictEqual(decl.type, NodeType.VariableDeclaration);
+    if (decl.type === NodeType.VariableDeclaration) {
+      const fn = decl.init;
+      assert.strictEqual(fn.type, NodeType.FunctionExpression);
+      if (fn.type === NodeType.FunctionExpression) {
+        assert.ok(fn.typeParameters);
+        assert.strictEqual(fn.typeParameters.length, 1);
+        assert.strictEqual(fn.typeParameters[0].name, 'T');
+        assert.ok(fn.typeParameters[0].constraint);
+        const constraint = fn.typeParameters[0].constraint as any;
+        assert.strictEqual(constraint.name, 'Base');
+      }
+    }
+  });
+
+  test('should parse type parameter with both constraint and default', () => {
+    const input = 'type Foo<T extends Bar = Baz> = T;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0];
+    assert.strictEqual(decl.type, NodeType.TypeAliasDeclaration);
+    if (decl.type === NodeType.TypeAliasDeclaration) {
+      assert.ok(decl.typeParameters);
+      assert.strictEqual(decl.typeParameters.length, 1);
+      assert.strictEqual(decl.typeParameters[0].name, 'T');
+      assert.ok(decl.typeParameters[0].constraint);
+      const constraint = decl.typeParameters[0].constraint as any;
+      assert.strictEqual(constraint.name, 'Bar');
+      assert.ok(decl.typeParameters[0].default);
+      const defaultType = decl.typeParameters[0].default as any;
+      assert.strictEqual(defaultType.name, 'Baz');
+    }
+  });
 });

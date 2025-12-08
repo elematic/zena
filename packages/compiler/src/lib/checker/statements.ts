@@ -18,6 +18,7 @@ import {
   type Statement,
   type TuplePattern,
   type TypeAliasDeclaration,
+  type TypeParameter,
   type VariableDeclaration,
   type WhileStatement,
 } from '../ast.js';
@@ -119,20 +120,8 @@ function checkTypeAliasDeclaration(
 ) {
   const name = decl.name.name;
 
-  const typeParameters: TypeParameterType[] = [];
-  if (decl.typeParameters) {
-    for (const param of decl.typeParameters) {
-      typeParameters.push({
-        kind: TypeKind.TypeParameter,
-        name: param.name,
-      });
-    }
-  }
-
   ctx.enterScope();
-  for (const param of typeParameters) {
-    ctx.declare(param.name, param, 'type');
-  }
+  const typeParameters = createTypeParameters(ctx, decl.typeParameters);
 
   const target = resolveTypeAnnotation(ctx, decl.typeAnnotation);
 
@@ -219,20 +208,8 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
 }
 
 function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
-  const typeParameters: TypeParameterType[] = [];
-  if (decl.typeParameters) {
-    for (const param of decl.typeParameters) {
-      typeParameters.push({
-        kind: TypeKind.TypeParameter,
-        name: param.name,
-      });
-    }
-  }
-
   ctx.enterScope();
-  for (const tp of typeParameters) {
-    ctx.declare(tp.name, tp, 'type');
-  }
+  const typeParameters = createTypeParameters(ctx, decl.typeParameters);
 
   const paramTypes: Type[] = [];
   const optionalParameters: boolean[] = [];
@@ -559,6 +536,7 @@ function getPropertyType(
 function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   const className = decl.name.name;
 
+  // Create type parameters without constraints/defaults
   const typeParameters: TypeParameterType[] = [];
   if (decl.typeParameters) {
     for (const param of decl.typeParameters) {
@@ -770,18 +748,21 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   ctx.enterClass(classType);
 
   ctx.enterScope();
+  // Declare type parameters in scope
   for (const tp of typeParameters) {
     ctx.declare(tp.name, tp, 'type');
   }
 
-  if (decl.isExtension && decl.onType) {
-    classType.onType = resolveTypeAnnotation(ctx, decl.onType);
-  }
-
-  // Resolve default type parameters
+  // Resolve constraints and defaults (after all type params are in scope)
   if (decl.typeParameters) {
     for (let i = 0; i < decl.typeParameters.length; i++) {
       const param = decl.typeParameters[i];
+      if (param.constraint) {
+        typeParameters[i].constraint = resolveTypeAnnotation(
+          ctx,
+          param.constraint,
+        );
+      }
       if (param.default) {
         typeParameters[i].defaultType = resolveTypeAnnotation(
           ctx,
@@ -789,6 +770,10 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         );
       }
     }
+  }
+
+  if (decl.isExtension && decl.onType) {
+    classType.onType = resolveTypeAnnotation(ctx, decl.onType);
   }
 
   // 1. First pass: Collect members to build the ClassType
@@ -931,20 +916,8 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         classType.methods.set(setterName, methodType);
       }
     } else if (member.type === NodeType.MethodDefinition) {
-      const typeParameters: TypeParameterType[] = [];
-      if (member.typeParameters) {
-        for (const param of member.typeParameters) {
-          typeParameters.push({
-            kind: TypeKind.TypeParameter,
-            name: param.name,
-          });
-        }
-      }
-
       ctx.enterScope();
-      for (const tp of typeParameters) {
-        ctx.declare(tp.name, tp, 'type');
-      }
+      const typeParameters = createTypeParameters(ctx, member.typeParameters);
 
       const paramTypes = member.params.map((p) => resolveParameterType(ctx, p));
       const optionalParameters = member.params.map((p) => p.optional);
@@ -1191,6 +1164,25 @@ function checkInterfaceDeclaration(
     }
   }
 
+  // Resolve constraints and defaults (after all type params are in scope)
+  if (decl.typeParameters) {
+    for (let i = 0; i < decl.typeParameters.length; i++) {
+      const param = decl.typeParameters[i];
+      if (param.constraint) {
+        typeParameters[i].constraint = resolveTypeAnnotation(
+          ctx,
+          param.constraint,
+        );
+      }
+      if (param.default) {
+        typeParameters[i].defaultType = resolveTypeAnnotation(
+          ctx,
+          param.default,
+        );
+      }
+    }
+  }
+
   // Handle extends
   if (decl.extends) {
     for (const ext of decl.extends) {
@@ -1217,20 +1209,8 @@ function checkInterfaceDeclaration(
 
   for (const member of decl.body) {
     if (member.type === NodeType.MethodSignature) {
-      const typeParameters: TypeParameterType[] = [];
-      if (member.typeParameters) {
-        for (const param of member.typeParameters) {
-          typeParameters.push({
-            kind: TypeKind.TypeParameter,
-            name: param.name,
-          });
-        }
-      }
-
       ctx.enterScope();
-      for (const tp of typeParameters) {
-        ctx.declare(tp.name, tp, 'type');
-      }
+      const typeParameters = createTypeParameters(ctx, member.typeParameters);
 
       const paramTypes: Type[] = [];
       const optionalParameters: boolean[] = [];
@@ -1535,6 +1515,25 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     ctx.declare(tp.name, tp, 'let');
   }
 
+  // Resolve constraints and defaults (after all type params are in scope)
+  if (decl.typeParameters) {
+    for (let i = 0; i < decl.typeParameters.length; i++) {
+      const param = decl.typeParameters[i];
+      if (param.constraint) {
+        typeParameters[i].constraint = resolveTypeAnnotation(
+          ctx,
+          param.constraint,
+        );
+      }
+      if (param.default) {
+        typeParameters[i].defaultType = resolveTypeAnnotation(
+          ctx,
+          param.default,
+        );
+      }
+    }
+  }
+
   // Apply composed mixins
   if (decl.mixins) {
     for (const mixinId of decl.mixins) {
@@ -1635,20 +1634,8 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         }
       }
     } else if (member.type === NodeType.MethodDefinition) {
-      const typeParameters: TypeParameterType[] = [];
-      if (member.typeParameters) {
-        for (const param of member.typeParameters) {
-          typeParameters.push({
-            kind: TypeKind.TypeParameter,
-            name: param.name,
-          });
-        }
-      }
-
       ctx.enterScope();
-      for (const tp of typeParameters) {
-        ctx.declare(tp.name, tp, 'type');
-      }
+      const typeParameters = createTypeParameters(ctx, member.typeParameters);
 
       const paramTypes: Type[] = [];
       const optionalParameters: boolean[] = [];
@@ -1783,4 +1770,52 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
   ctx.exitClass();
   ctx.exitScope();
+}
+
+/**
+ * Helper to create type parameters from AST nodes and resolve constraints.
+ * This function:
+ * 1. Creates TypeParameterType objects without constraints
+ * 2. Declares them in the current scope
+ * 3. Resolves constraints (after all params are in scope)
+ * 4. Resolves default types (after all params are in scope)
+ */
+function createTypeParameters(
+  ctx: CheckerContext,
+  astTypeParameters: TypeParameter[] | undefined,
+): TypeParameterType[] {
+  const typeParameters: TypeParameterType[] = [];
+
+  if (!astTypeParameters) {
+    return typeParameters;
+  }
+
+  // First pass: create type parameters without constraints
+  for (const param of astTypeParameters) {
+    typeParameters.push({
+      kind: TypeKind.TypeParameter,
+      name: param.name,
+    });
+  }
+
+  // Declare all type parameters in scope so they can reference each other
+  for (const param of typeParameters) {
+    ctx.declare(param.name, param, 'type');
+  }
+
+  // Second pass: resolve constraints and defaults
+  for (let i = 0; i < astTypeParameters.length; i++) {
+    const astParam = astTypeParameters[i];
+    const param = typeParameters[i];
+
+    if (astParam.constraint) {
+      param.constraint = resolveTypeAnnotation(ctx, astParam.constraint);
+    }
+
+    if (astParam.default) {
+      param.defaultType = resolveTypeAnnotation(ctx, astParam.default);
+    }
+  }
+
+  return typeParameters;
 }

@@ -127,4 +127,102 @@ suite('TypeChecker - Generics', () => {
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
+
+  test('should check generic class with constraint', () => {
+    const input = `
+      class Base {}
+      class Derived extends Base {}
+      class Container<T extends Base> {
+        value: T;
+        #new(v: T) {
+          this.value = v;
+        }
+      }
+      let c1 = new Container<Base>(new Base());
+      let c2 = new Container<Derived>(new Derived());
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('should detect constraint violation in generic instantiation', () => {
+    const input = `
+      class Base {}
+      class Unrelated {}
+      class Container<T extends Base> {
+        value: T;
+        #new(v: T) {
+          this.value = v;
+        }
+      }
+      let c = new Container<Unrelated>(new Unrelated());
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.strictEqual(errors.length, 1);
+    assert.match(
+      errors[0].message,
+      /does not satisfy constraint.*for type parameter/,
+    );
+  });
+
+  test('should check multiple constrained type parameters', () => {
+    const input = `
+      class Base<V> {
+        v: V;
+        #new(v: V) {
+          this.v = v;
+        }
+      }
+      class Container<T extends Base<V>, V> {
+        value: T;
+        #new(v: T) {
+          this.value = v;
+        }
+      }
+      let c = new Container<Base<i32>, i32>(new Base<i32>(42));
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('should check generic function with constraint', () => {
+    const input = `
+      class Base {}
+      class Derived extends Base {}
+      let fn = <T extends Base>(x: T): T => x;
+      let result = fn<Derived>(new Derived());
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('should detect constraint violation in generic function call', () => {
+    const input = `
+      class Base {}
+      class Unrelated {}
+      let fn = <T extends Base>(x: T): T => x;
+      let result = fn<Unrelated>(new Unrelated());
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.strictEqual(errors.length, 1);
+    assert.match(
+      errors[0].message,
+      /does not satisfy constraint.*for type parameter/,
+    );
+  });
 });

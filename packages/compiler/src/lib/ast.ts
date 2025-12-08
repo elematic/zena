@@ -539,6 +539,7 @@ export interface Parameter extends Node {
 export interface TypeParameter extends Node {
   type: typeof NodeType.TypeParameter;
   name: string;
+  constraint?: TypeAnnotation;
   default?: TypeAnnotation;
 }
 
