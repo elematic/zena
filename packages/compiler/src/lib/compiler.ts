@@ -105,7 +105,10 @@ export class Compiler {
 
   #analyzeImports(module: Module) {
     for (const stmt of module.ast.body) {
-      if (stmt.type === NodeType.ImportDeclaration) {
+      if (
+        stmt.type === NodeType.ImportDeclaration ||
+        stmt.type === NodeType.ExportAllDeclaration
+      ) {
         const specifier = stmt.moduleSpecifier.value;
         const resolvedPath = this.#host.resolve(specifier, module.path);
 

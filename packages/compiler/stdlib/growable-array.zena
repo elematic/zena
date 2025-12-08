@@ -1,0 +1,78 @@
+import { Sequence, MutableSequence } from 'zena:sequence';
+import { FixedArray } from 'zena:fixed-array';
+import { IndexOutOfBoundsError } from 'zena:error';
+
+export class Array<T> implements MutableSequence<T> {
+  #buffer: FixedArray<T>;
+  #length: i32 = 0;
+
+  constructor(capacity: i32 = 8) {
+    this.#buffer = __array_new_empty<T>(capacity);
+  }
+
+  static from(seq: Sequence<T>): Array<T> {
+    let len = seq.length;
+    let result = new Array<T>(len);
+    var i = 0;
+    while (i < len) {
+      result.push(seq[i]);
+      i = i + 1;
+    }
+    return result;
+  }
+
+  length: i32 {
+    get {
+      return this.#length;
+    }
+  }
+
+  push(value: T): void {
+    if (this.#length == this.#buffer.length) {
+      this.#grow();
+    }
+    this.#buffer[this.#length] = value;
+    this.#length = this.#length + 1;
+  }
+
+  pop(): T {
+    this.#length = this.#length - 1;
+    return this.#buffer[this.#length];
+  }
+
+  operator [](index: i32): T {
+    if (index < 0 || index >= this.#length) {
+      throw new IndexOutOfBoundsError(index, this.#length);
+    }
+    return this.#buffer[index];
+  }
+
+  operator []=(index: i32, value: T): void {
+    if (index < 0 || index >= this.#length) {
+      throw new IndexOutOfBoundsError(index, this.#length);
+    }
+    this.#buffer[index] = value;
+  }
+
+  map<U>(f: (item: T, index: i32, seq: Array<T>) => U): Array<U> {
+    let len = this.#length;
+    let result = new Array<U>(len);
+    var i = 0;
+    while (i < len) {
+      result.push(f(this[i], i, this as Array<T>));
+      i = i + 1;
+    }
+    return result;
+  }
+
+  #grow(): void {
+    let newCapacity = this.#buffer.length * 2;
+    let newBuffer = __array_new_empty<T>(newCapacity);
+    var i = 0;
+    while (i < this.#length) {
+      newBuffer[i] = this.#buffer[i];
+      i = i + 1;
+    }
+    this.#buffer = newBuffer;
+  }
+}

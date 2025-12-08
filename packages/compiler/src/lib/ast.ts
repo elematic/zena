@@ -67,6 +67,7 @@ export const NodeType = {
   AccessorSignature: 'AccessorSignature',
   LiteralTypeAnnotation: 'LiteralTypeAnnotation',
   SpreadElement: 'SpreadElement',
+  ExportAllDeclaration: 'ExportAllDeclaration',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -121,6 +122,7 @@ export type Statement =
   | MixinDeclaration
   | DeclareFunction
   | ImportDeclaration
+  | ExportAllDeclaration
   | TypeAliasDeclaration;
 
 export interface ImportSpecifier extends Node {
@@ -133,6 +135,11 @@ export interface ImportDeclaration extends Node {
   type: typeof NodeType.ImportDeclaration;
   moduleSpecifier: StringLiteral;
   imports: ImportSpecifier[];
+}
+
+export interface ExportAllDeclaration extends Node {
+  type: typeof NodeType.ExportAllDeclaration;
+  moduleSpecifier: StringLiteral;
 }
 
 export interface DeclareFunction extends Node {

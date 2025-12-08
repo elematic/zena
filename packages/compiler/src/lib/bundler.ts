@@ -7,6 +7,7 @@ import {
   type ClassDeclaration,
   type Node,
   type ImportDeclaration,
+  type ExportAllDeclaration,
   type MethodDefinition,
   type FieldDefinition,
   type AccessorDeclaration,
@@ -206,6 +207,22 @@ export class Bundler {
             (stmt as any).exported = false;
           }
         }
+      } else if (stmt.type === NodeType.ExportAllDeclaration) {
+        const decl = stmt as ExportAllDeclaration;
+        const specifier = decl.moduleSpecifier.value;
+        const resolvedPath = module.imports.get(specifier);
+        if (resolvedPath) {
+          // Since modules are sorted topologically, the imported module
+          // should have already been processed and its symbols collected.
+          const prefix = `${resolvedPath}:`;
+          for (const [key, uniqueName] of this.#globalSymbols) {
+            if (key.startsWith(prefix)) {
+              const name = key.slice(prefix.length);
+              // Register alias for re-export
+              this.#globalSymbols.set(`${module.path}:${name}`, uniqueName);
+            }
+          }
+        }
       }
     }
   }
@@ -240,7 +257,11 @@ export class Bundler {
 
     // Let's iterate top-level statements and rewrite them.
     for (const stmt of module.ast.body) {
-      if (stmt.type === NodeType.ImportDeclaration) continue; // Skip imports in output
+      if (
+        stmt.type === NodeType.ImportDeclaration ||
+        stmt.type === NodeType.ExportAllDeclaration
+      )
+        continue; // Skip imports/exports in output
 
       // Deep clone statement to avoid side effects?
       // We MUST use a custom clone function because JSON.stringify destroys

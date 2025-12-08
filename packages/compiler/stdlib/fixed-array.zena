@@ -1,0 +1,49 @@
+import { Sequence, MutableSequence } from 'zena:sequence';
+
+export final extension class FixedArray<T> on array<T> implements MutableSequence<T> {
+  @intrinsic('array.len')
+  declare length: i32;
+
+  constructor(length: i32, value: T) {
+    super(__array_new(length, value));
+  }
+
+  @intrinsic('array.get')
+  declare operator [](index: i32): T;
+
+  @intrinsic('array.set')
+  declare operator []=(index: i32, value: T): void;
+
+  static from(seq: Sequence<T>): FixedArray<T> {
+    let len = seq.length;
+    let result = __array_new_empty<T>(len);
+    var i = 0;
+    while (i < len) {
+      result[i] = seq[i];
+      i = i + 1;
+    }
+    return result;
+  }
+
+  map<U>(f: (item: T, index: i32, seq: FixedArray<T>) => U): FixedArray<U> {
+    let len = this.length;
+    let result = __array_new_empty<U>(len);
+    var i = 0;
+    while (i < len) {
+      result[i] = f(this[i], i, this);
+      i = i + 1;
+    }
+    return result;
+  }
+
+  reverse(): FixedArray<T> {
+    let len = this.length;
+    let result = __array_new_empty<T>(len);
+    var i = 0;
+    while (i < len) {
+      result[i] = this[len - 1 - i];
+      i = i + 1;
+    }
+    return result;
+  }
+}

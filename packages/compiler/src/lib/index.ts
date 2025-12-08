@@ -15,6 +15,10 @@ import {CodeGenerator} from './codegen/index.js';
 import {TypeChecker} from './checker/index.js';
 import {
   arrayModule,
+  sequenceModule,
+  immutableArrayModule,
+  fixedArrayModule,
+  growableArrayModule,
   stringModule,
   consoleModule,
   mapModule,
@@ -46,6 +50,10 @@ export function compile(source: string): Uint8Array {
     new Map([
       ['main.zena', source],
       ['zena:array', arrayModule],
+      ['zena:sequence', sequenceModule],
+      ['zena:immutable-array', immutableArrayModule],
+      ['zena:fixed-array', fixedArrayModule],
+      ['zena:growable-array', growableArrayModule],
       ['zena:string', stringModule],
       ['zena:console', consoleModule],
       ['zena:map', mapModule],

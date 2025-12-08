@@ -9,6 +9,22 @@ export const arrayModule = fs.readFileSync(
   path.join(stdlibDir, 'array.zena'),
   'utf-8',
 );
+export const sequenceModule = fs.readFileSync(
+  path.join(stdlibDir, 'sequence.zena'),
+  'utf-8',
+);
+export const immutableArrayModule = fs.readFileSync(
+  path.join(stdlibDir, 'immutable-array.zena'),
+  'utf-8',
+);
+export const fixedArrayModule = fs.readFileSync(
+  path.join(stdlibDir, 'fixed-array.zena'),
+  'utf-8',
+);
+export const growableArrayModule = fs.readFileSync(
+  path.join(stdlibDir, 'growable-array.zena'),
+  'utf-8',
+);
 export const stringModule = fs.readFileSync(
   path.join(stdlibDir, 'string.zena'),
   'utf-8',

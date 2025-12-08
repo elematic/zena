@@ -5,6 +5,7 @@ import {
   type AssignmentPattern,
   type ClassDeclaration,
   type DeclareFunction,
+  type ExportAllDeclaration,
   type Expression,
   type ForStatement,
   type IfStatement,
@@ -53,6 +54,9 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
   switch (stmt.type) {
     case NodeType.ImportDeclaration:
       checkImportDeclaration(ctx, stmt as ImportDeclaration);
+      break;
+    case NodeType.ExportAllDeclaration:
+      checkExportAllDeclaration(ctx, stmt as ExportAllDeclaration);
       break;
     case NodeType.VariableDeclaration:
       checkVariableDeclaration(ctx, stmt as VariableDeclaration);
@@ -141,6 +145,56 @@ function checkTypeAliasDeclaration(
 
   if (decl.exported && ctx.module) {
     ctx.module.exports.set(name, {type: typeAlias, kind: 'type'});
+  }
+}
+
+function checkExportAllDeclaration(
+  ctx: CheckerContext,
+  decl: ExportAllDeclaration,
+) {
+  if (!ctx.module || !ctx.compiler) {
+    return;
+  }
+
+  const specifier = decl.moduleSpecifier.value;
+  const resolvedPath = ctx.module.imports.get(specifier);
+
+  if (!resolvedPath) {
+    ctx.diagnostics.reportError(
+      `Could not resolve module '${specifier}'`,
+      DiagnosticCode.ModuleNotFound,
+    );
+    return;
+  }
+
+  const importedModule = ctx.compiler.getModule(resolvedPath);
+  if (!importedModule) {
+    ctx.diagnostics.reportError(
+      `Module '${specifier}' not found (resolved to '${resolvedPath}')`,
+      DiagnosticCode.ModuleNotFound,
+    );
+    return;
+  }
+
+  // Re-export all symbols
+  for (const [name, symbolInfo] of importedModule.exports) {
+    if (ctx.module.exports.has(name)) {
+      // Conflict?
+      // If we have multiple export * from different modules exporting same name, it's a conflict.
+      // Or if we have local export with same name, local wins (shadows).
+      // But here we are populating exports.
+      // If local export exists, it should have been added already?
+      // Statements are checked in order.
+      // If export * comes first, it adds.
+      // If later we have export let x, it overwrites?
+      // Usually explicit export wins.
+      // For now, let's just warn or error on conflict if it's not identical.
+      const existing = ctx.module.exports.get(name)!;
+      if (existing.type !== symbolInfo.type) {
+        // Error?
+      }
+    }
+    ctx.module.exports.set(name, symbolInfo);
   }
 }
 

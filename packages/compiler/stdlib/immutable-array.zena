@@ -1,0 +1,31 @@
+import { Sequence } from 'zena:sequence';
+
+export final extension class ImmutableArray<T> on array<T> implements Sequence<T> {
+  @intrinsic('array.len')
+  declare length: i32;
+
+  @intrinsic('array.get')
+  declare operator [](index: i32): T;
+
+  static from(seq: Sequence<T>): ImmutableArray<T> {
+    let len = seq.length;
+    let result = __array_new_empty<T>(len);
+    var i = 0;
+    while (i < len) {
+      result[i] = seq[i];
+      i = i + 1;
+    }
+    return result as ImmutableArray<T>;
+  }
+
+  map<U>(f: (item: T, index: i32, seq: ImmutableArray<T>) => U): ImmutableArray<U> {
+    let len = this.length;
+    let result = __array_new_empty<U>(len);
+    var i = 0;
+    while (i < len) {
+      result[i] = f(this[i], i, this);
+      i = i + 1;
+    }
+    return result as ImmutableArray<U>;
+  }
+}

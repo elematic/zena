@@ -9,6 +9,7 @@ import {
   type Decorator,
   type DeclareFunction,
   type Expression,
+  type ExportAllDeclaration,
   type FieldDefinition,
   type ForStatement,
   type FunctionExpression,
@@ -115,6 +116,22 @@ export class Parser {
       this.#current--;
     }
     if (this.#match(TokenType.Export)) {
+      if (this.#match(TokenType.Star)) {
+        this.#consume(TokenType.From, "Expected 'from' after '*'.");
+        const sourceToken = this.#peek();
+        if (sourceToken.type !== TokenType.String) {
+          throw new Error("Expected string literal after 'from'.");
+        }
+        const moduleSpecifier = this.#parseExpression() as StringLiteral; // Reuse parseExpression or parseStringLiteral if available?
+        // parseExpression parses string literal as StringLiteral node.
+        this.#consume(TokenType.Semi, "Expected ';' after export declaration.");
+        const endToken = this.#previous();
+        return {
+          type: NodeType.ExportAllDeclaration,
+          moduleSpecifier,
+          loc: this.#loc(startToken, endToken),
+        } as ExportAllDeclaration;
+      }
       if (this.#match(TokenType.Final)) {
         if (this.#match(TokenType.Extension)) {
           this.#consume(TokenType.Class, "Expected 'class' after 'extension'.");

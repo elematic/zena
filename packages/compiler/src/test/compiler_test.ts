@@ -55,8 +55,8 @@ describe('Compiler', () => {
     const compiler = new Compiler(host);
     const modules = compiler.compile('main.zena');
 
-    // 2 user modules + 6 stdlib modules (array, string, console, map, box, error)
-    assert.strictEqual(modules.length, 8);
+    // 2 user modules + 10 stdlib modules (array split into 5 + string, console, map, box, error)
+    assert.strictEqual(modules.length, 12);
 
     const main = modules.find((m) => m.path === 'main.zena');
     const math = modules.find((m) => m.path === 'math.zena');
@@ -143,7 +143,36 @@ describe('Compiler', () => {
     const compiler = new Compiler(host);
     const modules = compiler.compile('a.zena');
 
-    // 2 user modules + 6 stdlib modules
-    assert.strictEqual(modules.length, 8);
+    // 2 user modules + 10 stdlib modules
+    assert.strictEqual(modules.length, 12);
+  });
+
+  it('handles export * re-exports', () => {
+    const host = new MockHost();
+    host.files.set(
+      'main.zena',
+      `
+      import { add } from './b.zena';
+      let x = add(1, 2);
+    `,
+    );
+    host.files.set(
+      'b.zena',
+      `
+      export * from './a.zena';
+    `,
+    );
+    host.files.set(
+      'a.zena',
+      `
+      export let add = (a: i32, b: i32) => a + b;
+    `,
+    );
+
+    const compiler = new Compiler(host);
+    const modules = compiler.compile('main.zena');
+
+    const main = modules.find((m) => m.path === 'main.zena');
+    assert.strictEqual(main?.diagnostics.length, 0);
   });
 });
