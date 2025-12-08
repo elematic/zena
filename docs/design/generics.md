@@ -122,18 +122,56 @@ between their components.
 - **Invariance**: No subtyping relationship. `List<Cat>` is not `List<Animal>`.
   Required for mutable data structures (read & write).
 
-### C# Approach
+### Design Decision: Declaration-Site Variance (Interfaces Only)
 
-C# allows explicit variance annotations on **interfaces** and **delegates**
-(e.g., `interface IEnumerable<out T>`). Classes are always invariant.
+Zena adopts **Declaration-Site Variance** using `in` and `out` modifiers, restricted to **Interfaces**.
 
-### Zena Approach
+1.  **Interfaces**: Can be covariant (`out T`) or contravariant (`in T`).
+    - `interface Reader<out T> { get(): T; }`
+    - `interface Writer<in T> { set(v: T); }`
+2.  **Classes**: Always **Invariant**.
+    - `class Box<T>` is never a subtype of `Box<U>` unless `T` equals `U`.
+    - This simplifies the memory model (monomorphization) and avoids complex structural subtyping issues for fields.
 
-To start, Zena should enforce **Invariance** for all generic classes.
+### The "Split Interface" Pattern
 
-- `Box<String>` is NOT a subtype of `Box<Object>`.
-- This is simple, safe, and sufficient for `Map` and `Array`.
-- We can explore variance later if we add Interfaces.
+To achieve flexibility (e.g., passing a `List<String>` to a function expecting a `List<Object>`), Zena encourages the **Split Interface** pattern. Instead of relying on complex use-site wildcards (like Java's `? extends T`), libraries should define separate read-only and mutable interfaces.
+
+**Example:**
+
+```zena
+// 1. Covariant (Read-Only) Interface
+interface List<out T> {
+  get(index: i32): T;
+  length(): i32;
+}
+
+// 2. Invariant (Mutable) Interface
+// Extends the covariant interface.
+interface MutableList<T> extends List<T> {
+  set(index: i32, value: T): void;
+  add(value: T): void;
+}
+
+// 3. Invariant Implementation
+class ArrayList<T> implements MutableList<T> {
+  // ... implementation ...
+}
+```
+
+**Usage:**
+
+```zena
+func printItems(list: List<Object>) { ... }
+
+let strings = new ArrayList<String>();
+printItems(strings); // ✅ Allowed! ArrayList<String> -> List<String> -> List<Object>
+```
+
+### Implementation Details
+
+- **Fat Pointers**: Casting `List<String>` to `List<Object>` is a runtime operation. It requires allocating a new Fat Pointer where the VTable reference is compatible, but the underlying instance pointer remains the same.
+- **Validation**: The compiler must verify that `out T` is only used in return positions and `in T` is only used in argument positions within the interface.
 
 ## Compilation Process (Monomorphization)
 
