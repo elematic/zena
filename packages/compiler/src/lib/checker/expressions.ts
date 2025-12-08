@@ -41,6 +41,7 @@ import {
   type ClassType,
   type InterfaceType,
   type FunctionType,
+  type LiteralType,
   type NumberType,
   type RecordType,
   type TupleType,
@@ -652,6 +653,27 @@ function checkIsExpression(ctx: CheckerContext, expr: IsExpression): Type {
   return Types.Boolean;
 }
 
+function checkExpressionAgainstLiteralType(expr: Expression, targetType: Type): boolean {
+  // Check if the expression matches the target literal type
+  if (targetType.kind === TypeKind.Literal) {
+    const literalType = targetType as LiteralType;
+    if (expr.type === NodeType.StringLiteral) {
+      return typeof literalType.value === 'string' && (expr as StringLiteral).value === literalType.value;
+    }
+    if (expr.type === NodeType.NumberLiteral) {
+      return typeof literalType.value === 'number' && (expr as NumberLiteral).value === literalType.value;
+    }
+    if (expr.type === NodeType.BooleanLiteral) {
+      return typeof literalType.value === 'boolean' && (expr as BooleanLiteral).value === literalType.value;
+    }
+  } else if (targetType.kind === TypeKind.Union) {
+    // Check if the expression matches any literal in the union
+    const unionType = targetType as UnionType;
+    return unionType.types.some(t => checkExpressionAgainstLiteralType(expr, t));
+  }
+  return false;
+}
+
 function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
   if (expr.callee.type === NodeType.SuperExpression) {
     if (!ctx.currentClass) {
@@ -958,8 +980,16 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
   ) {
     const argType = argTypes[i];
     const paramType = funcType.parameters[i];
+    const argExpr = expr.arguments[i];
 
-    if (!isAssignableTo(ctx, argType, paramType)) {
+    let compatible = isAssignableTo(ctx, argType, paramType);
+    
+    // Special handling for literal types
+    if (!compatible) {
+      compatible = checkExpressionAgainstLiteralType(argExpr, paramType);
+    }
+    
+    if (!compatible) {
       ctx.diagnostics.reportError(
         `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,

@@ -5,6 +5,7 @@ import {
   type AssignmentPattern,
   type ClassDeclaration,
   type DeclareFunction,
+  type Expression,
   type ForStatement,
   type IfStatement,
   type ImportDeclaration,
@@ -29,6 +30,7 @@ import {
   type ClassType,
   type FunctionType,
   type InterfaceType,
+  type LiteralType,
   type MixinType,
   type RecordType,
   type TupleType,
@@ -362,6 +364,20 @@ function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {
   }
 }
 
+function checkLiteralMatch(expr: Expression, literalType: LiteralType): boolean {
+  // Check if the expression is a literal that matches the type
+  if (expr.type === NodeType.StringLiteral) {
+    return typeof literalType.value === 'string' && expr.value === literalType.value;
+  }
+  if (expr.type === NodeType.NumberLiteral) {
+    return typeof literalType.value === 'number' && expr.value === literalType.value;
+  }
+  if (expr.type === NodeType.BooleanLiteral) {
+    return typeof literalType.value === 'boolean' && expr.value === literalType.value;
+  }
+  return false;
+}
+
 function checkVariableDeclaration(
   ctx: CheckerContext,
   decl: VariableDeclaration,
@@ -370,7 +386,26 @@ function checkVariableDeclaration(
 
   if (decl.typeAnnotation) {
     const explicitType = resolveTypeAnnotation(ctx, decl.typeAnnotation);
-    if (!isAssignableTo(ctx, type, explicitType)) {
+    
+    // Special handling for literal types
+    let compatible = isAssignableTo(ctx, type, explicitType);
+    if (!compatible) {
+      if (explicitType.kind === TypeKind.Literal) {
+        // Check if the init expression is a matching literal
+        compatible = checkLiteralMatch(decl.init, explicitType as LiteralType);
+      } else if (explicitType.kind === TypeKind.Union) {
+        // Check if the init expression matches any literal in the union
+        const unionType = explicitType as UnionType;
+        compatible = unionType.types.some(t => {
+          if (t.kind === TypeKind.Literal) {
+            return checkLiteralMatch(decl.init, t as LiteralType);
+          }
+          return isAssignableTo(ctx, type, t);
+        });
+      }
+    }
+    
+    if (!compatible) {
       ctx.diagnostics.reportError(
         `Type mismatch: expected ${typeToString(explicitType)}, got ${typeToString(type)}`,
         DiagnosticCode.TypeMismatch,
@@ -378,6 +413,9 @@ function checkVariableDeclaration(
     }
     type = explicitType;
   }
+
+  // Set the inferred type on the declaration
+  decl.inferredType = type;
 
   if (decl.pattern.type === NodeType.Identifier) {
     ctx.declare(decl.pattern.name, type, decl.kind);
