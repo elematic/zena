@@ -1994,12 +1994,18 @@ function getPatternType(
 
 /**
  * Validates that type arguments satisfy their corresponding type parameter constraints.
+ * Assumes that typeArguments.length === typeParameters.length (validated by caller).
  */
 function validateTypeArgumentConstraints(
   ctx: CheckerContext,
   typeParameters: TypeParameterType[],
   typeArguments: Type[],
 ): void {
+  // Defensive check: ensure we have matching lengths
+  if (typeArguments.length !== typeParameters.length) {
+    return;
+  }
+
   for (let i = 0; i < typeParameters.length; i++) {
     const param = typeParameters[i];
     const arg = typeArguments[i];
