@@ -131,4 +131,33 @@ suite('CodeGenerator - Generic Interfaces', () => {
     const result = await compileAndRun(source);
     assert.strictEqual(result, 1);
   });
+
+  test('covariant return type and contravariant parameter type in generic interface implementation', async () => {
+    const source = `
+      export interface Seq<T> {
+        map<U>(f: (item: T, seq: Seq<T>) => U): Seq<U>;
+      }
+
+      export class Arr<T> implements Seq<T> {
+        map<U>(f: (item: T, seq: Arr<T>) => U): Arr<U> {
+          return new Arr<U>();
+        }
+      }
+
+      export let main = () => {
+        let a = new Arr<i32>();
+        // Case 1: Call on concrete type
+        let m1 = a.map<i32>((item: i32, seq: Arr<i32>) => item);
+        
+        // Case 2: Assign to interface (verifies implementation is valid)
+        let s: Seq<i32> = a;
+        // Note: We don't call s.map() here because generic methods in interfaces 
+        // are not yet fully supported in codegen (vtable generation skips them).
+        
+        return 1;
+      };
+    `;
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 1);
+  });
 });

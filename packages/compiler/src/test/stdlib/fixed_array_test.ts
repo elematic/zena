@@ -58,7 +58,7 @@ suite('Stdlib: FixedArray', () => {
         arr[0] = 1;
         arr[1] = 2;
         arr[2] = 3;
-        let mapped = arr.map<i32>((x: i32) => x * 2);
+        let mapped: FixedArray<i32> = arr.map<i32>((x: i32) => x * 2);
         
         if (mapped.length != 3) return 0;
         if (mapped[0] != 2) return 1;

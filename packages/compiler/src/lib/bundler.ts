@@ -98,20 +98,18 @@ export class Bundler {
       );
       if (decl) wellKnownTypes.Box = decl;
     }
-    // ByteArray is usually internal or in zena:string?
-    // Let's check where ByteArray is defined.
-    // It seems it is built-in type in CodegenContext, but maybe exposed via stdlib?
-    // In map_test.ts mock host: 'export final class String { bytes: ByteArray; length: i32; }'
-    // So ByteArray is used as a type name.
-    // But is it a class?
-    // In classes.ts: if (annotation.name === 'ByteArray') ...
-    // It seems ByteArray is a special type name that maps to WASM array<i8>.
-    // It might not be a class in stdlib.
+
+    const symbolMap = new Map<string, string>();
+    for (const [key, value] of this.#globalSymbols) {
+      const name = key.split(':').pop()!;
+      symbolMap.set(name, value);
+    }
 
     return {
       type: NodeType.Program,
       body: newBody,
       wellKnownTypes,
+      symbolMap,
     };
   }
 
@@ -171,7 +169,8 @@ export class Bundler {
         stmt.type === NodeType.ClassDeclaration ||
         stmt.type === NodeType.InterfaceDeclaration ||
         stmt.type === NodeType.MixinDeclaration ||
-        stmt.type === NodeType.DeclareFunction
+        stmt.type === NodeType.DeclareFunction ||
+        stmt.type === NodeType.TypeAliasDeclaration
       ) {
         name = (stmt as any).name.name;
       }
@@ -181,15 +180,22 @@ export class Bundler {
         const key = `${module.path}:${name}`;
         this.#globalSymbols.set(key, uniqueName);
 
-        // Rename the type object if it exists
-        const cls = stmt as any;
-        let typeObj = cls.inferredType;
-        if (!typeObj && cls.name && cls.name.inferredType) {
-          typeObj = cls.name.inferredType;
-        }
+        // Rename the type object if it exists AND it's a type declaration
+        if (
+          stmt.type === NodeType.ClassDeclaration ||
+          stmt.type === NodeType.InterfaceDeclaration ||
+          stmt.type === NodeType.MixinDeclaration ||
+          stmt.type === NodeType.TypeAliasDeclaration
+        ) {
+          const cls = stmt as any;
+          let typeObj = cls.inferredType;
+          if (!typeObj && cls.name && cls.name.inferredType) {
+            typeObj = cls.name.inferredType;
+          }
 
-        if (typeObj?.name) {
-          typeObj.name = uniqueName;
+          if (typeObj?.name) {
+            typeObj.name = uniqueName;
+          }
         }
 
         // Handle exports

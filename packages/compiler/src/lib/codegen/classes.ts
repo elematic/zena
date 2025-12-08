@@ -30,6 +30,7 @@ import {
   getHeapTypeIndex,
   boxPrimitive,
   unboxPrimitive,
+  isInterfaceSubtype,
 } from './expressions.js';
 import {
   generateBlockStatement,
@@ -410,18 +411,74 @@ export function generateTrampoline(
   // Handle return type adaptation (boxing)
   const classReturnType = classMethod.returnType;
 
-  if (
-    interfaceResults.length > 0 &&
-    classReturnType.length > 0 &&
-    interfaceResults[0].length === 1 &&
-    interfaceResults[0][0] === ValType.anyref &&
-    classReturnType.length === 1 &&
-    (classReturnType[0] === ValType.i32 ||
-      classReturnType[0] === ValType.i64 ||
-      classReturnType[0] === ValType.f32 ||
-      classReturnType[0] === ValType.f64)
-  ) {
-    boxPrimitive(ctx, classReturnType, body);
+  if (interfaceResults.length > 0 && classReturnType.length > 0) {
+    // 1. Primitive Boxing
+    if (
+      interfaceResults[0].length === 1 &&
+      interfaceResults[0][0] === ValType.anyref &&
+      classReturnType.length === 1 &&
+      (classReturnType[0] === ValType.i32 ||
+        classReturnType[0] === ValType.i64 ||
+        classReturnType[0] === ValType.f32 ||
+        classReturnType[0] === ValType.f64)
+    ) {
+      boxPrimitive(ctx, classReturnType, body);
+    }
+    // 2. Interface Boxing
+    else {
+      const interfaceTypeIndex = decodeTypeIndex(interfaceResults[0]);
+      const classTypeIndex = decodeTypeIndex(classReturnType);
+
+      if (
+        interfaceTypeIndex !== -1 &&
+        classTypeIndex !== -1 &&
+        interfaceTypeIndex !== classTypeIndex
+      ) {
+        const interfaceInfo = getInterfaceFromTypeIndex(ctx, interfaceTypeIndex);
+
+        if (interfaceInfo) {
+          let interfaceName: string | undefined;
+          for (const [name, info] of ctx.interfaces) {
+            if (info === interfaceInfo) {
+              interfaceName = name;
+              break;
+            }
+          }
+
+          if (interfaceName) {
+            const resultClassInfo = getClassFromTypeIndex(ctx, classTypeIndex);
+
+            if (resultClassInfo && resultClassInfo.implements) {
+              let impl = resultClassInfo.implements.get(interfaceName);
+
+              if (!impl) {
+                for (const [implName, implInfo] of resultClassInfo.implements) {
+                  if (isInterfaceSubtype(ctx, implName, interfaceName)) {
+                    impl = implInfo;
+                    break;
+                  }
+                }
+              }
+
+              if (impl) {
+                // Box it!
+                body.push(
+                  Opcode.global_get,
+                  ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
+                );
+
+                body.push(0xfb, GcOpcode.struct_new);
+                body.push(
+                  ...WasmModule.encodeSignedLEB128(
+                    interfaceInfo.structTypeIndex,
+                  ),
+                );
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   body.push(Opcode.end);
@@ -1779,13 +1836,6 @@ export function mapType(
   const typeContext = context || ctx.currentTypeContext;
   if (!type) return [ValType.i32];
 
-  if (
-    type.type === NodeType.TypeAnnotation &&
-    (type.name === 'FixedArray' || type.name === 'm1_FixedArray')
-  ) {
-    // console.log(`Mapping FixedArray: ${JSON.stringify(type)}`);
-  }
-
   // Resolve generic type parameters
   if (
     type.type === NodeType.TypeAnnotation &&
@@ -1859,14 +1909,9 @@ export function mapType(
           typeName = ctx.wellKnownTypes.String.name.name;
         }
 
-        // Workaround for console global variable type mismatch
-        // The Checker seems to infer the type name as the variable name 'console' (mangled)
-        // instead of the class name 'HostConsole' (mangled).
-        if (!ctx.classes.has(typeName) && typeName.endsWith('_console')) {
-          const hostConsoleName = typeName.replace(/_console$/, '_HostConsole');
-          if (ctx.classes.has(hostConsoleName)) {
-            typeName = hostConsoleName;
-          }
+        // Check symbol map
+        if (ctx.program.symbolMap && ctx.program.symbolMap.has(typeName)) {
+          typeName = ctx.program.symbolMap.get(typeName)!;
         }
 
         if (typeName === 'ByteArray') {

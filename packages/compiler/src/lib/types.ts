@@ -123,6 +123,7 @@ export interface ClassType extends Type {
   isAbstract?: boolean;
   isExtension?: boolean;
   onType?: Type;
+  genericSource?: ClassType;
 }
 
 const I32 = {kind: TypeKind.Number, name: 'i32'} as NumberType;

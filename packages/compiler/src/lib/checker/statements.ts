@@ -1094,7 +1094,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           );
         } else {
           const methodType = classType.methods.get(name)!;
-          if (typeToString(methodType) !== typeToString(type)) {
+          if (!isAssignableTo(ctx, methodType, type)) {
             let memberName = `Method '${name}'`;
             if (name.startsWith('get_')) {
               memberName = `Getter for '${name.slice(4)}'`;

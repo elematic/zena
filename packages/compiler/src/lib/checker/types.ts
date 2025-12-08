@@ -515,6 +515,7 @@ export function instantiateGenericClass(
       ? substituteFunction(genericClass.constructorType)
       : undefined,
     onType: genericClass.onType ? substitute(genericClass.onType) : undefined,
+    genericSource: genericClass,
   };
 
   if (ctx) {
@@ -833,9 +834,25 @@ export function isAssignableTo(
   if (source.kind === TypeKind.Class && target.kind === TypeKind.Interface) {
     let current: ClassType | undefined = source as ClassType;
     while (current) {
+      let implementsList = current.implements;
+
+      // If implements is empty but we have genericSource, try to re-instantiate implements
       if (
-        current.implements.some((impl) => isAssignableTo(ctx, impl, target))
+        implementsList.length === 0 &&
+        current.genericSource &&
+        current.genericSource.implements.length > 0 &&
+        current.typeArguments
       ) {
+        const typeMap = new Map<string, Type>();
+        current.genericSource.typeParameters!.forEach((param, index) => {
+          typeMap.set(param.name, current!.typeArguments![index]);
+        });
+        implementsList = current.genericSource.implements.map(
+          (impl) => substituteType(impl, typeMap) as InterfaceType,
+        );
+      }
+
+      if (implementsList.some((impl) => isAssignableTo(ctx, impl, target))) {
         return true;
       }
       current = current.superType;
@@ -937,11 +954,42 @@ export function isAssignableTo(
         if (info.type.kind === TypeKind.Class) {
           const classType = info.type as ClassType;
           if (classType.isExtension && classType.onType) {
+            let appliedClass = classType;
+
+            // Handle generic extension inference for FixedArray
+            if (
+              classType.typeParameters &&
+              classType.typeParameters.length > 0 &&
+              source.kind === TypeKind.FixedArray &&
+              classType.onType.kind === TypeKind.FixedArray
+            ) {
+              const sourceElem = (source as FixedArrayType).elementType;
+              const onTypeElem = (classType.onType as FixedArrayType)
+                .elementType;
+
+              if (onTypeElem.kind === TypeKind.TypeParameter) {
+                const paramIndex = classType.typeParameters.findIndex(
+                  (p) => p.name === (onTypeElem as TypeParameterType).name,
+                );
+                if (paramIndex !== -1) {
+                  const typeArgs = new Array(
+                    classType.typeParameters.length,
+                  ).fill(Types.Unknown);
+                  typeArgs[paramIndex] = sourceElem;
+                  appliedClass = instantiateGenericClass(
+                    classType,
+                    typeArgs,
+                    ctx,
+                  );
+                }
+              }
+            }
+
             // Check if extension applies to source
-            if (isAssignableTo(ctx, source, classType.onType)) {
+            if (isAssignableTo(ctx, source, appliedClass.onType!)) {
               // Check if extension implements target interface
               if (
-                classType.implements.some((impl) =>
+                appliedClass.implements.some((impl) =>
                   isAssignableTo(ctx, impl, target),
                 )
               ) {

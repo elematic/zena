@@ -4823,8 +4823,86 @@ export function generateAdaptedArgument(
       ); // context field
 
       // 2. Args for wrapped call (subset of wrapper args)
+      const expectedParams = ctx.module.getFunctionTypeParams(
+        expectedClosure.funcTypeIndex,
+      );
+      const actualParams = ctx.module.getFunctionTypeParams(
+        actualClosure.funcTypeIndex,
+      );
+
       for (let i = 0; i < actualArity; i++) {
         funcBody.push(Opcode.local_get, i + 1);
+
+        const sourceType = expectedParams[i + 1];
+        const targetType = actualParams[i + 1];
+
+        // Interface Boxing
+        if (sourceType.length > 1 && targetType.length > 1) {
+          const sourceTypeIndex = decodeTypeIndex(sourceType);
+          const targetTypeIndex = decodeTypeIndex(targetType);
+
+          if (
+            sourceTypeIndex !== -1 &&
+            targetTypeIndex !== -1 &&
+            sourceTypeIndex !== targetTypeIndex
+          ) {
+            // Check if target is interface
+            let interfaceInfo: InterfaceInfo | undefined;
+            let interfaceName: string | undefined;
+
+            for (const [name, info] of ctx.interfaces) {
+              if (info.structTypeIndex === targetTypeIndex) {
+                interfaceInfo = info;
+                interfaceName = name;
+                break;
+              }
+            }
+
+            if (interfaceInfo && interfaceName) {
+              // Check if source is class implementing interface
+              let classInfo: ClassInfo | undefined;
+              for (const info of ctx.classes.values()) {
+                if (info.structTypeIndex === sourceTypeIndex) {
+                  classInfo = info;
+                  break;
+                }
+                if (info.isExtension && info.onType) {
+                  const onTypeIndex = decodeTypeIndex(info.onType);
+                  if (onTypeIndex === sourceTypeIndex) {
+                    classInfo = info;
+                    break;
+                  }
+                }
+              }
+
+              if (classInfo && classInfo.implements) {
+                let impl = classInfo.implements.get(interfaceName);
+                if (!impl) {
+                  for (const [implName, implInfo] of classInfo.implements) {
+                    if (isInterfaceSubtype(ctx, implName, interfaceName)) {
+                      impl = implInfo;
+                      break;
+                    }
+                  }
+                }
+
+                if (impl) {
+                  // Box it!
+                  funcBody.push(
+                    Opcode.global_get,
+                    ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
+                  );
+                  funcBody.push(0xfb, GcOpcode.struct_new);
+                  funcBody.push(
+                    ...WasmModule.encodeSignedLEB128(
+                      interfaceInfo.structTypeIndex,
+                    ),
+                  );
+                }
+              }
+            }
+          }
+        }
       }
 
       // 3. Func Ref for wrapped call
@@ -4884,18 +4962,13 @@ export function isAdaptable(
   const expectedIndex = decodeTypeIndex(expectedType);
   const actualIndex = decodeTypeIndex(actualType);
 
+  if (expectedIndex === actualIndex) return false;
+
   const expectedClosure = ctx.closureStructs.get(expectedIndex);
   const actualClosure = ctx.closureStructs.get(actualIndex);
 
   if (expectedClosure && actualClosure) {
-    const expectedArity =
-      ctx.module.getFunctionTypeArity(expectedClosure.funcTypeIndex) - 1;
-    const actualArity =
-      ctx.module.getFunctionTypeArity(actualClosure.funcTypeIndex) - 1;
-
-    if (actualArity < expectedArity) {
-      return true;
-    }
+    return true;
   }
   return false;
 }
@@ -5944,7 +6017,7 @@ function generateMatchPatternBindings(
   }
 }
 
-function isInterfaceSubtype(
+export function isInterfaceSubtype(
   ctx: CodegenContext,
   sub: string,
   sup: string,
