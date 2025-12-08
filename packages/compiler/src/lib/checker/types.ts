@@ -715,7 +715,8 @@ export function isAssignableTo(
       if (stringType && target === stringType) return true;
       if (target.kind === TypeKind.Class && (target as ClassType).name === 'String') return true;
     } else if (typeof lit.value === 'number') {
-      // Number literals are assignable to i32/f32 (we default to i32)
+      // Number literals are assignable to i32 (default for integer literals)
+      // TODO: Support more flexible literal-to-numeric-type assignment based on value range
       if (target.kind === TypeKind.Number) {
         return (target as NumberType).name === 'i32';
       }

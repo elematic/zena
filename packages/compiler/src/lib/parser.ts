@@ -2381,7 +2381,7 @@ export class Parser {
       const token = this.#previous();
       return {
         type: NodeType.LiteralTypeAnnotation,
-        value: parseFloat(token.value),
+        value: Number(token.value),
         loc: this.#loc(startToken, token),
       } as LiteralTypeAnnotation;
     }

@@ -1,5 +1,6 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
+import {NodeType} from '../../lib/ast.js';
 import {TypeChecker} from '../../lib/checker/index.js';
 import {Parser} from '../../lib/parser.js';
 import {TypeKind, type LiteralType} from '../../lib/types.js';
@@ -14,7 +15,7 @@ suite('Checker: Literal Types', () => {
 
     assert.strictEqual(errors.length, 0);
     const decl = ast.body[0];
-    if (decl.type === 'VariableDeclaration') {
+    if (decl.type === NodeType.VariableDeclaration) {
       const type = decl.inferredType;
       assert.ok(type);
       assert.strictEqual(type!.kind, TypeKind.Literal);
@@ -33,7 +34,7 @@ suite('Checker: Literal Types', () => {
 
     assert.strictEqual(errors.length, 0);
     const decl = ast.body[0];
-    if (decl.type === 'VariableDeclaration') {
+    if (decl.type === NodeType.VariableDeclaration) {
       const type = decl.inferredType;
       assert.ok(type);
       assert.strictEqual(type!.kind, TypeKind.Literal);
@@ -52,7 +53,7 @@ suite('Checker: Literal Types', () => {
 
     assert.strictEqual(errors.length, 0);
     const decl = ast.body[0];
-    if (decl.type === 'VariableDeclaration') {
+    if (decl.type === NodeType.VariableDeclaration) {
       const type = decl.inferredType;
       assert.ok(type);
       assert.strictEqual(type!.kind, TypeKind.Literal);
