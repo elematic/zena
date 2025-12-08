@@ -619,4 +619,49 @@ export class WasmModule {
 
     return readType();
   }
+
+  public getArrayElementType(typeIndex: number): number[] {
+    const typeBytes = this.#types[typeIndex];
+    let offset = 0;
+
+    // Handle 'sub' (0x50) prefix if present
+    if (typeBytes[offset] === 0x50) {
+      offset++;
+      // Read supertype list length
+      let count = 0;
+      let shift = 0;
+      while (true) {
+        const b = typeBytes[offset++];
+        count |= (b & 0x7f) << shift;
+        if ((b & 0x80) === 0) break;
+        shift += 7;
+      }
+      // Skip supertypes (each is a type index)
+      for (let i = 0; i < count; i++) {
+        while (true) {
+          const b = typeBytes[offset++];
+          if ((b & 0x80) === 0) break;
+        }
+      }
+    }
+
+    if (typeBytes[offset] !== 0x5e) {
+      // array
+      throw new Error(`Type ${typeIndex} is not an array type`);
+    }
+    offset++;
+
+    // Read element type
+    const start = offset;
+    const opcode = typeBytes[offset++];
+    if (opcode === 0x63 || opcode === 0x64) {
+      // ref null, ref
+      // Read heap type (LEB128)
+      while (true) {
+        const b = typeBytes[offset++];
+        if ((b & 0x80) === 0) break;
+      }
+    }
+    return typeBytes.slice(start, offset);
+  }
 }

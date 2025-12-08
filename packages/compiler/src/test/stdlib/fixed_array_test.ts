@@ -92,12 +92,16 @@ suite('Stdlib: FixedArray', () => {
 
   test('map with array argument', async () => {
     const source = `
+      import { FixedArray, Sequence } from 'zena:array';
+
       export let run = (): i32 => {
         let arr = new FixedArray<i32>(1, 10);
         
         // Use the array argument to modify the array itself
-        arr.map<i32>((x: i32, i: i32, a: FixedArray<i32>) => {
-          a[0] = 999;
+        // We capture 'arr' instead of using 'a' because 'a' is read-only Sequence
+        // and downcasting Sequence to MutableSequence is not supported for arrays at runtime
+        arr.map<i32>((x: i32, i: i32, a: Sequence<i32>) => {
+          arr[0] = 999;
           return x;
         });
         

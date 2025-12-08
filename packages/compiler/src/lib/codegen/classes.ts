@@ -347,18 +347,65 @@ export function generateTrampoline(
     // Adapt if needed (unbox)
     if (
       interfaceParamType.length === 1 &&
-      interfaceParamType[0] === ValType.anyref &&
-      classParamType.length === 1 &&
-      (classParamType[0] === ValType.i32 ||
-        classParamType[0] === ValType.i64 ||
-        classParamType[0] === ValType.f32 ||
-        classParamType[0] === ValType.f64)
+      interfaceParamType[0] === ValType.anyref
     ) {
-      unboxPrimitive(ctx, classParamType, body);
+      if (
+        classParamType.length === 1 &&
+        (classParamType[0] === ValType.i32 ||
+          classParamType[0] === ValType.i64 ||
+          classParamType[0] === ValType.f32 ||
+          classParamType[0] === ValType.f64)
+      ) {
+        unboxPrimitive(ctx, classParamType, body);
+      } else if (
+        classParamType.length > 1 &&
+        (classParamType[0] === ValType.ref ||
+          classParamType[0] === ValType.ref_null)
+      ) {
+        body.push(0xfb, GcOpcode.ref_cast_null);
+        body.push(...classParamType.slice(1));
+      }
     }
   }
 
-  body.push(Opcode.call, ...WasmModule.encodeSignedLEB128(classMethod.index));
+  if (classMethod.intrinsic) {
+    if (classMethod.intrinsic === 'array.len') {
+      body.push(0xfb, GcOpcode.array_len);
+    } else if (classMethod.intrinsic === 'array.get') {
+      if (!classInfo.onType)
+        throw new Error('array.get intrinsic requires onType');
+      const typeIndex = decodeTypeIndex(classInfo.onType);
+      body.push(
+        0xfb,
+        GcOpcode.array_get,
+        ...WasmModule.encodeSignedLEB128(typeIndex),
+      );
+    } else if (classMethod.intrinsic === 'array.get_u') {
+      if (!classInfo.onType)
+        throw new Error('array.get_u intrinsic requires onType');
+      const typeIndex = decodeTypeIndex(classInfo.onType);
+      body.push(
+        0xfb,
+        GcOpcode.array_get_u,
+        ...WasmModule.encodeSignedLEB128(typeIndex),
+      );
+    } else if (classMethod.intrinsic === 'array.set') {
+      if (!classInfo.onType)
+        throw new Error('array.set intrinsic requires onType');
+      const typeIndex = decodeTypeIndex(classInfo.onType);
+      body.push(
+        0xfb,
+        GcOpcode.array_set,
+        ...WasmModule.encodeSignedLEB128(typeIndex),
+      );
+    } else {
+      throw new Error(
+        `Unsupported intrinsic in trampoline: ${classMethod.intrinsic}`,
+      );
+    }
+  } else {
+    body.push(Opcode.call, ...WasmModule.encodeSignedLEB128(classMethod.index));
+  }
 
   // Handle return type adaptation (boxing)
   const classReturnType = classMethod.returnType;
@@ -1863,12 +1910,14 @@ export function mapType(
         }
         if (ctx.interfaces.has(typeName)) {
           const interfaceInfo = ctx.interfaces.get(typeName)!;
-          return [
+          const res = [
             ValType.ref_null,
             ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
           ];
+          return res;
         }
 
+        // TODO: why do we have a default here?
         return [ValType.i32];
       }
     }
