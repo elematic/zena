@@ -336,79 +336,59 @@ TODO: Once we allow type aliasing and support modules we could have
 multiple classes with the same name in a inheritance chain and get
 private name collisions.
 
-## 9. Protected Members
+## 9. Static Symbols (Protocol Methods)
 
-> **Note**: This feature is currently in the design phase and has not been implemented yet.
+Zena supports **Static Symbols** to define "protocol" or "system" methods that are not part of the public name-based API. This replaces the traditional "protected" visibility modifier with a capability-based access control model similar to JavaScript Symbols, but statically resolved for zero-cost abstraction.
 
-Zena supports protected members using the `_` prefix (e.g., `_render`).
+### 9.1. Motivation
 
-### 9.1. Access Control Rules
+Sometimes APIs need to expose methods for system use (e.g., iteration, serialization) or for advanced users, without cluttering the public auto-complete namespace or risking name collisions.
 
-Protected members are accessible in:
+### 9.2. Defining Symbols
 
-1.  **The defining class**.
-2.  **Subclasses** (transitively).
-3.  **The defining module** (file).
-
-This "Module + Subclass" visibility allows framework code within the same module to orchestrate calls to protected methods (e.g., lifecycle hooks) without exposing them to the public API.
-
-### 9.2. Inheritance & Namespaces
-
-- **Shared Namespace**: Unlike private fields (`#`), protected fields (`_`) share the same namespace down the inheritance chain. A subclass can override a protected method.
-- **No Collision**: Protected names in unrelated classes do not collide because access is resolved via the type system.
-- **Mangling**: Protected members are **not** name-mangled like private fields. They behave like public fields but with restricted visibility during type checking.
-
-### 9.3. Interfaces
-
-Interfaces can declare protected methods.
-
-- Implementing classes must provide the method (marked with `_`).
-- The method is callable only by code with protected access to the interface (e.g., code in the same module as the interface definition).
-
-### 9.4. Collision Handling (Qualified Names)
-
-To avoid name collisions (e.g., when using Mixins or Interfaces that define the same protected name), Zena supports **Qualified Method Definitions**.
+Symbols are declared using the `symbol` keyword. They can be top-level constants or static members of classes/interfaces.
 
 ```zena
-class Widget extends Component {
-  // Standard override (ambiguous if multiple bases have _render)
-  override _render() { ... }
+// Top-level symbol
+export symbol mySymbol;
 
-  // Qualified override (targets specific base/interface)
-  Component._render() { ... }
+// Static member symbol (Recommended for Interfaces)
+interface Iterable<T> {
+  static symbol iterator;
+
+  // Method definition using the symbol
+  [Iterable.iterator](): Iterator<T>;
 }
 ```
 
-**Accessing Qualified Members**:
-To access a specific qualified member, use casting to the defining type.
+### 9.3. Implementing & Calling Symbols
+
+To define or call a symbol-keyed method, use the bracket syntax `[sym]`.
 
 ```zena
-let w = new Widget();
-(w as Component)._render(); // Calls the Component._render implementation
-```
-
-### 9.5. Super Calls
-
-When overriding a protected method, you can call the superclass implementation using `super`. If the method is qualified (to resolve ambiguity), use a cast on `super` to specify which base class implementation to invoke.
-
-```zena
-class Widget extends Component {
-  Component._render() {
-    // Call the specific base implementation
-    (super as Component)._render();
+class MyList<T> implements Iterable<T> {
+  // Implementation
+  [Iterable.iterator](): Iterator<T> {
+    return new MyIterator(this);
   }
 }
+
+// Usage
+let list = new MyList();
+// list.iterator(); // Error: No such method
+let it = list[Iterable.iterator](); // OK
 ```
 
-**Note on Syntax**: We chose `(super as T).method()` to maintain symmetry with instance access `(this as T).method()`.
+### 9.4. Semantics & Compilation
 
-- **Alternative Considered**: `super<T>.method()`.
-  - _Pros_: Explicitly distinguishes "static ancestor call" from "cast".
-  - _Cons_: Inconsistent with instance access. We cannot use `instance<T>.method()` for instances because it creates parsing ambiguities with comparison operators (e.g., `a < b`).
+- **Static Resolution**: Unlike JavaScript, Zena symbols are resolved at **compile time**. The compiler maps each symbol to a unique VTable index.
+- **No Dynamic Lookup**: The expression inside `[...]` must be a compile-time constant resolving to a symbol. Dynamic expressions like `list[getRandomSymbol()]()` are **not supported** to ensure performance and AOT compatibility.
+- **Access Control**: Visibility is controlled via standard `export` rules. If you don't export the symbol, outside modules cannot call or implement the method.
 
-### 9.6. Static Symbols (Alternative Considered)
+### 9.5. Comparison to "Protected"
 
-We considered using "Static Symbols" (similar to JavaScript Symbols or private declarations) to allow capability-based access control (e.g., `[_render]() { ... }`). However, we chose the `_` sigil for simplicity and performance, avoiding the need for computed property syntax or symbol management. The "Module Visibility" rule sufficiently covers the use case where a framework needs privileged access to a method it defines.
+- **Flexibility**: Symbols can be shared across unrelated libraries (if the symbol itself is shared), allowing for "friend" access patterns beyond just subclasses.
+- **No Collisions**: Two interfaces can define methods with the same _name_ but different _symbols_, allowing a class to implement both without conflict.
 
 ## 10. Initialization & Safety
 
