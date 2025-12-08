@@ -170,6 +170,7 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Decorators**: `docs/design/decorators.md`
     - **Destructuring**: `docs/design/destructuring.md`
     - **Diagnostics**: `docs/design/diagnostics.md`
+    - **Exceptions**: `docs/design/exceptions.md`
     - **Function Overloading**: `docs/design/function-overloading.md`
     - **Generics**: `docs/design/generics.md`
     - **Host Interop**: `docs/design/host-interop.md`
@@ -260,6 +261,26 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Tuple patterns (`[1, 2]`) for Tuples.
   - Class patterns (`Point {x}`).
   - `as` patterns (`Point {x} as p`).
+  - Logical patterns (`|`, `&`).
+  - Match Guards (`case ... if ...`).
+  - Exhaustiveness Checking.
+- [x] Implement Record Spread (`{ ...p, z: 3 }`).
+- [x] Implement Exceptions (`throw`).
+- [x] Implement `never` type.
+- [x] Implement Super Calls (`super(...)`, `super.method()`, `super.field`).
+- [x] Implement Advanced Inheritance:
+  - Virtual Fields (Uniform Access Principle).
+  - Dynamic Dispatch (VTables).
+  - Casting (`as`, `is`).
+  - Mixins (Parser, Checker, Codegen).
+- [x] Implement Interfaces:
+  - Definition, Implementation, Inheritance.
+  - Fat Pointers & VTables.
+  - Interface Properties.
+- [x] Implement Abstract Classes (`abstract` keyword, abstract methods).
+- [x] Enforce Access Control (`#` private fields).
+- [x] Implement Generic Constraints (`T extends Animal`).
+- [x] Implement Blocks (Lexical Scoping).
 
 ### Planned
 
@@ -270,60 +291,23 @@ This project is an **npm monorepo** managed with **Wireit**.
       - Use byte streaming (start/byte/end pattern) for string I/O.
       - See `docs/design/host-interop.md` for details.
 
-2.  **Object-Oriented Features**:
-    - **Accessors**:
-      - [x] Implement Type Checker for accessors.
-      - [x] Implement Code Generator for accessors (emit methods).
-      - [x] Implement Property Access syntax (rewrite `obj.prop` to method calls).
-    - **Optimization (`final`)**:
-      - [x] Implement Type Checker for `final` (prevent overrides/subclassing).
-      - [x] Implement Code Generator for `final` (devirtualization).
-    - **Super Calls**:
-      - [x] Implement `super(...)` constructor calls.
-      - [x] Implement `super.method()` calls (static dispatch).
-      - [x] Implement `super.field` access.
-    - **Inheritance (Advanced)**:
-      - [x] **Virtual Fields**: Implement Uniform Access Principle (treat public fields as virtual properties with default accessors).
-      - [x] **Dynamic Dispatch**: Implement VTables for polymorphic method calls.
-      - **Casting**:
-        - [x] Implement `as` operator.
-        - [x] Implement `is` checks.
-      - **Mixins**:
-        - [x] Implement Mixin Parser.
-        - [x] Implement Mixin Type Checker.
-        - [x] Implement Mixin Code Generator (Application, Composition, Overrides).
-    - **Interfaces**:
-      - [x] Implement Interface Parser & Checker.
-      - [x] Implement Interface Code Generator (Fat Pointers, VTables).
-      - [x] Implement `implements` keyword.
-      - [x] Implement Interface Properties (Getters in VTable).
-      - [x] Implement Interface Inheritance (`interface A extends B`).
-    - **Abstract Classes**:
-      - [x] Implement `abstract` keyword.
-      - [x] Implement Abstract Methods.
-    - **Access Control**:
-      - [x] Enforce `#` private fields strictly.
-
-3.  **Generics Enhancements**:
-    - **Constraints**: Support `T extends Animal` (Requires Inheritance).
-
-4.  **Data Structures**:
+2.  **Data Structures**:
     - **Maps**: Implement map literal syntax (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
-5.  **Standard Library**:
+3.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
     - String manipulation (`substring`, `indexOf`).
+    - Regexes.
 
-6.  **Self-Hosting**:
+4.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
 
-7.  **Pattern Matching (Advanced)**:
+5.  **Pattern Matching (Advanced)**:
     - Array element matching (requires `FixedArray` support or `Sequence` interface).
     - Rest patterns (`...tail`).
-    - Logical patterns (`|`, `&`).
 
-8.  **Future Features**:
+6.  **Future Features**:
     - **Syntax**:
       - Blocks.
       - For/of loops.
@@ -339,7 +323,6 @@ This project is an **npm monorepo** managed with **Wireit**.
       - Mixin constructors.
       - Async functions.
     - **Standard Library & Runtime**:
-      - More operators: ternary, not, exponentiation.
+      - More operators: exponentiation.
       - Regexes.
-      - Console built-in.
       - Workers.

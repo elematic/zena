@@ -62,6 +62,7 @@ This soundness is enforced by the underlying WASM-GC architecture. Zena does not
 - **`boolean`**: Boolean value (`true` or `false`).
 - **`string`**: UTF-8 string.
 - **`anyref`**: The top type for all reference types. It can hold any object, array, string, function, or `null`. It cannot hold unboxed primitives (`i32`, `f32`, `boolean`).
+- **`never`**: The bottom type. It represents a value that never occurs (e.g., the result of `throw` or a function that never returns). `never` is a subtype of every type.
 - **`ByteArray`**: A mutable array of 8-bit integers. This is a low-level type primarily used for implementing strings and binary data manipulation.
 
 ### The `any` Type
@@ -463,6 +464,8 @@ let quote = 'She said "Hi"'; // Escaped double quotes
 let apostrophe = "it's"; // Escaped single quote
 ```
 
+**Note**: Unicode escape sequences (e.g., `\uXXXX`) are not currently supported. Since Zena source files are UTF-8, you can include Unicode characters directly in the string.
+
 ### Strings
 
 Strings are immutable sequences of UTF-8 bytes.
@@ -635,6 +638,19 @@ Operands must be of type `boolean`.
 
 ## 6. Control Flow
 
+### Blocks
+
+A block statement groups zero or more statements within curly braces `{}`. Blocks introduce a new **lexical scope**. Variables declared within a block are only accessible within that block and any nested blocks.
+
+```zena
+let outer = 1;
+{
+  let inner = 2;
+  // outer and inner are visible
+}
+// inner is not visible here
+```
+
 ### If Statement
 
 Zena supports `if` and `else` for conditional execution.
@@ -803,13 +819,25 @@ Match cases can include an optional guard expression using `if`. The guard is a 
 match (x) {
   case i if i > 10: "greater than 10"
   case i if i < 0: "negative"
-  case _: "between 0 and 10"
+    case _: "between 0 and 10"
 }
 ```
 
-#### Exhaustiveness Checking
+#### Block Cases
 
-Match expressions must be exhaustive, meaning they must cover all possible values of the discriminant type. If the compiler detects that some values are not covered, it will report an error.
+Match cases can contain a block of statements. The value of the block is the value of the last expression.
+
+```zena
+match (x) {
+  case 1: {
+    let result = x * 2;
+    result + 1
+  }
+  case _: 0
+}
+```
+
+#### Exhaustiveness CheckingMatch expressions must be exhaustive, meaning they must cover all possible values of the discriminant type. If the compiler detects that some values are not covered, it will report an error.
 
 ```zena
 type T = 1 | 2;

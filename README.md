@@ -78,12 +78,15 @@ Why do this though? Will anyone use this language? What's the point? Here are so
 - [x] Console built-in
 - [ ] Mutable Maps and map literals (`#{...}`)
 - [ ] More primitive types
-- [ ] Blocks
+- [x] Blocks
 - [ ] Do/while loops
-- [ ] Pattern matching
+- [x] Pattern matching (Basic, Logical, Guards)
+- [x] Record spread syntax (`{ ...p }`)
+- [x] Exceptions (`throw`)
+- [x] `never` type
 - [ ] For/of loops
 - [ ] Iterators
-- [ ] More operators: ternary, not, exponentiation
+- [ ] More operators: exponentiation
 - [ ] Standard library
 - [ ] Numeric unit types
 - [ ] Extension methods
