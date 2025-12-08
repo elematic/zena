@@ -179,6 +179,41 @@ let maybeNumber: Box<i32> | null = new Box(42);
 
 **Note**: This is distinct from the "Indistinguishable Types" limitation (see [Distinguishable Types & Erasure](#distinguishable-types--erasure)). Primitives _are_ distinguishable from references, but they are incompatible in storage layout.
 
+### Literal Types
+
+Zena supports **literal types** for strings, numbers, and booleans. A literal type represents a single, specific value rather than a general type. Literal types are especially useful in union types to create enumerations of specific values.
+
+```zena
+// String literal types
+type Mode = 'replace' | 'append' | 'insert';
+let mode: Mode = 'replace';
+
+// Number literal types
+type Level = 1 | 2 | 3;
+let level: Level = 2;
+
+// Boolean literal types
+type Flag = true | false;  // Equivalent to boolean, but more explicit
+let flag: Flag = true;
+```
+
+Literal types are checked at compile time and allow precise type constraints:
+
+```zena
+let setMode = (mode: 'read' | 'write') => {
+  // mode is guaranteed to be exactly 'read' or 'write'
+};
+
+setMode('read');    // OK
+setMode('append');  // Error: Type '"append"' is not assignable to type '"read" | "write"'
+```
+
+**Key points:**
+- Literal types are **singleton types** - they represent exactly one value.
+- Unlike regular primitive types, literal types **can be used in unions** because they are distinguishable at runtime.
+- A literal value is assignable to its literal type and to the corresponding base type (e.g., `'hello'` is assignable to both `'hello'` and `string`).
+- Literal types enable precise API contracts and exhaustive pattern matching.
+
 ## 3. Variables
 
 Variables are declared using `let` or `var`.
