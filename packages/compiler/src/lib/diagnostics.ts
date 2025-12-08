@@ -35,6 +35,7 @@ export const DiagnosticCode = {
   UnknownIntrinsic: 2019,
   MissingDecorator: 2020,
   UnexpectedBody: 2021,
+  UnreachableCode: 2022,
 
   // Codegen Errors (3000-3999)
   UnknownType: 3001,

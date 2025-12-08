@@ -807,6 +807,37 @@ match (x) {
 }
 ```
 
+#### Exhaustiveness Checking
+
+Match expressions must be exhaustive, meaning they must cover all possible values of the discriminant type. If the compiler detects that some values are not covered, it will report an error.
+
+```zena
+type T = 1 | 2;
+let x: T = 1;
+
+// Error: Non-exhaustive match. Remaining type: 2
+match (x) {
+  case 1: "one"
+}
+
+// OK
+match (x) {
+  case 1: "one"
+  case 2: "two"
+}
+```
+
+You can use a wildcard pattern `_` or a variable pattern to cover all remaining cases.
+
+```zena
+match (x) {
+  case 1: "one"
+  case _: "other"
+}
+```
+
+The compiler also checks for unreachable cases. If a case appears after a pattern that covers all remaining possibilities (like a wildcard), it is flagged as unreachable.
+
 ## 7. Classes and Objects
 
 Zena supports object-oriented programming with classes.
@@ -838,11 +869,11 @@ Classes can be generic by specifying type parameters:
 ```zena
 class Box<T> {
   value: T;
-  
+
   #new(value: T) {
     this.value = value;
   }
-  
+
   getValue(): T {
     return this.value;
   }
@@ -863,7 +894,7 @@ class Animal {
 
 class Zoo<T extends Animal> {
   animals: array<T>;
-  
+
   #new() {
     this.animals = #[];
   }
@@ -875,7 +906,7 @@ Multiple type parameters can have constraints that reference other type paramete
 ```zena
 class Container<T extends Box<V>, V> {
   item: T;
-  
+
   #new(item: T) {
     this.item = item;
   }

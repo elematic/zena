@@ -434,7 +434,10 @@ export function generateTrampoline(
         classTypeIndex !== -1 &&
         interfaceTypeIndex !== classTypeIndex
       ) {
-        const interfaceInfo = getInterfaceFromTypeIndex(ctx, interfaceTypeIndex);
+        const interfaceInfo = getInterfaceFromTypeIndex(
+          ctx,
+          interfaceTypeIndex,
+        );
 
         if (interfaceInfo) {
           let interfaceName: string | undefined;

@@ -150,10 +150,19 @@ function checkMatchExpression(
   const discriminantType = checkExpression(ctx, expr.discriminant);
   const caseTypes: Type[] = [];
   const matchedTypes: Type[] = [];
+  let remainingType = discriminantType;
 
   for (const c of expr.cases) {
     ctx.enterScope();
     checkMatchPattern(ctx, c.pattern, discriminantType);
+
+    // Check for unreachable code
+    if (remainingType.kind === TypeKind.Never) {
+      ctx.diagnostics.reportError(
+        `Unreachable case. The match is already exhaustive.`,
+        DiagnosticCode.UnreachableCode,
+      );
+    }
 
     const patternType = getPatternType(ctx, c.pattern);
     if (patternType) {
@@ -183,6 +192,12 @@ function checkMatchExpression(
       matchedTypes.push(patternType);
     }
 
+    // Update remaining type
+    // Only if there is no guard. If there is a guard, we can't assume the pattern covers the type.
+    if (!c.guard) {
+      remainingType = subtractType(ctx, remainingType, c.pattern);
+    }
+
     if (c.guard) {
       const guardType = checkExpression(ctx, c.guard);
       if (guardType !== Types.Boolean) {
@@ -196,6 +211,13 @@ function checkMatchExpression(
     const bodyType = checkMatchCaseBody(ctx, c.body);
     caseTypes.push(bodyType);
     ctx.exitScope();
+  }
+
+  if (remainingType.kind !== TypeKind.Never) {
+    ctx.diagnostics.reportError(
+      `Non-exhaustive match. Remaining type: ${typeToString(remainingType)}`,
+      DiagnosticCode.TypeMismatch,
+    );
   }
 
   if (caseTypes.length === 0) return Types.Void;
@@ -463,6 +485,35 @@ function checkMatchPattern(
             continue;
           }
           checkMatchPattern(ctx, prop.value, propType);
+        }
+      } else if (discriminantType.kind === TypeKind.Union) {
+        const unionType = discriminantType as UnionType;
+        // Check if pattern matches any member of the union
+        const matchingMembers = unionType.types.filter((t) => {
+          if (t.kind === TypeKind.Record) {
+            const rt = t as RecordType;
+            return recordPattern.properties.every((p) =>
+              rt.properties.has(p.name.name),
+            );
+          }
+          // TODO: Handle classes in union too?
+          return false;
+        });
+
+        if (matchingMembers.length === 0) {
+          ctx.diagnostics.reportError(
+            `Pattern does not match any type in the union '${typeToString(discriminantType)}'.`,
+            DiagnosticCode.TypeMismatch,
+          );
+        } else {
+          // For each property, check against the union of property types from matching members
+          for (const prop of recordPattern.properties) {
+            const propTypes = matchingMembers.map(
+              (t) => (t as RecordType).properties.get(prop.name.name)!,
+            );
+            const propType = createUnionType(propTypes);
+            checkMatchPattern(ctx, prop.value, propType);
+          }
         }
       } else {
         // Allow if unknown or any?
@@ -2099,4 +2150,107 @@ function validateTypeArgumentConstraints(
       }
     }
   }
+}
+
+function subtractType(
+  ctx: CheckerContext,
+  type: Type,
+  pattern:
+    | Pattern
+    | ClassPattern
+    | NumberLiteral
+    | StringLiteral
+    | BooleanLiteral
+    | NullLiteral,
+): Type {
+  if (type.kind === TypeKind.Union) {
+    const ut = type as UnionType;
+    const remainingMembers: Type[] = [];
+    for (const t of ut.types) {
+      const rem = subtractType(ctx, t, pattern);
+      if (rem.kind !== TypeKind.Never) {
+        remainingMembers.push(rem);
+      }
+    }
+    if (remainingMembers.length === 0) return Types.Never;
+    return createUnionType(remainingMembers);
+  }
+
+  // Handle Wildcard
+  if (pattern.type === NodeType.Identifier && pattern.name === '_') {
+    return Types.Never;
+  }
+  // Handle Variable Pattern (matches everything)
+  if (pattern.type === NodeType.Identifier) {
+    return Types.Never;
+  }
+  if (pattern.type === NodeType.AsPattern) {
+    return subtractType(ctx, type, (pattern as AsPattern).pattern);
+  }
+
+  // Handle Literals
+  if (
+    pattern.type === NodeType.NumberLiteral ||
+    pattern.type === NodeType.StringLiteral ||
+    pattern.type === NodeType.BooleanLiteral
+  ) {
+    // If type is a LiteralType and matches, return Never.
+    if (type.kind === TypeKind.Literal) {
+      const litType = type as LiteralType;
+      const patVal = (pattern as any).value;
+      if (litType.value === patVal) return Types.Never;
+      return type;
+    }
+    // If type is Boolean and pattern is true/false
+    if (
+      type.kind === TypeKind.Boolean &&
+      pattern.type === NodeType.BooleanLiteral
+    ) {
+      const val = (pattern as BooleanLiteral).value;
+      return {kind: TypeKind.Literal, value: !val} as LiteralType; // The other boolean value
+    }
+    return type;
+  }
+
+  // Handle Classes
+  if (pattern.type === NodeType.ClassPattern) {
+    const classPattern = pattern as ClassPattern;
+    const className = classPattern.name.name;
+    const patType = ctx.resolve(className);
+
+    if (type.kind === TypeKind.Class) {
+      if (patType && isAssignableTo(ctx, type, patType)) {
+        // Pattern class covers the type.
+        // Check properties.
+        if (classPattern.properties.length === 0) return Types.Never;
+
+        // If properties are present, we assume it's partial unless we prove otherwise.
+        // For now, assume if there are properties, it's NOT exhaustive for the class.
+      }
+    }
+    return type;
+  }
+
+  // Handle Records
+  if (pattern.type === NodeType.RecordPattern) {
+    if (type.kind === TypeKind.Record) {
+      const recordType = type as RecordType;
+      let covers = true;
+      for (const prop of (pattern as RecordPattern).properties) {
+        const fieldType = recordType.properties.get(prop.name.name);
+        if (!fieldType) {
+          return type;
+        }
+        const rem = subtractType(ctx, fieldType, prop.value);
+        if (rem.kind !== TypeKind.Never) {
+          covers = false;
+          break;
+        }
+      }
+      if (covers) return Types.Never;
+    }
+    return type;
+  }
+
+  return type;
 }
