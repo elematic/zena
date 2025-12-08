@@ -838,11 +838,11 @@ Classes can be generic by specifying type parameters:
 ```zena
 class Box<T> {
   value: T;
-  
+
   #new(value: T) {
     this.value = value;
   }
-  
+
   getValue(): T {
     return this.value;
   }
@@ -863,7 +863,7 @@ class Animal {
 
 class Zoo<T extends Animal> {
   animals: array<T>;
-  
+
   #new() {
     this.animals = #[];
   }
@@ -875,7 +875,7 @@ Multiple type parameters can have constraints that reference other type paramete
 ```zena
 class Container<T extends Box<V>, V> {
   item: T;
-  
+
   #new(item: T) {
     this.item = item;
   }
@@ -994,9 +994,75 @@ Since extension classes and distinct types are erased at runtime, they have some
     ```zena
     match (arr) {
       case A {}: ...
-      case B {}: ... // Error: Ambiguous match
-    }
     ```
+
+## 8. Enums
+
+Enums allow you to define a set of named constants. Zena enums are nominal types that wrap a union of literal values.
+
+### Syntax
+
+```zena
+enum Color {
+  Red,
+  Green,
+  Blue
+}
+
+enum Direction {
+  Up = "UP",
+  Down = "DOWN"
+}
+```
+
+### Semantics
+
+An enum declaration creates:
+
+1.  A **Distinct Type** named `Color` which is a union of the member values (e.g., `0 | 1 | 2`).
+2.  A **Runtime Object** named `Color` containing the members as properties.
+
+```zena
+let c: Color = Color.Red;
+```
+
+### Backing Types
+
+Enums can be backed by integers (`i32`) or strings.
+
+- **Integer Enums**: If no initializer is provided, values start at 0 and increment by 1.
+  ```zena
+  enum Status {
+    Ok = 200,
+    NotFound = 404
+  }
+  ```
+- **String Enums**: Members are initialized with string literals.
+  ```zena
+  enum Direction {
+    Up = "UP",
+    Down = "DOWN"
+  }
+  ```
+
+### Type Safety
+
+Enums are **distinct types**, meaning they are not assignable to or from their underlying primitive types without an explicit cast.
+
+```zena
+let c: Color = Color.Red;
+
+// Error: Type 'i32' is not assignable to type 'Color'.
+// let x: Color = 0;
+
+// Error: Type 'Color' is not assignable to type 'i32'.
+// let y: i32 = c;
+
+// Explicit casting is allowed
+let z: i32 = c as i32;
+```
+
+Because the Enum type is defined as a union of its member values (e.g., `0 | 1 | 2`), the type checker enforces that variables of the Enum type can only hold one of the valid member values (within the limits of compile-time analysis).
 
 ### Built-in Types
 
@@ -1216,6 +1282,41 @@ class Error {
   message: string;
   #new(message: string) { this.message = message; }
 }
+```
+
+## 12. Enums
+
+Enums allow you to define a set of named constants. In Zena, enums are nominal types backed by `i32` values.
+
+```zena
+enum Color {
+  Red,
+  Green,
+  Blue
+}
+
+let c: Color = Color.Red;
+```
+
+### Backing Values
+
+By default, enum members are assigned integer values starting from 0. You can manually specify values.
+
+```zena
+enum Status {
+  Ok = 200,
+  NotFound = 404,
+  Error = 500
+}
+```
+
+### Usage
+
+Enums are treated as distinct types. You cannot assign an integer directly to an enum variable without casting, nor can you assign an enum to an integer variable without casting.
+
+```zena
+let s: Status = Status.Ok;
+let code: i32 = s as i32; // Explicit cast required
 ```
 
 ## 14. Grammar (Simplified)

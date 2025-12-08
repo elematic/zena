@@ -1303,6 +1303,44 @@ function generateMemberExpression(
       }
     }
 
+    // Check for Enums
+    if (!foundClass && ctx.enums.has(structTypeIndex)) {
+      // It's an enum!
+      // We are accessing a member of the enum value (which is a struct).
+      // But wait, enum values are just i32s (or strings) wrapped in a struct?
+      // No, the enum *type* is a struct type.
+      // The enum *value* is an instance of that struct.
+      // Actually, the design says:
+      // "Enum values are represented as distinct types backed by i32 or string."
+      // But in codegen we made a struct type for the *namespace*?
+      // Wait, let's look at #generateEnum in codegen/index.ts.
+      // It creates a global which is a struct instance.
+      // The struct fields are the enum members.
+      // So `Color.Red` is a field access on that global struct.
+
+      // However, here we are in `generateMemberExpression`.
+      // If `object` is the Enum type (which is a value in Zena),
+      // then `objectType` is the type of that value.
+      // The type of the Enum value (the namespace object) is the struct type we created.
+
+      const enumInfo = ctx.enums.get(structTypeIndex)!;
+      if (enumInfo.members.has(fieldName)) {
+        const fieldIndex = enumInfo.members.get(fieldName)!;
+
+        // Push the enum instance (struct) onto the stack
+        generateExpression(ctx, expr.object, body);
+
+        // Emit struct.get
+        body.push(
+          Opcode.gc_prefix,
+          GcOpcode.struct_get,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+          ...WasmModule.encodeSignedLEB128(fieldIndex),
+        );
+        return;
+      }
+    }
+
     if (foundClass) {
       // Fall through to class member access
     } else {

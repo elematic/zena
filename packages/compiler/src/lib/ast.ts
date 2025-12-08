@@ -67,6 +67,8 @@ export const NodeType = {
   AccessorSignature: 'AccessorSignature',
   LiteralTypeAnnotation: 'LiteralTypeAnnotation',
   SpreadElement: 'SpreadElement',
+  EnumDeclaration: 'EnumDeclaration',
+  EnumMember: 'EnumMember',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -121,7 +123,8 @@ export type Statement =
   | MixinDeclaration
   | DeclareFunction
   | ImportDeclaration
-  | TypeAliasDeclaration;
+  | TypeAliasDeclaration
+  | EnumDeclaration;
 
 export interface ImportSpecifier extends Node {
   type: typeof NodeType.ImportSpecifier;
@@ -633,4 +636,18 @@ export interface TaggedTemplateExpression extends Node {
   type: typeof NodeType.TaggedTemplateExpression;
   tag: Expression;
   quasi: TemplateLiteral;
+}
+
+export interface EnumMember extends Node {
+  type: typeof NodeType.EnumMember;
+  name: Identifier;
+  initializer?: Expression;
+  resolvedValue?: number | string;
+}
+
+export interface EnumDeclaration extends Node {
+  type: typeof NodeType.EnumDeclaration;
+  name: Identifier;
+  members: EnumMember[];
+  exported: boolean;
 }

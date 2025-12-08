@@ -1776,7 +1776,6 @@ export function mapType(
   type: TypeAnnotation,
   context?: Map<string, TypeAnnotation>,
 ): number[] {
-  const typeContext = context || ctx.currentTypeContext;
   if (!type) return [ValType.i32];
 
   if (
@@ -1786,13 +1785,24 @@ export function mapType(
     // console.log(`Mapping FixedArray: ${JSON.stringify(type)}`);
   }
 
+  return mapTypeInternal(ctx, type, context);
+}
+
+function mapTypeInternal(
+  ctx: CodegenContext,
+  type: TypeAnnotation,
+  context?: Map<string, TypeAnnotation>,
+): number[] {
+  const typeContext = context || ctx.currentTypeContext;
+  if (!type) return [ValType.i32];
+
   // Resolve generic type parameters
   if (
     type.type === NodeType.TypeAnnotation &&
     typeContext &&
     typeContext.has(type.name)
   ) {
-    return mapType(ctx, typeContext.get(type.name)!, typeContext);
+    return mapTypeInternal(ctx, typeContext.get(type.name)!, typeContext);
   }
 
   // Check type aliases
@@ -1940,6 +1950,7 @@ export function mapType(
           return res;
         }
 
+        // console.log(`mapType: Unknown type '${typeName}', defaulting to i32. Context:`, context ? Array.from(context.keys()) : 'none');
         // TODO: why do we have a default here?
         return [ValType.i32];
       }

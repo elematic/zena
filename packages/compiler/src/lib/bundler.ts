@@ -32,6 +32,11 @@ export class Bundler {
    */
   #globalSymbols = new Map<string, string>();
 
+  /**
+   * Maps prelude export names (e.g. "console", "Box") to their unique bundled name.
+   */
+  #preludeSymbols = new Map<string, string>();
+
   constructor(modules: Module[], entryPoint: Module) {
     this.#modules = modules;
     this.#entryPoint = entryPoint;
@@ -51,7 +56,24 @@ export class Bundler {
       this.#collectModuleSymbols(module);
     }
 
-    // 3. Rewrite ASTs
+    // 3. Collect prelude symbols
+    for (const module of this.#modules) {
+      if (module.path.startsWith('zena:')) {
+        for (const [key] of module.exports) {
+          // key is like "value:console" or "type:Box"
+          const name = key.split(':')[1];
+          const globalKey = `${module.path}:${name}`;
+          if (this.#globalSymbols.has(globalKey)) {
+            const bundledName = this.#globalSymbols.get(globalKey)!;
+            if (!this.#preludeSymbols.has(name)) {
+              this.#preludeSymbols.set(name, bundledName);
+            }
+          }
+        }
+      }
+    }
+
+    // 4. Rewrite ASTs
     const newBody: Statement[] = [];
     for (const module of this.#modules) {
       const rewrittenStatements = this.#rewriteModule(module);
@@ -146,6 +168,16 @@ export class Bundler {
       sorted.push(module);
     };
 
+    // First pass: Visit standard library modules (zena:*)
+    // This ensures they appear before user code in the bundle,
+    // which is required because user code implicitly depends on them (prelude).
+    for (const module of this.#modules) {
+      if (module.path.startsWith('zena:')) {
+        visit(module, new Set());
+      }
+    }
+
+    // Second pass: Visit remaining modules
     for (const module of this.#modules) {
       visit(module, new Set());
     }
@@ -171,7 +203,8 @@ export class Bundler {
         stmt.type === NodeType.ClassDeclaration ||
         stmt.type === NodeType.InterfaceDeclaration ||
         stmt.type === NodeType.MixinDeclaration ||
-        stmt.type === NodeType.DeclareFunction
+        stmt.type === NodeType.DeclareFunction ||
+        stmt.type === NodeType.EnumDeclaration
       ) {
         name = (stmt as any).name.name;
       }
@@ -270,6 +303,7 @@ export class Bundler {
       module,
       this.#modulePrefixes.get(module.path)!,
       this.#globalSymbols,
+      this.#preludeSymbols,
       importMap,
     ).visit(stmt);
   }
@@ -279,6 +313,7 @@ class ASTRewriter {
   module: Module;
   prefix: string;
   globalSymbols: Map<string, string>;
+  preludeSymbols: Map<string, string>;
   importMap: Map<string, string>;
   scopeStack: Set<string>[] = [];
 
@@ -286,11 +321,13 @@ class ASTRewriter {
     module: Module,
     prefix: string,
     globalSymbols: Map<string, string>,
+    preludeSymbols: Map<string, string>,
     importMap: Map<string, string>,
   ) {
     this.module = module;
     this.prefix = prefix;
     this.globalSymbols = globalSymbols;
+    this.preludeSymbols = preludeSymbols;
     this.importMap = importMap;
     this.scopeStack.push(new Set()); // Top-level scope (but we don't add top-level decls here, we rename them)
   }
@@ -349,6 +386,8 @@ class ASTRewriter {
           const key = `${this.module.path}:${typeName}`;
           if (this.globalSymbols.has(key)) {
             typeNode.name = this.globalSymbols.get(key)!;
+          } else if (this.preludeSymbols.has(typeName)) {
+            typeNode.name = this.preludeSymbols.get(typeName)!;
           }
         }
         // Visit type arguments
@@ -507,6 +546,12 @@ class ASTRewriter {
     const key = `${this.module.path}:${name}`;
     if (this.globalSymbols.has(key)) {
       node.name = this.globalSymbols.get(key)!;
+      return;
+    }
+
+    // 4. Check prelude symbols
+    if (this.preludeSymbols.has(name)) {
+      node.name = this.preludeSymbols.get(name)!;
     }
   }
 

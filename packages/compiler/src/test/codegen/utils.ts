@@ -70,6 +70,7 @@ export async function compileAndInstantiate(
     exports: new Map(),
     isStdlib: true,
   } as any);
+  checker.preludeModules = compiler.preludeModules;
   const diagnostics = checker.check();
   if (diagnostics.length > 0) {
     throw new Error(

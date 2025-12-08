@@ -2,6 +2,7 @@ import {
   NodeType,
   type ClassDeclaration,
   type DeclareFunction,
+  type EnumDeclaration,
   type FunctionExpression,
   type InterfaceDeclaration,
   type MixinDeclaration,
@@ -21,7 +22,7 @@ import {
   generateStringGetByteFunction,
   inferType,
 } from './expressions.js';
-import {HeapType, Opcode, ValType, ExportDesc} from '../wasm.js';
+import {HeapType, Opcode, ValType, ExportDesc, GcOpcode} from '../wasm.js';
 import {WasmModule} from '../emitter.js';
 
 /**
@@ -165,6 +166,8 @@ export class CodeGenerator {
             globalInitializers.push({index: globalIndex, init: member.value});
           }
         }
+      } else if (statement.type === NodeType.EnumDeclaration) {
+        this.#generateEnum(statement as EnumDeclaration);
       } else if (statement.type === NodeType.VariableDeclaration) {
         const varDecl = statement as VariableDeclaration;
         if (varDecl.pattern.type === NodeType.Identifier) {
@@ -282,4 +285,95 @@ export class CodeGenerator {
 
     return this.#ctx.module.toBytes();
   }
+
+  #generateEnum(decl: EnumDeclaration) {
+    // Determine backing type (assume i32 for now)
+    const backingType = ValType.i32;
+
+    const fieldTypes: number[] = [];
+    for (const _ of decl.members) {
+      fieldTypes.push(backingType);
+    }
+
+    // Create struct type
+    // (field (mut i32)) ... actually they should be immutable (const).
+    // (field i32)
+    const structTypeIndex = this.#ctx.module.addStructType(
+      fieldTypes.map((t) => ({type: [t], mutable: false})),
+    );
+
+    // Register enum info
+    const members = new Map<string, number>();
+    decl.members.forEach((m, i) => members.set(m.name.name, i));
+    this.#ctx.enums.set(structTypeIndex, {members});
+
+    // Create Global
+    // (global $EnumName (ref $StructType) (struct.new $StructType (i32.const val)...))
+
+    const initOps: number[] = [];
+    for (const member of decl.members) {
+      const val = member.resolvedValue;
+      if (typeof val === 'number') {
+        initOps.push(Opcode.i32_const, ...encodeSignedLEB128(val));
+      } else {
+        // Fallback for non-numbers (should be caught by checker)
+        initOps.push(Opcode.i32_const, 0);
+      }
+    }
+
+    initOps.push(
+      Opcode.gc_prefix,
+      GcOpcode.struct_new,
+      ...encodeUnsignedLEB128(structTypeIndex),
+    );
+
+    const globalType = [ValType.ref, ...encodeSignedLEB128(structTypeIndex)]; // (ref $StructType)
+    const globalIndex = this.#ctx.module.addGlobal(
+      globalType,
+      false, // immutable
+      initOps,
+    );
+
+    this.#ctx.defineGlobal(decl.name.name, globalIndex, globalType);
+
+    if (decl.exported) {
+      this.#ctx.module.addExport(
+        decl.name.name,
+        ExportDesc.Global,
+        globalIndex,
+      );
+    }
+  }
+}
+
+function encodeSignedLEB128(value: number): number[] {
+  const bytes: number[] = [];
+  let more = true;
+  while (more) {
+    let byte = value & 0x7f;
+    value >>= 7;
+    if (
+      (value === 0 && (byte & 0x40) === 0) ||
+      (value === -1 && (byte & 0x40) !== 0)
+    ) {
+      more = false;
+    } else {
+      byte |= 0x80;
+    }
+    bytes.push(byte);
+  }
+  return bytes;
+}
+
+function encodeUnsignedLEB128(value: number): number[] {
+  const bytes: number[] = [];
+  do {
+    let byte = value & 0x7f;
+    value >>>= 7;
+    if (value !== 0) {
+      byte |= 0x80;
+    }
+    bytes.push(byte);
+  } while (value !== 0);
+  return bytes;
 }

@@ -60,8 +60,10 @@ export class CheckerContext {
 
   declare(name: string, type: Type, kind: 'let' | 'var' | 'type' = 'let') {
     const scope = this.scopes[this.scopes.length - 1];
-    if (scope.has(name)) {
-      const existing = scope.get(name)!;
+    const key = kind === 'type' ? `type:${name}` : `value:${name}`;
+
+    if (scope.has(key)) {
+      const existing = scope.get(key)!;
       // Allow overloading for functions
       if (
         existing.kind === 'let' &&
@@ -84,37 +86,113 @@ export class CheckerContext {
       );
       return;
     }
-    scope.set(name, {type, kind});
+    scope.set(key, {type, kind});
   }
 
-  resolve(name: string): Type | undefined {
+  resolveValue(name: string): Type | undefined {
+    const key = `value:${name}`;
     for (let i = this.scopes.length - 1; i >= 0; i--) {
-      if (this.scopes[i].has(name)) {
-        return this.scopes[i].get(name)!.type;
+      if (this.scopes[i].has(key)) {
+        return this.scopes[i].get(key)!.type;
       }
     }
 
     // Check prelude
-    if (this.preludeExports.has(name)) {
-      const exportInfo = this.preludeExports.get(name)!;
-      this.usedPreludeSymbols.set(name, {
+    if (this.preludeExports.has(key)) {
+      const exportInfo = this.preludeExports.get(key)!;
+      this.usedPreludeSymbols.set(key, {
         modulePath: exportInfo.modulePath,
         exportName: exportInfo.exportName,
       });
       return exportInfo.info.type;
     }
 
+    // Fallback for legacy/unmangled prelude exports
+    if (this.preludeExports.has(name)) {
+      const exportInfo = this.preludeExports.get(name)!;
+      if (exportInfo.info.kind !== 'type') {
+        this.usedPreludeSymbols.set(name, {
+          modulePath: exportInfo.modulePath,
+          exportName: exportInfo.exportName,
+        });
+        return exportInfo.info.type;
+      }
+    }
+
     return undefined;
   }
 
-  resolveInfo(name: string): SymbolInfo | undefined {
+  resolveType(name: string): Type | undefined {
+    const key = `type:${name}`;
     for (let i = this.scopes.length - 1; i >= 0; i--) {
-      if (this.scopes[i].has(name)) {
-        return this.scopes[i].get(name)!;
+      if (this.scopes[i].has(key)) {
+        return this.scopes[i].get(key)!.type;
       }
     }
 
     // Check prelude
+    if (this.preludeExports.has(key)) {
+      const exportInfo = this.preludeExports.get(key)!;
+      this.usedPreludeSymbols.set(key, {
+        modulePath: exportInfo.modulePath,
+        exportName: exportInfo.exportName,
+      });
+      return exportInfo.info.type;
+    }
+
+    // Fallback for legacy/unmangled prelude exports
+    if (this.preludeExports.has(name)) {
+      const exportInfo = this.preludeExports.get(name)!;
+      if (exportInfo.info.kind === 'type') {
+        this.usedPreludeSymbols.set(name, {
+          modulePath: exportInfo.modulePath,
+          exportName: exportInfo.exportName,
+        });
+        return exportInfo.info.type;
+      }
+    }
+
+    return undefined;
+  }
+
+  resolveInfo(name: string): SymbolInfo | undefined {
+    // Try value first, then type? Or return both?
+    // This method is used for finding symbol info, usually for values.
+    // Let's check usage.
+    const valueKey = `value:${name}`;
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      if (this.scopes[i].has(valueKey)) {
+        return this.scopes[i].get(valueKey)!;
+      }
+    }
+
+    const typeKey = `type:${name}`;
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      if (this.scopes[i].has(typeKey)) {
+        return this.scopes[i].get(typeKey)!;
+      }
+    }
+
+    // Check prelude
+    if (this.preludeExports.has(valueKey)) {
+      const exportInfo = this.preludeExports.get(valueKey)!;
+      this.usedPreludeSymbols.set(valueKey, {
+        modulePath: exportInfo.modulePath,
+        exportName: exportInfo.exportName,
+      });
+      return exportInfo.info;
+    }
+
+    if (this.preludeExports.has(typeKey)) {
+      const exportInfo = this.preludeExports.get(typeKey)!;
+      this.usedPreludeSymbols.set(typeKey, {
+        modulePath: exportInfo.modulePath,
+        exportName: exportInfo.exportName,
+      });
+      return exportInfo.info;
+    }
+
+    // Check prelude (legacy)
     if (this.preludeExports.has(name)) {
       const exportInfo = this.preludeExports.get(name)!;
       this.usedPreludeSymbols.set(name, {

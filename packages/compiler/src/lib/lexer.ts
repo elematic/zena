@@ -37,6 +37,7 @@ export const TokenType = {
   Throw: 'Throw',
   Match: 'Match',
   Case: 'Case',
+  Enum: 'Enum',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -144,6 +145,7 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   throw: TokenType.Throw,
   match: TokenType.Match,
   case: TokenType.Case,
+  enum: TokenType.Enum,
 });
 
 export function tokenize(source: string): Token[] {
