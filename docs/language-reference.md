@@ -563,6 +563,7 @@ Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`):
 - `*` (Multiplication)
 - `/` (Division) - Signed for `i32`, unsigned for `u32`.
 - `%` (Modulo - integer types only) - Signed for `i32`, unsigned for `u32`.
+- `**` (Exponentiation) - Supported for `i32` and `f32`.
 
 Supported bitwise operators for integer types (`i32`, `u32`):
 

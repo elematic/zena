@@ -24,6 +24,7 @@ import {
   mapModule,
   boxModule,
   errorModule,
+  mathModule,
 } from './stdlib.js';
 
 class InMemoryHost implements CompilerHost {
@@ -59,6 +60,7 @@ export function compile(source: string): Uint8Array {
       ['zena:map', mapModule],
       ['zena:box', boxModule],
       ['zena:error', errorModule],
+      ['zena:math', mathModule],
     ]),
   );
 

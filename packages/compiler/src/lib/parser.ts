@@ -992,12 +992,30 @@ export class Parser {
   }
 
   #parseFactor(): Expression {
-    let left = this.#parseUnary();
+    let left = this.#parseExponentiation();
 
     while (this.#match(TokenType.Star, TokenType.Slash, TokenType.Percent)) {
       const operator = this.#previous().value;
-      const right = this.#parseUnary();
+      const right = this.#parseExponentiation();
       left = {
+        type: NodeType.BinaryExpression,
+        left,
+        operator,
+        right,
+        loc: this.#loc(left, right),
+      };
+    }
+
+    return left;
+  }
+
+  #parseExponentiation(): Expression {
+    let left = this.#parseUnary();
+
+    if (this.#match(TokenType.StarStar)) {
+      const operator = this.#previous().value;
+      const right = this.#parseExponentiation();
+      return {
         type: NodeType.BinaryExpression,
         left,
         operator,

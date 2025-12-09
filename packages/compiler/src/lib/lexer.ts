@@ -65,6 +65,7 @@ export const TokenType = {
   Plus: 'Plus',
   Minus: 'Minus',
   Star: 'Star',
+  StarStar: 'StarStar',
   Slash: 'Slash',
   Percent: 'Percent',
   Pipe: 'Pipe',
@@ -531,14 +532,26 @@ export function tokenize(source: string): Token[] {
         });
         break;
       case '*':
-        tokens.push({
-          type: TokenType.Star,
-          value: '*',
-          line,
-          column: startColumn,
-          start: startIndex,
-          end: current,
-        });
+        if (peek() === '*') {
+          advance();
+          tokens.push({
+            type: TokenType.StarStar,
+            value: '**',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Star,
+            value: '*',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        }
         break;
       case '/':
         if (peek() === '/') {

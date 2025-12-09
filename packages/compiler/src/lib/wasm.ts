@@ -157,6 +157,7 @@ export const Opcode = {
   f32_neg: 0x8c,
 
   f32_convert_i32_s: 0xb2,
+  f32_convert_i32_u: 0xb3,
 } as const;
 
 export const ExportDesc = {

@@ -2715,6 +2715,12 @@ function generateBinaryExpression(
 
   const isF32 = (t: number[]) => t.length === 1 && t[0] === ValType.f32;
   const isI32 = (t: number[]) => t.length === 1 && t[0] === ValType.i32;
+  const isU32 = (e: Expression): boolean => {
+    if (e.inferredType && e.inferredType.kind === TypeKind.Number) {
+      return (e.inferredType as NumberType).name === 'u32';
+    }
+    return false;
+  };
 
   if (
     (isF32(leftType) || isF32(rightType)) &&
@@ -2723,12 +2729,16 @@ function generateBinaryExpression(
   ) {
     generateExpression(ctx, expr.left, body);
     if (isI32(leftType)) {
-      body.push(Opcode.f32_convert_i32_s);
+      body.push(
+        isU32(expr.left) ? Opcode.f32_convert_i32_u : Opcode.f32_convert_i32_s,
+      );
     }
 
     generateExpression(ctx, expr.right, body);
     if (isI32(rightType)) {
-      body.push(Opcode.f32_convert_i32_s);
+      body.push(
+        isU32(expr.right) ? Opcode.f32_convert_i32_u : Opcode.f32_convert_i32_s,
+      );
     }
 
     switch (expr.operator) {
@@ -2743,6 +2753,9 @@ function generateBinaryExpression(
         break;
       case '/':
         body.push(Opcode.f32_div);
+        break;
+      case '**':
+        generatePowF32(ctx, body);
         break;
       case '==':
       case '===':
@@ -2907,12 +2920,6 @@ function generateBinaryExpression(
 
   // Check if operating on unsigned integers (u32)
   // The WASM type is still i32, but we need to use unsigned instructions
-  const isU32 = (e: Expression): boolean => {
-    if (e.inferredType && e.inferredType.kind === TypeKind.Number) {
-      return (e.inferredType as NumberType).name === 'u32';
-    }
-    return false;
-  };
   const useUnsigned = isU32(expr.left) || isU32(expr.right);
 
   switch (expr.operator) {
@@ -2927,6 +2934,9 @@ function generateBinaryExpression(
       break;
     case '/':
       body.push(useUnsigned ? Opcode.i32_div_u : Opcode.i32_div_s);
+      break;
+    case '**':
+      generatePowI32(ctx, body);
       break;
     case '%':
       body.push(useUnsigned ? Opcode.i32_rem_u : Opcode.i32_rem_s);
@@ -2963,17 +2973,118 @@ function generateBinaryExpression(
   }
 }
 
+function generatePowF32(ctx: CodegenContext, body: number[]) {
+  if (ctx.powF32FunctionIndex === undefined || ctx.powF32FunctionIndex === -1) {
+    // Import Math.pow
+    const typeIndex = ctx.module.addType(
+      [[ValType.f32], [ValType.f32]],
+      [[ValType.f32]],
+    );
+    ctx.powF32FunctionIndex = ctx.module.addImport(
+      'Math',
+      'pow',
+      ExportDesc.Func,
+      typeIndex,
+    );
+  }
+  body.push(Opcode.call);
+  body.push(...WasmModule.encodeSignedLEB128(ctx.powF32FunctionIndex));
+}
+
+function generatePowI32(ctx: CodegenContext, body: number[]) {
+  if (ctx.powI32FunctionIndex === -1) {
+    ctx.powI32FunctionIndex = generatePowI32Function(ctx);
+  }
+  body.push(Opcode.call);
+  body.push(...WasmModule.encodeSignedLEB128(ctx.powI32FunctionIndex));
+}
+
+function generatePowI32Function(ctx: CodegenContext): number {
+  const typeIndex = ctx.module.addType(
+    [[ValType.i32], [ValType.i32]],
+    [[ValType.i32]],
+  );
+  const funcIndex = ctx.module.addFunction(typeIndex);
+
+  ctx.pendingHelperFunctions.push(() => {
+    // Locals:
+    // 0: base
+    // 1: exp
+    // 2: result
+    const locals: number[][] = [[ValType.i32]]; // result
+    const body: number[] = [];
+
+    // result = 1
+    body.push(Opcode.i32_const, 1);
+    body.push(Opcode.local_set, 2);
+
+    // if (exp < 0) return 0;
+    body.push(Opcode.local_get, 1);
+    body.push(Opcode.i32_const, 0);
+    body.push(Opcode.i32_lt_s);
+    body.push(Opcode.if, ValType.void);
+    body.push(Opcode.i32_const, 0);
+    body.push(Opcode.return);
+    body.push(Opcode.end);
+
+    // while (exp > 0)
+    body.push(Opcode.block, ValType.void);
+    body.push(Opcode.loop, ValType.void);
+
+    body.push(Opcode.local_get, 1); // exp
+    body.push(Opcode.i32_const, 0);
+    body.push(Opcode.i32_le_s);
+    body.push(Opcode.br_if, 1); // break if exp <= 0
+
+    // if (exp & 1) result *= base
+    body.push(Opcode.local_get, 1);
+    body.push(Opcode.i32_const, 1);
+    body.push(Opcode.i32_and);
+    body.push(Opcode.if, ValType.void);
+    body.push(Opcode.local_get, 2); // result
+    body.push(Opcode.local_get, 0); // base
+    body.push(Opcode.i32_mul);
+    body.push(Opcode.local_set, 2);
+    body.push(Opcode.end);
+
+    // base *= base
+    body.push(Opcode.local_get, 0);
+    body.push(Opcode.local_get, 0);
+    body.push(Opcode.i32_mul);
+    body.push(Opcode.local_set, 0);
+
+    // exp >>= 1
+    body.push(Opcode.local_get, 1);
+    body.push(Opcode.i32_const, 1);
+    body.push(Opcode.i32_shr_u); // unsigned shift for positive exp
+    body.push(Opcode.local_set, 1);
+
+    body.push(Opcode.br, 0); // continue
+    body.push(Opcode.end); // loop
+    body.push(Opcode.end); // block
+
+    // return result
+    body.push(Opcode.local_get, 2);
+    body.push(Opcode.end);
+
+    ctx.module.addCode(funcIndex, locals, body);
+  });
+
+  return funcIndex;
+}
+
 function generateNumberLiteral(
   ctx: CodegenContext,
   expr: NumberLiteral,
   body: number[],
 ) {
-  if (Number.isInteger(expr.value)) {
-    body.push(Opcode.i32_const);
-    body.push(...WasmModule.encodeSignedLEB128(expr.value));
-  } else {
+  const type = expr.inferredType;
+  if (type && type.kind === TypeKind.Number && (type as NumberType).name === 'f32') {
     body.push(Opcode.f32_const);
     body.push(...WasmModule.encodeF32(expr.value));
+  } else {
+    body.push(Opcode.i32_const);
+    body.push(...WasmModule.encodeSignedLEB128(expr.value));
   }
 }
 
@@ -3706,6 +3817,18 @@ function generateGlobalIntrinsic(
 ) {
   const args = expr.arguments;
   switch (name) {
+    case 'math.pow': {
+      generateExpression(ctx, args[0], body);
+      generateExpression(ctx, args[1], body);
+      generatePowF32(ctx, body);
+      break;
+    }
+    case 'math.pow_i32': {
+      generateExpression(ctx, args[0], body);
+      generateExpression(ctx, args[1], body);
+      generatePowI32(ctx, body);
+      break;
+    }
     case 'eq': {
       const left = args[0];
       const right = args[1];

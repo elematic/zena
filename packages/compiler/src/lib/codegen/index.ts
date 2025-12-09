@@ -9,6 +9,9 @@ import {
   type Program,
   type TypeAliasDeclaration,
   type VariableDeclaration,
+  type BinaryExpression,
+  type CallExpression,
+  type Identifier,
 } from '../ast.js';
 import {
   registerClassStruct,
@@ -81,6 +84,21 @@ export class CodeGenerator {
     );
 
     const globalInitializers: {index: number; init: any}[] = [];
+
+    // Pre-scan for float exponentiation usage to add Math.pow import early
+    // This avoids shifting function indices during codegen
+    if (scanForFloatPow(program, this.#ctx)) {
+      const typeIndex = this.#ctx.module.addType(
+        [[ValType.f32], [ValType.f32]],
+        [[ValType.f32]],
+      );
+      this.#ctx.powF32FunctionIndex = this.#ctx.module.addImport(
+        'Math',
+        'pow',
+        ExportDesc.Func,
+        typeIndex,
+      );
+    }
 
     // 1. Register Interfaces and Mixins (First pass)
     for (const statement of program.body) {
@@ -345,6 +363,47 @@ export class CodeGenerator {
       );
     }
   }
+}
+
+function scanForFloatPow(node: any, ctx: CodegenContext): boolean {
+  if (!node || typeof node !== 'object') return false;
+
+  if (node.type === NodeType.BinaryExpression) {
+    const expr = node as BinaryExpression;
+    if (expr.operator === '**') {
+      const leftType = inferType(ctx, expr.left);
+      const rightType = inferType(ctx, expr.right);
+      const isF32 = (t: number[]) => t.length === 1 && t[0] === ValType.f32;
+      // If either is float, we use float pow (due to promotion)
+      if (isF32(leftType) || isF32(rightType)) {
+        return true;
+      }
+    }
+  } else if (node.type === NodeType.CallExpression) {
+    const expr = node as CallExpression;
+    if (expr.callee.type === NodeType.Identifier) {
+      const name = (expr.callee as Identifier).name;
+      // Check for 'pow' or mangled 'mX_pow'
+      if (name === 'pow' || /_pow$/.test(name)) {
+        // console.error('DEBUG: Found pow call');
+        return true;
+      }
+    }
+  }
+
+  // Recurse
+  for (const key in node) {
+    if (key === 'parent' || key === 'loc' || key === 'range') continue;
+    const child = node[key];
+    if (Array.isArray(child)) {
+      for (const c of child) {
+        if (scanForFloatPow(c, ctx)) return true;
+      }
+    } else if (child && typeof child === 'object' && child.type) {
+      if (scanForFloatPow(child, ctx)) return true;
+    }
+  }
+  return false;
 }
 
 function encodeSignedLEB128(value: number): number[] {

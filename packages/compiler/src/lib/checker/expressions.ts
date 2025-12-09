@@ -1377,6 +1377,7 @@ function checkBinaryExpression(
     case '-':
     case '*':
     case '/':
+    case '**':
       return resultType;
     case '%':
     case '&':

@@ -58,6 +58,8 @@ export class CodegenContext {
   // Deferred generation
   public pendingHelperFunctions: (() => void)[] = [];
   public concatFunctionIndex = -1;
+  public powI32FunctionIndex = -1;
+  public powF32FunctionIndex = -1;
   public strEqFunctionIndex = -1;
   public stringHashFunctionIndex = -1;
   public byteArrayGetFunctionIndex = -1; // Exported helper for JS to read ByteArray

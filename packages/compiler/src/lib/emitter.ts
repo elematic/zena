@@ -2,7 +2,13 @@ import {ExportDesc, SectionId} from './wasm.js';
 
 export class WasmModule {
   #types: number[][] = [];
-  #imports: {module: string; name: string; kind: number; index: number}[] = [];
+  #imports: {
+    module: string;
+    name: string;
+    kind: number;
+    index: number;
+    assignedIndex?: number;
+  }[] = [];
   #functions: number[] = [];
   #exports: {name: string; kind: number; index: number}[] = [];
   #globals: number[][] = [];
@@ -10,6 +16,7 @@ export class WasmModule {
   #codes: number[][] = [];
   #datas: number[][] = [];
   #declaredFunctions: Set<number> = new Set();
+  #typeCache: Map<string, number> = new Map();
 
   #importedFunctionCount = 0;
   #startFunctionIndex: number | undefined;
@@ -29,9 +36,14 @@ export class WasmModule {
       buffer.push(...result);
     }
 
-    // Simple deduplication could go here, but for now just push
+    const key = buffer.join(',');
+    if (this.#typeCache.has(key)) {
+      return this.#typeCache.get(key)!;
+    }
+
     this.#types.push(buffer);
     const index = this.#types.length - 1;
+    this.#typeCache.set(key, index);
     return index;
   }
 
@@ -41,10 +53,32 @@ export class WasmModule {
     kind: number,
     index: number,
   ): number {
-    this.#imports.push({module, name, kind, index});
-    if (kind === ExportDesc.Func) {
-      return this.#importedFunctionCount++;
+    const existing = this.#imports.find(
+      (i) =>
+        i.module === module &&
+        i.name === name &&
+        i.kind === kind &&
+        i.index === index,
+    );
+    if (existing && existing.assignedIndex !== undefined) {
+      return existing.assignedIndex;
     }
+
+    const importEntry = {
+      module,
+      name,
+      kind,
+      index,
+      assignedIndex: undefined as number | undefined,
+    };
+
+    if (kind === ExportDesc.Func) {
+      importEntry.assignedIndex = this.#importedFunctionCount++;
+      this.#imports.push(importEntry);
+      return importEntry.assignedIndex;
+    }
+
+    this.#imports.push(importEntry);
     // TODO: Handle other import kinds for index calculation
     return -1;
   }
