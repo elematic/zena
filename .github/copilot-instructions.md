@@ -188,6 +188,9 @@ This project is an **npm monorepo** managed with **Wireit**.
 ## Future Considerations
 
 - **Strings & Unicode**: Currently, strings are UTF-8 bytes. We may want to change single-quotes `'` to represent a character/code-point type in the future, distinct from string literals. Unicode handling needs careful design.
+- **Numeric Literals**:
+  - **Defaults**: Revisit default types for literals. Consider making `f64` the default for floating-point literals (matching JS).
+  - **Suffixes**: Implement syntax for numeric suffixes (e.g., `1L` for `i64`, `1f` for `f32`) to avoid verbose casting (`1 as i64`).
 
 ## Next Steps
 
@@ -250,6 +253,7 @@ This project is an **npm monorepo** managed with **Wireit**.
 - [x] Implement strict equality (`===`, `!==`).
 - [x] Implement bitwise XOR (`^`), AND (`&`), OR (`|`).
 - [x] Implement modulo operator (`%`).
+- [x] Implement `i64` and `f64` support (Codegen & Emitter).
 - [x] Allow identifiers to contain `$` and `_`.
 - [x] Implement `#[ ... ]` array literal syntax.
 - [x] Implement `map()` for `Array` and `FixedArray`.

@@ -41,19 +41,20 @@ suite('Unsigned Integers (u32) - Codegen', () => {
 
   test('u32 division (unsigned)', async () => {
     const source = `
-      export let div = (a: u32, b: u32): u32 => a / b;
+      export let div = (a: u32, b: u32): f32 => a / b;
     `;
     const {div} = await compileAndInstantiate(source);
 
-    assert.strictEqual(div(10, 3), 3); // Integer division
+    assert.strictEqual(div(10, 3), Math.fround(10 / 3)); // Float division
     assert.strictEqual(div(100, 10), 10);
 
     // Key test: large unsigned numbers that would be negative if signed
-    // 0xFFFFFFFF (4294967295) / 2 should be 2147483647 (unsigned division)
-    // If signed, -1 / 2 = 0 (signed division)
+    // 0xFFFFFFFF (4294967295) / 2 should be 2147483647.5 (unsigned division)
+    // However, due to f32 precision, 4294967295 rounds to 4294967296.
+    // 4294967296 / 2 = 2147483648.
     const largeU32 = 0xffffffff >>> 0; // 4294967295
     const result = div(largeU32, 2);
-    assert.strictEqual(result >>> 0, 2147483647);
+    assert.strictEqual(result, 2147483648);
   });
 
   test('u32 remainder (unsigned)', async () => {
@@ -210,26 +211,27 @@ suite('Unsigned Integers (u32) - Codegen', () => {
   test('i32 vs u32 division difference', async () => {
     // This test demonstrates the difference between signed and unsigned division
     const source = `
-      export let divI32 = (a: i32, b: i32): i32 => a / b;
-      export let divU32 = (a: u32, b: u32): u32 => a / b;
+      export let divI32 = (a: i32, b: i32): f32 => a / b;
+      export let divU32 = (a: u32, b: u32): f32 => a / b;
     `;
     const {divI32, divU32} = await compileAndInstantiate(source);
 
     // For positive numbers, both should give same result
-    assert.strictEqual(divI32(10, 3), 3);
-    assert.strictEqual(divU32(10, 3), 3);
+    assert.strictEqual(divI32(10, 3), Math.fround(10 / 3));
+    assert.strictEqual(divU32(10, 3), Math.fround(10 / 3));
 
     // For values that are negative when interpreted as signed:
     // 0xFFFFFFFE = -2 (signed) or 4294967294 (unsigned)
     // Divided by 2:
-    // - Signed: -2 / 2 = -1
-    // - Unsigned: 4294967294 / 2 = 2147483647
+    // - Signed: -2 / 2 = -1.0
+    // - Unsigned: 4294967294 / 2 = 2147483647.0
+    // Note: Due to f32 precision, 4294967294 rounds to 4294967296, so result is 2147483648.
     const value = 0xfffffffe;
     const signedResult = divI32(value, 2);
     const unsignedResult = divU32(value, 2);
 
     assert.strictEqual(signedResult, -1);
-    assert.strictEqual(unsignedResult >>> 0, 2147483647);
+    assert.strictEqual(unsignedResult, 2147483648);
   });
 
   test('i32 vs u32 comparison difference', async () => {

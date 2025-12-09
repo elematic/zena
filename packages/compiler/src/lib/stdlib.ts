@@ -45,3 +45,7 @@ export const errorModule = fs.readFileSync(
   path.join(stdlibDir, 'error.zena'),
   'utf-8',
 );
+export const mathModule = fs.readFileSync(
+  path.join(stdlibDir, 'math.zena'),
+  'utf-8',
+);

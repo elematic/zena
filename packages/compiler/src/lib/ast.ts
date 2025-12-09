@@ -523,6 +523,7 @@ export interface CallExpression extends Node {
   callee: Expression;
   typeArguments?: TypeAnnotation[];
   arguments: Expression[];
+  resolvedFunctionType?: Type;
 }
 
 export interface ReturnStatement extends Node {

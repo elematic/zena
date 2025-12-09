@@ -277,8 +277,12 @@ export function resolveTypeAnnotation(
       return Types.I32;
     case 'u32':
       return Types.U32;
+    case 'i64':
+      return Types.I64;
     case 'f32':
       return Types.F32;
+    case 'f64':
+      return Types.F64;
     case 'boolean':
       return Types.Boolean;
     case 'symbol':

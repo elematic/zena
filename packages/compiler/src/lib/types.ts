@@ -141,6 +141,9 @@ export interface ClassType extends Type {
 
 const I32 = {kind: TypeKind.Number, name: 'i32'} as NumberType;
 const U32 = {kind: TypeKind.Number, name: 'u32'} as NumberType;
+const I64 = {kind: TypeKind.Number, name: 'i64'} as NumberType;
+const F32 = {kind: TypeKind.Number, name: 'f32'} as NumberType;
+const F64 = {kind: TypeKind.Number, name: 'f64'} as NumberType;
 
 export const StringClass: ClassType = {
   kind: TypeKind.Class,
@@ -163,7 +166,9 @@ export const Types = {
   Unknown: {kind: TypeKind.Unknown} as Type,
   I32: I32,
   U32: U32,
-  F32: {kind: TypeKind.Number, name: 'f32'} as NumberType,
+  I64: I64,
+  F32: F32,
+  F64: F64,
   AnyRef: {kind: TypeKind.AnyRef} as Type,
   Any: {kind: TypeKind.Any} as Type,
   Never: {kind: TypeKind.Never} as Type,

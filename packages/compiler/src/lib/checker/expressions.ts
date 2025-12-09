@@ -984,6 +984,8 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     funcType = instantiateGenericFunction(funcType, typeArguments, ctx);
   }
 
+  expr.resolvedFunctionType = funcType;
+
   if (expr.arguments.length !== funcType.parameters.length) {
     const minArity = funcType.optionalParameters
       ? funcType.optionalParameters.filter((o) => !o).length
@@ -1311,39 +1313,79 @@ function checkBinaryExpression(
   let typesMatch = false;
   let resultType = left;
 
-  if (expr.operator === '==' || expr.operator === '!=') {
-    typesMatch =
-      isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
-    resultType = Types.Boolean;
-  } else if (expr.operator === '===' || expr.operator === '!==') {
-    typesMatch =
-      isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
-    resultType = Types.Boolean;
-  } else if (left === right) {
-    typesMatch = true;
-  } else if (left.kind === TypeKind.Number && right.kind === TypeKind.Number) {
+  if (left.kind === TypeKind.Number && right.kind === TypeKind.Number) {
     const leftName = (left as NumberType).name;
     const rightName = (right as NumberType).name;
 
-    // Forbid mixing i32 and u32 (they must be cast explicitly)
-    if (
-      (leftName === 'i32' && rightName === 'u32') ||
-      (leftName === 'u32' && rightName === 'i32')
-    ) {
-      ctx.diagnostics.reportError(
-        `Cannot mix signed (i32) and unsigned (u32) integers. Use explicit cast with 'as'.`,
-        DiagnosticCode.TypeMismatch,
-      );
-      return Types.Unknown;
-    }
+    const isU32 = (n: string) => n === 'u32';
+    const isI64 = (n: string) => n === 'i64';
+    const isF32 = (n: string) => n === 'f32';
+    const isF64 = (n: string) => n === 'f64';
 
-    typesMatch = true;
-    if (leftName === 'f32' || rightName === 'f32') {
-      resultType = Types.F32;
-    } else if (leftName === 'u32' && rightName === 'u32') {
-      resultType = Types.U32;
+    let commonType: Type | null = null;
+
+    // Division always produces float
+    if (expr.operator === '/') {
+      if (
+        isF64(leftName) ||
+        isF64(rightName) ||
+        isI64(leftName) ||
+        isI64(rightName)
+      ) {
+        commonType = Types.F64;
+      } else {
+        commonType = Types.F32;
+      }
+      // Result of division is the common float type
+      resultType = commonType;
+      typesMatch = true;
     } else {
-      resultType = Types.I32;
+      // Other operators
+      if (leftName === rightName) {
+        commonType = left;
+      } else if (isF64(leftName) || isF64(rightName)) {
+        commonType = Types.F64;
+      } else if (isF32(leftName) || isF32(rightName)) {
+        // If one is f32 and other is i64, promote to f64 to preserve precision
+        if (isI64(leftName) || isI64(rightName)) {
+          commonType = Types.F64;
+        } else {
+          commonType = Types.F32;
+        }
+      } else if (isI64(leftName) || isI64(rightName)) {
+        commonType = Types.I64;
+      } else {
+        // Should be i32 + i32
+        if (leftName === 'i32' && rightName === 'i32') {
+          commonType = Types.I32;
+        } else if (isU32(leftName) && isU32(rightName)) {
+          commonType = Types.U32;
+        }
+        // Mixed i32/u32 is not allowed implicitly
+      }
+
+      if (commonType) {
+        typesMatch = true;
+        if (['==', '!=', '<', '<=', '>', '>='].includes(expr.operator)) {
+          resultType = Types.Boolean;
+        } else {
+          resultType = commonType;
+        }
+      }
+    }
+  }
+
+  if (!typesMatch) {
+    if (expr.operator === '==' || expr.operator === '!=') {
+      typesMatch =
+        isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
+      resultType = Types.Boolean;
+    } else if (expr.operator === '===' || expr.operator === '!==') {
+      typesMatch =
+        isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
+      resultType = Types.Boolean;
+    } else if (left === right) {
+      typesMatch = true;
     }
   }
 
@@ -1355,13 +1397,13 @@ function checkBinaryExpression(
     return Types.Unknown;
   }
 
-  // Helper to check if a type is an integer type (i32 or u32)
+  // Helper to check if a type is an integer type (i32, u32, i64)
   const isIntegerType = (type: Type): boolean =>
     type === Types.I32 ||
     type === Types.U32 ||
+    type === Types.I64 ||
     (type.kind === TypeKind.Number &&
-      ((type as NumberType).name === 'i32' ||
-        (type as NumberType).name === 'u32'));
+      ['i32', 'u32', 'i64'].includes((type as NumberType).name));
 
   switch (expr.operator) {
     case '==':
@@ -1382,7 +1424,7 @@ function checkBinaryExpression(
     case '&':
     case '|':
     case '^': {
-      // Bitwise and modulo operators require integer types (i32 or u32)
+      // Bitwise and modulo operators require integer types
       if (!isIntegerType(left) || !isIntegerType(right)) {
         ctx.diagnostics.reportError(
           `Operator '${expr.operator}' cannot be applied to type '${typeToString(left)}' and '${typeToString(right)}'.`,

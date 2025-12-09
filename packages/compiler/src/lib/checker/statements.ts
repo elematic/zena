@@ -298,11 +298,15 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
     parameterInitializers,
   };
 
+  decl.inferredType = functionType;
   ctx.declare(decl.name.name, functionType, 'let');
 
   if (decl.exported && ctx.module) {
+    // Retrieve the type from the scope to ensure we export the aggregated overloads
+    // (if this is an overload)
+    const exportedType = ctx.resolveValue(decl.name.name) || functionType;
     ctx.module.exports.set(`value:${decl.name.name}`, {
-      type: functionType,
+      type: exportedType,
       kind: 'let',
     });
   }

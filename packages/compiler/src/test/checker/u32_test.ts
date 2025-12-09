@@ -94,7 +94,10 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /Cannot mix signed.*unsigned/);
+    assert.match(
+      errors[0].message,
+      /Type mismatch: cannot apply operator '\+' to i32 and u32/,
+    );
   });
 
   test('should forbid mixing u32 and i32 in comparison', () => {
@@ -107,10 +110,13 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /Cannot mix signed.*unsigned/);
+    assert.match(
+      errors[0].message,
+      /Type mismatch: cannot apply operator '<' to u32 and i32/,
+    );
   });
 
-  test('should forbid mixing i32 and u32 in division', () => {
+  test('should allow mixing i32 and u32 in division (returns float)', () => {
     const input = `
       let divide = (a: i32, b: u32) => a / b;
     `;
@@ -119,8 +125,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     const checker = new TypeChecker(ast);
     const errors = checker.check();
 
-    assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /Cannot mix signed.*unsigned/);
+    assert.strictEqual(errors.length, 0);
   });
 
   test('should allow explicit cast from i32 to u32', () => {

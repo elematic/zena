@@ -348,15 +348,15 @@ export class WasmModule {
     return buffer;
   }
 
-  public static encodeSignedLEB128(value: number): number[] {
+  public static encodeSignedLEB128(value: number | bigint): number[] {
     const buffer: number[] = [];
-    value |= 0;
+    let val = BigInt(value);
     while (true) {
-      let byte = value & 0x7f;
-      value >>= 7;
+      let byte = Number(val & 0x7fn);
+      val >>= 7n;
       if (
-        (value === 0 && (byte & 0x40) === 0) ||
-        (value === -1 && (byte & 0x40) !== 0)
+        (val === 0n && (byte & 0x40) === 0) ||
+        (val === -1n && (byte & 0x40) !== 0)
       ) {
         buffer.push(byte);
         break;
@@ -370,6 +370,12 @@ export class WasmModule {
   public static encodeF32(value: number): number[] {
     const buffer = new ArrayBuffer(4);
     new DataView(buffer).setFloat32(0, value, true); // Little endian
+    return Array.from(new Uint8Array(buffer));
+  }
+
+  public static encodeF64(value: number): number[] {
+    const buffer = new ArrayBuffer(8);
+    new DataView(buffer).setFloat64(0, value, true); // Little endian
     return Array.from(new Uint8Array(buffer));
   }
 

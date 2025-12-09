@@ -105,10 +105,10 @@ See [Interfaces Design](./interfaces.md) for implementation details.
 
 ## 4. Primitive Types
 
-**Status: Partially Implemented**
+**Status: Implemented**
 
 - `i32`, `f32`, `boolean`, `string`: **Implemented**
-- `i64`, `f64`: **Planned**
+- `i64`, `f64`: **Implemented**
 
 Zena maps its primitive types directly to WebAssembly value types to ensure maximum performance and zero ovezenad.
 

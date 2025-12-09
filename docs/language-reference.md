@@ -57,8 +57,10 @@ This soundness is enforced by the underlying WASM-GC architecture. Zena does not
 ### Primitive Types
 
 - **`i32`**: 32-bit signed integer. This is the default type for integer literals. Operations like division and comparison use signed semantics.
+- **`i64`**: 64-bit signed integer. Used for large numbers. Constructed via casting (e.g., `100 as i64`).
 - **`u32`**: 32-bit unsigned integer. Operations like division, modulo, and comparison use unsigned semantics. `i32` and `u32` cannot be mixed in operations without explicit casting using `as`.
-- **`f32`**: 32-bit floating-point number.
+- **`f32`**: 32-bit floating-point number. This is the default type for floating-point literals.
+- **`f64`**: 64-bit floating-point number. Constructed via casting (e.g., `1.0 as f64`).
 - **`boolean`**: Boolean value (`true` or `false`).
 - **`string`**: UTF-8 string.
 - **`anyref`**: The top type for all reference types. It can hold any object, array, string, function, or `null`. It cannot hold unboxed primitives (`i32`, `f32`, `boolean`).
@@ -100,6 +102,22 @@ let s = 'hello'; // Inferred as string
 Zena enforces strict type safety and does not support implicit type coercion.
 
 Explicit type casts (e.g., using an `as` operator) are **checked casts**. This means the validity of the cast is verified at runtime. If the value is not of the target type, a runtime error (trap) is raised. This ensures that the type system remains sound even when downcasting.
+
+**Numeric Conversions**:
+Conversions between numeric types (e.g., `i32` to `i64`, `f32` to `i32`) generally must be explicit. These casts compile to specific WASM conversion instructions (e.g., `i64.extend_i32_s`, `i32.trunc_f32_s`).
+
+- `i32` <-> `i64` (Sign-extend / Wrap)
+- `i32` <-> `f32` (Convert / Truncate)
+- `i64` <-> `f64` (Convert / Truncate)
+- `i32` <-> `u32` (Reinterpret bits - zero cost)
+
+**Implicit Conversions**:
+Zena supports implicit conversion **only** between `i32` and `f32` in binary arithmetic operations.
+
+- `i32` + `f32` -> `f32` (The `i32` is promoted to `f32`)
+- `f32` + `i32` -> `f32`
+
+All other mixed arithmetic (e.g., `i32` + `i64`, `f32` + `f64`) requires explicit casting.
 
 However, if the source type and the target type are identical (e.g. casting a value to its own type, or casting between a distinct type and its underlying type), the cast is **elided** at runtime. In these cases, the cast serves purely as a compile-time assertion and incurs no runtime overhead.
 
@@ -561,7 +579,7 @@ Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`):
 - `+` (Addition / String Concatenation)
 - `-` (Subtraction)
 - `*` (Multiplication)
-- `/` (Division) - Signed for `i32`, unsigned for `u32`.
+- `/` (Division) - Always returns a floating-point value (`f32` or `f64`).
 - `%` (Modulo - integer types only) - Signed for `i32`, unsigned for `u32`.
 
 Supported bitwise operators for integer types (`i32`, `u32`):
@@ -570,7 +588,7 @@ Supported bitwise operators for integer types (`i32`, `u32`):
 - `|` (Bitwise OR)
 - `^` (Bitwise XOR)
 
-Operands must be of the same type. Implicit coercion is not supported. **Mixing `i32` and `u32` is not allowed**; you must explicitly cast using `as`.
+Operands must be of the same type, with the exception of mixing `i32` and `f32`. **Mixing other numeric types (e.g., `i32` and `i64`) is not allowed**; you must explicitly cast using `as`.
 
 ```zena
 let a = 10;
@@ -582,13 +600,17 @@ let s = 'Hello' + ' World'; // Valid (String Concatenation)
 // Unsigned example
 let x: u32 = 10 as u32;
 let y: u32 = 3 as u32;
-let q = x / y;  // u32 division: 10 / 3 = 3
+let q = x / y;  // Result is 3.333... (f32)
 
-// Mixing i32 and u32 requires explicit cast
-let signed: i32 = 5;
-let unsigned: u32 = 2 as u32;
-// let sum = signed + unsigned; // Error: Cannot mix i32 and u32
-let sum = (signed as u32) + unsigned; // OK
+// Mixing i32 and f32 is allowed (result is f32)
+let i: i32 = 5;
+let f: f32 = 2.5;
+let sum = i + f; // OK, result is 7.5 (f32)
+
+// Mixing i32 and i64 requires explicit cast
+let big: i64 = 100 as i64;
+// let res = i + big; // Error: Cannot mix i32 and i64
+let res = (i as i64) + big; // OK
 ```
 
 ### Function Calls

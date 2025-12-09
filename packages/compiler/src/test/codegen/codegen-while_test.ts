@@ -59,7 +59,7 @@ suite('CodeGenerator - While Loops', () => {
         var i = start;
         while (i < limit) {
           if (i > 0) {
-            var mod = i - (i / 3) * 3;
+            var mod = i - ((i / 3) as i32) * 3;
             if (mod == 0) {
               return i;
             }

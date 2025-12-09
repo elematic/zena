@@ -15,6 +15,7 @@ import {
   type DiagnosticLocation,
 } from '../diagnostics.js';
 import {WasmModule} from '../emitter.js';
+import {type FunctionType} from '../types.js';
 import {ValType} from '../wasm.js';
 import type {ClassInfo, InterfaceInfo, LocalInfo} from './types.js';
 
@@ -33,7 +34,12 @@ export class CodegenContext {
   public functions = new Map<string, number>();
   public functionOverloads = new Map<
     string,
-    {index: number; params: number[][]}[]
+    {
+      index: number;
+      params: number[][];
+      intrinsic?: string;
+      type?: FunctionType;
+    }[]
   >();
   public classes = new Map<string, ClassInfo>();
   public mixins = new Map<string, MixinDeclaration>();

@@ -234,6 +234,69 @@ function generateAsExpression(
     return;
   }
 
+  // Primitive conversions
+  if (sourceType && sourceType.length === 1 && targetType.length === 1) {
+    const src = sourceType[0];
+    const tgt = targetType[0];
+
+    if (src === ValType.i32 && tgt === ValType.i64) {
+      body.push(Opcode.i64_extend_i32_s);
+      return;
+    }
+    if (src === ValType.i64 && tgt === ValType.i32) {
+      body.push(Opcode.i32_wrap_i64);
+      return;
+    }
+    if (src === ValType.f32 && tgt === ValType.f64) {
+      body.push(Opcode.f64_promote_f32);
+      return;
+    }
+    if (src === ValType.f64 && tgt === ValType.f32) {
+      body.push(Opcode.f32_demote_f64);
+      return;
+    }
+    // i32 -> f32
+    if (src === ValType.i32 && tgt === ValType.f32) {
+      body.push(Opcode.f32_convert_i32_s);
+      return;
+    }
+    // i32 -> f64
+    if (src === ValType.i32 && tgt === ValType.f64) {
+      body.push(Opcode.f64_convert_i32_s);
+      return;
+    }
+    // i64 -> f32
+    if (src === ValType.i64 && tgt === ValType.f32) {
+      body.push(Opcode.f32_convert_i64_s);
+      return;
+    }
+    // i64 -> f64
+    if (src === ValType.i64 && tgt === ValType.f64) {
+      body.push(Opcode.f64_convert_i64_s);
+      return;
+    }
+    // f32 -> i32
+    if (src === ValType.f32 && tgt === ValType.i32) {
+      body.push(Opcode.i32_trunc_f32_s);
+      return;
+    }
+    // f64 -> i32
+    if (src === ValType.f64 && tgt === ValType.i32) {
+      body.push(Opcode.i32_trunc_f64_s);
+      return;
+    }
+    // f32 -> i64
+    if (src === ValType.f32 && tgt === ValType.i64) {
+      body.push(Opcode.i64_trunc_f32_s);
+      return;
+    }
+    // f64 -> i64
+    if (src === ValType.f64 && tgt === ValType.i64) {
+      body.push(Opcode.i64_trunc_f64_s);
+      return;
+    }
+  }
+
   // Interface Boxing
   const targetIndex = decodeTypeIndex(targetType);
   const interfaceInfo = getInterfaceFromTypeIndex(ctx, targetIndex);
@@ -1944,12 +2007,19 @@ function generateCallExpression(
       }
 
       if (ctx.globalIntrinsics.has(name)) {
-        generateGlobalIntrinsic(
-          ctx,
-          ctx.globalIntrinsics.get(name)!,
-          expr,
-          body,
-        );
+        let intrinsicName = ctx.globalIntrinsics.get(name)!;
+
+        if (expr.resolvedFunctionType && ctx.functionOverloads.has(name)) {
+          const overloads = ctx.functionOverloads.get(name)!;
+          const match = overloads.find(
+            (o) => o.type === expr.resolvedFunctionType,
+          );
+          if (match && match.intrinsic) {
+            intrinsicName = match.intrinsic;
+          }
+        }
+
+        generateGlobalIntrinsic(ctx, intrinsicName, expr, body);
         return;
       }
 
@@ -2005,7 +2075,9 @@ function generateCallExpression(
         const overloads = ctx.functionOverloads.get(name)!;
         const argTypes = expr.arguments.map((arg) => inferType(ctx, arg));
 
-        let bestMatchIndex = -1;
+        let bestMatch:
+          | {index: number; params: number[][]; intrinsic?: string}
+          | undefined;
 
         for (const overload of overloads) {
           if (overload.params.length !== argTypes.length) continue;
@@ -2029,11 +2101,18 @@ function generateCallExpression(
           }
 
           if (match) {
-            bestMatchIndex = overload.index;
+            bestMatch = overload;
             break;
           }
         }
-        targetFuncIndex = bestMatchIndex;
+
+        if (bestMatch) {
+          if (bestMatch.intrinsic) {
+            generateGlobalIntrinsic(ctx, bestMatch.intrinsic, expr, body);
+            return;
+          }
+          targetFuncIndex = bestMatch.index;
+        }
       } else {
         targetFuncIndex = ctx.functions.get(name) ?? -1;
       }
@@ -2715,57 +2794,263 @@ function generateBinaryExpression(
 
   const isF32 = (t: number[]) => t.length === 1 && t[0] === ValType.f32;
   const isI32 = (t: number[]) => t.length === 1 && t[0] === ValType.i32;
+  const isI64 = (t: number[]) => t.length === 1 && t[0] === ValType.i64;
+  const isF64 = (t: number[]) => t.length === 1 && t[0] === ValType.f64;
 
-  if (
-    (isF32(leftType) || isF32(rightType)) &&
-    (isF32(leftType) || isI32(leftType)) &&
-    (isF32(rightType) || isI32(rightType))
-  ) {
+  const isNumeric = (t: number[]) =>
+    isI32(t) || isI64(t) || isF32(t) || isF64(t);
+
+  if (isNumeric(leftType) && isNumeric(rightType)) {
+    let targetType: number = ValType.i32;
+
+    // Determine target type based on promotion rules
+    if (expr.operator === '/') {
+      if (
+        isF64(leftType) ||
+        isF64(rightType) ||
+        isI64(leftType) ||
+        isI64(rightType)
+      ) {
+        targetType = ValType.f64;
+      } else {
+        targetType = ValType.f32;
+      }
+    } else {
+      if (isF64(leftType) || isF64(rightType)) {
+        targetType = ValType.f64;
+      } else if (isF32(leftType) || isF32(rightType)) {
+        if (isI64(leftType) || isI64(rightType)) {
+          targetType = ValType.f64;
+        } else {
+          targetType = ValType.f32;
+        }
+      } else if (isI64(leftType) || isI64(rightType)) {
+        targetType = ValType.i64;
+      } else {
+        targetType = ValType.i32;
+      }
+    }
+
+    const emitConversion = (
+      source: number[],
+      target: number,
+      sourceZenaType: any,
+    ) => {
+      if (source[0] === target) return;
+
+      const isU32 =
+        sourceZenaType &&
+        sourceZenaType.kind === TypeKind.Number &&
+        (sourceZenaType as NumberType).name === 'u32';
+
+      if (source[0] === ValType.i32) {
+        if (target === ValType.i64)
+          body.push(isU32 ? Opcode.i64_extend_i32_u : Opcode.i64_extend_i32_s);
+        else if (target === ValType.f32)
+          body.push(
+            isU32 ? Opcode.f32_convert_i32_u : Opcode.f32_convert_i32_s,
+          );
+        else if (target === ValType.f64)
+          body.push(
+            isU32 ? Opcode.f64_convert_i32_u : Opcode.f64_convert_i32_s,
+          );
+      } else if (source[0] === ValType.i64) {
+        if (target === ValType.f32) body.push(Opcode.f32_convert_i64_s);
+        else if (target === ValType.f64) body.push(Opcode.f64_convert_i64_s);
+      } else if (source[0] === ValType.f32) {
+        if (target === ValType.f64) body.push(Opcode.f64_promote_f32);
+      }
+    };
+
     generateExpression(ctx, expr.left, body);
-    if (isI32(leftType)) {
-      body.push(Opcode.f32_convert_i32_s);
-    }
-
+    emitConversion(leftType, targetType, expr.left.inferredType);
     generateExpression(ctx, expr.right, body);
-    if (isI32(rightType)) {
-      body.push(Opcode.f32_convert_i32_s);
-    }
+    emitConversion(rightType, targetType, expr.right.inferredType);
 
-    switch (expr.operator) {
-      case '+':
-        body.push(Opcode.f32_add);
+    const isU32Type = (t: any) =>
+      t && t.kind === TypeKind.Number && (t as NumberType).name === 'u32';
+    const useUnsigned =
+      isU32Type(expr.left.inferredType) || isU32Type(expr.right.inferredType);
+
+    switch (targetType) {
+      case ValType.i32:
+        switch (expr.operator) {
+          case '+':
+            body.push(Opcode.i32_add);
+            break;
+          case '-':
+            body.push(Opcode.i32_sub);
+            break;
+          case '*':
+            body.push(Opcode.i32_mul);
+            break;
+          case '/':
+            // Division is always float, so this case is unreachable for /
+            // But if we ever support integer division, we'd use div_u/div_s
+            body.push(useUnsigned ? Opcode.i32_div_u : Opcode.i32_div_s);
+            break;
+          case '%':
+            body.push(useUnsigned ? Opcode.i32_rem_u : Opcode.i32_rem_s);
+            break;
+          case '&':
+            body.push(Opcode.i32_and);
+            break;
+          case '|':
+            body.push(Opcode.i32_or);
+            break;
+          case '^':
+            body.push(Opcode.i32_xor);
+            break;
+          case '==':
+          case '===':
+            body.push(Opcode.i32_eq);
+            break;
+          case '!=':
+          case '!==':
+            body.push(Opcode.i32_ne);
+            break;
+          case '<':
+            body.push(useUnsigned ? Opcode.i32_lt_u : Opcode.i32_lt_s);
+            break;
+          case '<=':
+            body.push(useUnsigned ? Opcode.i32_le_u : Opcode.i32_le_s);
+            break;
+          case '>':
+            body.push(useUnsigned ? Opcode.i32_gt_u : Opcode.i32_gt_s);
+            break;
+          case '>=':
+            body.push(useUnsigned ? Opcode.i32_ge_u : Opcode.i32_ge_s);
+            break;
+          default:
+            throw new Error(`Unsupported operator for i32: ${expr.operator}`);
+        }
         break;
-      case '-':
-        body.push(Opcode.f32_sub);
+      case ValType.i64:
+        switch (expr.operator) {
+          case '+':
+            body.push(Opcode.i64_add);
+            break;
+          case '-':
+            body.push(Opcode.i64_sub);
+            break;
+          case '*':
+            body.push(Opcode.i64_mul);
+            break;
+          case '/':
+            body.push(Opcode.i64_div_s);
+            break; // Should not happen
+          case '%':
+            body.push(Opcode.i64_rem_s);
+            break;
+          case '&':
+            body.push(Opcode.i64_and);
+            break;
+          case '|':
+            body.push(Opcode.i64_or);
+            break;
+          case '^':
+            body.push(Opcode.i64_xor);
+            break;
+          case '==':
+          case '===':
+            body.push(Opcode.i64_eq);
+            break;
+          case '!=':
+          case '!==':
+            body.push(Opcode.i64_ne);
+            break;
+          case '<':
+            body.push(Opcode.i64_lt_s);
+            break;
+          case '<=':
+            body.push(Opcode.i64_le_s);
+            break;
+          case '>':
+            body.push(Opcode.i64_gt_s);
+            break;
+          case '>=':
+            body.push(Opcode.i64_ge_s);
+            break;
+          default:
+            throw new Error(`Unsupported operator for i64: ${expr.operator}`);
+        }
         break;
-      case '*':
-        body.push(Opcode.f32_mul);
+      case ValType.f32:
+        switch (expr.operator) {
+          case '+':
+            body.push(Opcode.f32_add);
+            break;
+          case '-':
+            body.push(Opcode.f32_sub);
+            break;
+          case '*':
+            body.push(Opcode.f32_mul);
+            break;
+          case '/':
+            body.push(Opcode.f32_div);
+            break;
+          case '==':
+          case '===':
+            body.push(Opcode.f32_eq);
+            break;
+          case '!=':
+          case '!==':
+            body.push(Opcode.f32_ne);
+            break;
+          case '<':
+            body.push(Opcode.f32_lt);
+            break;
+          case '<=':
+            body.push(Opcode.f32_le);
+            break;
+          case '>':
+            body.push(Opcode.f32_gt);
+            break;
+          case '>=':
+            body.push(Opcode.f32_ge);
+            break;
+          default:
+            throw new Error(`Unsupported operator for f32: ${expr.operator}`);
+        }
         break;
-      case '/':
-        body.push(Opcode.f32_div);
+      case ValType.f64:
+        switch (expr.operator) {
+          case '+':
+            body.push(Opcode.f64_add);
+            break;
+          case '-':
+            body.push(Opcode.f64_sub);
+            break;
+          case '*':
+            body.push(Opcode.f64_mul);
+            break;
+          case '/':
+            body.push(Opcode.f64_div);
+            break;
+          case '==':
+          case '===':
+            body.push(Opcode.f64_eq);
+            break;
+          case '!=':
+          case '!==':
+            body.push(Opcode.f64_ne);
+            break;
+          case '<':
+            body.push(Opcode.f64_lt);
+            break;
+          case '<=':
+            body.push(Opcode.f64_le);
+            break;
+          case '>':
+            body.push(Opcode.f64_gt);
+            break;
+          case '>=':
+            body.push(Opcode.f64_ge);
+            break;
+          default:
+            throw new Error(`Unsupported operator for f64: ${expr.operator}`);
+        }
         break;
-      case '==':
-      case '===':
-        body.push(Opcode.f32_eq);
-        break;
-      case '!=':
-      case '!==':
-        body.push(Opcode.f32_ne);
-        break;
-      case '<':
-        body.push(Opcode.f32_lt);
-        break;
-      case '<=':
-        body.push(Opcode.f32_le);
-        break;
-      case '>':
-        body.push(Opcode.f32_gt);
-        break;
-      case '>=':
-        body.push(Opcode.f32_ge);
-        break;
-      default:
-        throw new Error(`Unsupported operator for f32: ${expr.operator}`);
     }
     return;
   }
@@ -2968,12 +3253,41 @@ function generateNumberLiteral(
   expr: NumberLiteral,
   body: number[],
 ) {
-  if (Number.isInteger(expr.value)) {
-    body.push(Opcode.i32_const);
-    body.push(...WasmModule.encodeSignedLEB128(expr.value));
+  let isFloat = !Number.isInteger(expr.value);
+  let isF64 = false;
+  let isI64 = false;
+
+  if (expr.inferredType && expr.inferredType.kind === TypeKind.Number) {
+    const name = (expr.inferredType as NumberType).name;
+    if (name === 'f32') {
+      isFloat = true;
+    } else if (name === 'f64') {
+      isFloat = true;
+      isF64 = true;
+    } else if (name === 'i64') {
+      isI64 = true;
+      isFloat = false;
+    } else if (name === 'i32') {
+      isFloat = false;
+    }
+  }
+
+  if (isFloat) {
+    if (isF64) {
+      body.push(Opcode.f64_const);
+      body.push(...WasmModule.encodeF64(expr.value));
+    } else {
+      body.push(Opcode.f32_const);
+      body.push(...WasmModule.encodeF32(expr.value));
+    }
   } else {
-    body.push(Opcode.f32_const);
-    body.push(...WasmModule.encodeF32(expr.value));
+    if (isI64) {
+      body.push(Opcode.i64_const);
+      body.push(...WasmModule.encodeSignedLEB128(BigInt(expr.value)));
+    } else {
+      body.push(Opcode.i32_const);
+      body.push(...WasmModule.encodeSignedLEB128(expr.value));
+    }
   }
 }
 
@@ -3912,8 +4226,18 @@ function generateGlobalIntrinsic(
       body.push(Opcode.unreachable);
       break;
     }
-    default:
+    default: {
+      // Handle math intrinsics (e.g. i32.clz, f64.abs)
+      const opcodeName = name.replace('.', '_');
+      if (opcodeName in Opcode) {
+        for (const arg of args) {
+          generateExpression(ctx, arg, body);
+        }
+        body.push((Opcode as any)[opcodeName]);
+        return;
+      }
       throw new Error(`Unsupported global intrinsic: ${name}`);
+    }
   }
 }
 
