@@ -8,9 +8,9 @@ Inspired by F#, Zena will support a static "Units of Measure" system. This allow
 
 ### 1.1 Core Concepts
 
--   **Compile-Time Only**: Units are erased at compile time. They have zero runtime cost. `10<m>` compiles to a plain `i32` or `f64`.
--   **Dimensional Analysis**: The compiler checks that units match in assignments and additions, and calculates the resulting unit for multiplication and division.
--   **Generics**: Functions can be generic over units.
+- **Compile-Time Only**: Units are erased at compile time. They have zero runtime cost. `10<m>` compiles to a plain `i32` or `f64`.
+- **Dimensional Analysis**: The compiler checks that units match in assignments and additions, and calculates the resulting unit for multiplication and division.
+- **Generics**: Functions can be generic over units.
 
 ### 1.2 Syntax
 
@@ -51,8 +51,8 @@ let t = 9.8 s;      // 9.8 with unit Second
 let v = 10 m/s;     // 10 with unit Meter/Second
 ```
 
-*Parsing Challenge*: `100 m` could be ambiguous in some contexts (e.g., `return 100 m` vs `return 100; m;`).
-*Resolution*: Since `Literal Identifier` is currently invalid syntax (missing operator), we can parse this as a single unit-literal expression. We must ensure it doesn't conflict with future syntax.
+_Parsing Challenge_: `100 m` could be ambiguous in some contexts (e.g., `return 100 m` vs `return 100; m;`).
+_Resolution_: Since `Literal Identifier` is currently invalid syntax (missing operator), we can parse this as a single unit-literal expression. We must ensure it doesn't conflict with future syntax.
 
 **Proposal B: Angle Brackets**
 Use the generic syntax.
@@ -72,10 +72,10 @@ let d = 100m; // Requires 'm' to be a registered suffix, distinct from hex '0x..
 
 Units propagate through arithmetic operations:
 
--   `+`, `-`: Operands must have the same unit. Result has that unit.
--   `*`: Result unit is the product of operand units (`m * m = m^2`).
--   `/`: Result unit is the quotient (`m / s = m/s`).
--   Scalars: Dimensionless numbers (scalars) are the identity element.
+- `+`, `-`: Operands must have the same unit. Result has that unit.
+- `*`: Result unit is the product of operand units (`m * m = m^2`).
+- `/`: Result unit is the quotient (`m / s = m/s`).
+- Scalars: Dimensionless numbers (scalars) are the identity element.
 
 ```zena
 let d = 100.0 m;
@@ -106,7 +106,7 @@ We can leverage Zena's tuple syntax `[...]` combined with a postfix modifier to 
 
 ```zena
 // Vector
-let v = [1.0, 2.0, 3.0] v; 
+let v = [1.0, 2.0, 3.0] v;
 
 // Matrix (Row-major)
 let m = [
@@ -125,7 +125,7 @@ let v1 = [1, 2] v;
 let v2 = [3, 4] v;
 
 let sum = v1 + v2; // [4, 6] v
-let dot = v1 * v2; // Dot product? Or element-wise? 
+let dot = v1 * v2; // Dot product? Or element-wise?
                    // NumPy uses * for element-wise, @ for matmul.
                    // Zena might define a specific operator for dot product, e.g. `.*` or `dot(a, b)`.
 ```
@@ -135,9 +135,10 @@ let dot = v1 * v2; // Dot product? Or element-wise?
 We can unify the syntax for `mat` with Zena's existing **Tagged Template Literals** and extend it to other literals (Tuples, Records, Arrays).
 
 **Concept**: A "Tagged Literal" is an identifier followed immediately by a literal.
--   `tag`template`` (Existing)
--   `tag[...]` (Tagged Tuple/Array)
--   `tag{...}` (Tagged Record)
+
+- `tag`template`` (Existing)
+- `tag[...]` (Tagged Tuple/Array)
+- `tag{...}` (Tagged Record)
 
 **Application to Matrices**:
 Instead of postfix `[...] mat`, we can use prefix `mat[...]`.
@@ -153,29 +154,32 @@ let m = mat[
 Syntactically, `mat[...]` is identical to **Array Indexing** (`arr[index]`). To resolve this, and to avoid conflicts with future features like Callable Objects (functors) that might also implement `[]` for indexing, we enforce a strict distinction based on the identifier's category:
 
 1.  **Runtime Variables**: If the identifier resolves to a **Variable** (e.g., `let m = ...`), `m[...]` is always treated as **Indexing**.
-    -   Even if the object is "callable" (acts like a function), `[...]` remains the index operator.
-    -   This preserves standard semantics: `myVector[0]`.
+    - Even if the object is "callable" (acts like a function), `[...]` remains the index operator.
+    - This preserves standard semantics: `myVector[0]`.
 
 2.  **Compile-Time Entities (Types/Macros)**: If the identifier resolves to a **Type** (e.g., `Set`) or **Macro** (e.g., `mat`), `Tag[...]` is treated as a **Tagged Literal**.
-    -   This allows `Set[1, 2]` or `mat[1, 2]` to act as constructors.
-    -   Since Types and Macros are not runtime values that can be indexed, there is no overlap.
+    - This allows `Set[1, 2]` or `mat[1, 2]` to act as constructors.
+    - Since Types and Macros are not runtime values that can be indexed, there is no overlap.
 
 **Restriction**: You cannot use a runtime variable as a tag.
+
 ```zena
 let myTag = mat; // Assuming we could alias macros (unlikely) or types
 myTag[1, 2];     // Error: 'myTag' is a variable, treated as indexing.
 ```
 
 **Benefits**:
+
 1.  **Consistency**: Aligns with `wat`...`` (inline WASM) and other DSLs.
 2.  **Extensibility**: Users can define their own "Tags" (Classes or Macros).
-    -   `Set[1, 2, 3]` -> Creates a Set.
-    -   `Vec[1, 2]` -> Creates a Vector.
-    -   `Complex{r: 1, i: 2}` -> Creates a Complex number.
+    - `Set[1, 2, 3]` -> Creates a Set.
+    - `Vec[1, 2]` -> Creates a Vector.
+    - `Complex{r: 1, i: 2}` -> Creates a Complex number.
 
 **Built-in Tags**:
--   `mat[...]`: Matrix construction.
--   `wat`...``: Inline WASM (returns `v128` or other types).
+
+- `mat[...]`: Matrix construction.
+- `wat`...``: Inline WASM (returns `v128` or other types).
 
 ### 2.5 Zero-Copy Construction Strategy
 
@@ -183,6 +187,7 @@ Can avoid copying. **Yes, absolutely.** This is the primary motivation for treat
 
 **The Naive Approach (Function Call)**:
 If `mat` were a function `func mat(data: Array<f64>)`, the compiler would:
+
 1.  Allocate a GC Array.
 2.  Fill it with literals.
 3.  Pass it to `mat`.
@@ -190,17 +195,19 @@ If `mat` were a function `func mat(data: Array<f64>)`, the compiler would:
 5.  GC Array is discarded (garbage).
 
 **The Macro Approach (Zero-Copy)**:
-Since `mat` is a compile-time construct, it consumes the *syntax* of the literal.
+Since `mat` is a compile-time construct, it consumes the _syntax_ of the literal.
+
 1.  **Analysis**: The compiler sees `mat[1.0, 2.0]`.
-2.  **Code Gen**: It generates instructions to write `1.0` and `2.0` *directly* into the final destination (Linear Memory).
-    -   **No intermediate array is ever allocated.**
-    -   **No copying occurs.**
+2.  **Code Gen**: It generates instructions to write `1.0` and `2.0` _directly_ into the final destination (Linear Memory).
+    - **No intermediate array is ever allocated.**
+    - **No copying occurs.**
 
 **Large Literals**:
 For large constant matrices (e.g., embedding weights), the macro can optimize further:
+
 1.  Store the data in a **WASM Data Segment** (static binary data).
 2.  Emit a `memory.init` instruction to bulk-copy the data from the binary to the heap at runtime.
-    -   This is the fastest possible initialization.
+    - This is the fastest possible initialization.
 
 **Future User-Defined Macros**:
 To allow users to write efficient constructors like `mat`, we could introduce a macro system. This is a complex feature requiring a sandboxed execution environment (likely WASM-in-WASM) to safely run user code during compilation.
@@ -214,42 +221,47 @@ For the near term, `mat` will be implemented as a **Compiler Intrinsic**, meanin
 For a language targeting scientific computing, memory layout is critical for performance.
 
 #### Flat vs. Nested Layout
+
 While the syntax `[[1, 2], [3, 4]]` suggests an "Array of Arrays" (nested tuples), this is inefficient for numerical computing due to:
+
 1.  **Pointer Chasing**: Accessing `m[i][j]` requires two memory lookups.
 2.  **Cache Locality**: Rows might be scattered in memory.
 3.  **SIMD/BLAS Incompatibility**: Hardware vector units and standard libraries (BLAS) expect contiguous blocks of memory.
 
 **Design Decision**: The `mat` modifier (or constructor) MUST flatten the data into a **single contiguous array**.
--   **Layout**: Row-Major (C-style) is preferred for compatibility with NumPy and C libraries.
--   **Representation**: A Matrix is a struct containing:
-    -   `data`: The backing flat array.
-    -   `rows`: Number of rows.
-    -   `cols`: Number of columns.
-    -   `strides`: (Optional) To support views/slicing without copying.
+
+- **Layout**: Row-Major (C-style) is preferred for compatibility with NumPy and C libraries.
+- **Representation**: A Matrix is a struct containing:
+  - `data`: The backing flat array.
+  - `rows`: Number of rows.
+  - `cols`: Number of columns.
+  - `strides`: (Optional) To support views/slicing without copying.
 
 #### Backing Storage: GC Arrays vs. Linear Memory
 
 There are two options for the backing array in WASM:
 
 1.  **WASM GC Packed Arrays** (`(array f64)`):
-    -   *Pros*: Managed by the engine's GC. Safe. No manual `free()`.
-    -   *Cons*: Harder to pass to C/C++ libraries (BLAS) which expect a raw pointer to Linear Memory. SIMD support for GC arrays is evolving but less mature than Linear Memory.
+    - _Pros_: Managed by the engine's GC. Safe. No manual `free()`.
+    - _Cons_: Harder to pass to C/C++ libraries (BLAS) which expect a raw pointer to Linear Memory. SIMD support for GC arrays is evolving but less mature than Linear Memory.
 
 2.  **Linear Memory** (WASM `memory`):
-    -   *Pros*: Standard for C/C++/Rust interop. Zero-copy passing to BLAS. Native SIMD support (`v128.load`).
-    -   *Cons*: Requires manual memory management (malloc/free) or a custom allocator within Zena.
+    - _Pros_: Standard for C/C++/Rust interop. Zero-copy passing to BLAS. Native SIMD support (`v128.load`).
+    - _Cons_: Requires manual memory management (malloc/free) or a custom allocator within Zena.
 
 **Recommendation**:
 For the "Scientific Computing" module, Zena should likely use **Linear Memory** (wrapped in a `Float64Array`-like class) as the backing store. This allows:
--   **Zero-Copy Interop**: We can pass the pointer directly to a WASI implementation of BLAS.
--   **SIMD**: We can easily load `v128` vectors from the buffer.
+
+- **Zero-Copy Interop**: We can pass the pointer directly to a WASI implementation of BLAS.
+- **SIMD**: We can easily load `v128` vectors from the buffer.
 
 The `mat` syntax should compile to code that allocates this buffer and populates it directly.
 
 **Optimization**: The compiler should **avoid** creating an intermediate tuple or array at runtime.
+
 1.  **Allocation**: Allocate the linear memory buffer.
 2.  **Initialization**: Emit `f64.store` instructions to write the literal values directly into the buffer.
-    -   *Constant Data*: If the matrix is fully constant, the compiler can place the data in a WASM Data Segment and use `memory.init` for bulk initialization.
+    - _Constant Data_: If the matrix is fully constant, the compiler can place the data in a WASM Data Segment and use `memory.init` for bulk initialization.
 
 ```zena
 // Conceptually compiles to (pseudo-code):
@@ -266,13 +278,15 @@ Using Linear Memory introduces a challenge: **Who frees the memory?** The `Matri
 
 **Strategy 1: Explicit Disposal (Deterministic)**
 Users must manually free large matrices.
+
 ```zena
 let m = ...;
 // use m
 m.dispose(); // Calls free(m.ptr)
 ```
-*Pros*: Deterministic, simple.
-*Cons*: Unsafe (use-after-free), ergonomic burden.
+
+_Pros_: Deterministic, simple.
+_Cons_: Unsafe (use-after-free), ergonomic burden.
 
 **Strategy 2: Host Finalization (Safety Net)**
 We can leverage the Host's `FinalizationRegistry` (in JS) to free memory when the Zena object is collected.
@@ -290,6 +304,7 @@ Native WASM WeakRefs and Finalizers are a [Post-MVP proposal](https://github.com
 **Decision**: Implement **Strategy 1 (Dispose)** for immediate control and **Strategy 2 (Host Finalization)** as the automatic safety net for JS environments.
 
 #### Small Vectors
+
 Small fixed-size vectors (Vec2, Vec3, Vec4) should be treated differently. They should be value types (structs) or mapped directly to `v128` where possible, living on the stack or in registers, not the heap.
 
 ## 3. WASM SIMD Support
@@ -337,8 +352,8 @@ interface LinearAlgebraBackend {
 
 ### 4.2 WASI-NN and Host Bindings
 
--   **WASI-NN**: Zena should support the WASI-NN standard for machine learning inference.
--   **Custom Host Imports**: Zena's `declare` syntax can import optimized math functions from JavaScript (which might call into WebGPU or WebGL) or a native host.
+- **WASI-NN**: Zena should support the WASI-NN standard for machine learning inference.
+- **Custom Host Imports**: Zena's `declare` syntax can import optimized math functions from JavaScript (which might call into WebGPU or WebGL) or a native host.
 
 ```zena
 @external("env", "cblas_dgemm")
