@@ -80,6 +80,10 @@ export class CodeGenerator {
       this.#ctx.exceptionTagIndex,
     );
 
+    // Add default memory (1 page = 64KB)
+    const memoryIndex = this.#ctx.module.addMemory(1);
+    this.#ctx.module.addExport('memory', ExportDesc.Mem, memoryIndex);
+
     const globalInitializers: {index: number; init: any}[] = [];
 
     // 1. Register Interfaces and Mixins (First pass)

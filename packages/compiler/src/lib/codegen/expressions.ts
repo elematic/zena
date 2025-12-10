@@ -4020,6 +4020,18 @@ function generateGlobalIntrinsic(
 ) {
   const args = expr.arguments;
   switch (name) {
+    case 'i32.store': {
+      generateExpression(ctx, args[0], body); // ptr
+      generateExpression(ctx, args[1], body); // value
+      body.push(Opcode.i32_store, 0, 0); // align=0, offset=0
+      break;
+    }
+    case 'i32.store8': {
+      generateExpression(ctx, args[0], body); // ptr
+      generateExpression(ctx, args[1], body); // value
+      body.push(Opcode.i32_store8, 0, 0); // align=0, offset=0
+      break;
+    }
     case 'eq': {
       const left = args[0];
       const right = args[1];

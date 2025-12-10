@@ -4,8 +4,10 @@ export class WasmModule {
   #types: number[][] = [];
   #imports: {module: string; name: string; kind: number; index: number}[] = [];
   #functions: number[] = [];
-  #exports: {name: string; kind: number; index: number}[] = [];
+  #tables: number[][] = [];
+  #memories: number[][] = [];
   #globals: number[][] = [];
+  #exports: {name: string; kind: number; index: number}[] = [];
   #tags: number[][] = [];
   #codes: number[][] = [];
   #datas: number[][] = [];
@@ -148,6 +150,20 @@ export class WasmModule {
     this.#exports.push({name, kind, index});
   }
 
+  public addMemory(min: number, max?: number): number {
+    const buffer: number[] = [];
+    if (max !== undefined) {
+      buffer.push(0x01); // limits: min max
+      this.#writeUnsignedLEB128(buffer, min);
+      this.#writeUnsignedLEB128(buffer, max);
+    } else {
+      buffer.push(0x00); // limits: min
+      this.#writeUnsignedLEB128(buffer, min);
+    }
+    this.#memories.push(buffer);
+    return this.#memories.length - 1;
+  }
+
   public addGlobal(type: number[], mutable: boolean, init: number[]): number {
     const buffer: number[] = [];
     buffer.push(...type);
@@ -216,6 +232,26 @@ export class WasmModule {
         this.#writeUnsignedLEB128(sectionBuffer, typeIndex);
       }
       this.#writeSection(buffer, SectionId.Function, sectionBuffer);
+    }
+
+    // Table Section
+    if (this.#tables.length > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#tables.length);
+      for (const table of this.#tables) {
+        sectionBuffer.push(...table);
+      }
+      this.#writeSection(buffer, SectionId.Table, sectionBuffer);
+    }
+
+    // Memory Section
+    if (this.#memories.length > 0) {
+      const sectionBuffer: number[] = [];
+      this.#writeUnsignedLEB128(sectionBuffer, this.#memories.length);
+      for (const memory of this.#memories) {
+        sectionBuffer.push(...memory);
+      }
+      this.#writeSection(buffer, SectionId.Memory, sectionBuffer);
     }
 
     // Tag Section
