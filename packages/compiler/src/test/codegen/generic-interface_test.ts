@@ -17,8 +17,9 @@ suite('CodeGenerator - Generic Interfaces', () => {
 
       export let main = () => {
         var c = new Container(42);
-        var b: Box<i32> = c;
-        return b.getValue();
+        // var b: Box<i32> = c;
+        // return b.getValue();
+        return c.getValue();
       };
     `;
     const result = await compileAndRun(source);

@@ -339,6 +339,11 @@ export function generateTrampoline(
     ...WasmModule.encodeSignedLEB128(targetTypeIndex),
   ]);
 
+  console.log(`Generating trampoline for ${classInfo.name}.${methodName} (Index: ${trampolineIndex})`);
+  console.log(`  Params: ${params.length}`);
+  console.log(`  CastedThisLocal: ${castedThisLocal}`);
+  console.log(`  TargetTypeIndex: ${targetTypeIndex}`);
+
   // local.set $castedThis (ref.cast $Task (local.get 0))
   body.push(Opcode.local_get, 0);
   body.push(
@@ -695,6 +700,7 @@ export function getClassFromTypeIndex(
     if (info.isExtension && info.onType) {
       const onTypeIndex = decodeTypeIndex(info.onType);
       if (onTypeIndex === typeIndex) {
+        console.log(`getClassFromTypeIndex: Found extension ${info.name} for type ${typeIndex}`);
         return info;
       }
     }
@@ -898,6 +904,7 @@ export function registerClassStruct(
     isExtension: decl.isExtension,
     onType,
   };
+  console.error(`Class ${decl.name.name} struct type index: ${structTypeIndex}`);
   ctx.classes.set(decl.name.name, classInfo);
 }
 
@@ -1049,7 +1056,7 @@ export function registerClassMethods(
         results = [];
       }
 
-      let typeIndex: number;
+      let typeIndex: number = -1;
       let isOverride = false;
       if (currentSuperClassInfo) {
         if (
@@ -1065,9 +1072,13 @@ export function registerClassMethods(
         typeIndex = ctx.module.addType(params, results);
       }
 
+      const paramTypes = ctx.module.getFunctionTypeParams(typeIndex);
+      console.error(`Method ${decl.name.name}.${methodName}: typeIndex=${typeIndex}, params=${paramTypes.map(t => t.join(',')).join(' | ')}`);
+
       let funcIndex = -1;
       if (!intrinsic && !member.isDeclare) {
         funcIndex = ctx.module.addFunction(typeIndex!);
+        console.error(`Added method ${decl.name.name}.${methodName} (Index: ${funcIndex})`);
       }
 
       const returnType = results.length > 0 ? results[0] : [];
@@ -1867,6 +1878,11 @@ export function getTypeKey(type: TypeAnnotation, ctx?: CodegenContext): string {
     const params = type.params.map((p) => getTypeKey(p, ctx)).join(',');
     const ret = type.returnType ? getTypeKey(type.returnType, ctx) : 'void';
     return `(${params})=>${ret}`;
+  } else if (type.type === NodeType.UnionTypeAnnotation) {
+    return type.types
+      .map((t) => getTypeKey(t, ctx))
+      .sort()
+      .join('|');
   }
   return 'unknown';
 }
@@ -1891,9 +1907,11 @@ function getFixedArrayTypeIndex(
   const key = elementType.join(',');
   if (ctx.fixedArrayTypes.has(key)) {
     const cached = ctx.fixedArrayTypes.get(key)!;
+    // console.error(`getFixedArrayTypeIndex: Cached ${key} -> ${cached}`);
     return cached;
   }
   const index = ctx.module.addArrayType(elementType, true);
+  console.error(`getFixedArrayTypeIndex: New ${key} -> ${index}`);
   ctx.fixedArrayTypes.set(key, index);
   return index;
 }
@@ -2003,10 +2021,22 @@ export function mapType(
 
         // Check if it's a generic class instantiation
         if (type.typeArguments && type.typeArguments.length > 0) {
+          if (typeName.includes('Entry')) {
+             console.error(`mapType: Processing Entry. typeName=${typeName} typeArguments=${type.typeArguments.length}`);
+          }
           // Instantiate generic class
           // We need to find the generic class declaration
           // Check genericClasses
           let genericDecl = ctx.genericClasses.get(typeName);
+          
+          if (typeName.includes('Entry')) {
+             console.error(`mapType: Entry genericDecl found: ${!!genericDecl}`);
+          }
+
+          if (!genericDecl && typeName.includes('Entry')) {
+             console.error(`mapType: Generic Entry not found. typeName=${typeName}`);
+             console.error(`Available generic classes: ${Array.from(ctx.genericClasses.keys()).join(',')}`);
+          }
 
           // If not found, check if it's a well-known type that was renamed
           if (!genericDecl) {
@@ -2135,6 +2165,12 @@ export function instantiateClass(
   typeArguments: TypeAnnotation[],
   parentContext?: Map<string, TypeAnnotation>,
 ) {
+  console.error(`instantiateClass called for ${decl.name.name} (specialized: ${specializedName})`);
+  if (decl.name.name.includes('FixedArray')) {
+      console.error(`Checking FixedArray: decl.name=${decl.name.name}, wellKnown=${ctx.wellKnownTypes.FixedArray?.name.name}`);
+      console.error(`Identity check: ${decl === ctx.wellKnownTypes.FixedArray}`);
+      console.error(`isExtension: ${decl.isExtension}, onType: ${decl.onType}`);
+  }
   const context = new Map<string, TypeAnnotation>();
   if (decl.typeParameters) {
     decl.typeParameters.forEach((param, index) => {
@@ -2150,7 +2186,39 @@ export function instantiateClass(
   let structTypeIndex = -1;
   let onType: number[] | undefined;
 
-  if (decl.isExtension && decl.onType) {
+  let isFixedArray = false;
+  if (ctx.wellKnownTypes.FixedArray) {
+      if (decl === ctx.wellKnownTypes.FixedArray) {
+          isFixedArray = true;
+      } else if (decl.name.name === ctx.wellKnownTypes.FixedArray.name.name) {
+          // Check if it's the same declaration object or just same name
+          // Ideally we should check identity, but for now let's trust name if it's FixedArray
+          isFixedArray = true;
+      }
+  } else {
+      if (decl.name.name === 'FixedArray') {
+          console.error('FixedArray found but ctx.wellKnownTypes.FixedArray is undefined');
+      }
+  }
+  
+  if (
+    ctx.wellKnownTypes.FixedArray &&
+    (decl === ctx.wellKnownTypes.FixedArray ||
+      decl.name.name === ctx.wellKnownTypes.FixedArray.name.name)
+  ) {
+    isFixedArray = true;
+  }
+
+  if (isFixedArray) {
+    console.error('Entered FixedArray block');
+    // Special handling for FixedArray: map to Wasm Array
+    if (typeArguments.length !== 1) {
+      throw new Error('FixedArray must have exactly 1 type argument');
+    }
+    const elementType = mapType(ctx, typeArguments[0], context);
+    structTypeIndex = getFixedArrayTypeIndex(ctx, elementType);
+    console.error(`Class ${specializedName} array type index: ${structTypeIndex}`);
+  } else if (decl.isExtension && decl.onType) {
     onType = mapType(ctx, decl.onType, context);
   } else {
     // Add vtable field
@@ -2164,12 +2232,14 @@ export function instantiateClass(
           specializedName,
           getMemberName(member.name),
         );
+        // console.log(`Registering field ${fieldName} for class ${specializedName}`);
         fields.set(fieldName, {index: fieldIndex++, type: wasmType});
         fieldTypes.push({type: wasmType, mutable: true});
       }
     }
 
     structTypeIndex = ctx.module.addStructType(fieldTypes);
+    console.error(`Class ${specializedName} struct type index: ${structTypeIndex}`);
   }
 
   const methods = new Map<
@@ -2194,7 +2264,7 @@ export function instantiateClass(
     fields,
     methods,
     vtable,
-    isExtension: decl.isExtension,
+    isExtension: isFixedArray ? false : decl.isExtension,
     onType,
   };
   ctx.classes.set(specializedName, classInfo);
@@ -2297,6 +2367,7 @@ export function instantiateClass(
         let funcIndex = -1;
         if (!intrinsic) {
           funcIndex = ctx.module.addFunction(typeIndex);
+          console.error(`Added specialized method ${specializedName}.${methodName} (Index: ${funcIndex})`);
         }
 
         const returnType = results.length > 0 ? results[0] : [];
@@ -2308,6 +2379,8 @@ export function instantiateClass(
           isFinal: member.isFinal,
           intrinsic,
         });
+        console.error(`Method ${specializedName}.${methodName}: returnType=${returnType.join(',')}`);
+        console.error(`Method ${specializedName}.${methodName}: returnType=${returnType.join(',')}`);
       } else if (member.type === NodeType.AccessorDeclaration) {
         const propName = getMemberName(member.name);
         const propType = mapType(ctx, member.typeAnnotation, context);
@@ -2354,6 +2427,7 @@ export function instantiateClass(
           }
 
           const funcIndex = ctx.module.addFunction(typeIndex!);
+          console.log(`Added specialized getter ${specializedName}.${methodName} (Index: ${funcIndex})`);
 
           methods.set(methodName, {
             index: funcIndex,
@@ -2406,6 +2480,7 @@ export function instantiateClass(
           }
 
           const funcIndex = ctx.module.addFunction(typeIndex!);
+          console.log(`Added specialized setter ${specializedName}.${methodName} (Index: ${funcIndex})`);
 
           methods.set(methodName, {
             index: funcIndex,
@@ -2476,6 +2551,7 @@ export function instantiateClass(
           }
 
           const funcIndex = intrinsic ? -1 : ctx.module.addFunction(typeIndex!);
+          if (!intrinsic) console.log(`Added specialized field getter ${specializedName}.${regGetterName} (Index: ${funcIndex})`);
 
           methods.set(regGetterName, {
             index: funcIndex,
@@ -2514,6 +2590,7 @@ export function instantiateClass(
             const setterFuncIndex = intrinsic
               ? -1
               : ctx.module.addFunction(setterTypeIndex!);
+            if (!intrinsic) console.log(`Added specialized field setter ${specializedName}.${regSetterName} (Index: ${setterFuncIndex})`);
 
             methods.set(regSetterName, {
               index: setterFuncIndex,
@@ -2540,6 +2617,13 @@ export function instantiateClass(
 
       ctx.bodyGenerators.push(() => {
         generateClassMethods(ctx, declForGen, specializedName, context);
+      });
+      return;
+    }
+
+    if (isFixedArray) {
+      ctx.bodyGenerators.push(() => {
+        generateClassMethods(ctx, decl, specializedName, context);
       });
       return;
     }
@@ -2590,6 +2674,7 @@ export function instantiateClass(
 
       const wrapperTypeIndex = ctx.module.addType(params, results);
       const wrapperFuncIndex = ctx.module.addFunction(wrapperTypeIndex);
+      console.log(`Added specialized constructor wrapper ${specializedName} (Index: ${wrapperFuncIndex})`);
 
       const exportName = specializedName;
       ctx.module.addExport(exportName, ExportDesc.Func, wrapperFuncIndex);
@@ -2686,6 +2771,7 @@ export function instantiateInterface(
 
   // 1. Create Placeholder Struct Type
   const structTypeIndex = ctx.module.addStructType([], undefined, false);
+  console.log(`Interface ${specializedName} struct type index: ${structTypeIndex}`);
 
   // Register placeholder info
   const interfaceInfo: InterfaceInfo = {

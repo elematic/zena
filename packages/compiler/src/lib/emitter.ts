@@ -38,6 +38,10 @@ export class WasmModule {
 
     this.#types.push(buffer);
     const index = this.#types.length - 1;
+    console.error(`Added Type #${index}: params=${params.map(p => p.join(',')).join('|')}, results=${results.map(r => r.join(',')).join('|')}`);
+    if (index === 1) {
+       console.error(`Type #0: ${this.#types[0].join(',')}`);
+    }
     return index;
   }
 
@@ -88,6 +92,7 @@ export class WasmModule {
 
     this.#types.push(buffer);
     const index = this.#types.length - 1;
+    console.error(`Added Struct Type #${index}`);
     return index;
   }
 
@@ -138,10 +143,12 @@ export class WasmModule {
     this.#functions.push(typeIndex);
     this.#codes.push([]);
     const index = this.#importedFunctionCount + this.#functions.length - 1;
+    console.log(`Added function #${index} with type #${typeIndex}`);
     return index;
   }
 
   public addCode(index: number, locals: number[][], body: number[]) {
+    console.log(`Adding code for function #${index}`);
     // Code entry: size (u32) + code
     // code: vec(locals) + expr
     // locals: vec(local)

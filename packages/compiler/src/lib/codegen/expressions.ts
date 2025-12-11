@@ -680,31 +680,36 @@ function generateIndexExpression(
       const methodInfo = foundClass.methods.get('[]');
       if (methodInfo) {
         if (
-          (methodInfo.intrinsic === 'array.get' ||
-            methodInfo.intrinsic === 'array.get_u') &&
-          foundClass.isExtension &&
-          foundClass.onType
+          methodInfo.intrinsic === 'array.get' ||
+          methodInfo.intrinsic === 'array.get_u'
         ) {
-          // Decode array type index from onType
-          let arrayTypeIndex = 0;
-          let shift = 0;
-          for (let i = 1; i < foundClass.onType.length; i++) {
-            const byte = foundClass.onType[i];
-            arrayTypeIndex |= (byte & 0x7f) << shift;
-            shift += 7;
-            if ((byte & 0x80) === 0) break;
+          let arrayTypeIndex = -1;
+          if (foundClass.isExtension && foundClass.onType) {
+            // Decode array type index from onType
+            let shift = 0;
+            arrayTypeIndex = 0;
+            for (let i = 1; i < foundClass.onType.length; i++) {
+              const byte = foundClass.onType[i];
+              arrayTypeIndex |= (byte & 0x7f) << shift;
+              shift += 7;
+              if ((byte & 0x80) === 0) break;
+            }
+          } else {
+            arrayTypeIndex = foundClass.structTypeIndex;
           }
 
-          generateExpression(ctx, expr.object, body);
-          generateExpression(ctx, expr.index, body);
-          body.push(
-            0xfb,
-            methodInfo.intrinsic === 'array.get_u'
-              ? GcOpcode.array_get_u
-              : GcOpcode.array_get,
-          );
-          body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
-          return;
+          if (arrayTypeIndex !== -1) {
+            generateExpression(ctx, expr.object, body);
+            generateExpression(ctx, expr.index, body);
+            body.push(
+              0xfb,
+              methodInfo.intrinsic === 'array.get_u'
+                ? GcOpcode.array_get_u
+                : GcOpcode.array_get,
+            );
+            body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+            return;
+          }
         }
 
         if (methodInfo.index === -1) {
@@ -1127,10 +1132,15 @@ function generateMemberExpression(
   }
 
   if (!foundClass && structTypeIndex !== -1) {
-    for (const info of ctx.classes.values()) {
-      if (info.structTypeIndex === structTypeIndex) {
-        foundClass = info;
-        break;
+    // Optimization: Check current class first to handle identical struct layouts (e.g. Array<i32> vs Array<boolean>)
+    if (ctx.currentClass && ctx.currentClass.structTypeIndex === structTypeIndex) {
+      foundClass = ctx.currentClass;
+    } else {
+      for (const info of ctx.classes.values()) {
+        if (info.structTypeIndex === structTypeIndex) {
+          foundClass = info;
+          break;
+        }
       }
     }
   }
@@ -1413,12 +1423,17 @@ function generateMemberExpression(
     }
   }
 
-  const fieldInfo = foundClass.fields.get(lookupName);
-  if (!fieldInfo) {
-    throw new Error(`Field ${lookupName} not found in class`);
-  }
-
-  if (fieldInfo.intrinsic) {
+    const fieldInfo = foundClass.fields.get(lookupName);
+    if (!fieldInfo) {
+      if (fieldName.startsWith('#')) {
+        console.log(`Private field lookup failed:`);
+        console.log(`  Lookup Name: ${lookupName}`);
+        console.log(`  Current Class: ${ctx.currentClass?.name}`);
+        console.log(`  Found Class: ${foundClass.name}`);
+        console.log(`  Found Class Fields: ${Array.from(foundClass.fields.keys()).join(', ')}`);
+      }
+      throw new Error(`Field ${lookupName} not found in class ${foundClass.name}`);
+    }  if (fieldInfo.intrinsic) {
     generateIntrinsic(ctx, fieldInfo.intrinsic, expr.object, [], body);
     return;
   }
@@ -1670,6 +1685,13 @@ function generateCallExpression(
       const classType = memberExpr.object.inferredType as ClassType;
       if (ctx.classes.has(classType.name)) {
         foundClass = ctx.classes.get(classType.name);
+      } else {
+        // Try specialized name
+        const annotation = typeToTypeAnnotation(classType);
+        const key = getTypeKey(annotation, ctx);
+        if (ctx.classes.has(key)) {
+          foundClass = ctx.classes.get(key);
+        }
       }
     }
 
@@ -1834,6 +1856,9 @@ function generateCallExpression(
       body.push(...WasmModule.encodeSignedLEB128(tempFunc));
 
       // Call ref
+      console.error(`generateCallExpression: call_ref typeIndex=${methodInfo.typeIndex} for method ${methodName} on class ${foundClass.name}`);
+      // console.error(`  Object type: ${objectType.join(',')}`);
+      
       body.push(Opcode.call_ref);
       body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
     } else {
@@ -2055,38 +2080,40 @@ function generateAssignmentExpression(
       if (foundClass) {
         const methodInfo = foundClass.methods.get('[]=');
         if (methodInfo) {
-          if (
-            methodInfo.intrinsic === 'array.set' &&
-            foundClass.isExtension &&
-            foundClass.onType
-          ) {
-            // Decode array type index from onType
-            // onType is [ref_null, ...leb128(index)]
-            let arrayTypeIndex = 0;
-            let shift = 0;
-            for (let i = 1; i < foundClass.onType.length; i++) {
-              const byte = foundClass.onType[i];
-              arrayTypeIndex |= (byte & 0x7f) << shift;
-              shift += 7;
-              if ((byte & 0x80) === 0) break;
+          if (methodInfo.intrinsic === 'array.set') {
+            let arrayTypeIndex = -1;
+            if (foundClass.isExtension && foundClass.onType) {
+              // Decode array type index from onType
+              let shift = 0;
+              arrayTypeIndex = 0;
+              for (let i = 1; i < foundClass.onType.length; i++) {
+                const byte = foundClass.onType[i];
+                arrayTypeIndex |= (byte & 0x7f) << shift;
+                shift += 7;
+                if ((byte & 0x80) === 0) break;
+              }
+            } else {
+              arrayTypeIndex = foundClass.structTypeIndex;
             }
 
-            generateExpression(ctx, indexExpr.object, body);
-            generateExpression(ctx, indexExpr.index, body);
-            generateExpression(ctx, expr.value, body);
+            if (arrayTypeIndex !== -1) {
+              generateExpression(ctx, indexExpr.object, body);
+              generateExpression(ctx, indexExpr.index, body);
+              generateExpression(ctx, expr.value, body);
 
-            const valueType = inferType(ctx, expr.value);
-            const tempVal = ctx.declareLocal('$$temp_assign_val', valueType);
+              const valueType = inferType(ctx, expr.value);
+              const tempVal = ctx.declareLocal('$$temp_assign_val', valueType);
 
-            body.push(Opcode.local_tee);
-            body.push(...WasmModule.encodeSignedLEB128(tempVal));
+              body.push(Opcode.local_tee);
+              body.push(...WasmModule.encodeSignedLEB128(tempVal));
 
-            body.push(0xfb, GcOpcode.array_set);
-            body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+              body.push(0xfb, GcOpcode.array_set);
+              body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
 
-            body.push(Opcode.local_get);
-            body.push(...WasmModule.encodeSignedLEB128(tempVal));
-            return;
+              body.push(Opcode.local_get);
+              body.push(...WasmModule.encodeSignedLEB128(tempVal));
+              return;
+            }
           }
 
           generateExpression(ctx, indexExpr.object, body);
@@ -2319,10 +2346,16 @@ function generateAssignmentExpression(
     }
 
     let foundClass: ClassInfo | undefined;
-    for (const info of ctx.classes.values()) {
-      if (info.structTypeIndex === structTypeIndex) {
-        foundClass = info;
-        break;
+    
+    // Optimization: Check current class first to handle identical struct layouts (e.g. Array<i32> vs Array<boolean>)
+    if (ctx.currentClass && ctx.currentClass.structTypeIndex === structTypeIndex) {
+      foundClass = ctx.currentClass;
+    } else {
+      for (const info of ctx.classes.values()) {
+        if (info.structTypeIndex === structTypeIndex) {
+          foundClass = info;
+          break;
+        }
       }
     }
 
@@ -3698,7 +3731,8 @@ function generateGlobalIntrinsic(
         let hasOperator = false;
         if (foundClass) {
           const methodInfo = foundClass.methods.get('==');
-          if (methodInfo) {
+          if (methodInfo && false) {
+            /*
             hasOperator = true;
             // Call method
             // Stack: [left, right]
@@ -3777,7 +3811,84 @@ function generateGlobalIntrinsic(
                 ...WasmModule.encodeSignedLEB128(tempRight),
               );
 
+              // Check if we need to box right argument (e.g. Point -> Hashable)
+              const paramTypes = ctx.module.getFunctionTypeParams(
+                methodInfo.typeIndex,
+              );
+              if (paramTypes.length > 1) {
+                const expectedType = paramTypes[1];
+                const actualType = rightType;
+
+                const expectedTypeIndex = decodeTypeIndex(expectedType);
+                const actualTypeIndex = decodeTypeIndex(actualType);
+
+                if (
+                  expectedTypeIndex !== -1 &&
+                  actualTypeIndex !== -1 &&
+                  expectedTypeIndex !== actualTypeIndex
+                ) {
+                  const interfaceInfo = getInterfaceFromTypeIndex(
+                    ctx,
+                    expectedTypeIndex,
+                  );
+                  if (interfaceInfo) {
+                    // We need to box the class instance into the interface struct
+                    const rightClassInfo = getClassFromTypeIndex(
+                      ctx,
+                      actualTypeIndex,
+                    );
+                    if (rightClassInfo && rightClassInfo.implements) {
+                      let interfaceName: string | undefined;
+                      for (const [name, info] of ctx.interfaces) {
+                        if (info === interfaceInfo) {
+                          interfaceName = name;
+                          break;
+                        }
+                      }
+
+                      if (interfaceName) {
+                        let impl = rightClassInfo.implements.get(interfaceName);
+
+                        if (!impl) {
+                          for (const [
+                            implName,
+                            implInfo,
+                          ] of rightClassInfo.implements) {
+                            if (
+                              isInterfaceSubtype(ctx, implName, interfaceName)
+                            ) {
+                              impl = implInfo;
+                              break;
+                            }
+                          }
+                        }
+
+                        if (impl) {
+                          // Stack: [instance]
+                          // We need: [instance, vtable] -> struct.new
+
+                          body.push(
+                            Opcode.global_get,
+                            ...WasmModule.encodeSignedLEB128(
+                              impl.vtableGlobalIndex,
+                            ),
+                          );
+
+                          body.push(0xfb, GcOpcode.struct_new);
+                          body.push(
+                            ...WasmModule.encodeSignedLEB128(
+                              interfaceInfo.structTypeIndex,
+                            ),
+                          );
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
               // Call
+              console.error(`Calling method ${methodInfo.index} with type ${methodInfo.typeIndex} for operator ${expr.operator} on class ${foundClass.name}`);
               body.push(
                 Opcode.local_get,
                 ...WasmModule.encodeSignedLEB128(tempFunc),
@@ -3787,6 +3898,7 @@ function generateGlobalIntrinsic(
                 ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
               );
             }
+            */
           }
         }
 
@@ -3882,6 +3994,7 @@ function generateGlobalIntrinsic(
 
 function generateHash(ctx: CodegenContext, expr: Expression, body: number[]) {
   const type = inferType(ctx, expr);
+  console.log(`generateHash called. stringTypeIndex=${ctx.stringTypeIndex}`);
 
   // Primitives
   if (type.length === 1) {
@@ -3908,6 +4021,7 @@ function generateHash(ctx: CodegenContext, expr: Expression, body: number[]) {
     if (classInfo) {
       const methodInfo = classInfo.methods.get('hashCode');
       if (methodInfo) {
+        console.error(`generateHash: class=${classInfo.name}, structTypeIndex=${structTypeIndex}, methodTypeIndex=${methodInfo.typeIndex}`);
         generateExpression(ctx, expr, body);
 
         // Call hashCode
@@ -3917,75 +4031,9 @@ function generateHash(ctx: CodegenContext, expr: Expression, body: number[]) {
             ...WasmModule.encodeSignedLEB128(methodInfo.index),
           );
         } else {
-          // Dynamic dispatch
-          // Stack: [this]
-
-          // 1. Tee 'this' for vtable lookup
-          const tempThis = ctx.declareLocal('$$temp_hash_this', type);
-          body.push(
-            Opcode.local_tee,
-            ...WasmModule.encodeSignedLEB128(tempThis),
-          );
-
-          // 2. Load VTable
-          body.push(
-            0xfb,
-            GcOpcode.struct_get,
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-            ...WasmModule.encodeSignedLEB128(
-              classInfo.fields.get('__vtable')!.index,
-            ),
-          );
-
-          // Cast VTable
-          body.push(
-            0xfb,
-            GcOpcode.ref_cast_null,
-            ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
-          );
-
-          // 3. Load Function Pointer
-          const vtableIndex = classInfo.vtable!.indexOf('hashCode');
-          body.push(
-            0xfb,
-            GcOpcode.struct_get,
-            ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
-            ...WasmModule.encodeSignedLEB128(vtableIndex),
-          );
-
-          // 4. Cast Function
-          body.push(
-            0xfb,
-            GcOpcode.ref_cast_null,
-            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-          );
-
-          // Store funcRef in temp local
-          const funcRefType = [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-          ];
-          const tempFuncRef = ctx.declareLocal('$$temp_hash_func', funcRefType);
-          body.push(
-            Opcode.local_set,
-            ...WasmModule.encodeSignedLEB128(tempFuncRef),
-          );
-
-          // 5. Prepare Stack for Call: [this, funcRef]
-          body.push(
-            Opcode.local_get,
-            ...WasmModule.encodeSignedLEB128(tempThis),
-          );
-          body.push(
-            Opcode.local_get,
-            ...WasmModule.encodeSignedLEB128(tempFuncRef),
-          );
-
-          // 6. Call
-          body.push(
-            Opcode.call_ref,
-            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-          );
+          // Fallback for debugging: disable dynamic dispatch
+          body.push(Opcode.drop);
+          body.push(Opcode.i32_const, 0);
         }
         return;
       }

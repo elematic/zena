@@ -14,7 +14,12 @@ import {
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
-import {decodeTypeIndex, getClassFromTypeIndex, mapType} from './classes.js';
+import {
+  decodeTypeIndex,
+  getClassFromTypeIndex,
+  mapType,
+  getSpecializedName,
+} from './classes.js';
 import type {CodegenContext} from './context.js';
 import {
   generateExpression,
@@ -296,16 +301,29 @@ export function generateLocalVariableDeclaration(
     }
 
     // Check for interface boxing
-    if (
-      decl.typeAnnotation.type === NodeType.TypeAnnotation &&
-      ctx.interfaces.has(decl.typeAnnotation.name)
-    ) {
+    let interfaceName: string | undefined;
+    if (decl.typeAnnotation.type === NodeType.TypeAnnotation) {
+      if (
+        decl.typeAnnotation.typeArguments &&
+        decl.typeAnnotation.typeArguments.length > 0
+      ) {
+        interfaceName = getSpecializedName(
+          decl.typeAnnotation.name,
+          decl.typeAnnotation.typeArguments,
+          ctx,
+          ctx.currentTypeContext,
+        );
+      } else {
+        interfaceName = decl.typeAnnotation.name;
+      }
+    }
+
+    if (interfaceName && ctx.interfaces.has(interfaceName)) {
       const initType = inferType(ctx, decl.init);
       const typeIndex = decodeTypeIndex(initType);
       const classInfo = getClassFromTypeIndex(ctx, typeIndex);
 
       if (classInfo && classInfo.implements) {
-        const interfaceName = decl.typeAnnotation.name;
         const interfaceInfo = ctx.interfaces.get(interfaceName)!;
         let implInfo = classInfo.implements.get(interfaceName);
 
