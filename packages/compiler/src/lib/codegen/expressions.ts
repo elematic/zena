@@ -2684,28 +2684,58 @@ function generateAssignmentExpression(
   } else if (expr.left.type === NodeType.Identifier) {
     generateExpression(ctx, expr.value, body);
     const local = ctx.getLocal(expr.left.name);
-    if (!local) throw new Error(`Unknown identifier: ${expr.left.name}`);
-    const index = local.index;
 
-    const valueType = inferType(ctx, expr.value);
-    if (
-      ((local.type.length > 1 &&
-        local.type[0] === ValType.ref_null &&
-        local.type[1] === ValType.anyref) ||
-        (local.type.length === 1 && local.type[0] === ValType.anyref)) &&
-      valueType.length === 1 &&
-      (valueType[0] === ValType.i32 ||
-        valueType[0] === ValType.i64 ||
-        valueType[0] === ValType.f32 ||
-        valueType[0] === ValType.f64)
-    ) {
-      boxPrimitive(ctx, valueType, body);
+    if (local) {
+      const index = local.index;
+
+      const valueType = inferType(ctx, expr.value);
+      if (
+        ((local.type.length > 1 &&
+          local.type[0] === ValType.ref_null &&
+          local.type[1] === ValType.anyref) ||
+          (local.type.length === 1 && local.type[0] === ValType.anyref)) &&
+        valueType.length === 1 &&
+        (valueType[0] === ValType.i32 ||
+          valueType[0] === ValType.i64 ||
+          valueType[0] === ValType.f32 ||
+          valueType[0] === ValType.f64)
+      ) {
+        boxPrimitive(ctx, valueType, body);
+      }
+
+      // Assignment is an expression that evaluates to the assigned value.
+      // So we use local.tee to set the local and keep the value on the stack.
+      body.push(Opcode.local_tee);
+      body.push(...WasmModule.encodeSignedLEB128(index));
+    } else {
+      const global = ctx.getGlobal(expr.left.name);
+      if (global) {
+        const valueType = inferType(ctx, expr.value);
+        if (
+          ((global.type.length > 1 &&
+            global.type[0] === ValType.ref_null &&
+            global.type[1] === ValType.anyref) ||
+            (global.type.length === 1 && global.type[0] === ValType.anyref)) &&
+          valueType.length === 1 &&
+          (valueType[0] === ValType.i32 ||
+            valueType[0] === ValType.i64 ||
+            valueType[0] === ValType.f32 ||
+            valueType[0] === ValType.f64)
+        ) {
+          boxPrimitive(ctx, valueType, body);
+        }
+
+        const temp = ctx.declareLocal('$$temp_global_assign', valueType);
+        body.push(Opcode.local_tee);
+        body.push(...WasmModule.encodeSignedLEB128(temp));
+        body.push(Opcode.global_set);
+        body.push(...WasmModule.encodeSignedLEB128(global.index));
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(temp));
+      } else {
+        throw new Error(`Unknown identifier: ${expr.left.name}`);
+      }
     }
-
-    // Assignment is an expression that evaluates to the assigned value.
-    // So we use local.tee to set the local and keep the value on the stack.
-    body.push(Opcode.local_tee);
-    body.push(...WasmModule.encodeSignedLEB128(index));
   } else {
     throw new Error('Invalid assignment target');
   }

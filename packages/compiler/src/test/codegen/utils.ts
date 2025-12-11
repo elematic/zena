@@ -18,7 +18,7 @@ export interface CompileOptions {
 }
 
 export async function compileAndInstantiate(
-  input: string,
+  input: string | Record<string, string>,
   options: CompileOptions = {},
 ): Promise<any> {
   const path = options.path ?? '/main.zena';
@@ -51,7 +51,11 @@ export async function compileAndInstantiate(
 
   const host: CompilerHost = {
     load: (p: string) => {
-      if (p === path) return input;
+      if (typeof input === 'string') {
+        if (p === path) return input;
+      } else if (Object.hasOwn(input, p)) {
+        return input[p];
+      }
       if (p.startsWith('zena:')) {
         const name = p.substring(5);
         return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
@@ -112,7 +116,7 @@ export async function compileAndInstantiate(
 }
 
 export async function compileAndRun(
-  input: string,
+  input: string | Record<string, string>,
   optionsOrEntryPoint: string | CompileOptions = 'main',
   importsArg: Record<string, any> = {},
 ): Promise<any> {
