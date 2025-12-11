@@ -2087,6 +2087,24 @@ function checkTaggedTemplateExpression(
     return Types.Unknown;
   }
 
+  const templateStringsArrayType = ctx.getWellKnownType('TemplateStringsArray');
+  if (templateStringsArrayType) {
+    if (
+      !isAssignableTo(ctx, templateStringsArrayType, funcType.parameters[0])
+    ) {
+      ctx.diagnostics.reportError(
+        `Tagged template tag function first argument must be assignable from TemplateStringsArray. Expected ${typeToString(
+          funcType.parameters[0],
+        )}, got ${typeToString(templateStringsArrayType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+  } else {
+    // If we can't find the type, we can't check it.
+    // But we should probably error if stdlib is missing.
+    // The bundler checks for it, so it should be there.
+  }
+
   // Return the function's return type
   return funcType.returnType;
 }

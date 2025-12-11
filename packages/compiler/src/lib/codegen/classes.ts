@@ -61,6 +61,10 @@ export function registerInterface(
   ctx: CodegenContext,
   decl: InterfaceDeclaration,
 ) {
+  if (decl.typeParameters && decl.typeParameters.length > 0) {
+    ctx.genericInterfaces.set(decl.name.name, decl);
+  }
+
   if (ctx.interfaces.has(decl.name.name)) return;
 
   let parentInfo: InterfaceInfo | undefined;
@@ -604,7 +608,31 @@ export function generateInterfaceVTable(
       throw new Error('Interfaces cannot be union types');
     }
     const interfaceName = impl.name;
-    const interfaceInfo = ctx.interfaces.get(interfaceName)!;
+    let specializedName = interfaceName;
+
+    if (impl.typeArguments && impl.typeArguments.length > 0) {
+      specializedName = getSpecializedName(
+        interfaceName,
+        impl.typeArguments,
+        ctx,
+        classInfo.typeArguments,
+      );
+
+      if (!ctx.interfaces.has(specializedName)) {
+        const genericDecl = ctx.genericInterfaces.get(interfaceName);
+        if (genericDecl) {
+          instantiateInterface(
+            ctx,
+            genericDecl,
+            specializedName,
+            impl.typeArguments,
+            classInfo.typeArguments,
+          );
+        }
+      }
+    }
+
+    const interfaceInfo = ctx.interfaces.get(specializedName)!;
 
     const vtableSize = interfaceInfo.methods.size + interfaceInfo.fields.size;
     const vtableEntries: number[] = new Array(vtableSize);
@@ -651,7 +679,7 @@ export function generateInterfaceVTable(
       initExpr,
     );
 
-    classInfo.implements.set(interfaceName, {vtableGlobalIndex: globalIndex});
+    classInfo.implements.set(specializedName, {vtableGlobalIndex: globalIndex});
   }
 }
 
@@ -1809,25 +1837,35 @@ export function resolveAnnotation(
   return type;
 }
 
-export function getTypeKey(type: TypeAnnotation): string {
+export function getTypeKey(type: TypeAnnotation, ctx?: CodegenContext): string {
   if (type.type === NodeType.TypeAnnotation) {
     let key = type.name;
+
+    if (ctx) {
+      if (key === 'string' && ctx.wellKnownTypes.String) {
+        key = ctx.wellKnownTypes.String.name.name;
+      }
+      if (ctx.program.symbolMap && ctx.program.symbolMap.has(key)) {
+        key = ctx.program.symbolMap.get(key)!;
+      }
+    }
+
     if (type.typeArguments && type.typeArguments.length > 0) {
-      key += `<${type.typeArguments.map(getTypeKey).join(',')}>`;
+      key += `<${type.typeArguments.map((t) => getTypeKey(t, ctx)).join(',')}>`;
     }
     return key;
   } else if (type.type === NodeType.RecordTypeAnnotation) {
     const props = type.properties
-      .map((p) => `${p.name.name}:${getTypeKey(p.typeAnnotation)}`)
+      .map((p) => `${p.name.name}:${getTypeKey(p.typeAnnotation, ctx)}`)
       .sort()
       .join(',');
     return `{${props}}`;
   } else if (type.type === NodeType.TupleTypeAnnotation) {
-    const elements = type.elementTypes.map(getTypeKey).join(',');
+    const elements = type.elementTypes.map((t) => getTypeKey(t, ctx)).join(',');
     return `[${elements}]`;
   } else if (type.type === NodeType.FunctionTypeAnnotation) {
-    const params = type.params.map(getTypeKey).join(',');
-    const ret = type.returnType ? getTypeKey(type.returnType) : 'void';
+    const params = type.params.map((p) => getTypeKey(p, ctx)).join(',');
+    const ret = type.returnType ? getTypeKey(type.returnType, ctx) : 'void';
     return `(${params})=>${ret}`;
   }
   return 'unknown';
@@ -1841,7 +1879,7 @@ export function getSpecializedName(
 ): string {
   const argNames = args.map((arg) => {
     const resolved = resolveAnnotation(arg, context);
-    return getTypeKey(resolved);
+    return getTypeKey(resolved, ctx);
   });
   return `${name}<${argNames.join(',')}>`;
 }
@@ -1874,7 +1912,17 @@ export function mapType(
     typeContext &&
     typeContext.has(type.name)
   ) {
-    return mapType(ctx, typeContext.get(type.name)!, typeContext);
+    const resolved = typeContext.get(type.name)!;
+    // Prevent infinite recursion if T maps to T
+    if (
+      !(
+        resolved.type === NodeType.TypeAnnotation &&
+        resolved.name === type.name &&
+        (!resolved.typeArguments || resolved.typeArguments.length === 0)
+      )
+    ) {
+      return mapType(ctx, resolved, typeContext);
+    }
   }
 
   // Check type aliases
@@ -1994,6 +2042,31 @@ export function mapType(
             return [
               ValType.ref_null,
               ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ];
+          }
+
+          // Check generic interfaces
+          let genericInterfaceDecl = ctx.genericInterfaces.get(typeName);
+          if (genericInterfaceDecl) {
+            const specializedName = getSpecializedName(
+              typeName,
+              type.typeArguments,
+              ctx,
+              context,
+            );
+            if (!ctx.interfaces.has(specializedName)) {
+              instantiateInterface(
+                ctx,
+                genericInterfaceDecl,
+                specializedName,
+                type.typeArguments,
+                context,
+              );
+            }
+            const interfaceInfo = ctx.interfaces.get(specializedName)!;
+            return [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
             ];
           }
         }
@@ -2589,6 +2662,257 @@ export function instantiateClass(
   } else {
     ctx.pendingMethodGenerations.push(registerMethods);
   }
+}
+
+export function instantiateInterface(
+  ctx: CodegenContext,
+  decl: InterfaceDeclaration,
+  specializedName: string,
+  typeArguments: TypeAnnotation[],
+  parentContext?: Map<string, TypeAnnotation>,
+) {
+  if (ctx.interfaces.has(specializedName)) {
+    return;
+  }
+
+  // Create type context
+  const context = new Map<string, TypeAnnotation>();
+  if (decl.typeParameters) {
+    decl.typeParameters.forEach((param, index) => {
+      const arg = typeArguments[index];
+      context.set(param.name, resolveAnnotation(arg, parentContext));
+    });
+  }
+
+  // 1. Create Placeholder Struct Type
+  const structTypeIndex = ctx.module.addStructType([], undefined, false);
+
+  // Register placeholder info
+  const interfaceInfo: InterfaceInfo = {
+    structTypeIndex,
+    vtableTypeIndex: -1, // Placeholder
+    methods: new Map(),
+    fields: new Map(),
+  };
+  ctx.interfaces.set(specializedName, interfaceInfo);
+
+  let parentInfo: InterfaceInfo | undefined;
+
+  if (decl.extends && decl.extends.length > 0) {
+    const ext = decl.extends[0];
+    if (ext.type === NodeType.TypeAnnotation) {
+      const parentName = ext.name;
+
+      // Check generic interfaces
+      let parentDecl = ctx.genericInterfaces.get(parentName);
+      if (parentDecl) {
+        const parentArgs = ext.typeArguments || [];
+        const specializedParentName = getSpecializedName(
+          parentName,
+          parentArgs,
+          ctx,
+          context,
+        );
+        instantiateInterface(
+          ctx,
+          parentDecl,
+          specializedParentName,
+          parentArgs,
+          context,
+        );
+        parentInfo = ctx.interfaces.get(specializedParentName);
+      } else {
+        // Check regular interfaces
+        const parentDecl = ctx.program.body.find(
+          (s) =>
+            s.type === NodeType.InterfaceDeclaration &&
+            (s as InterfaceDeclaration).name.name === parentName,
+        ) as InterfaceDeclaration | undefined;
+
+        if (parentDecl) {
+          registerInterface(ctx, parentDecl);
+          parentInfo = ctx.interfaces.get(parentName);
+        }
+      }
+    }
+  }
+
+  // 2. Create VTable Struct Type
+  const vtableFields: {type: number[]; mutable: boolean}[] = [];
+  const methodIndices = new Map<
+    string,
+    {index: number; typeIndex: number; returnType: number[]}
+  >();
+  const fieldIndices = new Map<
+    string,
+    {index: number; typeIndex: number; type: number[]}
+  >();
+
+  let methodIndex = 0;
+
+  // If parent, copy indices and fields
+  if (parentInfo) {
+    const parentFields = new Array(
+      parentInfo.methods.size + parentInfo.fields.size,
+    );
+
+    // Copy methods
+    for (const [name, info] of parentInfo.methods) {
+      methodIndices.set(name, info);
+      methodIndex = Math.max(methodIndex, info.index + 1);
+      parentFields[info.index] = {
+        type: [ValType.ref, ...WasmModule.encodeSignedLEB128(info.typeIndex)],
+        mutable: false,
+      };
+    }
+    // Copy fields
+    for (const [name, info] of parentInfo.fields) {
+      fieldIndices.set(name, info);
+      methodIndex = Math.max(methodIndex, info.index + 1);
+      parentFields[info.index] = {
+        type: [ValType.ref, ...WasmModule.encodeSignedLEB128(info.typeIndex)],
+        mutable: false,
+      };
+    }
+
+    vtableFields.push(...parentFields);
+  }
+
+  for (const member of decl.body) {
+    if (member.type === NodeType.MethodSignature) {
+      if (member.typeParameters && member.typeParameters.length > 0) {
+        continue;
+      }
+      // Function type: (param any, ...params) -> result
+      const params: number[][] = [[ValType.ref_null, ValType.anyref]]; // 'this' is (ref null any)
+      for (const param of member.params) {
+        params.push(mapType(ctx, param.typeAnnotation, context));
+      }
+      const results: number[][] = [];
+      let returnType: number[] = [];
+      if (member.returnType) {
+        const mapped = mapType(ctx, member.returnType, context);
+        if (mapped.length > 0) {
+          results.push(mapped);
+          returnType = mapped;
+        }
+      }
+
+      const funcTypeIndex = ctx.module.addType(params, results);
+
+      // Field in VTable: (ref funcType)
+      vtableFields.push({
+        type: [ValType.ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex)],
+        mutable: false, // VTables are immutable
+      });
+
+      methodIndices.set(getMemberName(member.name), {
+        index: methodIndex++,
+        typeIndex: funcTypeIndex,
+        returnType,
+      });
+    } else if (member.type === NodeType.FieldDefinition) {
+      // Field getter: (param any) -> Type
+      const params: number[][] = [[ValType.ref_null, ValType.anyref]];
+      const results: number[][] = [];
+      let fieldType: number[] = [];
+      const mapped = mapType(ctx, member.typeAnnotation, context);
+      if (mapped.length > 0) {
+        results.push(mapped);
+        fieldType = mapped;
+      }
+
+      const funcTypeIndex = ctx.module.addType(params, results);
+
+      // Field in VTable: (ref funcType)
+      vtableFields.push({
+        type: [ValType.ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex)],
+        mutable: false,
+      });
+
+      fieldIndices.set(getMemberName(member.name), {
+        index: methodIndex++,
+        typeIndex: funcTypeIndex,
+        type: fieldType,
+      });
+    } else if (member.type === NodeType.AccessorSignature) {
+      const propName = getMemberName(member.name);
+      const propType = mapType(ctx, member.typeAnnotation, context);
+
+      if (member.hasGetter) {
+        const methodName = `get_${propName}`;
+
+        // Function type: (param any) -> result
+        const params: number[][] = [[ValType.ref_null, ValType.anyref]];
+        const results: number[][] = [];
+        if (propType.length > 0) {
+          results.push(propType);
+        }
+
+        const funcTypeIndex = ctx.module.addType(params, results);
+
+        // Field in VTable: (ref funcType)
+        vtableFields.push({
+          type: [ValType.ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex)],
+          mutable: false,
+        });
+
+        methodIndices.set(methodName, {
+          index: methodIndex++,
+          typeIndex: funcTypeIndex,
+          returnType: propType,
+        });
+      }
+
+      if (member.hasSetter) {
+        const methodName = `set_${propName}`;
+
+        // Function type: (param any, value) -> void
+        const params: number[][] = [
+          [ValType.ref_null, ValType.anyref],
+          propType,
+        ];
+        const results: number[][] = [];
+
+        const funcTypeIndex = ctx.module.addType(params, results);
+
+        // Field in VTable: (ref funcType)
+        vtableFields.push({
+          type: [ValType.ref, ...WasmModule.encodeSignedLEB128(funcTypeIndex)],
+          mutable: false,
+        });
+
+        methodIndices.set(methodName, {
+          index: methodIndex++,
+          typeIndex: funcTypeIndex,
+          returnType: [],
+        });
+      }
+    }
+  }
+
+  const vtableTypeIndex = ctx.module.addStructType(
+    vtableFields,
+    parentInfo?.vtableTypeIndex,
+  );
+
+  // Update interface info
+  interfaceInfo.vtableTypeIndex = vtableTypeIndex;
+  interfaceInfo.methods = methodIndices;
+  interfaceInfo.fields = fieldIndices;
+  interfaceInfo.parent = parentInfo ? parentInfo.parent : undefined; // Should be parent name?
+
+  // 3. Update Interface Struct Type (Fat Pointer)
+  // (struct (field (ref null any)) (field (ref vtable)))
+  const interfaceFields = [
+    {type: [ValType.ref_null, ValType.anyref], mutable: true}, // instance
+    {
+      type: [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
+      mutable: true,
+    }, // vtable
+  ];
+
+  ctx.module.updateStructType(structTypeIndex, interfaceFields);
 }
 
 function manglePrivateName(className: string, memberName: string): string {

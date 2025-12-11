@@ -982,6 +982,7 @@ function generateNewExpression(
     // Get the specialized name
     className = getTypeKey(
       resolveAnnotation(annotation, ctx.currentTypeContext),
+      ctx,
     );
   }
 
@@ -4415,22 +4416,32 @@ function generateTaggedTemplateExpression(
   body: number[],
 ) {
   // console.log('generateTaggedTemplateExpression', expr.tag);
-  // 1. Create strings array (cached)
-  const stringType = [
-    ValType.ref_null,
-    ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-  ];
-  const stringsArrayTypeIndex = getFixedArrayTypeIndex(ctx, stringType);
 
+  // 1. Get TemplateStringsArray class info
+  const templateStringsArrayDecl = ctx.wellKnownTypes.TemplateStringsArray;
+  if (!templateStringsArrayDecl) {
+    throw new Error('TemplateStringsArray class not found in standard library');
+  }
+  const templateStringsArrayClass = ctx.classes.get(
+    templateStringsArrayDecl.name.name,
+  );
+  if (!templateStringsArrayClass) {
+    throw new Error(
+      `TemplateStringsArray class info not found for ${templateStringsArrayDecl.name.name}`,
+    );
+  }
+  const templateStringsArrayStructIndex =
+    templateStringsArrayClass.structTypeIndex;
+
+  // 2. Create global for caching the TemplateStringsArray instance
   let globalIndex: number;
   if (ctx.templateLiteralGlobals.has(expr)) {
     globalIndex = ctx.templateLiteralGlobals.get(expr)!;
   } else {
-    // Create global
-    // Type: (ref null $stringsArrayTypeIndex)
+    // Global type: (ref null $TemplateStringsArray)
     const globalType = [
       ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex),
+      ...WasmModule.encodeSignedLEB128(templateStringsArrayStructIndex),
     ];
 
     // Initialize with null
@@ -4441,14 +4452,48 @@ function generateTaggedTemplateExpression(
     ctx.templateLiteralGlobals.set(expr, globalIndex);
   }
 
-  // Lazy initialization
+  // Lazy initialization check
   body.push(Opcode.global_get);
   body.push(...WasmModule.encodeSignedLEB128(globalIndex));
   body.push(Opcode.ref_is_null);
   body.push(Opcode.if);
   body.push(ValType.void);
 
-  // Create strings array
+  // --- Initialization Block ---
+
+  // Prepare String type for arrays
+  const stringType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+  ];
+  const stringsArrayTypeIndex = getFixedArrayTypeIndex(ctx, stringType);
+
+  // A. Create "cooked" strings array
+  for (const quasi of expr.quasi.quasis) {
+    generateStringLiteral(
+      ctx,
+      {
+        type: NodeType.StringLiteral,
+        value: quasi.value.cooked,
+      } as StringLiteral,
+      body,
+    );
+  }
+  body.push(0xfb, GcOpcode.array_new_fixed);
+  body.push(...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(expr.quasi.quasis.length));
+
+  // Store cooked array in temp local
+  const cookedArrayLocal = ctx.declareLocal('$$cooked_strings', [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex),
+  ]);
+  body.push(
+    Opcode.local_set,
+    ...WasmModule.encodeSignedLEB128(cookedArrayLocal),
+  );
+
+  // B. Create "raw" strings array
   for (const quasi of expr.quasi.quasis) {
     generateStringLiteral(
       ctx,
@@ -4460,17 +4505,64 @@ function generateTaggedTemplateExpression(
   body.push(...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex));
   body.push(...WasmModule.encodeSignedLEB128(expr.quasi.quasis.length));
 
+  // Store raw array in temp local
+  const rawArrayLocal = ctx.declareLocal('$$raw_strings', [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex),
+  ]);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(rawArrayLocal));
+
+  // C. Instantiate TemplateStringsArray
+  // Fields: vtable, brand, strings, raw
+
+  // 1. VTable
+  if (templateStringsArrayClass.vtableGlobalIndex !== undefined) {
+    body.push(Opcode.global_get);
+    body.push(
+      ...WasmModule.encodeSignedLEB128(
+        templateStringsArrayClass.vtableGlobalIndex,
+      ),
+    );
+  } else {
+    body.push(Opcode.ref_null, HeapType.none);
+  }
+
+  // 2. Brand
+  const brandFieldName = `__brand_${templateStringsArrayClass.name}`;
+  const brandFieldInfo = templateStringsArrayClass.fields.get(brandFieldName);
+  if (brandFieldInfo) {
+    const brandTypeIndex = decodeTypeIndex(brandFieldInfo.type);
+    body.push(Opcode.ref_null);
+    body.push(...WasmModule.encodeSignedLEB128(brandTypeIndex));
+  } else {
+    // Fallback if brand not found (should not happen)
+    body.push(Opcode.ref_null, HeapType.struct);
+  }
+
+  // 3. Strings
+  body.push(
+    Opcode.local_get,
+    ...WasmModule.encodeSignedLEB128(cookedArrayLocal),
+  );
+
+  // 4. Raw
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(rawArrayLocal));
+
+  // struct.new
+  body.push(0xfb, GcOpcode.struct_new);
+  body.push(...WasmModule.encodeSignedLEB128(templateStringsArrayStructIndex));
+
   // Set global
   body.push(Opcode.global_set);
   body.push(...WasmModule.encodeSignedLEB128(globalIndex));
 
   body.push(Opcode.end); // end if
 
-  // Push strings array
+  // Push TemplateStringsArray instance
   body.push(Opcode.global_get);
   body.push(...WasmModule.encodeSignedLEB128(globalIndex));
 
-  // 2. Create values array
+  // 3. Create values array
   let valueType: number[] = [ValType.i32];
   let expectedValuesArrayTypeIndex: number | undefined;
 
@@ -4481,7 +4573,7 @@ function generateTaggedTemplateExpression(
       const funcIndex = ctx.functions.get(name)!;
       const funcTypeIndex = ctx.module.getFunctionTypeIndex(funcIndex);
       const params = ctx.module.getFunctionTypeParams(funcTypeIndex);
-      // params[0] is strings, params[1] is values
+      // params[0] is TemplateStringsArray, params[1] is values
       if (params.length >= 2) {
         const valuesParamType = params[1];
         // Check if it is a reference type
@@ -4528,7 +4620,7 @@ function generateTaggedTemplateExpression(
   body.push(...WasmModule.encodeSignedLEB128(valuesArrayTypeIndex));
   body.push(...WasmModule.encodeSignedLEB128(expr.quasi.expressions.length));
 
-  // 3. Call tag function
+  // 4. Call tag function
   if (expr.tag.type === NodeType.Identifier) {
     const name = (expr.tag as Identifier).name;
 
@@ -4541,8 +4633,8 @@ function generateTaggedTemplateExpression(
 
       if (closureInfo) {
         // Closure Call
-        // Stack has [stringsArray, valuesArray]
-        // We need [context, stringsArray, valuesArray, funcRef] -> call_ref
+        // Stack has [templateStringsArray, valuesArray]
+        // We need [context, templateStringsArray, valuesArray, funcRef] -> call_ref
 
         // Save args to locals
         const valuesArrayLocal = ctx.declareLocal('$$values_array', [
@@ -4554,13 +4646,16 @@ function generateTaggedTemplateExpression(
           ...WasmModule.encodeSignedLEB128(valuesArrayLocal),
         );
 
-        const stringsArrayLocal = ctx.declareLocal('$$strings_array', [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex),
-        ]);
+        const templateStringsArrayLocal = ctx.declareLocal(
+          '$$template_strings_array',
+          [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(templateStringsArrayStructIndex),
+          ],
+        );
         body.push(
           Opcode.local_set,
-          ...WasmModule.encodeSignedLEB128(stringsArrayLocal),
+          ...WasmModule.encodeSignedLEB128(templateStringsArrayLocal),
         );
 
         // 1. Load Context
@@ -4578,7 +4673,7 @@ function generateTaggedTemplateExpression(
         // 2. Push Args
         body.push(
           Opcode.local_get,
-          ...WasmModule.encodeSignedLEB128(stringsArrayLocal),
+          ...WasmModule.encodeSignedLEB128(templateStringsArrayLocal),
         );
         body.push(
           Opcode.local_get,
@@ -4713,8 +4808,29 @@ export function generateAdaptedArgument(
     const actualIndex = decodeTypeIndex(actualType);
     let classInfo: ClassInfo | undefined;
 
+    // Try to get class info from checker type first
+    if (arg.inferredType && arg.inferredType.kind === TypeKind.Class) {
+      const classType = arg.inferredType as ClassType;
+      const className = classType.name;
+
+      if (ctx.classes.has(className) && !ctx.genericClasses.has(className)) {
+        classInfo = ctx.classes.get(className);
+      } else if (ctx.genericClasses.has(className)) {
+        const typeArgs = (classType.typeArguments || []).map((t) =>
+          typeToTypeAnnotation(t),
+        );
+        const specializedName = getSpecializedName(
+          className,
+          typeArgs,
+          ctx,
+          ctx.currentTypeContext,
+        );
+        classInfo = ctx.classes.get(specializedName);
+      }
+    }
+
     // Check classes
-    if (actualIndex !== -1) {
+    if (!classInfo && actualIndex !== -1) {
       for (const info of ctx.classes.values()) {
         if (info.structTypeIndex === actualIndex) {
           classInfo = info;

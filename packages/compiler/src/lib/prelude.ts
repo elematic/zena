@@ -5,4 +5,5 @@ import { console } from 'zena:console';
 import { Map } from 'zena:map';
 import { Box } from 'zena:box';
 import { Error, IndexOutOfBoundsError } from 'zena:error';
+import { TemplateStringsArray } from 'zena:template-strings-array';
 `;

@@ -100,6 +100,27 @@ export class Bundler {
       if (decl) wellKnownTypes.Box = decl;
     }
 
+    if (
+      this.#globalSymbols.has(
+        'zena:template-strings-array:TemplateStringsArray',
+      )
+    ) {
+      const name = this.#globalSymbols.get(
+        'zena:template-strings-array:TemplateStringsArray',
+      )!;
+      const decl = newBody.find(
+        (stmt): stmt is ClassDeclaration =>
+          stmt.type === NodeType.ClassDeclaration && stmt.name.name === name,
+      );
+      if (decl) wellKnownTypes.TemplateStringsArray = decl;
+    }
+
+    if (!wellKnownTypes.TemplateStringsArray && !this.#entryPoint.isStdlib) {
+      throw new Error(
+        'Missing well-known type: TemplateStringsArray. The standard library module "zena:template-strings-array" is required for user modules.',
+      );
+    }
+
     const symbolMap = new Map<string, string>();
     for (const [key, value] of this.#globalSymbols) {
       const name = key.split(':').pop()!;

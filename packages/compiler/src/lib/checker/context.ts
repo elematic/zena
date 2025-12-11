@@ -127,7 +127,9 @@ export class CheckerContext {
     return undefined;
   }
 
-  getWellKnownType(name: 'String' | 'FixedArray'): Type | undefined {
+  getWellKnownType(
+    name: 'String' | 'FixedArray' | 'TemplateStringsArray',
+  ): Type | undefined {
     // Check bundled well-known types first
     if (
       name === 'String' &&
@@ -141,6 +143,12 @@ export class CheckerContext {
     ) {
       return this.program.wellKnownTypes.FixedArray.inferredType;
     }
+    if (
+      name === 'TemplateStringsArray' &&
+      this.program.wellKnownTypes?.TemplateStringsArray?.inferredType
+    ) {
+      return this.program.wellKnownTypes.TemplateStringsArray.inferredType;
+    }
 
     if (!this.compiler) return undefined;
 
@@ -153,6 +161,9 @@ export class CheckerContext {
     } else if (name === 'FixedArray') {
       modulePath = 'zena:array';
       exportName = 'FixedArray';
+    } else if (name === 'TemplateStringsArray') {
+      modulePath = 'zena:template-strings-array';
+      exportName = 'TemplateStringsArray';
     }
 
     const module = this.compiler.getModule(modulePath);

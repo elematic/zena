@@ -29,7 +29,13 @@ export class WasmModule {
       buffer.push(...result);
     }
 
-    // Simple deduplication could go here, but for now just push
+    // Deduplication
+    for (let i = 0; i < this.#types.length; i++) {
+      if (this.#areTypesEqual(this.#types[i], buffer)) {
+        return i;
+      }
+    }
+
     this.#types.push(buffer);
     const index = this.#types.length - 1;
     return index;
@@ -52,6 +58,7 @@ export class WasmModule {
   public addStructType(
     fields: {type: number[]; mutable: boolean}[],
     superTypeIndex?: number,
+    allowDeduplication = true,
   ): number {
     const buffer: number[] = [];
     // Always use sub to allow extensibility
@@ -69,9 +76,43 @@ export class WasmModule {
       buffer.push(...field.type);
       buffer.push(field.mutable ? 1 : 0);
     }
+
+    // Deduplication
+    if (allowDeduplication) {
+      for (let i = 0; i < this.#types.length; i++) {
+        if (this.#areTypesEqual(this.#types[i], buffer)) {
+          return i;
+        }
+      }
+    }
+
     this.#types.push(buffer);
     const index = this.#types.length - 1;
     return index;
+  }
+
+  public updateStructType(
+    index: number,
+    fields: {type: number[]; mutable: boolean}[],
+    superTypeIndex?: number,
+  ) {
+    const buffer: number[] = [];
+    // Always use sub to allow extensibility
+    buffer.push(0x50); // sub
+    if (superTypeIndex !== undefined) {
+      this.#writeUnsignedLEB128(buffer, 1);
+      this.#writeUnsignedLEB128(buffer, superTypeIndex);
+    } else {
+      this.#writeUnsignedLEB128(buffer, 0);
+    }
+
+    buffer.push(0x5f); // struct
+    this.#writeUnsignedLEB128(buffer, fields.length);
+    for (const field of fields) {
+      buffer.push(...field.type);
+      buffer.push(field.mutable ? 1 : 0);
+    }
+    this.#types[index] = buffer;
   }
 
   public addArrayType(elementType: number[], mutable: boolean): number {
@@ -81,6 +122,14 @@ export class WasmModule {
     buffer.push(0x5e);
     buffer.push(...elementType);
     buffer.push(mutable ? 1 : 0);
+
+    // Deduplication
+    for (let i = 0; i < this.#types.length; i++) {
+      if (this.#areTypesEqual(this.#types[i], buffer)) {
+        return i;
+      }
+    }
+
     this.#types.push(buffer);
     return this.#types.length - 1;
   }
@@ -188,7 +237,10 @@ export class WasmModule {
     // Type Section
     if (this.#types.length > 0) {
       const sectionBuffer: number[] = [];
-      this.#writeUnsignedLEB128(sectionBuffer, this.#types.length);
+      // Emit a single recursion group containing all types to allow forward references
+      this.#writeUnsignedLEB128(sectionBuffer, 1); // 1 type definition (the rec group)
+      sectionBuffer.push(0x4e); // rec
+      this.#writeUnsignedLEB128(sectionBuffer, this.#types.length); // number of types in the group
       for (const type of this.#types) {
         sectionBuffer.push(...type);
       }

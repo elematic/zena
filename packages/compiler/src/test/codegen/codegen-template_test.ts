@@ -80,7 +80,7 @@ suite('CodeGenerator - Template Literals', () => {
   // Tagged template literal tests
   test('should compile tagged template literal without substitutions', async () => {
     const source = `
-      let tag = (strings: FixedArray<string>, values: FixedArray<i32>): i32 => {
+      let tag = (strings: TemplateStringsArray, values: FixedArray<i32>): i32 => {
         return strings.length;
       };
       export let main = (): i32 => {
@@ -95,7 +95,7 @@ suite('CodeGenerator - Template Literals', () => {
 
   test('should compile tagged template literal with single substitution', async () => {
     const source = `
-      let tag = (strings: FixedArray<string>, values: FixedArray<i32>): i32 => {
+      let tag = (strings: TemplateStringsArray, values: FixedArray<i32>): i32 => {
         return strings.length;
       };
       export let main = (): i32 => {
@@ -111,7 +111,7 @@ suite('CodeGenerator - Template Literals', () => {
 
   test('should compile tagged template literal with multiple substitutions', async () => {
     const source = `
-      let tag = (strings: FixedArray<string>, values: FixedArray<i32>): i32 => {
+      let tag = (strings: TemplateStringsArray, values: FixedArray<i32>): i32 => {
         return strings.length;
       };
       export let main = (): i32 => {
@@ -129,7 +129,7 @@ suite('CodeGenerator - Template Literals', () => {
 
   test('should compile tagged template literal that returns values count', async () => {
     const source = `
-      let tag = (strings: FixedArray<string>, values: FixedArray<i32>): i32 => {
+      let tag = (strings: TemplateStringsArray, values: FixedArray<i32>): i32 => {
         return values.length;
       };
       export let main = (): i32 => {
@@ -146,7 +146,7 @@ suite('CodeGenerator - Template Literals', () => {
 
   test('should compile tagged template literal that accesses first value', async () => {
     const source = `
-      let tag = (strings: FixedArray<string>, values: FixedArray<i32>): i32 => {
+      let tag = (strings: TemplateStringsArray, values: FixedArray<i32>): i32 => {
         return values[0];
       };
       export let main = (): i32 => {
@@ -161,7 +161,7 @@ suite('CodeGenerator - Template Literals', () => {
 
   test('should compile tagged template literal that sums values', async () => {
     const source = `
-      let tag = (strings: FixedArray<string>, values: FixedArray<i32>): i32 => {
+      let tag = (strings: TemplateStringsArray, values: FixedArray<i32>): i32 => {
         return values[0] + values[1];
       };
       export let main = (): i32 => {
@@ -180,10 +180,10 @@ suite('CodeGenerator - Template Literals', () => {
     // every time the same tagged template expression is evaluated. This is
     // important for caching: the strings array can be used as a cache key.
     const source = `
-      let captureStrings = (strings: FixedArray<string>, values: FixedArray<i32>): FixedArray<string> => {
+      let captureStrings = (strings: TemplateStringsArray, values: FixedArray<i32>): TemplateStringsArray => {
         return strings;
       };
-      let go = (): FixedArray<string> => {
+      let go = (): TemplateStringsArray => {
         return captureStrings\`hello\`;
       };
       export let main = (): i32 => {

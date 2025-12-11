@@ -2,6 +2,7 @@ import {
   NodeType,
   type ClassDeclaration,
   type FunctionExpression,
+  type InterfaceDeclaration,
   type MethodDefinition,
   type MixinDeclaration,
   type Node,
@@ -63,8 +64,10 @@ export class CodegenContext {
   public byteArrayGetFunctionIndex = -1; // Exported helper for JS to read ByteArray
   public stringGetByteFunctionIndex = -1; // Exported helper for JS to read String bytes
   public genericClasses = new Map<string, ClassDeclaration>();
+  public genericInterfaces = new Map<string, InterfaceDeclaration>();
   public genericFunctions = new Map<string, FunctionExpression>();
   public genericMethods = new Map<string, MethodDefinition>();
+  public instantiatedInterfaces = new Map<string, InterfaceDeclaration>();
   public functionReturnTypes = new Map<string, number[]>();
   public pendingMethodGenerations: (() => void)[] = [];
   public bodyGenerators: (() => void)[] = [];
@@ -80,6 +83,7 @@ export class CodegenContext {
     FixedArray?: ClassDeclaration;
     String?: ClassDeclaration;
     Box?: ClassDeclaration;
+    TemplateStringsArray?: ClassDeclaration;
   } = {};
 
   // Records and Tuples

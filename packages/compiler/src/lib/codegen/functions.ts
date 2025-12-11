@@ -242,7 +242,7 @@ export function instantiateGenericFunction(
   if (!funcDecl) throw new Error(`Generic function ${name} not found`);
 
   const key = `${name}<${typeArgs
-    .map((t) => getTypeKey(resolveAnnotation(t, ctx.currentTypeContext)))
+    .map((t) => getTypeKey(resolveAnnotation(t, ctx.currentTypeContext), ctx))
     .join(',')}>`;
 
   if (ctx.functions.has(key)) {
@@ -257,7 +257,10 @@ export function instantiateGenericFunction(
       );
     }
     for (let i = 0; i < funcDecl.typeParameters.length; i++) {
-      typeContext.set(funcDecl.typeParameters[i].name, typeArgs[i]);
+      typeContext.set(
+        funcDecl.typeParameters[i].name,
+        resolveAnnotation(typeArgs[i], ctx.currentTypeContext),
+      );
     }
   }
 
@@ -370,7 +373,7 @@ export function instantiateGenericMethod(
   if (!methodDecl) throw new Error(`Generic method ${key} not found`);
 
   const specializedKey = `${methodName}<${typeArgs
-    .map((t) => getTypeKey(resolveAnnotation(t, ctx.currentTypeContext)))
+    .map((t) => getTypeKey(resolveAnnotation(t, ctx.currentTypeContext), ctx))
     .join(',')}>`;
 
   // Check if already instantiated in the class
@@ -395,7 +398,10 @@ export function instantiateGenericMethod(
       );
     }
     for (let i = 0; i < methodDecl.typeParameters.length; i++) {
-      typeContext.set(methodDecl.typeParameters[i].name, typeArgs[i]);
+      typeContext.set(
+        methodDecl.typeParameters[i].name,
+        resolveAnnotation(typeArgs[i], ctx.currentTypeContext),
+      );
     }
   }
 
