@@ -11,6 +11,11 @@ import {
   type FixedArrayType,
 } from '../types.js';
 
+/**
+ * The TypeChecker analyzes the AST to validate types, resolve symbols,
+ * and infer types for expressions. It populates the AST with type information
+ * (e.g., `inferredType`) that is used by the CodeGenerator.
+ */
 export class TypeChecker {
   #program: Program;
   #compiler?: Compiler;

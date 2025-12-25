@@ -58,6 +58,7 @@ import {
   type WhileStatement,
 } from './ast.js';
 import {TokenType, tokenize, type Token} from './lexer.js';
+import {Decorators} from './types.js';
 
 export class Parser {
   #tokens: Token[];
@@ -2615,12 +2616,12 @@ export class Parser {
       let externalName: string | undefined;
 
       for (const d of decorators) {
-        if (d.name === 'external') {
+        if (d.name === Decorators.External) {
           if (d.args.length !== 2)
             throw new Error('@external expects 2 arguments');
           externalModule = d.args[0].value;
           externalName = d.args[1].value;
-        } else if (d.name === 'intrinsic') {
+        } else if (d.name === Decorators.Intrinsic) {
           if (d.args.length !== 1)
             throw new Error('@intrinsic expects 1 argument');
         } else {

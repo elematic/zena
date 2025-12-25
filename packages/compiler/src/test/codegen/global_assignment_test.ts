@@ -23,12 +23,12 @@ suite('CodeGenerator - Global Assignment', () => {
     `;
 
     const exports = await compileAndInstantiate(input);
-    
+
     assert.strictEqual(exports.getCounter(), 0);
     assert.strictEqual(exports.increment(), 1);
     assert.strictEqual(exports.increment(), 2);
     assert.strictEqual(exports.getCounter(), 2);
-    
+
     assert.strictEqual(exports.setCounter(100), 100);
     assert.strictEqual(exports.getCounter(), 100);
     assert.strictEqual(exports.increment(), 101);
@@ -47,7 +47,7 @@ suite('CodeGenerator - Global Assignment', () => {
     `;
 
     const exports = await compileAndInstantiate(input);
-    
+
     assert.strictEqual(exports.updateIfTrue(false), 10);
     assert.strictEqual(exports.updateIfTrue(true), 20);
     // Should persist

@@ -3,6 +3,7 @@ import {DiagnosticCode} from '../diagnostics.js';
 import {
   TypeKind,
   Types,
+  TypeNames,
   type FixedArrayType,
   type ClassType,
   type FunctionType,
@@ -33,6 +34,14 @@ function isPrimitive(type: Type): boolean {
   return false;
 }
 
+/**
+ * Substitutes type parameters in a type with concrete types from a map.
+ * This is used during generic instantiation to replace T with i32, etc.
+ *
+ * @param type The type to substitute parameters in.
+ * @param typeMap A map from type parameter names to concrete types.
+ * @returns The substituted type.
+ */
 export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
   if (type.kind === TypeKind.TypeParameter) {
     return typeMap.get((type as TypeParameterType).name) || type;
@@ -150,6 +159,14 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
   return type;
 }
 
+/**
+ * Resolves a type annotation from the AST into a semantic Type.
+ * Handles primitive types, class references, unions, function types, etc.
+ *
+ * @param ctx The checker context.
+ * @param annotation The AST type annotation.
+ * @returns The resolved semantic Type.
+ */
 export function resolveTypeAnnotation(
   ctx: CheckerContext,
   annotation: TypeAnnotation,
@@ -273,35 +290,35 @@ export function resolveTypeAnnotation(
 
   const name = annotation.name;
   switch (name) {
-    case 'i32':
+    case Types.I32.name:
       return Types.I32;
-    case 'u32':
+    case Types.U32.name:
       return Types.U32;
-    case 'i64':
+    case Types.I64.name:
       return Types.I64;
-    case 'f32':
+    case Types.F32.name:
       return Types.F32;
-    case 'f64':
+    case Types.F64.name:
       return Types.F64;
-    case 'boolean':
+    case TypeNames.Boolean:
       return Types.Boolean;
     case 'symbol':
       return Types.Symbol;
-    case 'anyref':
+    case TypeNames.AnyRef:
       return Types.AnyRef;
-    case 'any':
+    case TypeNames.Any:
       return Types.Any;
-    case 'string': {
-      const stringType = ctx.resolveType('String');
+    case TypeNames.String: {
+      const stringType = ctx.resolveType(Types.String.name);
       if (stringType) return stringType;
 
-      const wellKnown = ctx.getWellKnownType('String');
+      const wellKnown = ctx.getWellKnownType(Types.String.name);
       return wellKnown || Types.String;
     }
-    case 'ByteArray':
+    case TypeKind.ByteArray:
       return Types.ByteArray;
-    case 'array':
-    case 'FixedArray': {
+    case TypeNames.Array:
+    case TypeNames.FixedArray: {
       if (annotation.typeArguments && annotation.typeArguments.length === 1) {
         const elementType = resolveTypeAnnotation(
           ctx,
@@ -317,11 +334,11 @@ export function resolveTypeAnnotation(
       // or maybe we should error if generic arguments are missing.
       break;
     }
-    case 'void':
+    case TypeNames.Void:
       return Types.Void;
-    case 'never':
+    case TypeNames.Never:
       return Types.Never;
-    case 'null':
+    case TypeNames.Null:
       return Types.Null;
   }
 
@@ -477,6 +494,17 @@ export function validateType(type: Type, ctx: CheckerContext) {
   }
 }
 
+function substituteFunctionType(
+  fn: FunctionType,
+  typeMap: Map<string, Type>,
+): FunctionType {
+  return {
+    ...fn,
+    parameters: fn.parameters.map((p) => substituteType(p, typeMap)),
+    returnType: substituteType(fn.returnType, typeMap),
+  };
+}
+
 export function instantiateGenericClass(
   genericClass: ClassType,
   typeArguments: Type[],
@@ -489,14 +517,6 @@ export function instantiateGenericClass(
 
   const substitute = (type: Type) => substituteType(type, typeMap);
 
-  const substituteFunction = (fn: FunctionType): FunctionType => {
-    return {
-      ...fn,
-      parameters: fn.parameters.map(substitute),
-      returnType: substitute(fn.returnType),
-    };
-  };
-
   const newFields = new Map<string, Type>();
   for (const [name, type] of genericClass.fields) {
     newFields.set(name, substitute(type));
@@ -504,7 +524,7 @@ export function instantiateGenericClass(
 
   const newMethods = new Map<string, FunctionType>();
   for (const [name, fn] of genericClass.methods) {
-    newMethods.set(name, substituteFunction(fn));
+    newMethods.set(name, substituteFunctionType(fn, typeMap));
   }
 
   const newImplements = genericClass.implements.map(
@@ -518,7 +538,7 @@ export function instantiateGenericClass(
     methods: newMethods,
     implements: newImplements,
     constructorType: genericClass.constructorType
-      ? substituteFunction(genericClass.constructorType)
+      ? substituteFunctionType(genericClass.constructorType, typeMap)
       : undefined,
     onType: genericClass.onType ? substitute(genericClass.onType) : undefined,
     genericSource: genericClass,
@@ -550,14 +570,6 @@ export function instantiateGenericInterface(
 
   const substitute = (type: Type) => substituteType(type, typeMap);
 
-  const substituteFunction = (fn: FunctionType): FunctionType => {
-    return {
-      ...fn,
-      parameters: fn.parameters.map(substitute),
-      returnType: substitute(fn.returnType),
-    };
-  };
-
   const newFields = new Map<string, Type>();
   for (const [name, type] of genericInterface.fields) {
     newFields.set(name, substitute(type));
@@ -565,7 +577,7 @@ export function instantiateGenericInterface(
 
   const newMethods = new Map<string, FunctionType>();
   for (const [name, fn] of genericInterface.methods) {
-    newMethods.set(name, substituteFunction(fn));
+    newMethods.set(name, substituteFunctionType(fn, typeMap));
   }
 
   const newExtends = genericInterface.extends
@@ -623,19 +635,19 @@ export function instantiateGenericFunction(
 export function typeToString(type: Type): string {
   switch (type.kind) {
     case TypeKind.Never:
-      return 'never';
+      return TypeNames.Never;
     case TypeKind.Number:
       return (type as NumberType).name;
     case TypeKind.Boolean:
-      return 'boolean';
+      return TypeNames.Boolean;
     case TypeKind.ByteArray:
-      return 'ByteArray';
+      return TypeKind.ByteArray;
     case TypeKind.Void:
-      return 'void';
+      return TypeNames.Void;
     case TypeKind.Null:
-      return 'null';
+      return TypeNames.Null;
     case TypeKind.Any:
-      return 'any';
+      return TypeNames.Any;
     case TypeKind.Literal: {
       const lit = type as LiteralType;
       if (typeof lit.value === 'string') {
@@ -718,18 +730,18 @@ export function isAssignableTo(
     const lit = source as LiteralType;
     if (typeof lit.value === 'string') {
       // String literals are assignable to string type
-      const stringType = ctx.resolveType('String');
+      const stringType = ctx.resolveType(Types.String.name);
       if (stringType && target === stringType) return true;
       if (
         target.kind === TypeKind.Class &&
-        (target as ClassType).name === 'String'
+        (target as ClassType).name === Types.String.name
       )
         return true;
     } else if (typeof lit.value === 'number') {
       // Number literals are assignable to i32 (default for integer literals)
       // TODO: Support more flexible literal-to-numeric-type assignment based on value range
       if (target.kind === TypeKind.Number) {
-        return (target as NumberType).name === 'i32';
+        return (target as NumberType).name === Types.I32.name;
       }
     } else if (typeof lit.value === 'boolean') {
       // Boolean literals are assignable to boolean type
@@ -1009,29 +1021,7 @@ export function isAssignableTo(
   }
 
   if (source.kind === TypeKind.Function && target.kind === TypeKind.Function) {
-    const sourceFunc = source as FunctionType;
-    const targetFunc = target as FunctionType;
-
-    // 1. Return type must be assignable (Covariant)
-    if (!isAssignableTo(ctx, sourceFunc.returnType, targetFunc.returnType)) {
-      return false;
-    }
-
-    // 2. Parameter count: Source must have <= Target parameters
-    if (sourceFunc.parameters.length > targetFunc.parameters.length) {
-      return false;
-    }
-
-    // 3. Parameter types: Source params must be assignable FROM Target params (Contravariant)
-    for (let i = 0; i < sourceFunc.parameters.length; i++) {
-      if (
-        !isAssignableTo(ctx, targetFunc.parameters[i], sourceFunc.parameters[i])
-      ) {
-        return false;
-      }
-    }
-
-    return true;
+    return isAdaptable(ctx, source, target);
   }
 
   return typeToString(source) === typeToString(target);

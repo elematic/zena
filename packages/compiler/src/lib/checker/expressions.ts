@@ -50,6 +50,9 @@ import {
   type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
+
+const LENGTH_PROPERTY = 'length';
+
 import {
   instantiateGenericClass,
   instantiateGenericFunction,
@@ -77,7 +80,7 @@ function checkExpressionInternal(ctx: CheckerContext, expr: Expression): Type {
       return Types.I32;
     }
     case NodeType.StringLiteral: {
-      const stringType = ctx.getWellKnownType('String');
+      const stringType = ctx.getWellKnownType(Types.String.name);
       return stringType || Types.String;
     }
     case NodeType.BooleanLiteral:
@@ -340,7 +343,8 @@ function checkMatchPattern(
       break;
     }
     case NodeType.StringLiteral: {
-      const stringType = ctx.getWellKnownType('String') || Types.String;
+      const stringType =
+        ctx.getWellKnownType(Types.String.name) || Types.String;
       if (
         !isAssignableTo(ctx, stringType, discriminantType) &&
         !isAssignableTo(ctx, discriminantType, stringType)
@@ -1299,6 +1303,10 @@ function checkAssignmentExpression(
   return Types.Unknown;
 }
 
+/**
+ * Checks a binary expression (e.g., a + b, a == b).
+ * Handles arithmetic type promotion (i32 -> f32 -> f64) and operator overloading.
+ */
 function checkBinaryExpression(
   ctx: CheckerContext,
   expr: BinaryExpression,
@@ -1317,10 +1325,10 @@ function checkBinaryExpression(
     const leftName = (left as NumberType).name;
     const rightName = (right as NumberType).name;
 
-    const isU32 = (n: string) => n === 'u32';
-    const isI64 = (n: string) => n === 'i64';
-    const isF32 = (n: string) => n === 'f32';
-    const isF64 = (n: string) => n === 'f64';
+    const isU32 = (n: string) => n === Types.U32.name;
+    const isI64 = (n: string) => n === Types.I64.name;
+    const isF32 = (n: string) => n === Types.F32.name;
+    const isF64 = (n: string) => n === Types.F64.name;
 
     let commonType: Type | null = null;
 
@@ -1356,7 +1364,7 @@ function checkBinaryExpression(
         commonType = Types.I64;
       } else {
         // Should be i32 + i32
-        if (leftName === 'i32' && rightName === 'i32') {
+        if (leftName === Types.I32.name && rightName === Types.I32.name) {
           commonType = Types.I32;
         } else if (isU32(leftName) && isU32(rightName)) {
           commonType = Types.U32;
@@ -1403,7 +1411,9 @@ function checkBinaryExpression(
     type === Types.U32 ||
     type === Types.I64 ||
     (type.kind === TypeKind.Number &&
-      ['i32', 'u32', 'i64'].includes((type as NumberType).name));
+      [Types.I32.name, Types.U32.name, Types.I64.name].includes(
+        (type as NumberType).name,
+      ));
 
   switch (expr.operator) {
     case '==':
@@ -1746,7 +1756,7 @@ function checkMemberExpression(
   if (objectType.kind === TypeKind.FixedArray) {
     // Check for extension methods
     // TODO: Support multiple extensions or lookup by type, not just name 'Array'
-    const arrayType = ctx.getWellKnownType('FixedArray');
+    const arrayType = ctx.getWellKnownType(TypeKind.FixedArray);
     if (arrayType && arrayType.kind === TypeKind.Class) {
       const classType = arrayType as ClassType;
       if (classType.methods.has(expr.property.name)) {
@@ -1770,7 +1780,7 @@ function checkMemberExpression(
       }
     }
 
-    if (expr.property.name === 'length') {
+    if (expr.property.name === LENGTH_PROPERTY) {
       return Types.I32;
     }
   }
@@ -2014,7 +2024,7 @@ function checkIndexExpression(
 
   if (
     indexType.kind !== TypeKind.Number ||
-    (indexType as NumberType).name !== 'i32'
+    (indexType as NumberType).name !== Types.I32.name
   ) {
     ctx.diagnostics.reportError(
       `Array index must be i32, got ${typeToString(indexType)}`,
@@ -2024,7 +2034,7 @@ function checkIndexExpression(
 
   const isString =
     objectType === Types.String ||
-    objectType === ctx.getWellKnownType('String');
+    objectType === ctx.getWellKnownType(Types.String.name);
 
   if (objectType.kind !== TypeKind.FixedArray && !isString) {
     ctx.diagnostics.reportError(
@@ -2084,7 +2094,7 @@ function checkTemplateLiteral(
   }
 
   // The result of an untagged template literal is always a String
-  const stringType = ctx.getWellKnownType('String');
+  const stringType = ctx.getWellKnownType(Types.String.name);
   return stringType || Types.String;
 }
 

@@ -174,3 +174,28 @@ export const Types = {
   Never: {kind: TypeKind.Never} as Type,
   Symbol: {kind: TypeKind.Symbol} as SymbolType,
 } as const;
+
+export const Decorators = {
+  Intrinsic: 'intrinsic',
+  External: 'external',
+} as const;
+
+export const TypeNames = {
+  Void: 'void',
+  Never: 'never',
+  Null: 'null',
+  Boolean: 'boolean',
+  String: 'string',
+  Any: 'any',
+  AnyRef: 'anyref',
+  EqRef: 'eqref',
+  Struct: 'struct',
+  Array: 'array',
+  FixedArray: 'FixedArray',
+  I32: 'i32',
+  I64: 'i64',
+  F32: 'f32',
+  F64: 'f64',
+  U32: 'u32',
+  ByteArray: 'ByteArray',
+} as const;

@@ -4,7 +4,7 @@ import {compileAndInstantiate} from './utils.js';
 suite('CodeGenerator - Module Collision', () => {
   test('should support global variables with same name in different modules', async () => {
     const modules = {
-      'module_a': `
+      module_a: `
         export var counter = 0;
         export let increment = (): i32 => {
           counter = counter + 1;
@@ -12,7 +12,7 @@ suite('CodeGenerator - Module Collision', () => {
         };
         export let get = (): i32 => counter;
       `,
-      'module_b': `
+      module_b: `
         export var counter = 100;
         export let increment = (): i32 => {
           counter = counter + 1;
@@ -20,7 +20,7 @@ suite('CodeGenerator - Module Collision', () => {
         };
         export let get = (): i32 => counter;
       `,
-      'main': `
+      main: `
         import { increment as incA, get as getA } from "module_a";
         import { increment as incB, get as getB } from "module_b";
 
@@ -39,10 +39,10 @@ suite('CodeGenerator - Module Collision', () => {
           if (getA() != 1) throw new Error("5"); // A should be unchanged
           if (getB() != 101) throw new Error("6");
         };
-      `
+      `,
     };
 
-    const exports = await compileAndInstantiate(modules, { path: 'main' });
+    const exports = await compileAndInstantiate(modules, {path: 'main'});
     exports.test();
   });
 });

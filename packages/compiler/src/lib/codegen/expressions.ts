@@ -37,7 +37,9 @@ import {
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
 import {WasmModule} from '../emitter.js';
 import {
+  Decorators,
   TypeKind,
+  Types,
   type ClassType,
   type FunctionType,
   type NumberType,
@@ -46,6 +48,10 @@ import {
 } from '../types.js';
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import {analyzeCaptures} from './captures.js';
+
+const BOX_VALUE_FIELD = 'value';
+const HASH_CODE_METHOD = 'hashCode';
+
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
@@ -70,6 +76,11 @@ import {
 } from './statements.js';
 import type {ClassInfo, InterfaceInfo} from './types.js';
 
+/**
+ * Generates WASM instructions for an expression.
+ * Appends the instructions to the `body` array.
+ * The generated code leaves the result of the expression on the stack.
+ */
 export function generateExpression(
   ctx: CodegenContext,
   expression: Expression,
@@ -465,13 +476,13 @@ function generateIsExpression(
 function wasmTypeToTypeAnnotation(type: number[]): TypeAnnotation {
   if (type.length === 1) {
     if (type[0] === ValType.i32)
-      return {type: NodeType.TypeAnnotation, name: 'i32'};
+      return {type: NodeType.TypeAnnotation, name: Types.I32.name};
     if (type[0] === ValType.i64)
-      return {type: NodeType.TypeAnnotation, name: 'i64'};
+      return {type: NodeType.TypeAnnotation, name: Types.I64.name};
     if (type[0] === ValType.f32)
-      return {type: NodeType.TypeAnnotation, name: 'f32'};
+      return {type: NodeType.TypeAnnotation, name: Types.F32.name};
     if (type[0] === ValType.f64)
-      return {type: NodeType.TypeAnnotation, name: 'f64'};
+      return {type: NodeType.TypeAnnotation, name: Types.F64.name};
   }
   throw new Error(`Unsupported type for boxing: ${type}`);
 }
@@ -512,7 +523,7 @@ export function unboxPrimitive(
   body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
 
   // 3. Get value
-  const valueField = boxClass.fields.get('value');
+  const valueField = boxClass.fields.get(BOX_VALUE_FIELD);
   if (!valueField) throw new Error("Box class missing 'value' field");
 
   body.push(0xfb, GcOpcode.struct_get);
@@ -647,7 +658,7 @@ function resolveFixedArrayClass(
   if (checkerType && checkerType.kind === TypeKind.FixedArray) {
     let fixedArrayDecl = ctx.wellKnownTypes.FixedArray;
     if (!fixedArrayDecl) {
-      fixedArrayDecl = ctx.genericClasses.get('FixedArray');
+      fixedArrayDecl = ctx.genericClasses.get(TypeKind.FixedArray);
     }
 
     if (fixedArrayDecl) {
@@ -2871,7 +2882,7 @@ function generateBinaryExpression(
       const isU32 =
         sourceZenaType &&
         sourceZenaType.kind === TypeKind.Number &&
-        (sourceZenaType as NumberType).name === 'u32';
+        (sourceZenaType as NumberType).name === Types.U32.name;
 
       if (source[0] === ValType.i32) {
         if (target === ValType.i64)
@@ -2898,7 +2909,9 @@ function generateBinaryExpression(
     emitConversion(rightType, targetType, expr.right.inferredType);
 
     const isU32Type = (t: any) =>
-      t && t.kind === TypeKind.Number && (t as NumberType).name === 'u32';
+      t &&
+      t.kind === TypeKind.Number &&
+      (t as NumberType).name === Types.U32.name;
     const useUnsigned =
       isU32Type(expr.left.inferredType) || isU32Type(expr.right.inferredType);
 
@@ -3224,7 +3237,7 @@ function generateBinaryExpression(
   // The WASM type is still i32, but we need to use unsigned instructions
   const isU32 = (e: Expression): boolean => {
     if (e.inferredType && e.inferredType.kind === TypeKind.Number) {
-      return (e.inferredType as NumberType).name === 'u32';
+      return (e.inferredType as NumberType).name === Types.U32.name;
     }
     return false;
   };
@@ -3289,15 +3302,15 @@ function generateNumberLiteral(
 
   if (expr.inferredType && expr.inferredType.kind === TypeKind.Number) {
     const name = (expr.inferredType as NumberType).name;
-    if (name === 'f32') {
+    if (name === Types.F32.name) {
       isFloat = true;
-    } else if (name === 'f64') {
+    } else if (name === Types.F64.name) {
       isFloat = true;
       isF64 = true;
-    } else if (name === 'i64') {
+    } else if (name === Types.I64.name) {
       isI64 = true;
       isFloat = false;
-    } else if (name === 'i32') {
+    } else if (name === Types.I32.name) {
       isFloat = false;
     }
   }
@@ -4309,7 +4322,7 @@ function generateHash(ctx: CodegenContext, expr: Expression, body: number[]) {
 
     const classInfo = getClassFromTypeIndex(ctx, structTypeIndex);
     if (classInfo) {
-      const methodInfo = classInfo.methods.get('hashCode');
+      const methodInfo = classInfo.methods.get(HASH_CODE_METHOD);
       if (methodInfo) {
         generateExpression(ctx, expr, body);
 
@@ -5047,7 +5060,9 @@ function findArrayIntrinsic(
       member.name.name === memberName
     ) {
       if (member.decorators) {
-        const d = member.decorators.find((d) => d.name === 'intrinsic');
+        const d = member.decorators.find(
+          (d) => d.name === Decorators.Intrinsic,
+        );
         if (d && d.args.length === 1) return d.args[0].value;
       }
     }
@@ -5057,7 +5072,9 @@ function findArrayIntrinsic(
       member.name.name === memberName
     ) {
       if (member.decorators) {
-        const d = member.decorators.find((d) => d.name === 'intrinsic');
+        const d = member.decorators.find(
+          (d) => d.name === Decorators.Intrinsic,
+        );
         if (d && d.args.length === 1) return d.args[0].value;
       }
     }

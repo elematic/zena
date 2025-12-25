@@ -656,6 +656,7 @@ export interface EnumMember extends Node {
   type: typeof NodeType.EnumMember;
   name: Identifier;
   initializer?: Expression;
+  /** The resolved constant value of the enum member (populated by checker) */
   resolvedValue?: number | string;
 }
 

@@ -30,6 +30,7 @@ import {
 } from '../ast.js';
 import {DiagnosticCode, type DiagnosticLocation} from '../diagnostics.js';
 import {
+  Decorators,
   TypeKind,
   Types,
   type ClassType,
@@ -1168,7 +1169,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
       if (member.isDeclare) {
         const hasIntrinsic = member.decorators?.some(
-          (d) => d.name === 'intrinsic',
+          (d) => d.name === Decorators.Intrinsic,
         );
         if (!hasIntrinsic) {
           ctx.diagnostics.reportError(
@@ -1566,7 +1567,7 @@ function checkInterfaceDeclaration(
 function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   if (method.decorators) {
     for (const decorator of method.decorators) {
-      if (decorator.name === 'intrinsic') {
+      if (decorator.name === Decorators.Intrinsic) {
         if (ctx.module && !ctx.module.isStdlib) {
           ctx.diagnostics.reportError(
             '@intrinsic is only allowed in zena: modules.',
@@ -2161,7 +2162,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
       if (isIntegerEnum) {
         if (!isAssignableTo(ctx, initType, Types.I32)) {
           ctx.diagnostics.reportError(
-            `Enum member initializer must be assignable to 'i32'.`,
+            `Enum member initializer must be assignable to '${Types.I32.name}'.`,
             DiagnosticCode.TypeMismatch,
             toDiagnosticLocation(member.initializer.loc, ctx),
           );
@@ -2181,7 +2182,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
       } else {
         if (!isAssignableTo(ctx, initType, Types.String)) {
           ctx.diagnostics.reportError(
-            `Enum member initializer must be assignable to 'string'.`,
+            `Enum member initializer must be assignable to '${Types.String.name}'.`,
             DiagnosticCode.TypeMismatch,
             toDiagnosticLocation(member.initializer.loc, ctx),
           );

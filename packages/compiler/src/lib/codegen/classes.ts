@@ -12,7 +12,10 @@ import {
   type ComputedPropertyName,
 } from '../ast.js';
 import {
+  Decorators,
   TypeKind,
+  Types,
+  TypeNames,
   type Type,
   type ClassType,
   type NumberType,
@@ -135,7 +138,7 @@ export function registerInterface(
     for (const param of decl.typeParameters) {
       context.set(param.name, {
         type: NodeType.TypeAnnotation,
-        name: 'anyref',
+        name: TypeNames.AnyRef,
       });
     }
   }
@@ -823,7 +826,7 @@ export function registerClassStruct(
         let intrinsic: string | undefined;
         if (member.decorators) {
           const intrinsicDecorator = member.decorators.find(
-            (d) => d.name === 'intrinsic',
+            (d) => d.name === Decorators.Intrinsic,
           );
           if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
             intrinsic = intrinsicDecorator.args[0].value;
@@ -955,7 +958,7 @@ export function registerClassMethods(
       let intrinsic: string | undefined;
       if (member.decorators) {
         const intrinsicDecorator = member.decorators.find(
-          (d) => d.name === 'intrinsic',
+          (d) => d.name === Decorators.Intrinsic,
         );
         if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
           intrinsic = intrinsicDecorator.args[0].value;
@@ -1165,7 +1168,7 @@ export function registerClassMethods(
         let intrinsic: string | undefined;
         if (member.decorators) {
           const intrinsicDecorator = member.decorators.find(
-            (d) => d.name === 'intrinsic',
+            (d) => d.name === Decorators.Intrinsic,
           );
           if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
             intrinsic = intrinsicDecorator.args[0].value;
@@ -1827,7 +1830,7 @@ export function getTypeKey(type: TypeAnnotation): string {
     return `[${elements}]`;
   } else if (type.type === NodeType.FunctionTypeAnnotation) {
     const params = type.params.map(getTypeKey).join(',');
-    const ret = type.returnType ? getTypeKey(type.returnType) : 'void';
+    const ret = type.returnType ? getTypeKey(type.returnType) : TypeNames.Void;
     return `(${params})=>${ret}`;
   }
   return 'unknown';
@@ -1896,17 +1899,17 @@ function mapTypeInternal(
 
   if (type.type === NodeType.TypeAnnotation) {
     switch (type.name) {
-      case 'i32':
+      case Types.I32.name:
         return [ValType.i32];
-      case 'i64':
+      case Types.I64.name:
         return [ValType.i64];
-      case 'f32':
+      case Types.F32.name:
         return [ValType.f32];
-      case 'f64':
+      case Types.F64.name:
         return [ValType.f64];
-      case 'boolean':
+      case TypeNames.Boolean:
         return [ValType.i32];
-      case 'string': {
+      case TypeNames.String: {
         if (ctx.stringTypeIndex !== -1) {
           return [
             ValType.ref_null,
@@ -1925,17 +1928,17 @@ function mapTypeInternal(
         }
         return [ValType.i32];
       }
-      case 'void':
+      case TypeNames.Void:
         return [];
-      case 'anyref':
+      case TypeNames.AnyRef:
         return [ValType.anyref];
-      case 'any':
+      case TypeNames.Any:
         return [ValType.anyref];
-      case 'eqref':
+      case TypeNames.EqRef:
         return [ValType.eqref];
-      case 'struct':
+      case TypeNames.Struct:
         return [ValType.ref_null, HeapType.struct];
-      case 'array':
+      case TypeNames.Array:
         if (type.typeArguments && type.typeArguments.length === 1) {
           const elementType = mapType(ctx, type.typeArguments[0], context);
           const typeIndex = getFixedArrayTypeIndex(ctx, elementType);
@@ -1949,7 +1952,7 @@ function mapTypeInternal(
         // Class or Interface
         // Check for well-known types first (renamed by bundler)
         let typeName = type.name;
-        if (typeName === 'String' && ctx.wellKnownTypes.String) {
+        if (typeName === Types.String.name && ctx.wellKnownTypes.String) {
           typeName = ctx.wellKnownTypes.String.name.name;
         }
 
@@ -1958,7 +1961,7 @@ function mapTypeInternal(
           typeName = ctx.program.symbolMap.get(typeName)!;
         }
 
-        if (typeName === 'ByteArray') {
+        if (typeName === TypeNames.ByteArray) {
           return [
             ValType.ref_null,
             ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
@@ -2030,7 +2033,9 @@ function mapTypeInternal(
         }
 
         // console.log(`mapType: Unknown type '${typeName}', defaulting to i32. Context:`, context ? Array.from(context.keys()) : 'none');
-        // TODO: why do we have a default here?
+        // TODO: This is a hack to handle forward references or recursive types where the type
+        // hasn't been registered yet. Ideally we should do a two-pass registration:
+        // 1. Assign type indices. 2. Define structs.
         return [ValType.i32];
       }
     }
@@ -2702,12 +2707,12 @@ export function typeToTypeAnnotation(
     case TypeKind.Boolean:
       return {
         type: NodeType.TypeAnnotation,
-        name: 'boolean',
+        name: TypeNames.Boolean,
       };
     case TypeKind.Void:
       return {
         type: NodeType.TypeAnnotation,
-        name: 'void',
+        name: TypeNames.Void,
       };
     case TypeKind.Class: {
       const classType = type as ClassType;
@@ -2751,7 +2756,7 @@ export function typeToTypeAnnotation(
       const arrayType = type as FixedArrayType;
       return {
         type: NodeType.TypeAnnotation,
-        name: 'array',
+        name: TypeNames.Array,
         typeArguments: [
           typeToTypeAnnotation(arrayType.elementType, erasedTypeParams),
         ],
@@ -2849,10 +2854,10 @@ export function mapCheckerTypeToWasmType(
 ): number[] {
   if (type.kind === TypeKind.Number) {
     const name = (type as NumberType).name;
-    if (name === 'i32') return [ValType.i32];
-    if (name === 'i64') return [ValType.i64];
-    if (name === 'f32') return [ValType.f32];
-    if (name === 'f64') return [ValType.f64];
+    if (name === Types.I32.name) return [ValType.i32];
+    if (name === Types.I64.name) return [ValType.i64];
+    if (name === Types.F32.name) return [ValType.f32];
+    if (name === Types.F64.name) return [ValType.f64];
     return [ValType.i32];
   }
   if (type.kind === TypeKind.Boolean) return [ValType.i32];

@@ -11,7 +11,7 @@ import {
   type VariableDeclaration,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {TypeKind, type FunctionType} from '../types.js';
+import {Decorators, TypeKind, type FunctionType} from '../types.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
   decodeTypeIndex,
@@ -298,7 +298,9 @@ export function registerDeclaredFunction(
 ) {
   let intrinsicName: string | undefined;
   if (decl.decorators) {
-    const intrinsic = decl.decorators.find((d) => d.name === 'intrinsic');
+    const intrinsic = decl.decorators.find(
+      (d) => d.name === Decorators.Intrinsic,
+    );
     if (intrinsic && intrinsic.args.length === 1) {
       intrinsicName = intrinsic.args[0].value;
     }

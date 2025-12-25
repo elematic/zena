@@ -1,5 +1,11 @@
 import {DiagnosticBag, DiagnosticCode} from '../diagnostics.js';
-import type {Type, ClassType, FunctionType} from '../types.js';
+import {
+  type Type,
+  type ClassType,
+  type FunctionType,
+  Types,
+  TypeNames,
+} from '../types.js';
 import type {Program} from '../ast.js';
 import type {Compiler, Module} from '../compiler.js';
 
@@ -205,16 +211,16 @@ export class CheckerContext {
     return undefined;
   }
 
-  getWellKnownType(name: 'String' | 'FixedArray'): Type | undefined {
+  getWellKnownType(name: string): Type | undefined {
     // Check bundled well-known types first
     if (
-      name === 'String' &&
+      name === Types.String.name &&
       this.program.wellKnownTypes?.String?.inferredType
     ) {
       return this.program.wellKnownTypes.String.inferredType;
     }
     if (
-      name === 'FixedArray' &&
+      name === TypeNames.FixedArray &&
       this.program.wellKnownTypes?.FixedArray?.inferredType
     ) {
       return this.program.wellKnownTypes.FixedArray.inferredType;
@@ -225,12 +231,12 @@ export class CheckerContext {
     let modulePath = '';
     let exportName = '';
 
-    if (name === 'String') {
+    if (name === Types.String.name) {
       modulePath = 'zena:string';
-      exportName = 'String';
-    } else if (name === 'FixedArray') {
+      exportName = Types.String.name;
+    } else if (name === TypeNames.FixedArray) {
       modulePath = 'zena:array';
-      exportName = 'FixedArray';
+      exportName = TypeNames.FixedArray;
     }
 
     const module = this.compiler.getModule(modulePath);
