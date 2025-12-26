@@ -1879,7 +1879,8 @@ function generateCallExpression(
     if (
       vtableIndex !== -1 &&
       foundClass.vtableTypeIndex !== undefined &&
-      !methodInfo.isFinal
+      !methodInfo.isFinal &&
+      !foundClass.isFinal
     ) {
       // Dynamic Dispatch
       generateExpression(ctx, memberExpr.object, body);
@@ -2569,6 +2570,32 @@ function generateAssignmentExpression(
       const setterName = `set_${fieldName}`;
       const methodInfo = foundClass.methods.get(setterName);
       if (methodInfo) {
+        // Check if we can use static dispatch (final class, final method, or extension)
+        const useStaticDispatch =
+          foundClass.isFinal || methodInfo.isFinal || foundClass.isExtension;
+
+        if (useStaticDispatch) {
+          // Static dispatch - direct call
+          generateExpression(ctx, memberExpr.object, body);
+          generateExpression(ctx, expr.value, body);
+          const valueType = inferType(ctx, expr.value);
+          const tempVal = ctx.declareLocal('$$temp_val', valueType);
+          body.push(
+            Opcode.local_tee,
+            ...WasmModule.encodeSignedLEB128(tempVal),
+          );
+          body.push(
+            Opcode.call,
+            ...WasmModule.encodeSignedLEB128(methodInfo.index),
+          );
+          body.push(
+            Opcode.local_get,
+            ...WasmModule.encodeSignedLEB128(tempVal),
+          );
+          return;
+        }
+
+        // Dynamic dispatch via vtable
         generateExpression(ctx, memberExpr.object, body);
         const tempObj = ctx.declareLocal('$$temp_obj', objectType);
         body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempObj));

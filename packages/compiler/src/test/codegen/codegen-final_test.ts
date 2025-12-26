@@ -1,6 +1,9 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
 import {compileAndRun} from './utils.js';
+import {Parser} from '../../lib/parser.js';
+import {TypeChecker} from '../../lib/checker/index.js';
+import {CodeGenerator} from '../../lib/codegen/index.js';
 
 suite('CodeGenerator - Final Modifier', () => {
   test('should compile and run final class', async () => {
@@ -84,5 +87,291 @@ suite('CodeGenerator - Final Modifier', () => {
     `;
     const output = await compileAndRun(input, 'main');
     assert.strictEqual(output, 20);
+  });
+
+  test('final method uses static dispatch (no call_ref)', async () => {
+    // This test verifies that final methods use static dispatch (call)
+    // instead of dynamic dispatch (call_ref via vtable)
+
+    const countCallRef = (bytesArr: Uint8Array) => {
+      let count = 0;
+      for (let i = 0; i < bytesArr.length; i++) {
+        if (bytesArr[i] === 0x14) count++; // call_ref opcode
+      }
+      return count;
+    };
+
+    // Version with final method
+    const parser1 = new Parser(`
+      class Widget {
+        final getValue(): i32 { return 42; }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.getValue();
+      };
+    `);
+    const ast1 = parser1.parse();
+    const checker1 = new TypeChecker(ast1);
+    checker1.check();
+    const codegen1 = new CodeGenerator(ast1);
+    const bytesFinal = codegen1.generate();
+
+    // Version with non-final method
+    const parser2 = new Parser(`
+      class Widget {
+        getValue(): i32 { return 42; }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.getValue();
+      };
+    `);
+    const ast2 = parser2.parse();
+    const checker2 = new TypeChecker(ast2);
+    checker2.check();
+    const codegen2 = new CodeGenerator(ast2);
+    const bytesNonFinal = codegen2.generate();
+
+    const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));
+    const nonFinalCallRefs = countCallRef(new Uint8Array(bytesNonFinal));
+
+    // Non-final method should use MORE call_ref than final method
+    assert.ok(
+      nonFinalCallRefs > finalCallRefs,
+      `Expected more call_ref with non-final method (${nonFinalCallRefs}) than final (${finalCallRefs})`,
+    );
+  });
+
+  test('final class methods use static dispatch (no call_ref)', async () => {
+    // This test verifies that methods on final classes use static dispatch
+    // because the class cannot be subclassed
+
+    const countCallRef = (bytesArr: Uint8Array) => {
+      let count = 0;
+      for (let i = 0; i < bytesArr.length; i++) {
+        if (bytesArr[i] === 0x14) count++; // call_ref opcode
+      }
+      return count;
+    };
+
+    // Version with final class
+    const parser1 = new Parser(`
+      final class Widget {
+        getValue(): i32 { return 42; }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.getValue();
+      };
+    `);
+    const ast1 = parser1.parse();
+    const checker1 = new TypeChecker(ast1);
+    checker1.check();
+    const codegen1 = new CodeGenerator(ast1);
+    const bytesFinalClass = codegen1.generate();
+
+    // Version with non-final class
+    const parser2 = new Parser(`
+      class Widget {
+        getValue(): i32 { return 42; }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.getValue();
+      };
+    `);
+    const ast2 = parser2.parse();
+    const checker2 = new TypeChecker(ast2);
+    checker2.check();
+    const codegen2 = new CodeGenerator(ast2);
+    const bytesNonFinalClass = codegen2.generate();
+
+    const finalClassCallRefs = countCallRef(new Uint8Array(bytesFinalClass));
+    const nonFinalClassCallRefs = countCallRef(
+      new Uint8Array(bytesNonFinalClass),
+    );
+
+    // Non-final class should use MORE call_ref than final class
+    assert.ok(
+      nonFinalClassCallRefs > finalClassCallRefs,
+      `Expected more call_ref with non-final class (${nonFinalClassCallRefs}) than final class (${finalClassCallRefs})`,
+    );
+  });
+
+  test('final accessor getter uses static dispatch', async () => {
+    const countCallRef = (bytesArr: Uint8Array) => {
+      let count = 0;
+      for (let i = 0; i < bytesArr.length; i++) {
+        if (bytesArr[i] === 0x14) count++;
+      }
+      return count;
+    };
+
+    // Version with final accessor
+    const parser1 = new Parser(`
+      class Widget {
+        #value: i32 = 42;
+        final val: i32 {
+          get { return this.#value; }
+        }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.val;
+      };
+    `);
+    const ast1 = parser1.parse();
+    const checker1 = new TypeChecker(ast1);
+    checker1.check();
+    const codegen1 = new CodeGenerator(ast1);
+    const bytesFinal = codegen1.generate();
+
+    // Version with non-final accessor
+    const parser2 = new Parser(`
+      class Widget {
+        #value: i32 = 42;
+        val: i32 {
+          get { return this.#value; }
+        }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.val;
+      };
+    `);
+    const ast2 = parser2.parse();
+    const checker2 = new TypeChecker(ast2);
+    checker2.check();
+    const codegen2 = new CodeGenerator(ast2);
+    const bytesNonFinal = codegen2.generate();
+
+    const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));
+    const nonFinalCallRefs = countCallRef(new Uint8Array(bytesNonFinal));
+
+    assert.ok(
+      nonFinalCallRefs > finalCallRefs,
+      `Expected more call_ref with non-final accessor (${nonFinalCallRefs}) than final (${finalCallRefs})`,
+    );
+  });
+
+  test('final accessor setter uses static dispatch', async () => {
+    const countCallRef = (bytesArr: Uint8Array) => {
+      let count = 0;
+      for (let i = 0; i < bytesArr.length; i++) {
+        if (bytesArr[i] === 0x14) count++;
+      }
+      return count;
+    };
+
+    // Version with final accessor
+    const parser1 = new Parser(`
+      class Widget {
+        #value: i32 = 0;
+        final val: i32 {
+          get { return this.#value; }
+          set(v) { this.#value = v; }
+        }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        w.val = 42;
+        return w.val;
+      };
+    `);
+    const ast1 = parser1.parse();
+    const checker1 = new TypeChecker(ast1);
+    checker1.check();
+    const codegen1 = new CodeGenerator(ast1);
+    const bytesFinal = codegen1.generate();
+
+    // Version with non-final accessor
+    const parser2 = new Parser(`
+      class Widget {
+        #value: i32 = 0;
+        val: i32 {
+          get { return this.#value; }
+          set(v) { this.#value = v; }
+        }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        w.val = 42;
+        return w.val;
+      };
+    `);
+    const ast2 = parser2.parse();
+    const checker2 = new TypeChecker(ast2);
+    checker2.check();
+    const codegen2 = new CodeGenerator(ast2);
+    const bytesNonFinal = codegen2.generate();
+
+    const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));
+    const nonFinalCallRefs = countCallRef(new Uint8Array(bytesNonFinal));
+
+    assert.ok(
+      nonFinalCallRefs > finalCallRefs,
+      `Expected more call_ref with non-final accessor setter (${nonFinalCallRefs}) than final (${finalCallRefs})`,
+    );
+  });
+
+  test('final field getter uses static dispatch', async () => {
+    const countCallRef = (bytesArr: Uint8Array) => {
+      let count = 0;
+      for (let i = 0; i < bytesArr.length; i++) {
+        if (bytesArr[i] === 0x14) count++;
+      }
+      return count;
+    };
+
+    // Version with final field
+    const parser1 = new Parser(`
+      class Widget {
+        final value: i32 = 42;
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.value;
+      };
+    `);
+    const ast1 = parser1.parse();
+    const checker1 = new TypeChecker(ast1);
+    checker1.check();
+    const codegen1 = new CodeGenerator(ast1);
+    const bytesFinal = codegen1.generate();
+
+    // Version with non-final field
+    const parser2 = new Parser(`
+      class Widget {
+        value: i32 = 42;
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.value;
+      };
+    `);
+    const ast2 = parser2.parse();
+    const checker2 = new TypeChecker(ast2);
+    checker2.check();
+    const codegen2 = new CodeGenerator(ast2);
+    const bytesNonFinal = codegen2.generate();
+
+    const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));
+    const nonFinalCallRefs = countCallRef(new Uint8Array(bytesNonFinal));
+
+    assert.ok(
+      nonFinalCallRefs > finalCallRefs,
+      `Expected more call_ref with non-final field (${nonFinalCallRefs}) than final (${finalCallRefs})`,
+    );
   });
 });
