@@ -86,4 +86,76 @@ suite('Codegen: Private Fields', () => {
     const result = await compileAndRun(source);
     assert.strictEqual(result, 30);
   });
+
+  test('Private fields use static dispatch (no getter in vtable)', async () => {
+    // This test verifies that private fields are accessed directly via struct_get
+    // and do NOT generate virtual getters/setters in the vtable.
+    // Public fields generate get_fieldName/set_fieldName accessors in the vtable.
+    // Private fields are accessed directly without vtable indirection.
+
+    const parser = new Parser(`
+      class Widget {
+        #secret: i32 = 42;
+        getValue(): i32 { return this.#secret; }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.getValue();
+      };
+    `);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    checker.check();
+    const codegen = new CodeGenerator(ast);
+    const bytesPrivate = codegen.generate();
+
+    // Verify the generated code works correctly
+    const result = await WebAssembly.instantiate(
+      bytesPrivate.buffer as ArrayBuffer,
+    );
+    const {main} = result.instance.exports as {main: () => number};
+    assert.strictEqual(main(), 42);
+
+    // Now compare with a version where secret is public
+    // Public fields generate virtual getters that use call_ref (dynamic dispatch)
+    // Private fields use direct struct_get (static access)
+    const parser2 = new Parser(`
+      class Widget {
+        secret: i32 = 42;
+        getValue(): i32 { return this.secret; }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.getValue();
+      };
+    `);
+    const ast2 = parser2.parse();
+    const checker2 = new TypeChecker(ast2);
+    checker2.check();
+    const codegen2 = new CodeGenerator(ast2);
+    const bytesPublic = codegen2.generate();
+
+    // Count call_ref (0x14) in both versions
+    // Public field access goes through virtual getter (call_ref)
+    // Private field access is direct (struct_get, no call_ref)
+    const countCallRef = (bytesArr: Uint8Array) => {
+      let count = 0;
+      for (let i = 0; i < bytesArr.length; i++) {
+        if (bytesArr[i] === 0x14) count++;
+      }
+      return count;
+    };
+
+    const privateCallRefs = countCallRef(new Uint8Array(bytesPrivate));
+    const publicCallRefs = countCallRef(new Uint8Array(bytesPublic));
+
+    // The version with public field should have MORE call_ref instructions
+    // because public field access goes through virtual getter
+    assert.ok(
+      publicCallRefs > privateCallRefs,
+      `Expected more call_ref instructions with public field (${publicCallRefs}) than private (${privateCallRefs})`,
+    );
+  });
 });

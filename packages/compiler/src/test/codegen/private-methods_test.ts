@@ -1,6 +1,9 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
 import {compileAndRun} from './utils.js';
+import {Parser} from '../../lib/parser.js';
+import {TypeChecker} from '../../lib/checker/index.js';
+import {CodeGenerator} from '../../lib/codegen/index.js';
 
 suite('Codegen: Private Methods', () => {
   test('Basic private method call', async () => {
@@ -71,5 +74,76 @@ suite('Codegen: Private Methods', () => {
     `;
     const result = await compileAndRun(source);
     assert.strictEqual(result, 12);
+  });
+
+  test('Private methods use static dispatch (not in vtable)', async () => {
+    // This test verifies that private methods are NOT added to the vtable
+    // and use static dispatch (direct call opcode 0x10) instead of
+    // dynamic dispatch (call_ref opcode 0x14)
+    const source = `
+      class Widget {
+        #helper(): i32 { return 42; }
+        publicMethod(): i32 { return this.#helper(); }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.publicMethod();
+      };
+    `;
+
+    const parser = new Parser(source);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    checker.check();
+    const codegen = new CodeGenerator(ast);
+    const bytes = codegen.generate();
+
+    // Verify the generated code works correctly
+    const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);
+    const {main} = result.instance.exports as {main: () => number};
+    assert.strictEqual(main(), 42);
+
+    // Now compare with a version where #helper is public
+    // Public method calls use call_ref (dynamic dispatch)
+    // Private method calls use call (static dispatch)
+    const sourceWithPublic = `
+      class Widget {
+        helper(): i32 { return 42; }
+        publicMethod(): i32 { return this.helper(); }
+      }
+      
+      export let main = (): i32 => {
+        let w = new Widget();
+        return w.publicMethod();
+      };
+    `;
+
+    const parser2 = new Parser(sourceWithPublic);
+    const ast2 = parser2.parse();
+    const checker2 = new TypeChecker(ast2);
+    checker2.check();
+    const codegen2 = new CodeGenerator(ast2);
+    const bytesPublic = codegen2.generate();
+
+    // Count call_ref (0x14) in both versions
+    const countCallRef = (bytesArr: Uint8Array) => {
+      let count = 0;
+      for (let i = 0; i < bytesArr.length; i++) {
+        if (bytesArr[i] === 0x14) count++;
+      }
+      return count;
+    };
+
+    const privateCallRefs = countCallRef(new Uint8Array(bytes));
+    const publicCallRefs = countCallRef(new Uint8Array(bytesPublic));
+
+    // The version with public helper() should have MORE call_ref instructions
+    // than the version with private #helper() because public methods use
+    // dynamic dispatch (call_ref) while private methods use static dispatch (call)
+    assert.ok(
+      publicCallRefs > privateCallRefs,
+      `Expected more call_ref instructions with public method (${publicCallRefs}) than private (${privateCallRefs})`,
+    );
   });
 });
