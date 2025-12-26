@@ -56,7 +56,7 @@ export class CodegenContext {
   public thisLocalIndex = 0;
 
   // Type management
-  public fixedArrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
+  public arrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
   public stringTypeIndex = -1;
   public byteArrayTypeIndex = -1;
   public stringLiterals = new Map<string, number>(); // content -> dataIndex
@@ -141,13 +141,13 @@ export class CodegenContext {
     return index;
   }
 
-  public getFixedArrayTypeIndex(elementType: number[]): number {
+  public getArrayTypeIndex(elementType: number[]): number {
     const key = elementType.join(',');
-    if (this.fixedArrayTypes.has(key)) {
-      return this.fixedArrayTypes.get(key)!;
+    if (this.arrayTypes.has(key)) {
+      return this.arrayTypes.get(key)!;
     }
     const index = this.module.addArrayType(elementType, true);
-    this.fixedArrayTypes.set(key, index);
+    this.arrayTypes.set(key, index);
     return index;
   }
 

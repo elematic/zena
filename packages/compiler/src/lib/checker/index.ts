@@ -8,7 +8,7 @@ import {
   type TypeParameterType,
   Types,
   type FunctionType,
-  type FixedArrayType,
+  type ArrayType,
 } from '../types.js';
 
 /**
@@ -82,9 +82,7 @@ export class TypeChecker {
       {
         kind: TypeKind.Function,
         typeParameters: [T],
-        parameters: [
-          {kind: TypeKind.FixedArray, elementType: T} as FixedArrayType,
-        ],
+        parameters: [{kind: TypeKind.Array, elementType: T} as ArrayType],
         returnType: Types.I32,
       } as FunctionType,
       'let',
@@ -97,7 +95,7 @@ export class TypeChecker {
         kind: TypeKind.Function,
         typeParameters: [T],
         parameters: [
-          {kind: TypeKind.FixedArray, elementType: T} as FixedArrayType,
+          {kind: TypeKind.Array, elementType: T} as ArrayType,
           Types.I32,
         ],
         returnType: T,
@@ -112,7 +110,7 @@ export class TypeChecker {
         kind: TypeKind.Function,
         typeParameters: [T],
         parameters: [
-          {kind: TypeKind.FixedArray, elementType: T} as FixedArrayType,
+          {kind: TypeKind.Array, elementType: T} as ArrayType,
           Types.I32,
           T,
         ],
@@ -129,9 +127,9 @@ export class TypeChecker {
         typeParameters: [T],
         parameters: [Types.I32, T],
         returnType: {
-          kind: TypeKind.FixedArray,
+          kind: TypeKind.Array,
           elementType: T,
-        } as FixedArrayType,
+        } as ArrayType,
       } as FunctionType,
       'let',
     );
@@ -144,9 +142,9 @@ export class TypeChecker {
         typeParameters: [T],
         parameters: [Types.I32],
         returnType: {
-          kind: TypeKind.FixedArray,
+          kind: TypeKind.Array,
           elementType: T,
-        } as FixedArrayType,
+        } as ArrayType,
       } as FunctionType,
       'let',
     );

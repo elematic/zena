@@ -4,7 +4,7 @@ import {
   TypeKind,
   Types,
   TypeNames,
-  type FixedArrayType,
+  type ArrayType,
   type ClassType,
   type FunctionType,
   type InterfaceType,
@@ -46,14 +46,11 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
   if (type.kind === TypeKind.TypeParameter) {
     return typeMap.get((type as TypeParameterType).name) || type;
   }
-  if (type.kind === TypeKind.FixedArray) {
+  if (type.kind === TypeKind.Array) {
     return {
       ...type,
-      elementType: substituteType(
-        (type as FixedArrayType).elementType,
-        typeMap,
-      ),
-    } as FixedArrayType;
+      elementType: substituteType((type as ArrayType).elementType, typeMap),
+    } as ArrayType;
   }
   if (type.kind === TypeKind.Class) {
     const ct = type as ClassType;
@@ -298,9 +295,26 @@ export function resolveTypeAnnotation(
   const type = ctx.resolveType(name);
 
   if (!type) {
-    // Handle Array/FixedArray specifically to prefer primitive type over prelude class
-    // This ensures that 'FixedArray<T>' resolves to the primitive array type,
-    // even though 'FixedArray' class exists in the prelude.
+    // Handle Array/FixedArray specifically to prefer primitive type over prelude class.
+    //
+    // EXPLANATION:
+    // In WASM GC, arrays are a distinct primitive kind (like i32 or f64), not structs/classes.
+    // Zena models this with `TypeKind.Array`.
+    //
+    // However, we want `FixedArray<T>` to have methods like `.map()`, `.length`, etc.
+    // In Zena, methods are added to primitives via "Extension Classes".
+    // The stdlib defines `extension class FixedArray<T> on array<T>`.
+    //
+    // This creates a duality:
+    // 1. The Primitive: `TypeKind.Array` (the data layout, maps to WASM array).
+    // 2. The Class: `FixedArray` symbol (the behavior, maps to static functions).
+    //
+    // To ensure that `array<i32>` and `FixedArray<i32>` are treated as the EXACT same type
+    // (canonicalization), we force the name `FixedArray` to resolve to the primitive type here.
+    //
+    // If we resolved it to the Class symbol, we would have a `TypeKind.Class` which is an extension.
+    // While the checker handles extensions, it's cleaner to treat the type as the primitive
+    // and apply the extension methods when needed.
     if (name === TypeNames.Array || name === TypeNames.FixedArray) {
       if (annotation.typeArguments && annotation.typeArguments.length === 1) {
         const elementType = resolveTypeAnnotation(
@@ -308,9 +322,9 @@ export function resolveTypeAnnotation(
           annotation.typeArguments[0],
         );
         return {
-          kind: TypeKind.FixedArray,
+          kind: TypeKind.Array,
           elementType,
-        } as FixedArrayType;
+        } as ArrayType;
       }
     }
 
@@ -451,8 +465,8 @@ export function validateType(type: Type, ctx: CheckerContext) {
       }
       validateType(t, ctx);
     }
-  } else if (type.kind === TypeKind.FixedArray) {
-    validateType((type as FixedArrayType).elementType, ctx);
+  } else if (type.kind === TypeKind.Array) {
+    validateType((type as ArrayType).elementType, ctx);
   } else if (type.kind === TypeKind.Function) {
     const ft = type as FunctionType;
     ft.parameters.forEach((p) => validateType(p, ctx));
@@ -655,8 +669,8 @@ export function typeToString(type: Type): string {
       }
       return it.name;
     }
-    case TypeKind.FixedArray:
-      return `FixedArray<${typeToString((type as FixedArrayType).elementType)}>`;
+    case TypeKind.Array:
+      return `array<${typeToString((type as ArrayType).elementType)}>`;
     case TypeKind.Record: {
       const rt = type as RecordType;
       const props = Array.from(rt.properties.entries())
@@ -725,7 +739,7 @@ export function isAssignableTo(
     switch (source.kind) {
       case TypeKind.Class:
       case TypeKind.Interface:
-      case TypeKind.FixedArray:
+      case TypeKind.Array:
       case TypeKind.Record:
       case TypeKind.Tuple:
       case TypeKind.Function:
@@ -814,7 +828,7 @@ export function isAssignableTo(
     switch (target.kind) {
       case TypeKind.Class:
       case TypeKind.Interface:
-      case TypeKind.FixedArray:
+      case TypeKind.Array:
       case TypeKind.Record:
       case TypeKind.Tuple:
       case TypeKind.Function:
@@ -942,7 +956,7 @@ export function isAssignableTo(
   }
 
   // Allow assigning primitive FixedArray to Extension Class wrapping it
-  if (source.kind === TypeKind.FixedArray && target.kind === TypeKind.Class) {
+  if (source.kind === TypeKind.Array && target.kind === TypeKind.Class) {
     const targetClass = target as ClassType;
     if (targetClass.isExtension && targetClass.onType) {
       return isAssignableTo(ctx, source, targetClass.onType);
@@ -965,11 +979,11 @@ export function isAssignableTo(
             if (
               classType.typeParameters &&
               classType.typeParameters.length > 0 &&
-              source.kind === TypeKind.FixedArray &&
-              classType.onType.kind === TypeKind.FixedArray
+              source.kind === TypeKind.Array &&
+              classType.onType.kind === TypeKind.Array
             ) {
-              const sourceElem = (source as FixedArrayType).elementType;
-              const onTypeElem = (classType.onType as FixedArrayType)
+              const sourceElem = (source as ArrayType).elementType;
+              const onTypeElem = (classType.onType as ArrayType)
                 .elementType;
 
               if (onTypeElem.kind === TypeKind.TypeParameter) {

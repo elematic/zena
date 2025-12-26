@@ -20,7 +20,7 @@ import {
   type ClassType,
   type NumberType,
   type InterfaceType,
-  type FixedArrayType,
+  type ArrayType,
   type RecordType,
   type TupleType,
   type FunctionType,
@@ -1849,18 +1849,8 @@ export function getSpecializedName(
   return `${name}<${argNames.join(',')}>`;
 }
 
-function getFixedArrayTypeIndex(
-  ctx: CodegenContext,
-  elementType: number[],
-): number {
-  const key = elementType.join(',');
-  if (ctx.fixedArrayTypes.has(key)) {
-    const cached = ctx.fixedArrayTypes.get(key)!;
-    return cached;
-  }
-  const index = ctx.module.addArrayType(elementType, true);
-  ctx.fixedArrayTypes.set(key, index);
-  return index;
+function getArrayTypeIndex(ctx: CodegenContext, elementType: number[]): number {
+  return ctx.getArrayTypeIndex(elementType);
 }
 
 export function mapType(
@@ -1941,7 +1931,7 @@ function mapTypeInternal(
       case TypeNames.Array:
         if (type.typeArguments && type.typeArguments.length === 1) {
           const elementType = mapType(ctx, type.typeArguments[0], context);
-          const typeIndex = getFixedArrayTypeIndex(ctx, elementType);
+          const typeIndex = getArrayTypeIndex(ctx, elementType);
           return [
             ValType.ref_null,
             ...WasmModule.encodeSignedLEB128(typeIndex),
@@ -2752,8 +2742,8 @@ export function typeToTypeAnnotation(
         typeArguments: args.length > 0 ? args : undefined,
       };
     }
-    case TypeKind.FixedArray: {
-      const arrayType = type as FixedArrayType;
+    case TypeKind.Array: {
+      const arrayType = type as ArrayType;
       return {
         type: NodeType.TypeAnnotation,
         name: TypeNames.Array,

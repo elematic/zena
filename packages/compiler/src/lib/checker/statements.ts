@@ -34,7 +34,7 @@ import {
   TypeKind,
   Types,
   type ClassType,
-  type FixedArrayType,
+  type ArrayType,
   type FunctionType,
   type InterfaceType,
   type LiteralType,
@@ -570,8 +570,8 @@ function checkTuplePattern(
 
       checkPattern(ctx, elemPattern, tupleType.elementTypes[i], kind);
     }
-  } else if (type.kind === TypeKind.FixedArray) {
-    const arrayType = type as FixedArrayType;
+  } else if (type.kind === TypeKind.Array) {
+    const arrayType = type as ArrayType;
     for (const elemPattern of pattern.elements) {
       if (!elemPattern) continue;
       checkPattern(ctx, elemPattern, arrayType.elementType, kind);

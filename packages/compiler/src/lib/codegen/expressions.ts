@@ -40,6 +40,7 @@ import {
   Decorators,
   TypeKind,
   Types,
+  TypeNames,
   type ClassType,
   type FunctionType,
   type NumberType,
@@ -638,27 +639,18 @@ function isStringType(ctx: CodegenContext, type: number[]): boolean {
   return index === ctx.stringTypeIndex; // stringTypeIndex is now byteArrayTypeIndex
 }
 
-function getFixedArrayTypeIndex(
-  ctx: CodegenContext,
-  elementType: number[],
-): number {
-  const key = elementType.join(',');
-  if (ctx.fixedArrayTypes.has(key)) {
-    return ctx.fixedArrayTypes.get(key)!;
-  }
-  const index = ctx.module.addArrayType(elementType, true);
-  ctx.fixedArrayTypes.set(key, index);
-  return index;
+function getArrayTypeIndex(ctx: CodegenContext, elementType: number[]): number {
+  return ctx.getArrayTypeIndex(elementType);
 }
 
 function resolveFixedArrayClass(
   ctx: CodegenContext,
   checkerType: any,
 ): ClassInfo | undefined {
-  if (checkerType && checkerType.kind === TypeKind.FixedArray) {
+  if (checkerType && checkerType.kind === TypeKind.Array) {
     let fixedArrayDecl = ctx.wellKnownTypes.FixedArray;
     if (!fixedArrayDecl) {
-      fixedArrayDecl = ctx.genericClasses.get(TypeKind.FixedArray);
+      fixedArrayDecl = ctx.genericClasses.get(TypeNames.FixedArray);
     }
 
     if (fixedArrayDecl) {
@@ -702,7 +694,7 @@ function generateArrayLiteral(
   } else {
     // Fallback / Default to i32
     const elementType = [ValType.i32];
-    typeIndex = getFixedArrayTypeIndex(ctx, elementType);
+    typeIndex = getArrayTypeIndex(ctx, elementType);
   }
 
   if (expr.elements.length === 0) {
@@ -1168,9 +1160,7 @@ function generateMemberExpression(
       return;
     }
 
-    const isArray = Array.from(ctx.fixedArrayTypes.values()).includes(
-      objectType[1],
-    );
+    const isArray = Array.from(ctx.arrayTypes.values()).includes(objectType[1]);
 
     if (isArray) {
       const intrinsic = findArrayIntrinsic(ctx, 'length');
@@ -2394,7 +2384,7 @@ function generateAssignmentExpression(
       ) {
         arrayTypeIndex = decodeTypeIndex(objectType);
       } else {
-        arrayTypeIndex = getFixedArrayTypeIndex(ctx, [ValType.i32]);
+        arrayTypeIndex = getArrayTypeIndex(ctx, [ValType.i32]);
       }
     }
 
@@ -4238,7 +4228,7 @@ function generateGlobalIntrinsic(
       const defaultValue = args[1];
 
       const elemType = inferType(ctx, defaultValue);
-      const arrayTypeIndex = getFixedArrayTypeIndex(ctx, elemType);
+      const arrayTypeIndex = getArrayTypeIndex(ctx, elemType);
 
       // array.new $type value size
       generateExpression(ctx, defaultValue, body);
@@ -4837,7 +4827,7 @@ function generateTaggedTemplateExpression(
     ValType.ref_null,
     ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
   ];
-  const stringsArrayTypeIndex = getFixedArrayTypeIndex(ctx, stringType);
+  const stringsArrayTypeIndex = getArrayTypeIndex(ctx, stringType);
 
   let globalIndex: number;
   if (ctx.templateLiteralGlobals.has(expr)) {
@@ -4931,7 +4921,7 @@ function generateTaggedTemplateExpression(
   const valuesArrayTypeIndex =
     expectedValuesArrayTypeIndex !== undefined
       ? expectedValuesArrayTypeIndex
-      : getFixedArrayTypeIndex(ctx, valueType);
+      : getArrayTypeIndex(ctx, valueType);
 
   for (const arg of expr.quasi.expressions) {
     if (expectedValuesArrayTypeIndex !== undefined) {

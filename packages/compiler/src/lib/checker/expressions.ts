@@ -37,7 +37,8 @@ import {DiagnosticCode} from '../diagnostics.js';
 import {
   TypeKind,
   Types,
-  type FixedArrayType,
+  TypeNames,
+  type ArrayType,
   type ClassType,
   type InterfaceType,
   type FunctionType,
@@ -547,9 +548,9 @@ function checkMatchPattern(
             checkMatchPattern(ctx, elemPattern, tupleType.elementTypes[i]);
           }
         }
-      } else if (discriminantType.kind === TypeKind.FixedArray) {
+      } else if (discriminantType.kind === TypeKind.Array) {
         // Array destructuring?
-        const arrayType = discriminantType as FixedArrayType;
+        const arrayType = discriminantType as ArrayType;
         for (const elemPattern of tuplePattern.elements) {
           if (elemPattern) {
             checkMatchPattern(ctx, elemPattern, arrayType.elementType);
@@ -1098,12 +1099,12 @@ function inferTypeArguments(
         }
       }
     } else if (
-      paramType.kind === TypeKind.FixedArray &&
-      argType.kind === TypeKind.FixedArray
+      paramType.kind === TypeKind.Array &&
+      argType.kind === TypeKind.Array
     ) {
       infer(
-        (paramType as FixedArrayType).elementType,
-        (argType as FixedArrayType).elementType,
+        (paramType as ArrayType).elementType,
+        (argType as ArrayType).elementType,
       );
     } else if (
       paramType.kind === TypeKind.Class &&
@@ -1753,16 +1754,16 @@ function checkMemberExpression(
     }
   }
 
-  if (objectType.kind === TypeKind.FixedArray) {
+  if (objectType.kind === TypeKind.Array) {
     // Check for extension methods
     // TODO: Support multiple extensions or lookup by type, not just name 'Array'
-    const arrayType = ctx.getWellKnownType(TypeKind.FixedArray);
+    const arrayType = ctx.getWellKnownType(TypeNames.FixedArray);
     if (arrayType && arrayType.kind === TypeKind.Class) {
       const classType = arrayType as ClassType;
       if (classType.methods.has(expr.property.name)) {
         const method = classType.methods.get(expr.property.name)!;
         if (classType.typeParameters && classType.typeParameters.length > 0) {
-          const typeArgs = [(objectType as FixedArrayType).elementType];
+          const typeArgs = [(objectType as ArrayType).elementType];
           const typeMap = new Map<string, Type>();
           classType.typeParameters.forEach((param, index) => {
             typeMap.set(param.name, typeArgs[index]);
@@ -1898,9 +1899,9 @@ function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
     // Better: Array<any> (if we had any).
     // Let's return Array<Unknown> and hope it gets refined or cast.
     return {
-      kind: TypeKind.FixedArray,
+      kind: TypeKind.Array,
       elementType: Types.Unknown,
-    } as FixedArrayType;
+    } as ArrayType;
   }
 
   const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
@@ -1918,9 +1919,9 @@ function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
   }
 
   return {
-    kind: TypeKind.FixedArray,
+    kind: TypeKind.Array,
     elementType: firstType,
-  } as FixedArrayType;
+  } as ArrayType;
 }
 
 function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
@@ -2036,7 +2037,7 @@ function checkIndexExpression(
     objectType === Types.String ||
     objectType === ctx.getWellKnownType(Types.String.name);
 
-  if (objectType.kind !== TypeKind.FixedArray && !isString) {
+  if (objectType.kind !== TypeKind.Array && !isString) {
     ctx.diagnostics.reportError(
       `Index expression only supported on arrays, strings, or types with [] operator, got ${typeToString(objectType)}`,
       DiagnosticCode.NotIndexable,
@@ -2052,7 +2053,7 @@ function checkIndexExpression(
     return Types.Unknown;
   }
 
-  return (objectType as FixedArrayType).elementType;
+  return (objectType as ArrayType).elementType;
 }
 
 function checkSuperExpression(
