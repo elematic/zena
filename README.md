@@ -20,8 +20,9 @@ around efficient WASM output.
     `List<i32>` stores raw integers with zero boxing overhead.
   - **Arrays and Record** map directly to WASM GC arrays and structs.
   - **Classes** map to WASM GC structs with vtables.
-  - **Polymorphism** uses vtables where necessary (interfaces), but we prefer
-    static dispatch when possible.
+  - **Polymorphism** uses vtables where necessary (inheritance, interfaces), but
+    we prefer static dispatch when possible. Private and final class members are
+    guareteed to use static dispatch.
 - **Familiar yet AOT**: While Zena looks like TypeScript, it is entirely
   designed for **ahead-of-time (AOT) compilation**. It breaks away from
   JavaScript's dynamic semantics to allow for efficient compilation and small
@@ -52,7 +53,7 @@ of challenge.
 Why do this though? Will anyone use this language? What's the point? Here are
 some of my thoughts and motivations at the moment:
 
-- **Breaking the larrier to entry**: I've had ideas for a programming language
+- **Breaking the barrier to entry**: I've had ideas for a programming language
   for a long time, but I never had the time or deep expertise to pull it off. I
   worked on the Dart team (mostly on tools, not the VM) and have written parsers
   before (like for Polymer expressions), but building a full compiler and
