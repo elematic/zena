@@ -774,11 +774,16 @@ export function registerClassStruct(
   }
 
   if (decl.mixins && decl.mixins.length > 0) {
-    for (const mixinId of decl.mixins) {
-      const mixinDecl = ctx.mixins.get(mixinId.name);
-      if (!mixinDecl) {
-        throw new Error(`Unknown mixin ${mixinId.name}`);
+    for (const mixinAnnotation of decl.mixins) {
+      if (mixinAnnotation.type !== NodeType.TypeAnnotation) {
+        throw new Error('Mixin must be a named type');
       }
+      const mixinName = mixinAnnotation.name;
+      const mixinDecl = ctx.mixins.get(mixinName);
+      if (!mixinDecl) {
+        throw new Error(`Unknown mixin ${mixinName}`);
+      }
+      // TODO: Handle generic mixin instantiation in codegen
       currentSuperClassInfo = applyMixin(ctx, currentSuperClassInfo, mixinDecl);
     }
   }

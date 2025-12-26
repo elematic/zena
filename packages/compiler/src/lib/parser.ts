@@ -1740,10 +1740,10 @@ export class Parser {
       superClass = this.#parseIdentifier();
     }
 
-    const mixins: Identifier[] = [];
+    const mixins: TypeAnnotation[] = [];
     if (this.#match(TokenType.With)) {
       do {
-        mixins.push(this.#parseIdentifier());
+        mixins.push(this.#parseTypeAnnotation());
       } while (this.#match(TokenType.Comma));
     }
 
@@ -1795,10 +1795,10 @@ export class Parser {
       on = this.#parseIdentifier();
     }
 
-    const mixins: Identifier[] = [];
+    const mixins: TypeAnnotation[] = [];
     if (this.#match(TokenType.With)) {
       do {
-        mixins.push(this.#parseIdentifier());
+        mixins.push(this.#parseTypeAnnotation());
       } while (this.#match(TokenType.Comma));
     }
 

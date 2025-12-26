@@ -111,6 +111,7 @@ export interface MixinType extends Type {
   kind: typeof TypeKind.Mixin;
   name: string;
   typeParameters?: TypeParameterType[];
+  typeArguments?: Type[];
   onType?: ClassType;
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;

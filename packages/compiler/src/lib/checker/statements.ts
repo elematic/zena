@@ -728,18 +728,15 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
   // Apply Mixins
   if (decl.mixins) {
-    for (const mixinId of decl.mixins) {
-      const mixinType = ctx.resolveType(mixinId.name);
-      if (!mixinType) {
-        ctx.diagnostics.reportError(
-          `Unknown mixin '${mixinId.name}'.`,
-          DiagnosticCode.SymbolNotFound,
-        );
+    for (const mixinAnnotation of decl.mixins) {
+      const mixinType = resolveTypeAnnotation(ctx, mixinAnnotation);
+      if (mixinType.kind === TypeKind.Unknown) {
+        // Error already reported by resolveTypeAnnotation
         continue;
       }
       if (mixinType.kind !== TypeKind.Mixin) {
         ctx.diagnostics.reportError(
-          `'${mixinId.name}' is not a mixin.`,
+          `'${typeToString(mixinType)}' is not a mixin.`,
           DiagnosticCode.TypeMismatch,
         );
         continue;
@@ -1799,22 +1796,19 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
   // Apply composed mixins
   if (decl.mixins) {
-    for (const mixinId of decl.mixins) {
-      const composedMixinType = ctx.resolveType(mixinId.name);
-      if (!composedMixinType) {
-        ctx.diagnostics.reportError(
-          `Unknown mixin '${mixinId.name}'.`,
-          DiagnosticCode.SymbolNotFound,
-        );
+    for (const mixinAnnotation of decl.mixins) {
+      const composedMixinType = resolveTypeAnnotation(ctx, mixinAnnotation);
+      if (composedMixinType.kind === TypeKind.Unknown) {
         continue;
       }
       if (composedMixinType.kind !== TypeKind.Mixin) {
         ctx.diagnostics.reportError(
-          `'${mixinId.name}' is not a mixin.`,
+          `'${typeToString(composedMixinType)}' is not a mixin.`,
           DiagnosticCode.TypeMismatch,
         );
         continue;
       }
+
       const composedMixin = composedMixinType as MixinType;
 
       // Check 'on' compatibility

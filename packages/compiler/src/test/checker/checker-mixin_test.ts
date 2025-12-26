@@ -220,4 +220,64 @@ suite('Checker - Mixins', () => {
     assert.strictEqual(diagnostics.length, 1);
     assert.strictEqual(diagnostics[0].code, DiagnosticCode.PropertyNotFound);
   });
+
+  test('should require type arguments for generic mixin used as type', () => {
+    const source = `
+      mixin Timestamped<T> {
+        timestamp: T;
+      }
+      class Log with Timestamped { // Missing type argument
+      }
+    `;
+    const diagnostics = checkSource(source);
+    const missingArgError = diagnostics.find((e) =>
+      /Generic type 'Timestamped' requires 1 type arguments/.test(e.message),
+    );
+    assert.ok(missingArgError, 'Should report missing type arguments error');
+  });
+
+  test('should allow generic mixin with type arguments', () => {
+    const source = `
+      mixin Timestamped<T> {
+        timestamp: T;
+      }
+      class Log with Timestamped<i32> {
+      }
+    `;
+    const diagnostics = checkSource(source);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('should fail when applying a class as a mixin', () => {
+    const source = `
+      class A {}
+      class B with A {}
+    `;
+    const diagnostics = checkSource(source);
+    assert.strictEqual(diagnostics.length, 1);
+    assert.match(diagnostics[0].message, /'A' is not a mixin/);
+  });
+
+  test('should fail when applying an interface as a mixin', () => {
+    const source = `
+      interface I {}
+      class B with I {}
+    `;
+    const diagnostics = checkSource(source);
+    assert.strictEqual(diagnostics.length, 1);
+    assert.match(diagnostics[0].message, /'I' is not a mixin/);
+  });
+
+  test('should fail when applying a union type as a mixin', () => {
+    const source = `
+      mixin M {}
+      mixin N {}
+      type U = M | N;
+      class B with U {}
+    `;
+    const diagnostics = checkSource(source);
+    assert.strictEqual(diagnostics.length, 1);
+    // The error message uses typeToString, which for a union is "T1 | T2"
+    assert.match(diagnostics[0].message, /'M \| N' is not a mixin/);
+  });
 });

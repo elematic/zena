@@ -9,6 +9,7 @@ import {
   type FunctionType,
   type InterfaceType,
   type LiteralType,
+  type MixinType,
   type NumberType,
   type RecordType,
   type TupleType,
@@ -118,6 +119,36 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
         methods: newMethods,
         extends: newExtends,
       } as InterfaceType;
+    }
+  }
+  if (type.kind === TypeKind.Mixin) {
+    const mt = type as MixinType;
+    if (mt.typeArguments) {
+      const newTypeArguments = mt.typeArguments.map((t) =>
+        substituteType(t, typeMap),
+      );
+
+      const newFields = new Map<string, Type>();
+      for (const [name, type] of mt.fields) {
+        newFields.set(name, substituteType(type, typeMap));
+      }
+
+      const newMethods = new Map<string, FunctionType>();
+      for (const [name, fn] of mt.methods) {
+        newMethods.set(name, substituteType(fn, typeMap) as FunctionType);
+      }
+
+      const newOnType = mt.onType
+        ? (substituteType(mt.onType, typeMap) as ClassType)
+        : undefined;
+
+      return {
+        ...mt,
+        typeArguments: newTypeArguments,
+        fields: newFields,
+        methods: newMethods,
+        onType: newOnType,
+      } as MixinType;
     }
   }
   if (type.kind === TypeKind.Function) {
@@ -375,63 +406,63 @@ export function resolveTypeAnnotation(
     } as ArrayType;
   }
 
-  if (annotation.typeArguments && annotation.typeArguments.length > 0) {
-    // Handle generic instantiation based on the type kind.
-    // This validates that the type is actually generic and applies the type arguments.
-    if (type.kind === TypeKind.Class) {
-      const classType = type as ClassType;
-      if (!classType.typeParameters || classType.typeParameters.length === 0) {
+  if (
+    type.kind === TypeKind.Class ||
+    type.kind === TypeKind.Interface ||
+    type.kind === TypeKind.Mixin
+  ) {
+    const genericType = type as ClassType | InterfaceType | MixinType;
+    const typeParameters = genericType.typeParameters || [];
+    const typeArguments = annotation.typeArguments || [];
+
+    if (typeParameters.length > 0) {
+      if (typeArguments.length === 0) {
         ctx.diagnostics.reportError(
-          `Type '${name}' is not generic.`,
+          `Generic type '${name}' requires ${typeParameters.length} type arguments.`,
           DiagnosticCode.GenericTypeArgumentMismatch,
         );
         return type;
       }
-      if (classType.typeParameters.length !== annotation.typeArguments.length) {
+      if (typeArguments.length !== typeParameters.length) {
         ctx.diagnostics.reportError(
-          `Expected ${classType.typeParameters.length} type arguments, got ${annotation.typeArguments.length}.`,
+          `Expected ${typeParameters.length} type arguments, got ${typeArguments.length}.`,
           DiagnosticCode.GenericTypeArgumentMismatch,
         );
         return type;
       }
 
-      const typeArguments = annotation.typeArguments.map((arg) =>
+      const resolvedArgs = typeArguments.map((arg) =>
         resolveTypeAnnotation(ctx, arg),
       );
-      return instantiateGenericClass(classType, typeArguments, ctx);
-    } else if (type.kind === TypeKind.Interface) {
-      const interfaceType = type as InterfaceType;
-      if (
-        !interfaceType.typeParameters ||
-        interfaceType.typeParameters.length === 0
-      ) {
-        ctx.diagnostics.reportError(
-          `Type '${name}' is not generic.`,
-          DiagnosticCode.GenericTypeArgumentMismatch,
-        );
-        return type;
-      }
-      if (
-        interfaceType.typeParameters.length !== annotation.typeArguments.length
-      ) {
-        ctx.diagnostics.reportError(
-          `Expected ${interfaceType.typeParameters.length} type arguments, got ${annotation.typeArguments.length}.`,
-          DiagnosticCode.GenericTypeArgumentMismatch,
-        );
-        return type;
-      }
 
-      const typeArguments = annotation.typeArguments.map((arg) =>
-        resolveTypeAnnotation(ctx, arg),
-      );
-      return instantiateGenericInterface(interfaceType, typeArguments, ctx);
+      if (type.kind === TypeKind.Class) {
+        return instantiateGenericClass(type as ClassType, resolvedArgs, ctx);
+      } else if (type.kind === TypeKind.Interface) {
+        return instantiateGenericInterface(
+          type as InterfaceType,
+          resolvedArgs,
+          ctx,
+        );
+      } else {
+        return instantiateGenericMixin(type as MixinType, resolvedArgs, ctx);
+      }
     } else {
-      ctx.diagnostics.reportError(
-        `Type '${name}' is not generic.`,
-        DiagnosticCode.GenericTypeArgumentMismatch,
-      );
+      if (typeArguments.length > 0) {
+        ctx.diagnostics.reportError(
+          `Type '${name}' is not generic.`,
+          DiagnosticCode.GenericTypeArgumentMismatch,
+        );
+      }
       return type;
     }
+  }
+
+  if (annotation.typeArguments && annotation.typeArguments.length > 0) {
+    ctx.diagnostics.reportError(
+      `Type '${name}' is not generic.`,
+      DiagnosticCode.GenericTypeArgumentMismatch,
+    );
+    return type;
   }
 
   return type;
@@ -573,6 +604,51 @@ export function instantiateGenericInterface(
   return newInterface;
 }
 
+export function instantiateGenericMixin(
+  genericMixin: MixinType,
+  typeArguments: Type[],
+  ctx?: CheckerContext,
+): MixinType {
+  const typeMap = new Map<string, Type>();
+  genericMixin.typeParameters!.forEach((param, index) => {
+    typeMap.set(param.name, typeArguments[index]);
+  });
+
+  const substitute = (type: Type) => substituteType(type, typeMap);
+
+  const newFields = new Map<string, Type>();
+  for (const [name, type] of genericMixin.fields) {
+    newFields.set(name, substitute(type));
+  }
+
+  const newMethods = new Map<string, FunctionType>();
+  for (const [name, fn] of genericMixin.methods) {
+    newMethods.set(name, substituteFunctionType(fn, typeMap));
+  }
+
+  const newOnType = genericMixin.onType
+    ? (substitute(genericMixin.onType) as ClassType)
+    : undefined;
+
+  const newMixin = {
+    ...genericMixin,
+    typeArguments,
+    fields: newFields,
+    methods: newMethods,
+    onType: newOnType,
+  };
+
+  if (ctx) {
+    for (const type of newFields.values()) validateType(type, ctx);
+    for (const method of newMethods.values()) {
+      for (const p of method.parameters) validateType(p, ctx);
+      validateType(method.returnType, ctx);
+    }
+  }
+
+  return newMixin;
+}
+
 export function instantiateGenericFunction(
   genericFunc: FunctionType,
   typeArguments: Type[],
@@ -652,6 +728,13 @@ export function typeToString(type: Type): string {
         return `${it.name}<${it.typeArguments.map((t) => typeToString(t)).join(', ')}>`;
       }
       return it.name;
+    }
+    case TypeKind.Mixin: {
+      const mt = type as MixinType;
+      if (mt.typeArguments && mt.typeArguments.length > 0) {
+        return `${mt.name}<${mt.typeArguments.map((t) => typeToString(t)).join(', ')}>`;
+      }
+      return mt.name;
     }
     case TypeKind.Array:
       return `array<${typeToString((type as ArrayType).elementType)}>`;

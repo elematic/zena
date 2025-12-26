@@ -225,4 +225,43 @@ suite('TypeChecker - Generics', () => {
       /does not satisfy constraint.*for type parameter/,
     );
   });
+
+  test('should require type arguments for generic class used as type', () => {
+    const input = `
+      class Box<T> {
+        value: T;
+        #new(v: T) { this.value = v; }
+      }
+      let b: Box = new Box<i32>(1);
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    const missingArgError = errors.find((e) =>
+      /Generic type 'Box' requires 1 type arguments/.test(e.message),
+    );
+    assert.ok(missingArgError, 'Should report missing type arguments error');
+  });
+
+  test('should require type arguments for generic interface used as type', () => {
+    const input = `
+      interface Container<T> {
+        get(): T;
+      }
+      class MyContainer implements Container {
+        get(): i32 { return 0; }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    // We expect an error about missing type arguments.
+    // We might also get an error about incorrect implementation if the type resolution failed/defaulted.
+    const missingArgError = errors.find((e) =>
+      /Generic type 'Container' requires 1 type arguments/.test(e.message),
+    );
+    assert.ok(missingArgError, 'Should report missing type arguments error');
+  });
 });

@@ -398,7 +398,7 @@ export interface ClassDeclaration extends Node {
   name: Identifier;
   typeParameters?: TypeParameter[];
   superClass?: Identifier;
-  mixins?: Identifier[];
+  mixins?: TypeAnnotation[];
   implements?: TypeAnnotation[];
   body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[];
   exported: boolean;
@@ -414,7 +414,7 @@ export interface MixinDeclaration extends Node {
   name: Identifier;
   typeParameters?: TypeParameter[];
   on?: Identifier;
-  mixins?: Identifier[];
+  mixins?: TypeAnnotation[];
   body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[];
   exported: boolean;
   exportName?: string;

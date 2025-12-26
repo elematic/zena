@@ -52,8 +52,10 @@ suite('Parser - Mixins', () => {
     assert.strictEqual(mixinDecl.type, NodeType.MixinDeclaration);
     if (mixinDecl.type === NodeType.MixinDeclaration) {
       assert.strictEqual(mixinDecl.mixins?.length, 2);
-      assert.strictEqual(mixinDecl.mixins[0].name, 'A');
-      assert.strictEqual(mixinDecl.mixins[1].name, 'B');
+      assert.strictEqual(mixinDecl.mixins[0].type, NodeType.TypeAnnotation);
+      assert.strictEqual((mixinDecl.mixins[0] as any).name, 'A');
+      assert.strictEqual(mixinDecl.mixins[1].type, NodeType.TypeAnnotation);
+      assert.strictEqual((mixinDecl.mixins[1] as any).name, 'B');
     }
   });
 
@@ -70,8 +72,10 @@ suite('Parser - Mixins', () => {
     if (classDecl.type === NodeType.ClassDeclaration) {
       assert.strictEqual(classDecl.superClass?.name, 'Entity');
       assert.strictEqual(classDecl.mixins?.length, 2);
-      assert.strictEqual(classDecl.mixins[0].name, 'Timestamped');
-      assert.strictEqual(classDecl.mixins[1].name, 'Syncable');
+      assert.strictEqual(classDecl.mixins[0].type, NodeType.TypeAnnotation);
+      assert.strictEqual((classDecl.mixins[0] as any).name, 'Timestamped');
+      assert.strictEqual(classDecl.mixins[1].type, NodeType.TypeAnnotation);
+      assert.strictEqual((classDecl.mixins[1] as any).name, 'Syncable');
     }
   });
 });
