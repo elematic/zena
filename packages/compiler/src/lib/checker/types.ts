@@ -295,39 +295,6 @@ export function resolveTypeAnnotation(
   const type = ctx.resolveType(name);
 
   if (!type) {
-    // Handle Array/FixedArray specifically to prefer primitive type over prelude class.
-    //
-    // EXPLANATION:
-    // In WASM GC, arrays are a distinct primitive kind (like i32 or f64), not structs/classes.
-    // Zena models this with `TypeKind.Array`.
-    //
-    // However, we want `FixedArray<T>` to have methods like `.map()`, `.length`, etc.
-    // In Zena, methods are added to primitives via "Extension Classes".
-    // The stdlib defines `extension class FixedArray<T> on array<T>`.
-    //
-    // This creates a duality:
-    // 1. The Primitive: `TypeKind.Array` (the data layout, maps to WASM array).
-    // 2. The Class: `FixedArray` symbol (the behavior, maps to static functions).
-    //
-    // To ensure that `array<i32>` and `FixedArray<i32>` are treated as the EXACT same type
-    // (canonicalization), we force the name `FixedArray` to resolve to the primitive type here.
-    //
-    // If we resolved it to the Class symbol, we would have a `TypeKind.Class` which is an extension.
-    // While the checker handles extensions, it's cleaner to treat the type as the primitive
-    // and apply the extension methods when needed.
-    if (name === TypeNames.Array || name === TypeNames.FixedArray) {
-      if (annotation.typeArguments && annotation.typeArguments.length === 1) {
-        const elementType = resolveTypeAnnotation(
-          ctx,
-          annotation.typeArguments[0],
-        );
-        return {
-          kind: TypeKind.Array,
-          elementType,
-        } as ArrayType;
-      }
-    }
-
     ctx.diagnostics.reportError(
       `Unknown type '${name}'.`,
       DiagnosticCode.SymbolNotFound,
@@ -393,7 +360,24 @@ export function resolveTypeAnnotation(
     return alias.target;
   }
 
+  if (type.kind === TypeKind.Array) {
+    if (!annotation.typeArguments || annotation.typeArguments.length !== 1) {
+      ctx.diagnostics.reportError(
+        `Generic type '${name}' requires 1 type argument.`,
+        DiagnosticCode.GenericTypeArgumentMismatch,
+      );
+      return type;
+    }
+    const elementType = resolveTypeAnnotation(ctx, annotation.typeArguments[0]);
+    return {
+      kind: TypeKind.Array,
+      elementType,
+    } as ArrayType;
+  }
+
   if (annotation.typeArguments && annotation.typeArguments.length > 0) {
+    // Handle generic instantiation based on the type kind.
+    // This validates that the type is actually generic and applies the type arguments.
     if (type.kind === TypeKind.Class) {
       const classType = type as ClassType;
       if (!classType.typeParameters || classType.typeParameters.length === 0) {
@@ -983,8 +967,7 @@ export function isAssignableTo(
               classType.onType.kind === TypeKind.Array
             ) {
               const sourceElem = (source as ArrayType).elementType;
-              const onTypeElem = (classType.onType as ArrayType)
-                .elementType;
+              const onTypeElem = (classType.onType as ArrayType).elementType;
 
               if (onTypeElem.kind === TypeKind.TypeParameter) {
                 const paramIndex = classType.typeParameters.findIndex(

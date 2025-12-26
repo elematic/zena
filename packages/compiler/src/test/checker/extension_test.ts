@@ -17,7 +17,7 @@ function check(input: string) {
 suite('TypeChecker - Extension Types', () => {
   test('should allow extension class on array', () => {
     const input = `
-      extension class Array on FixedArray<i32> {
+      extension class Array on array<i32> {
         static #new() {}
         length: i32 { get { return 0; } }
       }
@@ -31,7 +31,7 @@ suite('TypeChecker - Extension Types', () => {
 
   test('should disallow instance fields in extension class', () => {
     const input = `
-      extension class Array on FixedArray<i32> {
+      extension class Array on array<i32> {
         x: i32; // Error
       }
     `;
@@ -48,7 +48,7 @@ suite('TypeChecker - Extension Types', () => {
 
   test('should allow static fields in extension class', () => {
     const input = `
-      extension class Array on FixedArray<i32> {
+      extension class Array on array<i32> {
         static MAX_SIZE: i32 = 100;
       }
     `;
@@ -61,9 +61,9 @@ suite('TypeChecker - Extension Types', () => {
 
   test('should resolve "this" to underlying type', () => {
     const input = `
-      extension class Array on FixedArray<i32> {
+      extension class Array on array<i32> {
         test() {
-          let a: FixedArray<i32> = this; // Should be valid
+          let a: array<i32> = this; // Should be valid
         }
       }
     `;

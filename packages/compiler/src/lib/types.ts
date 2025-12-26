@@ -173,6 +173,10 @@ export const Types = {
   Any: {kind: TypeKind.Any} as Type,
   Never: {kind: TypeKind.Never} as Type,
   Symbol: {kind: TypeKind.Symbol} as SymbolType,
+  Array: {
+    kind: TypeKind.Array,
+    elementType: {kind: TypeKind.Unknown} as Type,
+  } as ArrayType,
 } as const;
 
 export const Decorators = {

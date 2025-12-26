@@ -195,6 +195,10 @@ export class CheckerContext {
         return Types.Never;
       case TypeNames.Null:
         return Types.Null;
+      case TypeNames.Array:
+        // Return the base array type. Generic instantiation happens in
+        // resolveTypeAnnotation.
+        return Types.Array;
     }
 
     return undefined;

@@ -73,4 +73,33 @@ suite('TypeChecker - Arrays', () => {
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /Type mismatch/);
   });
+
+  test('should require type argument for array type', () => {
+    const errors = check(`
+      let x: array = #[];
+    `);
+    assert.strictEqual(errors.length, 1);
+    assert.match(
+      errors[0].message,
+      /Generic type 'array' requires 1 type argument/,
+    );
+  });
+
+  test('should allow valid generic array type', () => {
+    const errors = check(`
+      let x: array<i32> = #[1, 2, 3];
+    `);
+    assert.strictEqual(errors.length, 0);
+  });
+
+  test('should detect too many type arguments for array', () => {
+    const errors = check(`
+      let x: array<i32, i32> = #[1, 2, 3];
+    `);
+    assert.strictEqual(errors.length, 2);
+    assert.match(
+      errors[0].message,
+      /Generic type 'array' requires 1 type argument/,
+    );
+  });
 });

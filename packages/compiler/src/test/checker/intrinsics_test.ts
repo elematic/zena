@@ -29,7 +29,7 @@ function check(input: string, path = 'zena:test') {
 suite('TypeChecker - Intrinsics', () => {
   test('should resolve __array_len intrinsic in zena: module', () => {
     const input = `
-      let test = (a: FixedArray<i32>) => {
+      let test = (a: array<i32>) => {
         let l = __array_len(a);
       };
     `;
@@ -39,7 +39,7 @@ suite('TypeChecker - Intrinsics', () => {
 
   test('should NOT resolve __array_len intrinsic in user module', () => {
     const input = `
-      let test = (a: FixedArray<i32>) => {
+      let test = (a: array<i32>) => {
         let l = __array_len(a);
       };
     `;
@@ -54,7 +54,7 @@ suite('TypeChecker - Intrinsics', () => {
 
   test('should resolve __array_get intrinsic', () => {
     const input = `
-      let test = (a: FixedArray<i32>) => {
+      let test = (a: array<i32>) => {
         let x: i32 = __array_get(a, 0);
       };
     `;
@@ -64,7 +64,7 @@ suite('TypeChecker - Intrinsics', () => {
 
   test('should resolve __array_set intrinsic', () => {
     const input = `
-      let test = (a: FixedArray<i32>) => {
+      let test = (a: array<i32>) => {
         __array_set(a, 0, 10);
       };
     `;
@@ -74,7 +74,7 @@ suite('TypeChecker - Intrinsics', () => {
 
   test('should check types for intrinsics', () => {
     const input = `
-      let test = (a: FixedArray<i32>) => {
+      let test = (a: array<i32>) => {
         let l: string = __array_len(a); // Error: i32 vs string
       };
     `;
@@ -85,7 +85,7 @@ suite('TypeChecker - Intrinsics', () => {
   test('should resolve __array_new intrinsic', () => {
     const input = `
       let test = () => {
-        let a: FixedArray<i32> = __array_new(10, 0);
+        let a: array<i32> = __array_new(10, 0);
       };
     `;
     const diagnostics = check(input);
