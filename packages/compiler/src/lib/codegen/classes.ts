@@ -1837,6 +1837,20 @@ export function getTypeKey(type: TypeAnnotation): string {
     const params = type.params.map(getTypeKey).join(',');
     const ret = type.returnType ? getTypeKey(type.returnType) : TypeNames.Void;
     return `(${params})=>${ret}`;
+  } else if (type.type === NodeType.UnionTypeAnnotation) {
+    // Sort union members for consistent keys regardless of order
+    const members = type.types.map(getTypeKey).sort().join('|');
+    return `(${members})`;
+  } else if (type.type === NodeType.LiteralTypeAnnotation) {
+    // Include the literal value in the key
+    const val = type.value;
+    if (typeof val === 'string') {
+      return `'${val}'`;
+    } else if (typeof val === 'boolean') {
+      return val ? 'true' : 'false';
+    } else {
+      return String(val);
+    }
   }
   return 'unknown';
 }
@@ -1949,11 +1963,6 @@ function mapTypeInternal(
         let typeName = type.name;
         if (typeName === Types.String.name && ctx.wellKnownTypes.String) {
           typeName = ctx.wellKnownTypes.String.name.name;
-        }
-
-        // Check symbol map
-        if (ctx.program.symbolMap && ctx.program.symbolMap.has(typeName)) {
-          typeName = ctx.program.symbolMap.get(typeName)!;
         }
 
         if (typeName === TypeNames.ByteArray) {

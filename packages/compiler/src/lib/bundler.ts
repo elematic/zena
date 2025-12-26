@@ -122,17 +122,10 @@ export class Bundler {
       if (decl) wellKnownTypes.Box = decl;
     }
 
-    const symbolMap = new Map<string, string>();
-    for (const [key, value] of this.#globalSymbols) {
-      const name = key.split(':').pop()!;
-      symbolMap.set(name, value);
-    }
-
     return {
       type: NodeType.Program,
       body: newBody,
       wellKnownTypes,
-      symbolMap,
     };
   }
 

@@ -109,7 +109,6 @@ export interface Program extends Node {
     ByteArray?: ClassDeclaration;
     Box?: ClassDeclaration;
   };
-  symbolMap?: Map<string, string>;
 }
 
 export type Statement =
