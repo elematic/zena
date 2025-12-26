@@ -5,6 +5,7 @@ import {
   type FunctionType,
   Types,
   TypeNames,
+  TypeKind,
 } from '../types.js';
 import type {Program} from '../ast.js';
 import type {Compiler, Module} from '../compiler.js';
@@ -156,6 +157,44 @@ export class CheckerContext {
         });
         return exportInfo.info.type;
       }
+    }
+
+    // Built-in types (implicitly global)
+    switch (name) {
+      case Types.I32.name:
+        return Types.I32;
+      case Types.U32.name:
+        return Types.U32;
+      case Types.I64.name:
+        return Types.I64;
+      case Types.F32.name:
+        return Types.F32;
+      case Types.F64.name:
+        return Types.F64;
+      case TypeNames.Boolean:
+        return Types.Boolean;
+      case 'symbol':
+        return Types.Symbol;
+      case TypeNames.AnyRef:
+        return Types.AnyRef;
+      case TypeNames.Any:
+        return Types.Any;
+      case TypeNames.String: {
+        // 'string' is an alias for the 'String' class if it exists in scope
+        const stringType = this.resolveType(Types.String.name);
+        if (stringType) return stringType;
+
+        const wellKnown = this.getWellKnownType(Types.String.name);
+        return wellKnown || Types.String;
+      }
+      case TypeKind.ByteArray:
+        return Types.ByteArray;
+      case TypeNames.Void:
+        return Types.Void;
+      case TypeNames.Never:
+        return Types.Never;
+      case TypeNames.Null:
+        return Types.Null;
     }
 
     return undefined;
