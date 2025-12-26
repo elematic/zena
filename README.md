@@ -13,8 +13,12 @@ around efficient WASM output.
 
 - **WASM-First & High Performance**: The primary backend is WASM-GC. We aim for
   **no-cost to low-cost abstractions**.
+  - **Numeric types** align directly with with WASM numerics, with the addition
+    of unsigned types to statically select WASM's unsigned arithmetic
+    operations.
   - **Generics** are fully monomorphized (like C++ templates or Rust), meaning `List<i32>` stores raw integers with zero boxing overhead.
-  - **Classes** map directly to WASM GC structs.
+  - **Arrays and Record** map directly to WASM GC arrays and structs.
+  - **Classes** map to WASM GC structs with vtables.
   - **Polymorphism** uses vtables where necessary (interfaces), but we prefer static dispatch when possible.
 - **Familiar yet AOT**: While Zena looks like TypeScript, it is entirely
   designed for **ahead-of-time (AOT) compilation**. It breaks away from
@@ -27,7 +31,7 @@ around efficient WASM output.
 - **Correctness & Safety**: Zena is designed to make invalid states unrepresentable.
   - **Immutable by Default**: Data structures and bindings are immutable unless explicitly opted-out, reducing classes of bugs related to shared mutable state.
   - **Nominal Typing**: Enforces strict semantic boundaries between types, preventing accidental structural compatibility.
-  - **Advanced Safety Features**: Future plans include **Exhaustiveness Checking** for pattern matching and **Branded Types** (Opaque Types) to enforce unit correctness at compile time (e.g., preventing `Meters + Seconds`).
+  - **Advanced Safety Features**: Future plans include **Exhaustiveness Checking** for pattern matching and **Units of Measure** to enforce unit correctness at compile time (e.g., preventing `Meters + Seconds`).
 
 ## Zena and Generative AI
 
