@@ -289,36 +289,24 @@ export function resolveTypeAnnotation(
   }
 
   const name = annotation.name;
-  switch (name) {
-    case Types.I32.name:
-      return Types.I32;
-    case Types.U32.name:
-      return Types.U32;
-    case Types.I64.name:
-      return Types.I64;
-    case Types.F32.name:
-      return Types.F32;
-    case Types.F64.name:
-      return Types.F64;
-    case TypeNames.Boolean:
-      return Types.Boolean;
-    case 'symbol':
-      return Types.Symbol;
-    case TypeNames.AnyRef:
-      return Types.AnyRef;
-    case TypeNames.Any:
-      return Types.Any;
-    case TypeNames.String: {
-      const stringType = ctx.resolveType(Types.String.name);
-      if (stringType) return stringType;
 
-      const wellKnown = ctx.getWellKnownType(Types.String.name);
-      return wellKnown || Types.String;
-    }
-    case TypeKind.ByteArray:
-      return Types.ByteArray;
-    case TypeNames.Array:
-    case TypeNames.FixedArray: {
+  // Resolve the type name in the current context.
+  // ctx.resolveType() walks the scope stack from innermost to outermost,
+  // so this respects lexical scoping and allows shadowing of types.
+  // For example, a local 'type String = i32' will be found here,
+  // shadowing the global 'String' class or built-in types.
+  const type = ctx.resolveType(name);
+
+  if (!type) {
+    // If the type was not found in any scope (user-defined or prelude),
+    // we check if it is a built-in primitive type or intrinsic.
+    // These are not stored in the symbol table to avoid polluting scopes,
+    // but they act as if they are in the global scope (lowest priority).
+
+    // Handle Array/FixedArray specifically to prefer primitive type over prelude class
+    // This ensures that 'FixedArray<T>' resolves to the primitive array type,
+    // even though 'FixedArray' class exists in the prelude.
+    if (name === TypeNames.Array || name === TypeNames.FixedArray) {
       if (annotation.typeArguments && annotation.typeArguments.length === 1) {
         const elementType = resolveTypeAnnotation(
           ctx,
@@ -329,27 +317,52 @@ export function resolveTypeAnnotation(
           elementType,
         } as FixedArrayType;
       }
-      // If used without type arguments, it might be a raw Array or we should error.
-      // For now let's fall through to resolve it as a class (which we will skip in codegen)
-      // or maybe we should error if generic arguments are missing.
-      break;
     }
-    case TypeNames.Void:
-      return Types.Void;
-    case TypeNames.Never:
-      return Types.Never;
-    case TypeNames.Null:
-      return Types.Null;
-  }
 
-  const type = ctx.resolveType(name);
-  if (!type) {
+    switch (name) {
+      case Types.I32.name:
+        return Types.I32;
+      case Types.U32.name:
+        return Types.U32;
+      case Types.I64.name:
+        return Types.I64;
+      case Types.F32.name:
+        return Types.F32;
+      case Types.F64.name:
+        return Types.F64;
+      case TypeNames.Boolean:
+        return Types.Boolean;
+      case 'symbol':
+        return Types.Symbol;
+      case TypeNames.AnyRef:
+        return Types.AnyRef;
+      case TypeNames.Any:
+        return Types.Any;
+      case TypeNames.String: {
+        // 'string' is an alias for the 'String' class if it exists in scope
+        const stringType = ctx.resolveType(Types.String.name);
+        if (stringType) return stringType;
+
+        const wellKnown = ctx.getWellKnownType(Types.String.name);
+        return wellKnown || Types.String;
+      }
+      case TypeKind.ByteArray:
+        return Types.ByteArray;
+      case TypeNames.Void:
+        return Types.Void;
+      case TypeNames.Never:
+        return Types.Never;
+      case TypeNames.Null:
+        return Types.Null;
+    }
+
     ctx.diagnostics.reportError(
       `Unknown type '${name}'.`,
       DiagnosticCode.SymbolNotFound,
     );
     return Types.Unknown;
   }
+
 
   if (type.kind === TypeKind.TypeAlias) {
     const alias = type as TypeAliasType;
@@ -737,6 +750,8 @@ export function isAssignableTo(
         (target as ClassType).name === Types.String.name
       )
         return true;
+      
+      // console.log(`[DEBUG] isAssignableTo string literal. Target: ${typeToString(target)} (${target.kind}). StringType: ${stringType ? typeToString(stringType) : 'undefined'}`);
     } else if (typeof lit.value === 'number') {
       // Number literals are assignable to i32 (default for integer literals)
       // TODO: Support more flexible literal-to-numeric-type assignment based on value range
@@ -809,6 +824,21 @@ export function isAssignableTo(
   ) {
     // Nothing is assignable to a distinct type except itself (handled above).
     return false;
+  }
+
+  // Handle non-distinct Type Aliases (transparent)
+  if (
+    source.kind === TypeKind.TypeAlias &&
+    !(source as TypeAliasType).isDistinct
+  ) {
+    return isAssignableTo(ctx, (source as TypeAliasType).target, target);
+  }
+
+  if (
+    target.kind === TypeKind.TypeAlias &&
+    !(target as TypeAliasType).isDistinct
+  ) {
+    return isAssignableTo(ctx, source, (target as TypeAliasType).target);
   }
 
   if (source.kind === TypeKind.Union) {
