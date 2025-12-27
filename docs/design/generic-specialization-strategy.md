@@ -10,11 +10,13 @@ Box<Y2> → struct $Box_Y2 { vtable, value: (ref $Y2) }
 ```
 
 **Pros:**
+
 - Simple implementation
 - `is` checks work naturally via WASM struct type checks
 - No runtime overhead for type checks
 
 **Cons:**
+
 - Code duplication when type parameters have same runtime representation
 - Larger binary size
 
@@ -69,17 +71,17 @@ let box: Box<Animal> = ...;
 
 ### When to Share vs Specialize
 
-| Type Parameter | WASM Representation | Strategy |
-|---------------|---------------------|----------|
-| `i32` | `i32` | Specialize (different size) |
-| `u32` | `i32` | Could share with `i32` (same WASM type) |
-| `i64` | `i64` | Specialize |
-| `f32` | `f32` | Specialize |
-| `f64` | `f64` | Specialize |
-| `SomeClass` | `(ref null $SomeClass)` | Share (all refs) |
-| `SomeInterface` | `(ref null $Object)` | Share |
-| `[i32, string]` (tuple) | `(ref $Tuple_i32_string)` | Specialize |
-| `{x: i32}` (record) | `(ref $Record_x_i32)` | Specialize |
+| Type Parameter          | WASM Representation       | Strategy                                |
+| ----------------------- | ------------------------- | --------------------------------------- |
+| `i32`                   | `i32`                     | Specialize (different size)             |
+| `u32`                   | `i32`                     | Could share with `i32` (same WASM type) |
+| `i64`                   | `i64`                     | Specialize                              |
+| `f32`                   | `f32`                     | Specialize                              |
+| `f64`                   | `f64`                     | Specialize                              |
+| `SomeClass`             | `(ref null $SomeClass)`   | Share (all refs)                        |
+| `SomeInterface`         | `(ref null $Object)`      | Share                                   |
+| `[i32, string]` (tuple) | `(ref $Tuple_i32_string)` | Specialize                              |
+| `{x: i32}` (record)     | `(ref $Record_x_i32)`     | Specialize                              |
 
 ### Implementation Considerations
 
@@ -92,7 +94,7 @@ When creating `new Box<Dog>(myDog)`, we need to pass the TypeInfo:
 (call $Box_Dog_new (local.get $myDog))
 
 ;; After (shared with type info)
-(call $Box_ref_new 
+(call $Box_ref_new
   (global.get $TypeInfo_Dog)  ;; type argument info
   (local.get $myDog))
 ```
@@ -134,11 +136,13 @@ For each unique type, create a global TypeInfo:
 ### Trade-offs
 
 #### Pros of Hybrid Approach
+
 - **Smaller code size**: One set of methods for all reference-type instantiations
 - **Faster compilation**: Fewer methods to generate
 - **Still type-safe**: `is` checks work via TypeInfo comparison
 
 #### Cons of Hybrid Approach
+
 - **Runtime overhead**: Extra indirection for `is` checks
 - **Memory overhead**: TypeInfo globals for each instantiation
 - **Complexity**: More complex codegen
@@ -149,10 +153,12 @@ For each unique type, create a global TypeInfo:
 Should `Box<i32>` and `Box<u32>` share code?
 
 **Arguments for sharing:**
+
 - Same WASM representation (`i32`)
 - Reduces code size
 
 **Arguments against sharing:**
+
 - Semantically different (signed vs unsigned)
 - `is` checks might need to distinguish them
 - Operations behave differently (division, comparison)
@@ -162,6 +168,7 @@ Should `Box<i32>` and `Box<u32>` share code?
 ### Literal Types and Unions
 
 For `Box<'a' | 'b'>` vs `Box<string>`:
+
 - Both erase to `string` at runtime
 - Could share the same struct type
 - TypeInfo would store the union type for `is` checks
@@ -171,20 +178,24 @@ This is where the hybrid approach shines - we don't need separate code, but we p
 ## Implementation Plan
 
 ### Phase 1: Analysis
+
 1. Categorize type parameters by their WASM representation
 2. Group instantiations that can share code
 
 ### Phase 2: TypeInfo Infrastructure
+
 1. Define TypeInfo structure
 2. Generate TypeInfo globals for all types
 3. Implement type equality checking
 
 ### Phase 3: Shared Specialization
+
 1. Modify struct generation to use erased types for shareable params
 2. Add type_arg field to structs
 3. Update `is` checks to use TypeInfo comparison
 
 ### Phase 4: Optimization
+
 1. Inline TypeInfo comparisons where possible
 2. Cache common TypeInfo checks
 3. Eliminate TypeInfo for types never used with `is`
@@ -222,6 +233,7 @@ x is Iterable      // interface check - ref.test or vtable check
 ```
 
 Generated WASM:
+
 ```wasm
 ;; x is Map (any Map, don't care about type args)
 (ref.test $Map_ref (local.get $x))
@@ -253,6 +265,7 @@ x is Map<string, unknown>  // any Map with string keys
 ```
 
 Generated code:
+
 ```wasm
 ;; x is Map<string, unknown>
 (if (ref.test $Map_ref (local.get $x))
@@ -272,6 +285,7 @@ x is Map<string, Dog>  // specific instantiation
 ```
 
 Generated code:
+
 ```wasm
 ;; x is Map<string, Dog>
 (if (ref.test $Map_ref (local.get $x))
@@ -297,13 +311,13 @@ For hot paths, we could generate specialized comparison functions:
 
 ### Summary of `is` Check Performance
 
-| Pattern | Check Type | Performance |
-|---------|-----------|-------------|
-| `x is i32` | Primitive | Inline WASM |
-| `x is Dog` | Non-generic class | Fast `ref.test` |
-| `x is Map` | Generic base | Fast `ref.test` |
-| `x is Map<unknown, unknown>` | Wildcard | Fast `ref.test` |
-| `x is Map<string, unknown>` | Partial | `ref.test` + 1 TypeInfo check |
-| `x is Map<string, Dog>` | Full | `ref.test` + full TypeInfo check |
+| Pattern                      | Check Type        | Performance                      |
+| ---------------------------- | ----------------- | -------------------------------- |
+| `x is i32`                   | Primitive         | Inline WASM                      |
+| `x is Dog`                   | Non-generic class | Fast `ref.test`                  |
+| `x is Map`                   | Generic base      | Fast `ref.test`                  |
+| `x is Map<unknown, unknown>` | Wildcard          | Fast `ref.test`                  |
+| `x is Map<string, unknown>`  | Partial           | `ref.test` + 1 TypeInfo check    |
+| `x is Map<string, Dog>`      | Full              | `ref.test` + full TypeInfo check |
 
 This tiered approach means most `is` checks remain fast, and only fully-specified generic instantiation checks pay the TypeInfo comparison cost.

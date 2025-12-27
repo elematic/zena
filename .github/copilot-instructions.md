@@ -288,30 +288,33 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 ### Planned
 
-1.  **Host Interop**:
+1.  **Type Checker Refactoring**:
+    - **`ctx.currentClass` consistency**: Inside a generic class `Foo<T>`, `ctx.currentClass` should have `typeArguments = typeParameters` (i.e., represent `Foo<T>`, not just `Foo`). Currently, `checkThisExpression` creates a type with `typeArguments`, but `ctx.currentClass` doesn't have them, requiring a workaround in `isAssignableTo` to handle self-referential generic class comparisons. Fixing this at the source would eliminate that special case.
+
+2.  **Host Interop**:
     - **WASM GC Interop Notes**:
       - WASM GC structs and arrays are OPAQUE from JavaScript.
       - JS cannot access struct fields or iterate GC arrays.
       - Use byte streaming (start/byte/end pattern) for string I/O.
       - See `docs/design/host-interop.md` for details.
 
-2.  **Data Structures**:
+3.  **Data Structures**:
     - **Maps**: Implement map literal syntax (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
-3.  **Standard Library**:
+4.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
     - String manipulation (`substring`, `indexOf`).
     - Regexes.
 
-4.  **Self-Hosting**:
+5.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
 
-5.  **Pattern Matching (Advanced)**:
+6.  **Pattern Matching (Advanced)**:
     - Array element matching (requires `FixedArray` support or `Sequence` interface).
     - Rest patterns (`...tail`).
 
-6.  **Future Features**:
+7.  **Future Features**:
     - **Syntax**:
       - Blocks.
       - For/of loops.

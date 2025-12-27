@@ -1770,7 +1770,15 @@ export function resolveAnnotation(
     context &&
     context.has(type.name)
   ) {
-    return resolveAnnotation(context.get(type.name)!, context);
+    const resolved = context.get(type.name)!;
+    // Avoid infinite recursion if type parameter maps to itself
+    if (
+      resolved.type === NodeType.TypeAnnotation &&
+      resolved.name === type.name
+    ) {
+      return type;
+    }
+    return resolveAnnotation(resolved, context);
   }
 
   if (type.type === NodeType.TypeAnnotation && type.typeArguments) {
@@ -1898,7 +1906,16 @@ function mapTypeInternal(
     typeContext &&
     typeContext.has(type.name)
   ) {
-    return mapTypeInternal(ctx, typeContext.get(type.name)!, typeContext);
+    const resolved = typeContext.get(type.name)!;
+    // Avoid infinite recursion if type parameter maps to itself
+    if (
+      resolved.type === NodeType.TypeAnnotation &&
+      resolved.name === type.name
+    ) {
+      // Type parameter maps to itself - treat as a reference type (i32 pointer)
+      return [ValType.i32];
+    }
+    return mapTypeInternal(ctx, resolved, typeContext);
   }
 
   // Check type aliases

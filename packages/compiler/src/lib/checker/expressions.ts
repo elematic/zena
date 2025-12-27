@@ -1889,6 +1889,21 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
   if (ctx.currentClass.isExtension && ctx.currentClass.onType) {
     return ctx.currentClass.onType;
   }
+
+  // For generic classes, 'this' should have type parameters as type arguments
+  // e.g., inside class Foo<T>, 'this' has type Foo<T>
+  if (
+    ctx.currentClass.typeParameters &&
+    ctx.currentClass.typeParameters.length > 0 &&
+    !ctx.currentClass.typeArguments
+  ) {
+    // Return the class type with its own type parameters as type arguments
+    return {
+      ...ctx.currentClass,
+      typeArguments: ctx.currentClass.typeParameters,
+    } as ClassType;
+  }
+
   return ctx.currentClass;
 }
 

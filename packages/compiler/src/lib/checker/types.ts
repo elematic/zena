@@ -909,9 +909,55 @@ export function isAssignableTo(
   }
 
   if (source.kind === TypeKind.Class && target.kind === TypeKind.Class) {
-    let current: ClassType | undefined = source as ClassType;
+    const sourceClass = source as ClassType;
+    const targetClass = target as ClassType;
+
+    let current: ClassType | undefined = sourceClass;
     while (current) {
-      if (typeToString(current) === typeToString(target)) return true;
+      // Check if the classes match
+      if (typeToString(current) === typeToString(targetClass)) return true;
+
+      // Handle self-referential generic class types.
+      // Inside a generic class Foo<T>, `this` has type Foo<T> (with typeArguments=[T]).
+      // But ctx.currentClass is Foo (without typeArguments).
+      // For private member access checks, we need these to be compatible.
+      // This is safe because:
+      // 1. We verify the class names match exactly
+      // 2. We verify one has typeArguments that equal its typeParameters (self-ref)
+      // 3. We verify the other has no typeArguments (class definition)
+      // This cannot match different instantiations like Foo<i32> vs Foo<string>.
+      if (current.name === targetClass.name) {
+        const currentIsSelfRef =
+          current.typeArguments &&
+          current.typeParameters &&
+          current.typeArguments.length === current.typeParameters.length &&
+          current.typeArguments.every(
+            (arg, i) =>
+              arg.kind === TypeKind.TypeParameter &&
+              (arg as TypeParameterType).name ===
+                current!.typeParameters![i].name,
+          );
+        const targetIsSelfRef =
+          targetClass.typeArguments &&
+          targetClass.typeParameters &&
+          targetClass.typeArguments.length ===
+            targetClass.typeParameters.length &&
+          targetClass.typeArguments.every(
+            (arg, i) =>
+              arg.kind === TypeKind.TypeParameter &&
+              (arg as TypeParameterType).name ===
+                targetClass.typeParameters![i].name,
+          );
+
+        // One is self-referential and the other has no typeArguments
+        if (
+          (currentIsSelfRef && !targetClass.typeArguments) ||
+          (targetIsSelfRef && !current.typeArguments)
+        ) {
+          return true;
+        }
+      }
+
       current = current.superType;
     }
     return false;
