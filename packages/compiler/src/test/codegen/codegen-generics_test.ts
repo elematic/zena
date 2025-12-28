@@ -25,8 +25,7 @@ suite('Codegen: Generics', () => {
     );
   });
 
-  // TODO: Codegen fails with "Unknown type 'Base'" when resolving constraint
-  test.skip('should compile generic class with constraint', async () => {
+  test('should compile generic class with constraint', async () => {
     await compileAndRun(
       `
       import { log } from 'zena:console';
@@ -58,7 +57,7 @@ suite('Codegen: Generics', () => {
     );
   });
 
-  test.skip('should compile generic function with constraint', async () => {
+  test('should compile generic function with constraint', async () => {
     await compileAndRun(
       `
       import { log } from 'zena:console';

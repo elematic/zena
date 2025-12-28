@@ -422,6 +422,17 @@ class ASTRewriter {
           (node as any).name.name = this.prefix + (node as any).name.name;
         }
         this.enterScope();
+        // Visit type parameters (for constraint type references)
+        if ((node as any).typeParameters) {
+          (node as any).typeParameters.forEach((tp: any) => {
+            if (tp.constraint) {
+              this.visit(tp.constraint);
+            }
+            if (tp.default) {
+              this.visit(tp.default);
+            }
+          });
+        }
         // Visit super class
         if ((node as any).superClass) {
           this.visit((node as any).superClass);
@@ -444,6 +455,17 @@ class ASTRewriter {
           (node as any).name.name = this.prefix + (node as any).name.name;
         }
         this.enterScope();
+        // Visit type parameters (for constraint type references)
+        if ((node as any).typeParameters) {
+          (node as any).typeParameters.forEach((tp: any) => {
+            if (tp.constraint) {
+              this.visit(tp.constraint);
+            }
+            if (tp.default) {
+              this.visit(tp.default);
+            }
+          });
+        }
         // Visit on type
         if ((node as any).on) {
           this.visit((node as any).on);
@@ -462,6 +484,17 @@ class ASTRewriter {
           (node as any).name.name = this.prefix + (node as any).name.name;
         }
         this.enterScope();
+        // Visit type parameters (for constraint type references)
+        if ((node as any).typeParameters) {
+          (node as any).typeParameters.forEach((tp: any) => {
+            if (tp.constraint) {
+              this.visit(tp.constraint);
+            }
+            if (tp.default) {
+              this.visit(tp.default);
+            }
+          });
+        }
         // Visit extends
         if ((node as any).extends) {
           (node as any).extends.forEach((e: any) => this.visit(e));
