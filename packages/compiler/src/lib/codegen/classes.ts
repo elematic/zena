@@ -2115,16 +2115,48 @@ export function instantiateClass(
   typeArguments: TypeAnnotation[],
   parentContext?: Map<string, TypeAnnotation>,
 ) {
-  const superClassName = decl.superClass
-    ? getTypeAnnotationName(decl.superClass)
-    : undefined;
-
   const context = new Map<string, TypeAnnotation>();
   if (decl.typeParameters) {
     decl.typeParameters.forEach((param, index) => {
       const arg = typeArguments[index];
       context.set(param.name, resolveAnnotation(arg, parentContext));
     });
+  }
+
+  // Handle generic superclass instantiation
+  let superClassName: string | undefined;
+  if (decl.superClass) {
+    const baseSuperName = getTypeAnnotationName(decl.superClass);
+    const superTypeArgs =
+      decl.superClass.type === NodeType.TypeAnnotation
+        ? decl.superClass.typeArguments
+        : undefined;
+
+    if (superTypeArgs && superTypeArgs.length > 0) {
+      // Superclass is generic - need to instantiate it with resolved type args
+      superClassName = getSpecializedName(
+        baseSuperName,
+        superTypeArgs,
+        ctx,
+        context,
+      );
+
+      // Ensure superclass is instantiated
+      if (!ctx.classes.has(superClassName)) {
+        const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
+        if (genericSuperDecl) {
+          instantiateClass(
+            ctx,
+            genericSuperDecl,
+            superClassName,
+            superTypeArgs,
+            context,
+          );
+        }
+      }
+    } else {
+      superClassName = baseSuperName;
+    }
   }
 
   const fields = new Map<string, {index: number; type: number[]}>();

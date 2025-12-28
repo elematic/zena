@@ -82,10 +82,7 @@ suite('Codegen: Generics', () => {
     );
   });
 
-  // TODO: Codegen doesn't yet handle generic superclass instantiation.
-  // The checker now properly handles type arguments in superclass (e.g., class Derived<T> extends Base<T>).
-  // But codegen needs to instantiate Base<T> appropriately when processing Derived<T>.
-  test.skip('should compile generic class extending generic class', async () => {
+  test('should compile generic class extending generic class', async () => {
     await compileAndRun(
       `
       import { log } from 'zena:console';
