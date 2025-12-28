@@ -139,7 +139,6 @@ This project is an **npm monorepo** managed with **Wireit**.
       - Do NOT try to pass arguments to the root `npm test` command (e.g. `npm test packages/compiler/...`), as they are ignored.
     - **NEVER** use `npm test packages/compiler` or `npm test -- some/path/some_test.ts`.
     - Packages are always referred to by **package name** (e.g., `@zena-lang/compiler`), not package path.
-    
 
 ## Coding Standards
 
@@ -297,6 +296,7 @@ This project is an **npm monorepo** managed with **Wireit**.
 - [x] Enforce Access Control (`#` private fields).
 - [x] Implement Generic Constraints (`T extends Animal`).
 - [x] Implement Blocks (Lexical Scoping).
+- [x] Implement Type Narrowing (control-flow-based null checks).
 
 ### Planned
 
