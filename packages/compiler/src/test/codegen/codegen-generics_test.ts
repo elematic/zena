@@ -82,8 +82,9 @@ suite('Codegen: Generics', () => {
     );
   });
 
-  // TODO: The checker doesn't yet properly handle type arguments passed to a generic superclass
-  // when the derived class is also generic. The parser now correctly parses this syntax.
+  // TODO: Codegen doesn't yet handle generic superclass instantiation.
+  // The checker now properly handles type arguments in superclass (e.g., class Derived<T> extends Base<T>).
+  // But codegen needs to instantiate Base<T> appropriately when processing Derived<T>.
   test.skip('should compile generic class extending generic class', async () => {
     await compileAndRun(
       `

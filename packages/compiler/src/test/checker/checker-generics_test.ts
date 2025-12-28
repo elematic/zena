@@ -264,4 +264,30 @@ suite('TypeChecker - Generics', () => {
     );
     assert.ok(missingArgError, 'Should report missing type arguments error');
   });
+
+  test('should check generic class extending generic class', () => {
+    const input = `
+      class Base<T> {
+        value: T;
+        #new(value: T) {
+          this.value = value;
+        }
+        getValue(): T {
+          return this.value;
+        }
+      }
+      class Derived<T> extends Base<T> {
+        extra: i32;
+        #new(value: T, extra: i32) {
+          super(value);
+          this.extra = extra;
+        }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.deepStrictEqual(errors, []);
+  });
 });

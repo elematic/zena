@@ -693,6 +693,16 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
   }
 
+  // Temporarily enter a scope and declare type parameters so they're available
+  // when resolving superclass type arguments (e.g., class Derived<T> extends Base<T>)
+  // We'll exit this scope after resolving superclass/mixins and re-enter properly later.
+  if (typeParameters.length > 0) {
+    ctx.enterScope();
+    for (const tp of typeParameters) {
+      ctx.declare(tp.name, tp, 'type');
+    }
+  }
+
   let superType: ClassType | undefined;
   if (decl.superClass) {
     const resolvedSuperType = resolveTypeAnnotation(ctx, decl.superClass);
@@ -849,6 +859,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
   }
 
+  // Exit the temporary scope we created for type parameter resolution
+  if (typeParameters.length > 0) {
+    ctx.exitScope();
+  }
+
   const classType: ClassType = {
     kind: TypeKind.Class,
     _debugId: Math.floor(Math.random() * 1000000),
@@ -901,13 +916,13 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
   ctx.enterClass(classType);
 
+  // Enter the class body scope and declare type parameters
   ctx.enterScope();
-  // Declare type parameters in scope
   for (const tp of typeParameters) {
     ctx.declare(tp.name, tp, 'type');
   }
 
-  // Resolve constraints and defaults (after all type params are in scope)
+  // Resolve constraints and defaults (type params now in scope)
   if (decl.typeParameters) {
     for (let i = 0; i < decl.typeParameters.length; i++) {
       const param = decl.typeParameters[i];
