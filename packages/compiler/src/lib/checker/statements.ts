@@ -940,6 +940,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
   if (decl.isExtension && decl.onType) {
     classType.onType = resolveTypeAnnotation(ctx, decl.onType);
+    // Also update ctx.currentClass.onType since enterClass may have created
+    // a copy with typeArguments added, and it needs onType for 'this' resolution.
+    if (ctx.currentClass && ctx.currentClass !== classType) {
+      ctx.currentClass.onType = classType.onType;
+    }
   }
 
   // 1. First pass: Collect members to build the ClassType

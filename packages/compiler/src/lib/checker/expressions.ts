@@ -1890,20 +1890,8 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
     return ctx.currentClass.onType;
   }
 
-  // For generic classes, 'this' should have type parameters as type arguments
-  // e.g., inside class Foo<T>, 'this' has type Foo<T>
-  if (
-    ctx.currentClass.typeParameters &&
-    ctx.currentClass.typeParameters.length > 0 &&
-    !ctx.currentClass.typeArguments
-  ) {
-    // Return the class type with its own type parameters as type arguments
-    return {
-      ...ctx.currentClass,
-      typeArguments: ctx.currentClass.typeParameters,
-    } as ClassType;
-  }
-
+  // ctx.currentClass already has typeArguments = typeParameters for generic classes
+  // (set by enterClass), so we can just return it directly.
   return ctx.currentClass;
 }
 

@@ -50,7 +50,21 @@ export class CheckerContext {
 
   enterClass(classType: ClassType) {
     this.#classStack.push(this.currentClass);
-    this.currentClass = classType;
+    // For generic classes, set typeArguments = typeParameters so that
+    // ctx.currentClass and 'this' type are consistent (both represent Foo<T>).
+    // This avoids special-case handling in isAssignableTo for self-referential types.
+    if (
+      classType.typeParameters &&
+      classType.typeParameters.length > 0 &&
+      !classType.typeArguments
+    ) {
+      this.currentClass = {
+        ...classType,
+        typeArguments: classType.typeParameters,
+      };
+    } else {
+      this.currentClass = classType;
+    }
   }
 
   exitClass() {
