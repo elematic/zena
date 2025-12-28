@@ -3,6 +3,7 @@ import {
   type AccessorDeclaration,
   type AsPattern,
   type AssignmentPattern,
+  type BinaryExpression,
   type ClassDeclaration,
   type ComputedPropertyName,
   type DeclareFunction,
@@ -14,6 +15,7 @@ import {
   type IfStatement,
   type ImportDeclaration,
   type InterfaceDeclaration,
+  type IsExpression,
   type MethodDefinition,
   type MixinDeclaration,
   type Parameter,
@@ -55,6 +57,219 @@ import {
   typeToString,
   validateType,
 } from './types.js';
+
+// =============================================================================
+// Type Narrowing
+// =============================================================================
+
+/**
+ * Represents a type narrowing discovered from a condition.
+ * For example, `x !== null` narrows `x` by removing `null`.
+ */
+interface TypeNarrowing {
+  variableName: string;
+  narrowedType: Type;
+}
+
+/**
+ * Subtract `typeToRemove` from `originalType`.
+ * For unions, this removes matching members.
+ * E.g., subtractTypeFromUnion(T | null, null) => T
+ */
+const subtractTypeFromUnion = (
+  originalType: Type,
+  typeToRemove: Type,
+): Type => {
+  if (originalType.kind !== TypeKind.Union) {
+    // If the original type equals the type to remove, return never
+    if (typesEqual(originalType, typeToRemove)) {
+      return Types.Never;
+    }
+    // Otherwise, no change
+    return originalType;
+  }
+
+  const union = originalType as UnionType;
+  const remainingTypes = union.types.filter(
+    (t) => !typesEqual(t, typeToRemove),
+  );
+
+  if (remainingTypes.length === 0) {
+    return Types.Never;
+  }
+  if (remainingTypes.length === 1) {
+    return remainingTypes[0];
+  }
+  return {kind: TypeKind.Union, types: remainingTypes} as UnionType;
+};
+
+/**
+ * Check if two types are equal (shallow comparison for null checks).
+ */
+const typesEqual = (a: Type, b: Type): boolean => {
+  if (a === b) return true;
+  if (a.kind !== b.kind) return false;
+
+  // For null, just compare kind
+  if (a.kind === TypeKind.Null) return true;
+
+  // For classes, compare by name or reference
+  if (a.kind === TypeKind.Class) {
+    return (a as ClassType).name === (b as ClassType).name;
+  }
+
+  // For other types, fall back to reference equality
+  return false;
+};
+
+/**
+ * Extract type narrowing information from a condition expression.
+ * Returns narrowings that should be applied when the condition is TRUE.
+ *
+ * Supported patterns:
+ * - `x !== null` / `x != null` -> narrows x by removing null (true branch)
+ * - `null !== x` / `null != x` -> narrows x by removing null (true branch)
+ * - `x === null` / `x == null` -> narrows x to null (true branch)
+ * - `null === x` / `null == x` -> narrows x to null (true branch)
+ * - `x is T` -> narrows x to T (true branch)
+ */
+const extractNarrowingFromCondition = (
+  ctx: CheckerContext,
+  condition: Expression,
+): TypeNarrowing | null => {
+  // Handle `x is T` pattern
+  if (condition.type === NodeType.IsExpression) {
+    const isExpr = condition as IsExpression;
+    if (isExpr.expression.type !== NodeType.Identifier) {
+      return null;
+    }
+    const identifier = isExpr.expression as Identifier;
+    const targetType = resolveTypeAnnotation(ctx, isExpr.typeAnnotation);
+    return {variableName: identifier.name, narrowedType: targetType};
+  }
+
+  if (condition.type !== NodeType.BinaryExpression) {
+    return null;
+  }
+
+  const binary = condition as BinaryExpression;
+  const op = binary.operator;
+
+  // Handle !== and != (not equal to null)
+  if (op === '!==' || op === '!=') {
+    const identifier = extractNullComparisonIdentifier(binary);
+    if (!identifier) return null;
+
+    const variableName = identifier.name;
+    const originalType = ctx.resolveValue(variableName);
+    if (!originalType) return null;
+
+    // Narrow by removing null
+    const narrowedType = subtractTypeFromUnion(originalType, Types.Null);
+    if (narrowedType === originalType) return null;
+
+    return {variableName, narrowedType};
+  }
+
+  // Handle === and == (equal to null)
+  if (op === '===' || op === '==') {
+    const identifier = extractNullComparisonIdentifier(binary);
+    if (!identifier) return null;
+
+    // In the true branch of `x == null`, x is null
+    return {variableName: identifier.name, narrowedType: Types.Null};
+  }
+
+  return null;
+};
+
+/**
+ * Helper to extract the identifier from a null comparison expression.
+ * Works for both `x op null` and `null op x` patterns.
+ */
+const extractNullComparisonIdentifier = (
+  binary: BinaryExpression,
+): Identifier | null => {
+  // Check pattern: x op null
+  if (
+    binary.left.type === NodeType.Identifier &&
+    binary.right.type === NodeType.NullLiteral
+  ) {
+    return binary.left as Identifier;
+  }
+  // Check pattern: null op x
+  if (
+    binary.left.type === NodeType.NullLiteral &&
+    binary.right.type === NodeType.Identifier
+  ) {
+    return binary.right as Identifier;
+  }
+  return null;
+};
+
+/**
+ * Extract the inverse narrowing from a condition.
+ * This is used for the else branch.
+ *
+ * - `x !== null` else branch -> x is null
+ * - `x === null` else branch -> x is non-null
+ * - `x is T` else branch -> x with T subtracted (if union)
+ */
+const extractInverseNarrowingFromCondition = (
+  ctx: CheckerContext,
+  condition: Expression,
+): TypeNarrowing | null => {
+  // Handle `x is T` pattern - in else branch, we know x is NOT T
+  if (condition.type === NodeType.IsExpression) {
+    const isExpr = condition as IsExpression;
+    if (isExpr.expression.type !== NodeType.Identifier) {
+      return null;
+    }
+    const identifier = isExpr.expression as Identifier;
+    const variableName = identifier.name;
+    const originalType = ctx.resolveValue(variableName);
+    if (!originalType) return null;
+
+    const targetType = resolveTypeAnnotation(ctx, isExpr.typeAnnotation);
+    const narrowedType = subtractTypeFromUnion(originalType, targetType);
+    if (narrowedType === originalType) return null;
+
+    return {variableName, narrowedType};
+  }
+
+  if (condition.type !== NodeType.BinaryExpression) {
+    return null;
+  }
+
+  const binary = condition as BinaryExpression;
+  const op = binary.operator;
+
+  const identifier = extractNullComparisonIdentifier(binary);
+  if (!identifier) return null;
+
+  // For !== and !=, the else branch means IS null
+  if (op === '!==' || op === '!=') {
+    return {variableName: identifier.name, narrowedType: Types.Null};
+  }
+
+  // For === and ==, the else branch means NOT null
+  if (op === '===' || op === '==') {
+    const variableName = identifier.name;
+    const originalType = ctx.resolveValue(variableName);
+    if (!originalType) return null;
+
+    const narrowedType = subtractTypeFromUnion(originalType, Types.Null);
+    if (narrowedType === originalType) return null;
+
+    return {variableName, narrowedType};
+  }
+
+  return null;
+};
+
+// =============================================================================
+// Statement Checking
+// =============================================================================
 
 export function checkStatement(ctx: CheckerContext, stmt: Statement) {
   switch (stmt.type) {
@@ -325,9 +540,32 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
     );
   }
 
+  // Extract narrowing information from the condition
+  const narrowing = extractNarrowingFromCondition(ctx, stmt.test);
+
+  // Check the consequent branch with narrowing applied
+  ctx.enterScope();
+  if (narrowing) {
+    ctx.narrowType(narrowing.variableName, narrowing.narrowedType);
+  }
   checkStatement(ctx, stmt.consequent);
+  ctx.exitScope();
+
+  // Check the alternate branch with inverse narrowing applied
   if (stmt.alternate) {
+    const inverseNarrowing = extractInverseNarrowingFromCondition(
+      ctx,
+      stmt.test,
+    );
+    ctx.enterScope();
+    if (inverseNarrowing) {
+      ctx.narrowType(
+        inverseNarrowing.variableName,
+        inverseNarrowing.narrowedType,
+      );
+    }
     checkStatement(ctx, stmt.alternate);
+    ctx.exitScope();
   }
 }
 

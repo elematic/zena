@@ -32,6 +32,10 @@ export class CheckerContext {
   initializedFields = new Set<string>();
   inferredReturnTypes: Type[] = [];
 
+  // Type narrowing: stack of maps for narrowed types
+  // Each map represents narrowings active in the current scope
+  #narrowedTypes: Map<string, Type>[] = [];
+
   // Prelude support
   preludeExports = new Map<
     string,
@@ -73,10 +77,37 @@ export class CheckerContext {
 
   enterScope() {
     this.scopes.push(new Map());
+    this.#narrowedTypes.push(new Map());
   }
 
   exitScope() {
     this.scopes.pop();
+    this.#narrowedTypes.pop();
+  }
+
+  /**
+   * Narrow a variable's type in the current scope.
+   * This is used for control flow-based type narrowing (e.g., after null checks).
+   */
+  narrowType(name: string, type: Type) {
+    const narrowings = this.#narrowedTypes[this.#narrowedTypes.length - 1];
+    if (narrowings) {
+      narrowings.set(name, type);
+    }
+  }
+
+  /**
+   * Get the narrowed type for a variable, if any.
+   */
+  getNarrowedType(name: string): Type | undefined {
+    // Check from innermost scope outward
+    for (let i = this.#narrowedTypes.length - 1; i >= 0; i--) {
+      const narrowings = this.#narrowedTypes[i];
+      if (narrowings.has(name)) {
+        return narrowings.get(name);
+      }
+    }
+    return undefined;
   }
 
   declare(name: string, type: Type, kind: 'let' | 'var' | 'type' = 'let') {
@@ -111,6 +142,12 @@ export class CheckerContext {
   }
 
   resolveValue(name: string): Type | undefined {
+    // Check for narrowed type first (control-flow narrowing)
+    const narrowedType = this.getNarrowedType(name);
+    if (narrowedType !== undefined) {
+      return narrowedType;
+    }
+
     const key = `value:${name}`;
     for (let i = this.scopes.length - 1; i >= 0; i--) {
       if (this.scopes[i].has(key)) {

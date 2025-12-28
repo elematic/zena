@@ -214,6 +214,71 @@ let maybeNumber: Box<i32> | null = new Box(42);
 
 **Note**: This is distinct from the "Indistinguishable Types" limitation (see [Distinguishable Types & Erasure](#distinguishable-types--erasure)). Primitives _are_ distinguishable from references, but they are incompatible in storage layout.
 
+#### Type Narrowing
+
+Zena supports **control-flow-based type narrowing** for union types. When you check whether a variable is or isn't `null`, or use the `is` operator, the type system automatically narrows the variable's type within the respective branches.
+
+##### Null Checks
+
+```zena
+class Node {
+  value: i32;
+  next: Node | null;
+
+  #new(value: i32) {
+    this.value = value;
+    this.next = null;
+  }
+}
+
+let process = (node: Node | null): void => {
+  if (node !== null) {
+    // Inside this block, `node` is narrowed to `Node`
+    let v = node.value;  // OK: `node` is known to be non-null
+    let next = node.next;
+  } else {
+    // Inside this block, `node` is narrowed to `null`
+    // node.value would be an error here
+  }
+  // After the if, `node` is back to `Node | null`
+};
+```
+
+**Supported null-check patterns:**
+
+- `x !== null` / `x != null`: Narrows `x` to non-null in the true branch, to `null` in the else branch.
+- `null !== x` / `null != x`: Same as above.
+- `x === null` / `x == null`: Narrows `x` to `null` in the true branch, to non-null in the else branch.
+- `null === x` / `null == x`: Same as above.
+
+##### Type Checks with `is`
+
+The `is` operator narrows the type to the checked type in the true branch, and removes that type in the else branch (for unions):
+
+```zena
+class Cat {
+  #new() {}
+  meow(): string { return "meow"; }
+}
+
+class Dog {
+  #new() {}
+  bark(): string { return "woof"; }
+}
+
+let speak = (pet: Cat | Dog): string => {
+  if (pet is Cat) {
+    // pet is narrowed to Cat
+    return pet.meow();
+  } else {
+    // pet is narrowed to Dog (Cat removed from union)
+    return pet.bark();
+  }
+};
+```
+
+Type narrowing is scoped to the block where the narrowing applies. Once you exit the block, the original type is restored.
+
 ### Literal Types
 
 Zena supports **literal types** for strings, numbers, and booleans. A literal type represents a single, specific value rather than a general type. Literal types are especially useful in union types to create enumerations of specific values.
