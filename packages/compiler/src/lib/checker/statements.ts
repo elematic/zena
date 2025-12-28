@@ -695,28 +695,16 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
   let superType: ClassType | undefined;
   if (decl.superClass) {
-    const type = ctx.resolveType(decl.superClass.name);
-    if (!type) {
-      // Check if it exists as a value to give a better error message
-      const valueType = ctx.resolveValue(decl.superClass.name);
-      if (valueType) {
-        ctx.diagnostics.reportError(
-          `Superclass '${decl.superClass.name}' must be a class.`,
-          DiagnosticCode.TypeMismatch,
-        );
-      } else {
-        ctx.diagnostics.reportError(
-          `Unknown superclass '${decl.superClass.name}'.`,
-          DiagnosticCode.SymbolNotFound,
-        );
-      }
-    } else if (type.kind !== TypeKind.Class) {
+    const resolvedSuperType = resolveTypeAnnotation(ctx, decl.superClass);
+    if (resolvedSuperType.kind === TypeKind.Unknown) {
+      // Error already reported by resolveTypeAnnotation
+    } else if (resolvedSuperType.kind !== TypeKind.Class) {
       ctx.diagnostics.reportError(
-        `Superclass '${decl.superClass.name}' must be a class.`,
+        `Superclass '${typeToString(resolvedSuperType)}' must be a class.`,
         DiagnosticCode.TypeMismatch,
       );
     } else {
-      superType = type as ClassType;
+      superType = resolvedSuperType as ClassType;
       if (superType.isFinal) {
         ctx.diagnostics.reportError(
           `Cannot extend final class '${superType.name}'.`,

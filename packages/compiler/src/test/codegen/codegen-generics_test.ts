@@ -81,4 +81,40 @@ suite('Codegen: Generics', () => {
       'main',
     );
   });
+
+  // TODO: The checker doesn't yet properly handle type arguments passed to a generic superclass
+  // when the derived class is also generic. The parser now correctly parses this syntax.
+  test.skip('should compile generic class extending generic class', async () => {
+    await compileAndRun(
+      `
+      import { log } from 'zena:console';
+      
+      class Base<T> {
+        value: T;
+        #new(value: T) {
+          this.value = value;
+        }
+        getValue(): T {
+          return this.value;
+        }
+      }
+      
+      class Derived<T> extends Base<T> {
+        extra: i32;
+        #new(value: T, extra: i32) {
+          super(value);
+          this.extra = extra;
+        }
+        getExtra(): i32 {
+          return this.extra;
+        }
+      }
+      
+      let d = new Derived<i32>(10, 42);
+      log(d.getValue());
+      log(d.getExtra());
+    `,
+      'main',
+    );
+  });
 });

@@ -70,7 +70,9 @@ suite('Parser - Mixins', () => {
 
     assert.strictEqual(classDecl.type, NodeType.ClassDeclaration);
     if (classDecl.type === NodeType.ClassDeclaration) {
-      assert.strictEqual(classDecl.superClass?.name, 'Entity');
+      assert.ok(classDecl.superClass);
+      assert.strictEqual(classDecl.superClass.type, NodeType.TypeAnnotation);
+      assert.strictEqual(classDecl.superClass.name, 'Entity');
       assert.strictEqual(classDecl.mixins?.length, 2);
       assert.strictEqual(classDecl.mixins[0].type, NodeType.TypeAnnotation);
       assert.strictEqual((classDecl.mixins[0] as any).name, 'Timestamped');

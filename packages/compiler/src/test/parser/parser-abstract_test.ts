@@ -79,7 +79,9 @@ suite('Parser - Abstract Classes', () => {
 
     if (classDecl.type === NodeType.ClassDeclaration) {
       assert.strictEqual(classDecl.isAbstract, true);
-      assert.strictEqual(classDecl.superClass?.name, 'Object');
+      assert.ok(classDecl.superClass);
+      assert.strictEqual(classDecl.superClass.type, NodeType.TypeAnnotation);
+      assert.strictEqual(classDecl.superClass.name, 'Object');
     }
   });
 });

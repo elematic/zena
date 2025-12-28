@@ -170,4 +170,64 @@ suite('Parser (Generics)', () => {
       assert.strictEqual(defaultType.name, 'Baz');
     }
   });
+
+  test('should parse generic class extending generic class', () => {
+    const input = 'class Derived<T> extends Base<T> { }';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0];
+    assert.strictEqual(decl.type, NodeType.ClassDeclaration);
+    if (decl.type === NodeType.ClassDeclaration) {
+      assert.strictEqual(decl.name.name, 'Derived');
+
+      // Check type parameters
+      assert.ok(decl.typeParameters);
+      assert.strictEqual(decl.typeParameters.length, 1);
+      assert.strictEqual(decl.typeParameters[0].name, 'T');
+
+      // Check superclass with type arguments
+      assert.ok(decl.superClass);
+      assert.strictEqual(decl.superClass.type, NodeType.TypeAnnotation);
+      if (decl.superClass.type === NodeType.TypeAnnotation) {
+        assert.strictEqual(decl.superClass.name, 'Base');
+        assert.ok(decl.superClass.typeArguments);
+        assert.strictEqual(decl.superClass.typeArguments.length, 1);
+        const typeArg = decl.superClass.typeArguments[0];
+        assert.strictEqual(typeArg.type, NodeType.TypeAnnotation);
+        if (typeArg.type === NodeType.TypeAnnotation) {
+          assert.strictEqual(typeArg.name, 'T');
+        }
+      }
+    }
+  });
+
+  test('should parse generic class extending generic class with multiple type args', () => {
+    const input = 'class MyMap<K, V> extends Map<K, V> { }';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0];
+    assert.strictEqual(decl.type, NodeType.ClassDeclaration);
+    if (decl.type === NodeType.ClassDeclaration) {
+      assert.strictEqual(decl.name.name, 'MyMap');
+
+      // Check type parameters
+      assert.ok(decl.typeParameters);
+      assert.strictEqual(decl.typeParameters.length, 2);
+      assert.strictEqual(decl.typeParameters[0].name, 'K');
+      assert.strictEqual(decl.typeParameters[1].name, 'V');
+
+      // Check superclass with type arguments
+      assert.ok(decl.superClass);
+      assert.strictEqual(decl.superClass.type, NodeType.TypeAnnotation);
+      if (decl.superClass.type === NodeType.TypeAnnotation) {
+        assert.strictEqual(decl.superClass.name, 'Map');
+        assert.ok(decl.superClass.typeArguments);
+        assert.strictEqual(decl.superClass.typeArguments.length, 2);
+        assert.strictEqual((decl.superClass.typeArguments[0] as any).name, 'K');
+        assert.strictEqual((decl.superClass.typeArguments[1] as any).name, 'V');
+      }
+    }
+  });
 });

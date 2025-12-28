@@ -151,6 +151,7 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Use `suite` and `test` syntax from `node:test`.
   - Write tests for each compiler stage (Lexer, Parser, Codegen).
   - New syntax features MUST have dedicated parser tests (and lexer tests, if new tokens are introduced).
+  - Assertions should NOT be followed by conditionals that check the same thing. Assertions act as guards.
   - **Isolating Tests**: To isolate tests, pass the `--test-only` flag to Node and use `test.only()` in the test file.
   - **Codegen Tests**:
     - Use `compileAndRun(source, entryPoint?)` from `test/codegen/utils.ts` to compile and execute Zena code. It returns the result of the entry point function.

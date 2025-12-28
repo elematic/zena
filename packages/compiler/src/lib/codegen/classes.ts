@@ -30,6 +30,17 @@ import {
 } from '../types.js';
 import {WasmModule} from '../emitter.js';
 
+/**
+ * Extracts the name from a TypeAnnotation.
+ * Assumes the annotation is a NamedTypeAnnotation (type === NodeType.TypeAnnotation).
+ */
+const getTypeAnnotationName = (annotation: TypeAnnotation): string => {
+  if (annotation.type === NodeType.TypeAnnotation) {
+    return annotation.name;
+  }
+  throw new Error(`Expected NamedTypeAnnotation, got ${annotation.type}`);
+};
+
 export function getMemberName(name: Identifier | ComputedPropertyName): string {
   if (name.type === NodeType.Identifier) {
     return name.name;
@@ -767,9 +778,10 @@ export function registerClassStruct(
 
   let currentSuperClassInfo: ClassInfo | undefined;
   if (decl.superClass) {
-    currentSuperClassInfo = ctx.classes.get(decl.superClass.name);
+    const superClassName = getTypeAnnotationName(decl.superClass);
+    currentSuperClassInfo = ctx.classes.get(superClassName);
     if (!currentSuperClassInfo) {
-      throw new Error(`Unknown superclass ${decl.superClass.name}`);
+      throw new Error(`Unknown superclass ${superClassName}`);
     }
   }
 
@@ -904,7 +916,9 @@ export function registerClassMethods(
   if (classInfo.superClass) {
     currentSuperClassInfo = ctx.classes.get(classInfo.superClass);
   } else if (decl.superClass) {
-    currentSuperClassInfo = ctx.classes.get(decl.superClass.name);
+    currentSuperClassInfo = ctx.classes.get(
+      getTypeAnnotationName(decl.superClass),
+    );
   }
 
   // Inherit methods and vtable from superclass
@@ -2101,6 +2115,10 @@ export function instantiateClass(
   typeArguments: TypeAnnotation[],
   parentContext?: Map<string, TypeAnnotation>,
 ) {
+  const superClassName = decl.superClass
+    ? getTypeAnnotationName(decl.superClass)
+    : undefined;
+
   const context = new Map<string, TypeAnnotation>();
   if (decl.typeParameters) {
     decl.typeParameters.forEach((param, index) => {
@@ -2156,7 +2174,7 @@ export function instantiateClass(
     originalName: decl.name.name,
     typeArguments: context,
     structTypeIndex,
-    superClass: decl.superClass?.name,
+    superClass: superClassName,
     fields,
     methods,
     vtable,
@@ -2295,8 +2313,8 @@ export function instantiateClass(
             ];
           }
 
-          if (decl.superClass) {
-            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassName) {
+            const superClassInfo = ctx.classes.get(superClassName)!;
             if (superClassInfo.methods.has(methodName)) {
               thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
             }
@@ -2307,8 +2325,8 @@ export function instantiateClass(
 
           let typeIndex: number;
           let isOverride = false;
-          if (decl.superClass) {
-            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassName) {
+            const superClassInfo = ctx.classes.get(superClassName)!;
             if (superClassInfo.methods.has(methodName)) {
               typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
               isOverride = true;
@@ -2347,8 +2365,8 @@ export function instantiateClass(
             ];
           }
 
-          if (decl.superClass) {
-            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassName) {
+            const superClassInfo = ctx.classes.get(superClassName)!;
             if (superClassInfo.methods.has(methodName)) {
               thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
             }
@@ -2359,8 +2377,8 @@ export function instantiateClass(
 
           let typeIndex: number;
           let isOverride = false;
-          if (decl.superClass) {
-            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassName) {
+            const superClassInfo = ctx.classes.get(superClassName)!;
             if (superClassInfo.methods.has(methodName)) {
               typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
               isOverride = true;
@@ -2416,8 +2434,8 @@ export function instantiateClass(
             ];
           }
 
-          if (decl.superClass) {
-            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassName) {
+            const superClassInfo = ctx.classes.get(superClassName)!;
             if (superClassInfo.methods.has(regGetterName)) {
               thisType =
                 superClassInfo.methods.get(regGetterName)!.paramTypes[0];
@@ -2429,8 +2447,8 @@ export function instantiateClass(
 
           let typeIndex: number;
           let isOverride = false;
-          if (decl.superClass) {
-            const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+          if (superClassName) {
+            const superClassInfo = ctx.classes.get(superClassName)!;
             if (superClassInfo.methods.has(regGetterName)) {
               typeIndex = superClassInfo.methods.get(regGetterName)!.typeIndex;
               isOverride = true;
@@ -2464,8 +2482,8 @@ export function instantiateClass(
 
             let setterTypeIndex: number;
             let isSetterOverride = false;
-            if (decl.superClass) {
-              const superClassInfo = ctx.classes.get(decl.superClass.name)!;
+            if (superClassName) {
+              const superClassInfo = ctx.classes.get(superClassName)!;
               if (superClassInfo.methods.has(regSetterName)) {
                 setterTypeIndex =
                   superClassInfo.methods.get(regSetterName)!.typeIndex;
@@ -2511,8 +2529,8 @@ export function instantiateClass(
     }
 
     let vtableSuperTypeIndex: number | undefined;
-    const baseClassInfo = decl.superClass
-      ? ctx.classes.get(decl.superClass.name)
+    const baseClassInfo = superClassName
+      ? ctx.classes.get(superClassName)
       : undefined;
     if (baseClassInfo) {
       vtableSuperTypeIndex = baseClassInfo.vtableTypeIndex;

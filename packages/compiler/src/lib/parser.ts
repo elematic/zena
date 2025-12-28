@@ -1732,12 +1732,12 @@ export class Parser {
       onType = this.#parseTypeAnnotation();
     }
 
-    let superClass: Identifier | undefined;
+    let superClass: TypeAnnotation | undefined;
     if (this.#match(TokenType.Extends)) {
       if (isExtension) {
         throw new Error('Extension classes cannot extend other classes.');
       }
-      superClass = this.#parseIdentifier();
+      superClass = this.#parseTypeAnnotation();
     }
 
     const mixins: TypeAnnotation[] = [];

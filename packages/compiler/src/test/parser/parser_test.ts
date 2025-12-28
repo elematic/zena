@@ -283,6 +283,7 @@ suite('Parser', () => {
     if (cls.type === NodeType.ClassDeclaration) {
       assert.strictEqual(cls.name.name, 'Dog');
       assert.ok(cls.superClass);
+      assert.strictEqual(cls.superClass.type, NodeType.TypeAnnotation);
       assert.strictEqual(cls.superClass.name, 'Animal');
     }
   });
