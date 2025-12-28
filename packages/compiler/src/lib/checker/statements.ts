@@ -701,6 +701,20 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     for (const tp of typeParameters) {
       ctx.declare(tp.name, tp, 'type');
     }
+
+    // Resolve constraints early so type parameters have them when checking superclass
+    // This is needed for constraint compatibility checking (e.g., T extends Dog satisfies T extends Animal)
+    if (decl.typeParameters) {
+      for (let i = 0; i < decl.typeParameters.length; i++) {
+        const param = decl.typeParameters[i];
+        if (param.constraint) {
+          typeParameters[i].constraint = resolveTypeAnnotation(
+            ctx,
+            param.constraint,
+          );
+        }
+      }
+    }
   }
 
   let superType: ClassType | undefined;

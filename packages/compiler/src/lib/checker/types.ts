@@ -504,11 +504,69 @@ function substituteFunctionType(
   };
 }
 
+/**
+ * Validates that type arguments satisfy their corresponding type parameter constraints.
+ * Assumes that typeArguments.length === typeParameters.length (validated by caller).
+ */
+export function validateTypeArgumentConstraints(
+  ctx: CheckerContext,
+  typeParameters: TypeParameterType[],
+  typeArguments: Type[],
+): void {
+  // Defensive check: ensure we have matching lengths
+  if (typeArguments.length !== typeParameters.length) {
+    return;
+  }
+
+  for (let i = 0; i < typeParameters.length; i++) {
+    const param = typeParameters[i];
+    const arg = typeArguments[i];
+
+    if (param.constraint) {
+      // Substitute type parameters in the constraint with actual type arguments
+      const typeMap = new Map<string, Type>();
+      for (let j = 0; j < typeParameters.length; j++) {
+        typeMap.set(typeParameters[j].name, typeArguments[j]);
+      }
+      const substitutedConstraint = substituteType(param.constraint, typeMap);
+
+      // If the argument is itself a type parameter with a constraint,
+      // check if its constraint satisfies the required constraint.
+      // For example: class DogContainer<T extends Dog> extends Container<T>
+      // Here T's constraint (Dog) must be assignable to Container's constraint (Animal)
+      let effectiveArg = arg;
+      if (arg.kind === TypeKind.TypeParameter) {
+        const argParam = arg as TypeParameterType;
+        if (argParam.constraint) {
+          effectiveArg = argParam.constraint;
+        }
+      }
+
+      // Check if the type argument (or its constraint) is assignable to the constraint
+      if (!isAssignableTo(ctx, effectiveArg, substitutedConstraint)) {
+        ctx.diagnostics.reportError(
+          `Type '${typeToString(arg)}' does not satisfy constraint '${typeToString(substitutedConstraint)}' for type parameter '${param.name}'.`,
+          DiagnosticCode.TypeMismatch,
+        );
+      }
+    }
+  }
+}
+
 export function instantiateGenericClass(
   genericClass: ClassType,
   typeArguments: Type[],
   ctx?: CheckerContext,
 ): ClassType {
+  // Validate type argument constraints
+  if (ctx && genericClass.typeParameters) {
+    validateTypeArgumentConstraints(
+      ctx,
+      genericClass.typeParameters,
+      typeArguments,
+    );
+  }
+
   const typeMap = new Map<string, Type>();
   genericClass.typeParameters!.forEach((param, index) => {
     typeMap.set(param.name, typeArguments[index]);
@@ -562,6 +620,15 @@ export function instantiateGenericInterface(
   typeArguments: Type[],
   ctx?: CheckerContext,
 ): InterfaceType {
+  // Validate type argument constraints
+  if (ctx && genericInterface.typeParameters) {
+    validateTypeArgumentConstraints(
+      ctx,
+      genericInterface.typeParameters,
+      typeArguments,
+    );
+  }
+
   const typeMap = new Map<string, Type>();
   genericInterface.typeParameters!.forEach((param, index) => {
     typeMap.set(param.name, typeArguments[index]);
@@ -609,6 +676,15 @@ export function instantiateGenericMixin(
   typeArguments: Type[],
   ctx?: CheckerContext,
 ): MixinType {
+  // Validate type argument constraints
+  if (ctx && genericMixin.typeParameters) {
+    validateTypeArgumentConstraints(
+      ctx,
+      genericMixin.typeParameters,
+      typeArguments,
+    );
+  }
+
   const typeMap = new Map<string, Type>();
   genericMixin.typeParameters!.forEach((param, index) => {
     typeMap.set(param.name, typeArguments[index]);
@@ -654,6 +730,15 @@ export function instantiateGenericFunction(
   typeArguments: Type[],
   ctx?: CheckerContext,
 ): FunctionType {
+  // Validate type argument constraints
+  if (ctx && genericFunc.typeParameters) {
+    validateTypeArgumentConstraints(
+      ctx,
+      genericFunc.typeParameters,
+      typeArguments,
+    );
+  }
+
   const typeMap = new Map<string, Type>();
   genericFunc.typeParameters!.forEach((param, index) => {
     typeMap.set(param.name, typeArguments[index]);

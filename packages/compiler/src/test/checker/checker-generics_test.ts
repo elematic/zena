@@ -290,4 +290,97 @@ suite('TypeChecker - Generics', () => {
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
+
+  test('should allow generic subclass with compatible constraint', () => {
+    const input = `
+      class Animal {}
+      class Dog extends Animal {}
+      
+      class Container<T extends Animal> {
+        value: T;
+        #new(v: T) { this.value = v; }
+      }
+      
+      // Dog extends Animal, so T extends Dog satisfies T extends Animal
+      class DogContainer<T extends Dog> extends Container<T> {
+        #new(v: T) { super(v); }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('should allow generic subclass with same constraint as superclass', () => {
+    const input = `
+      class Animal {}
+      
+      class Container<T extends Animal> {
+        value: T;
+        #new(v: T) { this.value = v; }
+      }
+      
+      class SpecialContainer<T extends Animal> extends Container<T> {
+        #new(v: T) { super(v); }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('should reject generic subclass with no constraint when superclass has constraint', () => {
+    const input = `
+      class Animal {}
+      
+      class Container<T extends Animal> {
+        value: T;
+        #new(v: T) { this.value = v; }
+      }
+      
+      // T has no constraint, but Container requires T extends Animal
+      class BadContainer<T> extends Container<T> {
+        #new(v: T) { super(v); }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.strictEqual(errors.length, 1);
+    assert.match(
+      errors[0].message,
+      /does not satisfy constraint.*for type parameter/,
+    );
+  });
+
+  test('should reject generic subclass with incompatible constraint', () => {
+    const input = `
+      class Animal {}
+      class Plant {}
+      
+      class Container<T extends Animal> {
+        value: T;
+        #new(v: T) { this.value = v; }
+      }
+      
+      // Plant is not related to Animal
+      class PlantContainer<T extends Plant> extends Container<T> {
+        #new(v: T) { super(v); }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.strictEqual(errors.length, 1);
+    assert.match(
+      errors[0].message,
+      /does not satisfy constraint.*for type parameter/,
+    );
+  });
 });

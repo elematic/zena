@@ -979,13 +979,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       expr.inferredTypeArguments = inferred;
     }
 
-    // Validate constraints
-    validateTypeArgumentConstraints(
-      ctx,
-      funcType.typeParameters,
-      typeArguments,
-    );
-
+    // Constraint validation is done inside instantiateGenericFunction
     funcType = instantiateGenericFunction(funcType, typeArguments, ctx);
   }
 
@@ -1622,12 +1616,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
       const typeArguments = expr.typeArguments.map((arg) =>
         resolveTypeAnnotation(ctx, arg),
       );
-      // Validate constraints
-      validateTypeArgumentConstraints(
-        ctx,
-        classType.typeParameters,
-        typeArguments,
-      );
+      // Constraint validation is done inside instantiateGenericClass
       classType = instantiateGenericClass(classType, typeArguments, ctx);
       expr.inferredTypeArguments = typeArguments;
     }
@@ -1649,8 +1638,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
     }
 
     if (inferred) {
-      // Validate constraints for inferred types
-      validateTypeArgumentConstraints(ctx, classType.typeParameters, inferred);
+      // Constraint validation is done inside instantiateGenericClass
       classType = instantiateGenericClass(classType, inferred, ctx);
       expr.inferredTypeArguments = inferred;
     } else {
@@ -2171,43 +2159,6 @@ function getPatternType(
     }
     default:
       return null;
-  }
-}
-
-/**
- * Validates that type arguments satisfy their corresponding type parameter constraints.
- * Assumes that typeArguments.length === typeParameters.length (validated by caller).
- */
-function validateTypeArgumentConstraints(
-  ctx: CheckerContext,
-  typeParameters: TypeParameterType[],
-  typeArguments: Type[],
-): void {
-  // Defensive check: ensure we have matching lengths
-  if (typeArguments.length !== typeParameters.length) {
-    return;
-  }
-
-  for (let i = 0; i < typeParameters.length; i++) {
-    const param = typeParameters[i];
-    const arg = typeArguments[i];
-
-    if (param.constraint) {
-      // Substitute type parameters in the constraint with actual type arguments
-      const typeMap = new Map<string, Type>();
-      for (let j = 0; j < typeParameters.length; j++) {
-        typeMap.set(typeParameters[j].name, typeArguments[j]);
-      }
-      const substitutedConstraint = substituteType(param.constraint, typeMap);
-
-      // Check if the type argument is assignable to the constraint
-      if (!isAssignableTo(ctx, arg, substitutedConstraint)) {
-        ctx.diagnostics.reportError(
-          `Type '${typeToString(arg)}' does not satisfy constraint '${typeToString(substitutedConstraint)}' for type parameter '${param.name}'.`,
-          DiagnosticCode.TypeMismatch,
-        );
-      }
-    }
   }
 }
 

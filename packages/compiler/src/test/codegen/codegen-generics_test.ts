@@ -25,6 +25,7 @@ suite('Codegen: Generics', () => {
     );
   });
 
+  // TODO: Codegen fails with "Unknown type 'Base'" when resolving constraint
   test.skip('should compile generic class with constraint', async () => {
     await compileAndRun(
       `
