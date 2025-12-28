@@ -123,4 +123,59 @@ suite('TypeChecker - Inheritance', () => {
       /Method 'speak' in 'Dog' incorrectly overrides method in 'Animal'/,
     );
   });
+
+  test('should reject extending an interface', () => {
+    const input = `
+      interface Speakable {
+        speak(): void;
+      }
+      class Dog extends Speakable { }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0].message, /must be a class/);
+  });
+
+  test('should reject extending a mixin', () => {
+    const input = `
+      mixin Timestamped {
+        timestamp: i32;
+      }
+      class Log extends Timestamped { }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0].message, /must be a class/);
+  });
+
+  test('should reject extending a type alias', () => {
+    const input = `
+      type MyType = i32;
+      class Foo extends MyType { }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0].message, /must be a class/);
+  });
+
+  test('should reject extending a primitive type', () => {
+    const input = `
+      class Foo extends i32 { }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0].message, /must be a class/);
+  });
 });
