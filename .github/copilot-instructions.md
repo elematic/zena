@@ -115,12 +115,22 @@ The official language reference is maintained in `docs/language-reference.md`.
 
 This project is an **npm monorepo** managed with **Wireit**.
 
+- **Wireit Behavior**:
+  - Wireit caches script results and only re-runs scripts when inputs change.
+    Remember this when debugging or running tasks repeatedly.
+  - You do not need to build before testing; Wireit handles dependencies
+    automatically.
+  - You do not need to delete build outputs manually; Wireit tracks
+    inputs/outputs. If a script doesn't run because it was cached, its outputs
+    remain unchanged. A passing test is still passing if it's skipped.
+  - If you want to see more output for a script, set the WIREIT_LOGGER environment
+    variable to `simple` (e.g., `WIREIT_LOGGER=simple npm test`).
+
 - **Root**: Contains the workspace configuration and global scripts.
 - **packages/compiler**: The core compiler implementation (`@zena-lang/compiler`).
 - **Scripts**:
   - `npm test`: Runs tests across the workspace using Wireit.
   - `npm run build`: Builds packages using Wireit.
-  - **Wireit Caching**: Wireit caches script results and only re-runs scripts when inputs change. Remember this when debugging or running tasks repeatedly.
   - **Running Tests**:
     - Use `npm test` or `npm test -w @zena-lang/compiler` to run all tests.
     - **Running Specific Tests**:
@@ -129,6 +139,7 @@ This project is an **npm monorepo** managed with **Wireit**.
       - Do NOT try to pass arguments to the root `npm test` command (e.g. `npm test packages/compiler/...`), as they are ignored.
     - **NEVER** use `npm test packages/compiler` or `npm test -- some/path/some_test.ts`.
     - Packages are always referred to by **package name** (e.g., `@zena-lang/compiler`), not package path.
+    
 
 ## Coding Standards
 
