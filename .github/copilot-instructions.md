@@ -202,6 +202,7 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Types**: `docs/design/types.md`
     - **Weak References**: `docs/design/weak-references.md`
     - **Runtime Type Tags**: `docs/design/runtime-type-tags.md`
+    - **This Type**: `docs/design/this-type.md`
 
 ## Future Considerations
 

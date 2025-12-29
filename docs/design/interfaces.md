@@ -139,7 +139,45 @@ r.run();
 (call_ref $fn (local.get $inst))
 ```
 
-## 4. Rationale
+## 4. Covariant Return Types
+
+When implementing an interface method, Zena allows the implementation to declare
+a **more specific return type** than the interface requires. This is called
+**covariant return type refinement** and is type-safe.
+
+### Example
+
+```zena
+interface Sequence<T> {
+  map<U>(f: (item: T) => U): Sequence<U>;
+}
+
+class Array<T> implements Sequence<T> {
+  // Return type refined from Sequence<U> to Array<U> — allowed!
+  map<U>(f: (item: T) => U): Array<U> {
+    // ...
+  }
+}
+```
+
+### Why It's Sound
+
+If a caller expects `Sequence<U>` and receives `Array<U>`, that's fine —
+`Array<U>` is a subtype of `Sequence<U>`. The caller can always treat a more
+specific type as the less specific interface type.
+
+### Variance Rules for Interface Implementation
+
+| Position       | Variance      | Rule                                |
+| -------------- | ------------- | ----------------------------------- |
+| Return type    | Covariant     | Can return a **more specific** type |
+| Parameter type | Contravariant | Can accept a **more general** type  |
+| Mutable field  | Invariant     | Must be **exactly** the same type   |
+
+**Note:** Contravariant parameters are rarely useful in practice. Covariant
+return types are the common case (e.g., builder patterns, collection methods).
+
+## 5. Rationale
 
 ### Why Fat Pointers?
 
