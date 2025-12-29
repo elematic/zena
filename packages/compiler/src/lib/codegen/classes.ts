@@ -711,6 +711,238 @@ export function decodeTypeIndex(type: number[]): number {
   return typeIndex;
 }
 
+/**
+ * Pre-registers a class by reserving a type index and adding minimal info to ctx.classes.
+ * This must be called for all classes before calling defineClassStruct, to allow
+ * self-referential and mutually-recursive class types to work.
+ */
+export function preRegisterClassStruct(
+  ctx: CodegenContext,
+  decl: ClassDeclaration,
+) {
+  if (decl.typeParameters && decl.typeParameters.length > 0) {
+    ctx.genericClasses.set(decl.name.name, decl);
+    return;
+  }
+
+  // Handle extension classes (e.g. FixedArray extends array<T>)
+  // These are handled entirely in preRegister since they don't need deferred definition
+  if (decl.isExtension && decl.onType) {
+    const onType = mapType(ctx, decl.onType);
+
+    // Create a dummy struct type for extensions so that we have a valid type index
+    // This is needed because some parts of the compiler might try to reference the class type
+    const structTypeIndex = ctx.module.addStructType([]);
+
+    ctx.classes.set(decl.name.name, {
+      name: decl.name.name,
+      structTypeIndex,
+      fields: new Map(),
+      methods: new Map(),
+      isExtension: true,
+      onType,
+    });
+
+    // Check if this is the String class
+    const isStringClass =
+      !!ctx.wellKnownTypes.String &&
+      decl.name.name === ctx.wellKnownTypes.String.name.name;
+
+    if (isStringClass) {
+      const typeIndex = getHeapTypeIndex(ctx, onType);
+      if (typeIndex >= 0) {
+        ctx.stringTypeIndex = typeIndex;
+      }
+    }
+
+    return;
+  }
+
+  // Reserve type index for the struct
+  const isStringClass =
+    !!ctx.wellKnownTypes.String &&
+    decl.name.name === ctx.wellKnownTypes.String.name.name;
+
+  // If the class uses mixins, pre-register the intermediate mixin classes first
+  // They must have lower type indices than this class since they'll be its supertype chain
+  if (decl.mixins && decl.mixins.length > 0) {
+    let currentSuperClassInfo: ClassInfo | undefined;
+    if (decl.superClass) {
+      const superClassName = getTypeAnnotationName(decl.superClass);
+      currentSuperClassInfo = ctx.classes.get(superClassName);
+    }
+
+    for (const mixinAnnotation of decl.mixins) {
+      if (mixinAnnotation.type !== NodeType.TypeAnnotation) {
+        continue;
+      }
+      const mixinName = mixinAnnotation.name;
+      const mixinDecl = ctx.mixins.get(mixinName);
+      if (!mixinDecl) {
+        continue;
+      }
+      // Pre-register the intermediate mixin class
+      currentSuperClassInfo = preRegisterMixin(
+        ctx,
+        currentSuperClassInfo,
+        mixinDecl,
+      );
+    }
+  }
+
+  // Generate brand type FIRST so it has a lower index than the struct
+  // This avoids forward references in the type section (WASM requires types to only
+  // reference types with lower indices, unless using rec groups)
+  const brandId = ctx.classes.size + 1;
+  const brandTypeIndex = generateBrandType(ctx, brandId);
+
+  let structTypeIndex: number;
+  if (isStringClass && ctx.stringTypeIndex >= 0) {
+    // Reuse the pre-allocated String type index
+    structTypeIndex = ctx.stringTypeIndex;
+  } else {
+    structTypeIndex = ctx.module.reserveType();
+    if (isStringClass) {
+      ctx.stringTypeIndex = structTypeIndex;
+    }
+  }
+
+  // Add minimal info to ctx.classes so self-references work
+  ctx.classes.set(decl.name.name, {
+    name: decl.name.name,
+    structTypeIndex,
+    brandTypeIndex,
+    fields: new Map(),
+    methods: new Map(),
+    vtable: [],
+    isFinal: decl.isFinal,
+    isExtension: decl.isExtension,
+  });
+}
+
+/**
+ * Defines the struct type for a class that was pre-registered.
+ * This processes all fields and creates the actual WASM struct type.
+ */
+export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
+  if (decl.typeParameters && decl.typeParameters.length > 0) {
+    // Generic classes are not defined here
+    return;
+  }
+
+  // Extension classes are fully handled in preRegisterClassStruct
+  if (decl.isExtension && decl.onType) {
+    return;
+  }
+
+  const classInfo = ctx.classes.get(decl.name.name)!;
+  const structTypeIndex = classInfo.structTypeIndex;
+
+  const fields = new Map<
+    string,
+    {index: number; type: number[]; intrinsic?: string}
+  >();
+  const fieldTypes: {type: number[]; mutable: boolean}[] = [];
+  let fieldIndex = 0;
+
+  let superTypeIndex: number | undefined;
+
+  let currentSuperClassInfo: ClassInfo | undefined;
+  if (decl.superClass) {
+    const superClassName = getTypeAnnotationName(decl.superClass);
+    currentSuperClassInfo = ctx.classes.get(superClassName);
+    if (!currentSuperClassInfo) {
+      throw new Error(`Unknown superclass ${superClassName}`);
+    }
+  }
+
+  if (decl.mixins && decl.mixins.length > 0) {
+    for (const mixinAnnotation of decl.mixins) {
+      if (mixinAnnotation.type !== NodeType.TypeAnnotation) {
+        throw new Error('Mixin must be a named type');
+      }
+      const mixinName = mixinAnnotation.name;
+      const mixinDecl = ctx.mixins.get(mixinName);
+      if (!mixinDecl) {
+        throw new Error(`Unknown mixin ${mixinName}`);
+      }
+      // TODO: Handle generic mixin instantiation in codegen
+      currentSuperClassInfo = applyMixin(ctx, currentSuperClassInfo, mixinDecl);
+    }
+  }
+
+  if (currentSuperClassInfo) {
+    superTypeIndex = currentSuperClassInfo.structTypeIndex;
+
+    // Inherit fields
+    const sortedSuperFields = Array.from(
+      currentSuperClassInfo.fields.entries(),
+    ).sort((a, b) => a[1].index - b[1].index);
+
+    for (const [name, info] of sortedSuperFields) {
+      fields.set(name, {index: fieldIndex++, type: info.type});
+      fieldTypes.push({type: info.type, mutable: true});
+    }
+  } else {
+    // Root class: Add vtable field
+    fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
+    fieldTypes.push({type: [ValType.eqref], mutable: true});
+  }
+
+  // Use the brand type that was pre-generated in preRegisterClassStruct
+  const brandTypeIndex = classInfo.brandTypeIndex!;
+  const brandFieldName = `__brand_${decl.name.name}`;
+  fields.set(brandFieldName, {
+    index: fieldIndex++,
+    type: [ValType.ref_null, ...WasmModule.encodeSignedLEB128(brandTypeIndex)],
+  });
+  fieldTypes.push({
+    type: [ValType.ref_null, ...WasmModule.encodeSignedLEB128(brandTypeIndex)],
+    mutable: true,
+  });
+
+  for (const member of decl.body) {
+    if (member.type === NodeType.FieldDefinition) {
+      const wasmType = mapType(ctx, member.typeAnnotation);
+      const fieldName = manglePrivateName(
+        decl.name.name,
+        getMemberName(member.name),
+      );
+
+      if (!fields.has(fieldName)) {
+        let intrinsic: string | undefined;
+        if (member.decorators) {
+          const intrinsicDecorator = member.decorators.find(
+            (d) => d.name === Decorators.Intrinsic,
+          );
+          if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
+            intrinsic = intrinsicDecorator.args[0].value;
+          }
+        }
+
+        fields.set(fieldName, {index: fieldIndex++, type: wasmType, intrinsic});
+        fieldTypes.push({type: wasmType, mutable: true});
+      }
+    }
+  }
+
+  // Define the struct type at the reserved index
+  ctx.module.defineStructType(structTypeIndex, fieldTypes, superTypeIndex);
+
+  let onType: number[] | undefined;
+  if (decl.isExtension && decl.onType) {
+    onType = mapType(ctx, decl.onType);
+  }
+
+  // Update classInfo with full data
+  classInfo.superClass = currentSuperClassInfo?.name;
+  classInfo.fields = fields;
+  classInfo.onType = onType;
+}
+
+/**
+ * @deprecated Use preRegisterClassStruct followed by defineClassStruct instead.
+ */
 export function registerClassStruct(
   ctx: CodegenContext,
   decl: ClassDeclaration,
@@ -2687,6 +2919,40 @@ function manglePrivateName(className: string, memberName: string): string {
   return memberName;
 }
 
+/**
+ * Pre-registers a mixin intermediate class. This reserves the type index so that
+ * classes using this mixin can have it as their supertype.
+ */
+function preRegisterMixin(
+  ctx: CodegenContext,
+  baseClassInfo: ClassInfo | undefined,
+  mixinDecl: MixinDeclaration,
+): ClassInfo {
+  const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
+  const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+
+  // If already registered, return the existing info
+  if (ctx.classes.has(intermediateName)) {
+    return ctx.classes.get(intermediateName)!;
+  }
+
+  // Reserve type index for this intermediate class
+  const structTypeIndex = ctx.module.reserveType();
+
+  // Create minimal ClassInfo so it can be referenced
+  const classInfo: ClassInfo = {
+    name: intermediateName,
+    structTypeIndex,
+    superClass: baseClassInfo?.name,
+    fields: new Map(),
+    methods: new Map(),
+    vtable: [],
+  };
+  ctx.classes.set(intermediateName, classInfo);
+
+  return classInfo;
+}
+
 function applyMixin(
   ctx: CodegenContext,
   baseClassInfo: ClassInfo | undefined,
@@ -2695,9 +2961,27 @@ function applyMixin(
   const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
   const intermediateName = `${baseName}_${mixinDecl.name.name}`;
 
-  if (ctx.classes.has(intermediateName)) {
-    return ctx.classes.get(intermediateName)!;
+  const existingInfo = ctx.classes.get(intermediateName);
+  if (existingInfo && existingInfo.fields.size > 0) {
+    // Already fully defined
+    return existingInfo;
   }
+
+  // Get or create the ClassInfo (might already be pre-registered)
+  const classInfo = existingInfo || {
+    name: intermediateName,
+    structTypeIndex: ctx.module.reserveType(),
+    superClass: baseClassInfo?.name,
+    fields: new Map(),
+    methods: new Map(),
+    vtable: [],
+  };
+
+  if (!existingInfo) {
+    ctx.classes.set(intermediateName, classInfo);
+  }
+
+  const structTypeIndex = classInfo.structTypeIndex;
 
   const fields = new Map<string, {index: number; type: number[]}>();
   const fieldTypes: {type: number[]; mutable: boolean}[] = [];
@@ -2738,17 +3022,13 @@ function applyMixin(
     }
   }
 
-  const structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
+  // Define the struct type at the pre-reserved index
+  ctx.module.defineStructType(structTypeIndex, fieldTypes, superTypeIndex);
 
-  const classInfo: ClassInfo = {
-    name: intermediateName,
-    structTypeIndex,
-    superClass: baseClassInfo?.name,
-    fields,
-    methods,
-    vtable,
-  };
-  ctx.classes.set(intermediateName, classInfo);
+  // Update the ClassInfo with the actual field info
+  classInfo.fields = fields;
+  classInfo.methods = methods;
+  classInfo.vtable = vtable;
 
   const declForGen = {
     ...mixinDecl,

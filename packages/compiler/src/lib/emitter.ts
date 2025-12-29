@@ -1,7 +1,7 @@
 import {ExportDesc, SectionId} from './wasm.js';
 
 export class WasmModule {
-  #types: number[][] = [];
+  #types: (number[] | null)[] = [];
   #imports: {module: string; name: string; kind: number; index: number}[] = [];
   #functions: number[] = [];
   #tables: number[][] = [];
@@ -51,10 +51,34 @@ export class WasmModule {
     return -1;
   }
 
-  public addStructType(
+  /**
+   * Reserve a type index for later definition. Returns the index that can be
+   * used in type references. The type must be defined later with defineStructType.
+   */
+  public reserveType(): number {
+    this.#types.push(null);
+    return this.#types.length - 1;
+  }
+
+  /**
+   * Define a struct type at a previously reserved index.
+   */
+  public defineStructType(
+    index: number,
     fields: {type: number[]; mutable: boolean}[],
     superTypeIndex?: number,
-  ): number {
+  ): void {
+    if (this.#types[index] !== null) {
+      throw new Error(`Type at index ${index} is already defined`);
+    }
+    const buffer = this.#encodeStructType(fields, superTypeIndex);
+    this.#types[index] = buffer;
+  }
+
+  #encodeStructType(
+    fields: {type: number[]; mutable: boolean}[],
+    superTypeIndex?: number,
+  ): number[] {
     const buffer: number[] = [];
     // Always use sub to allow extensibility
     buffer.push(0x50); // sub
@@ -71,6 +95,14 @@ export class WasmModule {
       buffer.push(...field.type);
       buffer.push(field.mutable ? 1 : 0);
     }
+    return buffer;
+  }
+
+  public addStructType(
+    fields: {type: number[]; mutable: boolean}[],
+    superTypeIndex?: number,
+  ): number {
+    const buffer = this.#encodeStructType(fields, superTypeIndex);
     this.#types.push(buffer);
     const index = this.#types.length - 1;
     return index;
@@ -205,7 +237,11 @@ export class WasmModule {
     if (this.#types.length > 0) {
       const sectionBuffer: number[] = [];
       this.#writeUnsignedLEB128(sectionBuffer, this.#types.length);
-      for (const type of this.#types) {
+      for (let i = 0; i < this.#types.length; i++) {
+        const type = this.#types[i];
+        if (type === null) {
+          throw new Error(`Type at index ${i} was reserved but never defined`);
+        }
         sectionBuffer.push(...type);
       }
       this.#writeSection(buffer, SectionId.Type, sectionBuffer);
@@ -419,7 +455,7 @@ export class WasmModule {
     this.#startFunctionIndex = functionIndex;
   }
 
-  public getType(index: number): number[] {
+  public getType(index: number): number[] | null {
     return this.#types[index];
   }
 
@@ -595,6 +631,9 @@ export class WasmModule {
 
   public getStructFieldType(typeIndex: number, fieldIndex: number): number[] {
     const typeBytes = this.#types[typeIndex];
+    if (!typeBytes) {
+      throw new Error(`Type ${typeIndex} is reserved but not defined`);
+    }
     let offset = 0;
 
     // Handle 'sub' (0x50) prefix if present
@@ -664,6 +703,9 @@ export class WasmModule {
 
   public getArrayElementType(typeIndex: number): number[] {
     const typeBytes = this.#types[typeIndex];
+    if (!typeBytes) {
+      throw new Error(`Type ${typeIndex} is reserved but not defined`);
+    }
     let offset = 0;
 
     // Handle 'sub' (0x50) prefix if present

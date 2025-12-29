@@ -5,6 +5,7 @@ export interface ClassInfo {
   originalName?: string;
   typeArguments?: Map<string, TypeAnnotation>;
   structTypeIndex: number;
+  brandTypeIndex?: number;
   superClass?: string;
   fields: Map<string, {index: number; type: number[]; intrinsic?: string}>;
   methods: Map<

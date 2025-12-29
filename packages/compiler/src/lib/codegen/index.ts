@@ -11,7 +11,8 @@ import {
   type VariableDeclaration,
 } from '../ast.js';
 import {
-  registerClassStruct,
+  preRegisterClassStruct,
+  defineClassStruct,
   registerClassMethods,
   registerInterface,
   getMemberName,
@@ -102,15 +103,23 @@ export class CodeGenerator {
       }
     }
 
-    // 2. Register Class Structs (Second pass)
-    // This ensures types are available for imports and other declarations
+    // 2. Pre-register Class Structs (Second pass)
+    // This reserves type indices so self-referential types can work
     for (const statement of program.body) {
       if (statement.type === NodeType.ClassDeclaration) {
-        registerClassStruct(this.#ctx, statement as ClassDeclaration);
+        preRegisterClassStruct(this.#ctx, statement as ClassDeclaration);
       }
     }
 
-    // 3. Register Imports (DeclareFunction)
+    // 3. Define Class Structs (Third pass)
+    // Now that all classes have reserved indices, define the actual struct types
+    for (const statement of program.body) {
+      if (statement.type === NodeType.ClassDeclaration) {
+        defineClassStruct(this.#ctx, statement as ClassDeclaration);
+      }
+    }
+
+    // 4. Register Imports (DeclareFunction)
     // Imports must be registered before defined functions to ensure correct index space.
     for (const statement of program.body) {
       if (statement.type === NodeType.DeclareFunction) {
@@ -118,7 +127,7 @@ export class CodeGenerator {
       }
     }
 
-    // 4. Register Class Methods (Fourth pass)
+    // 5. Register Class Methods (Fifth pass)
     // Execute pending method registrations (e.g. from mixins created in Pass 2)
     let pendingIndex = 0;
     while (pendingIndex < this.#ctx.pendingMethodGenerations.length) {
@@ -137,7 +146,7 @@ export class CodeGenerator {
       }
     }
 
-    // 5. Register Functions and Variables (Fifth pass)
+    // 6. Register Functions and Variables (Sixth pass)
     for (const statement of program.body) {
       if (statement.type === NodeType.ClassDeclaration) {
         const classDecl = statement as ClassDeclaration;

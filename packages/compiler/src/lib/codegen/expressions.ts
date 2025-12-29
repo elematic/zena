@@ -4783,7 +4783,7 @@ function getReturnTypeFromTypeIndex(
   typeIndex: number,
 ): number[] {
   const typeBytes = ctx.module.getType(typeIndex);
-  if (typeBytes[0] !== 0x60) return []; // Not a function type
+  if (!typeBytes || typeBytes[0] !== 0x60) return []; // Not a function type or reserved
 
   let offset = 1;
 
