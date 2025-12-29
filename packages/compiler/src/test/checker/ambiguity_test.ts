@@ -51,7 +51,7 @@ suite('Ambiguity and Distinguishability Tests', () => {
     }
   });
 
-  test('Boxed distinct types are currently indistinguishable', async () => {
+  test('Boxed distinct types are distinguishable', async () => {
     const source = `
       import { Box } from 'zena:box';
       
@@ -61,8 +61,8 @@ suite('Ambiguity and Distinguishability Tests', () => {
       export let main = (): boolean => {
         let m = new Box<Meters>(10 as Meters);
         
-        // At runtime, Box<Meters> and Box<Seconds> are both Box<i32>
-        // So 'm is Box<Seconds>' returns true.
+        // Box<Meters> and Box<Seconds> are distinct specializations,
+        // so 'm is Box<Seconds>' returns false.
         let isSeconds = m is Box<Seconds>;
         
         return isSeconds;
@@ -70,11 +70,7 @@ suite('Ambiguity and Distinguishability Tests', () => {
     `;
 
     const result = await compileAndRun(source, 'main');
-    // Documenting current behavior: they are indistinguishable, so result is true (1)
-    assert.strictEqual(
-      result,
-      1,
-      'Boxed distinct types erase to underlying type',
-    );
+    // Distinct type parameters create separate specializations
+    assert.strictEqual(result, 0, 'Boxed distinct types are distinguishable');
   });
 });

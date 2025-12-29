@@ -268,6 +268,189 @@ const extractInverseNarrowingFromCondition = (
 };
 
 // =============================================================================
+// Type Pre-declaration (First Pass)
+// =============================================================================
+
+/**
+ * Pre-declares a type (class, mixin, interface) so it can be referenced
+ * by other types before its full definition is processed.
+ * This enables forward references (e.g., a mixin field referencing a class
+ * that uses the mixin).
+ */
+export function predeclareType(ctx: CheckerContext, stmt: Statement) {
+  switch (stmt.type) {
+    case NodeType.ClassDeclaration:
+      predeclareClass(ctx, stmt as ClassDeclaration);
+      break;
+    case NodeType.MixinDeclaration:
+      predeclareMixin(ctx, stmt as MixinDeclaration);
+      break;
+    case NodeType.InterfaceDeclaration:
+      predeclareInterface(ctx, stmt as InterfaceDeclaration);
+      break;
+  }
+}
+
+/**
+ * Pre-declares a class type with empty fields/methods.
+ * The actual members will be filled in during the full check pass.
+ */
+const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
+  const className = decl.name.name;
+
+  // Skip if already declared (e.g., imported types)
+  if (ctx.resolveType(className)) {
+    return;
+  }
+
+  // Create type parameters
+  const typeParameters: TypeParameterType[] = [];
+  if (decl.typeParameters) {
+    for (const param of decl.typeParameters) {
+      typeParameters.push({
+        kind: TypeKind.TypeParameter,
+        name: param.name,
+      });
+    }
+  }
+
+  // Create a placeholder class type
+  const classType: ClassType = {
+    kind: TypeKind.Class,
+    _debugId: Math.floor(Math.random() * 1000000),
+    name: className,
+    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+    superType: undefined, // Will be resolved in full check
+    implements: [],
+    fields: new Map(),
+    methods: new Map(),
+    statics: new Map(),
+    symbolFields: new Map(),
+    symbolMethods: new Map(),
+    constructorType: undefined,
+    vtable: [],
+    isFinal: decl.isFinal,
+    isAbstract: decl.isAbstract,
+    isExtension: decl.isExtension,
+    onType: undefined,
+  };
+
+  ctx.declare(className, classType, 'type');
+  ctx.declare(className, classType, 'let');
+
+  // Store reference for the full check pass to update
+  decl.inferredType = classType;
+
+  if (decl.exported && ctx.module) {
+    ctx.module.exports.set(`type:${className}`, {
+      type: classType,
+      kind: 'type',
+    });
+    ctx.module.exports.set(`value:${className}`, {
+      type: classType,
+      kind: 'let',
+    });
+  }
+};
+
+/**
+ * Pre-declares a mixin type with empty fields/methods.
+ */
+const predeclareMixin = (ctx: CheckerContext, decl: MixinDeclaration) => {
+  const mixinName = decl.name.name;
+
+  // Skip if already declared
+  if (ctx.resolveType(mixinName)) {
+    return;
+  }
+
+  // Create type parameters
+  const typeParameters: TypeParameterType[] = [];
+  if (decl.typeParameters) {
+    for (const param of decl.typeParameters) {
+      typeParameters.push({
+        kind: TypeKind.TypeParameter,
+        name: param.name,
+      });
+    }
+  }
+
+  // Create a placeholder mixin type
+  const mixinType: MixinType = {
+    kind: TypeKind.Mixin,
+    name: mixinName,
+    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+    onType: undefined, // Will be resolved in full check
+    fields: new Map(),
+    methods: new Map(),
+    symbolFields: new Map(),
+    symbolMethods: new Map(),
+  };
+
+  ctx.declare(mixinName, mixinType, 'type');
+
+  // Store reference for the full check pass to update
+  decl.inferredType = mixinType;
+
+  if (decl.exported && ctx.module) {
+    ctx.module.exports.set(`type:${mixinName}`, {
+      type: mixinType,
+      kind: 'type',
+    });
+  }
+};
+
+/**
+ * Pre-declares an interface type with empty members.
+ */
+const predeclareInterface = (
+  ctx: CheckerContext,
+  decl: InterfaceDeclaration,
+) => {
+  const interfaceName = decl.name.name;
+
+  // Skip if already declared
+  if (ctx.resolveType(interfaceName)) {
+    return;
+  }
+
+  // Create type parameters
+  const typeParameters: TypeParameterType[] = [];
+  if (decl.typeParameters) {
+    for (const param of decl.typeParameters) {
+      typeParameters.push({
+        kind: TypeKind.TypeParameter,
+        name: param.name,
+      });
+    }
+  }
+
+  // Create a placeholder interface type
+  const interfaceType: InterfaceType = {
+    kind: TypeKind.Interface,
+    name: interfaceName,
+    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+    extends: [],
+    fields: new Map(),
+    methods: new Map(),
+    symbolFields: new Map(),
+    symbolMethods: new Map(),
+  };
+
+  ctx.declare(interfaceName, interfaceType, 'type');
+
+  // Store reference for the full check pass to update
+  decl.inferredType = interfaceType;
+
+  if (decl.exported && ctx.module) {
+    ctx.module.exports.set(`type:${interfaceName}`, {
+      type: interfaceType,
+      kind: 'type',
+    });
+  }
+};
+
+// =============================================================================
 // Statement Checking
 // =============================================================================
 
@@ -1030,6 +1213,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         symbolMethods: new Map(),
         vtable: superType ? [...superType.vtable] : [],
         isFinal: false, // Intermediate classes are not final
+        isMixinIntermediate: true, // Mark as synthetic mixin intermediate
       };
 
       // Inherit from superType
@@ -1116,25 +1300,54 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     ctx.exitScope();
   }
 
-  const classType: ClassType = {
-    kind: TypeKind.Class,
-    _debugId: Math.floor(Math.random() * 1000000),
-    name: className,
-    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
-    superType,
-    implements: [],
-    fields: new Map(),
-    methods: new Map(),
-    statics: new Map(),
-    symbolFields: new Map(),
-    symbolMethods: new Map(),
-    constructorType: undefined,
-    vtable: superType ? [...superType.vtable] : [],
-    isFinal: decl.isFinal,
-    isAbstract: decl.isAbstract,
-    isExtension: decl.isExtension,
-    onType: undefined,
-  };
+  // Get the pre-declared class type (from the first pass)
+  // The type was already declared and stored in decl.inferredType
+  // If not pre-declared (e.g., imported types or special cases), create the type now
+  let classType = decl.inferredType as ClassType | undefined;
+  if (!classType) {
+    classType = {
+      kind: TypeKind.Class,
+      _debugId: Math.floor(Math.random() * 1000000),
+      name: className,
+      typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+      superType: undefined,
+      implements: [],
+      fields: new Map(),
+      methods: new Map(),
+      statics: new Map(),
+      symbolFields: new Map(),
+      symbolMethods: new Map(),
+      constructorType: undefined,
+      vtable: [],
+      isFinal: decl.isFinal,
+      isAbstract: decl.isAbstract,
+      isExtension: decl.isExtension,
+      onType: undefined,
+    };
+    ctx.declare(className, classType, 'type');
+    ctx.declare(className, classType, 'let');
+    decl.inferredType = classType;
+
+    if (decl.exported && ctx.module) {
+      ctx.module.exports.set(`type:${className}`, {
+        type: classType,
+        kind: 'type',
+      });
+      ctx.module.exports.set(`value:${className}`, {
+        type: classType,
+        kind: 'let',
+      });
+    }
+  }
+
+  // Update the type parameters (with resolved constraints)
+  if (typeParameters.length > 0) {
+    classType.typeParameters = typeParameters;
+  }
+
+  // Update superType and inherited members
+  classType.superType = superType;
+  classType.vtable = superType ? [...superType.vtable] : [];
 
   if (superType) {
     // Inherit fields
@@ -1150,10 +1363,6 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       }
     }
   }
-
-  ctx.declare(className, classType, 'type');
-  ctx.declare(className, classType, 'let');
-  decl.inferredType = classType;
 
   if (decl.exported && ctx.module) {
     ctx.module.exports.set(`type:${className}`, {
@@ -1623,26 +1832,25 @@ function checkInterfaceDeclaration(
     }
   }
 
-  const interfaceType: InterfaceType = {
-    kind: TypeKind.Interface,
-    name: interfaceName,
-    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
-    fields: new Map(),
-    methods: new Map(),
-    symbolFields: new Map(),
-    symbolMethods: new Map(),
-    extends: [],
-  };
-
-  // Register interface in current scope
-  ctx.declare(interfaceName, interfaceType, 'type');
-  decl.inferredType = interfaceType;
-
-  if (decl.exported && ctx.module) {
-    ctx.module.exports.set(`type:${interfaceName}`, {
-      type: interfaceType,
-      kind: 'type',
-    });
+  // Get the pre-declared interface type (from the first pass), or create it if not present
+  let interfaceType = decl.inferredType as InterfaceType | undefined;
+  if (!interfaceType) {
+    // Fallback: create a new interface type if predeclaration was skipped (e.g., shadowing)
+    interfaceType = {
+      kind: TypeKind.Interface,
+      name: interfaceName,
+      typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+      extends: [],
+      fields: new Map(),
+      methods: new Map(),
+    };
+    ctx.declare(interfaceName, interfaceType, 'type');
+    decl.inferredType = interfaceType;
+  } else {
+    // Update the type parameters
+    if (typeParameters.length > 0) {
+      interfaceType.typeParameters = typeParameters;
+    }
   }
 
   // Enter scope for type parameters
@@ -1877,8 +2085,21 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   const previousMethod = ctx.currentMethod;
   ctx.currentMethod = methodName;
 
+  // Helper to check if the superType chain requires super() to be called.
+  // If the superType is only mixin intermediate classes (no user-defined base), super() is not required.
+  const requiresSuperCall = (): boolean => {
+    if (!ctx.currentClass?.superType) return false;
+    let current: ClassType | undefined = ctx.currentClass.superType;
+    while (current) {
+      // If we find a non-mixin-intermediate class, super() is required
+      if (!current.isMixinIntermediate) return true;
+      current = current.superType;
+    }
+    return false;
+  };
+
   const previousIsThisInitialized = ctx.isThisInitialized;
-  if (methodName === '#new' && ctx.currentClass?.superType) {
+  if (methodName === '#new' && requiresSuperCall()) {
     ctx.isThisInitialized = false;
   } else {
     ctx.isThisInitialized = true;
@@ -1925,7 +2146,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
 
   if (
     methodName === '#new' &&
-    (ctx.currentClass?.superType || ctx.currentClass?.isExtension) &&
+    (requiresSuperCall() || ctx.currentClass?.isExtension) &&
     !ctx.isThisInitialized
   ) {
     ctx.diagnostics.reportError(
@@ -2009,25 +2230,26 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     }
   }
 
-  const mixinType: MixinType = {
-    kind: TypeKind.Mixin,
-    name: mixinName,
-    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
-    onType,
-    fields: new Map(),
-    methods: new Map(),
-    symbolFields: new Map(),
-    symbolMethods: new Map(),
-  };
-
-  ctx.declare(mixinName, mixinType, 'type');
-  decl.inferredType = mixinType;
-
-  if (decl.exported && ctx.module) {
-    ctx.module.exports.set(`type:${mixinName}`, {
-      type: mixinType,
-      kind: 'type',
-    });
+  // Get the pre-declared mixin type (from the first pass), or create it if not present
+  let mixinType = decl.inferredType as MixinType | undefined;
+  if (!mixinType) {
+    // Fallback: create a new mixin type if predeclaration was skipped (e.g., shadowing)
+    mixinType = {
+      kind: TypeKind.Mixin,
+      name: mixinName,
+      typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+      onType,
+      fields: new Map(),
+      methods: new Map(),
+    };
+    ctx.declare(mixinName, mixinType, 'type');
+    decl.inferredType = mixinType;
+  } else {
+    // Update the type parameters and onType
+    if (typeParameters.length > 0) {
+      mixinType.typeParameters = typeParameters;
+    }
+    mixinType.onType = onType;
   }
 
   ctx.enterScope();

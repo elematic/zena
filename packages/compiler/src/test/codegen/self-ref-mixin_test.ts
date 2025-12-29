@@ -3,12 +3,12 @@ import assert from 'node:assert';
 import {compileAndRun} from './utils.js';
 
 suite('self-referential mixins', () => {
-  // These tests document a current limitation: mixins cannot have fields
-  // that reference classes which apply the mixin. This is because the mixin
-  // is type-checked before the class that uses it is defined.
-  // TODO: Support forward references in mixin field types.
+  // These tests verify that mixins can have fields that reference classes
+  // which apply the mixin. This works because the checker predeclares all
+  // types before fully checking them, and the emitter wraps all WASM types
+  // in a single rec block to support mutually recursive type references.
 
-  test.skip('mixin with field referencing class that applies it', async () => {
+  test('mixin with field referencing class that applies it', async () => {
     // This is the key self-referential mixin case:
     // The mixin has a field of type TreeNode, but TreeNode uses the mixin
     const source = `
@@ -46,7 +46,7 @@ export let main = (): i32 => {
     assert.strictEqual(result, 30);
   });
 
-  test.skip('simple mixin with next pointer', async () => {
+  test('simple mixin with next pointer', async () => {
     const source = `
 mixin Chainable {
   next: ChainNode;

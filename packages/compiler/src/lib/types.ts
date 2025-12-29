@@ -136,6 +136,7 @@ export interface ClassType extends Type {
   isFinal?: boolean;
   isAbstract?: boolean;
   isExtension?: boolean;
+  isMixinIntermediate?: boolean; // True for synthetic intermediate mixin classes
   onType?: Type;
   genericSource?: ClassType;
 }

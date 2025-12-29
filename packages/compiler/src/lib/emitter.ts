@@ -17,9 +17,12 @@ export class WasmModule {
   #startFunctionIndex: number | undefined;
 
   public addType(params: number[][], results: number[][]): number {
-    // Function type: 0x60 + vec(params) + vec(results)
+    // Function type wrapped in sub final for compatibility with rec blocks
+    // sub final (func ...) = 0x4f 0x00 0x60 ...
     const buffer: number[] = [];
-    buffer.push(0x60);
+    buffer.push(0x4f); // sub final
+    buffer.push(0x00); // 0 supertypes
+    buffer.push(0x60); // func
 
     this.#writeUnsignedLEB128(buffer, params.length);
     for (const param of params) {
@@ -109,10 +112,12 @@ export class WasmModule {
   }
 
   public addArrayType(elementType: number[], mutable: boolean): number {
-    // Array type: 0x5E + field_type
-    // field_type: val_type + mutability
+    // Array type wrapped in sub final for compatibility with rec blocks
+    // sub final (array ...) = 0x4f 0x00 0x5e ...
     const buffer: number[] = [];
-    buffer.push(0x5e);
+    buffer.push(0x4f); // sub final
+    buffer.push(0x00); // 0 supertypes
+    buffer.push(0x5e); // array
     buffer.push(...elementType);
     buffer.push(mutable ? 1 : 0);
     this.#types.push(buffer);
@@ -233,9 +238,14 @@ export class WasmModule {
     buffer.push(0x00, 0x61, 0x73, 0x6d);
     buffer.push(0x01, 0x00, 0x00, 0x00);
 
-    // Type Section
+    // Type Section - wrapped in a single rec block for mutually recursive types
     if (this.#types.length > 0) {
       const sectionBuffer: number[] = [];
+      // Write 1 for the count (one rec group containing all types)
+      this.#writeUnsignedLEB128(sectionBuffer, 1);
+      // rec opcode
+      sectionBuffer.push(0x4e);
+      // Count of types in the rec group
       this.#writeUnsignedLEB128(sectionBuffer, this.#types.length);
       for (let i = 0; i < this.#types.length; i++) {
         const type = this.#types[i];
@@ -461,11 +471,25 @@ export class WasmModule {
 
   public getFunctionTypeArity(typeIndex: number): number {
     const typeBytes = this.#types[typeIndex];
-    if (!typeBytes || typeBytes[0] !== 0x60) {
+    if (!typeBytes) {
       throw new Error(`Type ${typeIndex} is not a function type`);
     }
 
-    let offset = 1;
+    // Handle sub final wrapped function types (0x4f 0x00 0x60 ...)
+    // or plain function types (0x60 ...)
+    let offset = 0;
+    if (typeBytes[0] === 0x4f) {
+      // sub final: skip 0x4f, skip supertype count (0), then expect 0x60
+      offset = 1;
+      // Skip supertype count (LEB128)
+      while ((typeBytes[offset++] & 0x80) !== 0) {}
+      // Now should be at func opcode
+    }
+    if (typeBytes[offset] !== 0x60) {
+      throw new Error(`Type ${typeIndex} is not a function type`);
+    }
+    offset++; // Skip 0x60
+
     // Read params count (LEB128)
     let paramCount = 0;
     let shift = 0;
@@ -480,11 +504,24 @@ export class WasmModule {
 
   public getFunctionTypeParams(typeIndex: number): number[][] {
     const typeBytes = this.#types[typeIndex];
-    if (!typeBytes || typeBytes[0] !== 0x60) {
+    if (!typeBytes) {
       throw new Error(`Type ${typeIndex} is not a function type`);
     }
 
-    let offset = 1;
+    // Handle sub final wrapped function types (0x4f 0x00 0x60 ...)
+    // or plain function types (0x60 ...)
+    let offset = 0;
+    if (typeBytes[0] === 0x4f) {
+      // sub final: skip 0x4f, skip supertype count (0), then expect 0x60
+      offset = 1;
+      // Skip supertype count (LEB128)
+      while ((typeBytes[offset++] & 0x80) !== 0) {}
+      // Now should be at func opcode
+    }
+    if (typeBytes[offset] !== 0x60) {
+      throw new Error(`Type ${typeIndex} is not a function type`);
+    }
+    offset++; // Skip 0x60
     // Read params count (LEB128)
     let paramCount = 0;
     let shift = 0;
@@ -552,11 +589,24 @@ export class WasmModule {
 
   public getFunctionTypeResults(typeIndex: number): number[][] {
     const typeBytes = this.#types[typeIndex];
-    if (!typeBytes || typeBytes[0] !== 0x60) {
+    if (!typeBytes) {
       throw new Error(`Type ${typeIndex} is not a function type`);
     }
 
-    let offset = 1;
+    // Handle sub final wrapped function types (0x4f 0x00 0x60 ...)
+    // or plain function types (0x60 ...)
+    let offset = 0;
+    if (typeBytes[0] === 0x4f) {
+      // sub final: skip 0x4f, skip supertype count (0), then expect 0x60
+      offset = 1;
+      // Skip supertype count (LEB128)
+      while ((typeBytes[offset++] & 0x80) !== 0) {}
+      // Now should be at func opcode
+    }
+    if (typeBytes[offset] !== 0x60) {
+      throw new Error(`Type ${typeIndex} is not a function type`);
+    }
+    offset++; // Skip 0x60
     // Read params count (LEB128)
     let paramCount = 0;
     let shift = 0;
@@ -708,8 +758,8 @@ export class WasmModule {
     }
     let offset = 0;
 
-    // Handle 'sub' (0x50) prefix if present
-    if (typeBytes[offset] === 0x50) {
+    // Handle 'sub' (0x50) or 'sub final' (0x4f) prefix if present
+    if (typeBytes[offset] === 0x50 || typeBytes[offset] === 0x4f) {
       offset++;
       // Read supertype list length
       let count = 0;

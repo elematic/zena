@@ -1625,13 +1625,6 @@ function generateCallExpression(
 
     if (ctx.currentClass && ctx.currentClass.superClass) {
       // Normal class super call
-      // Load 'this'
-      body.push(Opcode.local_get, 0);
-      // Args
-      for (const arg of expr.arguments) {
-        generateExpression(ctx, arg, body);
-      }
-      // Call super constructor
       const superClassInfo = ctx.classes.get(ctx.currentClass.superClass)!;
       const ctorInfo = superClassInfo.methods.get('#new');
       if (!ctorInfo) {
@@ -1642,6 +1635,13 @@ function generateCallExpression(
           `Super constructor not found for ${ctx.currentClass.name}`,
         );
       }
+      // Load 'this'
+      body.push(Opcode.local_get, 0);
+      // Args
+      for (const arg of expr.arguments) {
+        generateExpression(ctx, arg, body);
+      }
+      // Call super constructor
       body.push(Opcode.call);
       body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
       return;
@@ -3944,10 +3944,13 @@ function generateFunctionExpression(
 
   ctx.currentTypeContext = oldTypeContext;
 
-  //  // 4. Generate Implementation Function
-  const implParams = [[ValType.eqref], ...paramTypes];
-  const implResults = returnType.length > 0 ? [returnType] : [];
-  const implTypeIndex = ctx.module.addType(implParams, implResults);
+  // 4. Get or create closure type (this must happen BEFORE creating the impl function
+  // to ensure type indices match)
+  const closureTypeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
+  const closureInfo = ctx.closureStructs.get(closureTypeIndex)!;
+  const implTypeIndex = closureInfo.funcTypeIndex;
+
+  // 5. Generate Implementation Function using the type from the closure struct
   const implFuncIndex = ctx.module.addFunction(implTypeIndex);
 
   ctx.module.declareFunction(implFuncIndex);
@@ -4062,9 +4065,7 @@ function generateFunctionExpression(
   }
 
   // Create Closure Struct
-  // We need the Closure Struct Type Index
-  const closureTypeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
-
+  // closureTypeIndex was obtained earlier (before creating the impl function)
   body.push(0xfb, GcOpcode.struct_new);
   body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
 }
@@ -5019,7 +5020,6 @@ function generateTaggedTemplateExpression(
 
     // Check for local variable (closure/func ref)
     const local = ctx.getLocal(name);
-    if (local) console.log(`TaggedTemplate: found local ${name}`);
     if (local) {
       const closureTypeIndex = decodeTypeIndex(local.type);
       const closureInfo = ctx.closureStructs.get(closureTypeIndex);

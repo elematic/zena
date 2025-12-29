@@ -763,12 +763,52 @@ export function preRegisterClassStruct(
     !!ctx.wellKnownTypes.String &&
     decl.name.name === ctx.wellKnownTypes.String.name.name;
 
+  // If the superclass is generic, instantiate it first so it gets a lower type index
+  if (decl.superClass) {
+    const baseSuperName = getTypeAnnotationName(decl.superClass);
+    const superTypeArgs =
+      decl.superClass.type === NodeType.TypeAnnotation
+        ? decl.superClass.typeArguments
+        : undefined;
+
+    if (superTypeArgs && superTypeArgs.length > 0) {
+      // Superclass is generic - need to instantiate it first
+      const specializedName = getSpecializedName(
+        baseSuperName,
+        superTypeArgs,
+        ctx,
+      );
+      if (!ctx.classes.has(specializedName)) {
+        const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
+        if (genericSuperDecl) {
+          instantiateClass(
+            ctx,
+            genericSuperDecl,
+            specializedName,
+            superTypeArgs,
+          );
+        }
+      }
+    }
+  }
+
   // If the class uses mixins, pre-register the intermediate mixin classes first
   // They must have lower type indices than this class since they'll be its supertype chain
   if (decl.mixins && decl.mixins.length > 0) {
     let currentSuperClassInfo: ClassInfo | undefined;
     if (decl.superClass) {
-      const superClassName = getTypeAnnotationName(decl.superClass);
+      const baseSuperName = getTypeAnnotationName(decl.superClass);
+      const superTypeArgs =
+        decl.superClass.type === NodeType.TypeAnnotation
+          ? decl.superClass.typeArguments
+          : undefined;
+
+      let superClassName: string;
+      if (superTypeArgs && superTypeArgs.length > 0) {
+        superClassName = getSpecializedName(baseSuperName, superTypeArgs, ctx);
+      } else {
+        superClassName = baseSuperName;
+      }
       currentSuperClassInfo = ctx.classes.get(superClassName);
     }
 
@@ -849,7 +889,33 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
   let currentSuperClassInfo: ClassInfo | undefined;
   if (decl.superClass) {
-    const superClassName = getTypeAnnotationName(decl.superClass);
+    const baseSuperName = getTypeAnnotationName(decl.superClass);
+    const superTypeArgs =
+      decl.superClass.type === NodeType.TypeAnnotation
+        ? decl.superClass.typeArguments
+        : undefined;
+
+    let superClassName: string;
+    if (superTypeArgs && superTypeArgs.length > 0) {
+      // Superclass is generic - need to get/instantiate the specialized version
+      superClassName = getSpecializedName(baseSuperName, superTypeArgs, ctx);
+
+      // Ensure the superclass is instantiated
+      if (!ctx.classes.has(superClassName)) {
+        const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
+        if (genericSuperDecl) {
+          instantiateClass(
+            ctx,
+            genericSuperDecl,
+            superClassName,
+            superTypeArgs,
+          );
+        }
+      }
+    } else {
+      superClassName = baseSuperName;
+    }
+
     currentSuperClassInfo = ctx.classes.get(superClassName);
     if (!currentSuperClassInfo) {
       throw new Error(`Unknown superclass ${superClassName}`);
@@ -2377,6 +2443,7 @@ export function instantiateClass(
       if (!ctx.classes.has(superClassName)) {
         const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
         if (genericSuperDecl) {
+          const pendingCountBefore = ctx.pendingMethodGenerations.length;
           instantiateClass(
             ctx,
             genericSuperDecl,
@@ -2384,6 +2451,13 @@ export function instantiateClass(
             superTypeArgs,
             context,
           );
+          // Execute any pending method registrations from the superclass
+          // so that methods and vtable are available for inheritance
+          while (ctx.pendingMethodGenerations.length > pendingCountBefore) {
+            const gen = ctx.pendingMethodGenerations[pendingCountBefore];
+            ctx.pendingMethodGenerations.splice(pendingCountBefore, 1);
+            gen();
+          }
         }
       }
     } else {
@@ -2396,14 +2470,31 @@ export function instantiateClass(
 
   let fieldIndex = 0;
   let structTypeIndex = -1;
+  let superTypeIndex: number | undefined;
   let onType: number[] | undefined;
 
   if (decl.isExtension && decl.onType) {
     onType = mapType(ctx, decl.onType, context);
   } else {
-    // Add vtable field
-    fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
-    fieldTypes.push({type: [ValType.eqref], mutable: true});
+    // Check for superclass and inherit fields
+    if (superClassName && ctx.classes.has(superClassName)) {
+      const superClassInfo = ctx.classes.get(superClassName)!;
+      superTypeIndex = superClassInfo.structTypeIndex;
+
+      // Inherit fields from superclass
+      const sortedSuperFields = Array.from(
+        superClassInfo.fields.entries(),
+      ).sort((a, b) => a[1].index - b[1].index);
+
+      for (const [name, info] of sortedSuperFields) {
+        fields.set(name, {index: fieldIndex++, type: info.type});
+        fieldTypes.push({type: info.type, mutable: true});
+      }
+    } else {
+      // Root class: Add vtable field
+      fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
+      fieldTypes.push({type: [ValType.eqref], mutable: true});
+    }
 
     for (const member of decl.body) {
       if (member.type === NodeType.FieldDefinition) {
@@ -2417,7 +2508,7 @@ export function instantiateClass(
       }
     }
 
-    structTypeIndex = ctx.module.addStructType(fieldTypes);
+    structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
   }
 
   const methods = new Map<
@@ -2432,6 +2523,21 @@ export function instantiateClass(
     }
   >();
   const vtable: string[] = [];
+
+  // Inherit methods from superclass
+  if (superClassName && ctx.classes.has(superClassName)) {
+    const superClassInfo = ctx.classes.get(superClassName)!;
+
+    // Copy inherited methods
+    for (const [methodName, methodInfo] of superClassInfo.methods.entries()) {
+      methods.set(methodName, {...methodInfo});
+    }
+
+    // Copy inherited vtable entries
+    if (superClassInfo.vtable) {
+      vtable.push(...superClassInfo.vtable);
+    }
+  }
 
   const classInfo: ClassInfo = {
     name: specializedName,

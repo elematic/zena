@@ -1,7 +1,7 @@
 import {type Program} from '../ast.js';
 import {type Diagnostic} from '../diagnostics.js';
 import {CheckerContext} from './context.js';
-import {checkStatement} from './statements.js';
+import {checkStatement, predeclareType} from './statements.js';
 import type {Compiler, Module} from '../compiler.js';
 import {
   TypeKind,
@@ -59,6 +59,13 @@ export class TypeChecker {
       this.#registerIntrinsics(ctx);
     }
 
+    // First pass: pre-declare all type names (classes, mixins, interfaces)
+    // This enables forward references (e.g., a mixin field referencing a class that uses the mixin)
+    for (const stmt of this.#program.body) {
+      predeclareType(ctx, stmt);
+    }
+
+    // Second pass: fully check all statements
     for (const stmt of this.#program.body) {
       checkStatement(ctx, stmt);
     }
