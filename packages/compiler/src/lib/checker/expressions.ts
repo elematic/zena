@@ -65,6 +65,40 @@ import {
 } from './types.js';
 import {checkStatement} from './statements.js';
 
+/**
+ * Resolves a member (field or method) type from a class, handling generic type substitution.
+ * When the class is an instantiated generic (e.g., Node<i32>), the member types are defined
+ * in terms of type parameters (e.g., T) and need to be substituted with the actual type arguments.
+ */
+function resolveMemberType(
+  classType: ClassType | InterfaceType,
+  memberType: Type,
+): Type {
+  // If the class doesn't have type arguments, no substitution needed
+  if (!classType.typeArguments || classType.typeArguments.length === 0) {
+    return memberType;
+  }
+
+  // Get the type parameters from genericSource or the class itself
+  const source = (classType as ClassType).genericSource || classType;
+  const typeParameters = source.typeParameters;
+
+  if (!typeParameters || typeParameters.length === 0) {
+    return memberType;
+  }
+
+  // Create a typeMap from type parameter names to type arguments
+  const typeMap = new Map<string, Type>();
+  typeParameters.forEach((param: TypeParameterType, index: number) => {
+    if (index < classType.typeArguments!.length) {
+      typeMap.set(param.name, classType.typeArguments![index]);
+    }
+  });
+
+  // Substitute type parameters in the member type
+  return substituteType(memberType, typeMap);
+}
+
 export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
   const type = checkExpressionInternal(ctx, expr);
   expr.inferredType = type;
@@ -1250,25 +1284,30 @@ function checkAssignmentExpression(
       const classType = objectType as ClassType | InterfaceType;
       const setter = classType.methods.get('[]=');
       if (setter) {
+        // Resolve the method type with generic substitution for the class's type arguments
+        const resolvedSetter = resolveMemberType(
+          classType,
+          setter,
+        ) as FunctionType;
         const indexType = checkExpression(ctx, indexExpr.index);
 
-        if (setter.parameters.length !== 2) {
+        if (resolvedSetter.parameters.length !== 2) {
           ctx.diagnostics.reportError(
             `Operator []= must take exactly two arguments (index and value).`,
             DiagnosticCode.ArgumentCountMismatch,
           );
         } else {
-          if (!isAssignableTo(ctx, indexType, setter.parameters[0])) {
+          if (!isAssignableTo(ctx, indexType, resolvedSetter.parameters[0])) {
             ctx.diagnostics.reportError(
-              `Type mismatch in index: expected ${typeToString(setter.parameters[0])}, got ${typeToString(indexType)}`,
+              `Type mismatch in index: expected ${typeToString(resolvedSetter.parameters[0])}, got ${typeToString(indexType)}`,
               DiagnosticCode.TypeMismatch,
             );
           }
 
           const valueType = checkExpression(ctx, expr.value);
-          if (!isAssignableTo(ctx, valueType, setter.parameters[1])) {
+          if (!isAssignableTo(ctx, valueType, resolvedSetter.parameters[1])) {
             ctx.diagnostics.reportError(
-              `Type mismatch in assignment: expected ${typeToString(setter.parameters[1])}, got ${typeToString(valueType)}`,
+              `Type mismatch in assignment: expected ${typeToString(resolvedSetter.parameters[1])}, got ${typeToString(valueType)}`,
               DiagnosticCode.TypeMismatch,
             );
           }
@@ -1839,18 +1878,25 @@ function checkMemberExpression(
 
   // Check fields
   if (classType.fields.has(memberName)) {
-    return classType.fields.get(memberName)!;
+    const fieldType = classType.fields.get(memberName)!;
+    return resolveMemberType(classType, fieldType);
   }
 
   // Check methods
   if (classType.methods.has(memberName)) {
-    return classType.methods.get(memberName)!;
+    const methodType = classType.methods.get(memberName)!;
+    return resolveMemberType(classType, methodType);
   }
 
   // Check getters
   const getterName = `get_${memberName}`;
   if (classType.methods.has(getterName)) {
-    return classType.methods.get(getterName)!.returnType;
+    const getterType = classType.methods.get(getterName)!;
+    const resolvedGetter = resolveMemberType(
+      classType,
+      getterType,
+    ) as FunctionType;
+    return resolvedGetter.returnType;
   }
 
   ctx.diagnostics.reportError(
@@ -1977,20 +2023,25 @@ function checkIndexExpression(
     const classType = objectType as ClassType | InterfaceType;
     const method = classType.methods.get('[]');
     if (method) {
-      if (method.parameters.length !== 1) {
+      // Resolve the method type with generic substitution for the class's type arguments
+      const resolvedMethod = resolveMemberType(
+        classType,
+        method,
+      ) as FunctionType;
+      if (resolvedMethod.parameters.length !== 1) {
         ctx.diagnostics.reportError(
           `Operator [] must take exactly one argument.`,
           DiagnosticCode.ArgumentCountMismatch,
         );
       } else {
-        if (!isAssignableTo(ctx, indexType, method.parameters[0])) {
+        if (!isAssignableTo(ctx, indexType, resolvedMethod.parameters[0])) {
           ctx.diagnostics.reportError(
-            `Type mismatch in index: expected ${typeToString(method.parameters[0])}, got ${typeToString(indexType)}`,
+            `Type mismatch in index: expected ${typeToString(resolvedMethod.parameters[0])}, got ${typeToString(indexType)}`,
             DiagnosticCode.TypeMismatch,
           );
         }
       }
-      return method.returnType;
+      return resolvedMethod.returnType;
     }
   }
 

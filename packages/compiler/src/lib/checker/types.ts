@@ -60,34 +60,58 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
         substituteType(t, typeMap),
       );
 
-      const newFields = new Map<string, Type>();
-      for (const [name, type] of ct.fields) {
-        newFields.set(name, substituteType(type, typeMap));
+      // Check if the substitution is a no-op (all typeArguments unchanged)
+      const isNoOp = newTypeArguments.every(
+        (newArg, i) => newArg === ct.typeArguments![i],
+      );
+      if (isNoOp) {
+        return ct;
       }
 
-      const newMethods = new Map<string, FunctionType>();
-      for (const [name, fn] of ct.methods) {
-        newMethods.set(name, substituteType(fn, typeMap) as FunctionType);
+      // For self-referential types, we need to avoid infinite recursion.
+      // We do this by NOT recursively substituting fields/methods here.
+      // Instead, we just update the typeArguments and keep a reference to the generic source.
+      // The field types will be resolved on-demand using resolveMemberType in expressions.ts.
+      //
+      // This is safe because:
+      // 1. Field/method types are defined in terms of the class's type parameters
+      // 2. When accessing a field/method, resolveMemberType substitutes using typeArguments
+      // 3. This breaks the infinite recursion that would occur if we tried to fully
+      //    substitute all fields here (e.g., Node<T> with field child: Node<T>)
+
+      const source = ct.genericSource || ct;
+
+      // Check if all typeArguments are TypeParameterTypes matching the source's typeParameters
+      // (identity substitution). In that case, return with typeArguments set.
+      if (
+        source.typeParameters &&
+        newTypeArguments.length === source.typeParameters.length &&
+        newTypeArguments.every(
+          (arg, i) =>
+            arg.kind === TypeKind.TypeParameter &&
+            (arg as TypeParameterType).name === source.typeParameters![i].name,
+        )
+      ) {
+        return {
+          ...source,
+          typeArguments: newTypeArguments,
+        } as ClassType;
       }
 
-      const newConstructor = ct.constructorType
-        ? (substituteType(ct.constructorType, typeMap) as FunctionType)
-        : undefined;
-      const newOnType = ct.onType
-        ? substituteType(ct.onType, typeMap)
-        : undefined;
-      const newSuperType = ct.superType
-        ? (substituteType(ct.superType, typeMap) as ClassType)
-        : undefined;
+      // Substitute the implements list so interface assignability checks work correctly.
+      // This is safe because interfaces don't have self-referential fields.
+      const newImplements = source.implements.map(
+        (impl) => substituteType(impl, typeMap) as InterfaceType,
+      );
 
+      // Return a ClassType with substituted typeArguments but shared fields/methods from source.
+      // The genericSource allows resolveMemberType to properly substitute field types on access.
       return {
-        ...ct,
+        ...source,
         typeArguments: newTypeArguments,
-        fields: newFields,
-        methods: newMethods,
-        constructorType: newConstructor,
-        onType: newOnType,
-        superType: newSuperType,
+        implements: newImplements,
+        genericSource:
+          source.genericSource || (source.typeParameters ? source : undefined),
       } as ClassType;
     }
   }
@@ -565,6 +589,26 @@ export function instantiateGenericClass(
       genericClass.typeParameters,
       typeArguments,
     );
+  }
+
+  // Check if this is an identity substitution (e.g., ListNode<T> inside class ListNode<T>).
+  // In this case, we can return the original class to avoid issues with incomplete fields
+  // during class declaration processing, and to avoid infinite recursion for self-referential types.
+  if (
+    genericClass.typeParameters &&
+    typeArguments.length === genericClass.typeParameters.length &&
+    typeArguments.every(
+      (arg, i) =>
+        arg.kind === TypeKind.TypeParameter &&
+        (arg as TypeParameterType).name ===
+          genericClass.typeParameters![i].name,
+    )
+  ) {
+    // Identity substitution - return original class with typeArguments set
+    return {
+      ...genericClass,
+      typeArguments,
+    };
   }
 
   const typeMap = new Map<string, Type>();

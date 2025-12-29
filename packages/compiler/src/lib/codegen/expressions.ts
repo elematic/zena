@@ -1184,8 +1184,30 @@ function generateMemberExpression(
     expr.object.inferredType.kind === TypeKind.Class
   ) {
     const classType = expr.object.inferredType as ClassType;
+
+    // First try direct name lookup (works for non-generic classes)
     if (ctx.classes.has(classType.name)) {
       foundClass = ctx.classes.get(classType.name);
+    }
+
+    // If the class has typeArguments, try to find the specialized version
+    if (
+      !foundClass &&
+      classType.typeArguments &&
+      classType.typeArguments.length > 0
+    ) {
+      // Convert type arguments to type annotations and get specialized name
+      const typeAnnotations = classType.typeArguments.map((arg) =>
+        typeToTypeAnnotation(arg),
+      );
+      const specializedName = getSpecializedName(
+        classType.name,
+        typeAnnotations,
+        ctx,
+      );
+      if (ctx.classes.has(specializedName)) {
+        foundClass = ctx.classes.get(specializedName);
+      }
     }
   }
 
@@ -1441,6 +1463,7 @@ function generateMemberExpression(
         }
         // Static dispatch - direct call
         generateExpression(ctx, expr.object, body);
+
         body.push(Opcode.call);
         body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
       } else {
@@ -1448,8 +1471,25 @@ function generateMemberExpression(
 
         generateExpression(ctx, expr.object, body);
 
+        // Cast if object is anyref (e.g., from narrowed union type)
+        const isAnyRef =
+          objectType.length === 1 && objectType[0] === ValType.anyref;
+        if (isAnyRef) {
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+          );
+        }
+
         // 1. Duplicate 'this' for vtable lookup
-        const tempThis = ctx.declareLocal('$$temp_this', objectType);
+        // Use the struct type for the temp local since we've already cast
+        const tempThisType = isAnyRef
+          ? [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+            ]
+          : objectType;
+        const tempThis = ctx.declareLocal('$$temp_this', tempThisType);
         body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
 
         // 2. Load VTable
@@ -1525,6 +1565,17 @@ function generateMemberExpression(
   }
 
   generateExpression(ctx, expr.object, body);
+
+  // If the object is stored in an anyref (e.g., from a union type like Node<T> | null),
+  // we need to cast it to the specific struct type before struct_get.
+  // The objectType inferred from the expression might be anyref even though
+  // the checker has narrowed it to a more specific type.
+  const isAnyRef = objectType.length === 1 && objectType[0] === ValType.anyref;
+  if (isAnyRef) {
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
+  }
+
   body.push(0xfb, GcOpcode.struct_get);
   body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
   body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
