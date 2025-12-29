@@ -135,6 +135,8 @@ some of my thoughts and motivations at the moment:
 - [ ] Numeric unit types
 - [ ] Extension methods
 - [ ] Operator overloading
+- [ ] `operator is` overloading
+- [ ] `TypeId<T>` intrinsic
 - [ ] Intersection types
 - [ ] Mixin constructors
 - [ ] Async functions

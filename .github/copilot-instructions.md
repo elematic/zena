@@ -201,6 +201,7 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Strings**: `docs/design/strings.md`
     - **Types**: `docs/design/types.md`
     - **Weak References**: `docs/design/weak-references.md`
+    - **Runtime Type Tags**: `docs/design/runtime-type-tags.md`
 
 ## Future Considerations
 
@@ -345,6 +346,8 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **OOP & Functions**:
       - Extension methods.
       - Operator overloading.
+      - `operator is` overloading (zero-cost for non-overriders).
+      - `TypeId<T>` intrinsic (compile-time type identifier).
       - Mixin constructors.
       - Async functions.
     - **Standard Library & Runtime**:
