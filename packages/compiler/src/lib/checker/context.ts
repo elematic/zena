@@ -2,6 +2,7 @@ import {DiagnosticBag, DiagnosticCode} from '../diagnostics.js';
 import {
   type Type,
   type ClassType,
+  type InterfaceType,
   type FunctionType,
   Types,
   TypeNames,
@@ -20,12 +21,14 @@ export class CheckerContext {
   diagnostics = new DiagnosticBag();
   currentFunctionReturnType: Type | null = null;
   currentClass: ClassType | null = null;
+  currentInterface: InterfaceType | null = null;
   currentMethod: string | null = null;
   isThisInitialized = true;
   program: Program;
   module?: Module;
   compiler?: Compiler;
   #classStack: (ClassType | null)[] = [];
+  #interfaceStack: (InterfaceType | null)[] = [];
 
   // Field initialization tracking
   isCheckingFieldInitializer = false;
@@ -73,6 +76,28 @@ export class CheckerContext {
 
   exitClass() {
     this.currentClass = this.#classStack.pop() || null;
+  }
+
+  enterInterface(interfaceType: InterfaceType) {
+    this.#interfaceStack.push(this.currentInterface);
+    // For generic interfaces, set typeArguments = typeParameters so that
+    // `this` type is consistent (represents Interface<T>).
+    if (
+      interfaceType.typeParameters &&
+      interfaceType.typeParameters.length > 0 &&
+      !interfaceType.typeArguments
+    ) {
+      this.currentInterface = {
+        ...interfaceType,
+        typeArguments: interfaceType.typeParameters,
+      };
+    } else {
+      this.currentInterface = interfaceType;
+    }
+  }
+
+  exitInterface() {
+    this.currentInterface = this.#interfaceStack.pop() || null;
   }
 
   enterScope() {

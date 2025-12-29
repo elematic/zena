@@ -2561,6 +2561,15 @@ export class Parser {
       } as LiteralTypeAnnotation;
     }
 
+    // Check for `this` type
+    if (this.#match(TokenType.This)) {
+      const token = this.#previous();
+      return {
+        type: NodeType.ThisTypeAnnotation,
+        loc: this.#loc(startToken, token),
+      };
+    }
+
     // Otherwise parse as named type
     return this.#parseNamedTypeAnnotation();
   }

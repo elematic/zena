@@ -5327,8 +5327,25 @@ export function generateAdaptedArgument(
         const sourceType = expectedParams[i + 1];
         const targetType = actualParams[i + 1];
 
+        // Check if source is anyref and target is a specific struct type
+        // This handles `this` type in callback parameters: interface uses anyref,
+        // but the actual closure expects a specific class type
+        const isSourceAnyRef =
+          (sourceType.length === 1 && sourceType[0] === ValType.anyref) ||
+          (sourceType.length === 2 &&
+            sourceType[0] === ValType.ref_null &&
+            sourceType[1] === ValType.anyref);
+        const isTargetStruct =
+          targetType.length > 1 &&
+          (targetType[0] === ValType.ref || targetType[0] === ValType.ref_null);
+
+        if (isSourceAnyRef && isTargetStruct) {
+          // Cast from anyref to the specific struct type
+          funcBody.push(0xfb, GcOpcode.ref_cast_null);
+          funcBody.push(...targetType.slice(1)); // type index
+        }
         // Interface Boxing
-        if (sourceType.length > 1 && targetType.length > 1) {
+        else if (sourceType.length > 1 && targetType.length > 1) {
           const sourceTypeIndex = decodeTypeIndex(sourceType);
           const targetTypeIndex = decodeTypeIndex(targetType);
 

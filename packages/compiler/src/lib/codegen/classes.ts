@@ -378,11 +378,16 @@ export function generateTrampoline(
     // Load argument
     body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(paramIndex));
 
-    // Adapt if needed (unbox)
-    if (
-      interfaceParamType.length === 1 &&
-      interfaceParamType[0] === ValType.anyref
-    ) {
+    // Check if interface param is anyref (either as single byte or ref_null anyref)
+    const isAnyRef =
+      (interfaceParamType.length === 1 &&
+        interfaceParamType[0] === ValType.anyref) ||
+      (interfaceParamType.length === 2 &&
+        interfaceParamType[0] === ValType.ref_null &&
+        interfaceParamType[1] === ValType.anyref);
+
+    // Adapt if needed (unbox/cast)
+    if (isAnyRef) {
       if (
         classParamType.length === 1 &&
         (classParamType[0] === ValType.i32 ||
@@ -398,6 +403,76 @@ export function generateTrampoline(
       ) {
         body.push(0xfb, GcOpcode.ref_cast_null);
         body.push(...classParamType.slice(1));
+      }
+    } else {
+      // Check if both are closure types but with different type indices
+      // This happens when the interface has `this` type in callback params
+      const interfaceTypeIndex = decodeTypeIndex(interfaceParamType);
+      const classTypeIndex = decodeTypeIndex(classParamType);
+      
+      if (interfaceTypeIndex !== -1 && classTypeIndex !== -1 && 
+          interfaceTypeIndex !== classTypeIndex) {
+        const interfaceClosure = ctx.closureStructs.get(interfaceTypeIndex);
+        const classClosure = ctx.closureStructs.get(classTypeIndex);
+        
+        if (interfaceClosure && classClosure) {
+          // Need to create a wrapper closure that adapts the callback
+          // The interface callback has anyref param, class callback has specific type
+          // Wrapper: takes specific type, casts to anyref (no-op upcast), calls interface callback
+          
+          const wrapperFuncIndex = ctx.module.addFunction(classClosure.funcTypeIndex);
+          ctx.module.declareFunction(wrapperFuncIndex);
+          
+          // Store the interface closure in a temp local for the wrapper
+          const tempClosureLocal = ctx.declareLocal('$$tramp_closure', interfaceParamType);
+          body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempClosureLocal));
+          
+          ctx.pendingHelperFunctions.push(() => {
+            const wrapperBody: number[] = [];
+            
+            // Param 0: context (eqref) - will hold the interface closure
+            // Param 1+: arguments with specific types
+            
+            // Get the interface closure from context
+            wrapperBody.push(Opcode.local_get, 0);
+            wrapperBody.push(0xfb, GcOpcode.ref_cast, ...WasmModule.encodeSignedLEB128(interfaceTypeIndex));
+            
+            // Get interface closure's context
+            wrapperBody.push(0xfb, GcOpcode.struct_get, 
+              ...WasmModule.encodeSignedLEB128(interfaceTypeIndex),
+              ...WasmModule.encodeSignedLEB128(1)); // context field
+            
+            // Get params from wrapper and pass to interface closure
+            // Interface closure expects anyref params (or other erased types)
+            const classFuncParams = ctx.module.getFunctionTypeParams(classClosure.funcTypeIndex);
+            
+            for (let j = 1; j < classFuncParams.length; j++) {
+              wrapperBody.push(Opcode.local_get, j);
+              // No cast needed - subtyping allows specific type where anyref is expected
+            }
+            
+            // Get interface closure's func ref
+            wrapperBody.push(Opcode.local_get, 0);
+            wrapperBody.push(0xfb, GcOpcode.ref_cast, ...WasmModule.encodeSignedLEB128(interfaceTypeIndex));
+            wrapperBody.push(0xfb, GcOpcode.struct_get,
+              ...WasmModule.encodeSignedLEB128(interfaceTypeIndex),
+              ...WasmModule.encodeSignedLEB128(0)); // func field
+            
+            // Call the interface closure
+            wrapperBody.push(Opcode.call_ref, ...WasmModule.encodeSignedLEB128(interfaceClosure.funcTypeIndex));
+            
+            wrapperBody.push(Opcode.end);
+            ctx.module.addCode(wrapperFuncIndex, [], wrapperBody);
+          });
+          
+          // Create the wrapper closure struct
+          // func ref to wrapper
+          body.push(Opcode.ref_func, ...WasmModule.encodeSignedLEB128(wrapperFuncIndex));
+          // context = the interface closure
+          body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempClosureLocal));
+          // struct.new for class closure type
+          body.push(0xfb, GcOpcode.struct_new, ...WasmModule.encodeSignedLEB128(classTypeIndex));
+        }
       }
     }
   }
@@ -1202,6 +1277,10 @@ export function registerClassMethods(
   const classInfo = ctx.classes.get(decl.name.name);
   if (!classInfo) throw new Error(`Class ${decl.name.name} not found`);
 
+  // Set current class for `this` type resolution in method signatures
+  const previousCurrentClass = ctx.currentClass;
+  ctx.currentClass = classInfo;
+
   // Ensure vtable exists if we are going to use it
   if (!classInfo.vtable) {
     classInfo.vtable = [];
@@ -1693,6 +1772,9 @@ export function registerClassMethods(
   ctx.bodyGenerators.push(() => {
     generateClassMethods(ctx, declForGen);
   });
+
+  // Restore previous class context
+  ctx.currentClass = previousCurrentClass;
 }
 
 export function generateClassMethods(
@@ -1772,13 +1854,13 @@ export function generateClassMethods(
           member.isStatic || (classInfo.isExtension && methodName === '#new')
             ? i
             : i + 1;
+        const paramType = methodInfo.paramTypes[paramTypeIndex];
         ctx.defineLocal(
           param.name.name,
           ctx.nextLocalIndex++,
-          methodInfo.paramTypes[paramTypeIndex],
+          paramType,
         );
       }
-
       if (classInfo.isExtension && methodName === '#new') {
         // Extension constructor: 'this' is a local variable, not a param
         const thisLocalIndex = ctx.nextLocalIndex++;
@@ -2212,6 +2294,18 @@ function mapTypeInternal(
   const typeContext = context || ctx.currentTypeContext;
   if (!type) return [ValType.i32];
 
+  // Handle `this` type - resolve to current class type
+  if (type.type === NodeType.ThisTypeAnnotation) {
+    if (ctx.currentClass) {
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(ctx.currentClass.structTypeIndex),
+      ];
+    }
+    // In interface context (no currentClass), use anyref since any class can implement
+    return [ValType.ref_null, ValType.anyref];
+  }
+
   // Resolve generic type parameters
   if (
     type.type === NodeType.TypeAnnotation &&
@@ -2554,6 +2648,10 @@ export function instantiateClass(
   ctx.classes.set(specializedName, classInfo);
 
   const registerMethods = () => {
+    // Set current class for `this` type resolution in method signatures
+    const previousCurrentClass = ctx.currentClass;
+    ctx.currentClass = classInfo;
+
     // Register methods
     const members = [...decl.body];
     const hasConstructor = members.some(
@@ -2895,6 +2993,9 @@ export function instantiateClass(
       ctx.bodyGenerators.push(() => {
         generateClassMethods(ctx, declForGen, specializedName, context);
       });
+
+      // Restore context before early return
+      ctx.currentClass = previousCurrentClass;
       return;
     }
 
@@ -3009,6 +3110,9 @@ export function instantiateClass(
     ctx.bodyGenerators.push(() => {
       generateClassMethods(ctx, declForGen, specializedName, context);
     });
+
+    // Restore context
+    ctx.currentClass = previousCurrentClass;
   };
 
   if (ctx.isGeneratingBodies) {

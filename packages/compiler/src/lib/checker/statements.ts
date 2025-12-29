@@ -54,6 +54,7 @@ import {checkExpression} from './expressions.js';
 import {
   isAssignableTo,
   resolveTypeAnnotation,
+  substituteType,
   typeToString,
   validateType,
 } from './types.js';
@@ -1714,6 +1715,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       const interfaceType = type as InterfaceType;
       classType.implements.push(interfaceType);
 
+      // Create a type map to substitute `this` with the implementing class.
+      // Use ctx.currentClass which has typeArguments set to typeParameters for generics.
+      const thisTypeMap = new Map<string, Type>();
+      thisTypeMap.set('$this', ctx.currentClass!);
+
       // Check methods
       for (const [name, type] of interfaceType.methods) {
         if (!classType.methods.has(name)) {
@@ -1730,7 +1736,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           );
         } else {
           const methodType = classType.methods.get(name)!;
-          if (!isAssignableTo(ctx, methodType, type)) {
+          // Substitute `this` type in the interface method with the implementing class
+          const substitutedType = substituteType(type, thisTypeMap);
+          if (!isAssignableTo(ctx, methodType, substitutedType)) {
             let memberName = `Method '${name}'`;
             if (name.startsWith('get_')) {
               memberName = `Getter for '${name.slice(4)}'`;
@@ -1739,7 +1747,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             }
 
             ctx.diagnostics.reportError(
-              `Class '${className}' incorrectly implements interface '${interfaceType.name}'. ${memberName} is type '${typeToString(methodType)}' but expected '${typeToString(type)}'.`,
+              `Class '${className}' incorrectly implements interface '${interfaceType.name}'. ${memberName} is type '${typeToString(methodType)}' but expected '${typeToString(substitutedType)}'.`,
               DiagnosticCode.TypeMismatch,
             );
           }
@@ -1855,6 +1863,7 @@ function checkInterfaceDeclaration(
 
   // Enter scope for type parameters
   ctx.enterScope();
+  ctx.enterInterface(interfaceType);
   if (interfaceType.typeParameters) {
     for (const param of interfaceType.typeParameters) {
       ctx.declare(param.name, param, 'type');
@@ -2026,6 +2035,7 @@ function checkInterfaceDeclaration(
     }
   }
 
+  ctx.exitInterface();
   ctx.exitScope();
 }
 

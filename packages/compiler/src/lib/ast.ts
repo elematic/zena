@@ -66,6 +66,7 @@ export const NodeType = {
   IfExpression: 'IfExpression',
   AccessorSignature: 'AccessorSignature',
   LiteralTypeAnnotation: 'LiteralTypeAnnotation',
+  ThisTypeAnnotation: 'ThisTypeAnnotation',
   SpreadElement: 'SpreadElement',
   ExportAllDeclaration: 'ExportAllDeclaration',
   ComputedPropertyName: 'ComputedPropertyName',
@@ -572,7 +573,8 @@ export type TypeAnnotation =
   | RecordTypeAnnotation
   | TupleTypeAnnotation
   | FunctionTypeAnnotation
-  | LiteralTypeAnnotation;
+  | LiteralTypeAnnotation
+  | ThisTypeAnnotation;
 
 export interface FunctionTypeAnnotation extends Node {
   type: typeof NodeType.FunctionTypeAnnotation;
@@ -610,6 +612,10 @@ export interface UnionTypeAnnotation extends Node {
 export interface LiteralTypeAnnotation extends Node {
   type: typeof NodeType.LiteralTypeAnnotation;
   value: string | number | boolean;
+}
+
+export interface ThisTypeAnnotation extends Node {
+  type: typeof NodeType.ThisTypeAnnotation;
 }
 
 export interface SuperExpression extends Node {

@@ -20,6 +20,7 @@ export const TypeKind = {
   Never: 'Never',
   Literal: 'Literal',
   Symbol: 'Symbol',
+  This: 'This',
 } as const;
 
 export type TypeKind = (typeof TypeKind)[keyof typeof TypeKind];
@@ -32,6 +33,14 @@ export interface Type {
 export interface SymbolType extends Type {
   kind: typeof TypeKind.Symbol;
   uniqueId?: string;
+}
+
+/**
+ * Represents the `this` type in class/interface definitions.
+ * This is a placeholder type that gets resolved to the actual implementing type.
+ */
+export interface ThisType extends Type {
+  kind: typeof TypeKind.This;
 }
 
 export interface UnionType extends Type {

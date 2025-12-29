@@ -12,6 +12,7 @@ import {
   type MixinType,
   type NumberType,
   type RecordType,
+  type ThisType,
   type TupleType,
   type Type,
   type TypeAliasType,
@@ -38,6 +39,7 @@ function isPrimitive(type: Type): boolean {
 /**
  * Substitutes type parameters in a type with concrete types from a map.
  * This is used during generic instantiation to replace T with i32, etc.
+ * Also handles substitution of `this` type using the special key '$this'.
  *
  * @param type The type to substitute parameters in.
  * @param typeMap A map from type parameter names to concrete types.
@@ -46,6 +48,10 @@ function isPrimitive(type: Type): boolean {
 export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
   if (type.kind === TypeKind.TypeParameter) {
     return typeMap.get((type as TypeParameterType).name) || type;
+  }
+  // Handle `this` type substitution
+  if (type.kind === TypeKind.This) {
+    return typeMap.get('$this') || type;
   }
   if (type.kind === TypeKind.Array) {
     return {
@@ -228,6 +234,24 @@ export function resolveTypeAnnotation(
       kind: TypeKind.Literal,
       value: annotation.value,
     } as LiteralType;
+  }
+
+  // Handle `this` type annotation
+  if (annotation.type === NodeType.ThisTypeAnnotation) {
+    // In a class context, resolve immediately to the class type
+    if (ctx.currentClass) {
+      return ctx.currentClass;
+    }
+    // In an interface context, keep as ThisType (resolved during implementation checking)
+    if (ctx.currentInterface) {
+      return {kind: TypeKind.This} as ThisType;
+    }
+    // Not in a class or interface
+    ctx.diagnostics.reportError(
+      `'this' type is only valid inside a class or interface.`,
+      DiagnosticCode.TypeMismatch,
+    );
+    return Types.Unknown;
   }
 
   if (annotation.type === NodeType.UnionTypeAnnotation) {
@@ -879,6 +903,8 @@ export function typeToString(type: Type): string {
       const elems = tt.elementTypes.map((t) => typeToString(t)).join(', ');
       return `[${elems}]`;
     }
+    case TypeKind.This:
+      return 'this';
     default:
       return type.kind;
   }

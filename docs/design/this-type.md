@@ -322,6 +322,30 @@ When checking that `Array<T>.forEach` implements `Sequence<T>.forEach`:
 2. Substitute `this` → `Array<T>`: `(f: (item: T, seq: Array<T>) => void) => void`
 3. Check implementation matches this resolved signature ✅
 
+### WASM Codegen: Closure Type Adaptation
+
+When an interface method has a callback parameter containing `this`, the interface
+and class method have different WASM closure types:
+
+- **Interface**: Callback with `anyref` parameter (erased `this`)
+- **Class**: Callback with specific struct type parameter
+
+The trampoline (which adapts interface calls to class methods) must handle this
+mismatch by creating a wrapper closure:
+
+```
+// Interface trampoline receives: callback with (anyref) => T signature
+// Class method expects: callback with (ref SpecificClass) => T signature
+
+// Solution: Create wrapper closure that:
+// 1. Has the class's expected closure signature
+// 2. Holds the interface callback as its context
+// 3. When called, passes arguments directly (subtyping allows specific → anyref)
+// 4. Calls the original interface callback
+```
+
+This is handled automatically in `generateTrampoline` in `codegen/classes.ts`.
+
 ## Related: F-Bounded Polymorphism
 
 The `this` type is essentially compiler-managed **F-bounded polymorphism**. The
