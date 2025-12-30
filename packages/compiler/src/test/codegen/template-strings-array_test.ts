@@ -5,9 +5,10 @@ import {compileAndRun} from './utils.js';
 suite('CodeGenerator - TemplateStringsArray', () => {
   test('should access length property', async () => {
     const source = `
+      import {TemplateTag} from 'zena:template-strings-array';
       import {TemplateStringsArray} from 'zena:template-strings-array';
       
-      let tag = (strings: TemplateStringsArray, values: FixedArray<i32>): i32 => {
+      let tag: TemplateTag<i32> = (strings: TemplateStringsArray, values: FixedArray<any>): i32 => {
         return strings.length;
       };
       export let main = (): i32 => {

@@ -310,6 +310,8 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 1.  **Type Checker Refactoring**:
     - **`ctx.currentClass` consistency**: Inside a generic class `Foo<T>`, `ctx.currentClass` should have `typeArguments = typeParameters` (i.e., represent `Foo<T>`, not just `Foo`). Currently, `checkThisExpression` creates a type with `typeArguments`, but `ctx.currentClass` doesn't have them, requiring a workaround in `isAssignableTo` to handle self-referential generic class comparisons. Fixing this at the source would eliminate that special case.
+    - **Reject index assignment without `operator []=`**: Currently `x[0] = y` compiles even if the type only has `operator []` (getter). The checker should require `operator []=` for index assignment.
+    - **Reject assignment to getter-only properties**: Currently `x.length = 5` compiles even if `length` only has a getter. The checker should require a setter for property assignment.
 
 2.  **Host Interop**:
     - **WASM GC Interop Notes**:
@@ -344,6 +346,7 @@ This project is an **npm monorepo** managed with **Wireit**.
       - Numeric unit types.
       - Intersection types.
       - Enums.
+      - Contextual typing for closures: Infer parameter types from context (e.g., `arr.map(x => x * 2)`). Requires parser support for `(a, b) =>` without type annotations, and checker support to propagate expected function type.
     - **OOP & Functions**:
       - Extension methods.
       - Operator overloading.

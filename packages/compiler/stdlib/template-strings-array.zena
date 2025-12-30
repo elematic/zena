@@ -1,7 +1,60 @@
 import { ImmutableArray } from 'zena:immutable-array';
 
-export class TemplateStringsArray {
+/**
+ * Type alias for template tag functions.
+ *
+ * Example usage:
+ * ```
+ * const html: TemplateTag<string> = (strings, values) => {
+ *   // strings[0], strings[1], etc. are the literal parts
+ *   // values[0], values[1], etc. are the interpolated expressions
+ *   // strings.raw gives access to raw (unescaped) strings
+ *   return '...';
+ * };
+ *
+ * const result = html`<div>${name}</div>`;
+ * ```
+ */
+export type TemplateTag<T> = (strings: TemplateStringsArray, values: FixedArray<any>) => T;
+
+/**
+ * Represents the string literals in a tagged template expression.
+ *
+ * When you write `tag\`Hello ${name}!\`` the tag function receives:
+ * - strings: TemplateStringsArray containing ["Hello ", "!"]
+ * - values: array containing [name]
+ *
+ * Key properties:
+ * - **Immutable**: The strings array cannot be modified.
+ * - **Cached**: The same TemplateStringsArray instance is reused across
+ *   invocations of the same tagged template expression.
+ * - **Interleaved**: Strings and values alternate, with strings on both ends.
+ *   For `\`a${x}b${y}c\``: strings = ["a", "b", "c"], values = [x, y].
+ *   This means there is always `strings.length == values.length + 1`.
+ *
+ * The `raw` property provides access to the raw (unescaped) string literals,
+ * where escape sequences like `\\n` appear as two characters (`\` and `n`)
+ * rather than being interpreted as a newline.
+ *
+ * Example:
+ * ```
+ * let tag = (strings: TemplateStringsArray, values: FixedArray<any>): string => {
+ *   // strings[0] = "Line 1\nLine 2" (newline interpreted)
+ *   // strings.raw[0] = "Line 1\\nLine 2" (backslash-n literal)
+ *   return strings[0];
+ * };
+ * tag\`Line 1\\nLine 2\`;
+ * ```
+ */
+export final class TemplateStringsArray {
+  /**
+   * The cooked (escape-processed) string literals.
+   */
   #strings: ImmutableArray<string>;
+
+  /**
+   * The raw (unescaped) string literals.
+   */
   #raw: ImmutableArray<string>;
 
   #new(strings: ImmutableArray<string>, raw: ImmutableArray<string>) {
@@ -9,18 +62,28 @@ export class TemplateStringsArray {
     this.#raw = raw;
   }
 
+  /**
+   * The raw string literals with escape sequences preserved.
+   */
   raw: ImmutableArray<string> {
     get {
       return this.#raw;
     }
   }
 
+  /**
+   * The number of string literals. This is always one more than the number of
+   * interpolated values.
+   */
   length: i32 {
     get {
       return this.#strings.length;
     }
   }
 
+  /**
+   * Access a cooked string literal by index.
+   */
   operator [](index: i32): string {
     return this.#strings[index];
   }
