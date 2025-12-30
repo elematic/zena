@@ -4900,26 +4900,53 @@ function generateTaggedTemplateExpression(
   expr: TaggedTemplateExpression,
   body: number[],
 ) {
-  // console.log('generateTaggedTemplateExpression', expr.tag);
-  // 1. Create strings array (cached)
+  // 1. Create TemplateStringsArray for the strings
+  const tsaDecl = ctx.wellKnownTypes.TemplateStringsArray;
+  if (!tsaDecl) {
+    throw new Error('TemplateStringsArray not available - stdlib not loaded');
+  }
+  const tsaClassName = tsaDecl.name.name;
+  const tsaClassInfo = ctx.classes.get(tsaClassName);
+  if (!tsaClassInfo) {
+    throw new Error('TemplateStringsArray class not found in codegen context');
+  }
+
   const stringType = [
     ValType.ref_null,
     ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
   ];
   const stringsArrayTypeIndex = getArrayTypeIndex(ctx, stringType);
 
+  // Each unique tagged template literal in the source gets its own module-level
+  // global to cache the TemplateStringsArray instance. This matches JavaScript
+  // semantics where the strings array is frozen and reused across invocations:
+  //
+  //   const results: TemplateStringsArray[] = [];
+  //   const tag = (strings: TemplateStringsArray) => { results.push(strings); };
+  //   for (let i = 0; i < 3; i++) tag`hello`;
+  //   console.log(results[0] === results[1]); // true - same instance
+  //
+  // The global is initialized to null and lazily populated on first use.
+  // Different tagged template expressions (e.g., tag`a` vs tag`b`) get separate
+  // globals, but the same expression always returns the same TSA instance.
+  //
+  // TODO: Make TSA a compile-time constant global instead of lazily initialized.
+  // WASM GC supports constant expressions for struct.new and array.new_fixed,
+  // so this could be a true constant if string literals were also constants.
+  // This optimization would extend to other immutable data: string literals,
+  // immutable arrays with literal elements, records/tuples, and potentially
+  // a broader "const expression" feature (like Dart's const constructors).
+  // See: https://github.com/user/zena/issues/XXX (compile-time constants)
   let globalIndex: number;
   if (ctx.templateLiteralGlobals.has(expr)) {
     globalIndex = ctx.templateLiteralGlobals.get(expr)!;
   } else {
-    // Create global
-    // Type: (ref null $stringsArrayTypeIndex)
     const globalType = [
       ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex),
+      ...WasmModule.encodeSignedLEB128(tsaClassInfo.structTypeIndex),
     ];
 
-    // Initialize with null
+    // Initialize with null - will be lazily populated on first call
     globalIndex = ctx.module.addGlobal(globalType, true, [
       Opcode.ref_null,
       HeapType.none,
@@ -4934,7 +4961,35 @@ function generateTaggedTemplateExpression(
   body.push(Opcode.if);
   body.push(ValType.void);
 
-  // Create strings array
+  // Create TemplateStringsArray instance
+  // Declare locals for arrays
+  const cookedLocal = ctx.declareLocal('$$tsa_cooked', [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex),
+  ]);
+  const rawLocal = ctx.declareLocal('$$tsa_raw', [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex),
+  ]);
+
+  // 1. Create cooked strings array and save to local
+  for (const quasi of expr.quasi.quasis) {
+    generateStringLiteral(
+      ctx,
+      {
+        type: NodeType.StringLiteral,
+        value: quasi.value.cooked,
+      } as StringLiteral,
+      body,
+    );
+  }
+  body.push(0xfb, GcOpcode.array_new_fixed);
+  body.push(...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(expr.quasi.quasis.length));
+  body.push(Opcode.local_set);
+  body.push(...WasmModule.encodeSignedLEB128(cookedLocal));
+
+  // 2. Create raw strings array and save to local
   for (const quasi of expr.quasi.quasis) {
     generateStringLiteral(
       ctx,
@@ -4945,6 +5000,29 @@ function generateTaggedTemplateExpression(
   body.push(0xfb, GcOpcode.array_new_fixed);
   body.push(...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex));
   body.push(...WasmModule.encodeSignedLEB128(expr.quasi.quasis.length));
+  body.push(Opcode.local_set);
+  body.push(...WasmModule.encodeSignedLEB128(rawLocal));
+
+  // 3. Create TemplateStringsArray struct with vtable and fields
+  // TemplateStringsArray has: __vtable, __brand_*, #strings, #raw
+  // Push vtable
+  if (tsaClassInfo.vtableGlobalIndex !== undefined) {
+    body.push(Opcode.global_get);
+    body.push(...WasmModule.encodeSignedLEB128(tsaClassInfo.vtableGlobalIndex));
+  } else {
+    body.push(Opcode.ref_null, HeapType.none);
+  }
+  // Push brand (null)
+  body.push(Opcode.ref_null, HeapType.none);
+  // Push #strings (cooked)
+  body.push(Opcode.local_get);
+  body.push(...WasmModule.encodeSignedLEB128(cookedLocal));
+  // Push #raw
+  body.push(Opcode.local_get);
+  body.push(...WasmModule.encodeSignedLEB128(rawLocal));
+  // Create struct
+  body.push(0xfb, GcOpcode.struct_new);
+  body.push(...WasmModule.encodeSignedLEB128(tsaClassInfo.structTypeIndex));
 
   // Set global
   body.push(Opcode.global_set);
@@ -4952,7 +5030,7 @@ function generateTaggedTemplateExpression(
 
   body.push(Opcode.end); // end if
 
-  // Push strings array
+  // Push TemplateStringsArray
   body.push(Opcode.global_get);
   body.push(...WasmModule.encodeSignedLEB128(globalIndex));
 

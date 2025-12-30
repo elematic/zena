@@ -86,6 +86,7 @@ export class CodegenContext {
     FixedArray?: ClassDeclaration;
     String?: ClassDeclaration;
     Box?: ClassDeclaration;
+    TemplateStringsArray?: ClassDeclaration;
   } = {};
 
   // Records and Tuples

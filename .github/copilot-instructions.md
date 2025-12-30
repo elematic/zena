@@ -351,6 +351,8 @@ This project is an **npm monorepo** managed with **Wireit**.
       - `TypeId<T>` intrinsic (compile-time type identifier).
       - Mixin constructors.
       - Async functions.
+    - **Optimization**:
+      - Compile-time constant expressions (string literals, immutable arrays, records/tuples, TemplateStringsArray as WASM constant globals instead of lazy initialization).
     - **Standard Library & Runtime**:
       - More operators: exponentiation.
       - Regexes.
