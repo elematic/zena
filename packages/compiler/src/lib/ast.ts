@@ -109,6 +109,7 @@ export interface Program extends Node {
     String?: ClassDeclaration;
     ByteArray?: ClassDeclaration;
     Box?: ClassDeclaration;
+    TemplateStringsArray?: ClassDeclaration;
   };
 }
 

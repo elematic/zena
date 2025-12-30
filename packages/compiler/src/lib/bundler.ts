@@ -122,6 +122,21 @@ export class Bundler {
       if (decl) wellKnownTypes.Box = decl;
     }
 
+    if (
+      this.#globalSymbols.has(
+        'zena:template-strings-array:TemplateStringsArray',
+      )
+    ) {
+      const name = this.#globalSymbols.get(
+        'zena:template-strings-array:TemplateStringsArray',
+      )!;
+      const decl = newBody.find(
+        (stmt): stmt is ClassDeclaration =>
+          stmt.type === NodeType.ClassDeclaration && stmt.name.name === name,
+      );
+      if (decl) wellKnownTypes.TemplateStringsArray = decl;
+    }
+
     return {
       type: NodeType.Program,
       body: newBody,

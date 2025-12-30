@@ -49,3 +49,7 @@ export const mathModule = fs.readFileSync(
   path.join(stdlibDir, 'math.zena'),
   'utf-8',
 );
+export const templateStringsArrayModule = fs.readFileSync(
+  path.join(stdlibDir, 'template-strings-array.zena'),
+  'utf-8',
+);
