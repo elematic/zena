@@ -25,7 +25,10 @@ suite('Parser: This Type', () => {
 
     const method = decl.body[0] as MethodSignature;
     assert.strictEqual(method.type, NodeType.MethodSignature);
-    assert.strictEqual(method.params[0].typeAnnotation?.type, NodeType.ThisTypeAnnotation);
+    assert.strictEqual(
+      method.params[0].typeAnnotation?.type,
+      NodeType.ThisTypeAnnotation,
+    );
   });
 
   test('should parse `this` type in interface method return type', () => {
@@ -61,7 +64,10 @@ suite('Parser: This Type', () => {
 
     const method = decl.body[0] as MethodDefinition;
     assert.strictEqual(method.type, NodeType.MethodDefinition);
-    assert.strictEqual(method.params[0].typeAnnotation?.type, NodeType.ThisTypeAnnotation);
+    assert.strictEqual(
+      method.params[0].typeAnnotation?.type,
+      NodeType.ThisTypeAnnotation,
+    );
   });
 
   test('should parse `this` type in class method return type', () => {

@@ -409,69 +409,109 @@ export function generateTrampoline(
       // This happens when the interface has `this` type in callback params
       const interfaceTypeIndex = decodeTypeIndex(interfaceParamType);
       const classTypeIndex = decodeTypeIndex(classParamType);
-      
-      if (interfaceTypeIndex !== -1 && classTypeIndex !== -1 && 
-          interfaceTypeIndex !== classTypeIndex) {
+
+      if (
+        interfaceTypeIndex !== -1 &&
+        classTypeIndex !== -1 &&
+        interfaceTypeIndex !== classTypeIndex
+      ) {
         const interfaceClosure = ctx.closureStructs.get(interfaceTypeIndex);
         const classClosure = ctx.closureStructs.get(classTypeIndex);
-        
+
         if (interfaceClosure && classClosure) {
           // Need to create a wrapper closure that adapts the callback
           // The interface callback has anyref param, class callback has specific type
           // Wrapper: takes specific type, casts to anyref (no-op upcast), calls interface callback
-          
-          const wrapperFuncIndex = ctx.module.addFunction(classClosure.funcTypeIndex);
+
+          const wrapperFuncIndex = ctx.module.addFunction(
+            classClosure.funcTypeIndex,
+          );
           ctx.module.declareFunction(wrapperFuncIndex);
-          
+
           // Store the interface closure in a temp local for the wrapper
-          const tempClosureLocal = ctx.declareLocal('$$tramp_closure', interfaceParamType);
-          body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempClosureLocal));
-          
+          const tempClosureLocal = ctx.declareLocal(
+            '$$tramp_closure',
+            interfaceParamType,
+          );
+          body.push(
+            Opcode.local_set,
+            ...WasmModule.encodeSignedLEB128(tempClosureLocal),
+          );
+
           ctx.pendingHelperFunctions.push(() => {
             const wrapperBody: number[] = [];
-            
+
             // Param 0: context (eqref) - will hold the interface closure
             // Param 1+: arguments with specific types
-            
+
             // Get the interface closure from context
             wrapperBody.push(Opcode.local_get, 0);
-            wrapperBody.push(0xfb, GcOpcode.ref_cast, ...WasmModule.encodeSignedLEB128(interfaceTypeIndex));
-            
-            // Get interface closure's context
-            wrapperBody.push(0xfb, GcOpcode.struct_get, 
+            wrapperBody.push(
+              0xfb,
+              GcOpcode.ref_cast,
               ...WasmModule.encodeSignedLEB128(interfaceTypeIndex),
-              ...WasmModule.encodeSignedLEB128(1)); // context field
-            
+            );
+
+            // Get interface closure's context
+            wrapperBody.push(
+              0xfb,
+              GcOpcode.struct_get,
+              ...WasmModule.encodeSignedLEB128(interfaceTypeIndex),
+              ...WasmModule.encodeSignedLEB128(1),
+            ); // context field
+
             // Get params from wrapper and pass to interface closure
             // Interface closure expects anyref params (or other erased types)
-            const classFuncParams = ctx.module.getFunctionTypeParams(classClosure.funcTypeIndex);
-            
+            const classFuncParams = ctx.module.getFunctionTypeParams(
+              classClosure.funcTypeIndex,
+            );
+
             for (let j = 1; j < classFuncParams.length; j++) {
               wrapperBody.push(Opcode.local_get, j);
               // No cast needed - subtyping allows specific type where anyref is expected
             }
-            
+
             // Get interface closure's func ref
             wrapperBody.push(Opcode.local_get, 0);
-            wrapperBody.push(0xfb, GcOpcode.ref_cast, ...WasmModule.encodeSignedLEB128(interfaceTypeIndex));
-            wrapperBody.push(0xfb, GcOpcode.struct_get,
+            wrapperBody.push(
+              0xfb,
+              GcOpcode.ref_cast,
               ...WasmModule.encodeSignedLEB128(interfaceTypeIndex),
-              ...WasmModule.encodeSignedLEB128(0)); // func field
-            
+            );
+            wrapperBody.push(
+              0xfb,
+              GcOpcode.struct_get,
+              ...WasmModule.encodeSignedLEB128(interfaceTypeIndex),
+              ...WasmModule.encodeSignedLEB128(0),
+            ); // func field
+
             // Call the interface closure
-            wrapperBody.push(Opcode.call_ref, ...WasmModule.encodeSignedLEB128(interfaceClosure.funcTypeIndex));
-            
+            wrapperBody.push(
+              Opcode.call_ref,
+              ...WasmModule.encodeSignedLEB128(interfaceClosure.funcTypeIndex),
+            );
+
             wrapperBody.push(Opcode.end);
             ctx.module.addCode(wrapperFuncIndex, [], wrapperBody);
           });
-          
+
           // Create the wrapper closure struct
           // func ref to wrapper
-          body.push(Opcode.ref_func, ...WasmModule.encodeSignedLEB128(wrapperFuncIndex));
+          body.push(
+            Opcode.ref_func,
+            ...WasmModule.encodeSignedLEB128(wrapperFuncIndex),
+          );
           // context = the interface closure
-          body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempClosureLocal));
+          body.push(
+            Opcode.local_get,
+            ...WasmModule.encodeSignedLEB128(tempClosureLocal),
+          );
           // struct.new for class closure type
-          body.push(0xfb, GcOpcode.struct_new, ...WasmModule.encodeSignedLEB128(classTypeIndex));
+          body.push(
+            0xfb,
+            GcOpcode.struct_new,
+            ...WasmModule.encodeSignedLEB128(classTypeIndex),
+          );
         }
       }
     }
@@ -1855,11 +1895,7 @@ export function generateClassMethods(
             ? i
             : i + 1;
         const paramType = methodInfo.paramTypes[paramTypeIndex];
-        ctx.defineLocal(
-          param.name.name,
-          ctx.nextLocalIndex++,
-          paramType,
-        );
+        ctx.defineLocal(param.name.name, ctx.nextLocalIndex++, paramType);
       }
       if (classInfo.isExtension && methodName === '#new') {
         // Extension constructor: 'this' is a local variable, not a param

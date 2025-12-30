@@ -129,7 +129,10 @@ suite('TypeChecker - This Type', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /'this' type is only valid inside a class or interface/);
+    assert.match(
+      errors[0].message,
+      /'this' type is only valid inside a class or interface/,
+    );
   });
 
   test('should resolve `this` in generic class', () => {
