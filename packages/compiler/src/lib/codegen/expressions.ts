@@ -29,6 +29,7 @@ import {
   type TemplateLiteral,
   type ThisExpression,
   type ThrowExpression,
+  type TryExpression,
   type TupleLiteral,
   type TuplePattern,
   type TypeAnnotation,
@@ -47,7 +48,14 @@ import {
   type RecordType,
   type UnionType,
 } from '../types.js';
-import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
+import {
+  CatchKind,
+  ExportDesc,
+  GcOpcode,
+  HeapType,
+  Opcode,
+  ValType,
+} from '../wasm.js';
 import {analyzeCaptures} from './captures.js';
 
 const BOX_VALUE_FIELD = 'value';
@@ -163,6 +171,9 @@ export function generateExpression(
     case NodeType.ThrowExpression:
       generateThrowExpression(ctx, expression as ThrowExpression, body);
       break;
+    case NodeType.TryExpression:
+      generateTryExpression(ctx, expression as TryExpression, body);
+      break;
     case NodeType.UnaryExpression:
       generateUnaryExpression(ctx, expression as UnaryExpression, body);
       break;
@@ -183,9 +194,256 @@ function generateThrowExpression(
   expr: ThrowExpression,
   body: number[],
 ) {
+  // Generate the exception payload (e.g., Error object)
   generateExpression(ctx, expr.argument, body);
+  // Store payload in the global variable
+  body.push(Opcode.global_set);
+  body.push(
+    ...WasmModule.encodeUnsignedLEB128(ctx.exceptionPayloadGlobalIndex),
+  );
+  // Throw the exception (tag has no params, payload is in global)
   body.push(Opcode.throw);
   body.push(...WasmModule.encodeSignedLEB128(ctx.exceptionTagIndex));
+}
+
+/**
+ * Generate code for try/catch/finally expressions.
+ *
+ * WASM try_table structure:
+ * We use a simplified approach with locals to handle the control flow complexity.
+ * The exception payload is stored in a global variable (set by throw, read by catch).
+ *
+ * For: try { tryBody } catch (e) { catchBody }
+ *
+ * We generate:
+ *   block $done
+ *     block $catch
+ *       try_table (catch tagIdx $catch)
+ *         tryBody -> $result
+ *       end
+ *       br $done  ; success
+ *     end
+ *     ; caught: payload is in global, nothing on stack
+ *     ; read payload from global if needed
+ *     catchBody -> $result
+ *   end
+ */
+function generateTryExpression(
+  ctx: CodegenContext,
+  expr: TryExpression,
+  body: number[],
+) {
+  // Get result type from inferred type
+  let resultType: number[] = [];
+  if (expr.inferredType) {
+    resultType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+  }
+
+  // Allocate local for the result if we have a non-void result
+  let resultLocal: number | null = null;
+  if (resultType.length > 0) {
+    resultLocal = ctx.declareLocal(
+      `$$try_result_${ctx.nextLocalIndex}`,
+      resultType,
+    );
+  }
+
+  if (expr.handler) {
+    // Simple try/catch structure
+    // block $done
+    //   block $catch  ; catch target (void - tag has no params)
+    //     try_table (catch tag $catch)
+    //       try body
+    //     end
+    //     br $done
+    //   end
+    //   ; exception caught - payload is in global, read it if needed
+    //   ; handle it and produce result
+    // end
+
+    // Outer block (void - we use locals for result)
+    body.push(Opcode.block);
+    body.push(ValType.void);
+
+    // Catch target block (void - tag has no params so nothing pushed)
+    body.push(Opcode.block);
+    body.push(ValType.void);
+
+    // try_table (void) with catch
+    body.push(Opcode.try_table);
+    body.push(ValType.void);
+
+    // 1 catch clause
+    body.push(0x01);
+    body.push(CatchKind.catch);
+    body.push(...WasmModule.encodeUnsignedLEB128(ctx.exceptionTagIndex));
+    body.push(...WasmModule.encodeUnsignedLEB128(0)); // branch to immediately enclosing block ($catch)
+
+    // Generate try body
+    ctx.pushScope();
+    generateBlockExpressionCode(ctx, expr.body, body);
+    // Store result in local
+    if (resultLocal !== null) {
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeUnsignedLEB128(resultLocal));
+    }
+    ctx.popScope();
+
+    body.push(Opcode.end); // end try_table
+
+    // If we have finally, run it now (success path)
+    if (expr.finalizer) {
+      ctx.pushScope();
+      generateBlockExpressionCode(ctx, expr.finalizer, body);
+      ctx.popScope();
+      // Drop finally result
+      body.push(Opcode.drop);
+    }
+
+    // Success - branch past catch block to done
+    body.push(Opcode.br);
+    body.push(...WasmModule.encodeUnsignedLEB128(1)); // skip $catch block
+
+    body.push(Opcode.end); // end catch target block
+
+    // Exception was caught - payload is in global, read it if handler has param
+    ctx.pushScope();
+    if (expr.handler.param) {
+      const paramLocal = ctx.declareLocal(expr.handler.param.name, [
+        ValType.eqref,
+      ]);
+      // Read payload from global
+      body.push(Opcode.global_get);
+      body.push(
+        ...WasmModule.encodeUnsignedLEB128(ctx.exceptionPayloadGlobalIndex),
+      );
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeUnsignedLEB128(paramLocal));
+    }
+    // No else - if no param, we don't need the payload
+
+    // Generate catch body
+    generateBlockExpressionCode(ctx, expr.handler.body, body);
+    // Store result in local
+    if (resultLocal !== null) {
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeUnsignedLEB128(resultLocal));
+    }
+    ctx.popScope();
+
+    // If we have finally, run it (catch path)
+    if (expr.finalizer) {
+      ctx.pushScope();
+      generateBlockExpressionCode(ctx, expr.finalizer, body);
+      ctx.popScope();
+      // Drop finally result
+      body.push(Opcode.drop);
+    }
+
+    body.push(Opcode.end); // end outer done block
+
+    // Load result
+    if (resultLocal !== null) {
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeUnsignedLEB128(resultLocal));
+    }
+  } else {
+    // Only finally, no catch handler
+    // We need to catch, run finally, then rethrow
+    // Exception payload is in global, we save it to local for rethrowing
+
+    // Local for exception payload
+    const exnLocal = ctx.declareLocal(`$$try_exn_${ctx.nextLocalIndex}`, [
+      ValType.eqref,
+    ]);
+    const caughtLocal = ctx.declareLocal(`$$try_caught_${ctx.nextLocalIndex}`, [
+      ValType.i32,
+    ]);
+
+    // Initialize caught flag to 0
+    body.push(Opcode.i32_const);
+    body.push(0);
+    body.push(Opcode.local_set);
+    body.push(...WasmModule.encodeUnsignedLEB128(caughtLocal));
+
+    // Outer block
+    body.push(Opcode.block);
+    body.push(ValType.void);
+
+    // Catch target block (void - tag has no params)
+    body.push(Opcode.block);
+    body.push(ValType.void);
+
+    // try_table with catch
+    body.push(Opcode.try_table);
+    body.push(ValType.void);
+
+    body.push(0x01);
+    body.push(CatchKind.catch);
+    body.push(...WasmModule.encodeUnsignedLEB128(ctx.exceptionTagIndex));
+    body.push(...WasmModule.encodeUnsignedLEB128(0));
+
+    // Generate try body
+    ctx.pushScope();
+    generateBlockExpressionCode(ctx, expr.body, body);
+    if (resultLocal !== null) {
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeUnsignedLEB128(resultLocal));
+    }
+    ctx.popScope();
+
+    body.push(Opcode.end); // end try_table
+
+    // Success path - branch to done
+    body.push(Opcode.br);
+    body.push(...WasmModule.encodeUnsignedLEB128(1));
+
+    body.push(Opcode.end); // end catch target
+
+    // Exception caught - read payload from global and save to local
+    body.push(Opcode.global_get);
+    body.push(
+      ...WasmModule.encodeUnsignedLEB128(ctx.exceptionPayloadGlobalIndex),
+    );
+    body.push(Opcode.local_set);
+    body.push(...WasmModule.encodeUnsignedLEB128(exnLocal));
+    body.push(Opcode.i32_const);
+    body.push(1);
+    body.push(Opcode.local_set);
+    body.push(...WasmModule.encodeUnsignedLEB128(caughtLocal));
+
+    body.push(Opcode.end); // end outer block
+
+    // Run finally (both paths end up here)
+    ctx.pushScope();
+    generateBlockExpressionCode(ctx, expr.finalizer!, body);
+    ctx.popScope();
+    // Drop finally result
+    body.push(Opcode.drop);
+
+    // If we caught an exception, rethrow it
+    // First restore the payload to global, then throw
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeUnsignedLEB128(caughtLocal));
+    body.push(Opcode.if);
+    body.push(ValType.void);
+    // Store payload back to global before rethrowing
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeUnsignedLEB128(exnLocal));
+    body.push(Opcode.global_set);
+    body.push(
+      ...WasmModule.encodeUnsignedLEB128(ctx.exceptionPayloadGlobalIndex),
+    );
+    body.push(Opcode.throw);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.exceptionTagIndex));
+    body.push(Opcode.end);
+
+    // Load result
+    if (resultLocal !== null) {
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeUnsignedLEB128(resultLocal));
+    }
+  }
 }
 
 function generateUnaryExpression(

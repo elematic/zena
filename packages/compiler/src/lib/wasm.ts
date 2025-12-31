@@ -83,6 +83,7 @@ export const Opcode = {
   if: 0x04,
   else: 0x05,
   throw: 0x08,
+  throw_ref: 0x0a,
   end: 0x0b,
   br: 0x0c,
   br_if: 0x0d,
@@ -93,6 +94,7 @@ export const Opcode = {
   call_ref: 0x14,
   drop: 0x1a,
   select: 0x1b,
+  try_table: 0x1f,
 
   ref_null: 0xd0,
   ref_is_null: 0xd1,
@@ -270,6 +272,21 @@ export const Opcode = {
   i64_reinterpret_f64: 0xbd,
   f32_reinterpret_i32: 0xbe,
   f64_reinterpret_i64: 0xbf,
+} as const;
+
+/**
+ * Catch clause kinds for try_table instruction.
+ * Used to specify how exceptions are caught in try_table blocks.
+ */
+export const CatchKind = {
+  /** catch <tagidx> <labelidx> - catch exception with tag, branch with payload */
+  catch: 0x00,
+  /** catch_ref <tagidx> <labelidx> - catch exception with tag, branch with payload + exnref */
+  catch_ref: 0x01,
+  /** catch_all <labelidx> - catch any exception, branch without payload */
+  catch_all: 0x02,
+  /** catch_all_ref <labelidx> - catch any exception, branch with exnref */
+  catch_all_ref: 0x03,
 } as const;
 
 export const ExportDesc = {

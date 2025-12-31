@@ -48,6 +48,7 @@ export class CodegenContext {
 
   // Exception handling
   public exceptionTagIndex = -1;
+  public exceptionPayloadGlobalIndex = -1;
 
   // Current state
   public currentClass: ClassInfo | null = null;

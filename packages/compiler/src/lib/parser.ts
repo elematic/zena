@@ -5,6 +5,7 @@ import {
   type BindingProperty,
   type BlockStatement,
   type CallExpression,
+  type CatchClause,
   type ClassDeclaration,
   type ComputedPropertyName,
   type Decorator,
@@ -48,6 +49,7 @@ import {
   type TaggedTemplateExpression,
   type TemplateElement,
   type TemplateLiteral,
+  type TryExpression,
   type TupleLiteral,
   type TuplePattern,
   type TupleTypeAnnotation,
@@ -1247,6 +1249,9 @@ export class Parser {
     if (this.#match(TokenType.If)) {
       return this.#parseIfExpression();
     }
+    if (this.#match(TokenType.Try)) {
+      return this.#parseTryExpression();
+    }
     if (this.#match(TokenType.Hash)) {
       const startToken = this.#previous();
       if (this.#match(TokenType.LBracket)) {
@@ -1416,6 +1421,58 @@ export class Parser {
       consequent,
       alternate,
       loc: this.#loc(startToken, alternate),
+    };
+  }
+
+  /**
+   * Parse try/catch/finally expression.
+   * Syntax: try { ... } catch (e) { ... } finally { ... }
+   */
+  #parseTryExpression(): TryExpression {
+    const startToken = this.#previous();
+
+    this.#consume(TokenType.LBrace, "Expected '{' after 'try'.");
+    const body = this.#parseBlockAsExpression();
+
+    let handler: CatchClause | null = null;
+    let finalizer: BlockStatement | null = null;
+
+    if (this.#match(TokenType.Catch)) {
+      const catchToken = this.#previous();
+      let param: Identifier | null = null;
+
+      if (this.#match(TokenType.LParen)) {
+        param = this.#parseIdentifier();
+        this.#consume(TokenType.RParen, "Expected ')' after catch parameter.");
+      }
+
+      this.#consume(TokenType.LBrace, "Expected '{' after catch.");
+      const catchBody = this.#parseBlockAsExpression();
+
+      handler = {
+        type: NodeType.CatchClause,
+        param,
+        body: catchBody,
+        loc: this.#loc(catchToken, catchBody),
+      };
+    }
+
+    if (this.#match(TokenType.Finally)) {
+      this.#consume(TokenType.LBrace, "Expected '{' after 'finally'.");
+      finalizer = this.#parseBlockAsExpression();
+    }
+
+    if (!handler && !finalizer) {
+      throw new Error("Expected 'catch' or 'finally' after try block.");
+    }
+
+    const endLoc = finalizer ?? handler!.body;
+    return {
+      type: NodeType.TryExpression,
+      body,
+      handler,
+      finalizer,
+      loc: this.#loc(startToken, endLoc),
     };
   }
 

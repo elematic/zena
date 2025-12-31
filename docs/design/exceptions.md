@@ -2,47 +2,35 @@
 
 ## Status
 
-- **Status**: Proposed
-- **Date**: 2025-12-03
+- **Status**: Implemented
+- **Date**: 2025-12-30
 
-## Problem
+## Overview
 
-Currently, Zena handles runtime errors (like array out-of-bounds) by trapping. This is fatal and unrecoverable. The current implementation of out-of-bounds checks relies on a "hack" where we intentionally access an out-of-bounds index on the underlying WASM array to trigger a trap.
+Zena uses the **WebAssembly Exception Handling** proposal to provide structured error handling with `try`, `catch`, `throw`, and `finally`.
 
-Users coming from high-level languages (TypeScript, Java, C#) expect a structured way to handle errors and recover from them.
-
-## Goals
+### Goals
 
 1.  **Recoverable Errors**: Allow programs to catch and handle errors without crashing.
-2.  **Familiar Syntax**: Use standard `try`, `catch`, `throw`, `finally` syntax.
-3.  **Expression-Oriented**: `throw` and `try/catch` should be expressions to support immutable bindings and functional patterns.
+2.  **Familiar Syntax**: Standard `try`, `catch`, `throw`, `finally` syntax.
+3.  **Expression-Oriented**: `throw` and `try/catch` are expressions to support immutable bindings.
 4.  **Performance**: Zero-cost on the happy path (no overhead if no exception is thrown).
-5.  **Interoperability**: Integrate with WebAssembly Exception Handling (WASM EH).
 
-## Proposal
+## Syntax & Semantics
 
-Adopt the **WebAssembly Exception Handling** proposal and treat control flow constructs as expressions where possible.
+### Throw Expression
 
-### Syntax & Semantics
+`throw` is an expression that evaluates to `never`, allowing it in any value context:
 
-#### Throw Expression
-
-`throw` is an expression, not just a statement. It evaluates to the bottom type (`never`), allowing it to be used in any context where a value is expected.
-
-```typescript
-// Used in a ternary (or future if-expression)
-let x = isValid ? getValue() : throw new Error("Invalid");
-
-// Used in null coalescing (future)
-let y = maybeNull ?? throw new Error("Missing value");
+```zena
+let x = if (isValid) { getValue() } else { throw new Error("Invalid") };
 ```
 
-#### Try/Catch Expression
+### Try/Catch Expression
 
-`try/catch` is an expression. This allows initializing immutable variables with the result of a potentially failing operation, avoiding the need for mutable `var` declarations and "dummy" initial values.
+`try/catch` is an expression, enabling immutable bindings with error handling:
 
-```typescript
-// Immutable binding with error handling
+```zena
 let content = try {
   readFile("data.txt")
 } catch (e) {
@@ -50,19 +38,13 @@ let content = try {
 };
 ```
 
-**Semantics**:
+**Type**: The union of the `try` and `catch` block types.
 
-- **Type**: The type of the `try/catch` expression is the union (or least upper bound) of the types of the `try` block and the `catch` block.
-- **Evaluation**:
-  1.  The `try` block is executed. If it completes successfully, its result is the value of the expression.
-  2.  If an exception is thrown, the `catch` block is executed. Its result becomes the value of the expression.
+### Finally
 
-#### Finally
+`finally` blocks execute for cleanup regardless of success or failure:
 
-`finally` blocks are supported for cleanup.
-
-```typescript
-let resource = acquire();
+```zena
 let result = try {
   process(resource)
 } catch (e) {
@@ -72,31 +54,11 @@ let result = try {
 };
 ```
 
-**Semantics**:
-
-- The `finally` block is **always** executed after the `try` block (and `catch` block, if triggered) completes.
-- **Value**: The `finally` block **does not** contribute to the value of the expression. It is executed purely for side effects.
-  - If `try` succeeds, the result is the `try` value.
-  - If `catch` executes, the result is the `catch` value.
-  - If `finally` throws or returns (if allowed), it overrides the previous completion (standard JS/Java behavior).
-
-### Expression-Oriented Control Flow
-
-Zena supports `if/else` as expressions (like Rust), replacing the need for a ternary operator and allowing for more functional coding styles.
-
-```typescript
-// if expression syntax
-let x = if (cond) { 1 } else { 2 };
-
-// Chained else-if
-let sign = if (n < 0) -1 else if (n == 0) 0 else 1;
-```
+The `finally` block does not contribute to the expression's value.
 
 ### Standard Library
 
-We need a standard `Error` class.
-
-```typescript
+```zena
 class Error {
   message: string;
   #new(message: string) {
@@ -105,38 +67,86 @@ class Error {
 }
 ```
 
-### Implementation Strategy
+## WASM Implementation
 
-We will target the **WebAssembly Exception Handling** proposal.
+### Tag Design
 
-1.  **Tags**: Define a WASM `tag` `$zena_exception` (param `(ref $Object)`).
-2.  **Throw**: Compile `throw expr` to `throw $zena_exception`.
-3.  **Try/Catch**: Compile to WASM `try_table`.
-    - The `try_table` instruction allows specifying a block type (return type), which maps naturally to the expression result type.
-    - Handlers catch `$zena_exception`.
-4.  **Finally**:
-    - WASM `try_table` doesn't have a direct `finally`. It is typically implemented by:
-      1.  Executing the `try` body.
-      2.  If successful, branch to a label after the `catch` blocks, execute `finally` code, then continue.
-      3.  If an exception occurs, catch it, execute `finally` code, then rethrow (or handle if caught).
-    - Since `try/catch` is an expression, we need to ensure the result value is preserved across the `finally` block execution (e.g., stored in a local).
+We use a **single exception tag** with no parameters:
 
-### Immediate Fix: `unreachable`
+```wat
+(tag $zena_exception)  ;; type () -> ()
+```
 
-Before implementing full exceptions, we should replace the "array OOB hack" with a proper `unreachable` instruction.
+The exception payload (the thrown `Error` object) is stored in a **mutable global variable**:
 
-1.  Add an intrinsic `@intrinsic('unreachable') declare function unreachable(): never;`.
-2.  Update `Array` implementation to call `unreachable()` instead of the OOB hack.
+```wat
+(global $exception_payload (mut eqref) (ref.null eq))
+```
+
+**Why not pass the payload as a tag parameter?**
+
+The natural design would be `(tag $zena_exception (param eqref))`, passing the Error directly. However, WASM EH's `catch` clause pushes the tag's parameters onto the stack when branching to the catch target block. This creates a control flow problem:
+
+```wat
+;; If tag had (param eqref), this would be the structure:
+block $catch (param eqref)  ;; catch target needs matching input arity
+  try_table (catch $zena_exception $catch)
+    ;; try body
+  end
+  br $done  ;; SUCCESS PATH: Can't enter $catch block normally!
+end
+```
+
+You can't enter a block with input parameters via normal control flow—only via branch. This breaks the success path where we need to skip the catch handler.
+
+**Solution**: Store payload in global, use void tag:
+
+```wat
+block $done
+  block $catch  ;; void - no input params
+    try_table (catch $zena_exception $catch)
+      ;; try body - store result in local
+    end
+    br $done  ;; success - skip catch
+  end
+  ;; caught: read payload from global
+  global.get $exception_payload
+  ;; catch handler
+end
+```
+
+### Throw Compilation
+
+1. Evaluate the Error expression
+2. Store in `$exception_payload` global
+3. Execute `throw $zena_exception`
+
+### Try/Catch Compilation
+
+- Use WASM `try_table` with catch clauses that branch to labeled blocks
+- On catch, read the payload from the global variable
+- Store result values in locals to handle control flow
+
+### Finally Compilation
+
+1. Execute the `try` body, store result in local
+2. If successful, run `finally`, then branch to done
+3. If exception caught, save payload, run `finally`, then either:
+   - Execute catch handler (if present)
+   - Rethrow (if no catch handler)
+
+## Alternative Designs Considered
+
+1. **Tag with payload parameter**: `(tag (param eqref))` — Rejected due to catch target block arity issues.
+
+2. **Multiple tags per exception type**: One tag per class. Would require knowing all exception types at compile time and complex pattern matching. Rejected in favor of single tag + runtime type checking.
+
+3. **Using `exnref` with `catch_ref`**: Could enable rethrowing with full context. May revisit when more widely supported.
 
 ## Open Questions
 
-1.  **Checked Exceptions**: Do we want checked exceptions?
-    - _Proposal_: No. Like TypeScript/C#, exceptions are unchecked.
-2.  **JS Interop**: How do we handle JS exceptions?
-    - WASM EH allows catching JS exceptions if they are thrown as `externref`. We might need a way to distinguish Zena exceptions from JS exceptions.
+1.  **JS Interop**: WASM EH can catch JS exceptions as `externref`. May need a way to distinguish Zena exceptions from JS exceptions.
 
-## Plan
+## Runtime Requirements
 
-1.  **Phase 1**: Implement `unreachable` intrinsic and fix Array OOB.
-2.  **Phase 2**: Implement `throw` expression and `Error` class.
-3.  **Phase 3**: Implement `try`/`catch`/`finally` expressions.
+Requires `--experimental-wasm-exnref` flag in Node.js (as of v24). The test runner passes this flag to worker subprocesses via `execArgv`.

@@ -59,6 +59,8 @@ export const NodeType = {
   Decorator: 'Decorator',
   UnaryExpression: 'UnaryExpression',
   ThrowExpression: 'ThrowExpression',
+  TryExpression: 'TryExpression',
+  CatchClause: 'CatchClause',
   MatchExpression: 'MatchExpression',
   MatchCase: 'MatchCase',
   ClassPattern: 'ClassPattern',
@@ -292,6 +294,7 @@ export type Expression =
   | IsExpression
   | UnaryExpression
   | ThrowExpression
+  | TryExpression
   | MatchExpression
   | IfExpression;
 
@@ -367,6 +370,23 @@ export interface UnaryExpression extends Node {
 export interface ThrowExpression extends Node {
   type: typeof NodeType.ThrowExpression;
   argument: Expression;
+}
+
+/**
+ * Try/catch expression - like Rust, try/catch can be used as an expression.
+ * The type is the union of the try body and catch body types.
+ */
+export interface TryExpression extends Node {
+  type: typeof NodeType.TryExpression;
+  body: BlockStatement;
+  handler: CatchClause | null;
+  finalizer: BlockStatement | null;
+}
+
+export interface CatchClause extends Node {
+  type: typeof NodeType.CatchClause;
+  param: Identifier | null;
+  body: BlockStatement;
 }
 
 export interface NumberLiteral extends Node {

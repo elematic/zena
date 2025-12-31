@@ -71,14 +71,26 @@ export class CodeGenerator {
     const {program} = this.#ctx;
 
     // Initialize exception tag
-    // Tag type: (param eqref) -> void
-    // We use eqref to allow throwing any object (including Error instances)
-    const tagTypeIndex = this.#ctx.module.addType([[ValType.eqref]], []);
+    // Tag type: () -> void (no parameters)
+    // The exception payload is stored in a global variable before throwing
+    // and read from the global in the catch handler.
+    // This is necessary because WASM EH catch clauses push tag params to the stack,
+    // and the target block would need matching input arity, which creates
+    // control flow issues (can't enter block with params from normal flow).
+    const tagTypeIndex = this.#ctx.module.addType([], []);
     this.#ctx.exceptionTagIndex = this.#ctx.module.addTag(tagTypeIndex);
     this.#ctx.module.addExport(
       'zena_exception',
       ExportDesc.Tag,
       this.#ctx.exceptionTagIndex,
+    );
+
+    // Add global for exception payload (mutable eqref, initially null)
+    // Note: addGlobal adds the 0x0b end opcode automatically
+    this.#ctx.exceptionPayloadGlobalIndex = this.#ctx.module.addGlobal(
+      [ValType.eqref],
+      true, // mutable
+      [Opcode.ref_null, HeapType.eq], // init: ref.null eq
     );
 
     // Add default memory (1 page = 64KB)

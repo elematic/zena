@@ -8,6 +8,7 @@ import {
   type BlockStatement,
   type BooleanLiteral,
   type CallExpression,
+  type CatchClause,
   type ClassPattern,
   type Expression,
   type FunctionExpression,
@@ -29,6 +30,7 @@ import {
   type TemplateLiteral,
   type ThisExpression,
   type ThrowExpression,
+  type TryExpression,
   type TupleLiteral,
   type TuplePattern,
   type UnaryExpression,
@@ -172,6 +174,8 @@ function checkExpressionInternal(ctx: CheckerContext, expr: Expression): Type {
       return checkUnaryExpression(ctx, expr as UnaryExpression);
     case NodeType.ThrowExpression:
       return checkThrowExpression(ctx, expr as ThrowExpression);
+    case NodeType.TryExpression:
+      return checkTryExpression(ctx, expr as TryExpression);
     case NodeType.MatchExpression:
       return checkMatchExpression(ctx, expr as MatchExpression);
     case NodeType.IfExpression:
@@ -730,6 +734,46 @@ function checkThrowExpression(
     }
   }
   return Types.Never;
+}
+
+function checkTryExpression(ctx: CheckerContext, expr: TryExpression): Type {
+  // Check the try body
+  const tryType = checkBlockExpressionType(ctx, expr.body);
+
+  // Check the catch clause
+  let catchType: Type | null = null;
+  if (expr.handler) {
+    catchType = checkCatchClause(ctx, expr.handler);
+  }
+
+  // Check the finally block (doesn't contribute to the expression type)
+  if (expr.finalizer) {
+    checkBlockExpressionType(ctx, expr.finalizer);
+  }
+
+  // The type of the try/catch expression is the union of:
+  // - The try body type
+  // - The catch body type (if present)
+  // If no catch, it's just the try type (errors will propagate)
+  if (catchType !== null) {
+    return createUnionType([tryType, catchType]);
+  }
+  return tryType;
+}
+
+function checkCatchClause(ctx: CheckerContext, clause: CatchClause): Type {
+  ctx.enterScope();
+
+  // If there's a parameter, bind it to the Error type (or eqref for now)
+  if (clause.param) {
+    const errorType = ctx.resolveType('Error') ?? Types.Unknown;
+    ctx.declare(clause.param.name, errorType, 'let');
+  }
+
+  const bodyType = checkBlockExpressionType(ctx, clause.body);
+
+  ctx.exitScope();
+  return bodyType;
 }
 
 function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {

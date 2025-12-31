@@ -94,18 +94,18 @@ export let fail: (message?: string) => never;
 
 #### Assertion Semantics
 
-| Function          | Comparison Used   | Description                            |
-| ----------------- | ----------------- | -------------------------------------- |
-| `ok`              | Truthiness        | Value is truthy (== true)              |
-| `equal`           | `==` (operator)   | Structural equality via `operator ==`  |
-| `notEqual`        | `!=` (operator)   | Structural inequality                  |
-| `strictEqual`     | `==` (operator)   | Alias for `equal` (Zena has no ===/!==)|
-| `same`            | `===` (reference) | Reference equality                     |
-| `notSame`         | `!==` (reference) | Reference inequality                   |
-| `greater`         | `>`               | actual > expected                      |
-| `less`            | `<`               | actual < expected                      |
-| `greaterOrEqual`  | `>=`              | actual >= expected                     |
-| `lessOrEqual`     | `<=`              | actual <= expected                     |
+| Function         | Comparison Used   | Description                             |
+| ---------------- | ----------------- | --------------------------------------- |
+| `ok`             | Truthiness        | Value is truthy (== true)               |
+| `equal`          | `==` (operator)   | Structural equality via `operator ==`   |
+| `notEqual`       | `!=` (operator)   | Structural inequality                   |
+| `strictEqual`    | `==` (operator)   | Alias for `equal` (Zena has no ===/!==) |
+| `same`           | `===` (reference) | Reference equality                      |
+| `notSame`        | `!==` (reference) | Reference inequality                    |
+| `greater`        | `>`               | actual > expected                       |
+| `less`           | `<`               | actual < expected                       |
+| `greaterOrEqual` | `>=`              | actual >= expected                      |
+| `lessOrEqual`    | `<=`              | actual <= expected                      |
 
 **Note**: In Zena, `==` is structural equality (uses `operator ==` if defined),
 while `===` is reference equality. This differs from JavaScript where `===` is
@@ -123,7 +123,7 @@ export class TestContext {
   #new(name: string) {
     this.name = name;
   }
-  
+
   // Diagnostic output during test
   diagnostic(message: string): void;
 }
@@ -134,7 +134,7 @@ export class TestResult {
   passed: boolean;
   error: Error | null;
   duration: i32;  // milliseconds (when we have timing)
-  
+
   #new(name: string, passed: boolean, error: Error | null) {
     this.name = name;
     this.passed = passed;
@@ -147,7 +147,7 @@ export class SuiteResult {
   tests: Array<TestResult>;
   passed: i32;
   failed: i32;
-  
+
   #new(name: string) {
     this.name = name;
     this.tests = new Array<TestResult>();
@@ -224,7 +224,8 @@ console.log(`Passed: ${results.passed}, Failed: ${results.failed}`);
 
 ### Phase 1: AssertionError and Basic Assertions
 
-**Prerequisites**: 
+**Prerequisites**:
+
 - `throw` expression (✅ Done)
 - String concatenation (✅ Done)
 - Generic functions (✅ Done)
@@ -287,6 +288,7 @@ export let fail = (message: string = 'Test failed'): never => {
 ### Phase 3: Exception Assertions
 
 **Prerequisites**:
+
 - `try`/`catch` expressions (🔄 Planned)
 
 **Tasks**:
@@ -313,6 +315,7 @@ export let throws = (fn: () => void, message: string = 'Expected function to thr
 ### Phase 4: Test Runner Foundation
 
 **Prerequisites**:
+
 - Closures (✅ Done)
 - `Array<T>` (✅ Done)
 
@@ -333,11 +336,11 @@ import { console } from 'zena:console';
 
 export class TestContext {
   name: string;
-  
+
   #new(name: string) {
     this.name = name;
   }
-  
+
   diagnostic(message: string): void {
     console.log(`  # ${message}`);
   }
@@ -347,7 +350,7 @@ export class TestResult {
   name: string;
   passed: boolean;
   error: Error | null;
-  
+
   #new(name: string, passed: boolean, error: Error | null) {
     this.name = name;
     this.passed = passed;
@@ -358,7 +361,7 @@ export class TestResult {
 class TestCase {
   name: string;
   fn: (ctx: TestContext) => void;
-  
+
   #new(name: string, fn: (ctx: TestContext) => void) {
     this.name = name;
     this.fn = fn;
@@ -379,7 +382,7 @@ export let run = () => {
   while (i < tests.length) {
     let testCase = tests[i];
     let ctx = new TestContext(testCase.name);
-    
+
     try {
       testCase.fn(ctx);
       console.log(`✓ ${testCase.name}`);
@@ -389,10 +392,10 @@ export let run = () => {
       console.error(`  ${e.message}`);
       failedCount = failedCount + 1;
     }
-    
+
     i = i + 1;
   }
-  
+
   console.log('');
   console.log(`${passedCount} passing, ${failedCount} failing`);
 };
@@ -418,6 +421,7 @@ export let run = () => {
 ### Phase 7: Reporter and Output
 
 **Prerequisites**:
+
 - Template literals (✅ Done)
 - Better string formatting
 
@@ -472,6 +476,7 @@ expect(actual).toBe(expected);
 ```
 
 Reasons:
+
 - Simpler implementation (no fluent builder pattern needed)
 - More familiar to Node.js developers
 - Better static typing (no dynamic method chains)
@@ -503,27 +508,27 @@ for error reporting.
 
 ### Required Language Features
 
-| Feature            | Status      | Needed For                    |
-| ------------------ | ----------- | ----------------------------- |
-| Classes            | ✅ Done     | AssertionError, TestResult    |
-| Inheritance        | ✅ Done     | AssertionError extends Error  |
-| Generics           | ✅ Done     | Generic assertion functions   |
-| Closures           | ✅ Done     | Test functions, hooks         |
-| `throw`            | ✅ Done     | Assertion failures            |
-| `try`/`catch`      | 🔄 Planned  | Exception assertions, runner  |
-| Optional params    | ✅ Done     | Default messages              |
-| `any` type         | ✅ Done     | Storing any value in errors   |
-| Template literals  | ✅ Done     | Error message formatting      |
-| `Array<T>`         | ✅ Done     | Test registry                 |
-| Module-level vars  | ✅ Done     | Global test registry          |
+| Feature           | Status     | Needed For                   |
+| ----------------- | ---------- | ---------------------------- |
+| Classes           | ✅ Done    | AssertionError, TestResult   |
+| Inheritance       | ✅ Done    | AssertionError extends Error |
+| Generics          | ✅ Done    | Generic assertion functions  |
+| Closures          | ✅ Done    | Test functions, hooks        |
+| `throw`           | ✅ Done    | Assertion failures           |
+| `try`/`catch`     | 🔄 Planned | Exception assertions, runner |
+| Optional params   | ✅ Done    | Default messages             |
+| `any` type        | ✅ Done    | Storing any value in errors  |
+| Template literals | ✅ Done    | Error message formatting     |
+| `Array<T>`        | ✅ Done    | Test registry                |
+| Module-level vars | ✅ Done    | Global test registry         |
 
 ### Required Stdlib Components
 
-| Component          | Status      | Needed For                    |
-| ------------------ | ----------- | ----------------------------- |
-| `Error` class      | ✅ Done     | Base for AssertionError       |
-| `console`          | ✅ Done     | Test output                   |
-| `Array<T>`         | ✅ Done     | Test collection               |
+| Component     | Status  | Needed For              |
+| ------------- | ------- | ----------------------- |
+| `Error` class | ✅ Done | Base for AssertionError |
+| `console`     | ✅ Done | Test output             |
+| `Array<T>`    | ✅ Done | Test collection         |
 
 ---
 
@@ -545,8 +550,8 @@ infrastructure:
 
 ```typescript
 // packages/compiler/src/test/stdlib/assert_test.ts
-import { suite, test } from 'node:test';
-import { compileAndRun } from '../codegen/utils.js';
+import {suite, test} from 'node:test';
+import {compileAndRun} from '../codegen/utils.js';
 import assert from 'node:assert';
 
 suite('Stdlib: assert', () => {
@@ -643,6 +648,7 @@ test('is within range', (ctx) => {
 
 The critical blocker is **try/catch support** (Phase 3 of Exceptions Design).
 Without it, we cannot:
+
 - Catch assertion failures in the test runner
 - Implement `throws` assertion
 - Report test failures without crashing
