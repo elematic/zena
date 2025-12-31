@@ -53,3 +53,7 @@ export const templateStringsArrayModule = fs.readFileSync(
   path.join(stdlibDir, 'template-strings-array.zena'),
   'utf-8',
 );
+export const assertModule = fs.readFileSync(
+  path.join(stdlibDir, 'assert.zena'),
+  'utf-8',
+);
