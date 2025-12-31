@@ -2,8 +2,8 @@
 
 ## Status
 
-- **Status**: Proposed
-- **Date**: 2025-12-30
+- **Status**: In Progress (Phase 1 Complete)
+- **Date**: 2025-12-31
 
 ## Overview
 
@@ -35,6 +35,39 @@ modules will enable writing tests directly in Zena, which is essential for:
 
 ---
 
+## Future Direction: Macro-Based Assert
+
+The current API uses separate functions for each operator (`equal`, `notEqual`,
+`same`, etc.). Once Zena has declarative macros (see `docs/design/macros.md`),
+this can be simplified to a single `assert` macro:
+
+```zena
+// Instead of:
+equal(foo, bar);
+notEqual(a, b);
+same(x, y);
+
+// Write:
+assert(foo == bar);
+assert(a != b);
+assert(x === y);
+```
+
+The macro would introspect the AST at compile time and generate rich error
+messages including the source expression, operator, and actual values:
+
+```
+AssertionError: Assertion failed: foo == bar
+  left:  42
+  right: 43
+  operator: ==
+```
+
+This is planned for after the macro system is implemented. The current
+function-based API serves as a working MVP.
+
+---
+
 ## API Design
 
 ### Module: `zena:assert`
@@ -42,28 +75,24 @@ modules will enable writing tests directly in Zena, which is essential for:
 The assertion module provides functions for making test assertions. All
 assertion functions throw `AssertionError` on failure.
 
+**Note**: Unlike Node.js's `assert.ok()`, Zena does not have a truthiness-based
+assertion because Zena has no implicit type coercion. Use `isTrue()` instead.
+
 ```zena
 // zena:assert
 
 export class AssertionError extends Error {
-  actual: any;
-  expected: any;
   operator: string;
 
-  #new(message: string, actual: any, expected: any, operator: string) {
+  #new(message: string, operator: string) {
     super(message);
-    this.actual = actual;
-    this.expected = expected;
     this.operator = operator;
   }
 }
 
 // Core assertions
-export let ok: (value: boolean, message?: string) => void;
 export let equal: <T>(actual: T, expected: T, message?: string) => void;
 export let notEqual: <T>(actual: T, expected: T, message?: string) => void;
-export let strictEqual: <T>(actual: T, expected: T, message?: string) => void;
-export let notStrictEqual: <T>(actual: T, expected: T, message?: string) => void;
 
 // Reference equality (===)
 export let same: <T>(actual: T, expected: T, message?: string) => void;
@@ -94,22 +123,28 @@ export let fail: (message?: string) => never;
 
 #### Assertion Semantics
 
-| Function         | Comparison Used   | Description                             |
-| ---------------- | ----------------- | --------------------------------------- |
-| `ok`             | Truthiness        | Value is truthy (== true)               |
-| `equal`          | `==` (operator)   | Structural equality via `operator ==`   |
-| `notEqual`       | `!=` (operator)   | Structural inequality                   |
-| `strictEqual`    | `==` (operator)   | Alias for `equal` (Zena has no ===/!==) |
-| `same`           | `===` (reference) | Reference equality                      |
-| `notSame`        | `!==` (reference) | Reference inequality                    |
-| `greater`        | `>`               | actual > expected                       |
-| `less`           | `<`               | actual < expected                       |
-| `greaterOrEqual` | `>=`              | actual >= expected                      |
-| `lessOrEqual`    | `<=`              | actual <= expected                      |
+| Function         | Comparison Used   | Description                           |
+| ---------------- | ----------------- | ------------------------------------- |
+| `equal`          | `==` (operator)   | Structural equality via `operator ==` |
+| `notEqual`       | `!=` (operator)   | Structural inequality                 |
+| `same`           | `===` (reference) | Reference equality                    |
+| `notSame`        | `!==` (reference) | Reference inequality                  |
+| `isTrue`         | `=== true`        | Value is exactly `true`               |
+| `isFalse`        | `=== false`       | Value is exactly `false`              |
+| `isNull`         | `=== null`        | Value is `null`                       |
+| `isNotNull`      | `!== null`        | Value is not `null`                   |
+| `greater`        | `>`               | actual > expected                     |
+| `less`           | `<`               | actual < expected                     |
+| `greaterOrEqual` | `>=`              | actual >= expected                    |
+| `lessOrEqual`    | `<=`              | actual <= expected                    |
 
 **Note**: In Zena, `==` is structural equality (uses `operator ==` if defined),
 while `===` is reference equality. This differs from JavaScript where `===` is
 strict equality. Our API reflects Zena's semantics.
+
+**Note**: There is no `ok()` assertion because Zena has no concept of
+"truthiness" - values don't coerce to booleans. Use `isTrue()` for boolean
+checks.
 
 ### Module: `zena:test`
 
@@ -222,7 +257,7 @@ console.log(`Passed: ${results.passed}, Failed: ${results.failed}`);
 
 ## Implementation Plan
 
-### Phase 1: AssertionError and Basic Assertions
+### Phase 1: AssertionError and Basic Assertions ✅ COMPLETE
 
 **Prerequisites**:
 
@@ -230,14 +265,41 @@ console.log(`Passed: ${results.passed}, Failed: ${results.failed}`);
 - String concatenation (✅ Done)
 - Generic functions (✅ Done)
 
-**Tasks**:
+**Status**: ✅ Completed 2025-12-31
 
-1. Create `packages/compiler/stdlib/assert.zena`
-2. Implement `AssertionError` class extending `Error`
-3. Implement core assertions:
-   - `ok(value: boolean, message?: string)`
-   - `equal<T>(actual: T, expected: T, message?: string)`
-   - `notEqual<T>(actual: T, expected: T, message?: string)`
+**Implemented**:
+
+- `packages/compiler/stdlib/assert.zena` created
+- `AssertionError` class extending `Error`
+- Core assertions:
+  - `ok(value: boolean, message?: string): void`
+  - `equal<T>(actual: T, expected: T, message?: string): void`
+  - `notEqual<T>(actual: T, expected: T, message?: string): void`
+  - `strictEqual<T>` (alias for `equal`)
+  - `notStrictEqual<T>` (alias for `notEqual`)
+  - `fail(message?: string): never`
+- Extended assertions (from Phase 2):
+  - `same<T>(actual: T, expected: T, message?: string): void` (reference equality)
+  - `notSame<T>(actual: T, expected: T, message?: string): void`
+  - `isNull<T>(value: T | null, message?: string): void`
+  - `isNotNull<T>(value: T | null, message?: string): void`
+  - `isTrue(value: boolean, message?: string): void`
+  - `isFalse(value: boolean, message?: string): void`
+- Test file: `packages/compiler/src/test/stdlib/assert_test.ts`
+
+**Note**: The `AssertionError` class currently only stores `message` and `operator`,
+not `actual`/`expected` values. This is because we don't have an `any` type or
+boxing mechanism for arbitrary values yet.
+
+**Original Tasks**:
+
+1. ~~Create `packages/compiler/stdlib/assert.zena`~~
+2. ~~Implement `AssertionError` class extending `Error`~~
+3. ~~Implement core assertions:~~
+   - ~~`ok(value: boolean, message?: string)`~~
+   - ~~`equal<T>(actual: T, expected: T, message?: string)`~~
+   - ~~`notEqual<T>(actual: T, expected: T, message?: string)`~~
+   - ~~`fail(message?: string): never`~~
    - `fail(message?: string): never`
 
 **Implementation Notes**:
@@ -276,20 +338,25 @@ export let fail = (message: string = 'Test failed'): never => {
 };
 ```
 
-### Phase 2: Extended Assertions
+### Phase 2: Extended Assertions ✅ PARTIALLY COMPLETE
 
-**Tasks**:
+**Status**: Most assertions implemented in Phase 1. Remaining: comparison assertions.
+
+**Completed**:
+
+- ~~Implement null assertions: `isNull`, `isNotNull`~~ ✅
+- ~~Implement boolean assertions: `isTrue`, `isFalse`~~ ✅
+- ~~Implement reference equality: `same`, `notSame`~~ ✅
+
+**Remaining Tasks**:
 
 1. Implement comparison assertions: `greater`, `less`, `greaterOrEqual`, `lessOrEqual`
-2. Implement null assertions: `isNull`, `isNotNull`
-3. Implement boolean assertions: `isTrue`, `isFalse`
-4. Implement reference equality: `same`, `notSame`
 
 ### Phase 3: Exception Assertions
 
 **Prerequisites**:
 
-- `try`/`catch` expressions (🔄 Planned)
+- `try`/`catch` expressions (✅ Done - implemented 2025-12-31)
 
 **Tasks**:
 
@@ -307,7 +374,7 @@ export let throws = (fn: () => void, message: string = 'Expected function to thr
     threw = true;
   }
   if (!threw) {
-    throw new AssertionError(message, null, null, 'throws');
+    throw new AssertionError(message, 'throws');
   }
 };
 ```
@@ -640,23 +707,19 @@ test('is within range', (ctx) => {
 
 ## Implementation Priority
 
-1. **Phase 1**: `AssertionError`, `ok`, `equal`, `fail` (MVP)
-2. **Phase 3**: `throws`, `doesNotThrow` (requires try/catch)
+1. **Phase 1**: `AssertionError`, `ok`, `equal`, `fail` (MVP) ✅ DONE
+2. **Phase 3**: `throws`, `doesNotThrow` (requires try/catch) ← NEXT
 3. **Phase 4**: Basic `test()` and `run()` (requires try/catch)
-4. **Phase 2**: Extended assertions (can be added incrementally)
+4. **Phase 2**: Extended assertions (mostly done, comparison assertions remaining)
 5. **Phase 5-7**: Suites, hooks, reporters (nice-to-have)
 
-The critical blocker is **try/catch support** (Phase 3 of Exceptions Design).
-Without it, we cannot:
-
-- Catch assertion failures in the test runner
-- Implement `throws` assertion
-- Report test failures without crashing
+The critical blocker (**try/catch support**) has been implemented!
 
 ## Immediate Next Steps
 
-1. **Implement try/catch** in the compiler (see `docs/design/exceptions.md`)
-2. Create `assert.zena` with `AssertionError`, `ok`, `equal`, `fail`
-3. Create basic tests for the assert module
-4. Create `test.zena` with basic `test()` and `run()`
-5. Dogfood by converting some stdlib tests to Zena
+1. ~~**Implement try/catch** in the compiler~~ ✅ DONE
+2. ~~Create `assert.zena` with `AssertionError`, `ok`, `equal`, `fail`~~ ✅ DONE
+3. ~~Create basic tests for the assert module~~ ✅ DONE
+4. **Implement `throws` and `doesNotThrow`** in `assert.zena` (Phase 3)
+5. **Create `test.zena`** with basic `test()` and `run()` (Phase 4)
+6. Dogfood by converting some stdlib tests to Zena

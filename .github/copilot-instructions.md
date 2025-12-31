@@ -183,6 +183,7 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Architecture**: `docs/design/compiler-architecture.md`
     - **Argument Adaptation**: `docs/design/argument-adaptation.md`
     - **Arrays**: `docs/design/arrays.md`
+    - **Capabilities**: `docs/design/capabilities.md`
     - **Classes**: `docs/design/classes.md`
     - **Decorators**: `docs/design/decorators.md`
     - **Destructuring**: `docs/design/destructuring.md`

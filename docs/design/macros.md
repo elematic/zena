@@ -4,46 +4,152 @@ This document outlines a preliminary design for a Macro system in Zena. Macros a
 
 ## 1. The Challenge
 
-Macros are powerful but dangerous. They run arbitrary code during compilation.
+Macros are powerful but need careful design. They run code during compilation.
 
-- **Security**: A malicious macro could read files, access the network, or crash the compiler.
-- **Stability**: Macros must be deterministic.
-- **Performance**: Running macros shouldn't slow down compilation to a crawl.
+- **Security**: A malicious macro should not be able to read files, access the network, or exfiltrate data.
+- **Stability**: A buggy macro can crash or slow down the compiler, but this should only affect the current compilation.
+- **Performance**: Running macros shouldn't slow down compilation significantly.
 
-## 2. Architecture: WASM Sandboxing
+## 2. Security Model
 
-To address security and stability, Zena macros will be compiled to **WebAssembly** and executed in a sandboxed environment within the compiler.
+### 2.1 The Key Insight
 
-### 2.1 The Model
+The security boundary is between **WASM and the host OS**, not between macros and the compiler.
 
-1.  **Definition**: A macro is a Zena function annotated with `@macro`.
-2.  **Compilation**: The compiler compiles the macro code to a standalone WASM module _before_ compiling the main program.
-3.  **Execution**: When the compiler encounters a macro invocation (e.g., `mat[...]`), it:
-    - Instantiates the macro's WASM module.
-    - Serializes the relevant AST nodes (the arguments).
-    - Calls the macro function in the sandbox.
-    - Deserializes the returned AST nodes.
-    - Replaces the invocation with the returned AST.
+```
+┌─────────────────────────────────────────┐
+│              Host OS                    │
+│  (filesystem, network, secrets)         │
+└─────────────────────────────────────────┘
+                   │
+         ┌─────────┴─────────┐
+         │ Security boundary │  ← This is what matters
+         └─────────┬─────────┘
+                   │
+┌─────────────────────────────────────────┐
+│           WASM Runtime                  │
+│  ┌───────────────────────────────────┐  │
+│  │ Compiler + Macros (same instance) │  │
+│  │                                   │  │
+│  │ Macros are just function calls.   │  │
+│  │ No separate sandbox needed.       │  │
+│  └───────────────────────────────────┘  │
+└─────────────────────────────────────────┘
+```
 
-### 2.2 Isolation
+Once the Zena compiler is self-hosted (compiled to WASM), macros are simply Zena functions that the compiler calls. They run in the same WASM instance with no special isolation.
 
-The macro WASM module is instantiated with a **restricted import set**.
+A malicious or buggy macro **can**:
 
-- **Allowed**: Standard library pure functions (math, string manipulation), AST builder functions.
-- **Denied**: File I/O, Network, System calls.
+- Crash the compiler (annoying, not dangerous)
+- Slow down compilation (DoS—handled at the runtime level)
+- Produce incorrect output (breaks this compile, not a security issue)
 
-This guarantees that a macro cannot steal secrets or modify the system, satisfying the safety requirement.
+A malicious macro **cannot**:
+
+- Read files (SSH keys, environment variables, source code)
+- Access the network (exfiltrate data)
+- Modify the filesystem
+- Affect anything outside the current compilation
+
+This is because WASM has no ambient capabilities—file I/O, network, etc. only exist if the host explicitly provides imports for them. The compiler simply doesn't import these capabilities.
+
+### 2.2 Resource Limits
+
+For online compilers or untrusted inputs, resource limits are applied to the **entire compilation**, not per-macro:
+
+- **Fuel**: Limit total instructions executed
+- **Memory**: Cap heap size
+- **Time**: Wall-clock timeout
+
+If compilation exceeds limits, the host kills the WASM instance. No per-macro accounting needed.
+
+### 2.3 Bootstrap vs Self-Hosted
+
+During bootstrap (TypeScript compiler), we need to compile macros to WASM and instantiate them separately, with AST serialization at the boundary. This is a temporary cost.
+
+Once self-hosted:
+
+- Macros are just functions
+- No serialization overhead
+- No separate instantiation
+- The "sandbox" is just WASM's natural isolation from the host
+
+### 2.4 Macro Module Restrictions
+
+While the WASM boundary protects against host-level access, the self-hosted
+compiler itself has capabilities (file I/O, etc.) that macros should not access.
+
+**Solution**: Macro modules have restricted imports.
+
+A module containing macros can only import:
+
+- Other macro modules
+- Pure standard library modules (`zena:macro`, `zena:string`, `zena:array`, etc.)
+- Cannot import effectful modules (`zena:fs`, `zena:net`, etc.)
+
+```zena
+// my-macros.zena
+
+import { Expr, q } from 'zena:macro';  // OK: pure AST utilities
+import { Map } from 'zena:map';        // OK: pure data structures
+import { readFile } from 'zena:fs';    // ERROR: macro modules cannot import zena:fs
+```
+
+The compiler statically enforces these restrictions. A macro cannot accidentally
+(or maliciously) gain access to file I/O even when running in the same WASM
+instance as the compiler.
+
+### 2.5 Toward Capabilities and Isolated Libraries
+
+This security model points toward more general language features:
+
+1. **Pure Functions**: Functions that provably have no side effects. Macros are
+   an early use case—they're effectively pure functions over ASTs.
+
+2. **Capability-Based I/O**: Rather than importing `zena:fs` for ambient
+   filesystem access, programs would receive explicit capability objects:
+
+   ```zena
+   // Instead of:
+   import { readFile } from 'zena:fs';
+   readFile('config.json');
+
+   // Capabilities as values:
+   let loadConfig = (fs: FileSystem) => fs.read('config.json');
+   ```
+
+   This enables selective propagation—pass full access, read-only access, or
+   nothing at all to different parts of the program.
+
+3. **Library Instantiation**: Libraries could declare their required capabilities
+   as parameters, making dependencies explicit and controllable:
+
+   ```zena
+   library(fs: FileSystem) {
+     export let processFile = (path: string) => fs.read(path);
+   }
+   ```
+
+4. **Static Import Allow-Lists**: Modules could declare what imports they permit,
+   enabling compile-time verification of capability boundaries.
+
+These features would solve both security (selective propagation to dependencies)
+and abstraction (interface over implementation) problems that plague existing
+ecosystems.
+
+**See also**: `docs/design/capabilities.md` (planned) for the full design of
+capability-based I/O and isolated libraries.
 
 ## 3. Data Transfer (ASTs)
 
-The bottleneck is passing complex AST data between the Compiler (Host) and the Macro (Guest).
+During the bootstrap phase (before self-hosting), we need to pass AST data
+between the TypeScript compiler and WASM macro modules.
 
 ### 3.1 AST Serialization
 
-Since the Compiler and the Macro might be running in different memory spaces (or even different languages if the compiler is self-hosted vs bootstrapped), we need a stable serialization format for the AST.
-
 - **Binary Protocol**: A compact binary format representing Zena AST nodes.
-- **Shared Memory (Advanced)**: If the compiler is also running in WASM (self-hosted), we might be able to share memory pages or use Interface Types (Component Model) to pass high-level objects efficiently.
+- **Shared Memory (Advanced)**: Once self-hosted, the compiler and macros share the same address space—no serialization needed.
 
 ### 3.2 The `MacroContext` API
 
@@ -178,7 +284,203 @@ Macros **compose**.
 - Macro arguments can contain macro invocations.
 - **Expansion Order**: Macros are typically expanded "outside-in" or "inside-out" depending on the strategy, but the result is that all macros are expanded until only core Zena code remains.
 
-## 5. Roadmap
+## 5. Macro Tiers: Declarative vs Procedural
+
+A key design question is whether macros should be visually distinguishable from
+function calls. The concern: a macro can behave very differently from a function
+(e.g., not evaluating arguments, evaluating them multiple times, capturing AST).
+
+### 5.1 The Two-Tier System
+
+Zena distinguishes between two kinds of macros based on their **caller-facing
+evaluation semantics**:
+
+| Tier            | Sigil | Evaluation Semantics         | Power                                    |
+| --------------- | ----- | ---------------------------- | ---------------------------------------- |
+| **Declarative** | None  | All args once, left-to-right | AST introspection, restructuring         |
+| **Procedural**  | `!`   | Anything goes                | Lazy, repeat, skip, compile-time effects |
+
+**Important**: Both tiers benefit from the WASM security model (Section 2). The
+tier distinction is purely about **caller-facing evaluation semantics**, not
+security. Neither can access files, network, or system resources—that's
+guaranteed by the WASM boundary.
+
+**Declarative macros** look and behave like function calls from the caller's
+perspective. They guarantee:
+
+1. All expression arguments evaluate **exactly once**
+2. Evaluation order is **left-to-right** (same as functions)
+3. No new bindings escape into the caller's scope
+4. Output is a **pure quasi-quote expansion**
+
+Because of these guarantees, no sigil is required—the caller experiences
+function-call semantics.
+
+**Procedural macros** (`!`) have full power and can violate normal evaluation
+rules. The `!` sigil signals "this is not a normal call."
+
+### 5.2 Motivating Example: `assert`
+
+The `assert` function is a perfect use case for declarative macros.
+
+**The Problem**: How do you get good error messages from assertions?
+
+```zena
+// Option 1: Simple function - poor error messages
+assert(foo == bar);  // "Assertion failed" - what were the values?
+
+// Option 2: Separate assertion functions - verbose API
+equal(foo, bar);     // "Values not equal: left=42, right=43"
+notEqual(a, b);
+same(x, y);
+isNull(z);
+// ... need a function for every operator
+
+// Option 3: Declarative macro - best of both worlds
+assert(foo == bar);  // "Assertion failed: foo == bar (left=42, right=43)"
+```
+
+**How it works**: The `assert` macro:
+
+1. Receives the AST of `foo == bar` at compile time
+2. Destructures it to extract: operator (`==`), left expr (`foo`), right expr (`bar`)
+3. Generates code that evaluates each operand once and produces a rich error
+
+```zena
+// User writes:
+assert(foo == bar);
+
+// Macro expands to:
+{
+  let __left = foo;
+  let __right = bar;
+  if (!(__left == __right)) {
+    throw new AssertionError(
+      "Assertion failed: foo == bar",
+      __left,
+      __right,
+      "=="
+    );
+  }
+}
+```
+
+Each sub-expression evaluates exactly once, left-to-right—just like a function
+call. But the error message includes:
+
+- The original source text (`foo == bar`)
+- The actual values (42 and 43)
+- The operator (`==`)
+
+### 5.3 Declarative Macro Definition
+
+A declarative macro uses `@macro` and returns a quasi-quote:
+
+```zena
+@macro
+let assert = (expr: Expression<bool>, message?: string): Statement => {
+  match expr.ast {
+    case BinaryExpr { left, op, right } => q{
+      {
+        let __left = $(left);
+        let __right = $(right);
+        if (!(__left $(op) __right)) {
+          throw new AssertionError(
+            $(message ?? `Assertion failed: ${expr.source}`),
+            __left,
+            __right,
+            $(op.toString())
+          );
+        }
+      }
+    }
+    case _ => q{
+      if (!$(expr)) {
+        throw new AssertionError(
+          $(message ?? `Assertion failed: ${expr.source}`)
+        );
+      }
+    }
+  }
+};
+```
+
+The macro can **read** the AST structure but cannot cause multiple evaluations—
+`$(left)` and `$(right)` each appear once in the output.
+
+### 5.4 Enforcing Declarative Constraints
+
+How does the compiler ensure a declarative macro upholds its guarantees?
+
+1. **WASM Sandbox** (same as procedural): The macro code runs in an isolated
+   environment with no file I/O, network, or system access. It can only receive
+   AST and return AST.
+
+2. **Linear Use Analysis**: The compiler statically verifies that each
+   `Expression` argument is spliced into the output quasi-quote **exactly once**.
+   If a macro tries to use `$(left)` twice, it's a compile-time error.
+
+3. **No Escape**: The macro cannot return code that introduces bindings into the
+   caller's scope (hygiene) or references internal macro state.
+
+If a macro needs to violate linear use (e.g., evaluate something zero times or
+multiple times), it must be marked as procedural with `!`.
+
+### 5.5 When You Need `!`
+
+Procedural macros require the `!` sigil because they break normal evaluation:
+
+```zena
+// Lazy evaluation - argument may never execute
+log!(expensive_computation());
+
+// Short-circuit - second arg only evaluates if first is true
+and!(check_permissions(), do_action());
+
+// Repeat evaluation - runs the block multiple times
+retry!(3, fetch_data());
+
+// Compile-time code execution
+include!("./generated.zena");
+```
+
+These should look different because they **are** different.
+
+### 5.6 Explicit Quoting for Lazy Arguments
+
+If a declarative macro (or regular function) needs to receive an unevaluated
+expression, the caller uses explicit quoting:
+
+```zena
+// #(...) captures expression as a Quote<T> object
+lazyLog(#(expensive_computation()));
+```
+
+The "weird behavior" marker is on the **argument** (`#(...)`), not the call
+site. This keeps the weirdness explicit and local.
+
+The function signature would accept `Quote<T>`:
+
+```zena
+let lazyLog = (expr: Quote<string>): void => {
+  if (logLevel >= DEBUG) {
+    console.log(expr.eval());  // Only evaluates if needed
+  }
+};
+```
+
+### 5.7 Summary
+
+| Want to...                                 | Use                          |
+| ------------------------------------------ | ---------------------------- |
+| Introspect AST, restructure, better errors | Declarative macro (no sigil) |
+| Skip/repeat/lazy evaluation                | Procedural macro (`!`)       |
+| Pass unevaluated expr to function          | Quote syntax `#(...)`        |
+
+This design keeps most macros "invisible" because they behave predictably,
+while truly unusual ones announce themselves.
+
+## 6. Roadmap
 
 1.  **Built-in Intrinsics (Phase 1)**: Implement `mat`, `wat`, and others as hard-coded logic inside the compiler. This avoids the complexity of the macro system initially.
 2.  **Macro Prototype (Phase 2)**: Experiment with running a simple WASM function that accepts/returns a byte array (serialized AST).
