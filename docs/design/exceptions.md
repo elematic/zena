@@ -147,6 +147,34 @@ end
 
 1.  **JS Interop**: WASM EH can catch JS exceptions as `externref`. May need a way to distinguish Zena exceptions from JS exceptions.
 
+2.  **Try/Catch Statement Form**: Currently `try/catch` is expression-only, requiring both branches to produce a value. This makes side-effect-only patterns awkward:
+
+    ```zena
+    // What we'd LIKE to write:
+    try {
+      fn();
+      throw new AssertionError(message, 'throws');
+    } catch (e) {
+      // success - swallow the exception
+    };
+
+    // What we HAVE to write instead:
+    let threw = try {
+      fn();
+      false
+    } catch (e) {
+      true
+    };
+    if (!threw) {
+      throw new AssertionError(message, 'throws');
+    }
+    ```
+
+    **Possible solutions**:
+    - Allow `void` try/catch when both branches are void/never
+    - Add a separate try statement syntax for imperative control flow
+    - Improve `never` type handling so `throw` unifies with `void`
+
 ## Runtime Requirements
 
 Requires `--experimental-wasm-exnref` flag in Node.js (as of v24). The test runner passes this flag to worker subprocesses via `execArgv`.

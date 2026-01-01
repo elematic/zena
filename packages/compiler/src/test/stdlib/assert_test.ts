@@ -300,4 +300,226 @@ suite('Stdlib: assert', () => {
       });
     });
   });
+
+  suite('greater', () => {
+    test('passes when actual > expected', async () => {
+      const source = `
+        import { greater } from 'zena:assert';
+        export let run = (): i32 => {
+          greater(5, 3);
+          return 1;
+        };
+      `;
+      const result = await compileAndRun(source, 'run');
+      assert.strictEqual(result, 1);
+    });
+
+    test('throws when actual == expected', async () => {
+      const source = `
+        import { greater } from 'zena:assert';
+        export let run = (): i32 => {
+          greater(5, 5);
+          return 1;
+        };
+      `;
+      await assert.rejects(async () => {
+        await compileAndRun(source, 'run');
+      });
+    });
+
+    test('throws when actual < expected', async () => {
+      const source = `
+        import { greater } from 'zena:assert';
+        export let run = (): i32 => {
+          greater(3, 5);
+          return 1;
+        };
+      `;
+      await assert.rejects(async () => {
+        await compileAndRun(source, 'run');
+      });
+    });
+  });
+
+  suite('greaterOrEqual', () => {
+    test('passes when actual > expected', async () => {
+      const source = `
+        import { greaterOrEqual } from 'zena:assert';
+        export let run = (): i32 => {
+          greaterOrEqual(5, 3);
+          return 1;
+        };
+      `;
+      const result = await compileAndRun(source, 'run');
+      assert.strictEqual(result, 1);
+    });
+
+    test('passes when actual == expected', async () => {
+      const source = `
+        import { greaterOrEqual } from 'zena:assert';
+        export let run = (): i32 => {
+          greaterOrEqual(5, 5);
+          return 1;
+        };
+      `;
+      const result = await compileAndRun(source, 'run');
+      assert.strictEqual(result, 1);
+    });
+
+    test('throws when actual < expected', async () => {
+      const source = `
+        import { greaterOrEqual } from 'zena:assert';
+        export let run = (): i32 => {
+          greaterOrEqual(3, 5);
+          return 1;
+        };
+      `;
+      await assert.rejects(async () => {
+        await compileAndRun(source, 'run');
+      });
+    });
+  });
+
+  suite('less', () => {
+    test('passes when actual < expected', async () => {
+      const source = `
+        import { less } from 'zena:assert';
+        export let run = (): i32 => {
+          less(3, 5);
+          return 1;
+        };
+      `;
+      const result = await compileAndRun(source, 'run');
+      assert.strictEqual(result, 1);
+    });
+
+    test('throws when actual == expected', async () => {
+      const source = `
+        import { less } from 'zena:assert';
+        export let run = (): i32 => {
+          less(5, 5);
+          return 1;
+        };
+      `;
+      await assert.rejects(async () => {
+        await compileAndRun(source, 'run');
+      });
+    });
+
+    test('throws when actual > expected', async () => {
+      const source = `
+        import { less } from 'zena:assert';
+        export let run = (): i32 => {
+          less(5, 3);
+          return 1;
+        };
+      `;
+      await assert.rejects(async () => {
+        await compileAndRun(source, 'run');
+      });
+    });
+  });
+
+  suite('lessOrEqual', () => {
+    test('passes when actual < expected', async () => {
+      const source = `
+        import { lessOrEqual } from 'zena:assert';
+        export let run = (): i32 => {
+          lessOrEqual(3, 5);
+          return 1;
+        };
+      `;
+      const result = await compileAndRun(source, 'run');
+      assert.strictEqual(result, 1);
+    });
+
+    test('passes when actual == expected', async () => {
+      const source = `
+        import { lessOrEqual } from 'zena:assert';
+        export let run = (): i32 => {
+          lessOrEqual(5, 5);
+          return 1;
+        };
+      `;
+      const result = await compileAndRun(source, 'run');
+      assert.strictEqual(result, 1);
+    });
+
+    test('throws when actual > expected', async () => {
+      const source = `
+        import { lessOrEqual } from 'zena:assert';
+        export let run = (): i32 => {
+          lessOrEqual(5, 3);
+          return 1;
+        };
+      `;
+      await assert.rejects(async () => {
+        await compileAndRun(source, 'run');
+      });
+    });
+  });
+
+  suite('throws', () => {
+    test('passes when function throws', async () => {
+      const source = `
+        import { throws } from 'zena:assert';
+        import { Error } from 'zena:error';
+        export let run = (): i32 => {
+          throws(() => {
+            throw new Error('expected');
+          });
+          return 1;
+        };
+      `;
+      const result = await compileAndRun(source, 'run');
+      assert.strictEqual(result, 1);
+    });
+
+    test('throws when function does not throw', async () => {
+      const source = `
+        import { throws } from 'zena:assert';
+        export let run = (): i32 => {
+          throws(() => {
+            let x = 1;
+          });
+          return 1;
+        };
+      `;
+      await assert.rejects(async () => {
+        await compileAndRun(source, 'run');
+      });
+    });
+  });
+
+  suite('doesNotThrow', () => {
+    test('passes when function does not throw', async () => {
+      const source = `
+        import { doesNotThrow } from 'zena:assert';
+        export let run = (): i32 => {
+          doesNotThrow(() => {
+            let x = 1;
+          });
+          return 1;
+        };
+      `;
+      const result = await compileAndRun(source, 'run');
+      assert.strictEqual(result, 1);
+    });
+
+    test('throws when function throws', async () => {
+      const source = `
+        import { doesNotThrow } from 'zena:assert';
+        import { Error } from 'zena:error';
+        export let run = (): i32 => {
+          doesNotThrow(() => {
+            throw new Error('unexpected');
+          });
+          return 1;
+        };
+      `;
+      await assert.rejects(async () => {
+        await compileAndRun(source, 'run');
+      });
+    });
+  });
 });

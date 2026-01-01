@@ -322,23 +322,26 @@ This project is an **npm monorepo** managed with **Wireit**.
       - Use byte streaming (start/byte/end pattern) for string I/O.
       - See `docs/design/host-interop.md` for details.
 
-3.  **Data Structures**:
+3.  **Exceptions**:
+    - **Try/Catch Statement Form**: Allow side-effect-only try/catch without requiring both branches to produce values. See `docs/design/exceptions.md` Open Questions.
+
+4.  **Data Structures**:
     - **Maps**: Implement map literal syntax (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
-4.  **Standard Library**:
+5.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
     - String manipulation (`substring`, `indexOf`).
     - Regexes.
 
-5.  **Self-Hosting**:
+6.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
 
-6.  **Pattern Matching (Advanced)**:
+7.  **Pattern Matching (Advanced)**:
     - Array element matching (requires `FixedArray` support or `Sequence` interface).
     - Rest patterns (`...tail`).
 
-7.  **Future Features**:
+8.  **Future Features**:
     - **Syntax**:
       - Blocks.
       - For/of loops.

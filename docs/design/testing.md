@@ -338,41 +338,45 @@ export let fail = (message: string = 'Test failed'): never => {
 };
 ```
 
-### Phase 2: Extended Assertions ✅ PARTIALLY COMPLETE
+### Phase 2: Extended Assertions ✅ COMPLETE
 
-**Status**: Most assertions implemented in Phase 1. Remaining: comparison assertions.
+**Status**: Completed 2025-12-31
 
-**Completed**:
+**Implemented**:
 
-- ~~Implement null assertions: `isNull`, `isNotNull`~~ ✅
-- ~~Implement boolean assertions: `isTrue`, `isFalse`~~ ✅
-- ~~Implement reference equality: `same`, `notSame`~~ ✅
+- `isNull<T>(value: T | null, message?: string)` ✅
+- `isNotNull<T>(value: T | null, message?: string)` ✅
+- `isTrue(value: boolean, message?: string)` ✅
+- `isFalse(value: boolean, message?: string)` ✅
+- `same<T>(actual: T, expected: T, message?: string)` ✅ (reference equality)
+- `notSame<T>(actual: T, expected: T, message?: string)` ✅
+- `greater<T>(actual: T, expected: T, message?: string)` ✅
+- `greaterOrEqual<T>(actual: T, expected: T, message?: string)` ✅
+- `less<T>(actual: T, expected: T, message?: string)` ✅
+- `lessOrEqual<T>(actual: T, expected: T, message?: string)` ✅
 
-**Remaining Tasks**:
+### Phase 3: Exception Assertions ✅ COMPLETE
 
-1. Implement comparison assertions: `greater`, `less`, `greaterOrEqual`, `lessOrEqual`
+**Status**: Completed 2025-12-31
 
-### Phase 3: Exception Assertions
+**Implemented**:
 
-**Prerequisites**:
-
-- `try`/`catch` expressions (✅ Done - implemented 2025-12-31)
-
-**Tasks**:
-
-1. Implement `throws(fn: () => void, message?: string)`
-2. Implement `doesNotThrow(fn: () => void, message?: string)`
+- `throws(fn: () => void, message?: string)` ✅
+- `doesNotThrow(fn: () => void, message?: string)` ✅
 
 **Implementation Notes**:
 
+Since `try`/`catch` is an expression in Zena (not a statement), exception assertions
+use the expression form to capture whether an exception was thrown:
+
 ```zena
-export let throws = (fn: () => void, message: string = 'Expected function to throw') => {
-  let threw = false;
-  try {
+export let throws = (fn: () => void, message: string = 'Expected function to throw'): void => {
+  let threw = try {
     fn();
+    false
   } catch (e) {
-    threw = true;
-  }
+    true
+  };
   if (!threw) {
     throw new AssertionError(message, 'throws');
   }
