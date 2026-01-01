@@ -17,25 +17,36 @@ Traditional approaches (like C# or TypeScript targeting ES5) involve **State Mac
 - **Binary Size**: Generates significant boilerplate code, violating our "Minimal Output" principle.
 - **Performance**: State machines can be slower than native stack switching.
 
-### The Solution: WASM Stack Switching (JSPI)
+### The Solution: WASM Stack Switching (Continuations)
 
-We should target the **JavaScript Promise Integration (JSPI)** proposal (also known as Stack Switching).
+We should target the **WASM Stack Switching** proposal (specifically Typed Continuations). This provides the low-level primitives (`suspend`, `resume`, `cont.new`) to implement coroutines and async/await efficiently without state-machine lowering.
 
-- **How it works**: It allows a WebAssembly module to import a JavaScript function that returns a Promise, and "suspend" the WASM execution when that function is called. When the Promise resolves, the WASM execution resumes.
-- **Benefit**: Zena code looks synchronous and uses the native WASM stack. No compiler rewriting is required.
-- **Status**: Currently in Phase 3 (Implementation). Available in V8 (Chrome/Node) behind flags.
+However, the implementation strategy depends on the host:
+
+#### 1. JavaScript Hosts (Browser/Node) -> JSPI
+For environments with JavaScript, we should use the **JavaScript Promise Integration (JSPI)** API.
+- **Mechanism**: Wraps WASM exports/imports to handle the suspension automatically.
+- **Benefit**: Seamless interop with JS Promises. The JS engine manages the event loop and suspension.
+
+#### 2. Standalone Hosts (WASI) -> Core Stack Switching
+For standalone environments (like `wasmtime` or embedded), we cannot rely on JSPI.
+- **Mechanism**: We must use the core **Stack Switching** instructions directly.
+- **Requirement**: This requires Zena to implement its own **Async Runtime** (Scheduler) to manage the suspended stacks (continuations).
 
 ### Recommendation
-**We should wait for (or experimentally target) WASM Stack Switching.**
+**Design for the Core Stack Switching model.**
 
-Implementing a full state-machine transformation now would be a massive effort that would likely be obsoleted by the platform shortly.
+- The compiler should treat `async` functions as functions that can suspend.
+- **Backend Divergence**:
+  - **JS Target**: Emits JSPI-compatible wrappers.
+  - **WASI Target**: Emits code that yields a continuation to a Zena-implemented scheduler.
 
 ### Proposed Syntax
 
 ```zena
 // Returns a Promise<string> (or Zena equivalent wrapper)
 async const fetchUser = (id: i32): string => {
-  // 'await' suspends the stack via JSPI
+  // 'await' suspends the stack
   const response = await fetch(`https://api.example.com/users/${id}`);
   return response.text();
 }
@@ -43,15 +54,24 @@ async const fetchUser = (id: i32): string => {
 
 ## 2. The Event Loop
 
-**Q: Do we need an event loop first?**
-**A: No.**
+**Q: Do we need an event loop?**
+**A: It depends on the target.**
 
-Since Zena primarily targets host environments that already possess an event loop (Browsers, Node.js, Cloudflare Workers), we should **delegate to the host**.
+### Browser/Node (JSPI)
+**No.** We delegate to the host's JS Event Loop. Zena code runs on the V8 stack and suspends via JSPI.
 
-- **Browser/Node**: The JS Event Loop drives execution. Zena code runs on the V8 stack.
-- **WASI**: When targeting standalone WASI, we would rely on the WASI async poll interface (WASI Preview 2), which provides an event-loop-like mechanism.
+### Standalone (WASI / Core Stack Switching)
+**Yes.**
+Since there is no JS engine to drive the promises, Zena must include a minimal **Async Runtime** in its standard library for standalone builds.
 
-**Decision**: Zena does not implement its own scheduler or event loop. It is a guest language.
+- **Scheduler**: A simple queue of ready continuations.
+- **Reactor**: A mechanism to poll the host (via WASI `poll_oneoff` or similar) for I/O events and wake up the corresponding continuations.
+
+**Decision**:
+- **Compiler**: Agnostic. Generates code that suspends.
+- **Runtime**:
+  - `zena-js`: Thin wrapper around JSPI.
+  - `zena-wasi`: Includes a Scheduler and Event Loop.
 
 ## 3. Threads & Concurrency
 
@@ -99,10 +119,14 @@ const val = await ch.receive();
 1.  **Phase 1 (Now)**:
     - No native `async`/`await`.
     - Use callbacks or raw Promises via Host Interop if needed.
-2.  **Phase 2 (Experimental)**:
+2.  **Phase 2 (Experimental - JSPI)**:
     - Enable JSPI flags in test runner.
-    - Implement `async` keyword which compiles to a "suspending" function signature in the WASM Type Section.
+    - Implement `async` keyword which compiles to a "suspending" function signature.
     - Implement `await` which calls the suspending import.
-3.  **Phase 3 (Standard)**:
-    - Once JSPI is standard, expose full `async`/`await` support.
+3.  **Phase 3 (Standalone Support)**:
+    - Implement the **Async Runtime** (Scheduler) in Zena.
+    - Implement `async` compilation using Core Stack Switching instructions (`suspend`, `resume`).
+    - Integrate with WASI poll interface.
+4.  **Phase 4 (Standard)**:
+    - Expose full `async`/`await` support across all targets.
     - Build `Task` and `Channel` libraries.
