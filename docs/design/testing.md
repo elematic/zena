@@ -2,8 +2,8 @@
 
 ## Status
 
-- **Status**: In Progress (Phase 1 Complete)
-- **Date**: 2025-12-31
+- **Status**: In Progress (Phase 3 Complete)
+- **Date**: 2026-01-01
 
 ## Overview
 
@@ -32,6 +32,123 @@ modules will enable writing tests directly in Zena, which is essential for:
 2. **Async testing**: Deferred until async/await is implemented in Zena
 3. **Mocking/Spying**: Out of scope for MVP
 4. **Code coverage**: Out of scope for MVP
+
+---
+
+## Test Execution Modes
+
+Until Zena has native I/O capabilities (via WASI or similar), test execution is
+orchestrated by Node.js. There are two primary modes:
+
+### Mode 1: Inline Zena in Node Tests
+
+For compiler codegen tests and quick validation, embed Zena code directly in
+Node test files:
+
+```typescript
+// packages/compiler/src/test/stdlib/math_test.ts
+import {suite, test} from 'node:test';
+import assert from 'node:assert';
+import {compileAndRun} from '../codegen/utils.js';
+
+suite('Math stdlib', () => {
+  test('abs returns positive value', async () => {
+    const result = await compileAndRun(`
+      import { equal } from 'zena:assert';
+      import { abs } from 'zena:math';
+
+      export let main = (): i32 => {
+        equal(abs(-5), 5);
+        equal(abs(5), 5);
+        return 1;  // success sentinel
+      };
+    `);
+    assert.strictEqual(result, 1);
+  });
+});
+```
+
+**Characteristics**:
+
+- Zena assertions (`equal`, `throws`, etc.) run inside WASM
+- Better error messages without serializing values to JS
+- Node just checks for successful completion (return value or no exception)
+- Good for: unit tests, codegen validation, quick iteration
+
+### Mode 2: Standalone Zena Test Files
+
+For larger test suites (stdlib, self-hosted compiler), write tests in `.zena`
+files using `suite()` and `test()`, but discover and run them from Node:
+
+```zena
+// packages/compiler/stdlib-tests/array_test.zena
+import { suite, test } from 'zena:test';
+import { equal, throws } from 'zena:assert';
+import { Array } from 'zena:array';
+
+suite('Array', () => {
+  test('push increases length', (ctx: TestContext) => {
+    let arr = new Array<i32>();
+    equal(arr.length, 0);
+    arr.push(1);
+    equal(arr.length, 1);
+  });
+
+  test('pop returns last element', (ctx: TestContext) => {
+    let arr = new Array<i32>();
+    arr.push(10);
+    arr.push(20);
+    equal(arr.pop(), 20);
+  });
+
+  test('get throws on out of bounds', (ctx: TestContext) => {
+    let arr = new Array<i32>();
+    throws(() => { arr[0]; });
+  });
+});
+```
+
+The Node test runner discovers and executes these files:
+
+```typescript
+// packages/compiler/src/test/stdlib-runner.ts
+import {suite, test} from 'node:test';
+import {glob} from 'node:fs/promises';
+import {compileAndRunTestFile} from './utils.js';
+
+// Discover all .zena test files
+const testFiles = await glob('stdlib-tests/**/*_test.zena');
+
+for (const file of testFiles) {
+  suite(file, () => {
+    test('runs without error', async () => {
+      await compileAndRunTestFile(file);
+    });
+  });
+}
+```
+
+**Characteristics**:
+
+- Tests are pure Zena code
+- Node handles file discovery and process orchestration
+- Test results reported back to Node (via exports or return value)
+- Good for: stdlib tests, integration tests, self-hosting tests
+
+### Future: Native Zena Test Runner
+
+Once Zena has WASI file I/O and console output, we can implement a fully native
+test runner:
+
+```zena
+// Run tests directly in Zena
+import { run } from 'zena:test';
+
+let results = run();
+// Output results, exit with appropriate code
+```
+
+This is deferred until WASI interfaces are more complete.
 
 ---
 
