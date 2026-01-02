@@ -112,4 +112,15 @@ suite('Checker: Union Types', () => {
     assert.strictEqual(diagnostics.length, 1);
     assert.strictEqual(diagnostics[0].code, DiagnosticCode.TypeMismatch);
   });
+
+  test('should filter never from union', () => {
+    const diagnostics = check(`
+      class Error {}
+      // if-expression returns i32 | never, which should simplify to i32
+      let x: i32 = if (true) { 1 } else { throw new Error() };
+      
+      let y: i32 = x; // Should succeed
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
 });

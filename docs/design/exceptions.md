@@ -147,33 +147,19 @@ end
 
 1.  **JS Interop**: WASM EH can catch JS exceptions as `externref`. May need a way to distinguish Zena exceptions from JS exceptions.
 
-2.  **Try/Catch Statement Form**: Currently `try/catch` is expression-only, requiring both branches to produce a value. This makes side-effect-only patterns awkward:
+2.  **Try/Catch Statement Form**: Resolved. `never` type handling was improved so `throw` unifies with `void` (and other types).
 
     ```zena
-    // What we'd LIKE to write:
+    // Now works as expected:
     try {
       fn();
       throw new AssertionError(message, 'throws');
     } catch (e) {
       // success - swallow the exception
     };
-
-    // What we HAVE to write instead:
-    let threw = try {
-      fn();
-      false
-    } catch (e) {
-      true
-    };
-    if (!threw) {
-      throw new AssertionError(message, 'throws');
-    }
     ```
 
-    **Possible solutions**:
-    - Allow `void` try/catch when both branches are void/never
-    - Add a separate try statement syntax for imperative control flow
-    - Improve `never` type handling so `throw` unifies with `void`
+    The type of the above expression is `void` (union of `never` and `void`).
 
 ## Runtime Requirements
 

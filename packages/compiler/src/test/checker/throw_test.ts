@@ -52,4 +52,71 @@ suite('Checker: Throw Expression', () => {
 
     assert.deepStrictEqual(errors, []);
   });
+
+  test('try/catch as statement with void/never', () => {
+    const input = `
+      class Error {}
+      class AssertionError extends Error {
+        #new(msg: string, name: string) {
+          super();
+        }
+      }
+      
+      let fn = () => {};
+      
+      let test = () => {
+        try {
+          fn();
+          throw new AssertionError('msg', 'throws');
+        } catch (e) {
+          // success - swallow the exception
+        };
+      };
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('re-throw from catch', () => {
+    const input = `
+      class Error {}
+      let test = () => {
+        try {
+          throw new Error();
+        } catch (e) {
+          throw e;
+        };
+      };
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('throw new error from catch', () => {
+    const input = `
+      class Error {}
+      class OtherError extends Error {}
+      let test = () => {
+        try {
+          throw new Error();
+        } catch (e) {
+          throw new OtherError();
+        };
+      };
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    const errors = checker.check();
+
+    assert.deepStrictEqual(errors, []);
+  });
 });

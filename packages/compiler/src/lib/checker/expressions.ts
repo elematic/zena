@@ -674,10 +674,15 @@ function createUnionType(types: Type[]): Type {
     }
   }
 
+  // Filter out Never types, unless all are Never
+  // T | never => T
+  const nonNeverTypes = flatTypes.filter((t) => t.kind !== TypeKind.Never);
+  const typesToProcess = nonNeverTypes.length > 0 ? nonNeverTypes : flatTypes;
+
   // Deduplicate
   const uniqueTypes: Type[] = [];
   const seen = new Set<string>();
-  for (const t of flatTypes) {
+  for (const t of typesToProcess) {
     const s = typeToString(t);
     if (!seen.has(s)) {
       seen.add(s);

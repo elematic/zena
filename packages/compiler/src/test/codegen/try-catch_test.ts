@@ -48,6 +48,52 @@ suite('Codegen: Try/Catch', () => {
     assert.strictEqual(result, 30);
   });
 
+  test('try/catch as statement (void)', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        var sideEffect = 0;
+        try {
+          sideEffect = 1;
+          throw new Error("oops");
+          sideEffect = 2;
+        } catch (e) {
+          sideEffect = 3;
+        };
+        return sideEffect;
+      };
+    `);
+    assert.strictEqual(result, 3);
+  });
+
+  test('re-throw from catch', async () => {
+    await assert.rejects(async () => {
+      await compileAndRun(`
+        export let main = () => {
+          try {
+            throw new Error("original");
+          } catch (e) {
+            throw e;
+          };
+        };
+      `);
+    });
+  });
+
+  test('throw new error from catch', async () => {
+    await assert.rejects(async () => {
+      await compileAndRun(`
+        class OtherError extends Error {}
+        export let main = () => {
+          try {
+            throw new Error("original");
+          } catch (e) {
+            throw new OtherError("new");
+          };
+        };
+      `);
+    });
+  });
+
   test('try/catch with computation in catch block', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
