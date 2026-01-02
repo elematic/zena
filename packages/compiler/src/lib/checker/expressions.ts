@@ -36,6 +36,7 @@ import {
   type UnaryExpression,
 } from '../ast.js';
 import {DiagnosticCode} from '../diagnostics.js';
+import {getGetterName, getSetterName} from '../names.js';
 import {
   TypeKind,
   Types,
@@ -1300,7 +1301,7 @@ function checkAssignmentExpression(
     }
 
     // Check setters
-    const setterName = `set_${memberName}`;
+    const setterName = getSetterName(memberName);
     if (classType.methods.has(setterName)) {
       const setter = classType.methods.get(setterName)!;
       const valueType = checkExpression(ctx, expr.value);
@@ -1317,7 +1318,7 @@ function checkAssignmentExpression(
     }
 
     // Check if it is a read-only property (getter only)
-    const getterName = `get_${memberName}`;
+    const getterName = getGetterName(memberName);
     if (classType.methods.has(getterName)) {
       ctx.diagnostics.reportError(
         `Cannot assign to read-only property '${memberName}'.`,
@@ -1958,7 +1959,7 @@ function checkMemberExpression(
   }
 
   // Check getters
-  const getterName = `get_${memberName}`;
+  const getterName = getGetterName(memberName);
   if (classType.methods.has(getterName)) {
     const getterType = classType.methods.get(getterName)!;
     const resolvedGetter = resolveMemberType(

@@ -21,8 +21,8 @@ suite('TypeChecker - Readonly Assignment', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.strictEqual(errors[0].code, DiagnosticCode.InvalidAssignment); 
-    // Note: Currently it might report PropertyNotFound or something else, 
+    assert.strictEqual(errors[0].code, DiagnosticCode.InvalidAssignment);
+    // Note: Currently it might report PropertyNotFound or something else,
     // but we want InvalidAssignment or similar.
     // If it currently reports PropertyNotFound, this test will fail on the code check.
   });

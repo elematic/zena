@@ -16,7 +16,10 @@ suite('Parser - Match Expression', () => {
       assert.strictEqual(decl.init.type, NodeType.MatchExpression);
       if (decl.init.type === NodeType.MatchExpression) {
         assert.strictEqual(decl.init.cases.length, 1);
-        assert.strictEqual(decl.init.cases[0].pattern.type, NodeType.NumberLiteral);
+        assert.strictEqual(
+          decl.init.cases[0].pattern.type,
+          NodeType.NumberLiteral,
+        );
       }
     }
   });
@@ -34,7 +37,10 @@ suite('Parser - Match Expression', () => {
 
     assert.strictEqual(ast.body.length, 1);
     const decl = ast.body[0];
-    if (decl.type === NodeType.VariableDeclaration && decl.init.type === NodeType.MatchExpression) {
+    if (
+      decl.type === NodeType.VariableDeclaration &&
+      decl.init.type === NodeType.MatchExpression
+    ) {
       assert.strictEqual(decl.init.cases.length, 3);
     }
   });

@@ -83,7 +83,7 @@ suite('TypeChecker - Final Modifier', () => {
     assert.ok(errors.length >= 1);
     assert.match(
       errors.map((e) => e.message).join('\n'),
-      /Cannot override final method 'get_prop'/,
+      /Cannot override final method 'get#prop'/,
     );
   });
 });

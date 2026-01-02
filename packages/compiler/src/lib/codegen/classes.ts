@@ -28,6 +28,7 @@ import {
   type TypeAliasType,
   type SymbolType,
 } from '../types.js';
+import {getGetterName, getSetterName} from '../names.js';
 import {WasmModule} from '../emitter.js';
 
 /**
@@ -216,7 +217,7 @@ export function registerInterface(
       const propType = mapType(ctx, member.typeAnnotation, context);
 
       if (member.hasGetter) {
-        const methodName = `get_${propName}`;
+        const methodName = getGetterName(propName);
 
         // Function type: (param any) -> result
         const params: number[][] = [[ValType.ref_null, ValType.anyref]];
@@ -241,7 +242,7 @@ export function registerInterface(
       }
 
       if (member.hasSetter) {
-        const methodName = `set_${propName}`;
+        const methodName = getSetterName(propName);
 
         // Function type: (param any, value) -> void
         const params: number[][] = [
@@ -695,7 +696,7 @@ function generateFieldGetterTrampoline(
     );
   } else {
     // Check for getter
-    const getterName = `get_${fieldName}`;
+    const getterName = getGetterName(fieldName);
     const methodInfo = classInfo.methods.get(getterName);
     if (methodInfo) {
       // Call getter
@@ -1496,7 +1497,7 @@ export function registerClassMethods(
 
       // Getter
       if (member.getter) {
-        const methodName = `get_${propName}`;
+        const methodName = getGetterName(propName);
         if (!vtable.includes(methodName)) {
           vtable.push(methodName);
         }
@@ -1548,7 +1549,7 @@ export function registerClassMethods(
 
       // Setter
       if (member.setter) {
-        const methodName = `set_${propName}`;
+        const methodName = getSetterName(propName);
         if (!vtable.includes(methodName)) {
           vtable.push(methodName);
         }
@@ -1615,7 +1616,7 @@ export function registerClassMethods(
         const propType = mapType(ctx, member.typeAnnotation);
 
         // Getter
-        const getterName = `get_${propName}`;
+        const getterName = getGetterName(propName);
         if (!intrinsic && !vtable.includes(getterName)) {
           vtable.push(getterName);
         }
@@ -1665,7 +1666,7 @@ export function registerClassMethods(
 
         // Setter (if mutable)
         if (!member.isFinal) {
-          const setterName = `set_${propName}`;
+          const setterName = getSetterName(propName);
           if (!intrinsic && !vtable.includes(setterName)) {
             vtable.push(setterName);
           }
@@ -2033,7 +2034,7 @@ export function generateClassMethods(
 
       // Getter
       if (member.getter) {
-        const methodName = `get_${propName}`;
+        const methodName = getGetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
         const body: number[] = [];
 
@@ -2079,7 +2080,7 @@ export function generateClassMethods(
 
       // Setter
       if (member.setter) {
-        const methodName = `set_${propName}`;
+        const methodName = getSetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
         const body: number[] = [];
 
@@ -2153,7 +2154,7 @@ export function generateClassMethods(
         }
 
         // Getter
-        const getterName = `get_${propName}`;
+        const getterName = getGetterName(propName);
         const getterInfo = classInfo.methods.get(getterName)!;
         const getterBody: number[] = [];
 
@@ -2170,7 +2171,7 @@ export function generateClassMethods(
 
         // Setter
         if (!member.isFinal) {
-          const setterName = `set_${propName}`;
+          const setterName = getSetterName(propName);
           const setterInfo = classInfo.methods.get(setterName)!;
           const setterBody: number[] = [];
 
@@ -2802,7 +2803,7 @@ export function instantiateClass(
 
         // Getter
         if (member.getter) {
-          const methodName = `get_${propName}`;
+          const methodName = getGetterName(propName);
           if (!vtable.includes(methodName)) {
             vtable.push(methodName);
           }
@@ -2854,7 +2855,7 @@ export function instantiateClass(
 
         // Setter
         if (member.setter) {
-          const methodName = `set_${propName}`;
+          const methodName = getSetterName(propName);
           if (!vtable.includes(methodName)) {
             vtable.push(methodName);
           }
@@ -2923,7 +2924,7 @@ export function instantiateClass(
           const propType = mapType(ctx, member.typeAnnotation, context);
 
           // Register Getter
-          const regGetterName = `get_${propName}`;
+          const regGetterName = getGetterName(propName);
           if (!intrinsic && !vtable.includes(regGetterName)) {
             vtable.push(regGetterName);
           }
@@ -2976,7 +2977,7 @@ export function instantiateClass(
 
           // Register Setter (if mutable)
           if (!member.isFinal) {
-            const regSetterName = `set_${propName}`;
+            const regSetterName = getSetterName(propName);
             if (!intrinsic && !vtable.includes(regSetterName)) {
               vtable.push(regSetterName);
             }

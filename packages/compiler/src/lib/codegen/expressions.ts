@@ -36,6 +36,7 @@ import {
   type UnaryExpression,
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
+import {getGetterName, getSetterName} from '../names.js';
 import {WasmModule} from '../emitter.js';
 import {
   Decorators,
@@ -1529,7 +1530,7 @@ function generateMemberExpression(
         targetTypeIndex = fieldInfo.typeIndex;
       } else {
         // Check for getter
-        const getterName = `get_${fieldName}`;
+        const getterName = getGetterName(fieldName);
         const methodInfo = interfaceInfo.methods.get(getterName);
         if (methodInfo) {
           fieldInfo = {
@@ -1704,7 +1705,7 @@ function generateMemberExpression(
 
   // Check for virtual property access (public fields or accessors)
   if (!fieldName.startsWith('#')) {
-    const getterName = `get_${fieldName}`;
+    const getterName = getGetterName(fieldName);
     const methodInfo = foundClass.methods.get(getterName);
     if (methodInfo) {
       // Call getter
@@ -2757,7 +2758,7 @@ function generateAssignmentExpression(
       // Check if it's an interface
       const interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
       if (interfaceInfo) {
-        const setterName = `set_${fieldName}`;
+        const setterName = getSetterName(fieldName);
         const methodInfo = interfaceInfo.methods.get(setterName);
         if (!methodInfo) {
           throw new Error(`Setter for ${fieldName} not found in interface`);
@@ -2876,7 +2877,7 @@ function generateAssignmentExpression(
 
     // Check for virtual property assignment (public fields or accessors)
     if (!fieldName.startsWith('#')) {
-      const setterName = `set_${fieldName}`;
+      const setterName = getSetterName(fieldName);
       const methodInfo = foundClass.methods.get(setterName);
       if (methodInfo) {
         // Check if we can use static dispatch (final class, final method, or extension)

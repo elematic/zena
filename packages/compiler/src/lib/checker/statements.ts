@@ -32,6 +32,13 @@ import {
 } from '../ast.js';
 import {DiagnosticCode, type DiagnosticLocation} from '../diagnostics.js';
 import {
+  getGetterName,
+  getPropertyNameFromAccessor,
+  getSetterName,
+  isGetterName,
+  isSetterName,
+} from '../names.js';
+import {
   Decorators,
   TypeKind,
   Types,
@@ -1413,6 +1420,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   }
 
   // 1. First pass: Collect members to build the ClassType
+  const localFields = new Set<string>();
+  const localMethods = new Set<string>();
+
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
       if (decl.isExtension && !member.isStatic && !member.isDeclare) {
@@ -1450,8 +1460,17 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
       const memberName = memberNameInfo.name;
 
+      if (localFields.has(memberName)) {
+        ctx.diagnostics.reportError(
+          `Duplicate field '${memberName}' in class '${className}'.`,
+          DiagnosticCode.DuplicateDeclaration,
+        );
+        continue;
+      }
+      localFields.add(memberName);
+
+      // Check if it's a redeclaration of an inherited field
       if (classType.fields.has(memberName)) {
-        // Check if it's a redeclaration of an inherited field
         if (superType && superType.fields.has(memberName)) {
           // Allow shadowing/overriding of fields
           // Check type compatibility
@@ -1465,23 +1484,42 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             );
           }
         } else {
+          // Should not happen if localFields check passed, unless classType.fields has it but superType doesn't?
+          // This could happen if we have mixins or other mechanisms populating fields.
+          // But for now, if it's in classType.fields but not localFields, it must be inherited.
+        }
+      }
+
+      if (classType.methods.has(memberName)) {
+        // Check if it conflicts with a method
+        // If the method is inherited, it's a conflict (field shadowing method?)
+        // In many languages, field cannot shadow method.
+        // If it's a local method, we'll catch it when processing the method (or here if method came first).
+
+        // If method came first locally:
+        if (localMethods.has(memberName)) {
           ctx.diagnostics.reportError(
-            `Duplicate field '${memberName}' in class '${className}'.`,
+            `Field '${memberName}' conflicts with method '${memberName}'.`,
+            DiagnosticCode.DuplicateDeclaration,
+          );
+        } else {
+          // Inherited method
+          ctx.diagnostics.reportError(
+            `Field '${memberName}' conflicts with inherited method '${memberName}'.`,
             DiagnosticCode.DuplicateDeclaration,
           );
         }
       }
+
       classType.fields.set(memberName, fieldType);
 
       // Register implicit accessors for public fields
       if (!memberName.startsWith('#')) {
-        const getterName = `get_${memberName}`;
-        const setterName = `set_${memberName}`;
+        const getterName = getGetterName(memberName);
+        const setterName = getSetterName(memberName);
 
         // Getter
-        if (!classType.methods.has(getterName)) {
-          classType.vtable.push(getterName);
-        }
+        classType.vtable.push(getterName);
         classType.methods.set(getterName, {
           kind: TypeKind.Function,
           parameters: [],
@@ -1491,9 +1529,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
         // Setter (if mutable)
         if (!member.isFinal) {
-          if (!classType.methods.has(setterName)) {
-            classType.vtable.push(setterName);
-          }
+          classType.vtable.push(setterName);
           classType.methods.set(setterName, {
             kind: TypeKind.Function,
             parameters: [fieldType],
@@ -1521,29 +1557,18 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
       const memberName = memberNameInfo.name;
 
-      if (classType.fields.has(memberName)) {
-        if (superType && superType.fields.has(memberName)) {
-          // Allow overriding field with accessor
-          // Check type compatibility
-          const superFieldType = superType.fields.get(memberName)!;
-          if (!isAssignableTo(ctx, fieldType, superFieldType)) {
-            ctx.diagnostics.reportError(
-              `Accessor '${memberName}' in subclass '${className}' must be compatible with inherited field.`,
-              DiagnosticCode.TypeMismatch,
-            );
-          }
-        } else {
-          ctx.diagnostics.reportError(
-            `Duplicate field '${memberName}' in class '${className}'.`,
-            DiagnosticCode.DuplicateDeclaration,
-          );
-        }
+      if (localFields.has(memberName)) {
+        ctx.diagnostics.reportError(
+          `Duplicate field '${memberName}' in class '${className}'.`,
+          DiagnosticCode.DuplicateDeclaration,
+        );
       }
-      // classType.fields.set(memberName, fieldType); // Accessors are not fields
+      // Accessors are not fields, but they conflict with fields
+      // classType.fields.set(memberName, fieldType);
 
       // Register getter/setter methods
       if (member.getter) {
-        const getterName = `get_${memberName}`;
+        const getterName = getGetterName(memberName);
         const methodType: FunctionType = {
           kind: TypeKind.Function,
           parameters: [],
@@ -1570,7 +1595,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       }
 
       if (member.setter) {
-        const setterName = `set_${memberName}`;
+        const setterName = getSetterName(memberName);
         const methodType: FunctionType = {
           kind: TypeKind.Function,
           parameters: [fieldType],
@@ -1662,6 +1687,29 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
         classType.constructorType = methodType;
       } else {
+        if (localMethods.has(memberName)) {
+          ctx.diagnostics.reportError(
+            `Duplicate method '${memberName}' in class '${className}'.`,
+            DiagnosticCode.DuplicateDeclaration,
+          );
+        }
+        localMethods.add(memberName);
+
+        if (classType.fields.has(memberName)) {
+          if (localFields.has(memberName)) {
+            ctx.diagnostics.reportError(
+              `Method '${memberName}' conflicts with field '${memberName}'.`,
+              DiagnosticCode.DuplicateDeclaration,
+            );
+          } else {
+            // Inherited field
+            ctx.diagnostics.reportError(
+              `Method '${memberName}' conflicts with inherited field '${memberName}'.`,
+              DiagnosticCode.DuplicateDeclaration,
+            );
+          }
+        }
+
         if (!memberName.startsWith('#') && !classType.methods.has(memberName)) {
           classType.vtable.push(memberName);
         }
@@ -1688,10 +1736,22 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
               );
             }
           } else {
-            ctx.diagnostics.reportError(
-              `Duplicate method '${memberName}' in class '${className}'.`,
-              DiagnosticCode.DuplicateDeclaration,
-            );
+            // If it's not in superType, but in classType.methods, it must be a local duplicate
+            // But we already checked localMethods.
+            // Wait, if we have multiple methods with same name (overloading?), we might hit this.
+            // But Zena doesn't support overloading yet (except via adaptation which is different).
+            // If localMethods check passed, then it shouldn't be here unless...
+            // Ah, accessors add to methods too!
+            // If we have `get x()` and `x()`, they collide on `x`? No, `get x` is `get#x`.
+            // So `x()` is `x`.
+            // What if we have `x()` and `x()`? localMethods catches it.
+            // What if we have `x()` inherited and `x()` local?
+            // `classType.methods` has inherited `x`. `superType` has `x`. -> Override check.
+            // So the `else` block here (Duplicate method) should technically be unreachable if localMethods check works
+            // AND we correctly populated classType.methods from superType.
+            // However, if we have mixins, they might add methods to classType but not superType?
+            // No, mixins create intermediate super classes.
+            // So this else block might be redundant or for safety.
           }
         }
         classType.methods.set(memberName, methodType);
@@ -1724,10 +1784,10 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       for (const [name, type] of interfaceType.methods) {
         if (!classType.methods.has(name)) {
           let errorMsg = `Method '${name}' is missing.`;
-          if (name.startsWith('get_')) {
-            errorMsg = `Getter for '${name.slice(4)}' is missing.`;
-          } else if (name.startsWith('set_')) {
-            errorMsg = `Setter for '${name.slice(4)}' is missing.`;
+          if (isGetterName(name)) {
+            errorMsg = `Getter for '${getPropertyNameFromAccessor(name)}' is missing.`;
+          } else if (isSetterName(name)) {
+            errorMsg = `Setter for '${getPropertyNameFromAccessor(name)}' is missing.`;
           }
 
           ctx.diagnostics.reportError(
@@ -1740,10 +1800,10 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           const substitutedType = substituteType(type, thisTypeMap);
           if (!isAssignableTo(ctx, methodType, substitutedType)) {
             let memberName = `Method '${name}'`;
-            if (name.startsWith('get_')) {
-              memberName = `Getter for '${name.slice(4)}'`;
-            } else if (name.startsWith('set_')) {
-              memberName = `Setter for '${name.slice(4)}'`;
+            if (isGetterName(name)) {
+              memberName = `Getter for '${getPropertyNameFromAccessor(name)}'`;
+            } else if (isSetterName(name)) {
+              memberName = `Setter for '${getPropertyNameFromAccessor(name)}'`;
             }
 
             ctx.diagnostics.reportError(
@@ -1978,8 +2038,8 @@ function checkInterfaceDeclaration(
         interfaceType.fields.set(memberName, type);
 
         // Implicit accessors
-        const getterName = `get_${memberName}`;
-        const setterName = `set_${memberName}`;
+        const getterName = getGetterName(memberName);
+        const setterName = getSetterName(memberName);
 
         interfaceType.methods.set(getterName, {
           kind: TypeKind.Function,
@@ -2014,7 +2074,7 @@ function checkInterfaceDeclaration(
       }
 
       if (member.hasGetter) {
-        const getterName = `get_${memberName}`;
+        const getterName = getGetterName(memberName);
         interfaceType.methods.set(getterName, {
           kind: TypeKind.Function,
           parameters: [],
@@ -2024,7 +2084,7 @@ function checkInterfaceDeclaration(
       }
 
       if (member.hasSetter) {
-        const setterName = `set_${memberName}`;
+        const setterName = getSetterName(memberName);
         interfaceType.methods.set(setterName, {
           kind: TypeKind.Function,
           parameters: [type],
@@ -2371,8 +2431,8 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
       // Implicit accessors
       if (!memberName.startsWith('#')) {
-        const getterName = `get_${memberName}`;
-        const setterName = `set_${memberName}`;
+        const getterName = getGetterName(memberName);
+        const setterName = getSetterName(memberName);
 
         mixinType.methods.set(getterName, {
           kind: TypeKind.Function,
@@ -2449,7 +2509,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       mixinType.fields.set(memberName, fieldType);
 
       if (member.getter) {
-        mixinType.methods.set(`get_${memberName}`, {
+        mixinType.methods.set(getGetterName(memberName), {
           kind: TypeKind.Function,
           parameters: [],
           returnType: fieldType,
@@ -2457,7 +2517,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         });
       }
       if (member.setter) {
-        mixinType.methods.set(`set_${memberName}`, {
+        mixinType.methods.set(getSetterName(memberName), {
           kind: TypeKind.Function,
           parameters: [fieldType],
           returnType: Types.Void,
