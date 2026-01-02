@@ -665,10 +665,32 @@ export class Parser {
     };
   }
 
+  #isBlockEndedExpression(expression: Expression): boolean {
+    if (expression.type === NodeType.MatchExpression) return true;
+    if (expression.type === NodeType.TryExpression) return true;
+    if (expression.type === NodeType.IfExpression) {
+      const ifExpr = expression as IfExpression;
+      if (ifExpr.alternate.type === NodeType.BlockStatement) return true;
+      if (ifExpr.alternate.type === NodeType.IfExpression) {
+        return this.#isBlockEndedExpression(ifExpr.alternate as Expression);
+      }
+      return false;
+    }
+    return false;
+  }
+
   #parseExpressionStatement(): Statement {
     const startToken = this.#peek();
     const expression = this.#parseExpression();
-    this.#consume(TokenType.Semi, "Expected ';' after expression.");
+
+    if (this.#isBlockEndedExpression(expression)) {
+      if (this.#check(TokenType.Semi)) {
+        this.#consume(TokenType.Semi, "Expected ';' after expression.");
+      }
+    } else {
+      this.#consume(TokenType.Semi, "Expected ';' after expression.");
+    }
+
     const endToken = this.#previous();
     return {
       type: NodeType.ExpressionStatement,

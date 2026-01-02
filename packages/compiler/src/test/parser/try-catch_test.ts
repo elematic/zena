@@ -118,4 +118,13 @@ suite('Parser: Try/Catch', () => {
       parser.parse();
     }, /Expected 'catch' or 'finally'/);
   });
+
+  test('should allow optional semicolon for try expression statement', () => {
+    const parser = new Parser('try { 1 } catch { 2 }');
+    const ast = parser.parse();
+    assert.strictEqual(ast.body.length, 1);
+    const stmt = ast.body[0] as any;
+    assert.strictEqual(stmt.type, NodeType.ExpressionStatement);
+    assert.strictEqual(stmt.expression.type, NodeType.TryExpression);
+  });
 });

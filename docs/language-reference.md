@@ -725,6 +725,33 @@ Operands must be of type `boolean`.
 
 ## 6. Control Flow
 
+### Optional Semicolons
+
+Semicolons are generally required to terminate statements. However, for block-ended expressions (`if`, `match`, `try`) used as standalone statements, the trailing semicolon is optional.
+
+```zena
+// Optional semicolon
+if (x) { ... } else { ... }
+
+match (x) {
+  case 1: ...
+}
+
+try {
+  ...
+} catch {
+  ...
+}
+```
+
+**Note**: When these expressions are used as part of another statement (e.g., variable declaration, return statement), the semicolon is still required.
+
+```zena
+// Required semicolon
+let x = if (cond) 1 else 2;
+return match (x) { ... };
+```
+
 ### Blocks
 
 A block statement groups zero or more statements within curly braces `{}`. Blocks introduce a new **lexical scope**. Variables declared within a block are only accessible within that block and any nested blocks.

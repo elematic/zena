@@ -88,4 +88,15 @@ suite('Parser - If Expression', () => {
       }
     }
   });
+
+  test('should allow optional semicolon for if statement', () => {
+    const input = 'if (true) { 1; } else { 2; }';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    assert.strictEqual(ast.body.length, 1);
+    const stmt = ast.body[0];
+    // if is parsed as IfStatement, which doesn't require a semicolon
+    assert.strictEqual(stmt.type, NodeType.IfStatement);
+  });
 });
