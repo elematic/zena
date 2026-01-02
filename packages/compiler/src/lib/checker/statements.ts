@@ -1539,7 +1539,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           );
         }
       }
-      classType.fields.set(memberName, fieldType);
+      // classType.fields.set(memberName, fieldType); // Accessors are not fields
 
       // Register getter/setter methods
       if (member.getter) {

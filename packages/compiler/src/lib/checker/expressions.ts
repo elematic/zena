@@ -1316,6 +1316,16 @@ function checkAssignmentExpression(
       return valueType;
     }
 
+    // Check if it is a read-only property (getter only)
+    const getterName = `get_${memberName}`;
+    if (classType.methods.has(getterName)) {
+      ctx.diagnostics.reportError(
+        `Cannot assign to read-only property '${memberName}'.`,
+        DiagnosticCode.InvalidAssignment,
+      );
+      return Types.Unknown;
+    }
+
     ctx.diagnostics.reportError(
       `Field '${memberName}' does not exist on type '${classType.name}'.`,
       DiagnosticCode.PropertyNotFound,
@@ -1365,6 +1375,16 @@ function checkAssignmentExpression(
           indexExpr.inferredType = valueType;
           return valueType;
         }
+        return Types.Unknown;
+      }
+
+      // Check if it is a read-only indexer (getter only)
+      const getter = classType.methods.get('[]');
+      if (getter) {
+        ctx.diagnostics.reportError(
+          `Cannot assign to read-only indexer.`,
+          DiagnosticCode.InvalidAssignment,
+        );
         return Types.Unknown;
       }
     }

@@ -36,7 +36,7 @@ const checkSource = (source: string) => {
 
 suite('Stdlib: TemplateStringsArray', () => {
   // TODO: Checker should reject index assignment without operator []=
-  test.todo('should reject index assignment on TemplateStringsArray', () => {
+  test('should reject index assignment on TemplateStringsArray', () => {
     const source = `
       import {TemplateStringsArray} from 'zena:template-strings-array';
       
@@ -54,7 +54,7 @@ suite('Stdlib: TemplateStringsArray', () => {
   });
 
   // TODO: Checker should reject index assignment on ImmutableArray
-  test.todo('should reject index assignment on raw property', () => {
+  test('should reject index assignment on raw property', () => {
     const source = `
       import {TemplateStringsArray} from 'zena:template-strings-array';
       
@@ -72,7 +72,7 @@ suite('Stdlib: TemplateStringsArray', () => {
   });
 
   // TODO: Checker should reject assignment to getter-only properties
-  test.todo('should reject assignment to length property', () => {
+  test('should reject assignment to length property', () => {
     const source = `
       import {TemplateStringsArray} from 'zena:template-strings-array';
       
