@@ -26,6 +26,7 @@ if (args.length > 0) {
 
 const stream = run({
   files,
+  concurrency: true,
   // Pass experimental flags to test worker subprocesses
   execArgv: ['--enable-source-maps', '--experimental-wasm-exnref'],
 });
