@@ -53,4 +53,19 @@ suite('CodeGenerator - Global Assignment', () => {
     // Should persist
     assert.strictEqual(exports.updateIfTrue(false), 20);
   });
+
+  test('should allow assigning to nullable global variables', async () => {
+    const input = `
+      class Foo { x: i32; #new() { this.x = 0; } }
+      var g: Foo | null = null;
+
+      export let test = (): i32 => {
+        g = new Foo();
+        return 1;
+      };
+    `;
+
+    const exports = await compileAndInstantiate(input);
+    assert.strictEqual(exports.test(), 1);
+  });
 });

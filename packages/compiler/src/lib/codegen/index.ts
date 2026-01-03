@@ -16,6 +16,7 @@ import {
   registerClassMethods,
   registerInterface,
   getMemberName,
+  mapType,
 } from './classes.js';
 import {CodegenContext} from './context.js';
 import {registerDeclaredFunction, registerFunction} from './functions.js';
@@ -209,7 +210,9 @@ export class CodeGenerator {
             );
           } else {
             // Global variable
-            const type = inferType(this.#ctx, varDecl.init);
+            const type = varDecl.typeAnnotation
+              ? mapType(this.#ctx, varDecl.typeAnnotation)
+              : inferType(this.#ctx, varDecl.init);
             let initBytes: number[] = [];
 
             // Default initialization

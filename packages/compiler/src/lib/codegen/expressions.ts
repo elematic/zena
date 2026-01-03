@@ -1463,6 +1463,7 @@ function generateMemberExpression(
         classType.name,
         typeAnnotations,
         ctx,
+        ctx.currentTypeContext,
       );
       if (ctx.classes.has(specializedName)) {
         foundClass = ctx.classes.get(specializedName);

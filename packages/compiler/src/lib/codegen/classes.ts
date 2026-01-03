@@ -24,6 +24,7 @@ import {
   type RecordType,
   type TupleType,
   type FunctionType,
+  type UnionType,
   type TypeParameterType,
   type TypeAliasType,
   type SymbolType,
@@ -2399,6 +2400,8 @@ function mapTypeInternal(
       }
       case TypeNames.Void:
         return [];
+      case TypeNames.Null:
+        return [ValType.ref_null, HeapType.none];
       case TypeNames.AnyRef:
         return [ValType.anyref];
       case TypeNames.Any:
@@ -2531,6 +2534,31 @@ function mapTypeInternal(
       ...WasmModule.encodeSignedLEB128(closureTypeIndex),
     ];
   } else if (type.type === NodeType.UnionTypeAnnotation) {
+    // Check for T | null
+    const nonNullTypes = type.types.filter(
+      (t) => !(t.type === NodeType.TypeAnnotation && t.name === 'null'),
+    );
+
+    if (nonNullTypes.length === 1) {
+      const innerType = mapType(ctx, nonNullTypes[0], context);
+      const typeCode = innerType[0];
+
+      // Check if it is a reference type
+      if (
+        typeCode === ValType.ref ||
+        typeCode === ValType.ref_null ||
+        typeCode === ValType.anyref ||
+        typeCode === ValType.eqref ||
+        typeCode === ValType.externref ||
+        typeCode === ValType.funcref
+      ) {
+        if (typeCode === ValType.ref) {
+          return [ValType.ref_null, ...innerType.slice(1)];
+        }
+        return innerType;
+      }
+    }
+
     return [ValType.anyref];
   }
 
@@ -2604,6 +2632,25 @@ export function instantiateClass(
   let superTypeIndex: number | undefined;
   let onType: number[] | undefined;
 
+  // Reserve type index early to handle recursive references
+  if (!decl.isExtension) {
+    structTypeIndex = ctx.module.reserveType();
+
+    // Register partial class info
+    const partialClassInfo: ClassInfo = {
+      name: specializedName,
+      originalName: decl.name.name,
+      typeArguments: context,
+      structTypeIndex,
+      superClass: superClassName,
+      fields: new Map(), // Will be populated later
+      methods: new Map(),
+      vtable: [],
+      isExtension: false,
+    };
+    ctx.classes.set(specializedName, partialClassInfo);
+  }
+
   if (decl.isExtension && decl.onType) {
     onType = mapType(ctx, decl.onType, context);
   } else {
@@ -2639,7 +2686,7 @@ export function instantiateClass(
       }
     }
 
-    structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
+    ctx.module.defineStructType(structTypeIndex, fieldTypes, superTypeIndex);
   }
 
   const methods = new Map<
@@ -2670,19 +2717,28 @@ export function instantiateClass(
     }
   }
 
-  const classInfo: ClassInfo = {
-    name: specializedName,
-    originalName: decl.name.name,
-    typeArguments: context,
-    structTypeIndex,
-    superClass: superClassName,
-    fields,
-    methods,
-    vtable,
-    isExtension: decl.isExtension,
-    onType,
-  };
-  ctx.classes.set(specializedName, classInfo);
+  let classInfo: ClassInfo;
+  if (ctx.classes.has(specializedName)) {
+    classInfo = ctx.classes.get(specializedName)!;
+    classInfo.fields = fields;
+    classInfo.methods = methods;
+    classInfo.vtable = vtable;
+    classInfo.onType = onType;
+  } else {
+    classInfo = {
+      name: specializedName,
+      originalName: decl.name.name,
+      typeArguments: context,
+      structTypeIndex,
+      superClass: superClassName,
+      fields,
+      methods,
+      vtable,
+      isExtension: decl.isExtension,
+      onType,
+    };
+    ctx.classes.set(specializedName, classInfo);
+  }
 
   const registerMethods = () => {
     // Set current class for `this` type resolution in method signatures
@@ -3433,11 +3489,20 @@ export function typeToTypeAnnotation(
         type: NodeType.TypeAnnotation,
         name: 'anyref',
       };
-    case TypeKind.Union:
+    case TypeKind.Null:
       return {
         type: NodeType.TypeAnnotation,
-        name: 'anyref',
+        name: 'null',
       };
+    case TypeKind.Union: {
+      const unionType = type as UnionType;
+      return {
+        type: NodeType.UnionTypeAnnotation,
+        types: unionType.types.map((t) =>
+          typeToTypeAnnotation(t, erasedTypeParams),
+        ),
+      } as any;
+    }
     default:
       return {
         type: NodeType.TypeAnnotation,
