@@ -120,7 +120,7 @@ property "reverse twice is identity" {
 
 **Mutation testing** provides stronger guarantees—automatically mutate code and verify tests fail. If a mutation survives, the tests don't verify that behavior.
 
-**Fakes over mocks**: Mocks encode assumptions about *how* a dependency is called. Fakes—simplified real implementations—are easier to reason about. AI excels at generating fakes since implementing interfaces isn't tedious for it.
+**Fakes over mocks**: Mocks encode assumptions about _how_ a dependency is called. Fakes—simplified real implementations—are easier to reason about. AI excels at generating fakes since implementing interfaces isn't tedious for it.
 
 ### Actionable Error Messages
 
@@ -162,9 +162,9 @@ In JavaScript and Python, objects can have properties added or removed at any ti
 
 ```javascript
 // JavaScript - shape can change at any time
-const user = { name: "Alice" };
-user.email = "alice@example.com";  // Added
-delete user.name;                   // Removed
+const user = {name: 'Alice'};
+user.email = 'alice@example.com'; // Added
+delete user.name; // Removed
 // What properties does user have? Requires tracing all code paths.
 ```
 
@@ -209,7 +209,7 @@ Encapsulation creates **trust boundaries** that let reviewers safely ignore impl
 class UserService {
   #cache: Map<i32, User>;        // Private - ignore during review
   #db: Database;                  // Private - implementation detail
-  
+
   getUser(id: i32): User { ... }  // Public - this is the contract
 }
 ```
@@ -340,15 +340,15 @@ The goal is to move as much verification as possible from human review to automa
 
 Zena was designed with many of these principles in mind:
 
-| Principle | Zena Implementation |
-|-----------|---------------------|
-| Static typing | Full static type system |
-| Sound types | Non-nullable by default, checked casts, no implicit coercion |
-| Immutability | Records/tuples immutable, `let` for immutable bindings |
-| GC | WASM-GC backend, no manual memory management |
-| Familiar syntax | TypeScript-like with Rust-inspired pattern matching |
-| Rich syntax | Pattern matching, destructuring, template literals |
-| WASM output | Primary compilation target |
-| Fast feedback | Designed for quick incremental compilation |
+| Principle       | Zena Implementation                                          |
+| --------------- | ------------------------------------------------------------ |
+| Static typing   | Full static type system                                      |
+| Sound types     | Non-nullable by default, checked casts, no implicit coercion |
+| Immutability    | Records/tuples immutable, `let` for immutable bindings       |
+| GC              | WASM-GC backend, no manual memory management                 |
+| Familiar syntax | TypeScript-like with Rust-inspired pattern matching          |
+| Rich syntax     | Pattern matching, destructuring, template literals           |
+| WASM output     | Primary compilation target                                   |
+| Fast feedback   | Designed for quick incremental compilation                   |
 
 See [Language Reference](../language-reference.md) for details.
