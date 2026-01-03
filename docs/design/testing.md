@@ -78,50 +78,33 @@ suite('Math stdlib', () => {
 ### Mode 2: Standalone Zena Test Files
 
 For larger test suites (stdlib, self-hosted compiler), write tests in `.zena`
-files. However, note the **current limitation**: Zena does not execute top-level
-expression statements. This means the common DSL pattern won't work:
-
-```zena
-// THIS WON'T WORK - top-level calls are not executed
-import { suite, test } from 'zena:test';
-
-suite('Array', () => {  // <-- This call is ignored!
-  test('push', (ctx) => { ... });
-});
-```
-
-**Workaround**: Use explicit registration functions that get called by the host:
+files. Since Zena does not execute top-level expression statements, test files
+export a `tests` variable containing the suite:
 
 ```zena
 // packages/compiler/stdlib-tests/array_test.zena
-import { suite, test, getRootSuite, TestContext, Suite } from 'zena:test';
-import { equal, throws } from 'zena:assert';
+import { suite, test, TestContext, Suite } from 'zena:test';
+import { equal } from 'zena:assert';
 import { Array } from 'zena:array';
 
-// Register tests in an exported function
-export let registerTests = (): void => {
-  suite('Array', (): void => {
-    test('push increases length', (ctx: TestContext): void => {
-      let arr = new Array<i32>();
-      equal(arr.length, 0);
-      arr.push(1);
-      equal(arr.length, 1);
-    });
-
-    test('pop returns last element', (ctx: TestContext): void => {
-      let arr = new Array<i32>();
-      arr.push(10);
-      arr.push(20);
-      equal(arr.pop(), 20);
-    });
+export let tests = suite('Array', (): void => {
+  test('push increases length', (ctx: TestContext): void => {
+    let arr = new Array<i32>();
+    equal(arr.length, 0);
+    arr.push(1);
+    equal(arr.length, 1);
   });
-};
 
-// Return root suite for external runner
-export let getRoot = (): Suite => getRootSuite();
+  test('pop returns last element', (ctx: TestContext): void => {
+    let arr = new Array<i32>();
+    arr.push(10);
+    arr.push(20);
+    equal(arr.pop(), 20);
+  });
+});
 ```
 
-The Node test runner calls `registerTests()` first, then inspects the suite:
+The Node test runner imports and runs the suite:
 
 ```typescript
 // packages/compiler/src/test/stdlib-runner.ts
@@ -130,19 +113,13 @@ import {compileAndInstantiate} from './codegen/utils.js';
 
 suite('Array tests', async () => {
   const {exports} = await compileAndInstantiate(source);
-
-  // Register tests first
-  exports.registerTests();
-
-  // Then get the suite structure
-  const rootSuite = exports.getRoot();
-  // ... run tests from suite
+  const results = exports.tests.run();
+  // ... check results
 });
 ```
 
-**Future**: Once Zena supports top-level statement execution (via a module
-initialization function or start function enhancement), the DSL pattern will
-work directly.
+This pattern is explicit and type-safe: the runner knows to look for a `Suite`
+export. Multiple suites can be exported if needed (`unitTests`, `integrationTests`).
 
 **Characteristics**:
 

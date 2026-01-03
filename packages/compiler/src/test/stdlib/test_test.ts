@@ -4,18 +4,17 @@ import {compileAndRun} from '../codegen/utils.js';
 
 suite('Stdlib: test', () => {
   suite('test registration', () => {
-    test('test() registers a test case', async () => {
-      // Registration must happen inside exported function due to
-      // top-level statement limitation in Zena
+    test('test() registers a test case in current suite', async () => {
       const source = `
-        import { test, getRootSuite, TestContext } from 'zena:test';
+        import { suite, test, TestContext } from 'zena:test';
 
         export let run = (): i32 => {
-          test('my test', (ctx: TestContext): void => {
-            // empty test
+          let s = suite('my suite', (): void => {
+            test('my test', (ctx: TestContext): void => {
+              // empty test
+            });
           });
-          let root = getRootSuite();
-          return root.tests.length;
+          return s.tests.length;
         };
       `;
       const result = await compileAndRun(source, 'run');
@@ -24,14 +23,15 @@ suite('Stdlib: test', () => {
 
     test('multiple tests are registered', async () => {
       const source = `
-        import { test, getRootSuite, TestContext } from 'zena:test';
+        import { suite, test, TestContext } from 'zena:test';
 
         export let run = (): i32 => {
-          test('test 1', (ctx: TestContext): void => {});
-          test('test 2', (ctx: TestContext): void => {});
-          test('test 3', (ctx: TestContext): void => {});
-          let root = getRootSuite();
-          return root.tests.length;
+          let s = suite('my suite', (): void => {
+            test('test 1', (ctx: TestContext): void => {});
+            test('test 2', (ctx: TestContext): void => {});
+            test('test 3', (ctx: TestContext): void => {});
+          });
+          return s.tests.length;
         };
       `;
       const result = await compileAndRun(source, 'run');
@@ -40,16 +40,17 @@ suite('Stdlib: test', () => {
   });
 
   suite('suite registration', () => {
-    test('suite() creates a nested suite', async () => {
+    test('suite() returns a Suite', async () => {
       const source = `
-        import { suite, test, getRootSuite, TestContext } from 'zena:test';
+        import { suite, test, TestContext } from 'zena:test';
+        import { equal } from 'zena:assert';
 
         export let run = (): i32 => {
-          suite('my suite', (): void => {
+          let s = suite('my suite', (): void => {
             test('nested test', (ctx: TestContext): void => {});
           });
-          let root = getRootSuite();
-          return root.suites.length;
+          equal(s.name, 'my suite');
+          return 1;
         };
       `;
       const result = await compileAndRun(source, 'run');
@@ -58,17 +59,39 @@ suite('Stdlib: test', () => {
 
     test('nested suites work', async () => {
       const source = `
-        import { suite, test, getRootSuite, TestContext } from 'zena:test';
+        import { suite, test, TestContext } from 'zena:test';
 
         export let run = (): i32 => {
-          suite('outer', (): void => {
+          let outer = suite('outer', (): void => {
             suite('inner', (): void => {
               test('deep test', (ctx: TestContext): void => {});
             });
           });
-          let root = getRootSuite();
-          let outer = root.suites[0];
           return outer.suites.length;
+        };
+      `;
+      const result = await compileAndRun(source, 'run');
+      assert.strictEqual(result, 1);
+    });
+
+    test('export let tests = suite(...) pattern works', async () => {
+      const source = `
+        import { suite, test, Suite, TestContext } from 'zena:test';
+        import { equal } from 'zena:assert';
+
+        export let tests = suite('Array', (): void => {
+          test('push increases length', (ctx: TestContext): void => {
+            // test body
+          });
+          test('pop returns last', (ctx: TestContext): void => {
+            // test body
+          });
+        });
+
+        export let run = (): i32 => {
+          equal(tests.name, 'Array');
+          equal(tests.tests.length, 2);
+          return 1;
         };
       `;
       const result = await compileAndRun(source, 'run');
