@@ -6,8 +6,9 @@ import {
   writeFileSync,
   existsSync,
 } from 'node:fs';
-import {join, resolve, dirname, relative} from 'node:path';
+import {join, resolve, dirname, relative, basename} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {suite, test} from 'node:test';
 
 // Import compiler
 import {Parser, TypeChecker, CodeGenerator, Compiler} from '../lib/index.js';
@@ -20,13 +21,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(__dirname, '../../..');
 const testsDir = join(rootDir, 'tests');
 
-// Colors
-const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
-const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
+// Colors (kept for snapshot generation messages)
 const gray = (s: string) => `\x1b[90m${s}\x1b[0m`;
-
-let passed = 0;
-let failed = 0;
 
 interface TestDirectives {
   mode?: 'parse' | 'check' | 'run';
@@ -100,7 +96,7 @@ function stripLocation(obj: any): any {
   return obj;
 }
 
-async function runTest(filePath: string) {
+async function runTestFile(filePath: string): Promise<void> {
   const content = readFileSync(filePath, 'utf-8');
   const {directives, errors} = parseDirectives(content);
   const relPath = relative(testsDir, filePath);
@@ -114,22 +110,14 @@ async function runTest(filePath: string) {
     else mode = 'parse'; // Default
   }
 
-  try {
-    if (mode === 'parse') {
-      await runParseTest(filePath, content, directives, relPath);
-    } else if (mode === 'check') {
-      await runCheckTest(filePath, content, directives, errors, relPath);
-    } else if (mode === 'run') {
-      await runExecutionTest(filePath, content, directives, relPath);
-    } else {
-      throw new Error(`Unknown mode: ${mode}`);
-    }
-    console.log(`${green('PASS')} ${relPath}`);
-    passed++;
-  } catch (e: any) {
-    console.log(`${red('FAIL')} ${relPath}`);
-    console.log(`  ${e.message}`);
-    failed++;
+  if (mode === 'parse') {
+    await runParseTest(filePath, content, directives, relPath);
+  } else if (mode === 'check') {
+    await runCheckTest(filePath, content, directives, errors, relPath);
+  } else if (mode === 'run') {
+    await runExecutionTest(filePath, content, directives, relPath);
+  } else {
+    throw new Error(`Unknown mode: ${mode}`);
   }
 }
 
@@ -346,16 +334,40 @@ async function runExecutionTest(
   }
 }
 
-async function main() {
-  const tests = getAllTests(testsDir);
-  console.log(`Found ${tests.length} tests.`);
-
-  for (const test of tests) {
-    await runTest(test);
-  }
-
-  console.log(`\n${passed} passed, ${failed} failed.`);
-  if (failed > 0) process.exit(1);
+// Group tests by directory for suites
+interface TestGroup {
+  name: string;
+  tests: string[];
 }
 
-main();
+function groupTestsByDirectory(testFiles: string[]): TestGroup[] {
+  const groups = new Map<string, string[]>();
+
+  for (const filePath of testFiles) {
+    const relPath = relative(testsDir, filePath);
+    const dir = dirname(relPath);
+    const suiteName = dir.replace(/\//g, ' / ') || 'root';
+
+    if (!groups.has(suiteName)) {
+      groups.set(suiteName, []);
+    }
+    groups.get(suiteName)!.push(filePath);
+  }
+
+  return Array.from(groups.entries()).map(([name, tests]) => ({name, tests}));
+}
+
+// Register all tests with Node's test runner
+const allTests = getAllTests(testsDir);
+const testGroups = groupTestsByDirectory(allTests);
+
+for (const group of testGroups) {
+  suite(`Portable: ${group.name}`, () => {
+    for (const filePath of group.tests) {
+      const testName = basename(filePath, '.zena');
+      test(testName, async () => {
+        await runTestFile(filePath);
+      });
+    }
+  });
+}
