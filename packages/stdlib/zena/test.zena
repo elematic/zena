@@ -1,0 +1,77 @@
+import { Error } from 'zena:error';
+import { Array } from 'zena:array';
+
+// Test context passed to each test function
+export class TestContext {
+  name: string;
+
+  #new(name: string) {
+    this.name = name;
+  }
+}
+
+// Result of a single test execution
+export class TestResult {
+  name: string;
+  passed: boolean;
+  error: Error | null;
+
+  #new(name: string, passed: boolean, error: Error | null) {
+    this.name = name;
+    this.passed = passed;
+    this.error = error;
+  }
+}
+
+// Internal: represents a registered test
+class TestCase {
+  name: string;
+  fn: (ctx: TestContext) => void;
+
+  #new(name: string, fn: (ctx: TestContext) => void) {
+    this.name = name;
+    this.fn = fn;
+  }
+}
+
+// Internal: represents a test suite
+export class Suite {
+  name: string;
+  tests: Array<TestCase>;
+  suites: Array<Suite>;
+
+  #new(name: string) {
+    this.name = name;
+    this.tests = new Array<TestCase>();
+    this.suites = new Array<Suite>();
+  }
+}
+
+// Global test registry
+var rootSuite = new Suite('root');
+var currentSuite = rootSuite;
+
+// Register a test in the current suite
+export let test = (name: string, fn: (ctx: TestContext) => void): void => {
+  currentSuite.tests.push(new TestCase(name, fn));
+};
+
+// Create a test suite (group of tests)
+export let suite = (name: string, fn: () => void): void => {
+  let parentSuite = currentSuite;
+  let newSuite = new Suite(name);
+  parentSuite.suites.push(newSuite);
+  currentSuite = newSuite;
+  fn();
+  currentSuite = parentSuite;
+};
+
+// Get all registered tests (for external runner)
+export let getTests = (): Array<TestCase> => {
+  return rootSuite.tests;
+};
+
+// Get the root suite (for external runner)
+export let getRootSuite = (): Suite => {
+  return rootSuite;
+};

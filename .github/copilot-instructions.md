@@ -330,19 +330,25 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Maps**: Implement map literal syntax (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
-5.  **Standard Library**:
+5.  **Top-Level Statement Execution**:
+    - Currently, top-level expression statements (like `test('name', fn)`) are ignored in codegen.
+    - Only global variable initializers run via the WASM start function.
+    - This blocks DSL-style test registration. See `docs/design/testing.md` for workaround.
+    - **Solution**: Extend the start function to execute top-level statements, or add module initialization support.
+
+6.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
     - String manipulation (`substring`, `indexOf`).
     - Regexes.
 
-6.  **Self-Hosting**:
+7.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
 
-7.  **Pattern Matching (Advanced)**:
+8.  **Pattern Matching (Advanced)**:
     - Array element matching (requires `FixedArray` support or `Sequence` interface).
     - Rest patterns (`...tail`).
 
-8.  **Future Features**:
+9.  **Future Features**:
     - **Syntax**:
       - Blocks.
       - For/of loops.

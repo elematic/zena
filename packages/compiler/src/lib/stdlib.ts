@@ -12,4 +12,5 @@ export {
   sequenceModule,
   stringModule,
   templateStringsArrayModule,
+  testModule,
 } from '@zena-lang/stdlib';
