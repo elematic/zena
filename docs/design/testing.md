@@ -386,7 +386,7 @@ console.log(`Passed: ${results.passed}, Failed: ${results.failed}`);
 
 **Implemented**:
 
-- `packages/compiler/stdlib/assert.zena` created
+- `packages/stdlib/zena/assert.zena` created
 - `AssertionError` class extending `Error`
 - Core assertions:
   - `ok(value: boolean, message?: string): void`
@@ -410,7 +410,7 @@ boxing mechanism for arbitrary values yet.
 
 **Original Tasks**:
 
-1. ~~Create `packages/compiler/stdlib/assert.zena`~~
+1. ~~Create `packages/stdlib/zena/assert.zena`~~
 2. ~~Implement `AssertionError` class extending `Error`~~
 3. ~~Implement core assertions:~~
    - ~~`ok(value: boolean, message?: string)`~~
@@ -509,7 +509,7 @@ export let throws = (fn: () => void, message: string = 'Expected function to thr
 
 **Tasks**:
 
-1. Create `packages/compiler/stdlib/test.zena`
+1. Create `packages/stdlib/zena/test.zena`
 2. Implement `TestContext` and `TestResult` classes
 3. Implement global test registry (module-level state)
 4. Implement `test(name, fn)` function
@@ -723,7 +723,7 @@ for error reporting.
 ## File Structure
 
 ```
-packages/compiler/stdlib/
+packages/stdlib/zena/
 ├── assert.zena          # Assertion functions
 ├── test.zena            # Test runner and registration
 └── ... (existing files)

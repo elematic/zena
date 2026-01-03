@@ -219,7 +219,7 @@ async function runExecutionTest(
         const name = path.substring(5);
         try {
           return readFileSync(
-            join(rootDir, 'packages/compiler/stdlib', `${name}.zena`),
+            join(rootDir, 'packages/stdlib/zena', `${name}.zena`),
             'utf-8',
           );
         } catch (e) {

@@ -2,9 +2,6 @@ import {type CompilerHost} from '@zena-lang/compiler';
 import {readFileSync, existsSync} from 'node:fs';
 import {resolve, dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createRequire} from 'node:module';
-
-const require = createRequire(import.meta.url);
 
 export class NodeCompilerHost implements CompilerHost {
   #stdlibPath: string;
@@ -14,16 +11,8 @@ export class NodeCompilerHost implements CompilerHost {
   }
 
   #findStdlibPath(): string {
-    try {
-      // Try to resolve the compiler package
-      const pkgPath = require.resolve('@zena-lang/compiler/package.json');
-      return join(dirname(pkgPath), 'stdlib');
-    } catch {
-      // Fallback: assume we are in the monorepo
-      const currentDir = dirname(fileURLToPath(import.meta.url));
-      // packages/cli/lib/host.js -> ../../compiler/stdlib
-      return resolve(currentDir, '../../compiler/stdlib');
-    }
+    const pkgPath = fileURLToPath(import.meta.resolve('@zena-lang/stdlib'));
+    return join(dirname(pkgPath), 'zena');
   }
 
   resolve(specifier: string, referrer: string): string {

@@ -810,7 +810,7 @@ Options:
 
 The `Console` module provides basic I/O operations.
 
-**Implementation**: `packages/compiler/stdlib/console.zena`
+**Implementation**: `packages/stdlib/zena/console.zena`
 
 **API**:
 

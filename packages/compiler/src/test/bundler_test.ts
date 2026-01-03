@@ -10,7 +10,7 @@ import {Parser} from '../lib/parser.js';
 import {CodeGenerator} from '../lib/codegen/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const stdlibPath = path.resolve(__dirname, '../stdlib');
+const stdlibPath = path.resolve(__dirname, '../../stdlib/zena');
 
 function createModule(path: string, code: string): Module {
   const parser = new Parser(code);

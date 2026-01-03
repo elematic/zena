@@ -128,6 +128,7 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 - **Root**: Contains the workspace configuration and global scripts.
 - **packages/compiler**: The core compiler implementation (`@zena-lang/compiler`).
+- **packages/stdlib**: The Zena standard library implementation (`@zena-lang/stdlib`).
 - **Scripts**:
   - `npm test`: Runs tests across the workspace using Wireit.
   - `npm run build`: Builds packages using Wireit.

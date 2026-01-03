@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {Compiler, type CompilerHost} from '../lib/compiler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const stdlibPath = path.resolve(__dirname, '../stdlib');
+const stdlibPath = path.resolve(__dirname, '../../stdlib/zena');
 
 class MockHost implements CompilerHost {
   files = new Map<string, string>();

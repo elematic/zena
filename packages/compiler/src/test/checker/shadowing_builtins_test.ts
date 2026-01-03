@@ -7,7 +7,7 @@ import {Compiler} from '../../lib/compiler.js';
 import {DiagnosticSeverity, type Diagnostic} from '../../lib/diagnostics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const stdlibPath = path.resolve(__dirname, '../../stdlib');
+const stdlibPath = path.resolve(__dirname, '../../../stdlib/zena');
 console.log('stdlibPath:', stdlibPath);
 
 class MockHost {

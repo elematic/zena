@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {NodeType, type Program} from '../../lib/ast.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const stdlibPath = join(__dirname, '../../stdlib');
+const stdlibPath = join(__dirname, '../../../stdlib/zena');
 
 /**
  * Helper to find all TypeAnnotation names in a bundled program

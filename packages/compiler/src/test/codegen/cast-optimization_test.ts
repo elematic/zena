@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import assert from 'node:assert';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const stdlibPath = join(__dirname, '../../stdlib');
+const stdlibPath = join(__dirname, '../../../stdlib/zena');
 
 function compileToWasm(input: string): Uint8Array {
   const host: CompilerHost = {

@@ -8,8 +8,8 @@ import {execSync} from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // When running compiled tests, we are in packages/compiler/test/codegen
-// Stdlib is in packages/compiler/stdlib
-const stdlibPath = join(__dirname, '../../stdlib');
+// Stdlib is in packages/stdlib/zena
+const stdlibPath = join(__dirname, '../../../stdlib/zena');
 
 export interface CompileOptions {
   entryPoint?: string;
