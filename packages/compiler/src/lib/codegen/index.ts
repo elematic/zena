@@ -22,6 +22,7 @@ import {registerDeclaredFunction, registerFunction} from './functions.js';
 import {
   generateExpression,
   generateStringGetByteFunction,
+  generateStringGetLengthFunction,
   inferType,
 } from './expressions.js';
 import {HeapType, Opcode, ValType, ExportDesc, GcOpcode} from '../wasm.js';
@@ -274,6 +275,7 @@ export class CodeGenerator {
     // Required for the V8-recommended pattern of reading WASM GC arrays from JS
     if (this.#ctx.stringTypeIndex >= 0) {
       generateStringGetByteFunction(this.#ctx);
+      generateStringGetLengthFunction(this.#ctx);
       // Execute any newly added pending helper functions
       while (this.#ctx.pendingHelperFunctions.length > 0) {
         const gen = this.#ctx.pendingHelperFunctions.shift()!;

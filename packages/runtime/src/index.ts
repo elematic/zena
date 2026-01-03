@@ -85,7 +85,7 @@ export function isZenaString(value: unknown): value is ZenaString {
  * @param exports - The WASM instance exports containing $stringGetByte
  * @returns A function that reads a string from externref + length
  */
-function createStringReader(exports: WebAssembly.Exports) {
+export function createStringReader(exports: WebAssembly.Exports) {
   const getByte = exports.$stringGetByte as
     | ((str: unknown, index: number) => number)
     | undefined;

@@ -3970,6 +3970,52 @@ export function generateStringGetByteFunction(ctx: CodegenContext): number {
   return funcIndex;
 }
 
+/**
+ * Generates a helper function to get the length of a string.
+ * This function takes a string as externref (for efficient JS interop)
+ * and returns the length as i32.
+ *
+ * Generated WASM:
+ * (func $stringGetLength (export "$stringGetLength") (param externref) (result i32)
+ *   local.get 0
+ *   any.convert_extern
+ *   ref.cast $ByteArray
+ *   array.len)
+ */
+export function generateStringGetLengthFunction(ctx: CodegenContext): number {
+  // Type: (externref) -> i32
+  const typeIndex = ctx.module.addType([[ValType.externref]], [[ValType.i32]]);
+
+  const funcIndex = ctx.module.addFunction(typeIndex);
+
+  // Export the function as "$stringGetLength"
+  ctx.module.addExport('$stringGetLength', ExportDesc.Func, funcIndex);
+
+  ctx.pendingHelperFunctions.push(() => {
+    const locals: number[][] = [];
+    const body: number[] = [];
+
+    // local.get 0 (externref param)
+    body.push(Opcode.local_get, 0);
+
+    // any.convert_extern
+    body.push(0xfb, GcOpcode.any_convert_extern);
+
+    // ref.cast $ByteArray
+    body.push(0xfb, GcOpcode.ref_cast);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
+
+    // array.len
+    body.push(0xfb, GcOpcode.array_len);
+
+    body.push(Opcode.end);
+
+    ctx.module.addCode(funcIndex, locals, body);
+  });
+
+  return funcIndex;
+}
+
 function generateRecordLiteral(
   ctx: CodegenContext,
   expr: RecordLiteral,
