@@ -1,15 +1,10 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {Compiler, type CompilerHost} from '../../lib/compiler.js';
+import {Compiler} from '../../lib/compiler.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {TypeChecker} from '../../lib/checker/index.js';
-import {readFileSync} from 'node:fs';
-import {join, dirname} from 'node:path';
-import {fileURLToPath} from 'node:url';
 import {NodeType, type Program} from '../../lib/ast.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const stdlibPath = join(__dirname, '../../../stdlib/zena');
+import {compileAndRun, createHost} from './utils.js';
 
 /**
  * Helper to find all TypeAnnotation names in a bundled program
@@ -111,20 +106,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       `,
     };
 
-    const host: CompilerHost = {
-      load: (p: string) => {
-        if (Object.hasOwn(files, p)) {
-          return files[p];
-        }
-        if (p.startsWith('zena:')) {
-          const name = p.substring(5);
-          return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
-        }
-        throw new Error(`File not found: ${p}`);
-      },
-      resolve: (specifier: string, _referrer: string) => specifier,
-    };
-
+    const host = createHost(files);
     const compiler = new Compiler(host);
     const program = compiler.bundle('/main.zena');
 
@@ -222,56 +204,8 @@ suite('Codegen: Generic Specialization Collision', () => {
       `,
     };
 
-    const host: CompilerHost = {
-      load: (p: string) => {
-        if (Object.hasOwn(files, p)) {
-          return files[p];
-        }
-        if (p.startsWith('zena:')) {
-          const name = p.substring(5);
-          return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
-        }
-        throw new Error(`File not found: ${p}`);
-      },
-      resolve: (specifier: string, _referrer: string) => specifier,
-    };
-
-    const compiler = new Compiler(host);
-    const program = compiler.bundle('/main.zena');
-
-    // Re-run checker
-    const checker = new TypeChecker(program, compiler, {
-      path: '/main.zena',
-      exports: new Map(),
-      isStdlib: true,
-    } as any);
-    checker.preludeModules = compiler.preludeModules;
-    const diagnostics = checker.check();
-    if (diagnostics.length > 0) {
-      throw new Error(
-        `Bundled program check failed: ${diagnostics.map((d) => d.message).join(', ')}`,
-      );
-    }
-
-    const codegen = new CodeGenerator(program);
-    const bytes = codegen.generate();
-
-    const result = await WebAssembly.instantiate(bytes, {
-      console: {
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
-    });
-    const instance = (result as any).instance || result;
-    const exports = instance.exports;
-
     // Both Box<X> and Box<Y> (where Y is alias for X) should work
-    const value = exports.main();
+    const value = await compileAndRun(files);
     assert.strictEqual(value, 30, 'Expected 30 (10 + 20)');
   });
 
@@ -311,55 +245,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       `,
     };
 
-    const host: CompilerHost = {
-      load: (p: string) => {
-        if (Object.hasOwn(files, p)) {
-          return files[p];
-        }
-        if (p.startsWith('zena:')) {
-          const name = p.substring(5);
-          return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
-        }
-        throw new Error(`File not found: ${p}`);
-      },
-      resolve: (specifier: string, _referrer: string) => specifier,
-    };
-
-    const compiler = new Compiler(host);
-    const program = compiler.bundle('/main.zena');
-
-    // Re-run checker
-    const checker = new TypeChecker(program, compiler, {
-      path: '/main.zena',
-      exports: new Map(),
-      isStdlib: true,
-    } as any);
-    checker.preludeModules = compiler.preludeModules;
-    const diagnostics = checker.check();
-    if (diagnostics.length > 0) {
-      throw new Error(
-        `Bundled program check failed: ${diagnostics.map((d) => d.message).join(', ')}`,
-      );
-    }
-
-    const codegen = new CodeGenerator(program);
-    const bytes = codegen.generate();
-
-    const result = await WebAssembly.instantiate(bytes, {
-      console: {
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
-    });
-    const instance = (result as any).instance || result;
-    const exports = instance.exports;
-
-    const value = exports.main();
+    const value = await compileAndRun(files);
     assert.strictEqual(value, 30, 'Expected 30 (10 + 20)');
   });
 
@@ -390,55 +276,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       `,
     };
 
-    const host: CompilerHost = {
-      load: (p: string) => {
-        if (Object.hasOwn(files, p)) {
-          return files[p];
-        }
-        if (p.startsWith('zena:')) {
-          const name = p.substring(5);
-          return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
-        }
-        throw new Error(`File not found: ${p}`);
-      },
-      resolve: (specifier: string, _referrer: string) => specifier,
-    };
-
-    const compiler = new Compiler(host);
-    const program = compiler.bundle('/main.zena');
-
-    // Re-run checker
-    const checker = new TypeChecker(program, compiler, {
-      path: '/main.zena',
-      exports: new Map(),
-      isStdlib: true,
-    } as any);
-    checker.preludeModules = compiler.preludeModules;
-    const diagnostics = checker.check();
-    if (diagnostics.length > 0) {
-      throw new Error(
-        `Bundled program check failed: ${diagnostics.map((d) => d.message).join(', ')}`,
-      );
-    }
-
-    const codegen = new CodeGenerator(program);
-    const bytes = codegen.generate();
-
-    const result = await WebAssembly.instantiate(bytes, {
-      console: {
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
-    });
-    const instance = (result as any).instance || result;
-    const exports = instance.exports;
-
-    const value = exports.main();
+    const value = await compileAndRun(files);
     assert.strictEqual(value, 30, 'Expected 30 (10 + 20)');
   });
 
@@ -479,55 +317,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       `,
     };
 
-    const host: CompilerHost = {
-      load: (p: string) => {
-        if (Object.hasOwn(files, p)) {
-          return files[p];
-        }
-        if (p.startsWith('zena:')) {
-          const name = p.substring(5);
-          return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
-        }
-        throw new Error(`File not found: ${p}`);
-      },
-      resolve: (specifier: string, _referrer: string) => specifier,
-    };
-
-    const compiler = new Compiler(host);
-    const program = compiler.bundle('/main.zena');
-
-    // Re-run checker
-    const checker = new TypeChecker(program, compiler, {
-      path: '/main.zena',
-      exports: new Map(),
-      isStdlib: true,
-    } as any);
-    checker.preludeModules = compiler.preludeModules;
-    const diagnostics = checker.check();
-    if (diagnostics.length > 0) {
-      throw new Error(
-        `Bundled program check failed: ${diagnostics.map((d) => d.message).join(', ')}`,
-      );
-    }
-
-    const codegen = new CodeGenerator(program);
-    const bytes = codegen.generate();
-
-    const result = await WebAssembly.instantiate(bytes, {
-      console: {
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
-    });
-    const instance = (result as any).instance || result;
-    const exports = instance.exports;
-
-    const value = exports.main();
+    const value = await compileAndRun(files);
     assert.strictEqual(value, 42);
   });
 });

@@ -1,6 +1,7 @@
-import {Compiler, type CompilerHost} from '../../lib/compiler.js';
+import {Compiler, type CompilerHost, type Module} from '../../lib/compiler.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {TypeChecker} from '../../lib/checker/index.js';
+import {type Diagnostic} from '../../lib/diagnostics.js';
 import {readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -9,13 +10,85 @@ import {execSync} from 'node:child_process';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // When running compiled tests, we are in packages/compiler/test/codegen
 // Stdlib is in packages/stdlib/zena
-const stdlibPath = join(__dirname, '../../../stdlib/zena');
+export const stdlibPath = join(__dirname, '../../../stdlib/zena');
 
 export interface CompileOptions {
   entryPoint?: string;
   imports?: Record<string, any>;
   path?: string;
 }
+
+/**
+ * Create a standard compiler host for test files.
+ * @param files - Map of file paths to source code, or a single source string (uses /main.zena)
+ * @param mainPath - Path for single source string input (default: /main.zena)
+ */
+export const createHost = (
+  files: string | Record<string, string>,
+  mainPath = '/main.zena',
+): CompilerHost => ({
+  load: (p: string) => {
+    if (typeof files === 'string') {
+      if (p === mainPath) return files;
+    } else if (Object.hasOwn(files, p)) {
+      return files[p];
+    }
+    if (p.startsWith('zena:')) {
+      const name = p.substring(5);
+      return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
+    }
+    throw new Error(`File not found: ${p}`);
+  },
+  resolve: (specifier: string, _referrer: string) => specifier,
+});
+
+/**
+ * Compile source to a bundled program and return diagnostics.
+ * Useful for checker tests that need to verify type errors.
+ */
+export const checkSource = (
+  input: string | Record<string, string>,
+  path = '/main.zena',
+): Diagnostic[] => {
+  const host = createHost(input, path);
+  const compiler = new Compiler(host);
+  const program = compiler.bundle(path);
+  const checker = new TypeChecker(program, compiler, {
+    path,
+    exports: new Map(),
+    isStdlib: true,
+  } as any);
+  checker.preludeModules = compiler.preludeModules;
+  return checker.check();
+};
+
+/**
+ * Compile source and return modules with their diagnostics.
+ * Useful for tests that need to check per-module diagnostics from the initial compile pass.
+ */
+export const compileModules = (
+  input: string | Record<string, string>,
+  path = '/main.zena',
+): Module[] => {
+  const host = createHost(input, path);
+  const compiler = new Compiler(host);
+  return compiler.compile(path);
+};
+
+/**
+ * Compile source to WASM bytes without instantiating.
+ * Useful for tests that compare binary output or check WASM structure.
+ */
+export const compileToWasm = (
+  input: string | Record<string, string>,
+  path = '/main.zena',
+): Uint8Array => {
+  const host = createHost(input, path);
+  const compiler = new Compiler(host);
+  const program = compiler.bundle(path);
+  const generator = new CodeGenerator(program);
+  return generator.generate();
+};
 
 export async function compileAndInstantiate(
   input: string | Record<string, string>,
@@ -49,21 +122,7 @@ export async function compileAndInstantiate(
     };
   }
 
-  const host: CompilerHost = {
-    load: (p: string) => {
-      if (typeof input === 'string') {
-        if (p === path) return input;
-      } else if (Object.hasOwn(input, p)) {
-        return input[p];
-      }
-      if (p.startsWith('zena:')) {
-        const name = p.substring(5);
-        return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
-      }
-      throw new Error(`File not found: ${p}`);
-    },
-    resolve: (specifier: string, referrer: string) => specifier,
-  };
+  const host = createHost(input, path);
 
   const compiler = new Compiler(host);
   const program = compiler.bundle(path);

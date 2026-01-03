@@ -1,41 +1,11 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {Compiler} from '../../lib/compiler.js';
+import {compileModules} from '../codegen/utils.js';
 import {DiagnosticSeverity, type Diagnostic} from '../../lib/diagnostics.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const stdlibPath = path.resolve(__dirname, '../../../stdlib/zena');
-console.log('stdlibPath:', stdlibPath);
-
-class MockHost {
-  files = new Map<string, string>();
-
-  resolve(specifier: string, referrer: string) {
-    return specifier;
-  }
-
-  load(specifier: string) {
-    if (this.files.has(specifier)) {
-      return this.files.get(specifier)!;
-    }
-    if (specifier.startsWith('zena:')) {
-      const name = specifier.substring(5);
-      const filePath = path.join(stdlibPath, `${name}.zena`);
-      return fs.readFileSync(filePath, 'utf-8');
-    }
-    throw new Error(`File not found: ${specifier}`);
-  }
-}
 
 describe('Built-in Shadowing Tests', () => {
   it('should allow shadowing i32 with string', () => {
-    const host = new MockHost();
-    host.files.set(
-      'main.zena',
-      `
+    const modules = compileModules(`
       type i32 = string;
       
       export let main = () => {
@@ -45,12 +15,8 @@ describe('Built-in Shadowing Tests', () => {
         // And this should be invalid (assigning number to string)
         let n: i32 = 123;
       };
-    `,
-    );
-
-    const compiler = new Compiler(host);
-    const modules = compiler.compile('main.zena');
-    const main = modules.find((m) => m.path === 'main.zena')!;
+    `);
+    const main = modules.find((m) => m.path === '/main.zena')!;
 
     const errors = main.diagnostics.filter(
       (d: Diagnostic) => d.severity === DiagnosticSeverity.Error,
@@ -80,21 +46,14 @@ describe('Built-in Shadowing Tests', () => {
   });
 
   it('should allow shadowing void', () => {
-    const host = new MockHost();
-    host.files.set(
-      'main.zena',
-      `
+    const modules = compileModules(`
       type void = i32;
       
       export let main = (): void => {
         return 123;
       };
-    `,
-    );
-
-    const compiler = new Compiler(host);
-    const modules = compiler.compile('main.zena');
-    const main = modules.find((m) => m.path === 'main.zena')!;
+    `);
+    const main = modules.find((m) => m.path === '/main.zena')!;
 
     const errors = main.diagnostics.filter(
       (d: Diagnostic) => d.severity === DiagnosticSeverity.Error,
@@ -107,10 +66,7 @@ describe('Built-in Shadowing Tests', () => {
   });
 
   it('should allow shadowing String', () => {
-    const host = new MockHost();
-    host.files.set(
-      'main.zena',
-      `
+    const modules = compileModules(`
       type String = i32;
       
       export let main = () => {
@@ -120,12 +76,8 @@ describe('Built-in Shadowing Tests', () => {
         // Should be invalid because String is i32, not a string literal
         let t: String = "hello";
       };
-    `,
-    );
-
-    const compiler = new Compiler(host);
-    const modules = compiler.compile('main.zena');
-    const main = modules.find((m) => m.path === 'main.zena')!;
+    `);
+    const main = modules.find((m) => m.path === '/main.zena')!;
 
     const errors = main.diagnostics.filter(
       (d: Diagnostic) => d.severity === DiagnosticSeverity.Error,
@@ -151,22 +103,15 @@ describe('Built-in Shadowing Tests', () => {
   });
 
   it('should allow shadowing FixedArray', () => {
-    const host = new MockHost();
-    host.files.set(
-      'main.zena',
-      `
+    const modules = compileModules(`
       type FixedArray = i32;
       
       export let main = () => {
         // Should be valid because FixedArray is now i32
         let a: FixedArray = 123;
       };
-    `,
-    );
-
-    const compiler = new Compiler(host);
-    const modules = compiler.compile('main.zena');
-    const main = modules.find((m) => m.path === 'main.zena')!;
+    `);
+    const main = modules.find((m) => m.path === '/main.zena')!;
 
     const errors = main.diagnostics.filter(
       (d: Diagnostic) => d.severity === DiagnosticSeverity.Error,
