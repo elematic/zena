@@ -28,7 +28,32 @@ Directives are single-line comments starting with `// @`.
 - `// @target: <target>`: Specifies the parsing target. Options: `module` (default), `statement`, `expression`.
 - `// @result: <value>`: Expected return value for execution tests.
 - `// @stdout: <string>`: Expected stdout output for execution tests.
+- `// @throws: <type>`: Expected exception type. Currently supports `wasm` for WebAssembly.Exception.
 - `// @error: <regex>`: Expected compiler error message (for checker tests). Can be placed on the line of the error or at the top.
+
+### Suite Metadata
+
+Test folders can contain a `test-suite.json` file to provide metadata and expected test counts:
+
+```json
+{
+  "name": "Array",
+  "description": "Tests for the Array stdlib class",
+  "expected": {
+    "pass": 8,
+    "fail": 0,
+    "skip": 0
+  }
+}
+```
+
+Fields:
+- `name`: Display name for the suite (shown in test output).
+- `description`: Optional description of the test suite.
+- `expected`: Expected test counts. If provided, a validation test runs after all tests to verify counts match.
+  - `pass`: Number of tests expected to pass.
+  - `fail`: Number of tests expected to fail (useful for tracking known issues).
+  - `skip`: Number of tests expected to be skipped.
 
 ## Test Categories
 
@@ -162,29 +187,35 @@ tests/
     execution/       # Codegen tests (.zena with @result)
       arithmetic/
       functions/
+    stdlib/          # Standard library tests (.zena with @result/@throws)
+      array/         # Array class tests + test-suite.json
+      map/           # Map class tests + test-suite.json
 ```
 
 ## Test Runner Implementation
 
-A new test runner script (initially in TypeScript, later in Zena) will be created: `scripts/test-runner.ts`.
+The portable test runner is implemented in `packages/compiler/src/test/portable-runner.ts`.
 
 **Responsibilities**:
 
 1.  **Discovery**: Walk the `tests/` directory.
 2.  **Parsing**: Read `.zena` files and parse directives.
-3.  **Execution**:
+3.  **Suite Metadata**: Load `test-suite.json` files for folder metadata.
+4.  **Execution**:
     - **Parse Mode**: Call Compiler Parser -> Serialize AST -> Compare with JSON.
     - **Check Mode**: Call Compiler Checker -> Collect Diagnostics -> Match against `@error` regexes.
-    - **Run Mode**: Call Compiler Codegen -> Instantiate WASM -> Run `main` -> Compare result/stdout.
-4.  **Reporting**: Output pass/fail statistics.
+    - **Run Mode**: Call Compiler Codegen -> Instantiate WASM -> Run `main` -> Compare result/stdout/throws.
+5.  **Validation**: Verify test counts match suite expectations.
+6.  **Reporting**: Output pass/fail statistics.
 
 ## Migration Plan
 
-1.  **Create Runner**: Implement the basic `scripts/test-runner.ts`.
+1.  **Create Runner**: Implement the basic `scripts/test-runner.ts`. ✅
 2.  **Port Parser Tests**: Convert a subset of `packages/compiler/src/test/parser/` to `tests/language/syntax/`.
 3.  **Port Checker Tests**: Convert `packages/compiler/src/test/checker/` to `tests/language/semantics/`.
 4.  **Port Codegen Tests**: Convert `packages/compiler/src/test/codegen/` to `tests/language/execution/`.
-5.  **CI Integration**: Add the new runner to `npm test`.
+5.  **Port Stdlib Tests**: Convert `packages/compiler/src/test/stdlib/` to `tests/language/stdlib/`. ✅ (In Progress)
+6.  **CI Integration**: Add the new runner to `npm test`. ✅
 
 ## Future Considerations
 

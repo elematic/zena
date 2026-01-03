@@ -29,12 +29,67 @@ interface TestDirectives {
   target?: 'module' | 'statement' | 'expression';
   result?: string;
   stdout?: string;
+  throws?: string; // Expected exception type (e.g., 'wasm' for WebAssembly.Exception)
   [key: string]: string | undefined;
 }
 
 interface ExpectedError {
   line: number;
   regex: RegExp;
+}
+
+interface TestSuiteMetadata {
+  name?: string;
+  description?: string;
+  expected?: {
+    pass?: number;
+    fail?: number;
+    skip?: number;
+  };
+}
+
+interface SuiteResults {
+  pass: number;
+  fail: number;
+  skip: number;
+}
+
+function loadSuiteMetadata(dir: string): TestSuiteMetadata | null {
+  const metadataPath = join(dir, 'test-suite.json');
+  if (!existsSync(metadataPath)) return null;
+  try {
+    return JSON.parse(readFileSync(metadataPath, 'utf-8'));
+  } catch (e) {
+    console.warn(`Failed to parse test-suite.json in ${dir}:`, e);
+    return null;
+  }
+}
+
+function validateSuiteResults(
+  suitePath: string,
+  metadata: TestSuiteMetadata,
+  results: SuiteResults,
+): void {
+  const expected = metadata.expected;
+  if (!expected) return;
+
+  const errors: string[] = [];
+
+  if (expected.pass !== undefined && results.pass !== expected.pass) {
+    errors.push(`pass: expected ${expected.pass}, got ${results.pass}`);
+  }
+  if (expected.fail !== undefined && results.fail !== expected.fail) {
+    errors.push(`fail: expected ${expected.fail}, got ${results.fail}`);
+  }
+  if (expected.skip !== undefined && results.skip !== expected.skip) {
+    errors.push(`skip: expected ${expected.skip}, got ${results.skip}`);
+  }
+
+  if (errors.length > 0) {
+    throw new Error(
+      `Suite "${metadata.name || suitePath}" test count mismatch:\n  ${errors.join('\n  ')}`,
+    );
+  }
 }
 
 function getAllTests(dir: string): string[] {
@@ -107,6 +162,7 @@ async function runTestFile(filePath: string): Promise<void> {
     if (relPath.includes('syntax')) mode = 'parse';
     else if (relPath.includes('semantics')) mode = 'check';
     else if (relPath.includes('execution')) mode = 'run';
+    else if (relPath.includes('stdlib')) mode = 'run'; // Stdlib tests are execution tests
     else mode = 'parse'; // Default
   }
 
@@ -296,6 +352,31 @@ async function runExecutionTest(
     }
   };
 
+  // Handle @throws directive - expect an exception
+  if (directives.throws) {
+    if (!instanceExports.main) {
+      throw new Error('Test expects throws but no main function found');
+    }
+    try {
+      (instanceExports.main as Function)();
+      throw new Error(
+        `Expected ${directives.throws} exception but none was thrown`,
+      );
+    } catch (e) {
+      if (directives.throws === 'wasm') {
+        if (!(e instanceof (WebAssembly as any).Exception)) {
+          throw new Error(
+            `Expected WebAssembly.Exception but got ${(e as Error).constructor.name}: ${(e as Error).message}`,
+          );
+        }
+        // Success - expected exception was thrown
+        return;
+      }
+      // Unknown throws type - re-throw
+      throw e;
+    }
+  }
+
   if (instanceExports.main) {
     const ret = (instanceExports.main as Function)();
     if (directives.result) {
@@ -338,23 +419,31 @@ async function runExecutionTest(
 interface TestGroup {
   name: string;
   tests: string[];
+  dirPath: string;
+  metadata: TestSuiteMetadata | null;
 }
 
 function groupTestsByDirectory(testFiles: string[]): TestGroup[] {
-  const groups = new Map<string, string[]>();
+  const groups = new Map<string, {tests: string[]; dirPath: string}>();
 
   for (const filePath of testFiles) {
     const relPath = relative(testsDir, filePath);
     const dir = dirname(relPath);
     const suiteName = dir.replace(/\//g, ' / ') || 'root';
+    const dirPath = join(testsDir, dir);
 
     if (!groups.has(suiteName)) {
-      groups.set(suiteName, []);
+      groups.set(suiteName, {tests: [], dirPath});
     }
-    groups.get(suiteName)!.push(filePath);
+    groups.get(suiteName)!.tests.push(filePath);
   }
 
-  return Array.from(groups.entries()).map(([name, tests]) => ({name, tests}));
+  return Array.from(groups.entries()).map(([name, {tests, dirPath}]) => ({
+    name,
+    tests,
+    dirPath,
+    metadata: loadSuiteMetadata(dirPath),
+  }));
 }
 
 // Register all tests with Node's test runner
@@ -362,11 +451,30 @@ const allTests = getAllTests(testsDir);
 const testGroups = groupTestsByDirectory(allTests);
 
 for (const group of testGroups) {
-  suite(`Portable: ${group.name}`, () => {
+  const suiteName = group.metadata?.name
+    ? `Portable: ${group.name} (${group.metadata.name})`
+    : `Portable: ${group.name}`;
+
+  suite(suiteName, async () => {
+    const results: SuiteResults = {pass: 0, fail: 0, skip: 0};
+
     for (const filePath of group.tests) {
       const testName = basename(filePath, '.zena');
       test(testName, async () => {
-        await runTestFile(filePath);
+        try {
+          await runTestFile(filePath);
+          results.pass++;
+        } catch (e) {
+          results.fail++;
+          throw e;
+        }
+      });
+    }
+
+    // Validate expected counts after all tests in suite complete
+    if (group.metadata?.expected) {
+      test('validate suite expectations', () => {
+        validateSuiteResults(group.dirPath, group.metadata!, results);
       });
     }
   });
