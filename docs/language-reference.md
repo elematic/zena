@@ -551,12 +551,13 @@ let apostrophe = "it's"; // Escaped single quote
 
 ### Strings
 
-Strings are immutable sequences of UTF-8 bytes.
+Strings are immutable sequences of characters.
 
 - **Literals**: `'text'` or `"text"`.
 - **Concatenation**: `+` operator.
-- **Indexing**: `str[index]` returns the byte value at the given index as an `i32`.
-- **Length**: `str.length` returns the number of bytes.
+- **Length**: `str.length` returns the length of the string.
+- **Indexing**: Direct indexed access (`str[index]`) is **not supported**. Use
+  iterators or methods like `charAt()` (planned) to access characters.
 
 ### Template Literals
 

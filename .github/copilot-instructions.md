@@ -209,7 +209,12 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 ## Future Considerations
 
-- **Strings & Unicode**: Currently, strings are UTF-8 bytes. We may want to change single-quotes `'` to represent a character/code-point type in the future, distinct from string literals. Unicode handling needs careful design.
+- **Strings & Unicode**:
+  - **Consolidation**: Consolidate `string` type and `String` class.
+  - **Interning**: Implement runtime string interning.
+  - **Hashing**: Implement fast string hashing and comparison.
+  - **Multiple Implementations**: Support host strings and potentially UTF-16.
+  - **Indexing**: Disallow indexed access (`str[i]`) and implement iterators.
 - **Numeric Literals**:
   - **Defaults**: Revisit default types for literals. Consider making `f64` the default for floating-point literals (matching JS).
   - **Suffixes**: Implement syntax for numeric suffixes (e.g., `1L` for `i64`, `1f` for `f32`) to avoid verbose casting (`1 as i64`).

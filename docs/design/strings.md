@@ -2,18 +2,43 @@
 
 ## Overview
 
-Strings in Zena are immutable sequences of UTF-8 bytes. They are implemented
-using WASM GC arrays.
+Strings in Zena are immutable sequences of characters. While the default
+implementation uses UTF-8 bytes backed by WASM GC arrays, the design allows for
+multiple implementations (e.g., host strings, ropes) to optimize for different
+use cases.
 
 ## Representation
 
-- **WASM Type**: `(ref null $string)` where `$string` is defined as `(array
-(mut i8))`. This type is exposed in Zena as `ByteArray`.
-  - _Note_: While the WASM type definition uses `mut i8` to allow for
-    efficient construction (e.g., concatenation), the language semantics
-    enforce immutability. User code cannot modify string contents after
-    creation.
+### Default Implementation (UTF-8)
+
+- **WASM Type**: `(ref null $string)` where `$string` is defined as `(array (mut
+  i8))`. This type is exposed in Zena as `ByteArray`.
+  - _Note_: While the WASM type definition uses `mut i8` to allow for efficient
+    construction (e.g., concatenation), the language semantics enforce
+    immutability. User code cannot modify string contents after creation.
 - **Encoding**: UTF-8.
+
+### Future Implementations
+
+- **Host Strings**: To support efficient interop with the host environment (JS,
+  Java), we plan to support strings that wrap host string objects. This avoids
+  copying when passing strings across the boundary.
+- **Encoding Flags**: A compiler flag may be introduced to switch the default
+  encoding to UTF-16 (or WFT-16) to better match JS/Java semantics.
+- **Encoding Tag**: String objects might eventually include an encoding tag to
+  support mixed encodings at runtime.
+
+## Class Hierarchy
+
+We are moving towards a unified `String` class that all string implementations
+must adhere to.
+
+- **Goal**: Consolidate the primitive `string` type and the `String` extension
+  class.
+- **Methods**: The `String` class will provide a rich set of methods similar to
+  JavaScript strings (e.g., `substring`, `indexOf`, `startsWith`).
+- **Operators**: The `+` operator will be overloaded on the `String` class to
+  support concatenation.
 
 ## Literals
 
@@ -23,11 +48,12 @@ String literals are stored in the WASM **Data Section**.
     UTF-8 bytes to a passive data segment in the WASM binary.
 2.  **Runtime**: At runtime, a new array is allocated and initialized from the
     data segment using `array.new_data`.
-3.  **Interning**: Currently, strings are **not interned** at runtime.
-    - Evaluating the same literal multiple times (e.g., in a loop) creates
-      distinct array objects (different references).
-    - However, identical literals in the source code share the same underlying
-      data segment in the binary to minimize binary size.
+3.  **Interning**:
+    - **Current**: Strings are **not interned** at runtime. Evaluating the same
+      literal multiple times creates distinct array objects.
+    - **Planned**: We plan to implement runtime string interning to ensure that
+      identical string literals result in the same object reference. This will
+      significantly improve equality check performance.
 
 ## Operations
 
@@ -50,12 +76,22 @@ Equality checks are implemented via a runtime helper function that performs
 2.  Checks if the lengths are equal.
 3.  Iterates through the arrays and compares them byte-by-byte.
 
-### Indexing (`str[i]`)
+**Optimization**: With string interning, equality checks for literals can be
+reduced to a simple reference comparison.
 
-Indexing is compiled directly to the `array.get_u` instruction.
+### Hashing
 
-- Returns the byte value (`i32`) at the specified index.
-- Traps if the index is out of bounds (handled by WASM engine).
+We need a fast hash implementation for strings to support their use as keys in
+`Map` and `Set`. The hash code should be cached on the string object if
+possible, or computed efficiently.
+
+### Indexing & Iteration
+
+- **Indexed Access**: Direct indexed access (e.g., `str[i]`) is **disallowed**
+  to support changing encodings without breaking programs.
+- **Iteration**: Iteration over strings will be supported via **Iterators**.
+  This allows for stable iteration over Unicode characters regardless of the
+  underlying encoding.
 
 ### Length (`str.length`)
 
@@ -63,13 +99,9 @@ Length access is compiled directly to the `array.len` instruction.
 
 ## Future Considerations
 
-- **Unicode Support**: Currently, indexing returns raw bytes. Future
-  iterations should consider how to handle Unicode code points or grapheme
+- **Unicode Support**: Iterators will handle Unicode code points or grapheme
   clusters.
 - **Single Quotes**: We may reserve single quotes `'` for character literals
-  (code points) in the future, similar to Rust or C.
-- **Interning**: Implementing runtime string interning could improve equality
-  check performance but adds complexity (requires a global string table/map).
-- **Multiple Implementations**: We might want to support multiple string
-  implementations in the future, such as Ropes for efficient concatenation of
-  large strings.
+  (code points) in the future, distinct from string literals.
+- **Ropes**: We might want to support Ropes for efficient concatenation of large
+  strings.
