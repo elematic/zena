@@ -310,14 +310,34 @@ function generateTryExpression(
     // Exception was caught - payload is in global, read it if handler has param
     ctx.pushScope();
     if (expr.handler.param) {
-      const paramLocal = ctx.declareLocal(expr.handler.param.name, [
-        ValType.eqref,
-      ]);
+      // Find the Error class type - search for 'Error' or a bundled name like 'm1_Error'
+      let errorTypeIndex = -1;
+      for (const [name, classInfo] of ctx.classes) {
+        if (name === 'Error' || name.endsWith('_Error')) {
+          errorTypeIndex = classInfo.structTypeIndex;
+          break;
+        }
+      }
+
+      // Declare local with Error struct type if found, otherwise eqref
+      const paramType =
+        errorTypeIndex >= 0
+          ? [ValType.ref_null, ...WasmModule.encodeSignedLEB128(errorTypeIndex)]
+          : [ValType.eqref];
+      const paramLocal = ctx.declareLocal(expr.handler.param.name, paramType);
+
       // Read payload from global
       body.push(Opcode.global_get);
       body.push(
         ...WasmModule.encodeUnsignedLEB128(ctx.exceptionPayloadGlobalIndex),
       );
+
+      // Cast from eqref to Error struct type if we found it
+      if (errorTypeIndex >= 0) {
+        body.push(0xfb, GcOpcode.ref_cast_null);
+        body.push(...WasmModule.encodeSignedLEB128(errorTypeIndex));
+      }
+
       body.push(Opcode.local_set);
       body.push(...WasmModule.encodeUnsignedLEB128(paramLocal));
     }
@@ -857,7 +877,9 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
   if (expr.type === NodeType.Identifier) {
     const ident = expr as Identifier;
     const local = ctx.getLocal(ident.name);
-    if (local) return local.type;
+    if (local) {
+      return local.type;
+    }
     const global = ctx.getGlobal(ident.name);
     if (global) return global.type;
   }
@@ -1367,13 +1389,26 @@ function generateNewExpression(
     body.push(...WasmModule.encodeSignedLEB128(tempLocal));
   }
 
+  // Get constructor parameter types for adaptation
+  const ctorInfo = classInfo.methods.get('#new');
+  let ctorParams: number[][] | undefined;
+  if (ctorInfo !== undefined) {
+    ctorParams = ctx.module.getFunctionTypeParams(ctorInfo.typeIndex);
+    // params[0] is 'this'
+  }
+
   // Prepare args for constructor: [this, args...]
-  for (const arg of expr.arguments) {
-    generateExpression(ctx, arg, body);
+  for (let i = 0; i < expr.arguments.length; i++) {
+    const arg = expr.arguments[i];
+    if (ctorParams && i + 1 < ctorParams.length) {
+      // Adapt argument to expected type (skip 'this' at index 0)
+      generateAdaptedArgument(ctx, arg, ctorParams[i + 1], body);
+    } else {
+      generateExpression(ctx, arg, body);
+    }
   }
 
   // Call constructor
-  const ctorInfo = classInfo.methods.get('#new');
   if (ctorInfo !== undefined) {
     body.push(Opcode.call);
     if (ctorInfo.index === -1)
@@ -2082,6 +2117,14 @@ function generateCallExpression(
       const classType = memberExpr.object.inferredType as ClassType;
       if (ctx.classes.has(classType.name)) {
         foundClass = ctx.classes.get(classType.name);
+      } else {
+        // Try to find class by suffix (handles bundled names like m3_Array for Array)
+        for (const [name, info] of ctx.classes) {
+          if (name.endsWith('_' + classType.name)) {
+            foundClass = info;
+            break;
+          }
+        }
       }
     }
 
@@ -2148,7 +2191,134 @@ function generateCallExpression(
       }
     }
 
+    // If method not found, check if it's a field with function type
     if (methodInfo === undefined) {
+      const fieldInfo = foundClass.fields.get(methodName);
+      if (fieldInfo) {
+        // This is a field with function type - generate field access and call_ref
+        // Get the function type index from the field type
+        const fieldType = fieldInfo.type;
+
+        // Check if field type is a function reference
+        if (
+          fieldType.length >= 2 &&
+          (fieldType[0] === ValType.ref || fieldType[0] === ValType.ref_null)
+        ) {
+          const fieldTypeIndex = decodeTypeIndex(fieldType);
+
+          // Check if this is a closure type
+          const closureInfo = ctx.closureStructs.get(fieldTypeIndex);
+
+          if (closureInfo) {
+            // Field is a closure - need to call it properly
+
+            // Get object (this)
+            generateExpression(ctx, memberExpr.object, body);
+
+            // Downcast if needed (for anyref case)
+            const isAnyRef =
+              objectType.length === 1 && objectType[0] === ValType.anyref;
+            if (isAnyRef) {
+              body.push(0xfb, GcOpcode.ref_cast_null);
+              body.push(
+                ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+              );
+            }
+
+            // Get field (closure struct reference)
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+            );
+            body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+            // Store closure in temp local
+            const closureLocal = ctx.declareLocal('$$field_closure', fieldType);
+            body.push(
+              Opcode.local_set,
+              ...WasmModule.encodeSignedLEB128(closureLocal),
+            );
+
+            // Load context (field 1 of closure struct)
+            body.push(
+              Opcode.local_get,
+              ...WasmModule.encodeSignedLEB128(closureLocal),
+            );
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(...WasmModule.encodeSignedLEB128(fieldTypeIndex));
+            body.push(...WasmModule.encodeSignedLEB128(1)); // context field
+
+            // Generate arguments
+            const params = ctx.module.getFunctionTypeParams(
+              closureInfo.funcTypeIndex,
+            );
+            // params[0] is context
+            for (let i = 0; i < expr.arguments.length; i++) {
+              const arg = expr.arguments[i];
+              const expectedType = params[i + 1];
+              generateAdaptedArgument(ctx, arg, expectedType, body);
+            }
+
+            // Load function pointer (field 0 of closure struct)
+            body.push(
+              Opcode.local_get,
+              ...WasmModule.encodeSignedLEB128(closureLocal),
+            );
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(...WasmModule.encodeSignedLEB128(fieldTypeIndex));
+            body.push(...WasmModule.encodeSignedLEB128(0)); // function field
+
+            // Call function
+            body.push(Opcode.call_ref);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(closureInfo.funcTypeIndex),
+            );
+            return;
+          } else {
+            // Direct function reference (not a closure)
+            // Get object (this)
+            generateExpression(ctx, memberExpr.object, body);
+
+            // Downcast if needed (for anyref case)
+            const isAnyRef =
+              objectType.length === 1 && objectType[0] === ValType.anyref;
+            if (isAnyRef) {
+              body.push(0xfb, GcOpcode.ref_cast_null);
+              body.push(
+                ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+              );
+            }
+
+            // Get field (function reference)
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+            );
+            body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+            // Store func ref in temp local
+            const funcRefLocal = ctx.declareLocal('$$field_func', fieldType);
+            body.push(
+              Opcode.local_set,
+              ...WasmModule.encodeSignedLEB128(funcRefLocal),
+            );
+
+            // Generate arguments
+            for (const arg of expr.arguments) {
+              generateExpression(ctx, arg, body);
+            }
+
+            // Load func ref and call
+            body.push(
+              Opcode.local_get,
+              ...WasmModule.encodeSignedLEB128(funcRefLocal),
+            );
+            body.push(Opcode.call_ref);
+            body.push(...WasmModule.encodeSignedLEB128(fieldTypeIndex));
+            return;
+          }
+        }
+      }
       throw new Error(`Method ${methodName} not found in class`);
     }
 
@@ -5652,6 +5822,25 @@ export function generateAdaptedArgument(
         return;
       }
     }
+  }
+
+  // Eqref/Anyref -> Specific struct type cast
+  // This is needed when the actual value is eqref/anyref (e.g., exception parameter)
+  // but the expected type is a specific struct reference
+  const isActualEqref =
+    actualType.length === 1 && actualType[0] === ValType.eqref;
+  const isActualAnyref =
+    actualType.length === 1 && actualType[0] === ValType.anyref;
+  const isExpectedStructRef =
+    expectedType.length > 1 &&
+    (expectedType[0] === ValType.ref || expectedType[0] === ValType.ref_null);
+
+  if ((isActualEqref || isActualAnyref) && isExpectedStructRef) {
+    generateExpression(ctx, arg, body);
+    // Cast from eqref/anyref to specific struct type
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...expectedType.slice(1)); // type index
+    return;
   }
 
   if (isAdaptable(ctx, actualType, expectedType)) {

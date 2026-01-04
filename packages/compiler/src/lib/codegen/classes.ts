@@ -2453,9 +2453,21 @@ function mapTypeInternal(
             }
           }
 
+          // Try to find by suffix (handles bundled names)
+          if (!genericDecl) {
+            for (const [name, decl] of ctx.genericClasses) {
+              if (name.endsWith('_' + typeName)) {
+                genericDecl = decl;
+                break;
+              }
+            }
+          }
+
           if (genericDecl) {
+            // Use the actual registered name from the declaration, not the type annotation name
+            const actualGenericName = genericDecl.name.name;
             const specializedName = getSpecializedName(
-              typeName,
+              actualGenericName,
               type.typeArguments,
               ctx,
               context,
@@ -2490,6 +2502,20 @@ function mapTypeInternal(
             ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
           ];
         }
+
+        // Try to find class by suffix (handles bundled names like m3_Array for Array)
+        for (const [name, classInfo] of ctx.classes) {
+          if (name.endsWith('_' + typeName)) {
+            if (classInfo.isExtension && classInfo.onType) {
+              return classInfo.onType;
+            }
+            return [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ];
+          }
+        }
+
         if (ctx.interfaces.has(typeName)) {
           const interfaceInfo = ctx.interfaces.get(typeName)!;
           const res = [
@@ -3528,7 +3554,8 @@ export function mapCheckerTypeToWasmType(
   if (type.kind === TypeKind.Null) return [ValType.ref_null, HeapType.none];
 
   const annotation = typeToTypeAnnotation(type);
-  return mapType(ctx, annotation, ctx.currentTypeContext);
+  const result = mapType(ctx, annotation, ctx.currentTypeContext);
+  return result;
 }
 
 function generateBrandType(ctx: CodegenContext, id: number): number {
