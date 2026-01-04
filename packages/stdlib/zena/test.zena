@@ -1,5 +1,5 @@
 import { Error } from 'zena:error';
-import { Array } from 'zena:array';
+import { Array } from 'zena:growable-array';
 
 // Test context passed to each test function
 export class TestContext {
@@ -14,36 +14,115 @@ export class TestContext {
 export class TestResult {
   name: string;
   passed: boolean;
-  error: Error | null;
+  error: string | null;
 
-  #new(name: string, passed: boolean, error: Error | null) {
+  #new(name: string, passed: boolean, error: string | null) {
     this.name = name;
     this.passed = passed;
     this.error = error;
   }
 }
 
-// Internal: represents a registered test
-class TestCase {
+// Result of running a suite
+export class SuiteResult {
   name: string;
-  fn: (ctx: TestContext) => void;
+  tests: Array<TestResult>;
+  suites: Array<SuiteResult>;
+  passed: i32;
+  failed: i32;
 
-  #new(name: string, fn: (ctx: TestContext) => void) {
+  #new(name: string) {
     this.name = name;
-    this.fn = fn;
+    this.tests = new Array<TestResult>();
+    this.suites = new Array<SuiteResult>();
+    this.passed = 0;
+    this.failed = 0;
+  }
+
+  addTestResult(result: TestResult): void {
+    this.tests.push(result);
+    if (result.passed) {
+      this.passed = this.passed + 1;
+    } else {
+      this.failed = this.failed + 1;
+    }
+  }
+
+  addSuiteResult(result: SuiteResult): void {
+    this.suites.push(result);
+    this.passed = this.passed + result.passed;
+    this.failed = this.failed + result.failed;
   }
 }
 
-// Internal: represents a test suite
+// A single test case
+class TestCase {
+  name: string;
+  fn: (ctx: TestContext) => void;
+  only: boolean;
+
+  #new(name: string, fn: (ctx: TestContext) => void, only: boolean) {
+    this.name = name;
+    this.fn = fn;
+    this.only = only;
+  }
+
+  run(): TestResult {
+    let ctx = new TestContext(this.name);
+    let result = try {
+      this.fn(ctx);
+      new TestResult(this.name, true, null)
+    } catch (e) {
+      new TestResult(this.name, false, e.message)
+    };
+    return result;
+  }
+}
+
+// A test suite containing tests and nested suites
 export class Suite {
   name: string;
   tests: Array<TestCase>;
   suites: Array<Suite>;
+  hasOnly: boolean;
 
   #new(name: string) {
     this.name = name;
     this.tests = new Array<TestCase>();
     this.suites = new Array<Suite>();
+    this.hasOnly = false;
+  }
+
+  // Run all tests in this suite and return structured results
+  run(): SuiteResult {
+    let result = new SuiteResult(this.name);
+    
+    // Check if any test has .only
+    let runOnlyTests = this.hasOnly;
+    
+    // Run tests
+    var i: i32 = 0;
+    while (i < this.tests.length) {
+      let testCase = this.tests[i];
+      // Skip non-only tests if we have .only tests
+      let shouldRun = !runOnlyTests || testCase.only;
+      if (shouldRun) {
+        let testResult = testCase.run();
+        result.addTestResult(testResult);
+      }
+      i = i + 1;
+    }
+    
+    // Run nested suites
+    var j: i32 = 0;
+    while (j < this.suites.length) {
+      let nestedSuite = this.suites[j];
+      let suiteResult = nestedSuite.run();
+      result.addSuiteResult(suiteResult);
+      j = j + 1;
+    }
+    
+    return result;
   }
 }
 
@@ -53,12 +132,19 @@ var currentSuite: Suite | null = null;
 // Register a test in the current suite
 export let test = (name: string, fn: (ctx: TestContext) => void): void => {
   if (currentSuite !== null) {
-    currentSuite.tests.push(new TestCase(name, fn));
+    currentSuite.tests.push(new TestCase(name, fn, false));
   }
 };
 
-// Create a test suite (group of tests)
-// Returns the Suite so it can be exported: `export let tests = suite('...', () => { ... });`
+// Register a test that will be the only one to run (for debugging)
+export let testOnly = (name: string, fn: (ctx: TestContext) => void): void => {
+  if (currentSuite !== null) {
+    currentSuite.tests.push(new TestCase(name, fn, true));
+    currentSuite.hasOnly = true;
+  }
+};
+
+// Create a test suite
 export let suite = (name: string, fn: () => void): Suite => {
   let parentSuite = currentSuite;
   let newSuite = new Suite(name);

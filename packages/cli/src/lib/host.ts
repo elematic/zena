@@ -5,9 +5,18 @@ import {fileURLToPath} from 'node:url';
 
 export class NodeCompilerHost implements CompilerHost {
   #stdlibPath: string;
+  #virtualFiles: Map<string, string> = new Map();
 
   constructor() {
     this.#stdlibPath = this.#findStdlibPath();
+  }
+
+  /**
+   * Register a virtual file that exists only in memory.
+   * This is used for generated wrapper files.
+   */
+  registerVirtualFile(path: string, content: string): void {
+    this.#virtualFiles.set(path, content);
   }
 
   #findStdlibPath(): string {
@@ -31,6 +40,11 @@ export class NodeCompilerHost implements CompilerHost {
   }
 
   load(path: string): string {
+    // Check virtual files first
+    if (this.#virtualFiles.has(path)) {
+      return this.#virtualFiles.get(path)!;
+    }
+
     if (path.startsWith('zena:')) {
       const name = path.substring(5); // remove 'zena:'
       const filePath = join(this.#stdlibPath, `${name}.zena`);

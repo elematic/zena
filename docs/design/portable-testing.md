@@ -48,6 +48,7 @@ Test folders can contain a `test-suite.json` file to provide metadata and expect
 ```
 
 Fields:
+
 - `name`: Display name for the suite (shown in test output).
 - `description`: Optional description of the test suite.
 - `expected`: Expected test counts. If provided, a validation test runs after all tests to verify counts match.

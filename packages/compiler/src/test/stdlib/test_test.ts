@@ -109,7 +109,7 @@ suite('Stdlib: test', () => {
           let result = new TestResult('my test', true, null);
           equal(result.name, 'my test');
           isTrue(result.passed);
-          isNull<Error>(result.error);
+          isNull<string>(result.error);
           return 1;
         };
       `;
@@ -121,14 +121,12 @@ suite('Stdlib: test', () => {
       const source = `
         import { TestResult } from 'zena:test';
         import { isFalse, isNotNull, equal } from 'zena:assert';
-        import { Error } from 'zena:error';
 
         export let run = (): i32 => {
-          let err = new Error('test failed');
-          let result = new TestResult('my test', false, err);
+          let result = new TestResult('my test', false, 'test failed');
           equal(result.name, 'my test');
           isFalse(result.passed);
-          isNotNull<Error>(result.error);
+          isNotNull<string>(result.error);
           return 1;
         };
       `;

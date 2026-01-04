@@ -14,11 +14,13 @@ import {readFile, writeFile} from 'node:fs/promises';
 import {basename, resolve} from 'node:path';
 import {parseArgs} from 'node:util';
 import {NodeCompilerHost} from './host.js';
+import {testCommand} from './test.js';
 
 const Commands = {
   build: 'build',
   check: 'check',
   run: 'run',
+  test: 'test',
   help: 'help',
 } as const;
 
@@ -36,16 +38,20 @@ Commands:
   build    Compile Zena source files to WASM
   check    Type-check Zena source files without emitting
   run      Compile and run Zena source files
+  test     Run Zena test files
   help     Show this help message
 
 Options:
   -o, --output <file>  Output file path (for build command)
+  -v, --verbose        Verbose output (for test command)
   -h, --help           Show help
 
 Examples:
   zena build main.zena -o main.wasm
   zena check main.zena
   zena run main.zena
+  zena test                           # Run all *_test.zena files
+  zena test 'tests/**/*_test.zena'    # Run tests matching pattern
 `);
 };
 
@@ -206,6 +212,7 @@ export const main = async (args: string[]): Promise<number> => {
     options: {
       help: {type: 'boolean', short: 'h', default: false},
       output: {type: 'string', short: 'o'},
+      verbose: {type: 'boolean', short: 'v', default: false},
     },
     allowPositionals: true,
   });
@@ -226,6 +233,8 @@ export const main = async (args: string[]): Promise<number> => {
       return checkCommand(files);
     case 'run':
       return runCommand(files);
+    case 'test':
+      return testCommand(files, {verbose: values.verbose});
     default:
       printHelp();
       return 1;

@@ -320,6 +320,7 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **`ctx.currentClass` consistency**: Inside a generic class `Foo<T>`, `ctx.currentClass` should have `typeArguments = typeParameters` (i.e., represent `Foo<T>`, not just `Foo`). Currently, `checkThisExpression` creates a type with `typeArguments`, but `ctx.currentClass` doesn't have them, requiring a workaround in `isAssignableTo` to handle self-referential generic class comparisons. Fixing this at the source would eliminate that special case.
     - **Reject index assignment without `operator []=`**: Currently `x[0] = y` compiles even if the type only has `operator []` (getter). The checker should require `operator []=` for index assignment.
     - **Reject assignment to getter-only properties**: Currently `x.length = 5` compiles even if `length` only has a getter. The checker should require a setter for property assignment.
+    - **Suffix-based type lookup is unsafe**: In `codegen/classes.ts`, `mapType()` uses `name.endsWith('_' + typeName)` to resolve bundled class names (e.g., `m3_Array` for `Array`). This is fragile and could cause name collisions if two modules define classes with the same base name, or if a class name is a suffix of another (e.g., `MyArray` matching `Array`). The proper fix is for the bundler to update type annotations when renaming declarations, so codegen always sees the canonical name.
 
 2.  **Host Interop**:
     - **WASM GC Interop Notes**:
@@ -327,6 +328,12 @@ This project is an **npm monorepo** managed with **Wireit**.
       - JS cannot access struct fields or iterate GC arrays.
       - Use byte streaming (start/byte/end pattern) for string I/O.
       - See `docs/design/host-interop.md` for details.
+    - **`@expose` Decorator**: Allow marking class methods as callable from JS hosts.
+      - Syntax: `@expose` or `@expose("customName")` on methods.
+      - Generates a WASM export wrapper that takes `this` as first parameter.
+      - Example: `@expose` on `Suite.run()` exports `Suite.run(self: Suite): i32`.
+      - JS usage: `exports['Suite.run'](suiteInstance)`.
+      - The inverse of `@external` - exposes Zena methods to hosts instead of importing host functions.
 
 3.  **Exceptions**:
     - **Try/Catch Statement Form**: Allow side-effect-only try/catch without requiring both branches to produce values. See `docs/design/exceptions.md` Open Questions.

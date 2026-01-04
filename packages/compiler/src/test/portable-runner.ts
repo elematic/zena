@@ -162,7 +162,8 @@ async function runTestFile(filePath: string): Promise<void> {
     if (relPath.includes('syntax')) mode = 'parse';
     else if (relPath.includes('semantics')) mode = 'check';
     else if (relPath.includes('execution')) mode = 'run';
-    else if (relPath.includes('stdlib')) mode = 'run'; // Stdlib tests are execution tests
+    else if (relPath.includes('stdlib'))
+      mode = 'run'; // Stdlib tests are execution tests
     else mode = 'parse'; // Default
   }
 
