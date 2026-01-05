@@ -16,6 +16,18 @@ import {parseArgs} from 'node:util';
 import {NodeCompilerHost} from './host.js';
 import {testCommand} from './test.js';
 
+// Check Node version
+const MIN_NODE_VERSION = 25;
+const nodeVersion = parseInt(process.versions.node.split('.')[0], 10);
+if (nodeVersion < MIN_NODE_VERSION) {
+  console.warn(
+    `\x1b[33mWarning: Zena requires Node.js ${MIN_NODE_VERSION}+, but you are using v${process.versions.node}.\x1b[0m`,
+  );
+  console.warn(
+    `\x1b[33mSome features (like WASM GC exceptions) may not work correctly.\x1b[0m`,
+  );
+}
+
 const Commands = {
   build: 'build',
   check: 'check',

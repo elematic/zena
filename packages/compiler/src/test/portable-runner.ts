@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import assert from 'node:assert';
 import {
   readFileSync,
   readdirSync,
@@ -14,6 +15,7 @@ import {suite, test} from 'node:test';
 import {Parser, TypeChecker, CodeGenerator, Compiler} from '../lib/index.js';
 
 import {createStringReader} from '@zena-lang/runtime';
+import {runZenaTestFile, flattenTests} from './codegen/utils.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // We are in packages/compiler/test/portable-runner.js
@@ -92,20 +94,27 @@ function validateSuiteResults(
   }
 }
 
-function getAllTests(dir: string): string[] {
-  let results: string[] = [];
-  if (!existsSync(dir)) return [];
+function getAllTests(dir: string): {directive: string[]; zenaTest: string[]} {
+  const directive: string[] = [];
+  const zenaTest: string[] = [];
+  if (!existsSync(dir)) return {directive, zenaTest};
   const list = readdirSync(dir);
   for (const file of list) {
     const filePath = join(dir, file);
     const stat = statSync(filePath);
     if (stat && stat.isDirectory()) {
-      results = results.concat(getAllTests(filePath));
+      const sub = getAllTests(filePath);
+      directive.push(...sub.directive);
+      zenaTest.push(...sub.zenaTest);
+    } else if (file.endsWith('_test.zena')) {
+      // *_test.zena files use zena:test format
+      zenaTest.push(filePath);
     } else if (file.endsWith('.zena')) {
-      results.push(filePath);
+      // Other .zena files use directive format
+      directive.push(filePath);
     }
   }
-  return results;
+  return {directive, zenaTest};
 }
 
 function parseDirectives(content: string): {
@@ -448,10 +457,12 @@ function groupTestsByDirectory(testFiles: string[]): TestGroup[] {
 }
 
 // Register all tests with Node's test runner
-const allTests = getAllTests(testsDir);
-const testGroups = groupTestsByDirectory(allTests);
+const {directive: directiveTests, zenaTest: zenaTests} = getAllTests(testsDir);
 
-for (const group of testGroups) {
+// --- Directive-based tests (*.zena, not *_test.zena) ---
+const directiveGroups = groupTestsByDirectory(directiveTests);
+
+for (const group of directiveGroups) {
   const suiteName = group.metadata?.name
     ? `Portable: ${group.name} (${group.metadata.name})`
     : `Portable: ${group.name}`;
@@ -476,6 +487,34 @@ for (const group of testGroups) {
     if (group.metadata?.expected) {
       test('validate suite expectations', () => {
         validateSuiteResults(group.dirPath, group.metadata!, results);
+      });
+    }
+  });
+}
+
+// --- zena:test format tests (*_test.zena) ---
+const zenaTestGroups = groupTestsByDirectory(zenaTests);
+
+for (const group of zenaTestGroups) {
+  const suiteName = `Zena: ${group.name}`;
+
+  suite(suiteName, () => {
+    for (const filePath of group.tests) {
+      const testName = basename(filePath, '.zena');
+
+      test(testName, async (t) => {
+        // Run the Zena test file
+        const suiteResult = await runZenaTestFile(filePath);
+        const flatTests = flattenTests(suiteResult);
+
+        // Report each Zena test as a subtest
+        for (const zt of flatTests) {
+          await t.test(zt.name, () => {
+            if (!zt.passed) {
+              assert.fail(zt.error ?? 'Test failed');
+            }
+          });
+        }
       });
     }
   });

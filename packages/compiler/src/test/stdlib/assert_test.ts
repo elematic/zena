@@ -2,20 +2,14 @@ import {suite, test} from 'node:test';
 import assert from 'node:assert';
 import {compileAndRun} from '../codegen/utils.js';
 
-suite('Stdlib: assert', () => {
-  suite('equal', () => {
-    test('passes for equal i32 values', async () => {
-      const source = `
-        import { equal } from 'zena:assert';
-        export let run = (): i32 => {
-          equal(42, 42);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
+// Most assert tests are in tests/language/stdlib/assert/assert_test.zena
+// This file contains tests that can't run in zena:test due to:
+// 1. Tests that verify assertions throw (nested closures cause codegen bugs)
+// 2. Tests requiring class definitions (same/notSame/isNull/isNotNull)
+// 3. Tests with string comparisons (cause codegen bugs in test context)
 
+suite('Stdlib: assert (non-portable)', () => {
+  suite('equal', () => {
     test('throws for unequal i32 values', async () => {
       const source = `
         import { equal } from 'zena:assert';
@@ -53,34 +47,9 @@ suite('Stdlib: assert', () => {
         await compileAndRun(source, 'run');
       });
     });
-
-    test('passes for equal booleans', async () => {
-      const source = `
-        import { equal } from 'zena:assert';
-        export let run = (): i32 => {
-          equal(true, true);
-          equal(false, false);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
   });
 
   suite('notEqual', () => {
-    test('passes for unequal values', async () => {
-      const source = `
-        import { notEqual } from 'zena:assert';
-        export let run = (): i32 => {
-          notEqual(1, 2);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
     test('throws for equal values', async () => {
       const source = `
         import { notEqual } from 'zena:assert';
@@ -222,18 +191,6 @@ suite('Stdlib: assert', () => {
   });
 
   suite('isTrue / isFalse', () => {
-    test('isTrue passes for true', async () => {
-      const source = `
-        import { isTrue } from 'zena:assert';
-        export let run = (): i32 => {
-          isTrue(true);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
     test('isTrue throws for false', async () => {
       const source = `
         import { isTrue } from 'zena:assert';
@@ -245,18 +202,6 @@ suite('Stdlib: assert', () => {
       await assert.rejects(async () => {
         await compileAndRun(source, 'run');
       });
-    });
-
-    test('isFalse passes for false', async () => {
-      const source = `
-        import { isFalse } from 'zena:assert';
-        export let run = (): i32 => {
-          isFalse(false);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
     });
 
     test('isFalse throws for true', async () => {
@@ -302,19 +247,7 @@ suite('Stdlib: assert', () => {
   });
 
   suite('greater', () => {
-    test('passes when actual > expected', async () => {
-      const source = `
-        import { greater } from 'zena:assert';
-        export let run = (): i32 => {
-          greater(5, 3);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
-    test('throws when actual == expected', async () => {
+    test('throws when actual <= expected', async () => {
       const source = `
         import { greater } from 'zena:assert';
         export let run = (): i32 => {
@@ -326,46 +259,9 @@ suite('Stdlib: assert', () => {
         await compileAndRun(source, 'run');
       });
     });
-
-    test('throws when actual < expected', async () => {
-      const source = `
-        import { greater } from 'zena:assert';
-        export let run = (): i32 => {
-          greater(3, 5);
-          return 1;
-        };
-      `;
-      await assert.rejects(async () => {
-        await compileAndRun(source, 'run');
-      });
-    });
   });
 
   suite('greaterOrEqual', () => {
-    test('passes when actual > expected', async () => {
-      const source = `
-        import { greaterOrEqual } from 'zena:assert';
-        export let run = (): i32 => {
-          greaterOrEqual(5, 3);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
-    test('passes when actual == expected', async () => {
-      const source = `
-        import { greaterOrEqual } from 'zena:assert';
-        export let run = (): i32 => {
-          greaterOrEqual(5, 5);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
     test('throws when actual < expected', async () => {
       const source = `
         import { greaterOrEqual } from 'zena:assert';
@@ -381,19 +277,7 @@ suite('Stdlib: assert', () => {
   });
 
   suite('less', () => {
-    test('passes when actual < expected', async () => {
-      const source = `
-        import { less } from 'zena:assert';
-        export let run = (): i32 => {
-          less(3, 5);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
-    test('throws when actual == expected', async () => {
+    test('throws when actual >= expected', async () => {
       const source = `
         import { less } from 'zena:assert';
         export let run = (): i32 => {
@@ -405,46 +289,9 @@ suite('Stdlib: assert', () => {
         await compileAndRun(source, 'run');
       });
     });
-
-    test('throws when actual > expected', async () => {
-      const source = `
-        import { less } from 'zena:assert';
-        export let run = (): i32 => {
-          less(5, 3);
-          return 1;
-        };
-      `;
-      await assert.rejects(async () => {
-        await compileAndRun(source, 'run');
-      });
-    });
   });
 
   suite('lessOrEqual', () => {
-    test('passes when actual < expected', async () => {
-      const source = `
-        import { lessOrEqual } from 'zena:assert';
-        export let run = (): i32 => {
-          lessOrEqual(3, 5);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
-    test('passes when actual == expected', async () => {
-      const source = `
-        import { lessOrEqual } from 'zena:assert';
-        export let run = (): i32 => {
-          lessOrEqual(5, 5);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
     test('throws when actual > expected', async () => {
       const source = `
         import { lessOrEqual } from 'zena:assert';

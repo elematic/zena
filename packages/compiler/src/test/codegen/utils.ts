@@ -2,8 +2,8 @@ import {Compiler, type CompilerHost, type Module} from '../../lib/compiler.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {TypeChecker} from '../../lib/checker/index.js';
 import {type Diagnostic} from '../../lib/diagnostics.js';
-import {readFileSync} from 'node:fs';
-import {join, dirname} from 'node:path';
+import {readFileSync, existsSync} from 'node:fs';
+import {join, dirname, basename, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execSync} from 'node:child_process';
 
@@ -16,6 +16,21 @@ export interface CompileOptions {
   entryPoint?: string;
   imports?: Record<string, any>;
   path?: string;
+}
+
+// Zena test result structures (mirroring zena:test)
+export interface ZenaTestResult {
+  name: string;
+  passed: boolean;
+  error: string | null;
+}
+
+export interface ZenaSuiteResult {
+  name: string;
+  tests: ZenaTestResult[];
+  suites: ZenaSuiteResult[];
+  passed: number;
+  failed: number;
 }
 
 /**
@@ -201,3 +216,313 @@ export async function compileAndRun(
   }
   return null;
 }
+
+/**
+ * Read a string from WASM using the standard byte-reading pattern.
+ */
+const readWasmString = (
+  exports: WebAssembly.Exports,
+  getter: () => unknown,
+): string => {
+  const stringRef = getter();
+  if (stringRef === null || stringRef === undefined) {
+    return '';
+  }
+  const $stringGetLength = exports.$stringGetLength as (s: unknown) => number;
+  const $stringGetByte = exports.$stringGetByte as (
+    s: unknown,
+    i: number,
+  ) => number;
+
+  if (!$stringGetLength || !$stringGetByte) {
+    return '';
+  }
+
+  const length = $stringGetLength(stringRef);
+  const bytes = new Uint8Array(length);
+  for (let i = 0; i < length; i++) {
+    bytes[i] = $stringGetByte(stringRef, i) & 0xff;
+  }
+  return new TextDecoder().decode(bytes);
+};
+
+/**
+ * Read suite results from WASM exports using accessor functions.
+ */
+const readSuiteResult = (
+  exports: WebAssembly.Exports,
+): ZenaSuiteResult | null => {
+  const getSuiteName = exports.getSuiteName as (() => unknown) | undefined;
+  const getSuitePassed = exports.getSuitePassed as (() => number) | undefined;
+  const getSuiteFailed = exports.getSuiteFailed as (() => number) | undefined;
+  const getTestCount = exports.getTestCount as (() => number) | undefined;
+  const getNestedSuiteCount = exports.getNestedSuiteCount as
+    | (() => number)
+    | undefined;
+  const getTestName = exports.getTestName as
+    | ((i: number) => unknown)
+    | undefined;
+  const getTestPassed = exports.getTestPassed as
+    | ((i: number) => boolean)
+    | undefined;
+  const getTestError = exports.getTestError as
+    | ((i: number) => unknown)
+    | undefined;
+  const selectNestedSuite = exports.selectNestedSuite as
+    | ((i: number) => void)
+    | undefined;
+  const getNestedSuiteName = exports.getNestedSuiteName as
+    | (() => unknown)
+    | undefined;
+  const getNestedSuitePassed = exports.getNestedSuitePassed as
+    | (() => number)
+    | undefined;
+  const getNestedSuiteFailed = exports.getNestedSuiteFailed as
+    | (() => number)
+    | undefined;
+  const getNestedTestCount = exports.getNestedTestCount as
+    | (() => number)
+    | undefined;
+  const getNestedTestName = exports.getNestedTestName as
+    | ((i: number) => unknown)
+    | undefined;
+  const getNestedTestPassed = exports.getNestedTestPassed as
+    | ((i: number) => boolean)
+    | undefined;
+  const getNestedTestError = exports.getNestedTestError as
+    | ((i: number) => unknown)
+    | undefined;
+
+  if (!getSuiteName || !getSuitePassed || !getSuiteFailed || !getTestCount) {
+    return null;
+  }
+
+  // Read root suite tests
+  const tests: ZenaTestResult[] = [];
+  const testCount = getTestCount();
+  for (let i = 0; i < testCount; i++) {
+    const name = getTestName
+      ? readWasmString(exports, () => getTestName(i))
+      : '';
+    const passed = getTestPassed ? getTestPassed(i) : false;
+    const errorRef = getTestError ? getTestError(i) : null;
+    const error =
+      errorRef !== null ? readWasmString(exports, () => errorRef) : null;
+    tests.push({name, passed, error});
+  }
+
+  // Read nested suites (one level deep)
+  const suites: ZenaSuiteResult[] = [];
+  const nestedCount = getNestedSuiteCount ? getNestedSuiteCount() : 0;
+  for (let i = 0; i < nestedCount; i++) {
+    if (selectNestedSuite) {
+      selectNestedSuite(i);
+    }
+    const nestedTests: ZenaTestResult[] = [];
+    const nestedTestCount = getNestedTestCount ? getNestedTestCount() : 0;
+    for (let j = 0; j < nestedTestCount; j++) {
+      const name = getNestedTestName
+        ? readWasmString(exports, () => getNestedTestName(j))
+        : '';
+      const passed = getNestedTestPassed ? getNestedTestPassed(j) : false;
+      const errorRef = getNestedTestError ? getNestedTestError(j) : null;
+      const error =
+        errorRef !== null ? readWasmString(exports, () => errorRef) : null;
+      nestedTests.push({name, passed, error});
+    }
+    suites.push({
+      name: getNestedSuiteName
+        ? readWasmString(exports, () => getNestedSuiteName())
+        : '',
+      tests: nestedTests,
+      suites: [],
+      passed: getNestedSuitePassed ? getNestedSuitePassed() : 0,
+      failed: getNestedSuiteFailed ? getNestedSuiteFailed() : 0,
+    });
+  }
+
+  return {
+    name: readWasmString(exports, () => getSuiteName()),
+    tests,
+    suites,
+    passed: getSuitePassed(),
+    failed: getSuiteFailed(),
+  };
+};
+
+/**
+ * Create a compiler host that can load files from disk.
+ */
+const createFileHost = (
+  entryPath: string,
+  virtualFiles: Map<string, string> = new Map(),
+): CompilerHost => ({
+  load: (p: string) => {
+    if (virtualFiles.has(p)) {
+      return virtualFiles.get(p)!;
+    }
+    if (p.startsWith('zena:')) {
+      const name = p.substring(5);
+      return readFileSync(join(stdlibPath, `${name}.zena`), 'utf-8');
+    }
+    if (existsSync(p)) {
+      return readFileSync(p, 'utf-8');
+    }
+    throw new Error(`File not found: ${p}`);
+  },
+  resolve: (specifier: string, referrer: string) => {
+    if (specifier.startsWith('zena:')) {
+      return specifier;
+    }
+    if (specifier.startsWith('./') || specifier.startsWith('../')) {
+      const dir = dirname(referrer);
+      return resolve(dir, specifier);
+    }
+    return specifier;
+  },
+});
+
+/**
+ * Run a Zena test file and return structured results.
+ * The test file should export `tests` as a Suite.
+ */
+export const runZenaTestFile = async (
+  filePath: string,
+): Promise<ZenaSuiteResult> => {
+  const absolutePath = resolve(filePath);
+  const testFileName = basename(absolutePath);
+  const wrapperPath = absolutePath.replace(/\.zena$/, '.__wrapper__.zena');
+
+  // Generate wrapper that imports tests and exposes accessors
+  const wrapperSource = `
+import { tests } from './${testFileName}';
+import { SuiteResult, TestResult } from 'zena:test';
+import { Array } from 'zena:growable-array';
+
+var _result: SuiteResult | null = null;
+
+let result = (): SuiteResult => {
+  if (_result !== null) {
+    return _result;
+  }
+  return new SuiteResult('');
+};
+
+export let main = (): i32 => {
+  _result = tests.run();
+  if (_result !== null) {
+    return _result.failed;
+  }
+  return 0;
+};
+
+export let getSuiteName = (): string => result().name;
+export let getSuitePassed = (): i32 => result().passed;
+export let getSuiteFailed = (): i32 => result().failed;
+export let getTestCount = (): i32 => result().tests.length;
+export let getNestedSuiteCount = (): i32 => result().suites.length;
+
+export let getTestName = (index: i32): string => result().tests[index].name;
+export let getTestPassed = (index: i32): boolean => result().tests[index].passed;
+export let getTestError = (index: i32): string | null => result().tests[index].error;
+
+var currentNestedSuite: SuiteResult | null = null;
+
+export let selectNestedSuite = (index: i32): void => {
+  currentNestedSuite = result().suites[index];
+};
+
+let nested = (): SuiteResult => {
+  if (currentNestedSuite !== null) {
+    return currentNestedSuite;
+  }
+  return new SuiteResult('');
+};
+
+export let getNestedSuiteName = (): string => nested().name;
+export let getNestedSuitePassed = (): i32 => nested().passed;
+export let getNestedSuiteFailed = (): i32 => nested().failed;
+export let getNestedTestCount = (): i32 => nested().tests.length;
+export let getNestedTestName = (index: i32): string => nested().tests[index].name;
+export let getNestedTestPassed = (index: i32): boolean => nested().tests[index].passed;
+export let getNestedTestError = (index: i32): string | null => nested().tests[index].error;
+`;
+
+  const virtualFiles = new Map<string, string>();
+  virtualFiles.set(wrapperPath, wrapperSource);
+
+  const host = createFileHost(wrapperPath, virtualFiles);
+  const compiler = new Compiler(host);
+
+  // Check for compilation errors
+  const modules = compiler.compile(wrapperPath);
+  for (const mod of modules) {
+    if (mod.diagnostics.length > 0) {
+      const errors = mod.diagnostics.map((d) => d.message).join(', ');
+      throw new Error(`Compilation errors: ${errors}`);
+    }
+  }
+
+  const program = compiler.bundle(wrapperPath);
+  const codegen = new CodeGenerator(program);
+  const bytes = codegen.generate();
+
+  // Instantiate with console mocks
+  let capturedExports: WebAssembly.Exports | null = null;
+  const imports = {
+    console: {
+      log_i32: (v: number) => console.log(v),
+      log_f32: (v: number) => console.log(v),
+      log_string: () => {},
+      error_string: () => {},
+      warn_string: () => {},
+      info_string: () => {},
+      debug_string: () => {},
+    },
+  };
+
+  const result = await WebAssembly.instantiate(bytes, imports);
+  const instance =
+    result instanceof WebAssembly.Instance
+      ? result
+      : (result as WebAssembly.WebAssemblyInstantiatedSource).instance;
+  capturedExports = instance.exports;
+
+  // Run main() to execute tests
+  const mainFn = capturedExports.main as () => number;
+  mainFn();
+
+  // Read structured results
+  const suiteResult = readSuiteResult(capturedExports);
+  if (!suiteResult) {
+    throw new Error('Failed to read suite results');
+  }
+
+  return suiteResult;
+};
+
+/**
+ * Flatten a ZenaSuiteResult into an array of test results with full paths.
+ */
+export const flattenTests = (
+  suite: ZenaSuiteResult,
+  prefix = '',
+): Array<{name: string; passed: boolean; error: string | null}> => {
+  const results: Array<{name: string; passed: boolean; error: string | null}> =
+    [];
+  const path = prefix ? `${prefix} > ${suite.name}` : suite.name;
+
+  for (const test of suite.tests) {
+    results.push({
+      name: `${path} > ${test.name}`,
+      passed: test.passed,
+      error: test.error,
+    });
+  }
+
+  for (const nested of suite.suites) {
+    results.push(...flattenTests(nested, path));
+  }
+
+  return results;
+};

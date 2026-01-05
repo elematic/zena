@@ -2,93 +2,15 @@ import assert from 'node:assert';
 import {suite, test} from 'node:test';
 import {compileAndRun} from '../codegen/utils.js';
 
-suite('Stdlib: Array', () => {
-  test('constructor and length', async () => {
-    const source = `
-      import { Array } from 'zena:array';
-      export let run = (): i32 => {
-        let arr = new Array<i32>(4);
-        return arr.length;
-      };
-    `;
-    const result = await compileAndRun(source, 'run');
-    assert.strictEqual(result, 0);
-  });
+// Most Array tests are in tests/language/stdlib/array/array_test.zena
+// This file only contains tests that can't run in zena:test due to nested closure bugs
 
-  test('push and get', async () => {
-    const source = `
-      import { Array } from 'zena:array';
-      export let run = (): i32 => {
-        let arr = new Array<i32>(4);
-        arr.push(10);
-        arr.push(20);
-        if (arr.length != 2) return 1;
-        if (arr[0] != 10) return 2;
-        if (arr[1] != 20) return 3;
-        return 100;
-      };
-    `;
-    const result = await compileAndRun(source, 'run');
-    assert.strictEqual(result, 100);
-  });
-
-  test('pop', async () => {
-    const source = `
-      import { Array } from 'zena:array';
-      export let run = (): i32 => {
-        let arr = new Array<i32>(4);
-        arr.push(10);
-        arr.push(20);
-        let v1 = arr.pop();
-        if (v1 != 20) return 1;
-        if (arr.length != 1) return 2;
-        let v2 = arr.pop();
-        if (v2 != 10) return 3;
-        if (arr.length != 0) return 4;
-        return 100;
-      };
-    `;
-    const result = await compileAndRun(source, 'run');
-    assert.strictEqual(result, 100);
-  });
-
-  test('set', async () => {
-    const source = `
-      import { Array } from 'zena:array';
-      export let run = (): i32 => {
-        let arr = new Array<i32>(4);
-        arr.push(10);
-        arr[0] = 99;
-        return arr[0];
-      };
-    `;
-    const result = await compileAndRun(source, 'run');
-    assert.strictEqual(result, 99);
-  });
-
-  test('grow', async () => {
-    const source = `
-      import { Array } from 'zena:array';
-      export let run = (): i32 => {
-        let arr = new Array<i32>(4);
-        // Default capacity is 4. Push 5 items to trigger grow.
-        arr.push(1);
-        arr.push(2);
-        arr.push(3);
-        arr.push(4);
-        arr.push(5);
-        
-        if (arr.length != 5) return 1;
-        if (arr[0] != 1) return 2;
-        if (arr[4] != 5) return 3;
-        return 100;
-      };
-    `;
-    const result = await compileAndRun(source, 'run');
-    assert.strictEqual(result, 100);
-  });
-
+suite('Stdlib: Array (non-portable)', () => {
   test('map', async () => {
+    // This test works here because the closure to map() is inside a top-level function,
+    // not inside another closure. In zena:test, test callbacks are closures, so
+    // arr.map((x) => ...) becomes a nested closure which triggers a codegen bug.
+    // See: nested-closure-in-generic-method_test.ts
     const source = `
       import { Array } from 'zena:array';
       export let run = (): i32 => {
@@ -109,45 +31,5 @@ suite('Stdlib: Array', () => {
     `;
     const result = await compileAndRun(source, 'run');
     assert.strictEqual(result, 100);
-  });
-
-  test('out of bounds access throws', async () => {
-    const source = `
-      import { Array } from 'zena:array';
-      export let run = (): i32 => {
-        let arr = new Array<i32>(4);
-        arr.push(1);
-        return arr[1]; // Should throw
-      };
-    `;
-    try {
-      await compileAndRun(source, 'run');
-      assert.fail('Should have thrown');
-    } catch (e: any) {
-      assert.ok(
-        e instanceof (WebAssembly as any).Exception,
-        'Should be a WASM exception',
-      );
-    }
-  });
-
-  test('out of bounds set throws', async () => {
-    const source = `
-      import { Array } from 'zena:array';
-      export let run = (): void => {
-        let arr = new Array<i32>(4);
-        arr.push(1);
-        arr[1] = 2; // Should throw
-      };
-    `;
-    try {
-      await compileAndRun(source, 'run');
-      assert.fail('Should have thrown');
-    } catch (e: any) {
-      assert.ok(
-        e instanceof (WebAssembly as any).Exception,
-        'Should be a WASM exception',
-      );
-    }
   });
 });
