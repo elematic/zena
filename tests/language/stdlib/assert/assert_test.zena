@@ -1,16 +1,24 @@
 // Assert stdlib tests using zena:test
 import {suite, test, TestContext} from 'zena:test';
-import {equal, notEqual, isTrue, isFalse, greater, greaterOrEqual, less, lessOrEqual} from 'zena:assert';
+import {equal, notEqual, isTrue, isFalse, greater, greaterOrEqual, less, lessOrEqual, throws, doesNotThrow, same, notSame, isNull, isNotNull} from 'zena:assert';
+import {Error} from 'zena:error';
 
-// Note: Tests for same/notSame/isNull/isNotNull require class definitions.
-// Tests using throws/doesNotThrow/fail cause codegen issues.
-// Those remain in assert_test.ts.
+class TestBox {
+  value: i32;
+  #new(v: i32) { this.value = v; }
+}
 
 export let tests = suite('Assert', (): void => {
   test('equal passes for same i32 values', (ctx: TestContext): void => {
     equal(1 + 1, 2);
     equal(5 - 3, 2);
     equal(10, 10);
+  });
+
+  test('equal throws for unequal i32 values', (ctx: TestContext): void => {
+    throws(() => {
+      equal(42, 43);
+    });
   });
 
   test('notEqual passes for different values', (ctx: TestContext): void => {
@@ -46,5 +54,38 @@ export let tests = suite('Assert', (): void => {
   test('lessOrEqual passes when actual <= expected', (ctx: TestContext): void => {
     lessOrEqual(3, 5);
     lessOrEqual(5, 5);
+  });
+
+  test('throws passes when function throws', (ctx: TestContext): void => {
+    throws(() => {
+      throw new Error('expected');
+    });
+  });
+
+  test('doesNotThrow passes when function does not throw', (ctx: TestContext): void => {
+    doesNotThrow(() => {
+      let x = 1;
+    });
+  });
+
+  test('same passes for same reference', (ctx: TestContext): void => {
+    let b = new TestBox(1);
+    same(b, b);
+  });
+
+  test('notSame passes for different references', (ctx: TestContext): void => {
+    let a = new TestBox(1);
+    let b = new TestBox(1);
+    notSame(a, b);
+  });
+
+  test('isNull passes for null', (ctx: TestContext): void => {
+    let b: TestBox | null = null;
+    isNull<TestBox>(b);
+  });
+
+  test('isNotNull passes for non-null', (ctx: TestContext): void => {
+    let b: TestBox | null = new TestBox(1);
+    isNotNull<TestBox>(b);
   });
 });

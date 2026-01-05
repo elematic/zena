@@ -1901,10 +1901,8 @@ export function generateClassMethods(
       }
       if (classInfo.isExtension && methodName === '#new') {
         // Extension constructor: 'this' is a local variable, not a param
-        const thisLocalIndex = ctx.nextLocalIndex++;
-        ctx.defineLocal('this', thisLocalIndex, classInfo.onType!);
+        const thisLocalIndex = ctx.declareLocal('this', classInfo.onType!);
         ctx.thisLocalIndex = thisLocalIndex;
-        ctx.extraLocals.push(classInfo.onType!);
       }
 
       // Downcast 'this' if needed (e.g. overriding a method from a superclass)
@@ -1920,15 +1918,13 @@ export function generateClassMethods(
             ValType.ref_null,
             ...WasmModule.encodeSignedLEB128(targetTypeIndex),
           ];
-          const realThisLocal = ctx.nextLocalIndex++;
-          ctx.extraLocals.push(realThisType);
+          const realThisLocal = ctx.declareLocal('this', realThisType);
 
           body.push(Opcode.local_get, 0);
           body.push(0xfb, GcOpcode.ref_cast_null);
           body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
           body.push(Opcode.local_set, realThisLocal);
 
-          ctx.defineLocal('this', realThisLocal, realThisType);
           ctx.thisLocalIndex = realThisLocal;
         }
       }
@@ -2060,15 +2056,13 @@ export function generateClassMethods(
             ValType.ref_null,
             ...WasmModule.encodeSignedLEB128(targetTypeIndex),
           ];
-          const realThisLocal = ctx.nextLocalIndex++;
-          ctx.extraLocals.push(realThisType);
+          const realThisLocal = ctx.declareLocal('this', realThisType);
 
           body.push(Opcode.local_get, 0);
           body.push(0xfb, GcOpcode.ref_cast_null);
           body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
           body.push(Opcode.local_set, realThisLocal);
 
-          ctx.defineLocal('this', realThisLocal, realThisType);
           ctx.thisLocalIndex = realThisLocal;
         }
 
@@ -2112,15 +2106,13 @@ export function generateClassMethods(
             ValType.ref_null,
             ...WasmModule.encodeSignedLEB128(targetTypeIndex),
           ];
-          const realThisLocal = ctx.nextLocalIndex++;
-          ctx.extraLocals.push(realThisType);
+          const realThisLocal = ctx.declareLocal('this', realThisType);
 
           body.push(Opcode.local_get, 0);
           body.push(0xfb, GcOpcode.ref_cast_null);
           body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
           body.push(Opcode.local_set, realThisLocal);
 
-          ctx.defineLocal('this', realThisLocal, realThisType);
           ctx.thisLocalIndex = realThisLocal;
         }
 

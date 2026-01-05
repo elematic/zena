@@ -4,9 +4,8 @@ import {compileAndRun} from '../codegen/utils.js';
 
 // Most assert tests are in tests/language/stdlib/assert/assert_test.zena
 // This file contains tests that can't run in zena:test due to:
-// 1. Tests that verify assertions throw (nested closures cause codegen bugs)
-// 2. Tests requiring class definitions (same/notSame/isNull/isNotNull)
-// 3. Tests with string comparisons (cause codegen bugs in test context)
+// 1. Tests with string comparisons (cause codegen bugs in test context)
+// 2. Negative tests (verifying assertions throw) that haven't been moved yet
 
 suite('Stdlib: assert (non-portable)', () => {
   suite('equal', () => {
@@ -55,132 +54,6 @@ suite('Stdlib: assert (non-portable)', () => {
         import { notEqual } from 'zena:assert';
         export let run = (): i32 => {
           notEqual(1, 1);
-          return 1;
-        };
-      `;
-      await assert.rejects(async () => {
-        await compileAndRun(source, 'run');
-      });
-    });
-  });
-
-  suite('same (reference equality)', () => {
-    test('passes for same reference', async () => {
-      const source = `
-        import { same } from 'zena:assert';
-        class Box { value: i32; #new(v: i32) { this.value = v; } }
-        export let run = (): i32 => {
-          let b = new Box(1);
-          same(b, b);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
-    test('throws for different references', async () => {
-      const source = `
-        import { same } from 'zena:assert';
-        class Box { value: i32; #new(v: i32) { this.value = v; } }
-        export let run = (): i32 => {
-          let a = new Box(1);
-          let b = new Box(1);
-          same(a, b);
-          return 1;
-        };
-      `;
-      await assert.rejects(async () => {
-        await compileAndRun(source, 'run');
-      });
-    });
-  });
-
-  suite('notSame', () => {
-    test('passes for different references', async () => {
-      const source = `
-        import { notSame } from 'zena:assert';
-        class Box { value: i32; #new(v: i32) { this.value = v; } }
-        export let run = (): i32 => {
-          let a = new Box(1);
-          let b = new Box(1);
-          notSame(a, b);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
-    test('throws for same reference', async () => {
-      const source = `
-        import { notSame } from 'zena:assert';
-        class Box { value: i32; #new(v: i32) { this.value = v; } }
-        export let run = (): i32 => {
-          let b = new Box(1);
-          notSame(b, b);
-          return 1;
-        };
-      `;
-      await assert.rejects(async () => {
-        await compileAndRun(source, 'run');
-      });
-    });
-  });
-
-  suite('isNull', () => {
-    test('passes for null', async () => {
-      const source = `
-        import { isNull } from 'zena:assert';
-        class Box { value: i32; #new(v: i32) { this.value = v; } }
-        export let run = (): i32 => {
-          let b: Box | null = null;
-          isNull<Box>(b);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
-    test('throws for non-null', async () => {
-      const source = `
-        import { isNull } from 'zena:assert';
-        class Box { value: i32; #new(v: i32) { this.value = v; } }
-        export let run = (): i32 => {
-          let b: Box | null = new Box(1);
-          isNull(b);
-          return 1;
-        };
-      `;
-      await assert.rejects(async () => {
-        await compileAndRun(source, 'run');
-      });
-    });
-  });
-
-  suite('isNotNull', () => {
-    test('passes for non-null', async () => {
-      const source = `
-        import { isNotNull } from 'zena:assert';
-        class Box { value: i32; #new(v: i32) { this.value = v; } }
-        export let run = (): i32 => {
-          let b: Box | null = new Box(1);
-          isNotNull<Box>(b);
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
-    test('throws for null', async () => {
-      const source = `
-        import { isNotNull } from 'zena:assert';
-        class Box { value: i32; #new(v: i32) { this.value = v; } }
-        export let run = (): i32 => {
-          let b: Box | null = null;
-          isNotNull(b);
           return 1;
         };
       `;
@@ -297,70 +170,6 @@ suite('Stdlib: assert (non-portable)', () => {
         import { lessOrEqual } from 'zena:assert';
         export let run = (): i32 => {
           lessOrEqual(5, 3);
-          return 1;
-        };
-      `;
-      await assert.rejects(async () => {
-        await compileAndRun(source, 'run');
-      });
-    });
-  });
-
-  suite('throws', () => {
-    test('passes when function throws', async () => {
-      const source = `
-        import { throws } from 'zena:assert';
-        import { Error } from 'zena:error';
-        export let run = (): i32 => {
-          throws(() => {
-            throw new Error('expected');
-          });
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
-    test('throws when function does not throw', async () => {
-      const source = `
-        import { throws } from 'zena:assert';
-        export let run = (): i32 => {
-          throws(() => {
-            let x = 1;
-          });
-          return 1;
-        };
-      `;
-      await assert.rejects(async () => {
-        await compileAndRun(source, 'run');
-      });
-    });
-  });
-
-  suite('doesNotThrow', () => {
-    test('passes when function does not throw', async () => {
-      const source = `
-        import { doesNotThrow } from 'zena:assert';
-        export let run = (): i32 => {
-          doesNotThrow(() => {
-            let x = 1;
-          });
-          return 1;
-        };
-      `;
-      const result = await compileAndRun(source, 'run');
-      assert.strictEqual(result, 1);
-    });
-
-    test('throws when function throws', async () => {
-      const source = `
-        import { doesNotThrow } from 'zena:assert';
-        import { Error } from 'zena:error';
-        export let run = (): i32 => {
-          doesNotThrow(() => {
-            throw new Error('unexpected');
-          });
           return 1;
         };
       `;

@@ -4454,8 +4454,7 @@ function generateFunctionExpression(
     // Unpack Context
     if (captureList.length > 0) {
       // Cast context
-      const typedCtxLocal = ctx.nextLocalIndex++;
-      ctx.extraLocals.push([
+      const typedCtxLocal = ctx.declareLocal('$$typedCtx', [
         ValType.ref,
         ...WasmModule.encodeSignedLEB128(contextStructTypeIndex),
       ]);
@@ -4472,9 +4471,7 @@ function generateFunctionExpression(
       captureList.forEach((c, i) => {
         // We define a new local for the captured variable
         // and initialize it from the struct.
-        const localIndex = ctx.nextLocalIndex++;
-        ctx.defineLocal(c.name, localIndex, c.type);
-        ctx.extraLocals.push(c.type);
+        const localIndex = ctx.declareLocal(c.name, c.type);
 
         funcBody.push(Opcode.local_get, typedCtxLocal);
         funcBody.push(

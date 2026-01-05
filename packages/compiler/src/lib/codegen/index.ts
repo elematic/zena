@@ -258,19 +258,22 @@ export class CodeGenerator {
     // Pass 2: Generate bodies
     this.#ctx.isGeneratingBodies = true;
 
-    // Execute deferred body generators
-    // Use while loop to handle generators added during generation (e.g. by late instantiation)
+    // Execute deferred body generators and pending helper functions
+    // Use a single loop to handle mutual dependencies (e.g. helpers adding bodies or vice versa)
     let bodyIndex = 0;
-    while (bodyIndex < this.#ctx.bodyGenerators.length) {
-      const generator = this.#ctx.bodyGenerators[bodyIndex++];
-      generator();
-    }
-
-    // Generate pending helper functions (concat, strEq, etc.)
-    // Use while/shift to handle any functions that add more pending functions
-    while (this.#ctx.pendingHelperFunctions.length > 0) {
-      const gen = this.#ctx.pendingHelperFunctions.shift()!;
-      gen();
+    while (
+      bodyIndex < this.#ctx.bodyGenerators.length ||
+      this.#ctx.pendingHelperFunctions.length > 0
+    ) {
+      // Prioritize body generators to keep order somewhat predictable
+      if (bodyIndex < this.#ctx.bodyGenerators.length) {
+        const generator = this.#ctx.bodyGenerators[bodyIndex++];
+        generator();
+      } else {
+        // Process pending helpers
+        const gen = this.#ctx.pendingHelperFunctions.shift()!;
+        gen();
+      }
     }
 
     // Generate the $stringGetByte export for JS interop
@@ -309,9 +312,19 @@ export class CodeGenerator {
     }
 
     // Execute any body generators added during start function generation (e.g. generic instantiation)
-    while (bodyIndex < this.#ctx.bodyGenerators.length) {
-      const generator = this.#ctx.bodyGenerators[bodyIndex++];
-      generator();
+    while (
+      bodyIndex < this.#ctx.bodyGenerators.length ||
+      this.#ctx.pendingHelperFunctions.length > 0
+    ) {
+      if (bodyIndex < this.#ctx.bodyGenerators.length) {
+        const generator = this.#ctx.bodyGenerators[bodyIndex++];
+        generator();
+      }
+
+      if (this.#ctx.pendingHelperFunctions.length > 0) {
+        const gen = this.#ctx.pendingHelperFunctions.shift()!;
+        gen();
+      }
     }
 
     return this.#ctx.module.toBytes();
