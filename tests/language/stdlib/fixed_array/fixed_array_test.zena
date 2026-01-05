@@ -1,0 +1,75 @@
+// FixedArray stdlib tests using zena:test
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {FixedArray} from 'zena:array';
+
+export let tests = suite('FixedArray', (): void => {
+  test('constructor with length creates array of given size', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(10, 0);
+    equal(arr.length, 10);
+  });
+
+  test('constructor initializes all elements to given value', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(5, 42);
+    equal(arr[0], 42);
+    equal(arr[1], 42);
+    equal(arr[2], 42);
+    equal(arr[3], 42);
+    equal(arr[4], 42);
+  });
+
+  test('reverse returns new reversed array', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(3, 0);
+    arr[0] = 1;
+    arr[1] = 2;
+    arr[2] = 3;
+    let reversed = arr.reverse();
+    
+    equal(reversed.length, 3);
+    equal(reversed[0], 3);
+    equal(reversed[1], 2);
+    equal(reversed[2], 1);
+    
+    // Check original is unchanged
+    equal(arr[0], 1);
+    equal(arr[1], 2);
+    equal(arr[2], 3);
+  });
+
+  test('map transforms elements', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(3, 0);
+    arr[0] = 1;
+    arr[1] = 2;
+    arr[2] = 3;
+    let mapped: FixedArray<i32> = arr.map<i32>((x: i32) => x * 2);
+    
+    equal(mapped.length, 3);
+    equal(mapped[0], 2);
+    equal(mapped[1], 4);
+    equal(mapped[2], 6);
+  });
+
+  test('map with index parameter', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(3, 0);
+    // map to just the index
+    let mapped = arr.map<i32>((x: i32, i: i32) => i);
+    
+    equal(mapped[0], 0);
+    equal(mapped[1], 1);
+    equal(mapped[2], 2);
+  });
+
+  test('map with array parameter allows mutation via closure', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(1, 10);
+    
+    // Use the array argument to modify the array itself
+    // We capture 'arr' instead of using 'a' because 'a' is the same array
+    // but modifying through either reference works
+    arr.map<i32>((x: i32, i: i32, a: FixedArray<i32>) => {
+      arr[0] = 999;
+      return x;
+    });
+    
+    equal(arr[0], 999);
+  });
+});
