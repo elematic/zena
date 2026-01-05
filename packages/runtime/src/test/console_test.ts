@@ -1,12 +1,14 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compileAndInstantiate} from '../codegen/utils.js';
+
+// Import compiler to compile Zena source
+import {compile} from '@zena-lang/compiler';
 
 /**
- * Create test console imports that capture output.
+ * Create test console imports that capture output instead of logging.
  * Uses the V8-recommended pattern for reading WASM GC arrays from JS.
  */
-function createCapturingConsoleImports(
+function createCapturingConsole(
   getExports: () => WebAssembly.Exports | undefined,
 ) {
   const output: {method: string; value: string | number}[] = [];
@@ -50,30 +52,31 @@ function createCapturingConsoleImports(
 }
 
 /**
- * Helper to compile and run Zena code with the console stdlib,
- * capturing console output for assertions.
+ * Compile Zena source and instantiate with capturing console.
  */
-async function runWithConsole(userSource: string) {
-  // Deferred exports reference for string reading
-  let instanceExports: WebAssembly.Exports | undefined;
-  const testConsole = createCapturingConsoleImports(() => instanceExports);
+async function compileAndRun(source: string) {
+  const wasm = compile(source);
 
-  const exports = await compileAndInstantiate(userSource, {
-    imports: {
-      console: testConsole.imports,
-    },
+  let instanceExports: WebAssembly.Exports | undefined;
+  const testConsole = createCapturingConsole(() => instanceExports);
+
+  const result = await WebAssembly.instantiate(wasm, {
+    console: testConsole.imports,
   });
-  instanceExports = exports;
+
+  // WebAssembly.instantiate returns WebAssemblyInstantiatedSource when given a buffer
+  const instance = (result as any).instance || result;
+  instanceExports = instance.exports;
 
   return {
-    exports: exports as {main?: () => void; [key: string]: unknown},
+    exports: instance.exports as {main?: () => void; [key: string]: unknown},
     getOutput: testConsole.getOutput,
   };
 }
 
-suite('Standard Library - Console', () => {
-  test('console.log() with string', async () => {
-    const {exports, getOutput} = await runWithConsole(`
+suite('Runtime - Console Host Integration', () => {
+  test('console.log() captures string output', async () => {
+    const {exports, getOutput} = await compileAndRun(`
       export let main = () => {
         console.log("Hello, World!");
       };
@@ -87,8 +90,8 @@ suite('Standard Library - Console', () => {
     assert.strictEqual(output[0].value, 'Hello, World!');
   });
 
-  test('console.log() with string concatenation', async () => {
-    const {exports, getOutput} = await runWithConsole(`
+  test('console.log() captures concatenated strings', async () => {
+    const {exports, getOutput} = await compileAndRun(`
       export let main = () => {
         console.log("Hello, " + "World!");
       };
@@ -102,8 +105,8 @@ suite('Standard Library - Console', () => {
     assert.strictEqual(output[0].value, 'Hello, World!');
   });
 
-  test('console.error() with string', async () => {
-    const {exports, getOutput} = await runWithConsole(`
+  test('console.error() captures error output', async () => {
+    const {exports, getOutput} = await compileAndRun(`
       export let main = () => {
         console.error("An error occurred!");
       };
@@ -117,8 +120,8 @@ suite('Standard Library - Console', () => {
     assert.strictEqual(output[0].value, 'An error occurred!');
   });
 
-  test('console.warn() with string', async () => {
-    const {exports, getOutput} = await runWithConsole(`
+  test('console.warn() captures warning output', async () => {
+    const {exports, getOutput} = await compileAndRun(`
       export let main = () => {
         console.warn("Warning!");
       };
@@ -132,8 +135,8 @@ suite('Standard Library - Console', () => {
     assert.strictEqual(output[0].value, 'Warning!');
   });
 
-  test('console.info() with string', async () => {
-    const {exports, getOutput} = await runWithConsole(`
+  test('console.info() captures info output', async () => {
+    const {exports, getOutput} = await compileAndRun(`
       export let main = () => {
         console.info("Info message");
       };
@@ -147,8 +150,8 @@ suite('Standard Library - Console', () => {
     assert.strictEqual(output[0].value, 'Info message');
   });
 
-  test('console.debug() with string', async () => {
-    const {exports, getOutput} = await runWithConsole(`
+  test('console.debug() captures debug output', async () => {
+    const {exports, getOutput} = await compileAndRun(`
       export let main = () => {
         console.debug("Debug info");
       };
@@ -162,8 +165,8 @@ suite('Standard Library - Console', () => {
     assert.strictEqual(output[0].value, 'Debug info');
   });
 
-  test('multiple console.log() calls', async () => {
-    const {exports, getOutput} = await runWithConsole(`
+  test('multiple console.log() calls are captured in order', async () => {
+    const {exports, getOutput} = await compileAndRun(`
       export let main = () => {
         console.log("First");
         console.log("Second");
@@ -180,8 +183,8 @@ suite('Standard Library - Console', () => {
     assert.strictEqual(output[2].value, 'Third');
   });
 
-  test('mixed console methods', async () => {
-    const {exports, getOutput} = await runWithConsole(`
+  test('mixed console methods are captured correctly', async () => {
+    const {exports, getOutput} = await compileAndRun(`
       export let main = () => {
         console.log("Log message");
         console.error("Error message");
@@ -194,7 +197,10 @@ suite('Standard Library - Console', () => {
     const output = getOutput();
     assert.strictEqual(output.length, 3);
     assert.strictEqual(output[0].method, 'log');
+    assert.strictEqual(output[0].value, 'Log message');
     assert.strictEqual(output[1].method, 'error');
+    assert.strictEqual(output[1].value, 'Error message');
     assert.strictEqual(output[2].method, 'warn');
+    assert.strictEqual(output[2].value, 'Warn message');
   });
 });
