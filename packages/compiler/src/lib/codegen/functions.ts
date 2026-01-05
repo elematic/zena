@@ -38,7 +38,7 @@ export function inferReturnTypeFromBlock(
         : inferType(ctx, decl.init);
 
       if (decl.pattern.type === NodeType.Identifier) {
-        ctx.defineLocal(decl.pattern.name, ctx.nextLocalIndex++, type);
+        ctx.defineParam(decl.pattern.name, type);
       } else {
         definePatternLocals(ctx, decl.pattern, type);
       }
@@ -59,7 +59,7 @@ function definePatternLocals(
   type: number[],
 ) {
   if (pattern.type === NodeType.Identifier) {
-    ctx.defineLocal(pattern.name, ctx.nextLocalIndex++, type);
+    ctx.defineParam(pattern.name, type);
     return;
   }
 
@@ -156,13 +156,12 @@ export function registerFunction(
     mappedReturn = mapCheckerTypeToWasmType(ctx, returnType);
   } else {
     // Setup temporary scope for inference
-    ctx.pushScope();
-    const oldNextLocalIndex = ctx.nextLocalIndex;
-    ctx.nextLocalIndex = 0;
+    const savedContext = ctx.saveFunctionContext();
+    ctx.pushFunctionScope();
 
     for (let i = 0; i < func.params.length; i++) {
       const param = func.params[i];
-      ctx.defineLocal(param.name.name, ctx.nextLocalIndex++, params[i]);
+      ctx.defineParam(param.name.name, params[i]);
     }
 
     if (func.body.type !== NodeType.BlockStatement) {
@@ -171,8 +170,7 @@ export function registerFunction(
       mappedReturn = inferReturnTypeFromBlock(ctx, func.body as BlockStatement);
     }
 
-    ctx.popScope();
-    ctx.nextLocalIndex = oldNextLocalIndex;
+    ctx.restoreFunctionContext(savedContext);
   }
 
   const results = mappedReturn.length > 0 ? [mappedReturn] : [];
@@ -204,16 +202,10 @@ export function generateFunctionBody(
   ctx.currentTypeContext = typeContext;
   ctx.currentReturnType = returnType;
 
-  ctx.scopes = [new Map()];
-  ctx.extraLocals = [];
-  ctx.nextLocalIndex = 0;
+  ctx.pushFunctionScope();
 
   func.params.forEach((p) => {
-    const index = ctx.nextLocalIndex++;
-    ctx.scopes[0].set(p.name.name, {
-      index,
-      type: mapType(ctx, p.typeAnnotation, typeContext),
-    });
+    ctx.defineParam(p.name.name, mapType(ctx, p.typeAnnotation, typeContext));
   });
 
   const body: number[] = [];
@@ -474,10 +466,7 @@ function generateMethodBody(
   ctx.currentReturnType = returnType;
   ctx.currentClass = classInfo;
 
-  ctx.scopes = [new Map()];
-  ctx.extraLocals = [];
-  ctx.nextLocalIndex = 0;
-  ctx.thisLocalIndex = 0;
+  ctx.pushFunctionScope();
 
   // Params
   if (!method.isStatic) {
@@ -490,15 +479,11 @@ function generateMethodBody(
         ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
       ];
     }
-    ctx.defineLocal('this', ctx.nextLocalIndex++, thisType);
+    ctx.defineParam('this', thisType);
   }
 
   method.params.forEach((p) => {
-    const index = ctx.nextLocalIndex++;
-    ctx.scopes[0].set(p.name.name, {
-      index,
-      type: mapType(ctx, p.typeAnnotation, typeContext),
-    });
+    ctx.defineParam(p.name.name, mapType(ctx, p.typeAnnotation, typeContext));
   });
 
   const body: number[] = [];

@@ -295,9 +295,7 @@ export class CodeGenerator {
       const funcIndex = this.#ctx.module.addFunction(typeIndex);
 
       const body: number[] = [];
-      this.#ctx.pushScope(); // Global scope?
-      this.#ctx.nextLocalIndex = 0;
-      this.#ctx.extraLocals = [];
+      this.#ctx.pushFunctionScope();
 
       for (const {index, init} of globalInitializers) {
         generateExpression(this.#ctx, init, body);
@@ -308,7 +306,6 @@ export class CodeGenerator {
 
       this.#ctx.module.addCode(funcIndex, this.#ctx.extraLocals, body);
       this.#ctx.module.setStart(funcIndex);
-      this.#ctx.popScope();
     }
 
     // Execute any body generators added during start function generation (e.g. generic instantiation)

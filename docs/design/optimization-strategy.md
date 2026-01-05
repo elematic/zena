@@ -75,3 +75,20 @@ We need a suite of micro-benchmarks to track performance regressions.
 
 - **Problem**: Generics currently box primitives (e.g., `Box<i32>` stores `i32` as `(ref any)` or similar).
 - **Solution**: Monomorphization (generating specialized copies of classes for each type argument) is planned to eliminate boxing overhead.
+
+### Local Slot Reuse
+
+- **Problem**: Currently, WASM locals accumulate monotonically within a function. Each variable declaration gets a unique local index, even when variables in separate scopes could share slots.
+- **Example**:
+  ```zena
+  const foo = () => {
+    { let a = 1; }  // local 0
+    { let b = 2; }  // local 1 (could reuse local 0)
+  };
+  ```
+- **Solution**: Track "live ranges" for locals. When exiting a scope, mark its locals as available for reuse. The next declaration in a disjoint scope can reuse those slots.
+- **Benefits**:
+  - Reduces function local count (smaller WASM binary)
+  - Better register allocation opportunities for WASM engines
+- **Complexity**: Moderate. Requires tracking live ranges and ensuring correctness when variables are captured by closures (captured variables can't be reused).
+- **Priority**: Low. Modern WASM engines handle many locals efficiently. Implement only if profiling shows local count is a bottleneck.

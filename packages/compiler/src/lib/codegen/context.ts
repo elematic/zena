@@ -19,6 +19,67 @@ import {type FunctionType} from '../types.js';
 import {ValType} from '../wasm.js';
 import type {ClassInfo, InterfaceInfo, LocalInfo} from './types.js';
 
+/**
+ * Saved function context state for nested function generation.
+ * Used by trampolines and other nested code generation scenarios.
+ */
+export interface FunctionContextState {
+  scopes: Map<string, LocalInfo>[];
+  extraLocals: number[][];
+  nextLocalIndex: number;
+  thisLocalIndex: number;
+}
+
+/**
+ * CodegenContext manages state during WASM code generation.
+ *
+ * ## Scope Model
+ *
+ * This class manages two distinct but related concepts:
+ *
+ * ### Lexical Scopes (`pushScope()` / `popScope()`)
+ * Zena has block-level lexical scoping for variable name resolution. When you
+ * write `{ let x = 1; }`, the `x` binding is only visible within that block.
+ * Nested blocks can shadow outer bindings.
+ *
+ * ### WASM Function Contexts (`pushFunctionScope()` / `saveFunctionContext()`)
+ * WASM has function-level local allocation. All locals for a function must be
+ * declared upfront in the function header—there's no concept of "block-local"
+ * variables in WASM itself.
+ *
+ * For example:
+ * ```zena
+ * const foo = () => {
+ *   let x = 1;        // WASM local 0
+ *   {
+ *     let y = 2;      // WASM local 1
+ *     let x = 3;      // WASM local 2 (shadows outer x in Zena)
+ *   }
+ *   // x refers to WASM local 0 again
+ * };
+ * ```
+ *
+ * All three variables become WASM locals (0, 1, 2). The lexical scope only
+ * affects which local index a name resolves to, not local allocation.
+ *
+ * ### Why Block Scopes Don't Reset Local Indices
+ *
+ * When entering a block, we push a new lexical scope but continue allocating
+ * locals from the current `nextLocalIndex`. This is simpler than local slot
+ * reuse (where exiting a block would free its locals for reuse) and ensures
+ * outer scope variables remain valid.
+ *
+ * Local slot reuse is a potential future optimization—see optimization-strategy.md.
+ *
+ * ### When to Use Each
+ *
+ * - `pushScope()`: Entering a Zena lexical block (if, while, match arm, etc.)
+ *   within the same WASM function.
+ * - `pushFunctionScope()`: Starting code generation for a new WASM function.
+ *   Each WASM function has its own local index space starting at 0.
+ * - `saveFunctionContext()` / `restoreFunctionContext()`: Temporarily generating
+ *   a nested WASM function (trampolines, closures) while preserving outer state.
+ */
 export class CodegenContext {
   public module: WasmModule;
   public program: Program;
@@ -27,10 +88,15 @@ export class CodegenContext {
   /** File name used for diagnostic locations */
   public fileName = '<anonymous>';
 
-  // Symbol tables
+  /**
+   * Stack of lexical scopes for variable name resolution.
+   * Each scope maps variable names to their local info (index + type).
+   * Pushed/popped for blocks; replaced entirely for new functions.
+   */
   public scopes: Map<string, LocalInfo>[] = [];
-  public extraLocals: number[][] = [];
-  public nextLocalIndex = 0;
+  #extraLocals: number[][] = [];
+  #nextLocalIndex = 0;
+  #thisLocalIndex = 0;
   public functions = new Map<string, number>();
   public functionOverloads = new Map<
     string,
@@ -54,7 +120,6 @@ export class CodegenContext {
   public currentClass: ClassInfo | null = null;
   public currentTypeContext: Map<string, TypeAnnotation> | undefined;
   public currentReturnType: number[] | undefined;
-  public thisLocalIndex = 0;
 
   // Type management
   public arrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
@@ -115,16 +180,126 @@ export class CodegenContext {
     this.stringTypeIndex = this.byteArrayTypeIndex;
   }
 
+  // ===== Local Index Management =====
+  // These fields track state for the current WASM function being generated.
+  // They are reset by pushFunctionScope() when starting a new function.
+
+  /**
+   * Get the extra locals declared during function body generation.
+   * These are locals beyond the function parameters, accumulated as
+   * variables are declared in the function body.
+   */
+  get extraLocals(): number[][] {
+    return this.#extraLocals;
+  }
+
+  /**
+   * Get the next available local index for the current WASM function.
+   * Starts at 0 (or paramCount) after pushFunctionScope() and increments
+   * monotonically as locals are declared.
+   */
+  get nextLocalIndex(): number {
+    return this.#nextLocalIndex;
+  }
+
+  /**
+   * Get the local index where 'this' is stored for the current method.
+   * Usually 0 (first parameter), but may change when downcasting 'this'
+   * to a more specific type.
+   */
+  get thisLocalIndex(): number {
+    return this.#thisLocalIndex;
+  }
+
+  /**
+   * Set the local index for 'this'. Used when downcasting 'this' to a subtype.
+   */
+  set thisLocalIndex(index: number) {
+    this.#thisLocalIndex = index;
+  }
+
+  // ===== Scope Management =====
+
+  /**
+   * Push a new lexical scope for variable name resolution.
+   *
+   * Use this when entering a Zena block that can introduce new bindings
+   * (blocks, loops, if/else, match arms, try/catch, etc.).
+   *
+   * This does NOT reset local indices—locals continue to accumulate within
+   * the same WASM function. The scope only affects which local a name resolves to.
+   */
   public pushScope() {
     this.scopes.push(new Map());
+  }
+
+  /**
+   * Start generating a new WASM function.
+   *
+   * This resets all function-local state:
+   * - Scopes: Replaced with a single fresh scope
+   * - extraLocals: Cleared (new function has no body locals yet)
+   * - nextLocalIndex: Reset to paramCount (locals 0..paramCount-1 are params)
+   * - thisLocalIndex: Reset to 0 (default for methods)
+   *
+   * Unlike pushScope(), this starts fresh—it doesn't nest within the current
+   * function's scope stack. Each WASM function has its own local index space.
+   *
+   * @param paramCount - Number of parameters. Sets nextLocalIndex so body
+   *   locals start after parameters. Default 0 for functions with no params.
+   */
+  public pushFunctionScope(paramCount = 0) {
+    this.scopes = [new Map()];
+    this.#extraLocals = [];
+    this.#nextLocalIndex = paramCount;
+    this.#thisLocalIndex = 0;
+  }
+
+  /**
+   * Save the current function context state. Use this when generating
+   * nested functions (like trampolines) that need to restore the outer
+   * function's state after completion.
+   */
+  public saveFunctionContext(): FunctionContextState {
+    return {
+      scopes: this.scopes,
+      extraLocals: this.#extraLocals,
+      nextLocalIndex: this.#nextLocalIndex,
+      thisLocalIndex: this.#thisLocalIndex,
+    };
+  }
+
+  /**
+   * Restore a previously saved function context state.
+   */
+  public restoreFunctionContext(state: FunctionContextState) {
+    this.scopes = state.scopes;
+    this.#extraLocals = state.extraLocals;
+    this.#nextLocalIndex = state.nextLocalIndex;
+    this.#thisLocalIndex = state.thisLocalIndex;
   }
 
   public popScope() {
     this.scopes.pop();
   }
 
+  /**
+   * Define a local variable that was already allocated (e.g., function parameters).
+   * Use this when the local index is already known.
+   * @deprecated Use defineParam() for parameters or declareLocal() for new locals.
+   */
   public defineLocal(name: string, index: number, type: number[]) {
     this.scopes[this.scopes.length - 1].set(name, {index, type});
+  }
+
+  /**
+   * Define a function parameter. This allocates the next local index and
+   * registers the parameter in the current scope.
+   */
+  public defineParam(name: string, type: number[]): number {
+    const index = this.#nextLocalIndex++;
+    this.scopes[this.scopes.length - 1].set(name, {index, type});
+    return index;
   }
 
   public getLocal(name: string): LocalInfo | undefined {
@@ -136,10 +311,14 @@ export class CodegenContext {
     return undefined;
   }
 
+  /**
+   * Declare a new local variable within the current function body.
+   * This allocates a new local index and registers it in the extra locals.
+   */
   public declareLocal(name: string, type: number[] = [ValType.i32]): number {
-    const index = this.nextLocalIndex++;
+    const index = this.#nextLocalIndex++;
     this.scopes[this.scopes.length - 1].set(name, {index, type});
-    this.extraLocals.push(type);
+    this.#extraLocals.push(type);
     return index;
   }
 

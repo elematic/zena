@@ -4403,18 +4403,16 @@ function generateFunctionExpression(
       );
     } else {
       // Setup temporary scope for inference
-      ctx.pushScope();
-      const oldNextLocalIndex = ctx.nextLocalIndex;
-      ctx.nextLocalIndex = 0;
+      const savedContext = ctx.saveFunctionContext();
+      ctx.pushFunctionScope();
 
       expr.params.forEach((p, i) => {
-        ctx.defineLocal(p.name.name, ctx.nextLocalIndex++, paramTypes[i]);
+        ctx.defineParam(p.name.name, paramTypes[i]);
       });
 
       returnType = inferReturnTypeFromBlock(ctx, expr.body as BlockStatement);
 
-      ctx.popScope();
-      ctx.nextLocalIndex = oldNextLocalIndex;
+      ctx.restoreFunctionContext(savedContext);
     }
   }
 
@@ -4438,17 +4436,14 @@ function generateFunctionExpression(
     const funcBody: number[] = [];
 
     // Setup Scope
-    ctx.scopes = [new Map()];
-    ctx.extraLocals = [];
-    ctx.nextLocalIndex = 0;
+    ctx.pushFunctionScope();
 
     // Param 0: Context (eqref)
-    const ctxLocalIndex = ctx.nextLocalIndex++;
-    ctx.defineLocal('$$ctx', ctxLocalIndex, [ValType.eqref]);
+    const ctxLocalIndex = ctx.defineParam('$$ctx', [ValType.eqref]);
 
     // Params 1..N: Arguments
     expr.params.forEach((p, i) => {
-      ctx.defineLocal(p.name.name, ctx.nextLocalIndex++, paramTypes[i]);
+      ctx.defineParam(p.name.name, paramTypes[i]);
     });
 
     // Unpack Context

@@ -310,27 +310,21 @@ export function generateTrampoline(
 ): number {
   const trampolineIndex = ctx.module.addFunction(typeIndex);
 
-  // Save context state
-  const prevScopes = ctx.scopes;
-  const prevExtraLocals = ctx.extraLocals;
-  const prevNextLocalIndex = ctx.nextLocalIndex;
+  // Save context state for nested function generation
+  const savedContext = ctx.saveFunctionContext();
 
   // Initialize new function context
-  ctx.scopes = [new Map()];
-  ctx.extraLocals = [];
-  ctx.nextLocalIndex = 0;
+  ctx.pushFunctionScope();
 
   const body: number[] = [];
 
   // Register parameters
   const params = ctx.module.getFunctionTypeParams(typeIndex);
   // Param 0 is 'this' (anyref)
-  ctx.defineLocal('this', 0, params[0]);
-  ctx.nextLocalIndex++;
+  ctx.defineParam('this', params[0]);
 
   for (let i = 1; i < params.length; i++) {
-    ctx.defineLocal(`arg${i}`, i, params[i]);
-    ctx.nextLocalIndex++;
+    ctx.defineParam(`arg${i}`, params[i]);
   }
 
   const classMethod = classInfo.methods.get(methodName);
@@ -639,9 +633,7 @@ export function generateTrampoline(
   ctx.module.addCode(trampolineIndex, ctx.extraLocals, body);
 
   // Restore context state
-  ctx.scopes = prevScopes;
-  ctx.extraLocals = prevExtraLocals;
-  ctx.nextLocalIndex = prevNextLocalIndex;
+  ctx.restoreFunctionContext(savedContext);
 
   return trampolineIndex;
 }
@@ -1757,9 +1749,8 @@ export function registerClassMethods(
     ctx.bodyGenerators.push(() => {
       const body: number[] = [];
 
-      ctx.pushScope();
-      ctx.nextLocalIndex = params.length; // Params are locals 0..N-1
-      ctx.extraLocals = [];
+      // Params are locals 0..N-1, so start nextLocalIndex after them
+      ctx.pushFunctionScope(params.length);
 
       // 1. Allocate
       body.push(0xfb, GcOpcode.struct_new_default);
@@ -1800,7 +1791,6 @@ export function registerClassMethods(
       body.push(Opcode.end);
 
       ctx.module.addCode(wrapperFuncIndex, ctx.extraLocals, body);
-      ctx.popScope();
     });
   }
 
@@ -1874,10 +1864,7 @@ export function generateClassMethods(
       const methodInfo = classInfo.methods.get(methodName)!;
       const body: number[] = [];
 
-      ctx.pushScope();
-      ctx.nextLocalIndex = 0;
-      ctx.extraLocals = [];
-      ctx.thisLocalIndex = 0;
+      ctx.pushFunctionScope();
 
       // Params
       // 0: this
@@ -1885,7 +1872,7 @@ export function generateClassMethods(
         !member.isStatic &&
         !(classInfo.isExtension && methodName === '#new')
       ) {
-        ctx.defineLocal('this', ctx.nextLocalIndex++, methodInfo.paramTypes[0]);
+        ctx.defineParam('this', methodInfo.paramTypes[0]);
       }
 
       for (let i = 0; i < member.params.length; i++) {
@@ -1897,7 +1884,7 @@ export function generateClassMethods(
             ? i
             : i + 1;
         const paramType = methodInfo.paramTypes[paramTypeIndex];
-        ctx.defineLocal(param.name.name, ctx.nextLocalIndex++, paramType);
+        ctx.defineParam(param.name.name, paramType);
       }
       if (classInfo.isExtension && methodName === '#new') {
         // Extension constructor: 'this' is a local variable, not a param
@@ -1933,17 +1920,14 @@ export function generateClassMethods(
         body.push(Opcode.unreachable);
         body.push(Opcode.end);
         ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
-        ctx.popScope();
         continue;
       }
 
       if (methodInfo.intrinsic) {
-        ctx.popScope();
         continue;
       }
 
       if (member.isDeclare) {
-        ctx.popScope();
         continue;
       }
 
@@ -2025,7 +2009,6 @@ export function generateClassMethods(
       body.push(Opcode.end);
 
       ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
-      ctx.popScope();
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
 
@@ -2035,14 +2018,11 @@ export function generateClassMethods(
         const methodInfo = classInfo.methods.get(methodName)!;
         const body: number[] = [];
 
-        ctx.pushScope();
-        ctx.nextLocalIndex = 0;
-        ctx.extraLocals = [];
-        ctx.thisLocalIndex = 0;
+        ctx.pushFunctionScope();
 
         // Params
         // 0: this
-        ctx.defineLocal('this', ctx.nextLocalIndex++, methodInfo.paramTypes[0]);
+        ctx.defineParam('this', methodInfo.paramTypes[0]);
 
         // Downcast 'this' if needed
         const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
@@ -2070,7 +2050,6 @@ export function generateClassMethods(
         body.push(Opcode.end);
 
         ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
-        ctx.popScope();
       }
 
       // Setter
@@ -2079,20 +2058,13 @@ export function generateClassMethods(
         const methodInfo = classInfo.methods.get(methodName)!;
         const body: number[] = [];
 
-        ctx.pushScope();
-        ctx.nextLocalIndex = 0;
-        ctx.extraLocals = [];
-        ctx.thisLocalIndex = 0;
+        ctx.pushFunctionScope();
 
         // Params
         // 0: this
-        ctx.defineLocal('this', ctx.nextLocalIndex++, methodInfo.paramTypes[0]);
+        ctx.defineParam('this', methodInfo.paramTypes[0]);
         // 1: value
-        ctx.defineLocal(
-          member.setter.param.name,
-          ctx.nextLocalIndex++,
-          methodInfo.paramTypes[1],
-        );
+        ctx.defineParam(member.setter.param.name, methodInfo.paramTypes[1]);
 
         // Downcast 'this' if needed
         const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
@@ -2120,7 +2092,6 @@ export function generateClassMethods(
         body.push(Opcode.end);
 
         ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
-        ctx.popScope();
       }
     } else if (member.type === NodeType.FieldDefinition) {
       if (member.isDeclare) continue;
@@ -3163,9 +3134,8 @@ export function instantiateClass(
       ctx.bodyGenerators.push(() => {
         const body: number[] = [];
 
-        ctx.pushScope();
-        ctx.nextLocalIndex = params.length; // Params are locals 0..N-1
-        ctx.extraLocals = [];
+        // Params are locals 0..N-1, so start nextLocalIndex after them
+        ctx.pushFunctionScope(params.length);
 
         // 1. Allocate
         body.push(0xfb, GcOpcode.struct_new_default);
@@ -3206,7 +3176,6 @@ export function instantiateClass(
         body.push(Opcode.end);
 
         ctx.module.addCode(wrapperFuncIndex, ctx.extraLocals, body);
-        ctx.popScope();
       });
     }
 
