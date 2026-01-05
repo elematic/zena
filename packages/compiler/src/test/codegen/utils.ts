@@ -382,12 +382,18 @@ const createFileHost = (
   },
 });
 
+export interface ZenaTestOptions {
+  /** Treat the test file as stdlib (enabling intrinsics like __array_new) */
+  isStdlib?: boolean;
+}
+
 /**
  * Run a Zena test file and return structured results.
  * The test file should export `tests` as a Suite.
  */
 export const runZenaTestFile = async (
   filePath: string,
+  options: ZenaTestOptions = {},
 ): Promise<ZenaSuiteResult> => {
   const absolutePath = resolve(filePath);
   const testFileName = basename(absolutePath);
@@ -452,18 +458,25 @@ export let getNestedTestError = (index: i32): string | null => nested().tests[in
   virtualFiles.set(wrapperPath, wrapperSource);
 
   const host = createFileHost(wrapperPath, virtualFiles);
-  const compiler = new Compiler(host);
-
-  // Check for compilation errors
-  const modules = compiler.compile(wrapperPath);
-  for (const mod of modules) {
-    if (mod.diagnostics.length > 0) {
-      const errors = mod.diagnostics.map((d) => d.message).join(', ');
-      throw new Error(`Compilation errors: ${errors}`);
-    }
-  }
+  const compilerOptions = options.isStdlib ? {stdlibPaths: [absolutePath]} : {};
+  const compiler = new Compiler(host, compilerOptions);
 
   const program = compiler.bundle(wrapperPath);
+
+  // Re-run checker on the bundled program to ensure types have correct bundled names
+  // This is also where isStdlib intrinsics get properly resolved
+  const checker = new TypeChecker(program, compiler, {
+    path: wrapperPath,
+    exports: new Map(),
+    isStdlib: true,
+  } as any);
+  checker.preludeModules = compiler.preludeModules;
+  const diagnostics = checker.check();
+  if (diagnostics.length > 0) {
+    const errors = diagnostics.map((d) => d.message).join(', ');
+    throw new Error(`Compilation errors: ${errors}`);
+  }
+
   const codegen = new CodeGenerator(program);
   const bytes = codegen.generate();
 

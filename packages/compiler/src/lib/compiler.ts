@@ -11,6 +11,11 @@ export interface CompilerHost {
   load(path: string): string;
 }
 
+export interface CompilerOptions {
+  /** Paths that should be treated as stdlib (enabling intrinsics) */
+  stdlibPaths?: string[];
+}
+
 export interface Module {
   path: string;
   isStdlib: boolean;
@@ -23,12 +28,14 @@ export interface Module {
 
 export class Compiler {
   #host: CompilerHost;
+  #options: CompilerOptions;
   #modules = new Map<string, Module>();
   #preludeModules: Module[] = [];
   #preludeLoaded = false;
 
-  constructor(host: CompilerHost) {
+  constructor(host: CompilerHost, options: CompilerOptions = {}) {
     this.#host = host;
+    this.#options = options;
   }
 
   public getModule(path: string): Module | undefined {
@@ -79,6 +86,11 @@ export class Compiler {
     }
 
     if (path.startsWith('zena:')) {
+      isStdlib = true;
+    }
+
+    // Check if path is in stdlibPaths option
+    if (this.#options.stdlibPaths?.includes(path)) {
       isStdlib = true;
     }
 

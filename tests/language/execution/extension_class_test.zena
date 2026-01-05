@@ -1,0 +1,38 @@
+// @stdlib: true
+// Extension class tests using zena:test
+// Tests extension class mechanics on raw array<T> types
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {FixedArray} from 'zena:array';
+
+extension class ArrayExt<T> on array<T> {
+  first: T {
+    get { return this[0]; }
+  }
+}
+
+export let tests = suite('Extension Classes on Raw Arrays', (): void => {
+  test('can call FixedArray methods on raw array<T> created via __array_new', (ctx: TestContext): void => {
+    // Create a raw array<i32> using the intrinsic
+    let arr = __array_new(3, 0);
+    arr[0] = 1;
+    arr[1] = 2;
+    arr[2] = 3;
+    
+    // Call reverse() which is defined on FixedArray extension
+    let reversed = arr.reverse();
+    
+    equal(reversed.length, 3);
+    equal(reversed[0], 3);
+    equal(reversed[1], 2);
+    equal(reversed[2], 1);
+  });
+
+  test('can access property on raw array<T> via generic extension class with cast', (ctx: TestContext): void => {
+    let arr = __array_new(3, 0);
+    arr[0] = 42;
+    // Cast to ArrayExt to use its methods
+    let ext = arr as ArrayExt<i32>;
+    equal(ext.first, 42);
+  });
+});

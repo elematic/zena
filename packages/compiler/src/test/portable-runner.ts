@@ -32,6 +32,7 @@ interface TestDirectives {
   result?: string;
   stdout?: string;
   throws?: string; // Expected exception type (e.g., 'wasm' for WebAssembly.Exception)
+  stdlib?: string; // Enable stdlib intrinsics (e.g., 'true')
   [key: string]: string | undefined;
 }
 
@@ -503,8 +504,14 @@ for (const group of zenaTestGroups) {
       const testName = basename(filePath, '.zena');
 
       test(testName, async (t) => {
-        // Run the Zena test file
-        const suiteResult = await runZenaTestFile(filePath);
+        // Parse directives from the test file
+        const content = readFileSync(filePath, 'utf-8');
+        const {directives} = parseDirectives(content);
+
+        // Run the Zena test file with options
+        const suiteResult = await runZenaTestFile(filePath, {
+          isStdlib: directives.stdlib === 'true',
+        });
         const flatTests = flattenTests(suiteResult);
 
         // Report each Zena test as a subtest
