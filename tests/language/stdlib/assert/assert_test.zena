@@ -1,6 +1,6 @@
 // Assert stdlib tests using zena:test
 import {suite, test, TestContext} from 'zena:test';
-import {equal, notEqual, isTrue, isFalse, greater, greaterOrEqual, less, lessOrEqual, throws, doesNotThrow, same, notSame, isNull, isNotNull} from 'zena:assert';
+import {equal, notEqual, isTrue, isFalse, greater, greaterOrEqual, less, lessOrEqual, throws, doesNotThrow, same, notSame, isNull, isNotNull, fail} from 'zena:assert';
 import {Error} from 'zena:error';
 
 class TestBox {
@@ -15,6 +15,16 @@ export let tests = suite('Assert', (): void => {
     equal(10, 10);
   });
 
+  test('equal passes for equal strings', (ctx: TestContext): void => { 
+    equal('hello', 'hello');
+  });
+
+  test('equal throws for unequal strings', (ctx: TestContext): void => {
+    throws(() => {
+      equal('hello', 'world');
+    });
+  });
+
   test('equal throws for unequal i32 values', (ctx: TestContext): void => {
     throws(() => {
       equal(42, 43);
@@ -24,6 +34,12 @@ export let tests = suite('Assert', (): void => {
   test('notEqual passes for different values', (ctx: TestContext): void => {
     notEqual(1, 2);
     notEqual(10, 20);
+  });
+
+  test('notEqual throws for equal values', (ctx: TestContext): void => {
+    throws(() => {
+      notEqual(1, 1);
+    });
   });
 
   test('isTrue passes for true', (ctx: TestContext): void => {
@@ -38,8 +54,38 @@ export let tests = suite('Assert', (): void => {
     isFalse(1 > 2);
   });
 
+  test('isTrue throws for false', (ctx: TestContext): void => {
+    throws(() => {
+      isTrue(false);
+    });
+  });
+
+  test('isFalse throws for true', (ctx: TestContext): void => {
+    throws(() => {
+      isFalse(true);
+    });
+  });
+
+  test('fail always throws', (ctx: TestContext): void => {
+    throws(() => {
+      fail();
+    });
+  });
+
+  test('fail throws with custom message', (ctx: TestContext): void => {
+    throws(() => {
+      fail('intentional failure');
+    });
+  });
+
   test('greater passes when actual > expected', (ctx: TestContext): void => {
     greater(5, 3);
+  });
+
+  test('greater throws when actual <= expected', (ctx: TestContext): void => {
+    throws(() => {
+      greater(5, 5);
+    });
   });
 
   test('greaterOrEqual passes when actual >= expected', (ctx: TestContext): void => {
@@ -47,13 +93,31 @@ export let tests = suite('Assert', (): void => {
     greaterOrEqual(5, 5);
   });
 
+  test('greaterOrEqual throws when actual < expected', (ctx: TestContext): void => {
+    throws(() => {
+      greaterOrEqual(3, 5);
+    });
+  });
+
   test('less passes when actual < expected', (ctx: TestContext): void => {
     less(3, 5);
+  });
+
+  test('less throws when actual >= expected', (ctx: TestContext): void => {
+    throws(() => {
+      less(5, 5);
+    });
   });
 
   test('lessOrEqual passes when actual <= expected', (ctx: TestContext): void => {
     lessOrEqual(3, 5);
     lessOrEqual(5, 5);
+  });
+
+  test('lessOrEqual throws when actual > expected', (ctx: TestContext): void => {
+    throws(() => {
+      lessOrEqual(5, 3);
+    });
   });
 
   test('throws passes when function throws', (ctx: TestContext): void => {
