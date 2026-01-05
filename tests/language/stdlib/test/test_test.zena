@@ -1,0 +1,163 @@
+// Test stdlib tests using zena:test
+// Tests the test framework's data structures (Suite, TestResult, test registration)
+import {suite, test, Suite, SuiteResult, TestResult, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse, isNull, isNotNull, fail} from 'zena:assert';
+
+export let tests = suite('Test Framework', (): void => {
+  suite('test registration', (): void => {
+    test('test() registers a test case in current suite', (ctx: TestContext): void => {
+      let s = suite('my suite', (): void => {
+        test('my test', (ctx: TestContext): void => {
+          // empty test
+        });
+      });
+      equal(s.tests.length, 1);
+    });
+
+    test('multiple tests are registered', (ctx: TestContext): void => {
+      let s = suite('my suite', (): void => {
+        test('test 1', (ctx: TestContext): void => {});
+        test('test 2', (ctx: TestContext): void => {});
+        test('test 3', (ctx: TestContext): void => {});
+      });
+      equal(s.tests.length, 3);
+    });
+  });
+
+  suite('suite registration', (): void => {
+    test('suite() returns a Suite with correct name', (ctx: TestContext): void => {
+      let s = suite('my suite', (): void => {
+        test('nested test', (ctx: TestContext): void => {});
+      });
+      equal(s.name, 'my suite');
+    });
+
+    test('nested suites work', (ctx: TestContext): void => {
+      let outer = suite('outer', (): void => {
+        suite('inner', (): void => {
+          test('deep test', (ctx: TestContext): void => {});
+        });
+      });
+      equal(outer.suites.length, 1);
+    });
+
+    test('export let tests = suite(...) pattern works', (ctx: TestContext): void => {
+      let s = suite('Array', (): void => {
+        test('push increases length', (ctx: TestContext): void => {
+          // test body
+        });
+        test('pop returns last', (ctx: TestContext): void => {
+          // test body
+        });
+      });
+      equal(s.name, 'Array');
+      equal(s.tests.length, 2);
+    });
+  });
+
+  suite('TestResult', (): void => {
+    test('can create passing result', (ctx: TestContext): void => {
+      let result = new TestResult('my test', true, null);
+      equal(result.name, 'my test');
+      isTrue(result.passed);
+      isNull<string>(result.error);
+    });
+
+    test('can create failing result', (ctx: TestContext): void => {
+      let result = new TestResult('my test', false, 'test failed');
+      equal(result.name, 'my test');
+      isFalse(result.passed);
+      isNotNull<string>(result.error);
+    });
+  });
+
+  suite('suite.run()', (): void => {
+    test('run() returns SuiteResult with correct name', (ctx: TestContext): void => {
+      let s = suite('my suite', (): void => {
+        test('a test', (ctx: TestContext): void => {});
+      });
+      let result = s.run();
+      equal(result.name, 'my suite');
+    });
+
+    test('passing test increments passed count', (ctx: TestContext): void => {
+      let s = suite('passing suite', (): void => {
+        test('passes', (ctx: TestContext): void => {
+          equal(1, 1);
+        });
+      });
+      let result = s.run();
+      equal(result.passed, 1);
+      equal(result.failed, 0);
+    });
+
+    test('failing test increments failed count', (ctx: TestContext): void => {
+      let s = suite('failing suite', (): void => {
+        test('fails', (ctx: TestContext): void => {
+          fail('intentional failure');
+        });
+      });
+      let result = s.run();
+      equal(result.passed, 0);
+      equal(result.failed, 1);
+    });
+
+    test('mixed passing and failing tests', (ctx: TestContext): void => {
+      let s = suite('mixed suite', (): void => {
+        test('passes 1', (ctx: TestContext): void => {
+          equal(1, 1);
+        });
+        test('fails', (ctx: TestContext): void => {
+          fail();
+        });
+        test('passes 2', (ctx: TestContext): void => {
+          isTrue(true);
+        });
+      });
+      let result = s.run();
+      equal(result.passed, 2);
+      equal(result.failed, 1);
+    });
+
+    test('test results contain correct pass/fail status', (ctx: TestContext): void => {
+      let s = suite('status suite', (): void => {
+        test('passes', (ctx: TestContext): void => {});
+        test('fails', (ctx: TestContext): void => {
+          fail();
+        });
+      });
+      let result = s.run();
+      equal(result.tests.length, 2);
+      isTrue(result.tests[0].passed);
+      isFalse(result.tests[1].passed);
+    });
+
+    test('failing test result contains error message', (ctx: TestContext): void => {
+      let s = suite('error suite', (): void => {
+        test('fails with message', (ctx: TestContext): void => {
+          fail('custom error message');
+        });
+      });
+      let result = s.run();
+      isFalse(result.tests[0].passed);
+      isNotNull<string>(result.tests[0].error);
+    });
+
+    test('nested suite results are aggregated', (ctx: TestContext): void => {
+      let s = suite('outer', (): void => {
+        test('outer passes', (ctx: TestContext): void => {});
+        suite('inner', (): void => {
+          test('inner passes', (ctx: TestContext): void => {});
+          test('inner fails', (ctx: TestContext): void => {
+            fail();
+          });
+        });
+      });
+      let result = s.run();
+      // outer: 1 pass, inner: 1 pass + 1 fail = total 2 pass, 1 fail
+      equal(result.passed, 2);
+      equal(result.failed, 1);
+      equal(result.suites.length, 1);
+    });
+  });
+});
