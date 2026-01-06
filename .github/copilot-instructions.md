@@ -146,6 +146,10 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Use the `--test-only` flag to isolate tests when debugging.
   - Use only `npm run`, `npm test`, or `node` to run scripts. Do NOT run scripts
     with `npx`, `tsx`, or `ts-node`.
+- **Node verison**: The project uses Node.js v25 because it includes
+  built-in WASM exnref support. If you see errors about unsupported
+  WebAssembly features, ensure you are using Node v25+. Run `node -v` to check
+  and `nvm use default` to switch to the correct version.
 
 ## Coding Standards
 

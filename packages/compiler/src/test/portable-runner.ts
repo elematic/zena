@@ -14,7 +14,7 @@ import {suite, test} from 'node:test';
 // Import compiler
 import {Parser, TypeChecker, CodeGenerator, Compiler} from '../lib/index.js';
 
-import {createStringReader} from '@zena-lang/runtime';
+import {createStringReader} from './string-reader.js';
 import {runZenaTestFile, flattenTests} from './codegen/utils.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

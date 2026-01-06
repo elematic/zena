@@ -5575,7 +5575,10 @@ function generateTaggedTemplateExpression(
         // Stack has [stringsArray, valuesArray]
         // We need [context, stringsArray, valuesArray, funcRef] -> call_ref
 
-        // Save args to locals
+        // Save args to locals to reorder the stack for the closure call.
+        // Each declareLocal allocates a fresh index, so multiple tagged
+        // templates in the same function get separate locals (the name is just
+        // for debugging).
         const valuesArrayLocal = ctx.declareLocal('$$values_array', [
           ValType.ref_null,
           ...WasmModule.encodeSignedLEB128(valuesArrayTypeIndex),
@@ -5585,14 +5588,12 @@ function generateTaggedTemplateExpression(
           ...WasmModule.encodeSignedLEB128(valuesArrayLocal),
         );
 
-        const stringsArrayLocal = ctx.declareLocal('$$strings_array', [
+        // The stack has the TemplateStringsArray struct (not the raw string array)
+        const tsaLocal = ctx.declareLocal('$$tsa', [
           ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(stringsArrayTypeIndex),
+          ...WasmModule.encodeSignedLEB128(tsaClassInfo.structTypeIndex),
         ]);
-        body.push(
-          Opcode.local_set,
-          ...WasmModule.encodeSignedLEB128(stringsArrayLocal),
-        );
+        body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tsaLocal));
 
         // 1. Load Context
         body.push(
@@ -5607,10 +5608,7 @@ function generateTaggedTemplateExpression(
         );
 
         // 2. Push Args
-        body.push(
-          Opcode.local_get,
-          ...WasmModule.encodeSignedLEB128(stringsArrayLocal),
-        );
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tsaLocal));
         body.push(
           Opcode.local_get,
           ...WasmModule.encodeSignedLEB128(valuesArrayLocal),
