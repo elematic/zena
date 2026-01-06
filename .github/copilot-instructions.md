@@ -213,12 +213,13 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 ## Future Considerations
 
-- **Strings & Unicode**:
-  - **Consolidation**: Consolidate `string` type and `String` class.
-  - **Interning**: Implement runtime string interning.
-  - **Hashing**: Implement fast string hashing and comparison.
-  - **Multiple Implementations**: Support host strings and potentially UTF-16.
-  - **Indexing**: Disallow indexed access (`str[i]`) and implement iterators.
+- **Strings & Unicode** (see `docs/design/strings.md` for detailed plan):
+  - **Phase 1**: Consolidate `string` type and `String` class into unified `String` class.
+  - **Phase 2**: Implement compile-time string interning.
+  - **Phase 3**: Add JavaScript-like string methods (`substring`, `indexOf`, etc.).
+  - **Phase 4**: Disallow indexed byte access, add `charAt()` for code points.
+  - **Phase 5**: Host string support for zero-copy interop (future).
+  - **Phase 6**: Iterator support for Unicode character iteration (future).
 - **Numeric Literals**:
   - **Defaults**: Revisit default types for literals. Consider making `f64` the default for floating-point literals (matching JS).
   - **Suffixes**: Implement syntax for numeric suffixes (e.g., `1L` for `i64`, `1f` for `f32`) to avoid verbose casting (`1 as i64`).
@@ -320,13 +321,26 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 ### Planned
 
-1.  **Type Checker Refactoring**:
+1.  **String Unification** (see `docs/design/strings.md`):
+    - **Phase 1: Class Consolidation**: Convert `String` from extension class to regular class.
+      - Create `String` as final class wrapping `ByteArray` internally.
+      - Add `operator +` to `String` class for concatenation.
+      - Unify `string` keyword to resolve to `String` class type.
+      - Update codegen to create `String` instances from literals.
+    - **Phase 2: String Interning**: Implement compile-time string interning.
+      - Add global intern table (array of nullable string refs).
+      - Generate interning wrapper for string literal access.
+      - First access creates string; subsequent accesses return cached.
+    - **Phase 3: String Methods**: Add JS-like methods (`substring`, `indexOf`, etc.).
+    - **Phase 4: Encoding Independence**: Disallow `str[i]` indexed access.
+
+2.  **Type Checker Refactoring**:
     - **`ctx.currentClass` consistency**: Inside a generic class `Foo<T>`, `ctx.currentClass` should have `typeArguments = typeParameters` (i.e., represent `Foo<T>`, not just `Foo`). Currently, `checkThisExpression` creates a type with `typeArguments`, but `ctx.currentClass` doesn't have them, requiring a workaround in `isAssignableTo` to handle self-referential generic class comparisons. Fixing this at the source would eliminate that special case.
     - **Reject index assignment without `operator []=`**: Currently `x[0] = y` compiles even if the type only has `operator []` (getter). The checker should require `operator []=` for index assignment.
     - **Reject assignment to getter-only properties**: Currently `x.length = 5` compiles even if `length` only has a getter. The checker should require a setter for property assignment.
     - **Suffix-based type lookup is unsafe**: In `codegen/classes.ts`, `mapType()` uses `name.endsWith('_' + typeName)` to resolve bundled class names (e.g., `m3_Array` for `Array`). This is fragile and could cause name collisions if two modules define classes with the same base name, or if a class name is a suffix of another (e.g., `MyArray` matching `Array`). The proper fix is for the bundler to update type annotations when renaming declarations, so codegen always sees the canonical name.
 
-2.  **Host Interop**:
+3.  **Host Interop**:
     - **WASM GC Interop Notes**:
       - WASM GC structs and arrays are OPAQUE from JavaScript.
       - JS cannot access struct fields or iterate GC arrays.
@@ -339,32 +353,31 @@ This project is an **npm monorepo** managed with **Wireit**.
       - JS usage: `exports['Suite.run'](suiteInstance)`.
       - The inverse of `@external` - exposes Zena methods to hosts instead of importing host functions.
 
-3.  **Exceptions**:
+4.  **Exceptions**:
     - **Try/Catch Statement Form**: Allow side-effect-only try/catch without requiring both branches to produce values. See `docs/design/exceptions.md` Open Questions.
 
-4.  **Data Structures**:
+5.  **Data Structures**:
     - **Maps**: Implement map literal syntax (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
-5.  **Top-Level Statement Execution**:
+6.  **Top-Level Statement Execution**:
     - Currently, top-level expression statements (like `test('name', fn)`) are ignored in codegen.
     - Only global variable initializers run via the WASM start function.
     - This blocks DSL-style test registration. See `docs/design/testing.md` for workaround.
     - **Solution**: Extend the start function to execute top-level statements, or add module initialization support.
 
-6.  **Standard Library**:
+7.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
-    - String manipulation (`substring`, `indexOf`).
     - Regexes.
 
-7.  **Self-Hosting**:
+8.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
 
-8.  **Pattern Matching (Advanced)**:
+9.  **Pattern Matching (Advanced)**:
     - Array element matching (requires `FixedArray` support or `Sequence` interface).
     - Rest patterns (`...tail`).
 
-9.  **Future Features**:
+10. **Future Features**:
     - **Syntax**:
       - Blocks.
       - For/of loops.
