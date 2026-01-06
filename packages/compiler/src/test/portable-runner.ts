@@ -234,10 +234,52 @@ async function runCheckTest(
   expectedErrors: ExpectedError[],
   relPath: string,
 ) {
-  const parser = new Parser(content);
-  const ast = parser.parse();
-  const checker = new TypeChecker(ast);
-  const diagnostics = checker.check();
+  // Check if the test has imports - if so, use the full compiler
+  const hasImports = content.includes('import ');
+
+  let diagnostics: Array<{message: string}>;
+
+  if (hasImports) {
+    // Use full compiler to resolve imports
+    const host = {
+      load: (path: string) => {
+        if (path === filePath) return content;
+        if (path.startsWith('zena:')) {
+          const name = path.substring(5);
+          try {
+            return readFileSync(
+              join(rootDir, 'packages/stdlib/zena', `${name}.zena`),
+              'utf-8',
+            );
+          } catch (e) {
+            throw new Error(`Stdlib module not found: ${name}`);
+          }
+        }
+        // Try to load relative to test file
+        const resolvedPath = join(dirname(filePath), path);
+        if (existsSync(resolvedPath)) {
+          return readFileSync(resolvedPath, 'utf-8');
+        }
+        throw new Error(`File not found: ${path}`);
+      },
+      resolve: (specifier: string, _referrer: string) => specifier,
+    };
+
+    const compiler = new Compiler(host);
+    const modules = compiler.compile(filePath);
+
+    // Collect all diagnostics
+    diagnostics = [];
+    for (const mod of modules) {
+      diagnostics.push(...mod.diagnostics);
+    }
+  } else {
+    // Simple case - no imports, use TypeChecker directly
+    const parser = new Parser(content);
+    const ast = parser.parse();
+    const checker = new TypeChecker(ast);
+    diagnostics = checker.check();
+  }
 
   // Match expected errors
   for (const expected of expectedErrors) {
@@ -247,7 +289,7 @@ async function runCheckTest(
 
     if (!found) {
       throw new Error(
-        `Expected error matching ${expected.regex} on line ${expected.line}, but found none.`,
+        `Expected error matching ${expected.regex} on line ${expected.line}, but found none.\nActual errors: ${diagnostics.map((d) => d.message).join(', ') || '(none)'}`,
       );
     }
   }
