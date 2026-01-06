@@ -78,6 +78,23 @@ export class WasmModule {
     this.#types[index] = buffer;
   }
 
+  /**
+   * Update an existing struct type at the given index with new fields.
+   * This is used for two-phase type registration where we need to update
+   * a placeholder type after dependent types are registered.
+   */
+  public updateStructType(
+    index: number,
+    fields: {type: number[]; mutable: boolean}[],
+    superTypeIndex?: number,
+  ): void {
+    if (index < 0 || index >= this.#types.length) {
+      throw new Error(`Invalid type index: ${index}`);
+    }
+    const buffer = this.#encodeStructType(fields, superTypeIndex);
+    this.#types[index] = buffer;
+  }
+
   #encodeStructType(
     fields: {type: number[]; mutable: boolean}[],
     superTypeIndex?: number,

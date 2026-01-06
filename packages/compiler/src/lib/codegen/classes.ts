@@ -73,7 +73,15 @@ import {
 } from './statements.js';
 import type {ClassInfo, InterfaceInfo} from './types.js';
 
-export function registerInterface(
+/**
+ * Pre-registers an interface by reserving type indices for the fat pointer struct
+ * and vtable struct. This must be called before classes are registered so that
+ * interface types are available for class implements clauses.
+ *
+ * The actual method types are populated later by defineInterfaceMethods, after
+ * all classes have been pre-registered.
+ */
+export function preRegisterInterface(
   ctx: CodegenContext,
   decl: InterfaceDeclaration,
 ) {
@@ -95,16 +103,97 @@ export function registerInterface(
       ) as InterfaceDeclaration | undefined;
 
       if (parentDecl) {
-        registerInterface(ctx, parentDecl);
+        preRegisterInterface(ctx, parentDecl);
         parentInfo = ctx.interfaces.get(parentName);
-      } else {
-        // Parent decl not found
       }
     }
   }
 
-  // 1. Create VTable Struct Type
-  // (struct (field (ref (func (param any) ...))) ...)
+  // Reserve vtable struct type with no fields initially
+  // This will be updated in defineInterfaceMethods
+  const vtableTypeIndex = ctx.module.addStructType(
+    [],
+    parentInfo?.vtableTypeIndex,
+  );
+
+  // Create interface struct type (fat pointer)
+  // (struct (field (ref null any)) (field (ref vtable)))
+  const interfaceFields = [
+    {type: [ValType.ref_null, ValType.anyref], mutable: true}, // instance
+    {
+      type: [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
+      mutable: true,
+    }, // vtable
+  ];
+  const structTypeIndex = ctx.module.addStructType(interfaceFields);
+
+  let parentName: string | undefined;
+  if (parentInfo) {
+    const ext = decl.extends![0];
+    if (ext.type === NodeType.TypeAnnotation) {
+      parentName = ext.name;
+    }
+  }
+
+  // Register with empty methods/fields - will be populated by defineInterfaceMethods
+  ctx.interfaces.set(decl.name.name, {
+    structTypeIndex,
+    vtableTypeIndex,
+    methods: new Map(),
+    fields: new Map(),
+    parent: parentName,
+  });
+}
+
+/**
+ * Defines the method and field types for an interface.
+ * This must be called after all classes have been pre-registered so that
+ * mapType can resolve class types correctly.
+ */
+export function defineInterfaceMethods(
+  ctx: CodegenContext,
+  decl: InterfaceDeclaration,
+) {
+  const interfaceInfo = ctx.interfaces.get(decl.name.name);
+  if (!interfaceInfo) {
+    throw new Error(
+      `Interface ${decl.name.name} was not pre-registered before defineInterfaceMethods`,
+    );
+  }
+
+  // Skip if methods are already defined
+  if (interfaceInfo.methods.size > 0 || interfaceInfo.fields.size > 0) {
+    // Check if this is a parent interface that may need its methods defined first
+    // by checking if any member exists in the declaration
+    const hasMembers = decl.body.some(
+      (m) =>
+        m.type === NodeType.MethodSignature ||
+        m.type === NodeType.FieldDefinition ||
+        m.type === NodeType.AccessorSignature,
+    );
+    if (!hasMembers || interfaceInfo.methods.size > 0) {
+      return;
+    }
+  }
+
+  let parentInfo: InterfaceInfo | undefined;
+  if (interfaceInfo.parent) {
+    parentInfo = ctx.interfaces.get(interfaceInfo.parent);
+
+    // Ensure parent methods are defined first
+    if (parentInfo && parentInfo.methods.size === 0) {
+      const parentDecl = ctx.program.body.find(
+        (s) =>
+          s.type === NodeType.InterfaceDeclaration &&
+          (s as InterfaceDeclaration).name.name === interfaceInfo.parent,
+      ) as InterfaceDeclaration | undefined;
+      if (parentDecl) {
+        defineInterfaceMethods(ctx, parentDecl);
+        parentInfo = ctx.interfaces.get(interfaceInfo.parent);
+      }
+    }
+  }
+
   const vtableFields: {type: number[]; mutable: boolean}[] = [];
   const methodIndices = new Map<
     string,
@@ -269,37 +358,28 @@ export function registerInterface(
     }
   }
 
-  const vtableTypeIndex = ctx.module.addStructType(
+  // Update the vtable struct type with the actual fields
+  // The vtable type was reserved in preRegisterInterface with no fields
+  ctx.module.updateStructType(
+    interfaceInfo.vtableTypeIndex,
     vtableFields,
     parentInfo?.vtableTypeIndex,
   );
 
-  // 2. Create Interface Struct Type (Fat Pointer)
-  // (struct (field (ref null any)) (field (ref vtable)))
-  const interfaceFields = [
-    {type: [ValType.ref_null, ValType.anyref], mutable: true}, // instance
-    {
-      type: [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
-      mutable: true,
-    }, // vtable
-  ];
-  const structTypeIndex = ctx.module.addStructType(interfaceFields);
+  // Update the interface info with the method and field maps
+  interfaceInfo.methods = methodIndices;
+  interfaceInfo.fields = fieldIndices;
+}
 
-  let parentName: string | undefined;
-  if (parentInfo) {
-    const ext = decl.extends![0];
-    if (ext.type === NodeType.TypeAnnotation) {
-      parentName = ext.name;
-    }
-  }
-
-  ctx.interfaces.set(decl.name.name, {
-    structTypeIndex,
-    vtableTypeIndex,
-    methods: methodIndices,
-    fields: fieldIndices,
-    parent: parentName,
-  });
+/**
+ * @deprecated Use preRegisterInterface followed by defineInterfaceMethods instead.
+ */
+export function registerInterface(
+  ctx: CodegenContext,
+  decl: InterfaceDeclaration,
+) {
+  preRegisterInterface(ctx, decl);
+  defineInterfaceMethods(ctx, decl);
 }
 
 export function generateTrampoline(

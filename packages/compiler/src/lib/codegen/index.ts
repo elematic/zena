@@ -14,7 +14,8 @@ import {
   preRegisterClassStruct,
   defineClassStruct,
   registerClassMethods,
-  registerInterface,
+  preRegisterInterface,
+  defineInterfaceMethods,
   getMemberName,
   mapType,
 } from './classes.js';
@@ -101,10 +102,12 @@ export class CodeGenerator {
 
     const globalInitializers: {index: number; init: any}[] = [];
 
-    // 1. Register Interfaces and Mixins (First pass)
+    // 1. Pre-register Interfaces and register Mixins/Type Aliases (First pass)
+    // This reserves type indices for interfaces so they can be referenced by classes.
+    // Interface method types are NOT defined yet since they may reference classes.
     for (const statement of program.body) {
       if (statement.type === NodeType.InterfaceDeclaration) {
-        registerInterface(this.#ctx, statement as InterfaceDeclaration);
+        preRegisterInterface(this.#ctx, statement as InterfaceDeclaration);
       } else if (statement.type === NodeType.MixinDeclaration) {
         const mixinDecl = statement as MixinDeclaration;
         this.#ctx.mixins.set(mixinDecl.name.name, mixinDecl);
@@ -125,7 +128,15 @@ export class CodeGenerator {
       }
     }
 
-    // 3. Define Class Structs (Third pass)
+    // 3. Define Interface Methods (Third pass)
+    // Now that all classes have reserved indices, mapType can resolve class types correctly.
+    for (const statement of program.body) {
+      if (statement.type === NodeType.InterfaceDeclaration) {
+        defineInterfaceMethods(this.#ctx, statement as InterfaceDeclaration);
+      }
+    }
+
+    // 4. Define Class Structs (Fourth pass)
     // Now that all classes have reserved indices, define the actual struct types
     for (const statement of program.body) {
       if (statement.type === NodeType.ClassDeclaration) {
@@ -133,7 +144,7 @@ export class CodeGenerator {
       }
     }
 
-    // 4. Register Imports (DeclareFunction)
+    // 5. Register Imports (DeclareFunction)
     // Imports must be registered before defined functions to ensure correct index space.
     for (const statement of program.body) {
       if (statement.type === NodeType.DeclareFunction) {
@@ -141,7 +152,7 @@ export class CodeGenerator {
       }
     }
 
-    // 5. Register Class Methods (Fifth pass)
+    // 6. Register Class Methods (Sixth pass)
     // Execute pending method registrations (e.g. from mixins created in Pass 2)
     let pendingIndex = 0;
     while (pendingIndex < this.#ctx.pendingMethodGenerations.length) {
