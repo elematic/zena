@@ -3,6 +3,7 @@ import {
   type ClassDeclaration,
   type FunctionTypeAnnotation,
   type InterfaceDeclaration,
+  type LiteralTypeAnnotation,
   type MethodDefinition,
   type MixinDeclaration,
   type RecordTypeAnnotation,
@@ -28,9 +29,11 @@ import {
   type TypeParameterType,
   type TypeAliasType,
   type SymbolType,
+  type LiteralType,
 } from '../types.js';
 import {getGetterName, getSetterName} from '../names.js';
 import {WasmModule} from '../emitter.js';
+import {DiagnosticCode} from '../diagnostics.js';
 
 /**
  * Extracts the name from a TypeAnnotation.
@@ -2410,10 +2413,21 @@ function mapTypeInternal(
     return mapType(ctx, ctx.typeAliases.get(type.name)!, context);
   }
 
+  // Try to find type alias by suffix (handles bundled names like m3_Color for Color)
+  if (type.type === NodeType.TypeAnnotation) {
+    for (const [aliasName, aliasType] of ctx.typeAliases) {
+      if (aliasName.endsWith('_' + type.name)) {
+        return mapType(ctx, aliasType, context);
+      }
+    }
+  }
+
   if (type.type === NodeType.TypeAnnotation) {
     switch (type.name) {
       case Types.I32.name:
         return [ValType.i32];
+      case Types.U32.name:
+        return [ValType.i32]; // u32 maps to i32 in WASM
       case Types.I64.name:
         return [ValType.i64];
       case Types.F32.name:
@@ -2439,9 +2453,19 @@ function mapTypeInternal(
             ];
           }
         }
+        // Report error - String type should always be available
+        ctx.reportError(
+          `String type not found in code generation. This may indicate a missing stdlib import.`,
+          DiagnosticCode.UnknownType,
+        );
         return [ValType.i32];
       }
       case TypeNames.Void:
+        return [];
+      case TypeNames.Never:
+        // `never` type represents computations that never return (e.g., throw).
+        // In WASM, we can represent this as an empty result (like void) since
+        // code after a never-returning expression is unreachable.
         return [];
       case TypeNames.Null:
         return [ValType.ref_null, HeapType.none];
@@ -2568,10 +2592,25 @@ function mapTypeInternal(
           return res;
         }
 
-        // console.log(`mapType: Unknown type '${typeName}', defaulting to i32. Context:`, context ? Array.from(context.keys()) : 'none');
-        // TODO: This is a hack to handle forward references or recursive types where the type
-        // hasn't been registered yet. Ideally we should do a two-pass registration:
-        // 1. Assign type indices. 2. Define structs.
+        // Check if this is an unbound type parameter (should have been erased)
+        // Type parameters should only appear in generic instantiation contexts
+        if (!typeContext || !typeContext.has(typeName)) {
+          // This is likely a type parameter from a generic function/class.
+          // Type parameters should never appear in WASM types - they should either:
+          // 1. Be substituted with concrete types (during instantiation), or
+          // 2. Not be mapped at all (generic functions aren't generated)
+          //
+          // However, it might also be that the type lookup failed. Rather than reporting
+          // an error, we'll map it to anyref, which is a safe fallback for reference types.
+          // This allows the WASM compiler to catch real type errors.
+          return [ValType.anyref];
+        }
+
+        // Report error for truly unknown types
+        ctx.reportError(
+          `Unknown type '${typeName}' in code generation. This should have been caught by the type checker.`,
+          DiagnosticCode.UnknownType,
+        );
         return [ValType.i32];
       }
     }
@@ -2628,7 +2667,36 @@ function mapTypeInternal(
       }
     }
 
+    // Check if this is a union of literals (e.g., enum values)
+    // All literal types should map to the same WASM type
+    if (
+      nonNullTypes.length > 0 &&
+      nonNullTypes.every((t) => t.type === NodeType.LiteralTypeAnnotation)
+    ) {
+      // For literal unions (like enum members), pick the first type
+      // All literals should have the same backing type
+      return mapType(ctx, nonNullTypes[0], context);
+    }
+
     return [ValType.anyref];
+  } else if (type.type === NodeType.LiteralTypeAnnotation) {
+    // Literal types (number, string, boolean) map to their base types
+    const litType = type as LiteralTypeAnnotation;
+    if (typeof litType.value === 'number') {
+      return [ValType.i32]; // Integer literals are i32
+    } else if (typeof litType.value === 'string') {
+      // String literals map to string type
+      if (ctx.stringTypeIndex !== -1) {
+        return [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+        ];
+      }
+      return [ValType.anyref]; // Fallback if string type not available
+    } else if (typeof litType.value === 'boolean') {
+      return [ValType.i32]; // Booleans are i32
+    }
+    return [ValType.i32];
   }
 
   return [ValType.i32];
@@ -3435,6 +3503,11 @@ export function typeToTypeAnnotation(
         type: NodeType.TypeAnnotation,
         name: TypeNames.Void,
       };
+    case TypeKind.Never:
+      return {
+        type: NodeType.TypeAnnotation,
+        name: TypeNames.Never,
+      };
     case TypeKind.Class: {
       const classType = type as ClassType;
       let args = classType.typeArguments
@@ -3539,10 +3612,9 @@ export function typeToTypeAnnotation(
     case TypeKind.TypeAlias: {
       const aliasType = type as TypeAliasType;
       if (aliasType.isDistinct) {
-        return {
-          type: NodeType.TypeAnnotation,
-          name: aliasType.name,
-        };
+        // For distinct type aliases (including enums), we need to map to the underlying type
+        // in code generation, since WASM doesn't have nominal typing
+        return typeToTypeAnnotation(aliasType.target, erasedTypeParams);
       }
       return typeToTypeAnnotation(aliasType.target, erasedTypeParams);
     }
@@ -3561,6 +3633,13 @@ export function typeToTypeAnnotation(
         type: NodeType.TypeAnnotation,
         name: 'null',
       };
+    case TypeKind.Literal: {
+      const literalType = type as LiteralType;
+      return {
+        type: NodeType.LiteralTypeAnnotation,
+        value: literalType.value,
+      };
+    }
     case TypeKind.Union: {
       const unionType = type as UnionType;
       return {
@@ -3592,6 +3671,7 @@ export function mapCheckerTypeToWasmType(
   }
   if (type.kind === TypeKind.Boolean) return [ValType.i32];
   if (type.kind === TypeKind.Void) return [];
+  if (type.kind === TypeKind.Never) return [];
   if (type.kind === TypeKind.Null) return [ValType.ref_null, HeapType.none];
 
   const annotation = typeToTypeAnnotation(type);

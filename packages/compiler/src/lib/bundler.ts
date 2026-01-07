@@ -227,7 +227,8 @@ export class Bundler {
           stmt.type === NodeType.ClassDeclaration ||
           stmt.type === NodeType.InterfaceDeclaration ||
           stmt.type === NodeType.MixinDeclaration ||
-          stmt.type === NodeType.TypeAliasDeclaration
+          stmt.type === NodeType.TypeAliasDeclaration ||
+          stmt.type === NodeType.EnumDeclaration
         ) {
           const cls = stmt as any;
           let typeObj = cls.inferredType;

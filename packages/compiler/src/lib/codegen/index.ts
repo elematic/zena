@@ -18,6 +18,7 @@ import {
   defineInterfaceMethods,
   getMemberName,
   mapType,
+  typeToTypeAnnotation,
 } from './classes.js';
 import {CodegenContext} from './context.js';
 import {registerDeclaredFunction, registerFunction} from './functions.js';
@@ -102,7 +103,7 @@ export class CodeGenerator {
 
     const globalInitializers: {index: number; init: any}[] = [];
 
-    // 1. Pre-register Interfaces and register Mixins/Type Aliases (First pass)
+    // 1. Pre-register Interfaces and register Mixins/Type Aliases/Enums (First pass)
     // This reserves type indices for interfaces so they can be referenced by classes.
     // Interface method types are NOT defined yet since they may reference classes.
     for (const statement of program.body) {
@@ -117,6 +118,21 @@ export class CodeGenerator {
           aliasDecl.name.name,
           aliasDecl.typeAnnotation,
         );
+      } else if (statement.type === NodeType.EnumDeclaration) {
+        // Enums create type aliases (distinct types) in the type system
+        // We need to register them so they can be found during type mapping
+        const enumDecl = statement as EnumDeclaration;
+        const enumName = enumDecl.name.name;
+
+        // Get the type from the checker (TypeAliasType with target = union of literals)
+        const checkerType = enumDecl.inferredType;
+        if (checkerType) {
+          // Convert the target type (union of literal values) to a TypeAnnotation
+          const targetAnnotation = typeToTypeAnnotation(
+            (checkerType as any)?.target || checkerType,
+          );
+          this.#ctx.typeAliases.set(enumName, targetAnnotation);
+        }
       }
     }
 
@@ -333,6 +349,13 @@ export class CodeGenerator {
         const gen = this.#ctx.pendingHelperFunctions.shift()!;
         gen();
       }
+    }
+
+    // Check for codegen errors before returning
+    if (this.#ctx.diagnostics.hasErrors()) {
+      throw new Error(
+        `Code generation failed with errors:\n${this.#ctx.diagnostics.diagnostics.map((d) => d.message).join('\n')}`,
+      );
     }
 
     return this.#ctx.module.toBytes();

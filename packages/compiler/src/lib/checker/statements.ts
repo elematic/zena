@@ -2792,6 +2792,9 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
 
   ctx.declare(name, enumType, 'type');
 
+  // Store reference so the bundler can update the type name
+  decl.inferredType = enumType;
+
   const fields = new Map<string, Type>();
   for (const member of decl.members) {
     fields.set(member.name.name, enumType);

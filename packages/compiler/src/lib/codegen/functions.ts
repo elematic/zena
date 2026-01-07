@@ -288,6 +288,7 @@ export function registerDeclaredFunction(
   ctx: CodegenContext,
   decl: DeclareFunction,
 ) {
+  // Check if this is an intrinsic (regardless of whether it's generic)
   let intrinsicName: string | undefined;
   if (decl.decorators) {
     const intrinsic = decl.decorators.find(
@@ -296,6 +297,17 @@ export function registerDeclaredFunction(
     if (intrinsic && intrinsic.args.length === 1) {
       intrinsicName = intrinsic.args[0].value;
     }
+  }
+
+  // Generic declared functions (like intrinsics hash<T> and equals<T>)
+  // are handled specially - they're instantiated inline at the call site
+  if (decl.typeParameters && decl.typeParameters.length > 0) {
+    // Register intrinsics so they can be recognized during call generation
+    if (intrinsicName) {
+      ctx.globalIntrinsics.set(decl.name.name, intrinsicName);
+    }
+    // Don't create WASM imports for generic functions - they're only used via intrinsics
+    return;
   }
 
   const params = decl.params.map((p) => mapType(ctx, p.typeAnnotation));
