@@ -311,6 +311,29 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
     return;
   }
 
+  // If the AST node already has an inferred type (e.g., from a previous type-check
+  // pass before bundling), reuse it instead of creating a new one.
+  // This preserves type identity across bundling.
+  if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
+    const existingType = decl.inferredType as ClassType;
+    // Update the name to match the (possibly renamed) declaration
+    existingType.name = className;
+    ctx.declare(className, existingType, 'type');
+    ctx.declare(className, existingType, 'let');
+
+    if (decl.exported && ctx.module) {
+      ctx.module.exports.set(`type:${className}`, {
+        type: existingType,
+        kind: 'type',
+      });
+      ctx.module.exports.set(`value:${className}`, {
+        type: existingType,
+        kind: 'let',
+      });
+    }
+    return;
+  }
+
   // Create type parameters
   const typeParameters: TypeParameterType[] = [];
   if (decl.typeParameters) {
@@ -372,6 +395,21 @@ const predeclareMixin = (ctx: CheckerContext, decl: MixinDeclaration) => {
     return;
   }
 
+  // If the AST node already has an inferred type, reuse it
+  if (decl.inferredType && decl.inferredType.kind === TypeKind.Mixin) {
+    const existingType = decl.inferredType as MixinType;
+    existingType.name = mixinName;
+    ctx.declare(mixinName, existingType, 'type');
+
+    if (decl.exported && ctx.module) {
+      ctx.module.exports.set(`type:${mixinName}`, {
+        type: existingType,
+        kind: 'type',
+      });
+    }
+    return;
+  }
+
   // Create type parameters
   const typeParameters: TypeParameterType[] = [];
   if (decl.typeParameters) {
@@ -419,6 +457,21 @@ const predeclareInterface = (
 
   // Skip if already declared
   if (ctx.resolveType(interfaceName)) {
+    return;
+  }
+
+  // If the AST node already has an inferred type, reuse it
+  if (decl.inferredType && decl.inferredType.kind === TypeKind.Interface) {
+    const existingType = decl.inferredType as InterfaceType;
+    existingType.name = interfaceName;
+    ctx.declare(interfaceName, existingType, 'type');
+
+    if (decl.exported && ctx.module) {
+      ctx.module.exports.set(`type:${interfaceName}`, {
+        type: existingType,
+        kind: 'type',
+      });
+    }
     return;
   }
 
@@ -541,6 +594,22 @@ function checkTypeAliasDeclaration(
 ) {
   const name = decl.name.name;
 
+  // If the AST node already has an inferred type (from a previous type-check pass),
+  // reuse it to preserve type identity across bundling.
+  if (decl.inferredType && decl.inferredType.kind === TypeKind.TypeAlias) {
+    const existingType = decl.inferredType as TypeAliasType;
+    // Update the name to match the (possibly renamed) declaration
+    existingType.name = name;
+    ctx.declare(name, existingType, 'type');
+    if (decl.exported && ctx.module) {
+      ctx.module.exports.set(`type:${name}`, {
+        type: existingType,
+        kind: 'type',
+      });
+    }
+    return;
+  }
+
   ctx.enterScope();
   const typeParameters = createTypeParameters(ctx, decl.typeParameters);
 
@@ -557,6 +626,7 @@ function checkTypeAliasDeclaration(
   };
 
   ctx.declare(name, typeAlias, 'type');
+  decl.inferredType = typeAlias;
 
   if (decl.exported && ctx.module) {
     ctx.module.exports.set(`type:${name}`, {type: typeAlias, kind: 'type'});
@@ -1110,6 +1180,12 @@ function resolveMemberName(
 
 function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   const className = decl.name.name;
+
+  // If the type has already been fully checked (e.g., from a previous type-check
+  // pass before bundling), skip re-checking to avoid duplicate member errors.
+  if (decl.inferredType && (decl.inferredType as ClassType)._checked) {
+    return;
+  }
 
   // Create type parameters without constraints/defaults
   const typeParameters: TypeParameterType[] = [];
@@ -1882,6 +1958,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
   ctx.exitClass();
   ctx.exitScope();
+
+  // Mark the type as fully checked to prevent re-checking after bundling
+  classType._checked = true;
 }
 
 function checkInterfaceDeclaration(
@@ -1889,6 +1968,11 @@ function checkInterfaceDeclaration(
   decl: InterfaceDeclaration,
 ) {
   const interfaceName = decl.name.name;
+
+  // Skip if already fully checked (e.g., from a previous type-check pass before bundling)
+  if (decl.inferredType && (decl.inferredType as InterfaceType)._checked) {
+    return;
+  }
 
   const typeParameters: TypeParameterType[] = [];
   if (decl.typeParameters) {
@@ -2097,6 +2181,9 @@ function checkInterfaceDeclaration(
 
   ctx.exitInterface();
   ctx.exitScope();
+
+  // Mark the type as fully checked to prevent re-checking after bundling
+  interfaceType._checked = true;
 }
 
 function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
@@ -2271,6 +2358,11 @@ function checkAccessorDeclaration(
 
 function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
   const mixinName = decl.name.name;
+
+  // Skip if already fully checked (e.g., from a previous type-check pass before bundling)
+  if (decl.inferredType && (decl.inferredType as MixinType)._checked) {
+    return;
+  }
 
   const typeParameters: TypeParameterType[] = [];
   if (decl.typeParameters) {
@@ -2627,6 +2719,9 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
   ctx.exitClass();
   ctx.exitScope();
+
+  // Mark the type as fully checked to prevent re-checking after bundling
+  mixinType._checked = true;
 }
 
 /**
@@ -2679,6 +2774,38 @@ function createTypeParameters(
 
 function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
   const name = decl.name.name;
+
+  // If the AST node already has an inferred type (from a previous type-check pass),
+  // reuse it to preserve type identity across bundling.
+  if (decl.inferredType && decl.inferredType.kind === TypeKind.TypeAlias) {
+    const existingType = decl.inferredType as TypeAliasType;
+    // Update the name to match the (possibly renamed) declaration
+    existingType.name = name;
+    ctx.declare(name, existingType, 'type');
+
+    // Recreate the value type with the existing enum type
+    const fields = new Map<string, Type>();
+    for (const member of decl.members) {
+      fields.set(member.name.name, existingType);
+    }
+    const enumValueType: RecordType = {
+      kind: TypeKind.Record,
+      properties: fields,
+    };
+    ctx.declare(name, enumValueType, 'let');
+
+    if (decl.exported && ctx.module) {
+      ctx.module.exports.set(`type:${name}`, {
+        type: existingType,
+        kind: 'type',
+      });
+      ctx.module.exports.set(`value:${name}`, {
+        type: enumValueType,
+        kind: 'let',
+      });
+    }
+    return;
+  }
 
   // 1. Determine backing type
   let isStringEnum = false;
@@ -2791,6 +2918,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
   };
 
   ctx.declare(name, enumType, 'type');
+  decl.inferredType = enumType;
 
   // Store reference so the bundler can update the type name
   decl.inferredType = enumType;

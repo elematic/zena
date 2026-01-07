@@ -118,6 +118,9 @@ function checkExpressionInternal(ctx: CheckerContext, expr: Expression): Type {
       return Types.I32;
     }
     case NodeType.StringLiteral: {
+      // String literals always have the stdlib String type, even if a user
+      // defines their own class named `String`. This ensures consistent
+      // behavior for literals regardless of what's in scope.
       const stringType = ctx.getWellKnownType(Types.String.name);
       return stringType || Types.String;
     }

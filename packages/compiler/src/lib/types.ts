@@ -114,6 +114,10 @@ export interface InterfaceType extends Type {
   methods: Map<string, FunctionType>;
   symbolFields?: Map<string, Type>;
   symbolMethods?: Map<string, FunctionType>;
+  /** Internal flag to indicate this type has been fully checked. */
+  _checked?: boolean;
+  /** For instantiated generics, points to the original generic type definition. */
+  genericSource?: InterfaceType;
 }
 
 export interface MixinType extends Type {
@@ -126,6 +130,8 @@ export interface MixinType extends Type {
   methods: Map<string, FunctionType>;
   symbolFields?: Map<string, Type>;
   symbolMethods?: Map<string, FunctionType>;
+  /** Internal flag to indicate this type has been fully checked. */
+  _checked?: boolean;
 }
 
 export interface ClassType extends Type {
@@ -148,6 +154,8 @@ export interface ClassType extends Type {
   isMixinIntermediate?: boolean; // True for synthetic intermediate mixin classes
   onType?: Type;
   genericSource?: ClassType;
+  /** Internal flag to indicate this type has been fully checked. */
+  _checked?: boolean;
 }
 
 const I32 = {kind: TypeKind.Number, name: 'i32'} as NumberType;

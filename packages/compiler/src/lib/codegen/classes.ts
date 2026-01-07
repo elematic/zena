@@ -2190,14 +2190,7 @@ export function generateClassMethods(
         const fieldName = manglePrivateName(className, propName);
         const fieldInfo = classInfo.fields.get(fieldName);
         if (!fieldInfo) {
-          console.error(
-            `Field ${fieldName} not found in class ${decl.name.name}`,
-          );
-          console.error(
-            'Available fields:',
-            Array.from(classInfo.fields.keys()),
-          );
-          throw new Error(`Field ${fieldName} not found`);
+          throw new Error(`Field ${fieldName} not found in class ${decl.name.name}`);
         }
 
         // Getter
@@ -2592,6 +2585,16 @@ function mapTypeInternal(
           return res;
         }
 
+        // Try to find interface by suffix (handles bundled names like m2_Sequence for Sequence)
+        for (const [name, interfaceInfo] of ctx.interfaces) {
+          if (name.endsWith('_' + typeName)) {
+            return [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+            ];
+          }
+        }
+
         // Check if this is an unbound type parameter (should have been erased)
         // Type parameters should only appear in generic instantiation contexts
         if (!typeContext || !typeContext.has(typeName)) {
@@ -2611,7 +2614,7 @@ function mapTypeInternal(
           `Unknown type '${typeName}' in code generation. This should have been caught by the type checker.`,
           DiagnosticCode.UnknownType,
         );
-        return [ValType.i32];
+        throw new Error(`Unknown type '${typeName}' in code generation`);
       }
     }
   } else if (type.type === NodeType.RecordTypeAnnotation) {
@@ -3510,6 +3513,13 @@ export function typeToTypeAnnotation(
       };
     case TypeKind.Class: {
       const classType = type as ClassType;
+      // Follow genericSource chain to get canonical name (handles bundler renaming)
+      let canonicalName = classType.name;
+      let source = classType.genericSource;
+      while (source) {
+        canonicalName = source.name;
+        source = source.genericSource;
+      }
       let args = classType.typeArguments
         ? classType.typeArguments.map((t) =>
             typeToTypeAnnotation(t, erasedTypeParams),
@@ -3529,12 +3539,19 @@ export function typeToTypeAnnotation(
 
       return {
         type: NodeType.TypeAnnotation,
-        name: classType.name,
+        name: canonicalName,
         typeArguments: args.length > 0 ? args : undefined,
       };
     }
     case TypeKind.Interface: {
       const ifaceType = type as InterfaceType;
+      // Follow genericSource chain to get canonical name (handles bundler renaming)
+      let canonicalName = ifaceType.name;
+      let source = ifaceType.genericSource;
+      while (source) {
+        canonicalName = source.name;
+        source = source.genericSource;
+      }
       const args = ifaceType.typeArguments
         ? ifaceType.typeArguments.map((t) =>
             typeToTypeAnnotation(t, erasedTypeParams),
@@ -3542,7 +3559,7 @@ export function typeToTypeAnnotation(
         : [];
       return {
         type: NodeType.TypeAnnotation,
-        name: ifaceType.name,
+        name: canonicalName,
         typeArguments: args.length > 0 ? args : undefined,
       };
     }

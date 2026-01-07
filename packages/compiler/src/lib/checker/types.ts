@@ -628,10 +628,11 @@ export function instantiateGenericClass(
           genericClass.typeParameters![i].name,
     )
   ) {
-    // Identity substitution - return original class with typeArguments set
+    // Identity substitution - return a copy with genericSource set to preserve identity
     return {
       ...genericClass,
       typeArguments,
+      genericSource: genericClass,
     };
   }
 
@@ -720,12 +721,13 @@ export function instantiateGenericInterface(
       )
     : undefined;
 
-  const newInterface = {
+  const newInterface: InterfaceType = {
     ...genericInterface,
     typeArguments,
     fields: newFields,
     methods: newMethods,
     extends: newExtends,
+    genericSource: genericInterface,
   };
 
   if (ctx) {
@@ -827,6 +829,139 @@ export function instantiateGenericFunction(
   }
 
   return newFunc;
+}
+
+/**
+ * Gets the canonical (original) type for a potentially instantiated generic.
+ * For non-generic types, returns the type itself.
+ * For generic instantiations, follows the genericSource chain to the root.
+ */
+export function getCanonicalType(type: ClassType): ClassType {
+  let current = type;
+  while (current.genericSource) {
+    current = current.genericSource;
+  }
+  return current;
+}
+
+/**
+ * Compares two ClassTypes for identity equality.
+ * For generic instantiations, compares canonical sources and type arguments.
+ * This avoids relying on mutable name strings.
+ */
+export function classTypesEqual(a: ClassType, b: ClassType): boolean {
+  // Fast path: same object
+  if (a === b) return true;
+
+  // Get canonical types (follow genericSource chain)
+  const canonA = getCanonicalType(a);
+  const canonB = getCanonicalType(b);
+
+  // Check if canonical types match (by identity or by name as fallback)
+  // Name fallback is needed when types are recreated during bundled re-checking
+  if (canonA !== canonB && canonA.name !== canonB.name) return false;
+
+  // Same base type - now compare type arguments
+  const argsA = a.typeArguments;
+  const argsB = b.typeArguments;
+
+  // Both non-generic (or same generic with no instantiation)
+  if (!argsA && !argsB) return true;
+
+  // One has args, one doesn't
+  if (!argsA || !argsB) return false;
+
+  // Different number of args
+  if (argsA.length !== argsB.length) return false;
+
+  // Compare each type argument recursively
+  for (let i = 0; i < argsA.length; i++) {
+    if (!typesEqual(argsA[i], argsB[i])) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Compares two Types for structural equality.
+ * Used for comparing type arguments in generic instantiations.
+ */
+export function typesEqual(a: Type, b: Type): boolean {
+  if (a === b) return true;
+  if (a.kind !== b.kind) return false;
+
+  switch (a.kind) {
+    case TypeKind.Class:
+      return classTypesEqual(a as ClassType, b as ClassType);
+    case TypeKind.Interface: {
+      const ia = a as InterfaceType;
+      const ib = b as InterfaceType;
+      // Get canonical types (follow genericSource chain)
+      let canonA: InterfaceType = ia;
+      while (canonA.genericSource) canonA = canonA.genericSource;
+      let canonB: InterfaceType = ib;
+      while (canonB.genericSource) canonB = canonB.genericSource;
+
+      // Check if canonical types match (by identity or by name as fallback)
+      if (canonA !== canonB && canonA.name !== canonB.name) return false;
+
+      // Same base type - compare type arguments
+      if (!ia.typeArguments && !ib.typeArguments) return true;
+      if (!ia.typeArguments || !ib.typeArguments) return false;
+      if (ia.typeArguments.length !== ib.typeArguments.length) return false;
+      return ia.typeArguments.every((arg, i) =>
+        typesEqual(arg, ib.typeArguments![i]),
+      );
+    }
+    case TypeKind.Array: {
+      const aa = a as ArrayType;
+      const ab = b as ArrayType;
+      return typesEqual(aa.elementType, ab.elementType);
+    }
+    case TypeKind.Number:
+      return (a as NumberType).name === (b as NumberType).name;
+    case TypeKind.Literal:
+      return (a as LiteralType).value === (b as LiteralType).value;
+    case TypeKind.TypeParameter:
+      return (a as TypeParameterType).name === (b as TypeParameterType).name;
+    case TypeKind.Function: {
+      const fa = a as FunctionType;
+      const fb = b as FunctionType;
+      if (fa.parameters.length !== fb.parameters.length) return false;
+      if (!typesEqual(fa.returnType, fb.returnType)) return false;
+      return fa.parameters.every((p, i) => typesEqual(p, fb.parameters[i]));
+    }
+    case TypeKind.Record: {
+      const ra = a as RecordType;
+      const rb = b as RecordType;
+      if (ra.properties.size !== rb.properties.size) return false;
+      for (const [key, typeA] of ra.properties) {
+        const typeB = rb.properties.get(key);
+        if (!typeB || !typesEqual(typeA, typeB)) return false;
+      }
+      return true;
+    }
+    case TypeKind.Tuple: {
+      const ta = a as TupleType;
+      const tb = b as TupleType;
+      if (ta.elementTypes.length !== tb.elementTypes.length) return false;
+      return ta.elementTypes.every((t, i) => typesEqual(t, tb.elementTypes[i]));
+    }
+    // Simple types that are singletons or compared by kind
+    case TypeKind.Boolean:
+    case TypeKind.Void:
+    case TypeKind.Null:
+    case TypeKind.Never:
+    case TypeKind.Any:
+    case TypeKind.AnyRef:
+    case TypeKind.Unknown:
+    case TypeKind.ByteArray:
+    case TypeKind.This:
+      return true;
+    default:
+      // Fall back to string comparison for unhandled cases
+      return typeToString(a) === typeToString(b);
+  }
 }
 
 export function typeToString(type: Type): string {
@@ -1069,8 +1204,8 @@ export function isAssignableTo(
 
     let current: ClassType | undefined = sourceClass;
     while (current) {
-      // Check if the classes match
-      if (typeToString(current) === typeToString(targetClass)) return true;
+      // Check if the classes match using identity-based comparison
+      if (classTypesEqual(current, targetClass)) return true;
 
       current = current.superType;
     }
@@ -1110,7 +1245,8 @@ export function isAssignableTo(
     source.kind === TypeKind.Interface &&
     target.kind === TypeKind.Interface
   ) {
-    if (typeToString(source) === typeToString(target)) return true;
+    // Use typesEqual for identity-based comparison (handles type arguments)
+    if (typesEqual(source, target)) return true;
     const srcInterface = source as InterfaceType;
     if (srcInterface.extends) {
       return srcInterface.extends.some((ext) =>

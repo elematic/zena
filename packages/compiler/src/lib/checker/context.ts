@@ -60,6 +60,7 @@ export class CheckerContext {
     // For generic classes, set typeArguments = typeParameters so that
     // ctx.currentClass and 'this' type are consistent (both represent Foo<T>).
     // This avoids special-case handling in isAssignableTo for self-referential types.
+    // We also set genericSource to preserve type identity when comparing.
     if (
       classType.typeParameters &&
       classType.typeParameters.length > 0 &&
@@ -68,6 +69,7 @@ export class CheckerContext {
       this.currentClass = {
         ...classType,
         typeArguments: classType.typeParameters,
+        genericSource: classType,
       };
     } else {
       this.currentClass = classType;
@@ -82,6 +84,7 @@ export class CheckerContext {
     this.#interfaceStack.push(this.currentInterface);
     // For generic interfaces, set typeArguments = typeParameters so that
     // `this` type is consistent (represents Interface<T>).
+    // We also set genericSource to preserve type identity when comparing.
     if (
       interfaceType.typeParameters &&
       interfaceType.typeParameters.length > 0 &&
@@ -90,6 +93,7 @@ export class CheckerContext {
       this.currentInterface = {
         ...interfaceType,
         typeArguments: interfaceType.typeParameters,
+        genericSource: interfaceType,
       };
     } else {
       this.currentInterface = interfaceType;
@@ -330,8 +334,18 @@ export class CheckerContext {
     return undefined;
   }
 
+  /**
+   * Canonical locations for well-known types.
+   * These types have special semantics in the language and must come from specific modules.
+   */
+  static readonly WELL_KNOWN_TYPE_MODULES: ReadonlyMap<string, string> =
+    new Map([
+      [Types.String.name, 'zena:string'],
+      [TypeNames.FixedArray, 'zena:array'],
+    ]);
+
   getWellKnownType(name: string): Type | undefined {
-    // Check bundled well-known types first
+    // Check bundled well-known types first (already resolved during bundling)
     if (
       name === Types.String.name &&
       this.program.wellKnownTypes?.String?.inferredType
@@ -345,28 +359,21 @@ export class CheckerContext {
       return this.program.wellKnownTypes.FixedArray.inferredType;
     }
 
+    // Look up from canonical module location
     if (!this.compiler) return undefined;
 
-    let modulePath = '';
-    let exportName = '';
-
-    if (name === Types.String.name) {
-      modulePath = 'zena:string';
-      exportName = Types.String.name;
-    } else if (name === TypeNames.FixedArray) {
-      modulePath = 'zena:array';
-      exportName = TypeNames.FixedArray;
-    }
+    const modulePath = CheckerContext.WELL_KNOWN_TYPE_MODULES.get(name);
+    if (!modulePath) return undefined;
 
     const module = this.compiler.getModule(modulePath);
     if (!module) return undefined;
 
-    const symbol = module.exports.get(exportName);
+    const symbol = module.exports.get(`type:${name}`);
     if (symbol) {
       // Record usage so it gets injected/bundled
-      this.usedPreludeSymbols.set(exportName, {
+      this.usedPreludeSymbols.set(`type:${name}`, {
         modulePath,
-        exportName,
+        exportName: name,
       });
       return symbol.type;
     }

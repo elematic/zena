@@ -168,6 +168,8 @@ export interface TypeAliasDeclaration extends Node {
   typeAnnotation: TypeAnnotation;
   exported: boolean;
   isDistinct: boolean;
+  /** Inferred type, populated by the checker. */
+  inferredType?: Type;
 }
 
 export interface VariableDeclaration extends Node {
@@ -691,4 +693,6 @@ export interface EnumDeclaration extends Node {
   name: Identifier;
   members: EnumMember[];
   exported: boolean;
+  /** Inferred type, populated by the checker. */
+  inferredType?: Type;
 }
