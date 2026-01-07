@@ -455,6 +455,64 @@ SemanticContext could be used for different backends (WASM, debugging, etc.).
 
 **Effort:** 2-3 hours
 
+### Investigation: mapType Suffix-Based Lookups
+
+**Problem:** `mapType()` in `codegen/classes.ts` uses suffix matching like
+`name.endsWith('_' + typeName)` to resolve bundled class names. This is fragile.
+
+**Locations of suffix-based lookups:**
+
+- Line ~2426: Type alias suffix lookup
+- Line ~2539: Generic class suffix lookup
+- Line ~2588: Class suffix lookup
+- Line ~2610: Interface suffix lookup
+
+**Finding: Suffix matching appears to be dead code.**
+
+After extensive testing, we found that the suffix matching fallback is never
+triggered in practice. The bundler correctly updates ALL TypeAnnotation nodes
+with their bundled names (e.g., `Data` → `m0_Data`), so the direct lookup
+`ctx.classes.has(typeName)` always succeeds before the suffix fallback is
+reached.
+
+**Evidence:**
+
+- Created comprehensive test suite: `test/codegen/bundler-type-identity_test.ts`
+- Tests cover: suffix collisions (Array/MyArray), same-name classes across
+  modules, generics with cross-module types, nested generics, interfaces
+- All 10+ scenarios pass, meaning bundler correctly renames type references
+- Could not construct a scenario where suffix matching is actually triggered
+
+**Why the code was originally written:**
+
+The suffix matching was likely added as a safety fallback when the bundler was
+first implemented, in case some type annotations were missed. Now that the
+bundler has matured, it handles all cases correctly.
+
+**Why this is still problematic:**
+
+1. Dead code adds maintenance burden and cognitive overhead
+2. Couples codegen to bundler naming conventions (fragile if conventions change)
+3. The fallback returns the FIRST match from Map iteration - non-deterministic
+4. If any future code path introduces unbundled type annotations, suffix
+   matching could return the wrong class silently
+
+**Resolution:**
+
+After Round 2 (identity-based lookups via checker types), the suffix matching
+code can be safely removed. A `test.todo()` marker has been added to track this:
+`bundler-type-identity_test.ts: "Round 2 verification: remove suffix-based lookups"`
+
+**Original analysis (preserved for context):**
+
+~~Root cause: The bundler updates class declaration names (e.g., `Array` →
+`m3_Array`) and most type annotations. However, type annotations inside generic
+class bodies may not be updated when the class is instantiated at codegen time.~~
+
+This turned out to be incorrect - the bundler does update type annotations in
+generic class bodies correctly. The suffix matching was defensive coding that
+became unnecessary.
+
 ### Round 2: Single Pass Type Checking
 
 **Goal:** Eliminate bundler renaming and multiple type-check passes
