@@ -104,7 +104,8 @@ Codegen
 
 **Location:** New file `packages/compiler/src/lib/checker/semantic-context.ts`
 
-Replaces scattered AST mutations with a single metadata store:
+Stores semantic metadata separately from the AST. This keeps the AST immutable
+and enables incremental compilation.
 
 ```typescript
 export class SemanticContext {
@@ -113,9 +114,6 @@ export class SemanticContext {
 
   // Map identifiers/members to their resolved symbols
   readonly nodeSymbols = new Map<Node, Symbol>();
-
-  // Map class/interface types to their struct indices (assigned during codegen)
-  readonly typeStructIndices = new Map<ClassType | InterfaceType, number>();
 
   // Module-level declarations (types, functions, classes, interfaces)
   readonly moduleDeclarations = new Map<string, Map<string, Declaration>>();
@@ -129,12 +127,13 @@ export class SemanticContext {
   setNodeType(node: Node, type: Type): void { ... }
   getNodeType(node: Node): Type | undefined { ... }
 
-  setTypeStructIndex(type: ClassType | InterfaceType, index: number): void { ... }
-  getTypeStructIndex(type: ClassType | InterfaceType): number | undefined { ... }
-
   // ... other accessors
 }
 ```
+
+**Note:** WASM struct indices are stored in `CodegenContext`, not here. This
+keeps SemanticContext output-format agnostic—the same semantic info can be used
+for different backends (WASM, debugging, LSP hover info, etc.).
 
 **Benefits:**
 
@@ -319,45 +318,48 @@ export function classTypesEqual(t1: ClassType, t2: ClassType): boolean {
 
 **New approach:**
 
+Struct indices are stored in `CodegenContext` (the emitter layer), not
+`SemanticContext`. This keeps semantic info separate from output-format-specific
+details:
+
 ```typescript
-export class Codegen {
-  private typeStructIndex = new Map<ClassType | InterfaceType, number>();
-  private nextStructIndex = 0;
+// In CodegenContext (WASM emitter state)
+export class CodegenContext {
+  // Type → WASM struct index mappings (keyed by checker types)
+  readonly #classStructIndices = new Map<ClassType, number>();
+  readonly #interfaceStructIndices = new Map<InterfaceType, number>();
+  readonly #structIndexToClass = new Map<number, ClassType>();
+  readonly #structIndexToInterface = new Map<number, InterfaceType>();
 
   /**
-   * During codegen, assign struct indices to types as they're encountered.
-   * Store in SemanticContext for later reference.
+   * Register a class type's WASM struct index.
+   * Called during code generation when a class struct is created.
    */
-  private assignStructIndex(type: ClassType | InterfaceType): number {
-    if (this.typeStructIndex.has(type)) {
-      return this.typeStructIndex.get(type)!;
-    }
-
-    const index = this.nextStructIndex++;
-    this.typeStructIndex.set(type, index);
-    this.semanticContext.setTypeStructIndex(type, index);
-    return index;
+  setClassStructIndex(classType: ClassType, structIndex: number): void {
+    this.#classStructIndices.set(classType, structIndex);
+    this.#structIndexToClass.set(structIndex, classType);
   }
 
   /**
-   * Look up a type's struct index - no string matching needed.
+   * Get the WASM struct index for a class type.
    */
-  private getStructIndex(type: ClassType | InterfaceType): number {
-    const index = this.typeStructIndex.get(type);
-    if (index === undefined) {
-      throw new Error(`Type ${type.name} has no struct index assigned`);
-    }
-    return index;
+  getClassStructIndex(classType: ClassType): number | undefined {
+    return this.#classStructIndices.get(classType);
   }
+
+  // Similar methods for interfaces...
 }
 ```
 
+**Key insight:** Using checker types (ClassType, InterfaceType) as map keys
+enables identity-based lookups. Even if declaration names are renamed during
+bundling, the ClassType object remains the same, so lookups work correctly.
+
 **Files affected:**
 
-- `packages/compiler/src/lib/codegen/index.ts` - Accept SemanticContext
-- `packages/compiler/src/lib/codegen/classes.ts` - Remove `mapType()`, use
-  struct indices
-- `packages/compiler/src/lib/emitter.ts` - Use struct indices directly
+- `packages/compiler/src/lib/codegen/context.ts` - Store type→struct index maps
+- `packages/compiler/src/lib/codegen/classes.ts` - Use identity-based lookups
+  instead of `mapType()` suffix matching
 
 ### 6. AST Immutability
 
@@ -422,31 +424,34 @@ interface Expression {
 
 ## Implementation Plan
 
-### Round 1: Foundation (Establish SemanticContext)
+### Round 1: Foundation (Establish SemanticContext) ✅ COMPLETED
 
 **Goal:** Introduce SemanticContext without removing existing functionality
 
-1. Create `SemanticContext` class
-2. Wire it through Codegen as optional metadata store
-3. Store type→struct index mappings in context
-4. Remove suffix-based `mapType()` lookups, use context instead
-5. All tests should pass (no semantic changes)
+1. ✅ Create `SemanticContext` class
+2. ✅ Wire it through Codegen as optional metadata store
+3. ✅ Store type→struct index mappings in `CodegenContext` (emitter layer)
+4. ✅ Add identity-based lookup methods (`getClassInfoByType`, `getInterfaceInfoByType`)
+5. All tests pass (no semantic changes)
+
+**Architecture note:** Struct indices are stored in `CodegenContext`, not
+`SemanticContext`. This keeps semantic info output-format agnostic. The same
+SemanticContext could be used for different backends (WASM, debugging, etc.).
 
 **Important:** Preserve recent type system improvements:
+
 - Never type support in codegen (maps to empty results)
 - Literal type support (LiteralTypeAnnotation)
 - Union-of-literals detection for enum backing types
 - Type parameter erasure to `anyref` (not `i32`) for unbound generics
 - NO silent fallback to `i32` for unknown types (should error instead)
 
-**Affected files:**
+**Files completed:**
 
-- Create: `packages/compiler/src/lib/checker/semantic-context.ts`
-- Update: `packages/compiler/src/lib/codegen/index.ts` (accept context)
-- Update: `packages/compiler/src/lib/codegen/classes.ts` (use context instead of
-  mapType)
-- Update: `packages/compiler/src/lib/compiler.ts` (create and pass context)
-- Update: Tests in `packages/compiler/src/test/`
+- Created: `packages/compiler/src/lib/checker/semantic-context.ts`
+- Updated: `packages/compiler/src/lib/codegen/context.ts` (type→struct index maps)
+- Updated: `packages/compiler/src/lib/codegen/classes.ts` (register types during preRegister)
+- Updated: `packages/compiler/src/lib/codegen/index.ts` (pass SemanticContext to CodegenContext)
 
 **Effort:** 2-3 hours
 
@@ -460,6 +465,9 @@ interface Expression {
 4. Implement topological import-driven type-checking
 5. Remove Bundler entirely
 6. Remove `_checked` flags from types
+7. **Register generic instantiations with checker types** - When `instantiateClass()`
+   creates `Box<String>`, register the instantiated ClassType so identity-based
+   lookups work for generics too
 
 **Affected files:**
 
@@ -561,6 +569,162 @@ The refactoring is mostly internal:
    - Add readonly check to TypeScript compiler
    - Incremental migration of code to use context
    - All existing tests pass
+
+### Suggested Failing Tests (Add Before Fix)
+
+These tests expose latent bugs caused by name-based lookups. They should fail
+with the current implementation and pass after the refactoring is complete.
+
+#### 1. Cross-Module Generic with Same Class Name
+
+**File:** `packages/compiler/src/test/codegen/cross-module-generic-collision_test.ts`
+
+**Problem:** Two modules define different classes with the same name. When both
+are used as type arguments to a generic, the suffix-based lookup in `mapType()`
+may resolve to the wrong class.
+
+```zena
+// Module A (zena:test/module-a)
+export class Item { value: i32; #new(v: i32) { this.value = v; } }
+
+// Module B (zena:test/module-b)
+export class Item { name: string; #new(n: string) { this.name = n; } }
+
+// Main module
+import { Item as ItemA } from 'zena:test/module-a';
+import { Item as ItemB } from 'zena:test/module-b';
+
+class Box<T> { contents: T; #new(c: T) { this.contents = c; } }
+
+const boxA = new Box<ItemA>(new ItemA(42));
+const boxB = new Box<ItemB>(new ItemB('hello'));
+
+// Should access the correct field for each type
+export const test = () => boxA.contents.value + boxB.contents.name.length;
+```
+
+**Expected:** Returns `42 + 5 = 47`  
+**Current risk:** `mapType()` might resolve `ItemA` to `ItemB`'s struct if
+suffix matching is ambiguous.
+
+#### 2. Generic Instantiation After Bundler Rename
+
+**File:** `packages/compiler/src/test/codegen/generic-rename-lookup_test.ts`
+
+**Problem:** `getSpecializedName()` produces names like `Box_m0_String` after
+bundling. If the checker's ClassType still has the original name, identity-based
+lookup fails and we fall back to suffix matching.
+
+```zena
+// Stdlib provides String (renamed to m0_String after bundling)
+class Box<T> {
+  value: T;
+  #new(v: T) { this.value = v; }
+}
+
+const strBox = new Box<string>('test');
+
+// Later, use the Box<string> type in a function signature
+const getLength = (b: Box<string>) => b.value.length;
+
+export const test = () => getLength(strBox);
+```
+
+**Expected:** Returns `4`  
+**Current risk:** The `Box<string>` in `getLength`'s signature may create a
+different specialized name than the one created for `strBox`, causing a type
+mismatch or wrong struct index.
+
+#### 3. Record Type with Class-Typed Field After Rename
+
+**File:** `packages/compiler/src/test/codegen/record-class-field-rename_test.ts`
+
+**Problem:** Record type canonical keys include field types. If a class is
+renamed, two records with the "same" structure may get different canonical keys.
+
+```zena
+class Point { x: i32; y: i32; #new(x: i32, y: i32) { this.x = x; this.y = y; } }
+
+const makeRecord = () => { point: new Point(1, 2) };
+const useRecord = (r: { point: Point }) => r.point.x + r.point.y;
+
+export const test = () => useRecord(makeRecord());
+```
+
+**Expected:** Returns `3`  
+**Current risk:** If `makeRecord`'s return type is computed before bundler
+rename and `useRecord`'s parameter type is computed after, the record types
+may have different canonical keys.
+
+#### 4. Closure Type with Generic Callback
+
+**File:** `packages/compiler/src/test/codegen/closure-generic-callback_test.ts`
+
+**Problem:** Closure types are keyed by WASM type bytes, which derive from
+struct indices. If a generic class instantiation's struct index lookup fails,
+the closure signature may be wrong.
+
+```zena
+class Container<T> {
+  items: array<T>;
+  #new() { this.items = #[]; }
+
+  forEach(callback: (item: T) => void): void {
+    // iterate and call callback
+  }
+}
+
+const container = new Container<i32>();
+var sum = 0;
+container.forEach((x) => { sum = sum + x; });
+
+export const test = () => sum;
+```
+
+**Expected:** Compiles and runs  
+**Current risk:** The closure type for `(item: T) => void` may resolve `T`
+incorrectly if the generic instantiation lookup fails.
+
+#### 5. Interface Implementation Across Modules
+
+**File:** `packages/compiler/src/test/codegen/interface-cross-module_test.ts`
+
+**Problem:** Interface names are used as keys in `classInfo.implements` map.
+After renaming, the interface name may not match.
+
+```zena
+// Module A
+export interface Printable { print(): string; }
+
+// Module B
+import { Printable } from 'zena:test/module-a';
+
+export class Item implements Printable {
+  name: string;
+  #new(n: string) { this.name = n; }
+  print(): string { return this.name; }
+}
+
+// Main
+import { Printable } from 'zena:test/module-a';
+import { Item } from 'zena:test/module-b';
+
+const printIt = (p: Printable) => p.print();
+
+export const test = () => printIt(new Item('hello'));
+```
+
+**Expected:** Returns `"hello"`  
+**Current risk:** `Item`'s implements map may use a different name for
+`Printable` than what `printIt` expects.
+
+### Test Implementation Notes
+
+- These tests require multi-module compilation support in the test harness
+- Some may already pass if the current implementation handles the edge case
+- If a test passes unexpectedly, investigate why—either the bug was fixed or
+  the test doesn't exercise the intended code path
+- After refactoring, these tests serve as regression tests
 
 ### Rollback Strategy
 

@@ -9,13 +9,18 @@ import {
   type TaggedTemplateExpression,
   type TypeAnnotation,
 } from '../ast.js';
+import {SemanticContext} from '../checker/semantic-context.js';
 import {
   DiagnosticBag,
   DiagnosticCode,
   type DiagnosticLocation,
 } from '../diagnostics.js';
 import {WasmModule} from '../emitter.js';
-import {type FunctionType} from '../types.js';
+import {
+  type ClassType,
+  type FunctionType,
+  type InterfaceType,
+} from '../types.js';
 import {ValType} from '../wasm.js';
 import type {ClassInfo, InterfaceInfo, LocalInfo} from './types.js';
 
@@ -84,6 +89,12 @@ export class CodegenContext {
   public module: WasmModule;
   public program: Program;
   public diagnostics = new DiagnosticBag();
+
+  /**
+   * Semantic context for type → struct index lookups.
+   * Populated during codegen and used to resolve types by object identity.
+   */
+  public semanticContext: SemanticContext;
 
   /** File name used for diagnostic locations */
   public fileName = '<anonymous>';
@@ -162,11 +173,18 @@ export class CodegenContext {
   public closureStructs = new Map<number, {funcTypeIndex: number}>(); // structTypeIndex -> info
   public enums = new Map<number, {members: Map<string, number>}>(); // structTypeIndex -> info
 
+  // Type → WASM struct index mappings (emitter-specific, keyed by checker types)
+  readonly #classStructIndices = new Map<ClassType, number>();
+  readonly #interfaceStructIndices = new Map<InterfaceType, number>();
+  readonly #structIndexToClass = new Map<number, ClassType>();
+  readonly #structIndexToInterface = new Map<number, InterfaceType>();
+
   // Template Literals
   public templateLiteralGlobals = new Map<TaggedTemplateExpression, number>();
 
-  constructor(program: Program) {
+  constructor(program: Program, semanticContext?: SemanticContext) {
     this.program = program;
+    this.semanticContext = semanticContext ?? new SemanticContext();
     if (program.wellKnownTypes) {
       this.wellKnownTypes = program.wellKnownTypes;
     }
@@ -340,6 +358,62 @@ export class CodegenContext {
     return this.globals.get(name);
   }
 
+  // ===== Type → Struct Index Management (WASM-specific) =====
+  // These maps store WASM binary emitter state, keyed by checker types.
+  // Using object identity ensures stable lookups regardless of name changes.
+
+  /**
+   * Register a class type's WASM struct index.
+   * Called during code generation when a class struct is created.
+   */
+  public setClassStructIndex(classType: ClassType, structIndex: number): void {
+    this.#classStructIndices.set(classType, structIndex);
+    this.#structIndexToClass.set(structIndex, classType);
+  }
+
+  /**
+   * Get the WASM struct index for a class type.
+   */
+  public getClassStructIndex(classType: ClassType): number | undefined {
+    return this.#classStructIndices.get(classType);
+  }
+
+  /**
+   * Get the ClassType for a struct index.
+   */
+  public getClassByStructIndex(structIndex: number): ClassType | undefined {
+    return this.#structIndexToClass.get(structIndex);
+  }
+
+  /**
+   * Register an interface type's WASM struct index.
+   */
+  public setInterfaceStructIndex(
+    interfaceType: InterfaceType,
+    structIndex: number,
+  ): void {
+    this.#interfaceStructIndices.set(interfaceType, structIndex);
+    this.#structIndexToInterface.set(structIndex, interfaceType);
+  }
+
+  /**
+   * Get the WASM struct index for an interface type.
+   */
+  public getInterfaceStructIndex(
+    interfaceType: InterfaceType,
+  ): number | undefined {
+    return this.#interfaceStructIndices.get(interfaceType);
+  }
+
+  /**
+   * Get the InterfaceType for a struct index.
+   */
+  public getInterfaceByStructIndex(
+    structIndex: number,
+  ): InterfaceType | undefined {
+    return this.#structIndexToInterface.get(structIndex);
+  }
+
   public getRecordTypeIndex(fields: {name: string; type: number[]}[]): number {
     // Sort fields by name to canonicalize
     const sortedFields = [...fields].sort((a, b) =>
@@ -467,5 +541,49 @@ export class CodegenContext {
       DiagnosticCode.InternalCompilerError,
       node,
     );
+  }
+
+  /**
+   * Look up a ClassInfo by its checker ClassType.
+   * Uses object identity to find the class, avoiding name-based lookups.
+   *
+   * @param classType The ClassType from the type checker
+   * @returns The ClassInfo if found, undefined otherwise
+   */
+  public getClassInfoByType(
+    classType: import('../types.js').ClassType,
+  ): ClassInfo | undefined {
+    const structIndex = this.getClassStructIndex(classType);
+    if (structIndex === undefined) return undefined;
+
+    // Find ClassInfo with matching structTypeIndex
+    for (const info of this.classes.values()) {
+      if (info.structTypeIndex === structIndex) {
+        return info;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Look up an InterfaceInfo by its checker InterfaceType.
+   * Uses object identity to find the interface, avoiding name-based lookups.
+   *
+   * @param interfaceType The InterfaceType from the type checker
+   * @returns The InterfaceInfo if found, undefined otherwise
+   */
+  public getInterfaceInfoByType(
+    interfaceType: import('../types.js').InterfaceType,
+  ): InterfaceInfo | undefined {
+    const structIndex = this.getInterfaceStructIndex(interfaceType);
+    if (structIndex === undefined) return undefined;
+
+    // Find InterfaceInfo with matching structTypeIndex
+    for (const info of this.interfaces.values()) {
+      if (info.structTypeIndex === structIndex) {
+        return info;
+      }
+    }
+    return undefined;
   }
 }

@@ -10,6 +10,7 @@ import {
   type TypeAliasDeclaration,
   type VariableDeclaration,
 } from '../ast.js';
+import {SemanticContext} from '../checker/semantic-context.js';
 import {
   preRegisterClassStruct,
   defineClassStruct,
@@ -49,8 +50,16 @@ import {WasmModule} from '../emitter.js';
 export class CodeGenerator {
   #ctx: CodegenContext;
 
-  constructor(program: Program) {
-    this.#ctx = new CodegenContext(program);
+  constructor(program: Program, semanticContext?: SemanticContext) {
+    this.#ctx = new CodegenContext(program, semanticContext);
+  }
+
+  /**
+   * Get the semantic context used by this code generator.
+   * Useful for tests that need to inspect type mappings.
+   */
+  public get semanticContext(): SemanticContext {
+    return this.#ctx.semanticContext;
   }
 
   /**

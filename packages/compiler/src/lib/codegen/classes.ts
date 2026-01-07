@@ -146,6 +146,14 @@ export function preRegisterInterface(
     fields: new Map(),
     parent: parentName,
   });
+
+  // Register type → struct index for identity-based lookups
+  if (decl.inferredType && decl.inferredType.kind === TypeKind.Interface) {
+    ctx.setInterfaceStructIndex(
+      decl.inferredType as InterfaceType,
+      structTypeIndex,
+    );
+  }
 }
 
 /**
@@ -935,6 +943,11 @@ export function preRegisterClassStruct(
       onType,
     });
 
+    // Register type → struct index for identity-based lookups
+    if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
+      ctx.setClassStructIndex(decl.inferredType as ClassType, structTypeIndex);
+    }
+
     // Check if this is the String class
     const isStringClass =
       !!ctx.wellKnownTypes.String &&
@@ -1050,6 +1063,11 @@ export function preRegisterClassStruct(
     isFinal: decl.isFinal,
     isExtension: decl.isExtension,
   });
+
+  // Register type → struct index for identity-based lookups
+  if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
+    ctx.setClassStructIndex(decl.inferredType as ClassType, structTypeIndex);
+  }
 }
 
 /**
@@ -2190,7 +2208,9 @@ export function generateClassMethods(
         const fieldName = manglePrivateName(className, propName);
         const fieldInfo = classInfo.fields.get(fieldName);
         if (!fieldInfo) {
-          throw new Error(`Field ${fieldName} not found in class ${decl.name.name}`);
+          throw new Error(
+            `Field ${fieldName} not found in class ${decl.name.name}`,
+          );
         }
 
         // Getter
