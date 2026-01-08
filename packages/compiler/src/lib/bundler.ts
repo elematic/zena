@@ -83,8 +83,8 @@ export class Bundler {
 
     const wellKnownTypes: Program['wellKnownTypes'] = {};
 
-    if (this.#globalSymbols.has('zena:array:FixedArray')) {
-      const name = this.#globalSymbols.get('zena:array:FixedArray')!;
+    if (this.#globalSymbols.has('zena:fixed-array:FixedArray')) {
+      const name = this.#globalSymbols.get('zena:fixed-array:FixedArray')!;
       const decl = newBody.find(
         (stmt): stmt is ClassDeclaration =>
           stmt.type === NodeType.ClassDeclaration && stmt.name.name === name,
@@ -94,7 +94,7 @@ export class Bundler {
 
     if (!wellKnownTypes.FixedArray && !this.#entryPoint.isStdlib) {
       throw new Error(
-        'Missing well-known type: FixedArray. The standard library module "zena:array" is required for user modules.',
+        'Missing well-known type: FixedArray. The standard library module "zena:fixed-array" is required for user modules.',
       );
     }
 

@@ -306,8 +306,10 @@ export function predeclareType(ctx: CheckerContext, stmt: Statement) {
 const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
   const className = decl.name.name;
 
-  // Skip if already declared (e.g., imported types)
-  if (ctx.resolveType(className)) {
+  // Skip if already declared IN CURRENT SCOPE (e.g., imported types)
+  // Don't skip for prelude types - allow user to shadow them
+  const existingInScope = ctx.resolveTypeLocal(className);
+  if (existingInScope && existingInScope.kind === TypeKind.Class) {
     return;
   }
 
@@ -348,7 +350,6 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
   // Create a placeholder class type
   const classType: ClassType = {
     kind: TypeKind.Class,
-    _debugId: Math.floor(Math.random() * 1000000),
     name: className,
     typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
     superType: undefined, // Will be resolved in full check
@@ -455,8 +456,10 @@ const predeclareInterface = (
 ) => {
   const interfaceName = decl.name.name;
 
-  // Skip if already declared
-  if (ctx.resolveType(interfaceName)) {
+  // Skip if already declared IN CURRENT SCOPE (not prelude)
+  // Allow user to shadow prelude types with their own interfaces
+  const existingInScope = ctx.resolveTypeLocal(interfaceName);
+  if (existingInScope && existingInScope.kind === TypeKind.Interface) {
     return;
   }
 

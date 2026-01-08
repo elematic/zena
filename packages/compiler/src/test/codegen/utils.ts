@@ -140,22 +140,17 @@ export async function compileAndInstantiate(
   const host = createHost(input, path);
 
   const compiler = new Compiler(host);
-  const program = compiler.bundle(path);
 
-  // Re-run checker on the bundled program to ensure types have correct bundled names
-  const checker = new TypeChecker(program, compiler, {
-    path,
-    exports: new Map(),
-    isStdlib: true,
-  } as any);
-  checker.preludeModules = compiler.preludeModules;
-  const diagnostics = checker.check();
-  if (diagnostics.length > 0) {
+  // Check for errors from the initial compilation pass
+  const modules = compiler.compile(path);
+  const allDiagnostics = modules.flatMap((m) => m.diagnostics);
+  if (allDiagnostics.length > 0) {
     throw new Error(
-      `Bundled program check failed: ${diagnostics.map((d) => d.message).join(', ')}`,
+      `Compilation failed: ${allDiagnostics.map((d) => d.message).join(', ')}`,
     );
   }
 
+  const program = compiler.bundle(path);
   const codegen = new CodeGenerator(program);
   const bytes = codegen.generate();
 

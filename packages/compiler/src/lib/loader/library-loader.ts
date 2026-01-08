@@ -124,7 +124,9 @@ export class LibraryLoader {
    */
   load(path: string): LibraryRecord {
     const existing = this.#cache.get(path);
-    if (existing) return existing;
+    if (existing) {
+      return existing;
+    }
 
     const isStdlib = path.startsWith('zena:') || this.#stdlibPaths.has(path);
 

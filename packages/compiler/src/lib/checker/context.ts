@@ -209,6 +209,20 @@ export class CheckerContext {
     return undefined;
   }
 
+  /**
+   * Resolve a type name, checking only local scopes (not prelude).
+   * Use this when you need to check if a type is already declared locally.
+   */
+  resolveTypeLocal(name: string): Type | undefined {
+    const key = `type:${name}`;
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      if (this.scopes[i].has(key)) {
+        return this.scopes[i].get(key)!.type;
+      }
+    }
+    return undefined;
+  }
+
   resolveType(name: string): Type | undefined {
     const key = `type:${name}`;
     for (let i = this.scopes.length - 1; i >= 0; i--) {
@@ -341,7 +355,7 @@ export class CheckerContext {
   static readonly WELL_KNOWN_TYPE_MODULES: ReadonlyMap<string, string> =
     new Map([
       [Types.String.name, 'zena:string'],
-      [TypeNames.FixedArray, 'zena:array'],
+      [TypeNames.FixedArray, 'zena:fixed-array'],
     ]);
 
   getWellKnownType(name: string): Type | undefined {
