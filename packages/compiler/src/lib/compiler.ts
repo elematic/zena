@@ -127,7 +127,9 @@ export class Compiler {
     const checking = new Set<string>();
 
     const checkModule = (module: Module) => {
-      if (checked.has(module.path) || checking.has(module.path)) return;
+      if (checked.has(module.path) || checking.has(module.path)) {
+        return;
+      }
 
       checking.add(module.path);
 
@@ -139,21 +141,30 @@ export class Compiler {
         }
       }
 
-      // Ensure prelude modules are checked
-      // If the current module is a prelude module, we only check prelude modules
-      // that appear BEFORE it in the prelude list. This prevents circular dependencies
-      // and enforces a topological order for the standard library.
-      let preludeLimit = this.#preludeModules.length;
-      const preludeIndex = this.#preludeModules.findIndex(
-        (pm) => pm.path === module.path,
-      );
-
-      if (preludeIndex !== -1) {
-        preludeLimit = preludeIndex;
-      }
-
-      for (let i = 0; i < preludeLimit; i++) {
-        checkModule(this.#preludeModules[i]);
+      // Ensure prelude modules are checked for user code.
+      // Stdlib modules (including prelude modules) don't need prelude checking -
+      // they should only use their explicit dependencies. This prevents cycles
+      // where a stdlib module depends on a prelude module that depends back on it
+      // (e.g., zena:array -> zena:map -> zena:array).
+      //
+      // For prelude modules specifically, we check only prelude modules that
+      // appear BEFORE this one in the prelude list, enforcing topological order.
+      if (!module.isStdlib && !module.path.startsWith('zena:')) {
+        // User module: ensure all prelude modules are checked
+        for (const preludeMod of this.#preludeModules) {
+          checkModule(preludeMod);
+        }
+      } else {
+        // Prelude module: only check earlier prelude modules
+        const preludeIndex = this.#preludeModules.findIndex(
+          (pm) => pm.path === module.path,
+        );
+        if (preludeIndex !== -1) {
+          for (let i = 0; i < preludeIndex; i++) {
+            checkModule(this.#preludeModules[i]);
+          }
+        }
+        // Other stdlib modules: don't check any prelude, just use explicit deps
       }
 
       const checker = new TypeChecker(module.ast, this, module);
