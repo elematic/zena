@@ -543,19 +543,31 @@ Created a `LibraryLoader` class that handles library resolution, loading, parsin
 - Circular imports don't cause infinite recursion - library added to cache before loading deps
 - Uses `CompilerHost` for file system access (no separate `LibraryLoaderHost` - that would duplicate `CompilerHost`)
 - `computeGraph()` returns topological order with cycle detection
-- **No `loadPrelude()` method** - Prelude handling is a *compilation policy*, not a loader concern.
+- **No `loadPrelude()` method** - Prelude handling is a _compilation policy_, not a loader concern.
   The Compiler is responsible for:
   1. Parsing the prelude source to extract stdlib specifiers
   2. Calling `loader.load()` for each stdlib path
   3. Passing prelude libraries to the type checker
-  This keeps LibraryLoader focused on its core job: loading, parsing, and caching libraries.
+     This keeps LibraryLoader focused on its core job: loading, parsing, and caching libraries.
 
-#### Step 2.2: Refactor Compiler to use LibraryLoader
+#### Step 2.2: Refactor Compiler to use LibraryLoader ✅ COMPLETED
 
-1. Update `Compiler` class to use `DefaultLibraryLoader` internally
-2. Replace `#loadModule()` with `LibraryLoader.load()`
-3. Replace `Module` type with `LibraryRecord` (or adapt)
-4. Test that existing compilation still works
+Refactored the `Compiler` class to use `LibraryLoader` internally for all library loading:
+
+1. ✅ Added `#loader: LibraryLoader` field to Compiler
+2. ✅ Updated `compile()` to use `loader.load()` and convert libraries to modules
+3. ✅ Updated `#loadPrelude()` to load via LibraryLoader and convert ALL transitive dependencies to modules
+4. ✅ Created `#libraryToModule()` to convert `LibraryRecord` to `Module` (adding checker-specific fields)
+5. ✅ All tests pass
+
+**Key insight:** When prelude imports from `zena:array` (a re-export module), the LibraryLoader
+loads all transitive dependencies (`zena:fixed-array`, `zena:sequence`, etc.). The fix ensures
+ALL loaded libraries are converted to Modules and added to `#modules`, not just the directly
+imported ones. This allows the Bundler to see re-exported symbols like `zena:array:FixedArray`.
+
+**Files updated:**
+
+- `packages/compiler/src/lib/compiler.ts` - Uses LibraryLoader, simplified module loading
 
 #### Step 2.3: Update Checker to use LibraryLoader
 

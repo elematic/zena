@@ -5,6 +5,7 @@ import type {SymbolInfo} from './checker/context.js';
 import {TypeChecker} from './checker/index.js';
 import type {Diagnostic} from './diagnostics.js';
 import {Bundler} from './bundler.js';
+import {LibraryLoader, type LibraryRecord} from './loader/index.js';
 
 export interface CompilerHost {
   resolve(specifier: string, referrer: string): string;
@@ -16,26 +17,31 @@ export interface CompilerOptions {
   stdlibPaths?: string[];
 }
 
+/**
+ * A module with type-checking results.
+ *
+ * Extends LibraryRecord with checker-populated fields (exports, diagnostics).
+ */
 export interface Module {
   path: string;
   isStdlib: boolean;
   source: string;
   ast: Program;
   imports: Map<string, string>; // specifier -> resolvedPath
-  exports: Map<string, SymbolInfo>; // exported name -> symbol info
-  diagnostics: Diagnostic[];
+  exports: Map<string, SymbolInfo>; // exported name -> symbol info (populated by checker)
+  diagnostics: Diagnostic[]; // type-checking diagnostics (populated by checker)
 }
 
 export class Compiler {
   #host: CompilerHost;
-  #options: CompilerOptions;
+  #loader: LibraryLoader;
   #modules = new Map<string, Module>();
   #preludeModules: Module[] = [];
   #preludeLoaded = false;
 
   constructor(host: CompilerHost, options: CompilerOptions = {}) {
     this.#host = host;
-    this.#options = options;
+    this.#loader = new LibraryLoader(host, {stdlibPaths: options.stdlibPaths});
   }
 
   public getModule(path: string): Module | undefined {
@@ -47,7 +53,16 @@ export class Compiler {
   }
 
   public compile(entryPoint: string): Module[] {
-    this.#loadModule(entryPoint);
+    // Load entry point and all dependencies via LibraryLoader
+    this.#loader.load(entryPoint);
+
+    // Convert all loaded libraries to Modules
+    for (const lib of this.#loader.libraries()) {
+      if (!this.#modules.has(lib.path)) {
+        this.#modules.set(lib.path, this.#libraryToModule(lib));
+      }
+    }
+
     this.#checkModules();
     return Array.from(this.#modules.values());
   }
@@ -57,6 +72,21 @@ export class Compiler {
     const entryModule = this.#modules.get(entryPoint)!;
     const bundler = new Bundler(modules, entryModule);
     return bundler.bundle();
+  }
+
+  /**
+   * Convert a LibraryRecord to a Module by adding checker-specific fields.
+   */
+  #libraryToModule(lib: LibraryRecord): Module {
+    return {
+      path: lib.path,
+      isStdlib: lib.isStdlib,
+      source: lib.source,
+      ast: lib.ast,
+      imports: new Map(lib.imports), // Convert ReadonlyMap to mutable Map
+      exports: new Map(),
+      diagnostics: [],
+    };
   }
 
   #loadPrelude() {
@@ -71,67 +101,21 @@ export class Compiler {
         const specifier = stmt.moduleSpecifier.value;
         // We assume prelude imports are zena: modules
         const resolved = this.#host.resolve(specifier, 'prelude');
-        this.#loadModule(resolved, true);
+
+        // Load via LibraryLoader (this loads transitive dependencies too)
+        this.#loader.load(resolved);
+
+        // Convert ALL loaded libraries to Modules (including transitive dependencies)
+        for (const lib of this.#loader.libraries()) {
+          if (!this.#modules.has(lib.path)) {
+            this.#modules.set(lib.path, this.#libraryToModule(lib));
+          }
+        }
+
         const mod = this.#modules.get(resolved);
         if (mod) {
           this.#preludeModules.push(mod);
         }
-      }
-    }
-  }
-
-  #loadModule(path: string, isStdlib = false): Module {
-    if (this.#modules.has(path)) {
-      return this.#modules.get(path)!;
-    }
-
-    if (path.startsWith('zena:')) {
-      isStdlib = true;
-    }
-
-    // Check if path is in stdlibPaths option
-    if (this.#options.stdlibPaths?.includes(path)) {
-      isStdlib = true;
-    }
-
-    const source = this.#host.load(path);
-    const parser = new Parser(source);
-    const ast = parser.parse();
-
-    const module: Module = {
-      path,
-      isStdlib,
-      source,
-      ast,
-      imports: new Map(),
-      exports: new Map(),
-      diagnostics: [],
-    };
-
-    this.#modules.set(path, module);
-
-    this.#analyzeImports(module);
-
-    return module;
-  }
-
-  #analyzeImports(module: Module) {
-    for (const stmt of module.ast.body) {
-      if (
-        stmt.type === NodeType.ImportDeclaration ||
-        stmt.type === NodeType.ExportAllDeclaration
-      ) {
-        const specifier = stmt.moduleSpecifier.value;
-        const resolvedPath = this.#host.resolve(specifier, module.path);
-
-        const isImportStdlib =
-          specifier.startsWith('zena:') ||
-          (module.isStdlib && specifier.startsWith('.'));
-
-        module.imports.set(specifier, resolvedPath);
-
-        // Recursively load imported module
-        this.#loadModule(resolvedPath, isImportStdlib);
       }
     }
   }
