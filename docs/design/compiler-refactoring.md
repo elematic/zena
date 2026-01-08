@@ -569,22 +569,52 @@ imported ones. This allows the Bundler to see re-exported symbols like `zena:arr
 
 - `packages/compiler/src/lib/compiler.ts` - Uses LibraryLoader, simplified module loading
 
-#### Step 2.3: Update Checker to use LibraryLoader
+#### Step 2.3: Topological Type-Checking Order
 
-1. Create `LibraryLoader` interface with `resolve()`, `load()`, etc.
-2. Extract library resolution from Bundler
+**Goal:** Ensure libraries are type-checked in dependency order so that imported types are fully resolved before use.
 
-#### Step 2.4: Refactor CheckerContext
+Currently, the `Compiler.#checkModules()` method already handles this:
 
-1. Refactor CheckerContext to accept LibraryLoader
-2. Implement topological import-driven type-checking
-3. Remove bundler symbol renaming
-4. Remove `_checked` flags from types
-5. **Register generic instantiations with checker types** - When `instantiateClass()`
-   creates `Box<String>`, register the instantiated ClassType so identity-based
-   lookups work for generics too
+- It calls `checkModule()` for each dependency before checking the current module
+- Prelude modules are checked before user modules
 
-#### Step 2.4: Remove Bundler Renaming
+**Status:** This is already implemented in `Compiler.#checkModules()`. The topological ordering is handled there.
+
+**Remaining work for this step:**
+
+1. Verify that prelude modules are checked in the correct order (dependencies first)
+2. Consider moving the topological logic to use `LibraryLoader.computeGraph()` for consistency
+
+#### Step 2.4: Remove `_checked` Flags from Types
+
+**Goal:** Eliminate the `_checked` flag on ClassType/InterfaceType/MixinType.
+
+**Status:** BLOCKED - Requires eliminating double type-checking first.
+
+**Finding:** The `_checked` flag must persist across CheckerContext instances because
+the current compilation flow runs the type checker twice:
+
+1. First in `compiler.bundle()` via `#checkModules()`
+2. Second explicitly in test utilities (e.g., `runZenaTestFile`) to "ensure types have correct bundled names"
+
+The `_checked` flag is stored on the type object itself (not in CheckerContext) so it
+survives across multiple TypeChecker instantiations. If we move it to `ctx.checkedTypes`,
+the second type-check pass fails with "Duplicate constructor/field/method" errors.
+
+**Prerequisite:** Step 2.5 (Remove Bundler Renaming) must be completed first.
+Once we eliminate bundler renaming and the need for a second type-check pass, we can:
+
+1. Move `_checked` tracking to SemanticContext (shared across checker instances)
+2. Or simply remove the second type-check pass entirely
+
+**Tasks (deferred):**
+
+1. Add `checkedTypes: Set<Type>` to SemanticContext (not CheckerContext)
+2. Replace `type._checked = true` with `semanticContext.checkedTypes.add(type)`
+3. Replace `if (type._checked)` with `if (semanticContext.checkedTypes.has(type))`
+4. Remove `_checked` property from ClassType, InterfaceType, MixinType
+
+#### Step 2.5: Remove Bundler Renaming
 
 1. Remove Bundler entirely (or just the renaming logic)
 2. Update tests to work with original symbol names
