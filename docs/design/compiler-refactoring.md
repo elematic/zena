@@ -69,12 +69,12 @@ The current AST is mutable:
 ```
 entry.zena
     ↓
-ModuleLoader (resolve imports, read files)
+LibraryLoader (resolve imports, read files)
     ↓
 Parser (produces immutable AST)
     ↓
 TypeChecker (single pass, topologically ordered)
-    ├─ Recursively type-check imported modules first
+    ├─ Recursively type-check imported libraries first
     ├─ Register types/classes/interfaces as encountered
     ├─ Build SemanticContext (metadata map)
     └─ All types tracked by object identity
@@ -142,44 +142,44 @@ for different backends (WASM, debugging, LSP hover info, etc.).
 - Codegen works with explicit metadata, not implicit AST mutations
 - LSP servers can maintain AST + SemanticContext for incremental edits
 
-### 2. ModuleLoader
+### 2. LibraryLoader
 
-**Location:** New file `packages/compiler/src/lib/loader/module-loader.ts`
+**Location:** New file `packages/compiler/src/lib/loader/library-loader.ts`
 
-Encapsulates module resolution and loading:
+Encapsulates library resolution and loading:
 
 ```typescript
-export interface ModuleLoader {
+export interface LibraryLoader {
   /**
-   * Resolve an import specifier (e.g., 'zena:string', './local-module')
-   * to a canonical module path and its source code.
+   * Resolve an import specifier (e.g., 'zena:string', './local-library')
+   * to a canonical library path and its source code.
    */
-  resolveModule(
+  resolveLibrary(
     specifier: string,
-    fromModule?: string,
+    fromLibrary?: string,
   ): Promise<{
     path: string;
     source: string;
   }>;
 
   /**
-   * Get all modules reachable from entry points, in topological order.
+   * Get all libraries reachable from entry points, in topological order.
    */
-  getModuleGraph(entryPoints: string[]): Promise<string[]>;
+  getLibraryGraph(entryPoints: string[]): Promise<string[]>;
 }
 ```
 
 Current bundler logic in
 [packages/compiler/src/lib/bundler.ts](../../../packages/compiler/src/lib/bundler.ts):
 
-- Extract module resolution into `ModuleLoader`
+- Extract library resolution into `LibraryLoader`
 - Remove name-renaming logic
 - Keep dependency graph construction
 
 **Files affected:**
 
-- `packages/compiler/src/lib/bundler.ts` - Extract to ModuleLoader, deprecate
-- `packages/compiler/src/lib/compiler.ts` - Use ModuleLoader instead of Bundler
+- `packages/compiler/src/lib/bundler.ts` - Extract to LibraryLoader, deprecate
+- `packages/compiler/src/lib/compiler.ts` - Use LibraryLoader instead of Bundler
 
 ### 3. TypeChecker Refactoring
 
@@ -188,8 +188,8 @@ Current bundler logic in
 
 **Current design:**
 
-- `CheckerContext` is local to a single module
-- `checkModule` is called separately for each module
+- `CheckerContext` is local to a single library
+- `checkModule` is called separately for each library
 - Bundler pre-renames, then type-checker runs
 - No natural ordering
 
@@ -198,32 +198,32 @@ Current bundler logic in
 ```typescript
 export class CheckerContext {
   constructor(
-    moduleLoader: ModuleLoader,
+    libraryLoader: LibraryLoader,
     semanticContext: SemanticContext,
-    entryModules: string[],
+    entryLibraries: string[],
   ) { ... }
 
   /**
-   * Type-check the entire program starting from entry modules.
-   * Recursively type-checks imported modules first (topological order).
+   * Type-check the entire program starting from entry libraries.
+   * Recursively type-checks imported libraries first (topological order).
    * Returns true if successful, false if errors occurred.
    */
   async checkProgram(): Promise<boolean> { ... }
 
   /**
-   * Type-check a single module (may recursively check imports).
+   * Type-check a single library (may recursively check imports).
    * Returns true if already checked (cached).
    */
-  private async checkModule(modulePath: string): Promise<boolean> { ... }
+  private async checkLibrary(libraryPath: string): Promise<boolean> { ... }
 
   /**
-   * Register a class, interface, or function in the current module's scope.
+   * Register a class, interface, or function in the current library's scope.
    * Called during parsing or semantic analysis.
    */
   registerDeclaration(name: string, declaration: Declaration): void { ... }
 
   /**
-   * Resolve a type by name within the current module context.
+   * Resolve a type by name within the current library context.
    * Checks current scope, then imports, respecting visibility rules.
    */
   resolveType(name: string): Type | undefined { ... }
@@ -233,11 +233,11 @@ export class CheckerContext {
 **Key changes:**
 
 1. Remove the `_checked` flag from types - rely on
-   `semanticContext.checkedModules` instead
-2. Remove `preludeExports` and `wellKnownTypes` maps - use explicit ModuleLoader
+   `semanticContext.checkedLibraries` instead
+2. Remove `preludeExports` and `wellKnownTypes` maps - use explicit LibraryLoader
    for stdlib
 3. Make type registration topological:
-   - When type-checking module A, if it imports B, check B first
+   - When type-checking library A, if it imports B, check B first
    - Register B's exports in the namespace
    - Then register A's types
 4. Store all registered types in SemanticContext
@@ -411,15 +411,15 @@ interface Expression {
 
 **New approach:**
 
-- Stdlib is just another module (`zena:string`, `zena:array`, etc.)
-- ModuleLoader resolves these standard specifiers
+- Stdlib is just another library (`zena:string`, `zena:array`, etc.)
+- LibraryLoader resolves these standard specifiers
 - No special well-known type logic needed
-- String type is registered during stdlib module type-checking
+- String type is registered during stdlib library type-checking
 
 **Files affected:**
 
 - `packages/compiler/src/lib/checker/context.ts` - Remove getWellKnownType
-- `packages/compiler/src/lib/loader/module-loader.ts` - Built-in support for
+- `packages/compiler/src/lib/loader/library-loader.ts` - Built-in support for
   `zena:*` specifiers
 
 ## Implementation Plan
@@ -513,30 +513,82 @@ This turned out to be incorrect - the bundler does update type annotations in
 generic class bodies correctly. The suffix matching was defensive coding that
 became unnecessary.
 
-### Round 2: Single Pass Type Checking
+### Round 2: Single Pass Type Checking (IN PROGRESS)
 
 **Goal:** Eliminate bundler renaming and multiple type-check passes
 
-1. Create `ModuleLoader` interface
-2. Extract module resolution from Bundler
-3. Refactor CheckerContext to accept ModuleLoader
-4. Implement topological import-driven type-checking
-5. Remove Bundler entirely
-6. Remove `_checked` flags from types
-7. **Register generic instantiations with checker types** - When `instantiateClass()`
+> **Terminology Note:** We use "library" to refer to individual `.zena` files,
+> reserving "module" for WASM modules. This avoids confusion since the compiler
+> produces WASM modules from multiple Zena libraries.
+
+#### Step 2.1: LibraryLoader Interface ✅ COMPLETED
+
+Created a `LibraryLoader` class that handles library resolution, loading, parsing, and caching:
+
+1. ✅ Create `LibraryLoader` class with `resolve()`, `load()`, `has()`, `get()`, `libraries()`, `computeGraph()` methods
+2. ✅ Create `LibraryRecord` type to represent loaded libraries with identity
+3. ✅ Implement topological sorting via `computeGraph()`
+4. ✅ Handle circular imports gracefully (add to cache before recursing)
+5. ✅ Add tests for library loading, caching, cycle detection, and identity
+
+**Files created:**
+
+- `packages/compiler/src/lib/loader/library-loader.ts` - LibraryLoader class
+- `packages/compiler/src/lib/loader/index.ts` - Public exports
+- `packages/compiler/src/test/loader/library-loader_test.ts` - Tests
+
+**Key design decisions:**
+
+- `LibraryRecord` is cached by path - same path always returns same object (identity)
+- Circular imports don't cause infinite recursion - library added to cache before loading deps
+- Uses `CompilerHost` for file system access (no separate `LibraryLoaderHost` - that would duplicate `CompilerHost`)
+- `computeGraph()` returns topological order with cycle detection
+- **No `loadPrelude()` method** - Prelude handling is a *compilation policy*, not a loader concern.
+  The Compiler is responsible for:
+  1. Parsing the prelude source to extract stdlib specifiers
+  2. Calling `loader.load()` for each stdlib path
+  3. Passing prelude libraries to the type checker
+  This keeps LibraryLoader focused on its core job: loading, parsing, and caching libraries.
+
+#### Step 2.2: Refactor Compiler to use LibraryLoader
+
+1. Update `Compiler` class to use `DefaultLibraryLoader` internally
+2. Replace `#loadModule()` with `LibraryLoader.load()`
+3. Replace `Module` type with `LibraryRecord` (or adapt)
+4. Test that existing compilation still works
+
+#### Step 2.3: Update Checker to use LibraryLoader
+
+1. Create `LibraryLoader` interface with `resolve()`, `load()`, etc.
+2. Extract library resolution from Bundler
+
+#### Step 2.4: Refactor CheckerContext
+
+1. Refactor CheckerContext to accept LibraryLoader
+2. Implement topological import-driven type-checking
+3. Remove bundler symbol renaming
+4. Remove `_checked` flags from types
+5. **Register generic instantiations with checker types** - When `instantiateClass()`
    creates `Box<String>`, register the instantiated ClassType so identity-based
    lookups work for generics too
 
+#### Step 2.4: Remove Bundler Renaming
+
+1. Remove Bundler entirely (or just the renaming logic)
+2. Update tests to work with original symbol names
+3. Remove suffix-based lookups from codegen (now safe to delete)
+
 **Affected files:**
 
-- Create: `packages/compiler/src/lib/loader/module-loader.ts`
+- ✅ Created: `packages/compiler/src/lib/loader/module-loader.ts`
+- ✅ Created: `packages/compiler/src/lib/loader/index.ts`
 - Update: `packages/compiler/src/lib/bundler.ts` (extract to ModuleLoader)
 - Update: `packages/compiler/src/lib/checker/context.ts` (major refactor)
 - Update: `packages/compiler/src/lib/compiler.ts` (use ModuleLoader)
 - Update: `packages/compiler/src/lib/checker/types.ts` (remove `_checked`)
 - Update: Tests
 
-**Effort:** 4-5 hours
+**Effort:** 4-5 hours total (Step 2.1 done, ~3 hours remaining)
 
 **Note:** The current bundler's enum type renaming logic will be eliminated entirely. Enums will keep their source names, and the checker's `inferredType` on EnumDeclaration nodes will move to SemanticContext.
 

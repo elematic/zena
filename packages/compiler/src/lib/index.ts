@@ -9,6 +9,7 @@ export * from './emitter.js';
 export * from './diagnostics.js';
 export * from './codegen/index.js';
 export * from './compiler.js';
+export * from './loader/index.js';
 
 import {Compiler, type CompilerHost} from './compiler.js';
 import {CodeGenerator} from './codegen/index.js';
