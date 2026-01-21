@@ -614,7 +614,60 @@ Once we eliminate bundler renaming and the need for a second type-check pass, we
 3. Replace `if (type._checked)` with `if (semanticContext.checkedTypes.has(type))`
 4. Remove `_checked` property from ClassType, InterfaceType, MixinType
 
-#### Step 2.5: Remove Bundler Renaming
+#### Step 2.5: Remove Bundler Renaming (Incremental Approach)
+
+**Goal:** Remove bundler's type name mutation and use identity-based lookups.
+
+**Status:** IN PROGRESS - Using incremental approach to avoid breaking changes.
+
+**Background:** A previous attempt to remove bundler renaming in one step caused
+10 closure type mismatch failures. The incremental approach adds infrastructure
+first, then switches over gradually.
+
+##### Step 2.5.1: Infrastructure Only ✅ COMPLETED
+
+Added identity-based lookup infrastructure without changing behavior:
+
+1. ✅ Added `structDefined` guard field to `ClassInfo` interface
+2. ✅ Added `#classBundledNames` map: `ClassType -> bundledName`
+3. ✅ Added `#genericTemplates` map: `name -> ClassType`
+4. ✅ Added `#genericSpecializations` map: `key -> ClassInfo`
+5. ✅ Added accessor methods for the new maps
+
+##### Step 2.5.2: Register Identity Mappings ✅ COMPLETED
+
+Populated identity maps during class registration (but not using them yet):
+
+1. ✅ In `preRegisterClassStruct`: Register bundled name and generic templates
+2. ✅ In `instantiateClass`: Register generic specializations
+
+##### Step 2.5.3: Add Guards ✅ COMPLETED
+
+Added guards to prevent duplicate class definitions:
+
+1. ✅ `defineClassStruct`: Early return if `classInfo.structDefined` is true
+2. ✅ `instantiateClass`: Early return if existing `ClassInfo.structDefined` is true
+3. ✅ Set `structDefined = true` after completing struct definition
+
+##### Step 2.5.4: Stop Type Name Mutation (DEFERRED)
+
+**Status:** DEFERRED - Requires coordinated changes.
+
+**Issue:** Stopping bundler's `typeObj.name = uniqueName` mutation requires
+updating `typeToTypeAnnotation` to use identity-based lookups, otherwise
+specialization keys become inconsistent (e.g., `m0_FixedArray<String>` vs
+`m0_FixedArray<m0_String>`).
+
+**Required changes (to be done together):**
+1. Update `typeToTypeAnnotation` to use `ctx.getClassBundledName()`
+2. Update `getTypeKey` or callers to resolve source names to bundled names
+3. Remove the `typeObj.name = uniqueName` line in `bundler.ts`
+
+##### Step 2.5.5: Use Identity Lookups (DEFERRED)
+
+Depends on Step 2.5.4. Will add `findClassInfo` helper using identity-based maps.
+
+#### Step 2.5 (Original): Remove Bundler Renaming
 
 1. Remove Bundler entirely (or just the renaming logic)
 2. Update tests to work with original symbol names
