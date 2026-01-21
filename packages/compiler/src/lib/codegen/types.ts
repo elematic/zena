@@ -26,6 +26,11 @@ export interface ClassInfo {
   isFinal?: boolean;
   isExtension?: boolean;
   onType?: number[];
+  /**
+   * Guard to prevent duplicate struct definition.
+   * Set to true after defineClassStruct completes.
+   */
+  structDefined?: boolean;
 }
 
 export interface InterfaceInfo {

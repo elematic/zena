@@ -179,6 +179,14 @@ export class CodegenContext {
   readonly #structIndexToClass = new Map<number, ClassType>();
   readonly #structIndexToInterface = new Map<number, InterfaceType>();
 
+  // Identity-based lookup infrastructure (Round 2.5 refactoring)
+  // Maps checker types to their bundled names for lookup
+  readonly #classBundledNames = new Map<ClassType, string>();
+  // Maps generic class declarations to their ClassType
+  readonly #genericTemplates = new Map<string, ClassType>();
+  // Maps generic specializations: "TemplateName|arg1,arg2" -> ClassInfo
+  readonly #genericSpecializations = new Map<string, ClassInfo>();
+
   // Template Literals
   public templateLiteralGlobals = new Map<TaggedTemplateExpression, number>();
 
@@ -412,6 +420,55 @@ export class CodegenContext {
     structIndex: number,
   ): InterfaceType | undefined {
     return this.#structIndexToInterface.get(structIndex);
+  }
+
+  // ===== Identity-Based Lookup Methods (Round 2.5 refactoring) =====
+  // These methods support looking up ClassInfo by checker type identity,
+  // enabling us to remove bundler name mutation and suffix-based lookups.
+
+  /**
+   * Register the bundled name for a checker ClassType.
+   * Called during class registration to track the name mapping.
+   */
+  public setClassBundledName(classType: ClassType, bundledName: string): void {
+    this.#classBundledNames.set(classType, bundledName);
+  }
+
+  /**
+   * Get the bundled name for a checker ClassType.
+   */
+  public getClassBundledName(classType: ClassType): string | undefined {
+    return this.#classBundledNames.get(classType);
+  }
+
+  /**
+   * Register a generic class template's checker type.
+   * Called when a generic class declaration is first seen.
+   */
+  public setGenericTemplate(name: string, classType: ClassType): void {
+    this.#genericTemplates.set(name, classType);
+  }
+
+  /**
+   * Get the checker ClassType for a generic class template.
+   */
+  public getGenericTemplate(name: string): ClassType | undefined {
+    return this.#genericTemplates.get(name);
+  }
+
+  /**
+   * Register a generic specialization.
+   * Key format: "TemplateName|TypeArg1,TypeArg2"
+   */
+  public registerGenericSpecialization(key: string, classInfo: ClassInfo): void {
+    this.#genericSpecializations.set(key, classInfo);
+  }
+
+  /**
+   * Find a generic specialization by key.
+   */
+  public findGenericSpecialization(key: string): ClassInfo | undefined {
+    return this.#genericSpecializations.get(key);
   }
 
   public getRecordTypeIndex(fields: {name: string; type: number[]}[]): number {
