@@ -922,6 +922,10 @@ export function preRegisterClassStruct(
 ) {
   if (decl.typeParameters && decl.typeParameters.length > 0) {
     ctx.genericClasses.set(decl.name.name, decl);
+    // Register generic template's checker type for identity-based lookups
+    if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
+      ctx.setGenericTemplate(decl.name.name, decl.inferredType as ClassType);
+    }
     return;
   }
 
@@ -946,6 +950,8 @@ export function preRegisterClassStruct(
     // Register type → struct index for identity-based lookups
     if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
       ctx.setClassStructIndex(decl.inferredType as ClassType, structTypeIndex);
+      // Register bundled name for identity-based lookups
+      ctx.setClassBundledName(decl.inferredType as ClassType, decl.name.name);
     }
 
     // Check if this is the String class
@@ -1067,6 +1073,8 @@ export function preRegisterClassStruct(
   // Register type → struct index for identity-based lookups
   if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
     ctx.setClassStructIndex(decl.inferredType as ClassType, structTypeIndex);
+    // Register bundled name for identity-based lookups
+    ctx.setClassBundledName(decl.inferredType as ClassType, decl.name.name);
   }
 }
 
@@ -2899,6 +2907,15 @@ export function instantiateClass(
     };
     ctx.classes.set(specializedName, classInfo);
   }
+
+  // Register generic specialization for identity-based lookups
+  // Key format: "TemplateName|TypeArg1,TypeArg2"
+  const argNames = typeArguments.map((arg) => {
+    const resolved = resolveAnnotation(arg, parentContext);
+    return getTypeKey(resolved);
+  });
+  const specializationKey = `${decl.name.name}|${argNames.join(',')}`;
+  ctx.registerGenericSpecialization(specializationKey, classInfo);
 
   const registerMethods = () => {
     // Set current class for `this` type resolution in method signatures
