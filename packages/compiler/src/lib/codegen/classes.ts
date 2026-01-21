@@ -1094,6 +1094,12 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   }
 
   const classInfo = ctx.classes.get(decl.name.name)!;
+
+  // Guard against duplicate definition
+  if (classInfo.structDefined) {
+    return;
+  }
+
   const structTypeIndex = classInfo.structTypeIndex;
 
   const fields = new Map<
@@ -1222,6 +1228,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   classInfo.superClass = currentSuperClassInfo?.name;
   classInfo.fields = fields;
   classInfo.onType = onType;
+  classInfo.structDefined = true;
 }
 
 /**
@@ -2740,6 +2747,12 @@ export function instantiateClass(
   typeArguments: TypeAnnotation[],
   parentContext?: Map<string, TypeAnnotation>,
 ) {
+  // Guard against duplicate instantiation
+  const existingInfo = ctx.classes.get(specializedName);
+  if (existingInfo?.structDefined) {
+    return;
+  }
+
   const context = new Map<string, TypeAnnotation>();
   if (decl.typeParameters) {
     decl.typeParameters.forEach((param, index) => {
@@ -2907,6 +2920,9 @@ export function instantiateClass(
     };
     ctx.classes.set(specializedName, classInfo);
   }
+
+  // Mark as fully defined to prevent duplicate instantiation
+  classInfo.structDefined = true;
 
   // Register generic specialization for identity-based lookups
   // Key format: "TemplateName|TypeArg1,TypeArg2"
