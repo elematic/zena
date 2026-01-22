@@ -719,7 +719,7 @@ All 1118 tests pass.
 
 ##### Step 2.5.6: Remove Bundled Name Bridge Infrastructure (OPTIONAL)
 
-**Status:** READY - Can proceed now that suffix lookups are removed.
+**Status:** IN PROGRESS - Partial implementation complete.
 
 **Background:** The `#classBundledNames` and `#interfaceBundledNames` maps in
 `CodegenContext` exist as a bridge solution. They allow `typeToTypeAnnotation`
@@ -744,13 +744,34 @@ we shouldn't round-trip through TypeAnnotation at all. Instead:
    already have a checker type
 3. Remove the bundled name maps once no longer needed
 
+**Progress (2026-01-22):**
+
+`mapCheckerTypeToWasmType()` in `codegen/classes.ts` now handles:
+
+- ✅ Non-generic ClassType via identity-based lookup (`resolveClassInfo`)
+- ✅ Non-generic InterfaceType via identity-based lookup (`resolveInterfaceStructIndex`)
+- ✅ Extension classes (returns `onType` instead of `structTypeIndex`)
+- ⚠️ Generic classes/interfaces still fall through to annotation-based path
+
+**Limitation:** Generic class/interface instantiations (e.g., `Map<K,V>`) cannot
+use pure identity-based lookups because:
+
+1. Specializations create new structs with different indices
+2. The specialized ClassInfo is keyed by a name like `m2_Map<m4_String,i32>`
+3. The checker ClassType doesn't directly know about this specialized name
+
+To fully remove bundled name maps, we would need to either:
+
+- Register specialized ClassInfo objects by checker type identity (not just name)
+- Or compute the specialized name from checker types without using bundled names
+
 **Tasks:**
 
-1. Implement `mapCheckerType()` in codegen/classes.ts
-2. Audit all `typeToTypeAnnotation` call sites
-3. Replace calls that have checker types available with `mapCheckerType`
-4. Remove `#classBundledNames`, `#interfaceBundledNames` and their accessors
-5. Remove `setClassBundledName`, `getClassBundledName`, etc.
+1. ✅ Implement `mapCheckerTypeToWasmType()` for non-generic classes/interfaces
+2. ✅ Add `resolveClassInfo()` helper that follows `genericSource` chain
+3. Audit all `typeToTypeAnnotation` call sites - DEFERRED
+4. Replace calls that have checker types available - DEFERRED
+5. Remove `#classBundledNames`, `#interfaceBundledNames` - BLOCKED by generics
 
 #### Step 2.5 (Original): Remove Bundler Renaming
 

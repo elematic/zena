@@ -3796,18 +3796,47 @@ export function mapCheckerTypeToWasmType(
   if (type.kind === TypeKind.Never) return [];
   if (type.kind === TypeKind.Null) return [ValType.ref_null, HeapType.none];
 
-  // Note: ClassType is NOT handled directly here because extension classes
-  // (like FixedArray) need special handling that returns onType instead of
-  // structTypeIndex. The annotation-based path handles this correctly.
+  // Handle ClassType directly using identity-based lookups
+  // NOTE: Only handles non-generic classes directly. Generic instantiations
+  // fall through to annotation-based lookup which handles specialization names.
+  if (type.kind === TypeKind.Class) {
+    const classType = type as ClassType;
+    // For generic classes with type arguments, fall through to annotation-based path
+    // which handles specialization naming correctly
+    if (!classType.typeArguments || classType.typeArguments.length === 0) {
+      const classInfo = resolveClassInfo(ctx, classType);
+      if (classInfo) {
+        // Extension classes (like FixedArray, String) return their onType
+        if (classInfo.isExtension && classInfo.onType) {
+          return classInfo.onType;
+        }
+        return [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+        ];
+      }
+    }
+    // Fall through to annotation-based lookup for generic classes
+  }
 
   // Handle InterfaceType directly using identity-based lookups
+  // NOTE: Only handles non-generic interfaces directly.
   if (type.kind === TypeKind.Interface) {
     const interfaceType = type as InterfaceType;
-    const structIndex = resolveInterfaceStructIndex(ctx, interfaceType);
-    if (structIndex !== undefined) {
-      return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structIndex)];
+    // For generic interfaces with type arguments, fall through to annotation-based path
+    if (
+      !interfaceType.typeArguments ||
+      interfaceType.typeArguments.length === 0
+    ) {
+      const structIndex = resolveInterfaceStructIndex(ctx, interfaceType);
+      if (structIndex !== undefined) {
+        return [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structIndex),
+        ];
+      }
     }
-    // Fall through to annotation-based lookup as last resort
+    // Fall through to annotation-based lookup
   }
 
   // Handle Union types - use anyref for nullable reference types
@@ -3824,9 +3853,38 @@ export function mapCheckerTypeToWasmType(
     // For other unions, fall through to annotation-based lookup
   }
 
+  // Fall through to annotation-based lookup for remaining types
+  // (Arrays, Records, Tuples, Functions, TypeAliases, etc.)
   const annotation = typeToTypeAnnotation(type, undefined, ctx);
   const result = mapType(ctx, annotation, ctx.currentTypeContext);
   return result;
+}
+
+/**
+ * Resolve the ClassInfo for a ClassType using identity-based lookups.
+ * Follows the genericSource chain to find the registered class.
+ */
+function resolveClassInfo(
+  ctx: CodegenContext,
+  classType: ClassType,
+): ClassInfo | undefined {
+  // Try direct identity lookup
+  let classInfo = ctx.getClassInfoByType(classType);
+  if (classInfo) {
+    return classInfo;
+  }
+
+  // Follow genericSource chain
+  let source = classType.genericSource;
+  while (source) {
+    classInfo = ctx.getClassInfoByType(source);
+    if (classInfo) {
+      return classInfo;
+    }
+    source = source.genericSource;
+  }
+
+  return undefined;
 }
 
 /**

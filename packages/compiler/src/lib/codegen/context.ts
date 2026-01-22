@@ -427,12 +427,9 @@ export class CodegenContext {
   // These methods support looking up ClassInfo by checker type identity,
   // enabling us to remove bundler name mutation and suffix-based lookups.
   //
-  // TODO(Step 2.5.6): These bundled name methods are a bridge solution.
-  // Once bundler renaming is eliminated (Step 2.5 Original), we should:
-  // 1. Add mapCheckerType() that maps ClassType -> WASM type directly via
-  //    getClassStructIndex(), bypassing TypeAnnotation entirely
-  // 2. Remove these bundled name maps and their accessors
-  // See docs/design/compiler-refactoring.md Step 2.5.6
+  // mapCheckerTypeToWasmType() now uses these for non-generic classes/interfaces.
+  // Generic classes still need bundled names for specialization name lookup.
+  // See docs/design/compiler-refactoring.md Step 2.5.6 for full details.
 
   /**
    * Register the bundled name for a checker ClassType.
