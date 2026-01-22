@@ -139,6 +139,8 @@ export class CodeGenerator {
           // Convert the target type (union of literal values) to a TypeAnnotation
           const targetAnnotation = typeToTypeAnnotation(
             (checkerType as any)?.target || checkerType,
+            undefined,
+            this.#ctx,
           );
           this.#ctx.typeAliases.set(enumName, targetAnnotation);
         }

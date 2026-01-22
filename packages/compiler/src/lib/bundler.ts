@@ -222,24 +222,10 @@ export class Bundler {
         const key = `${module.path}:${name}`;
         this.#globalSymbols.set(key, uniqueName);
 
-        // Rename the type object if it exists AND it's a type declaration
-        if (
-          stmt.type === NodeType.ClassDeclaration ||
-          stmt.type === NodeType.InterfaceDeclaration ||
-          stmt.type === NodeType.MixinDeclaration ||
-          stmt.type === NodeType.TypeAliasDeclaration ||
-          stmt.type === NodeType.EnumDeclaration
-        ) {
-          const cls = stmt as any;
-          let typeObj = cls.inferredType;
-          if (!typeObj && cls.name && cls.name.inferredType) {
-            typeObj = cls.name.inferredType;
-          }
-
-          if (typeObj?.name) {
-            typeObj.name = uniqueName;
-          }
-        }
+        // NOTE: Type object names are NO LONGER mutated here.
+        // Identity-based lookups in codegen use ctx.getClassBundledName() instead.
+        // The AST declaration name (stmt.name.name) is still renamed during rewrite,
+        // and that bundled name is registered in CodegenContext during class registration.
 
         // Handle exports
         if ('exported' in stmt && (stmt as any).exported) {

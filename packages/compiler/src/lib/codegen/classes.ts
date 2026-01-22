@@ -153,6 +153,11 @@ export function preRegisterInterface(
       decl.inferredType as InterfaceType,
       structTypeIndex,
     );
+    // Also register the bundled name for typeToTypeAnnotation lookups
+    ctx.setInterfaceBundledName(
+      decl.inferredType as InterfaceType,
+      decl.name.name,
+    );
   }
 }
 
@@ -925,6 +930,8 @@ export function preRegisterClassStruct(
     // Register generic template's checker type for identity-based lookups
     if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
       ctx.setGenericTemplate(decl.name.name, decl.inferredType as ClassType);
+      // Also register bundled name for the template itself
+      ctx.setClassBundledName(decl.inferredType as ClassType, decl.name.name);
     }
     return;
   }
@@ -3542,6 +3549,7 @@ function applyMixin(
 export function typeToTypeAnnotation(
   type: Type,
   erasedTypeParams?: Set<string>,
+  ctx?: CodegenContext,
 ): TypeAnnotation {
   switch (type.kind) {
     case TypeKind.Number:
@@ -3566,16 +3574,25 @@ export function typeToTypeAnnotation(
       };
     case TypeKind.Class: {
       const classType = type as ClassType;
-      // Follow genericSource chain to get canonical name (handles bundler renaming)
-      let canonicalName = classType.name;
-      let source = classType.genericSource;
-      while (source) {
-        canonicalName = source.name;
-        source = source.genericSource;
+      // Try identity-based lookup first (if ctx provided)
+      let canonicalName = ctx?.getClassBundledName(classType);
+      if (!canonicalName) {
+        // Fall back to genericSource chain for backward compatibility
+        canonicalName = classType.name;
+        let source = classType.genericSource;
+        while (source) {
+          const sourceName = ctx?.getClassBundledName(source);
+          if (sourceName) {
+            canonicalName = sourceName;
+            break;
+          }
+          canonicalName = source.name;
+          source = source.genericSource;
+        }
       }
       let args = classType.typeArguments
         ? classType.typeArguments.map((t) =>
-            typeToTypeAnnotation(t, erasedTypeParams),
+            typeToTypeAnnotation(t, erasedTypeParams, ctx),
           )
         : [];
 
@@ -3598,16 +3615,25 @@ export function typeToTypeAnnotation(
     }
     case TypeKind.Interface: {
       const ifaceType = type as InterfaceType;
-      // Follow genericSource chain to get canonical name (handles bundler renaming)
-      let canonicalName = ifaceType.name;
-      let source = ifaceType.genericSource;
-      while (source) {
-        canonicalName = source.name;
-        source = source.genericSource;
+      // Try identity-based lookup first (if ctx provided)
+      let canonicalName = ctx?.getInterfaceBundledName(ifaceType);
+      if (!canonicalName) {
+        // Fall back to genericSource chain for backward compatibility
+        canonicalName = ifaceType.name;
+        let source = ifaceType.genericSource;
+        while (source) {
+          const sourceName = ctx?.getInterfaceBundledName(source);
+          if (sourceName) {
+            canonicalName = sourceName;
+            break;
+          }
+          canonicalName = source.name;
+          source = source.genericSource;
+        }
       }
       const args = ifaceType.typeArguments
         ? ifaceType.typeArguments.map((t) =>
-            typeToTypeAnnotation(t, erasedTypeParams),
+            typeToTypeAnnotation(t, erasedTypeParams, ctx),
           )
         : [];
       return {
@@ -3622,7 +3648,7 @@ export function typeToTypeAnnotation(
         type: NodeType.TypeAnnotation,
         name: TypeNames.Array,
         typeArguments: [
-          typeToTypeAnnotation(arrayType.elementType, erasedTypeParams),
+          typeToTypeAnnotation(arrayType.elementType, erasedTypeParams, ctx),
         ],
       };
     }
@@ -3633,7 +3659,7 @@ export function typeToTypeAnnotation(
         properties.push({
           type: NodeType.PropertySignature,
           name: {type: NodeType.Identifier, name},
-          typeAnnotation: typeToTypeAnnotation(propType, erasedTypeParams),
+          typeAnnotation: typeToTypeAnnotation(propType, erasedTypeParams, ctx),
         });
       }
       return {
@@ -3646,7 +3672,7 @@ export function typeToTypeAnnotation(
       return {
         type: NodeType.TupleTypeAnnotation,
         elementTypes: tupleType.elementTypes.map((t) =>
-          typeToTypeAnnotation(t, erasedTypeParams),
+          typeToTypeAnnotation(t, erasedTypeParams, ctx),
         ),
       } as any;
     }
@@ -3661,9 +3687,9 @@ export function typeToTypeAnnotation(
       return {
         type: NodeType.FunctionTypeAnnotation,
         params: funcType.parameters.map((p) =>
-          typeToTypeAnnotation(p, newErased),
+          typeToTypeAnnotation(p, newErased, ctx),
         ),
-        returnType: typeToTypeAnnotation(funcType.returnType, newErased),
+        returnType: typeToTypeAnnotation(funcType.returnType, newErased, ctx),
       } as any;
     }
     case TypeKind.TypeParameter: {
@@ -3684,9 +3710,9 @@ export function typeToTypeAnnotation(
       if (aliasType.isDistinct) {
         // For distinct type aliases (including enums), we need to map to the underlying type
         // in code generation, since WASM doesn't have nominal typing
-        return typeToTypeAnnotation(aliasType.target, erasedTypeParams);
+        return typeToTypeAnnotation(aliasType.target, erasedTypeParams, ctx);
       }
-      return typeToTypeAnnotation(aliasType.target, erasedTypeParams);
+      return typeToTypeAnnotation(aliasType.target, erasedTypeParams, ctx);
     }
     case TypeKind.ByteArray:
       return {
@@ -3715,7 +3741,7 @@ export function typeToTypeAnnotation(
       return {
         type: NodeType.UnionTypeAnnotation,
         types: unionType.types.map((t) =>
-          typeToTypeAnnotation(t, erasedTypeParams),
+          typeToTypeAnnotation(t, erasedTypeParams, ctx),
         ),
       } as any;
     }
@@ -3744,7 +3770,7 @@ export function mapCheckerTypeToWasmType(
   if (type.kind === TypeKind.Never) return [];
   if (type.kind === TypeKind.Null) return [ValType.ref_null, HeapType.none];
 
-  const annotation = typeToTypeAnnotation(type);
+  const annotation = typeToTypeAnnotation(type, undefined, ctx);
   const result = mapType(ctx, annotation, ctx.currentTypeContext);
   return result;
 }

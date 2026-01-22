@@ -148,7 +148,12 @@ export class WasmModule {
     return index;
   }
 
-  public addCode(index: number, locals: number[][], body: number[]) {
+  public addCode(
+    index: number,
+    locals: number[][],
+    body: number[],
+    debugInfo?: string,
+  ) {
     // Code entry: size (u32) + code
     // code: vec(locals) + expr
     // locals: vec(local)

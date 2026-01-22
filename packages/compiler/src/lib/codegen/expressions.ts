@@ -937,7 +937,11 @@ function resolveFixedArrayClass(
     if (fixedArrayDecl) {
       const elementType = (checkerType as any).elementType;
       if (elementType) {
-        const elementTypeAnnotation = typeToTypeAnnotation(elementType);
+        const elementTypeAnnotation = typeToTypeAnnotation(
+          elementType,
+          undefined,
+          ctx,
+        );
         const typeArgs = [elementTypeAnnotation];
         const specializedName = getSpecializedName(
           fixedArrayDecl.name.name,
@@ -1282,7 +1286,7 @@ function generateNewExpression(
 
   if (expr.inferredTypeArguments) {
     typeArguments = expr.inferredTypeArguments.map((t) => {
-      const res = typeToTypeAnnotation(t);
+      const res = typeToTypeAnnotation(t, undefined, ctx);
       return res;
     });
   }
@@ -1327,9 +1331,9 @@ function generateNewExpression(
     // Ensure the class is instantiated
     mapType(ctx, annotation, ctx.currentTypeContext);
     // Get the specialized name
-    className = getTypeKey(
-      resolveAnnotation(annotation, ctx.currentTypeContext),
-    );
+    const resolved = resolveAnnotation(annotation, ctx.currentTypeContext);
+    const newClassName = getTypeKey(resolved);
+    className = newClassName;
   }
 
   const classInfo = ctx.classes.get(className);
@@ -1492,10 +1496,26 @@ function generateMemberExpression(
     ) {
       // Convert type arguments to type annotations and get specialized name
       const typeAnnotations = classType.typeArguments.map((arg) =>
-        typeToTypeAnnotation(arg),
+        typeToTypeAnnotation(arg, undefined, ctx),
       );
+      // Use identity-based lookup to get the bundled name
+      let baseName = ctx.getClassBundledName(classType);
+      if (!baseName) {
+        // Fall back to genericSource chain
+        baseName = classType.name;
+        let source = classType.genericSource;
+        while (source) {
+          const sourceName = ctx.getClassBundledName(source);
+          if (sourceName) {
+            baseName = sourceName;
+            break;
+          }
+          baseName = source.name;
+          source = source.genericSource;
+        }
+      }
       const specializedName = getSpecializedName(
-        classType.name,
+        baseName,
         typeAnnotations,
         ctx,
         ctx.currentTypeContext,
@@ -1519,6 +1539,19 @@ function generateMemberExpression(
     // Special handling for FixedArray: treat array<T> as FixedArray<T>
     foundClass = resolveFixedArrayClass(ctx, expr.object.inferredType);
   }
+
+  // Check for extension classes on primitives (before structTypeIndex check)
+  if (!foundClass) {
+    for (const info of ctx.classes.values()) {
+      if (info.isExtension && info.onType) {
+        if (typesAreEqual(info.onType, objectType)) {
+          foundClass = info;
+          break;
+        }
+      }
+    }
+  }
+
   if (!foundClass) {
     if (structTypeIndex === -1) {
       throw new Error(`Invalid object type for field access: ${fieldName}`);
@@ -1672,16 +1705,6 @@ function generateMemberExpression(
       }
 
       return;
-    }
-
-    // Check for extension classes
-    for (const info of ctx.classes.values()) {
-      if (info.isExtension && info.onType) {
-        if (typesAreEqual(info.onType, objectType)) {
-          foundClass = info;
-          break;
-        }
-      }
     }
 
     // Check for Enums
@@ -2115,17 +2138,7 @@ function generateCallExpression(
       memberExpr.object.inferredType.kind === TypeKind.Class
     ) {
       const classType = memberExpr.object.inferredType as ClassType;
-      if (ctx.classes.has(classType.name)) {
-        foundClass = ctx.classes.get(classType.name);
-      } else {
-        // Try to find class by suffix (handles bundled names like m3_Array for Array)
-        for (const [name, info] of ctx.classes) {
-          if (name.endsWith('_' + classType.name)) {
-            foundClass = info;
-            break;
-          }
-        }
-      }
+      foundClass = ctx.getClassInfoByType(classType);
     }
 
     if (!foundClass && structTypeIndex !== -1) {
@@ -2176,7 +2189,7 @@ function generateCallExpression(
 
         if (expr.inferredTypeArguments) {
           typeArguments = expr.inferredTypeArguments.map((t) =>
-            typeToTypeAnnotation(t),
+            typeToTypeAnnotation(t, undefined, ctx),
           );
         }
 
@@ -2525,7 +2538,7 @@ function generateCallExpression(
 
         if (expr.inferredTypeArguments) {
           typeArguments = expr.inferredTypeArguments.map((t) =>
-            typeToTypeAnnotation(t),
+            typeToTypeAnnotation(t, undefined, ctx),
           );
         } else if (!typeArguments || typeArguments.length === 0) {
           throw new Error(`Missing inferred type arguments for ${name}`);
@@ -4274,7 +4287,8 @@ function generateRecordLiteral(
           const classType = spreadType as ClassType;
           if (classType.fields.has(key) && !key.startsWith('#')) {
             const spreadInfo = spreadLocals.get(prop)!;
-            const classInfo = ctx.classes.get(classType.name);
+            // Use identity-based lookup instead of name-based
+            const classInfo = ctx.getClassInfoByType(classType);
             if (!classInfo) {
               throw new Error(`Class info not found for ${classType.name}`);
             }

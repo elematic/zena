@@ -659,6 +659,7 @@ specialization keys become inconsistent (e.g., `m0_FixedArray<String>` vs
 `m0_FixedArray<m0_String>`).
 
 **Required changes (to be done together):**
+
 1. Update `typeToTypeAnnotation` to use `ctx.getClassBundledName()`
 2. Update `getTypeKey` or callers to resolve source names to bundled names
 3. Remove the `typeObj.name = uniqueName` line in `bundler.ts`
@@ -666,6 +667,41 @@ specialization keys become inconsistent (e.g., `m0_FixedArray<String>` vs
 ##### Step 2.5.5: Use Identity Lookups (DEFERRED)
 
 Depends on Step 2.5.4. Will add `findClassInfo` helper using identity-based maps.
+
+##### Step 2.5.6: Remove Bundled Name Bridge Infrastructure (DEFERRED)
+
+**Status:** DEFERRED - Requires bundler renaming to be fully eliminated first.
+
+**Background:** The `#classBundledNames` and `#interfaceBundledNames` maps in
+`CodegenContext` exist as a bridge solution. They allow `typeToTypeAnnotation`
+to convert checker types back to TypeAnnotation AST nodes with the correct
+(bundled) names.
+
+**Problem with TypeAnnotations:** TypeAnnotations are just names, but names are
+only meaningful within a scope. When we create a TypeAnnotation with a name like
+`"Array"`, that name could refer to different types depending on scope. The
+checker resolves names within their scope, but by the time we're in codegen,
+we've lost that scope context. The bundled name workaround ensures uniqueness
+across modules, but it's fragile.
+
+**Proper solution:** When we already have a checker type (ClassType, InterfaceType),
+we shouldn't round-trip through TypeAnnotation at all. Instead:
+
+1. Add `mapCheckerType(type: Type): number[]` to codegen that:
+   - For ClassType: Use `getClassStructIndex()` directly
+   - For InterfaceType: Use `getInterfaceStructIndex()` directly
+   - For primitives: Return the appropriate ValType
+2. Update callers of `typeToTypeAnnotation` to use `mapCheckerType` when they
+   already have a checker type
+3. Remove the bundled name maps once no longer needed
+
+**Tasks:**
+
+1. Implement `mapCheckerType()` in codegen/classes.ts
+2. Audit all `typeToTypeAnnotation` call sites
+3. Replace calls that have checker types available with `mapCheckerType`
+4. Remove `#classBundledNames`, `#interfaceBundledNames` and their accessors
+5. Remove `setClassBundledName`, `getClassBundledName`, etc.
 
 #### Step 2.5 (Original): Remove Bundler Renaming
 

@@ -182,6 +182,7 @@ export class CodegenContext {
   // Identity-based lookup infrastructure (Round 2.5 refactoring)
   // Maps checker types to their bundled names for lookup
   readonly #classBundledNames = new Map<ClassType, string>();
+  readonly #interfaceBundledNames = new Map<InterfaceType, string>();
   // Maps generic class declarations to their ClassType
   readonly #genericTemplates = new Map<string, ClassType>();
   // Maps generic specializations: "TemplateName|arg1,arg2" -> ClassInfo
@@ -425,6 +426,13 @@ export class CodegenContext {
   // ===== Identity-Based Lookup Methods (Round 2.5 refactoring) =====
   // These methods support looking up ClassInfo by checker type identity,
   // enabling us to remove bundler name mutation and suffix-based lookups.
+  //
+  // TODO(Step 2.5.6): These bundled name methods are a bridge solution.
+  // Once bundler renaming is eliminated (Step 2.5 Original), we should:
+  // 1. Add mapCheckerType() that maps ClassType -> WASM type directly via
+  //    getClassStructIndex(), bypassing TypeAnnotation entirely
+  // 2. Remove these bundled name maps and their accessors
+  // See docs/design/compiler-refactoring.md Step 2.5.6
 
   /**
    * Register the bundled name for a checker ClassType.
@@ -439,6 +447,26 @@ export class CodegenContext {
    */
   public getClassBundledName(classType: ClassType): string | undefined {
     return this.#classBundledNames.get(classType);
+  }
+
+  /**
+   * Register the bundled name for a checker InterfaceType.
+   * Called during interface registration to track the name mapping.
+   */
+  public setInterfaceBundledName(
+    interfaceType: InterfaceType,
+    bundledName: string,
+  ): void {
+    this.#interfaceBundledNames.set(interfaceType, bundledName);
+  }
+
+  /**
+   * Get the bundled name for a checker InterfaceType.
+   */
+  public getInterfaceBundledName(
+    interfaceType: InterfaceType,
+  ): string | undefined {
+    return this.#interfaceBundledNames.get(interfaceType);
   }
 
   /**
@@ -460,7 +488,10 @@ export class CodegenContext {
    * Register a generic specialization.
    * Key format: "TemplateName|TypeArg1,TypeArg2"
    */
-  public registerGenericSpecialization(key: string, classInfo: ClassInfo): void {
+  public registerGenericSpecialization(
+    key: string,
+    classInfo: ClassInfo,
+  ): void {
     this.#genericSpecializations.set(key, classInfo);
   }
 
