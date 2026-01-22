@@ -719,7 +719,7 @@ All 1118 tests pass.
 
 ##### Step 2.5.6: Remove Bundled Name Bridge Infrastructure (OPTIONAL)
 
-**Status:** IN PROGRESS - Partial implementation complete.
+**Status:** MOSTLY COMPLETE - Generic non-extension classes now use identity lookup.
 
 **Background:** The `#classBundledNames` and `#interfaceBundledNames` maps in
 `CodegenContext` exist as a bridge solution. They allow `typeToTypeAnnotation`
@@ -750,28 +750,37 @@ we shouldn't round-trip through TypeAnnotation at all. Instead:
 
 - ✅ Non-generic ClassType via identity-based lookup (`resolveClassInfo`)
 - ✅ Non-generic InterfaceType via identity-based lookup (`resolveInterfaceStructIndex`)
-- ✅ Extension classes (returns `onType` instead of `structTypeIndex`)
-- ⚠️ Generic classes/interfaces still fall through to annotation-based path
+- ✅ Extension classes for non-generic lookups (returns `onType`)
+- ✅ Generic classes via specialization registry lookup (`computeSpecializationKey`)
+- ⚠️ Generic extension classes (e.g., `FixedArray<T>`) still use annotation-based path
 
-**Limitation:** Generic class/interface instantiations (e.g., `Map<K,V>`) cannot
-use pure identity-based lookups because:
+**Implementation details:**
 
-1. Specializations create new structs with different indices
-2. The specialized ClassInfo is keyed by a name like `m2_Map<m4_String,i32>`
-3. The checker ClassType doesn't directly know about this specialized name
+1. `resolveClassInfo()` tries identity lookup, then follows `genericSource` chain,
+   then tries the specialization registry with a computed key.
+2. `computeSpecializationKey()` builds a key like `"m2_Map|m4_String,i32"` from
+   the ClassType by following `genericSource` for the template name and converting
+   type arguments to TypeAnnotation keys.
+3. Extension class specializations are explicitly skipped in `resolveClassInfo`
+   because their `onType` depends on the type context at point of use.
+4. `containsTypeParameter()` helper checks if type arguments contain unresolved
+   type parameters (K, V, etc.) and returns `undefined` key to skip those.
 
-To fully remove bundled name maps, we would need to either:
-
-- Register specialized ClassInfo objects by checker type identity (not just name)
-- Or compute the specialized name from checker types without using bundled names
+**Remaining limitation:** Generic extension classes like `FixedArray<i32>` cannot
+use identity-based lookup because their `onType` (the WASM array type) varies
+based on the type context when the specialization is used. Different call sites
+may need different array types even for the "same" specialization.
 
 **Tasks:**
 
 1. ✅ Implement `mapCheckerTypeToWasmType()` for non-generic classes/interfaces
 2. ✅ Add `resolveClassInfo()` helper that follows `genericSource` chain
-3. Audit all `typeToTypeAnnotation` call sites - DEFERRED
-4. Replace calls that have checker types available - DEFERRED
-5. Remove `#classBundledNames`, `#interfaceBundledNames` - BLOCKED by generics
+3. ✅ Add `computeSpecializationKey()` to look up generic specializations
+4. ✅ Add `containsTypeParameter()` to skip lookups with unresolved type params
+5. Audit all `typeToTypeAnnotation` call sites - DEFERRED
+6. Replace calls that have checker types available - DEFERRED
+7. Remove `#classBundledNames`, `#interfaceBundledNames` - MAY NOT BE NEEDED
+   (Most lookups now work via specialization registry)
 
 #### Step 2.5 (Original): Remove Bundler Renaming
 

@@ -3797,44 +3797,28 @@ export function mapCheckerTypeToWasmType(
   if (type.kind === TypeKind.Null) return [ValType.ref_null, HeapType.none];
 
   // Handle ClassType directly using identity-based lookups
-  // NOTE: Only handles non-generic classes directly. Generic instantiations
-  // fall through to annotation-based lookup which handles specialization names.
   if (type.kind === TypeKind.Class) {
     const classType = type as ClassType;
-    // For generic classes with type arguments, fall through to annotation-based path
-    // which handles specialization naming correctly
-    if (!classType.typeArguments || classType.typeArguments.length === 0) {
-      const classInfo = resolveClassInfo(ctx, classType);
-      if (classInfo) {
-        // Extension classes (like FixedArray, String) return their onType
-        if (classInfo.isExtension && classInfo.onType) {
-          return classInfo.onType;
-        }
-        return [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-        ];
+    const classInfo = resolveClassInfo(ctx, classType);
+    if (classInfo) {
+      // Extension classes (like FixedArray, String) return their onType
+      if (classInfo.isExtension && classInfo.onType) {
+        return classInfo.onType;
       }
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+      ];
     }
-    // Fall through to annotation-based lookup for generic classes
+    // Fall through to annotation-based lookup if identity lookup fails
   }
 
   // Handle InterfaceType directly using identity-based lookups
-  // NOTE: Only handles non-generic interfaces directly.
   if (type.kind === TypeKind.Interface) {
     const interfaceType = type as InterfaceType;
-    // For generic interfaces with type arguments, fall through to annotation-based path
-    if (
-      !interfaceType.typeArguments ||
-      interfaceType.typeArguments.length === 0
-    ) {
-      const structIndex = resolveInterfaceStructIndex(ctx, interfaceType);
-      if (structIndex !== undefined) {
-        return [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(structIndex),
-        ];
-      }
+    const structIndex = resolveInterfaceStructIndex(ctx, interfaceType);
+    if (structIndex !== undefined) {
+      return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structIndex)];
     }
     // Fall through to annotation-based lookup
   }
@@ -3862,19 +3846,20 @@ export function mapCheckerTypeToWasmType(
 
 /**
  * Resolve the ClassInfo for a ClassType using identity-based lookups.
- * Follows the genericSource chain to find the registered class.
+ * Handles both non-generic classes (via struct index map) and generic
+ * instantiations (via specialization registry).
  */
 function resolveClassInfo(
   ctx: CodegenContext,
   classType: ClassType,
 ): ClassInfo | undefined {
-  // Try direct identity lookup
+  // Try direct identity lookup first
   let classInfo = ctx.getClassInfoByType(classType);
   if (classInfo) {
     return classInfo;
   }
 
-  // Follow genericSource chain
+  // Follow genericSource chain for identity lookup
   let source = classType.genericSource;
   while (source) {
     classInfo = ctx.getClassInfoByType(source);
@@ -3884,7 +3869,111 @@ function resolveClassInfo(
     source = source.genericSource;
   }
 
+  // For generic instantiations, try specialization registry
+  // Skip this for types that MIGHT be extension classes, since extension classes
+  // need context-specific onType computation that the specialization might not have
+  if (classType.typeArguments && classType.typeArguments.length > 0) {
+    const specializationKey = computeSpecializationKey(ctx, classType);
+    if (specializationKey) {
+      classInfo = ctx.findGenericSpecialization(specializationKey);
+      if (classInfo) {
+        // Don't use specialization lookup for extension classes - their onType
+        // depends on the type context at point of use, which may differ from
+        // what was stored when the specialization was first registered
+        if (classInfo.isExtension) {
+          return undefined; // Fall through to annotation-based path
+        }
+        // Cache the mapping for future identity lookups
+        ctx.setClassStructIndex(classType, classInfo.structTypeIndex);
+        return classInfo;
+      }
+    }
+  }
+
   return undefined;
+}
+
+/**
+ * Compute a specialization key for a generic ClassType.
+ * Key format matches what instantiateClass uses: "BundledTemplateName|TypeArg1,TypeArg2"
+ * Returns undefined if any type argument contains a type parameter (K, V, etc.)
+ * since those should go through the annotation-based path for proper resolution.
+ */
+function computeSpecializationKey(
+  ctx: CodegenContext,
+  classType: ClassType,
+): string | undefined {
+  if (!classType.typeArguments || classType.typeArguments.length === 0) {
+    return undefined;
+  }
+
+  // Check if any type argument contains type parameters - if so, skip specialization lookup
+  // Type parameters need to go through the annotation path for proper context resolution
+  for (const arg of classType.typeArguments) {
+    if (containsTypeParameter(arg)) {
+      return undefined;
+    }
+  }
+
+  // Get the bundled template name by following genericSource chain
+  let templateName: string | undefined;
+  let source: ClassType | undefined = classType.genericSource;
+  while (source) {
+    const bundledName = ctx.getClassBundledName(source);
+    if (bundledName) {
+      templateName = bundledName;
+      break;
+    }
+    source = source.genericSource;
+  }
+
+  // If no bundled name found, fall back to the class name
+  if (!templateName) {
+    templateName = classType.genericSource?.name ?? classType.name;
+  }
+
+  // Convert type arguments to TypeAnnotations and get their keys
+  const argKeys = classType.typeArguments.map((arg) => {
+    const annotation = typeToTypeAnnotation(arg, undefined, ctx);
+    return getTypeKey(annotation);
+  });
+
+  return `${templateName}|${argKeys.join(',')}`;
+}
+
+/**
+ * Check if a type contains any type parameters (K, V, T, etc.)
+ */
+function containsTypeParameter(type: Type): boolean {
+  switch (type.kind) {
+    case TypeKind.TypeParameter:
+      return true;
+    case TypeKind.Class: {
+      const classType = type as ClassType;
+      return classType.typeArguments?.some(containsTypeParameter) ?? false;
+    }
+    case TypeKind.Interface: {
+      const interfaceType = type as InterfaceType;
+      return interfaceType.typeArguments?.some(containsTypeParameter) ?? false;
+    }
+    case TypeKind.Array: {
+      const arrayType = type as ArrayType;
+      return containsTypeParameter(arrayType.elementType);
+    }
+    case TypeKind.Union: {
+      const unionType = type as UnionType;
+      return unionType.types.some(containsTypeParameter);
+    }
+    case TypeKind.Function: {
+      const funcType = type as FunctionType;
+      if (funcType.returnType && containsTypeParameter(funcType.returnType)) {
+        return true;
+      }
+      return funcType.parameters.some(containsTypeParameter);
+    }
+    default:
+      return false;
+  }
 }
 
 /**

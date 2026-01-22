@@ -427,8 +427,13 @@ export class CodegenContext {
   // These methods support looking up ClassInfo by checker type identity,
   // enabling us to remove bundler name mutation and suffix-based lookups.
   //
-  // mapCheckerTypeToWasmType() now uses these for non-generic classes/interfaces.
-  // Generic classes still need bundled names for specialization name lookup.
+  // mapCheckerTypeToWasmType() uses these for:
+  // - Non-generic classes/interfaces (via struct index maps)
+  // - Generic class specializations (via specialization registry)
+  //
+  // Generic extension classes (e.g., FixedArray<T>) still use the annotation
+  // path because their onType varies based on type context.
+  //
   // See docs/design/compiler-refactoring.md Step 2.5.6 for full details.
 
   /**
