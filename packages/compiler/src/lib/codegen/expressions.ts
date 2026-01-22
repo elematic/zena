@@ -67,11 +67,13 @@ import {
   getClassFromTypeIndex,
   getInterfaceFromTypeIndex,
   getSpecializedName,
+  getSpecializedNameFromTypes,
   getTypeKey,
   instantiateClass,
   mapCheckerTypeToWasmType,
   mapType,
   resolveAnnotation,
+  typeContainsTypeParameter,
   typeToTypeAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
@@ -1515,10 +1517,6 @@ function generateMemberExpression(
       classType.typeArguments &&
       classType.typeArguments.length > 0
     ) {
-      // Convert type arguments to type annotations and get specialized name
-      const typeAnnotations = classType.typeArguments.map((arg) =>
-        typeToTypeAnnotation(arg, undefined, ctx),
-      );
       // Use identity-based lookup to get the bundled name
       let baseName = ctx.getClassBundledName(classType);
       if (!baseName) {
@@ -1535,12 +1533,35 @@ function generateMemberExpression(
           source = source.genericSource;
         }
       }
-      const specializedName = getSpecializedName(
-        baseName,
-        typeAnnotations,
-        ctx,
-        ctx.currentTypeContext,
+
+      // Check if type arguments are fully resolved (no type parameters)
+      // If so, we can use the more efficient checker-type path
+      const hasUnresolvedTypeParams = classType.typeArguments.some(
+        typeContainsTypeParameter,
       );
+
+      let specializedName: string;
+      if (hasUnresolvedTypeParams) {
+        // Type arguments contain type parameters (e.g., T, K, V) that need
+        // resolution via currentTypeContext - use TypeAnnotation path
+        const typeAnnotations = classType.typeArguments.map((arg) =>
+          typeToTypeAnnotation(arg, undefined, ctx),
+        );
+        specializedName = getSpecializedName(
+          baseName,
+          typeAnnotations,
+          ctx,
+          ctx.currentTypeContext,
+        );
+      } else {
+        // Type arguments are fully concrete - use direct checker type path
+        specializedName = getSpecializedNameFromTypes(
+          baseName,
+          classType.typeArguments,
+          ctx,
+        );
+      }
+
       if (ctx.classes.has(specializedName)) {
         foundClass = ctx.classes.get(specializedName);
       }

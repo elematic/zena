@@ -31,6 +31,7 @@ import {
   type TypeAliasType,
   type SymbolType,
   type LiteralType,
+  type MixinType,
 } from '../types.js';
 import {getGetterName, getSetterName} from '../names.js';
 import {WasmModule} from '../emitter.js';
@@ -2376,6 +2377,226 @@ export function getTypeKey(type: TypeAnnotation): string {
     }
   }
   return 'unknown';
+}
+
+/**
+ * Get a canonical string key for a checker Type, for use in specialization names.
+ * This is the checker-type equivalent of getTypeKey(TypeAnnotation).
+ *
+ * Uses identity-based lookups for class/interface names when ctx is provided,
+ * falling back to the type's name property.
+ */
+export function getCheckerTypeKeyForSpecialization(
+  type: Type,
+  ctx?: CodegenContext,
+): string {
+  switch (type.kind) {
+    case TypeKind.Number:
+      return (type as NumberType).name;
+    case TypeKind.Boolean:
+      return TypeNames.Boolean;
+    case TypeKind.Void:
+      return TypeNames.Void;
+    case TypeKind.Null:
+      return 'null';
+    case TypeKind.Never:
+      return 'never';
+    case TypeKind.Any:
+      return 'any';
+    case TypeKind.AnyRef:
+      return 'anyref';
+    case TypeKind.ByteArray:
+      return 'ByteArray';
+    case TypeKind.TypeParameter:
+      return (type as TypeParameterType).name;
+    case TypeKind.Class: {
+      const classType = type as ClassType;
+      // Use bundled name via identity lookup if available
+      let name = ctx?.getClassBundledName(classType);
+      if (!name) {
+        // Fall back to genericSource chain
+        name = classType.name;
+        let source = classType.genericSource;
+        while (source) {
+          const sourceName = ctx?.getClassBundledName(source);
+          if (sourceName) {
+            name = sourceName;
+            break;
+          }
+          name = source.name;
+          source = source.genericSource;
+        }
+      }
+      if (classType.typeArguments && classType.typeArguments.length > 0) {
+        const args = classType.typeArguments
+          .map((a) => getCheckerTypeKeyForSpecialization(a, ctx))
+          .join(',');
+        return `${name}<${args}>`;
+      }
+      return name;
+    }
+    case TypeKind.Interface: {
+      const interfaceType = type as InterfaceType;
+      // Use bundled name via identity lookup if available
+      let name = ctx?.getInterfaceBundledName(interfaceType);
+      if (!name) {
+        // Fall back to genericSource chain
+        name = interfaceType.name;
+        let source = interfaceType.genericSource;
+        while (source) {
+          const sourceName = ctx?.getInterfaceBundledName(source);
+          if (sourceName) {
+            name = sourceName;
+            break;
+          }
+          name = source.name;
+          source = source.genericSource;
+        }
+      }
+      if (
+        interfaceType.typeArguments &&
+        interfaceType.typeArguments.length > 0
+      ) {
+        const args = interfaceType.typeArguments
+          .map((a) => getCheckerTypeKeyForSpecialization(a, ctx))
+          .join(',');
+        return `${name}<${args}>`;
+      }
+      return name;
+    }
+    case TypeKind.Array: {
+      const arrayType = type as ArrayType;
+      const elementKey = getCheckerTypeKeyForSpecialization(
+        arrayType.elementType,
+        ctx,
+      );
+      return `array<${elementKey}>`;
+    }
+    case TypeKind.Record: {
+      const recordType = type as RecordType;
+      const props = Array.from(recordType.properties.entries())
+        .map(
+          ([name, propType]) =>
+            `${name}:${getCheckerTypeKeyForSpecialization(propType, ctx)}`,
+        )
+        .sort()
+        .join(',');
+      return `{${props}}`;
+    }
+    case TypeKind.Tuple: {
+      const tupleType = type as TupleType;
+      const elements = tupleType.elementTypes
+        .map((t) => getCheckerTypeKeyForSpecialization(t, ctx))
+        .join(',');
+      return `[${elements}]`;
+    }
+    case TypeKind.Function: {
+      const funcType = type as FunctionType;
+      const params = funcType.parameters
+        .map((p) => getCheckerTypeKeyForSpecialization(p, ctx))
+        .join(',');
+      const ret = getCheckerTypeKeyForSpecialization(funcType.returnType, ctx);
+      return `(${params})=>${ret}`;
+    }
+    case TypeKind.Union: {
+      const unionType = type as UnionType;
+      const members = unionType.types
+        .map((t) => getCheckerTypeKeyForSpecialization(t, ctx))
+        .sort()
+        .join('|');
+      return `(${members})`;
+    }
+    case TypeKind.Literal: {
+      const litType = type as LiteralType;
+      if (typeof litType.value === 'string') {
+        return `'${litType.value}'`;
+      } else if (typeof litType.value === 'boolean') {
+        return litType.value ? 'true' : 'false';
+      } else {
+        return String(litType.value);
+      }
+    }
+    case TypeKind.TypeAlias: {
+      const aliasType = type as TypeAliasType;
+      // For type aliases (including distinct), use the target type's key
+      return getCheckerTypeKeyForSpecialization(aliasType.target, ctx);
+    }
+    case TypeKind.Symbol:
+      return 'symbol';
+    case TypeKind.Mixin: {
+      const mixinType = type as MixinType;
+      return mixinType.name;
+    }
+    default:
+      return 'unknown';
+  }
+}
+
+/**
+ * Get a specialized name for a generic type instantiation using checker Types.
+ * This is the checker-type equivalent of getSpecializedName(name, TypeAnnotation[]).
+ *
+ * @param baseName The base class/interface name (should be bundled name)
+ * @param typeArgs The type arguments as checker Types
+ * @param ctx CodegenContext for identity-based name lookups
+ */
+export function getSpecializedNameFromTypes(
+  baseName: string,
+  typeArgs: Type[],
+  ctx: CodegenContext,
+): string {
+  const argKeys = typeArgs.map((arg) =>
+    getCheckerTypeKeyForSpecialization(arg, ctx),
+  );
+  return `${baseName}<${argKeys.join(',')}>`;
+}
+
+/**
+ * Check if a checker Type contains any unresolved type parameters.
+ * Returns true if the type (or any nested type) is a TypeParameterType.
+ *
+ * Use this to determine if a type needs resolution through the type context
+ * before computing specialized names.
+ */
+export function typeContainsTypeParameter(type: Type): boolean {
+  switch (type.kind) {
+    case TypeKind.TypeParameter:
+      return true;
+    case TypeKind.Class: {
+      const classType = type as ClassType;
+      return classType.typeArguments?.some(typeContainsTypeParameter) ?? false;
+    }
+    case TypeKind.Interface: {
+      const ifaceType = type as InterfaceType;
+      return ifaceType.typeArguments?.some(typeContainsTypeParameter) ?? false;
+    }
+    case TypeKind.Array:
+      return typeContainsTypeParameter((type as ArrayType).elementType);
+    case TypeKind.Record: {
+      const recordType = type as RecordType;
+      for (const propType of recordType.properties.values()) {
+        if (typeContainsTypeParameter(propType)) return true;
+      }
+      return false;
+    }
+    case TypeKind.Tuple: {
+      const tupleType = type as TupleType;
+      return tupleType.elementTypes.some(typeContainsTypeParameter);
+    }
+    case TypeKind.Function: {
+      const funcType = type as FunctionType;
+      if (typeContainsTypeParameter(funcType.returnType)) return true;
+      return funcType.parameters.some(typeContainsTypeParameter);
+    }
+    case TypeKind.Union: {
+      const unionType = type as UnionType;
+      return unionType.types.some(typeContainsTypeParameter);
+    }
+    case TypeKind.TypeAlias:
+      return typeContainsTypeParameter((type as TypeAliasType).target);
+    default:
+      return false;
+  }
 }
 
 export function getSpecializedName(
