@@ -641,6 +641,15 @@ export function instantiateGenericClass(
     };
   }
 
+  // Check interning cache - return cached instance if available
+  // This ensures identical generic instantiations share the same object
+  if (ctx) {
+    const cached = ctx.getInternedClass(genericClass, typeArguments);
+    if (cached) {
+      return cached;
+    }
+  }
+
   const typeMap = new Map<string, Type>();
   genericClass.typeParameters!.forEach((param, index) => {
     typeMap.set(param.name, typeArguments[index]);
@@ -662,7 +671,7 @@ export function instantiateGenericClass(
     (impl) => substituteType(impl, typeMap) as InterfaceType,
   );
 
-  const newClass = {
+  const newClass: ClassType = {
     ...genericClass,
     typeArguments,
     fields: newFields,
@@ -674,6 +683,11 @@ export function instantiateGenericClass(
     onType: genericClass.onType ? substitute(genericClass.onType) : undefined,
     genericSource: genericClass,
   };
+
+  // Store in interning cache before validation to handle recursive types
+  if (ctx) {
+    ctx.internClass(genericClass, typeArguments, newClass);
+  }
 
   if (ctx) {
     for (const type of newFields.values()) validateType(type, ctx);
@@ -701,6 +715,14 @@ export function instantiateGenericInterface(
       genericInterface.typeParameters,
       typeArguments,
     );
+  }
+
+  // Check interning cache - return cached instance if available
+  if (ctx) {
+    const cached = ctx.getInternedInterface(genericInterface, typeArguments);
+    if (cached) {
+      return cached;
+    }
   }
 
   const typeMap = new Map<string, Type>();
@@ -735,6 +757,11 @@ export function instantiateGenericInterface(
     genericSource: genericInterface,
   };
 
+  // Store in interning cache before validation to handle recursive types
+  if (ctx) {
+    ctx.internInterface(genericInterface, typeArguments, newInterface);
+  }
+
   if (ctx) {
     for (const type of newFields.values()) validateType(type, ctx);
     for (const method of newMethods.values()) {
@@ -760,6 +787,14 @@ export function instantiateGenericMixin(
     );
   }
 
+  // Check interning cache - return cached instance if available
+  if (ctx) {
+    const cached = ctx.getInternedMixin(genericMixin, typeArguments);
+    if (cached) {
+      return cached;
+    }
+  }
+
   const typeMap = new Map<string, Type>();
   genericMixin.typeParameters!.forEach((param, index) => {
     typeMap.set(param.name, typeArguments[index]);
@@ -781,13 +816,19 @@ export function instantiateGenericMixin(
     ? (substitute(genericMixin.onType) as ClassType)
     : undefined;
 
-  const newMixin = {
+  const newMixin: MixinType = {
     ...genericMixin,
     typeArguments,
     fields: newFields,
     methods: newMethods,
     onType: newOnType,
+    genericSource: genericMixin,
   };
+
+  // Store in interning cache before validation to handle recursive types
+  if (ctx) {
+    ctx.internMixin(genericMixin, typeArguments, newMixin);
+  }
 
   if (ctx) {
     for (const type of newFields.values()) validateType(type, ctx);

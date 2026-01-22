@@ -3,6 +3,7 @@ import {
   type Type,
   type ClassType,
   type InterfaceType,
+  type MixinType,
   type FunctionType,
   Types,
   TypeNames,
@@ -48,6 +49,20 @@ export class CheckerContext {
     string,
     {modulePath: string; exportName: string}
   >();
+
+  /**
+   * Type interning cache for generic instantiations.
+   * Key format: "kind:genericSourceId|arg1Key,arg2Key,..."
+   * This ensures that identical generic instantiations share the same object,
+   * enabling identity-based type comparisons.
+   */
+  #internedTypes = new Map<string, Type>();
+
+  /** Counter for assigning unique IDs to generic source types */
+  #typeIdCounter = 0;
+
+  /** Map from generic source types to their unique IDs */
+  #typeIds = new WeakMap<Type, number>();
 
   constructor(program: Program, compiler?: Compiler, module?: Module) {
     this.program = program;
@@ -392,5 +407,215 @@ export class CheckerContext {
       return symbol.type;
     }
     return undefined;
+  }
+
+  // ============================================================
+  // Type Interning
+  // ============================================================
+
+  /**
+   * Get a unique ID for a type, assigning one if necessary.
+   * Used as part of the interning key to avoid name-based lookups.
+   */
+  getTypeId(type: Type): number {
+    let id = this.#typeIds.get(type);
+    if (id === undefined) {
+      id = this.#typeIdCounter++;
+      this.#typeIds.set(type, id);
+    }
+    return id;
+  }
+
+  /**
+   * Compute a canonical string key for a type, used for interning.
+   * This key must be stable and unique for structurally identical types.
+   */
+  computeTypeKey(type: Type): string {
+    switch (type.kind) {
+      case TypeKind.Number:
+        // Number types differ by name (i32, f32, i64, f64, etc.)
+        return `N:${(type as import('../types.js').NumberType).name}`;
+      case TypeKind.Boolean:
+      case TypeKind.Void:
+      case TypeKind.Null:
+      case TypeKind.Never:
+      case TypeKind.Any:
+      case TypeKind.AnyRef:
+      case TypeKind.ByteArray:
+      case TypeKind.Symbol:
+      case TypeKind.This:
+        // Primitive/singleton types use their kind as key
+        return type.kind;
+      case TypeKind.TypeParameter:
+        // Type parameters are identified by name within their scope
+        return `TP:${(type as import('../types.js').TypeParameterType).name}`;
+      case TypeKind.Class: {
+        const ct = type as ClassType;
+        // Use the canonical (root) type's ID to handle genericSource chains
+        const sourceType = ct.genericSource ?? ct;
+        const sourceId = this.getTypeId(sourceType);
+        if (ct.typeArguments && ct.typeArguments.length > 0) {
+          const argKeys = ct.typeArguments
+            .map((a) => this.computeTypeKey(a))
+            .join(',');
+          return `C:${sourceId}<${argKeys}>`;
+        }
+        return `C:${sourceId}`;
+      }
+      case TypeKind.Interface: {
+        const it = type as InterfaceType;
+        const sourceType = it.genericSource ?? it;
+        const sourceId = this.getTypeId(sourceType);
+        if (it.typeArguments && it.typeArguments.length > 0) {
+          const argKeys = it.typeArguments
+            .map((a) => this.computeTypeKey(a))
+            .join(',');
+          return `I:${sourceId}<${argKeys}>`;
+        }
+        return `I:${sourceId}`;
+      }
+      case TypeKind.Mixin: {
+        const mt = type as MixinType;
+        const sourceType = mt.genericSource ?? mt;
+        const sourceId = this.getTypeId(sourceType);
+        if (mt.typeArguments && mt.typeArguments.length > 0) {
+          const argKeys = mt.typeArguments
+            .map((a) => this.computeTypeKey(a))
+            .join(',');
+          return `M:${sourceId}<${argKeys}>`;
+        }
+        return `M:${sourceId}`;
+      }
+      case TypeKind.Array: {
+        const at = type as import('../types.js').ArrayType;
+        return `A:${this.computeTypeKey(at.elementType)}`;
+      }
+      case TypeKind.Tuple: {
+        const tt = type as import('../types.js').TupleType;
+        const elemKeys = tt.elementTypes
+          .map((e) => this.computeTypeKey(e))
+          .join(',');
+        return `T:[${elemKeys}]`;
+      }
+      case TypeKind.Record: {
+        const rt = type as import('../types.js').RecordType;
+        const propKeys = Array.from(rt.properties.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, v]) => `${k}:${this.computeTypeKey(v)}`)
+          .join(',');
+        return `R:{${propKeys}}`;
+      }
+      case TypeKind.Function: {
+        const ft = type as FunctionType;
+        const paramKeys = ft.parameters
+          .map((p) => this.computeTypeKey(p))
+          .join(',');
+        const retKey = this.computeTypeKey(ft.returnType);
+        return `F:(${paramKeys})=>${retKey}`;
+      }
+      case TypeKind.Union: {
+        const ut = type as import('../types.js').UnionType;
+        // Sort union members for canonical representation
+        const memberKeys = ut.types
+          .map((t) => this.computeTypeKey(t))
+          .sort()
+          .join('|');
+        return `U:(${memberKeys})`;
+      }
+      case TypeKind.Literal: {
+        const lt = type as import('../types.js').LiteralType;
+        return `L:${JSON.stringify(lt.value)}`;
+      }
+      case TypeKind.TypeAlias: {
+        const ta = type as import('../types.js').TypeAliasType;
+        // Type aliases resolve to their target for structural comparison
+        return this.computeTypeKey(ta.target);
+      }
+      default:
+        // Fallback to type kind
+        return type.kind;
+    }
+  }
+
+  /**
+   * Get an interned generic class instantiation, or undefined if not cached.
+   */
+  getInternedClass(
+    genericSource: ClassType,
+    typeArguments: Type[],
+  ): ClassType | undefined {
+    const key = this.computeInstantiationKey('C', genericSource, typeArguments);
+    return this.#internedTypes.get(key) as ClassType | undefined;
+  }
+
+  /**
+   * Store an interned generic class instantiation.
+   */
+  internClass(
+    genericSource: ClassType,
+    typeArguments: Type[],
+    instance: ClassType,
+  ): void {
+    const key = this.computeInstantiationKey('C', genericSource, typeArguments);
+    this.#internedTypes.set(key, instance);
+  }
+
+  /**
+   * Get an interned generic interface instantiation, or undefined if not cached.
+   */
+  getInternedInterface(
+    genericSource: InterfaceType,
+    typeArguments: Type[],
+  ): InterfaceType | undefined {
+    const key = this.computeInstantiationKey('I', genericSource, typeArguments);
+    return this.#internedTypes.get(key) as InterfaceType | undefined;
+  }
+
+  /**
+   * Store an interned generic interface instantiation.
+   */
+  internInterface(
+    genericSource: InterfaceType,
+    typeArguments: Type[],
+    instance: InterfaceType,
+  ): void {
+    const key = this.computeInstantiationKey('I', genericSource, typeArguments);
+    this.#internedTypes.set(key, instance);
+  }
+
+  /**
+   * Get an interned generic mixin instantiation, or undefined if not cached.
+   */
+  getInternedMixin(
+    genericSource: MixinType,
+    typeArguments: Type[],
+  ): MixinType | undefined {
+    const key = this.computeInstantiationKey('M', genericSource, typeArguments);
+    return this.#internedTypes.get(key) as MixinType | undefined;
+  }
+
+  /**
+   * Store an interned generic mixin instantiation.
+   */
+  internMixin(
+    genericSource: MixinType,
+    typeArguments: Type[],
+    instance: MixinType,
+  ): void {
+    const key = this.computeInstantiationKey('M', genericSource, typeArguments);
+    this.#internedTypes.set(key, instance);
+  }
+
+  /**
+   * Compute interning key for a generic instantiation.
+   */
+  private computeInstantiationKey(
+    prefix: string,
+    genericSource: Type,
+    typeArguments: Type[],
+  ): string {
+    const sourceId = this.getTypeId(genericSource);
+    const argKeys = typeArguments.map((a) => this.computeTypeKey(a)).join(',');
+    return `${prefix}:${sourceId}<${argKeys}>`;
   }
 }

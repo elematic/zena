@@ -130,6 +130,7 @@ export interface MixinType extends Type {
   methods: Map<string, FunctionType>;
   symbolFields?: Map<string, Type>;
   symbolMethods?: Map<string, FunctionType>;
+  genericSource?: MixinType;
   /** Internal flag to indicate this type has been fully checked. */
   _checked?: boolean;
 }

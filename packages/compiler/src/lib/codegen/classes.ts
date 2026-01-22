@@ -3793,16 +3793,10 @@ export function typeToTypeAnnotation(
  * For class/interface types, uses the bundled name when available for
  * consistency with how instantiateClass generates specialization keys.
  *
- * @deprecated TECHNICAL DEBT: This function exists because the specialization
- * registry uses string keys ("Box|i32") instead of identity-based lookups.
- * The root cause is that the checker creates new ClassType objects for each
- * generic instantiation site, so Box<i32> at line 10 and Box<i32> at line 50
- * are different objects even though they represent the same WASM type.
- *
- * **Solution:** Implement type interning in the checker so that identical
- * type instantiations share the same object. Then the specialization registry
- * can use a WeakMap keyed by the Type objects directly, eliminating the need
- * for string keys entirely.
+ * @deprecated PENDING REMOVAL: Type interning is now implemented in the checker
+ * (see CheckerContext in context.ts), so identical type instantiations share
+ * the same object. This function can be removed once codegen migrates to
+ * identity-based lookups using WeakMap keyed by Type objects directly.
  *
  * See docs/design/compiler-refactoring.md "Type Interning" section.
  */
