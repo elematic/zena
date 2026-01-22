@@ -186,7 +186,12 @@ export class CodegenContext {
   // Maps generic class declarations to their ClassType
   readonly #genericTemplates = new Map<string, ClassType>();
   // Maps generic specializations: "TemplateName|arg1,arg2" -> ClassInfo
+  // @deprecated Use #classInfoByType for identity-based lookups
   readonly #genericSpecializations = new Map<string, ClassInfo>();
+  // Identity-based specialization lookup: ClassType -> ClassInfo
+  // With type interning in the checker, identical instantiations share the
+  // same ClassType object, so we can use a WeakMap for O(1) lookup.
+  readonly #classInfoByType = new WeakMap<ClassType, ClassInfo>();
 
   // Template Literals
   public templateLiteralGlobals = new Map<TaggedTemplateExpression, number>();
@@ -487,6 +492,8 @@ export class CodegenContext {
   /**
    * Register a generic specialization.
    * Key format: "TemplateName|TypeArg1,TypeArg2"
+   *
+   * @deprecated Use registerClassInfoByType for identity-based registration
    */
   public registerGenericSpecialization(
     key: string,
@@ -497,9 +504,36 @@ export class CodegenContext {
 
   /**
    * Find a generic specialization by key.
+   *
+   * @deprecated Use getClassInfoByCheckerType for identity-based lookup
    */
   public findGenericSpecialization(key: string): ClassInfo | undefined {
     return this.#genericSpecializations.get(key);
+  }
+
+  /**
+   * Register a ClassInfo by its checker ClassType for identity-based lookup.
+   * With type interning, identical instantiations share the same ClassType
+   * object, so this provides O(1) lookup without string key computation.
+   */
+  public registerClassInfoByType(
+    classType: ClassType,
+    classInfo: ClassInfo,
+  ): void {
+    this.#classInfoByType.set(classType, classInfo);
+  }
+
+  /**
+   * Look up a ClassInfo by its checker ClassType using identity.
+   * This is the preferred lookup method when you have a ClassType from the checker.
+   *
+   * Returns undefined if not found - caller should fall back to other lookups
+   * or the type hasn't been registered yet.
+   */
+  public getClassInfoByCheckerType(
+    classType: ClassType,
+  ): ClassInfo | undefined {
+    return this.#classInfoByType.get(classType);
   }
 
   public getRecordTypeIndex(fields: {name: string; type: number[]}[]): number {

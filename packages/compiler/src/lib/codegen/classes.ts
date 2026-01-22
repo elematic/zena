@@ -3788,16 +3788,19 @@ export function typeToTypeAnnotation(
 /**
  * Get a canonical string key for a checker Type.
  * This is the checker-type equivalent of getTypeKey(TypeAnnotation).
- * Used for specialization registry keys and type identity comparisons.
  *
- * For class/interface types, uses the bundled name when available for
- * consistency with how instantiateClass generates specialization keys.
+ * **Status: FALLBACK PATH ONLY**
  *
- * @deprecated PENDING REMOVAL: Type interning is now implemented in the checker
- * (see CheckerContext in context.ts), so identical type instantiations share
- * the same object. This function can be removed once codegen migrates to
- * identity-based lookups using WeakMap keyed by Type objects directly.
+ * With the type interning migration (Round 3), this function is now only used
+ * in the fallback path of `computeSpecializationKey()` when identity-based
+ * lookups don't find a match. The identity-based lookup path
+ * (`getClassInfoByCheckerType`) is preferred and used first.
  *
+ * This function will be fully removed once:
+ * 1. All class instantiation paths populate `#classInfoByType`
+ * 2. Generic function/method instantiation uses identity-based caching
+ *
+ * @deprecated Used only as fallback. Prefer identity-based lookups.
  * See docs/design/compiler-refactoring.md "Type Interning" section.
  */
 export function getCheckerTypeKey(type: Type, ctx?: CodegenContext): string {
@@ -4090,8 +4093,18 @@ function resolveClassInfo(
   ctx: CodegenContext,
   classType: ClassType,
 ): ClassInfo | undefined {
-  // Try direct identity lookup first
-  let classInfo = ctx.getClassInfoByType(classType);
+  // Try identity-based WeakMap lookup first (fastest path)
+  let classInfo = ctx.getClassInfoByCheckerType(classType);
+  if (classInfo) {
+    // For extension classes, recompute onType if we have type arguments
+    if (classInfo.isExtension && classInfo.onTypeAnnotation) {
+      return resolveExtensionClassInfo(ctx, classInfo, classType);
+    }
+    return classInfo;
+  }
+
+  // Try struct index lookup (older identity-based path)
+  classInfo = ctx.getClassInfoByType(classType);
   if (classInfo) {
     // For extension classes, recompute onType if we have type arguments
     if (classInfo.isExtension && classInfo.onTypeAnnotation) {
@@ -4114,7 +4127,7 @@ function resolveClassInfo(
     source = source.genericSource;
   }
 
-  // For generic instantiations, try specialization registry
+  // For generic instantiations, try specialization registry (string-based fallback)
   if (classType.typeArguments && classType.typeArguments.length > 0) {
     const specializationKey = computeSpecializationKey(ctx, classType);
     if (specializationKey) {
@@ -4124,8 +4137,9 @@ function resolveClassInfo(
         if (classInfo.isExtension && classInfo.onTypeAnnotation) {
           return resolveExtensionClassInfo(ctx, classInfo, classType);
         }
-        // Cache the mapping for future identity lookups
+        // Cache the mapping for future identity lookups (both maps)
         ctx.setClassStructIndex(classType, classInfo.structTypeIndex);
+        ctx.registerClassInfoByType(classType, classInfo);
         return classInfo;
       }
     }

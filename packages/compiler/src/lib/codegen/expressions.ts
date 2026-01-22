@@ -1283,60 +1283,81 @@ function generateNewExpression(
 ) {
   let className = expr.callee.name;
   let typeArguments = expr.typeArguments;
+  let classInfo: ClassInfo | undefined;
 
-  if (expr.inferredTypeArguments) {
-    typeArguments = expr.inferredTypeArguments.map((t) => {
-      const res = typeToTypeAnnotation(t, undefined, ctx);
-      return res;
-    });
+  // Try identity-based lookup first using the checker's interned ClassType
+  if (expr.inferredType && expr.inferredType.kind === TypeKind.Class) {
+    const classType = expr.inferredType as ClassType;
+    classInfo = ctx.getClassInfoByCheckerType(classType);
+
+    // If identity lookup failed, fall back to annotation-based path
+    // which will trigger instantiation if needed
+    if (!classInfo) {
+      // This path handles the case where the class was instantiated via codegen
+      // (AST-driven) rather than being pre-registered from checker types.
+      // The mapCheckerTypeToWasmType call will instantiate and cache the class.
+      mapCheckerTypeToWasmType(ctx, classType);
+      classInfo = ctx.getClassInfoByCheckerType(classType);
+    }
   }
 
-  if (
-    (!typeArguments || typeArguments.length === 0) &&
-    ctx.genericClasses.has(className)
-  ) {
-    throw new Error(`Missing inferred type arguments for ${className}`);
-  }
-
-  if (typeArguments && typeArguments.length > 0) {
-    // Check for partial type arguments and fill with defaults
-    if (ctx.genericClasses.has(className)) {
-      const classDecl = ctx.genericClasses.get(className)!;
-      if (
-        classDecl.typeParameters &&
-        typeArguments.length < classDecl.typeParameters.length
-      ) {
-        const newArgs = [...typeArguments];
-        for (
-          let i = typeArguments.length;
-          i < classDecl.typeParameters.length;
-          i++
-        ) {
-          const param = classDecl.typeParameters[i];
-          if (param.default) {
-            newArgs.push(param.default);
-          } else {
-            throw new Error(`Missing type argument for ${param.name}`);
-          }
-        }
-        typeArguments = newArgs;
-      }
+  // Fall back to annotation-based lookup for edge cases
+  if (!classInfo) {
+    if (expr.inferredTypeArguments) {
+      typeArguments = expr.inferredTypeArguments.map((t) => {
+        const res = typeToTypeAnnotation(t, undefined, ctx);
+        return res;
+      });
     }
 
-    const annotation: TypeAnnotation = {
-      type: NodeType.TypeAnnotation,
-      name: className,
-      typeArguments: typeArguments,
-    };
-    // Ensure the class is instantiated
-    mapType(ctx, annotation, ctx.currentTypeContext);
-    // Get the specialized name
-    const resolved = resolveAnnotation(annotation, ctx.currentTypeContext);
-    const newClassName = getTypeKey(resolved);
-    className = newClassName;
+    if (
+      (!typeArguments || typeArguments.length === 0) &&
+      ctx.genericClasses.has(className)
+    ) {
+      throw new Error(`Missing inferred type arguments for ${className}`);
+    }
+
+    if (typeArguments && typeArguments.length > 0) {
+      // Check for partial type arguments and fill with defaults
+      if (ctx.genericClasses.has(className)) {
+        const classDecl = ctx.genericClasses.get(className)!;
+        if (
+          classDecl.typeParameters &&
+          typeArguments.length < classDecl.typeParameters.length
+        ) {
+          const newArgs = [...typeArguments];
+          for (
+            let i = typeArguments.length;
+            i < classDecl.typeParameters.length;
+            i++
+          ) {
+            const param = classDecl.typeParameters[i];
+            if (param.default) {
+              newArgs.push(param.default);
+            } else {
+              throw new Error(`Missing type argument for ${param.name}`);
+            }
+          }
+          typeArguments = newArgs;
+        }
+      }
+
+      const annotation: TypeAnnotation = {
+        type: NodeType.TypeAnnotation,
+        name: className,
+        typeArguments: typeArguments,
+      };
+      // Ensure the class is instantiated
+      mapType(ctx, annotation, ctx.currentTypeContext);
+      // Get the specialized name
+      const resolved = resolveAnnotation(annotation, ctx.currentTypeContext);
+      const newClassName = getTypeKey(resolved);
+      className = newClassName;
+    }
+
+    classInfo = ctx.classes.get(className);
   }
 
-  const classInfo = ctx.classes.get(className);
   if (!classInfo) throw new Error(`Class ${className} not found`);
 
   if (classInfo.isExtension && classInfo.onType) {
