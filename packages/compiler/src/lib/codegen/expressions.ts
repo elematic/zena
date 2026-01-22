@@ -66,7 +66,6 @@ const HASH_CODE_METHOD = 'hashCode';
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
-  getInterfaceFromTypeIndex,
   getSpecializedName,
   getSpecializedNameFromTypes,
   getTypeKey,
@@ -591,8 +590,7 @@ function generateAsExpression(
     }
   }
 
-  // Interface Boxing
-  // Try identity-based lookup first via checker type
+  // Interface Boxing - identity-based lookup
   let interfaceInfo: InterfaceInfo | undefined;
   if (
     expr.typeAnnotation.inferredType &&
@@ -601,11 +599,11 @@ function generateAsExpression(
     interfaceInfo = ctx.getInterfaceInfoByCheckerType(
       expr.typeAnnotation.inferredType as InterfaceType,
     );
-  }
-  // Fall back to struct index lookup
-  if (!interfaceInfo) {
-    const targetIndex = decodeTypeIndex(targetType);
-    interfaceInfo = getInterfaceFromTypeIndex(ctx, targetIndex);
+    if (!interfaceInfo) {
+      throw new Error(
+        `Interface not registered: ${(expr.typeAnnotation.inferredType as InterfaceType).name}`,
+      );
+    }
   }
 
   if (interfaceInfo) {
@@ -1124,7 +1122,7 @@ function generateIndexExpression(
     }
 
     if (!foundClass) {
-      // Try identity-based lookup for interface
+      // Identity-based lookup for interface
       let interfaceInfo: InterfaceInfo | undefined;
       if (
         expr.object.inferredType &&
@@ -1133,10 +1131,11 @@ function generateIndexExpression(
         interfaceInfo = ctx.getInterfaceInfoByCheckerType(
           expr.object.inferredType as InterfaceType,
         );
-      }
-      // Fall back to struct index lookup
-      if (!interfaceInfo) {
-        interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+        if (!interfaceInfo) {
+          throw new Error(
+            `Interface not registered: ${(expr.object.inferredType as InterfaceType).name}`,
+          );
+        }
       }
 
       if (interfaceInfo) {
@@ -1703,7 +1702,7 @@ function generateMemberExpression(
       return;
     }
 
-    // Check if it's an interface - try identity-based lookup first
+    // Check if it's an interface - identity-based lookup
     let interfaceInfo: InterfaceInfo | undefined;
     if (
       expr.object.inferredType &&
@@ -1712,10 +1711,11 @@ function generateMemberExpression(
       interfaceInfo = ctx.getInterfaceInfoByCheckerType(
         expr.object.inferredType as InterfaceType,
       );
-    }
-    // Fall back to struct index lookup
-    if (!interfaceInfo) {
-      interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+      if (!interfaceInfo) {
+        throw new Error(
+          `Interface not registered: ${(expr.object.inferredType as InterfaceType).name}`,
+        );
+      }
     }
 
     if (interfaceInfo) {
@@ -2148,9 +2148,8 @@ function generateCallExpression(
     }
 
     const objectType = inferType(ctx, memberExpr.object);
-    const typeIndex = decodeTypeIndex(objectType);
 
-    // Check if interface - try identity-based lookup first
+    // Check if interface - identity-based lookup
     let interfaceInfo: InterfaceInfo | undefined;
     if (
       memberExpr.object.inferredType &&
@@ -2159,10 +2158,11 @@ function generateCallExpression(
       interfaceInfo = ctx.getInterfaceInfoByCheckerType(
         memberExpr.object.inferredType as InterfaceType,
       );
-    }
-    // Fall back to struct index lookup
-    if (!interfaceInfo) {
-      interfaceInfo = getInterfaceFromTypeIndex(ctx, typeIndex);
+      if (!interfaceInfo) {
+        throw new Error(
+          `Interface not registered: ${(memberExpr.object.inferredType as InterfaceType).name}`,
+        );
+      }
     }
 
     if (interfaceInfo) {
@@ -2883,7 +2883,7 @@ function generateAssignmentExpression(
           return;
         }
       } else {
-        // Try identity-based lookup for interface
+        // Identity-based lookup for interface
         let interfaceInfo: InterfaceInfo | undefined;
         if (
           indexExpr.object.inferredType &&
@@ -2892,10 +2892,11 @@ function generateAssignmentExpression(
           interfaceInfo = ctx.getInterfaceInfoByCheckerType(
             indexExpr.object.inferredType as InterfaceType,
           );
-        }
-        // Fall back to struct index lookup
-        if (!interfaceInfo) {
-          interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+          if (!interfaceInfo) {
+            throw new Error(
+              `Interface not registered: ${(indexExpr.object.inferredType as InterfaceType).name}`,
+            );
+          }
         }
 
         if (interfaceInfo) {
@@ -3117,7 +3118,7 @@ function generateAssignmentExpression(
     }
 
     if (!foundClass) {
-      // Check if it's an interface - try identity-based lookup first
+      // Identity-based lookup for interface
       let interfaceInfo: InterfaceInfo | undefined;
       if (
         memberExpr.object.inferredType &&
@@ -3126,10 +3127,11 @@ function generateAssignmentExpression(
         interfaceInfo = ctx.getInterfaceInfoByCheckerType(
           memberExpr.object.inferredType as InterfaceType,
         );
-      }
-      // Fall back to struct index lookup
-      if (!interfaceInfo) {
-        interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+        if (!interfaceInfo) {
+          throw new Error(
+            `Interface not registered: ${(memberExpr.object.inferredType as InterfaceType).name}`,
+          );
+        }
       }
 
       if (interfaceInfo) {

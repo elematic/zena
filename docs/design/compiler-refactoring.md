@@ -1339,6 +1339,110 @@ const classInfo = ctx.getClassInfoByCheckerType(classType);
 - ~200 lines of code removed
 - Aligns with how mature compilers (TypeScript, Rust) handle type identity
 
+## Future Direction: Late Type Lowering
+
+### Problem: Early Conversion to WASM Bytes
+
+Currently, codegen converts checker types to WASM byte encodings (`number[]`)
+early in the pipeline via `mapType()`. These byte arrays are then passed around
+and stored in `ClassInfo`, `InterfaceInfo`, method signatures, etc.
+
+This creates a problem: when we need to know _which_ type a WASM encoding
+represents (e.g., for return type boxing in trampolines), we must reverse-lookup
+from struct index to type via `getInterfaceFromTypeIndex()` or similar.
+
+**Example:** In `generateTrampoline`, we have `interfaceResults[0]` (WASM bytes
+for a return type). To box the return value into an interface fat pointer, we
+need to find the `InterfaceInfo`. But we only have bytes, so we decode the
+struct index and iterate through all interfaces to find a match.
+
+### Proposed Solution: Keep Checker Types Through Codegen
+
+Instead of converting to WASM bytes early, keep checker `Type` objects through
+the codegen pipeline and only convert at emit time:
+
+**Current (early lowering):**
+
+```
+Checker Type → mapType() → number[] → stored/passed → emit
+```
+
+**Proposed (late lowering):**
+
+```
+Checker Type → stored/passed → emit time: Type → WASM bytes
+```
+
+### What Would Change
+
+1. **Type storage:** `ClassInfo`, `InterfaceInfo` method/field types would store
+   `Type` instead of `number[]`
+2. **`mapType()` moves to emit:** Becomes `emitType(type: Type): number[]` called
+   only when writing WASM output
+3. **Locals and params:** Would reference `Type` objects, not byte arrays
+4. **Emitter interface:** Would need `typeToWasm(type: Type): number[]`
+
+### Benefits
+
+1. **Identity preserved:** No need for `getInterfaceFromTypeIndex()` - we always
+   have the `Type` object
+2. **Multiple backends:** WAT emitter, debug output, or other targets could
+   reuse the same codegen with different `typeToWasm` implementations
+3. **Simpler reasoning:** Types are first-class throughout, not encoded bytes
+4. **Better error messages:** We know what type something is, not just its encoding
+5. **No information loss:** Generic type arguments, names, etc. all preserved
+
+### Challenges
+
+1. **Large refactor:** Touches most of codegen - `ClassInfo`, `InterfaceInfo`,
+   method registration, local declarations, etc.
+2. **Synthetic types:** Some types are created during codegen (e.g., closure
+   contexts). Need to decide if these become `Type` objects too.
+3. **WASM-specific layout:** Struct field offsets still need early computation,
+   but this can be separate from type encoding.
+
+### Enabling WAT Emit
+
+A WAT emitter could implement `typeToWat(type: Type): string` and reuse all
+codegen logic. Currently, a WAT emitter would need to either decode `number[]`
+back to understand types, or duplicate all mapping logic.
+
+### Implementation Sketch
+
+```typescript
+// In ClassInfo (proposed)
+interface ClassInfo {
+  name: string;
+  structTypeIndex: number;
+  fields: Map<string, {index: number; type: Type}>; // Type, not number[]
+  methods: Map<
+    string,
+    {
+      index: number;
+      returnType: Type; // Type, not number[]
+      paramTypes: Type[]; // Type[], not number[][]
+    }
+  >;
+}
+
+// In emitter (proposed)
+function emitType(ctx: EmitContext, type: Type): number[] {
+  if (type.kind === TypeKind.Class) {
+    const structIndex = ctx.getClassStructIndex(type as ClassType);
+    return [ValType.ref_null, ...encodeSignedLEB128(structIndex)];
+  }
+  // ... handle other type kinds
+}
+```
+
+### Status
+
+This is tracked as a future direction. The current identity-based lookup
+infrastructure (WeakMaps keyed by checker types) is a step toward this goal -
+it establishes the pattern of using checker types as keys. The remaining work
+would be to stop converting to `number[]` early and instead preserve `Type`
+objects through the pipeline.
+
 ## Open Questions
 
 1. Should we support truly independent module checking (e.g., for LSP hover on

@@ -566,11 +566,18 @@ export class CodegenContext {
   /**
    * Look up an InterfaceInfo by its checker InterfaceType using identity.
    * This is the preferred lookup method when you have an InterfaceType from the checker.
+   * For specialized generic interfaces, also checks the genericSource.
    */
   public getInterfaceInfoByCheckerType(
     interfaceType: InterfaceType,
   ): InterfaceInfo | undefined {
-    return this.#interfaceInfoByType.get(interfaceType);
+    const result = this.#interfaceInfoByType.get(interfaceType);
+    if (result) return result;
+    // For specialized generic interfaces, look up via genericSource
+    if (interfaceType.genericSource) {
+      return this.#interfaceInfoByType.get(interfaceType.genericSource);
+    }
+    return undefined;
   }
 
   public getRecordTypeIndex(fields: {name: string; type: number[]}[]): number {
