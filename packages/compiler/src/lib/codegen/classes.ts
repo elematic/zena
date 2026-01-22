@@ -947,7 +947,7 @@ export function preRegisterClassStruct(
     // This is needed because some parts of the compiler might try to reference the class type
     const structTypeIndex = ctx.module.addStructType([]);
 
-    ctx.classes.set(decl.name.name, {
+    const classInfo: ClassInfo = {
       name: decl.name.name,
       structTypeIndex,
       fields: new Map(),
@@ -955,13 +955,17 @@ export function preRegisterClassStruct(
       isExtension: true,
       onType,
       onTypeAnnotation: decl.onType,
-    });
+    };
+    ctx.classes.set(decl.name.name, classInfo);
 
     // Register type → struct index for identity-based lookups
     if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
-      ctx.setClassStructIndex(decl.inferredType as ClassType, structTypeIndex);
+      const classType = decl.inferredType as ClassType;
+      ctx.setClassStructIndex(classType, structTypeIndex);
       // Register bundled name for identity-based lookups
-      ctx.setClassBundledName(decl.inferredType as ClassType, decl.name.name);
+      ctx.setClassBundledName(classType, decl.name.name);
+      // Register ClassInfo for O(1) lookup
+      ctx.registerClassInfoByType(classType, classInfo);
     }
 
     // Check if this is the String class
@@ -1069,7 +1073,7 @@ export function preRegisterClassStruct(
   }
 
   // Add minimal info to ctx.classes so self-references work
-  ctx.classes.set(decl.name.name, {
+  const classInfo: ClassInfo = {
     name: decl.name.name,
     structTypeIndex,
     brandTypeIndex,
@@ -1078,13 +1082,17 @@ export function preRegisterClassStruct(
     vtable: [],
     isFinal: decl.isFinal,
     isExtension: decl.isExtension,
-  });
+  };
+  ctx.classes.set(decl.name.name, classInfo);
 
   // Register type → struct index for identity-based lookups
   if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
-    ctx.setClassStructIndex(decl.inferredType as ClassType, structTypeIndex);
+    const classType = decl.inferredType as ClassType;
+    ctx.setClassStructIndex(classType, structTypeIndex);
     // Register bundled name for identity-based lookups
-    ctx.setClassBundledName(decl.inferredType as ClassType, decl.name.name);
+    ctx.setClassBundledName(classType, decl.name.name);
+    // Register ClassInfo for O(1) lookup
+    ctx.registerClassInfoByType(classType, classInfo);
   }
 }
 
@@ -1424,6 +1432,11 @@ export function registerClassStruct(
     onType,
   };
   ctx.classes.set(decl.name.name, classInfo);
+
+  // Update identity-based lookup registration with the complete ClassInfo
+  if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
+    ctx.registerClassInfoByType(decl.inferredType as ClassType, classInfo);
+  }
 }
 
 export function registerClassMethods(
@@ -4166,7 +4179,7 @@ function resolveClassInfo(
   ctx: CodegenContext,
   classType: ClassType,
 ): ClassInfo | undefined {
-  // Try identity-based WeakMap lookup first (fastest path)
+  // Try identity-based WeakMap lookup first (fastest path - O(1))
   let classInfo = ctx.getClassInfoByCheckerType(classType);
   if (classInfo) {
     // For extension classes, recompute onType if we have type arguments
@@ -4176,20 +4189,10 @@ function resolveClassInfo(
     return classInfo;
   }
 
-  // Try struct index lookup (older identity-based path)
-  classInfo = ctx.getClassInfoByType(classType);
-  if (classInfo) {
-    // For extension classes, recompute onType if we have type arguments
-    if (classInfo.isExtension && classInfo.onTypeAnnotation) {
-      return resolveExtensionClassInfo(ctx, classInfo, classType);
-    }
-    return classInfo;
-  }
-
-  // Follow genericSource chain for identity lookup
+  // Follow genericSource chain with WeakMap lookup (still O(1) per step)
   let source = classType.genericSource;
   while (source) {
-    classInfo = ctx.getClassInfoByType(source);
+    classInfo = ctx.getClassInfoByCheckerType(source);
     if (classInfo) {
       // For extension classes, recompute onType if we have type arguments
       if (classInfo.isExtension && classInfo.onTypeAnnotation) {
@@ -4198,6 +4201,18 @@ function resolveClassInfo(
       return classInfo;
     }
     source = source.genericSource;
+  }
+
+  // WeakMap lookup failed - try struct index lookup as last resort (O(n))
+  // This handles cases where the class was registered via struct index
+  // but not yet registered in the WeakMap
+  classInfo = ctx.getClassInfoByType(classType);
+  if (classInfo) {
+    // For extension classes, recompute onType if we have type arguments
+    if (classInfo.isExtension && classInfo.onTypeAnnotation) {
+      return resolveExtensionClassInfo(ctx, classInfo, classType);
+    }
+    return classInfo;
   }
 
   // Identity lookup failed - caller will fall through to annotation-based

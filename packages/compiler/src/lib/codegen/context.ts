@@ -511,6 +511,18 @@ export class CodegenContext {
     return this.#classInfoByType.get(classType);
   }
 
+  /**
+   * Look up a ClassInfo by struct type index using identity-based lookups.
+   * This is O(1) via the structIndex -> ClassType -> ClassInfo chain.
+   *
+   * Returns undefined if not found - caller should fall back to iteration.
+   */
+  public getClassInfoByStructIndex(structIndex: number): ClassInfo | undefined {
+    const classType = this.#structIndexToClass.get(structIndex);
+    if (!classType) return undefined;
+    return this.#classInfoByType.get(classType);
+  }
+
   public getRecordTypeIndex(fields: {name: string; type: number[]}[]): number {
     // Sort fields by name to canonicalize
     const sortedFields = [...fields].sort((a, b) =>

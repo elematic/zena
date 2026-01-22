@@ -1010,15 +1010,30 @@ function generateIndexExpression(
 
   if (structTypeIndex !== -1) {
     let foundClass: ClassInfo | undefined;
-    for (const info of ctx.classes.values()) {
-      if (info.structTypeIndex === structTypeIndex) {
-        foundClass = info;
-        break;
+
+    // Use identity-based lookup via checker type
+    if (
+      expr.object.inferredType &&
+      expr.object.inferredType.kind === TypeKind.Class
+    ) {
+      const classType = expr.object.inferredType as ClassType;
+      foundClass = ctx.getClassInfoByCheckerType(classType);
+    }
+
+    // Fall back to struct index lookup for classes instantiated via annotation path
+    // (e.g., generic specializations created during codegen that don't have
+    // checker types registered in the WeakMap)
+    if (!foundClass) {
+      for (const info of ctx.classes.values()) {
+        if (info.structTypeIndex === structTypeIndex) {
+          foundClass = info;
+          break;
+        }
       }
     }
 
+    // Check for extension classes (e.g., FixedArray on array<T>)
     if (!foundClass) {
-      // Check for extension classes
       for (const info of ctx.classes.values()) {
         if (info.isExtension && info.onType) {
           if (typesAreEqual(info.onType, objectType)) {
@@ -2174,15 +2189,18 @@ function generateCallExpression(
 
     let foundClass: ClassInfo | undefined;
 
-    // Try to find class from AST type first (needed for extension classes on primitives)
+    // Use identity-based lookup via checker type
     if (
       memberExpr.object.inferredType &&
       memberExpr.object.inferredType.kind === TypeKind.Class
     ) {
       const classType = memberExpr.object.inferredType as ClassType;
-      foundClass = ctx.getClassInfoByType(classType);
+      foundClass = ctx.getClassInfoByCheckerType(classType);
     }
 
+    // Fall back to struct index lookup for classes instantiated via annotation path
+    // (e.g., generic specializations created during codegen that don't have
+    // checker types registered in the WeakMap)
     if (!foundClass && structTypeIndex !== -1) {
       for (const info of ctx.classes.values()) {
         if (info.structTypeIndex === structTypeIndex) {
@@ -2192,8 +2210,8 @@ function generateCallExpression(
       }
     }
 
+    // Check for extension classes (e.g., FixedArray on array<T>)
     if (!foundClass) {
-      // Check for extension classes
       for (const info of ctx.classes.values()) {
         if (info.isExtension && info.onType) {
           if (typesAreEqual(info.onType, objectType)) {
@@ -4329,8 +4347,11 @@ function generateRecordLiteral(
           const classType = spreadType as ClassType;
           if (classType.fields.has(key) && !key.startsWith('#')) {
             const spreadInfo = spreadLocals.get(prop)!;
-            // Use identity-based lookup instead of name-based
-            const classInfo = ctx.getClassInfoByType(classType);
+            // Use identity-based lookup (O(1) via WeakMap), fall back to struct index lookup
+            let classInfo = ctx.getClassInfoByCheckerType(classType);
+            if (!classInfo) {
+              classInfo = ctx.getClassInfoByType(classType);
+            }
             if (!classInfo) {
               throw new Error(`Class info not found for ${classType.name}`);
             }
