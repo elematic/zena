@@ -3873,6 +3873,13 @@ export function mapCheckerTypeToWasmType(
       return [ValType.i32];
     } else if (typeof litType.value === 'string') {
       // String literals map to the String type
+      if (ctx.stringTypeIndex !== -1) {
+        return [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+        ];
+      }
+      // Fallback to annotation-based lookup
       const annotation = typeToTypeAnnotation(type, undefined, ctx);
       return mapType(ctx, annotation, ctx.currentTypeContext);
     } else if (typeof litType.value === 'boolean') {
