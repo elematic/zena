@@ -3788,6 +3788,21 @@ export function mapCheckerTypeToWasmType(
   ctx: CodegenContext,
   type: Type,
 ): number[] {
+  // First, resolve type parameters using ctx.currentTypeContext
+  // This ensures generic type parameters (T, K, V) are resolved to their
+  // concrete types before we try to map them to WASM types.
+  if (type.kind === TypeKind.TypeParameter) {
+    const typeParam = type as TypeParameterType;
+    if (ctx.currentTypeContext?.has(typeParam.name)) {
+      const resolved = ctx.currentTypeContext.get(typeParam.name)!;
+      // Convert the resolved TypeAnnotation back to a Type and recurse
+      // For now, use the annotation path for this resolution
+      return mapType(ctx, resolved, ctx.currentTypeContext);
+    }
+    // Unresolved type parameter - erase to anyref
+    return [ValType.anyref];
+  }
+
   if (type.kind === TypeKind.Number) {
     const name = (type as NumberType).name;
     if (name === Types.I32.name) return [ValType.i32];
@@ -3839,11 +3854,82 @@ export function mapCheckerTypeToWasmType(
       // It's T | null - use the non-null type's mapping
       return mapCheckerTypeToWasmType(ctx, nonNullTypes[0]);
     }
-    // For other unions, fall through to annotation-based lookup
+    // Check if all types are literals (e.g., enum values) - use the base type
+    if (
+      nonNullTypes.length > 0 &&
+      nonNullTypes.every((t) => t.kind === TypeKind.Literal)
+    ) {
+      // All literals should have the same base type, use the first one
+      return mapCheckerTypeToWasmType(ctx, nonNullTypes[0]);
+    }
+    // For other unions (reference types), use anyref
+    return [ValType.anyref];
   }
 
-  // Fall through to annotation-based lookup for remaining types
-  // (Arrays, Records, Tuples, Functions, TypeAliases, etc.)
+  // Handle Literal types - map to their base type
+  if (type.kind === TypeKind.Literal) {
+    const litType = type as LiteralType;
+    if (typeof litType.value === 'number') {
+      return [ValType.i32];
+    } else if (typeof litType.value === 'string') {
+      // String literals map to the String type
+      const annotation = typeToTypeAnnotation(type, undefined, ctx);
+      return mapType(ctx, annotation, ctx.currentTypeContext);
+    } else if (typeof litType.value === 'boolean') {
+      return [ValType.i32];
+    }
+  }
+
+  // Handle ArrayType directly (WASM GC array)
+  if (type.kind === TypeKind.Array) {
+    const arrayType = type as ArrayType;
+    const elementWasmType = mapCheckerTypeToWasmType(
+      ctx,
+      arrayType.elementType,
+    );
+    const typeIndex = ctx.getArrayTypeIndex(elementWasmType);
+    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+  }
+
+  // Handle RecordType directly
+  if (type.kind === TypeKind.Record) {
+    const recordType = type as RecordType;
+    const fields: {name: string; type: number[]}[] = [];
+    for (const [name, propType] of recordType.properties) {
+      fields.push({name, type: mapCheckerTypeToWasmType(ctx, propType)});
+    }
+    const typeIndex = ctx.getRecordTypeIndex(fields);
+    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+  }
+
+  // Handle TupleType directly
+  if (type.kind === TypeKind.Tuple) {
+    const tupleType = type as TupleType;
+    const elementTypes = tupleType.elementTypes.map((el) =>
+      mapCheckerTypeToWasmType(ctx, el),
+    );
+    const typeIndex = ctx.getTupleTypeIndex(elementTypes);
+    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+  }
+
+  // Handle FunctionType directly (closure struct)
+  if (type.kind === TypeKind.Function) {
+    const funcType = type as FunctionType;
+    const paramTypes = funcType.parameters.map((p) =>
+      mapCheckerTypeToWasmType(ctx, p),
+    );
+    const returnType = mapCheckerTypeToWasmType(ctx, funcType.returnType);
+    const typeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
+    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+  }
+
+  // Handle TypeAlias - resolve to target type
+  if (type.kind === TypeKind.TypeAlias) {
+    const aliasType = type as TypeAliasType;
+    return mapCheckerTypeToWasmType(ctx, aliasType.target);
+  }
+
+  // Fall through to annotation-based lookup for any remaining types
   const annotation = typeToTypeAnnotation(type, undefined, ctx);
   const result = mapType(ctx, annotation, ctx.currentTypeContext);
   return result;

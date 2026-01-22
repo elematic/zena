@@ -806,6 +806,7 @@ Currently, `ClassInfo` has both `onType` (WASM bytes, computed) and `onTypeAnnot
 `onTypeAnnotation` over time for cleaner architecture.
 
 **Current state:**
+
 - `onTypeAnnotation` is set from `ClassDeclaration.onType` (AST) during codegen
   in `preRegisterClassStruct` and `instantiateClass`
 - `onType` is computed via `mapType(ctx, decl.onType, context)` during codegen
@@ -820,9 +821,60 @@ Currently, `ClassInfo` has both `onType` (WASM bytes, computed) and `onTypeAnnot
 3. Remove `onType` field from `ClassInfo` interface
 
 **Benefits:**
+
 - Single source of truth (`onTypeAnnotation`)
 - Correct computation at each use site (no stale cached values)
 - Cleaner separation between AST-level types and WASM-level types
+
+##### Expanding mapCheckerTypeToWasmType ✅ COMPLETED (2026-01-22)
+
+**Goal:** Add direct handling for Array, Record, Tuple, Function, TypeParameter,
+TypeAlias types to reduce reliance on the annotation-based fallback path.
+
+**Result:** SUCCESS - All types now handled directly.
+
+**The key insight:** Handle `TypeParameter` FIRST by looking it up in
+`ctx.currentTypeContext`. This ensures type parameters (T, K, V) are resolved
+to concrete types before we try to handle nested types recursively.
+
+```typescript
+// Handle TypeParameter FIRST - resolve via context
+if (type.kind === TypeKind.TypeParameter) {
+  const typeParam = type as TypeParameterType;
+  if (ctx.currentTypeContext?.has(typeParam.name)) {
+    const resolved = ctx.currentTypeContext.get(typeParam.name)!;
+    return mapType(ctx, resolved, ctx.currentTypeContext);
+  }
+  // Unresolved type parameter - erase to anyref
+  return [ValType.anyref];
+}
+```
+
+**What `mapCheckerTypeToWasmType` now handles directly:**
+
+| Type Kind        | Handling                                                     |
+| ---------------- | ------------------------------------------------------------ |
+| TypeParameter    | Resolved via `ctx.currentTypeContext`, else erased to anyref |
+| Number, Boolean  | Maps to ValType.i32/i64/f32/f64                              |
+| Void, Never      | Maps to empty results `[]`                                   |
+| Null             | Maps to `ref null none`                                      |
+| ClassType        | Identity-based lookup via `resolveClassInfo()`               |
+| InterfaceType    | Identity-based lookup via `resolveInterfaceStructIndex()`    |
+| Array            | Recursively maps element type, gets array type index         |
+| Record           | Recursively maps property types, gets record type index      |
+| Tuple            | Recursively maps element types, gets tuple type index        |
+| Function         | Recursively maps param/return types, gets closure type index |
+| TypeAlias        | Resolves to target type recursively                          |
+| Union (T\|null)  | Delegates to non-null type                                   |
+| Union (literals) | Uses base type (for enums)                                   |
+| Literal          | Maps to base type (i32 for numbers/booleans)                 |
+
+**Remaining fallback:** Only truly unknown types fall through to the annotation
+path. In practice, this is rarely hit since all common type kinds are handled.
+
+**Impact:** This significantly reduces reliance on `typeToTypeAnnotation()` and
+the bundled name infrastructure. Most type mappings now work via identity-based
+lookups and recursive WASM type construction.
 
 #### Step 2.5 (Original): Remove Bundler Renaming
 
