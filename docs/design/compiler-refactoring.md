@@ -720,8 +720,9 @@ All 1118 tests pass.
 
 ##### Step 2.5.6: Remove Bundled Name Bridge Infrastructure (OPTIONAL)
 
-**Status:** ✅ COMPLETE - All class types (including generic extension classes) now
-use identity-based lookup via `mapCheckerTypeToWasmType()`.
+**Status:** PARTIALLY COMPLETE - `mapCheckerTypeToWasmType()` works for most cases.
+Removing `#classBundledNames`/`#interfaceBundledNames` is blocked until `instantiateClass`
+can register by type identity.
 
 **Background:** The `#classBundledNames` and `#interfaceBundledNames` maps in
 `CodegenContext` exist as a bridge solution. They allow `typeToTypeAnnotation`
@@ -797,8 +798,45 @@ the correct WASM array type index for the current context.
    - Removed `registerGenericSpecialization()` and `findGenericSpecialization()`
 8. Audit all `typeToTypeAnnotation` call sites - DEFERRED
 9. Replace calls that have checker types available - DEFERRED
-10. Remove `#classBundledNames`, `#interfaceBundledNames` - MAY NOT BE NEEDED
-    (Most lookups now work via identity-based WeakMap)
+10. Remove `#classBundledNames`, `#interfaceBundledNames` - BLOCKED (see below)
+
+**Progress (2026-01-22) - instantiateClass checker type registration:**
+
+Added infrastructure to pass checker types through `instantiateClass` for registration:
+
+1. ✅ Added optional `checkerType?: ClassType` parameter to `instantiateClass()`
+2. ✅ When provided, registers ClassInfo via `ctx.registerClassInfoByType()`
+3. ✅ Added `ctx.getGenericDeclByType()` - identity-based lookup for generic declarations
+4. ✅ Updated `mapCheckerTypeToWasmType()` to use identity-based declaration lookup
+   and pass checker type through to `instantiateClass()`
+5. ✅ Updated `resolveClassInfo()` to not return templates for specialized types
+   (returns undefined instead, triggering proper instantiation)
+
+**Remaining limitation:** The name-based lookup in `generateMemberExpression` is
+still needed because method registration is deferred (`pendingMethodGenerations`).
+When `mapCheckerTypeToWasmType` triggers `instantiateClass`, the ClassInfo is
+registered by checker type immediately, but methods aren't populated yet. The
+name-based lookup via `ctx.classes.get(specializedName)` works because the methods
+are populated before codegen uses them (during the pending method generation phase).
+
+**Attempted simplification that failed:**
+
+Tried to simplify `generateMemberExpression` to use identity-based lookup
+(`getClassInfoByCheckerType`) instead of building specialized names. This
+correctly found the ClassInfo, but methods weren't populated yet (empty map)
+because `registerMethods()` is deferred. The name-based path works because it
+looks up the same ClassInfo object which gets populated later.
+
+**To complete the removal of bundled names, we would need to:**
+
+1. ~~Pass checker types through `instantiateClass()` instead of TypeAnnotations~~ ✅ DONE
+2. Ensure type interning so the same specialized ClassType is used everywhere ✅ DONE (in checker)
+3. ~~Register generic templates' ClassInfo even though they don't have WASM structs~~ N/A
+4. **NEW: Ensure methods are registered before identity-based lookups are used**
+   - Either run `registerMethods()` synchronously during `instantiateClass()`, OR
+   - Accept that identity-based lookup is only reliable after method generation
+
+This is tracked as future work under "Late Type Lowering".
 
 ##### Future: Migrate from `onType` to `onTypeAnnotation`
 

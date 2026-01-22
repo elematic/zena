@@ -929,9 +929,12 @@ export function preRegisterClassStruct(
     ctx.genericClasses.set(decl.name.name, decl);
     // Register generic template's checker type for identity-based lookups
     if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
-      ctx.setGenericTemplate(decl.name.name, decl.inferredType as ClassType);
+      const templateType = decl.inferredType as ClassType;
+      ctx.setGenericTemplate(decl.name.name, templateType);
       // Also register bundled name for the template itself
-      ctx.setClassBundledName(decl.inferredType as ClassType, decl.name.name);
+      ctx.setClassBundledName(templateType, decl.name.name);
+      // Register declaration by type for identity-based lookup
+      ctx.setGenericDeclByType(templateType, decl);
     }
     return;
   }
@@ -3017,6 +3020,13 @@ export function instantiateClass(
   specializedName: string,
   typeArguments: TypeAnnotation[],
   parentContext?: Map<string, TypeAnnotation>,
+  /**
+   * The checker's ClassType for this instantiation, if available.
+   * When provided, enables identity-based lookup via getClassInfoByCheckerType().
+   * With type interning, the same checker ClassType is shared across all uses of
+   * identical instantiations (e.g., all Box<i32> references share one ClassType).
+   */
+  checkerType?: ClassType,
 ) {
   // Guard against duplicate instantiation
   const existingInfo = ctx.classes.get(specializedName);
@@ -3194,6 +3204,13 @@ export function instantiateClass(
       onTypeAnnotation: decl.isExtension ? decl.onType : undefined,
     };
     ctx.classes.set(specializedName, classInfo);
+  }
+
+  // Register by checker type for identity-based lookup
+  // This enables O(1) lookup via getClassInfoByCheckerType() when we have the
+  // checker's interned ClassType (which is shared across all identical instantiations)
+  if (checkerType) {
+    ctx.registerClassInfoByType(checkerType, classInfo);
   }
 
   // Mark as fully defined to prevent duplicate instantiation
@@ -4047,7 +4064,7 @@ export function mapCheckerTypeToWasmType(
   // Handle ClassType directly using identity-based lookups
   if (type.kind === TypeKind.Class) {
     const classType = type as ClassType;
-    const classInfo = resolveClassInfo(ctx, classType);
+    let classInfo = resolveClassInfo(ctx, classType);
     if (classInfo) {
       // Extension classes (like FixedArray, String) return their onType
       if (classInfo.isExtension && classInfo.onType) {
@@ -4057,6 +4074,52 @@ export function mapCheckerTypeToWasmType(
         ValType.ref_null,
         ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
       ];
+    }
+
+    // Identity lookup failed - trigger instantiation while we still have the checker type
+    // This is the key integration point: convert checker type to TypeAnnotation for
+    // instantiation, but pass the checker type for registration
+    if (classType.typeArguments && classType.typeArguments.length > 0) {
+      // Generic class - need to instantiate
+      // First try identity-based lookup for the generic declaration
+      let genericDecl = ctx.getGenericDeclByType(classType);
+      if (!genericDecl) {
+        // Fall back to name-based lookup (handles edge cases where checker type
+        // wasn't registered, e.g., well-known types from different modules)
+        const genericSource = classType.genericSource ?? classType;
+        genericDecl = ctx.genericClasses.get(genericSource.name);
+      }
+      if (genericDecl) {
+        const typeArgAnnotations = classType.typeArguments.map((ta) =>
+          typeToTypeAnnotation(ta, undefined, ctx),
+        );
+        const specializedName = getSpecializedName(
+          genericDecl.name.name,
+          typeArgAnnotations,
+          ctx,
+          ctx.currentTypeContext,
+        );
+        if (!ctx.classes.has(specializedName)) {
+          instantiateClass(
+            ctx,
+            genericDecl,
+            specializedName,
+            typeArgAnnotations,
+            ctx.currentTypeContext,
+            classType, // Pass checker type for registration
+          );
+        }
+        classInfo = ctx.classes.get(specializedName);
+        if (classInfo) {
+          if (classInfo.isExtension && classInfo.onType) {
+            return classInfo.onType;
+          }
+          return [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          ];
+        }
+      }
     }
     // Fall through to annotation-based lookup if identity lookup fails
   }
@@ -4177,13 +4240,22 @@ export function mapCheckerTypeToWasmType(
  *
  * For extension classes, computes the correct `onType` from the stored
  * `onTypeAnnotation` and the current type arguments.
+ *
+ * NOTE: This function returns undefined for generic types that need instantiation.
+ * It only returns ClassInfo for:
+ * 1. Non-generic classes (direct lookup)
+ * 2. Generic specializations that have already been instantiated
+ *
+ * It does NOT return the template ClassInfo when given a specialized type -
+ * that would give wrong methods. Caller must handle instantiation.
  */
 function resolveClassInfo(
   ctx: CodegenContext,
   classType: ClassType,
 ): ClassInfo | undefined {
   // Try identity-based WeakMap lookup first (fastest path - O(1))
-  let classInfo = ctx.getClassInfoByCheckerType(classType);
+  // This finds classes that have been registered by their exact checker type
+  const classInfo = ctx.getClassInfoByCheckerType(classType);
   if (classInfo) {
     // For extension classes, recompute onType if we have type arguments
     if (classInfo.isExtension && classInfo.onTypeAnnotation) {
@@ -4192,16 +4264,32 @@ function resolveClassInfo(
     return classInfo;
   }
 
-  // Follow genericSource chain with WeakMap lookup (still O(1) per step)
+  // If the type has type arguments but wasn't found, we need instantiation
+  // Do NOT return the template - it has wrong methods
+  if (classType.typeArguments && classType.typeArguments.length > 0) {
+    return undefined;
+  }
+
+  // For non-generic types, try following genericSource chain
+  // (This handles cases where a specialized type was created but the
+  // template is registered - should be rare after type interning)
   let source = classType.genericSource;
   while (source) {
-    classInfo = ctx.getClassInfoByCheckerType(source);
-    if (classInfo) {
-      // For extension classes, recompute onType if we have type arguments
-      if (classInfo.isExtension && classInfo.onTypeAnnotation) {
-        return resolveExtensionClassInfo(ctx, classInfo, classType);
+    const sourceInfo = ctx.getClassInfoByCheckerType(source);
+    if (sourceInfo) {
+      // Only return if this is NOT a generic template
+      // (i.e., it doesn't have unresolved type parameters)
+      if (
+        !sourceInfo.typeArguments ||
+        sourceInfo.typeArguments.size === 0 ||
+        !classType.typeArguments ||
+        classType.typeArguments.length === 0
+      ) {
+        if (sourceInfo.isExtension && sourceInfo.onTypeAnnotation) {
+          return resolveExtensionClassInfo(ctx, sourceInfo, classType);
+        }
+        return sourceInfo;
       }
-      return classInfo;
     }
     source = source.genericSource;
   }
@@ -4209,13 +4297,13 @@ function resolveClassInfo(
   // WeakMap lookup failed - try struct index lookup as last resort (O(n))
   // This handles cases where the class was registered via struct index
   // but not yet registered in the WeakMap
-  classInfo = ctx.getClassInfoByType(classType);
-  if (classInfo) {
+  const structInfo = ctx.getClassInfoByType(classType);
+  if (structInfo) {
     // For extension classes, recompute onType if we have type arguments
-    if (classInfo.isExtension && classInfo.onTypeAnnotation) {
-      return resolveExtensionClassInfo(ctx, classInfo, classType);
+    if (structInfo.isExtension && structInfo.onTypeAnnotation) {
+      return resolveExtensionClassInfo(ctx, structInfo, classType);
     }
-    return classInfo;
+    return structInfo;
   }
 
   // Identity lookup failed - caller will fall through to annotation-based

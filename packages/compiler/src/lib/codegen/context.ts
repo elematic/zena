@@ -186,6 +186,8 @@ export class CodegenContext {
   readonly #interfaceBundledNames = new Map<InterfaceType, string>();
   // Maps generic class declarations to their ClassType
   readonly #genericTemplates = new Map<string, ClassType>();
+  // Reverse mapping: checker ClassType → ClassDeclaration for generic classes
+  readonly #genericDeclsByType = new WeakMap<ClassType, ClassDeclaration>();
   // Identity-based specialization lookup: ClassType -> ClassInfo
   // With type interning in the checker, identical instantiations share the
   // same ClassType object, so we can use a WeakMap for O(1) lookup.
@@ -493,6 +495,39 @@ export class CodegenContext {
    */
   public getGenericTemplate(name: string): ClassType | undefined {
     return this.#genericTemplates.get(name);
+  }
+
+  /**
+   * Register a generic class declaration by its checker type for identity-based lookup.
+   * This enables looking up the AST declaration from an interned ClassType.
+   */
+  public setGenericDeclByType(
+    classType: ClassType,
+    decl: ClassDeclaration,
+  ): void {
+    this.#genericDeclsByType.set(classType, decl);
+  }
+
+  /**
+   * Get the ClassDeclaration for a generic class by its checker type.
+   * Follows genericSource chain to find the template.
+   */
+  public getGenericDeclByType(
+    classType: ClassType,
+  ): ClassDeclaration | undefined {
+    // Try direct lookup first
+    let decl = this.#genericDeclsByType.get(classType);
+    if (decl) return decl;
+
+    // Follow genericSource chain
+    let source = classType.genericSource;
+    while (source) {
+      decl = this.#genericDeclsByType.get(source);
+      if (decl) return decl;
+      source = source.genericSource;
+    }
+
+    return undefined;
   }
 
   /**
