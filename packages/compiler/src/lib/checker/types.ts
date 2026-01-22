@@ -101,6 +101,11 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
         return {
           ...source,
           typeArguments: newTypeArguments,
+          // Set genericSource for identity-based lookups in codegen.
+          // Without this, the new object won't be recognized as the same type.
+          genericSource:
+            source.genericSource ||
+            (source.typeParameters ? source : undefined),
         } as ClassType;
       }
 

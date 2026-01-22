@@ -462,52 +462,65 @@ SemanticContext could be used for different backends (WASM, debugging, etc.).
 
 **Locations of suffix-based lookups:**
 
-- Line ~2426: Type alias suffix lookup
-- Line ~2539: Generic class suffix lookup
-- Line ~2588: Class suffix lookup
-- Line ~2610: Interface suffix lookup
+- Line ~2454: Type alias suffix lookup
+- Line ~2558: Generic class suffix lookup
+- Line ~2608: Class suffix lookup
+- Line ~2630: Interface suffix lookup
 
-**Finding: Suffix matching appears to be dead code.**
+**Finding: Suffix matching IS required for some code paths.**
 
-After extensive testing, we found that the suffix matching fallback is never
-triggered in practice. The bundler correctly updates ALL TypeAnnotation nodes
-with their bundled names (e.g., `Data` → `m0_Data`), so the direct lookup
-`ctx.classes.has(typeName)` always succeeds before the suffix fallback is
-reached.
+Attempted to remove suffix lookups (2026-01-21) but discovered they are still
+needed. Debug logging showed the `map` test (using `Map<K,V>` from stdlib)
+fails without suffix lookups.
 
-**Evidence:**
+**Root cause:**
 
-- Created comprehensive test suite: `test/codegen/bundler-type-identity_test.ts`
-- Tests cover: suffix collisions (Array/MyArray), same-name classes across
-  modules, generics with cross-module types, nested generics, interfaces
-- All 10+ scenarios pass, meaning bundler correctly renames type references
-- Could not construct a scenario where suffix matching is actually triggered
+When the Map class uses its internal `Entry<K, V>` type, some TypeAnnotation
+nodes contain the unbundled name `Entry` instead of the bundled name `m2_Entry`.
+This happens because:
 
-**Why the code was originally written:**
+1. The bundler renames declaration names and most type annotations
+2. But some type annotations are created during codegen (e.g., for generic
+   instantiation type contexts) using unbundled names
+3. Example: `typeToTypeAnnotation()` can create TypeAnnotations from checker
+   types, and if the checker type's name wasn't updated, the annotation has
+   the unbundled name
 
-The suffix matching was likely added as a safety fallback when the bundler was
-first implemented, in case some type annotations were missed. Now that the
-bundler has matured, it handles all cases correctly.
+**Concrete example from debugging:**
 
-**Why this is still problematic:**
+```
+typeName='Entry'  (unbundled - looking for this)
+ctx.classes keys: m2_Entry<m4_String,m3_Box<i32>>, m2_Entry<K,V>  (bundled)
+```
 
-1. Dead code adds maintenance burden and cognitive overhead
-2. Couples codegen to bundler naming conventions (fragile if conventions change)
-3. The fallback returns the FIRST match from Map iteration - non-deterministic
-4. If any future code path introduces unbundled type annotations, suffix
-   matching could return the wrong class silently
+The suffix lookup `'m2_Entry<K,V>'.endsWith('_Entry')` succeeds and finds the
+generic template.
 
-**Resolution:**
+**Why previous "dead code" evidence was incorrect:**
 
-After Round 2 (identity-based lookups via checker types), the suffix matching
-code can be safely removed. A `test.todo()` marker has been added to track this:
-`bundler-type-identity_test.ts: "Round 2 verification: remove suffix-based lookups"`
+Initial testing with debug logging showed no suffix lookups triggered for most
+tests. However, this was misleading:
 
-**Original analysis (preserved for context):**
+1. Test caching (Wireit) skipped re-running tests after adding logging
+2. The Map test was the key case that triggers suffix lookups
+3. Simpler tests (user-defined classes in same module) don't need suffix lookups
 
-~~Root cause: The bundler updates class declaration names (e.g., `Array` →
-`m3_Array`) and most type annotations. However, type annotations inside generic
-class bodies may not be updated when the class is instantiated at codegen time.~~
+**Why suffix lookups are problematic:**
+
+1. Couples codegen to bundler naming conventions (fragile if conventions change)
+2. The fallback returns the FIRST match from Map iteration - non-deterministic
+   if two modules define classes ending with the same suffix
+3. Relies on naming convention (`m{N}_Name`) that could change
+
+**Resolution path:**
+
+To remove suffix lookups, we need to ensure `typeToTypeAnnotation()` always
+produces bundled names. This requires either:
+
+1. Updating checker types with bundled names (Step 2.5.4 approach - but this
+   creates identity issues for generic instantiations)
+2. Using identity-based lookups that bypass names entirely (Round 3 approach)
+3. Ensuring all TypeAnnotation creation uses bundled names from context
 
 This turned out to be incorrect - the bundler does update type annotations in
 generic class bodies correctly. The suffix matching was defensive coding that
@@ -649,28 +662,64 @@ Added guards to prevent duplicate class definitions:
 2. ✅ `instantiateClass`: Early return if existing `ClassInfo.structDefined` is true
 3. ✅ Set `structDefined = true` after completing struct definition
 
-##### Step 2.5.4: Stop Type Name Mutation (DEFERRED)
+##### Step 2.5.4: Stop Type Name Mutation ✅ COMPLETED
 
-**Status:** DEFERRED - Requires coordinated changes.
+**Status:** COMPLETED - Type object names are no longer mutated.
 
-**Issue:** Stopping bundler's `typeObj.name = uniqueName` mutation requires
-updating `typeToTypeAnnotation` to use identity-based lookups, otherwise
-specialization keys become inconsistent (e.g., `m0_FixedArray<String>` vs
-`m0_FixedArray<m0_String>`).
+The bundler no longer mutates `typeObj.name`. This was already done:
 
-**Required changes (to be done together):**
+- Comment in `bundler.ts` line ~226 confirms: "Type object names are NO LONGER mutated here"
+- `typeToTypeAnnotation` already uses `ctx.getClassBundledName()` for identity-based lookup
+- Bundled names are registered during `preRegisterClassStruct` for declarations
 
-1. Update `typeToTypeAnnotation` to use `ctx.getClassBundledName()`
-2. Update `getTypeKey` or callers to resolve source names to bundled names
-3. Remove the `typeObj.name = uniqueName` line in `bundler.ts`
+**Remaining concern:** When `getClassBundledName()` fails (returns undefined),
+the code falls back to `classType.name`. This can happen for:
 
-##### Step 2.5.5: Use Identity Lookups (DEFERRED)
+1. Generic instantiations where the ClassType object differs from the registered one
+2. Types from expressions that weren't directly registered
 
-Depends on Step 2.5.4. Will add `findClassInfo` helper using identity-based maps.
+This is acceptable because the suffix-based lookups in `mapType` handle these cases.
 
-##### Step 2.5.6: Remove Bundled Name Bridge Infrastructure (DEFERRED)
+##### Step 2.5.5: Use Identity Lookups and Remove Suffix Lookups ✅ COMPLETED
 
-**Status:** DEFERRED - Requires bundler renaming to be fully eliminated first.
+**Status:** COMPLETED
+
+**Investigation (2026-01-21):**
+
+Initial attempts to remove suffix-based lookups failed because `Entry<K, V>`
+types in the Map stdlib had no `genericSource` chain leading to a registered
+bundled name.
+
+**Root cause:** In `substituteType()` (checker/types.ts), identity-substituted
+generic types (where type arguments match type parameters, like `Entry<K, V>`)
+did not set `genericSource`. This broke the `genericSource` chain lookup in
+`typeToTypeAnnotation`.
+
+**Fix:** Added `genericSource` to the identity-substitution case in
+`substituteType()`:
+
+```typescript
+// In checker/types.ts substituteType() for identity substitution:
+return {
+  ...source,
+  typeArguments: newTypeArguments,
+  genericSource:
+    source.genericSource || (source.typeParameters ? source : undefined),
+} as ClassType;
+```
+
+**Result:** All 4 suffix-based lookups removed from `mapTypeInternal`:
+
+- Type alias suffix lookup
+- Generic class suffix lookup
+- Class suffix lookup
+- Interface suffix lookup
+
+All 1118 tests pass.
+
+##### Step 2.5.6: Remove Bundled Name Bridge Infrastructure (OPTIONAL)
+
+**Status:** READY - Can proceed now that suffix lookups are removed.
 
 **Background:** The `#classBundledNames` and `#interfaceBundledNames` maps in
 `CodegenContext` exist as a bridge solution. They allow `typeToTypeAnnotation`

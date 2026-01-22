@@ -2448,15 +2448,6 @@ function mapTypeInternal(
     return mapType(ctx, ctx.typeAliases.get(type.name)!, context);
   }
 
-  // Try to find type alias by suffix (handles bundled names like m3_Color for Color)
-  if (type.type === NodeType.TypeAnnotation) {
-    for (const [aliasName, aliasType] of ctx.typeAliases) {
-      if (aliasName.endsWith('_' + type.name)) {
-        return mapType(ctx, aliasType, context);
-      }
-    }
-  }
-
   if (type.type === NodeType.TypeAnnotation) {
     switch (type.name) {
       case Types.I32.name:
@@ -2555,16 +2546,6 @@ function mapTypeInternal(
             }
           }
 
-          // Try to find by suffix (handles bundled names)
-          if (!genericDecl) {
-            for (const [name, decl] of ctx.genericClasses) {
-              if (name.endsWith('_' + typeName)) {
-                genericDecl = decl;
-                break;
-              }
-            }
-          }
-
           if (genericDecl) {
             // Use the actual registered name from the declaration, not the type annotation name
             const actualGenericName = genericDecl.name.name;
@@ -2605,19 +2586,6 @@ function mapTypeInternal(
           ];
         }
 
-        // Try to find class by suffix (handles bundled names like m3_Array for Array)
-        for (const [name, classInfo] of ctx.classes) {
-          if (name.endsWith('_' + typeName)) {
-            if (classInfo.isExtension && classInfo.onType) {
-              return classInfo.onType;
-            }
-            return [
-              ValType.ref_null,
-              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-            ];
-          }
-        }
-
         if (ctx.interfaces.has(typeName)) {
           const interfaceInfo = ctx.interfaces.get(typeName)!;
           const res = [
@@ -2625,16 +2593,6 @@ function mapTypeInternal(
             ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
           ];
           return res;
-        }
-
-        // Try to find interface by suffix (handles bundled names like m2_Sequence for Sequence)
-        for (const [name, interfaceInfo] of ctx.interfaces) {
-          if (name.endsWith('_' + typeName)) {
-            return [
-              ValType.ref_null,
-              ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
-            ];
-          }
         }
 
         // Check if this is an unbound type parameter (should have been erased)
@@ -3770,9 +3728,63 @@ export function mapCheckerTypeToWasmType(
   if (type.kind === TypeKind.Never) return [];
   if (type.kind === TypeKind.Null) return [ValType.ref_null, HeapType.none];
 
+  // Note: ClassType is NOT handled directly here because extension classes
+  // (like FixedArray) need special handling that returns onType instead of
+  // structTypeIndex. The annotation-based path handles this correctly.
+
+  // Handle InterfaceType directly using identity-based lookups
+  if (type.kind === TypeKind.Interface) {
+    const interfaceType = type as InterfaceType;
+    const structIndex = resolveInterfaceStructIndex(ctx, interfaceType);
+    if (structIndex !== undefined) {
+      return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structIndex)];
+    }
+    // Fall through to annotation-based lookup as last resort
+  }
+
+  // Handle Union types - use anyref for nullable reference types
+  if (type.kind === TypeKind.Union) {
+    const unionType = type as UnionType;
+    // Check if it's a nullable reference type (T | null)
+    const nonNullTypes = unionType.types.filter(
+      (t) => t.kind !== TypeKind.Null,
+    );
+    if (nonNullTypes.length === 1) {
+      // It's T | null - use the non-null type's mapping
+      return mapCheckerTypeToWasmType(ctx, nonNullTypes[0]);
+    }
+    // For other unions, fall through to annotation-based lookup
+  }
+
   const annotation = typeToTypeAnnotation(type, undefined, ctx);
   const result = mapType(ctx, annotation, ctx.currentTypeContext);
   return result;
+}
+
+/**
+ * Resolve the WASM struct index for an InterfaceType using identity-based lookups.
+ */
+function resolveInterfaceStructIndex(
+  ctx: CodegenContext,
+  interfaceType: InterfaceType,
+): number | undefined {
+  // Try direct identity lookup
+  let structIndex = ctx.getInterfaceStructIndex(interfaceType);
+  if (structIndex !== undefined) {
+    return structIndex;
+  }
+
+  // Follow genericSource chain
+  let source = interfaceType.genericSource;
+  while (source) {
+    structIndex = ctx.getInterfaceStructIndex(source);
+    if (structIndex !== undefined) {
+      return structIndex;
+    }
+    source = source.genericSource;
+  }
+
+  return undefined;
 }
 
 function generateBrandType(ctx: CodegenContext, id: number): number {
