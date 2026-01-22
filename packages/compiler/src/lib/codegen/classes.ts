@@ -966,6 +966,11 @@ export function preRegisterClassStruct(
       ctx.setClassBundledName(classType, decl.name.name);
       // Register ClassInfo for O(1) lookup
       ctx.registerClassInfoByType(classType, classInfo);
+
+      // Register extension class by its onType for O(1) lookup
+      if (classType.onType) {
+        ctx.registerExtensionClass(classType.onType, classInfo);
+      }
     }
 
     // Check if this is the String class

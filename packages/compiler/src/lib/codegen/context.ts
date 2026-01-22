@@ -20,6 +20,7 @@ import {
   type ClassType,
   type FunctionType,
   type InterfaceType,
+  type Type,
 } from '../types.js';
 import {ValType} from '../wasm.js';
 import type {ClassInfo, InterfaceInfo, LocalInfo} from './types.js';
@@ -189,6 +190,11 @@ export class CodegenContext {
   // With type interning in the checker, identical instantiations share the
   // same ClassType object, so we can use a WeakMap for O(1) lookup.
   readonly #classInfoByType = new WeakMap<ClassType, ClassInfo>();
+
+  // Extension class lookup: onType (checker Type) -> ClassInfo[]
+  // Maps the type being extended to all extension classes that extend it.
+  // Multiple extension classes can extend the same type.
+  readonly #extensionsByOnType = new WeakMap<Type, ClassInfo[]>();
 
   // Template Literals
   public templateLiteralGlobals = new Map<TaggedTemplateExpression, number>();
@@ -521,6 +527,27 @@ export class CodegenContext {
     const classType = this.#structIndexToClass.get(structIndex);
     if (!classType) return undefined;
     return this.#classInfoByType.get(classType);
+  }
+
+  /**
+   * Register an extension class by its onType for O(1) lookup.
+   * Multiple extension classes can extend the same type.
+   */
+  public registerExtensionClass(onType: Type, classInfo: ClassInfo): void {
+    const existing = this.#extensionsByOnType.get(onType);
+    if (existing) {
+      existing.push(classInfo);
+    } else {
+      this.#extensionsByOnType.set(onType, [classInfo]);
+    }
+  }
+
+  /**
+   * Look up extension classes by the type they extend.
+   * Returns an array of ClassInfo (multiple extensions can extend the same type).
+   */
+  public getExtensionClassesByOnType(onType: Type): ClassInfo[] | undefined {
+    return this.#extensionsByOnType.get(onType);
   }
 
   public getRecordTypeIndex(fields: {name: string; type: number[]}[]): number {

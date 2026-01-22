@@ -598,8 +598,18 @@ function generateAsExpression(
     const sourceIndex = decodeTypeIndex(sourceType!);
     let classInfo = getClassFromTypeIndex(ctx, sourceIndex);
 
+    // Check extensions using O(1) lookup via checker type
+    if (!classInfo && expr.expression.inferredType) {
+      const extensions = ctx.getExtensionClassesByOnType(
+        expr.expression.inferredType,
+      );
+      if (extensions && extensions.length > 0) {
+        classInfo = extensions[0];
+      }
+    }
+
+    // Fall back to O(n) iteration for extension classes
     if (!classInfo) {
-      // Check extensions
       for (const info of ctx.classes.values()) {
         if (info.isExtension && info.onType) {
           if (typesAreEqual(info.onType, sourceType!)) {
@@ -1032,7 +1042,17 @@ function generateIndexExpression(
       }
     }
 
-    // Check for extension classes (e.g., FixedArray on array<T>)
+    // Check for extension classes (e.g., FixedArray on array<T>) using O(1) lookup
+    if (!foundClass && expr.object.inferredType) {
+      const extensions = ctx.getExtensionClassesByOnType(
+        expr.object.inferredType,
+      );
+      if (extensions && extensions.length > 0) {
+        foundClass = extensions[0];
+      }
+    }
+
+    // Fall back to O(n) iteration for extension classes (codegen-instantiated types)
     if (!foundClass) {
       for (const info of ctx.classes.values()) {
         if (info.isExtension && info.onType) {
@@ -1597,7 +1617,17 @@ function generateMemberExpression(
     foundClass = resolveFixedArrayClass(ctx, expr.object.inferredType);
   }
 
-  // Check for extension classes on primitives (before structTypeIndex check)
+  // Check for extension classes using O(1) lookup via checker type
+  if (!foundClass && expr.object.inferredType) {
+    const extensions = ctx.getExtensionClassesByOnType(
+      expr.object.inferredType,
+    );
+    if (extensions && extensions.length > 0) {
+      foundClass = extensions[0];
+    }
+  }
+
+  // Fall back to O(n) iteration for extension classes on primitives
   if (!foundClass) {
     for (const info of ctx.classes.values()) {
       if (info.isExtension && info.onType) {
@@ -2210,7 +2240,17 @@ function generateCallExpression(
       }
     }
 
-    // Check for extension classes (e.g., FixedArray on array<T>)
+    // Check for extension classes using O(1) lookup via checker type
+    if (!foundClass && memberExpr.object.inferredType) {
+      const extensions = ctx.getExtensionClassesByOnType(
+        memberExpr.object.inferredType,
+      );
+      if (extensions && extensions.length > 0) {
+        foundClass = extensions[0];
+      }
+    }
+
+    // Fall back to O(n) iteration for extension classes
     if (!foundClass) {
       for (const info of ctx.classes.values()) {
         if (info.isExtension && info.onType) {
@@ -2712,8 +2752,18 @@ function generateAssignmentExpression(
         }
       }
 
+      // Check for extension classes using O(1) lookup via checker type
+      if (!foundClass && indexExpr.object.inferredType) {
+        const extensions = ctx.getExtensionClassesByOnType(
+          indexExpr.object.inferredType,
+        );
+        if (extensions && extensions.length > 0) {
+          foundClass = extensions[0];
+        }
+      }
+
+      // Fall back to O(n) iteration for extension classes
       if (!foundClass) {
-        // Check for extension classes
         for (const info of ctx.classes.values()) {
           if (info.isExtension && info.onType) {
             if (typesAreEqual(info.onType, objectType)) {
@@ -5833,7 +5883,15 @@ export function generateAdaptedArgument(
       }
     }
 
-    // Check extensions
+    // Check extensions using O(1) lookup via checker type
+    if (!classInfo && arg.inferredType) {
+      const extensions = ctx.getExtensionClassesByOnType(arg.inferredType);
+      if (extensions && extensions.length > 0) {
+        classInfo = extensions[0];
+      }
+    }
+
+    // Fall back to O(n) iteration for extensions
     if (!classInfo) {
       for (const info of ctx.classes.values()) {
         if (info.isExtension && info.onType) {
