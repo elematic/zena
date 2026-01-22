@@ -141,25 +141,23 @@ export function preRegisterInterface(
   }
 
   // Register with empty methods/fields - will be populated by defineInterfaceMethods
-  ctx.interfaces.set(decl.name.name, {
+  const interfaceInfo: InterfaceInfo = {
     structTypeIndex,
     vtableTypeIndex,
     methods: new Map(),
     fields: new Map(),
     parent: parentName,
-  });
+  };
+  ctx.interfaces.set(decl.name.name, interfaceInfo);
 
   // Register type → struct index for identity-based lookups
   if (decl.inferredType && decl.inferredType.kind === TypeKind.Interface) {
-    ctx.setInterfaceStructIndex(
-      decl.inferredType as InterfaceType,
-      structTypeIndex,
-    );
+    const interfaceType = decl.inferredType as InterfaceType;
+    ctx.setInterfaceStructIndex(interfaceType, structTypeIndex);
     // Also register the bundled name for typeToTypeAnnotation lookups
-    ctx.setInterfaceBundledName(
-      decl.inferredType as InterfaceType,
-      decl.name.name,
-    );
+    ctx.setInterfaceBundledName(interfaceType, decl.name.name);
+    // Register InterfaceInfo for identity-based lookup
+    ctx.registerInterfaceInfoByType(interfaceType, interfaceInfo);
   }
 }
 

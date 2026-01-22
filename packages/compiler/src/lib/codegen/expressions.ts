@@ -45,6 +45,7 @@ import {
   TypeNames,
   type ClassType,
   type FunctionType,
+  type InterfaceType,
   type NumberType,
   type RecordType,
   type UnionType,
@@ -591,8 +592,21 @@ function generateAsExpression(
   }
 
   // Interface Boxing
-  const targetIndex = decodeTypeIndex(targetType);
-  const interfaceInfo = getInterfaceFromTypeIndex(ctx, targetIndex);
+  // Try identity-based lookup first via checker type
+  let interfaceInfo: InterfaceInfo | undefined;
+  if (
+    expr.typeAnnotation.inferredType &&
+    expr.typeAnnotation.inferredType.kind === TypeKind.Interface
+  ) {
+    interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+      expr.typeAnnotation.inferredType as InterfaceType,
+    );
+  }
+  // Fall back to struct index lookup
+  if (!interfaceInfo) {
+    const targetIndex = decodeTypeIndex(targetType);
+    interfaceInfo = getInterfaceFromTypeIndex(ctx, targetIndex);
+  }
 
   if (interfaceInfo) {
     const sourceIndex = decodeTypeIndex(sourceType!);
@@ -1110,7 +1124,21 @@ function generateIndexExpression(
     }
 
     if (!foundClass) {
-      const interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+      // Try identity-based lookup for interface
+      let interfaceInfo: InterfaceInfo | undefined;
+      if (
+        expr.object.inferredType &&
+        expr.object.inferredType.kind === TypeKind.Interface
+      ) {
+        interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+          expr.object.inferredType as InterfaceType,
+        );
+      }
+      // Fall back to struct index lookup
+      if (!interfaceInfo) {
+        interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+      }
+
       if (interfaceInfo) {
         const methodInfo = interfaceInfo.methods.get('[]');
         if (methodInfo) {
@@ -1675,8 +1703,21 @@ function generateMemberExpression(
       return;
     }
 
-    // Check if it's an interface
-    const interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+    // Check if it's an interface - try identity-based lookup first
+    let interfaceInfo: InterfaceInfo | undefined;
+    if (
+      expr.object.inferredType &&
+      expr.object.inferredType.kind === TypeKind.Interface
+    ) {
+      interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+        expr.object.inferredType as InterfaceType,
+      );
+    }
+    // Fall back to struct index lookup
+    if (!interfaceInfo) {
+      interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+    }
+
     if (interfaceInfo) {
       // Handle interface field access
       let fieldInfo = interfaceInfo.fields.get(fieldName);
@@ -2109,8 +2150,21 @@ function generateCallExpression(
     const objectType = inferType(ctx, memberExpr.object);
     const typeIndex = decodeTypeIndex(objectType);
 
-    // Check if interface
-    const interfaceInfo = getInterfaceFromTypeIndex(ctx, typeIndex);
+    // Check if interface - try identity-based lookup first
+    let interfaceInfo: InterfaceInfo | undefined;
+    if (
+      memberExpr.object.inferredType &&
+      memberExpr.object.inferredType.kind === TypeKind.Interface
+    ) {
+      interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+        memberExpr.object.inferredType as InterfaceType,
+      );
+    }
+    // Fall back to struct index lookup
+    if (!interfaceInfo) {
+      interfaceInfo = getInterfaceFromTypeIndex(ctx, typeIndex);
+    }
+
     if (interfaceInfo) {
       const methodInfo = interfaceInfo.methods.get(methodName);
       if (!methodInfo)
@@ -2829,7 +2883,21 @@ function generateAssignmentExpression(
           return;
         }
       } else {
-        const interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+        // Try identity-based lookup for interface
+        let interfaceInfo: InterfaceInfo | undefined;
+        if (
+          indexExpr.object.inferredType &&
+          indexExpr.object.inferredType.kind === TypeKind.Interface
+        ) {
+          interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+            indexExpr.object.inferredType as InterfaceType,
+          );
+        }
+        // Fall back to struct index lookup
+        if (!interfaceInfo) {
+          interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+        }
+
         if (interfaceInfo) {
           const methodInfo = interfaceInfo.methods.get('[]=');
           if (methodInfo) {
@@ -3049,8 +3117,21 @@ function generateAssignmentExpression(
     }
 
     if (!foundClass) {
-      // Check if it's an interface
-      const interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+      // Check if it's an interface - try identity-based lookup first
+      let interfaceInfo: InterfaceInfo | undefined;
+      if (
+        memberExpr.object.inferredType &&
+        memberExpr.object.inferredType.kind === TypeKind.Interface
+      ) {
+        interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+          memberExpr.object.inferredType as InterfaceType,
+        );
+      }
+      // Fall back to struct index lookup
+      if (!interfaceInfo) {
+        interfaceInfo = getInterfaceFromTypeIndex(ctx, structTypeIndex);
+      }
+
       if (interfaceInfo) {
         const setterName = getSetterName(fieldName);
         const methodInfo = interfaceInfo.methods.get(setterName);

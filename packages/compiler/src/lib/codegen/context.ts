@@ -196,6 +196,9 @@ export class CodegenContext {
   // Multiple extension classes can extend the same type.
   readonly #extensionsByOnType = new WeakMap<Type, ClassInfo[]>();
 
+  // Identity-based interface lookup: InterfaceType -> InterfaceInfo
+  readonly #interfaceInfoByType = new WeakMap<InterfaceType, InterfaceInfo>();
+
   // Template Literals
   public templateLiteralGlobals = new Map<TaggedTemplateExpression, number>();
 
@@ -548,6 +551,26 @@ export class CodegenContext {
    */
   public getExtensionClassesByOnType(onType: Type): ClassInfo[] | undefined {
     return this.#extensionsByOnType.get(onType);
+  }
+
+  /**
+   * Register an InterfaceInfo by its checker InterfaceType for identity-based lookup.
+   */
+  public registerInterfaceInfoByType(
+    interfaceType: InterfaceType,
+    interfaceInfo: InterfaceInfo,
+  ): void {
+    this.#interfaceInfoByType.set(interfaceType, interfaceInfo);
+  }
+
+  /**
+   * Look up an InterfaceInfo by its checker InterfaceType using identity.
+   * This is the preferred lookup method when you have an InterfaceType from the checker.
+   */
+  public getInterfaceInfoByCheckerType(
+    interfaceType: InterfaceType,
+  ): InterfaceInfo | undefined {
+    return this.#interfaceInfoByType.get(interfaceType);
   }
 
   public getRecordTypeIndex(fields: {name: string; type: number[]}[]): number {
