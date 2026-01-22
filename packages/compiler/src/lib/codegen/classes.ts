@@ -31,7 +31,6 @@ import {
   type TypeAliasType,
   type SymbolType,
   type LiteralType,
-  type MixinType,
 } from '../types.js';
 import {getGetterName, getSetterName} from '../names.js';
 import {WasmModule} from '../emitter.js';
@@ -2963,15 +2962,6 @@ export function instantiateClass(
   // Mark as fully defined to prevent duplicate instantiation
   classInfo.structDefined = true;
 
-  // Register generic specialization for identity-based lookups
-  // Key format: "TemplateName|TypeArg1,TypeArg2"
-  const argNames = typeArguments.map((arg) => {
-    const resolved = resolveAnnotation(arg, parentContext);
-    return getTypeKey(resolved);
-  });
-  const specializationKey = `${decl.name.name}|${argNames.join(',')}`;
-  ctx.registerGenericSpecialization(specializationKey, classInfo);
-
   const registerMethods = () => {
     // Set current class for `this` type resolution in method signatures
     const previousCurrentClass = ctx.currentClass;
@@ -3785,144 +3775,6 @@ export function typeToTypeAnnotation(
   }
 }
 
-/**
- * Get a canonical string key for a checker Type.
- * This is the checker-type equivalent of getTypeKey(TypeAnnotation).
- *
- * **Status: FALLBACK PATH ONLY**
- *
- * With the type interning migration (Round 3), this function is now only used
- * in the fallback path of `computeSpecializationKey()` when identity-based
- * lookups don't find a match. The identity-based lookup path
- * (`getClassInfoByCheckerType`) is preferred and used first.
- *
- * This function will be fully removed once:
- * 1. All class instantiation paths populate `#classInfoByType`
- * 2. Generic function/method instantiation uses identity-based caching
- *
- * @deprecated Used only as fallback. Prefer identity-based lookups.
- * See docs/design/compiler-refactoring.md "Type Interning" section.
- */
-export function getCheckerTypeKey(type: Type, ctx?: CodegenContext): string {
-  switch (type.kind) {
-    case TypeKind.Number:
-      return (type as NumberType).name;
-    case TypeKind.Boolean:
-      return TypeNames.Boolean;
-    case TypeKind.Void:
-      return TypeNames.Void;
-    case TypeKind.Null:
-      return 'null';
-    case TypeKind.Never:
-      return 'never';
-    case TypeKind.Any:
-      return 'any';
-    case TypeKind.TypeParameter:
-      return (type as TypeParameterType).name;
-    case TypeKind.Class: {
-      const classType = type as ClassType;
-      // Use bundled name if available for consistency with specialization keys
-      let name = ctx?.getClassBundledName(classType) ?? classType.name;
-      if (!name && classType.genericSource) {
-        name =
-          ctx?.getClassBundledName(classType.genericSource) ??
-          classType.genericSource.name;
-      }
-      name = name ?? classType.name;
-      if (classType.typeArguments && classType.typeArguments.length > 0) {
-        const args = classType.typeArguments
-          .map((a) => getCheckerTypeKey(a, ctx))
-          .join(',');
-        return `${name}<${args}>`;
-      }
-      return name;
-    }
-    case TypeKind.Interface: {
-      const interfaceType = type as InterfaceType;
-      // Use bundled name if available
-      let name =
-        ctx?.getInterfaceBundledName(interfaceType) ?? interfaceType.name;
-      if (!name && interfaceType.genericSource) {
-        name =
-          ctx?.getInterfaceBundledName(interfaceType.genericSource) ??
-          interfaceType.genericSource.name;
-      }
-      name = name ?? interfaceType.name;
-      if (
-        interfaceType.typeArguments &&
-        interfaceType.typeArguments.length > 0
-      ) {
-        const args = interfaceType.typeArguments
-          .map((a) => getCheckerTypeKey(a, ctx))
-          .join(',');
-        return `${name}<${args}>`;
-      }
-      return name;
-    }
-    case TypeKind.Array: {
-      const arrayType = type as ArrayType;
-      const elementKey = getCheckerTypeKey(arrayType.elementType, ctx);
-      return `array<${elementKey}>`;
-    }
-    case TypeKind.Record: {
-      const recordType = type as RecordType;
-      const props = Array.from(recordType.properties.entries())
-        .map(
-          ([name, propType]) => `${name}:${getCheckerTypeKey(propType, ctx)}`,
-        )
-        .sort()
-        .join(',');
-      return `{${props}}`;
-    }
-    case TypeKind.Tuple: {
-      const tupleType = type as TupleType;
-      const elements = tupleType.elementTypes
-        .map((t) => getCheckerTypeKey(t, ctx))
-        .join(',');
-      return `[${elements}]`;
-    }
-    case TypeKind.Function: {
-      const funcType = type as FunctionType;
-      const params = funcType.parameters
-        .map((p) => getCheckerTypeKey(p, ctx))
-        .join(',');
-      const ret = getCheckerTypeKey(funcType.returnType, ctx);
-      return `(${params})=>${ret}`;
-    }
-    case TypeKind.Union: {
-      const unionType = type as UnionType;
-      const members = unionType.types
-        .map((t) => getCheckerTypeKey(t, ctx))
-        .sort()
-        .join('|');
-      return `(${members})`;
-    }
-    case TypeKind.Literal: {
-      const litType = type as LiteralType;
-      if (typeof litType.value === 'string') {
-        return `'${litType.value}'`;
-      } else if (typeof litType.value === 'boolean') {
-        return litType.value ? 'true' : 'false';
-      } else {
-        return String(litType.value);
-      }
-    }
-    case TypeKind.TypeAlias: {
-      const aliasType = type as TypeAliasType;
-      // For type aliases, use the target type's key
-      return getCheckerTypeKey(aliasType.target, ctx);
-    }
-    case TypeKind.Symbol:
-      return 'symbol';
-    case TypeKind.Mixin: {
-      const mixinType = type as MixinType;
-      return mixinType.name;
-    }
-    default:
-      return 'unknown';
-  }
-}
-
 export function mapCheckerTypeToWasmType(
   ctx: CodegenContext,
   type: Type,
@@ -4127,24 +3979,8 @@ function resolveClassInfo(
     source = source.genericSource;
   }
 
-  // For generic instantiations, try specialization registry (string-based fallback)
-  if (classType.typeArguments && classType.typeArguments.length > 0) {
-    const specializationKey = computeSpecializationKey(ctx, classType);
-    if (specializationKey) {
-      classInfo = ctx.findGenericSpecialization(specializationKey);
-      if (classInfo) {
-        // For extension classes, recompute onType from onTypeAnnotation + typeArguments
-        if (classInfo.isExtension && classInfo.onTypeAnnotation) {
-          return resolveExtensionClassInfo(ctx, classInfo, classType);
-        }
-        // Cache the mapping for future identity lookups (both maps)
-        ctx.setClassStructIndex(classType, classInfo.structTypeIndex);
-        ctx.registerClassInfoByType(classType, classInfo);
-        return classInfo;
-      }
-    }
-  }
-
+  // Identity lookup failed - caller will fall through to annotation-based
+  // instantiation via mapType(), which triggers instantiateClass().
   return undefined;
 }
 
@@ -4194,88 +4030,6 @@ function resolveExtensionClassInfo(
     ...classInfo,
     onType,
   };
-}
-
-/**
- * Compute a specialization key for a generic ClassType.
- * Key format matches what instantiateClass uses: "BundledTemplateName|TypeArg1,TypeArg2"
- * Returns undefined if any type argument contains a type parameter (K, V, etc.)
- * since those should go through the annotation-based path for proper resolution.
- */
-function computeSpecializationKey(
-  ctx: CodegenContext,
-  classType: ClassType,
-): string | undefined {
-  if (!classType.typeArguments || classType.typeArguments.length === 0) {
-    return undefined;
-  }
-
-  // Check if any type argument contains type parameters - if so, skip specialization lookup
-  // Type parameters need to go through the annotation path for proper context resolution
-  for (const arg of classType.typeArguments) {
-    if (containsTypeParameter(arg)) {
-      return undefined;
-    }
-  }
-
-  // Get the bundled template name by following genericSource chain
-  let templateName: string | undefined;
-  let source: ClassType | undefined = classType.genericSource;
-  while (source) {
-    const bundledName = ctx.getClassBundledName(source);
-    if (bundledName) {
-      templateName = bundledName;
-      break;
-    }
-    source = source.genericSource;
-  }
-
-  // If no bundled name found, fall back to the class name
-  if (!templateName) {
-    templateName = classType.genericSource?.name ?? classType.name;
-  }
-
-  // Get keys for type arguments directly from checker types
-  const argKeys = classType.typeArguments.map((arg) =>
-    getCheckerTypeKey(arg, ctx),
-  );
-
-  return `${templateName}|${argKeys.join(',')}`;
-}
-
-/**
- * Check if a type contains any type parameters (K, V, T, etc.)
- */
-function containsTypeParameter(type: Type): boolean {
-  switch (type.kind) {
-    case TypeKind.TypeParameter:
-      return true;
-    case TypeKind.Class: {
-      const classType = type as ClassType;
-      return classType.typeArguments?.some(containsTypeParameter) ?? false;
-    }
-    case TypeKind.Interface: {
-      const interfaceType = type as InterfaceType;
-      return interfaceType.typeArguments?.some(containsTypeParameter) ?? false;
-    }
-    case TypeKind.Array: {
-      const arrayType = type as ArrayType;
-      return containsTypeParameter(arrayType.elementType);
-    }
-    case TypeKind.Union: {
-      const unionType = type as UnionType;
-      return unionType.types.some(containsTypeParameter);
-    }
-    case TypeKind.Function: {
-      const funcType = type as FunctionType;
-      if (funcType.returnType && containsTypeParameter(funcType.returnType)) {
-        return true;
-      }
-      return funcType.parameters.some(containsTypeParameter);
-    }
-    default:
-      return false;
-  }
 }
 
 /**

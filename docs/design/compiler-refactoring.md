@@ -644,15 +644,16 @@ Added identity-based lookup infrastructure without changing behavior:
 1. ✅ Added `structDefined` guard field to `ClassInfo` interface
 2. ✅ Added `#classBundledNames` map: `ClassType -> bundledName`
 3. ✅ Added `#genericTemplates` map: `name -> ClassType`
-4. ✅ Added `#genericSpecializations` map: `key -> ClassInfo`
+4. ✅ Added `#classInfoByType` WeakMap: `ClassType -> ClassInfo` (identity-based)
 5. ✅ Added accessor methods for the new maps
+6. ✅ ~~`#genericSpecializations` map~~ - REMOVED (replaced by `#classInfoByType`)
 
 ##### Step 2.5.2: Register Identity Mappings ✅ COMPLETED
 
-Populated identity maps during class registration (but not using them yet):
+Populated identity maps during class registration:
 
 1. ✅ In `preRegisterClassStruct`: Register bundled name and generic templates
-2. ✅ In `instantiateClass`: Register generic specializations
+2. ✅ In `instantiateClass`: Register ClassInfo by type identity (`registerClassInfoByType`)
 
 ##### Step 2.5.3: Add Guards ✅ COMPLETED
 
@@ -752,19 +753,15 @@ we shouldn't round-trip through TypeAnnotation at all. Instead:
 - ✅ Non-generic ClassType via identity-based lookup (`resolveClassInfo`)
 - ✅ Non-generic InterfaceType via identity-based lookup (`resolveInterfaceStructIndex`)
 - ✅ Extension classes for non-generic lookups (returns `onType`)
-- ✅ Generic classes via specialization registry lookup (`computeSpecializationKey`)
+- ✅ Generic classes via identity-based WeakMap lookup (`#classInfoByType`)
 - ✅ Generic extension classes (e.g., `FixedArray<T>`) via `onTypeAnnotation` recomputation
 
 **Implementation details:**
 
-1. `resolveClassInfo()` tries identity lookup, then follows `genericSource` chain,
-   then tries the specialization registry with a computed key.
-2. `computeSpecializationKey()` builds a key like `"m2_Map|m4_String,i32"` from
-   the ClassType by following `genericSource` for the template name and converting
-   type arguments to TypeAnnotation keys.
-3. `containsTypeParameter()` helper checks if type arguments contain unresolved
-   type parameters (K, V, etc.) and returns `undefined` key to skip those.
-4. `resolveExtensionClassInfo()` handles extension classes by recomputing `onType`
+1. `resolveClassInfo()` uses identity lookup via `#classInfoByType` WeakMap, then
+   follows `genericSource` chain to find registered ClassInfo.
+2. `instantiateClass()` registers ClassInfo by type identity during instantiation.
+3. `resolveExtensionClassInfo()` handles extension classes by recomputing `onType`
    from the stored `onTypeAnnotation` + current type arguments.
 
 **Key insight (onType vs onTypeAnnotation):**
@@ -788,14 +785,20 @@ the correct WASM array type index for the current context.
 
 1. ✅ Implement `mapCheckerTypeToWasmType()` for non-generic classes/interfaces
 2. ✅ Add `resolveClassInfo()` helper that follows `genericSource` chain
-3. ✅ Add `computeSpecializationKey()` to look up generic specializations
-4. ✅ Add `containsTypeParameter()` to skip lookups with unresolved type params
+3. ✅ ~~Add `computeSpecializationKey()` to look up generic specializations~~ REMOVED
+4. ✅ ~~Add `containsTypeParameter()` to skip lookups with unresolved type params~~ REMOVED
 5. ✅ Add `onTypeAnnotation` to ClassInfo for extension classes
 6. ✅ Add `resolveExtensionClassInfo()` to recompute `onType` at each use site
-7. Audit all `typeToTypeAnnotation` call sites - DEFERRED
-8. Replace calls that have checker types available - DEFERRED
-9. Remove `#classBundledNames`, `#interfaceBundledNames` - MAY NOT BE NEEDED
-   (Most lookups now work via specialization registry)
+7. ✅ Remove string-based lookup infrastructure:
+   - Removed `getCheckerTypeKey()` (~120 lines)
+   - Removed `computeSpecializationKey()` (~45 lines)
+   - Removed `containsTypeParameter()` (~30 lines)
+   - Removed `#genericSpecializations` Map from CodegenContext
+   - Removed `registerGenericSpecialization()` and `findGenericSpecialization()`
+8. Audit all `typeToTypeAnnotation` call sites - DEFERRED
+9. Replace calls that have checker types available - DEFERRED
+10. Remove `#classBundledNames`, `#interfaceBundledNames` - MAY NOT BE NEEDED
+    (Most lookups now work via identity-based WeakMap)
 
 ##### Future: Migrate from `onType` to `onTypeAnnotation`
 
@@ -1301,30 +1304,39 @@ via `getCheckerTypeKey()` and used those for registry lookups.
 - `packages/compiler/src/lib/checker/types.ts` - Updated `instantiateGenericClass/Interface/Mixin`
 - `packages/compiler/src/lib/types.ts` - Added `genericSource` to `MixinType`
 
-### Remaining Work: Codegen Migration
+### Codegen Migration ✅ COMPLETED
 
-With type interning in place, codegen can now be updated to use identity-based lookups:
+With type interning in place, codegen now uses identity-based lookups:
 
 ```typescript
-// Current: string key lookup (deprecated)
-const key = getCheckerTypeKey(classType, ctx);
-const classInfo = ctx.findGenericSpecialization(key);
+// Old: string key lookup (REMOVED)
+// const key = getCheckerTypeKey(classType, ctx);
+// const classInfo = ctx.findGenericSpecialization(key);
 
-// Future: identity lookup using WeakMap
-const classInfo = ctx.getClassInfoByType(classType);
+// New: identity lookup using WeakMap
+const classInfo = ctx.getClassInfoByCheckerType(classType);
 ```
 
-**Functions to remove/simplify once codegen migrates:**
+**Removed infrastructure:**
 
-- `getCheckerTypeKey()` in `classes.ts` - String key generation for checker types
-- `getTypeKey()` in `classes.ts` - String key generation for TypeAnnotations
-- `computeSpecializationKey()` in `classes.ts` - Builds registry keys
+- ~~`getCheckerTypeKey()` in `classes.ts`~~ - String key generation for checker types
+- ~~`computeSpecializationKey()` in `classes.ts`~~ - Built registry keys
+- ~~`containsTypeParameter()` in `classes.ts`~~ - Helper for type parameter detection
+- ~~`#genericSpecializations` Map in `context.ts`~~ - String-keyed registry
+- ~~`registerGenericSpecialization()` / `findGenericSpecialization()`~~ - String-based methods
 
-**Benefits:**
+**Current infrastructure:**
+
+- `#classInfoByType = new WeakMap<ClassType, ClassInfo>()` - Identity-based lookup
+- `registerClassInfoByType()` / `getClassInfoByCheckerType()` - Identity-based methods
+- `resolveClassInfo()` - Follows `genericSource` chain for identity lookup
+
+**Benefits achieved:**
 
 - Eliminates fragile string-based type identity
-- Reduces memory (shared type objects)
-- Enables simple `WeakMap` lookups in codegen
+- Reduces memory (shared type objects via interning)
+- Simple O(1) WeakMap lookups in codegen
+- ~200 lines of code removed
 - Aligns with how mature compilers (TypeScript, Rust) handle type identity
 
 ## Open Questions

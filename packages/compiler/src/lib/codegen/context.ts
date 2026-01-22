@@ -185,9 +185,6 @@ export class CodegenContext {
   readonly #interfaceBundledNames = new Map<InterfaceType, string>();
   // Maps generic class declarations to their ClassType
   readonly #genericTemplates = new Map<string, ClassType>();
-  // Maps generic specializations: "TemplateName|arg1,arg2" -> ClassInfo
-  // @deprecated Use #classInfoByType for identity-based lookups
-  readonly #genericSpecializations = new Map<string, ClassInfo>();
   // Identity-based specialization lookup: ClassType -> ClassInfo
   // With type interning in the checker, identical instantiations share the
   // same ClassType object, so we can use a WeakMap for O(1) lookup.
@@ -487,28 +484,6 @@ export class CodegenContext {
    */
   public getGenericTemplate(name: string): ClassType | undefined {
     return this.#genericTemplates.get(name);
-  }
-
-  /**
-   * Register a generic specialization.
-   * Key format: "TemplateName|TypeArg1,TypeArg2"
-   *
-   * @deprecated Use registerClassInfoByType for identity-based registration
-   */
-  public registerGenericSpecialization(
-    key: string,
-    classInfo: ClassInfo,
-  ): void {
-    this.#genericSpecializations.set(key, classInfo);
-  }
-
-  /**
-   * Find a generic specialization by key.
-   *
-   * @deprecated Use getClassInfoByCheckerType for identity-based lookup
-   */
-  public findGenericSpecialization(key: string): ClassInfo | undefined {
-    return this.#genericSpecializations.get(key);
   }
 
   /**
