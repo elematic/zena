@@ -430,9 +430,7 @@ export class CodegenContext {
   // mapCheckerTypeToWasmType() uses these for:
   // - Non-generic classes/interfaces (via struct index maps)
   // - Generic class specializations (via specialization registry)
-  //
-  // Generic extension classes (e.g., FixedArray<T>) still use the annotation
-  // path because their onType varies based on type context.
+  // - Generic extension classes (via onTypeAnnotation recomputation)
   //
   // See docs/design/compiler-refactoring.md Step 2.5.6 for full details.
 

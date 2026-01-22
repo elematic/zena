@@ -719,7 +719,8 @@ All 1118 tests pass.
 
 ##### Step 2.5.6: Remove Bundled Name Bridge Infrastructure (OPTIONAL)
 
-**Status:** MOSTLY COMPLETE - Generic non-extension classes now use identity lookup.
+**Status:** ✅ COMPLETE - All class types (including generic extension classes) now
+use identity-based lookup via `mapCheckerTypeToWasmType()`.
 
 **Background:** The `#classBundledNames` and `#interfaceBundledNames` maps in
 `CodegenContext` exist as a bridge solution. They allow `typeToTypeAnnotation`
@@ -752,7 +753,7 @@ we shouldn't round-trip through TypeAnnotation at all. Instead:
 - ✅ Non-generic InterfaceType via identity-based lookup (`resolveInterfaceStructIndex`)
 - ✅ Extension classes for non-generic lookups (returns `onType`)
 - ✅ Generic classes via specialization registry lookup (`computeSpecializationKey`)
-- ⚠️ Generic extension classes (e.g., `FixedArray<T>`) still use annotation-based path
+- ✅ Generic extension classes (e.g., `FixedArray<T>`) via `onTypeAnnotation` recomputation
 
 **Implementation details:**
 
@@ -761,15 +762,27 @@ we shouldn't round-trip through TypeAnnotation at all. Instead:
 2. `computeSpecializationKey()` builds a key like `"m2_Map|m4_String,i32"` from
    the ClassType by following `genericSource` for the template name and converting
    type arguments to TypeAnnotation keys.
-3. Extension class specializations are explicitly skipped in `resolveClassInfo`
-   because their `onType` depends on the type context at point of use.
-4. `containsTypeParameter()` helper checks if type arguments contain unresolved
+3. `containsTypeParameter()` helper checks if type arguments contain unresolved
    type parameters (K, V, etc.) and returns `undefined` key to skip those.
+4. `resolveExtensionClassInfo()` handles extension classes by recomputing `onType`
+   from the stored `onTypeAnnotation` + current type arguments.
 
-**Remaining limitation:** Generic extension classes like `FixedArray<i32>` cannot
-use identity-based lookup because their `onType` (the WASM array type) varies
-based on the type context when the specialization is used. Different call sites
-may need different array types even for the "same" specialization.
+**Key insight (onType vs onTypeAnnotation):**
+
+Extension classes like `FixedArray<T> on array<T>` have two related concepts:
+
+- `onTypeAnnotation` (Zena TypeAnnotation): The type from the AST (`array<T>`),
+  stored once when the class is registered.
+- `onType` (WASM bytes): The WASM array type, which depends on the element type.
+
+Previously, `onType` was computed once during instantiation. But WASM array types
+are canonicalized by element type - `array<i32>` and `array<String>` get different
+type indices depending on order of creation. This caused mismatches when a
+specialization was registered in one context but used in another.
+
+The fix: Store `onTypeAnnotation` alongside `onType`, and recompute `onType` at
+each use site using `mapType(ctx, onTypeAnnotation, typeContext)`. This ensures
+the correct WASM array type index for the current context.
 
 **Tasks:**
 
@@ -777,10 +790,39 @@ may need different array types even for the "same" specialization.
 2. ✅ Add `resolveClassInfo()` helper that follows `genericSource` chain
 3. ✅ Add `computeSpecializationKey()` to look up generic specializations
 4. ✅ Add `containsTypeParameter()` to skip lookups with unresolved type params
-5. Audit all `typeToTypeAnnotation` call sites - DEFERRED
-6. Replace calls that have checker types available - DEFERRED
-7. Remove `#classBundledNames`, `#interfaceBundledNames` - MAY NOT BE NEEDED
+5. ✅ Add `onTypeAnnotation` to ClassInfo for extension classes
+6. ✅ Add `resolveExtensionClassInfo()` to recompute `onType` at each use site
+7. Audit all `typeToTypeAnnotation` call sites - DEFERRED
+8. Replace calls that have checker types available - DEFERRED
+9. Remove `#classBundledNames`, `#interfaceBundledNames` - MAY NOT BE NEEDED
    (Most lookups now work via specialization registry)
+
+##### Future: Migrate from `onType` to `onTypeAnnotation`
+
+**Status:** PLANNED - Not blocking Step 2.5.6 completion.
+
+Currently, `ClassInfo` has both `onType` (WASM bytes, computed) and `onTypeAnnotation`
+(Zena TypeAnnotation, stored from AST). The intent is to migrate to only
+`onTypeAnnotation` over time for cleaner architecture.
+
+**Current state:**
+- `onTypeAnnotation` is set from `ClassDeclaration.onType` (AST) during codegen
+  in `preRegisterClassStruct` and `instantiateClass`
+- `onType` is computed via `mapType(ctx, decl.onType, context)` during codegen
+- ~30 call sites read `classInfo.onType` directly
+
+**Migration plan:**
+
+1. Add `getOnType(ctx, classInfo, typeContext?)` helper that computes WASM bytes
+   lazily from `onTypeAnnotation`
+2. Update all ~30 call sites in `codegen/classes.ts`, `codegen/functions.ts` to
+   use `getOnType()` instead of direct `classInfo.onType` access
+3. Remove `onType` field from `ClassInfo` interface
+
+**Benefits:**
+- Single source of truth (`onTypeAnnotation`)
+- Correct computation at each use site (no stale cached values)
+- Cleaner separation between AST-level types and WASM-level types
 
 #### Step 2.5 (Original): Remove Bundler Renaming
 

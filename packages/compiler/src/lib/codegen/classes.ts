@@ -953,6 +953,7 @@ export function preRegisterClassStruct(
       methods: new Map(),
       isExtension: true,
       onType,
+      onTypeAnnotation: decl.onType,
     });
 
     // Register type → struct index for identity-based lookups
@@ -2938,6 +2939,9 @@ export function instantiateClass(
     classInfo.methods = methods;
     classInfo.vtable = vtable;
     classInfo.onType = onType;
+    if (decl.isExtension && decl.onType) {
+      classInfo.onTypeAnnotation = decl.onType;
+    }
   } else {
     classInfo = {
       name: specializedName,
@@ -2950,6 +2954,7 @@ export function instantiateClass(
       vtable,
       isExtension: decl.isExtension,
       onType,
+      onTypeAnnotation: decl.isExtension ? decl.onType : undefined,
     };
     ctx.classes.set(specializedName, classInfo);
   }
@@ -3848,6 +3853,9 @@ export function mapCheckerTypeToWasmType(
  * Resolve the ClassInfo for a ClassType using identity-based lookups.
  * Handles both non-generic classes (via struct index map) and generic
  * instantiations (via specialization registry).
+ *
+ * For extension classes, computes the correct `onType` from the stored
+ * `onTypeAnnotation` and the current type arguments.
  */
 function resolveClassInfo(
   ctx: CodegenContext,
@@ -3856,6 +3864,10 @@ function resolveClassInfo(
   // Try direct identity lookup first
   let classInfo = ctx.getClassInfoByType(classType);
   if (classInfo) {
+    // For extension classes, recompute onType if we have type arguments
+    if (classInfo.isExtension && classInfo.onTypeAnnotation) {
+      return resolveExtensionClassInfo(ctx, classInfo, classType);
+    }
     return classInfo;
   }
 
@@ -3864,24 +3876,24 @@ function resolveClassInfo(
   while (source) {
     classInfo = ctx.getClassInfoByType(source);
     if (classInfo) {
+      // For extension classes, recompute onType if we have type arguments
+      if (classInfo.isExtension && classInfo.onTypeAnnotation) {
+        return resolveExtensionClassInfo(ctx, classInfo, classType);
+      }
       return classInfo;
     }
     source = source.genericSource;
   }
 
   // For generic instantiations, try specialization registry
-  // Skip this for types that MIGHT be extension classes, since extension classes
-  // need context-specific onType computation that the specialization might not have
   if (classType.typeArguments && classType.typeArguments.length > 0) {
     const specializationKey = computeSpecializationKey(ctx, classType);
     if (specializationKey) {
       classInfo = ctx.findGenericSpecialization(specializationKey);
       if (classInfo) {
-        // Don't use specialization lookup for extension classes - their onType
-        // depends on the type context at point of use, which may differ from
-        // what was stored when the specialization was first registered
-        if (classInfo.isExtension) {
-          return undefined; // Fall through to annotation-based path
+        // For extension classes, recompute onType from onTypeAnnotation + typeArguments
+        if (classInfo.isExtension && classInfo.onTypeAnnotation) {
+          return resolveExtensionClassInfo(ctx, classInfo, classType);
         }
         // Cache the mapping for future identity lookups
         ctx.setClassStructIndex(classType, classInfo.structTypeIndex);
@@ -3891,6 +3903,54 @@ function resolveClassInfo(
   }
 
   return undefined;
+}
+
+/**
+ * Resolve an extension ClassInfo by computing the correct onType for the given type arguments.
+ * Extension classes like FixedArray<T> need their onType (array<T>) computed fresh at each
+ * use site because the WASM array type index depends on the element type.
+ */
+function resolveExtensionClassInfo(
+  ctx: CodegenContext,
+  classInfo: ClassInfo,
+  classType: ClassType,
+): ClassInfo {
+  // If no type arguments, use the stored onType
+  if (!classType.typeArguments || classType.typeArguments.length === 0) {
+    return classInfo;
+  }
+
+  // Build type context from the ClassType's type arguments
+  // The classInfo.typeArguments contains the parameter names (T -> TypeAnnotation)
+  // We need to map those names to the actual type arguments from classType
+  const typeContext = new Map<string, TypeAnnotation>();
+
+  if (classInfo.typeArguments) {
+    // classInfo.typeArguments maps type param names to their resolved annotations
+    // But for the onType computation, we need to use the classType's type arguments
+    // to build a fresh context
+    const paramNames = Array.from(classInfo.typeArguments.keys());
+    for (
+      let i = 0;
+      i < paramNames.length && i < classType.typeArguments.length;
+      i++
+    ) {
+      const paramName = paramNames[i];
+      const typeArg = classType.typeArguments[i];
+      const typeAnnotation = typeToTypeAnnotation(typeArg, undefined, ctx);
+      typeContext.set(paramName, typeAnnotation);
+    }
+  }
+
+  // Compute the correct onType using the type context
+  const onType = mapType(ctx, classInfo.onTypeAnnotation!, typeContext);
+
+  // Return a modified ClassInfo with the correct onType
+  // Note: We don't mutate the original classInfo to avoid affecting other use sites
+  return {
+    ...classInfo,
+    onType,
+  };
 }
 
 /**

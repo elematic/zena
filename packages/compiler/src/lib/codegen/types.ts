@@ -25,7 +25,22 @@ export interface ClassInfo {
   implements?: Map<string, {vtableGlobalIndex: number}>; // interfaceName -> info
   isFinal?: boolean;
   isExtension?: boolean;
+  /**
+   * For extension classes: the WASM type bytes representing the underlying type.
+   * This is computed from `onTypeAnnotation` using the type context.
+   * For generic extension classes, this may need to be recomputed at each use site
+   * because different contexts produce different WASM array type indices.
+   *
+   * TODO(refactoring): Migrate to computing from `onTypeAnnotation` on demand.
+   * See docs/design/compiler-refactoring.md "Future: Migrate from onType to onTypeAnnotation".
+   */
   onType?: number[];
+  /**
+   * For extension classes: the Zena TypeAnnotation from the declaration.
+   * e.g., for `extension class FixedArray<T> on array<T>`, this is `array<T>`.
+   * Used to recompute `onType` with the correct type context at each use site.
+   */
+  onTypeAnnotation?: TypeAnnotation;
   /**
    * Guard to prevent duplicate struct definition.
    * Set to true after defineClassStruct completes.
