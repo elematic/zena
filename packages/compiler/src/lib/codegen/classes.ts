@@ -31,6 +31,7 @@ import {
   type TypeAliasType,
   type SymbolType,
   type LiteralType,
+  type MixinType,
 } from '../types.js';
 import {getGetterName, getSetterName} from '../names.js';
 import {WasmModule} from '../emitter.js';
@@ -3784,6 +3785,147 @@ export function typeToTypeAnnotation(
   }
 }
 
+/**
+ * Get a canonical string key for a checker Type.
+ * This is the checker-type equivalent of getTypeKey(TypeAnnotation).
+ * Used for specialization registry keys and type identity comparisons.
+ *
+ * For class/interface types, uses the bundled name when available for
+ * consistency with how instantiateClass generates specialization keys.
+ *
+ * @deprecated TECHNICAL DEBT: This function exists because the specialization
+ * registry uses string keys ("Box|i32") instead of identity-based lookups.
+ * The root cause is that the checker creates new ClassType objects for each
+ * generic instantiation site, so Box<i32> at line 10 and Box<i32> at line 50
+ * are different objects even though they represent the same WASM type.
+ *
+ * **Solution:** Implement type interning in the checker so that identical
+ * type instantiations share the same object. Then the specialization registry
+ * can use a WeakMap keyed by the Type objects directly, eliminating the need
+ * for string keys entirely.
+ *
+ * See docs/design/compiler-refactoring.md "Type Interning" section.
+ */
+export function getCheckerTypeKey(type: Type, ctx?: CodegenContext): string {
+  switch (type.kind) {
+    case TypeKind.Number:
+      return (type as NumberType).name;
+    case TypeKind.Boolean:
+      return TypeNames.Boolean;
+    case TypeKind.Void:
+      return TypeNames.Void;
+    case TypeKind.Null:
+      return 'null';
+    case TypeKind.Never:
+      return 'never';
+    case TypeKind.Any:
+      return 'any';
+    case TypeKind.TypeParameter:
+      return (type as TypeParameterType).name;
+    case TypeKind.Class: {
+      const classType = type as ClassType;
+      // Use bundled name if available for consistency with specialization keys
+      let name = ctx?.getClassBundledName(classType) ?? classType.name;
+      if (!name && classType.genericSource) {
+        name =
+          ctx?.getClassBundledName(classType.genericSource) ??
+          classType.genericSource.name;
+      }
+      name = name ?? classType.name;
+      if (classType.typeArguments && classType.typeArguments.length > 0) {
+        const args = classType.typeArguments
+          .map((a) => getCheckerTypeKey(a, ctx))
+          .join(',');
+        return `${name}<${args}>`;
+      }
+      return name;
+    }
+    case TypeKind.Interface: {
+      const interfaceType = type as InterfaceType;
+      // Use bundled name if available
+      let name =
+        ctx?.getInterfaceBundledName(interfaceType) ?? interfaceType.name;
+      if (!name && interfaceType.genericSource) {
+        name =
+          ctx?.getInterfaceBundledName(interfaceType.genericSource) ??
+          interfaceType.genericSource.name;
+      }
+      name = name ?? interfaceType.name;
+      if (
+        interfaceType.typeArguments &&
+        interfaceType.typeArguments.length > 0
+      ) {
+        const args = interfaceType.typeArguments
+          .map((a) => getCheckerTypeKey(a, ctx))
+          .join(',');
+        return `${name}<${args}>`;
+      }
+      return name;
+    }
+    case TypeKind.Array: {
+      const arrayType = type as ArrayType;
+      const elementKey = getCheckerTypeKey(arrayType.elementType, ctx);
+      return `array<${elementKey}>`;
+    }
+    case TypeKind.Record: {
+      const recordType = type as RecordType;
+      const props = Array.from(recordType.properties.entries())
+        .map(
+          ([name, propType]) => `${name}:${getCheckerTypeKey(propType, ctx)}`,
+        )
+        .sort()
+        .join(',');
+      return `{${props}}`;
+    }
+    case TypeKind.Tuple: {
+      const tupleType = type as TupleType;
+      const elements = tupleType.elementTypes
+        .map((t) => getCheckerTypeKey(t, ctx))
+        .join(',');
+      return `[${elements}]`;
+    }
+    case TypeKind.Function: {
+      const funcType = type as FunctionType;
+      const params = funcType.parameters
+        .map((p) => getCheckerTypeKey(p, ctx))
+        .join(',');
+      const ret = getCheckerTypeKey(funcType.returnType, ctx);
+      return `(${params})=>${ret}`;
+    }
+    case TypeKind.Union: {
+      const unionType = type as UnionType;
+      const members = unionType.types
+        .map((t) => getCheckerTypeKey(t, ctx))
+        .sort()
+        .join('|');
+      return `(${members})`;
+    }
+    case TypeKind.Literal: {
+      const litType = type as LiteralType;
+      if (typeof litType.value === 'string') {
+        return `'${litType.value}'`;
+      } else if (typeof litType.value === 'boolean') {
+        return litType.value ? 'true' : 'false';
+      } else {
+        return String(litType.value);
+      }
+    }
+    case TypeKind.TypeAlias: {
+      const aliasType = type as TypeAliasType;
+      // For type aliases, use the target type's key
+      return getCheckerTypeKey(aliasType.target, ctx);
+    }
+    case TypeKind.Symbol:
+      return 'symbol';
+    case TypeKind.Mixin: {
+      const mixinType = type as MixinType;
+      return mixinType.name;
+    }
+    default:
+      return 'unknown';
+  }
+}
+
 export function mapCheckerTypeToWasmType(
   ctx: CodegenContext,
   type: Type,
@@ -4085,11 +4227,10 @@ function computeSpecializationKey(
     templateName = classType.genericSource?.name ?? classType.name;
   }
 
-  // Convert type arguments to TypeAnnotations and get their keys
-  const argKeys = classType.typeArguments.map((arg) => {
-    const annotation = typeToTypeAnnotation(arg, undefined, ctx);
-    return getTypeKey(annotation);
-  });
+  // Get keys for type arguments directly from checker types
+  const argKeys = classType.typeArguments.map((arg) =>
+    getCheckerTypeKey(arg, ctx),
+  );
 
   return `${templateName}|${argKeys.join(',')}`;
 }

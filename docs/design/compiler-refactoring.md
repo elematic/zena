@@ -1230,6 +1230,87 @@ Each phase is somewhat independent:
 7. **Error handling:** Never silently fall back to `i32` for unknown types - this masks bugs. Always throw an error instead.
 8. **Preserve test coverage:** The generic function instantiation tests in `generic-function-value_test.ts` are valuable regression tests regardless of architecture
 
+## Technical Debt: Type Interning
+
+### Problem
+
+The specialization registry for generic types uses string keys (e.g.,
+`"Box|i32"`) instead of identity-based lookups. This is because the checker
+creates **new** `ClassType` objects for each generic instantiation site:
+
+```typescript
+// These are different ClassType objects in the checker
+const x: Box<i32> = ...;  // Creates ClassType { name: 'Box', typeArguments: [I32] }
+const y: Box<i32> = ...;  // Creates a NEW ClassType { name: 'Box', typeArguments: [I32] }
+```
+
+Both should map to the same WASM struct type, but since they're different
+objects, we can't use identity-based lookups. Instead, we compute string keys
+via `getCheckerTypeKey()` and use those for registry lookups.
+
+### Functions to Remove
+
+Once type interning is implemented, these should be deleted or significantly
+simplified:
+
+- `getCheckerTypeKey()` in `classes.ts` - String key generation for checker types
+- `getTypeKey()` in `classes.ts` - String key generation for TypeAnnotations
+- `computeSpecializationKey()` in `classes.ts` - Builds registry keys
+
+### Solution: Type Interning in the Checker
+
+**Goal:** Identical type instantiations should share the same object reference.
+
+**Implementation approach:**
+
+1. Add an interning cache to the checker context:
+
+   ```typescript
+   class CheckerContext {
+     // Cache for interned generic instantiations
+     readonly internedTypes = new Map<string, Type>();
+   }
+   ```
+
+2. When creating a generic instantiation, check the cache first:
+
+   ```typescript
+   function instantiateGeneric(template: ClassType, args: Type[]): ClassType {
+     const key = computeInternKey(template, args);
+     if (this.internedTypes.has(key)) {
+       return this.internedTypes.get(key) as ClassType;
+     }
+     const instance = createInstance(template, args);
+     this.internedTypes.set(key, instance);
+     return instance;
+   }
+   ```
+
+3. Update codegen to use identity-based lookups:
+
+   ```typescript
+   // Before: string key lookup
+   const key = getCheckerTypeKey(classType, ctx);
+   const classInfo = ctx.findGenericSpecialization(key);
+
+   // After: identity lookup
+   const classInfo = ctx.getClassInfoByType(classType);
+   ```
+
+**Benefits:**
+
+- Eliminates fragile string-based type identity
+- Reduces memory (shared type objects)
+- Enables simple `WeakMap` lookups in codegen
+- Aligns with how mature compilers (TypeScript, Rust) handle type identity
+
+**Files affected:**
+
+- `packages/compiler/src/lib/checker/context.ts` - Add interning cache
+- `packages/compiler/src/lib/checker/types.ts` - Update instantiation logic
+- `packages/compiler/src/lib/codegen/classes.ts` - Remove string key functions
+- `packages/compiler/src/lib/codegen/context.ts` - Switch to identity-based registry
+
 ## Open Questions
 
 1. Should we support truly independent module checking (e.g., for LSP hover on
