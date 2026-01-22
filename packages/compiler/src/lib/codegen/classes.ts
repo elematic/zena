@@ -9,6 +9,7 @@ import {
   type RecordTypeAnnotation,
   type TupleTypeAnnotation,
   type TypeAnnotation,
+  type UnionTypeAnnotation,
   type Identifier,
   type ComputedPropertyName,
 } from '../ast.js';
@@ -2602,11 +2603,14 @@ function mapTypeInternal(
           // Type parameters should never appear in WASM types - they should either:
           // 1. Be substituted with concrete types (during instantiation), or
           // 2. Not be mapped at all (generic functions aren't generated)
-          //
-          // However, it might also be that the type lookup failed. Rather than reporting
-          // an error, we'll map it to anyref, which is a safe fallback for reference types.
-          // This allows the WASM compiler to catch real type errors.
-          return [ValType.anyref];
+          ctx.reportError(
+            `Unbound type parameter '${typeName}' in code generation. Type
+            parameters must be substituted with concrete types.`,
+            DiagnosticCode.UnknownType,
+          );
+          throw new Error(
+            `Unbound type parameter '${typeName}' in code generation`,
+          );
         }
 
         // Report error for truly unknown types
@@ -2681,7 +2685,64 @@ function mapTypeInternal(
       return mapType(ctx, nonNullTypes[0], context);
     }
 
-    return [ValType.anyref];
+    // Check if this is a union of reference types (classes, interfaces, functions, etc.)
+    // Reference type unions use anyref as the common supertype since different
+    // concrete types can't share a single WASM type index.
+    const isReferenceType = (t: TypeAnnotation): boolean => {
+      // Function types are reference types
+      if (t.type === NodeType.FunctionTypeAnnotation) return true;
+
+      // Tuple types are reference types (stored as WASM structs)
+      if (t.type === NodeType.TupleTypeAnnotation) return true;
+
+      // Record types are reference types (stored as WASM structs)
+      if (t.type === NodeType.RecordTypeAnnotation) return true;
+
+      // Resolve type aliases
+      if (t.type === NodeType.TypeAnnotation && ctx.typeAliases.has(t.name)) {
+        const resolved = ctx.typeAliases.get(t.name)!;
+        return isReferenceType(resolved);
+      }
+
+      // Named types that are classes or interfaces are reference types
+      if (t.type === NodeType.TypeAnnotation) {
+        // Check if it's a known class
+        if (ctx.classes.has(t.name)) return true;
+        // Check if it's a known interface
+        if (ctx.interfaces.has(t.name)) return true;
+        // Check for string type (which is a reference type)
+        if (t.name === 'string' || t.name === 'String') return true;
+        // Check for built-in reference types
+        if (t.name === 'ByteArray') return true;
+        // Generic types like array<T>, Box<T> are reference types
+        if (t.typeArguments && t.typeArguments.length > 0) {
+          // array<T>, Map<K,V>, Box<T>, etc. are all reference types
+          return true;
+        }
+      }
+
+      return false;
+    };
+    if (nonNullTypes.length > 0 && nonNullTypes.every(isReferenceType)) {
+      return [ValType.anyref];
+    }
+
+    // Union types that aren't T | null, literal unions, or reference unions are not supported
+    const unionType = type as UnionTypeAnnotation;
+    const typeStr = unionType.types
+      .map((t: TypeAnnotation) =>
+        t.type === NodeType.TypeAnnotation
+          ? t.name
+          : t.type === NodeType.LiteralTypeAnnotation
+            ? String((t as LiteralTypeAnnotation).value)
+            : t.type,
+      )
+      .join(' | ');
+    ctx.reportError(
+      `Unsupported union type '${typeStr}' in code generation. Only T | null, literal unions, and reference type unions are supported.`,
+      DiagnosticCode.TypeMismatch,
+    );
+    throw new Error(`Unsupported union type in code generation`);
   } else if (type.type === NodeType.LiteralTypeAnnotation) {
     // Literal types (number, string, boolean) map to their base types
     const litType = type as LiteralTypeAnnotation;
@@ -2695,14 +2756,21 @@ function mapTypeInternal(
           ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
         ];
       }
-      return [ValType.anyref]; // Fallback if string type not available
+      throw new Error(
+        `String literal type encountered but string type not registered. This indicates a compiler initialization error.`,
+      );
     } else if (typeof litType.value === 'boolean') {
       return [ValType.i32]; // Booleans are i32
     }
-    return [ValType.i32];
+    throw new Error(
+      `Unknown literal type: ${typeof litType.value}. Only number, string, and boolean literals are supported.`,
+    );
   }
 
-  return [ValType.i32];
+  // This should be unreachable - all TypeAnnotation kinds should be handled above
+  throw new Error(
+    `Unhandled type annotation kind: ${(type as TypeAnnotation).type}. This is a compiler bug.`,
+  );
 }
 
 export function instantiateClass(
