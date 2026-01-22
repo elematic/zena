@@ -3,9 +3,9 @@ import {compileAndRun} from './utils.js';
 import assert from 'node:assert';
 
 suite('CodeGenerator - Error Messages', () => {
-  test('local classes should report class not found error', async () => {
-    // Local classes (classes defined inside functions) are not registered
-    // in the codegen class registry. This is a known limitation.
+  test('local classes should be rejected by the checker', async () => {
+    // Local classes (classes defined inside functions) are not supported.
+    // The checker should reject them with a clear error message.
     const source = `
       export let main = (): i32 => {
         class Local { x: i32; #new() { this.x = 1; } }
@@ -17,21 +17,18 @@ suite('CodeGenerator - Error Messages', () => {
     await assert.rejects(
       async () => compileAndRun(source),
       (err: Error) => {
-        // Local classes aren't supported and produce a "Class not found" error
         assert.match(
           err.message,
-          /Class Local not found/,
-          'Should report class not found for local class',
+          /Local class declarations are not supported/,
+          'Should reject local class declarations',
         );
         return true;
       },
     );
   });
 
-  test('local class in union should report error', async () => {
-    // When a local class appears in a union, we first try to check if it's
-    // a reference type, but since it's not in ctx.classes, the isReferenceType
-    // check fails and we fall through to the "unsupported union" error.
+  test('local class union should be rejected by the checker', async () => {
+    // Multiple local classes should all be rejected individually.
     const source = `
       export let main = (): i32 => {
         class Local1 { x: i32; #new() { this.x = 1; } }
@@ -44,14 +41,10 @@ suite('CodeGenerator - Error Messages', () => {
     await assert.rejects(
       async () => compileAndRun(source),
       (err: Error) => {
-        // The error could be either "Unbound type parameter" or "Unsupported union"
-        // depending on the code path
-        const isExpectedError =
-          err.message.includes('Unbound type parameter') ||
-          err.message.includes('Unsupported union type');
-        assert.ok(
-          isExpectedError,
-          `Expected unbound type or unsupported union error, got: ${err.message}`,
+        assert.match(
+          err.message,
+          /Local class declarations are not supported/,
+          'Should reject local class declarations',
         );
         return true;
       },

@@ -1184,6 +1184,15 @@ function resolveMemberName(
 function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   const className = decl.name.name;
 
+  // Local classes (classes declared inside functions) are not supported
+  if (ctx.currentFunctionReturnType !== null) {
+    ctx.diagnostics.reportError(
+      `Local class declarations are not supported. Class '${className}' must be declared at the top level.`,
+      DiagnosticCode.UnsupportedFeature,
+    );
+    return;
+  }
+
   // If the type has already been fully checked (e.g., from a previous type-check
   // pass before bundling), skip re-checking to avoid duplicate member errors.
   if (decl.inferredType && (decl.inferredType as ClassType)._checked) {
@@ -2675,6 +2684,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
       if (!methodType) continue; // Should not happen unless error occurred
 
+      const previousReturnType = ctx.currentFunctionReturnType;
       ctx.currentFunctionReturnType = methodType.returnType;
       ctx.enterScope();
       member.params.forEach((param, index) => {
@@ -2685,7 +2695,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         checkStatement(ctx, member.body);
       }
       ctx.exitScope();
-      ctx.currentFunctionReturnType = Types.Unknown;
+      ctx.currentFunctionReturnType = previousReturnType;
     } else if (member.type === NodeType.FieldDefinition && member.value) {
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) continue; // TODO: Check symbol field initializer
@@ -2703,6 +2713,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       if (memberNameInfo.isSymbol) continue; // TODO: Check symbol accessor body
 
       const fieldType = mixinType.fields.get(memberNameInfo.name)!;
+      const previousReturnType = ctx.currentFunctionReturnType;
       if (member.getter) {
         ctx.currentFunctionReturnType = fieldType;
         ctx.enterScope();
@@ -2716,7 +2727,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         checkStatement(ctx, member.setter.body);
         ctx.exitScope();
       }
-      ctx.currentFunctionReturnType = Types.Unknown;
+      ctx.currentFunctionReturnType = previousReturnType;
     }
   }
 
