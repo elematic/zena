@@ -1032,7 +1032,15 @@ export function preRegisterClassStruct(
   // They must have lower type indices than this class since they'll be its supertype chain
   if (decl.mixins && decl.mixins.length > 0) {
     let currentSuperClassInfo: ClassInfo | undefined;
-    if (decl.superClass) {
+
+    // Use identity-based lookup via checker's superType
+    const classType = decl.inferredType as ClassType | undefined;
+    if (classType?.superType) {
+      currentSuperClassInfo = ctx.getClassInfoByCheckerType(classType.superType);
+    }
+
+    // Fall back to name-based lookup if identity lookup failed
+    if (!currentSuperClassInfo && decl.superClass) {
       const baseSuperName = getTypeAnnotationName(decl.superClass);
       const superTypeArgs =
         decl.superClass.type === NodeType.TypeAnnotation
