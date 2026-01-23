@@ -33,9 +33,12 @@ export function inferReturnTypeFromBlock(
   for (const stmt of block.body) {
     if (stmt.type === NodeType.VariableDeclaration) {
       const decl = stmt as VariableDeclaration;
-      const type = decl.typeAnnotation
-        ? mapType(ctx, decl.typeAnnotation)
-        : inferType(ctx, decl.init);
+      // Prefer checker's inferredType (identity-based) over AST annotation
+      const type = decl.inferredType
+        ? mapCheckerTypeToWasmType(ctx, decl.inferredType)
+        : decl.typeAnnotation
+          ? mapType(ctx, decl.typeAnnotation)
+          : inferType(ctx, decl.init);
 
       if (decl.pattern.type === NodeType.Identifier) {
         ctx.defineParam(decl.pattern.name, type);

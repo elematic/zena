@@ -14,7 +14,12 @@ import {
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
-import {decodeTypeIndex, getClassFromTypeIndex, mapType} from './classes.js';
+import {
+  decodeTypeIndex,
+  getClassFromTypeIndex,
+  mapType,
+  mapCheckerTypeToWasmType,
+} from './classes.js';
 import type {CodegenContext} from './context.js';
 import {
   generateExpression,
@@ -275,7 +280,10 @@ export function generateLocalVariableDeclaration(
 
   let type: number[];
   if (decl.typeAnnotation) {
-    type = mapType(ctx, decl.typeAnnotation, ctx.currentTypeContext);
+    // Prefer checker's inferredType (identity-based) when available
+    type = decl.inferredType
+      ? mapCheckerTypeToWasmType(ctx, decl.inferredType)
+      : mapType(ctx, decl.typeAnnotation, ctx.currentTypeContext);
 
     // Union boxing (i32 -> anyref)
     const isAnyRef =

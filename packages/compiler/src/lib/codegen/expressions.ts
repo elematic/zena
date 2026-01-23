@@ -513,7 +513,10 @@ function generateAsExpression(
 ) {
   generateExpression(ctx, expr.expression, body);
 
-  const targetType = mapType(ctx, expr.typeAnnotation, ctx.currentTypeContext);
+  // Use checker's inferredType when available (identity-based), fall back to AST
+  const targetType = expr.inferredType
+    ? mapCheckerTypeToWasmType(ctx, expr.inferredType)
+    : mapType(ctx, expr.typeAnnotation, ctx.currentTypeContext);
 
   let sourceType: number[] | undefined;
   try {
@@ -4601,40 +4604,45 @@ function generateFunctionExpression(
   const oldTypeContext = ctx.currentTypeContext;
   ctx.currentTypeContext = typeContext;
 
-  const paramTypes = expr.params.map((p) => mapType(ctx, p.typeAnnotation));
+  let paramTypes: number[][];
   let returnType: number[];
-  if (expr.returnType) {
-    returnType = mapType(ctx, expr.returnType);
-  } else if (
-    expr.inferredType &&
-    expr.inferredType.kind === TypeKind.Function
-  ) {
+
+  // Use checker's inferredType when available (identity-based), fall back to AST
+  if (expr.inferredType && expr.inferredType.kind === TypeKind.Function) {
     const funcType = expr.inferredType as FunctionType;
+    paramTypes = funcType.parameters.map((t) =>
+      mapCheckerTypeToWasmType(ctx, t),
+    );
     returnType = mapCheckerTypeToWasmType(ctx, funcType.returnType);
   } else {
-    // Simple inference: if body is expression, infer type.
-    // If block, assume void for now or implement block inference.
-    if (expr.body.type !== NodeType.BlockStatement) {
-      // We can't easily infer here without generating the body.
-      // But we need the signature BEFORE generating the body.
-      // This is a circular dependency if we rely on inference.
-      // For now, default to i32 if not specified? Or error?
-      // Let's assume i32 for expression bodies if not annotated, to match simple lambdas.
-      throw new Error(
-        'Missing return type annotation or inference for function expression',
-      );
+    paramTypes = expr.params.map((p) => mapType(ctx, p.typeAnnotation));
+    if (expr.returnType) {
+      returnType = mapType(ctx, expr.returnType);
     } else {
-      // Setup temporary scope for inference
-      const savedContext = ctx.saveFunctionContext();
-      ctx.pushFunctionScope();
+      // Simple inference: if body is expression, infer type.
+      // If block, assume void for now or implement block inference.
+      if (expr.body.type !== NodeType.BlockStatement) {
+        // We can't easily infer here without generating the body.
+        // But we need the signature BEFORE generating the body.
+        // This is a circular dependency if we rely on inference.
+        // For now, default to i32 if not specified? Or error?
+        // Let's assume i32 for expression bodies if not annotated, to match simple lambdas.
+        throw new Error(
+          'Missing return type annotation or inference for function expression',
+        );
+      } else {
+        // Setup temporary scope for inference
+        const savedContext = ctx.saveFunctionContext();
+        ctx.pushFunctionScope();
 
-      expr.params.forEach((p, i) => {
-        ctx.defineParam(p.name.name, paramTypes[i]);
-      });
+        expr.params.forEach((p, i) => {
+          ctx.defineParam(p.name.name, paramTypes[i]);
+        });
 
-      returnType = inferReturnTypeFromBlock(ctx, expr.body as BlockStatement);
+        returnType = inferReturnTypeFromBlock(ctx, expr.body as BlockStatement);
 
-      ctx.restoreFunctionContext(savedContext);
+        ctx.restoreFunctionContext(savedContext);
+      }
     }
   }
 
