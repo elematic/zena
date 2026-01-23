@@ -947,7 +947,14 @@ export function preRegisterClassStruct(
   // Handle extension classes (e.g. FixedArray extends array<T>)
   // These are handled entirely in preRegister since they don't need deferred definition
   if (decl.isExtension && decl.onType) {
-    const onType = mapType(ctx, decl.onType);
+    // Try to get onType from checker if available
+    const classType =
+      decl.inferredType?.kind === TypeKind.Class
+        ? (decl.inferredType as ClassType)
+        : undefined;
+    const onType = classType?.onType
+      ? mapCheckerTypeToWasmType(ctx, classType.onType)
+      : mapType(ctx, decl.onType);
 
     // Create a dummy struct type for extensions so that we have a valid type index
     // This is needed because some parts of the compiler might try to reference the class type
@@ -1036,7 +1043,9 @@ export function preRegisterClassStruct(
     // Use identity-based lookup via checker's superType
     const classType = decl.inferredType as ClassType | undefined;
     if (classType?.superType) {
-      currentSuperClassInfo = ctx.getClassInfoByCheckerType(classType.superType);
+      currentSuperClassInfo = ctx.getClassInfoByCheckerType(
+        classType.superType,
+      );
     }
 
     // Fall back to name-based lookup if identity lookup failed
@@ -1284,11 +1293,13 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
-      const wasmType = mapType(ctx, member.typeAnnotation);
-      const fieldName = manglePrivateName(
-        decl.name.name,
-        getMemberName(member.name),
-      );
+      const memberName = getMemberName(member.name);
+      // Prefer checker's field type (already resolved) over AST annotation
+      const checkerFieldType = classType?.fields.get(memberName);
+      const wasmType = checkerFieldType
+        ? mapCheckerTypeToWasmType(ctx, checkerFieldType)
+        : mapType(ctx, member.typeAnnotation);
+      const fieldName = manglePrivateName(decl.name.name, memberName);
 
       if (!fields.has(fieldName)) {
         let intrinsic: string | undefined;
@@ -1312,7 +1323,10 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
   let onType: number[] | undefined;
   if (decl.isExtension && decl.onType) {
-    onType = mapType(ctx, decl.onType);
+    // Try to get onType from checker if available
+    onType = classType?.onType
+      ? mapCheckerTypeToWasmType(ctx, classType.onType)
+      : mapType(ctx, decl.onType);
   }
 
   // Update classInfo with full data
@@ -1337,7 +1351,14 @@ export function registerClassStruct(
 
   // Handle extension classes (e.g. FixedArray extends array<T>)
   if (decl.isExtension && decl.onType) {
-    const onType = mapType(ctx, decl.onType);
+    // Try to get onType from checker if available
+    const classType =
+      decl.inferredType?.kind === TypeKind.Class
+        ? (decl.inferredType as ClassType)
+        : undefined;
+    const onType = classType?.onType
+      ? mapCheckerTypeToWasmType(ctx, classType.onType)
+      : mapType(ctx, decl.onType);
     // console.log(
     //   `registerClassStruct: Extension ${decl.name.name} onType=${onType.join(',')}`,
     // );
@@ -1468,11 +1489,13 @@ export function registerClassStruct(
 
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
-      const wasmType = mapType(ctx, member.typeAnnotation);
-      const fieldName = manglePrivateName(
-        decl.name.name,
-        getMemberName(member.name),
-      );
+      const memberName = getMemberName(member.name);
+      // Prefer checker's field type (already resolved) over AST annotation
+      const checkerFieldType = classType?.fields.get(memberName);
+      const wasmType = checkerFieldType
+        ? mapCheckerTypeToWasmType(ctx, checkerFieldType)
+        : mapType(ctx, member.typeAnnotation);
+      const fieldName = manglePrivateName(decl.name.name, memberName);
 
       if (!fields.has(fieldName)) {
         let intrinsic: string | undefined;
@@ -1511,7 +1534,14 @@ export function registerClassStruct(
 
   let onType: number[] | undefined;
   if (decl.isExtension && decl.onType) {
-    onType = mapType(ctx, decl.onType);
+    // Try to get onType from checker if available
+    const classType =
+      decl.inferredType?.kind === TypeKind.Class
+        ? (decl.inferredType as ClassType)
+        : undefined;
+    onType = classType?.onType
+      ? mapCheckerTypeToWasmType(ctx, classType.onType)
+      : mapType(ctx, decl.onType);
   }
 
   const classInfo: ClassInfo = {
@@ -1544,8 +1574,12 @@ export function registerClassMethods(
 
   // Identity-based lookup using checker's type
   let classInfo: ClassInfo | undefined;
-  if (decl.inferredType?.kind === TypeKind.Class) {
-    classInfo = ctx.getClassInfoByCheckerType(decl.inferredType as ClassType);
+  const classType =
+    decl.inferredType?.kind === TypeKind.Class
+      ? (decl.inferredType as ClassType)
+      : undefined;
+  if (classType) {
+    classInfo = ctx.getClassInfoByCheckerType(classType);
   }
   if (!classInfo) {
     throw new Error(
@@ -1675,8 +1709,14 @@ export function registerClassMethods(
       ) {
         params.push(thisType);
       }
-      for (const param of member.params) {
-        const mapped = mapType(ctx, param.typeAnnotation);
+      // Prefer checker's method type (already resolved) over AST annotations
+      const checkerMethodType = classType?.methods.get(methodName);
+      for (let i = 0; i < member.params.length; i++) {
+        const param = member.params[i];
+        const checkerParamType = checkerMethodType?.parameters[i];
+        const mapped = checkerParamType
+          ? mapCheckerTypeToWasmType(ctx, checkerParamType)
+          : mapType(ctx, param.typeAnnotation);
         params.push(mapped);
       }
 
@@ -1685,13 +1725,19 @@ export function registerClassMethods(
         if (classInfo.isExtension && classInfo.onType) {
           results = [classInfo.onType];
         } else if (member.isStatic && member.returnType) {
-          const mapped = mapType(ctx, member.returnType);
+          const checkerReturnType = checkerMethodType?.returnType;
+          const mapped = checkerReturnType
+            ? mapCheckerTypeToWasmType(ctx, checkerReturnType)
+            : mapType(ctx, member.returnType);
           if (mapped.length > 0) results = [mapped];
         } else {
           results = [];
         }
       } else if (member.returnType) {
-        const mapped = mapType(ctx, member.returnType);
+        const checkerReturnType = checkerMethodType?.returnType;
+        const mapped = checkerReturnType
+          ? mapCheckerTypeToWasmType(ctx, checkerReturnType)
+          : mapType(ctx, member.returnType);
         if (mapped.length > 0) results = [mapped];
       } else {
         results = [];
@@ -1729,11 +1775,16 @@ export function registerClassMethods(
       });
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
-      const propType = mapType(ctx, member.typeAnnotation);
+      // Try to get the property type from the checker's getter method
+      const getterMethodName = getGetterName(propName);
+      const checkerGetterType = classType?.methods.get(getterMethodName);
+      const propType = checkerGetterType
+        ? mapCheckerTypeToWasmType(ctx, checkerGetterType.returnType)
+        : mapType(ctx, member.typeAnnotation);
 
       // Getter
       if (member.getter) {
-        const methodName = getGetterName(propName);
+        const methodName = getterMethodName;
         if (!vtable.includes(methodName)) {
           vtable.push(methodName);
         }
@@ -1849,7 +1900,11 @@ export function registerClassMethods(
         }
 
         const propName = getMemberName(member.name);
-        const propType = mapType(ctx, member.typeAnnotation);
+        // Try to get the field type from the checker
+        const checkerFieldType = classType?.fields.get(propName);
+        const propType = checkerFieldType
+          ? mapCheckerTypeToWasmType(ctx, checkerFieldType)
+          : mapType(ctx, member.typeAnnotation);
 
         // Getter
         const getterName = getGetterName(propName);
@@ -2044,12 +2099,7 @@ export function registerClassMethods(
       : decl.superClass,
   } as ClassDeclaration;
 
-  // Pass the checker type for identity-based lookup
-  const classType =
-    decl.inferredType?.kind === TypeKind.Class
-      ? (decl.inferredType as ClassType)
-      : undefined;
-
+  // Pass the checker type for identity-based lookup (classType is already declared at function top)
   ctx.bodyGenerators.push(() => {
     generateClassMethods(ctx, declForGen, undefined, undefined, classType);
   });
@@ -3251,7 +3301,10 @@ export function instantiateClass(
   }
 
   if (decl.isExtension && decl.onType) {
-    onType = mapType(ctx, decl.onType, context);
+    // Try to get onType from checker if available
+    onType = checkerType?.onType
+      ? mapCheckerTypeToWasmType(ctx, checkerType.onType)
+      : mapType(ctx, decl.onType, context);
   } else {
     // Check for superclass and inherit fields
     // Try identity-based lookup first
@@ -4565,7 +4618,10 @@ function resolveExtensionClassInfo(
   }
 
   // Compute the correct onType using the type context
-  const onType = mapType(ctx, classInfo.onTypeAnnotation!, typeContext);
+  // Try to get onType from checker if available
+  const onType = classType.onType
+    ? mapCheckerTypeToWasmType(ctx, classType.onType)
+    : mapType(ctx, classInfo.onTypeAnnotation!, typeContext);
 
   // Return a modified ClassInfo with the correct onType
   // Note: We don't mutate the original classInfo to avoid affecting other use sites

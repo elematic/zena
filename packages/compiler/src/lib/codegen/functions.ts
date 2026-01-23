@@ -143,17 +143,24 @@ export function registerFunction(
     return;
   }
 
-  const params = func.params.map((p) => mapType(ctx, p.typeAnnotation));
+  // Try to get function type from checker for identity-based type lookup
+  const checkerFuncType =
+    func.inferredType?.kind === TypeKind.Function
+      ? (func.inferredType as FunctionType)
+      : undefined;
+
+  const params = func.params.map((p, i) => {
+    const checkerParamType = checkerFuncType?.parameters[i];
+    return checkerParamType
+      ? mapCheckerTypeToWasmType(ctx, checkerParamType)
+      : mapType(ctx, p.typeAnnotation);
+  });
 
   let mappedReturn: number[];
-  if (func.returnType) {
+  if (checkerFuncType) {
+    mappedReturn = mapCheckerTypeToWasmType(ctx, checkerFuncType.returnType);
+  } else if (func.returnType) {
     mappedReturn = mapType(ctx, func.returnType);
-  } else if (
-    func.inferredType &&
-    func.inferredType.kind === TypeKind.Function
-  ) {
-    const returnType = (func.inferredType as FunctionType).returnType;
-    mappedReturn = mapCheckerTypeToWasmType(ctx, returnType);
   } else {
     // Setup temporary scope for inference
     const savedContext = ctx.saveFunctionContext();
@@ -310,8 +317,21 @@ export function registerDeclaredFunction(
     return;
   }
 
-  const params = decl.params.map((p) => mapType(ctx, p.typeAnnotation));
-  const returnType = mapType(ctx, decl.returnType);
+  // Try to get function type from checker for identity-based type lookup
+  const checkerFuncType =
+    decl.inferredType?.kind === TypeKind.Function
+      ? (decl.inferredType as FunctionType)
+      : undefined;
+
+  const params = decl.params.map((p, i) => {
+    const checkerParamType = checkerFuncType?.parameters[i];
+    return checkerParamType
+      ? mapCheckerTypeToWasmType(ctx, checkerParamType)
+      : mapType(ctx, p.typeAnnotation);
+  });
+  const returnType = checkerFuncType
+    ? mapCheckerTypeToWasmType(ctx, checkerFuncType.returnType)
+    : mapType(ctx, decl.returnType);
 
   let funcIndex = -1;
 
