@@ -836,7 +836,80 @@ looks up the same ClassInfo object which gets populated later.
    - Either run `registerMethods()` synchronously during `instantiateClass()`, OR
    - Accept that identity-based lookup is only reliable after method generation
 
-This is tracked as future work under "Late Type Lowering".
+~~This is tracked as future work under "Late Type Lowering".~~
+
+##### Root Cause Discovery (2026-01-22): Per-Module Type Interning
+
+**Status:** ROOT CAUSE IDENTIFIED - Name-based lookups are needed because type
+interning is per-module, not per-program.
+
+**Investigation:** Attempted to remove name-based lookups from `generateMemberExpression`
+in favor of identity-based lookup via `getClassInfoByCheckerType()`. This failed for:
+
+1. **Mixin synthetic types** (`M_This`) - Fixed with `ctx.currentClass` check for `this` expressions
+2. **Extension classes across modules** (e.g., `ArrayExt<i32>` from stdlib) - Identity lookup fails
+
+**Root cause analysis:**
+
+When codegen calls `mapCheckerTypeToWasmType()` with a ClassType from an expression's
+`inferredType`, the type was interned in a **different** `CheckerContext` than the
+one that registered the class during type checking. This happens because:
+
+1. `Compiler.#checkModules()` creates a **new TypeChecker** for each module (line ~161)
+2. `TypeChecker.check()` creates a **new CheckerContext** each time (line ~36)
+3. Type interning happens in `CheckerContext` via `#internedTypes` Map
+4. Each module's types are interned independently
+
+**Concrete example:**
+
+```
+Module A (stdlib): ArrayExt<i32> interned as object X
+Module B (user):   ArrayExt<i32> interned as object Y (different object!)
+```
+
+Both `X` and `Y` have the same structure (`name: 'ArrayExt', typeArguments: [I32]`),
+but they're different JavaScript objects. The `#classInfoByType` WeakMap in
+codegen was keyed by object `X` (from when the class was registered), but codegen
+receives object `Y` (from the user module's type checking). Identity lookup fails.
+
+**Current workaround:** Hybrid lookup in `generateMemberExpression`:
+
+```typescript
+// Try identity-based lookup first
+let classInfo = ctx.getClassInfoByCheckerType(classType);
+
+// Fall back to name-based lookup
+if (!classInfo) {
+  const specializedName = getSpecializedName(classType, ctx);
+  classInfo = ctx.classes.get(specializedName);
+}
+```
+
+All 1142 tests pass with this hybrid approach.
+
+**Architectural flaw identified:**
+
+The fundamental issue isn't in codegen—it's that **each module gets its own type
+interning cache**. This defeats the purpose of type interning, which is to ensure
+identical types share the same object reference across the entire compilation.
+
+The current architecture treats modules too independently:
+
+- Each module gets a fresh `CheckerContext`
+- The `Bundler` flattens modules by renaming symbols (`m0_String`, `m1_Array`)
+- This is a workaround for not having proper module-qualified names
+
+**Correct architecture:**
+
+A `Program` should be _composed_ of libraries, not flattened. One `CheckerContext`
+should span the entire compilation:
+
+1. **One CheckerContext** for the whole compilation
+2. **Libraries are namespaces** within that context
+3. **Type interning is global** - `ArrayExt<i32>` is the same object everywhere
+4. **No bundler renaming** - types are looked up by identity, not by name
+
+See **Step 2.6: Unified CheckerContext** for the implementation plan.
 
 ##### Future: Migrate from `onType` to `onTypeAnnotation`
 
@@ -917,25 +990,163 @@ path. In practice, this is rarely hit since all common type kinds are handled.
 the bundled name infrastructure. Most type mappings now work via identity-based
 lookups and recursive WASM type construction.
 
-#### Step 2.5 (Original): Remove Bundler Renaming
+#### Step 2.6: Unified CheckerContext (NEW)
 
-1. Remove Bundler entirely (or just the renaming logic)
-2. Update tests to work with original symbol names
-3. Remove suffix-based lookups from codegen (now safe to delete)
+**Goal:** Make type interning global across the entire compilation, eliminating
+the root cause of identity-based lookup failures.
 
-**Affected files:**
+**Status:** PLANNED - This is the correct fix for the issues discovered in Step 2.5.6.
 
-- ✅ Created: `packages/compiler/src/lib/loader/module-loader.ts`
-- ✅ Created: `packages/compiler/src/lib/loader/index.ts`
-- Update: `packages/compiler/src/lib/bundler.ts` (extract to ModuleLoader)
-- Update: `packages/compiler/src/lib/checker/context.ts` (major refactor)
-- Update: `packages/compiler/src/lib/compiler.ts` (use ModuleLoader)
-- Update: `packages/compiler/src/lib/checker/types.ts` (remove `_checked`)
-- Update: Tests
+**Problem statement:**
 
-**Effort:** 4-5 hours total (Step 2.1 done, ~3 hours remaining)
+The current architecture creates a new `CheckerContext` for each module:
 
-**Note:** The current bundler's enum type renaming logic will be eliminated entirely. Enums will keep their source names, and the checker's `inferredType` on EnumDeclaration nodes will move to SemanticContext.
+```typescript
+// In Compiler.#checkModules() - line ~161
+const checker = new TypeChecker(module.ast, this, module);
+checker.check(); // Creates new CheckerContext internally
+
+// In TypeChecker.check() - line ~36
+const ctx = new CheckerContext(...); // Fresh context per module!
+```
+
+This means:
+
+- `ArrayExt<i32>` in the stdlib is interned as object X
+- `ArrayExt<i32>` in user code is interned as object Y
+- X !== Y, so identity-based lookups fail
+
+**Proposed solution:**
+
+Create ONE `CheckerContext` that spans all modules in the compilation:
+
+```typescript
+// In Compiler
+class Compiler {
+  #checkerContext: CheckerContext; // Shared across all modules
+
+  constructor() {
+    this.#checkerContext = new CheckerContext(...);
+  }
+
+  #checkModules() {
+    for (const module of this.#modules) {
+      // Pass shared context, switch to module's scope
+      this.#checkerContext.setCurrentLibrary(module);
+      const checker = new TypeChecker(module.ast, this.#checkerContext);
+      checker.check();
+    }
+  }
+}
+```
+
+**Key changes:**
+
+1. **`CheckerContext` becomes long-lived:**
+   - Created once per `Compiler` instance
+   - Stores global type interning cache (`#internedTypes`)
+   - Has per-library state that can be switched (current scope, imports, etc.)
+
+2. **Add `setCurrentLibrary(lib)` method:**
+   - Switches the context's "current library" for scoping
+   - Imports, exports, and local scopes are library-specific
+   - Type interning remains global
+
+3. **`TypeChecker` receives context, doesn't create it:**
+   - Constructor takes `CheckerContext` as parameter
+   - `check()` no longer creates a new context
+
+4. **Type interning key uses global type IDs:**
+   - Already uses `#typeIdCounter` for unique IDs
+   - Just needs to be shared across modules
+
+**Implementation steps:**
+
+1. [ ] Move `CheckerContext` creation from `TypeChecker.check()` to `Compiler` constructor
+2. [ ] Add `setCurrentLibrary(module: Module)` to `CheckerContext`
+3. [ ] Extract library-local state (scopes, imports) into a switchable sub-object
+4. [ ] Update `TypeChecker` to take `CheckerContext` as constructor parameter
+5. [ ] Update `Compiler.#checkModules()` to reuse the shared context
+6. [ ] Verify type interning works globally (same `ArrayExt<i32>` object everywhere)
+7. [ ] Remove name-based fallback from `generateMemberExpression`
+
+**Validation:**
+
+After this change:
+
+- `ArrayExt<i32>` should be the same JavaScript object everywhere
+- `ctx.getClassInfoByCheckerType(classType)` should always find the ClassInfo
+- Name-based lookups become unnecessary
+- All 1142 tests should pass
+
+**Benefits:**
+
+1. **Correctness:** Type identity works by object reference, as intended
+2. **Simplicity:** No more hybrid lookup strategies
+3. **Performance:** WeakMap lookups are O(1), no string manipulation
+4. **Foundation:** Enables removing bundler renaming entirely
+
+**Effort:** 2-3 hours
+
+**Files affected:**
+
+- `packages/compiler/src/lib/compiler.ts` - Create shared CheckerContext
+- `packages/compiler/src/lib/checker/context.ts` - Add `setCurrentLibrary()`, extract per-library state
+- `packages/compiler/src/lib/checker/index.ts` - Take CheckerContext as param
+- `packages/compiler/src/lib/codegen/expressions.ts` - Remove name-based fallback
+
+#### Step 2.7: Remove Bundler Entirely (NEW)
+
+**Goal:** Delete `bundler.ts` completely. All its responsibilities are handled elsewhere.
+
+**Status:** PLANNED - Depends on Step 2.6 (Unified CheckerContext).
+
+**What the Bundler currently does:**
+
+| Responsibility                        | Replacement                              |
+| ------------------------------------- | ---------------------------------------- |
+| Topological sort                      | `LibraryLoader.computeGraph()` ✅        |
+| Assign module prefixes (`m0_`, `m1_`) | Not needed - identity-based lookups      |
+| Collect global symbols                | Not needed - CheckerContext tracks types |
+| Rename identifiers                    | Not needed - identity-based lookups      |
+| Flatten ASTs into single Program      | Codegen iterates over libraries directly |
+| Resolve wellKnownTypes                | CheckerContext tracks these by identity  |
+
+**Key insight:** The Bundler exists to work around the lack of proper scoping.
+Once CheckerContext is unified and types are tracked by identity, there's no
+need to rename symbols or flatten ASTs. Codegen can work with the original
+libraries directly.
+
+**Implementation steps:**
+
+1. [ ] Update codegen to accept `Library[]` instead of single `Program`
+2. [ ] Move wellKnownTypes tracking to CheckerContext (by type identity)
+3. [ ] Update `Compiler.compile()` to skip bundling
+4. [ ] Delete `bundler.ts`
+5. [ ] Update tests that depend on bundled names
+
+**Validation:**
+
+- All 1142 tests pass without bundler
+- Codegen produces identical WASM output
+- Symbol names in error messages match source names
+
+**Benefits:**
+
+1. **Simplicity:** ~760 lines of complex renaming logic removed
+2. **Correctness:** No more name-based identity issues
+3. **Debuggability:** Error messages use original source names
+4. **Performance:** No AST rewriting pass
+
+**Effort:** 2-3 hours (after Step 2.6 is complete)
+
+**Files affected:**
+
+- Delete: `packages/compiler/src/lib/bundler.ts`
+- Update: `packages/compiler/src/lib/compiler.ts` - Skip bundling
+- Update: `packages/compiler/src/lib/codegen/index.ts` - Accept Library[]
+- Update: `packages/compiler/src/lib/checker/context.ts` - Track wellKnownTypes
+- Update: Tests that assert on bundled names
 
 ### Round 3: Type Identity Simplification
 
@@ -1201,8 +1412,8 @@ Each phase is somewhat independent:
 
 | File                                               | Changes                                         |
 | -------------------------------------------------- | ----------------------------------------------- |
-| `packages/compiler/src/lib/bundler.ts`             | Extract ModuleLoader, deprecate                 |
-| `packages/compiler/src/lib/compiler.ts`            | Use ModuleLoader instead of Bundler             |
+| `packages/compiler/src/lib/bundler.ts`             | **DELETE** - no longer needed                   |
+| `packages/compiler/src/lib/compiler.ts`            | Remove bundler usage, pass libraries to codegen |
 | `packages/compiler/src/lib/checker/context.ts`     | Refactor for single-pass + topological ordering |
 | `packages/compiler/src/lib/checker/types.ts`       | Simplify type comparison                        |
 | `packages/compiler/src/lib/checker/expressions.ts` | Populate SemanticContext                        |
@@ -1231,12 +1442,16 @@ Each phase is somewhat independent:
 
 ### After Round 2
 
-- [ ] Bundler is deprecated (or removed)
-- [ ] ModuleLoader exists and works
-- [ ] Type-checking is single-pass
+- [ ] **Bundler is deleted** - not deprecated, fully removed
+- [x] LibraryLoader exists and works ✅
+- [x] Type-checking is single-pass _(topological ordering already implemented)_
 - [ ] Types are registered in dependency order
 - [ ] All existing tests pass
 - [ ] No `_checked` flags on types
+- [ ] **Unified CheckerContext** - one context per compilation, not per module
+- [ ] **Type interning is global** - same type object everywhere
+- [ ] **No name-based lookup fallbacks** - identity-based only
+- [ ] **Codegen works on Library[]** - no flattened Program AST
 
 ### After Round 3
 
@@ -1270,8 +1485,19 @@ Each phase is somewhat independent:
 6. **Type parameter erasure:** Unbound generic type parameters should map to `anyref`, not `i32` or error - this is the correct approach for type erasure
 7. **Error handling:** Never silently fall back to `i32` for unknown types - this masks bugs. Always throw an error instead.
 8. **Preserve test coverage:** The generic function instantiation tests in `generic-function-value_test.ts` are valuable regression tests regardless of architecture
+9. **Root cause of name-based lookups:** Each module gets its own `CheckerContext`
+   with separate type interning caches. This is why `ArrayExt<i32>` from stdlib
+   is a different object than `ArrayExt<i32>` from user code. The fix is to use
+   ONE `CheckerContext` for the entire compilation (Step 2.6).
+10. **Libraries are namespaces:** A Program should be _composed_ of libraries,
+    not flattened by a bundler. The bundler's symbol renaming (`m0_String`) is a
+    workaround for not having proper scoping. With unified CheckerContext and
+    identity-based lookups, the bundler becomes unnecessary.
+11. **Delete the bundler:** The goal is to remove `bundler.ts` entirely (Step 2.7),
+    not just disable parts of it. Once types are tracked by identity, there's
+    nothing left for the bundler to do.
 
-## Type Interning (Implemented)
+## Type Interning (Implemented - Per-Module)
 
 ### Problem
 
@@ -1341,6 +1567,22 @@ via `getCheckerTypeKey()` and used those for registry lookups.
 - `packages/compiler/src/lib/checker/context.ts` - Added interning cache and helper methods
 - `packages/compiler/src/lib/checker/types.ts` - Updated `instantiateGenericClass/Interface/Mixin`
 - `packages/compiler/src/lib/types.ts` - Added `genericSource` to `MixinType`
+
+### Limitation: Per-Module Scope
+
+**IMPORTANT:** Type interning currently only works **within a single module**.
+Each module gets its own `CheckerContext`, so types interned in module A are
+different objects from types interned in module B:
+
+```
+Module A (stdlib): Box<i32> → interned as object X in A's CheckerContext
+Module B (user):   Box<i32> → interned as object Y in B's CheckerContext
+X !== Y (different objects!)
+```
+
+This is why identity-based lookups fail in codegen for cross-module types.
+The fix is to use a **unified CheckerContext** for the entire compilation
+(see Step 2.6).
 
 ### Codegen Migration ✅ COMPLETED
 
@@ -1483,14 +1725,20 @@ objects through the pipeline.
 
 ## Open Questions
 
-1. Should we support truly independent module checking (e.g., for LSP hover on
-   hover on an imported type), or is full-program checking acceptable?
-2. Do we need WAT emit for debugging? If so, the stable qualified names strategy
-   handles it well.
+1. ~~Should we support truly independent module checking (e.g., for LSP hover on
+   hover on an imported type), or is full-program checking acceptable?~~
+   **RESOLVED:** Full-program checking with unified CheckerContext. LSP can
+   still work by caching the checked state and only re-checking changed files.
+2. Do we need WAT emit for debugging? If so, we can add qualified name generation
+   at emit time without bundler renaming (e.g., `zena_string_String` for WAT readability).
 3. Should AST parsing also be lazy (only parse modules needed for the program),
    or always parse eagerly?
 4. How should we handle stdlib imports? A hardcoded builtin loader or virtual
    filesystem?
+5. ~~**After Step 2.6:** Once CheckerContext is unified, should we remove the
+   bundler entirely, or keep it for WAT emit / debugging output?~~
+   **RESOLVED:** Remove bundler entirely. WAT emit (if needed) can generate
+   qualified names at emit time without AST mutation.
 
 ## References
 
