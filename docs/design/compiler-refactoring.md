@@ -1163,6 +1163,54 @@ to identity-based ones. We started with superclass lookups because:
 2. `ctx.genericClasses.get(baseSuperName)` - Generic class template lookups (~5)
 3. `ctx.mixins.get(mixinName)` - Mixin lookups (~4)
 
+#### Step 2.6d: Convert Generic Class and Mixin Lookups to Identity-Based
+
+**Goal:** Convert remaining `ctx.genericClasses.get()` and `ctx.mixins.get()` calls to use
+identity-based lookups via `ctx.getGenericDeclByType()` and `ctx.getMixinDeclByType()`.
+
+**Status:** ✅ COMPLETED
+
+**Background:**
+
+Name-based lookups like `ctx.genericClasses.get(name)` are fragile when the bundler renames
+declarations. Identity-based lookups via checker types are robust because the interned type
+objects are shared regardless of naming.
+
+**Changes:**
+
+1. **Mixin identity infrastructure** (`context.ts`, `index.ts`):
+   - Added `#mixinDeclByType: WeakMap<MixinType, MixinDeclaration>`
+   - Added `setMixinDeclByType()` and `getMixinDeclByType()` methods
+   - Register mixins by type at declaration processing time
+
+2. **Generic superclass lookups in `preRegisterClassStruct`** (`classes.ts`):
+   - Try `ctx.getGenericDeclByType(classType.superType)` first
+   - Fall back to `ctx.genericClasses.get(baseSuperName)` for edge cases
+
+3. **Generic superclass lookups in `defineClassStruct`** (`classes.ts`):
+   - Same pattern: identity-based first, name-based fallback
+
+4. **Generic superclass lookups in `instantiateClass`** (`classes.ts`):
+   - Same pattern: identity-based first, name-based fallback
+
+5. **Generic class lookups in `generateMemberExpression`** (`expressions.ts`):
+   - Try `ctx.getGenericDeclByType(genericSource)` first
+   - Fall back to name-based for bundler edge cases
+
+**Not converted (acceptable):**
+
+- `ctx.genericClasses.get(TypeNames.FixedArray)` in `resolveFixedArrayClass` - FixedArray is a
+  well-known stdlib type, already has O(1) lookup via `wellKnownTypes.FixedArray`
+- `ctx.genericClasses.has/get(className)` in `generateNewExpression` fallback path - This path
+  only executes when we don't have a checker type available (edge case)
+- `ctx.mixins.get(mixinName)` in classes.ts - Mixin annotations in AST don't have checker types;
+  the MixinDeclaration is found by name, then identity infrastructure is available for future use
+
+**Validation:**
+
+- All 1142 tests pass
+- No changes to test code required
+
 #### Step 2.6c: Migrate mapType Callers to mapCheckerTypeToWasmType
 
 **Goal:** Where AST nodes have `inferredType`, use `mapCheckerTypeToWasmType` instead
@@ -1212,22 +1260,22 @@ path for correctness and to enable future bundler removal.
 
 **`instantiateClass` calls with checker type (identity-based):**
 
-| Location                    | Checker Type Passed     |
-| --------------------------- | ----------------------- |
-| `preRegisterClassStruct`    | `classType?.superType`  |
-| `defineClassStruct`         | `superClassType`        |
-| `instantiateClass` (nested) | `superClassType`        |
-| `mapCheckerTypeToWasmType`  | `classType`             |
+| Location                    | Checker Type Passed    |
+| --------------------------- | ---------------------- |
+| `preRegisterClassStruct`    | `classType?.superType` |
+| `defineClassStruct`         | `superClassType`       |
+| `instantiateClass` (nested) | `superClassType`       |
+| `mapCheckerTypeToWasmType`  | `classType`            |
 
 **`instantiateClass` calls without checker type (known limitations):**
 
-| Location               | Reason                                    |
-| ---------------------- | ----------------------------------------- |
-| `mapType` (internal)   | AST-based, no checker context available   |
-| `generateIsExpression` | Box for `is` expression - codegen-internal|
-| `unboxPrimitive`       | Box for unboxing - uses WASM types only   |
-| `boxPrimitive`         | Box for boxing - uses WASM types only     |
-| `resolveFixedArrayClass`| FixedArray wrapper - codegen-internal    |
+| Location                 | Reason                                     |
+| ------------------------ | ------------------------------------------ |
+| `mapType` (internal)     | AST-based, no checker context available    |
+| `generateIsExpression`   | Box for `is` expression - codegen-internal |
+| `unboxPrimitive`         | Box for unboxing - uses WASM types only    |
+| `boxPrimitive`           | Box for boxing - uses WASM types only      |
+| `resolveFixedArrayClass` | FixedArray wrapper - codegen-internal      |
 
 **Why these limitations are acceptable:**
 

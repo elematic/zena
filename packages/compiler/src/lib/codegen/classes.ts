@@ -1028,7 +1028,12 @@ export function preRegisterClassStruct(
         ctx,
       );
       if (!ctx.classes.has(specializedName)) {
-        const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
+        // Try identity-based lookup via checker's superType first
+        let genericSuperDecl = classType?.superType
+          ? ctx.getGenericDeclByType(classType.superType)
+          : undefined;
+        // Fall back to name-based lookup
+        genericSuperDecl ??= ctx.genericClasses.get(baseSuperName);
         if (genericSuperDecl) {
           // Pass the checker's superType to enable identity-based lookup
           instantiateClass(
@@ -1207,7 +1212,12 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
         // Ensure the superclass is instantiated
         if (!ctx.classes.has(superClassName)) {
-          const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
+          // Try identity-based lookup via checker's superType first
+          let genericSuperDecl = superClassType
+            ? ctx.getGenericDeclByType(superClassType)
+            : undefined;
+          // Fall back to name-based lookup
+          genericSuperDecl ??= ctx.genericClasses.get(baseSuperName);
           if (genericSuperDecl) {
             // Pass the checker's superType to enable identity-based lookup
             instantiateClass(
@@ -3254,7 +3264,12 @@ export function instantiateClass(
 
         // Ensure superclass is instantiated
         if (!ctx.classes.has(superClassName)) {
-          const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
+          // Try identity-based lookup via checker's superType first
+          let genericSuperDecl = superClassType
+            ? ctx.getGenericDeclByType(superClassType)
+            : undefined;
+          // Fall back to name-based lookup
+          genericSuperDecl ??= ctx.genericClasses.get(baseSuperName);
           if (genericSuperDecl) {
             const pendingCountBefore = ctx.pendingMethodGenerations.length;
             // Pass the checker's superType to enable identity-based lookup

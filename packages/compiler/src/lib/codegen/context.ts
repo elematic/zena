@@ -20,6 +20,7 @@ import {
   type ClassType,
   type FunctionType,
   type InterfaceType,
+  type MixinType,
   type Type,
 } from '../types.js';
 import {ValType} from '../wasm.js';
@@ -200,6 +201,9 @@ export class CodegenContext {
 
   // Identity-based interface lookup: InterfaceType -> InterfaceInfo
   readonly #interfaceInfoByType = new WeakMap<InterfaceType, InterfaceInfo>();
+
+  // Identity-based mixin lookup: MixinType -> MixinDeclaration
+  readonly #mixinDeclByType = new WeakMap<MixinType, MixinDeclaration>();
 
   // Template Literals
   public templateLiteralGlobals = new Map<TaggedTemplateExpression, number>();
@@ -523,6 +527,39 @@ export class CodegenContext {
     let source = classType.genericSource;
     while (source) {
       decl = this.#genericDeclsByType.get(source);
+      if (decl) return decl;
+      source = source.genericSource;
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Register a mixin declaration by its checker MixinType for identity-based lookup.
+   * This enables looking up the AST declaration from an interned MixinType.
+   */
+  public setMixinDeclByType(
+    mixinType: MixinType,
+    decl: MixinDeclaration,
+  ): void {
+    this.#mixinDeclByType.set(mixinType, decl);
+  }
+
+  /**
+   * Get the MixinDeclaration for a mixin by its checker MixinType.
+   * Follows genericSource chain to find the template.
+   */
+  public getMixinDeclByType(
+    mixinType: MixinType,
+  ): MixinDeclaration | undefined {
+    // Try direct lookup first
+    let decl = this.#mixinDeclByType.get(mixinType);
+    if (decl) return decl;
+
+    // Follow genericSource chain for generic mixins
+    let source = mixinType.genericSource;
+    while (source) {
+      decl = this.#mixinDeclByType.get(source);
       if (decl) return decl;
       source = source.genericSource;
     }

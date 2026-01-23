@@ -1592,7 +1592,10 @@ function generateMemberExpression(
       // than the bundled declaration (e.g., ArrayExt vs m12_ArrayExt)
       if (!foundClass) {
         const genericSource = classType.genericSource ?? classType;
-        const genericDecl = ctx.genericClasses.get(genericSource.name);
+        // Try identity-based lookup via genericSource first
+        let genericDecl = ctx.getGenericDeclByType(genericSource);
+        // Fall back to name-based lookup for bundler cases
+        genericDecl ??= ctx.genericClasses.get(genericSource.name);
         if (genericDecl) {
           const typeArgAnnotations = classType.typeArguments.map((ta: Type) =>
             typeToTypeAnnotation(ta, undefined, ctx),

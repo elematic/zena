@@ -11,6 +11,7 @@ import {
   type VariableDeclaration,
 } from '../ast.js';
 import {SemanticContext} from '../checker/semantic-context.js';
+import {TypeKind, type MixinType} from '../types.js';
 import {
   preRegisterClassStruct,
   defineClassStruct,
@@ -121,6 +122,13 @@ export class CodeGenerator {
       } else if (statement.type === NodeType.MixinDeclaration) {
         const mixinDecl = statement as MixinDeclaration;
         this.#ctx.mixins.set(mixinDecl.name.name, mixinDecl);
+        // Identity-based registration for O(1) lookup via checker types
+        if (mixinDecl.inferredType?.kind === TypeKind.Mixin) {
+          this.#ctx.setMixinDeclByType(
+            mixinDecl.inferredType as MixinType,
+            mixinDecl,
+          );
+        }
       } else if (statement.type === NodeType.TypeAliasDeclaration) {
         const aliasDecl = statement as TypeAliasDeclaration;
         this.#ctx.typeAliases.set(
