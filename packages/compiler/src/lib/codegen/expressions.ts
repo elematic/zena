@@ -5592,8 +5592,17 @@ function generateTaggedTemplateExpression(
   if (!tsaDecl) {
     throw new Error('TemplateStringsArray not available - stdlib not loaded');
   }
-  const tsaClassName = tsaDecl.name.name;
-  const tsaClassInfo = ctx.classes.get(tsaClassName);
+  // Prefer identity-based lookup using checker's type
+  let tsaClassInfo: ClassInfo | undefined;
+  if (tsaDecl.inferredType?.kind === TypeKind.Class) {
+    tsaClassInfo = ctx.getClassInfoByCheckerType(
+      tsaDecl.inferredType as ClassType,
+    );
+  }
+  // Fall back to name-based lookup
+  if (!tsaClassInfo) {
+    tsaClassInfo = ctx.classes.get(tsaDecl.name.name);
+  }
   if (!tsaClassInfo) {
     throw new Error('TemplateStringsArray class not found in codegen context');
   }

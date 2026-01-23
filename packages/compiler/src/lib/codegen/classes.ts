@@ -1122,7 +1122,18 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
     return;
   }
 
-  const classInfo = ctx.classes.get(decl.name.name)!;
+  // Prefer identity-based lookup using checker's type
+  let classInfo: ClassInfo | undefined;
+  if (decl.inferredType?.kind === TypeKind.Class) {
+    classInfo = ctx.getClassInfoByCheckerType(decl.inferredType as ClassType);
+  }
+  // Fall back to name-based lookup
+  if (!classInfo) {
+    classInfo = ctx.classes.get(decl.name.name);
+  }
+  if (!classInfo) {
+    throw new Error(`Class ${decl.name.name} not found in defineClassStruct`);
+  }
 
   // Guard against duplicate definition
   if (classInfo.structDefined) {
@@ -1503,8 +1514,20 @@ export function registerClassMethods(
     return;
   }
 
-  const classInfo = ctx.classes.get(decl.name.name);
-  if (!classInfo) throw new Error(`Class ${decl.name.name} not found`);
+  // Prefer identity-based lookup using checker's type
+  let classInfo: ClassInfo | undefined;
+  if (decl.inferredType?.kind === TypeKind.Class) {
+    classInfo = ctx.getClassInfoByCheckerType(decl.inferredType as ClassType);
+  }
+  // Fall back to name-based lookup
+  if (!classInfo) {
+    classInfo = ctx.classes.get(decl.name.name);
+  }
+  if (!classInfo) {
+    throw new Error(
+      `Class ${decl.name.name} not found in registerClassMethods`,
+    );
+  }
 
   // Set current class for `this` type resolution in method signatures
   const previousCurrentClass = ctx.currentClass;
@@ -1519,12 +1542,21 @@ export function registerClassMethods(
   const structTypeIndex = classInfo.structTypeIndex;
 
   let currentSuperClassInfo: ClassInfo | undefined;
-  if (classInfo.superClass) {
-    currentSuperClassInfo = ctx.classes.get(classInfo.superClass);
-  } else if (decl.superClass) {
-    currentSuperClassInfo = ctx.classes.get(
-      getTypeAnnotationName(decl.superClass),
+  // Prefer identity-based lookup using checker's superType
+  if (classInfo.superClassType) {
+    currentSuperClassInfo = ctx.getClassInfoByCheckerType(
+      classInfo.superClassType,
     );
+  }
+  // Fall back to name-based lookup
+  if (!currentSuperClassInfo) {
+    if (classInfo.superClass) {
+      currentSuperClassInfo = ctx.classes.get(classInfo.superClass);
+    } else if (decl.superClass) {
+      currentSuperClassInfo = ctx.classes.get(
+        getTypeAnnotationName(decl.superClass),
+      );
+    }
   }
 
   // Inherit methods and vtable from superclass
@@ -2009,13 +2041,30 @@ export function generateClassMethods(
   decl: ClassDeclaration,
   specializedName?: string,
   typeContext?: Map<string, TypeAnnotation>,
+  checkerType?: ClassType,
 ) {
   if (typeContext) {
     ctx.currentTypeContext = typeContext;
   }
 
-  const className = specializedName || decl.name.name;
-  const classInfo = ctx.classes.get(className)!;
+  // Prefer identity-based lookup using checker's type
+  let classInfo: ClassInfo | undefined;
+  if (checkerType) {
+    classInfo = ctx.getClassInfoByCheckerType(checkerType);
+  }
+  if (!classInfo && decl.inferredType?.kind === TypeKind.Class) {
+    classInfo = ctx.getClassInfoByCheckerType(decl.inferredType as ClassType);
+  }
+  // Fall back to name-based lookup
+  if (!classInfo) {
+    const className = specializedName || decl.name.name;
+    classInfo = ctx.classes.get(className);
+  }
+  if (!classInfo) {
+    throw new Error(
+      `Class ${specializedName || decl.name.name} not found in generateClassMethods`,
+    );
+  }
   ctx.currentClass = classInfo;
 
   const members = [...decl.body];
@@ -2299,7 +2348,7 @@ export function generateClassMethods(
 
       if (!getMemberName(member.name).startsWith('#')) {
         const propName = getMemberName(member.name);
-        const fieldName = manglePrivateName(className, propName);
+        const fieldName = manglePrivateName(classInfo.name, propName);
         const fieldInfo = classInfo.fields.get(fieldName);
         if (!fieldInfo) {
           throw new Error(
@@ -3183,8 +3232,17 @@ export function instantiateClass(
     onType = mapType(ctx, decl.onType, context);
   } else {
     // Check for superclass and inherit fields
-    if (superClassName && ctx.classes.has(superClassName)) {
-      const superClassInfo = ctx.classes.get(superClassName)!;
+    // Try identity-based lookup first
+    let superClassInfo: ClassInfo | undefined;
+    if (superClassType) {
+      superClassInfo = ctx.getClassInfoByCheckerType(superClassType);
+    }
+    // Fall back to name-based lookup
+    if (!superClassInfo && superClassName && ctx.classes.has(superClassName)) {
+      superClassInfo = ctx.classes.get(superClassName);
+    }
+
+    if (superClassInfo) {
       superTypeIndex = superClassInfo.structTypeIndex;
 
       // Inherit fields from superclass
@@ -3231,17 +3289,32 @@ export function instantiateClass(
   const vtable: string[] = [];
 
   // Inherit methods from superclass
-  if (superClassName && ctx.classes.has(superClassName)) {
-    const superClassInfo = ctx.classes.get(superClassName)!;
+  // Try identity-based lookup first
+  let inheritFromSuperClass: ClassInfo | undefined;
+  if (superClassType) {
+    inheritFromSuperClass = ctx.getClassInfoByCheckerType(superClassType);
+  }
+  // Fall back to name-based lookup
+  if (
+    !inheritFromSuperClass &&
+    superClassName &&
+    ctx.classes.has(superClassName)
+  ) {
+    inheritFromSuperClass = ctx.classes.get(superClassName);
+  }
 
+  if (inheritFromSuperClass) {
     // Copy inherited methods
-    for (const [methodName, methodInfo] of superClassInfo.methods.entries()) {
+    for (const [
+      methodName,
+      methodInfo,
+    ] of inheritFromSuperClass.methods.entries()) {
       methods.set(methodName, {...methodInfo});
     }
 
     // Copy inherited vtable entries
-    if (superClassInfo.vtable) {
-      vtable.push(...superClassInfo.vtable);
+    if (inheritFromSuperClass.vtable) {
+      vtable.push(...inheritFromSuperClass.vtable);
     }
   }
 
@@ -3288,6 +3361,17 @@ export function instantiateClass(
     // Set current class for `this` type resolution in method signatures
     const previousCurrentClass = ctx.currentClass;
     ctx.currentClass = classInfo;
+
+    // Cache superclass info for method inheritance lookups
+    // Try identity-based lookup first
+    let baseClassInfo: ClassInfo | undefined;
+    if (superClassType) {
+      baseClassInfo = ctx.getClassInfoByCheckerType(superClassType);
+    }
+    // Fall back to name-based lookup
+    if (!baseClassInfo && superClassName) {
+      baseClassInfo = ctx.classes.get(superClassName);
+    }
 
     // Register methods
     const members = [...decl.body];
@@ -3418,11 +3502,8 @@ export function instantiateClass(
             ];
           }
 
-          if (superClassName) {
-            const superClassInfo = ctx.classes.get(superClassName)!;
-            if (superClassInfo.methods.has(methodName)) {
-              thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
-            }
+          if (baseClassInfo?.methods.has(methodName)) {
+            thisType = baseClassInfo.methods.get(methodName)!.paramTypes[0];
           }
 
           const params = [thisType];
@@ -3430,12 +3511,9 @@ export function instantiateClass(
 
           let typeIndex: number;
           let isOverride = false;
-          if (superClassName) {
-            const superClassInfo = ctx.classes.get(superClassName)!;
-            if (superClassInfo.methods.has(methodName)) {
-              typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
-              isOverride = true;
-            }
+          if (baseClassInfo?.methods.has(methodName)) {
+            typeIndex = baseClassInfo.methods.get(methodName)!.typeIndex;
+            isOverride = true;
           }
 
           if (!isOverride) {
@@ -3470,11 +3548,8 @@ export function instantiateClass(
             ];
           }
 
-          if (superClassName) {
-            const superClassInfo = ctx.classes.get(superClassName)!;
-            if (superClassInfo.methods.has(methodName)) {
-              thisType = superClassInfo.methods.get(methodName)!.paramTypes[0];
-            }
+          if (baseClassInfo?.methods.has(methodName)) {
+            thisType = baseClassInfo.methods.get(methodName)!.paramTypes[0];
           }
 
           const params = [thisType, propType];
@@ -3482,12 +3557,9 @@ export function instantiateClass(
 
           let typeIndex: number;
           let isOverride = false;
-          if (superClassName) {
-            const superClassInfo = ctx.classes.get(superClassName)!;
-            if (superClassInfo.methods.has(methodName)) {
-              typeIndex = superClassInfo.methods.get(methodName)!.typeIndex;
-              isOverride = true;
-            }
+          if (baseClassInfo?.methods.has(methodName)) {
+            typeIndex = baseClassInfo.methods.get(methodName)!.typeIndex;
+            isOverride = true;
           }
 
           if (!isOverride) {
@@ -3539,12 +3611,8 @@ export function instantiateClass(
             ];
           }
 
-          if (superClassName) {
-            const superClassInfo = ctx.classes.get(superClassName)!;
-            if (superClassInfo.methods.has(regGetterName)) {
-              thisType =
-                superClassInfo.methods.get(regGetterName)!.paramTypes[0];
-            }
+          if (baseClassInfo?.methods.has(regGetterName)) {
+            thisType = baseClassInfo.methods.get(regGetterName)!.paramTypes[0];
           }
 
           const params = [thisType];
@@ -3552,12 +3620,9 @@ export function instantiateClass(
 
           let typeIndex: number;
           let isOverride = false;
-          if (superClassName) {
-            const superClassInfo = ctx.classes.get(superClassName)!;
-            if (superClassInfo.methods.has(regGetterName)) {
-              typeIndex = superClassInfo.methods.get(regGetterName)!.typeIndex;
-              isOverride = true;
-            }
+          if (baseClassInfo?.methods.has(regGetterName)) {
+            typeIndex = baseClassInfo.methods.get(regGetterName)!.typeIndex;
+            isOverride = true;
           }
 
           if (!isOverride) {
@@ -3587,13 +3652,10 @@ export function instantiateClass(
 
             let setterTypeIndex: number;
             let isSetterOverride = false;
-            if (superClassName) {
-              const superClassInfo = ctx.classes.get(superClassName)!;
-              if (superClassInfo.methods.has(regSetterName)) {
-                setterTypeIndex =
-                  superClassInfo.methods.get(regSetterName)!.typeIndex;
-                isSetterOverride = true;
-              }
+            if (baseClassInfo?.methods.has(regSetterName)) {
+              setterTypeIndex =
+                baseClassInfo.methods.get(regSetterName)!.typeIndex;
+              isSetterOverride = true;
             }
 
             if (!isSetterOverride) {
@@ -3628,7 +3690,13 @@ export function instantiateClass(
       generateInterfaceVTable(ctx, classInfo, decl);
 
       ctx.bodyGenerators.push(() => {
-        generateClassMethods(ctx, declForGen, specializedName, context);
+        generateClassMethods(
+          ctx,
+          declForGen,
+          specializedName,
+          context,
+          checkerType,
+        );
       });
 
       // Restore context before early return
@@ -3637,9 +3705,7 @@ export function instantiateClass(
     }
 
     let vtableSuperTypeIndex: number | undefined;
-    const baseClassInfo = superClassName
-      ? ctx.classes.get(superClassName)
-      : undefined;
+    // Use existing baseClassInfo from earlier in registerMethods
     if (baseClassInfo) {
       vtableSuperTypeIndex = baseClassInfo.vtableTypeIndex;
     }
@@ -3743,7 +3809,13 @@ export function instantiateClass(
     } as ClassDeclaration;
 
     ctx.bodyGenerators.push(() => {
-      generateClassMethods(ctx, declForGen, specializedName, context);
+      generateClassMethods(
+        ctx,
+        declForGen,
+        specializedName,
+        context,
+        checkerType,
+      );
     });
 
     // Restore context
