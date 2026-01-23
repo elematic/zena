@@ -1236,6 +1236,12 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
         checkerIntermediateType,
       );
     }
+
+    // After processing mixins, update superClassType to point to the final
+    // mixin intermediate (which is classType.superType from the checker)
+    if (classType?.superType) {
+      superClassType = classType.superType;
+    }
   }
 
   if (currentSuperClassInfo) {
@@ -1558,10 +1564,8 @@ export function registerClassMethods(
       classInfo.superClassType,
     );
   }
-  // Fall back to name-based lookup (needed when superClassType is not set)
-  if (!currentSuperClassInfo && classInfo.superClass) {
-    currentSuperClassInfo = ctx.classes.get(classInfo.superClass);
-  }
+  // Note: No name-based fallback - superClassType should always be set when
+  // a superclass exists (including mixin intermediates)
 
   // Inherit methods and vtable from superclass
   if (currentSuperClassInfo) {
@@ -2065,7 +2069,7 @@ export function generateClassMethods(
   if (!classInfo && decl.inferredType?.kind === TypeKind.Class) {
     classInfo = ctx.getClassInfoByCheckerType(decl.inferredType as ClassType);
   }
-  // Fall back to name-based lookup for synthesized classes (e.g., mixin intermediates)
+  // Fall back to name-based lookup for generic instantiations created by codegen
   if (!classInfo) {
     const className = specializedName || decl.name.name;
     classInfo = ctx.classes.get(className);
