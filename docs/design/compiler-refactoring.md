@@ -1150,6 +1150,13 @@ to identity-based ones. We started with superclass lookups because:
 2. Foundation for removing more name-based lookups
 3. Improved performance (O(1) WeakMap lookup vs string Map lookup)
 
+**Additional changes (2026-01-22):**
+
+6. **Updated `preRegisterClassStruct` mixin superclass lookup** (`classes.ts`)
+   - In the mixin pre-registration section, try identity-based lookup via
+     `classType.superType` before computing superclass name from AST
+   - Falls back to name-based lookup for compatibility
+
 **Next candidates for identity-based conversion:**
 
 1. `ctx.classes.get(superClassName)` - Other superclass lookups (~6 remaining)
