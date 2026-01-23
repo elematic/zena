@@ -15,7 +15,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -31,7 +31,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -49,7 +49,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -69,7 +69,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -87,7 +87,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 2);
@@ -106,7 +106,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 2);
@@ -131,7 +131,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -152,7 +152,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -171,7 +171,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -191,7 +191,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -211,7 +211,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -234,7 +234,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -255,7 +255,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -276,7 +276,7 @@ suite('TypeChecker - Interfaces', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);

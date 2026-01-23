@@ -1,6 +1,5 @@
 import {Compiler, type CompilerHost, type Module} from '../../lib/compiler.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
-import {TypeChecker} from '../../lib/checker/index.js';
 import {type Diagnostic} from '../../lib/diagnostics.js';
 import {readFileSync, existsSync} from 'node:fs';
 import {join, dirname, basename, resolve} from 'node:path';
@@ -67,14 +66,10 @@ export const checkSource = (
 ): Diagnostic[] => {
   const host = createHost(input, path);
   const compiler = new Compiler(host);
-  const program = compiler.bundle(path);
-  const checker = new TypeChecker(program, compiler, {
-    path,
-    exports: new Map(),
-    isStdlib: true,
-  } as any);
-  checker.preludeModules = compiler.preludeModules;
-  return checker.check();
+  // compile() runs type checking on all modules
+  const modules = compiler.compile(path);
+  // Collect diagnostics from all modules
+  return modules.flatMap((m) => m.diagnostics);
 };
 
 /**
@@ -456,21 +451,15 @@ export let getNestedTestError = (index: i32): string | null => nested().tests[in
   const compilerOptions = options.isStdlib ? {stdlibPaths: [absolutePath]} : {};
   const compiler = new Compiler(host, compilerOptions);
 
-  const program = compiler.bundle(wrapperPath);
-
-  // Re-run checker on the bundled program to ensure types have correct bundled names
-  // This is also where isStdlib intrinsics get properly resolved
-  const checker = new TypeChecker(program, compiler, {
-    path: wrapperPath,
-    exports: new Map(),
-    isStdlib: true,
-  } as any);
-  checker.preludeModules = compiler.preludeModules;
-  const diagnostics = checker.check();
+  // compile() runs type checking on all modules
+  const modules = compiler.compile(wrapperPath);
+  const diagnostics = modules.flatMap((m) => m.diagnostics);
   if (diagnostics.length > 0) {
     const errors = diagnostics.map((d) => d.message).join(', ');
     throw new Error(`Compilation errors: ${errors}`);
   }
+
+  const program = compiler.bundle(wrapperPath);
 
   const codegen = new CodeGenerator(program);
   const bytes = codegen.generate();

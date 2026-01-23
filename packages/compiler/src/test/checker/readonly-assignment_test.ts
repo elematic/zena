@@ -17,7 +17,7 @@ suite('TypeChecker - Readonly Assignment', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -39,7 +39,7 @@ suite('TypeChecker - Readonly Assignment', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);

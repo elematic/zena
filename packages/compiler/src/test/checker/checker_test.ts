@@ -8,7 +8,7 @@ suite('TypeChecker', () => {
     const input = 'let x = 1;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -18,7 +18,7 @@ suite('TypeChecker', () => {
     const input = 'let x = y;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -29,7 +29,7 @@ suite('TypeChecker', () => {
     const input = 'let x = 1 + 2;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -44,7 +44,7 @@ suite('TypeChecker', () => {
     const input = "let x = 1 + 'hello';";
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -55,7 +55,7 @@ suite('TypeChecker', () => {
     const input = 'let add = (a: i32, b: i32) => a + b;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -65,7 +65,7 @@ suite('TypeChecker', () => {
     const input = 'let x = 1; let x = 2;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -76,7 +76,7 @@ suite('TypeChecker', () => {
     const input = 'let add = (a: i32, b: f32) => a + b;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -86,7 +86,7 @@ suite('TypeChecker', () => {
     const input = 'let add = (a: i32, b: i32): i32 => { return a + b; };';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -96,7 +96,7 @@ suite('TypeChecker', () => {
     const input = "let add = (a: i32, b: i32): i32 => { return 'hello'; };";
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -107,7 +107,7 @@ suite('TypeChecker', () => {
     const input = 'while (1) { }';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -121,7 +121,7 @@ suite('TypeChecker', () => {
     const input = 'if (1) { }';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -138,7 +138,7 @@ suite('TypeChecker', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -151,7 +151,7 @@ suite('TypeChecker', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -165,7 +165,7 @@ suite('TypeChecker', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -179,7 +179,7 @@ suite('TypeChecker', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);

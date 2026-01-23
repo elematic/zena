@@ -10,7 +10,7 @@ async function compileAndRun(
 ): Promise<number> {
   const parser = new Parser(input);
   const ast = parser.parse();
-  const checker = new TypeChecker(ast);
+  const checker = TypeChecker.forProgram(ast);
   checker.check();
   const codegen = new CodeGenerator(ast);
   const bytes = codegen.generate();

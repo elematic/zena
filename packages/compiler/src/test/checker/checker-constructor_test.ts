@@ -16,7 +16,7 @@ suite('Checker - Constructor Rules', () => {
     `;
     const parser = new Parser(source);
     const program = parser.parse();
-    const checker = new TypeChecker(program);
+    const checker = TypeChecker.forProgram(program);
     const diagnostics = checker.check();
 
     assert.ok(diagnostics.length > 0);
@@ -31,7 +31,7 @@ suite('Checker - Constructor Rules', () => {
     `;
     const parser = new Parser(source);
     const program = parser.parse();
-    const checker = new TypeChecker(program);
+    const checker = TypeChecker.forProgram(program);
     const diagnostics = checker.check();
 
     assert.equal(diagnostics.length, 0);
@@ -48,7 +48,7 @@ suite('Checker - Constructor Rules', () => {
     `;
     const parser = new Parser(source);
     const program = parser.parse();
-    const checker = new TypeChecker(program);
+    const checker = TypeChecker.forProgram(program);
     const diagnostics = checker.check();
 
     assert.equal(diagnostics.length, 0);
@@ -67,7 +67,7 @@ suite('Checker - Constructor Rules', () => {
     `;
     const parser = new Parser(source);
     const program = parser.parse();
-    const checker = new TypeChecker(program);
+    const checker = TypeChecker.forProgram(program);
     const diagnostics = checker.check();
 
     assert.ok(diagnostics.length > 0);
@@ -91,7 +91,7 @@ suite('Checker - Constructor Rules', () => {
     `;
     const parser = new Parser(source);
     const program = parser.parse();
-    const checker = new TypeChecker(program);
+    const checker = TypeChecker.forProgram(program);
     const diagnostics = checker.check();
 
     assert.equal(diagnostics.length, 0);
@@ -109,7 +109,7 @@ suite('Checker - Constructor Rules', () => {
     `;
     const parser = new Parser(source);
     const program = parser.parse();
-    const checker = new TypeChecker(program);
+    const checker = TypeChecker.forProgram(program);
     const diagnostics = checker.check();
 
     assert.equal(diagnostics.length, 0);

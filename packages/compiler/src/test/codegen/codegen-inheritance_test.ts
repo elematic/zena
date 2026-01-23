@@ -7,7 +7,7 @@ import {TypeChecker} from '../../lib/checker/index.js';
 async function compileAndRun(source: string): Promise<any> {
   const parser = new Parser(source);
   const ast = parser.parse();
-  const checker = new TypeChecker(ast);
+  const checker = TypeChecker.forProgram(ast);
   const errors = checker.check();
   if (errors.length > 0) {
     throw new Error(errors.join('\n'));

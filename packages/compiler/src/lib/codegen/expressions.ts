@@ -48,6 +48,7 @@ import {
   type InterfaceType,
   type NumberType,
   type RecordType,
+  type Type,
   type UnionType,
 } from '../types.js';
 import {
@@ -1578,53 +1579,30 @@ function generateMemberExpression(
     foundClass = ctx.getClassInfoByCheckerType(classType);
 
     // If identity lookup fails, try triggering instantiation
-    if (!foundClass && classType.genericSource) {
+    if (
+      !foundClass &&
+      classType.typeArguments &&
+      classType.typeArguments.length > 0
+    ) {
       mapCheckerTypeToWasmType(ctx, classType);
       foundClass = ctx.getClassInfoByCheckerType(classType);
-    }
 
-    // Fall back to name-based lookup
-    if (!foundClass) {
-      // First try direct name lookup (works for non-generic classes)
-      if (ctx.classes.has(classType.name)) {
-        foundClass = ctx.classes.get(classType.name);
-      }
-
-      // If the class has typeArguments, try to find the specialized version
-      if (
-        !foundClass &&
-        classType.typeArguments &&
-        classType.typeArguments.length > 0
-      ) {
-        // Use identity-based lookup to get the bundled name
-        let baseName = ctx.getClassBundledName(classType);
-        if (!baseName) {
-          // Fall back to genericSource chain
-          baseName = classType.name;
-          let source = classType.genericSource;
-          while (source) {
-            const sourceName = ctx.getClassBundledName(source);
-            if (sourceName) {
-              baseName = sourceName;
-              break;
-            }
-            baseName = source.name;
-            source = source.genericSource;
-          }
-        }
-
-        // Build specialized name using TypeAnnotations for proper resolution
-        const typeAnnotations = classType.typeArguments.map((arg) =>
-          typeToTypeAnnotation(arg, undefined, ctx),
-        );
-        const specializedName = getSpecializedName(
-          baseName,
-          typeAnnotations,
-          ctx,
-          ctx.currentTypeContext,
-        );
-
-        if (ctx.classes.has(specializedName)) {
+      // If identity lookup still fails, look up by specialized name
+      // This handles the bundler case where the checker type has a different name
+      // than the bundled declaration (e.g., ArrayExt vs m12_ArrayExt)
+      if (!foundClass) {
+        const genericSource = classType.genericSource ?? classType;
+        const genericDecl = ctx.genericClasses.get(genericSource.name);
+        if (genericDecl) {
+          const typeArgAnnotations = classType.typeArguments.map((ta: Type) =>
+            typeToTypeAnnotation(ta, undefined, ctx),
+          );
+          const specializedName = getSpecializedName(
+            genericDecl.name.name,
+            typeArgAnnotations,
+            ctx,
+            ctx.currentTypeContext,
+          );
           foundClass = ctx.classes.get(specializedName);
         }
       }

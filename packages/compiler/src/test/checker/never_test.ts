@@ -12,11 +12,10 @@ suite('Checker: Never Type', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast, undefined, {
+    const checker = TypeChecker.forProgram(ast, {
       path: 'zena:test',
-      exports: new Map(),
       isStdlib: true,
-    } as any);
+    });
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -36,11 +35,10 @@ suite('Checker: Never Type', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast, undefined, {
+    const checker = TypeChecker.forProgram(ast, {
       path: 'zena:test',
-      exports: new Map(),
       isStdlib: true,
-    } as any);
+    });
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -54,11 +52,10 @@ suite('Checker: Never Type', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast, undefined, {
+    const checker = TypeChecker.forProgram(ast, {
       path: 'zena:test',
-      exports: new Map(),
       isStdlib: true,
-    } as any);
+    });
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -72,11 +69,10 @@ suite('Checker: Never Type', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast, undefined, {
+    const checker = TypeChecker.forProgram(ast, {
       path: 'zena:test',
-      exports: new Map(),
       isStdlib: true,
-    } as any);
+    });
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);

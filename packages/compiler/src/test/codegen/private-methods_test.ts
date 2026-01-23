@@ -94,7 +94,7 @@ suite('Codegen: Private Methods', () => {
 
     const parser = new Parser(source);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     checker.check();
     const codegen = new CodeGenerator(ast);
     const bytes = codegen.generate();
@@ -121,7 +121,7 @@ suite('Codegen: Private Methods', () => {
 
     const parser2 = new Parser(sourceWithPublic);
     const ast2 = parser2.parse();
-    const checker2 = new TypeChecker(ast2);
+    const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
     const codegen2 = new CodeGenerator(ast2);
     const bytesPublic = codegen2.generate();

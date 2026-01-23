@@ -1,7 +1,7 @@
 import {NodeType, type Program, type ImportDeclaration} from './ast.js';
 import {Parser} from './parser.js';
 import {prelude} from './prelude.js';
-import type {SymbolInfo} from './checker/context.js';
+import {CheckerContext, type SymbolInfo} from './checker/context.js';
 import {TypeChecker} from './checker/index.js';
 import type {Diagnostic} from './diagnostics.js';
 import {Bundler} from './bundler.js';
@@ -39,9 +39,17 @@ export class Compiler {
   #preludeModules: Module[] = [];
   #preludeLoaded = false;
 
+  /**
+   * Shared checker context for the entire compilation.
+   * This ensures type interning is global across all modules,
+   * enabling identity-based type comparisons.
+   */
+  #checkerContext: CheckerContext;
+
   constructor(host: CompilerHost, options: CompilerOptions = {}) {
     this.#host = host;
     this.#loader = new LibraryLoader(host, {stdlibPaths: options.stdlibPaths});
+    this.#checkerContext = new CheckerContext(this);
   }
 
   public getModule(path: string): Module | undefined {
@@ -158,7 +166,8 @@ export class Compiler {
         checkModule(this.#preludeModules[i]);
       }
 
-      const checker = new TypeChecker(module.ast, this, module);
+      // Use shared checker context - TypeChecker will call setCurrentLibrary
+      const checker = new TypeChecker(this.#checkerContext, module);
       checker.preludeModules = this.#preludeModules;
       module.diagnostics = checker.check();
 

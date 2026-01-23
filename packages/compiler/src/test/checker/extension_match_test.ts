@@ -5,7 +5,7 @@ import {TypeChecker} from '../../lib/checker/index.js';
 function check(input: string) {
   const parser = new Parser(input);
   const program = parser.parse();
-  const checker = new TypeChecker(program);
+  const checker = TypeChecker.forProgram(program);
   const diagnostics = checker.check();
   return {
     errors: diagnostics.filter((d) => d.severity === 1),

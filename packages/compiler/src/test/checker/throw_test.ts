@@ -13,7 +13,7 @@ suite('Checker: Throw Expression', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -28,7 +28,7 @@ suite('Checker: Throw Expression', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -47,7 +47,7 @@ suite('Checker: Throw Expression', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -75,7 +75,7 @@ suite('Checker: Throw Expression', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -94,7 +94,7 @@ suite('Checker: Throw Expression', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -114,7 +114,7 @@ suite('Checker: Throw Expression', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);

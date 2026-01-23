@@ -2,24 +2,16 @@ import assert from 'node:assert';
 import {suite, test} from 'node:test';
 import {Parser} from '../../lib/parser.js';
 import {TypeChecker} from '../../lib/checker/index.js';
-import type {Module} from '../../lib/compiler.js';
 import {DiagnosticCode} from '../../lib/diagnostics.js';
 
 function check(input: string, path = 'zena:test') {
   const parser = new Parser(input);
   const program = parser.parse();
 
-  const module: Module = {
+  const checker = TypeChecker.forProgram(program, {
     path,
     isStdlib: path.startsWith('zena:'),
-    source: input,
-    ast: program,
-    imports: new Map(),
-    exports: new Map(),
-    diagnostics: [],
-  };
-
-  const checker = new TypeChecker(program, undefined, module);
+  });
   const diagnostics = checker.check();
   return {
     errors: diagnostics.filter((d) => d.severity === 1),

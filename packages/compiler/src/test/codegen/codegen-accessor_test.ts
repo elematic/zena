@@ -31,7 +31,7 @@ suite('CodeGenerator - Accessors', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
 
@@ -65,7 +65,7 @@ suite('CodeGenerator - Accessors', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
 

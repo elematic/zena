@@ -2,7 +2,6 @@ import {suite, test} from 'node:test';
 import assert from 'node:assert';
 import {Compiler} from '../../lib/compiler.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
-import {TypeChecker} from '../../lib/checker/index.js';
 import {NodeType, type Program} from '../../lib/ast.js';
 import {compileAndRun, createHost} from './utils.js';
 
@@ -126,17 +125,12 @@ suite('Codegen: Generic Specialization Collision', () => {
       `Expected all Y names to be unique: ${JSON.stringify(yNames)}`,
     );
 
-    // Re-run checker
-    const checker = new TypeChecker(program, compiler, {
-      path: '/main.zena',
-      exports: new Map(),
-      isStdlib: true,
-    } as any);
-    checker.preludeModules = compiler.preludeModules;
-    const diagnostics = checker.check();
+    // Type checking was already done by compiler.compile() - just verify no errors
+    const modules = compiler.compile('/main.zena');
+    const diagnostics = modules.flatMap((m) => m.diagnostics);
     if (diagnostics.length > 0) {
       throw new Error(
-        `Bundled program check failed: ${diagnostics.map((d) => d.message).join(', ')}`,
+        `Compilation check failed: ${diagnostics.map((d) => d.message).join(', ')}`,
       );
     }
 

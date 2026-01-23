@@ -18,7 +18,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -36,7 +36,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -53,7 +53,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /Type mismatch/);
@@ -73,7 +73,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -91,7 +91,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /Type mismatch/);
@@ -103,7 +103,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -123,7 +123,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -143,7 +143,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -162,7 +162,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(
@@ -189,7 +189,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -203,7 +203,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -217,7 +217,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(
@@ -236,7 +236,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     const missingArgError = errors.find((e) =>
       /Generic type 'Box' requires 1 type arguments/.test(e.message),
@@ -255,7 +255,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     // We expect an error about missing type arguments.
     // We might also get an error about incorrect implementation if the type resolution failed/defaulted.
@@ -286,7 +286,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -308,7 +308,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -328,7 +328,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -349,7 +349,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(
@@ -375,7 +375,7 @@ suite('TypeChecker - Generics', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(

@@ -13,7 +13,6 @@ export * from './loader/index.js';
 
 import {Compiler, type CompilerHost} from './compiler.js';
 import {CodeGenerator} from './codegen/index.js';
-import {TypeChecker} from './checker/index.js';
 import {
   arrayModule,
   sequenceModule,
@@ -70,18 +69,11 @@ export function compile(source: string): Uint8Array {
   );
 
   const compiler = new Compiler(host);
-  const program = compiler.bundle('main.zena');
+  // compile() runs type checking on all modules
+  const modules = compiler.compile('main.zena');
 
-  const checker = new TypeChecker(program, compiler, {
-    path: 'main.zena',
-    isStdlib: true,
-    exports: new Map(),
-    source: '',
-    ast: program,
-    imports: new Map(),
-    diagnostics: [],
-  });
-  const errors = checker.check();
+  // Check for errors from any module
+  const errors = modules.flatMap((m) => m.diagnostics);
   if (errors.length > 0) {
     const errorMessage = errors
       .map(
@@ -91,6 +83,8 @@ export function compile(source: string): Uint8Array {
       .join('\n');
     throw new Error(errorMessage);
   }
+
+  const program = compiler.bundle('main.zena');
 
   const codegen = new CodeGenerator(program);
   return codegen.generate();

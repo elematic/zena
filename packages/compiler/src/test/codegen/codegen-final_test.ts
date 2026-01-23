@@ -113,7 +113,7 @@ suite('CodeGenerator - Final Modifier', () => {
       };
     `);
     const ast1 = parser1.parse();
-    const checker1 = new TypeChecker(ast1);
+    const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
     const codegen1 = new CodeGenerator(ast1);
     const bytesFinal = codegen1.generate();
@@ -130,7 +130,7 @@ suite('CodeGenerator - Final Modifier', () => {
       };
     `);
     const ast2 = parser2.parse();
-    const checker2 = new TypeChecker(ast2);
+    const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
     const codegen2 = new CodeGenerator(ast2);
     const bytesNonFinal = codegen2.generate();
@@ -169,7 +169,7 @@ suite('CodeGenerator - Final Modifier', () => {
       };
     `);
     const ast1 = parser1.parse();
-    const checker1 = new TypeChecker(ast1);
+    const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
     const codegen1 = new CodeGenerator(ast1);
     const bytesFinalClass = codegen1.generate();
@@ -186,7 +186,7 @@ suite('CodeGenerator - Final Modifier', () => {
       };
     `);
     const ast2 = parser2.parse();
-    const checker2 = new TypeChecker(ast2);
+    const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
     const codegen2 = new CodeGenerator(ast2);
     const bytesNonFinalClass = codegen2.generate();
@@ -227,7 +227,7 @@ suite('CodeGenerator - Final Modifier', () => {
       };
     `);
     const ast1 = parser1.parse();
-    const checker1 = new TypeChecker(ast1);
+    const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
     const codegen1 = new CodeGenerator(ast1);
     const bytesFinal = codegen1.generate();
@@ -247,7 +247,7 @@ suite('CodeGenerator - Final Modifier', () => {
       };
     `);
     const ast2 = parser2.parse();
-    const checker2 = new TypeChecker(ast2);
+    const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
     const codegen2 = new CodeGenerator(ast2);
     const bytesNonFinal = codegen2.generate();
@@ -287,7 +287,7 @@ suite('CodeGenerator - Final Modifier', () => {
       };
     `);
     const ast1 = parser1.parse();
-    const checker1 = new TypeChecker(ast1);
+    const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
     const codegen1 = new CodeGenerator(ast1);
     const bytesFinal = codegen1.generate();
@@ -309,7 +309,7 @@ suite('CodeGenerator - Final Modifier', () => {
       };
     `);
     const ast2 = parser2.parse();
-    const checker2 = new TypeChecker(ast2);
+    const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
     const codegen2 = new CodeGenerator(ast2);
     const bytesNonFinal = codegen2.generate();
@@ -344,7 +344,7 @@ suite('CodeGenerator - Final Modifier', () => {
       };
     `);
     const ast1 = parser1.parse();
-    const checker1 = new TypeChecker(ast1);
+    const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
     const codegen1 = new CodeGenerator(ast1);
     const bytesFinal = codegen1.generate();
@@ -361,7 +361,7 @@ suite('CodeGenerator - Final Modifier', () => {
       };
     `);
     const ast2 = parser2.parse();
-    const checker2 = new TypeChecker(ast2);
+    const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
     const codegen2 = new CodeGenerator(ast2);
     const bytesNonFinal = codegen2.generate();

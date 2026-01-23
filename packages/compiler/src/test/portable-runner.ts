@@ -277,7 +277,7 @@ async function runCheckTest(
     // Simple case - no imports, use TypeChecker directly
     const parser = new Parser(content);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     diagnostics = checker.check();
   }
 
@@ -329,22 +329,19 @@ async function runExecutionTest(
   };
 
   const compiler = new Compiler(host);
-  const program = compiler.bundle('/main.zena');
+  // compile() does type checking and returns all modules with their diagnostics
+  const modules = compiler.compile('/main.zena');
 
-  const checker = new TypeChecker(program, compiler, {
-    path: '/main.zena',
-    exports: new Map(),
-    isStdlib: true, // Allow internal features
-  } as any);
-  // Load prelude
-  checker.preludeModules = compiler.preludeModules;
-
-  const diagnostics = checker.check();
+  // Check for errors from individual modules
+  const diagnostics = modules.flatMap((m) => m.diagnostics);
   if (diagnostics.length > 0) {
     throw new Error(
       `Compilation failed: ${diagnostics.map((d) => d.message).join(', ')}`,
     );
   }
+
+  // Now bundle (this just combines the already-checked modules)
+  const program = compiler.bundle('/main.zena');
 
   const codegen = new CodeGenerator(program);
   const bytes = codegen.generate();

@@ -7,7 +7,7 @@ suite('Checker: Records and Tuples', () => {
   function check(source: string) {
     const parser = new Parser(source);
     const program = parser.parse();
-    const checker = new TypeChecker(program);
+    const checker = TypeChecker.forProgram(program);
     const diagnostics = checker.check();
     return {body: program.body, diagnostics};
   }

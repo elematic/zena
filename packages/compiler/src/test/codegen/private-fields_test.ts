@@ -7,7 +7,7 @@ import {TypeChecker} from '../../lib/checker/index.js';
 async function compileAndRun(input: string): Promise<number> {
   const parser = new Parser(input);
   const ast = parser.parse();
-  const checker = new TypeChecker(ast);
+  const checker = TypeChecker.forProgram(ast);
   checker.check();
   const codegen = new CodeGenerator(ast);
   const bytes = codegen.generate();
@@ -105,7 +105,7 @@ suite('Codegen: Private Fields', () => {
       };
     `);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     checker.check();
     const codegen = new CodeGenerator(ast);
     const bytesPrivate = codegen.generate();
@@ -132,7 +132,7 @@ suite('Codegen: Private Fields', () => {
       };
     `);
     const ast2 = parser2.parse();
-    const checker2 = new TypeChecker(ast2);
+    const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
     const codegen2 = new CodeGenerator(ast2);
     const bytesPublic = codegen2.generate();

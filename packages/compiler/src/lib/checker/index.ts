@@ -2,7 +2,7 @@ import {type Program} from '../ast.js';
 import {type Diagnostic} from '../diagnostics.js';
 import {CheckerContext} from './context.js';
 import {checkStatement, predeclareType} from './statements.js';
-import type {Compiler, Module} from '../compiler.js';
+import type {Module} from '../compiler.js';
 import {
   TypeKind,
   type TypeParameterType,
@@ -17,25 +17,61 @@ import {
  * (e.g., `inferredType`) that is used by the CodeGenerator.
  */
 export class TypeChecker {
-  #program: Program;
-  #compiler?: Compiler;
-  #module?: Module;
+  #ctx: CheckerContext;
+  #module: Module;
   preludeModules: Module[] = [];
-  usedPreludeSymbols = new Map<
-    string,
-    {modulePath: string; exportName: string}
-  >();
 
-  constructor(program: Program, compiler?: Compiler, module?: Module) {
-    this.#program = program;
-    this.#compiler = compiler;
+  constructor(ctx: CheckerContext, module: Module) {
+    this.#ctx = ctx;
     this.#module = module;
   }
 
-  check(): Diagnostic[] {
-    const ctx = new CheckerContext(this.#program, this.#compiler, this.#module);
+  /**
+   * Create a TypeChecker for a standalone Program (no Compiler context).
+   * Useful for simple tests that don't need multi-module support.
+   *
+   * @param program The AST to check
+   * @param options Optional module configuration
+   */
+  static forProgram(
+    program: Program,
+    options?: {path?: string; isStdlib?: boolean},
+  ): TypeChecker {
+    const module: Module = {
+      path: options?.path ?? '<standalone>',
+      isStdlib: options?.isStdlib ?? false,
+      source: '',
+      ast: program,
+      imports: new Map(),
+      exports: new Map(),
+      diagnostics: [],
+    };
+    const ctx = new CheckerContext();
+    ctx.setCurrentLibrary(module);
+    return new TypeChecker(ctx, module);
+  }
 
-    // Populate prelude exports
+  /**
+   * Get the symbols used from the prelude after checking.
+   * Must be called after check().
+   */
+  get usedPreludeSymbols(): Map<
+    string,
+    {modulePath: string; exportName: string}
+  > {
+    return this.#ctx.usedPreludeSymbols;
+  }
+
+  check(): Diagnostic[] {
+    const ctx = this.#ctx;
+
+    // Switch context to current module (resets per-library state)
+    ctx.setCurrentLibrary(this.#module);
+
+    // Populate prelude exports (only if not already populated - they're global)
+    // This is done once per compilation, but we check here to be safe.
+    // Note: preludeExports is global, so modules checked later will see exports
+    // from modules checked earlier.
     for (const mod of this.preludeModules) {
       for (const [name, info] of mod.exports) {
         // Don't overwrite if multiple prelude modules export the same name (first wins)
@@ -52,27 +88,22 @@ export class TypeChecker {
     ctx.enterScope();
 
     // Only register intrinsics for system modules
-    if (
-      this.#module &&
-      (this.#module.path.startsWith('zena:') || this.#module.isStdlib)
-    ) {
+    if (this.#module.path.startsWith('zena:') || this.#module.isStdlib) {
       this.#registerIntrinsics(ctx);
     }
 
     // First pass: pre-declare all type names (classes, mixins, interfaces)
     // This enables forward references (e.g., a mixin field referencing a class that uses the mixin)
-    for (const stmt of this.#program.body) {
+    for (const stmt of ctx.program.body) {
       predeclareType(ctx, stmt);
     }
 
     // Second pass: fully check all statements
-    for (const stmt of this.#program.body) {
+    for (const stmt of ctx.program.body) {
       checkStatement(ctx, stmt);
     }
 
     ctx.exitScope();
-
-    this.usedPreludeSymbols = ctx.usedPreludeSymbols;
 
     return [...ctx.diagnostics.diagnostics];
   }

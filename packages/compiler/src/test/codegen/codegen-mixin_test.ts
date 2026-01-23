@@ -11,7 +11,7 @@ async function compileAndRun(
   const parser = new Parser(input);
   const ast = parser.parse();
 
-  const checker = new TypeChecker(ast);
+  const checker = TypeChecker.forProgram(ast);
   const diagnostics = checker.check();
   if (diagnostics.length > 0) {
     throw new Error(

@@ -14,7 +14,7 @@ test('block scope variables are not accessible outside the block', () => {
   `;
   const parser = new Parser(source);
   const ast = parser.parse();
-  const checker = new TypeChecker(ast);
+  const checker = TypeChecker.forProgram(ast);
   const errors = checker.check();
 
   assert.strictEqual(errors.length, 1);
@@ -34,7 +34,7 @@ test('nested block variables are not accessible in outer block', () => {
   `;
   const parser = new Parser(source);
   const ast = parser.parse();
-  const checker = new TypeChecker(ast);
+  const checker = TypeChecker.forProgram(ast);
   const errors = checker.check();
 
   assert.strictEqual(errors.length, 1);
@@ -53,7 +53,7 @@ test('block scoping allows shadowing without error', () => {
   `;
   const parser = new Parser(source);
   const ast = parser.parse();
-  const checker = new TypeChecker(ast);
+  const checker = TypeChecker.forProgram(ast);
   const errors = checker.check();
 
   // No error - shadowing in inner block is allowed

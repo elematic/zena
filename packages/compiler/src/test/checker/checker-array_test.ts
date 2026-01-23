@@ -9,7 +9,7 @@ suite('TypeChecker - Arrays', () => {
   function check(source: string): Diagnostic[] {
     const parser = new Parser(source);
     const ast = parser.parse();
-    const checker = new TypeChecker(ast);
+    const checker = TypeChecker.forProgram(ast);
     return checker.check();
   }
 

@@ -17,37 +17,123 @@ export interface SymbolInfo {
   kind: 'let' | 'var' | 'type';
 }
 
+/**
+ * Per-library state that gets reset when switching modules.
+ * This is separate from the global type interning state.
+ */
+interface LibraryState {
+  scopes: Map<string, SymbolInfo>[];
+  diagnostics: DiagnosticBag;
+  narrowedTypes: Map<string, Type>[];
+  classStack: (ClassType | null)[];
+  interfaceStack: (InterfaceType | null)[];
+  currentFunctionReturnType: Type | null;
+  currentClass: ClassType | null;
+  currentInterface: InterfaceType | null;
+  currentMethod: string | null;
+  isThisInitialized: boolean;
+  isCheckingFieldInitializer: boolean;
+  initializedFields: Set<string>;
+  inferredReturnTypes: Type[];
+  usedPreludeSymbols: Map<string, {modulePath: string; exportName: string}>;
+}
+
+/**
+ * Create fresh per-library state.
+ */
+const createLibraryState = (): LibraryState => ({
+  scopes: [],
+  diagnostics: new DiagnosticBag(),
+  narrowedTypes: [],
+  classStack: [],
+  interfaceStack: [],
+  currentFunctionReturnType: null,
+  currentClass: null,
+  currentInterface: null,
+  currentMethod: null,
+  isThisInitialized: true,
+  isCheckingFieldInitializer: false,
+  initializedFields: new Set(),
+  inferredReturnTypes: [],
+  usedPreludeSymbols: new Map(),
+});
+
 export class CheckerContext {
-  scopes: Map<string, SymbolInfo>[] = [];
-  diagnostics = new DiagnosticBag();
-  currentFunctionReturnType: Type | null = null;
-  currentClass: ClassType | null = null;
-  currentInterface: InterfaceType | null = null;
-  currentMethod: string | null = null;
-  isThisInitialized = true;
-  program: Program;
+  // ============================================================
+  // Per-library state (reset when switching modules)
+  // ============================================================
+  #lib: LibraryState = createLibraryState();
+
+  // Convenience accessors for per-library state
+  get scopes() {
+    return this.#lib.scopes;
+  }
+  get diagnostics() {
+    return this.#lib.diagnostics;
+  }
+  get currentFunctionReturnType() {
+    return this.#lib.currentFunctionReturnType;
+  }
+  set currentFunctionReturnType(v: Type | null) {
+    this.#lib.currentFunctionReturnType = v;
+  }
+  get currentClass() {
+    return this.#lib.currentClass;
+  }
+  set currentClass(v: ClassType | null) {
+    this.#lib.currentClass = v;
+  }
+  get currentInterface() {
+    return this.#lib.currentInterface;
+  }
+  set currentInterface(v: InterfaceType | null) {
+    this.#lib.currentInterface = v;
+  }
+  get currentMethod() {
+    return this.#lib.currentMethod;
+  }
+  set currentMethod(v: string | null) {
+    this.#lib.currentMethod = v;
+  }
+  get isThisInitialized() {
+    return this.#lib.isThisInitialized;
+  }
+  set isThisInitialized(v: boolean) {
+    this.#lib.isThisInitialized = v;
+  }
+  get isCheckingFieldInitializer() {
+    return this.#lib.isCheckingFieldInitializer;
+  }
+  set isCheckingFieldInitializer(v: boolean) {
+    this.#lib.isCheckingFieldInitializer = v;
+  }
+  get initializedFields() {
+    return this.#lib.initializedFields;
+  }
+  set initializedFields(v: Set<string>) {
+    this.#lib.initializedFields = v;
+  }
+  get inferredReturnTypes() {
+    return this.#lib.inferredReturnTypes;
+  }
+  set inferredReturnTypes(v: Type[]) {
+    this.#lib.inferredReturnTypes = v;
+  }
+  get usedPreludeSymbols() {
+    return this.#lib.usedPreludeSymbols;
+  }
+
+  // ============================================================
+  // Global state (shared across all modules)
+  // ============================================================
+  program!: Program;
   module?: Module;
   compiler?: Compiler;
-  #classStack: (ClassType | null)[] = [];
-  #interfaceStack: (InterfaceType | null)[] = [];
 
-  // Field initialization tracking
-  isCheckingFieldInitializer = false;
-  initializedFields = new Set<string>();
-  inferredReturnTypes: Type[] = [];
-
-  // Type narrowing: stack of maps for narrowed types
-  // Each map represents narrowings active in the current scope
-  #narrowedTypes: Map<string, Type>[] = [];
-
-  // Prelude support
+  // Prelude support (global, populated once)
   preludeExports = new Map<
     string,
     {modulePath: string; exportName: string; info: SymbolInfo}
-  >();
-  usedPreludeSymbols = new Map<
-    string,
-    {modulePath: string; exportName: string}
   >();
 
   /**
@@ -55,23 +141,33 @@ export class CheckerContext {
    * Key format: "kind:genericSourceId|arg1Key,arg2Key,..."
    * This ensures that identical generic instantiations share the same object,
    * enabling identity-based type comparisons.
+   *
+   * GLOBAL: Shared across all modules for consistent type identity.
    */
   #internedTypes = new Map<string, Type>();
 
-  /** Counter for assigning unique IDs to generic source types */
+  /** Counter for assigning unique IDs to generic source types (GLOBAL) */
   #typeIdCounter = 0;
 
-  /** Map from generic source types to their unique IDs */
+  /** Map from generic source types to their unique IDs (GLOBAL) */
   #typeIds = new WeakMap<Type, number>();
 
-  constructor(program: Program, compiler?: Compiler, module?: Module) {
-    this.program = program;
+  constructor(compiler?: Compiler) {
     this.compiler = compiler;
+  }
+
+  /**
+   * Switch to a new library/module for type checking.
+   * Resets per-library state while preserving global type interning.
+   */
+  setCurrentLibrary(module: Module): void {
     this.module = module;
+    this.program = module.ast;
+    this.#lib = createLibraryState();
   }
 
   enterClass(classType: ClassType) {
-    this.#classStack.push(this.currentClass);
+    this.#lib.classStack.push(this.currentClass);
     // For generic classes, set typeArguments = typeParameters so that
     // ctx.currentClass and 'this' type are consistent (both represent Foo<T>).
     // This avoids special-case handling in isAssignableTo for self-referential types.
@@ -92,11 +188,11 @@ export class CheckerContext {
   }
 
   exitClass() {
-    this.currentClass = this.#classStack.pop() || null;
+    this.currentClass = this.#lib.classStack.pop() || null;
   }
 
   enterInterface(interfaceType: InterfaceType) {
-    this.#interfaceStack.push(this.currentInterface);
+    this.#lib.interfaceStack.push(this.currentInterface);
     // For generic interfaces, set typeArguments = typeParameters so that
     // `this` type is consistent (represents Interface<T>).
     // We also set genericSource to preserve type identity when comparing.
@@ -116,17 +212,17 @@ export class CheckerContext {
   }
 
   exitInterface() {
-    this.currentInterface = this.#interfaceStack.pop() || null;
+    this.currentInterface = this.#lib.interfaceStack.pop() || null;
   }
 
   enterScope() {
     this.scopes.push(new Map());
-    this.#narrowedTypes.push(new Map());
+    this.#lib.narrowedTypes.push(new Map());
   }
 
   exitScope() {
     this.scopes.pop();
-    this.#narrowedTypes.pop();
+    this.#lib.narrowedTypes.pop();
   }
 
   /**
@@ -134,7 +230,8 @@ export class CheckerContext {
    * This is used for control flow-based type narrowing (e.g., after null checks).
    */
   narrowType(name: string, type: Type) {
-    const narrowings = this.#narrowedTypes[this.#narrowedTypes.length - 1];
+    const narrowings =
+      this.#lib.narrowedTypes[this.#lib.narrowedTypes.length - 1];
     if (narrowings) {
       narrowings.set(name, type);
     }
@@ -145,8 +242,8 @@ export class CheckerContext {
    */
   getNarrowedType(name: string): Type | undefined {
     // Check from innermost scope outward
-    for (let i = this.#narrowedTypes.length - 1; i >= 0; i--) {
-      const narrowings = this.#narrowedTypes[i];
+    for (let i = this.#lib.narrowedTypes.length - 1; i >= 0; i--) {
+      const narrowings = this.#lib.narrowedTypes[i];
       if (narrowings.has(name)) {
         return narrowings.get(name);
       }

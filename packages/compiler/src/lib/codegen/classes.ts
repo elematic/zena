@@ -935,6 +935,11 @@ export function preRegisterClassStruct(
       ctx.setClassBundledName(templateType, decl.name.name);
       // Register declaration by type for identity-based lookup
       ctx.setGenericDeclByType(templateType, decl);
+      // Also register by original name (from checker) for bundled AST lookups
+      // This allows code using pre-bundled type names to find the generic class
+      if (templateType.name !== decl.name.name) {
+        ctx.genericClasses.set(templateType.name, decl);
+      }
     }
     return;
   }
