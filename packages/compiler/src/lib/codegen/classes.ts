@@ -1140,38 +1140,61 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
   let superTypeIndex: number | undefined;
 
+  // Get the checker's ClassType for this class (if available)
+  const classType =
+    decl.inferredType?.kind === TypeKind.Class
+      ? (decl.inferredType as ClassType)
+      : undefined;
+
   let currentSuperClassInfo: ClassInfo | undefined;
+  let superClassType: ClassType | undefined;
+
   if (decl.superClass) {
-    const baseSuperName = getTypeAnnotationName(decl.superClass);
-    const superTypeArgs =
-      decl.superClass.type === NodeType.TypeAnnotation
-        ? decl.superClass.typeArguments
-        : undefined;
-
-    let superClassName: string;
-    if (superTypeArgs && superTypeArgs.length > 0) {
-      // Superclass is generic - need to get/instantiate the specialized version
-      superClassName = getSpecializedName(baseSuperName, superTypeArgs, ctx);
-
-      // Ensure the superclass is instantiated
-      if (!ctx.classes.has(superClassName)) {
-        const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
-        if (genericSuperDecl) {
-          instantiateClass(
-            ctx,
-            genericSuperDecl,
-            superClassName,
-            superTypeArgs,
-          );
-        }
-      }
-    } else {
-      superClassName = baseSuperName;
+    // Try identity-based lookup first using checker's type
+    if (classType?.superType) {
+      superClassType = classType.superType;
+      currentSuperClassInfo = ctx.getClassInfoByCheckerType(superClassType);
     }
 
-    currentSuperClassInfo = ctx.classes.get(superClassName);
+    // Fall back to name-based lookup if identity lookup failed
     if (!currentSuperClassInfo) {
-      throw new Error(`Unknown superclass ${superClassName}`);
+      const baseSuperName = getTypeAnnotationName(decl.superClass);
+      const superTypeArgs =
+        decl.superClass.type === NodeType.TypeAnnotation
+          ? decl.superClass.typeArguments
+          : undefined;
+
+      let superClassName: string;
+      if (superTypeArgs && superTypeArgs.length > 0) {
+        // Superclass is generic - need to get/instantiate the specialized version
+        superClassName = getSpecializedName(baseSuperName, superTypeArgs, ctx);
+
+        // Ensure the superclass is instantiated
+        if (!ctx.classes.has(superClassName)) {
+          const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
+          if (genericSuperDecl) {
+            // Pass the checker's superType to enable identity-based lookup
+            instantiateClass(
+              ctx,
+              genericSuperDecl,
+              superClassName,
+              superTypeArgs,
+              undefined,
+              superClassType,
+            );
+          }
+        }
+      } else {
+        superClassName = baseSuperName;
+      }
+
+      currentSuperClassInfo = ctx.classes.get(superClassName);
+    }
+
+    if (!currentSuperClassInfo) {
+      throw new Error(
+        `Unknown superclass ${getTypeAnnotationName(decl.superClass)}`,
+      );
     }
   }
 
@@ -1255,6 +1278,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
   // Update classInfo with full data
   classInfo.superClass = currentSuperClassInfo?.name;
+  classInfo.superClassType = superClassType;
   classInfo.fields = fields;
   classInfo.onType = onType;
   classInfo.structDefined = true;
@@ -1328,12 +1352,32 @@ export function registerClassStruct(
   >();
   const vtable: string[] = [];
 
+  // Get the checker's ClassType for this class (if available)
+  const classType =
+    decl.inferredType?.kind === TypeKind.Class
+      ? (decl.inferredType as ClassType)
+      : undefined;
+
   let currentSuperClassInfo: ClassInfo | undefined;
+  let superClassType: ClassType | undefined;
+
   if (decl.superClass) {
-    const superClassName = getTypeAnnotationName(decl.superClass);
-    currentSuperClassInfo = ctx.classes.get(superClassName);
+    // Try identity-based lookup first using checker's type
+    if (classType?.superType) {
+      superClassType = classType.superType;
+      currentSuperClassInfo = ctx.getClassInfoByCheckerType(superClassType);
+    }
+
+    // Fall back to name-based lookup if identity lookup failed
     if (!currentSuperClassInfo) {
-      throw new Error(`Unknown superclass ${superClassName}`);
+      const superClassName = getTypeAnnotationName(decl.superClass);
+      currentSuperClassInfo = ctx.classes.get(superClassName);
+    }
+
+    if (!currentSuperClassInfo) {
+      throw new Error(
+        `Unknown superclass ${getTypeAnnotationName(decl.superClass)}`,
+      );
     }
   }
 
@@ -1435,6 +1479,7 @@ export function registerClassStruct(
     name: decl.name.name,
     structTypeIndex,
     superClass: currentSuperClassInfo?.name,
+    superClassType,
     fields,
     methods,
     vtable,
@@ -3049,45 +3094,61 @@ export function instantiateClass(
 
   // Handle generic superclass instantiation
   let superClassName: string | undefined;
+  // Get the checker's ClassType for the superclass (if available)
+  const superClassType = checkerType?.superType;
+
   if (decl.superClass) {
-    const baseSuperName = getTypeAnnotationName(decl.superClass);
-    const superTypeArgs =
-      decl.superClass.type === NodeType.TypeAnnotation
-        ? decl.superClass.typeArguments
-        : undefined;
+    // Try identity-based lookup first using checker's type
+    if (superClassType) {
+      const superClassInfo = ctx.getClassInfoByCheckerType(superClassType);
+      if (superClassInfo) {
+        superClassName = superClassInfo.name;
+      }
+    }
 
-    if (superTypeArgs && superTypeArgs.length > 0) {
-      // Superclass is generic - need to instantiate it with resolved type args
-      superClassName = getSpecializedName(
-        baseSuperName,
-        superTypeArgs,
-        ctx,
-        context,
-      );
+    // Fall back to name-based lookup if identity lookup failed
+    if (!superClassName) {
+      const baseSuperName = getTypeAnnotationName(decl.superClass);
+      const superTypeArgs =
+        decl.superClass.type === NodeType.TypeAnnotation
+          ? decl.superClass.typeArguments
+          : undefined;
 
-      // Ensure superclass is instantiated
-      if (!ctx.classes.has(superClassName)) {
-        const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
-        if (genericSuperDecl) {
-          const pendingCountBefore = ctx.pendingMethodGenerations.length;
-          instantiateClass(
-            ctx,
-            genericSuperDecl,
-            superClassName,
-            superTypeArgs,
-            context,
-          );
-          // Execute any pending method registrations from the superclass
-          // so that methods and vtable are available for inheritance
-          while (ctx.pendingMethodGenerations.length > pendingCountBefore) {
-            const gen = ctx.pendingMethodGenerations[pendingCountBefore];
-            ctx.pendingMethodGenerations.splice(pendingCountBefore, 1);
-            gen();
+      if (superTypeArgs && superTypeArgs.length > 0) {
+        // Superclass is generic - need to instantiate it with resolved type args
+        superClassName = getSpecializedName(
+          baseSuperName,
+          superTypeArgs,
+          ctx,
+          context,
+        );
+
+        // Ensure superclass is instantiated
+        if (!ctx.classes.has(superClassName)) {
+          const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
+          if (genericSuperDecl) {
+            const pendingCountBefore = ctx.pendingMethodGenerations.length;
+            // Pass the checker's superType to enable identity-based lookup
+            instantiateClass(
+              ctx,
+              genericSuperDecl,
+              superClassName,
+              superTypeArgs,
+              context,
+              superClassType,
+            );
+            // Execute any pending method registrations from the superclass
+            // so that methods and vtable are available for inheritance
+            while (ctx.pendingMethodGenerations.length > pendingCountBefore) {
+              const gen = ctx.pendingMethodGenerations[pendingCountBefore];
+              ctx.pendingMethodGenerations.splice(pendingCountBefore, 1);
+              gen();
+            }
           }
         }
+      } else {
+        superClassName = baseSuperName;
       }
-    } else {
-      superClassName = baseSuperName;
     }
   }
 
@@ -3191,6 +3252,7 @@ export function instantiateClass(
     classInfo.methods = methods;
     classInfo.vtable = vtable;
     classInfo.onType = onType;
+    classInfo.superClassType = superClassType;
     if (decl.isExtension && decl.onType) {
       classInfo.onTypeAnnotation = decl.onType;
     }
@@ -3201,6 +3263,7 @@ export function instantiateClass(
       typeArguments: context,
       structTypeIndex,
       superClass: superClassName,
+      superClassType,
       fields,
       methods,
       vtable,

@@ -1,4 +1,5 @@
 import type {TypeAnnotation} from '../ast.js';
+import type {ClassType} from '../types.js';
 
 export interface ClassInfo {
   name: string;
@@ -7,6 +8,11 @@ export interface ClassInfo {
   structTypeIndex: number;
   brandTypeIndex?: number;
   superClass?: string;
+  /**
+   * The checker's ClassType for the superclass, if available.
+   * Enables identity-based lookup of superclass ClassInfo.
+   */
+  superClassType?: ClassType;
   fields: Map<string, {index: number; type: number[]; intrinsic?: string}>;
   methods: Map<
     string,

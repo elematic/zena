@@ -2050,8 +2050,17 @@ function generateCallExpression(
     }
 
     if (ctx.currentClass && ctx.currentClass.superClass) {
-      // Normal class super call
-      const superClassInfo = ctx.classes.get(ctx.currentClass.superClass)!;
+      // Normal class super call - prefer identity-based lookup
+      let superClassInfo = ctx.currentClass.superClassType
+        ? ctx.getClassInfoByCheckerType(ctx.currentClass.superClassType)
+        : undefined;
+      // Fall back to name-based lookup
+      if (!superClassInfo) {
+        superClassInfo = ctx.classes.get(ctx.currentClass.superClass);
+      }
+      if (!superClassInfo) {
+        throw new Error(`Super class not found for ${ctx.currentClass.name}`);
+      }
       const ctorInfo = superClassInfo.methods.get('#new');
       if (!ctorInfo) {
         // Implicit super call to no-arg constructor?
@@ -2087,7 +2096,17 @@ function generateCallExpression(
       if (!ctx.currentClass || !ctx.currentClass.superClass) {
         throw new Error('Super call outside of class with superclass');
       }
-      const superClassInfo = ctx.classes.get(ctx.currentClass.superClass)!;
+      // Prefer identity-based lookup
+      let superClassInfo = ctx.currentClass.superClassType
+        ? ctx.getClassInfoByCheckerType(ctx.currentClass.superClassType)
+        : undefined;
+      // Fall back to name-based lookup
+      if (!superClassInfo) {
+        superClassInfo = ctx.classes.get(ctx.currentClass.superClass);
+      }
+      if (!superClassInfo) {
+        throw new Error(`Super class not found for ${ctx.currentClass.name}`);
+      }
       const methodInfo = superClassInfo.methods.get(methodName);
       if (!methodInfo) {
         throw new Error(`Method ${methodName} not found in superclass`);
@@ -2605,7 +2624,17 @@ function generateCallExpression(
         'Super constructor call outside of class with superclass',
       );
     }
-    const superClassInfo = ctx.classes.get(ctx.currentClass.superClass)!;
+    // Prefer identity-based lookup
+    let superClassInfo = ctx.currentClass.superClassType
+      ? ctx.getClassInfoByCheckerType(ctx.currentClass.superClassType)
+      : undefined;
+    // Fall back to name-based lookup
+    if (!superClassInfo) {
+      superClassInfo = ctx.classes.get(ctx.currentClass.superClass);
+    }
+    if (!superClassInfo) {
+      throw new Error(`Super class not found for ${ctx.currentClass.name}`);
+    }
     const methodInfo = superClassInfo.methods.get('#new');
     if (!methodInfo) {
       throw new Error(`Constructor not found in superclass`);

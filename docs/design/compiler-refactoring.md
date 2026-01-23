@@ -1097,6 +1097,65 @@ unified type interning.
 - `packages/compiler/src/lib/codegen/expressions.ts` - Add specialized name lookup fallback
 - Multiple test files - Update to use `TypeChecker.forProgram()` API
 
+#### Step 2.6b: Identity-Based Superclass Lookups
+
+**Goal:** Enable identity-based lookups for superclass chain traversal.
+
+**Status:** ✅ COMPLETED
+
+**Background:**
+With unified type interning (Step 2.6), we now have the foundation for identity-based
+lookups. The next step toward removing the bundler is converting name-based lookups
+to identity-based ones. We started with superclass lookups because:
+
+1. They're a common pattern (~9 locations in classes.ts, 3 in expressions.ts)
+2. The checker already computes `ClassType.superType`
+3. Superclass chain traversal is critical for inheritance features
+
+**Changes:**
+
+1. **Added `superClassType` field to `ClassInfo`** (`types.ts`)
+   - Stores the checker's `ClassType` for the superclass
+   - Enables identity-based lookup via `ctx.getClassInfoByCheckerType(superClassType)`
+
+2. **Updated `defineClassStruct`** (`classes.ts`)
+   - Gets `classType.superType` from `decl.inferredType`
+   - Tries identity-based lookup first via `ctx.getClassInfoByCheckerType()`
+   - Falls back to name-based lookup for backward compatibility
+   - Sets `classInfo.superClassType` for downstream use
+
+3. **Updated `registerClassStruct` (deprecated)** (`classes.ts`)
+   - Same pattern: identity-first, name-fallback
+   - Sets `superClassType` in ClassInfo
+
+4. **Updated `instantiateClass`** (`classes.ts`)
+   - Gets `superClassType` from `checkerType?.superType`
+   - Tries identity-based lookup first
+   - Passes `superClassType` to recursive instantiation
+   - Sets `superClassType` in ClassInfo
+
+5. **Updated super call codegen** (`expressions.ts`)
+   - 3 locations where `ctx.classes.get(ctx.currentClass.superClass)` was used
+   - Now try `ctx.getClassInfoByCheckerType(ctx.currentClass.superClassType)` first
+   - Fall back to name-based lookup for compatibility
+
+**Validation:**
+
+- All 1142 tests pass
+- No changes to test code required
+
+**Benefits:**
+
+1. Superclass lookups now work without relying on bundled names
+2. Foundation for removing more name-based lookups
+3. Improved performance (O(1) WeakMap lookup vs string Map lookup)
+
+**Next candidates for identity-based conversion:**
+
+1. `ctx.classes.get(superClassName)` - Other superclass lookups (~6 remaining)
+2. `ctx.genericClasses.get(baseSuperName)` - Generic class template lookups (~5)
+3. `ctx.mixins.get(mixinName)` - Mixin lookups (~4)
+
 #### Step 2.7: Remove Bundler Entirely (NEW)
 
 **Goal:** Delete `bundler.ts` completely. All its responsibilities are handled elsewhere.
