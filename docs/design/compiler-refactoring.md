@@ -1288,6 +1288,72 @@ path for correctness and to enable future bundler removal.
 - All 1142 tests pass
 - No changes to test code required
 
+#### Phase 2 Status Summary (2026-01-23)
+
+**Goal:** Migrate codegen from AST-based type mapping (`mapType`) to checker-type-based
+mapping (`mapCheckerTypeToWasmType`) where possible, enabling identity-based lookups.
+
+**Completed migrations:**
+
+| Location | Function | Change |
+|----------|----------|--------|
+| `expressions.ts` | `generateAsExpression` | Uses `expr.inferredType` for target type of `as` casts |
+| `expressions.ts` | `generateFunctionExpression` | Uses `expr.inferredType` (FunctionType) for params and return |
+| `functions.ts` | `inferReturnTypeFromBlock` | Uses `decl.inferredType` for variable declarations |
+| `statements.ts` | `generateVariableDeclaration` | Uses `decl.inferredType` for variable type |
+| `classes.ts` | Field/method/accessor types | Uses checker types from `classType.fields/methods` |
+| `classes.ts` | Extension class `onType` | Uses `classType.onType` when available |
+| `functions.ts` | Function param/return types | Uses checker's FunctionType when available |
+
+**Remaining `mapType` usages (~40 calls):**
+
+1. **Inside `mapTypeInternal` itself** - This IS the AST-based path, cannot use checker types
+2. **Interface method registration** - Works with raw AST declarations
+3. **Generic instantiation** (`instantiateClass`) - Uses AST-level type parameter substitution
+4. **Box/unbox operations** - Codegen-internal, construct TypeAnnotation from WASM types
+
+**Why `mapType` cannot be fully removed:**
+
+1. **AST-only contexts:** Some codegen paths only have `TypeAnnotation` available (e.g., interface
+   declarations from AST, generic type parameter substitution via `context` map)
+
+2. **Side effects:** `mapType` triggers generic class instantiation when encountering
+   `ClassName<TypeArgs>`. This is needed for AST-driven compilation paths.
+
+3. **Codegen-internal types:** Box/unbox operations construct `TypeAnnotation` on-the-fly from
+   WASM primitive types. These don't have corresponding checker types.
+
+**`instantiateClass` checker type coverage:**
+
+| Call Site | Has checkerType? | Notes |
+|-----------|------------------|-------|
+| `preRegisterClassStruct` (superclass) | ✅ | Passes `classType?.superType` |
+| `defineClassStruct` (superclass) | ✅ | Passes `superClassType` |
+| `instantiateClass` (recursive superclass) | ✅ | Passes `superClassType` |
+| `mapCheckerTypeToWasmType` | ✅ | Passes `classType` |
+| `mapTypeInternal` | ❌ | AST path, no checker type available |
+| `generateIsExpression` (Box) | ❌ | Codegen-internal boxing |
+| `unboxPrimitive` | ❌ | Codegen-internal |
+| `boxPrimitive` | ❌ | Codegen-internal |
+| `resolveFixedArrayClass` | ❌ | Has ArrayType, not ClassType |
+
+**Phase assessment:**
+
+Phase 2 is **effectively complete**. All call sites that CAN pass checker types DO pass them.
+The remaining sites are architecturally constrained:
+
+1. **AST-only paths** have no checker types by design (`mapTypeInternal`)
+2. **Codegen-internal** operations work with WASM types, not checker types
+3. **Type mismatch** - `FixedArray<T>` codegen receives `ArrayType`, not `ClassType`
+
+**Next steps:**
+
+1. **Phase 3 (optional):** Reduce AST-only paths by ensuring more codegen entry points have
+   checker types. This would require architectural changes to how `FixedArray` is represented.
+
+2. **Step 2.7:** Remove the bundler. Phase 2 completion enables this because identity-based
+   lookups now work for the majority of cases.
+
 #### Step 2.7: Remove Bundler Entirely (NEW)
 
 **Goal:** Delete `bundler.ts` completely. All its responsibilities are handled elsewhere.
