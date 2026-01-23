@@ -1122,15 +1122,15 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
     return;
   }
 
-  // Prefer identity-based lookup using checker's type
-  let classInfo: ClassInfo | undefined;
-  if (decl.inferredType?.kind === TypeKind.Class) {
-    classInfo = ctx.getClassInfoByCheckerType(decl.inferredType as ClassType);
+  // Identity-based lookup using checker's type
+  if (!decl.inferredType || decl.inferredType.kind !== TypeKind.Class) {
+    throw new Error(
+      `Class ${decl.name.name} missing inferredType in defineClassStruct`,
+    );
   }
-  // Fall back to name-based lookup
-  if (!classInfo) {
-    classInfo = ctx.classes.get(decl.name.name);
-  }
+  const classInfo = ctx.getClassInfoByCheckerType(
+    decl.inferredType as ClassType,
+  );
   if (!classInfo) {
     throw new Error(`Class ${decl.name.name} not found in defineClassStruct`);
   }
@@ -1514,12 +1514,12 @@ export function registerClassMethods(
     return;
   }
 
-  // Prefer identity-based lookup using checker's type
+  // Identity-based lookup using checker's type
   let classInfo: ClassInfo | undefined;
   if (decl.inferredType?.kind === TypeKind.Class) {
     classInfo = ctx.getClassInfoByCheckerType(decl.inferredType as ClassType);
   }
-  // Fall back to name-based lookup
+  // Fall back to name-based lookup for synthesized classes (e.g., mixin intermediates)
   if (!classInfo) {
     classInfo = ctx.classes.get(decl.name.name);
   }
@@ -1542,21 +1542,15 @@ export function registerClassMethods(
   const structTypeIndex = classInfo.structTypeIndex;
 
   let currentSuperClassInfo: ClassInfo | undefined;
-  // Prefer identity-based lookup using checker's superType
+  // Identity-based lookup using checker's superType
   if (classInfo.superClassType) {
     currentSuperClassInfo = ctx.getClassInfoByCheckerType(
       classInfo.superClassType,
     );
   }
-  // Fall back to name-based lookup
-  if (!currentSuperClassInfo) {
-    if (classInfo.superClass) {
-      currentSuperClassInfo = ctx.classes.get(classInfo.superClass);
-    } else if (decl.superClass) {
-      currentSuperClassInfo = ctx.classes.get(
-        getTypeAnnotationName(decl.superClass),
-      );
-    }
+  // Fall back to name-based lookup for synthesized classes (e.g., mixin intermediates)
+  if (!currentSuperClassInfo && classInfo.superClass) {
+    currentSuperClassInfo = ctx.classes.get(classInfo.superClass);
   }
 
   // Inherit methods and vtable from superclass
@@ -2028,8 +2022,14 @@ export function registerClassMethods(
       : decl.superClass,
   } as ClassDeclaration;
 
+  // Pass the checker type for identity-based lookup
+  const classType =
+    decl.inferredType?.kind === TypeKind.Class
+      ? (decl.inferredType as ClassType)
+      : undefined;
+
   ctx.bodyGenerators.push(() => {
-    generateClassMethods(ctx, declForGen);
+    generateClassMethods(ctx, declForGen, undefined, undefined, classType);
   });
 
   // Restore previous class context
@@ -2047,7 +2047,7 @@ export function generateClassMethods(
     ctx.currentTypeContext = typeContext;
   }
 
-  // Prefer identity-based lookup using checker's type
+  // Identity-based lookup using checker's type
   let classInfo: ClassInfo | undefined;
   if (checkerType) {
     classInfo = ctx.getClassInfoByCheckerType(checkerType);
@@ -2055,7 +2055,7 @@ export function generateClassMethods(
   if (!classInfo && decl.inferredType?.kind === TypeKind.Class) {
     classInfo = ctx.getClassInfoByCheckerType(decl.inferredType as ClassType);
   }
-  // Fall back to name-based lookup
+  // Fall back to name-based lookup for synthesized classes (e.g., mixin intermediates)
   if (!classInfo) {
     const className = specializedName || decl.name.name;
     classInfo = ctx.classes.get(className);

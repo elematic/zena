@@ -2050,11 +2050,11 @@ function generateCallExpression(
     }
 
     if (ctx.currentClass && ctx.currentClass.superClass) {
-      // Normal class super call - prefer identity-based lookup
+      // Normal class super call - identity-based lookup
       let superClassInfo = ctx.currentClass.superClassType
         ? ctx.getClassInfoByCheckerType(ctx.currentClass.superClassType)
         : undefined;
-      // Fall back to name-based lookup
+      // Fall back to name-based lookup for synthesized classes (e.g., mixin intermediates)
       if (!superClassInfo) {
         superClassInfo = ctx.classes.get(ctx.currentClass.superClass);
       }
