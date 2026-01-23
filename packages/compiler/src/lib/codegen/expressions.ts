@@ -67,13 +67,11 @@ import {
   decodeTypeIndex,
   getClassFromTypeIndex,
   getSpecializedName,
-  getSpecializedNameFromTypes,
   getTypeKey,
   instantiateClass,
   mapCheckerTypeToWasmType,
   mapType,
   resolveAnnotation,
-  typeContainsTypeParameter,
   typeToTypeAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
@@ -1561,75 +1559,79 @@ function generateMemberExpression(
 
   let foundClass: ClassInfo | undefined;
 
-  // Try to find class from AST type first
+  // For `this` expressions, use ctx.currentClass directly.
+  // This handles mixin methods where the checker's inferredType is a synthetic
+  // type (like M_This) that doesn't exist in codegen.
+  if (expr.object.type === NodeType.ThisExpression && ctx.currentClass) {
+    foundClass = ctx.currentClass;
+  }
+
+  // Try to find class from AST type
   if (
+    !foundClass &&
     expr.object.inferredType &&
     expr.object.inferredType.kind === TypeKind.Class
   ) {
     const classType = expr.object.inferredType as ClassType;
 
-    // First try direct name lookup (works for non-generic classes)
-    if (ctx.classes.has(classType.name)) {
-      foundClass = ctx.classes.get(classType.name);
+    // Try identity-based lookup first (O(1) via WeakMap)
+    foundClass = ctx.getClassInfoByCheckerType(classType);
+
+    // If identity lookup fails, try triggering instantiation
+    if (!foundClass && classType.genericSource) {
+      mapCheckerTypeToWasmType(ctx, classType);
+      foundClass = ctx.getClassInfoByCheckerType(classType);
     }
 
-    // If the class has typeArguments, try to find the specialized version
-    if (
-      !foundClass &&
-      classType.typeArguments &&
-      classType.typeArguments.length > 0
-    ) {
-      // Use identity-based lookup to get the bundled name
-      let baseName = ctx.getClassBundledName(classType);
-      if (!baseName) {
-        // Fall back to genericSource chain
-        baseName = classType.name;
-        let source = classType.genericSource;
-        while (source) {
-          const sourceName = ctx.getClassBundledName(source);
-          if (sourceName) {
-            baseName = sourceName;
-            break;
-          }
-          baseName = source.name;
-          source = source.genericSource;
-        }
+    // Fall back to name-based lookup
+    if (!foundClass) {
+      // First try direct name lookup (works for non-generic classes)
+      if (ctx.classes.has(classType.name)) {
+        foundClass = ctx.classes.get(classType.name);
       }
 
-      // Check if type arguments are fully resolved (no type parameters)
-      // If so, we can use the more efficient checker-type path
-      const hasUnresolvedTypeParams = classType.typeArguments.some(
-        typeContainsTypeParameter,
-      );
+      // If the class has typeArguments, try to find the specialized version
+      if (
+        !foundClass &&
+        classType.typeArguments &&
+        classType.typeArguments.length > 0
+      ) {
+        // Use identity-based lookup to get the bundled name
+        let baseName = ctx.getClassBundledName(classType);
+        if (!baseName) {
+          // Fall back to genericSource chain
+          baseName = classType.name;
+          let source = classType.genericSource;
+          while (source) {
+            const sourceName = ctx.getClassBundledName(source);
+            if (sourceName) {
+              baseName = sourceName;
+              break;
+            }
+            baseName = source.name;
+            source = source.genericSource;
+          }
+        }
 
-      let specializedName: string;
-      if (hasUnresolvedTypeParams) {
-        // Type arguments contain type parameters (e.g., T, K, V) that need
-        // resolution via currentTypeContext - use TypeAnnotation path
+        // Build specialized name using TypeAnnotations for proper resolution
         const typeAnnotations = classType.typeArguments.map((arg) =>
           typeToTypeAnnotation(arg, undefined, ctx),
         );
-        specializedName = getSpecializedName(
+        const specializedName = getSpecializedName(
           baseName,
           typeAnnotations,
           ctx,
           ctx.currentTypeContext,
         );
-      } else {
-        // Type arguments are fully concrete - use direct checker type path
-        specializedName = getSpecializedNameFromTypes(
-          baseName,
-          classType.typeArguments,
-          ctx,
-        );
-      }
 
-      if (ctx.classes.has(specializedName)) {
-        foundClass = ctx.classes.get(specializedName);
+        if (ctx.classes.has(specializedName)) {
+          foundClass = ctx.classes.get(specializedName);
+        }
       }
     }
   }
 
+  // Fall back to struct index lookup
   if (!foundClass && structTypeIndex !== -1) {
     for (const info of ctx.classes.values()) {
       if (info.structTypeIndex === structTypeIndex) {
