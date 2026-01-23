@@ -1006,6 +1006,12 @@ export function preRegisterClassStruct(
     !!ctx.wellKnownTypes.String &&
     decl.name.name === ctx.wellKnownTypes.String.name.name;
 
+  // Get the checker's ClassType for this class (if available)
+  const classType =
+    decl.inferredType?.kind === TypeKind.Class
+      ? (decl.inferredType as ClassType)
+      : undefined;
+
   // If the superclass is generic, instantiate it first so it gets a lower type index
   if (decl.superClass) {
     const baseSuperName = getTypeAnnotationName(decl.superClass);
@@ -1024,11 +1030,14 @@ export function preRegisterClassStruct(
       if (!ctx.classes.has(specializedName)) {
         const genericSuperDecl = ctx.genericClasses.get(baseSuperName);
         if (genericSuperDecl) {
+          // Pass the checker's superType to enable identity-based lookup
           instantiateClass(
             ctx,
             genericSuperDecl,
             specializedName,
             superTypeArgs,
+            undefined,
+            classType?.superType,
           );
         }
       }
@@ -1041,7 +1050,6 @@ export function preRegisterClassStruct(
     let currentSuperClassInfo: ClassInfo | undefined;
 
     // Use identity-based lookup via checker's superType
-    const classType = decl.inferredType as ClassType | undefined;
     if (classType?.superType) {
       currentSuperClassInfo = ctx.getClassInfoByCheckerType(
         classType.superType,

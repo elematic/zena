@@ -1163,6 +1163,83 @@ to identity-based ones. We started with superclass lookups because:
 2. `ctx.genericClasses.get(baseSuperName)` - Generic class template lookups (~5)
 3. `ctx.mixins.get(mixinName)` - Mixin lookups (~4)
 
+#### Step 2.6c: Migrate mapType Callers to mapCheckerTypeToWasmType
+
+**Goal:** Where AST nodes have `inferredType`, use `mapCheckerTypeToWasmType` instead
+of `mapType(ctx, annotation, context)`. This enables identity-based type resolution.
+
+**Status:** ✅ COMPLETED
+
+**Background:**
+Two functions convert types to WASM bytes:
+
+1. `mapType(ctx, TypeAnnotation, context?)` - AST-based, name lookups, triggers instantiations
+2. `mapCheckerTypeToWasmType(ctx, Type)` - Checker-type-based, identity lookups
+
+Where AST nodes have `inferredType` from the checker, we should prefer the identity-based
+path for correctness and to enable future bundler removal.
+
+**Changes:**
+
+1. **Field type mapping in `defineClassStruct`** (`classes.ts`)
+   - Use `mapCheckerTypeToWasmType(ctx, checkerFieldType)` when `classType.fields` has the type
+   - Falls back to AST-based `mapType` for compatibility
+
+2. **Field type mapping in `registerClassStruct`** (deprecated) (`classes.ts`)
+   - Same pattern: checker type first, AST fallback
+
+3. **Method param/return types in `registerClassMethods`** (`classes.ts`)
+   - Gets `checkerMethodType` from `classType.methods.get(methodName)`
+   - Uses checker types for parameters and return type when available
+
+4. **Accessor types in `registerClassMethods`** (`classes.ts`)
+   - Uses checker getter type for getter return type
+   - Falls back to AST annotation
+
+5. **Extension class `onType`** (`classes.ts`)
+   - Uses `mapCheckerTypeToWasmType(ctx, classType.onType)` when available
+   - Falls back to AST-based path
+
+6. **Function param/return types in `registerFunction`** (`functions.ts`)
+   - Gets `FunctionType` from `decl.inferredType`
+   - Uses checker types for parameters and return type
+
+7. **Declared function types in `registerDeclaredFunction`** (`functions.ts`)
+   - Same pattern: uses checker's FunctionType when available
+
+8. **Superclass instantiation in `preRegisterClassStruct`** (`classes.ts`)
+   - Passes `classType?.superType` to `instantiateClass` for identity-based registration
+
+**`instantiateClass` calls with checker type (identity-based):**
+
+| Location                    | Checker Type Passed     |
+| --------------------------- | ----------------------- |
+| `preRegisterClassStruct`    | `classType?.superType`  |
+| `defineClassStruct`         | `superClassType`        |
+| `instantiateClass` (nested) | `superClassType`        |
+| `mapCheckerTypeToWasmType`  | `classType`             |
+
+**`instantiateClass` calls without checker type (known limitations):**
+
+| Location               | Reason                                    |
+| ---------------------- | ----------------------------------------- |
+| `mapType` (internal)   | AST-based, no checker context available   |
+| `generateIsExpression` | Box for `is` expression - codegen-internal|
+| `unboxPrimitive`       | Box for unboxing - uses WASM types only   |
+| `boxPrimitive`         | Box for boxing - uses WASM types only     |
+| `resolveFixedArrayClass`| FixedArray wrapper - codegen-internal    |
+
+**Why these limitations are acceptable:**
+
+1. **Box/FixedArray are well-known types** with consistent naming across all modules
+2. **Name-based lookup works correctly** for these cases (no bundler renaming conflicts)
+3. **These are codegen-internal operations** that create runtime support types
+
+**Validation:**
+
+- All 1142 tests pass
+- No changes to test code required
+
 #### Step 2.7: Remove Bundler Entirely (NEW)
 
 **Goal:** Delete `bundler.ts` completely. All its responsibilities are handled elsewhere.
