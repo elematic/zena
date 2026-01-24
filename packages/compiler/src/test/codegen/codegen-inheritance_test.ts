@@ -13,7 +13,11 @@ async function compileAndRun(source: string): Promise<any> {
   if (errors.length > 0) {
     throw new Error(errors.join('\n'));
   }
-  const generator = new CodeGenerator(wrapAsModule(ast, source));
+  const generator = new CodeGenerator(
+    wrapAsModule(ast, source),
+    undefined,
+    checker.semanticContext,
+  );
   const wasmBytes = generator.generate();
   const result = (await WebAssembly.instantiate(wasmBytes, {})) as any;
   return result.instance.exports;

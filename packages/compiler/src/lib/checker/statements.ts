@@ -739,13 +739,32 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
     }
 
     if (valueExport) {
-      ctx.declare(localName, valueExport.type, 'let');
+      // Pass the exported declaration (if any) and modulePath to track the binding
+      ctx.declare(
+        localName,
+        valueExport.type,
+        'let',
+        valueExport.declaration,
+        importedModule.path,
+      );
     }
     if (typeExport) {
-      ctx.declare(localName, typeExport.type, 'type');
+      ctx.declare(
+        localName,
+        typeExport.type,
+        'type',
+        typeExport.declaration,
+        importedModule.path,
+      );
     }
     if (legacyExport) {
-      ctx.declare(localName, legacyExport.type, legacyExport.kind);
+      ctx.declare(
+        localName,
+        legacyExport.type,
+        legacyExport.kind,
+        legacyExport.declaration,
+        importedModule.path,
+      );
     }
   }
 }
@@ -998,12 +1017,14 @@ function checkPattern(
 ) {
   switch (pattern.type) {
     case NodeType.Identifier:
-      ctx.declare(pattern.name, type, kind, declaration);
+      // Use the Identifier pattern itself as the declaration for binding resolution
+      ctx.declare(pattern.name, type, kind, pattern);
       break;
 
     case NodeType.AsPattern: {
       const asPattern = pattern as AsPattern;
-      ctx.declare(asPattern.name.name, type, kind, declaration);
+      // Use the Identifier in the AsPattern for binding resolution
+      ctx.declare(asPattern.name.name, type, kind, asPattern.name);
       checkPattern(ctx, asPattern.pattern, type, kind, declaration);
       break;
     }
@@ -2300,7 +2321,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   // Declare parameters
   for (const param of method.params) {
     const type = resolveParameterType(ctx, param);
-    ctx.declare(param.name.name, type, 'let');
+    ctx.declare(param.name.name, type, 'let', param);
 
     if (param.initializer) {
       const initType = checkExpression(ctx, param.initializer);
@@ -2367,8 +2388,8 @@ function checkAccessorDeclaration(
     const previousReturnType = ctx.currentFunctionReturnType;
     ctx.currentFunctionReturnType = Types.Void;
 
-    // Declare parameter
-    ctx.declare(decl.setter.param.name, propertyType, 'let');
+    // Declare parameter (pass the Identifier node as the declaration)
+    ctx.declare(decl.setter.param.name, propertyType, 'let', decl.setter.param);
 
     for (const stmt of decl.setter.body.body) {
       checkStatement(ctx, stmt);
@@ -2700,7 +2721,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       ctx.enterScope();
       member.params.forEach((param, index) => {
         const type = methodType!.parameters[index];
-        ctx.declare(param.name.name, type, 'let');
+        ctx.declare(param.name.name, type, 'let', param);
       });
       if (member.body) {
         checkStatement(ctx, member.body);
@@ -2734,7 +2755,12 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       if (member.setter) {
         ctx.currentFunctionReturnType = Types.Void;
         ctx.enterScope();
-        ctx.declare(member.setter.param.name, fieldType, 'let');
+        ctx.declare(
+          member.setter.param.name,
+          fieldType,
+          'let',
+          member.setter.param,
+        );
         checkStatement(ctx, member.setter.body);
         ctx.exitScope();
       }
@@ -2817,7 +2843,8 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
       kind: TypeKind.Record,
       properties: fields,
     };
-    ctx.declare(name, enumValueType, 'let');
+    // Pass the enum declaration for value binding resolution
+    ctx.declare(name, enumValueType, 'let', decl);
 
     if (decl.exported && ctx.module) {
       ctx.module.exports.set(`type:${name}`, {
@@ -2958,7 +2985,8 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
     properties: fields,
   };
 
-  ctx.declare(name, enumValueType, 'let');
+  // Pass the enum declaration as the value declaration so codegen can resolve enum references
+  ctx.declare(name, enumValueType, 'let', decl);
 
   if (decl.exported && ctx.module) {
     ctx.module.exports.set(`type:${name}`, {type: enumType, kind: 'type'});

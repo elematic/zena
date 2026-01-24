@@ -14,6 +14,7 @@ import {
 // Re-export types from context for external use
 export type {SymbolInfo, Declaration} from './context.js';
 export {SemanticContext} from './semantic-context.js';
+import type {SemanticContext} from './semantic-context.js';
 
 /**
  * The TypeChecker analyzes the AST to validate types, resolve symbols,
@@ -64,6 +65,15 @@ export class TypeChecker {
     {modulePath: string; exportName: string}
   > {
     return this.#ctx.usedPreludeSymbols;
+  }
+
+  /**
+   * Get the semantic context used by this checker.
+   * The semantic context stores resolved bindings and other semantic
+   * information that is shared with code generation.
+   */
+  get semanticContext(): SemanticContext {
+    return this.#ctx.semanticContext;
   }
 
   check(): Diagnostic[] {

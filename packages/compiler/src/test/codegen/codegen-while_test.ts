@@ -10,7 +10,11 @@ async function compile(input: string) {
   const ast = parser.parse();
   const checker = TypeChecker.forProgram(ast);
   checker.check();
-  const codegen = new CodeGenerator(wrapAsModule(ast, input));
+  const codegen = new CodeGenerator(
+    wrapAsModule(ast, input),
+    undefined,
+    checker.semanticContext,
+  );
   const bytes = codegen.generate();
   const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);
   return result.instance.exports;

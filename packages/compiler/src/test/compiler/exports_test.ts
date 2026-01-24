@@ -46,7 +46,11 @@ describe('Exports', () => {
     const compiler = new Compiler(host);
     const modules = compiler.compile('/main.zena');
 
-    const generator = new CodeGenerator(modules, '/main.zena');
+    const generator = new CodeGenerator(
+      modules,
+      '/main.zena',
+      compiler.semanticContext,
+    );
     const wasmBytes = generator.generate();
 
     // Verify exports
@@ -99,7 +103,11 @@ describe('Exports', () => {
     const compiler = new Compiler(host);
     const modules = compiler.compile('/main.zena');
 
-    const generator = new CodeGenerator(modules, '/main.zena');
+    const generator = new CodeGenerator(
+      modules,
+      '/main.zena',
+      compiler.semanticContext,
+    );
     const wasmBytes = generator.generate();
 
     const module = await WebAssembly.compile(wasmBytes as any);

@@ -12,7 +12,9 @@ import {
 import type {
   ClassDeclaration,
   DeclareFunction,
+  EnumDeclaration,
   FunctionExpression,
+  Identifier,
   InterfaceDeclaration,
   MixinDeclaration,
   Parameter,
@@ -31,13 +33,15 @@ import {SemanticContext} from './semantic-context.js';
 export type Declaration =
   | Parameter
   | VariableDeclaration
+  | Identifier
   | FunctionExpression
   | DeclareFunction
   | ClassDeclaration
   | InterfaceDeclaration
   | MixinDeclaration
   | TypeAliasDeclaration
-  | TypeParameter;
+  | TypeParameter
+  | EnumDeclaration;
 
 export interface SymbolInfo {
   type: Type;
@@ -302,12 +306,14 @@ export class CheckerContext {
    * @param type The semantic type
    * @param kind 'let' for immutable values, 'var' for mutable, 'type' for type declarations
    * @param declaration Optional AST node that declares this symbol
+   * @param modulePath Optional module path (for imported symbols)
    */
   declare(
     name: string,
     type: Type,
     kind: 'let' | 'var' | 'type' = 'let',
     declaration?: Declaration,
+    modulePath?: string,
   ) {
     const scope = this.scopes[this.scopes.length - 1];
     const key = kind === 'type' ? `type:${name}` : `value:${name}`;
@@ -341,8 +347,10 @@ export class CheckerContext {
     if (declaration) {
       info.declaration = declaration;
     }
-    // Track module path for top-level declarations
-    if (this.module && this.scopes.length === 1) {
+    // Track module path for top-level declarations or explicit imports
+    if (modulePath) {
+      info.modulePath = modulePath;
+    } else if (this.module && this.scopes.length === 1) {
       info.modulePath = this.module.path;
     }
     scope.set(key, info);
@@ -368,7 +376,11 @@ export class CheckerContext {
         modulePath: exportInfo.modulePath,
         exportName: exportInfo.exportName,
       });
-      return exportInfo.info;
+      // Return info with modulePath set to mark it as a global from another module
+      return {
+        ...exportInfo.info,
+        modulePath: exportInfo.modulePath,
+      };
     }
 
     // Fallback for legacy/unmangled prelude exports
@@ -379,7 +391,11 @@ export class CheckerContext {
           modulePath: exportInfo.modulePath,
           exportName: exportInfo.exportName,
         });
-        return exportInfo.info;
+        // Return info with modulePath set to mark it as a global from another module
+        return {
+          ...exportInfo.info,
+          modulePath: exportInfo.modulePath,
+        };
       }
     }
 

@@ -10,7 +10,11 @@ async function compileAndRun(input: string): Promise<number> {
   const ast = parser.parse();
   const checker = TypeChecker.forProgram(ast);
   checker.check();
-  const codegen = new CodeGenerator(wrapAsModule(ast, input));
+  const codegen = new CodeGenerator(
+    wrapAsModule(ast, input),
+    undefined,
+    checker.semanticContext,
+  );
   const bytes = codegen.generate();
   const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);
   const {main} = result.instance.exports as {main: () => number};
@@ -109,7 +113,11 @@ suite('Codegen: Private Fields', () => {
     const ast = parser.parse();
     const checker = TypeChecker.forProgram(ast);
     checker.check();
-    const codegen = new CodeGenerator(wrapAsModule(ast, source1));
+    const codegen = new CodeGenerator(
+      wrapAsModule(ast, source1),
+      undefined,
+      checker.semanticContext,
+    );
     const bytesPrivate = codegen.generate();
 
     // Verify the generated code works correctly
@@ -137,7 +145,11 @@ suite('Codegen: Private Fields', () => {
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
+    const codegen2 = new CodeGenerator(
+      wrapAsModule(ast2, source2),
+      undefined,
+      checker2.semanticContext,
+    );
     const bytesPublic = codegen2.generate();
 
     // Count call_ref (0x14) in both versions

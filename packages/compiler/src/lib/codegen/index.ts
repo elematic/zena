@@ -453,6 +453,9 @@ export class CodeGenerator {
 
     this.#ctx.defineGlobal(decl.name.name, globalIndex, globalType);
 
+    // Register the enum declaration for binding-based lookup
+    this.#ctx.registerGlobalByDecl(decl, globalIndex);
+
     if (decl.exported) {
       this.#ctx.module.addExport(
         decl.name.name,

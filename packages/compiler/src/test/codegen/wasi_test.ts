@@ -36,7 +36,11 @@ suite('CodeGenerator - WASI', () => {
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
 
-    const codegen = new CodeGenerator(wrapAsModule(ast, input));
+    const codegen = new CodeGenerator(
+      wrapAsModule(ast, input),
+      undefined,
+      checker.semanticContext,
+    );
     const wasmBuffer = codegen.generate();
 
     const {imports, setMemory, output} = createWasiImports();

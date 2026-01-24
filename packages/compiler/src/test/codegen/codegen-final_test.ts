@@ -116,7 +116,11 @@ suite('CodeGenerator - Final Modifier', () => {
     const ast1 = parser1.parse();
     const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
-    const codegen1 = new CodeGenerator(wrapAsModule(ast1, source1));
+    const codegen1 = new CodeGenerator(
+      wrapAsModule(ast1, source1),
+      undefined,
+      checker1.semanticContext,
+    );
     const bytesFinal = codegen1.generate();
 
     // Version with non-final method
@@ -134,7 +138,11 @@ suite('CodeGenerator - Final Modifier', () => {
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
+    const codegen2 = new CodeGenerator(
+      wrapAsModule(ast2, source2),
+      undefined,
+      checker2.semanticContext,
+    );
     const bytesNonFinal = codegen2.generate();
 
     const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));
@@ -174,7 +182,11 @@ suite('CodeGenerator - Final Modifier', () => {
     const ast1 = parser1.parse();
     const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
-    const codegen1 = new CodeGenerator(wrapAsModule(ast1, source1));
+    const codegen1 = new CodeGenerator(
+      wrapAsModule(ast1, source1),
+      undefined,
+      checker1.semanticContext,
+    );
     const bytesFinalClass = codegen1.generate();
 
     // Version with non-final class
@@ -192,7 +204,11 @@ suite('CodeGenerator - Final Modifier', () => {
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
+    const codegen2 = new CodeGenerator(
+      wrapAsModule(ast2, source2),
+      undefined,
+      checker2.semanticContext,
+    );
     const bytesNonFinalClass = codegen2.generate();
 
     const finalClassCallRefs = countCallRef(new Uint8Array(bytesFinalClass));
@@ -234,7 +250,11 @@ suite('CodeGenerator - Final Modifier', () => {
     const ast1 = parser1.parse();
     const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
-    const codegen1 = new CodeGenerator(wrapAsModule(ast1, source1));
+    const codegen1 = new CodeGenerator(
+      wrapAsModule(ast1, source1),
+      undefined,
+      checker1.semanticContext,
+    );
     const bytesFinal = codegen1.generate();
 
     // Version with non-final accessor
@@ -255,7 +275,11 @@ suite('CodeGenerator - Final Modifier', () => {
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
+    const codegen2 = new CodeGenerator(
+      wrapAsModule(ast2, source2),
+      undefined,
+      checker2.semanticContext,
+    );
     const bytesNonFinal = codegen2.generate();
 
     const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));
@@ -296,7 +320,11 @@ suite('CodeGenerator - Final Modifier', () => {
     const ast1 = parser1.parse();
     const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
-    const codegen1 = new CodeGenerator(wrapAsModule(ast1, source1));
+    const codegen1 = new CodeGenerator(
+      wrapAsModule(ast1, source1),
+      undefined,
+      checker1.semanticContext,
+    );
     const bytesFinal = codegen1.generate();
 
     // Version with non-final accessor
@@ -319,7 +347,11 @@ suite('CodeGenerator - Final Modifier', () => {
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
+    const codegen2 = new CodeGenerator(
+      wrapAsModule(ast2, source2),
+      undefined,
+      checker2.semanticContext,
+    );
     const bytesNonFinal = codegen2.generate();
 
     const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));
@@ -355,7 +387,11 @@ suite('CodeGenerator - Final Modifier', () => {
     const ast1 = parser1.parse();
     const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
-    const codegen1 = new CodeGenerator(wrapAsModule(ast1, source1));
+    const codegen1 = new CodeGenerator(
+      wrapAsModule(ast1, source1),
+      undefined,
+      checker1.semanticContext,
+    );
     const bytesFinal = codegen1.generate();
 
     // Version with non-final field
@@ -373,7 +409,11 @@ suite('CodeGenerator - Final Modifier', () => {
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
+    const codegen2 = new CodeGenerator(
+      wrapAsModule(ast2, source2),
+      undefined,
+      checker2.semanticContext,
+    );
     const bytesNonFinal = codegen2.generate();
 
     const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));

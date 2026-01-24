@@ -13,7 +13,9 @@
 import type {
   ClassDeclaration,
   DeclareFunction,
+  EnumDeclaration,
   FunctionExpression,
+  Identifier,
   ImportDeclaration,
   InterfaceDeclaration,
   MixinDeclaration,
@@ -40,19 +42,22 @@ import type {
  */
 export interface LocalBinding {
   readonly kind: 'local';
-  /** The parameter or variable declaration AST node */
-  readonly declaration: Parameter | VariableDeclaration;
+  /**
+   * The parameter or variable declaration AST node.
+   * For accessor setter parameters, this may be an Identifier.
+   */
+  readonly declaration: Parameter | VariableDeclaration | Identifier;
   /** The semantic type of the binding */
   readonly type: Type;
 }
 
 /**
- * A module-level variable (const/let/var at top level).
+ * A module-level variable (const/let/var at top level) or enum.
  */
 export interface GlobalBinding {
   readonly kind: 'global';
-  /** The variable declaration AST node */
-  readonly declaration: VariableDeclaration;
+  /** The variable or enum declaration AST node */
+  readonly declaration: VariableDeclaration | EnumDeclaration;
   /** The module path where this is declared */
   readonly modulePath: string;
   /** The semantic type of the binding */
@@ -233,6 +238,8 @@ export const getDeclaration = (
 ):
   | Parameter
   | VariableDeclaration
+  | EnumDeclaration
+  | Identifier
   | FunctionExpression
   | DeclareFunction
   | ClassDeclaration
@@ -295,13 +302,15 @@ export interface CreateBindingOptions {
 type Declaration =
   | Parameter
   | VariableDeclaration
+  | Identifier
   | FunctionExpression
   | DeclareFunction
   | ClassDeclaration
   | InterfaceDeclaration
   | MixinDeclaration
   | TypeAliasDeclaration
-  | TypeParameter;
+  | TypeParameter
+  | EnumDeclaration;
 
 /**
  * Create a ResolvedBinding from symbol information.
@@ -431,23 +440,29 @@ const createValueBinding = (
     if (!declaration) return undefined;
     if (
       declaration.type !== 'Parameter' &&
-      declaration.type !== 'VariableDeclaration'
+      declaration.type !== 'VariableDeclaration' &&
+      declaration.type !== 'Identifier'
     ) {
       return undefined;
     }
     return {
       kind: 'local',
-      declaration: declaration as Parameter | VariableDeclaration,
+      declaration: declaration as Parameter | VariableDeclaration | Identifier,
       type,
     };
   }
 
-  // Global variables
+  // Global variables and enums
   if (!declaration) return undefined;
-  if (declaration.type !== 'VariableDeclaration') return undefined;
+  if (
+    declaration.type !== 'VariableDeclaration' &&
+    declaration.type !== 'EnumDeclaration'
+  ) {
+    return undefined;
+  }
   return {
     kind: 'global',
-    declaration: declaration as VariableDeclaration,
+    declaration: declaration as VariableDeclaration | EnumDeclaration,
     modulePath: modulePath ?? '',
     type,
   };

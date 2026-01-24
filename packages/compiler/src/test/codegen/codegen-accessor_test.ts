@@ -36,7 +36,11 @@ suite('CodeGenerator - Accessors', () => {
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
 
-    const codegen = new CodeGenerator(wrapAsModule(ast, input));
+    const codegen = new CodeGenerator(
+      wrapAsModule(ast, input),
+      undefined,
+      checker.semanticContext,
+    );
     const wasmBuffer = codegen.generate();
 
     const result = await WebAssembly.instantiate(wasmBuffer);
@@ -70,7 +74,11 @@ suite('CodeGenerator - Accessors', () => {
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
 
-    const codegen = new CodeGenerator(wrapAsModule(ast, input));
+    const codegen = new CodeGenerator(
+      wrapAsModule(ast, input),
+      undefined,
+      checker.semanticContext,
+    );
     const wasmBuffer = codegen.generate();
 
     const result = await WebAssembly.instantiate(wasmBuffer);

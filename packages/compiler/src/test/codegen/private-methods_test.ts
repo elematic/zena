@@ -96,7 +96,11 @@ suite('Codegen: Private Methods', () => {
     const ast = parser.parse();
     const checker = TypeChecker.forProgram(ast);
     checker.check();
-    const codegen = new CodeGenerator(wrapAsModule(ast, source));
+    const codegen = new CodeGenerator(
+      wrapAsModule(ast, source),
+      undefined,
+      checker.semanticContext,
+    );
     const bytes = codegen.generate();
 
     // Verify the generated code works correctly
@@ -123,7 +127,11 @@ suite('Codegen: Private Methods', () => {
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(wrapAsModule(ast2, sourceWithPublic));
+    const codegen2 = new CodeGenerator(
+      wrapAsModule(ast2, sourceWithPublic),
+      undefined,
+      checker2.semanticContext,
+    );
     const bytesPublic = codegen2.generate();
 
     // Count call_ref (0x14) in both versions

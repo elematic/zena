@@ -367,13 +367,13 @@ function checkMatchPattern(
       // Variable pattern: matches anything, binds variable
       // If name is '_', it's a wildcard (no binding)
       if (pattern.name !== '_') {
-        ctx.declare(pattern.name, discriminantType);
+        ctx.declare(pattern.name, discriminantType, 'let', pattern);
       }
       break;
     }
     case NodeType.AsPattern: {
       const asPattern = pattern as AsPattern;
-      ctx.declare(asPattern.name.name, discriminantType);
+      ctx.declare(asPattern.name.name, discriminantType, 'let', asPattern.name);
       checkMatchPattern(ctx, asPattern.pattern, discriminantType);
       break;
     }
@@ -668,7 +668,8 @@ function checkMatchPattern(
             const rightInfo = rightVars.get(key)!;
             const mergedType = createUnionType([leftInfo.type, rightInfo.type]);
             const name = key.includes(':') ? key.split(':')[1] : key;
-            ctx.declare(name, mergedType, leftInfo.kind);
+            // Use the left declaration for the merged binding
+            ctx.declare(name, mergedType, leftInfo.kind, leftInfo.declaration);
           }
         }
       }
@@ -790,7 +791,7 @@ function checkCatchClause(ctx: CheckerContext, clause: CatchClause): Type {
   // If there's a parameter, bind it to the Error type (or eqref for now)
   if (clause.param) {
     const errorType = ctx.resolveType('Error') ?? Types.Unknown;
-    ctx.declare(clause.param.name, errorType, 'let');
+    ctx.declare(clause.param.name, errorType, 'let', clause.param);
   }
 
   const bodyType = checkBlockExpressionType(ctx, clause.body);
