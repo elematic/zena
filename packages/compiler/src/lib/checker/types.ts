@@ -236,6 +236,17 @@ export function resolveTypeAnnotation(
   ctx: CheckerContext,
   annotation: TypeAnnotation,
 ): Type {
+  const result = resolveTypeAnnotationInternal(ctx, annotation);
+  // Attach the resolved type to the annotation for use in codegen.
+  // This enables identity-based lookups without re-resolving names.
+  annotation.inferredType = result;
+  return result;
+}
+
+function resolveTypeAnnotationInternal(
+  ctx: CheckerContext,
+  annotation: TypeAnnotation,
+): Type {
   if (annotation.type === NodeType.LiteralTypeAnnotation) {
     return {
       kind: TypeKind.Literal,

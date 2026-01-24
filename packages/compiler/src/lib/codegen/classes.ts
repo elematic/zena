@@ -2727,7 +2727,11 @@ export function getCheckerTypeKeyForSpecialization(
     }
     case TypeKind.TypeAlias: {
       const aliasType = type as TypeAliasType;
-      // For type aliases (including distinct), use the target type's key
+      // For distinct types, preserve the alias name to keep them distinguishable
+      // For regular type aliases, use the target type's key (they're transparent)
+      if (aliasType.isDistinct) {
+        return aliasType.name;
+      }
       return getCheckerTypeKeyForSpecialization(aliasType.target, ctx);
     }
     case TypeKind.Symbol:
@@ -2818,8 +2822,14 @@ export function getSpecializedName(
     const resolved = resolveAnnotation(arg, context);
     // If the type annotation has a checker type (inferredType), use that for
     // identity-based naming to avoid collisions with same-named types from
-    // different modules
-    if (resolved.inferredType) {
+    // different modules.
+    // HOWEVER: if the inferredType contains unresolved type parameters, we need
+    // to fall through to the context-based resolution, which will resolve names
+    // like 'K' and 'V' to their concrete types via the context map.
+    if (
+      resolved.inferredType &&
+      !typeContainsTypeParameter(resolved.inferredType)
+    ) {
       return getCheckerTypeKeyForSpecialization(resolved.inferredType, ctx);
     }
     // Try to resolve the class name to a bundled name using the current module context
@@ -2944,7 +2954,10 @@ function mapTypeInternal(
   // If the TypeAnnotation has an attached checker type (inferredType), use
   // identity-based lookup directly. This handles cases where the annotation
   // was created from a checker type with a unique bundled name.
-  if (type.inferredType) {
+  // HOWEVER: if the inferredType contains unresolved type parameters, we need
+  // to fall through to the type parameter resolution logic below. Type parameters
+  // are resolved via ctx.currentTypeContext which maps names to TypeAnnotations.
+  if (type.inferredType && !typeContainsTypeParameter(type.inferredType)) {
     return mapCheckerTypeToWasmType(ctx, type.inferredType);
   }
 
@@ -4380,10 +4393,16 @@ export function typeToTypeAnnotation(
     case TypeKind.TypeAlias: {
       const aliasType = type as TypeAliasType;
       if (aliasType.isDistinct) {
-        // For distinct type aliases (including enums), we need to map to the underlying type
-        // in code generation, since WASM doesn't have nominal typing
-        return typeToTypeAnnotation(aliasType.target, erasedTypeParams, ctx);
+        // For distinct type aliases, preserve the alias name and attach inferredType.
+        // This ensures Box<Meters> and Box<Seconds> get different specialization names
+        // even though both map to i32 at the WASM level.
+        return {
+          type: NodeType.TypeAnnotation,
+          name: aliasType.name,
+          inferredType: type,
+        };
       }
+      // For regular type aliases (transparent), use the target type
       return typeToTypeAnnotation(aliasType.target, erasedTypeParams, ctx);
     }
     case TypeKind.ByteArray:

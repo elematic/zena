@@ -1420,6 +1420,64 @@ libraries directly.
 - Update: `packages/compiler/src/lib/checker/context.ts` - Track wellKnownTypes ✅ (already done)
 - ~~Update: Tests that assert on bundled names~~ Not needed - identity-based lookups handle this
 
+#### Step 2.8: Attach inferredType to TypeAnnotation Nodes
+
+**Goal:** Have the checker populate `inferredType` on TypeAnnotation nodes, then
+remove ad-hoc name resolution from codegen.
+
+**Status:** ✅ COMPLETED
+
+**Problem:** Codegen currently has `resolveClassByName()` which manually walks AST
+nodes to resolve class names. This is wrong because:
+
+1. It bypasses proper scope resolution (won't catch type aliases shadowing classes)
+2. Name resolution should happen in exactly one place (the checker)
+3. The "first try this, then that" pattern is fragile
+
+**Root cause:** The checker's `resolveTypeAnnotation()` resolves types properly via
+scope-based lookup, but doesn't attach the result to the TypeAnnotation node itself.
+So codegen loses the checker's resolution and has to re-resolve names (poorly).
+
+**Solution:** TypeAnnotation nodes already extend `Node` which has `inferredType?: Type`.
+The checker just needs to set it.
+
+**Implementation completed:**
+
+1. ✅ **Checker: Attach inferredType to TypeAnnotations**
+   - `resolveTypeAnnotation()` now wraps `resolveTypeAnnotationInternal()` and sets
+     `annotation.inferredType = result` before returning
+   - All type annotations processed by the checker now have their resolved type attached
+
+2. ✅ **Codegen: Use inferredType for identity-based lookups**
+   - `mapTypeInternal()` checks for `inferredType` and uses `mapCheckerTypeToWasmType()`
+   - `getSpecializedName()` checks for `inferredType` and uses `getCheckerTypeKeyForSpecialization()`
+   - Added `typeContainsTypeParameter()` guard to skip inferredType when it has unresolved
+     type parameters (falls back to context-based resolution)
+
+3. ✅ **Fixed distinct type handling**
+   - `typeToTypeAnnotation()` now preserves distinct type aliases (returns annotation with
+     name and inferredType, not the target type)
+   - `computeTypeKey()` in checker now uses unique alias ID for distinct types
+   - `getCheckerTypeKeyForSpecialization()` preserves distinct type names
+   - This ensures `Box<Meters>` and `Box<Seconds>` get different specialization names
+
+4. ✅ **Tests**
+   - All 1139 tests pass
+   - "Boxed distinct types are distinguishable" test now passes correctly
+
+**Remaining cleanup (deferred):**
+
+- `resolveClassByName()` and `getTypeKeyWithContext()` are still present as fallbacks
+  for edge cases where `inferredType` is missing. These could be removed once we verify
+  all TypeAnnotation creation paths attach `inferredType`.
+
+**Files changed:**
+
+- `packages/compiler/src/lib/checker/types.ts` - Added wrapper to attach `inferredType`
+- `packages/compiler/src/lib/checker/context.ts` - Fixed `computeTypeKey()` for distinct types
+- `packages/compiler/src/lib/codegen/classes.ts` - Added type parameter guards, fixed
+  `typeToTypeAnnotation()` for distinct types, fixed `getCheckerTypeKeyForSpecialization()`
+
 ### Round 3: Type Identity Simplification
 
 **Goal:** Remove name-based type comparison fallbacks
@@ -1682,19 +1740,19 @@ Each phase is somewhat independent:
 
 ### Major Files to Update
 
-| File                                               | Changes                                                   |
-| -------------------------------------------------- | --------------------------------------------------------- |
-| ~~`packages/compiler/src/lib/bundler.ts`~~         | ✅ **DELETED** (2026-01-23)                               |
-| `packages/compiler/src/lib/compiler.ts`            | ✅ Removed `bundle()` method, uses `compile()` only       |
-| `packages/compiler/src/lib/checker/context.ts`     | Refactor for single-pass + topological ordering           |
-| `packages/compiler/src/lib/checker/types.ts`       | Simplify type comparison                                  |
-| `packages/compiler/src/lib/checker/expressions.ts` | Populate SemanticContext                                  |
-| `packages/compiler/src/lib/checker/statements.ts`  | Populate SemanticContext                                  |
-| `packages/compiler/src/lib/checker/classes.ts`     | Populate SemanticContext                                  |
-| `packages/compiler/src/lib/codegen/index.ts`       | ✅ Accepts `Module[]`, uses struct indices                |
-| `packages/compiler/src/lib/codegen/context.ts`     | ✅ Added `resolveClassByName()` for module-aware lookups  |
-| `packages/compiler/src/lib/codegen/classes.ts`     | ✅ Added `getTypeKeyWithContext()` for identity-based keys|
-| `packages/compiler/src/lib/ast.ts`                 | Mark fields readonly (gradual)                            |
+| File                                               | Changes                                                    |
+| -------------------------------------------------- | ---------------------------------------------------------- |
+| ~~`packages/compiler/src/lib/bundler.ts`~~         | ✅ **DELETED** (2026-01-23)                                |
+| `packages/compiler/src/lib/compiler.ts`            | ✅ Removed `bundle()` method, uses `compile()` only        |
+| `packages/compiler/src/lib/checker/context.ts`     | Refactor for single-pass + topological ordering            |
+| `packages/compiler/src/lib/checker/types.ts`       | Simplify type comparison                                   |
+| `packages/compiler/src/lib/checker/expressions.ts` | Populate SemanticContext                                   |
+| `packages/compiler/src/lib/checker/statements.ts`  | Populate SemanticContext                                   |
+| `packages/compiler/src/lib/checker/classes.ts`     | Populate SemanticContext                                   |
+| `packages/compiler/src/lib/codegen/index.ts`       | ✅ Accepts `Module[]`, uses struct indices                 |
+| `packages/compiler/src/lib/codegen/context.ts`     | ✅ Added `resolveClassByName()` for module-aware lookups   |
+| `packages/compiler/src/lib/codegen/classes.ts`     | ✅ Added `getTypeKeyWithContext()` for identity-based keys |
+| `packages/compiler/src/lib/ast.ts`                 | Mark fields readonly (gradual)                             |
 
 ### Test Files to Update
 

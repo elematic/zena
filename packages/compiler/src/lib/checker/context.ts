@@ -625,7 +625,15 @@ export class CheckerContext {
       }
       case TypeKind.TypeAlias: {
         const ta = type as import('../types.js').TypeAliasType;
-        // Type aliases resolve to their target for structural comparison
+        // For distinct type aliases, preserve the alias identity in the key
+        // This ensures Box<Meters> and Box<Seconds> are different types
+        // even if both resolve to i32 structurally
+        if (ta.isDistinct) {
+          // Use the alias's own ID to distinguish it from other distinct types
+          const aliasId = this.getTypeId(ta);
+          return `TA:${aliasId}`;
+        }
+        // Regular type aliases resolve to their target for structural comparison
         return this.computeTypeKey(ta.target);
       }
       default:
