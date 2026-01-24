@@ -1527,6 +1527,47 @@ classes with identity-based lookups.
 objects with identity chains like `ClassType.genericSource`. The checker resolves
 names but doesn't attach the resolved declaration to call expressions.
 
+**Status:** 🚧 IN PROGRESS (2026-01-23)
+
+See [Name Resolution Design](./name-resolution.md) for the detailed architecture.
+
+#### Infrastructure Completed
+
+1. ✅ **ResolvedBinding types** (`bindings.ts`)
+   - Discriminated union: `LocalBinding`, `GlobalBinding`, `FunctionBinding`,
+     `ClassBinding`, `InterfaceBinding`, `MixinBinding`, `TypeAliasBinding`,
+     `TypeParameterBinding`, `ImportBinding`
+   - Helper functions: `isValueBinding()`, `isTypeBinding()`, `resolveImport()`,
+     `getDeclaration()`
+
+2. ✅ **SemanticContext binding storage** (`semantic-context.ts`)
+   - `#resolvedBindings = new Map<Identifier | MemberExpression, ResolvedBinding>()`
+   - `setResolvedBinding()`, `getResolvedBinding()`, `hasResolvedBinding()`
+
+3. ✅ **SymbolInfo declaration tracking** (`checker/context.ts`)
+   - Extended `SymbolInfo` with `declaration?: Declaration` and `modulePath?: string`
+   - Added `Declaration` type alias (union of all declarable AST nodes)
+   - Updated `declare()` to accept optional `declaration` parameter
+   - Added `resolveValueInfo()` returning full `SymbolInfo` (not just type)
+
+#### Remaining Work
+
+1. **Store bindings during type-checking** (Phase 2)
+   - Update `checkIdentifier()` to create `ResolvedBinding` from `SymbolInfo`
+   - Call `semanticContext.setResolvedBinding()` after resolution
+   - Handle all binding kinds (local, global, function, class, etc.)
+
+2. **Add codegen declaration registry** (Phase 3)
+   - Add `#localIndices`, `#globalIndices`, `#functionIndices` WeakMaps to `CodegenContext`
+   - Register declarations with WASM indices during codegen
+
+3. **Refactor codegen to use bindings** (Phase 3)
+   - Replace `ctx.resolveFunction()`, `ctx.getLocal()`, `ctx.resolveGlobal()`
+     with binding lookups via `semanticContext.getResolvedBinding()`
+
+4. **Clean up old resolution methods** (Phase 4)
+   - Remove or deprecate `resolveFunction()`, `resolveGlobal()`, `getLocal()`
+
 **Proposed solution (checker responsibility):**
 
 The checker should attach resolved declarations to AST nodes:
@@ -1545,26 +1586,24 @@ The checker should attach resolved declarations to AST nodes:
 - Checker already does the work - just needs to preserve it
 - Enables unified `lookupName()` in codegen that returns discriminated union
 
-**Unified lookup alternative:**
-
-Instead of separate `resolveFunction`, `resolveGlobal`, etc., have:
+**Unified lookup (implemented in bindings.ts):**
 
 ```typescript
 type ResolvedBinding =
-  | { kind: 'function', index: number }
-  | { kind: 'global', index: number, type: number[] }
-  | { kind: 'local', info: LocalInfo }
-  | { kind: 'class', info: ClassInfo }
-  | { kind: 'method', ... };
-
-lookupBinding(name: string): ResolvedBinding | undefined
+  | { kind: 'local', declaration: VariableDeclaration, ... }
+  | { kind: 'global', declaration: VariableDeclaration, ... }
+  | { kind: 'function', declaration: FunctionDeclaration | VariableDeclaration, ... }
+  | { kind: 'class', declaration: ClassDeclaration, ... }
+  | { kind: 'interface', declaration: InterfaceDeclaration, ... }
+  | { kind: 'mixin', declaration: MixinDeclaration, ... }
+  | { kind: 'type-alias', declaration: TypeAliasDeclaration, ... }
+  | { kind: 'type-parameter', declaration: TypeParameter, ... }
+  | { kind: 'import', binding: ResolvedBinding, ... };
 ```
 
-But the better approach is to not need name lookup in codegen at all - the
-checker should have already resolved everything.
-
-**Status:** Deferred - current implementation works. This is cleanup for
-architectural consistency with class lookups.
+The checker creates these bindings during name resolution and stores them in
+`SemanticContext`. Codegen looks up `semanticContext.getResolvedBinding(node)`
+and uses the declaration for identity-based index lookups.
 
 ### Round 3: Type Identity Simplification
 

@@ -3,6 +3,7 @@ export * from './lexer.js';
 export * from './ast.js';
 export * from './parser.js';
 export * from './types.js';
+export * from './bindings.js';
 export * from './checker/index.js';
 export * from './wasm.js';
 export * from './emitter.js';

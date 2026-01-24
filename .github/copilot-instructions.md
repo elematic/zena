@@ -201,6 +201,7 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Maps**: `docs/design/map.md`
     - **Mixins**: `docs/design/mixins.md`
     - **Modules**: `docs/design/modules.md`
+    - **Name Resolution**: `docs/design/name-resolution.md`
     - **Optimization**: `docs/design/optimization-strategy.md`
     - **Records & Tuples**: `docs/design/records-and-tuples.md`
     - **Standard Library**: `docs/design/standard-library.md`

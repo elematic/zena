@@ -7,15 +7,16 @@
  * 3. Clear separation between parsing, type-checking, and code generation
  * 4. Foundation for incremental compilation
  *
- * The context provides mappings from AST nodes to their inferred types.
- * This replaces mutable `inferredType` fields on AST nodes.
+ * The context provides mappings from AST nodes to their inferred types
+ * and resolved bindings.
  *
  * Note: Emitter-specific information (like WASM struct indices) is stored
  * in the emitter layer (CodegenContext), not here. This keeps SemanticContext
  * output-format agnostic.
  */
 
-import type {Node} from '../ast.js';
+import type {Identifier, MemberExpression, Node} from '../ast.js';
+import type {ResolvedBinding} from '../bindings.js';
 import type {Type} from '../types.js';
 
 /**
@@ -31,6 +32,18 @@ export class SemanticContext {
    * This replaces the `inferredType` field on Expression nodes.
    */
   readonly #nodeTypes = new Map<Node, Type>();
+
+  /**
+   * Map name references (Identifiers, MemberExpressions) to their resolved bindings.
+   * This is the result of name resolution during type checking.
+   *
+   * Example: For `let x = foo()`, the Identifier `foo` is mapped to a
+   * FunctionBinding pointing to the foo function declaration.
+   */
+  readonly #resolvedBindings = new Map<
+    Identifier | MemberExpression,
+    ResolvedBinding
+  >();
 
   // ===== Node Type Management =====
 
@@ -55,14 +68,50 @@ export class SemanticContext {
     return this.#nodeTypes.has(node);
   }
 
+  // ===== Resolved Binding Management =====
+
+  /**
+   * Store the resolved binding for a name reference.
+   * Called during type checking when an identifier is resolved.
+   *
+   * @param node The identifier or member expression being resolved
+   * @param binding The resolved binding (what the name refers to)
+   */
+  setResolvedBinding(
+    node: Identifier | MemberExpression,
+    binding: ResolvedBinding,
+  ): void {
+    this.#resolvedBindings.set(node, binding);
+  }
+
+  /**
+   * Get the resolved binding for a name reference.
+   * Returns undefined if the name hasn't been resolved (error case).
+   *
+   * @param node The identifier or member expression to look up
+   */
+  getResolvedBinding(
+    node: Identifier | MemberExpression,
+  ): ResolvedBinding | undefined {
+    return this.#resolvedBindings.get(node);
+  }
+
+  /**
+   * Check if a name reference has been resolved.
+   */
+  hasResolvedBinding(node: Identifier | MemberExpression): boolean {
+    return this.#resolvedBindings.has(node);
+  }
+
   // ===== Debugging =====
 
   /**
    * Get debug statistics about the context.
    */
-  get stats(): {nodeTypes: number} {
+  get stats(): {nodeTypes: number; resolvedBindings: number} {
     return {
       nodeTypes: this.#nodeTypes.size,
+      resolvedBindings: this.#resolvedBindings.size,
     };
   }
 }

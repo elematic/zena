@@ -9,12 +9,48 @@ import {
   TypeNames,
   TypeKind,
 } from '../types.js';
-import type {Program} from '../ast.js';
+import type {
+  ClassDeclaration,
+  DeclareFunction,
+  FunctionExpression,
+  InterfaceDeclaration,
+  MixinDeclaration,
+  Parameter,
+  Program,
+  TypeAliasDeclaration,
+  TypeParameter,
+  VariableDeclaration,
+} from '../ast.js';
 import type {Compiler, Module} from '../compiler.js';
+
+/**
+ * Declaration types that can be associated with a symbol.
+ * This enables tracking what AST node a name refers to.
+ */
+export type Declaration =
+  | Parameter
+  | VariableDeclaration
+  | FunctionExpression
+  | DeclareFunction
+  | ClassDeclaration
+  | InterfaceDeclaration
+  | MixinDeclaration
+  | TypeAliasDeclaration
+  | TypeParameter;
 
 export interface SymbolInfo {
   type: Type;
   kind: 'let' | 'var' | 'type';
+  /**
+   * The AST node that declares this symbol.
+   * Optional for backward compatibility with existing code.
+   */
+  declaration?: Declaration;
+  /**
+   * The module path where this symbol is declared.
+   * Set for top-level declarations to enable cross-module resolution.
+   */
+  modulePath?: string;
 }
 
 /**
@@ -251,7 +287,20 @@ export class CheckerContext {
     return undefined;
   }
 
-  declare(name: string, type: Type, kind: 'let' | 'var' | 'type' = 'let') {
+  /**
+   * Declare a symbol in the current scope.
+   *
+   * @param name The symbol name
+   * @param type The semantic type
+   * @param kind 'let' for immutable values, 'var' for mutable, 'type' for type declarations
+   * @param declaration Optional AST node that declares this symbol
+   */
+  declare(
+    name: string,
+    type: Type,
+    kind: 'let' | 'var' | 'type' = 'let',
+    declaration?: Declaration,
+  ) {
     const scope = this.scopes[this.scopes.length - 1];
     const key = kind === 'type' ? `type:${name}` : `value:${name}`;
 
@@ -279,7 +328,54 @@ export class CheckerContext {
       );
       return;
     }
-    scope.set(key, {type, kind});
+
+    const info: SymbolInfo = {type, kind};
+    if (declaration) {
+      info.declaration = declaration;
+    }
+    // Track module path for top-level declarations
+    if (this.module && this.scopes.length === 1) {
+      info.modulePath = this.module.path;
+    }
+    scope.set(key, info);
+  }
+
+  /**
+   * Resolve a value name and return the full SymbolInfo.
+   * Unlike resolveValue() which returns only the Type, this returns
+   * the full symbol info including the declaration (if tracked).
+   */
+  resolveValueInfo(name: string): SymbolInfo | undefined {
+    const key = `value:${name}`;
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      if (this.scopes[i].has(key)) {
+        return this.scopes[i].get(key);
+      }
+    }
+
+    // Check prelude
+    if (this.preludeExports.has(key)) {
+      const exportInfo = this.preludeExports.get(key)!;
+      this.usedPreludeSymbols.set(key, {
+        modulePath: exportInfo.modulePath,
+        exportName: exportInfo.exportName,
+      });
+      return exportInfo.info;
+    }
+
+    // Fallback for legacy/unmangled prelude exports
+    if (this.preludeExports.has(name)) {
+      const exportInfo = this.preludeExports.get(name)!;
+      if (exportInfo.info.kind !== 'type') {
+        this.usedPreludeSymbols.set(name, {
+          modulePath: exportInfo.modulePath,
+          exportName: exportInfo.exportName,
+        });
+        return exportInfo.info;
+      }
+    }
+
+    return undefined;
   }
 
   resolveValue(name: string): Type | undefined {

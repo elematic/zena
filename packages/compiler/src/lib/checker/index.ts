@@ -11,6 +11,10 @@ import {
   type ArrayType,
 } from '../types.js';
 
+// Re-export types from context for external use
+export type {SymbolInfo, Declaration} from './context.js';
+export {SemanticContext} from './semantic-context.js';
+
 /**
  * The TypeChecker analyzes the AST to validate types, resolve symbols,
  * and infer types for expressions. It populates the AST with type information

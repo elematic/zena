@@ -1,0 +1,264 @@
+/**
+ * Resolved bindings represent what a name resolves to at a usage site.
+ *
+ * During type checking, when an Identifier is encountered, the checker
+ * resolves it to a binding and stores it in SemanticContext. Code generation
+ * then uses these bindings to look up WASM indices without re-doing name
+ * resolution.
+ *
+ * This enables correct scoping semantics and removes duplicated resolution
+ * logic between the checker and codegen.
+ */
+
+import type {
+  ClassDeclaration,
+  DeclareFunction,
+  FunctionExpression,
+  ImportDeclaration,
+  InterfaceDeclaration,
+  MixinDeclaration,
+  Parameter,
+  TypeAliasDeclaration,
+  TypeParameter,
+  VariableDeclaration,
+} from './ast.js';
+import type {
+  ClassType,
+  FunctionType,
+  InterfaceType,
+  MixinType,
+  Type,
+  TypeParameterType,
+} from './types.js';
+
+// ============================================================
+// Binding Kinds
+// ============================================================
+
+/**
+ * A local variable or function parameter.
+ */
+export interface LocalBinding {
+  readonly kind: 'local';
+  /** The parameter or variable declaration AST node */
+  readonly declaration: Parameter | VariableDeclaration;
+  /** The semantic type of the binding */
+  readonly type: Type;
+}
+
+/**
+ * A module-level variable (const/let/var at top level).
+ */
+export interface GlobalBinding {
+  readonly kind: 'global';
+  /** The variable declaration AST node */
+  readonly declaration: VariableDeclaration;
+  /** The module path where this is declared */
+  readonly modulePath: string;
+  /** The semantic type of the binding */
+  readonly type: Type;
+}
+
+/**
+ * A named function (top-level or class method, not a closure).
+ * For closures, the variable holding the closure uses LocalBinding.
+ */
+export interface FunctionBinding {
+  readonly kind: 'function';
+  /** The function declaration/expression AST node */
+  readonly declaration: FunctionExpression | DeclareFunction;
+  /** The module path where this is declared */
+  readonly modulePath: string;
+  /** The semantic function type */
+  readonly type: FunctionType;
+  /** For overloaded functions, the specific overload resolved for this call */
+  readonly overloadIndex?: number;
+}
+
+/**
+ * A class in value position (i.e., used as a constructor).
+ * Example: `new Point(...)` - `Point` resolves to ClassBinding.
+ */
+export interface ClassBinding {
+  readonly kind: 'class';
+  /** The class declaration AST node */
+  readonly declaration: ClassDeclaration;
+  /** The module path where this is declared */
+  readonly modulePath: string;
+  /** The semantic class type */
+  readonly type: ClassType;
+}
+
+/**
+ * An interface binding (rarely used in value position, mainly for type checking).
+ */
+export interface InterfaceBinding {
+  readonly kind: 'interface';
+  /** The interface declaration AST node */
+  readonly declaration: InterfaceDeclaration;
+  /** The module path where this is declared */
+  readonly modulePath: string;
+  /** The semantic interface type */
+  readonly type: InterfaceType;
+}
+
+/**
+ * A mixin binding.
+ */
+export interface MixinBinding {
+  readonly kind: 'mixin';
+  /** The mixin declaration AST node */
+  readonly declaration: MixinDeclaration;
+  /** The module path where this is declared */
+  readonly modulePath: string;
+  /** The semantic mixin type */
+  readonly type: MixinType;
+}
+
+/**
+ * A type alias in value position (not common, mainly for `typeof` patterns).
+ */
+export interface TypeAliasBinding {
+  readonly kind: 'type-alias';
+  /** The type alias declaration AST node */
+  readonly declaration: TypeAliasDeclaration;
+  /** The module path where this is declared */
+  readonly modulePath: string;
+  /** The semantic type this alias refers to */
+  readonly type: Type;
+}
+
+/**
+ * A type parameter (e.g., `T` in `function foo<T>(x: T)`).
+ * Only valid within the generic scope.
+ */
+export interface TypeParameterBinding {
+  readonly kind: 'type-parameter';
+  /** The type parameter declaration node */
+  readonly declaration: TypeParameter;
+  /** The semantic type parameter type */
+  readonly type: TypeParameterType;
+}
+
+/**
+ * An import that re-exports to another binding.
+ * The `target` is the resolved binding from the source module.
+ */
+export interface ImportBinding {
+  readonly kind: 'import';
+  /** The local name used in this module */
+  readonly localName: string;
+  /** The import declaration AST node */
+  readonly importDeclaration: ImportDeclaration;
+  /** The resolved binding from the source module */
+  readonly target: ResolvedBinding;
+}
+
+// ============================================================
+// Union Type
+// ============================================================
+
+/**
+ * A resolved binding describes what a name reference resolves to.
+ * This is the result of name resolution during type checking.
+ */
+export type ResolvedBinding =
+  | LocalBinding
+  | GlobalBinding
+  | FunctionBinding
+  | ClassBinding
+  | InterfaceBinding
+  | MixinBinding
+  | TypeAliasBinding
+  | TypeParameterBinding
+  | ImportBinding;
+
+// ============================================================
+// Helper Functions
+// ============================================================
+
+/**
+ * Check if a binding is a value binding (can be used in expressions).
+ */
+export const isValueBinding = (binding: ResolvedBinding): boolean => {
+  switch (binding.kind) {
+    case 'local':
+    case 'global':
+    case 'function':
+    case 'class':
+    case 'import':
+      return true;
+    case 'interface':
+    case 'mixin':
+    case 'type-alias':
+    case 'type-parameter':
+      return false;
+  }
+};
+
+/**
+ * Check if a binding is a type binding (can be used in type annotations).
+ */
+export const isTypeBinding = (binding: ResolvedBinding): boolean => {
+  switch (binding.kind) {
+    case 'class':
+    case 'interface':
+    case 'mixin':
+    case 'type-alias':
+    case 'type-parameter':
+    case 'import':
+      return true;
+    case 'local':
+    case 'global':
+    case 'function':
+      return false;
+  }
+};
+
+/**
+ * Follow import bindings to their ultimate target.
+ */
+export const resolveImport = (binding: ResolvedBinding): ResolvedBinding => {
+  while (binding.kind === 'import') {
+    binding = binding.target;
+  }
+  return binding;
+};
+
+/**
+ * Get the declaration node from any binding.
+ */
+export const getDeclaration = (
+  binding: ResolvedBinding,
+):
+  | Parameter
+  | VariableDeclaration
+  | FunctionExpression
+  | DeclareFunction
+  | ClassDeclaration
+  | InterfaceDeclaration
+  | MixinDeclaration
+  | TypeAliasDeclaration
+  | TypeParameter
+  | ImportDeclaration => {
+  switch (binding.kind) {
+    case 'local':
+      return binding.declaration;
+    case 'global':
+      return binding.declaration;
+    case 'function':
+      return binding.declaration;
+    case 'class':
+      return binding.declaration;
+    case 'interface':
+      return binding.declaration;
+    case 'mixin':
+      return binding.declaration;
+    case 'type-alias':
+      return binding.declaration;
+    case 'type-parameter':
+      return binding.declaration;
+    case 'import':
+      return binding.importDeclaration;
+  }
+};
