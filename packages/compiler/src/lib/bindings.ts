@@ -420,6 +420,22 @@ const createValueBinding = (
         type: type as FunctionType,
       };
     }
+    // Check if it's a top-level variable with a function value (e.g., let foo = () => ...)
+    // Only create function binding for module-level (non-local) functions
+    if (
+      !isLocal &&
+      declaration &&
+      declaration.type === 'VariableDeclaration' &&
+      (declaration as VariableDeclaration).init?.type === 'FunctionExpression'
+    ) {
+      return {
+        kind: 'function',
+        declaration: (declaration as VariableDeclaration)
+          .init as FunctionExpression,
+        modulePath: modulePath ?? '',
+        type: type as FunctionType,
+      };
+    }
     // Variable holding a function value - treat as local/global based on scope
   }
 

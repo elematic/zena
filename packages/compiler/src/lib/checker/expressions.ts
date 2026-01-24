@@ -1269,6 +1269,15 @@ function checkAssignmentExpression(
       return Types.Unknown;
     }
 
+    // Create and store the resolved binding for codegen
+    const binding = createBinding(symbol, {
+      // Local if we're inside a function scope (scopes.length > 1 means we're past the global scope)
+      isLocal: !symbol.modulePath && ctx.scopes.length > 1,
+    });
+    if (binding) {
+      ctx.semanticContext.setResolvedBinding(expr.left, binding);
+    }
+
     if (symbol.kind !== 'var') {
       ctx.diagnostics.reportError(
         `Cannot assign to immutable variable '${varName}'.`,

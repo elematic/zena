@@ -87,7 +87,7 @@ import {
   generateFunctionStatement,
 } from './statements.js';
 import type {ClassInfo, InterfaceInfo} from './types.js';
-import type {ResolvedBinding} from '../bindings.js';
+import {resolveImport, type ResolvedBinding} from '../bindings.js';
 
 /**
  * Generates WASM instructions for an expression.
@@ -2722,12 +2722,22 @@ function generateCallExpression(
         return;
       }
 
-      if (
-        !ctx.getLocal(name) &&
-        (ctx.resolveFunction(name) !== undefined ||
-          ctx.genericFunctions.has(name) ||
-          ctx.functionOverloads.has(name))
-      ) {
+      // Check if this is a direct call to a global function using binding
+      const calleeBinding = ctx.semanticContext.getResolvedBinding(
+        expr.callee as Identifier,
+      );
+      const resolvedCalleeBinding = calleeBinding
+        ? resolveImport(calleeBinding)
+        : undefined;
+
+      // Check by binding, generic functions, overloads, or registered functions
+      const isFunctionBinding =
+        resolvedCalleeBinding?.kind === 'function' ||
+        ctx.genericFunctions.has(name) ||
+        ctx.functionOverloads.has(name) ||
+        ctx.functions.has(name);
+
+      if (!ctx.getLocal(name) && isFunctionBinding) {
         isDirectCall = true;
       }
     }
@@ -2813,7 +2823,23 @@ function generateCallExpression(
           targetFuncIndex = bestMatch.index;
         }
       } else {
-        targetFuncIndex = ctx.resolveFunction(name) ?? -1;
+        // Simple function call - try binding-based lookup first
+        const calleeBinding = ctx.semanticContext.getResolvedBinding(
+          expr.callee as Identifier,
+        );
+        if (calleeBinding) {
+          const resolved = resolveImport(calleeBinding);
+          if (resolved.kind === 'function') {
+            const index = ctx.getFunctionIndexByDecl(resolved.declaration);
+            if (index !== undefined) {
+              targetFuncIndex = index;
+            }
+          }
+        }
+        // Fall back to name-based lookup if binding lookup failed
+        if (targetFuncIndex === -1 && ctx.functions.has(name)) {
+          targetFuncIndex = ctx.functions.get(name)!;
+        }
       }
 
       if (targetFuncIndex !== -1) {
@@ -3478,34 +3504,45 @@ function generateAssignmentExpression(
       body.push(Opcode.local_tee);
       body.push(...WasmModule.encodeSignedLEB128(index));
     } else {
-      // Use resolveGlobal to handle imports and qualified names
-      const global = ctx.resolveGlobal(expr.left.name);
-      if (global) {
-        const valueType = inferType(ctx, expr.value);
-        if (
-          ((global.type.length > 1 &&
-            global.type[0] === ValType.ref_null &&
-            global.type[1] === ValType.anyref) ||
-            (global.type.length === 1 && global.type[0] === ValType.anyref)) &&
-          valueType.length === 1 &&
-          (valueType[0] === ValType.i32 ||
-            valueType[0] === ValType.i64 ||
-            valueType[0] === ValType.f32 ||
-            valueType[0] === ValType.f64)
-        ) {
-          boxPrimitive(ctx, valueType, body);
-        }
-
-        const temp = ctx.declareLocal('$$temp_global_assign', valueType);
-        body.push(Opcode.local_tee);
-        body.push(...WasmModule.encodeSignedLEB128(temp));
-        body.push(Opcode.global_set);
-        body.push(...WasmModule.encodeSignedLEB128(global.index));
-        body.push(Opcode.local_get);
-        body.push(...WasmModule.encodeSignedLEB128(temp));
-      } else {
+      // Use binding-based lookup for global assignment
+      const binding = ctx.semanticContext.getResolvedBinding(expr.left);
+      if (!binding) {
         throw new Error(`Unknown identifier: ${expr.left.name}`);
       }
+      const resolved = resolveImport(binding);
+      if (resolved.kind !== 'global') {
+        throw new Error(`Cannot assign to ${resolved.kind}: ${expr.left.name}`);
+      }
+      const globalIndex = ctx.getGlobalIndexByDecl(resolved.declaration);
+      if (globalIndex === undefined) {
+        throw new Error(`Global not registered: ${expr.left.name}`);
+      }
+      // Get WASM type from the binding's semantic type
+      const globalWasmType = mapCheckerTypeToWasmType(ctx, resolved.type);
+
+      const valueType = inferType(ctx, expr.value);
+      if (
+        ((globalWasmType.length > 1 &&
+          globalWasmType[0] === ValType.ref_null &&
+          globalWasmType[1] === ValType.anyref) ||
+          (globalWasmType.length === 1 &&
+            globalWasmType[0] === ValType.anyref)) &&
+        valueType.length === 1 &&
+        (valueType[0] === ValType.i32 ||
+          valueType[0] === ValType.i64 ||
+          valueType[0] === ValType.f32 ||
+          valueType[0] === ValType.f64)
+      ) {
+        boxPrimitive(ctx, valueType, body);
+      }
+
+      const temp = ctx.declareLocal('$$temp_global_assign', valueType);
+      body.push(Opcode.local_tee);
+      body.push(...WasmModule.encodeSignedLEB128(temp));
+      body.push(Opcode.global_set);
+      body.push(...WasmModule.encodeSignedLEB128(globalIndex));
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(temp));
     }
   } else {
     throw new Error('Invalid assignment target');
@@ -5849,7 +5886,20 @@ function generateTaggedTemplateExpression(
   // Try to determine expected type from tag function
   if (expr.tag.type === NodeType.Identifier) {
     const name = (expr.tag as Identifier).name;
-    const funcIndex = ctx.resolveFunction(name);
+    const tagBinding = ctx.semanticContext.getResolvedBinding(
+      expr.tag as Identifier,
+    );
+    let funcIndex: number | undefined;
+    if (tagBinding) {
+      const resolved = resolveImport(tagBinding);
+      if (resolved.kind === 'function') {
+        funcIndex = ctx.getFunctionIndexByDecl(resolved.declaration);
+      }
+    }
+    // Fall back to name-based lookup
+    if (funcIndex === undefined && ctx.functions.has(name)) {
+      funcIndex = ctx.functions.get(name);
+    }
     if (funcIndex !== undefined) {
       const funcTypeIndex = ctx.module.getFunctionTypeIndex(funcIndex);
       const params = ctx.module.getFunctionTypeParams(funcTypeIndex);
@@ -5984,8 +6034,24 @@ function generateTaggedTemplateExpression(
       return;
     }
 
-    // Check for global function
-    const funcIndex = ctx.resolveFunction(name);
+    // Check for global function using binding
+    const tagBinding = ctx.semanticContext.getResolvedBinding(
+      expr.tag as Identifier,
+    );
+    let funcIndex: number | undefined;
+    if (tagBinding) {
+      const resolved = resolveImport(tagBinding);
+      if (resolved.kind === 'function') {
+        funcIndex = ctx.getFunctionIndexByDecl(resolved.declaration);
+      }
+    }
+    // Fall back to name-based lookup
+    if (funcIndex === undefined) {
+      const name = (expr.tag as Identifier).name;
+      if (ctx.functions.has(name)) {
+        funcIndex = ctx.functions.get(name);
+      }
+    }
     if (funcIndex !== undefined) {
       body.push(Opcode.call);
       body.push(...WasmModule.encodeSignedLEB128(funcIndex));

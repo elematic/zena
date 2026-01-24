@@ -115,7 +115,12 @@ const buildCommand = async (
     if (hasErrors) return 1;
 
     // Generate code (pass modules directly, no bundling needed)
-    const codegen = new CodeGenerator(modules, entryPoint);
+    // Pass semantic context for resolved bindings
+    const codegen = new CodeGenerator(
+      modules,
+      entryPoint,
+      compiler.semanticContext,
+    );
     const bytes = codegen.generate();
 
     const outputPath = output || basename(files[0], '.zena') + '.wasm';
@@ -182,7 +187,12 @@ const runCommand = async (files: string[]): Promise<number> => {
     if (hasErrors) return 1;
 
     // Generate code (pass modules directly, no bundling needed)
-    const codegen = new CodeGenerator(modules, entryPoint);
+    // Pass semantic context for resolved bindings
+    const codegen = new CodeGenerator(
+      modules,
+      entryPoint,
+      compiler.semanticContext,
+    );
     const bytes = codegen.generate();
 
     // Use the runtime to instantiate with standard library support

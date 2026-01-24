@@ -2,7 +2,6 @@ import {
   NodeType,
   type ClassDeclaration,
   type FunctionExpression,
-  type ImportDeclaration,
   type InterfaceDeclaration,
   type MethodDefinition,
   type MixinDeclaration,
@@ -586,88 +585,6 @@ export class CodegenContext {
   public qualifyName(name: string, modulePath?: string): string {
     const path = modulePath ?? this.currentModule?.path ?? '';
     return `${path}:${name}`;
-  }
-
-  /**
-   * Resolve a name to its function index, checking imports if necessary.
-   * @param name - The name to resolve (may be an import alias)
-   * @returns The function index, or undefined if not found
-   */
-  public resolveFunction(name: string): number | undefined {
-    // First check if it's a directly registered function (qualified name)
-    const qualifiedName = this.qualifyName(name);
-    if (this.functions.has(qualifiedName)) {
-      return this.functions.get(qualifiedName);
-    }
-
-    // Check if it's an import alias in the current module
-    if (this.currentModule) {
-      for (const stmt of this.currentModule.ast.body) {
-        if (stmt.type === NodeType.ImportDeclaration) {
-          const importDecl = stmt as ImportDeclaration;
-          for (const spec of importDecl.imports) {
-            if (spec.local.name === name) {
-              // Found the import! Look up the actual function
-              const sourcePath = this.currentModule.imports.get(
-                importDecl.moduleSpecifier.value,
-              );
-              if (sourcePath) {
-                const targetQualified = `${sourcePath}:${spec.imported.name}`;
-                if (this.functions.has(targetQualified)) {
-                  return this.functions.get(targetQualified);
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // Fall back to unqualified lookup for backward compatibility
-    // (single-module tests may not use qualified names)
-    if (this.functions.has(name)) {
-      return this.functions.get(name);
-    }
-
-    return undefined;
-  }
-
-  /**
-   * Resolve a name to its global info, checking imports if necessary.
-   */
-  public resolveGlobal(
-    name: string,
-  ): {index: number; type: number[]} | undefined {
-    // First check qualified name in current module
-    const qualifiedName = this.qualifyName(name);
-    if (this.globals.has(qualifiedName)) {
-      return this.globals.get(qualifiedName);
-    }
-
-    // Check imports
-    if (this.currentModule) {
-      for (const stmt of this.currentModule.ast.body) {
-        if (stmt.type === NodeType.ImportDeclaration) {
-          const importDecl = stmt as ImportDeclaration;
-          for (const spec of importDecl.imports) {
-            if (spec.local.name === name) {
-              const sourcePath = this.currentModule.imports.get(
-                importDecl.moduleSpecifier.value,
-              );
-              if (sourcePath) {
-                const targetQualified = `${sourcePath}:${spec.imported.name}`;
-                if (this.globals.has(targetQualified)) {
-                  return this.globals.get(targetQualified);
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // Fall back to unqualified lookup
-    return this.globals.get(name);
   }
 
   // ===== Type → Struct Index Management (WASM-specific) =====

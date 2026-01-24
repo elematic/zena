@@ -269,11 +269,6 @@ export function instantiateGenericFunction(
   if (ctx.functions.has(key)) {
     return ctx.functions.get(key)!;
   }
-  // Also check using resolve for imports
-  const existing = ctx.resolveFunction(key);
-  if (existing !== undefined) {
-    return existing;
-  }
 
   const typeContext = new Map<string, TypeAnnotation>();
   if (funcDecl.typeParameters) {

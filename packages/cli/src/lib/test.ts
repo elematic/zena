@@ -293,8 +293,11 @@ const runTestFile = async (filePath: string): Promise<TestResult> => {
       // Generate a wrapper that imports tests and exposes accessors for results.
       // We can't build JSON in Zena (no string concat yet), so the wrapper
       // exports functions that let JS traverse the result tree.
-      const wrapperHost = new NodeCompilerHost();
-      const wrapperCompiler = new Compiler(wrapperHost);
+      //
+      // IMPORTANT: Reuse the same host and compiler to share semantic context.
+      // Using a new Compiler would create a new CheckerContext with empty bindings,
+      // causing "Unknown identifier" errors for stdlib code that was checked but
+      // skipped on recompile (due to _checked flag).
 
       const testFileName = basename(filePath);
       const wrapperPath = filePath.replace(/\.zena$/, '.__wrapper__.zena');
@@ -361,11 +364,11 @@ export let getNestedTestName = (index: i32): string => nested().tests[index].nam
 export let getNestedTestPassed = (index: i32): boolean => nested().tests[index].passed;
 export let getNestedTestError = (index: i32): string | null => nested().tests[index].error;
 `;
-      // Register the virtual wrapper file
-      wrapperHost.registerVirtualFile(wrapperPath, wrapperSource);
+      // Register the virtual wrapper file on the SAME host
+      host.registerVirtualFile(wrapperPath, wrapperSource);
 
-      // Compile with the wrapper as entry point
-      const wrapperModules = wrapperCompiler.compile(wrapperPath);
+      // Compile with the wrapper as entry point using the SAME compiler
+      const wrapperModules = compiler.compile(wrapperPath);
 
       // Check for errors in wrapper compilation
       for (const mod of wrapperModules) {
@@ -393,7 +396,12 @@ export let getNestedTestError = (index: i32): string | null => nested().tests[in
       useStructuredResults = true;
     }
 
-    const codegen = new CodeGenerator(compiledModules, entryPoint);
+    // Pass the compiler's semantic context to codegen so it can access resolved bindings
+    const codegen = new CodeGenerator(
+      compiledModules,
+      entryPoint,
+      compiler.semanticContext,
+    );
     const bytes = codegen.generate();
 
     // Instantiate
