@@ -36,7 +36,13 @@ import {
   type TuplePattern,
   type UnaryExpression,
 } from '../ast.js';
-import {createBinding} from '../bindings.js';
+import {
+  createBinding,
+  type FieldBinding,
+  type GetterBinding,
+  type MethodBinding,
+  type RecordFieldBinding,
+} from '../bindings.js';
 import {DiagnosticCode} from '../diagnostics.js';
 import {getGetterName, getSetterName} from '../names.js';
 import {
@@ -1893,19 +1899,43 @@ function checkMemberExpression(
             typeMap.set(param.name, typeArgs[index]);
           });
 
-          return {
+          const resolvedMethod = {
             ...method,
             parameters: method.parameters.map((t) =>
               substituteType(t, typeMap),
             ),
             returnType: substituteType(method.returnType, typeMap),
           } as FunctionType;
+
+          // Store method binding for array extension methods
+          const binding: MethodBinding = {
+            kind: 'method',
+            classType,
+            methodName: expr.property.name,
+            isStaticDispatch: true, // Extension classes always use static dispatch
+            type: resolvedMethod,
+          };
+          ctx.semanticContext.setResolvedBinding(expr, binding);
+
+          return resolvedMethod;
         }
+
+        // Store method binding
+        const binding: MethodBinding = {
+          kind: 'method',
+          classType,
+          methodName: expr.property.name,
+          isStaticDispatch: true,
+          type: method,
+        };
+        ctx.semanticContext.setResolvedBinding(expr, binding);
+
         return method;
       }
     }
 
     if (expr.property.name === LENGTH_PROPERTY) {
+      // No binding for intrinsic array.length
       return Types.I32;
     }
   }
@@ -1914,7 +1944,18 @@ function checkMemberExpression(
     const recordType = objectType as RecordType;
     const memberName = expr.property.name;
     if (recordType.properties.has(memberName)) {
-      return recordType.properties.get(memberName)!;
+      const fieldType = recordType.properties.get(memberName)!;
+
+      // Store record field binding
+      const binding: RecordFieldBinding = {
+        kind: 'record-field',
+        recordType,
+        fieldName: memberName,
+        type: fieldType,
+      };
+      ctx.semanticContext.setResolvedBinding(expr, binding);
+
+      return fieldType;
     }
     ctx.diagnostics.reportError(
       `Property '${memberName}' does not exist on type '${typeToString(objectType)}'.`,
@@ -1938,6 +1979,13 @@ function checkMemberExpression(
 
   const classType = objectType as ClassType | InterfaceType;
   const memberName = expr.property.name;
+
+  // Determine if we can use static dispatch
+  const canUseStaticDispatch = (ct: ClassType | InterfaceType): boolean => {
+    if (ct.kind === TypeKind.Interface) return false;
+    const cls = ct as ClassType;
+    return cls.isFinal === true || cls.isExtension === true;
+  };
 
   if (memberName.startsWith('#')) {
     if (!ctx.currentClass) {
@@ -1968,21 +2016,73 @@ function checkMemberExpression(
     }
 
     if (ctx.currentClass.fields.has(memberName)) {
-      return ctx.currentClass.fields.get(memberName)!;
+      const fieldType = ctx.currentClass.fields.get(memberName)!;
+
+      // Store private field binding (use mangled name for codegen)
+      const binding: FieldBinding = {
+        kind: 'field',
+        classType: ctx.currentClass,
+        fieldName: `${ctx.currentClass.name}::${memberName}`,
+        type: fieldType,
+      };
+      ctx.semanticContext.setResolvedBinding(expr, binding);
+
+      return fieldType;
     }
-    return ctx.currentClass.methods.get(memberName)!;
+
+    const methodType = ctx.currentClass.methods.get(memberName)!;
+
+    // Store private method binding
+    const binding: MethodBinding = {
+      kind: 'method',
+      classType: ctx.currentClass,
+      methodName: memberName,
+      isStaticDispatch: true, // Private methods are always static dispatch
+      type: methodType,
+    };
+    ctx.semanticContext.setResolvedBinding(expr, binding);
+
+    return methodType;
   }
 
   // Check fields
   if (classType.fields.has(memberName)) {
     const fieldType = classType.fields.get(memberName)!;
-    return resolveMemberType(classType, fieldType);
+    const resolvedType = resolveMemberType(classType, fieldType);
+
+    // Store field binding
+    const binding: FieldBinding = {
+      kind: 'field',
+      classType,
+      fieldName: memberName,
+      type: resolvedType,
+    };
+    ctx.semanticContext.setResolvedBinding(expr, binding);
+
+    return resolvedType;
   }
 
   // Check methods
   if (classType.methods.has(memberName)) {
     const methodType = classType.methods.get(memberName)!;
-    return resolveMemberType(classType, methodType);
+    const resolvedType = resolveMemberType(
+      classType,
+      methodType,
+    ) as FunctionType;
+
+    // Store method binding
+    // Static dispatch is possible if: class is final/extension, or method is final
+    const binding: MethodBinding = {
+      kind: 'method',
+      classType,
+      methodName: memberName,
+      isStaticDispatch:
+        canUseStaticDispatch(classType) || methodType.isFinal === true,
+      type: resolvedType,
+    };
+    ctx.semanticContext.setResolvedBinding(expr, binding);
+
+    return resolvedType;
   }
 
   // Check getters
@@ -1993,6 +2093,19 @@ function checkMemberExpression(
       classType,
       getterType,
     ) as FunctionType;
+
+    // Store getter binding
+    // Static dispatch is possible if: class is final/extension, or getter is final
+    const binding: GetterBinding = {
+      kind: 'getter',
+      classType,
+      methodName: getterName,
+      isStaticDispatch:
+        canUseStaticDispatch(classType) || getterType.isFinal === true,
+      type: resolvedGetter.returnType,
+    };
+    ctx.semanticContext.setResolvedBinding(expr, binding);
+
     return resolvedGetter.returnType;
   }
 

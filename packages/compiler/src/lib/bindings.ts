@@ -29,6 +29,7 @@ import type {
   FunctionType,
   InterfaceType,
   MixinType,
+  RecordType,
   Type,
   TypeParameterType,
 } from './types.js';
@@ -160,6 +161,70 @@ export interface ImportBinding {
 }
 
 // ============================================================
+// Member Bindings (for MemberExpression resolution)
+// ============================================================
+
+/**
+ * A field access on a class or interface.
+ * Example: `point.x` where `x` is a field on `Point`.
+ */
+export interface FieldBinding {
+  readonly kind: 'field';
+  /** The class or interface type containing the field */
+  readonly classType: ClassType | InterfaceType;
+  /** The field name (may include private prefix like `ClassName::#field`) */
+  readonly fieldName: string;
+  /** The semantic type of the field */
+  readonly type: Type;
+}
+
+/**
+ * A getter access on a class or interface.
+ * Example: `array.length` where `length` is implemented via `get length()`.
+ */
+export interface GetterBinding {
+  readonly kind: 'getter';
+  /** The class or interface type containing the getter */
+  readonly classType: ClassType | InterfaceType;
+  /** The getter method name (e.g., `get:length`) */
+  readonly methodName: string;
+  /** Whether static dispatch can be used (final class/method or extension) */
+  readonly isStaticDispatch: boolean;
+  /** The return type of the getter */
+  readonly type: Type;
+}
+
+/**
+ * A method access on a class or interface (not a call, just the method reference).
+ * Example: `obj.toString` (without call parens).
+ */
+export interface MethodBinding {
+  readonly kind: 'method';
+  /** The class or interface type containing the method */
+  readonly classType: ClassType | InterfaceType;
+  /** The method name */
+  readonly methodName: string;
+  /** Whether static dispatch can be used (final class/method or extension) */
+  readonly isStaticDispatch: boolean;
+  /** The semantic function type of the method */
+  readonly type: FunctionType;
+}
+
+/**
+ * A record field access.
+ * Example: `record.name` where record is `{ name: string }`.
+ */
+export interface RecordFieldBinding {
+  readonly kind: 'record-field';
+  /** The record type */
+  readonly recordType: RecordType;
+  /** The field name */
+  readonly fieldName: string;
+  /** The semantic type of the field */
+  readonly type: Type;
+}
+
+// ============================================================
 // Union Type
 // ============================================================
 
@@ -176,7 +241,20 @@ export type ResolvedBinding =
   | MixinBinding
   | TypeAliasBinding
   | TypeParameterBinding
-  | ImportBinding;
+  | ImportBinding
+  | FieldBinding
+  | GetterBinding
+  | MethodBinding
+  | RecordFieldBinding;
+
+/**
+ * Member bindings are the subset of bindings that resolve MemberExpressions.
+ */
+export type MemberBinding =
+  | FieldBinding
+  | GetterBinding
+  | MethodBinding
+  | RecordFieldBinding;
 
 // ============================================================
 // Helper Functions
@@ -192,6 +270,10 @@ export const isValueBinding = (binding: ResolvedBinding): boolean => {
     case 'function':
     case 'class':
     case 'import':
+    case 'field':
+    case 'getter':
+    case 'method':
+    case 'record-field':
       return true;
     case 'interface':
     case 'mixin':
@@ -216,6 +298,10 @@ export const isTypeBinding = (binding: ResolvedBinding): boolean => {
     case 'local':
     case 'global':
     case 'function':
+    case 'field':
+    case 'getter':
+    case 'method':
+    case 'record-field':
       return false;
   }
 };
@@ -232,6 +318,7 @@ export const resolveImport = (binding: ResolvedBinding): ResolvedBinding => {
 
 /**
  * Get the declaration node from any binding.
+ * Returns undefined for member bindings that don't have a declaration node.
  */
 export const getDeclaration = (
   binding: ResolvedBinding,
@@ -247,7 +334,8 @@ export const getDeclaration = (
   | MixinDeclaration
   | TypeAliasDeclaration
   | TypeParameter
-  | ImportDeclaration => {
+  | ImportDeclaration
+  | undefined => {
   switch (binding.kind) {
     case 'local':
       return binding.declaration;
@@ -267,6 +355,12 @@ export const getDeclaration = (
       return binding.declaration;
     case 'import':
       return binding.importDeclaration;
+    case 'getter':
+    case 'method':
+    case 'field':
+    case 'record-field':
+      // Member bindings don't have a direct declaration node
+      return undefined;
   }
 };
 

@@ -220,14 +220,13 @@ Using `WeakMap` with AST nodes as keys enables identity-based lookup.
 
 1. Update `generateIdentifier()` to use resolved bindings
 2. Update `generateCallExpression()` to get function index from binding
-3. ~~Remove `resolveFunction()`, `resolveGlobal()`, `getLocal()` once all usages
-   are migrated~~ (kept as fallbacks for now)
+3. Update `generateAssignmentExpression()` to use binding-based global lookup
+4. Update `generateTaggedTemplateExpression()` to use binding-based tag lookup
 
-### Phase 4: Clean Up
+### Phase 4: Clean Up ✅
 
-1. Remove name-based lookup methods from `CodegenContext`
-2. Simplify import handling (no longer needed in codegen)
-3. Update tests
+1. Remove `resolveFunction()` and `resolveGlobal()` from `CodegenContext`
+2. Pass `semanticContext` to `CodeGenerator` in CLI for binding access
 
 ## Current Status
 
@@ -259,9 +258,16 @@ because:
 Declaration-based lookup is retained for **globals** (where name collisions
 across modules are possible) and provides the foundation for LSP features.
 
+**Completed (Phase 7):**
+
+- Removed `resolveFunction()` and `resolveGlobal()` from CodegenContext
+- Updated `generateCallExpression()` to use binding-based function lookup
+- Updated `generateAssignmentExpression()` to use binding-based global lookup
+- Updated `generateTaggedTemplateExpression()` to use binding-based tag lookup
+- CLI passes `compiler.semanticContext` to `CodeGenerator` for binding access
+
 **Remaining:**
 
-- Remove legacy methods (`resolveFunction`, etc.) once all call sites migrated
 - Extend binding resolution to more expression types (MemberExpression, etc.)
 
 ## Benefits

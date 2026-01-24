@@ -87,7 +87,14 @@ import {
   generateFunctionStatement,
 } from './statements.js';
 import type {ClassInfo, InterfaceInfo} from './types.js';
-import {resolveImport, type ResolvedBinding} from '../bindings.js';
+import {
+  resolveImport,
+  type FieldBinding,
+  type GetterBinding,
+  type MethodBinding,
+  type RecordFieldBinding,
+  type ResolvedBinding,
+} from '../bindings.js';
 
 /**
  * Generates WASM instructions for an expression.
@@ -1553,6 +1560,26 @@ function generateMemberExpression(
   expr: MemberExpression,
   body: number[],
 ) {
+  // Try to use the resolved binding from the checker for O(1) lookup
+  const binding = ctx.semanticContext.getResolvedBinding(expr);
+  if (binding) {
+    const memberBinding = binding as
+      | FieldBinding
+      | GetterBinding
+      | MethodBinding
+      | RecordFieldBinding;
+    if (
+      memberBinding.kind === 'field' ||
+      memberBinding.kind === 'getter' ||
+      memberBinding.kind === 'method' ||
+      memberBinding.kind === 'record-field'
+    ) {
+      if (generateMemberFromBinding(ctx, memberBinding, expr.object, body)) {
+        return;
+      }
+    }
+  }
+
   // Check for static member access
   if (
     expr.object.type === NodeType.Identifier &&
@@ -1691,37 +1718,6 @@ function generateMemberExpression(
       throw new Error(`Invalid object type for field access: ${fieldName}`);
     }
 
-    // Check if it's a Record
-    let recordKey: string | undefined;
-    for (const [key, index] of ctx.recordTypes) {
-      if (index === structTypeIndex) {
-        recordKey = key;
-        break;
-      }
-    }
-
-    if (recordKey) {
-      // Parse key to find field index
-      // Key format: "name:type;name:type;..." (sorted by name)
-      const fields = recordKey.split(';').map((s) => {
-        // Split by first colon only
-        const colonIndex = s.indexOf(':');
-        const name = s.substring(0, colonIndex);
-        return {name};
-      });
-
-      const fieldIndex = fields.findIndex((f) => f.name === fieldName);
-      if (fieldIndex === -1) {
-        throw new Error(`Field ${fieldName} not found in record`);
-      }
-
-      generateExpression(ctx, expr.object, body);
-      body.push(0xfb, GcOpcode.struct_get);
-      body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
-      body.push(...WasmModule.encodeSignedLEB128(fieldIndex));
-      return;
-    }
-
     // Check if it's an interface - identity-based lookup
     let interfaceInfo: InterfaceInfo | undefined;
     if (
@@ -1853,44 +1849,6 @@ function generateMemberExpression(
       }
 
       return;
-    }
-
-    // Check for Enums
-    if (!foundClass && ctx.enums.has(structTypeIndex)) {
-      // It's an enum!
-      // We are accessing a member of the enum value (which is a struct).
-      // But wait, enum values are just i32s (or strings) wrapped in a struct?
-      // No, the enum *type* is a struct type.
-      // The enum *value* is an instance of that struct.
-      // Actually, the design says:
-      // "Enum values are represented as distinct types backed by i32 or string."
-      // But in codegen we made a struct type for the *namespace*?
-      // Wait, let's look at #generateEnum in codegen/index.ts.
-      // It creates a global which is a struct instance.
-      // The struct fields are the enum members.
-      // So `Color.Red` is a field access on that global struct.
-
-      // However, here we are in `generateMemberExpression`.
-      // If `object` is the Enum type (which is a value in Zena),
-      // then `objectType` is the type of that value.
-      // The type of the Enum value (the namespace object) is the struct type we created.
-
-      const enumInfo = ctx.enums.get(structTypeIndex)!;
-      if (enumInfo.members.has(fieldName)) {
-        const fieldIndex = enumInfo.members.get(fieldName)!;
-
-        // Push the enum instance (struct) onto the stack
-        generateExpression(ctx, expr.object, body);
-
-        // Emit struct.get
-        body.push(
-          Opcode.gc_prefix,
-          GcOpcode.struct_get,
-          ...WasmModule.encodeSignedLEB128(structTypeIndex),
-          ...WasmModule.encodeSignedLEB128(fieldIndex),
-        );
-        return;
-      }
     }
 
     if (foundClass) {
@@ -4217,9 +4175,386 @@ function generateFromBinding(
       // They need special handling (constructors, type lookups, etc.)
       return false;
     }
+    case 'field':
+    case 'getter':
+    case 'method':
+    case 'record-field': {
+      // Member bindings are handled by generateMemberFromBinding
+      return false;
+    }
     default:
       return false;
   }
+}
+
+/**
+ * Generate code from a resolved member binding (field, getter, method, record-field).
+ * Uses the binding's classType for O(1) identity-based class lookup.
+ * Returns true if code was generated, false otherwise.
+ */
+function generateMemberFromBinding(
+  ctx: CodegenContext,
+  binding: FieldBinding | GetterBinding | MethodBinding | RecordFieldBinding,
+  objectExpr: Expression,
+  body: number[],
+): boolean {
+  switch (binding.kind) {
+    case 'field':
+      return generateFieldFromBinding(ctx, binding, objectExpr, body);
+    case 'getter':
+      return generateGetterFromBinding(ctx, binding, objectExpr, body);
+    case 'method':
+      // Method access without call - just stores type info, actual codegen
+      // happens at call site. Return false to fall through.
+      return false;
+    case 'record-field':
+      return generateRecordFieldFromBinding(ctx, binding, objectExpr, body);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Generate code for a field access using the resolved FieldBinding.
+ */
+function generateFieldFromBinding(
+  ctx: CodegenContext,
+  binding: FieldBinding,
+  objectExpr: Expression,
+  body: number[],
+): boolean {
+  const {classType, fieldName} = binding;
+
+  // Handle interface field access
+  if (classType.kind === TypeKind.Interface) {
+    // Fall back to existing logic for now - interface field access is complex
+    return false;
+  }
+
+  // Look up the class info using O(1) identity-based lookup
+  let classInfo = ctx.getClassInfoByCheckerType(classType);
+
+  // If identity lookup fails (e.g., generic instantiation), try instantiating
+  if (
+    !classInfo &&
+    classType.typeArguments &&
+    classType.typeArguments.length > 0
+  ) {
+    mapCheckerTypeToWasmType(ctx, classType);
+    classInfo = ctx.getClassInfoByCheckerType(classType);
+  }
+
+  if (!classInfo) {
+    // Fall back to existing logic
+    return false;
+  }
+
+  // For public fields, codegen creates implicit getters that go through vtable dispatch.
+  // Check if there's a getter method for this field.
+  if (!fieldName.startsWith('#')) {
+    const getterName = getGetterName(fieldName);
+    const methodInfo = classInfo.methods.get(getterName);
+    if (methodInfo) {
+      // Use getter with appropriate dispatch
+      // Determine static vs dynamic dispatch: final class, final method (field), or extension
+      const useStaticDispatch =
+        classInfo.isFinal || methodInfo.isFinal || classInfo.isExtension;
+
+      if (methodInfo.intrinsic) {
+        generateIntrinsic(ctx, methodInfo.intrinsic, objectExpr, [], body);
+        return true;
+      }
+
+      if (useStaticDispatch) {
+        // Static dispatch - direct call
+        generateExpression(ctx, objectExpr, body);
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+        return true;
+      } else {
+        // Dynamic dispatch via vtable
+        const objectType = inferType(ctx, objectExpr);
+        generateExpression(ctx, objectExpr, body);
+
+        // Cast if object is anyref
+        const isAnyRef =
+          objectType.length === 1 && objectType[0] === ValType.anyref;
+        if (isAnyRef) {
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+        }
+
+        // Use the struct type for the temp local
+        const tempThisType = isAnyRef
+          ? [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ]
+          : objectType;
+        const tempThis = ctx.declareLocal('$$temp_this', tempThisType);
+        body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
+
+        // Load VTable
+        if (!classInfo.vtable || classInfo.vtableTypeIndex === undefined) {
+          throw new Error(`Class ${classInfo.name} has no vtable`);
+        }
+
+        body.push(0xfb, GcOpcode.struct_get);
+        body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+        body.push(
+          ...WasmModule.encodeSignedLEB128(
+            classInfo.fields.get('__vtable')!.index,
+          ),
+        );
+
+        // Cast VTable to correct type
+        body.push(0xfb, GcOpcode.ref_cast_null);
+        body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex));
+
+        // Load function pointer from VTable
+        const vtableIndex = classInfo.vtable.indexOf(getterName);
+        if (vtableIndex === -1) {
+          throw new Error(`Getter ${getterName} not found in vtable`);
+        }
+
+        body.push(0xfb, GcOpcode.struct_get);
+        body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex));
+        body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
+
+        // Cast to specific function type
+        body.push(0xfb, GcOpcode.ref_cast_null);
+        body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+        // Store func_ref
+        const funcRefType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        ];
+        const funcRef = ctx.declareLocal('$$func_ref', funcRefType);
+        body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRef));
+
+        // Call function: [this, func_ref]
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempThis));
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRef));
+        body.push(
+          Opcode.call_ref,
+          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+        );
+        return true;
+      }
+    }
+  }
+
+  // Look up the field by name (for private fields or fields without getters)
+  const fieldInfo = classInfo.fields.get(fieldName);
+  if (!fieldInfo) {
+    return false;
+  }
+
+  // Handle intrinsic fields
+  if (fieldInfo.intrinsic) {
+    generateIntrinsic(ctx, fieldInfo.intrinsic, objectExpr, [], body);
+    return true;
+  }
+
+  // Generate the object expression
+  generateExpression(ctx, objectExpr, body);
+
+  // Cast if needed (e.g., from anyref)
+  const objectType = inferType(ctx, objectExpr);
+  const isAnyRef = objectType.length === 1 && objectType[0] === ValType.anyref;
+  if (isAnyRef) {
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+  }
+
+  // Emit struct.get
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+  return true;
+}
+
+/**
+ * Generate code for a getter access using the resolved GetterBinding.
+ */
+function generateGetterFromBinding(
+  ctx: CodegenContext,
+  binding: GetterBinding,
+  objectExpr: Expression,
+  body: number[],
+): boolean {
+  const {classType, methodName, isStaticDispatch} = binding;
+
+  // Handle interface getter access
+  if (classType.kind === TypeKind.Interface) {
+    // Fall back to existing logic for now - interface getter is complex
+    return false;
+  }
+
+  // Look up the class info using O(1) identity-based lookup
+  let classInfo = ctx.getClassInfoByCheckerType(classType);
+
+  // If identity lookup fails (e.g., generic instantiation), try instantiating
+  if (
+    !classInfo &&
+    classType.typeArguments &&
+    classType.typeArguments.length > 0
+  ) {
+    mapCheckerTypeToWasmType(ctx, classType);
+    classInfo = ctx.getClassInfoByCheckerType(classType);
+  }
+
+  if (!classInfo) {
+    return false;
+  }
+
+  // Look up the getter method
+  const methodInfo = classInfo.methods.get(methodName);
+  if (!methodInfo) {
+    return false;
+  }
+
+  // Handle intrinsic getters
+  if (methodInfo.intrinsic) {
+    generateIntrinsic(ctx, methodInfo.intrinsic, objectExpr, [], body);
+    return true;
+  }
+
+  if (isStaticDispatch) {
+    // Static dispatch - direct call
+    generateExpression(ctx, objectExpr, body);
+    body.push(Opcode.call);
+    body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+  } else {
+    // Dynamic dispatch via vtable
+    const objectType = inferType(ctx, objectExpr);
+    generateExpression(ctx, objectExpr, body);
+
+    // Cast if object is anyref
+    const isAnyRef =
+      objectType.length === 1 && objectType[0] === ValType.anyref;
+    if (isAnyRef) {
+      body.push(0xfb, GcOpcode.ref_cast_null);
+      body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+    }
+
+    // Use the struct type for the temp local
+    const tempThisType = isAnyRef
+      ? [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+        ]
+      : objectType;
+    const tempThis = ctx.declareLocal('$$temp_this', tempThisType);
+    body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
+
+    // Load VTable
+    if (!classInfo.vtable || classInfo.vtableTypeIndex === undefined) {
+      throw new Error(`Class ${classInfo.name} has no vtable`);
+    }
+
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+    body.push(
+      ...WasmModule.encodeSignedLEB128(classInfo.fields.get('__vtable')!.index),
+    );
+
+    // Cast VTable to correct type
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex));
+
+    // Load function pointer from VTable
+    const vtableIndex = classInfo.vtable.indexOf(methodName);
+    if (vtableIndex === -1) {
+      throw new Error(`Method ${methodName} not found in vtable`);
+    }
+
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
+
+    // Cast to specific function type
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+    // Store func_ref
+    const funcRefType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+    ];
+    const funcRef = ctx.declareLocal('$$func_ref', funcRefType);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRef));
+
+    // Call function: [this, func_ref]
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempThis));
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRef));
+    body.push(
+      Opcode.call_ref,
+      ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+    );
+  }
+  return true;
+}
+
+/**
+ * Generate code for a record field access using the resolved RecordFieldBinding.
+ */
+function generateRecordFieldFromBinding(
+  ctx: CodegenContext,
+  binding: RecordFieldBinding,
+  objectExpr: Expression,
+  body: number[],
+): boolean {
+  const {recordType, fieldName} = binding;
+
+  // Get the struct type index for this record type
+  const objectType = inferType(ctx, objectExpr);
+  const structTypeIndex = getHeapTypeIndex(ctx, objectType);
+
+  if (structTypeIndex === -1) {
+    return false;
+  }
+
+  // Check if this is an enum access - enums have special handling
+  if (ctx.enums.has(structTypeIndex)) {
+    const enumInfo = ctx.enums.get(structTypeIndex)!;
+    if (enumInfo.members.has(fieldName)) {
+      const fieldIndex = enumInfo.members.get(fieldName)!;
+
+      // Push the enum instance (struct) onto the stack
+      generateExpression(ctx, objectExpr, body);
+
+      // Emit struct.get
+      body.push(
+        Opcode.gc_prefix,
+        GcOpcode.struct_get,
+        ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ...WasmModule.encodeSignedLEB128(fieldIndex),
+      );
+      return true;
+    }
+    // Field not found in enum - fall back
+    return false;
+  }
+
+  // Regular record field access
+  // Find field index by iterating through record properties (sorted by name)
+  const properties = Array.from(recordType.properties.entries()).sort(
+    ([a], [b]) => a.localeCompare(b),
+  );
+  const fieldIndex = properties.findIndex(([name]) => name === fieldName);
+  if (fieldIndex === -1) {
+    return false;
+  }
+
+  generateExpression(ctx, objectExpr, body);
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(fieldIndex));
+  return true;
 }
 
 function generateStringLiteral(
