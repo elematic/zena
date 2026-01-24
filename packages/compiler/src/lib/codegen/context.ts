@@ -633,48 +633,6 @@ export class CodegenContext {
     return this.globals.get(name);
   }
 
-  /**
-   * Resolve a name to its generic class declaration, checking imports if necessary.
-   * @param name - The name to resolve (may be an import alias)
-   * @returns The ClassDeclaration, or undefined if not found
-   */
-  public resolveGenericClass(name: string): ClassDeclaration | undefined {
-    // First check if it's a directly registered generic class
-    if (this.genericClasses.has(name)) {
-      return this.genericClasses.get(name);
-    }
-
-    // Check if it's an import alias in the current module
-    if (this.currentModule) {
-      for (const stmt of this.currentModule.ast.body) {
-        if (stmt.type === NodeType.ImportDeclaration) {
-          const importDecl = stmt as ImportDeclaration;
-          for (const spec of importDecl.imports) {
-            if (spec.local.name === name) {
-              // Found the import! Look up the actual generic class
-              const sourcePath = this.currentModule.imports.get(
-                importDecl.moduleSpecifier.value,
-              );
-              if (sourcePath) {
-                // Try with source path prefix (e.g., "a:Box")
-                const targetQualified = `${sourcePath}:${spec.imported.name}`;
-                if (this.genericClasses.has(targetQualified)) {
-                  return this.genericClasses.get(targetQualified);
-                }
-                // Try just the imported name (for backward compatibility)
-                if (this.genericClasses.has(spec.imported.name)) {
-                  return this.genericClasses.get(spec.imported.name);
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    return undefined;
-  }
-
   // ===== Type → Struct Index Management (WASM-specific) =====
   // These maps store WASM binary emitter state, keyed by checker types.
   // Using object identity ensures stable lookups regardless of name changes.

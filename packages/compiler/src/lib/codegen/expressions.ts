@@ -8,6 +8,7 @@ import {
   type BlockStatement,
   type BooleanLiteral,
   type CallExpression,
+  type ClassDeclaration,
   type ClassPattern,
   type Expression,
   type FunctionExpression,
@@ -1392,8 +1393,13 @@ function generateNewExpression(
       });
     }
 
-    // Resolve the generic class declaration, handling import aliases
-    const resolvedGenericClass = ctx.resolveGenericClass(className);
+    // Resolve the generic class declaration using identity-based lookup
+    let resolvedGenericClass: ClassDeclaration | undefined;
+    if (expr.inferredType && expr.inferredType.kind === TypeKind.Class) {
+      const classType = expr.inferredType as ClassType;
+      const genericSource = classType.genericSource ?? classType;
+      resolvedGenericClass = ctx.getGenericDeclByType(genericSource);
+    }
 
     if (
       (!typeArguments || typeArguments.length === 0) &&
@@ -1435,6 +1441,8 @@ function generateNewExpression(
         type: NodeType.TypeAnnotation,
         name: actualClassName,
         typeArguments: typeArguments,
+        // Preserve the checker type for identity-based lookups
+        inferredType: expr.inferredType,
       };
       // Ensure the class is instantiated
       mapType(ctx, annotation, ctx.currentTypeContext);
@@ -1618,10 +1626,8 @@ function generateMemberExpression(
       // than the bundled declaration (e.g., ArrayExt vs m12_ArrayExt)
       if (!foundClass) {
         const genericSource = classType.genericSource ?? classType;
-        // Try identity-based lookup via genericSource first
-        let genericDecl = ctx.getGenericDeclByType(genericSource);
-        // Fall back to name-based lookup for bundler cases
-        genericDecl ??= ctx.resolveGenericClass(genericSource.name);
+        // Use identity-based lookup via genericSource
+        const genericDecl = ctx.getGenericDeclByType(genericSource);
         if (genericDecl) {
           const typeArgAnnotations = classType.typeArguments.map((ta: Type) =>
             typeToTypeAnnotation(ta, undefined, ctx),

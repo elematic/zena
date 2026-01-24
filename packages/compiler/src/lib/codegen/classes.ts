@@ -1023,11 +1023,12 @@ export function preRegisterClassStruct(
       );
       if (!ctx.classes.has(specializedName)) {
         // Try identity-based lookup via checker's superType first
-        let genericSuperDecl = classType?.superType
-          ? ctx.getGenericDeclByType(classType.superType)
-          : undefined;
-        // Fall back to name-based lookup (resolve import aliases)
-        genericSuperDecl ??= ctx.resolveGenericClass(baseSuperName);
+        let genericSuperDecl: ClassDeclaration | undefined;
+        if (classType?.superType) {
+          const superGenericSource =
+            classType.superType.genericSource ?? classType.superType;
+          genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
+        }
         if (genericSuperDecl) {
           // Pass the checker's superType to enable identity-based lookup
           instantiateClass(
@@ -1208,12 +1209,13 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
         // Ensure the superclass is instantiated
         if (!ctx.classes.has(superClassName)) {
-          // Try identity-based lookup via checker's superType first
-          let genericSuperDecl = superClassType
-            ? ctx.getGenericDeclByType(superClassType)
-            : undefined;
-          // Fall back to name-based lookup (resolve import aliases)
-          genericSuperDecl ??= ctx.resolveGenericClass(baseSuperName);
+          // Try identity-based lookup via checker's superType
+          let genericSuperDecl: ClassDeclaration | undefined;
+          if (superClassType) {
+            const superGenericSource =
+              superClassType.genericSource ?? superClassType;
+            genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
+          }
           if (genericSuperDecl) {
             // Pass the checker's superType to enable identity-based lookup
             instantiateClass(
@@ -3049,9 +3051,13 @@ function mapTypeInternal(
         // Check if it's a generic class instantiation
         if (type.typeArguments && type.typeArguments.length > 0) {
           // Instantiate generic class
-          // We need to find the generic class declaration
-          // Check genericClasses (resolve import aliases)
-          let genericDecl = ctx.resolveGenericClass(typeName);
+          // We need to find the generic class declaration using identity-based lookup
+          let genericDecl: ClassDeclaration | undefined;
+          if (type.inferredType && type.inferredType.kind === TypeKind.Class) {
+            const classType = type.inferredType as ClassType;
+            const genericSource = classType.genericSource ?? classType;
+            genericDecl = ctx.getGenericDeclByType(genericSource);
+          }
 
           // If not found, check if it's a well-known type that was renamed
           if (!genericDecl) {
@@ -3351,12 +3357,13 @@ export function instantiateClass(
 
         // Ensure superclass is instantiated
         if (!ctx.classes.has(superClassName)) {
-          // Try identity-based lookup via checker's superType first
-          let genericSuperDecl = superClassType
-            ? ctx.getGenericDeclByType(superClassType)
-            : undefined;
-          // Fall back to name-based lookup (resolve import aliases)
-          genericSuperDecl ??= ctx.resolveGenericClass(baseSuperName);
+          // Try identity-based lookup via checker's superType
+          let genericSuperDecl: ClassDeclaration | undefined;
+          if (superClassType) {
+            const superGenericSource =
+              superClassType.genericSource ?? superClassType;
+            genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
+          }
           if (genericSuperDecl) {
             const pendingCountBefore = ctx.pendingMethodGenerations.length;
             // Pass the checker's superType to enable identity-based lookup
@@ -4506,14 +4513,9 @@ export function mapCheckerTypeToWasmType(
     // instantiation, but pass the checker type for registration
     if (classType.typeArguments && classType.typeArguments.length > 0) {
       // Generic class - need to instantiate
-      // First try identity-based lookup for the generic declaration
-      let genericDecl = ctx.getGenericDeclByType(classType);
-      if (!genericDecl) {
-        // Fall back to name-based lookup (handles edge cases where checker type
-        // wasn't registered, e.g., well-known types from different modules)
-        const genericSource = classType.genericSource ?? classType;
-        genericDecl = ctx.resolveGenericClass(genericSource.name);
-      }
+      // Use identity-based lookup for the generic declaration
+      const genericSource = classType.genericSource ?? classType;
+      const genericDecl = ctx.getGenericDeclByType(genericSource);
       if (genericDecl) {
         const typeArgAnnotations = classType.typeArguments.map((ta) =>
           typeToTypeAnnotation(ta, undefined, ctx),
