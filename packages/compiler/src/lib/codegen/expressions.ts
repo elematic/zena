@@ -782,13 +782,29 @@ function generateIsExpression(
 function wasmTypeToTypeAnnotation(type: number[]): TypeAnnotation {
   if (type.length === 1) {
     if (type[0] === ValType.i32)
-      return {type: NodeType.TypeAnnotation, name: Types.I32.name};
+      return {
+        type: NodeType.TypeAnnotation,
+        name: Types.I32.name,
+        inferredType: Types.I32,
+      };
     if (type[0] === ValType.i64)
-      return {type: NodeType.TypeAnnotation, name: Types.I64.name};
+      return {
+        type: NodeType.TypeAnnotation,
+        name: Types.I64.name,
+        inferredType: Types.I64,
+      };
     if (type[0] === ValType.f32)
-      return {type: NodeType.TypeAnnotation, name: Types.F32.name};
+      return {
+        type: NodeType.TypeAnnotation,
+        name: Types.F32.name,
+        inferredType: Types.F32,
+      };
     if (type[0] === ValType.f64)
-      return {type: NodeType.TypeAnnotation, name: Types.F64.name};
+      return {
+        type: NodeType.TypeAnnotation,
+        name: Types.F64.name,
+        inferredType: Types.F64,
+      };
   }
   throw new Error(`Unsupported type for boxing: ${type}`);
 }

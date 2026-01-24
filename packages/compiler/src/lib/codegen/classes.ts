@@ -2832,7 +2832,8 @@ export function getSpecializedName(
     ) {
       return getCheckerTypeKeyForSpecialization(resolved.inferredType, ctx);
     }
-    // Try to resolve the class name to a bundled name using the current module context
+    // Fallback for types containing type parameters (K, V, T, etc.)
+    // The context map resolves these to their concrete types.
     return getTypeKeyWithContext(resolved, ctx);
   });
   return `${name}<${argNames.join(',')}>`;
@@ -2841,33 +2842,14 @@ export function getSpecializedName(
 /**
  * Get a canonical string key for a TypeAnnotation, using codegen context
  * to resolve class names to their bundled names (avoiding same-name collisions).
+ * This is used as a fallback when inferredType contains type parameters.
  */
 function getTypeKeyWithContext(
   type: TypeAnnotation,
   ctx: CodegenContext,
 ): string {
   if (type.type === NodeType.TypeAnnotation) {
-    // Try to find the bundled name for this class
     let key = type.name;
-
-    // First, try to resolve via current module's context (imports and local declarations)
-    // This takes precedence because the same name might exist in ctx.classes from
-    // another module, but we need the one from the current module's scope.
-    const resolvedClass = ctx.resolveClassByName(type.name);
-    if (resolvedClass) {
-      // Found the class - get its bundled name
-      const bundledName = ctx.getClassBundledName(resolvedClass);
-      if (bundledName) {
-        key = bundledName;
-      }
-    } else if (ctx.classes.has(type.name)) {
-      // It's a non-generic class that exists in the global classes map
-      // but wasn't resolved via the current module. This can happen for:
-      // - Well-known types (String, FixedArray, etc.)
-      // - Classes defined in modules that have already been processed
-      // Use the name as-is since it's already the bundled name in the map.
-      key = type.name;
-    }
 
     if (type.typeArguments && type.typeArguments.length > 0) {
       key += `<${type.typeArguments.map((ta) => getTypeKeyWithContext(ta, ctx)).join(',')}>`;
@@ -4237,21 +4219,25 @@ export function typeToTypeAnnotation(
       return {
         type: NodeType.TypeAnnotation,
         name: (type as NumberType).name,
+        inferredType: type,
       };
     case TypeKind.Boolean:
       return {
         type: NodeType.TypeAnnotation,
         name: TypeNames.Boolean,
+        inferredType: type,
       };
     case TypeKind.Void:
       return {
         type: NodeType.TypeAnnotation,
         name: TypeNames.Void,
+        inferredType: type,
       };
     case TypeKind.Never:
       return {
         type: NodeType.TypeAnnotation,
         name: TypeNames.Never,
+        inferredType: type,
       };
     case TypeKind.Class: {
       const classType = type as ClassType;
@@ -4425,6 +4411,7 @@ export function typeToTypeAnnotation(
       return {
         type: NodeType.LiteralTypeAnnotation,
         value: literalType.value,
+        inferredType: type,
       };
     }
     case TypeKind.Union: {
@@ -4434,12 +4421,14 @@ export function typeToTypeAnnotation(
         types: unionType.types.map((t) =>
           typeToTypeAnnotation(t, erasedTypeParams, ctx),
         ),
+        inferredType: type,
       } as any;
     }
     default:
       return {
         type: NodeType.TypeAnnotation,
         name: 'any',
+        inferredType: type,
       };
   }
 }
@@ -4475,6 +4464,27 @@ export function mapCheckerTypeToWasmType(
   if (type.kind === TypeKind.Void) return [];
   if (type.kind === TypeKind.Never) return [];
   if (type.kind === TypeKind.Null) return [ValType.ref_null, HeapType.none];
+  if (type.kind === TypeKind.Any || type.kind === TypeKind.AnyRef)
+    return [ValType.anyref];
+  if (type.kind === TypeKind.ByteArray) {
+    return [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
+    ];
+  }
+  if (type.kind === TypeKind.Unknown) return [ValType.anyref];
+
+  // Handle This type - resolve to current class if available
+  if (type.kind === TypeKind.This) {
+    if (ctx.currentClass) {
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(ctx.currentClass.structTypeIndex),
+      ];
+    }
+    // In interface context (no currentClass), use anyref
+    return [ValType.anyref];
+  }
 
   // Handle ClassType directly using identity-based lookups
   if (type.kind === TypeKind.Class) {

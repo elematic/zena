@@ -675,62 +675,6 @@ export class CodegenContext {
     return undefined;
   }
 
-  /**
-   * Resolve a class name to its checker ClassType using the current module context.
-   * This handles both local declarations and imports.
-   *
-   * @param name - The class name to resolve
-   * @returns The ClassType, or undefined if not found
-   */
-  public resolveClassByName(name: string): ClassType | undefined {
-    // Check if it's a local class declaration in the current module
-    if (this.currentModule) {
-      for (const stmt of this.currentModule.ast.body) {
-        if (stmt.type === NodeType.ClassDeclaration) {
-          const classDecl = stmt as ClassDeclaration;
-          if (classDecl.name.name === name && classDecl.inferredType) {
-            return classDecl.inferredType as ClassType;
-          }
-        }
-      }
-
-      // Check if it's an import alias
-      for (const stmt of this.currentModule.ast.body) {
-        if (stmt.type === NodeType.ImportDeclaration) {
-          const importDecl = stmt as ImportDeclaration;
-          for (const spec of importDecl.imports) {
-            if (spec.local.name === name) {
-              // Found the import! Look up the actual class type
-              const sourcePath = this.currentModule.imports.get(
-                importDecl.moduleSpecifier.value,
-              );
-              if (sourcePath) {
-                // Find the source module and get the class declaration
-                const sourceModule = this.modules.find(
-                  (m) => m.path === sourcePath,
-                );
-                if (sourceModule) {
-                  for (const srcStmt of sourceModule.ast.body) {
-                    if (
-                      srcStmt.type === NodeType.ClassDeclaration &&
-                      (srcStmt as ClassDeclaration).name.name ===
-                        spec.imported.name
-                    ) {
-                      return (srcStmt as ClassDeclaration)
-                        .inferredType as ClassType;
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    return undefined;
-  }
-
   // ===== Type → Struct Index Management (WASM-specific) =====
   // These maps store WASM binary emitter state, keyed by checker types.
   // Using object identity ensures stable lookups regardless of name changes.
