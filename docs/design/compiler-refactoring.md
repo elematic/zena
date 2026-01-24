@@ -1478,6 +1478,94 @@ The checker just needs to set it.
 - `packages/compiler/src/lib/codegen/classes.ts` - Added type parameter guards, fixed
   `typeToTypeAnnotation()` for distinct types, fixed `getCheckerTypeKeyForSpecialization()`
 
+#### Step 2.9: Remove resolveGenericClass Fallback ✅ COMPLETED
+
+**Status:** COMPLETED (2026-01-23)
+
+Removed `resolveGenericClass()` name-based fallback from codegen entirely.
+
+**Root cause:** TypeAnnotations synthesized in codegen (e.g., in `generateNewExpression`)
+were missing `inferredType` because they were created without it:
+
+```typescript
+// Before (missing inferredType)
+const annotation: TypeAnnotation = {
+  type: NodeType.TypeAnnotation,
+  name: actualClassName,
+  typeArguments: typeArguments,
+};
+```
+
+**Fix:** Attach `inferredType` when creating TypeAnnotations in codegen:
+
+```typescript
+// After
+const annotation: TypeAnnotation = {
+  type: NodeType.TypeAnnotation,
+  name: actualClassName,
+  typeArguments: typeArguments,
+  inferredType: expr.inferredType, // ← preserve checker type
+};
+```
+
+**Changes:**
+
+1. ✅ Fixed `generateNewExpression` to attach `inferredType` to synthesized TypeAnnotations
+2. ✅ Removed all `resolveGenericClass()` fallback calls in `classes.ts` (4 locations)
+3. ✅ Removed all `resolveGenericClass()` fallback calls in `expressions.ts` (2 locations)
+4. ✅ Deleted `resolveGenericClass()` method from `CodegenContext`
+
+All 1133 tests pass.
+
+### Round 2 Future Work: Identity-Based Function/Global Resolution
+
+**Problem:** `resolveFunction()` and `resolveGlobal()` in `CodegenContext` walk
+the AST to resolve import aliases. This is the same pattern we eliminated for
+classes with identity-based lookups.
+
+**Key difference from classes:** Functions don't have interned `FunctionType`
+objects with identity chains like `ClassType.genericSource`. The checker resolves
+names but doesn't attach the resolved declaration to call expressions.
+
+**Proposed solution (checker responsibility):**
+
+The checker should attach resolved declarations to AST nodes:
+
+1. Checker sees `foo()` call expression
+2. Checker resolves `foo` to its `VariableDeclaration` or function declaration
+3. Checker validates it's callable (function type), reports error if not
+4. Checker attaches `resolvedDeclaration` to the `CallExpression` node
+5. Codegen registers function indices keyed by declaration identity (WeakMap)
+6. Codegen looks up: `ctx.getFunctionIndex(callExpr.resolvedDeclaration)`
+
+**Benefits:**
+
+- Removes name resolution from codegen entirely
+- Follows same pattern as class identity-based lookups
+- Checker already does the work - just needs to preserve it
+- Enables unified `lookupName()` in codegen that returns discriminated union
+
+**Unified lookup alternative:**
+
+Instead of separate `resolveFunction`, `resolveGlobal`, etc., have:
+
+```typescript
+type ResolvedBinding =
+  | { kind: 'function', index: number }
+  | { kind: 'global', index: number, type: number[] }
+  | { kind: 'local', info: LocalInfo }
+  | { kind: 'class', info: ClassInfo }
+  | { kind: 'method', ... };
+
+lookupBinding(name: string): ResolvedBinding | undefined
+```
+
+But the better approach is to not need name lookup in codegen at all - the
+checker should have already resolved everything.
+
+**Status:** Deferred - current implementation works. This is cleanup for
+architectural consistency with class lookups.
+
 ### Round 3: Type Identity Simplification
 
 **Goal:** Remove name-based type comparison fallbacks
