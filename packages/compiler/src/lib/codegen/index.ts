@@ -6,11 +6,11 @@ import {
   type FunctionExpression,
   type InterfaceDeclaration,
   type MixinDeclaration,
-  type Program,
   type TypeAliasDeclaration,
   type VariableDeclaration,
 } from '../ast.js';
 import {SemanticContext} from '../checker/semantic-context.js';
+import type {Module} from '../compiler.js';
 import {TypeKind, type MixinType} from '../types.js';
 import {
   preRegisterClassStruct,
@@ -51,8 +51,18 @@ import {WasmModule} from '../emitter.js';
 export class CodeGenerator {
   #ctx: CodegenContext;
 
-  constructor(program: Program, semanticContext?: SemanticContext) {
-    this.#ctx = new CodegenContext(program, semanticContext);
+  /**
+   * Create a new CodeGenerator.
+   * @param modules - All modules/libraries to generate code for
+   * @param entryPointPath - Path of the entry point module (its exports become WASM exports)
+   * @param semanticContext - Optional semantic context for type lookups
+   */
+  constructor(
+    modules: Module[],
+    entryPointPath?: string,
+    semanticContext?: SemanticContext,
+  ) {
+    this.#ctx = new CodegenContext(modules, entryPointPath, semanticContext);
   }
 
   /**
@@ -82,7 +92,7 @@ export class CodeGenerator {
    * @returns The generated WASM binary as a Uint8Array.
    */
   public generate(): Uint8Array {
-    const {program} = this.#ctx;
+    const statements = this.#ctx.statements;
 
     // Initialize exception tag
     // Tag type: () -> void (no parameters)
@@ -116,7 +126,7 @@ export class CodeGenerator {
     // 1. Pre-register Interfaces and register Mixins/Type Aliases/Enums (First pass)
     // This reserves type indices for interfaces so they can be referenced by classes.
     // Interface method types are NOT defined yet since they may reference classes.
-    for (const statement of program.body) {
+    for (const statement of statements) {
       if (statement.type === NodeType.InterfaceDeclaration) {
         preRegisterInterface(this.#ctx, statement as InterfaceDeclaration);
       } else if (statement.type === NodeType.MixinDeclaration) {
@@ -157,7 +167,7 @@ export class CodeGenerator {
 
     // 2. Pre-register Class Structs (Second pass)
     // This reserves type indices so self-referential types can work
-    for (const statement of program.body) {
+    for (const statement of statements) {
       if (statement.type === NodeType.ClassDeclaration) {
         preRegisterClassStruct(this.#ctx, statement as ClassDeclaration);
       }
@@ -165,7 +175,7 @@ export class CodeGenerator {
 
     // 3. Define Interface Methods (Third pass)
     // Now that all classes have reserved indices, mapType can resolve class types correctly.
-    for (const statement of program.body) {
+    for (const statement of statements) {
       if (statement.type === NodeType.InterfaceDeclaration) {
         defineInterfaceMethods(this.#ctx, statement as InterfaceDeclaration);
       }
@@ -173,7 +183,7 @@ export class CodeGenerator {
 
     // 4. Define Class Structs (Fourth pass)
     // Now that all classes have reserved indices, define the actual struct types
-    for (const statement of program.body) {
+    for (const statement of statements) {
       if (statement.type === NodeType.ClassDeclaration) {
         defineClassStruct(this.#ctx, statement as ClassDeclaration);
       }
@@ -181,9 +191,10 @@ export class CodeGenerator {
 
     // 5. Register Imports (DeclareFunction)
     // Imports must be registered before defined functions to ensure correct index space.
-    for (const statement of program.body) {
+    for (const statement of statements) {
       if (statement.type === NodeType.DeclareFunction) {
-        registerDeclaredFunction(this.#ctx, statement as DeclareFunction);
+        const decl = statement as DeclareFunction;
+        registerDeclaredFunction(this.#ctx, decl, this.#ctx.shouldExport(decl));
       }
     }
 
@@ -200,14 +211,15 @@ export class CodeGenerator {
       registerClassMethods(this.#ctx, decl);
     }
 
-    for (const statement of program.body) {
+    for (const statement of statements) {
       if (statement.type === NodeType.ClassDeclaration) {
         registerClassMethods(this.#ctx, statement as ClassDeclaration);
       }
     }
 
     // 6. Register Functions and Variables (Sixth pass)
-    for (const statement of program.body) {
+    // Use statementsWithModule to track current module for qualified names
+    for (const statement of this.#ctx.statementsWithModule()) {
       if (statement.type === NodeType.ClassDeclaration) {
         const classDecl = statement as ClassDeclaration;
         for (const member of classDecl.body) {
@@ -251,7 +263,7 @@ export class CodeGenerator {
               this.#ctx,
               name,
               varDecl.init as FunctionExpression,
-              varDecl.exported,
+              this.#ctx.shouldExport(varDecl),
               (varDecl as any).exportName,
             );
           } else {
@@ -282,7 +294,7 @@ export class CodeGenerator {
             this.#ctx.defineGlobal(name, globalIndex, type);
             globalInitializers.push({index: globalIndex, init: varDecl.init});
 
-            if (varDecl.exported) {
+            if (this.#ctx.shouldExport(varDecl)) {
               const exportName = (varDecl as any).exportName || name;
               this.#ctx.module.addExport(
                 exportName,

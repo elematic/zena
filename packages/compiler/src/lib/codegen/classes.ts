@@ -101,11 +101,7 @@ export function preRegisterInterface(
       const parentName = ext.name;
 
       // Find parent decl
-      const parentDecl = ctx.program.body.find(
-        (s) =>
-          s.type === NodeType.InterfaceDeclaration &&
-          (s as InterfaceDeclaration).name.name === parentName,
-      ) as InterfaceDeclaration | undefined;
+      const parentDecl = ctx.findInterfaceDeclaration(parentName);
 
       if (parentDecl) {
         preRegisterInterface(ctx, parentDecl);
@@ -198,11 +194,7 @@ export function defineInterfaceMethods(
 
     // Ensure parent methods are defined first
     if (parentInfo && parentInfo.methods.size === 0) {
-      const parentDecl = ctx.program.body.find(
-        (s) =>
-          s.type === NodeType.InterfaceDeclaration &&
-          (s as InterfaceDeclaration).name.name === interfaceInfo.parent,
-      ) as InterfaceDeclaration | undefined;
+      const parentDecl = ctx.findInterfaceDeclaration(interfaceInfo.parent!);
       if (parentDecl) {
         defineInterfaceMethods(ctx, parentDecl);
         parentInfo = ctx.interfaces.get(interfaceInfo.parent);
@@ -970,6 +962,8 @@ export function preRegisterClassStruct(
       onTypeAnnotation: decl.onType,
     };
     ctx.classes.set(decl.name.name, classInfo);
+    // Also register by struct index to support lookup when names collide
+    ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
 
     // Register type → struct index for identity-based lookups
     if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
@@ -1032,8 +1026,8 @@ export function preRegisterClassStruct(
         let genericSuperDecl = classType?.superType
           ? ctx.getGenericDeclByType(classType.superType)
           : undefined;
-        // Fall back to name-based lookup
-        genericSuperDecl ??= ctx.genericClasses.get(baseSuperName);
+        // Fall back to name-based lookup (resolve import aliases)
+        genericSuperDecl ??= ctx.resolveGenericClass(baseSuperName);
         if (genericSuperDecl) {
           // Pass the checker's superType to enable identity-based lookup
           instantiateClass(
@@ -1125,6 +1119,8 @@ export function preRegisterClassStruct(
     isExtension: decl.isExtension,
   };
   ctx.classes.set(decl.name.name, classInfo);
+  // Also register by struct index to support lookup when names collide
+  ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
 
   // Register type → struct index for identity-based lookups
   if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
@@ -1216,8 +1212,8 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
           let genericSuperDecl = superClassType
             ? ctx.getGenericDeclByType(superClassType)
             : undefined;
-          // Fall back to name-based lookup
-          genericSuperDecl ??= ctx.genericClasses.get(baseSuperName);
+          // Fall back to name-based lookup (resolve import aliases)
+          genericSuperDecl ??= ctx.resolveGenericClass(baseSuperName);
           if (genericSuperDecl) {
             // Pass the checker's superType to enable identity-based lookup
             instantiateClass(
@@ -1385,14 +1381,17 @@ export function registerClassStruct(
     // This is needed because some parts of the compiler might try to reference the class type
     const structTypeIndex = ctx.module.addStructType([]);
 
-    ctx.classes.set(decl.name.name, {
+    const classInfo: ClassInfo = {
       name: decl.name.name,
       structTypeIndex,
       fields: new Map(),
       methods: new Map(),
       isExtension: true,
       onType,
-    });
+    };
+    ctx.classes.set(decl.name.name, classInfo);
+    // Also register by struct index to support lookup when names collide
+    ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
 
     // Check if this is the String class
     const isStringClass =
@@ -1575,6 +1574,8 @@ export function registerClassStruct(
     onType,
   };
   ctx.classes.set(decl.name.name, classInfo);
+  // Also register by struct index to support lookup when names collide
+  ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
 
   // Update identity-based lookup registration with the complete ClassInfo
   if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
@@ -2047,7 +2048,7 @@ export function registerClassMethods(
 
   generateInterfaceVTable(ctx, classInfo, decl);
 
-  if (decl.exported && !decl.isExtension) {
+  if (ctx.shouldExport(decl) && !decl.isExtension) {
     const ctorInfo = methods.get('#new')!;
 
     // Wrapper signature: params -> (ref null struct)
@@ -2815,9 +2816,93 @@ export function getSpecializedName(
 ): string {
   const argNames = args.map((arg) => {
     const resolved = resolveAnnotation(arg, context);
-    return getTypeKey(resolved);
+    // If the type annotation has a checker type (inferredType), use that for
+    // identity-based naming to avoid collisions with same-named types from
+    // different modules
+    if (resolved.inferredType) {
+      return getCheckerTypeKeyForSpecialization(resolved.inferredType, ctx);
+    }
+    // Try to resolve the class name to a bundled name using the current module context
+    return getTypeKeyWithContext(resolved, ctx);
   });
   return `${name}<${argNames.join(',')}>`;
+}
+
+/**
+ * Get a canonical string key for a TypeAnnotation, using codegen context
+ * to resolve class names to their bundled names (avoiding same-name collisions).
+ */
+function getTypeKeyWithContext(
+  type: TypeAnnotation,
+  ctx: CodegenContext,
+): string {
+  if (type.type === NodeType.TypeAnnotation) {
+    // Try to find the bundled name for this class
+    let key = type.name;
+
+    // First, try to resolve via current module's context (imports and local declarations)
+    // This takes precedence because the same name might exist in ctx.classes from
+    // another module, but we need the one from the current module's scope.
+    const resolvedClass = ctx.resolveClassByName(type.name);
+    if (resolvedClass) {
+      // Found the class - get its bundled name
+      const bundledName = ctx.getClassBundledName(resolvedClass);
+      if (bundledName) {
+        key = bundledName;
+      }
+    } else if (ctx.classes.has(type.name)) {
+      // It's a non-generic class that exists in the global classes map
+      // but wasn't resolved via the current module. This can happen for:
+      // - Well-known types (String, FixedArray, etc.)
+      // - Classes defined in modules that have already been processed
+      // Use the name as-is since it's already the bundled name in the map.
+      key = type.name;
+    }
+
+    if (type.typeArguments && type.typeArguments.length > 0) {
+      key += `<${type.typeArguments.map((ta) => getTypeKeyWithContext(ta, ctx)).join(',')}>`;
+    }
+    return key;
+  } else if (type.type === NodeType.RecordTypeAnnotation) {
+    const props = type.properties
+      .map(
+        (p) => `${p.name.name}:${getTypeKeyWithContext(p.typeAnnotation, ctx)}`,
+      )
+      .sort()
+      .join(',');
+    return `{${props}}`;
+  } else if (type.type === NodeType.TupleTypeAnnotation) {
+    const elements = type.elementTypes
+      .map((t) => getTypeKeyWithContext(t, ctx))
+      .join(',');
+    return `[${elements}]`;
+  } else if (type.type === NodeType.FunctionTypeAnnotation) {
+    const params = type.params
+      .map((p) => getTypeKeyWithContext(p, ctx))
+      .join(',');
+    const ret = type.returnType
+      ? getTypeKeyWithContext(type.returnType, ctx)
+      : TypeNames.Void;
+    return `(${params})=>${ret}`;
+  } else if (type.type === NodeType.UnionTypeAnnotation) {
+    // Sort union members for consistent keys regardless of order
+    const members = type.types
+      .map((t) => getTypeKeyWithContext(t, ctx))
+      .sort()
+      .join('|');
+    return `(${members})`;
+  } else if (type.type === NodeType.LiteralTypeAnnotation) {
+    // Include the literal value in the key
+    const val = type.value;
+    if (typeof val === 'string') {
+      return `'${val}'`;
+    } else if (typeof val === 'boolean') {
+      return val ? 'true' : 'false';
+    } else {
+      return String(val);
+    }
+  }
+  return 'unknown';
 }
 
 function getArrayTypeIndex(ctx: CodegenContext, elementType: number[]): number {
@@ -2854,6 +2939,13 @@ function mapTypeInternal(
     }
     // In interface context (no currentClass), use anyref since any class can implement
     return [ValType.ref_null, ValType.anyref];
+  }
+
+  // If the TypeAnnotation has an attached checker type (inferredType), use
+  // identity-based lookup directly. This handles cases where the annotation
+  // was created from a checker type with a unique bundled name.
+  if (type.inferredType) {
+    return mapCheckerTypeToWasmType(ctx, type.inferredType);
   }
 
   // Resolve generic type parameters
@@ -2963,8 +3055,8 @@ function mapTypeInternal(
         if (type.typeArguments && type.typeArguments.length > 0) {
           // Instantiate generic class
           // We need to find the generic class declaration
-          // Check genericClasses
-          let genericDecl = ctx.genericClasses.get(typeName);
+          // Check genericClasses (resolve import aliases)
+          let genericDecl = ctx.resolveGenericClass(typeName);
 
           // If not found, check if it's a well-known type that was renamed
           if (!genericDecl) {
@@ -3268,8 +3360,8 @@ export function instantiateClass(
           let genericSuperDecl = superClassType
             ? ctx.getGenericDeclByType(superClassType)
             : undefined;
-          // Fall back to name-based lookup
-          genericSuperDecl ??= ctx.genericClasses.get(baseSuperName);
+          // Fall back to name-based lookup (resolve import aliases)
+          genericSuperDecl ??= ctx.resolveGenericClass(baseSuperName);
           if (genericSuperDecl) {
             const pendingCountBefore = ctx.pendingMethodGenerations.length;
             // Pass the checker's superType to enable identity-based lookup
@@ -3321,6 +3413,8 @@ export function instantiateClass(
       isExtension: false,
     };
     ctx.classes.set(specializedName, partialClassInfo);
+    // Also register by struct index to support lookup when names collide
+    ctx.setClassInfoByStructIndex(structTypeIndex, partialClassInfo);
   }
 
   if (decl.isExtension && decl.onType) {
@@ -3443,6 +3537,8 @@ export function instantiateClass(
       onTypeAnnotation: decl.isExtension ? decl.onType : undefined,
     };
     ctx.classes.set(specializedName, classInfo);
+    // Also register by struct index to support lookup when names collide
+    ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
   }
 
   // Register by checker type for identity-based lookup
@@ -3835,7 +3931,7 @@ export function instantiateClass(
 
     generateInterfaceVTable(ctx, classInfo, decl);
 
-    if (decl.exported && structTypeIndex !== -1) {
+    if (ctx.shouldExport(decl) && structTypeIndex !== -1) {
       const ctorInfo = methods.get('#new')!;
 
       // Wrapper signature: params -> (ref null struct)
@@ -3986,6 +4082,8 @@ function preRegisterMixin(
     vtable: [],
   };
   ctx.classes.set(intermediateName, classInfo);
+  // Also register by struct index to support lookup when names collide
+  ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
 
   return classInfo;
 }
@@ -4039,6 +4137,8 @@ function applyMixin(
 
   if (!existingInfo) {
     ctx.classes.set(intermediateName, classInfo);
+    // Also register by struct index to support lookup when names collide
+    ctx.setClassInfoByStructIndex(classInfo.structTypeIndex, classInfo);
   }
 
   // Register by identity for O(1) lookup if we have the checker type
@@ -4179,6 +4279,8 @@ export function typeToTypeAnnotation(
         type: NodeType.TypeAnnotation,
         name: canonicalName,
         typeArguments: args.length > 0 ? args : undefined,
+        // Preserve the checker type for identity-based lookups in getSpecializedName
+        inferredType: type,
       };
     }
     case TypeKind.Interface: {
@@ -4208,6 +4310,8 @@ export function typeToTypeAnnotation(
         type: NodeType.TypeAnnotation,
         name: canonicalName,
         typeArguments: args.length > 0 ? args : undefined,
+        // Preserve the checker type for identity-based lookups in getSpecializedName
+        inferredType: type,
       };
     }
     case TypeKind.Array: {
@@ -4379,14 +4483,18 @@ export function mapCheckerTypeToWasmType(
         // Fall back to name-based lookup (handles edge cases where checker type
         // wasn't registered, e.g., well-known types from different modules)
         const genericSource = classType.genericSource ?? classType;
-        genericDecl = ctx.genericClasses.get(genericSource.name);
+        genericDecl = ctx.resolveGenericClass(genericSource.name);
       }
       if (genericDecl) {
         const typeArgAnnotations = classType.typeArguments.map((ta) =>
           typeToTypeAnnotation(ta, undefined, ctx),
         );
+        // Use bundled name to avoid collisions with same-named classes from different modules
+        const genericSource = classType.genericSource ?? classType;
+        const bundledName =
+          ctx.getClassBundledName(genericSource) ?? genericDecl.name.name;
         const specializedName = getSpecializedName(
-          genericDecl.name.name,
+          bundledName,
           typeArgAnnotations,
           ctx,
           ctx.currentTypeContext,

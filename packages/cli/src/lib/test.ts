@@ -286,7 +286,7 @@ const runTestFile = async (filePath: string): Promise<TestResult> => {
     const hasTestsExport = mainModule?.exports?.has('value:tests') ?? false;
 
     let entryPoint = filePath;
-    let program;
+    let compiledModules = modules;
     let useStructuredResults = false;
 
     if (!hasMainExport && hasTestsExport) {
@@ -387,15 +387,13 @@ export let getNestedTestError = (index: i32): string | null => nested().tests[in
         }
       }
 
-      // Bundle with the wrapper compiler
-      program = wrapperCompiler.bundle(wrapperPath);
+      // Use the wrapper modules
+      compiledModules = wrapperModules;
+      entryPoint = wrapperPath;
       useStructuredResults = true;
-    } else {
-      // Bundle with the original compiler
-      program = compiler.bundle(entryPoint);
     }
 
-    const codegen = new CodeGenerator(program);
+    const codegen = new CodeGenerator(compiledModules, entryPoint);
     const bytes = codegen.generate();
 
     // Instantiate

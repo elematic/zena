@@ -1,6 +1,7 @@
 import {Compiler, type CompilerHost, type Module} from '../../lib/compiler.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {type Diagnostic} from '../../lib/diagnostics.js';
+import type {Program} from '../../lib/ast.js';
 import {readFileSync, existsSync} from 'node:fs';
 import {join, dirname, basename, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -10,6 +11,32 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // When running compiled tests, we are in packages/compiler/test/codegen
 // Stdlib is in packages/stdlib/zena
 export const stdlibPath = join(__dirname, '../../../stdlib/zena');
+
+/**
+ * Wrap a parsed and type-checked AST as a single-module array for CodeGenerator.
+ * Use this for low-level codegen tests that bypass the full compiler pipeline.
+ *
+ * @param ast - A parsed and type-checked Program AST
+ * @param source - Optional source code for error reporting
+ * @returns An array with a single Module
+ */
+export const wrapAsModule = (
+  ast: Program,
+  source = '',
+  path = '/test.zena',
+): Module[] => {
+  return [
+    {
+      path,
+      isStdlib: false,
+      source,
+      ast,
+      imports: new Map(),
+      exports: new Map(),
+      diagnostics: [],
+    },
+  ];
+};
 
 export interface CompileOptions {
   entryPoint?: string;
@@ -95,8 +122,8 @@ export const compileToWasm = (
 ): Uint8Array => {
   const host = createHost(input, path);
   const compiler = new Compiler(host);
-  const program = compiler.bundle(path);
-  const generator = new CodeGenerator(program);
+  const modules = compiler.compile(path);
+  const generator = new CodeGenerator(modules, path);
   return generator.generate();
 };
 
@@ -145,8 +172,7 @@ export async function compileAndInstantiate(
     );
   }
 
-  const program = compiler.bundle(path);
-  const codegen = new CodeGenerator(program);
+  const codegen = new CodeGenerator(modules, path);
   const bytes = codegen.generate();
 
   try {
@@ -459,9 +485,7 @@ export let getNestedTestError = (index: i32): string | null => nested().tests[in
     throw new Error(`Compilation errors: ${errors}`);
   }
 
-  const program = compiler.bundle(wrapperPath);
-
-  const codegen = new CodeGenerator(program);
+  const codegen = new CodeGenerator(modules, wrapperPath);
   const bytes = codegen.generate();
 
   // Instantiate with console mocks

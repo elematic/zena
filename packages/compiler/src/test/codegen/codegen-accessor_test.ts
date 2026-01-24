@@ -3,6 +3,7 @@ import {suite, test} from 'node:test';
 import {Parser} from '../../lib/parser.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {TypeChecker} from '../../lib/checker/index.js';
+import {wrapAsModule} from './utils.js';
 
 suite('CodeGenerator - Accessors', () => {
   test('should compile and run accessor getter and setter', async () => {
@@ -35,7 +36,7 @@ suite('CodeGenerator - Accessors', () => {
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
 
-    const codegen = new CodeGenerator(ast);
+    const codegen = new CodeGenerator(wrapAsModule(ast, input));
     const wasmBuffer = codegen.generate();
 
     const result = await WebAssembly.instantiate(wasmBuffer);
@@ -69,7 +70,7 @@ suite('CodeGenerator - Accessors', () => {
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
 
-    const codegen = new CodeGenerator(ast);
+    const codegen = new CodeGenerator(wrapAsModule(ast, input));
     const wasmBuffer = codegen.generate();
 
     const result = await WebAssembly.instantiate(wasmBuffer);

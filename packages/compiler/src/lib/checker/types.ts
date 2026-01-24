@@ -225,6 +225,8 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
 /**
  * Resolves a type annotation from the AST into a semantic Type.
  * Handles primitive types, class references, unions, function types, etc.
+ * Also attaches the resolved type to the annotation as `inferredType` for
+ * use in codegen (enables identity-based lookups to avoid name collisions).
  *
  * @param ctx The checker context.
  * @param annotation The AST type annotation.

@@ -2,14 +2,17 @@ import {
   NodeType,
   type ClassDeclaration,
   type FunctionExpression,
+  type ImportDeclaration,
+  type InterfaceDeclaration,
   type MethodDefinition,
   type MixinDeclaration,
   type Node,
-  type Program,
+  type Statement,
   type TaggedTemplateExpression,
   type TypeAnnotation,
 } from '../ast.js';
 import {SemanticContext} from '../checker/semantic-context.js';
+import type {Module} from '../compiler.js';
 import {
   DiagnosticBag,
   DiagnosticCode,
@@ -89,7 +92,21 @@ export interface FunctionContextState {
  */
 export class CodegenContext {
   public module: WasmModule;
-  public program: Program;
+  /**
+   * Ordered list of modules to generate code for.
+   * Modules are in topological order (dependencies before dependents).
+   */
+  public modules: Module[];
+  /**
+   * The entry point module (last in topological order).
+   * Only exports from this module become WASM exports.
+   */
+  public entryPointModule: Module;
+  /**
+   * The module currently being processed during iteration.
+   * Used to track which module declarations belong to.
+   */
+  public currentModule: Module | null = null;
   public diagnostics = new DiagnosticBag();
 
   /**
@@ -181,10 +198,16 @@ export class CodegenContext {
   readonly #structIndexToClass = new Map<number, ClassType>();
   readonly #structIndexToInterface = new Map<number, InterfaceType>();
 
+  // Struct index to ClassInfo mapping for fast lookup in code generation
+  // This avoids issues with name collisions when multiple modules define same-named classes
+  readonly #structIndexToClassInfo = new Map<number, ClassInfo>();
   // Identity-based lookup infrastructure (Round 2.5 refactoring)
   // Maps checker types to their bundled names for lookup
   readonly #classBundledNames = new Map<ClassType, string>();
   readonly #interfaceBundledNames = new Map<InterfaceType, string>();
+  // Counter for generating unique class names across modules
+  // This ensures classes with the same name in different modules get unique keys
+  #classNameCounter = 0;
   // Maps generic class declarations to their ClassType
   readonly #genericTemplates = new Map<string, ClassType>();
   // Reverse mapping: checker ClassType → ClassDeclaration for generic classes
@@ -208,12 +231,19 @@ export class CodegenContext {
   // Template Literals
   public templateLiteralGlobals = new Map<TaggedTemplateExpression, number>();
 
-  constructor(program: Program, semanticContext?: SemanticContext) {
-    this.program = program;
+  constructor(
+    modules: Module[],
+    entryPointPath?: string,
+    semanticContext?: SemanticContext,
+  ) {
+    this.modules = modules;
+    // Find entry point by path, or default to last module (for backward compatibility)
+    this.entryPointModule = entryPointPath
+      ? (modules.find((m) => m.path === entryPointPath) ??
+        modules[modules.length - 1])
+      : modules[modules.length - 1];
     this.semanticContext = semanticContext ?? new SemanticContext();
-    if (program.wellKnownTypes) {
-      this.wellKnownTypes = program.wellKnownTypes;
-    }
+    this.#extractWellKnownTypes();
     this.module = new WasmModule();
     // Define backing array type: array<i8> (mutable for construction)
     this.byteArrayTypeIndex = this.module.addArrayType([ValType.i8], true);
@@ -222,6 +252,125 @@ export class CodegenContext {
     // The String class definition in the prelude will reuse this type index.
     // String is now an extension class on ByteArray, so it shares the same type index.
     this.stringTypeIndex = this.byteArrayTypeIndex;
+  }
+
+  /**
+   * Extract well-known types (FixedArray, String, Box, TemplateStringsArray)
+   * from the module list based on their canonical module paths.
+   */
+  #extractWellKnownTypes() {
+    for (const mod of this.modules) {
+      for (const stmt of mod.ast.body) {
+        if (stmt.type !== NodeType.ClassDeclaration) continue;
+        const decl = stmt as ClassDeclaration;
+        const name = decl.name.name;
+
+        if (mod.path === 'zena:fixed-array' && name === 'FixedArray') {
+          this.wellKnownTypes.FixedArray = decl;
+        } else if (mod.path === 'zena:string' && name === 'String') {
+          this.wellKnownTypes.String = decl;
+        } else if (mod.path === 'zena:box' && name === 'Box') {
+          this.wellKnownTypes.Box = decl;
+        } else if (
+          mod.path === 'zena:template-strings-array' &&
+          name === 'TemplateStringsArray'
+        ) {
+          this.wellKnownTypes.TemplateStringsArray = decl;
+        }
+      }
+    }
+  }
+
+  /**
+   * Get all statements from all modules in topological order.
+   * Use this for iterating over the entire program.
+   */
+  get statements(): Statement[] {
+    const result: Statement[] = [];
+    for (const mod of this.modules) {
+      result.push(...mod.ast.body);
+    }
+    return result;
+  }
+
+  /**
+   * Iterate over all statements while tracking the current module.
+   * This is useful when you need to know which module a statement belongs to.
+   * Sets `currentModule` before processing each module's statements.
+   */
+  *statementsWithModule(): Generator<Statement, void, undefined> {
+    for (const mod of this.modules) {
+      this.currentModule = mod;
+      for (const stmt of mod.ast.body) {
+        yield stmt;
+      }
+    }
+    this.currentModule = null;
+  }
+
+  /**
+   * Execute a callback for each module, setting currentModule during the call.
+   * Use this when you need to process each module separately.
+   */
+  forEachModule(callback: (mod: Module) => void): void {
+    for (const mod of this.modules) {
+      this.currentModule = mod;
+      callback(mod);
+    }
+    this.currentModule = null;
+  }
+
+  /**
+   * Find a class declaration by name across all modules.
+   */
+  findClassDeclaration(name: string): ClassDeclaration | undefined {
+    for (const mod of this.modules) {
+      for (const stmt of mod.ast.body) {
+        if (
+          stmt.type === NodeType.ClassDeclaration &&
+          (stmt as ClassDeclaration).name.name === name
+        ) {
+          return stmt as ClassDeclaration;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Find an interface declaration by name across all modules.
+   */
+  findInterfaceDeclaration(name: string): InterfaceDeclaration | undefined {
+    for (const mod of this.modules) {
+      for (const stmt of mod.ast.body) {
+        if (
+          stmt.type === NodeType.InterfaceDeclaration &&
+          (stmt as InterfaceDeclaration).name.name === name
+        ) {
+          return stmt as InterfaceDeclaration;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Check if a statement is from the entry point module.
+   * Only exports from the entry point module should become WASM exports.
+   */
+  isFromEntryPoint(stmt: Statement): boolean {
+    return this.entryPointModule.ast.body.includes(stmt);
+  }
+
+  /**
+   * Check if a statement should produce a WASM export.
+   * Returns true if the statement is marked as exported AND is from the entry point module.
+   */
+  shouldExport(stmt: {exported?: boolean}): boolean {
+    // Only entry point exports become WASM exports
+    return !!(
+      stmt.exported && this.entryPointModule.ast.body.includes(stmt as any)
+    );
   }
 
   // ===== Local Index Management =====
@@ -378,10 +527,208 @@ export class CodegenContext {
 
   public defineGlobal(name: string, index: number, type: number[]) {
     this.globals.set(name, {index, type});
+    // Also register with qualified name for multi-module support
+    if (this.currentModule) {
+      const qualifiedName = this.qualifyName(name);
+      this.globals.set(qualifiedName, {index, type});
+    }
   }
 
   public getGlobal(name: string): {index: number; type: number[]} | undefined {
     return this.globals.get(name);
+  }
+
+  // ===== Qualified Name and Import Resolution =====
+
+  /**
+   * Create a qualified name for a declaration.
+   * Format: `{modulePath}:{name}`
+   * @param name - The unqualified name of the declaration
+   * @param modulePath - Optional module path (defaults to current module)
+   */
+  public qualifyName(name: string, modulePath?: string): string {
+    const path = modulePath ?? this.currentModule?.path ?? '';
+    return `${path}:${name}`;
+  }
+
+  /**
+   * Resolve a name to its function index, checking imports if necessary.
+   * @param name - The name to resolve (may be an import alias)
+   * @returns The function index, or undefined if not found
+   */
+  public resolveFunction(name: string): number | undefined {
+    // First check if it's a directly registered function (qualified name)
+    const qualifiedName = this.qualifyName(name);
+    if (this.functions.has(qualifiedName)) {
+      return this.functions.get(qualifiedName);
+    }
+
+    // Check if it's an import alias in the current module
+    if (this.currentModule) {
+      for (const stmt of this.currentModule.ast.body) {
+        if (stmt.type === NodeType.ImportDeclaration) {
+          const importDecl = stmt as ImportDeclaration;
+          for (const spec of importDecl.imports) {
+            if (spec.local.name === name) {
+              // Found the import! Look up the actual function
+              const sourcePath = this.currentModule.imports.get(
+                importDecl.moduleSpecifier.value,
+              );
+              if (sourcePath) {
+                const targetQualified = `${sourcePath}:${spec.imported.name}`;
+                if (this.functions.has(targetQualified)) {
+                  return this.functions.get(targetQualified);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Fall back to unqualified lookup for backward compatibility
+    // (single-module tests may not use qualified names)
+    if (this.functions.has(name)) {
+      return this.functions.get(name);
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Resolve a name to its global info, checking imports if necessary.
+   */
+  public resolveGlobal(
+    name: string,
+  ): {index: number; type: number[]} | undefined {
+    // First check qualified name in current module
+    const qualifiedName = this.qualifyName(name);
+    if (this.globals.has(qualifiedName)) {
+      return this.globals.get(qualifiedName);
+    }
+
+    // Check imports
+    if (this.currentModule) {
+      for (const stmt of this.currentModule.ast.body) {
+        if (stmt.type === NodeType.ImportDeclaration) {
+          const importDecl = stmt as ImportDeclaration;
+          for (const spec of importDecl.imports) {
+            if (spec.local.name === name) {
+              const sourcePath = this.currentModule.imports.get(
+                importDecl.moduleSpecifier.value,
+              );
+              if (sourcePath) {
+                const targetQualified = `${sourcePath}:${spec.imported.name}`;
+                if (this.globals.has(targetQualified)) {
+                  return this.globals.get(targetQualified);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Fall back to unqualified lookup
+    return this.globals.get(name);
+  }
+
+  /**
+   * Resolve a name to its generic class declaration, checking imports if necessary.
+   * @param name - The name to resolve (may be an import alias)
+   * @returns The ClassDeclaration, or undefined if not found
+   */
+  public resolveGenericClass(name: string): ClassDeclaration | undefined {
+    // First check if it's a directly registered generic class
+    if (this.genericClasses.has(name)) {
+      return this.genericClasses.get(name);
+    }
+
+    // Check if it's an import alias in the current module
+    if (this.currentModule) {
+      for (const stmt of this.currentModule.ast.body) {
+        if (stmt.type === NodeType.ImportDeclaration) {
+          const importDecl = stmt as ImportDeclaration;
+          for (const spec of importDecl.imports) {
+            if (spec.local.name === name) {
+              // Found the import! Look up the actual generic class
+              const sourcePath = this.currentModule.imports.get(
+                importDecl.moduleSpecifier.value,
+              );
+              if (sourcePath) {
+                // Try with source path prefix (e.g., "a:Box")
+                const targetQualified = `${sourcePath}:${spec.imported.name}`;
+                if (this.genericClasses.has(targetQualified)) {
+                  return this.genericClasses.get(targetQualified);
+                }
+                // Try just the imported name (for backward compatibility)
+                if (this.genericClasses.has(spec.imported.name)) {
+                  return this.genericClasses.get(spec.imported.name);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Resolve a class name to its checker ClassType using the current module context.
+   * This handles both local declarations and imports.
+   *
+   * @param name - The class name to resolve
+   * @returns The ClassType, or undefined if not found
+   */
+  public resolveClassByName(name: string): ClassType | undefined {
+    // Check if it's a local class declaration in the current module
+    if (this.currentModule) {
+      for (const stmt of this.currentModule.ast.body) {
+        if (stmt.type === NodeType.ClassDeclaration) {
+          const classDecl = stmt as ClassDeclaration;
+          if (classDecl.name.name === name && classDecl.inferredType) {
+            return classDecl.inferredType as ClassType;
+          }
+        }
+      }
+
+      // Check if it's an import alias
+      for (const stmt of this.currentModule.ast.body) {
+        if (stmt.type === NodeType.ImportDeclaration) {
+          const importDecl = stmt as ImportDeclaration;
+          for (const spec of importDecl.imports) {
+            if (spec.local.name === name) {
+              // Found the import! Look up the actual class type
+              const sourcePath = this.currentModule.imports.get(
+                importDecl.moduleSpecifier.value,
+              );
+              if (sourcePath) {
+                // Find the source module and get the class declaration
+                const sourceModule = this.modules.find(
+                  (m) => m.path === sourcePath,
+                );
+                if (sourceModule) {
+                  for (const srcStmt of sourceModule.ast.body) {
+                    if (
+                      srcStmt.type === NodeType.ClassDeclaration &&
+                      (srcStmt as ClassDeclaration).name.name ===
+                        spec.imported.name
+                    ) {
+                      return (srcStmt as ClassDeclaration)
+                        .inferredType as ClassType;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return undefined;
   }
 
   // ===== Type → Struct Index Management (WASM-specific) =====
@@ -440,6 +787,32 @@ export class CodegenContext {
     return this.#structIndexToInterface.get(structIndex);
   }
 
+  /**
+   * Register a ClassInfo by its struct index for fast lookup.
+   * This is called during class registration and enables looking up
+   * ClassInfo without name collisions across modules.
+   */
+  public setClassInfoByStructIndex(
+    structIndex: number,
+    classInfo: ClassInfo,
+  ): void {
+    this.#structIndexToClassInfo.set(structIndex, classInfo);
+  }
+
+  /**
+   * Get a ClassInfo directly by its WASM struct index.
+   * This is faster than iterating over ctx.classes.values()
+   * and avoids issues with name collisions across modules.
+   *
+   * Unlike getClassInfoByStructIndex (which uses identity-based lookup via
+   * ClassType), this uses a direct struct index to ClassInfo mapping.
+   */
+  public getClassInfoByStructIndexDirect(
+    structIndex: number,
+  ): ClassInfo | undefined {
+    return this.#structIndexToClassInfo.get(structIndex);
+  }
+
   // ===== Identity-Based Lookup Methods (Round 2.5 refactoring) =====
   // These methods support looking up ClassInfo by checker type identity,
   // enabling us to remove bundler name mutation and suffix-based lookups.
@@ -454,9 +827,26 @@ export class CodegenContext {
   /**
    * Register the bundled name for a checker ClassType.
    * Called during class registration to track the name mapping.
+   *
+   * If the bundled name has already been used by a different ClassType,
+   * a unique suffix is added to avoid collisions.
    */
   public setClassBundledName(classType: ClassType, bundledName: string): void {
-    this.#classBundledNames.set(classType, bundledName);
+    // Check if we've already registered this ClassType
+    if (this.#classBundledNames.has(classType)) {
+      return; // Already registered
+    }
+
+    // Check if this bundled name is already in use by a different ClassType
+    let finalName = bundledName;
+    for (const existingName of this.#classBundledNames.values()) {
+      if (existingName === finalName) {
+        // Name collision - generate a unique name
+        finalName = `${bundledName}$${this.#classNameCounter++}`;
+        break;
+      }
+    }
+    this.#classBundledNames.set(classType, finalName);
   }
 
   /**
@@ -647,9 +1037,14 @@ export class CodegenContext {
     if (result) return result;
     // For specialized generic interfaces, look up via genericSource
     if (interfaceType.genericSource) {
-      return this.#interfaceInfoByType.get(interfaceType.genericSource);
+      const sourceResult = this.#interfaceInfoByType.get(
+        interfaceType.genericSource,
+      );
+      if (sourceResult) return sourceResult;
     }
-    return undefined;
+    // Fall back to name-based lookup for generic interfaces with unbound type parameters
+    // This handles cases where the type identity doesn't match but the interface is the same
+    return this.interfaces.get(interfaceType.name);
   }
 
   public getRecordTypeIndex(fields: {name: string; type: number[]}[]): number {

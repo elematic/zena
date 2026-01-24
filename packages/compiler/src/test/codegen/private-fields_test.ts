@@ -3,13 +3,14 @@ import assert from 'node:assert';
 import {Parser} from '../../lib/parser.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {TypeChecker} from '../../lib/checker/index.js';
+import {wrapAsModule} from './utils.js';
 
 async function compileAndRun(input: string): Promise<number> {
   const parser = new Parser(input);
   const ast = parser.parse();
   const checker = TypeChecker.forProgram(ast);
   checker.check();
-  const codegen = new CodeGenerator(ast);
+  const codegen = new CodeGenerator(wrapAsModule(ast, input));
   const bytes = codegen.generate();
   const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);
   const {main} = result.instance.exports as {main: () => number};
@@ -93,7 +94,7 @@ suite('Codegen: Private Fields', () => {
     // Public fields generate get_fieldName/set_fieldName accessors in the vtable.
     // Private fields are accessed directly without vtable indirection.
 
-    const parser = new Parser(`
+    const source1 = `
       class Widget {
         #secret: i32 = 42;
         getValue(): i32 { return this.#secret; }
@@ -103,11 +104,12 @@ suite('Codegen: Private Fields', () => {
         let w = new Widget();
         return w.getValue();
       };
-    `);
+    `;
+    const parser = new Parser(source1);
     const ast = parser.parse();
     const checker = TypeChecker.forProgram(ast);
     checker.check();
-    const codegen = new CodeGenerator(ast);
+    const codegen = new CodeGenerator(wrapAsModule(ast, source1));
     const bytesPrivate = codegen.generate();
 
     // Verify the generated code works correctly
@@ -120,7 +122,7 @@ suite('Codegen: Private Fields', () => {
     // Now compare with a version where secret is public
     // Public fields generate virtual getters that use call_ref (dynamic dispatch)
     // Private fields use direct struct_get (static access)
-    const parser2 = new Parser(`
+    const source2 = `
       class Widget {
         secret: i32 = 42;
         getValue(): i32 { return this.secret; }
@@ -130,11 +132,12 @@ suite('Codegen: Private Fields', () => {
         let w = new Widget();
         return w.getValue();
       };
-    `);
+    `;
+    const parser2 = new Parser(source2);
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(ast2);
+    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
     const bytesPublic = codegen2.generate();
 
     // Count call_ref (0x14) in both versions

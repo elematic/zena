@@ -1,44 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {Compiler} from '../../lib/compiler.js';
-import {CodeGenerator} from '../../lib/codegen/index.js';
-import {NodeType, type Program} from '../../lib/ast.js';
-import {compileAndRun, createHost} from './utils.js';
-
-/**
- * Helper to find all TypeAnnotation names in a bundled program
- */
-function collectTypeAnnotationNames(program: Program): Set<string> {
-  const names = new Set<string>();
-  const visited = new WeakSet<object>();
-
-  const visitNode = (node: any) => {
-    if (!node || typeof node !== 'object') return;
-    if (visited.has(node)) return;
-    visited.add(node);
-
-    if (node.type === NodeType.TypeAnnotation) {
-      names.add(node.name);
-      if (node.typeArguments) {
-        node.typeArguments.forEach(visitNode);
-      }
-    } else {
-      for (const key in node) {
-        // Skip inferred types which can have circular references
-        if (key === 'inferredType' || key === 'inferredTypeArguments') continue;
-        const val = node[key];
-        if (Array.isArray(val)) {
-          val.forEach(visitNode);
-        } else if (val && typeof val === 'object') {
-          visitNode(val);
-        }
-      }
-    }
-  };
-
-  program.body.forEach(visitNode);
-  return names;
-}
+import {compileAndRun} from './utils.js';
 
 /**
  * This test file verifies that generic class specialization keys are unique
@@ -105,55 +67,9 @@ suite('Codegen: Generic Specialization Collision', () => {
       `,
     };
 
-    const host = createHost(files);
-    const compiler = new Compiler(host);
-    const program = compiler.bundle('/main.zena');
-
-    // Verify that the bundler renamed Y to different names in each module
-    const typeNames = collectTypeAnnotationNames(program);
-    const yNames = Array.from(typeNames).filter((n) => n.includes('Y'));
-    // There should be at least 2 different Y names (e.g., m2_Y and m3_Y)
-    assert.ok(
-      yNames.length >= 2,
-      `Expected at least 2 different Y type names, got: ${JSON.stringify(yNames)}`,
-    );
-    // Make sure they're all different (no collision)
-    const uniqueYNames = new Set(yNames);
-    assert.strictEqual(
-      uniqueYNames.size,
-      yNames.length,
-      `Expected all Y names to be unique: ${JSON.stringify(yNames)}`,
-    );
-
-    // Type checking was already done by compiler.compile() - just verify no errors
-    const modules = compiler.compile('/main.zena');
-    const diagnostics = modules.flatMap((m) => m.diagnostics);
-    if (diagnostics.length > 0) {
-      throw new Error(
-        `Compilation check failed: ${diagnostics.map((d) => d.message).join(', ')}`,
-      );
-    }
-
-    const codegen = new CodeGenerator(program);
-    const bytes = codegen.generate();
-
-    const result = await WebAssembly.instantiate(bytes, {
-      console: {
-        log_i32: () => {},
-        log_f32: () => {},
-        log_string: () => {},
-        error_string: () => {},
-        warn_string: () => {},
-        info_string: () => {},
-        debug_string: () => {},
-      },
-    });
-    const instance = (result as any).instance || result;
-    const exports = instance.exports;
-
     // If specialization keys are unique, we should get 100 + 200 = 300
     // If there's a collision, we'd likely get wrong values or a runtime error
-    const value = exports.main();
+    const value = await compileAndRun(files);
     assert.strictEqual(
       value,
       300,

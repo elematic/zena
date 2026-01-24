@@ -114,11 +114,8 @@ const buildCommand = async (
 
     if (hasErrors) return 1;
 
-    // Bundle
-    const program = compiler.bundle(entryPoint);
-
-    // Generate code
-    const codegen = new CodeGenerator(program);
+    // Generate code (pass modules directly, no bundling needed)
+    const codegen = new CodeGenerator(modules, entryPoint);
     const bytes = codegen.generate();
 
     const outputPath = output || basename(files[0], '.zena') + '.wasm';
@@ -184,8 +181,8 @@ const runCommand = async (files: string[]): Promise<number> => {
 
     if (hasErrors) return 1;
 
-    const program = compiler.bundle(entryPoint);
-    const codegen = new CodeGenerator(program);
+    // Generate code (pass modules directly, no bundling needed)
+    const codegen = new CodeGenerator(modules, entryPoint);
     const bytes = codegen.generate();
 
     // Use the runtime to instantiate with standard library support
@@ -197,12 +194,6 @@ const runCommand = async (files: string[]): Promise<number> => {
     const exports = instance.exports;
 
     // Look for a main function and call it
-    // The bundler might have renamed main?
-    // If main is exported from entry point, it should be exported as 'main' in WASM?
-    // We need to ensure CodeGenerator respects exports.
-    // Currently CodeGenerator emits exports for all functions? No.
-    // We need to check CodeGenerator.
-
     // Assuming 'main' is exported from entry point.
     const mainFn = exports.main;
     if (typeof mainFn === 'function') {

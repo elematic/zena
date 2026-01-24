@@ -192,11 +192,22 @@ export function registerFunction(
     ctx.module.addExport(exportName || name, ExportDesc.Func, funcIndex);
   }
 
+  // Register with qualified name for multi-module support
+  const qualifiedName = ctx.qualifyName(name);
+  ctx.functions.set(qualifiedName, funcIndex);
+  // Also register unqualified for backward compatibility with single-module tests
   ctx.functions.set(name, funcIndex);
   ctx.functionReturnTypes.set(name, mappedReturn);
+
+  // Capture current module for body generation
+  const capturedModule = ctx.currentModule;
   ctx.bodyGenerators.push(() => {
+    // Restore the module context for import resolution during body generation
+    const savedModule = ctx.currentModule;
+    ctx.currentModule = capturedModule;
     const body = generateFunctionBody(ctx, name, func, undefined, mappedReturn);
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
+    ctx.currentModule = savedModule;
   });
 }
 
@@ -247,8 +258,14 @@ export function instantiateGenericFunction(
     .map((t) => getTypeKey(resolveAnnotation(t, ctx.currentTypeContext)))
     .join(',')}>`;
 
+  // Check if already instantiated
   if (ctx.functions.has(key)) {
     return ctx.functions.get(key)!;
+  }
+  // Also check using resolve for imports
+  const existing = ctx.resolveFunction(key);
+  if (existing !== undefined) {
+    return existing;
   }
 
   const typeContext = new Map<string, TypeAnnotation>();
@@ -297,6 +314,7 @@ export function instantiateGenericFunction(
 export function registerDeclaredFunction(
   ctx: CodegenContext,
   decl: DeclareFunction,
+  shouldExport: boolean = false,
 ) {
   // Check if this is an intrinsic (regardless of whether it's generic)
   let intrinsicName: string | undefined;
@@ -353,7 +371,7 @@ export function registerDeclaredFunction(
       typeIndex,
     );
 
-    if (decl.exported) {
+    if (shouldExport) {
       const exportName = (decl as any).exportName || decl.name.name;
       ctx.module.addExport(exportName, ExportDesc.Func, funcIndex);
     }

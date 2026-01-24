@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {compileAndRun} from './utils.js';
+import {compileAndRun, wrapAsModule} from './utils.js';
 import {Parser} from '../../lib/parser.js';
 import {TypeChecker} from '../../lib/checker/index.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
@@ -102,7 +102,7 @@ suite('CodeGenerator - Final Modifier', () => {
     };
 
     // Version with final method
-    const parser1 = new Parser(`
+    const source1 = `
       class Widget {
         final getValue(): i32 { return 42; }
       }
@@ -111,15 +111,16 @@ suite('CodeGenerator - Final Modifier', () => {
         let w = new Widget();
         return w.getValue();
       };
-    `);
+    `;
+    const parser1 = new Parser(source1);
     const ast1 = parser1.parse();
     const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
-    const codegen1 = new CodeGenerator(ast1);
+    const codegen1 = new CodeGenerator(wrapAsModule(ast1, source1));
     const bytesFinal = codegen1.generate();
 
     // Version with non-final method
-    const parser2 = new Parser(`
+    const source2 = `
       class Widget {
         getValue(): i32 { return 42; }
       }
@@ -128,11 +129,12 @@ suite('CodeGenerator - Final Modifier', () => {
         let w = new Widget();
         return w.getValue();
       };
-    `);
+    `;
+    const parser2 = new Parser(source2);
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(ast2);
+    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
     const bytesNonFinal = codegen2.generate();
 
     const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));
@@ -158,7 +160,7 @@ suite('CodeGenerator - Final Modifier', () => {
     };
 
     // Version with final class
-    const parser1 = new Parser(`
+    const source1 = `
       final class Widget {
         getValue(): i32 { return 42; }
       }
@@ -167,15 +169,16 @@ suite('CodeGenerator - Final Modifier', () => {
         let w = new Widget();
         return w.getValue();
       };
-    `);
+    `;
+    const parser1 = new Parser(source1);
     const ast1 = parser1.parse();
     const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
-    const codegen1 = new CodeGenerator(ast1);
+    const codegen1 = new CodeGenerator(wrapAsModule(ast1, source1));
     const bytesFinalClass = codegen1.generate();
 
     // Version with non-final class
-    const parser2 = new Parser(`
+    const source2 = `
       class Widget {
         getValue(): i32 { return 42; }
       }
@@ -184,11 +187,12 @@ suite('CodeGenerator - Final Modifier', () => {
         let w = new Widget();
         return w.getValue();
       };
-    `);
+    `;
+    const parser2 = new Parser(source2);
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(ast2);
+    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
     const bytesNonFinalClass = codegen2.generate();
 
     const finalClassCallRefs = countCallRef(new Uint8Array(bytesFinalClass));
@@ -213,7 +217,7 @@ suite('CodeGenerator - Final Modifier', () => {
     };
 
     // Version with final accessor
-    const parser1 = new Parser(`
+    const source1 = `
       class Widget {
         #value: i32 = 42;
         final val: i32 {
@@ -225,15 +229,16 @@ suite('CodeGenerator - Final Modifier', () => {
         let w = new Widget();
         return w.val;
       };
-    `);
+    `;
+    const parser1 = new Parser(source1);
     const ast1 = parser1.parse();
     const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
-    const codegen1 = new CodeGenerator(ast1);
+    const codegen1 = new CodeGenerator(wrapAsModule(ast1, source1));
     const bytesFinal = codegen1.generate();
 
     // Version with non-final accessor
-    const parser2 = new Parser(`
+    const source2 = `
       class Widget {
         #value: i32 = 42;
         val: i32 {
@@ -245,11 +250,12 @@ suite('CodeGenerator - Final Modifier', () => {
         let w = new Widget();
         return w.val;
       };
-    `);
+    `;
+    const parser2 = new Parser(source2);
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(ast2);
+    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
     const bytesNonFinal = codegen2.generate();
 
     const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));
@@ -271,7 +277,7 @@ suite('CodeGenerator - Final Modifier', () => {
     };
 
     // Version with final accessor
-    const parser1 = new Parser(`
+    const source1 = `
       class Widget {
         #value: i32 = 0;
         final val: i32 {
@@ -285,15 +291,16 @@ suite('CodeGenerator - Final Modifier', () => {
         w.val = 42;
         return w.val;
       };
-    `);
+    `;
+    const parser1 = new Parser(source1);
     const ast1 = parser1.parse();
     const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
-    const codegen1 = new CodeGenerator(ast1);
+    const codegen1 = new CodeGenerator(wrapAsModule(ast1, source1));
     const bytesFinal = codegen1.generate();
 
     // Version with non-final accessor
-    const parser2 = new Parser(`
+    const source2 = `
       class Widget {
         #value: i32 = 0;
         val: i32 {
@@ -307,11 +314,12 @@ suite('CodeGenerator - Final Modifier', () => {
         w.val = 42;
         return w.val;
       };
-    `);
+    `;
+    const parser2 = new Parser(source2);
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(ast2);
+    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
     const bytesNonFinal = codegen2.generate();
 
     const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));
@@ -333,7 +341,7 @@ suite('CodeGenerator - Final Modifier', () => {
     };
 
     // Version with final field
-    const parser1 = new Parser(`
+    const source1 = `
       class Widget {
         final value: i32 = 42;
       }
@@ -342,15 +350,16 @@ suite('CodeGenerator - Final Modifier', () => {
         let w = new Widget();
         return w.value;
       };
-    `);
+    `;
+    const parser1 = new Parser(source1);
     const ast1 = parser1.parse();
     const checker1 = TypeChecker.forProgram(ast1);
     checker1.check();
-    const codegen1 = new CodeGenerator(ast1);
+    const codegen1 = new CodeGenerator(wrapAsModule(ast1, source1));
     const bytesFinal = codegen1.generate();
 
     // Version with non-final field
-    const parser2 = new Parser(`
+    const source2 = `
       class Widget {
         value: i32 = 42;
       }
@@ -359,11 +368,12 @@ suite('CodeGenerator - Final Modifier', () => {
         let w = new Widget();
         return w.value;
       };
-    `);
+    `;
+    const parser2 = new Parser(source2);
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(ast2);
+    const codegen2 = new CodeGenerator(wrapAsModule(ast2, source2));
     const bytesNonFinal = codegen2.generate();
 
     const finalCallRefs = countCallRef(new Uint8Array(bytesFinal));

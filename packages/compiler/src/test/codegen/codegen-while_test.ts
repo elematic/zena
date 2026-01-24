@@ -3,13 +3,14 @@ import {suite, test} from 'node:test';
 import {Parser} from '../../lib/parser.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {TypeChecker} from '../../lib/checker/index.js';
+import {wrapAsModule} from './utils.js';
 
 async function compile(input: string) {
   const parser = new Parser(input);
   const ast = parser.parse();
   const checker = TypeChecker.forProgram(ast);
   checker.check();
-  const codegen = new CodeGenerator(ast);
+  const codegen = new CodeGenerator(wrapAsModule(ast, input));
   const bytes = codegen.generate();
   const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);
   return result.instance.exports;

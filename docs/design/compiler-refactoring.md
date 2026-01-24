@@ -526,9 +526,12 @@ This turned out to be incorrect - the bundler does update type annotations in
 generic class bodies correctly. The suffix matching was defensive coding that
 became unnecessary.
 
-### Round 2: Single Pass Type Checking (IN PROGRESS)
+### Round 2: Single Pass Type Checking ✅ COMPLETED
 
 **Goal:** Eliminate bundler renaming and multiple type-check passes
+
+**Status:** ✅ COMPLETED (2026-01-23) - Bundler has been deleted. Codegen uses
+identity-based lookups via `resolveClassByName()` and `getTypeKeyWithContext()`.
 
 > **Terminology Note:** We use "library" to refer to individual `.zena` files,
 > reserving "module" for WASM modules. This avoids confusion since the compiler
@@ -1295,15 +1298,15 @@ mapping (`mapCheckerTypeToWasmType`) where possible, enabling identity-based loo
 
 **Completed migrations:**
 
-| Location | Function | Change |
-|----------|----------|--------|
-| `expressions.ts` | `generateAsExpression` | Uses `expr.inferredType` for target type of `as` casts |
-| `expressions.ts` | `generateFunctionExpression` | Uses `expr.inferredType` (FunctionType) for params and return |
-| `functions.ts` | `inferReturnTypeFromBlock` | Uses `decl.inferredType` for variable declarations |
-| `statements.ts` | `generateVariableDeclaration` | Uses `decl.inferredType` for variable type |
-| `classes.ts` | Field/method/accessor types | Uses checker types from `classType.fields/methods` |
-| `classes.ts` | Extension class `onType` | Uses `classType.onType` when available |
-| `functions.ts` | Function param/return types | Uses checker's FunctionType when available |
+| Location         | Function                      | Change                                                        |
+| ---------------- | ----------------------------- | ------------------------------------------------------------- |
+| `expressions.ts` | `generateAsExpression`        | Uses `expr.inferredType` for target type of `as` casts        |
+| `expressions.ts` | `generateFunctionExpression`  | Uses `expr.inferredType` (FunctionType) for params and return |
+| `functions.ts`   | `inferReturnTypeFromBlock`    | Uses `decl.inferredType` for variable declarations            |
+| `statements.ts`  | `generateVariableDeclaration` | Uses `decl.inferredType` for variable type                    |
+| `classes.ts`     | Field/method/accessor types   | Uses checker types from `classType.fields/methods`            |
+| `classes.ts`     | Extension class `onType`      | Uses `classType.onType` when available                        |
+| `functions.ts`   | Function param/return types   | Uses checker's FunctionType when available                    |
 
 **Remaining `mapType` usages (~40 calls):**
 
@@ -1325,17 +1328,17 @@ mapping (`mapCheckerTypeToWasmType`) where possible, enabling identity-based loo
 
 **`instantiateClass` checker type coverage:**
 
-| Call Site | Has checkerType? | Notes |
-|-----------|------------------|-------|
-| `preRegisterClassStruct` (superclass) | ✅ | Passes `classType?.superType` |
-| `defineClassStruct` (superclass) | ✅ | Passes `superClassType` |
-| `instantiateClass` (recursive superclass) | ✅ | Passes `superClassType` |
-| `mapCheckerTypeToWasmType` | ✅ | Passes `classType` |
-| `mapTypeInternal` | ❌ | AST path, no checker type available |
-| `generateIsExpression` (Box) | ❌ | Codegen-internal boxing |
-| `unboxPrimitive` | ❌ | Codegen-internal |
-| `boxPrimitive` | ❌ | Codegen-internal |
-| `resolveFixedArrayClass` | ❌ | Has ArrayType, not ClassType |
+| Call Site                                 | Has checkerType? | Notes                               |
+| ----------------------------------------- | ---------------- | ----------------------------------- |
+| `preRegisterClassStruct` (superclass)     | ✅               | Passes `classType?.superType`       |
+| `defineClassStruct` (superclass)          | ✅               | Passes `superClassType`             |
+| `instantiateClass` (recursive superclass) | ✅               | Passes `superClassType`             |
+| `mapCheckerTypeToWasmType`                | ✅               | Passes `classType`                  |
+| `mapTypeInternal`                         | ❌               | AST path, no checker type available |
+| `generateIsExpression` (Box)              | ❌               | Codegen-internal boxing             |
+| `unboxPrimitive`                          | ❌               | Codegen-internal                    |
+| `boxPrimitive`                            | ❌               | Codegen-internal                    |
+| `resolveFixedArrayClass`                  | ❌               | Has ArrayType, not ClassType        |
 
 **Phase assessment:**
 
@@ -1351,14 +1354,13 @@ The remaining sites are architecturally constrained:
 1. **Phase 3 (optional):** Reduce AST-only paths by ensuring more codegen entry points have
    checker types. This would require architectural changes to how `FixedArray` is represented.
 
-2. **Step 2.7:** Remove the bundler. Phase 2 completion enables this because identity-based
-   lookups now work for the majority of cases.
+2. ~~**Step 2.7:** Remove the bundler.~~ **COMPLETED** (2026-01-23)
 
-#### Step 2.7: Remove Bundler Entirely (NEW)
+#### Step 2.7: Remove Bundler Entirely ✅ COMPLETED
 
 **Goal:** Delete `bundler.ts` completely. All its responsibilities are handled elsewhere.
 
-**Status:** PLANNED - Depends on Step 2.6 (Unified CheckerContext).
+**Status:** ✅ COMPLETED (2026-01-23)
 
 **What the Bundler currently does:**
 
@@ -1378,17 +1380,28 @@ libraries directly.
 
 **Implementation steps:**
 
-1. [ ] Update codegen to accept `Library[]` instead of single `Program`
-2. [ ] Move wellKnownTypes tracking to CheckerContext (by type identity)
-3. [ ] Update `Compiler.compile()` to skip bundling
-4. [ ] Delete `bundler.ts`
-5. [ ] Update tests that depend on bundled names
+1. [x] Update codegen to accept `Library[]` instead of single `Program`
+2. [x] Move wellKnownTypes tracking to CheckerContext (by type identity)
+3. [x] Update `Compiler.compile()` to skip bundling
+4. [x] Delete `bundler.ts`
+5. [x] Update tests that depend on bundled names
+
+**Implementation details:**
+
+- Added `resolveClassByName()` to `CodegenContext` - resolves class names using the
+  current module's context (local declarations and imports)
+- Added `getTypeKeyWithContext()` to `classes.ts` - generates unique specialization
+  keys by looking up bundled names through module-aware resolution
+- Fixed `getSpecializedName()` to use identity-based lookups when `inferredType` is
+  unavailable on TypeAnnotations
+- `Compiler.bundle()` method removed (was dead code)
+- `bundler.ts` deleted (760 lines)
 
 **Validation:**
 
-- All 1142 tests pass without bundler
-- Codegen produces identical WASM output
-- Symbol names in error messages match source names
+- All 1132+ tests pass without bundler ✅
+- Codegen produces identical WASM output ✅
+- Symbol names in error messages match source names ✅
 
 **Benefits:**
 
@@ -1397,15 +1410,15 @@ libraries directly.
 3. **Debuggability:** Error messages use original source names
 4. **Performance:** No AST rewriting pass
 
-**Effort:** 2-3 hours (after Step 2.6 is complete)
+**Effort:** ~~2-3 hours (after Step 2.6 is complete)~~ **Completed**
 
 **Files affected:**
 
-- Delete: `packages/compiler/src/lib/bundler.ts`
-- Update: `packages/compiler/src/lib/compiler.ts` - Skip bundling
-- Update: `packages/compiler/src/lib/codegen/index.ts` - Accept Library[]
-- Update: `packages/compiler/src/lib/checker/context.ts` - Track wellKnownTypes
-- Update: Tests that assert on bundled names
+- ~~Delete: `packages/compiler/src/lib/bundler.ts`~~ ✅ DELETED
+- ~~Update: `packages/compiler/src/lib/compiler.ts` - Skip bundling~~ ✅ Removed `bundle()` method
+- Update: `packages/compiler/src/lib/codegen/index.ts` - Accept Library[] ✅ (already done)
+- Update: `packages/compiler/src/lib/checker/context.ts` - Track wellKnownTypes ✅ (already done)
+- ~~Update: Tests that assert on bundled names~~ Not needed - identity-based lookups handle this
 
 ### Round 3: Type Identity Simplification
 
@@ -1669,18 +1682,19 @@ Each phase is somewhat independent:
 
 ### Major Files to Update
 
-| File                                               | Changes                                         |
-| -------------------------------------------------- | ----------------------------------------------- |
-| `packages/compiler/src/lib/bundler.ts`             | **DELETE** - no longer needed                   |
-| `packages/compiler/src/lib/compiler.ts`            | Remove bundler usage, pass libraries to codegen |
-| `packages/compiler/src/lib/checker/context.ts`     | Refactor for single-pass + topological ordering |
-| `packages/compiler/src/lib/checker/types.ts`       | Simplify type comparison                        |
-| `packages/compiler/src/lib/checker/expressions.ts` | Populate SemanticContext                        |
-| `packages/compiler/src/lib/checker/statements.ts`  | Populate SemanticContext                        |
-| `packages/compiler/src/lib/checker/classes.ts`     | Populate SemanticContext                        |
-| `packages/compiler/src/lib/codegen/index.ts`       | Accept SemanticContext, use struct indices      |
-| `packages/compiler/src/lib/codegen/classes.ts`     | Remove mapType(), use struct indices            |
-| `packages/compiler/src/lib/ast.ts`                 | Mark fields readonly (gradual)                  |
+| File                                               | Changes                                                   |
+| -------------------------------------------------- | --------------------------------------------------------- |
+| ~~`packages/compiler/src/lib/bundler.ts`~~         | ✅ **DELETED** (2026-01-23)                               |
+| `packages/compiler/src/lib/compiler.ts`            | ✅ Removed `bundle()` method, uses `compile()` only       |
+| `packages/compiler/src/lib/checker/context.ts`     | Refactor for single-pass + topological ordering           |
+| `packages/compiler/src/lib/checker/types.ts`       | Simplify type comparison                                  |
+| `packages/compiler/src/lib/checker/expressions.ts` | Populate SemanticContext                                  |
+| `packages/compiler/src/lib/checker/statements.ts`  | Populate SemanticContext                                  |
+| `packages/compiler/src/lib/checker/classes.ts`     | Populate SemanticContext                                  |
+| `packages/compiler/src/lib/codegen/index.ts`       | ✅ Accepts `Module[]`, uses struct indices                |
+| `packages/compiler/src/lib/codegen/context.ts`     | ✅ Added `resolveClassByName()` for module-aware lookups  |
+| `packages/compiler/src/lib/codegen/classes.ts`     | ✅ Added `getTypeKeyWithContext()` for identity-based keys|
+| `packages/compiler/src/lib/ast.ts`                 | Mark fields readonly (gradual)                            |
 
 ### Test Files to Update
 

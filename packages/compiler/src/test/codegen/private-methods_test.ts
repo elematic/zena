@@ -1,6 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compileAndRun} from './utils.js';
+import {compileAndRun, wrapAsModule} from './utils.js';
 import {Parser} from '../../lib/parser.js';
 import {TypeChecker} from '../../lib/checker/index.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
@@ -96,7 +96,7 @@ suite('Codegen: Private Methods', () => {
     const ast = parser.parse();
     const checker = TypeChecker.forProgram(ast);
     checker.check();
-    const codegen = new CodeGenerator(ast);
+    const codegen = new CodeGenerator(wrapAsModule(ast, source));
     const bytes = codegen.generate();
 
     // Verify the generated code works correctly
@@ -123,7 +123,7 @@ suite('Codegen: Private Methods', () => {
     const ast2 = parser2.parse();
     const checker2 = TypeChecker.forProgram(ast2);
     checker2.check();
-    const codegen2 = new CodeGenerator(ast2);
+    const codegen2 = new CodeGenerator(wrapAsModule(ast2, sourceWithPublic));
     const bytesPublic = codegen2.generate();
 
     // Count call_ref (0x14) in both versions

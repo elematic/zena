@@ -4,6 +4,7 @@ import {Parser} from '../../lib/parser.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {TypeChecker} from '../../lib/checker/index.js';
 import {createWasiImports} from '../wasi_test_utils.js';
+import {wrapAsModule} from './utils.js';
 
 suite('CodeGenerator - WASI', () => {
   test('should compile and run WASI Hello World', async () => {
@@ -35,7 +36,7 @@ suite('CodeGenerator - WASI', () => {
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
 
-    const codegen = new CodeGenerator(ast);
+    const codegen = new CodeGenerator(wrapAsModule(ast, input));
     const wasmBuffer = codegen.generate();
 
     const {imports, setMemory, output} = createWasiImports();

@@ -4,7 +4,6 @@ import {prelude} from './prelude.js';
 import {CheckerContext, type SymbolInfo} from './checker/context.js';
 import {TypeChecker} from './checker/index.js';
 import type {Diagnostic} from './diagnostics.js';
-import {Bundler} from './bundler.js';
 import {LibraryLoader, type LibraryRecord} from './loader/index.js';
 
 export interface CompilerHost {
@@ -73,13 +72,6 @@ export class Compiler {
 
     this.#checkModules();
     return Array.from(this.#modules.values());
-  }
-
-  public bundle(entryPoint: string): Program {
-    const modules = this.compile(entryPoint);
-    const entryModule = this.#modules.get(entryPoint)!;
-    const bundler = new Bundler(modules, entryModule);
-    return bundler.bundle();
   }
 
   /**

@@ -3,6 +3,7 @@ import {suite, test} from 'node:test';
 import {Parser} from '../../lib/parser.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {DiagnosticCode} from '../../lib/diagnostics.js';
+import {wrapAsModule} from './utils.js';
 
 suite('CodeGenerator: Diagnostics', () => {
   test('should report diagnostic for unknown variable in expression', () => {
@@ -13,7 +14,7 @@ suite('CodeGenerator: Diagnostics', () => {
     `;
     const parser = new Parser(source);
     const ast = parser.parse();
-    const codegen = new CodeGenerator(ast);
+    const codegen = new CodeGenerator(wrapAsModule(ast, source));
     codegen.setFileName('test.zena');
 
     try {
@@ -43,7 +44,7 @@ suite('CodeGenerator: Diagnostics', () => {
     `;
     const parser = new Parser(source);
     const ast = parser.parse();
-    const codegen = new CodeGenerator(ast);
+    const codegen = new CodeGenerator(wrapAsModule(ast, source));
     codegen.setFileName('myfile.zena');
 
     try {
@@ -69,7 +70,7 @@ suite('CodeGenerator: Diagnostics', () => {
     `;
     const parser = new Parser(source);
     const ast = parser.parse();
-    const codegen = new CodeGenerator(ast);
+    const codegen = new CodeGenerator(wrapAsModule(ast, source));
     codegen.setFileName('test.zena');
 
     try {

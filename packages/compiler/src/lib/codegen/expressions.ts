@@ -1376,17 +1376,20 @@ function generateNewExpression(
       });
     }
 
+    // Resolve the generic class declaration, handling import aliases
+    const resolvedGenericClass = ctx.resolveGenericClass(className);
+
     if (
       (!typeArguments || typeArguments.length === 0) &&
-      ctx.genericClasses.has(className)
+      resolvedGenericClass
     ) {
       throw new Error(`Missing inferred type arguments for ${className}`);
     }
 
     if (typeArguments && typeArguments.length > 0) {
       // Check for partial type arguments and fill with defaults
-      if (ctx.genericClasses.has(className)) {
-        const classDecl = ctx.genericClasses.get(className)!;
+      if (resolvedGenericClass) {
+        const classDecl = resolvedGenericClass;
         if (
           classDecl.typeParameters &&
           typeArguments.length < classDecl.typeParameters.length
@@ -1408,9 +1411,13 @@ function generateNewExpression(
         }
       }
 
+      // Use the actual class name from the declaration, not the import alias
+      const actualClassName = resolvedGenericClass
+        ? resolvedGenericClass.name.name
+        : className;
       const annotation: TypeAnnotation = {
         type: NodeType.TypeAnnotation,
-        name: className,
+        name: actualClassName,
         typeArguments: typeArguments,
       };
       // Ensure the class is instantiated
@@ -1598,7 +1605,7 @@ function generateMemberExpression(
         // Try identity-based lookup via genericSource first
         let genericDecl = ctx.getGenericDeclByType(genericSource);
         // Fall back to name-based lookup for bundler cases
-        genericDecl ??= ctx.genericClasses.get(genericSource.name);
+        genericDecl ??= ctx.resolveGenericClass(genericSource.name);
         if (genericDecl) {
           const typeArgAnnotations = classType.typeArguments.map((ta: Type) =>
             typeToTypeAnnotation(ta, undefined, ctx),
@@ -2690,7 +2697,7 @@ function generateCallExpression(
 
       if (
         !ctx.getLocal(name) &&
-        (ctx.functions.has(name) ||
+        (ctx.resolveFunction(name) !== undefined ||
           ctx.genericFunctions.has(name) ||
           ctx.functionOverloads.has(name))
       ) {
@@ -2779,7 +2786,7 @@ function generateCallExpression(
           targetFuncIndex = bestMatch.index;
         }
       } else {
-        targetFuncIndex = ctx.functions.get(name) ?? -1;
+        targetFuncIndex = ctx.resolveFunction(name) ?? -1;
       }
 
       if (targetFuncIndex !== -1) {
@@ -3124,11 +3131,17 @@ function generateAssignmentExpression(
       throw new Error(`Invalid object type for field assignment: ${fieldName}`);
     }
 
-    let foundClass: ClassInfo | undefined;
-    for (const info of ctx.classes.values()) {
-      if (info.structTypeIndex === structTypeIndex) {
-        foundClass = info;
-        break;
+    // Try struct index lookup first (handles name collisions across modules)
+    let foundClass: ClassInfo | undefined =
+      ctx.getClassInfoByStructIndexDirect(structTypeIndex);
+
+    // Fall back to iteration for backward compatibility
+    if (!foundClass) {
+      for (const info of ctx.classes.values()) {
+        if (info.structTypeIndex === structTypeIndex) {
+          foundClass = info;
+          break;
+        }
       }
     }
 
@@ -3438,7 +3451,8 @@ function generateAssignmentExpression(
       body.push(Opcode.local_tee);
       body.push(...WasmModule.encodeSignedLEB128(index));
     } else {
-      const global = ctx.getGlobal(expr.left.name);
+      // Use resolveGlobal to handle imports and qualified names
+      const global = ctx.resolveGlobal(expr.left.name);
       if (global) {
         const valueType = inferType(ctx, expr.value);
         if (
@@ -4073,7 +4087,8 @@ function generateIdentifier(
     body.push(...WasmModule.encodeSignedLEB128(local.index));
     return;
   }
-  const global = ctx.getGlobal(expr.name);
+  // Use resolveGlobal to handle imports
+  const global = ctx.resolveGlobal(expr.name);
   if (global) {
     body.push(Opcode.global_get);
     body.push(...WasmModule.encodeSignedLEB128(global.index));
@@ -5748,8 +5763,8 @@ function generateTaggedTemplateExpression(
   // Try to determine expected type from tag function
   if (expr.tag.type === NodeType.Identifier) {
     const name = (expr.tag as Identifier).name;
-    if (ctx.functions.has(name)) {
-      const funcIndex = ctx.functions.get(name)!;
+    const funcIndex = ctx.resolveFunction(name);
+    if (funcIndex !== undefined) {
       const funcTypeIndex = ctx.module.getFunctionTypeIndex(funcIndex);
       const params = ctx.module.getFunctionTypeParams(funcTypeIndex);
       // params[0] is strings, params[1] is values
@@ -5884,8 +5899,8 @@ function generateTaggedTemplateExpression(
     }
 
     // Check for global function
-    if (ctx.functions.has(name)) {
-      const funcIndex = ctx.functions.get(name)!;
+    const funcIndex = ctx.resolveFunction(name);
+    if (funcIndex !== undefined) {
       body.push(Opcode.call);
       body.push(...WasmModule.encodeSignedLEB128(funcIndex));
       return;

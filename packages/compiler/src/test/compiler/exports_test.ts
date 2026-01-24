@@ -3,116 +3,11 @@ import assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Bundler} from '../lib/bundler.js';
-import {NodeType} from '../lib/ast.js';
-import {Compiler, type CompilerHost, type Module} from '../lib/compiler.js';
-import {Parser} from '../lib/parser.js';
-import {CodeGenerator} from '../lib/codegen/index.js';
+import {Compiler, type CompilerHost} from '../../lib/compiler.js';
+import {CodeGenerator} from '../../lib/codegen/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const stdlibPath = path.resolve(__dirname, '../../stdlib/zena');
-
-function createModule(path: string, code: string): Module {
-  const parser = new Parser(code);
-  const ast = parser.parse();
-  return {
-    path,
-    source: code,
-    ast,
-    imports: new Map(),
-    exports: new Map(),
-    diagnostics: [],
-    isStdlib: true, // Bypass well-known type checks for unit tests
-  };
-}
-
-describe('Bundler', () => {
-  it('renames top-level declarations and references', () => {
-    const modA = createModule(
-      'a.zena',
-      `
-      let x = 1;
-      let y = x + 1;
-    `,
-    );
-
-    const bundler = new Bundler([modA], modA);
-    const bundle = bundler.bundle();
-
-    assert.strictEqual(bundle.body.length, 2);
-
-    const decl1 = bundle.body[0] as any;
-    const decl2 = bundle.body[1] as any;
-
-    // Check renaming
-    assert.match(decl1.pattern.name, /^m0_x$/);
-    assert.match(decl2.pattern.name, /^m0_y$/);
-
-    // Check reference
-    assert.strictEqual(decl2.init.left.name, decl1.pattern.name);
-  });
-
-  it('renames imports', () => {
-    const modA = createModule(
-      'a.zena',
-      `
-      import { x } from './b.zena';
-      let y = x;
-    `,
-    );
-    const modB = createModule(
-      'b.zena',
-      `
-      export let x = 10;
-    `,
-    );
-
-    // Manually resolve imports for test
-    modA.imports.set('./b.zena', 'b.zena');
-
-    const bundler = new Bundler([modA, modB], modA);
-    const bundle = bundler.bundle();
-
-    // Should have 2 statements (modA let y, modB let x) - imports are removed
-    assert.strictEqual(bundle.body.length, 2);
-
-    // Find statements
-    const stmtY = bundle.body.find(
-      (s: any) =>
-        s.type === NodeType.VariableDeclaration && s.pattern.name.includes('y'),
-    ) as any;
-    const stmtX = bundle.body.find(
-      (s: any) =>
-        s.type === NodeType.VariableDeclaration && s.pattern.name.includes('x'),
-    ) as any;
-
-    assert.ok(stmtY);
-    assert.ok(stmtX);
-
-    // Check that y is initialized with x's mangled name
-    assert.strictEqual(stmtY.init.name, stmtX.pattern.name);
-  });
-
-  it('does not rename locals', () => {
-    const modA = createModule(
-      'a.zena',
-      `
-      let x = 1;
-      let f = (x: i32) => x;
-    `,
-    );
-
-    const bundler = new Bundler([modA], modA);
-    const bundle = bundler.bundle();
-
-    const stmtF = bundle.body[1] as any;
-    const param = stmtF.init.params[0];
-    const body = stmtF.init.body; // Expression body
-
-    assert.strictEqual(param.name.name, 'x'); // Param should stay 'x'
-    assert.strictEqual(body.name, 'x'); // Body usage should stay 'x'
-  });
-});
+const stdlibPath = path.resolve(__dirname, '../../../stdlib/zena');
 
 describe('Exports', () => {
   it('should export entry point functions with original names', async () => {
@@ -149,9 +44,9 @@ describe('Exports', () => {
     };
 
     const compiler = new Compiler(host);
-    const program = compiler.bundle('/main.zena');
+    const modules = compiler.compile('/main.zena');
 
-    const generator = new CodeGenerator(program);
+    const generator = new CodeGenerator(modules, '/main.zena');
     const wasmBytes = generator.generate();
 
     // Verify exports
@@ -202,9 +97,9 @@ describe('Exports', () => {
     };
 
     const compiler = new Compiler(host);
-    const program = compiler.bundle('/main.zena');
+    const modules = compiler.compile('/main.zena');
 
-    const generator = new CodeGenerator(program);
+    const generator = new CodeGenerator(modules, '/main.zena');
     const wasmBytes = generator.generate();
 
     const module = await WebAssembly.compile(wasmBytes as any);

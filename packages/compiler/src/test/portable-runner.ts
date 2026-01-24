@@ -340,10 +340,8 @@ async function runExecutionTest(
     );
   }
 
-  // Now bundle (this just combines the already-checked modules)
-  const program = compiler.bundle('/main.zena');
-
-  const codegen = new CodeGenerator(program);
+  // Pass modules directly to codegen (no bundling needed)
+  const codegen = new CodeGenerator(modules, '/main.zena');
   const bytes = codegen.generate();
 
   let stdout = '';

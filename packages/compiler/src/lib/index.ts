@@ -69,6 +69,7 @@ export function compile(source: string): Uint8Array {
   );
 
   const compiler = new Compiler(host);
+
   // compile() runs type checking on all modules
   const modules = compiler.compile('main.zena');
 
@@ -84,9 +85,8 @@ export function compile(source: string): Uint8Array {
     throw new Error(errorMessage);
   }
 
-  const program = compiler.bundle('main.zena');
-
-  const codegen = new CodeGenerator(program);
+  // Pass modules and entry point path to codegen
+  const codegen = new CodeGenerator(modules, 'main.zena');
   return codegen.generate();
 }
 
