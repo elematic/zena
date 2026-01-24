@@ -356,7 +356,7 @@ export function generateLocalVariableDeclaration(
   }
 
   if (decl.pattern.type === NodeType.Identifier) {
-    const index = ctx.declareLocal(decl.pattern.name, type);
+    const index = ctx.declareLocal(decl.pattern.name, type, decl);
     body.push(Opcode.local_set);
     body.push(...WasmModule.encodeSignedLEB128(index));
   } else {
@@ -371,7 +371,7 @@ function generatePatternBinding(
   body: number[],
 ) {
   if (pattern.type === NodeType.Identifier) {
-    const index = ctx.declareLocal(pattern.name, valueType);
+    const index = ctx.declareLocal(pattern.name, valueType, pattern);
     body.push(Opcode.local_set);
     body.push(...WasmModule.encodeSignedLEB128(index));
     return;

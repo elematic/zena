@@ -171,7 +171,7 @@ export function registerFunction(
 
     for (let i = 0; i < func.params.length; i++) {
       const param = func.params[i];
-      ctx.defineParam(param.name.name, params[i]);
+      ctx.defineParam(param.name.name, params[i], param);
     }
 
     if (func.body.type !== NodeType.BlockStatement) {
@@ -229,7 +229,11 @@ export function generateFunctionBody(
   ctx.pushFunctionScope();
 
   func.params.forEach((p) => {
-    ctx.defineParam(p.name.name, mapType(ctx, p.typeAnnotation, typeContext));
+    ctx.defineParam(
+      p.name.name,
+      mapType(ctx, p.typeAnnotation, typeContext),
+      p,
+    );
   });
 
   const body: number[] = [];
@@ -545,7 +549,11 @@ function generateMethodBody(
   }
 
   method.params.forEach((p) => {
-    ctx.defineParam(p.name.name, mapType(ctx, p.typeAnnotation, typeContext));
+    ctx.defineParam(
+      p.name.name,
+      mapType(ctx, p.typeAnnotation, typeContext),
+      p,
+    );
   });
 
   const body: number[] = [];

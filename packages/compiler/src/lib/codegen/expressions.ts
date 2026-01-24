@@ -10,7 +10,6 @@ import {
   type CallExpression,
   type ClassDeclaration,
   type ClassPattern,
-  type EnumDeclaration,
   type Expression,
   type FunctionExpression,
   type Identifier,
@@ -36,7 +35,6 @@ import {
   type TuplePattern,
   type TypeAnnotation,
   type UnaryExpression,
-  type VariableDeclaration,
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
 import {getGetterName, getSetterName} from '../names.js';
@@ -329,7 +327,11 @@ function generateTryExpression(
         errorTypeIndex >= 0
           ? [ValType.ref_null, ...WasmModule.encodeSignedLEB128(errorTypeIndex)]
           : [ValType.eqref];
-      const paramLocal = ctx.declareLocal(expr.handler.param.name, paramType);
+      const paramLocal = ctx.declareLocal(
+        expr.handler.param.name,
+        paramType,
+        expr.handler.param,
+      );
 
       // Read payload from global
       body.push(Opcode.global_get);
@@ -4109,7 +4111,7 @@ function generateIdentifier(
   // Use resolved binding from the checker
   const binding = ctx.semanticContext.getResolvedBinding(expr);
   if (binding) {
-    if (generateFromBinding(ctx, binding, body)) {
+    if (generateFromBinding(ctx, binding, body, expr.name)) {
       return;
     }
   }
@@ -4121,50 +4123,43 @@ function generateIdentifier(
 }
 
 /**
- * Generate code from a resolved binding using declaration-based lookup.
+ * Generate code from a resolved binding using name-based lookup.
+ * We use name-based lookup because declaration-based lookup can have stale
+ * entries when the same AST is processed multiple times (e.g., generic method
+ * instantiation). Name-based lookup within a single function scope is reliable.
  * Returns true if code was generated, false otherwise.
  */
 function generateFromBinding(
   ctx: CodegenContext,
   binding: ResolvedBinding,
   body: number[],
+  name: string,
 ): boolean {
   switch (binding.kind) {
     case 'local': {
-      const index = ctx.getLocalIndexByDecl(binding.declaration);
-      if (index !== undefined) {
+      // Use name-based lookup - more reliable for generic method instantiation
+      const local = ctx.getLocal(name);
+      if (local) {
         body.push(Opcode.local_get);
-        body.push(...WasmModule.encodeSignedLEB128(index));
+        body.push(...WasmModule.encodeSignedLEB128(local.index));
         return true;
-      }
-      // Declaration not registered - fall back to name-based for now
-      const name = getBindingName(binding);
-      if (name) {
-        const local = ctx.getLocal(name);
-        if (local) {
-          body.push(Opcode.local_get);
-          body.push(...WasmModule.encodeSignedLEB128(local.index));
-          return true;
-        }
       }
       return false;
     }
     case 'global': {
+      // Try declaration-based lookup first for globals
       const index = ctx.getGlobalIndexByDecl(binding.declaration);
       if (index !== undefined) {
         body.push(Opcode.global_get);
         body.push(...WasmModule.encodeSignedLEB128(index));
         return true;
       }
-      // Declaration not registered - fall back to name-based for now
-      const name = getBindingName(binding);
-      if (name) {
-        const global = ctx.resolveGlobal(name);
-        if (global) {
-          body.push(Opcode.global_get);
-          body.push(...WasmModule.encodeSignedLEB128(global.index));
-          return true;
-        }
+      // Fall back to name-based lookup
+      const global = ctx.getGlobal(name);
+      if (global) {
+        body.push(Opcode.global_get);
+        body.push(...WasmModule.encodeSignedLEB128(global.index));
+        return true;
       }
       return false;
     }
@@ -4187,57 +4182,6 @@ function generateFromBinding(
     }
     default:
       return false;
-  }
-}
-
-/**
- * Extract the name from a binding's declaration.
- */
-function getBindingName(binding: ResolvedBinding): string | undefined {
-  switch (binding.kind) {
-    case 'local': {
-      const decl = binding.declaration;
-      if (decl.type === NodeType.Parameter) {
-        return (decl as any).name.name;
-      } else if (decl.type === NodeType.VariableDeclaration) {
-        const pattern = (decl as any).pattern;
-        if (pattern.type === NodeType.Identifier) {
-          return pattern.name;
-        }
-      } else if (decl.type === NodeType.Identifier) {
-        // Accessor setter parameter
-        return (decl as any).name;
-      }
-      return undefined;
-    }
-    case 'global': {
-      const decl = binding.declaration;
-      if (decl.type === NodeType.EnumDeclaration) {
-        return (decl as EnumDeclaration).name.name;
-      }
-      // VariableDeclaration
-      const pattern = (decl as VariableDeclaration).pattern;
-      if (pattern.type === NodeType.Identifier) {
-        return (pattern as any).name;
-      }
-      return undefined;
-    }
-    case 'function':
-      return undefined; // Functions use different lookup mechanisms
-    case 'class':
-      return binding.declaration.name.name;
-    case 'interface':
-      return binding.declaration.name.name;
-    case 'mixin':
-      return binding.declaration.name.name;
-    case 'type-alias':
-      return binding.declaration.name.name;
-    case 'type-parameter':
-      return binding.declaration.name;
-    case 'import':
-      return binding.localName;
-    default:
-      return undefined;
   }
 }
 
@@ -4830,7 +4774,7 @@ function generateFunctionExpression(
 
     // Params 1..N: Arguments
     expr.params.forEach((p, i) => {
-      ctx.defineParam(p.name.name, paramTypes[i]);
+      ctx.defineParam(p.name.name, paramTypes[i], p);
     });
 
     // Unpack Context

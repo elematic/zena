@@ -238,11 +238,30 @@ Using `WeakMap` with AST nodes as keys enables identity-based lookup.
 - `SymbolInfo` extended with `declaration` and `modulePath` fields
 - `CheckerContext.resolveValueInfo()` for creating bindings
 - `CodegenContext` declaration → index WeakMaps and registration methods
-- `generateIdentifier()` uses resolved bindings with name-based fallback
+- `generateIdentifier()` uses resolved bindings
+- All `defineParam()` and `declareLocal()` calls pass declaration nodes
+
+**Design Decision: Name-based lookup for locals**
+
+Declaration-based lookup for locals (via `#localIndices` WeakMap) doesn't work
+reliably when the same AST is processed multiple times with different local
+indices. This happens with generic method instantiation - the WeakMap retains
+stale entries from previous instantiations, causing incorrect codegen.
+
+The solution: `generateFromBinding()` uses **name-based lookup for locals**
+(via `ctx.getLocal(name)`) instead of declaration-based lookup. This is correct
+because:
+
+- Each function has its own scope stack with name→index mappings
+- Shadowing is handled by the scope chain
+- The checker already validated all identifier references
+
+Declaration-based lookup is retained for **globals** (where name collisions
+across modules are possible) and provides the foundation for LSP features.
 
 **Remaining:**
 
-- Remove legacy name-based resolution methods once fully migrated
+- Remove legacy methods (`resolveFunction`, etc.) once all call sites migrated
 - Extend binding resolution to more expression types (MemberExpression, etc.)
 
 ## Benefits
@@ -258,11 +277,15 @@ Using `WeakMap` with AST nodes as keys enables identity-based lookup.
 1. **MemberExpression resolution**: Should we resolve `obj.method` to a binding?
    Currently the type is inferred but not the specific method declaration.
 
-2. **Generic instantiations**: How do bindings work for generic functions?
-   The declaration is the template, but the instance may differ.
-
-3. **Overloaded functions**: A call to an overloaded function should resolve to
+2. **Overloaded functions**: A call to an overloaded function should resolve to
    the specific overload chosen by the type checker.
 
-4. **Closures**: Captured variables need special handling - they're locals in
+3. **Closures**: Captured variables need special handling - they're locals in
    the enclosing function but context fields in the closure.
+
+## Resolved Questions
+
+1. **Generic instantiations**: Declaration-based lookup doesn't work for locals
+   in generic method bodies because the same AST is reused with different local
+   indices. Solution: Use name-based lookup for locals, which correctly uses
+   the current function scope's mappings.

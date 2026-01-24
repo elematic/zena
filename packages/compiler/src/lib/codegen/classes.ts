@@ -2221,7 +2221,7 @@ export function generateClassMethods(
             ? i
             : i + 1;
         const paramType = methodInfo.paramTypes[paramTypeIndex];
-        ctx.defineParam(param.name.name, paramType);
+        ctx.defineParam(param.name.name, paramType, param);
       }
       if (classInfo.isExtension && methodName === '#new') {
         // Extension constructor: 'this' is a local variable, not a param
@@ -2400,8 +2400,12 @@ export function generateClassMethods(
         // Params
         // 0: this
         ctx.defineParam('this', methodInfo.paramTypes[0]);
-        // 1: value
-        ctx.defineParam(member.setter.param.name, methodInfo.paramTypes[1]);
+        // 1: value - pass the Identifier node for binding resolution
+        ctx.defineParam(
+          member.setter.param.name,
+          methodInfo.paramTypes[1],
+          member.setter.param,
+        );
 
         // Downcast 'this' if needed
         const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
