@@ -74,6 +74,15 @@ export class CodeGenerator {
   }
 
   /**
+   * Get the codegen context for testing purposes.
+   * This exposes internal state and should only be used in tests.
+   * @internal
+   */
+  public get context(): CodegenContext {
+    return this.#ctx;
+  }
+
+  /**
    * Set the file name used for diagnostic locations.
    */
   public setFileName(fileName: string) {
@@ -292,6 +301,8 @@ export class CodeGenerator {
               initBytes,
             );
             this.#ctx.defineGlobal(name, globalIndex, type);
+            // Register by declaration for identity-based lookup (new name resolution)
+            this.#ctx.registerGlobalByDecl(varDecl, globalIndex);
             globalInitializers.push({index: globalIndex, init: varDecl.init});
 
             if (this.#ctx.shouldExport(varDecl)) {

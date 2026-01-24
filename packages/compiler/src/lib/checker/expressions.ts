@@ -12,6 +12,7 @@ import {
   type ClassPattern,
   type Expression,
   type FunctionExpression,
+  type Identifier,
   type IfExpression,
   type IndexExpression,
   type IsExpression,
@@ -35,6 +36,7 @@ import {
   type TuplePattern,
   type UnaryExpression,
 } from '../ast.js';
+import {createBinding} from '../bindings.js';
 import {DiagnosticCode} from '../diagnostics.js';
 import {getGetterName, getSetterName} from '../names.js';
 import {
@@ -129,15 +131,27 @@ function checkExpressionInternal(ctx: CheckerContext, expr: Expression): Type {
     case NodeType.NullLiteral:
       return Types.Null;
     case NodeType.Identifier: {
-      const type = ctx.resolveValue(expr.name);
-      if (!type) {
+      const symbolInfo = ctx.resolveValueInfo(expr.name);
+      if (!symbolInfo) {
         ctx.diagnostics.reportError(
           `Variable '${expr.name}' not found.`,
           DiagnosticCode.SymbolNotFound,
         );
         return Types.Unknown;
       }
-      return type;
+
+      // Create and store the resolved binding for codegen
+      const binding = createBinding(symbolInfo, {
+        // Local if we're inside a function scope (scopes.length > 1 means we're past the global scope)
+        isLocal: !symbolInfo.modulePath && ctx.scopes.length > 1,
+      });
+      if (binding) {
+        ctx.semanticContext.setResolvedBinding(expr as Identifier, binding);
+      }
+
+      // Return the type, applying any narrowing
+      const narrowedType = ctx.getNarrowedType(expr.name);
+      return narrowedType ?? symbolInfo.type;
     }
     case NodeType.AssignmentExpression:
       return checkAssignmentExpression(ctx, expr as AssignmentExpression);
@@ -1622,7 +1636,7 @@ function checkFunctionExpression(
       }
       validateType(type, ctx);
     }
-    ctx.declare(param.name.name, type);
+    ctx.declare(param.name.name, type, 'let', param);
     paramTypes.push(type);
     optionalParameters.push(param.optional);
     parameterInitializers.push(param.initializer);

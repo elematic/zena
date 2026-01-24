@@ -975,16 +975,17 @@ function checkVariableDeclaration(
   decl.inferredType = type;
 
   if (decl.pattern.type === NodeType.Identifier) {
-    ctx.declare(decl.pattern.name, type, decl.kind);
+    ctx.declare(decl.pattern.name, type, decl.kind, decl);
 
     if (decl.exported && ctx.module) {
       ctx.module.exports.set(`value:${decl.pattern.name}`, {
         type,
         kind: decl.kind,
+        declaration: decl,
       });
     }
   } else {
-    checkPattern(ctx, decl.pattern, type, decl.kind);
+    checkPattern(ctx, decl.pattern, type, decl.kind, decl);
   }
 }
 
@@ -993,29 +994,30 @@ function checkPattern(
   pattern: Pattern,
   type: Type,
   kind: 'let' | 'var',
+  declaration?: VariableDeclaration,
 ) {
   switch (pattern.type) {
     case NodeType.Identifier:
-      ctx.declare(pattern.name, type, kind);
+      ctx.declare(pattern.name, type, kind, declaration);
       break;
 
     case NodeType.AsPattern: {
       const asPattern = pattern as AsPattern;
-      ctx.declare(asPattern.name.name, type, kind);
-      checkPattern(ctx, asPattern.pattern, type, kind);
+      ctx.declare(asPattern.name.name, type, kind, declaration);
+      checkPattern(ctx, asPattern.pattern, type, kind, declaration);
       break;
     }
 
     case NodeType.RecordPattern:
-      checkRecordPattern(ctx, pattern, type, kind);
+      checkRecordPattern(ctx, pattern, type, kind, declaration);
       break;
 
     case NodeType.TuplePattern:
-      checkTuplePattern(ctx, pattern, type, kind);
+      checkTuplePattern(ctx, pattern, type, kind, declaration);
       break;
 
     case NodeType.AssignmentPattern:
-      checkAssignmentPattern(ctx, pattern, type, kind);
+      checkAssignmentPattern(ctx, pattern, type, kind, declaration);
       break;
   }
 }
@@ -1025,6 +1027,7 @@ function checkRecordPattern(
   pattern: RecordPattern,
   type: Type,
   kind: 'let' | 'var',
+  declaration?: VariableDeclaration,
 ) {
   // Ensure type has properties
   // We support RecordType, ClassType, InterfaceType, MixinType
@@ -1042,7 +1045,7 @@ function checkRecordPattern(
       continue;
     }
 
-    checkPattern(ctx, prop.value, propType, kind);
+    checkPattern(ctx, prop.value, propType, kind, declaration);
   }
 }
 
@@ -1051,6 +1054,7 @@ function checkTuplePattern(
   pattern: TuplePattern,
   type: Type,
   kind: 'let' | 'var',
+  declaration?: VariableDeclaration,
 ) {
   if (type.kind === TypeKind.Tuple) {
     const tupleType = type as TupleType;
@@ -1070,13 +1074,19 @@ function checkTuplePattern(
 
       if (i >= tupleType.elementTypes.length) break; // Already reported error
 
-      checkPattern(ctx, elemPattern, tupleType.elementTypes[i], kind);
+      checkPattern(
+        ctx,
+        elemPattern,
+        tupleType.elementTypes[i],
+        kind,
+        declaration,
+      );
     }
   } else if (type.kind === TypeKind.Array) {
     const arrayType = type as ArrayType;
     for (const elemPattern of pattern.elements) {
       if (!elemPattern) continue;
-      checkPattern(ctx, elemPattern, arrayType.elementType, kind);
+      checkPattern(ctx, elemPattern, arrayType.elementType, kind, declaration);
     }
   } else {
     ctx.diagnostics.reportError(
@@ -1091,6 +1101,7 @@ function checkAssignmentPattern(
   pattern: AssignmentPattern,
   type: Type,
   kind: 'let' | 'var',
+  declaration?: VariableDeclaration,
 ) {
   // pattern.right is default value
   const defaultType = checkExpression(ctx, pattern.right);
@@ -1114,7 +1125,7 @@ function checkAssignmentPattern(
   // Or maybe just for future proofing.
   // For now, just check the pattern against the type.
 
-  checkPattern(ctx, pattern.left, type, kind);
+  checkPattern(ctx, pattern.left, type, kind, declaration);
 }
 
 function getPropertyType(

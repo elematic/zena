@@ -22,6 +22,7 @@ import type {
   VariableDeclaration,
 } from '../ast.js';
 import type {Compiler, Module} from '../compiler.js';
+import {SemanticContext} from './semantic-context.js';
 
 /**
  * Declaration types that can be associated with a symbol.
@@ -166,6 +167,12 @@ export class CheckerContext {
   module?: Module;
   compiler?: Compiler;
 
+  /**
+   * Semantic context for storing resolved bindings and other metadata.
+   * Shared across all modules in the compilation.
+   */
+  semanticContext: SemanticContext;
+
   // Prelude support (global, populated once)
   preludeExports = new Map<
     string,
@@ -188,8 +195,9 @@ export class CheckerContext {
   /** Map from generic source types to their unique IDs (GLOBAL) */
   #typeIds = new WeakMap<Type, number>();
 
-  constructor(compiler?: Compiler) {
+  constructor(compiler?: Compiler, semanticContext?: SemanticContext) {
     this.compiler = compiler;
+    this.semanticContext = semanticContext ?? new SemanticContext();
   }
 
   /**

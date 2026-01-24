@@ -199,6 +199,9 @@ export function registerFunction(
   ctx.functions.set(name, funcIndex);
   ctx.functionReturnTypes.set(name, mappedReturn);
 
+  // Register by declaration for identity-based lookup (new name resolution)
+  ctx.registerFunctionByDecl(func, funcIndex);
+
   // Capture current module for body generation
   const capturedModule = ctx.currentModule;
   ctx.bodyGenerators.push(() => {
@@ -383,6 +386,12 @@ export function registerDeclaredFunction(
   if (!ctx.functions.has(decl.name.name)) {
     ctx.functions.set(decl.name.name, funcIndex);
     ctx.functionReturnTypes.set(decl.name.name, returnType);
+  }
+
+  // Register by declaration for identity-based lookup (new name resolution)
+  // Only register if a function was actually created (not an intrinsic)
+  if (funcIndex >= 0) {
+    ctx.registerFunctionByDecl(decl, funcIndex);
   }
 
   // Register in overload list

@@ -228,6 +228,25 @@ export class CodegenContext {
   // Identity-based mixin lookup: MixinType -> MixinDeclaration
   readonly #mixinDeclByType = new WeakMap<MixinType, MixinDeclaration>();
 
+  // ===== Declaration → WASM Index Mappings =====
+  // These enable identity-based lookup from resolved bindings to WASM indices.
+  // Used by the new name resolution architecture (see docs/design/name-resolution.md).
+
+  // Map local variable declarations to their WASM local indices.
+  // This includes function parameters and block-scoped variables.
+  // Note: Indices are function-scoped, so the same declaration may have
+  // different indices in different function contexts (e.g., closures).
+  readonly #localIndices = new WeakMap<Node, number>();
+
+  // Map global variable declarations to their WASM global indices.
+  readonly #globalIndices = new WeakMap<Node, number>();
+
+  // Map function declarations to their WASM function indices.
+  readonly #functionIndices = new WeakMap<Node, number>();
+
+  // Map class declarations to their WASM struct type indices.
+  readonly #classTypeIndices = new WeakMap<ClassDeclaration, number>();
+
   // Template Literals
   public templateLiteralGlobals = new Map<TaggedTemplateExpression, number>();
 
@@ -488,10 +507,17 @@ export class CodegenContext {
   /**
    * Define a function parameter. This allocates the next local index and
    * registers the parameter in the current scope.
+   * @param name The parameter name
+   * @param type The WASM type
+   * @param declaration Optional AST node for identity-based lookup
    */
-  public defineParam(name: string, type: number[]): number {
+  public defineParam(name: string, type: number[], declaration?: Node): number {
     const index = this.#nextLocalIndex++;
     this.scopes[this.scopes.length - 1].set(name, {index, type});
+    // Register by declaration for identity-based lookup (new name resolution)
+    if (declaration) {
+      this.registerLocalByDecl(declaration, index);
+    }
     return index;
   }
 
@@ -507,11 +533,22 @@ export class CodegenContext {
   /**
    * Declare a new local variable within the current function body.
    * This allocates a new local index and registers it in the extra locals.
+   * @param name The variable name
+   * @param type The WASM type
+   * @param declaration Optional AST node for identity-based lookup
    */
-  public declareLocal(name: string, type: number[] = [ValType.i32]): number {
+  public declareLocal(
+    name: string,
+    type: number[] = [ValType.i32],
+    declaration?: Node,
+  ): number {
     const index = this.#nextLocalIndex++;
     this.scopes[this.scopes.length - 1].set(name, {index, type});
     this.#extraLocals.push(type);
+    // Register by declaration for identity-based lookup (new name resolution)
+    if (declaration) {
+      this.registerLocalByDecl(declaration, index);
+    }
     return index;
   }
 
@@ -1120,5 +1157,69 @@ export class CodegenContext {
       }
     }
     return undefined;
+  }
+
+  // ===== Declaration-Based Index Management =====
+  // These methods support the new name resolution architecture where
+  // the checker resolves names to declarations, and codegen maps
+  // declarations to WASM indices.
+
+  /**
+   * Register a local variable's WASM index by its declaration.
+   * Call this when allocating a local for a parameter or variable declaration.
+   */
+  public registerLocalByDecl(decl: Node, index: number): void {
+    this.#localIndices.set(decl, index);
+  }
+
+  /**
+   * Get a local variable's WASM index by its declaration.
+   * Returns undefined if the declaration is not registered (e.g., for globals).
+   */
+  public getLocalIndexByDecl(decl: Node): number | undefined {
+    return this.#localIndices.get(decl);
+  }
+
+  /**
+   * Register a global variable's WASM index by its declaration.
+   */
+  public registerGlobalByDecl(decl: Node, index: number): void {
+    this.#globalIndices.set(decl, index);
+  }
+
+  /**
+   * Get a global variable's WASM index by its declaration.
+   */
+  public getGlobalIndexByDecl(decl: Node): number | undefined {
+    return this.#globalIndices.get(decl);
+  }
+
+  /**
+   * Register a function's WASM index by its declaration.
+   * The declaration can be a FunctionExpression or DeclareFunction.
+   */
+  public registerFunctionByDecl(decl: Node, index: number): void {
+    this.#functionIndices.set(decl, index);
+  }
+
+  /**
+   * Get a function's WASM index by its declaration.
+   */
+  public getFunctionIndexByDecl(decl: Node): number | undefined {
+    return this.#functionIndices.get(decl);
+  }
+
+  /**
+   * Register a class's WASM struct type index by its declaration.
+   */
+  public registerClassByDecl(decl: ClassDeclaration, index: number): void {
+    this.#classTypeIndices.set(decl, index);
+  }
+
+  /**
+   * Get a class's WASM struct type index by its declaration.
+   */
+  public getClassIndexByDecl(decl: ClassDeclaration): number | undefined {
+    return this.#classTypeIndices.get(decl);
   }
 }

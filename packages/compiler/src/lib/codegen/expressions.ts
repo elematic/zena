@@ -87,6 +87,7 @@ import {
   generateFunctionStatement,
 } from './statements.js';
 import type {ClassInfo, InterfaceInfo} from './types.js';
+import type {ResolvedBinding} from '../bindings.js';
 
 /**
  * Generates WASM instructions for an expression.
@@ -4103,6 +4104,16 @@ function generateIdentifier(
   expr: Identifier,
   body: number[],
 ) {
+  // Try to use resolved binding from the checker (new name resolution)
+  const binding = ctx.semanticContext.getResolvedBinding(expr);
+  if (binding) {
+    if (generateFromBinding(ctx, binding, body)) {
+      return;
+    }
+    // If binding-based generation fails, fall back to name-based lookup
+  }
+
+  // Fallback: name-based lookup (legacy path)
   const local = ctx.getLocal(expr.name);
   if (local) {
     body.push(Opcode.local_get);
@@ -4119,6 +4130,125 @@ function generateIdentifier(
   const message = `Unknown identifier: ${expr.name}`;
   ctx.reportError(message, DiagnosticCode.UnknownVariable, expr);
   throw new CompilerError(message);
+}
+
+/**
+ * Generate code from a resolved binding using declaration-based lookup.
+ * Returns true if code was generated, false if we need to fall back to name-based lookup.
+ */
+function generateFromBinding(
+  ctx: CodegenContext,
+  binding: ResolvedBinding,
+  body: number[],
+): boolean {
+  switch (binding.kind) {
+    case 'local': {
+      // Try declaration-based lookup first
+      if (binding.declaration) {
+        const index = ctx.getLocalIndexByDecl(binding.declaration);
+        if (index !== undefined) {
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(index));
+          return true;
+        }
+      }
+      // Fall back to name-based for now (locals may not all have declarations registered yet)
+      const name = getBindingName(binding);
+      if (name) {
+        const local = ctx.getLocal(name);
+        if (local) {
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(local.index));
+          return true;
+        }
+      }
+      return false;
+    }
+    case 'global': {
+      // Try declaration-based lookup first
+      if (binding.declaration) {
+        const index = ctx.getGlobalIndexByDecl(binding.declaration);
+        if (index !== undefined) {
+          body.push(Opcode.global_get);
+          body.push(...WasmModule.encodeSignedLEB128(index));
+          return true;
+        }
+      }
+      // Fall back to name-based lookup
+      const name = getBindingName(binding);
+      if (name) {
+        const global = ctx.resolveGlobal(name);
+        if (global) {
+          body.push(Opcode.global_get);
+          body.push(...WasmModule.encodeSignedLEB128(global.index));
+          return true;
+        }
+      }
+      return false;
+    }
+    case 'function': {
+      // For function bindings that are being used as values (not called),
+      // we need to create a function reference. This is typically handled
+      // by generateFunctionExpression, so this case may not occur often.
+      // Fall back to name-based for now.
+      return false;
+    }
+    case 'class':
+    case 'interface':
+    case 'mixin':
+    case 'type-alias':
+    case 'type-parameter':
+    case 'import': {
+      // These binding kinds don't generate simple local/global gets.
+      // They need special handling (constructors, type lookups, etc.)
+      return false;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Extract the name from a binding's declaration.
+ */
+function getBindingName(binding: ResolvedBinding): string | undefined {
+  switch (binding.kind) {
+    case 'local': {
+      const decl = binding.declaration;
+      if (decl.type === NodeType.Parameter) {
+        return (decl as any).name.name;
+      } else if (decl.type === NodeType.VariableDeclaration) {
+        const pattern = (decl as any).pattern;
+        if (pattern.type === NodeType.Identifier) {
+          return pattern.name;
+        }
+      }
+      return undefined;
+    }
+    case 'global': {
+      const pattern = binding.declaration.pattern;
+      if (pattern.type === NodeType.Identifier) {
+        return (pattern as any).name;
+      }
+      return undefined;
+    }
+    case 'function':
+      return undefined; // Functions use different lookup mechanisms
+    case 'class':
+      return binding.declaration.name.name;
+    case 'interface':
+      return binding.declaration.name.name;
+    case 'mixin':
+      return binding.declaration.name.name;
+    case 'type-alias':
+      return binding.declaration.name.name;
+    case 'type-parameter':
+      return binding.declaration.name;
+    case 'import':
+      return binding.localName;
+    default:
+      return undefined;
+  }
 }
 
 function generateStringLiteral(

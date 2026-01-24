@@ -59,6 +59,14 @@ export class Compiler {
     return this.#preludeModules;
   }
 
+  /**
+   * Get the semantic context populated during type checking.
+   * This contains resolved bindings that can be used by codegen.
+   */
+  public get semanticContext() {
+    return this.#checkerContext.semanticContext;
+  }
+
   public compile(entryPoint: string): Module[] {
     // Load entry point and all dependencies via LibraryLoader
     this.#loader.load(entryPoint);

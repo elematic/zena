@@ -202,32 +202,48 @@ Using `WeakMap` with AST nodes as keys enables identity-based lookup.
 
 ## Implementation Plan
 
-### Phase 1: Add Infrastructure
+### Phase 1: Add Infrastructure ✅
 
 1. Define `ResolvedBinding` types in a new file
    `packages/compiler/src/lib/bindings.ts`
 2. Add `setResolvedBinding()` / `getResolvedBinding()` to `SemanticContext`
 3. Add declaration → index maps to `CodegenContext`
 
-### Phase 2: Populate Bindings in Checker
+### Phase 2: Populate Bindings in Checker ✅
 
 1. In `checkIdentifier()` (checker/expressions.ts), after resolving, store the
    binding
 2. Handle all binding kinds: local, global, function, class, etc.
 3. Resolve imports to their targets
 
-### Phase 3: Use Bindings in Codegen
+### Phase 3: Use Bindings in Codegen ✅
 
 1. Update `generateIdentifier()` to use resolved bindings
 2. Update `generateCallExpression()` to get function index from binding
-3. Remove `resolveFunction()`, `resolveGlobal()`, `getLocal()` once all usages
-   are migrated
+3. ~~Remove `resolveFunction()`, `resolveGlobal()`, `getLocal()` once all usages
+   are migrated~~ (kept as fallbacks for now)
 
 ### Phase 4: Clean Up
 
 1. Remove name-based lookup methods from `CodegenContext`
 2. Simplify import handling (no longer needed in codegen)
 3. Update tests
+
+## Current Status
+
+**Implemented (January 2026):**
+
+- `bindings.ts` with `ResolvedBinding` types and helper functions
+- `SemanticContext.setResolvedBinding()` / `getResolvedBinding()`
+- `SymbolInfo` extended with `declaration` and `modulePath` fields
+- `CheckerContext.resolveValueInfo()` for creating bindings
+- `CodegenContext` declaration → index WeakMaps and registration methods
+- `generateIdentifier()` uses resolved bindings with name-based fallback
+
+**Remaining:**
+
+- Remove legacy name-based resolution methods once fully migrated
+- Extend binding resolution to more expression types (MemberExpression, etc.)
 
 ## Benefits
 

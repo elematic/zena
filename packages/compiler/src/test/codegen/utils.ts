@@ -123,7 +123,7 @@ export const compileToWasm = (
   const host = createHost(input, path);
   const compiler = new Compiler(host);
   const modules = compiler.compile(path);
-  const generator = new CodeGenerator(modules, path);
+  const generator = new CodeGenerator(modules, path, compiler.semanticContext);
   return generator.generate();
 };
 
@@ -172,7 +172,7 @@ export async function compileAndInstantiate(
     );
   }
 
-  const codegen = new CodeGenerator(modules, path);
+  const codegen = new CodeGenerator(modules, path, compiler.semanticContext);
   const bytes = codegen.generate();
 
   try {
@@ -203,6 +203,75 @@ export async function compileAndInstantiate(
     }
     throw e;
   }
+}
+
+/**
+ * Compile, instantiate, and return full details for testing.
+ * Unlike compileAndInstantiate, this returns the compiler, codegen, and modules
+ * for inspecting internal state during tests.
+ */
+export async function compileWithDetails(
+  input: string | Record<string, string>,
+  options: CompileOptions = {},
+): Promise<{
+  exports: WebAssembly.Exports;
+  codegen: CodeGenerator;
+  compiler: Compiler;
+  modules: Module[];
+  bytes: Uint8Array;
+}> {
+  const path = options.path ?? '/main.zena';
+  const imports = options.imports ?? {};
+
+  let capturedExports: any = null;
+
+  // Add default console mock if not present
+  if (!imports.console) {
+    const logString = (s: any, len: number) => {
+      if (!capturedExports || !capturedExports.$stringGetByte) return;
+      let str = '';
+      for (let i = 0; i < len; i++) {
+        const code = capturedExports.$stringGetByte(s, i);
+        str += String.fromCharCode(code);
+      }
+      console.log(str);
+    };
+
+    imports.console = {
+      log_i32: (v: number) => console.log(v),
+      log_f32: (v: number) => console.log(v),
+      log_string: logString,
+      error_string: logString,
+      warn_string: logString,
+      info_string: logString,
+      debug_string: logString,
+    };
+  }
+
+  const host = createHost(input, path);
+  const compiler = new Compiler(host);
+  const modules = compiler.compile(path);
+  const allDiagnostics = modules.flatMap((m) => m.diagnostics);
+  if (allDiagnostics.length > 0) {
+    throw new Error(
+      `Compilation failed: ${allDiagnostics.map((d) => d.message).join(', ')}`,
+    );
+  }
+
+  const codegen = new CodeGenerator(modules, path, compiler.semanticContext);
+  const bytes = codegen.generate();
+
+  const result = await WebAssembly.instantiate(bytes, imports);
+  const instance = (result as any).instance || result;
+  capturedExports = instance.exports;
+
+  return {
+    exports: instance.exports,
+    codegen,
+    compiler,
+    modules,
+    bytes,
+  };
 }
 
 export async function compileAndRun(
@@ -485,7 +554,11 @@ export let getNestedTestError = (index: i32): string | null => nested().tests[in
     throw new Error(`Compilation errors: ${errors}`);
   }
 
-  const codegen = new CodeGenerator(modules, wrapperPath);
+  const codegen = new CodeGenerator(
+    modules,
+    wrapperPath,
+    compiler.semanticContext,
+  );
   const bytes = codegen.generate();
 
   // Instantiate with console mocks

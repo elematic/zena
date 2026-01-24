@@ -262,3 +262,193 @@ export const getDeclaration = (
       return binding.importDeclaration;
   }
 };
+
+// ============================================================
+// Binding Creation
+// ============================================================
+
+/**
+ * Information needed to create a binding from a resolved symbol.
+ * This is the input to createBinding().
+ */
+export interface SymbolInfoForBinding {
+  type: Type;
+  kind: 'let' | 'var' | 'type';
+  declaration?: Declaration;
+  modulePath?: string;
+}
+
+/**
+ * Options for binding creation.
+ */
+export interface CreateBindingOptions {
+  /**
+   * Whether this is a local variable (inside a function, block, etc.)
+   * If not set, determined by whether modulePath is present.
+   */
+  isLocal?: boolean;
+}
+
+/**
+ * Declaration types that can be associated with a symbol.
+ */
+type Declaration =
+  | Parameter
+  | VariableDeclaration
+  | FunctionExpression
+  | DeclareFunction
+  | ClassDeclaration
+  | InterfaceDeclaration
+  | MixinDeclaration
+  | TypeAliasDeclaration
+  | TypeParameter;
+
+/**
+ * Create a ResolvedBinding from symbol information.
+ *
+ * This is used by the checker when resolving identifiers to create
+ * the appropriate binding type based on what the name resolves to.
+ *
+ * @param info The symbol information from the checker's scope lookup
+ * @param options Additional options for binding creation
+ * @returns A ResolvedBinding, or undefined if the info is insufficient
+ */
+export const createBinding = (
+  info: SymbolInfoForBinding,
+  options: CreateBindingOptions = {},
+): ResolvedBinding | undefined => {
+  const {type, kind, declaration, modulePath} = info;
+  const isLocal = options.isLocal ?? !modulePath;
+
+  // Type declarations
+  if (kind === 'type') {
+    return createTypeBinding(type, declaration, modulePath);
+  }
+
+  // Value declarations
+  return createValueBinding(type, declaration, modulePath, isLocal);
+};
+
+/**
+ * Create a binding for a type declaration (class, interface, mixin, type alias).
+ */
+const createTypeBinding = (
+  type: Type,
+  declaration: Declaration | undefined,
+  modulePath: string | undefined,
+): ResolvedBinding | undefined => {
+  switch (type.kind) {
+    case 'Class': {
+      if (!declaration) return undefined;
+      return {
+        kind: 'class',
+        declaration: declaration as ClassDeclaration,
+        modulePath: modulePath ?? '',
+        type: type as ClassType,
+      };
+    }
+    case 'Interface': {
+      if (!declaration) return undefined;
+      return {
+        kind: 'interface',
+        declaration: declaration as InterfaceDeclaration,
+        modulePath: modulePath ?? '',
+        type: type as InterfaceType,
+      };
+    }
+    case 'Mixin': {
+      if (!declaration) return undefined;
+      return {
+        kind: 'mixin',
+        declaration: declaration as MixinDeclaration,
+        modulePath: modulePath ?? '',
+        type: type as MixinType,
+      };
+    }
+    case 'TypeAlias': {
+      if (!declaration) return undefined;
+      return {
+        kind: 'type-alias',
+        declaration: declaration as TypeAliasDeclaration,
+        modulePath: modulePath ?? '',
+        type,
+      };
+    }
+    case 'TypeParameter': {
+      if (!declaration) return undefined;
+      return {
+        kind: 'type-parameter',
+        declaration: declaration as TypeParameter,
+        type: type as TypeParameterType,
+      };
+    }
+    default:
+      return undefined;
+  }
+};
+
+/**
+ * Create a binding for a value declaration (variable, function, class constructor).
+ */
+const createValueBinding = (
+  type: Type,
+  declaration: Declaration | undefined,
+  modulePath: string | undefined,
+  isLocal: boolean,
+): ResolvedBinding | undefined => {
+  // Functions (top-level or declared)
+  if (type.kind === 'Function') {
+    // Check if declaration is a function (not a variable holding a closure)
+    if (
+      declaration &&
+      (declaration.type === 'FunctionExpression' ||
+        declaration.type === 'DeclareFunction')
+    ) {
+      return {
+        kind: 'function',
+        declaration: declaration as FunctionExpression | DeclareFunction,
+        modulePath: modulePath ?? '',
+        type: type as FunctionType,
+      };
+    }
+    // Variable holding a function value - treat as local/global based on scope
+  }
+
+  // Classes in value position (used as constructors)
+  if (type.kind === 'Class') {
+    if (declaration && declaration.type === 'ClassDeclaration') {
+      return {
+        kind: 'class',
+        declaration: declaration as ClassDeclaration,
+        modulePath: modulePath ?? '',
+        type: type as ClassType,
+      };
+    }
+  }
+
+  // Local variables and parameters
+  if (isLocal) {
+    if (!declaration) return undefined;
+    if (
+      declaration.type !== 'Parameter' &&
+      declaration.type !== 'VariableDeclaration'
+    ) {
+      return undefined;
+    }
+    return {
+      kind: 'local',
+      declaration: declaration as Parameter | VariableDeclaration,
+      type,
+    };
+  }
+
+  // Global variables
+  if (!declaration) return undefined;
+  if (declaration.type !== 'VariableDeclaration') return undefined;
+  return {
+    kind: 'global',
+    declaration: declaration as VariableDeclaration,
+    modulePath: modulePath ?? '',
+    type,
+  };
+};

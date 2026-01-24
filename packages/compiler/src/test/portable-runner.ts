@@ -341,7 +341,11 @@ async function runExecutionTest(
   }
 
   // Pass modules directly to codegen (no bundling needed)
-  const codegen = new CodeGenerator(modules, '/main.zena');
+  const codegen = new CodeGenerator(
+    modules,
+    '/main.zena',
+    compiler.semanticContext,
+  );
   const bytes = codegen.generate();
 
   let stdout = '';
