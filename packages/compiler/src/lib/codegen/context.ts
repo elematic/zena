@@ -835,7 +835,17 @@ export class CodegenContext {
   public getClassInfoByCheckerType(
     classType: ClassType,
   ): ClassInfo | undefined {
-    return this.#classInfoByType.get(classType);
+    const result = this.#classInfoByType.get(classType);
+    if (result) return result;
+    // For specialized generic classes, look up via genericSource.
+    // This handles cases where the same logical class (e.g., FixedArray<Entry<K,V>>)
+    // is accessed via different expressions (field vs local variable), which may
+    // have different ClassType object identities due to substituteType creating
+    // new ClassType objects without interning.
+    if (classType.genericSource) {
+      return this.#classInfoByType.get(classType.genericSource);
+    }
+    return undefined;
   }
 
   /**

@@ -43,9 +43,14 @@ function isPrimitive(type: Type): boolean {
  *
  * @param type The type to substitute parameters in.
  * @param typeMap A map from type parameter names to concrete types.
+ * @param ctx Optional checker context for interning ClassTypes.
  * @returns The substituted type.
  */
-export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
+export function substituteType(
+  type: Type,
+  typeMap: Map<string, Type>,
+  ctx?: CheckerContext,
+): Type {
   if (type.kind === TypeKind.TypeParameter) {
     return typeMap.get((type as TypeParameterType).name) || type;
   }
@@ -56,14 +61,18 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
   if (type.kind === TypeKind.Array) {
     return {
       ...type,
-      elementType: substituteType((type as ArrayType).elementType, typeMap),
+      elementType: substituteType(
+        (type as ArrayType).elementType,
+        typeMap,
+        ctx,
+      ),
     } as ArrayType;
   }
   if (type.kind === TypeKind.Class) {
     const ct = type as ClassType;
     if (ct.typeArguments) {
       const newTypeArguments = ct.typeArguments.map((t) =>
-        substituteType(t, typeMap),
+        substituteType(t, typeMap, ctx),
       );
 
       // Check if the substitution is a no-op (all typeArguments unchanged)
@@ -109,42 +118,59 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
         } as ClassType;
       }
 
+      // Check interning cache first - return cached instance if available
+      if (ctx) {
+        const cached = ctx.getInternedClass(source, newTypeArguments);
+        if (cached) {
+          return cached;
+        }
+      }
+
       // Substitute the implements list so interface assignability checks work correctly.
       // This is safe because interfaces don't have self-referential fields.
       const newImplements = source.implements.map(
-        (impl) => substituteType(impl, typeMap) as InterfaceType,
+        (impl) => substituteType(impl, typeMap, ctx) as InterfaceType,
       );
 
       // Return a ClassType with substituted typeArguments but shared fields/methods from source.
       // The genericSource allows resolveMemberType to properly substitute field types on access.
-      return {
+      const newClass = {
         ...source,
         typeArguments: newTypeArguments,
         implements: newImplements,
         genericSource:
           source.genericSource || (source.typeParameters ? source : undefined),
       } as ClassType;
+
+      // Store in interning cache
+      if (ctx) {
+        ctx.internClass(source, newTypeArguments, newClass);
+      }
+
+      return newClass;
     }
   }
   if (type.kind === TypeKind.Interface) {
     const it = type as InterfaceType;
     if (it.typeArguments) {
       const newTypeArguments = it.typeArguments.map((t) =>
-        substituteType(t, typeMap),
+        substituteType(t, typeMap, ctx),
       );
 
       const newFields = new Map<string, Type>();
       for (const [name, type] of it.fields) {
-        newFields.set(name, substituteType(type, typeMap));
+        newFields.set(name, substituteType(type, typeMap, ctx));
       }
 
       const newMethods = new Map<string, FunctionType>();
       for (const [name, fn] of it.methods) {
-        newMethods.set(name, substituteType(fn, typeMap) as FunctionType);
+        newMethods.set(name, substituteType(fn, typeMap, ctx) as FunctionType);
       }
 
       const newExtends = it.extends
-        ? it.extends.map((ext) => substituteType(ext, typeMap) as InterfaceType)
+        ? it.extends.map(
+            (ext) => substituteType(ext, typeMap, ctx) as InterfaceType,
+          )
         : undefined;
 
       return {
@@ -160,21 +186,21 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
     const mt = type as MixinType;
     if (mt.typeArguments) {
       const newTypeArguments = mt.typeArguments.map((t) =>
-        substituteType(t, typeMap),
+        substituteType(t, typeMap, ctx),
       );
 
       const newFields = new Map<string, Type>();
       for (const [name, type] of mt.fields) {
-        newFields.set(name, substituteType(type, typeMap));
+        newFields.set(name, substituteType(type, typeMap, ctx));
       }
 
       const newMethods = new Map<string, FunctionType>();
       for (const [name, fn] of mt.methods) {
-        newMethods.set(name, substituteType(fn, typeMap) as FunctionType);
+        newMethods.set(name, substituteType(fn, typeMap, ctx) as FunctionType);
       }
 
       const newOnType = mt.onType
-        ? (substituteType(mt.onType, typeMap) as ClassType)
+        ? (substituteType(mt.onType, typeMap, ctx) as ClassType)
         : undefined;
 
       return {
@@ -190,22 +216,22 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
     const ft = type as FunctionType;
     return {
       ...ft,
-      parameters: ft.parameters.map((t) => substituteType(t, typeMap)),
-      returnType: substituteType(ft.returnType, typeMap),
+      parameters: ft.parameters.map((t) => substituteType(t, typeMap, ctx)),
+      returnType: substituteType(ft.returnType, typeMap, ctx),
     } as FunctionType;
   }
   if (type.kind === TypeKind.Union) {
     const ut = type as UnionType;
     return {
       ...ut,
-      types: ut.types.map((t) => substituteType(t, typeMap)),
+      types: ut.types.map((t) => substituteType(t, typeMap, ctx)),
     } as UnionType;
   }
   if (type.kind === TypeKind.Record) {
     const rt = type as RecordType;
     const newProperties = new Map<string, Type>();
     for (const [key, value] of rt.properties) {
-      newProperties.set(key, substituteType(value, typeMap));
+      newProperties.set(key, substituteType(value, typeMap, ctx));
     }
     return {
       ...rt,
@@ -216,7 +242,7 @@ export function substituteType(type: Type, typeMap: Map<string, Type>): Type {
     const tt = type as TupleType;
     return {
       ...tt,
-      elementTypes: tt.elementTypes.map((t) => substituteType(t, typeMap)),
+      elementTypes: tt.elementTypes.map((t) => substituteType(t, typeMap, ctx)),
     } as TupleType;
   }
   return type;
@@ -421,7 +447,7 @@ function resolveTypeAnnotationInternal(
           typeMap.set(param.name, typeArguments[index]);
         },
       );
-      const substituted = substituteType(alias.target, typeMap);
+      const substituted = substituteType(alias.target, typeMap, ctx);
       if (alias.isDistinct) {
         // Return a new TypeAliasType that is distinct but has the substituted target
         // This is tricky because TypeAliasType definition assumes generic params are on the alias definition,

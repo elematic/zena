@@ -3317,6 +3317,12 @@ export function instantiateClass(
   // Guard against duplicate instantiation
   const existingInfo = ctx.classes.get(specializedName);
   if (existingInfo?.structDefined) {
+    // Even if already instantiated, register the new checkerType for identity lookup.
+    // This handles cases where the same logical class is accessed via different
+    // ClassType objects (due to substituteType creating new objects without interning).
+    if (checkerType) {
+      ctx.registerClassInfoByType(checkerType, existingInfo);
+    }
     return;
   }
 
@@ -4519,7 +4525,19 @@ export function mapCheckerTypeToWasmType(
       // Generic class - need to instantiate
       // Use identity-based lookup for the generic declaration
       const genericSource = classType.genericSource ?? classType;
-      const genericDecl = ctx.getGenericDeclByType(genericSource);
+      let genericDecl = ctx.getGenericDeclByType(genericSource);
+
+      // Fallback: search by name (handles bundled names)
+      if (!genericDecl) {
+        const targetName = classType.name;
+        for (const [name, decl] of ctx.genericClasses.entries()) {
+          if (name === targetName || name.endsWith('_' + targetName)) {
+            genericDecl = decl;
+            break;
+          }
+        }
+      }
+
       if (genericDecl) {
         const typeArgAnnotations = classType.typeArguments.map((ta) =>
           typeToTypeAnnotation(ta, undefined, ctx),

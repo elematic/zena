@@ -84,6 +84,7 @@ import {checkStatement} from './statements.js';
 function resolveMemberType(
   classType: ClassType | InterfaceType,
   memberType: Type,
+  ctx?: CheckerContext,
 ): Type {
   // If the class doesn't have type arguments, no substitution needed
   if (!classType.typeArguments || classType.typeArguments.length === 0) {
@@ -107,7 +108,7 @@ function resolveMemberType(
   });
 
   // Substitute type parameters in the member type
-  return substituteType(memberType, typeMap);
+  return substituteType(memberType, typeMap, ctx);
 }
 
 export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
@@ -1381,6 +1382,7 @@ function checkAssignmentExpression(
         const resolvedSetter = resolveMemberType(
           classType,
           setter,
+          ctx,
         ) as FunctionType;
         const indexType = checkExpression(ctx, indexExpr.index);
 
@@ -1902,9 +1904,9 @@ function checkMemberExpression(
           const resolvedMethod = {
             ...method,
             parameters: method.parameters.map((t) =>
-              substituteType(t, typeMap),
+              substituteType(t, typeMap, ctx),
             ),
-            returnType: substituteType(method.returnType, typeMap),
+            returnType: substituteType(method.returnType, typeMap, ctx),
           } as FunctionType;
 
           // Store method binding for array extension methods
@@ -2048,7 +2050,7 @@ function checkMemberExpression(
   // Check fields
   if (classType.fields.has(memberName)) {
     const fieldType = classType.fields.get(memberName)!;
-    const resolvedType = resolveMemberType(classType, fieldType);
+    const resolvedType = resolveMemberType(classType, fieldType, ctx);
 
     // Store field binding
     const binding: FieldBinding = {
@@ -2068,6 +2070,7 @@ function checkMemberExpression(
     const resolvedType = resolveMemberType(
       classType,
       methodType,
+      ctx,
     ) as FunctionType;
 
     // Store method binding
@@ -2092,6 +2095,7 @@ function checkMemberExpression(
     const resolvedGetter = resolveMemberType(
       classType,
       getterType,
+      ctx,
     ) as FunctionType;
 
     // Store getter binding
@@ -2237,6 +2241,7 @@ function checkIndexExpression(
       const resolvedMethod = resolveMemberType(
         classType,
         method,
+        ctx,
       ) as FunctionType;
       if (resolvedMethod.parameters.length !== 1) {
         ctx.diagnostics.reportError(

@@ -1917,7 +1917,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         } else {
           const methodType = classType.methods.get(name)!;
           // Substitute `this` type in the interface method with the implementing class
-          const substitutedType = substituteType(type, thisTypeMap);
+          const substitutedType = substituteType(type, thisTypeMap, ctx);
           if (!isAssignableTo(ctx, methodType, substitutedType)) {
             let memberName = `Method '${name}'`;
             if (isGetterName(name)) {

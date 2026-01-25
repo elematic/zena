@@ -97,6 +97,26 @@ import {
 } from '../bindings.js';
 
 /**
+ * Decode a signed LEB128 integer from a byte array starting at offset.
+ */
+function decodeSignedLEB128(bytes: number[], offset: number): number {
+  let result = 0;
+  let shift = 0;
+  let byte: number;
+  let i = offset;
+  do {
+    byte = bytes[i++];
+    result |= (byte & 0x7f) << shift;
+    shift += 7;
+  } while (byte & 0x80);
+  // Sign extend if needed
+  if (shift < 32 && byte & 0x40) {
+    result |= ~0 << shift;
+  }
+  return result;
+}
+
+/**
  * Generates WASM instructions for an expression.
  * Appends the instructions to the `body` array.
  * The generated code leaves the result of the expression on the stack.
@@ -1860,149 +1880,164 @@ function generateMemberExpression(
     }
   }
 
-  let lookupName = fieldName;
-  if (fieldName.startsWith('#')) {
-    if (!ctx.currentClass) {
-      throw new Error('Private field access outside class');
+  // Binding-based code generation failed or no binding available.
+  // Fall back to class-based member access for getters and fields.
+  if (foundClass) {
+    let lookupName = fieldName;
+    if (fieldName.startsWith('#')) {
+      if (!ctx.currentClass) {
+        throw new Error('Private field access outside class');
+      }
+      lookupName = `${ctx.currentClass.name}::${fieldName}`;
     }
-    lookupName = `${ctx.currentClass.name}::${fieldName}`;
-  }
 
-  // Check for virtual property access (public fields or accessors)
-  if (!fieldName.startsWith('#')) {
-    const getterName = getGetterName(fieldName);
-    const methodInfo = foundClass.methods.get(getterName);
-    if (methodInfo) {
-      // Call getter
-      // Stack: [this]
+    // Check for virtual property access (public fields or accessors)
+    if (!fieldName.startsWith('#')) {
+      const getterName = getGetterName(fieldName);
+      const methodInfo = foundClass.methods.get(getterName);
+      if (methodInfo) {
+        // Call getter
+        // Check if we can use static dispatch (final class or final method)
+        const useStaticDispatch =
+          foundClass.isFinal || methodInfo.isFinal || foundClass.isExtension;
 
-      // Check if we can use static dispatch (final class or final method)
-      const useStaticDispatch =
-        foundClass.isFinal || methodInfo.isFinal || foundClass.isExtension;
+        if (useStaticDispatch) {
+          if (methodInfo.intrinsic) {
+            generateIntrinsic(ctx, methodInfo.intrinsic, expr.object, [], body);
+            return;
+          }
+          // Static dispatch - direct call
+          generateExpression(ctx, expr.object, body);
+          body.push(Opcode.call);
+          body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+        } else {
+          // Dynamic dispatch via vtable
+          generateExpression(ctx, expr.object, body);
 
-      if (useStaticDispatch) {
-        if (methodInfo.intrinsic) {
-          generateIntrinsic(ctx, methodInfo.intrinsic, expr.object, [], body);
-          return;
-        }
-        // Static dispatch - direct call
-        generateExpression(ctx, expr.object, body);
+          // Cast if object is anyref (e.g., from narrowed union type)
+          const isAnyRef =
+            objectType.length === 1 && objectType[0] === ValType.anyref;
+          if (isAnyRef) {
+            body.push(0xfb, GcOpcode.ref_cast_null);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+            );
+          }
 
-        body.push(Opcode.call);
-        body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
-      } else {
-        // Dynamic dispatch via vtable
+          // 1. Duplicate 'this' for vtable lookup
+          // Use the struct type for the temp local
+          const tempThisType = isAnyRef
+            ? [
+                ValType.ref_null,
+                ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
+              ]
+            : objectType;
+          const tempThis = ctx.declareLocal('$$temp_this', tempThisType);
+          body.push(Opcode.local_tee);
+          body.push(...WasmModule.encodeSignedLEB128(tempThis));
 
-        generateExpression(ctx, expr.object, body);
-
-        // Cast if object is anyref (e.g., from narrowed union type)
-        const isAnyRef =
-          objectType.length === 1 && objectType[0] === ValType.anyref;
-        if (isAnyRef) {
-          body.push(0xfb, GcOpcode.ref_cast_null);
+          // 2. Get VTable from first field
+          body.push(0xfb, GcOpcode.struct_get);
           body.push(
             ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
           );
+          body.push(
+            ...WasmModule.encodeSignedLEB128(
+              foundClass.fields.get('__vtable')!.index,
+            ),
+          );
+
+          // 3. Get method from VTable
+          if (foundClass.vtableTypeIndex === undefined) {
+            throw new Error(
+              `VTable type index not set for class ${foundClass.name}`,
+            );
+          }
+          if (!foundClass.vtable) {
+            throw new Error(`VTable not defined for class ${foundClass.name}`);
+          }
+
+          // Cast VTable to correct type (it's stored as eqref)
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
+          );
+
+          const vtableIndex = foundClass.vtable.indexOf(getterName);
+          if (vtableIndex === -1) {
+            throw new Error(
+              `Getter ${getterName} not found in vtable of class ${foundClass.name}`,
+            );
+          }
+          body.push(0xfb, GcOpcode.struct_get);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
+          );
+          body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
+
+          // Cast to specific function type
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+          // 4. Store funcRef
+          const funcRefType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+          ];
+          const funcRef = ctx.declareLocal('$$getter_ref', funcRefType);
+          body.push(Opcode.local_set);
+          body.push(...WasmModule.encodeSignedLEB128(funcRef));
+
+          // 5. Load 'this' again for call
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(tempThis));
+
+          // 6. Call via funcRef
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(funcRef));
+          body.push(
+            Opcode.call_ref,
+            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+          );
         }
-
-        // 1. Duplicate 'this' for vtable lookup
-        // Use the struct type for the temp local since we've already cast
-        const tempThisType = isAnyRef
-          ? [
-              ValType.ref_null,
-              ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
-            ]
-          : objectType;
-        const tempThis = ctx.declareLocal('$$temp_this', tempThisType);
-        body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
-
-        // 2. Load VTable
-        if (!foundClass.vtable || foundClass.vtableTypeIndex === undefined) {
-          throw new Error(`Class ${foundClass.name} has no vtable`);
-        }
-
-        body.push(
-          0xfb,
-          GcOpcode.struct_get,
-          ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
-          ...WasmModule.encodeSignedLEB128(
-            foundClass.fields.get('__vtable')!.index,
-          ),
-        );
-
-        // Cast VTable to correct type
-        body.push(
-          0xfb,
-          GcOpcode.ref_cast_null,
-          ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
-        );
-
-        // 3. Load Function Pointer from VTable
-        const vtableIndex = foundClass.vtable.indexOf(getterName);
-        if (vtableIndex === -1) {
-          throw new Error(`Method ${getterName} not found in vtable`);
-        }
-
-        body.push(
-          0xfb,
-          GcOpcode.struct_get,
-          ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
-          ...WasmModule.encodeSignedLEB128(vtableIndex),
-        );
-
-        // 4. Cast to specific function type
-        body.push(
-          0xfb,
-          GcOpcode.ref_cast_null,
-          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-        );
-
-        // Store func_ref
-        const funcRefType = [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-        ];
-        const funcRef = ctx.declareLocal('$$func_ref', funcRefType);
-        body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRef));
-
-        // 5. Call function
-        // Stack: [this, func_ref]
-        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempThis));
-        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRef));
-        body.push(
-          Opcode.call_ref,
-          ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-        );
+        return;
       }
+    }
+
+    // Direct field access
+    const fieldInfo = foundClass.fields.get(lookupName);
+    if (fieldInfo) {
+      if (fieldInfo.intrinsic) {
+        generateIntrinsic(ctx, fieldInfo.intrinsic, expr.object, [], body);
+        return;
+      }
+
+      generateExpression(ctx, expr.object, body);
+
+      // Cast if object is anyref
+      const isAnyRef =
+        objectType.length === 1 && objectType[0] === ValType.anyref;
+      if (isAnyRef) {
+        body.push(0xfb, GcOpcode.ref_cast_null);
+        body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
+      }
+
+      body.push(0xfb, GcOpcode.struct_get);
+      body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
+      body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
       return;
     }
+
+    throw new Error(
+      `Field or getter '${fieldName}' not found in class '${foundClass.name}'`,
+    );
   }
 
-  const fieldInfo = foundClass.fields.get(lookupName);
-  if (!fieldInfo) {
-    throw new Error(`Field ${lookupName} not found in class`);
-  }
-
-  if (fieldInfo.intrinsic) {
-    generateIntrinsic(ctx, fieldInfo.intrinsic, expr.object, [], body);
-    return;
-  }
-
-  generateExpression(ctx, expr.object, body);
-
-  // If the object is stored in an anyref (e.g., from a union type like Node<T> | null),
-  // we need to cast it to the specific struct type before struct_get.
-  // The objectType inferred from the expression might be anyref even though
-  // the checker has narrowed it to a more specific type.
-  const isAnyRef = objectType.length === 1 && objectType[0] === ValType.anyref;
-  if (isAnyRef) {
-    body.push(0xfb, GcOpcode.ref_cast_null);
-    body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
-  }
-
-  body.push(0xfb, GcOpcode.struct_get);
-  body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
-  body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+  // No foundClass - this is an error
+  throw new Error(
+    `No class found for member expression: ${fieldName}. ` +
+      `This may indicate a missing binding in the checker.`,
+  );
 }
 
 function generateThisExpression(
@@ -4231,6 +4266,47 @@ function generateFieldFromBinding(
     return false;
   }
 
+  // For private fields, use ctx.currentClass directly - we're inside the class
+  // that owns this private field, so we know exactly which ClassInfo to use.
+  // The binding stores the checker's class name, but codegen uses bundled names.
+  if (fieldName.includes('::#') && ctx.currentClass) {
+    const classInfo = ctx.currentClass;
+    // Extract the private part (e.g., "::#length") and rebuild with bundled name
+    const privatePart = fieldName.slice(fieldName.indexOf('::#'));
+    const lookupName = `${classInfo.name}${privatePart}`;
+
+    const fieldInfo = classInfo.fields.get(lookupName);
+    if (!fieldInfo) {
+      throw new Error(
+        `Private field ${lookupName} not found in class ${classInfo.name}`,
+      );
+    }
+
+    // Handle intrinsic fields
+    if (fieldInfo.intrinsic) {
+      generateIntrinsic(ctx, fieldInfo.intrinsic, objectExpr, [], body);
+      return true;
+    }
+
+    // Generate the object expression
+    generateExpression(ctx, objectExpr, body);
+
+    // Cast if needed (e.g., from anyref)
+    const objectType = inferType(ctx, objectExpr);
+    const isAnyRef =
+      objectType.length === 1 && objectType[0] === ValType.anyref;
+    if (isAnyRef) {
+      body.push(0xfb, GcOpcode.ref_cast_null);
+      body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+    }
+
+    // Emit struct.get
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+    return true;
+  }
+
   // Look up the class info using O(1) identity-based lookup
   let classInfo = ctx.getClassInfoByCheckerType(classType);
 
@@ -4240,8 +4316,23 @@ function generateFieldFromBinding(
     classType.typeArguments &&
     classType.typeArguments.length > 0
   ) {
-    mapCheckerTypeToWasmType(ctx, classType);
-    classInfo = ctx.getClassInfoByCheckerType(classType);
+    const wasmType = mapCheckerTypeToWasmType(ctx, classType);
+    // mapCheckerTypeToWasmType registers the instantiated class,
+    // but with its own type identity. We can find it via struct index.
+    if (wasmType.length >= 2 && wasmType[0] === ValType.ref_null) {
+      // Extract the struct index from [ref_null, ...LEB128(index)]
+      const structIndex = decodeSignedLEB128(wasmType, 1);
+      classInfo = ctx.getClassInfoByStructIndex(structIndex);
+      // Fall back to O(n) lookup by struct index if identity chain fails
+      if (!classInfo) {
+        for (const info of ctx.classes.values()) {
+          if (info.structTypeIndex === structIndex) {
+            classInfo = info;
+            break;
+          }
+        }
+      }
+    }
   }
 
   if (!classInfo) {
@@ -4378,6 +4469,83 @@ function generateFieldFromBinding(
 }
 
 /**
+ * Generate dynamic dispatch code for a getter via vtable.
+ */
+function generateGetterDynamicDispatch(
+  ctx: CodegenContext,
+  classInfo: ClassInfo,
+  methodName: string,
+  methodInfo: {index: number; typeIndex: number},
+  objectExpr: Expression,
+  body: number[],
+): void {
+  const objectType = inferType(ctx, objectExpr);
+  generateExpression(ctx, objectExpr, body);
+
+  // Cast if object is anyref
+  const isAnyRef = objectType.length === 1 && objectType[0] === ValType.anyref;
+  if (isAnyRef) {
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+  }
+
+  // Use the struct type for the temp local
+  const tempThisType = isAnyRef
+    ? [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+      ]
+    : objectType;
+  const tempThis = ctx.declareLocal('$$temp_this', tempThisType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
+
+  // Load VTable
+  if (!classInfo.vtable || classInfo.vtableTypeIndex === undefined) {
+    throw new Error(`Class ${classInfo.name} has no vtable`);
+  }
+
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+  body.push(
+    ...WasmModule.encodeSignedLEB128(classInfo.fields.get('__vtable')!.index),
+  );
+
+  // Cast VTable to correct type
+  body.push(0xfb, GcOpcode.ref_cast_null);
+  body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex));
+
+  // Load function pointer from VTable
+  const vtableIndex = classInfo.vtable.indexOf(methodName);
+  if (vtableIndex === -1) {
+    throw new Error(`Method ${methodName} not found in vtable`);
+  }
+
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
+
+  // Cast to specific function type
+  body.push(0xfb, GcOpcode.ref_cast_null);
+  body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+  // Store func_ref
+  const funcRefType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  ];
+  const funcRef = ctx.declareLocal('$$func_ref', funcRefType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRef));
+
+  // Call function: [this, func_ref]
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempThis));
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRef));
+  body.push(
+    Opcode.call_ref,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  );
+}
+
+/**
  * Generate code for a getter access using the resolved GetterBinding.
  */
 function generateGetterFromBinding(
@@ -4394,6 +4562,39 @@ function generateGetterFromBinding(
     return false;
   }
 
+  // For getter access on `this` inside the class being defined, use ctx.currentClass
+  // This handles cases where the binding's classType was created inside a generic class
+  // and doesn't match any registered instantiation.
+  if (
+    ctx.currentClass &&
+    objectExpr.type === NodeType.ThisExpression &&
+    ctx.currentClass.methods.has(methodName)
+  ) {
+    const methodInfo = ctx.currentClass.methods.get(methodName)!;
+    // Handle intrinsic getters
+    if (methodInfo.intrinsic) {
+      generateIntrinsic(ctx, methodInfo.intrinsic, objectExpr, [], body);
+      return true;
+    }
+
+    if (isStaticDispatch) {
+      generateExpression(ctx, objectExpr, body);
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+    } else {
+      // Dynamic dispatch - use ctx.currentClass for vtable info
+      generateGetterDynamicDispatch(
+        ctx,
+        ctx.currentClass,
+        methodName,
+        methodInfo,
+        objectExpr,
+        body,
+      );
+    }
+    return true;
+  }
+
   // Look up the class info using O(1) identity-based lookup
   let classInfo = ctx.getClassInfoByCheckerType(classType);
 
@@ -4403,8 +4604,41 @@ function generateGetterFromBinding(
     classType.typeArguments &&
     classType.typeArguments.length > 0
   ) {
-    mapCheckerTypeToWasmType(ctx, classType);
-    classInfo = ctx.getClassInfoByCheckerType(classType);
+    // mapCheckerTypeToWasmType triggers instantiation and registration
+    const wasmType = mapCheckerTypeToWasmType(ctx, classType);
+
+    // Try to find the class by struct index (for regular classes)
+    if (
+      !classInfo &&
+      wasmType.length >= 2 &&
+      wasmType[0] === ValType.ref_null
+    ) {
+      // Extract the struct index from [ref_null, ...LEB128(index)]
+      const structIndex = decodeSignedLEB128(wasmType, 1);
+      classInfo = ctx.getClassInfoByStructIndex(structIndex);
+      // Fall back to O(n) lookup by struct index if identity chain fails
+      if (!classInfo) {
+        for (const info of ctx.classes.values()) {
+          if (info.structTypeIndex === structIndex) {
+            classInfo = info;
+            break;
+          }
+        }
+      }
+    }
+
+    // For extension classes, mapCheckerTypeToWasmType returns onType, not struct index.
+    // Try to find the extension class by matching onType.
+    if (!classInfo) {
+      for (const info of ctx.classes.values()) {
+        if (info.isExtension && info.onType) {
+          if (typesAreEqual(info.onType, wasmType)) {
+            classInfo = info;
+            break;
+          }
+        }
+      }
+    }
   }
 
   if (!classInfo) {
@@ -4430,70 +4664,13 @@ function generateGetterFromBinding(
     body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
   } else {
     // Dynamic dispatch via vtable
-    const objectType = inferType(ctx, objectExpr);
-    generateExpression(ctx, objectExpr, body);
-
-    // Cast if object is anyref
-    const isAnyRef =
-      objectType.length === 1 && objectType[0] === ValType.anyref;
-    if (isAnyRef) {
-      body.push(0xfb, GcOpcode.ref_cast_null);
-      body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
-    }
-
-    // Use the struct type for the temp local
-    const tempThisType = isAnyRef
-      ? [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-        ]
-      : objectType;
-    const tempThis = ctx.declareLocal('$$temp_this', tempThisType);
-    body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
-
-    // Load VTable
-    if (!classInfo.vtable || classInfo.vtableTypeIndex === undefined) {
-      throw new Error(`Class ${classInfo.name} has no vtable`);
-    }
-
-    body.push(0xfb, GcOpcode.struct_get);
-    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
-    body.push(
-      ...WasmModule.encodeSignedLEB128(classInfo.fields.get('__vtable')!.index),
-    );
-
-    // Cast VTable to correct type
-    body.push(0xfb, GcOpcode.ref_cast_null);
-    body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex));
-
-    // Load function pointer from VTable
-    const vtableIndex = classInfo.vtable.indexOf(methodName);
-    if (vtableIndex === -1) {
-      throw new Error(`Method ${methodName} not found in vtable`);
-    }
-
-    body.push(0xfb, GcOpcode.struct_get);
-    body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
-
-    // Cast to specific function type
-    body.push(0xfb, GcOpcode.ref_cast_null);
-    body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
-
-    // Store func_ref
-    const funcRefType = [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-    ];
-    const funcRef = ctx.declareLocal('$$func_ref', funcRefType);
-    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRef));
-
-    // Call function: [this, func_ref]
-    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempThis));
-    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRef));
-    body.push(
-      Opcode.call_ref,
-      ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+    generateGetterDynamicDispatch(
+      ctx,
+      classInfo,
+      methodName,
+      methodInfo,
+      objectExpr,
+      body,
     );
   }
   return true;
