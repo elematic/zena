@@ -3347,8 +3347,9 @@ export function instantiateClass(
 
   // Handle generic superclass instantiation
   let superClassName: string | undefined;
-  // Get the checker's ClassType for the superclass (if available)
-  const superClassType = checkerType?.superType;
+  // Don't use checkerType?.superType - use annotation-based lookup for superclasses
+  // to avoid type mismatch issues between checker and codegen.
+  const superClassType: ClassType | undefined = checkerType?.superType;
 
   if (decl.superClass) {
     // Try identity-based lookup first using checker's type
@@ -3441,10 +3442,11 @@ export function instantiateClass(
   }
 
   if (decl.isExtension && decl.onType) {
-    // Try to get onType from checker if available
-    onType = checkerType?.onType
-      ? mapCheckerTypeToWasmType(ctx, checkerType.onType)
-      : mapType(ctx, decl.onType, context);
+    // Always use the annotation-based path for now
+    // The checker's onType might have already-substituted types that don't match
+    // the codegen's type resolution.
+    // TODO: Investigate why mapCheckerTypeToWasmType(checkerType.onType) gives different indices
+    onType = mapType(ctx, decl.onType, context);
   } else {
     // Check for superclass and inherit fields
     // Try identity-based lookup first
@@ -3568,6 +3570,11 @@ export function instantiateClass(
   if (classInfo.isExtension && classInfo.onType) {
     ctx.registerExtensionClassByWasmTypeIndex(classInfo);
   }
+
+  // TODO: Register extension class by checker onType - causes WASM binary errors
+  // if (checkerType?.isExtension && checkerType.onType) {
+  //   ctx.registerExtensionClass(checkerType.onType, classInfo);
+  // }
 
   // Register by checker type for identity-based lookup
   // This enables O(1) lookup via getClassInfoByCheckerType() when we have the

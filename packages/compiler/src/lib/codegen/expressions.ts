@@ -674,8 +674,8 @@ function generateAsExpression(
       }
     }
 
-    // TODO(type-interning): Remove this fallback once the checker interns all types.
-    // This handles cases where two ArrayType instances exist for the same array<T>.
+    // Fallback: look up by WASM type index
+    // This handles cases where checker type identity doesn't match
     if (!classInfo && sourceWasmType) {
       const sourceIndex = decodeTypeIndex(sourceWasmType);
       if (sourceIndex !== -1) {
@@ -1128,8 +1128,8 @@ function generateIndexExpression(
       }
     }
 
-    // Look up extension class by WASM type index (handles raw array<T> types
-    // where the checker Type identity may not match)
+    // Fallback: look up extension class by WASM type index
+    // This handles cases where type identity doesn't match (e.g., multiple ArrayType instances)
     if (!foundClass) {
       const extensions =
         ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
@@ -1960,8 +1960,8 @@ function generateCallExpression(
       }
     }
 
-    // Look up extension class by WASM type index (handles raw array<T> types
-    // where the checker Type identity may not match)
+    // Fallback: look up extension class by WASM type index
+    // This handles cases where type identity doesn't match (e.g., multiple ArrayType instances)
     if (!foundClass && structTypeIndex !== -1) {
       const extensions =
         ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
@@ -2499,7 +2499,7 @@ function generateAssignmentExpression(
       // Use O(1) lookup by struct index
       let foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
 
-      // Check for extension classes using O(1) lookup via checker type
+      // Check for extension classes on non-class types (e.g., raw array<T>)
       if (!foundClass && indexExpr.object.inferredType) {
         const extensions = ctx.getExtensionClassesByOnType(
           indexExpr.object.inferredType,
@@ -2509,7 +2509,8 @@ function generateAssignmentExpression(
         }
       }
 
-      // Check extensions using WASM type index
+      // Fallback: look up extension class by WASM type index
+      // This handles cases where type identity doesn't match (e.g., multiple ArrayType instances)
       if (!foundClass) {
         const extensions =
           ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
@@ -6636,7 +6637,8 @@ export function generateAdaptedArgument(
       }
     }
 
-    // Check extensions using WASM type index
+    // Fallback: look up extension class by WASM type index
+    // This handles cases where type identity doesn't match
     if (!classInfo && actualIndex !== -1) {
       const extensions = ctx.getExtensionClassesByWasmTypeIndex(actualIndex);
       if (extensions && extensions.length > 0) {

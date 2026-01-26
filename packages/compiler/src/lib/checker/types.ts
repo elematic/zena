@@ -59,14 +59,20 @@ export function substituteType(
     return typeMap.get('$this') || type;
   }
   if (type.kind === TypeKind.Array) {
-    return {
-      ...type,
-      elementType: substituteType(
-        (type as ArrayType).elementType,
-        typeMap,
-        ctx,
-      ),
-    } as ArrayType;
+    const newElementType = substituteType(
+      (type as ArrayType).elementType,
+      typeMap,
+      ctx,
+    );
+    // Return original if element type unchanged (avoid creating new instance)
+    if (newElementType === (type as ArrayType).elementType) {
+      return type;
+    }
+    // Use interning if context is available, otherwise create inline
+    if (ctx) {
+      return ctx.getOrCreateArrayType(newElementType);
+    }
+    return {kind: TypeKind.Array, elementType: newElementType} as ArrayType;
   }
   if (type.kind === TypeKind.Class) {
     const ct = type as ClassType;
@@ -132,12 +138,20 @@ export function substituteType(
         (impl) => substituteType(impl, typeMap, ctx) as InterfaceType,
       );
 
+      // Substitute onType for extension classes so identity-based lookups work.
+      const newOnType = source.onType
+        ? substituteType(source.onType, typeMap, ctx)
+        : undefined;
+
       // Return a ClassType with substituted typeArguments but shared fields/methods from source.
       // The genericSource allows resolveMemberType to properly substitute field types on access.
+      // Explicitly copy isExtension and onType to ensure extension class metadata is preserved.
       const newClass = {
         ...source,
         typeArguments: newTypeArguments,
         implements: newImplements,
+        isExtension: source.isExtension,
+        onType: newOnType,
         genericSource:
           source.genericSource || (source.typeParameters ? source : undefined),
       } as ClassType;
@@ -492,10 +506,7 @@ function resolveTypeAnnotationInternal(
       return type;
     }
     const elementType = resolveTypeAnnotation(ctx, annotation.typeArguments[0]);
-    return {
-      kind: TypeKind.Array,
-      elementType,
-    } as ArrayType;
+    return ctx.getOrCreateArrayType(elementType);
   }
 
   if (

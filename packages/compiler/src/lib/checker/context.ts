@@ -1,6 +1,7 @@
 import {DiagnosticBag, DiagnosticCode} from '../diagnostics.js';
 import {
   type Type,
+  type ArrayType,
   type ClassType,
   type InterfaceType,
   type MixinType,
@@ -829,6 +830,20 @@ export class CheckerContext {
   ): void {
     const key = this.computeInstantiationKey('M', genericSource, typeArguments);
     this.#internedTypes.set(key, instance);
+  }
+
+  /**
+   * Get or create an interned array type.
+   * ArrayType interning ensures that `array<T>` has a single identity for each element type.
+   */
+  getOrCreateArrayType(elementType: Type): ArrayType {
+    const key = `A:<${this.computeTypeKey(elementType)}>`;
+    let cached = this.#internedTypes.get(key);
+    if (!cached) {
+      cached = {kind: TypeKind.Array, elementType} as ArrayType;
+      this.#internedTypes.set(key, cached);
+    }
+    return cached as ArrayType;
   }
 
   /**

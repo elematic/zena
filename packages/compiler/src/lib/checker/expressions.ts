@@ -2173,10 +2173,7 @@ function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
     // For now, let's assume Array<i32> if empty, or maybe we need a bottom type.
     // Better: Array<any> (if we had any).
     // Let's return Array<Unknown> and hope it gets refined or cast.
-    return {
-      kind: TypeKind.Array,
-      elementType: Types.Unknown,
-    } as ArrayType;
+    return ctx.getOrCreateArrayType(Types.Unknown);
   }
 
   const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
@@ -2193,10 +2190,7 @@ function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
     }
   }
 
-  return {
-    kind: TypeKind.Array,
-    elementType: firstType,
-  } as ArrayType;
+  return ctx.getOrCreateArrayType(firstType);
 }
 
 function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
