@@ -1598,6 +1598,10 @@ function generateMemberExpression(
       if (generateMemberFromBinding(ctx, memberBinding, expr.object, body)) {
         return;
       }
+      // If binding-based codegen returns false, fall back to AST-based codegen below.
+      // This currently happens for:
+      // - Interface field/getter access (complex vtable dispatch)
+      // - Method access (handled at call site)
     }
   }
 
@@ -4128,6 +4132,19 @@ function generateFieldFromBinding(
     return false;
   }
 
+  // Handle well-known intrinsics for extension classes before looking up ClassInfo.
+  // This is needed because generic extension classes like FixedArray<T> may not have
+  // their ClassInfo registered (they skip registerClassMethods due to being generic).
+  // For these well-known cases, we can generate the intrinsic directly.
+  if (classType.isExtension && classType.name === 'FixedArray') {
+    if (fieldName === 'length') {
+      // FixedArray.length -> array.len intrinsic
+      generateExpression(ctx, objectExpr, body);
+      body.push(0xfb, GcOpcode.array_len);
+      return true;
+    }
+  }
+
   // Handle mixin's synthetic `This` type.
   // When a mixin method accesses `this.field`, the binding's classType is the mixin's
   // synthetic `This` type (e.g., `M_This`). This ClassType exists only in the checker;
@@ -4177,7 +4194,7 @@ function generateFieldFromBinding(
       body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
       return true;
     }
-    // Fall back to existing logic
+    // Fall back to existing logic - mixin synthetic This without field info
     return false;
   }
 
@@ -4281,8 +4298,44 @@ function generateFieldFromBinding(
     }
   }
 
+  // For generic extension classes that weren't found through normal lookups,
+  // try to create a ClassInfo on-the-fly. This is needed because generic extension classes
+  // (like FixedArray<T>) skip registerClassMethods and aren't in ctx.classes.
+  if (!classInfo && classType.isExtension) {
+    const genericDecl = ctx.genericClasses.get(classType.name);
+    if (genericDecl && genericDecl.isExtension && genericDecl.onType) {
+      // Get onType from the checker type if available, otherwise from AST
+      const onType = classType.onType
+        ? mapCheckerTypeToWasmType(ctx, classType.onType)
+        : mapType(ctx, genericDecl.onType);
+
+      // Create a dummy struct type for extensions
+      const structTypeIndex = ctx.module.addStructType([]);
+
+      classInfo = {
+        name: genericDecl.name.name,
+        structTypeIndex,
+        fields: new Map(),
+        methods: new Map(),
+        isExtension: true,
+        onType,
+        onTypeAnnotation: genericDecl.onType,
+      };
+
+      // Register it so we don't recreate it next time
+      ctx.classes.set(genericDecl.name.name, classInfo);
+      ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
+      if (classType) {
+        ctx.registerClassInfoByType(classType, classInfo);
+      }
+    }
+  }
+
   if (!classInfo) {
-    // Fall back to existing logic
+    // This is an error - we should have found the class info.
+    // Common causes:
+    // - Generic extension class without registered ClassInfo (handled above for known intrinsics)
+    // - Interface field access (should have returned false above)
     return false;
   }
 

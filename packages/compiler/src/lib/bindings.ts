@@ -176,6 +176,8 @@ export interface FieldBinding {
   readonly fieldName: string;
   /** The semantic type of the field */
   readonly type: Type;
+  /** If this field is an intrinsic (e.g., 'array.len'), the intrinsic name */
+  readonly intrinsic?: string;
 }
 
 /**
