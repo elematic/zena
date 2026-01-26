@@ -84,7 +84,7 @@ import {checkStatement} from './statements.js';
 function resolveMemberType(
   classType: ClassType | InterfaceType,
   memberType: Type,
-  ctx?: CheckerContext,
+  ctx: CheckerContext,
 ): Type {
   // If the class doesn't have type arguments, no substitution needed
   if (!classType.typeArguments || classType.typeArguments.length === 0) {

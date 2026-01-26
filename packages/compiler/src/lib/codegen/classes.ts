@@ -2609,12 +2609,11 @@ export function getTypeKey(type: TypeAnnotation): string {
  * Get a canonical string key for a checker Type, for use in specialization names.
  * This is the checker-type equivalent of getTypeKey(TypeAnnotation).
  *
- * Uses identity-based lookups for class/interface names when ctx is provided,
- * falling back to the type's name property.
+ * Uses identity-based lookups for class/interface names to avoid collisions.
  */
 export function getCheckerTypeKeyForSpecialization(
   type: Type,
-  ctx?: CodegenContext,
+  ctx: CodegenContext,
 ): string {
   switch (type.kind) {
     case TypeKind.Number:
@@ -2638,13 +2637,13 @@ export function getCheckerTypeKeyForSpecialization(
     case TypeKind.Class: {
       const classType = type as ClassType;
       // Use bundled name via identity lookup if available
-      let name = ctx?.getClassBundledName(classType);
+      let name = ctx.getClassBundledName(classType);
       if (!name) {
         // Fall back to genericSource chain
         name = classType.name;
         let source = classType.genericSource;
         while (source) {
-          const sourceName = ctx?.getClassBundledName(source);
+          const sourceName = ctx.getClassBundledName(source);
           if (sourceName) {
             name = sourceName;
             break;
@@ -2664,13 +2663,13 @@ export function getCheckerTypeKeyForSpecialization(
     case TypeKind.Interface: {
       const interfaceType = type as InterfaceType;
       // Use bundled name via identity lookup if available
-      let name = ctx?.getInterfaceBundledName(interfaceType);
+      let name = ctx.getInterfaceBundledName(interfaceType);
       if (!name) {
         // Fall back to genericSource chain
         name = interfaceType.name;
         let source = interfaceType.genericSource;
         while (source) {
-          const sourceName = ctx?.getInterfaceBundledName(source);
+          const sourceName = ctx.getInterfaceBundledName(source);
           if (sourceName) {
             name = sourceName;
             break;
@@ -4251,8 +4250,8 @@ function applyMixin(
 
 export function typeToTypeAnnotation(
   type: Type,
-  erasedTypeParams?: Set<string>,
-  ctx?: CodegenContext,
+  erasedTypeParams: Set<string> | undefined,
+  ctx: CodegenContext,
 ): TypeAnnotation {
   switch (type.kind) {
     case TypeKind.Number:
@@ -4281,14 +4280,14 @@ export function typeToTypeAnnotation(
       };
     case TypeKind.Class: {
       const classType = type as ClassType;
-      // Try identity-based lookup first (if ctx provided)
-      let canonicalName = ctx?.getClassBundledName(classType);
+      // Try identity-based lookup first
+      let canonicalName = ctx.getClassBundledName(classType);
       if (!canonicalName) {
         // Fall back to genericSource chain for backward compatibility
         canonicalName = classType.name;
         let source = classType.genericSource;
         while (source) {
-          const sourceName = ctx?.getClassBundledName(source);
+          const sourceName = ctx.getClassBundledName(source);
           if (sourceName) {
             canonicalName = sourceName;
             break;
@@ -4324,14 +4323,14 @@ export function typeToTypeAnnotation(
     }
     case TypeKind.Interface: {
       const ifaceType = type as InterfaceType;
-      // Try identity-based lookup first (if ctx provided)
-      let canonicalName = ctx?.getInterfaceBundledName(ifaceType);
+      // Try identity-based lookup first
+      let canonicalName = ctx.getInterfaceBundledName(ifaceType);
       if (!canonicalName) {
         // Fall back to genericSource chain for backward compatibility
         canonicalName = ifaceType.name;
         let source = ifaceType.genericSource;
         while (source) {
-          const sourceName = ctx?.getInterfaceBundledName(source);
+          const sourceName = ctx.getInterfaceBundledName(source);
           if (sourceName) {
             canonicalName = sourceName;
             break;

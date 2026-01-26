@@ -43,13 +43,13 @@ function isPrimitive(type: Type): boolean {
  *
  * @param type The type to substitute parameters in.
  * @param typeMap A map from type parameter names to concrete types.
- * @param ctx Optional checker context for interning ClassTypes.
+ * @param ctx Checker context for type interning.
  * @returns The substituted type.
  */
 export function substituteType(
   type: Type,
   typeMap: Map<string, Type>,
-  ctx?: CheckerContext,
+  ctx: CheckerContext,
 ): Type {
   if (type.kind === TypeKind.TypeParameter) {
     return typeMap.get((type as TypeParameterType).name) || type;
@@ -68,11 +68,7 @@ export function substituteType(
     if (newElementType === (type as ArrayType).elementType) {
       return type;
     }
-    // Use interning if context is available, otherwise create inline
-    if (ctx) {
-      return ctx.getOrCreateArrayType(newElementType);
-    }
-    return {kind: TypeKind.Array, elementType: newElementType} as ArrayType;
+    return ctx.getOrCreateArrayType(newElementType);
   }
   if (type.kind === TypeKind.Class) {
     const ct = type as ClassType;
@@ -125,11 +121,9 @@ export function substituteType(
       }
 
       // Check interning cache first - return cached instance if available
-      if (ctx) {
-        const cached = ctx.getInternedClass(source, newTypeArguments);
-        if (cached) {
-          return cached;
-        }
+      const cached = ctx.getInternedClass(source, newTypeArguments);
+      if (cached) {
+        return cached;
       }
 
       // Substitute the implements list so interface assignability checks work correctly.
@@ -157,9 +151,7 @@ export function substituteType(
       } as ClassType;
 
       // Store in interning cache
-      if (ctx) {
-        ctx.internClass(source, newTypeArguments, newClass);
-      }
+      ctx.internClass(source, newTypeArguments, newClass);
 
       return newClass;
     }
@@ -599,11 +591,12 @@ export function validateType(type: Type, ctx: CheckerContext) {
 function substituteFunctionType(
   fn: FunctionType,
   typeMap: Map<string, Type>,
+  ctx: CheckerContext,
 ): FunctionType {
   return {
     ...fn,
-    parameters: fn.parameters.map((p) => substituteType(p, typeMap)),
-    returnType: substituteType(fn.returnType, typeMap),
+    parameters: fn.parameters.map((p) => substituteType(p, typeMap, ctx)),
+    returnType: substituteType(fn.returnType, typeMap, ctx),
   };
 }
 
@@ -631,7 +624,11 @@ export function validateTypeArgumentConstraints(
       for (let j = 0; j < typeParameters.length; j++) {
         typeMap.set(typeParameters[j].name, typeArguments[j]);
       }
-      const substitutedConstraint = substituteType(param.constraint, typeMap);
+      const substitutedConstraint = substituteType(
+        param.constraint,
+        typeMap,
+        ctx,
+      );
 
       // If the argument is itself a type parameter with a constraint,
       // check if its constraint satisfies the required constraint.
@@ -659,10 +656,10 @@ export function validateTypeArgumentConstraints(
 export function instantiateGenericClass(
   genericClass: ClassType,
   typeArguments: Type[],
-  ctx?: CheckerContext,
+  ctx: CheckerContext,
 ): ClassType {
   // Validate type argument constraints
-  if (ctx && genericClass.typeParameters) {
+  if (genericClass.typeParameters) {
     validateTypeArgumentConstraints(
       ctx,
       genericClass.typeParameters,
@@ -693,11 +690,9 @@ export function instantiateGenericClass(
 
   // Check interning cache - return cached instance if available
   // This ensures identical generic instantiations share the same object
-  if (ctx) {
-    const cached = ctx.getInternedClass(genericClass, typeArguments);
-    if (cached) {
-      return cached;
-    }
+  const cached = ctx.getInternedClass(genericClass, typeArguments);
+  if (cached) {
+    return cached;
   }
 
   const typeMap = new Map<string, Type>();
@@ -705,7 +700,7 @@ export function instantiateGenericClass(
     typeMap.set(param.name, typeArguments[index]);
   });
 
-  const substitute = (type: Type) => substituteType(type, typeMap);
+  const substitute = (type: Type) => substituteType(type, typeMap, ctx);
 
   const newFields = new Map<string, Type>();
   for (const [name, type] of genericClass.fields) {
@@ -714,11 +709,11 @@ export function instantiateGenericClass(
 
   const newMethods = new Map<string, FunctionType>();
   for (const [name, fn] of genericClass.methods) {
-    newMethods.set(name, substituteFunctionType(fn, typeMap));
+    newMethods.set(name, substituteFunctionType(fn, typeMap, ctx));
   }
 
   const newImplements = genericClass.implements.map(
-    (impl) => substituteType(impl, typeMap) as InterfaceType,
+    (impl) => substituteType(impl, typeMap, ctx) as InterfaceType,
   );
 
   const newClass: ClassType = {
@@ -728,26 +723,22 @@ export function instantiateGenericClass(
     methods: newMethods,
     implements: newImplements,
     constructorType: genericClass.constructorType
-      ? substituteFunctionType(genericClass.constructorType, typeMap)
+      ? substituteFunctionType(genericClass.constructorType, typeMap, ctx)
       : undefined,
     onType: genericClass.onType ? substitute(genericClass.onType) : undefined,
     genericSource: genericClass,
   };
 
   // Store in interning cache before validation to handle recursive types
-  if (ctx) {
-    ctx.internClass(genericClass, typeArguments, newClass);
-  }
+  ctx.internClass(genericClass, typeArguments, newClass);
 
-  if (ctx) {
-    for (const type of newFields.values()) validateType(type, ctx);
-    for (const method of newMethods.values()) {
-      for (const p of method.parameters) validateType(p, ctx);
-      validateType(method.returnType, ctx);
-    }
-    if (newClass.constructorType) {
-      for (const p of newClass.constructorType.parameters) validateType(p, ctx);
-    }
+  for (const type of newFields.values()) validateType(type, ctx);
+  for (const method of newMethods.values()) {
+    for (const p of method.parameters) validateType(p, ctx);
+    validateType(method.returnType, ctx);
+  }
+  if (newClass.constructorType) {
+    for (const p of newClass.constructorType.parameters) validateType(p, ctx);
   }
 
   return newClass;
@@ -756,10 +747,10 @@ export function instantiateGenericClass(
 export function instantiateGenericInterface(
   genericInterface: InterfaceType,
   typeArguments: Type[],
-  ctx?: CheckerContext,
+  ctx: CheckerContext,
 ): InterfaceType {
   // Validate type argument constraints
-  if (ctx && genericInterface.typeParameters) {
+  if (genericInterface.typeParameters) {
     validateTypeArgumentConstraints(
       ctx,
       genericInterface.typeParameters,
@@ -768,11 +759,9 @@ export function instantiateGenericInterface(
   }
 
   // Check interning cache - return cached instance if available
-  if (ctx) {
-    const cached = ctx.getInternedInterface(genericInterface, typeArguments);
-    if (cached) {
-      return cached;
-    }
+  const cached = ctx.getInternedInterface(genericInterface, typeArguments);
+  if (cached) {
+    return cached;
   }
 
   const typeMap = new Map<string, Type>();
@@ -780,7 +769,7 @@ export function instantiateGenericInterface(
     typeMap.set(param.name, typeArguments[index]);
   });
 
-  const substitute = (type: Type) => substituteType(type, typeMap);
+  const substitute = (type: Type) => substituteType(type, typeMap, ctx);
 
   const newFields = new Map<string, Type>();
   for (const [name, type] of genericInterface.fields) {
@@ -789,12 +778,12 @@ export function instantiateGenericInterface(
 
   const newMethods = new Map<string, FunctionType>();
   for (const [name, fn] of genericInterface.methods) {
-    newMethods.set(name, substituteFunctionType(fn, typeMap));
+    newMethods.set(name, substituteFunctionType(fn, typeMap, ctx));
   }
 
   const newExtends = genericInterface.extends
     ? genericInterface.extends.map(
-        (ext) => substituteType(ext, typeMap) as InterfaceType,
+        (ext) => substituteType(ext, typeMap, ctx) as InterfaceType,
       )
     : undefined;
 
@@ -808,16 +797,12 @@ export function instantiateGenericInterface(
   };
 
   // Store in interning cache before validation to handle recursive types
-  if (ctx) {
-    ctx.internInterface(genericInterface, typeArguments, newInterface);
-  }
+  ctx.internInterface(genericInterface, typeArguments, newInterface);
 
-  if (ctx) {
-    for (const type of newFields.values()) validateType(type, ctx);
-    for (const method of newMethods.values()) {
-      for (const p of method.parameters) validateType(p, ctx);
-      validateType(method.returnType, ctx);
-    }
+  for (const type of newFields.values()) validateType(type, ctx);
+  for (const method of newMethods.values()) {
+    for (const p of method.parameters) validateType(p, ctx);
+    validateType(method.returnType, ctx);
   }
 
   return newInterface;
@@ -826,10 +811,10 @@ export function instantiateGenericInterface(
 export function instantiateGenericMixin(
   genericMixin: MixinType,
   typeArguments: Type[],
-  ctx?: CheckerContext,
+  ctx: CheckerContext,
 ): MixinType {
   // Validate type argument constraints
-  if (ctx && genericMixin.typeParameters) {
+  if (genericMixin.typeParameters) {
     validateTypeArgumentConstraints(
       ctx,
       genericMixin.typeParameters,
@@ -838,11 +823,9 @@ export function instantiateGenericMixin(
   }
 
   // Check interning cache - return cached instance if available
-  if (ctx) {
-    const cached = ctx.getInternedMixin(genericMixin, typeArguments);
-    if (cached) {
-      return cached;
-    }
+  const cached = ctx.getInternedMixin(genericMixin, typeArguments);
+  if (cached) {
+    return cached;
   }
 
   const typeMap = new Map<string, Type>();
@@ -850,7 +833,7 @@ export function instantiateGenericMixin(
     typeMap.set(param.name, typeArguments[index]);
   });
 
-  const substitute = (type: Type) => substituteType(type, typeMap);
+  const substitute = (type: Type) => substituteType(type, typeMap, ctx);
 
   const newFields = new Map<string, Type>();
   for (const [name, type] of genericMixin.fields) {
@@ -859,7 +842,7 @@ export function instantiateGenericMixin(
 
   const newMethods = new Map<string, FunctionType>();
   for (const [name, fn] of genericMixin.methods) {
-    newMethods.set(name, substituteFunctionType(fn, typeMap));
+    newMethods.set(name, substituteFunctionType(fn, typeMap, ctx));
   }
 
   const newOnType = genericMixin.onType
@@ -876,16 +859,12 @@ export function instantiateGenericMixin(
   };
 
   // Store in interning cache before validation to handle recursive types
-  if (ctx) {
-    ctx.internMixin(genericMixin, typeArguments, newMixin);
-  }
+  ctx.internMixin(genericMixin, typeArguments, newMixin);
 
-  if (ctx) {
-    for (const type of newFields.values()) validateType(type, ctx);
-    for (const method of newMethods.values()) {
-      for (const p of method.parameters) validateType(p, ctx);
-      validateType(method.returnType, ctx);
-    }
+  for (const type of newFields.values()) validateType(type, ctx);
+  for (const method of newMethods.values()) {
+    for (const p of method.parameters) validateType(p, ctx);
+    validateType(method.returnType, ctx);
   }
 
   return newMixin;
@@ -894,10 +873,10 @@ export function instantiateGenericMixin(
 export function instantiateGenericFunction(
   genericFunc: FunctionType,
   typeArguments: Type[],
-  ctx?: CheckerContext,
+  ctx: CheckerContext,
 ): FunctionType {
   // Validate type argument constraints
-  if (ctx && genericFunc.typeParameters) {
+  if (genericFunc.typeParameters) {
     validateTypeArgumentConstraints(
       ctx,
       genericFunc.typeParameters,
@@ -910,7 +889,7 @@ export function instantiateGenericFunction(
     typeMap.set(param.name, typeArguments[index]);
   });
 
-  const substitute = (type: Type) => substituteType(type, typeMap);
+  const substitute = (type: Type) => substituteType(type, typeMap, ctx);
 
   const newFunc = {
     ...genericFunc,
@@ -919,10 +898,8 @@ export function instantiateGenericFunction(
     returnType: substitute(genericFunc.returnType),
   };
 
-  if (ctx) {
-    newFunc.parameters.forEach((p) => validateType(p, ctx));
-    validateType(newFunc.returnType, ctx);
-  }
+  newFunc.parameters.forEach((p) => validateType(p, ctx));
+  validateType(newFunc.returnType, ctx);
 
   return newFunc;
 }
@@ -1325,7 +1302,7 @@ export function isAssignableTo(
           typeMap.set(param.name, current!.typeArguments![index]);
         });
         implementsList = current.genericSource.implements.map(
-          (impl) => substituteType(impl, typeMap) as InterfaceType,
+          (impl) => substituteType(impl, typeMap, ctx) as InterfaceType,
         );
       }
 

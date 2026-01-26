@@ -13,12 +13,12 @@ import {
 /**
  * Tests for substituteType interning behavior.
  *
- * These tests verify that substituteType properly interns ClassTypes when
- * a CheckerContext is provided, ensuring that identity-based lookups work
- * in codegen even for types accessed through member type resolution.
+ * These tests verify that substituteType properly interns ClassTypes,
+ * ensuring that identity-based lookups work in codegen even for types
+ * accessed through member type resolution.
  */
 suite('substituteType Interning', () => {
-  test('substituteType with ctx returns interned ClassType', () => {
+  test('substituteType returns interned ClassType', () => {
     // Create a simple generic type directly
     const tParam: TypeParameterType = {kind: TypeKind.TypeParameter, name: 'T'};
     const boxType: ClassType = {
@@ -39,7 +39,7 @@ suite('substituteType Interning', () => {
     const typeMap = new Map<string, any>();
     typeMap.set('T', Types.I32);
 
-    // With ctx, should return the same interned instance
+    // Should return the same interned instance
     const result1 = substituteType(boxType, typeMap, ctx) as ClassType;
     const result2 = substituteType(boxType, typeMap, ctx) as ClassType;
 
@@ -47,42 +47,8 @@ suite('substituteType Interning', () => {
     assert.strictEqual(
       result1,
       result2,
-      'substituteType with ctx should return interned ClassType instances',
+      'substituteType should return interned ClassType instances',
     );
-  });
-
-  test('substituteType without ctx creates new objects (not interned)', () => {
-    // Create a simple generic type directly
-    const tParam: TypeParameterType = {kind: TypeKind.TypeParameter, name: 'T'};
-    const boxType: ClassType = {
-      kind: TypeKind.Class,
-      name: 'Box',
-      typeParameters: [tParam],
-      typeArguments: [tParam],
-      implements: [],
-      fields: new Map(),
-      methods: new Map(),
-      statics: new Map(),
-      vtable: [],
-    };
-
-    const typeMap = new Map<string, any>();
-    typeMap.set('T', Types.I32);
-
-    // Without ctx, should create new objects each time
-    const result1 = substituteType(boxType, typeMap) as ClassType;
-    const result2 = substituteType(boxType, typeMap) as ClassType;
-
-    // Without interning, these should be different objects
-    assert.notStrictEqual(
-      result1,
-      result2,
-      'Without ctx, substituteType should create new objects',
-    );
-
-    // But they should be structurally equal
-    assert.strictEqual(result1.name, result2.name);
-    assert.deepStrictEqual(result1.typeArguments, result2.typeArguments);
   });
 
   test('nested generic types are interned through substituteType', () => {
