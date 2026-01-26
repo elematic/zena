@@ -2181,6 +2181,22 @@ it establishes the pattern of using checker types as keys. The remaining work
 would be to stop converting to `number[]` early and instead preserve `Type`
 objects through the pipeline.
 
+**Prerequisites:**
+
+Before tackling late type lowering, complete the name resolution work:
+
+1. ✅ MemberExpression bindings (done January 2026)
+2. Remove dead fallback code from codegen (see name-resolution.md Phase 5)
+3. Move interface resolution to checker (see name-resolution.md Phase 6)
+
+**Implementation Priority:**
+
+1. **Phase 5: Remove Dead Code** - Low effort, validates bindings work everywhere
+2. **Phase 6: Interface Bindings** - Medium effort, removes complex vtable logic from codegen
+3. **Late Type Lowering** - High effort, enables WAT backend
+
+See [name-resolution.md](./name-resolution.md) for the detailed phase plan.
+
 ## Open Questions
 
 1. ~~Should we support truly independent module checking (e.g., for LSP hover on

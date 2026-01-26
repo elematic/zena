@@ -266,9 +266,55 @@ across modules are possible) and provides the foundation for LSP features.
 - Updated `generateTaggedTemplateExpression()` to use binding-based tag lookup
 - CLI passes `compiler.semanticContext` to `CodeGenerator` for binding access
 
-**Remaining:**
+**Completed (January 2026) - MemberExpression Bindings:**
 
-- Extend binding resolution to more expression types (MemberExpression, etc.)
+- Added `FieldBinding`, `GetterBinding`, `MethodBinding`, `RecordFieldBinding` types
+- Checker stores resolved bindings for all member access expressions
+- `generateMemberExpression()` uses bindings as primary lookup path
+- `generateMemberFromBinding()` handles field, getter, method, and record field cases
+- Mixin synthetic `This` types handled via `isSyntheticMixinThis` flag
+- Fallback code verified as dead (throws if hit) and can be removed
+
+## Next Steps: Codegen Simplification
+
+With bindings working for Identifiers and MemberExpressions, the next phases
+focus on removing remaining fallback code and preparing for alternative backends.
+
+### Phase 5: Remove Dead Fallback Code (Low Effort, High Impact)
+
+The fallback paths in `generateMemberExpression` now throw if reached. This
+phase removes that dead code and adds similar verification to other areas.
+
+1. Remove the dead fallback code after binding checks in `generateMemberExpression`
+2. Add throws to other fallback paths to verify they're not hit
+3. Gradually remove verified-dead fallback code throughout codegen
+
+### Phase 6: Move Interface Resolution to Checker
+
+Interface member access still has complex codegen logic (vtable slot computation).
+
+1. Add `InterfaceMethodBinding` and `InterfaceFieldBinding` with vtable slot info
+2. Have checker compute vtable slot indices during type checking
+3. Codegen reads pre-computed slot from binding, emits vtable access
+
+### Phase 7: Centralize Type Instantiation in Checker
+
+Generic instantiation is currently duplicated between checker and codegen.
+
+1. Have checker instantiate all needed specializations during type-checking
+2. Store specialized types in SemanticContext
+3. Codegen only instantiates WASM types, not doing semantic type work
+
+### Phase 8: Abstract Emitter Interface (WAT Backend Preparation)
+
+To support a WAT backend alongside binary WASM:
+
+1. Create an IR layer - emit structured instructions instead of raw bytes
+2. Abstract `mapCheckerTypeToWasmType` into a shared type mapping layer
+3. Create `WasmEmitter` interface that both binary and WAT backends implement
+
+See [compiler-refactoring.md](./compiler-refactoring.md) "Late Type Lowering"
+section for the detailed design of keeping `Type` objects through the pipeline.
 
 ## Benefits
 
@@ -280,13 +326,10 @@ across modules are possible) and provides the foundation for LSP features.
 
 ## Open Questions
 
-1. **MemberExpression resolution**: Should we resolve `obj.method` to a binding?
-   Currently the type is inferred but not the specific method declaration.
-
-2. **Overloaded functions**: A call to an overloaded function should resolve to
+1. **Overloaded functions**: A call to an overloaded function should resolve to
    the specific overload chosen by the type checker.
 
-3. **Closures**: Captured variables need special handling - they're locals in
+2. **Closures**: Captured variables need special handling - they're locals in
    the enclosing function but context fields in the closure.
 
 ## Resolved Questions
@@ -295,3 +338,7 @@ across modules are possible) and provides the foundation for LSP features.
    in generic method bodies because the same AST is reused with different local
    indices. Solution: Use name-based lookup for locals, which correctly uses
    the current function scope's mappings.
+
+2. **MemberExpression resolution**: ✅ RESOLVED - We now resolve `obj.method`,
+   `obj.field`, and `obj.getter` to bindings. The checker stores `MethodBinding`,
+   `FieldBinding`, or `GetterBinding` which codegen uses for direct lookup.
