@@ -1645,141 +1645,14 @@ function generateMemberExpression(
     }
   }
 
+  // If we reach here, the binding-based codegen didn't handle this member access.
+  // This is an error - all member access should go through bindings.
   const fieldName = expr.property.name;
-
-  const structTypeIndex = getHeapTypeIndex(ctx, objectType);
-
-  let foundClass: ClassInfo | undefined;
-
-  // For `this` expressions, use ctx.currentClass directly.
-  // This handles mixin methods where the checker's inferredType is a synthetic
-  // type (like M_This) that doesn't exist in codegen.
-  if (expr.object.type === NodeType.ThisExpression && ctx.currentClass) {
-    foundClass = ctx.currentClass;
-  }
-
-  // Try to find class from AST type
-  if (
-    !foundClass &&
-    expr.object.inferredType &&
-    expr.object.inferredType.kind === TypeKind.Class
-  ) {
-    const classType = expr.object.inferredType as ClassType;
-
-    // Try identity-based lookup first (O(1) via WeakMap)
-    foundClass = ctx.getClassInfoByCheckerType(classType);
-
-    // If identity lookup fails, try triggering instantiation
-    if (
-      !foundClass &&
-      classType.typeArguments &&
-      classType.typeArguments.length > 0
-    ) {
-      mapCheckerTypeToWasmType(ctx, classType);
-      foundClass = ctx.getClassInfoByCheckerType(classType);
-
-      // If identity lookup still fails, look up by specialized name
-      // This handles the bundler case where the checker type has a different name
-      // than the bundled declaration (e.g., ArrayExt vs m12_ArrayExt)
-      if (!foundClass) {
-        const genericSource = classType.genericSource ?? classType;
-        // Use identity-based lookup via genericSource
-        const genericDecl = ctx.getGenericDeclByType(genericSource);
-        if (genericDecl) {
-          const typeArgAnnotations = classType.typeArguments.map((ta: Type) =>
-            typeToTypeAnnotation(ta, undefined, ctx),
-          );
-          const specializedName = getSpecializedName(
-            genericDecl.name.name,
-            typeArgAnnotations,
-            ctx,
-            ctx.currentTypeContext,
-          );
-          foundClass = ctx.classes.get(specializedName);
-        }
-      }
-    }
-  }
-
-  // Fall back to struct index lookup
-  if (!foundClass && structTypeIndex !== -1) {
-    for (const info of ctx.classes.values()) {
-      if (info.structTypeIndex === structTypeIndex) {
-        foundClass = info;
-        break;
-      }
-    }
-  }
-
-  if (!foundClass) {
-    // Special handling for FixedArray: treat array<T> as FixedArray<T>
-    foundClass = resolveFixedArrayClass(ctx, expr.object.inferredType);
-  }
-
-  // Check for extension classes using O(1) lookup via checker type
-  if (!foundClass && expr.object.inferredType) {
-    const extensions = ctx.getExtensionClassesByOnType(
-      expr.object.inferredType,
-    );
-    if (extensions && extensions.length > 0) {
-      foundClass = extensions[0];
-    }
-  }
-
-  // Fall back to O(n) iteration for extension classes on primitives
-  if (!foundClass) {
-    for (const info of ctx.classes.values()) {
-      if (info.isExtension && info.onType) {
-        if (typesAreEqual(info.onType, objectType)) {
-          foundClass = info;
-          break;
-        }
-      }
-    }
-  }
-
-  if (!foundClass) {
-    if (structTypeIndex === -1) {
-      throw new Error(`Invalid object type for field access: ${fieldName}`);
-    }
-
-    // Interface field access is now handled via bindings in generateFieldFromBinding.
-    // If we reach here with an interface type, something is wrong.
-    if (
-      expr.object.inferredType &&
-      expr.object.inferredType.kind === TypeKind.Interface
-    ) {
-      throw new Error(
-        `Interface field access for ${fieldName} should use bindings, not fallback path`,
-      );
-    }
-
-    if (foundClass) {
-      // Fall through to class member access
-    } else {
-      throw new Error(
-        `Class or Interface not found for object type ${structTypeIndex}`,
-      );
-    }
-  }
-
-  // Binding-based code generation failed or no binding available.
-  // TODO: With interning fix, this fallback should no longer be needed.
-  // Temporarily throwing to verify all paths go through bindings.
-  if (foundClass) {
-    const bindingInfo = binding
-      ? `binding kind=${(binding as any).kind}, binding classType=${(binding as any).classType?.name}`
-      : 'no binding';
-    throw new Error(
-      `Fallback path hit for member '${fieldName}' on class '${foundClass.name}'. ` +
-        `${bindingInfo}. ` +
-        `This should now go through bindings. Please investigate.`,
-    );
-  }
-
-  // No foundClass - this is an error
+  const bindingInfo = binding
+    ? `binding kind=${(binding as any).kind}`
+    : 'no binding';
   throw new Error(
-    `No class found for member expression: ${fieldName}. ` +
+    `Member access for '${fieldName}' not handled by bindings. ${bindingInfo}. ` +
       `This may indicate a missing binding in the checker.`,
   );
 }
