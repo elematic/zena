@@ -153,6 +153,7 @@ export interface ClassType extends Type {
   isAbstract?: boolean;
   isExtension?: boolean;
   isMixinIntermediate?: boolean; // True for synthetic intermediate mixin classes
+  isSyntheticMixinThis?: boolean; // True for the synthetic `This` type inside mixin bodies
   onType?: Type;
   genericSource?: ClassType;
   /** Internal flag to indicate this type has been fully checked. */

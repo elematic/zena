@@ -1934,10 +1934,34 @@ function checkMemberExpression(
 
         return method;
       }
+
+      // Also check for fields (e.g., FixedArray.length)
+      if (classType.fields.has(expr.property.name)) {
+        const field = classType.fields.get(expr.property.name)!;
+        const typeArgs = [(objectType as ArrayType).elementType];
+        const typeMap = new Map<string, Type>();
+        if (classType.typeParameters) {
+          classType.typeParameters.forEach((param, index) => {
+            typeMap.set(param.name, typeArgs[index]);
+          });
+        }
+        const resolvedType = substituteType(field, typeMap, ctx);
+
+        // Store field binding for array extension fields
+        const binding: FieldBinding = {
+          kind: 'field',
+          classType,
+          fieldName: expr.property.name,
+          type: resolvedType,
+        };
+        ctx.semanticContext.setResolvedBinding(expr, binding);
+
+        return resolvedType;
+      }
     }
 
     if (expr.property.name === LENGTH_PROPERTY) {
-      // No binding for intrinsic array.length
+      // Fallback for intrinsic array.length (should have been caught above)
       return Types.I32;
     }
   }

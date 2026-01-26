@@ -1582,6 +1582,7 @@ function generateMemberExpression(
 ) {
   // Try to use the resolved binding from the checker for O(1) lookup
   const binding = ctx.semanticContext.getResolvedBinding(expr);
+
   if (binding) {
     const memberBinding = binding as
       | FieldBinding
@@ -1881,155 +1882,16 @@ function generateMemberExpression(
   }
 
   // Binding-based code generation failed or no binding available.
-  // Fall back to class-based member access for getters and fields.
+  // TODO: With interning fix, this fallback should no longer be needed.
+  // Temporarily throwing to verify all paths go through bindings.
   if (foundClass) {
-    let lookupName = fieldName;
-    if (fieldName.startsWith('#')) {
-      if (!ctx.currentClass) {
-        throw new Error('Private field access outside class');
-      }
-      lookupName = `${ctx.currentClass.name}::${fieldName}`;
-    }
-
-    // Check for virtual property access (public fields or accessors)
-    if (!fieldName.startsWith('#')) {
-      const getterName = getGetterName(fieldName);
-      const methodInfo = foundClass.methods.get(getterName);
-      if (methodInfo) {
-        // Call getter
-        // Check if we can use static dispatch (final class or final method)
-        const useStaticDispatch =
-          foundClass.isFinal || methodInfo.isFinal || foundClass.isExtension;
-
-        if (useStaticDispatch) {
-          if (methodInfo.intrinsic) {
-            generateIntrinsic(ctx, methodInfo.intrinsic, expr.object, [], body);
-            return;
-          }
-          // Static dispatch - direct call
-          generateExpression(ctx, expr.object, body);
-          body.push(Opcode.call);
-          body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
-        } else {
-          // Dynamic dispatch via vtable
-          generateExpression(ctx, expr.object, body);
-
-          // Cast if object is anyref (e.g., from narrowed union type)
-          const isAnyRef =
-            objectType.length === 1 && objectType[0] === ValType.anyref;
-          if (isAnyRef) {
-            body.push(0xfb, GcOpcode.ref_cast_null);
-            body.push(
-              ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
-            );
-          }
-
-          // 1. Duplicate 'this' for vtable lookup
-          // Use the struct type for the temp local
-          const tempThisType = isAnyRef
-            ? [
-                ValType.ref_null,
-                ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
-              ]
-            : objectType;
-          const tempThis = ctx.declareLocal('$$temp_this', tempThisType);
-          body.push(Opcode.local_tee);
-          body.push(...WasmModule.encodeSignedLEB128(tempThis));
-
-          // 2. Get VTable from first field
-          body.push(0xfb, GcOpcode.struct_get);
-          body.push(
-            ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
-          );
-          body.push(
-            ...WasmModule.encodeSignedLEB128(
-              foundClass.fields.get('__vtable')!.index,
-            ),
-          );
-
-          // 3. Get method from VTable
-          if (foundClass.vtableTypeIndex === undefined) {
-            throw new Error(
-              `VTable type index not set for class ${foundClass.name}`,
-            );
-          }
-          if (!foundClass.vtable) {
-            throw new Error(`VTable not defined for class ${foundClass.name}`);
-          }
-
-          // Cast VTable to correct type (it's stored as eqref)
-          body.push(0xfb, GcOpcode.ref_cast_null);
-          body.push(
-            ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
-          );
-
-          const vtableIndex = foundClass.vtable.indexOf(getterName);
-          if (vtableIndex === -1) {
-            throw new Error(
-              `Getter ${getterName} not found in vtable of class ${foundClass.name}`,
-            );
-          }
-          body.push(0xfb, GcOpcode.struct_get);
-          body.push(
-            ...WasmModule.encodeSignedLEB128(foundClass.vtableTypeIndex),
-          );
-          body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
-
-          // Cast to specific function type
-          body.push(0xfb, GcOpcode.ref_cast_null);
-          body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
-
-          // 4. Store funcRef
-          const funcRefType = [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-          ];
-          const funcRef = ctx.declareLocal('$$getter_ref', funcRefType);
-          body.push(Opcode.local_set);
-          body.push(...WasmModule.encodeSignedLEB128(funcRef));
-
-          // 5. Load 'this' again for call
-          body.push(Opcode.local_get);
-          body.push(...WasmModule.encodeSignedLEB128(tempThis));
-
-          // 6. Call via funcRef
-          body.push(Opcode.local_get);
-          body.push(...WasmModule.encodeSignedLEB128(funcRef));
-          body.push(
-            Opcode.call_ref,
-            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
-          );
-        }
-        return;
-      }
-    }
-
-    // Direct field access
-    const fieldInfo = foundClass.fields.get(lookupName);
-    if (fieldInfo) {
-      if (fieldInfo.intrinsic) {
-        generateIntrinsic(ctx, fieldInfo.intrinsic, expr.object, [], body);
-        return;
-      }
-
-      generateExpression(ctx, expr.object, body);
-
-      // Cast if object is anyref
-      const isAnyRef =
-        objectType.length === 1 && objectType[0] === ValType.anyref;
-      if (isAnyRef) {
-        body.push(0xfb, GcOpcode.ref_cast_null);
-        body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
-      }
-
-      body.push(0xfb, GcOpcode.struct_get);
-      body.push(...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex));
-      body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
-      return;
-    }
-
+    const bindingInfo = binding
+      ? `binding kind=${(binding as any).kind}, binding classType=${(binding as any).classType?.name}`
+      : 'no binding';
     throw new Error(
-      `Field or getter '${fieldName}' not found in class '${foundClass.name}'`,
+      `Fallback path hit for member '${fieldName}' on class '${foundClass.name}'. ` +
+        `${bindingInfo}. ` +
+        `This should now go through bindings. Please investigate.`,
     );
   }
 
@@ -4258,7 +4120,7 @@ function generateFieldFromBinding(
   objectExpr: Expression,
   body: number[],
 ): boolean {
-  const {classType, fieldName} = binding;
+  let {classType, fieldName} = binding;
 
   // Handle interface field access
   if (classType.kind === TypeKind.Interface) {
@@ -4266,6 +4128,61 @@ function generateFieldFromBinding(
     return false;
   }
 
+  // Handle mixin's synthetic `This` type.
+  // When a mixin method accesses `this.field`, the binding's classType is the mixin's
+  // synthetic `This` type (e.g., `M_This`). This ClassType exists only in the checker;
+  // it doesn't have a corresponding ClassInfo in codegen. Use ctx.currentClass instead
+  // since we're generating code inside the concrete class that has the mixin applied.
+  if (
+    classType.isSyntheticMixinThis &&
+    ctx.currentClass &&
+    objectExpr.type === NodeType.ThisExpression
+  ) {
+    // For `this.x` in a mixin method, use the concrete class's field
+    // For private fields, the binding's fieldName is like 'M_This::#val' (mixin's synthetic name)
+    // but the ClassInfo stores it as 'C::#val' (concrete class name). Extract the private part
+    // and rebuild with the concrete class name.
+    let actualFieldName = fieldName;
+    let fieldInfo = ctx.currentClass.fields.get(actualFieldName);
+
+    // Try with mangled private field name - strip mixin prefix and use concrete class name
+    if (!fieldInfo && fieldName.includes('::#')) {
+      // fieldName is like 'M_This::#val', extract '::#val' and prepend concrete class name
+      const privatePart = fieldName.slice(fieldName.indexOf('::#'));
+      actualFieldName = `${ctx.currentClass.name}${privatePart}`;
+      fieldInfo = ctx.currentClass.fields.get(actualFieldName);
+    }
+
+    // Also try the simple private field case (just '#val')
+    if (!fieldInfo && fieldName.startsWith('#')) {
+      actualFieldName = `${ctx.currentClass.name}::${fieldName}`;
+      fieldInfo = ctx.currentClass.fields.get(actualFieldName);
+    }
+
+    if (fieldInfo) {
+      // Handle intrinsic fields
+      if (fieldInfo.intrinsic) {
+        generateIntrinsic(ctx, fieldInfo.intrinsic, objectExpr, [], body);
+        return true;
+      }
+
+      // Generate the object expression
+      generateExpression(ctx, objectExpr, body);
+
+      // Emit struct.get
+      body.push(0xfb, GcOpcode.struct_get);
+      body.push(
+        ...WasmModule.encodeSignedLEB128(ctx.currentClass.structTypeIndex),
+      );
+      body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+      return true;
+    }
+    // Fall back to existing logic
+    return false;
+  }
+
+  // If the binding's classType has unresolved type parameters (e.g., FixedArray<T>),
+  // let the existing mapCheckerTypeToWasmType and extension class lookup handle it.
   // For private fields, use ctx.currentClass directly - we're inside the class
   // that owns this private field, so we know exactly which ClassInfo to use.
   // The binding stores the checker's class name, but codegen uses bundled names.
@@ -4330,6 +4247,35 @@ function generateFieldFromBinding(
             classInfo = info;
             break;
           }
+        }
+      }
+    }
+
+    // For extension classes, mapCheckerTypeToWasmType returns onType, not struct index.
+    // Extension classes have a single ClassInfo per declaration (not per instantiation).
+    // Find by matching the WASM onType (since ClassInfo.onType is also a WASM type).
+    if (!classInfo && classType.isExtension) {
+      for (const info of ctx.classes.values()) {
+        if (info.isExtension && info.onType) {
+          if (typesAreEqual(info.onType, wasmType)) {
+            classInfo = info;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // If still not found and this is an extension class, try computing onType directly
+  // and matching against extension classes. This handles cases where typeArguments
+  // don't exist but the class is still an extension.
+  if (!classInfo && classType.isExtension && classType.onType) {
+    const wasmOnType = mapCheckerTypeToWasmType(ctx, classType.onType);
+    for (const info of ctx.classes.values()) {
+      if (info.isExtension && info.onType) {
+        if (typesAreEqual(info.onType, wasmOnType)) {
+          classInfo = info;
+          break;
         }
       }
     }
@@ -4554,7 +4500,7 @@ function generateGetterFromBinding(
   objectExpr: Expression,
   body: number[],
 ): boolean {
-  const {classType, methodName, isStaticDispatch} = binding;
+  let {classType, methodName, isStaticDispatch} = binding;
 
   // Handle interface getter access
   if (classType.kind === TypeKind.Interface) {
@@ -4628,14 +4574,30 @@ function generateGetterFromBinding(
     }
 
     // For extension classes, mapCheckerTypeToWasmType returns onType, not struct index.
-    // Try to find the extension class by matching onType.
-    if (!classInfo) {
+    // Extension classes have a single ClassInfo per declaration (not per instantiation).
+    // Find by matching the WASM onType (since ClassInfo.onType is also a WASM type).
+    if (!classInfo && classType.isExtension) {
       for (const info of ctx.classes.values()) {
         if (info.isExtension && info.onType) {
           if (typesAreEqual(info.onType, wasmType)) {
             classInfo = info;
             break;
           }
+        }
+      }
+    }
+  }
+
+  // If still not found and this is an extension class, try computing onType directly
+  // and matching against extension classes. This handles cases where typeArguments
+  // don't exist but the class is still an extension.
+  if (!classInfo && classType.isExtension && classType.onType) {
+    const wasmOnType = mapCheckerTypeToWasmType(ctx, classType.onType);
+    for (const info of ctx.classes.values()) {
+      if (info.isExtension && info.onType) {
+        if (typesAreEqual(info.onType, wasmOnType)) {
+          classInfo = info;
+          break;
         }
       }
     }

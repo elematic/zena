@@ -2681,6 +2681,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     symbolMethods: new Map(mixinType.symbolMethods),
     vtable: onType ? [...onType.vtable] : [],
     isFinal: false,
+    isSyntheticMixinThis: true,
   };
 
   if (onType) {
