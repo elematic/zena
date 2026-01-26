@@ -3441,11 +3441,14 @@ export function instantiateClass(
   }
 
   if (decl.isExtension && decl.onType) {
-    // Always use the annotation-based path for now
-    // The checker's onType might have already-substituted types that don't match
-    // the codegen's type resolution.
-    // TODO: Investigate why mapCheckerTypeToWasmType(checkerType.onType) gives different indices
-    onType = mapType(ctx, decl.onType, context);
+    // Use checker's substituted onType when available (identity-based path)
+    // This leverages ArrayType interning to ensure consistent WASM type indices.
+    // Fall back to annotation-based path when checker type isn't available.
+    if (checkerType?.onType) {
+      onType = mapCheckerTypeToWasmType(ctx, checkerType.onType);
+    } else {
+      onType = mapType(ctx, decl.onType, context);
+    }
   } else {
     // Check for superclass and inherit fields
     // Try identity-based lookup first
@@ -3570,10 +3573,12 @@ export function instantiateClass(
     ctx.registerExtensionClassByWasmTypeIndex(classInfo);
   }
 
-  // TODO: Register extension class by checker onType - causes WASM binary errors
-  // if (checkerType?.isExtension && checkerType.onType) {
-  //   ctx.registerExtensionClass(checkerType.onType, classInfo);
-  // }
+  // Register extension class by checker onType for identity-based lookup
+  // This enables O(1) lookup via getExtensionClassesByOnType() when we have the
+  // checker's interned ArrayType (or other onType)
+  if (checkerType?.isExtension && checkerType.onType) {
+    ctx.registerExtensionClass(checkerType.onType, classInfo);
+  }
 
   // Register by checker type for identity-based lookup
   // This enables O(1) lookup via getClassInfoByCheckerType() when we have the

@@ -1889,68 +1889,56 @@ function checkMemberExpression(
   if (objectType.kind === TypeKind.Array) {
     // Check for extension methods
     // TODO: Support multiple extensions or lookup by type, not just name 'Array'
-    const arrayType = ctx.getWellKnownType(TypeNames.FixedArray);
-    if (arrayType && arrayType.kind === TypeKind.Class) {
-      const classType = arrayType as ClassType;
-      if (classType.methods.has(expr.property.name)) {
-        const method = classType.methods.get(expr.property.name)!;
-        if (classType.typeParameters && classType.typeParameters.length > 0) {
-          const typeArgs = [(objectType as ArrayType).elementType];
-          const typeMap = new Map<string, Type>();
-          classType.typeParameters.forEach((param, index) => {
-            typeMap.set(param.name, typeArgs[index]);
-          });
+    const genericArrayType = ctx.getWellKnownType(TypeNames.FixedArray);
+    if (genericArrayType && genericArrayType.kind === TypeKind.Class) {
+      const genericClassType = genericArrayType as ClassType;
+      const elementType = (objectType as ArrayType).elementType;
 
-          const resolvedMethod = {
-            ...method,
-            parameters: method.parameters.map((t) =>
-              substituteType(t, typeMap, ctx),
-            ),
-            returnType: substituteType(method.returnType, typeMap, ctx),
-          } as FunctionType;
+      // Instantiate FixedArray<T> with the actual element type to get FixedArray<ElementType>.
+      // This ensures the binding's classType is the concrete instantiation, not the generic.
+      // Codegen uses the instantiated classType for O(1) identity-based lookup.
+      let instantiatedClassType = genericClassType;
+      if (
+        genericClassType.typeParameters &&
+        genericClassType.typeParameters.length > 0
+      ) {
+        instantiatedClassType = instantiateGenericClass(
+          genericClassType,
+          [elementType],
+          ctx,
+        );
+      }
 
-          // Store method binding for array extension methods
-          const binding: MethodBinding = {
-            kind: 'method',
-            classType,
-            methodName: expr.property.name,
-            isStaticDispatch: true, // Extension classes always use static dispatch
-            type: resolvedMethod,
-          };
-          ctx.semanticContext.setResolvedBinding(expr, binding);
+      if (genericClassType.methods.has(expr.property.name)) {
+        // Get the resolved method from the instantiated class
+        const resolvedMethod = instantiatedClassType.methods.get(
+          expr.property.name,
+        )!;
 
-          return resolvedMethod;
-        }
-
-        // Store method binding
+        // Store method binding for array extension methods with instantiated classType
         const binding: MethodBinding = {
           kind: 'method',
-          classType,
+          classType: instantiatedClassType,
           methodName: expr.property.name,
-          isStaticDispatch: true,
-          type: method,
+          isStaticDispatch: true, // Extension classes always use static dispatch
+          type: resolvedMethod,
         };
         ctx.semanticContext.setResolvedBinding(expr, binding);
 
-        return method;
+        return resolvedMethod;
       }
 
       // Also check for fields (e.g., FixedArray.length)
-      if (classType.fields.has(expr.property.name)) {
-        const field = classType.fields.get(expr.property.name)!;
-        const typeArgs = [(objectType as ArrayType).elementType];
-        const typeMap = new Map<string, Type>();
-        if (classType.typeParameters) {
-          classType.typeParameters.forEach((param, index) => {
-            typeMap.set(param.name, typeArgs[index]);
-          });
-        }
-        const resolvedType = substituteType(field, typeMap, ctx);
+      if (genericClassType.fields.has(expr.property.name)) {
+        // Get the resolved field type from the instantiated class
+        const resolvedType = instantiatedClassType.fields.get(
+          expr.property.name,
+        )!;
 
-        // Store field binding for array extension fields
+        // Store field binding for array extension fields with instantiated classType
         const binding: FieldBinding = {
           kind: 'field',
-          classType,
+          classType: instantiatedClassType,
           fieldName: expr.property.name,
           type: resolvedType,
         };

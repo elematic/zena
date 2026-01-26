@@ -1016,6 +1016,55 @@ function getArrayTypeIndex(ctx: CodegenContext, elementType: number[]): number {
   return ctx.getArrayTypeIndex(elementType);
 }
 
+/**
+ * Instantiate an extension class using the checker's ClassType.
+ * This uses the checker-provided type information to create the ClassInfo,
+ * avoiding the need for codegen to figure out the mapping (e.g., ArrayType -> FixedArray<T>).
+ */
+function instantiateExtensionClassFromCheckerType(
+  ctx: CodegenContext,
+  classType: ClassType,
+): ClassInfo | undefined {
+  // Get the generic class declaration
+  const genericDecl = ctx.genericClasses.get(classType.name);
+  if (!genericDecl || !genericDecl.isExtension) {
+    return undefined;
+  }
+
+  // Convert type arguments to annotations
+  const typeArgs: TypeAnnotation[] = [];
+  if (classType.typeArguments) {
+    for (const typeArg of classType.typeArguments) {
+      typeArgs.push(typeToTypeAnnotation(typeArg, undefined, ctx));
+    }
+  }
+
+  // Get specialized name
+  const specializedName = getSpecializedName(
+    genericDecl.name.name,
+    typeArgs,
+    ctx,
+    ctx.currentTypeContext,
+  );
+
+  // Check if already instantiated
+  if (ctx.classes.has(specializedName)) {
+    return ctx.classes.get(specializedName);
+  }
+
+  // Instantiate the class with the checker's ClassType for proper registration
+  instantiateClass(
+    ctx,
+    genericDecl,
+    specializedName,
+    typeArgs,
+    ctx.currentTypeContext,
+    classType, // Pass the checker's ClassType for O(1) lookup registration
+  );
+
+  return ctx.classes.get(specializedName);
+}
+
 function resolveFixedArrayClass(
   ctx: CodegenContext,
   checkerType: any,
@@ -1933,8 +1982,26 @@ function generateCallExpression(
 
     let foundClass: ClassInfo | undefined;
 
-    // Use identity-based lookup via checker type
+    // Try to get the class from the method binding (most reliable for extension classes)
+    // The binding's classType is the instantiated type (e.g., FixedArray<i32>) not generic
+    const calleeBinding = ctx.semanticContext.getResolvedBinding(memberExpr);
+    if (calleeBinding && calleeBinding.kind === 'method') {
+      const methodBinding = calleeBinding as MethodBinding;
+      if (methodBinding.classType.kind === TypeKind.Class) {
+        foundClass = ctx.getClassInfoByCheckerType(methodBinding.classType);
+        // If not found and this is an extension class, instantiate it now
+        if (!foundClass && methodBinding.classType.isExtension) {
+          foundClass = instantiateExtensionClassFromCheckerType(
+            ctx,
+            methodBinding.classType,
+          );
+        }
+      }
+    }
+
+    // Use identity-based lookup via object's checker type
     if (
+      !foundClass &&
       memberExpr.object.inferredType &&
       memberExpr.object.inferredType.kind === TypeKind.Class
     ) {

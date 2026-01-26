@@ -91,4 +91,94 @@ suite('substituteType Interning', () => {
     // Second arg should be i32 (substituted)
     assert.strictEqual(result1.typeArguments[1], Types.I32);
   });
+
+  test('ArrayType with same element type is interned', () => {
+    const ctx = new CheckerContext(undefined, new SemanticContext());
+
+    // Create two ArrayTypes with i32 element type
+    const array1 = ctx.getOrCreateArrayType(Types.I32);
+    const array2 = ctx.getOrCreateArrayType(Types.I32);
+
+    // Should be the same interned instance
+    assert.strictEqual(
+      array1,
+      array2,
+      'ArrayTypes with same element type should be interned',
+    );
+  });
+
+  test('ArrayType interning through substituteType', () => {
+    const ctx = new CheckerContext(undefined, new SemanticContext());
+
+    // Create array<T> type
+    const tParam: TypeParameterType = {kind: TypeKind.TypeParameter, name: 'T'};
+    const arrayT = ctx.getOrCreateArrayType(tParam);
+
+    // Substitute T -> i32
+    const typeMap = new Map<string, any>();
+    typeMap.set('T', Types.I32);
+
+    const result1 = substituteType(arrayT, typeMap, ctx);
+    const result2 = substituteType(arrayT, typeMap, ctx);
+
+    // Should be interned
+    assert.strictEqual(
+      result1,
+      result2,
+      'ArrayType substitution should return interned instance',
+    );
+
+    // Should be the same as creating directly
+    const directArray = ctx.getOrCreateArrayType(Types.I32);
+    assert.strictEqual(
+      result1,
+      directArray,
+      'Substituted ArrayType should match directly created ArrayType',
+    );
+  });
+
+  test('ClassType onType substitution interns ArrayType', () => {
+    const ctx = new CheckerContext(undefined, new SemanticContext());
+
+    // Create a type parameter
+    const tParam: TypeParameterType = {kind: TypeKind.TypeParameter, name: 'T'};
+
+    // Create an extension class type like FixedArray<T> on array<T>
+    const arrayT = ctx.getOrCreateArrayType(tParam);
+    const fixedArrayType: ClassType = {
+      kind: TypeKind.Class,
+      name: 'FixedArray',
+      isExtension: true,
+      typeParameters: [tParam],
+      typeArguments: [tParam],
+      onType: arrayT,
+      implements: [],
+      fields: new Map(),
+      methods: new Map(),
+      statics: new Map(),
+      vtable: [],
+    };
+
+    // Substitute T -> i32 (simulating FixedArray<i32>)
+    const typeMap = new Map<string, any>();
+    typeMap.set('T', Types.I32);
+
+    const result1 = substituteType(fixedArrayType, typeMap, ctx) as ClassType;
+    const result2 = substituteType(fixedArrayType, typeMap, ctx) as ClassType;
+
+    // ClassType itself should be interned
+    assert.strictEqual(
+      result1,
+      result2,
+      'Substituted ClassType should be interned',
+    );
+
+    // The onType should be the interned array<i32>
+    const directArrayI32 = ctx.getOrCreateArrayType(Types.I32);
+    assert.strictEqual(
+      result1.onType,
+      directArrayI32,
+      'ClassType.onType should be interned ArrayType',
+    );
+  });
 });
