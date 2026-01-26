@@ -552,26 +552,39 @@ function generateAsExpression(
 ) {
   generateExpression(ctx, expr.expression, body);
 
-  // Use checker's inferredType when available (identity-based), fall back to AST
-  const targetType = expr.inferredType
-    ? mapCheckerTypeToWasmType(ctx, expr.inferredType)
+  // Use checker types for semantic operations (lookups, type identity).
+  // WASM types are computed lazily, only when needed for opcode emission.
+  const sourceCheckerType = expr.expression.inferredType;
+  const targetCheckerType =
+    expr.inferredType ?? expr.typeAnnotation.inferredType;
+
+  // Compute WASM types for opcode emission
+  const targetWasmType = targetCheckerType
+    ? mapCheckerTypeToWasmType(ctx, targetCheckerType)
     : mapType(ctx, expr.typeAnnotation, ctx.currentTypeContext);
 
-  let sourceType: number[] | undefined;
-  try {
-    sourceType = inferType(ctx, expr.expression);
-  } catch (e) {
-    // Ignore inference errors, just don't optimize
+  let sourceWasmType: number[] | undefined;
+  if (sourceCheckerType) {
+    try {
+      sourceWasmType = mapCheckerTypeToWasmType(ctx, sourceCheckerType);
+    } catch {
+      // Ignore inference errors, just don't optimize
+    }
   }
 
-  if (sourceType && typesAreEqual(sourceType, targetType)) {
+  // No-op cast: same WASM representation
+  if (sourceWasmType && typesAreEqual(sourceWasmType, targetWasmType)) {
     return;
   }
 
-  // Primitive conversions
-  if (sourceType && sourceType.length === 1 && targetType.length === 1) {
-    const src = sourceType[0];
-    const tgt = targetType[0];
+  // Primitive conversions (need WASM types for opcode selection)
+  if (
+    sourceWasmType &&
+    sourceWasmType.length === 1 &&
+    targetWasmType.length === 1
+  ) {
+    const src = sourceWasmType[0];
+    const tgt = targetWasmType[0];
 
     if (src === ValType.i32 && tgt === ValType.i64) {
       body.push(Opcode.i64_extend_i32_s);
@@ -631,42 +644,49 @@ function generateAsExpression(
     }
   }
 
-  // Interface Boxing - identity-based lookup
-  let interfaceInfo: InterfaceInfo | undefined;
-  if (
-    expr.typeAnnotation.inferredType &&
-    expr.typeAnnotation.inferredType.kind === TypeKind.Interface
-  ) {
-    interfaceInfo = ctx.getInterfaceInfoByCheckerType(
-      expr.typeAnnotation.inferredType as InterfaceType,
+  // Interface Boxing - use checker types for all lookups
+  if (targetCheckerType?.kind === TypeKind.Interface) {
+    const interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+      targetCheckerType as InterfaceType,
     );
     if (!interfaceInfo) {
       throw new Error(
-        `Interface not registered: ${(expr.typeAnnotation.inferredType as InterfaceType).name}`,
+        `Interface not registered: ${(targetCheckerType as InterfaceType).name}`,
       );
     }
-  }
 
-  if (interfaceInfo) {
-    const sourceIndex = decodeTypeIndex(sourceType!);
-    let classInfo = getClassFromTypeIndex(ctx, sourceIndex);
+    let classInfo: ClassInfo | undefined;
 
-    // Check extensions using O(1) lookup via checker type
-    if (!classInfo && expr.expression.inferredType) {
-      const extensions = ctx.getExtensionClassesByOnType(
-        expr.expression.inferredType,
-      );
-      if (extensions && extensions.length > 0) {
-        classInfo = extensions[0];
+    // Primary: look up ClassInfo via checker type identity
+    if (sourceCheckerType) {
+      if (sourceCheckerType.kind === TypeKind.Class) {
+        classInfo = ctx.getClassInfoByCheckerType(
+          sourceCheckerType as ClassType,
+        );
+      }
+
+      // Extension class lookup by onType (checker type identity)
+      if (!classInfo) {
+        const extensions = ctx.getExtensionClassesByOnType(sourceCheckerType);
+        if (extensions && extensions.length > 0) {
+          classInfo = extensions[0];
+        }
       }
     }
 
-    // Look up extension class by WASM type index (handles raw array<T> types
-    // where the checker Type identity may not match)
-    if (!classInfo && sourceIndex !== -1) {
-      const extensions = ctx.getExtensionClassesByWasmTypeIndex(sourceIndex);
-      if (extensions && extensions.length > 0) {
-        classInfo = extensions[0];
+    // TODO(type-interning): Remove this fallback once the checker interns all types.
+    // This handles cases where two ArrayType instances exist for the same array<T>.
+    if (!classInfo && sourceWasmType) {
+      const sourceIndex = decodeTypeIndex(sourceWasmType);
+      if (sourceIndex !== -1) {
+        classInfo = getClassFromTypeIndex(ctx, sourceIndex);
+        if (!classInfo) {
+          const extensions =
+            ctx.getExtensionClassesByWasmTypeIndex(sourceIndex);
+          if (extensions && extensions.length > 0) {
+            classInfo = extensions[0];
+          }
+        }
       }
     }
 
@@ -709,25 +729,25 @@ function generateAsExpression(
 
   // Unboxing: Any -> Primitive
   if (
-    targetType.length === 1 &&
-    (targetType[0] === ValType.i32 ||
-      targetType[0] === ValType.i64 ||
-      targetType[0] === ValType.f32 ||
-      targetType[0] === ValType.f64) &&
-    sourceType &&
-    sourceType.length === 1 &&
-    sourceType[0] === ValType.anyref
+    targetWasmType.length === 1 &&
+    (targetWasmType[0] === ValType.i32 ||
+      targetWasmType[0] === ValType.i64 ||
+      targetWasmType[0] === ValType.f32 ||
+      targetWasmType[0] === ValType.f64) &&
+    sourceWasmType &&
+    sourceWasmType.length === 1 &&
+    sourceWasmType[0] === ValType.anyref
   ) {
-    unboxPrimitive(ctx, targetType, body);
+    unboxPrimitive(ctx, targetWasmType, body);
     return;
   }
 
   // If target is a reference type (ref null ...)
-  if (targetType.length > 1 && targetType[0] === ValType.ref_null) {
+  if (targetWasmType.length > 1 && targetWasmType[0] === ValType.ref_null) {
     // ref.cast_null
     body.push(0xfb, GcOpcode.ref_cast_null);
-    // The rest of targetType is the LEB128 encoded type index
-    body.push(...targetType.slice(1));
+    // The rest of targetWasmType is the LEB128 encoded type index
+    body.push(...targetWasmType.slice(1));
   }
 }
 
@@ -1111,7 +1131,8 @@ function generateIndexExpression(
     // Look up extension class by WASM type index (handles raw array<T> types
     // where the checker Type identity may not match)
     if (!foundClass) {
-      const extensions = ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
+      const extensions =
+        ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
       if (extensions && extensions.length > 0) {
         foundClass = extensions[0];
       }
@@ -1942,7 +1963,8 @@ function generateCallExpression(
     // Look up extension class by WASM type index (handles raw array<T> types
     // where the checker Type identity may not match)
     if (!foundClass && structTypeIndex !== -1) {
-      const extensions = ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
+      const extensions =
+        ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
       if (extensions && extensions.length > 0) {
         foundClass = extensions[0];
       }
@@ -2489,7 +2511,8 @@ function generateAssignmentExpression(
 
       // Check extensions using WASM type index
       if (!foundClass) {
-        const extensions = ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
+        const extensions =
+          ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
         if (extensions && extensions.length > 0) {
           foundClass = extensions[0];
         }
@@ -6773,7 +6796,8 @@ export function generateAdaptedArgument(
             if (interfaceInfo) {
               const interfaceName = interfaceInfo.name;
               // Check if source is class implementing interface using O(1) lookup
-              let classInfo = ctx.getClassInfoByStructIndexDirect(sourceTypeIndex);
+              let classInfo =
+                ctx.getClassInfoByStructIndexDirect(sourceTypeIndex);
 
               // Check extensions using WASM type index
               if (!classInfo) {
