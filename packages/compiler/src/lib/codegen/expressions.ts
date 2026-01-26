@@ -1599,9 +1599,9 @@ function generateMemberExpression(
         return;
       }
       // If binding-based codegen returns false, fall back to AST-based codegen below.
-      // This currently happens for:
-      // - Interface field/getter access (complex vtable dispatch)
-      // - Method access (handled at call site)
+      // This happens for:
+      // - Method access (handled at call site, not as a value)
+      // - Static field access like `ClassName.field` (uses globals, not struct.get)
     }
   }
 
@@ -1743,137 +1743,15 @@ function generateMemberExpression(
       throw new Error(`Invalid object type for field access: ${fieldName}`);
     }
 
-    // Check if it's an interface - identity-based lookup
-    let interfaceInfo: InterfaceInfo | undefined;
+    // Interface field access is now handled via bindings in generateFieldFromBinding.
+    // If we reach here with an interface type, something is wrong.
     if (
       expr.object.inferredType &&
       expr.object.inferredType.kind === TypeKind.Interface
     ) {
-      interfaceInfo = ctx.getInterfaceInfoByCheckerType(
-        expr.object.inferredType as InterfaceType,
+      throw new Error(
+        `Interface field access for ${fieldName} should use bindings, not fallback path`,
       );
-      if (!interfaceInfo) {
-        throw new Error(
-          `Interface not registered: ${(expr.object.inferredType as InterfaceType).name}`,
-        );
-      }
-    }
-
-    if (interfaceInfo) {
-      // Handle interface field access
-      let fieldInfo = interfaceInfo.fields.get(fieldName);
-      let targetTypeIndex = -1;
-
-      if (fieldInfo) {
-        targetTypeIndex = fieldInfo.typeIndex;
-      } else {
-        // Check for getter
-        const getterName = getGetterName(fieldName);
-        const methodInfo = interfaceInfo.methods.get(getterName);
-        if (methodInfo) {
-          fieldInfo = {
-            index: methodInfo.index,
-            typeIndex: methodInfo.typeIndex,
-            type: methodInfo.returnType,
-          };
-          targetTypeIndex = methodInfo.typeIndex;
-        }
-      }
-
-      if (!fieldInfo) {
-        throw new Error(`Field ${fieldName} not found in interface`);
-      }
-
-      // Stack: [InterfaceStruct]
-      // We need to call the getter from the VTable.
-
-      generateExpression(ctx, expr.object, body);
-
-      // 1. Store interface struct in temp local to access fields
-      const tempLocal = ctx.declareLocal('$$interface_temp', objectType);
-      body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempLocal));
-
-      // 2. Load VTable
-      body.push(
-        0xfb,
-        GcOpcode.struct_get,
-        ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
-        ...WasmModule.encodeSignedLEB128(1), // vtable is at index 1
-      );
-
-      // 3. Load Function Pointer from VTable
-      body.push(
-        0xfb,
-        GcOpcode.struct_get,
-        ...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex),
-        ...WasmModule.encodeSignedLEB128(fieldInfo.index),
-      );
-
-      // 4. Cast to specific function type
-      body.push(
-        0xfb,
-        GcOpcode.ref_cast_null,
-        ...WasmModule.encodeSignedLEB128(targetTypeIndex),
-      );
-
-      // Store funcRef in temp local
-      const funcRefType = [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(targetTypeIndex),
-      ];
-      const funcRefLocal = ctx.declareLocal('$$interface_getter', funcRefType);
-      body.push(
-        Opcode.local_set,
-        ...WasmModule.encodeSignedLEB128(funcRefLocal),
-      );
-
-      // 5. Load Instance from Interface Struct
-      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
-      body.push(
-        0xfb,
-        GcOpcode.struct_get,
-        ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
-        ...WasmModule.encodeSignedLEB128(0), // instance is at index 0
-      );
-
-      // Load funcRef
-      body.push(
-        Opcode.local_get,
-        ...WasmModule.encodeSignedLEB128(funcRefLocal),
-      );
-
-      // 6. Call Getter
-      body.push(
-        Opcode.call_ref,
-        ...WasmModule.encodeSignedLEB128(targetTypeIndex),
-      );
-
-      // Handle return value adaptation (unbox)
-      if (expr.inferredType) {
-        const expectedType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
-        const actualType = fieldInfo.type;
-
-        if (actualType.length === 1 && actualType[0] === ValType.anyref) {
-          if (
-            expectedType.length === 1 &&
-            (expectedType[0] === ValType.i32 ||
-              expectedType[0] === ValType.i64 ||
-              expectedType[0] === ValType.f32 ||
-              expectedType[0] === ValType.f64)
-          ) {
-            unboxPrimitive(ctx, expectedType, body);
-          } else if (
-            expectedType.length > 1 &&
-            (expectedType[0] === ValType.ref ||
-              expectedType[0] === ValType.ref_null)
-          ) {
-            body.push(0xfb, GcOpcode.ref_cast_null);
-            body.push(...expectedType.slice(1));
-          }
-        }
-      }
-
-      return;
     }
 
     if (foundClass) {
@@ -4128,8 +4006,14 @@ function generateFieldFromBinding(
 
   // Handle interface field access
   if (classType.kind === TypeKind.Interface) {
-    // Fall back to existing logic for now - interface field access is complex
-    return false;
+    return generateInterfaceFieldAccess(
+      ctx,
+      classType as InterfaceType,
+      fieldName,
+      binding.type,
+      objectExpr,
+      body,
+    );
   }
 
   // Handle well-known intrinsics for extension classes before looking up ClassInfo.
@@ -4468,6 +4352,276 @@ function generateFieldFromBinding(
 }
 
 /**
+ * Generate code for interface field access via vtable dispatch.
+ * Interface fields are accessed via getters in the vtable.
+ */
+function generateInterfaceFieldAccess(
+  ctx: CodegenContext,
+  interfaceType: InterfaceType,
+  fieldName: string,
+  expectedType: Type,
+  objectExpr: Expression,
+  body: number[],
+): boolean {
+  // Look up InterfaceInfo using identity-based lookup
+  const interfaceInfo = ctx.getInterfaceInfoByCheckerType(interfaceType);
+  if (!interfaceInfo) {
+    // Try by name as fallback
+    const info = ctx.interfaces.get(interfaceType.name);
+    if (!info) {
+      throw new Error(`Interface not registered: ${interfaceType.name}`);
+    }
+    return generateInterfaceFieldAccessWithInfo(
+      ctx,
+      info,
+      fieldName,
+      expectedType,
+      objectExpr,
+      body,
+    );
+  }
+
+  return generateInterfaceFieldAccessWithInfo(
+    ctx,
+    interfaceInfo,
+    fieldName,
+    expectedType,
+    objectExpr,
+    body,
+  );
+}
+
+/**
+ * Generate interface field access code given the InterfaceInfo.
+ */
+function generateInterfaceFieldAccessWithInfo(
+  ctx: CodegenContext,
+  interfaceInfo: InterfaceInfo,
+  fieldName: string,
+  expectedType: Type,
+  objectExpr: Expression,
+  body: number[],
+): boolean {
+  // Look up field or getter in the interface
+  let fieldInfo = interfaceInfo.fields.get(fieldName);
+  let targetTypeIndex = -1;
+
+  if (fieldInfo) {
+    targetTypeIndex = fieldInfo.typeIndex;
+  } else {
+    // Check for getter
+    const getterName = getGetterName(fieldName);
+    const methodInfo = interfaceInfo.methods.get(getterName);
+    if (methodInfo) {
+      fieldInfo = {
+        index: methodInfo.index,
+        typeIndex: methodInfo.typeIndex,
+        type: methodInfo.returnType,
+      };
+      targetTypeIndex = methodInfo.typeIndex;
+    }
+  }
+
+  if (!fieldInfo) {
+    throw new Error(`Field ${fieldName} not found in interface`);
+  }
+
+  // Generate the object expression
+  generateExpression(ctx, objectExpr, body);
+
+  // Get the object type for the temp local
+  const objectType = inferType(ctx, objectExpr);
+
+  // 1. Store interface struct in temp local to access fields
+  const tempLocal = ctx.declareLocal('$$interface_temp', objectType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempLocal));
+
+  // 2. Load VTable (at index 1 in interface struct)
+  body.push(
+    0xfb,
+    GcOpcode.struct_get,
+    ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+    ...WasmModule.encodeSignedLEB128(1),
+  );
+
+  // 3. Load Function Pointer from VTable
+  body.push(
+    0xfb,
+    GcOpcode.struct_get,
+    ...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex),
+    ...WasmModule.encodeSignedLEB128(fieldInfo.index),
+  );
+
+  // 4. Cast to specific function type
+  body.push(
+    0xfb,
+    GcOpcode.ref_cast_null,
+    ...WasmModule.encodeSignedLEB128(targetTypeIndex),
+  );
+
+  // Store funcRef in temp local
+  const funcRefType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(targetTypeIndex),
+  ];
+  const funcRefLocal = ctx.declareLocal('$$interface_getter', funcRefType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+
+  // 5. Load Instance from Interface Struct (at index 0)
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
+  body.push(
+    0xfb,
+    GcOpcode.struct_get,
+    ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+    ...WasmModule.encodeSignedLEB128(0),
+  );
+
+  // Load funcRef
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+
+  // 6. Call Getter via call_ref
+  body.push(Opcode.call_ref, ...WasmModule.encodeSignedLEB128(targetTypeIndex));
+
+  // 7. Handle return value adaptation (unbox if needed)
+  const actualType = fieldInfo.type;
+  if (actualType.length === 1 && actualType[0] === ValType.anyref) {
+    const wasmExpectedType = mapCheckerTypeToWasmType(ctx, expectedType);
+    if (
+      wasmExpectedType.length === 1 &&
+      (wasmExpectedType[0] === ValType.i32 ||
+        wasmExpectedType[0] === ValType.i64 ||
+        wasmExpectedType[0] === ValType.f32 ||
+        wasmExpectedType[0] === ValType.f64)
+    ) {
+      unboxPrimitive(ctx, wasmExpectedType, body);
+    } else if (
+      wasmExpectedType.length > 1 &&
+      (wasmExpectedType[0] === ValType.ref ||
+        wasmExpectedType[0] === ValType.ref_null)
+    ) {
+      body.push(0xfb, GcOpcode.ref_cast_null);
+      body.push(...wasmExpectedType.slice(1));
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Generate code for interface getter access via vtable dispatch.
+ * Interface getters are accessed via the method vtable.
+ */
+function generateInterfaceGetterAccess(
+  ctx: CodegenContext,
+  interfaceType: InterfaceType,
+  methodName: string,
+  expectedType: Type,
+  objectExpr: Expression,
+  body: number[],
+): boolean {
+  // Look up InterfaceInfo using identity-based lookup
+  let interfaceInfo = ctx.getInterfaceInfoByCheckerType(interfaceType);
+  if (!interfaceInfo) {
+    // Try by name as fallback
+    interfaceInfo = ctx.interfaces.get(interfaceType.name);
+    if (!interfaceInfo) {
+      throw new Error(`Interface not registered: ${interfaceType.name}`);
+    }
+  }
+
+  // Look up the getter method in the interface
+  const methodInfo = interfaceInfo.methods.get(methodName);
+  if (!methodInfo) {
+    throw new Error(
+      `Getter ${methodName} not found in interface ${interfaceType.name}`,
+    );
+  }
+
+  // Generate the object expression
+  generateExpression(ctx, objectExpr, body);
+
+  // Get the object type for the temp local
+  const objectType = inferType(ctx, objectExpr);
+
+  // 1. Store interface struct in temp local to access fields
+  const tempLocal = ctx.declareLocal('$$interface_temp', objectType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempLocal));
+
+  // 2. Load VTable (at index 1 in interface struct)
+  body.push(
+    0xfb,
+    GcOpcode.struct_get,
+    ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+    ...WasmModule.encodeSignedLEB128(1),
+  );
+
+  // 3. Load Function Pointer from VTable
+  body.push(
+    0xfb,
+    GcOpcode.struct_get,
+    ...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex),
+    ...WasmModule.encodeSignedLEB128(methodInfo.index),
+  );
+
+  // 4. Cast to specific function type
+  body.push(
+    0xfb,
+    GcOpcode.ref_cast_null,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  );
+
+  // Store funcRef in temp local
+  const funcRefType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  ];
+  const funcRefLocal = ctx.declareLocal('$$interface_getter', funcRefType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+
+  // 5. Load Instance from Interface Struct (at index 0)
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
+  body.push(
+    0xfb,
+    GcOpcode.struct_get,
+    ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+    ...WasmModule.encodeSignedLEB128(0),
+  );
+
+  // Load funcRef
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+
+  // 6. Call Getter via call_ref
+  body.push(
+    Opcode.call_ref,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  );
+
+  // 7. Handle return value adaptation (unbox if needed)
+  const actualType = methodInfo.returnType;
+  if (actualType.length === 1 && actualType[0] === ValType.anyref) {
+    const wasmExpectedType = mapCheckerTypeToWasmType(ctx, expectedType);
+    if (
+      wasmExpectedType.length === 1 &&
+      (wasmExpectedType[0] === ValType.i32 ||
+        wasmExpectedType[0] === ValType.i64 ||
+        wasmExpectedType[0] === ValType.f32 ||
+        wasmExpectedType[0] === ValType.f64)
+    ) {
+      unboxPrimitive(ctx, wasmExpectedType, body);
+    } else if (
+      wasmExpectedType.length > 1 &&
+      (wasmExpectedType[0] === ValType.ref ||
+        wasmExpectedType[0] === ValType.ref_null)
+    ) {
+      body.push(0xfb, GcOpcode.ref_cast_null);
+      body.push(...wasmExpectedType.slice(1));
+    }
+  }
+
+  return true;
+}
+
+/**
  * Generate dynamic dispatch code for a getter via vtable.
  */
 function generateGetterDynamicDispatch(
@@ -4557,8 +4711,14 @@ function generateGetterFromBinding(
 
   // Handle interface getter access
   if (classType.kind === TypeKind.Interface) {
-    // Fall back to existing logic for now - interface getter is complex
-    return false;
+    return generateInterfaceGetterAccess(
+      ctx,
+      classType as InterfaceType,
+      methodName,
+      binding.type,
+      objectExpr,
+      body,
+    );
   }
 
   // For getter access on `this` inside the class being defined, use ctx.currentClass
