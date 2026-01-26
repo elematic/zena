@@ -340,12 +340,18 @@ function generateTryExpression(
     // Exception was caught - payload is in global, read it if handler has param
     ctx.pushScope();
     if (expr.handler.param) {
-      // Find the Error class type - search for 'Error' or a bundled name like 'm1_Error'
+      // Find the Error class type using well-known type
       let errorTypeIndex = -1;
-      for (const [name, classInfo] of ctx.classes) {
-        if (name === 'Error' || name.endsWith('_Error')) {
-          errorTypeIndex = classInfo.structTypeIndex;
-          break;
+      const errorDecl = ctx.wellKnownTypes.Error;
+      if (
+        errorDecl?.inferredType &&
+        errorDecl.inferredType.kind === TypeKind.Class
+      ) {
+        const errorClassInfo = ctx.getClassInfoByCheckerType(
+          errorDecl.inferredType as ClassType,
+        );
+        if (errorClassInfo) {
+          errorTypeIndex = errorClassInfo.structTypeIndex;
         }
       }
 
@@ -655,26 +661,17 @@ function generateAsExpression(
       }
     }
 
-    // Fall back to O(n) iteration for extension classes
-    if (!classInfo) {
-      for (const info of ctx.classes.values()) {
-        if (info.isExtension && info.onType) {
-          if (typesAreEqual(info.onType, sourceType!)) {
-            classInfo = info;
-            break;
-          }
-        }
+    // Look up extension class by WASM type index (handles raw array<T> types
+    // where the checker Type identity may not match)
+    if (!classInfo && sourceIndex !== -1) {
+      const extensions = ctx.getExtensionClassesByWasmTypeIndex(sourceIndex);
+      if (extensions && extensions.length > 0) {
+        classInfo = extensions[0];
       }
     }
 
     if (classInfo && classInfo.implements) {
-      let interfaceName: string | undefined;
-      for (const [name, info] of ctx.interfaces) {
-        if (info === interfaceInfo) {
-          interfaceName = name;
-          break;
-        }
-      }
+      const interfaceName = interfaceInfo.name;
 
       if (interfaceName) {
         let impl = classInfo.implements.get(interfaceName);
@@ -1097,12 +1094,8 @@ function generateIndexExpression(
     // (e.g., generic specializations created during codegen that don't have
     // checker types registered in the WeakMap)
     if (!foundClass) {
-      for (const info of ctx.classes.values()) {
-        if (info.structTypeIndex === structTypeIndex) {
-          foundClass = info;
-          break;
-        }
-      }
+      // Use direct struct index lookup instead of O(n) iteration
+      foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
     }
 
     // Check for extension classes (e.g., FixedArray on array<T>) using O(1) lookup
@@ -1115,15 +1108,12 @@ function generateIndexExpression(
       }
     }
 
-    // Fall back to O(n) iteration for extension classes (codegen-instantiated types)
+    // Look up extension class by WASM type index (handles raw array<T> types
+    // where the checker Type identity may not match)
     if (!foundClass) {
-      for (const info of ctx.classes.values()) {
-        if (info.isExtension && info.onType) {
-          if (typesAreEqual(info.onType, objectType)) {
-            foundClass = info;
-            break;
-          }
-        }
+      const extensions = ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
+      if (extensions && extensions.length > 0) {
+        foundClass = extensions[0];
       }
     }
 
@@ -1935,12 +1925,8 @@ function generateCallExpression(
     // (e.g., generic specializations created during codegen that don't have
     // checker types registered in the WeakMap)
     if (!foundClass && structTypeIndex !== -1) {
-      for (const info of ctx.classes.values()) {
-        if (info.structTypeIndex === structTypeIndex) {
-          foundClass = info;
-          break;
-        }
-      }
+      // Use direct struct index lookup instead of O(n) iteration
+      foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
     }
 
     // Check for extension classes using O(1) lookup via checker type
@@ -1953,15 +1939,20 @@ function generateCallExpression(
       }
     }
 
-    // Fall back to O(n) iteration for extension classes
-    if (!foundClass) {
-      for (const info of ctx.classes.values()) {
-        if (info.isExtension && info.onType) {
-          if (typesAreEqual(info.onType, objectType)) {
-            foundClass = info;
-            break;
-          }
-        }
+    // Look up extension class by WASM type index (handles raw array<T> types
+    // where the checker Type identity may not match)
+    if (!foundClass && structTypeIndex !== -1) {
+      const extensions = ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
+      if (extensions && extensions.length > 0) {
+        foundClass = extensions[0];
+      }
+    }
+
+    // Look up extension class by WASM valtype (handles primitive types like i32)
+    if (!foundClass && objectType.length === 1) {
+      const extensions = ctx.getExtensionClassesByWasmValType(objectType[0]);
+      if (extensions && extensions.length > 0) {
+        foundClass = extensions[0];
       }
     }
 
@@ -2483,13 +2474,8 @@ function generateAssignmentExpression(
     const structTypeIndex = getHeapTypeIndex(ctx, objectType);
 
     if (structTypeIndex !== -1) {
-      let foundClass: ClassInfo | undefined;
-      for (const info of ctx.classes.values()) {
-        if (info.structTypeIndex === structTypeIndex) {
-          foundClass = info;
-          break;
-        }
-      }
+      // Use O(1) lookup by struct index
+      let foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
 
       // Check for extension classes using O(1) lookup via checker type
       if (!foundClass && indexExpr.object.inferredType) {
@@ -2501,15 +2487,11 @@ function generateAssignmentExpression(
         }
       }
 
-      // Fall back to O(n) iteration for extension classes
+      // Check extensions using WASM type index
       if (!foundClass) {
-        for (const info of ctx.classes.values()) {
-          if (info.isExtension && info.onType) {
-            if (typesAreEqual(info.onType, objectType)) {
-              foundClass = info;
-              break;
-            }
-          }
+        const extensions = ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
+        if (extensions && extensions.length > 0) {
+          foundClass = extensions[0];
         }
       }
 
@@ -2794,19 +2776,8 @@ function generateAssignmentExpression(
       throw new Error(`Invalid object type for field assignment: ${fieldName}`);
     }
 
-    // Try struct index lookup first (handles name collisions across modules)
-    let foundClass: ClassInfo | undefined =
-      ctx.getClassInfoByStructIndexDirect(structTypeIndex);
-
-    // Fall back to iteration for backward compatibility
-    if (!foundClass) {
-      for (const info of ctx.classes.values()) {
-        if (info.structTypeIndex === structTypeIndex) {
-          foundClass = info;
-          break;
-        }
-      }
-    }
+    // Use O(1) struct index lookup
+    const foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
 
     if (!foundClass) {
       // Identity-based lookup for interface
@@ -4008,50 +3979,11 @@ function generateFieldFromBinding(
     classType.typeArguments.length > 0
   ) {
     const wasmType = mapCheckerTypeToWasmType(ctx, classType);
-    // mapCheckerTypeToWasmType registers the instantiated class,
-    // but with its own type identity. We can find it via struct index.
+    // mapCheckerTypeToWasmType registers the instantiated class.
+    // We can find it via direct struct index lookup.
     if (wasmType.length >= 2 && wasmType[0] === ValType.ref_null) {
-      // Extract the struct index from [ref_null, ...LEB128(index)]
       const structIndex = decodeSignedLEB128(wasmType, 1);
-      classInfo = ctx.getClassInfoByStructIndex(structIndex);
-      // Fall back to O(n) lookup by struct index if identity chain fails
-      if (!classInfo) {
-        for (const info of ctx.classes.values()) {
-          if (info.structTypeIndex === structIndex) {
-            classInfo = info;
-            break;
-          }
-        }
-      }
-    }
-
-    // For extension classes, mapCheckerTypeToWasmType returns onType, not struct index.
-    // Extension classes have a single ClassInfo per declaration (not per instantiation).
-    // Find by matching the WASM onType (since ClassInfo.onType is also a WASM type).
-    if (!classInfo && classType.isExtension) {
-      for (const info of ctx.classes.values()) {
-        if (info.isExtension && info.onType) {
-          if (typesAreEqual(info.onType, wasmType)) {
-            classInfo = info;
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  // If still not found and this is an extension class, try computing onType directly
-  // and matching against extension classes. This handles cases where typeArguments
-  // don't exist but the class is still an extension.
-  if (!classInfo && classType.isExtension && classType.onType) {
-    const wasmOnType = mapCheckerTypeToWasmType(ctx, classType.onType);
-    for (const info of ctx.classes.values()) {
-      if (info.isExtension && info.onType) {
-        if (typesAreEqual(info.onType, wasmOnType)) {
-          classInfo = info;
-          break;
-        }
-      }
+      classInfo = ctx.getClassInfoByStructIndexDirect(structIndex);
     }
   }
 
@@ -4639,53 +4571,14 @@ function generateGetterFromBinding(
     // mapCheckerTypeToWasmType triggers instantiation and registration
     const wasmType = mapCheckerTypeToWasmType(ctx, classType);
 
-    // Try to find the class by struct index (for regular classes)
+    // Find the class by struct index via direct lookup
     if (
       !classInfo &&
       wasmType.length >= 2 &&
       wasmType[0] === ValType.ref_null
     ) {
-      // Extract the struct index from [ref_null, ...LEB128(index)]
       const structIndex = decodeSignedLEB128(wasmType, 1);
-      classInfo = ctx.getClassInfoByStructIndex(structIndex);
-      // Fall back to O(n) lookup by struct index if identity chain fails
-      if (!classInfo) {
-        for (const info of ctx.classes.values()) {
-          if (info.structTypeIndex === structIndex) {
-            classInfo = info;
-            break;
-          }
-        }
-      }
-    }
-
-    // For extension classes, mapCheckerTypeToWasmType returns onType, not struct index.
-    // Extension classes have a single ClassInfo per declaration (not per instantiation).
-    // Find by matching the WASM onType (since ClassInfo.onType is also a WASM type).
-    if (!classInfo && classType.isExtension) {
-      for (const info of ctx.classes.values()) {
-        if (info.isExtension && info.onType) {
-          if (typesAreEqual(info.onType, wasmType)) {
-            classInfo = info;
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  // If still not found and this is an extension class, try computing onType directly
-  // and matching against extension classes. This handles cases where typeArguments
-  // don't exist but the class is still an extension.
-  if (!classInfo && classType.isExtension && classType.onType) {
-    const wasmOnType = mapCheckerTypeToWasmType(ctx, classType.onType);
-    for (const info of ctx.classes.values()) {
-      if (info.isExtension && info.onType) {
-        if (typesAreEqual(info.onType, wasmOnType)) {
-          classInfo = info;
-          break;
-        }
-      }
+      classInfo = ctx.getClassInfoByStructIndexDirect(structIndex);
     }
   }
 
@@ -6695,31 +6588,21 @@ export function generateAdaptedArgument(
 
   // Interface Boxing
   const expectedIndex = decodeTypeIndex(expectedType);
-  let interfaceName: string | undefined;
   let interfaceInfo: InterfaceInfo | undefined;
 
   if (expectedIndex !== -1) {
-    for (const [name, info] of ctx.interfaces) {
-      if (info.structTypeIndex === expectedIndex) {
-        interfaceName = name;
-        interfaceInfo = info;
-        break;
-      }
-    }
+    // Use O(1) lookup by struct index
+    interfaceInfo = ctx.getInterfaceInfoByStructIndex(expectedIndex);
   }
 
-  if (interfaceInfo && interfaceName) {
+  if (interfaceInfo) {
+    const interfaceName = interfaceInfo.name;
     const actualIndex = decodeTypeIndex(actualType);
     let classInfo: ClassInfo | undefined;
 
-    // Check classes
+    // Check classes using O(1) lookup by struct index
     if (actualIndex !== -1) {
-      for (const info of ctx.classes.values()) {
-        if (info.structTypeIndex === actualIndex) {
-          classInfo = info;
-          break;
-        }
-      }
+      classInfo = ctx.getClassInfoByStructIndexDirect(actualIndex);
     }
 
     // Check extensions using O(1) lookup via checker type
@@ -6730,27 +6613,19 @@ export function generateAdaptedArgument(
       }
     }
 
-    // Fall back to O(n) iteration for extensions
-    if (!classInfo) {
-      for (const info of ctx.classes.values()) {
-        if (info.isExtension && info.onType) {
-          // Simple array equality check
-          let match = true;
-          if (info.onType.length !== actualType.length) match = false;
-          else {
-            for (let i = 0; i < info.onType.length; i++) {
-              if (info.onType[i] !== actualType[i]) {
-                match = false;
-                break;
-              }
-            }
-          }
+    // Check extensions using WASM type index
+    if (!classInfo && actualIndex !== -1) {
+      const extensions = ctx.getExtensionClassesByWasmTypeIndex(actualIndex);
+      if (extensions && extensions.length > 0) {
+        classInfo = extensions[0];
+      }
+    }
 
-          if (match) {
-            classInfo = info;
-            break;
-          }
-        }
+    // Check extensions using WASM valtype (for primitives)
+    if (!classInfo && actualType.length === 1) {
+      const extensions = ctx.getExtensionClassesByWasmValType(actualType[0]);
+      if (extensions && extensions.length > 0) {
+        classInfo = extensions[0];
       }
     }
 
@@ -6891,32 +6766,21 @@ export function generateAdaptedArgument(
             targetTypeIndex !== -1 &&
             sourceTypeIndex !== targetTypeIndex
           ) {
-            // Check if target is interface
-            let interfaceInfo: InterfaceInfo | undefined;
-            let interfaceName: string | undefined;
+            // Check if target is interface using O(1) lookup
+            const interfaceInfo =
+              ctx.getInterfaceInfoByStructIndex(targetTypeIndex);
 
-            for (const [name, info] of ctx.interfaces) {
-              if (info.structTypeIndex === targetTypeIndex) {
-                interfaceInfo = info;
-                interfaceName = name;
-                break;
-              }
-            }
+            if (interfaceInfo) {
+              const interfaceName = interfaceInfo.name;
+              // Check if source is class implementing interface using O(1) lookup
+              let classInfo = ctx.getClassInfoByStructIndexDirect(sourceTypeIndex);
 
-            if (interfaceInfo && interfaceName) {
-              // Check if source is class implementing interface
-              let classInfo: ClassInfo | undefined;
-              for (const info of ctx.classes.values()) {
-                if (info.structTypeIndex === sourceTypeIndex) {
-                  classInfo = info;
-                  break;
-                }
-                if (info.isExtension && info.onType) {
-                  const onTypeIndex = decodeTypeIndex(info.onType);
-                  if (onTypeIndex === sourceTypeIndex) {
-                    classInfo = info;
-                    break;
-                  }
+              // Check extensions using WASM type index
+              if (!classInfo) {
+                const extensions =
+                  ctx.getExtensionClassesByWasmTypeIndex(sourceTypeIndex);
+                if (extensions && extensions.length > 0) {
+                  classInfo = extensions[0];
                 }
               }
 

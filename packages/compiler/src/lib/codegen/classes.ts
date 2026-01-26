@@ -138,6 +138,7 @@ export function preRegisterInterface(
 
   // Register with empty methods/fields - will be populated by defineInterfaceMethods
   const interfaceInfo: InterfaceInfo = {
+    name: decl.name.name,
     structTypeIndex,
     vtableTypeIndex,
     methods: new Map(),
@@ -152,8 +153,11 @@ export function preRegisterInterface(
     ctx.setInterfaceStructIndex(interfaceType, structTypeIndex);
     // Also register the bundled name for typeToTypeAnnotation lookups
     ctx.setInterfaceBundledName(interfaceType, decl.name.name);
-    // Register InterfaceInfo for identity-based lookup
+    // Register InterfaceInfo for identity-based lookup (also registers by struct index)
     ctx.registerInterfaceInfoByType(interfaceType, interfaceInfo);
+  } else {
+    // Still register by struct index for O(1) lookup even without checker type
+    ctx.setInterfaceInfoByStructIndex(structTypeIndex, interfaceInfo);
   }
 }
 
@@ -1351,6 +1355,11 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   classInfo.fields = fields;
   classInfo.onType = onType;
   classInfo.structDefined = true;
+
+  // Register extension class by WASM type index for O(1) lookup
+  if (classInfo.isExtension && classInfo.onType) {
+    ctx.registerExtensionClassByWasmTypeIndex(classInfo);
+  }
 }
 
 /**
@@ -1394,6 +1403,8 @@ export function registerClassStruct(
     ctx.classes.set(decl.name.name, classInfo);
     // Also register by struct index to support lookup when names collide
     ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
+    // Register by WASM type index for O(1) lookup
+    ctx.registerExtensionClassByWasmTypeIndex(classInfo);
 
     // Check if this is the String class
     const isStringClass =
@@ -3551,6 +3562,11 @@ export function instantiateClass(
     ctx.classes.set(specializedName, classInfo);
     // Also register by struct index to support lookup when names collide
     ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
+  }
+
+  // Register extension class by WASM type index for O(1) lookup
+  if (classInfo.isExtension && classInfo.onType) {
+    ctx.registerExtensionClassByWasmTypeIndex(classInfo);
   }
 
   // Register by checker type for identity-based lookup

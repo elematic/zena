@@ -55,6 +55,7 @@ export interface ClassInfo {
 }
 
 export interface InterfaceInfo {
+  name: string;
   structTypeIndex: number;
   vtableTypeIndex: number;
   methods: Map<

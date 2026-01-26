@@ -182,6 +182,7 @@ export class CodegenContext {
     String?: ClassDeclaration;
     Box?: ClassDeclaration;
     TemplateStringsArray?: ClassDeclaration;
+    Error?: ClassDeclaration;
   } = {};
 
   // Records and Tuples
@@ -200,6 +201,8 @@ export class CodegenContext {
   // Struct index to ClassInfo mapping for fast lookup in code generation
   // This avoids issues with name collisions when multiple modules define same-named classes
   readonly #structIndexToClassInfo = new Map<number, ClassInfo>();
+  // Struct index to InterfaceInfo mapping for fast lookup
+  readonly #structIndexToInterfaceInfo = new Map<number, InterfaceInfo>();
   // Identity-based lookup infrastructure (Round 2.5 refactoring)
   // Maps checker types to their bundled names for lookup
   readonly #classBundledNames = new Map<ClassType, string>();
@@ -220,6 +223,15 @@ export class CodegenContext {
   // Maps the type being extended to all extension classes that extend it.
   // Multiple extension classes can extend the same type.
   readonly #extensionsByOnType = new WeakMap<Type, ClassInfo[]>();
+
+  // Extension class lookup by WASM type index: typeIndex -> ClassInfo[]
+  // Used when the checker Type is not available (e.g., raw array<T> types).
+  // The key is the heap type index from the WASM type encoding.
+  readonly #extensionsByWasmTypeIndex = new Map<number, ClassInfo[]>();
+
+  // Extension class lookup by WASM valtype (for primitives like i32): valtype -> ClassInfo[]
+  // The key is the WASM valtype byte (e.g., 0x7f for i32).
+  readonly #extensionsByWasmValType = new Map<number, ClassInfo[]>();
 
   // Identity-based interface lookup: InterfaceType -> InterfaceInfo
   readonly #interfaceInfoByType = new WeakMap<InterfaceType, InterfaceInfo>();
@@ -294,6 +306,8 @@ export class CodegenContext {
           name === 'TemplateStringsArray'
         ) {
           this.wellKnownTypes.TemplateStringsArray = decl;
+        } else if (mod.path === 'zena:error' && name === 'Error') {
+          this.wellKnownTypes.Error = decl;
         }
       }
     }
@@ -874,11 +888,75 @@ export class CodegenContext {
   }
 
   /**
+   * Register an extension class by its WASM type for O(1) lookup.
+   * Handles both reference types (by heap type index) and primitive types (by valtype).
+   * Call this after setting classInfo.onType with the WASM type bytes.
+   */
+  public registerExtensionClassByWasmTypeIndex(classInfo: ClassInfo): void {
+    if (!classInfo.onType || classInfo.onType.length === 0) {
+      return;
+    }
+
+    // Single byte = primitive valtype (e.g., 0x7f for i32)
+    if (classInfo.onType.length === 1) {
+      const valtype = classInfo.onType[0];
+      const existing = this.#extensionsByWasmValType.get(valtype);
+      if (existing) {
+        if (!existing.includes(classInfo)) {
+          existing.push(classInfo);
+        }
+      } else {
+        this.#extensionsByWasmValType.set(valtype, [classInfo]);
+      }
+      return;
+    }
+
+    // Multi-byte = reference type, decode the heap type index (skip the ref type byte)
+    let typeIndex = 0;
+    let shift = 0;
+    for (let i = 1; i < classInfo.onType.length; i++) {
+      const byte = classInfo.onType[i];
+      typeIndex |= (byte & 0x7f) << shift;
+      shift += 7;
+      if ((byte & 0x80) === 0) break;
+    }
+    const existing = this.#extensionsByWasmTypeIndex.get(typeIndex);
+    if (existing) {
+      // Avoid duplicate registration
+      if (!existing.includes(classInfo)) {
+        existing.push(classInfo);
+      }
+    } else {
+      this.#extensionsByWasmTypeIndex.set(typeIndex, [classInfo]);
+    }
+  }
+
+  /**
    * Look up extension classes by the type they extend.
    * Returns an array of ClassInfo (multiple extensions can extend the same type).
    */
   public getExtensionClassesByOnType(onType: Type): ClassInfo[] | undefined {
     return this.#extensionsByOnType.get(onType);
+  }
+
+  /**
+   * Look up extension classes by WASM heap type index.
+   * Returns an array of ClassInfo (multiple extensions can extend the same type).
+   */
+  public getExtensionClassesByWasmTypeIndex(
+    typeIndex: number,
+  ): ClassInfo[] | undefined {
+    return this.#extensionsByWasmTypeIndex.get(typeIndex);
+  }
+
+  /**
+   * Look up extension classes by WASM valtype byte (for primitives).
+   * Returns an array of ClassInfo (multiple extensions can extend the same type).
+   */
+  public getExtensionClassesByWasmValType(
+    valtype: number,
+  ): ClassInfo[] | undefined {
+    return this.#extensionsByWasmValType.get(valtype);
   }
 
   /**
@@ -889,6 +967,32 @@ export class CodegenContext {
     interfaceInfo: InterfaceInfo,
   ): void {
     this.#interfaceInfoByType.set(interfaceType, interfaceInfo);
+    // Also register by struct index for O(1) lookup
+    this.#structIndexToInterfaceInfo.set(
+      interfaceInfo.structTypeIndex,
+      interfaceInfo,
+    );
+  }
+
+  /**
+   * Register an InterfaceInfo by struct type index directly.
+   * Use this when no checker InterfaceType is available.
+   */
+  public setInterfaceInfoByStructIndex(
+    structIndex: number,
+    interfaceInfo: InterfaceInfo,
+  ): void {
+    this.#structIndexToInterfaceInfo.set(structIndex, interfaceInfo);
+  }
+
+  /**
+   * Look up an InterfaceInfo by struct type index directly.
+   * This is O(1) and preferred when you only have the struct index.
+   */
+  public getInterfaceInfoByStructIndex(
+    structIndex: number,
+  ): InterfaceInfo | undefined {
+    return this.#structIndexToInterfaceInfo.get(structIndex);
   }
 
   /**
@@ -1055,13 +1159,8 @@ export class CodegenContext {
     const structIndex = this.getClassStructIndex(classType);
     if (structIndex === undefined) return undefined;
 
-    // Find ClassInfo with matching structTypeIndex
-    for (const info of this.classes.values()) {
-      if (info.structTypeIndex === structIndex) {
-        return info;
-      }
-    }
-    return undefined;
+    // Use O(1) lookup by struct index
+    return this.#structIndexToClassInfo.get(structIndex);
   }
 
   /**
@@ -1077,13 +1176,8 @@ export class CodegenContext {
     const structIndex = this.getInterfaceStructIndex(interfaceType);
     if (structIndex === undefined) return undefined;
 
-    // Find InterfaceInfo with matching structTypeIndex
-    for (const info of this.interfaces.values()) {
-      if (info.structTypeIndex === structIndex) {
-        return info;
-      }
-    }
-    return undefined;
+    // Use O(1) lookup by struct index
+    return this.#structIndexToInterfaceInfo.get(structIndex);
   }
 
   // ===== Declaration-Based Index Management =====
