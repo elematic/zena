@@ -133,9 +133,37 @@ export function substituteType(
       );
 
       // Substitute onType for extension classes so identity-based lookups work.
-      const newOnType = source.onType
-        ? substituteType(source.onType, typeMap, ctx)
-        : undefined;
+      // We need a separate typeMap that maps the CLASS's type parameters to the
+      // newTypeArguments, not the outer context's typeMap.
+      // For example, if FixedArray<T> has onType=array<T>, and we're creating
+      // FixedArray<Entry<String,Box<i32>>>, we need T -> Entry<String,Box<i32>>.
+      let newOnType: Type | undefined;
+      let newSuperType: ClassType | undefined;
+
+      // Build inner type map for this class's type parameters
+      const innerTypeMap = new Map<string, Type>();
+      if (source.typeParameters) {
+        source.typeParameters.forEach((param, index) => {
+          if (index < newTypeArguments.length) {
+            innerTypeMap.set(param.name, newTypeArguments[index]);
+          }
+        });
+      }
+
+      if (source.onType) {
+        newOnType =
+          innerTypeMap.size > 0
+            ? substituteType(source.onType, innerTypeMap, ctx)
+            : source.onType;
+      }
+
+      // Substitute superType so that Derived<i32> extends Base<i32>, not Base<T>
+      if (source.superType) {
+        newSuperType =
+          innerTypeMap.size > 0
+            ? (substituteType(source.superType, innerTypeMap, ctx) as ClassType)
+            : source.superType;
+      }
 
       // Return a ClassType with substituted typeArguments but shared fields/methods from source.
       // The genericSource allows resolveMemberType to properly substitute field types on access.
@@ -146,6 +174,7 @@ export function substituteType(
         implements: newImplements,
         isExtension: source.isExtension,
         onType: newOnType,
+        superType: newSuperType,
         genericSource:
           source.genericSource || (source.typeParameters ? source : undefined),
       } as ClassType;
@@ -716,6 +745,11 @@ export function instantiateGenericClass(
     (impl) => substituteType(impl, typeMap, ctx) as InterfaceType,
   );
 
+  // Substitute superType so that Derived<i32> extends Base<i32>, not Base<T>
+  const newSuperType = genericClass.superType
+    ? (substitute(genericClass.superType) as ClassType)
+    : undefined;
+
   const newClass: ClassType = {
     ...genericClass,
     typeArguments,
@@ -726,6 +760,7 @@ export function instantiateGenericClass(
       ? substituteFunctionType(genericClass.constructorType, typeMap, ctx)
       : undefined,
     onType: genericClass.onType ? substitute(genericClass.onType) : undefined,
+    superType: newSuperType,
     genericSource: genericClass,
   };
 

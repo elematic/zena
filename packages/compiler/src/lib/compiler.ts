@@ -67,6 +67,15 @@ export class Compiler {
     return this.#checkerContext.semanticContext;
   }
 
+  /**
+   * Get the checker context for type operations.
+   * This provides access to type interning and instantiation utilities
+   * needed by codegen for identity-based type lookups.
+   */
+  public get checkerContext() {
+    return this.#checkerContext;
+  }
+
   public compile(entryPoint: string): Module[] {
     // Load entry point and all dependencies via LibraryLoader
     this.#loader.load(entryPoint);

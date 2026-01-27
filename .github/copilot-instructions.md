@@ -327,7 +327,48 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **Reject assignment to getter-only properties**: Currently `x.length = 5` compiles even if `length` only has a getter. The checker should require a setter for property assignment.
     - **Suffix-based type lookup is unsafe**: In `codegen/classes.ts`, `mapType()` uses `name.endsWith('_' + typeName)` to resolve bundled class names (e.g., `m3_Array` for `Array`). This is fragile and could cause name collisions if two modules define classes with the same base name, or if a class name is a suffix of another (e.g., `MyArray` matching `Array`). The proper fix is for the bundler to update type annotations when renaming declarations, so codegen always sees the canonical name.
 
-2.  **Host Interop**:
+2.  **Checker-Driven Type Instantiation** (IN PROGRESS):
+    Currently, codegen has two paths for type resolution:
+    - **Identity-based**: Uses checker's `ClassType` objects directly (correct, uses interning)
+    - **Annotation-based**: Rebuilds types from `TypeAnnotation` AST nodes (problematic, creates duplicate types)
+
+    The annotation-based path causes issues because:
+    - Extension classes (like `FixedArray<T>`) need interned `ArrayType` for their `onType`
+    - Field types in generic classes go through annotation-based substitution
+    - This creates duplicate WASM type indices, causing type mismatches
+
+    **Solution**: Make the checker the single source of truth for all instantiated types.
+    - [x] **Phase 1: General Type Resolution in CheckerContext**
+      - [x] Add `resolveTypeInContext(type, context)` to `CheckerContext`
+      - [x] Works for any type containing type parameters (fields, params, returns, locals)
+      - [x] Works with ClassType or FunctionType as context
+      - [x] Memoize results in `WeakMap<Type, WeakMap<Type, Type>>`
+      - [x] Add convenience methods: `resolveFieldTypes()`, `resolveMethodTypes()`
+      - [x] Add `typeArguments` to `FunctionType` for instantiated generic functions
+    - [x] **Phase 2: Pass CheckerContext to Codegen**
+      - [x] Expose `checkerContext` getter on `Compiler`
+      - [x] Add `CheckerContext` to `CodegenContext` constructor
+      - [x] Pass through from `CodeGenerator` constructor
+    - [x] **Phase 3: Use Checker Types in Codegen** (Partial)
+      - [x] Update `instantiateClass` to use `checkerContext.resolveFieldTypes()`
+      - [x] Fix `superType` substitution in `instantiateGenericClass` and `substituteType`
+      - [ ] Replace remaining `mapType(ctx, annotation, context)` calls with `resolveTypeInContext`
+      - [ ] Update method signature resolution to use `resolveMethodTypes()`
+    - [ ] **Phase 4: Require checkerType for Extension Classes**
+      - [x] Add check in `instantiateClass` requiring `checkerType.onType` for extension classes (when checkerType provided)
+      - [ ] Ensure all code paths provide checker types (blocked by Phase 3 completion)
+    - [ ] **Phase 5: Remove Annotation-Based Instantiation** (Future)
+      - [ ] Simplify `mapType` to only handle non-generic types
+      - [ ] All generic instantiation goes through checker types
+      - [ ] Remove `context: Map<string, TypeAnnotation>` parameter threading
+
+    **Benefits**:
+    - Enables intellisense (hover shows `i32`, not `T`)
+    - Supports compiler API (ask assignability of instantiated types)
+    - Multiple backends share semantic model
+    - Foundation for query-based incremental compilation
+
+3.  **Host Interop**:
     - **WASM GC Interop Notes**:
       - WASM GC structs and arrays are OPAQUE from JavaScript.
       - JS cannot access struct fields or iterate GC arrays.
@@ -340,32 +381,32 @@ This project is an **npm monorepo** managed with **Wireit**.
       - JS usage: `exports['Suite.run'](suiteInstance)`.
       - The inverse of `@external` - exposes Zena methods to hosts instead of importing host functions.
 
-3.  **Exceptions**:
+4.  **Exceptions**:
     - **Try/Catch Statement Form**: Allow side-effect-only try/catch without requiring both branches to produce values. See `docs/design/exceptions.md` Open Questions.
 
-4.  **Data Structures**:
+5.  **Data Structures**:
     - **Maps**: Implement map literal syntax (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
-5.  **Top-Level Statement Execution**:
+6.  **Top-Level Statement Execution**:
     - Currently, top-level expression statements (like `test('name', fn)`) are ignored in codegen.
     - Only global variable initializers run via the WASM start function.
     - This blocks DSL-style test registration. See `docs/design/testing.md` for workaround.
     - **Solution**: Extend the start function to execute top-level statements, or add module initialization support.
 
-6.  **Standard Library**:
+7.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
     - String manipulation (`substring`, `indexOf`).
     - Regexes.
 
-7.  **Self-Hosting**:
+8.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
 
-8.  **Pattern Matching (Advanced)**:
+9.  **Pattern Matching (Advanced)**:
     - Array element matching (requires `FixedArray` support or `Sequence` interface).
     - Rest patterns (`...tail`).
 
-9.  **Future Features**:
+10. **Future Features**:
     - **Syntax**:
       - Blocks.
       - For/of loops.

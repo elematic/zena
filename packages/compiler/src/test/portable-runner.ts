@@ -345,6 +345,7 @@ async function runExecutionTest(
     modules,
     '/main.zena',
     compiler.semanticContext,
+    compiler.checkerContext,
   );
   const bytes = codegen.generate();
 

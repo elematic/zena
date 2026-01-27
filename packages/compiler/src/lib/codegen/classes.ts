@@ -2147,8 +2147,15 @@ export function generateClassMethods(
   typeContext?: Map<string, TypeAnnotation>,
   checkerType?: ClassType,
 ) {
+  const previousTypeContext = ctx.currentTypeContext;
+  const previousCheckerType = ctx.currentCheckerType;
+
   if (typeContext) {
     ctx.currentTypeContext = typeContext;
+  }
+  // Set checker type for resolving type parameters in method bodies
+  if (checkerType) {
+    ctx.currentCheckerType = checkerType;
   }
 
   // Identity-based lookup using checker's type
@@ -2501,6 +2508,10 @@ export function generateClassMethods(
       }
     }
   }
+
+  // Restore previous context
+  ctx.currentTypeContext = previousTypeContext;
+  ctx.currentCheckerType = previousCheckerType;
 }
 
 export function resolveAnnotation(
@@ -3094,6 +3105,12 @@ function mapTypeInternal(
               context,
             );
             if (!ctx.classes.has(specializedName)) {
+              // Note: We don't pass checkerType here because:
+              // 1. type.inferredType may not be the correctly instantiated ClassType
+              // 2. Extension classes should be instantiated via binding-based path,
+              //    not through mapType (which is annotation-based)
+              // 3. The runtime check in instantiateClass will catch any extension
+              //    class that incorrectly reaches this code path
               instantiateClass(
                 ctx,
                 genericDecl,
@@ -3321,6 +3338,10 @@ export function instantiateClass(
    * When provided, enables identity-based lookup via getClassInfoByCheckerType().
    * With type interning, the same checker ClassType is shared across all uses of
    * identical instantiations (e.g., all Box<i32> references share one ClassType).
+   *
+   * For extension classes, providing checkerType enables ArrayType interning
+   * (the checker's interned ArrayType is used for onType). Without checkerType,
+   * the annotation-based path still works but may create duplicate WASM types.
    */
   checkerType?: ClassType,
 ) {
@@ -3441,12 +3462,24 @@ export function instantiateClass(
   }
 
   if (decl.isExtension && decl.onType) {
-    // Use checker's substituted onType when available (identity-based path)
-    // This leverages ArrayType interning to ensure consistent WASM type indices.
-    // Fall back to annotation-based path when checker type isn't available.
-    if (checkerType?.onType) {
+    // Extension classes require proper onType mapping for WASM GC arrays.
+    // Two paths:
+    // 1. Identity-based (checkerType provided): Use checkerType.onType which has
+    //    substituted type arguments and interned ArrayType for consistent WASM indices.
+    // 2. Annotation-based (no checkerType): Use mapType on the declaration's onType
+    //    annotation with the type context. This path may create duplicate array types
+    //    but is needed for annotation-driven instantiation (e.g., method return types).
+    if (checkerType) {
+      // When checkerType is provided, onType MUST be set (substituteType ensures this)
+      if (!checkerType.onType) {
+        throw new Error(
+          `Extension class '${decl.name.name}' has checkerType but missing onType. ` +
+            `This indicates a bug in type substitution.`,
+        );
+      }
       onType = mapCheckerTypeToWasmType(ctx, checkerType.onType);
     } else {
+      // Annotation-based path - compute onType from declaration
       onType = mapType(ctx, decl.onType, context);
     }
   } else {
@@ -3479,13 +3512,33 @@ export function instantiateClass(
       fieldTypes.push({type: [ValType.eqref], mutable: true});
     }
 
+    // Get resolved field types from checker if available (preferred path)
+    // This ensures proper type interning and avoids duplicate WASM types.
+    const resolvedFieldTypes =
+      checkerType && ctx.checkerContext
+        ? ctx.checkerContext.resolveFieldTypes(checkerType)
+        : undefined;
+
     for (const member of decl.body) {
       if (member.type === NodeType.FieldDefinition) {
-        const wasmType = mapType(ctx, member.typeAnnotation, context);
-        const fieldName = manglePrivateName(
-          specializedName,
-          getMemberName(member.name),
-        );
+        const memberName = getMemberName(member.name);
+
+        // Try to use resolved checker type (identity-based path)
+        let wasmType: number[];
+        if (resolvedFieldTypes) {
+          const checkerFieldType = resolvedFieldTypes.get(memberName);
+          if (checkerFieldType) {
+            wasmType = mapCheckerTypeToWasmType(ctx, checkerFieldType);
+          } else {
+            // Field not found in checker types - fall back to annotation
+            wasmType = mapType(ctx, member.typeAnnotation, context);
+          }
+        } else {
+          // No checker context - fall back to annotation-based path
+          wasmType = mapType(ctx, member.typeAnnotation, context);
+        }
+
+        const fieldName = manglePrivateName(specializedName, memberName);
         fields.set(fieldName, {index: fieldIndex++, type: wasmType});
         fieldTypes.push({type: wasmType, mutable: true});
       }

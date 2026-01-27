@@ -9,6 +9,7 @@ import {
   type TypeAliasDeclaration,
   type VariableDeclaration,
 } from '../ast.js';
+import type {CheckerContext} from '../checker/context.js';
 import {SemanticContext} from '../checker/semantic-context.js';
 import type {Module} from '../compiler.js';
 import {TypeKind, type MixinType} from '../types.js';
@@ -56,13 +57,20 @@ export class CodeGenerator {
    * @param modules - All modules/libraries to generate code for
    * @param entryPointPath - Path of the entry point module (its exports become WASM exports)
    * @param semanticContext - Optional semantic context for type lookups
+   * @param checkerContext - Optional checker context for type instantiation
    */
   constructor(
     modules: Module[],
     entryPointPath?: string,
     semanticContext?: SemanticContext,
+    checkerContext?: CheckerContext,
   ) {
-    this.#ctx = new CodegenContext(modules, entryPointPath, semanticContext);
+    this.#ctx = new CodegenContext(
+      modules,
+      entryPointPath,
+      semanticContext,
+      checkerContext,
+    );
   }
 
   /**

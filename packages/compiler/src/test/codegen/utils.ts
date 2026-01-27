@@ -123,7 +123,12 @@ export const compileToWasm = (
   const host = createHost(input, path);
   const compiler = new Compiler(host);
   const modules = compiler.compile(path);
-  const generator = new CodeGenerator(modules, path, compiler.semanticContext);
+  const generator = new CodeGenerator(
+    modules,
+    path,
+    compiler.semanticContext,
+    compiler.checkerContext,
+  );
   return generator.generate();
 };
 
@@ -172,7 +177,12 @@ export async function compileAndInstantiate(
     );
   }
 
-  const codegen = new CodeGenerator(modules, path, compiler.semanticContext);
+  const codegen = new CodeGenerator(
+    modules,
+    path,
+    compiler.semanticContext,
+    compiler.checkerContext,
+  );
   const bytes = codegen.generate();
 
   try {
@@ -258,7 +268,12 @@ export async function compileWithDetails(
     );
   }
 
-  const codegen = new CodeGenerator(modules, path, compiler.semanticContext);
+  const codegen = new CodeGenerator(
+    modules,
+    path,
+    compiler.semanticContext,
+    compiler.checkerContext,
+  );
   const bytes = codegen.generate();
 
   const result = await WebAssembly.instantiate(bytes, imports);
@@ -558,6 +573,7 @@ export let getNestedTestError = (index: i32): string | null => nested().tests[in
     modules,
     wrapperPath,
     compiler.semanticContext,
+    compiler.checkerContext,
   );
   const bytes = codegen.generate();
 

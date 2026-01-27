@@ -10,6 +10,7 @@ import {
   type TaggedTemplateExpression,
   type TypeAnnotation,
 } from '../ast.js';
+import type {CheckerContext} from '../checker/context.js';
 import {SemanticContext} from '../checker/semantic-context.js';
 import type {Module} from '../compiler.js';
 import {
@@ -114,6 +115,16 @@ export class CodegenContext {
    */
   public semanticContext: SemanticContext;
 
+  /**
+   * Checker context for type operations.
+   * Provides access to type interning and instantiation utilities
+   * (e.g., getInstantiatedFieldType) for identity-based type lookups.
+   *
+   * This ensures codegen uses the same interned types as the checker,
+   * avoiding duplicate WASM type indices for logically identical types.
+   */
+  public checkerContext: CheckerContext | undefined;
+
   /** File name used for diagnostic locations */
   public fileName = '<anonymous>';
 
@@ -148,6 +159,7 @@ export class CodegenContext {
   // Current state
   public currentClass: ClassInfo | null = null;
   public currentTypeContext: Map<string, TypeAnnotation> | undefined;
+  public currentCheckerType: ClassType | undefined; // For resolving type parameters in instantiated generics
   public currentReturnType: number[] | undefined;
 
   // Type management
@@ -265,6 +277,7 @@ export class CodegenContext {
     modules: Module[],
     entryPointPath?: string,
     semanticContext?: SemanticContext,
+    checkerContext?: CheckerContext,
   ) {
     this.modules = modules;
     // Find entry point by path, or default to last module (for backward compatibility)
@@ -273,6 +286,7 @@ export class CodegenContext {
         modules[modules.length - 1])
       : modules[modules.length - 1];
     this.semanticContext = semanticContext ?? new SemanticContext();
+    this.checkerContext = checkerContext;
     this.#extractWellKnownTypes();
     this.module = new WasmModule();
     // Define backing array type: array<i8> (mutable for construction)

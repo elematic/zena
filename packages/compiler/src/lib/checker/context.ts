@@ -10,6 +10,7 @@ import {
   TypeNames,
   TypeKind,
 } from '../types.js';
+import {substituteType} from './types.js';
 import type {
   ClassDeclaration,
   DeclareFunction,
@@ -844,6 +845,155 @@ export class CheckerContext {
       this.#internedTypes.set(key, cached);
     }
     return cached as ArrayType;
+  }
+
+  // ===== Generic Type Resolution =====
+
+  /**
+   * Memoization cache for resolved types.
+   * Structure: sourceType -> (context -> resolvedType)
+   *
+   * Uses WeakMaps so that when types are no longer referenced elsewhere,
+   * their cached resolutions can be garbage collected.
+   */
+  readonly #resolvedTypes = new WeakMap<Type, WeakMap<Type, Type>>();
+
+  /**
+   * Resolve a type within an instantiation context by substituting type parameters.
+   *
+   * This is the canonical way to get the concrete type of any generic type member.
+   * It handles field types, method parameter types, return types, local variable
+   * types - anything that might contain type parameters.
+   *
+   * Examples:
+   * - `resolveTypeInContext(K, Map<string, i32>)` → `StringType`
+   * - `resolveTypeInContext(FixedArray<K>, Map<string, i32>)` → `FixedArray<string>`
+   * - `resolveTypeInContext(Entry<K, V>, Map<string, i32>)` → `Entry<string, i32>`
+   * - `resolveTypeInContext(T, identity<i32>)` → `i32` (function context)
+   *
+   * Results are memoized per (type, context) pair for O(1) repeated lookups.
+   *
+   * @param type The type to resolve (may contain type parameters)
+   * @param context The instantiation context (ClassType or FunctionType with typeArguments)
+   * @returns The resolved type with all type parameters substituted
+   */
+  resolveTypeInContext(type: Type, context: ClassType | FunctionType): Type {
+    // Fast path: if no type arguments in context, no substitution needed
+    const typeArgs = (context as ClassType).typeArguments;
+    if (!typeArgs || typeArgs.length === 0) {
+      return type;
+    }
+
+    // Check memoization cache
+    let contextMap = this.#resolvedTypes.get(type);
+    if (contextMap) {
+      const cached = contextMap.get(context);
+      if (cached) return cached;
+    }
+
+    // Build type parameter map from context
+    const typeMap = this.#buildTypeMap(context);
+    if (typeMap.size === 0) {
+      return type;
+    }
+
+    // Substitute type parameters
+    const resolved = substituteType(type, typeMap, this);
+
+    // Memoize the result
+    if (!contextMap) {
+      contextMap = new WeakMap();
+      this.#resolvedTypes.set(type, contextMap);
+    }
+    contextMap.set(context, resolved);
+
+    return resolved;
+  }
+
+  /**
+   * Build a type parameter map from an instantiation context.
+   * Maps type parameter names to their concrete type arguments.
+   */
+  #buildTypeMap(context: ClassType | FunctionType): Map<string, Type> {
+    const typeMap = new Map<string, Type>();
+
+    if (context.kind === TypeKind.Class) {
+      const classType = context as ClassType;
+      const source = classType.genericSource || classType;
+      const typeParameters = source.typeParameters;
+      const typeArguments = classType.typeArguments;
+
+      if (typeParameters && typeArguments) {
+        typeParameters.forEach((param, index) => {
+          if (index < typeArguments.length) {
+            typeMap.set(param.name, typeArguments[index]);
+          }
+        });
+      }
+    } else if (context.kind === TypeKind.Function) {
+      const funcType = context as FunctionType;
+      const typeParameters = funcType.typeParameters;
+      const typeArguments = funcType.typeArguments;
+
+      if (typeParameters && typeArguments) {
+        typeParameters.forEach((param, index) => {
+          if (index < typeArguments.length) {
+            typeMap.set(param.name, typeArguments[index]);
+          }
+        });
+      }
+    }
+
+    return typeMap;
+  }
+
+  /**
+   * Resolve all field types for a class in one call.
+   * More efficient when you need multiple fields (e.g., during struct definition).
+   *
+   * @param classType The instantiated class type
+   * @returns A Map of field names to their resolved types
+   */
+  resolveFieldTypes(classType: ClassType): Map<string, Type> {
+    const source = classType.genericSource || classType;
+
+    // Fast path: no type arguments means fields are unchanged
+    if (!classType.typeArguments || classType.typeArguments.length === 0) {
+      return source.fields;
+    }
+
+    // Resolve each field type
+    const resolved = new Map<string, Type>();
+    for (const [name, fieldType] of source.fields) {
+      resolved.set(name, this.resolveTypeInContext(fieldType, classType));
+    }
+    return resolved;
+  }
+
+  /**
+   * Resolve all method signatures for a class.
+   * Returns method types with resolved parameter and return types.
+   *
+   * @param classType The instantiated class type
+   * @returns A Map of method names to their resolved FunctionTypes
+   */
+  resolveMethodTypes(classType: ClassType): Map<string, FunctionType> {
+    const source = classType.genericSource || classType;
+
+    // Fast path: no type arguments means methods are unchanged
+    if (!classType.typeArguments || classType.typeArguments.length === 0) {
+      return source.methods;
+    }
+
+    // Resolve each method type
+    const resolved = new Map<string, FunctionType>();
+    for (const [name, methodType] of source.methods) {
+      resolved.set(
+        name,
+        this.resolveTypeInContext(methodType, classType) as FunctionType,
+      );
+    }
+    return resolved;
   }
 
   /**

@@ -18,7 +18,8 @@ Understanding these terms is crucial for working on the compiler:
 - **`ValType`**: WASM Value Types (e.g., `i32`, `f64`, `ref`, `ref_null`). Defined in `packages/compiler/src/lib/wasm.ts`.
 - **`HeapType`**: WASM Heap Types for GC objects (e.g., `struct`, `array`, `func`, `any`, `eq`). Defined in `packages/compiler/src/lib/wasm.ts`.
 - **`CodegenContext`**: The central state object during code generation. It holds the `WasmModule` being built, symbol tables, and type maps.
-- **`mapType`**: A function (in `codegen/classes.ts`) that converts a Zena AST type (e.g., `TypeAnnotation`) into a WASM binary type encoding (an array of bytes/numbers).
+- **`mapType`**: A function (in `codegen/classes.ts`) that converts a Zena AST type (e.g., `TypeAnnotation`) into a WASM binary type encoding (an array of bytes/numbers). This is the **annotation-based** path.
+- **`mapCheckerTypeToWasmType`**: A function (in `codegen/classes.ts`) that converts a checker `Type` object into WASM bytes. This is the **identity-based** path (preferred for generic instantiation).
 - **VTable**: A table of function references used for dynamic dispatch (method overriding). In Zena, this is implemented as a WASM struct containing `ref func` fields.
 - **Fat Pointer**: Interfaces in Zena are implemented as "fat pointers": a struct containing the object instance (`ref any`) and its VTable (`ref vtable`).
 
@@ -56,6 +57,10 @@ Understanding these terms is crucial for working on the compiler:
   - **Type Inference**: Determines types for variables and expressions (e.g., `let x = 1` infers `i32`).
   - **Symbol Resolution**: Resolves identifiers to their definitions using scopes.
   - **Type Compatibility**: Checks if types match (e.g., passing `i32` to a function expecting `string`).
+  - **Generic Instantiation**: Creates specialized types for generic classes (e.g., `Box<i32>` from `Box<T>`), including proper substitution of `superType` and `onType`.
+- **Key Methods** (for codegen integration):
+  - `resolveFieldTypes(classType)`: Returns resolved field types for an instantiated generic class.
+  - `resolveTypeInContext(type, context)`: Substitutes type parameters within a class/function context.
 
 ### 5. Code Generator (`packages/compiler/src/lib/codegen/index.ts`)
 

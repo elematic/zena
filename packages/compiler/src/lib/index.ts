@@ -86,11 +86,12 @@ export function compile(source: string): Uint8Array {
     throw new Error(errorMessage);
   }
 
-  // Pass modules, entry point path, and semantic context to codegen
+  // Pass modules, entry point path, semantic context, and checker context to codegen
   const codegen = new CodeGenerator(
     modules,
     'main.zena',
     compiler.semanticContext,
+    compiler.checkerContext,
   );
   return codegen.generate();
 }

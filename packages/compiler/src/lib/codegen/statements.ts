@@ -281,8 +281,16 @@ export function generateLocalVariableDeclaration(
   let type: number[];
   if (decl.typeAnnotation) {
     // Prefer checker's inferredType (identity-based) when available
-    type = decl.inferredType
-      ? mapCheckerTypeToWasmType(ctx, decl.inferredType)
+    // If we're inside an instantiated generic class, resolve type parameters
+    let resolvedType = decl.inferredType;
+    if (resolvedType && ctx.currentCheckerType && ctx.checkerContext) {
+      resolvedType = ctx.checkerContext.resolveTypeInContext(
+        resolvedType,
+        ctx.currentCheckerType,
+      );
+    }
+    type = resolvedType
+      ? mapCheckerTypeToWasmType(ctx, resolvedType)
       : mapType(ctx, decl.typeAnnotation, ctx.currentTypeContext);
 
     // Union boxing (i32 -> anyref)

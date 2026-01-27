@@ -95,6 +95,7 @@ export interface NumberType extends Type {
 export interface FunctionType extends Type {
   kind: typeof TypeKind.Function;
   typeParameters?: TypeParameterType[];
+  typeArguments?: Type[]; // Concrete types when this is an instantiated generic function
   parameters: Type[];
   returnType: Type;
   isFinal?: boolean;
