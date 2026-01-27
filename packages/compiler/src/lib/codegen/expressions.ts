@@ -4141,10 +4141,7 @@ function generateFieldFromBinding(
   if (!classInfo && classType.isExtension) {
     const genericDecl = ctx.genericClasses.get(classType.name);
     if (genericDecl && genericDecl.isExtension && genericDecl.onType) {
-      // Get onType from the checker type if available, otherwise from AST
-      const onType = classType.onType
-        ? mapCheckerTypeToWasmType(ctx, classType.onType)
-        : mapType(ctx, genericDecl.onType);
+      const onType = mapCheckerTypeToWasmType(ctx, classType.onType!);
 
       // Create a dummy struct type for extensions
       const structTypeIndex = ctx.module.addStructType([]);

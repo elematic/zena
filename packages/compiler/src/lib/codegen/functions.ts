@@ -11,7 +11,7 @@ import {
   type VariableDeclaration,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {Decorators, TypeKind, type FunctionType, type Type} from '../types.js';
+import {Decorators, type FunctionType, type Type} from '../types.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
   decodeTypeIndex,
@@ -146,17 +146,10 @@ export function registerFunction(
     return;
   }
 
-  // Try to get function type from checker for identity-based type lookup
-  const checkerFuncType =
-    func.inferredType?.kind === TypeKind.Function
-      ? (func.inferredType as FunctionType)
-      : undefined;
-
+  const checkerFuncType = func.inferredType as FunctionType;
   const params = func.params.map((p, i) => {
-    const checkerParamType = checkerFuncType?.parameters[i];
-    return checkerParamType
-      ? mapCheckerTypeToWasmType(ctx, checkerParamType)
-      : mapType(ctx, p.typeAnnotation);
+    const checkerParamType = checkerFuncType.parameters[i];
+    return mapCheckerTypeToWasmType(ctx, checkerParamType);
   });
 
   let mappedReturn: number[];
@@ -341,20 +334,12 @@ export function registerDeclaredFunction(
   }
 
   // Try to get function type from checker for identity-based type lookup
-  const checkerFuncType =
-    decl.inferredType?.kind === TypeKind.Function
-      ? (decl.inferredType as FunctionType)
-      : undefined;
-
+  const checkerFuncType = decl.inferredType as FunctionType;
   const params = decl.params.map((p, i) => {
-    const checkerParamType = checkerFuncType?.parameters[i];
-    return checkerParamType
-      ? mapCheckerTypeToWasmType(ctx, checkerParamType)
-      : mapType(ctx, p.typeAnnotation);
+    const checkerParamType = checkerFuncType.parameters[i];
+    return mapCheckerTypeToWasmType(ctx, checkerParamType);
   });
-  const returnType = checkerFuncType
-    ? mapCheckerTypeToWasmType(ctx, checkerFuncType.returnType)
-    : mapType(ctx, decl.returnType);
+  const returnType = mapCheckerTypeToWasmType(ctx, checkerFuncType.returnType);
 
   let funcIndex = -1;
 

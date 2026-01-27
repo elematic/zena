@@ -18,7 +18,6 @@ import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
-  mapType,
   mapCheckerTypeToWasmType,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
@@ -264,10 +263,10 @@ export function generateLocalVariableDeclaration(
     if (actualType.length > 0) {
       // Try to find a member type that requires adaptation
       for (const member of typeAnnotation.types) {
-        // Prefer checker-based type resolution when available
-        const memberWasmType = member.inferredType
-          ? mapCheckerTypeToWasmType(ctx, member.inferredType)
-          : mapType(ctx, member, ctx.currentTypeContext);
+        const memberWasmType = mapCheckerTypeToWasmType(
+          ctx,
+          member.inferredType!,
+        );
         if (isAdaptable(ctx, actualType, memberWasmType)) {
           generateAdaptedArgument(ctx, decl.init, memberWasmType, body);
           adapted = true;

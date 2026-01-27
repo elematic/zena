@@ -3057,13 +3057,15 @@ function mapTypeInternal(
     const recordType = type as RecordTypeAnnotation;
     const fields = recordType.properties.map((p) => ({
       name: p.name.name,
-      type: mapType(ctx, p.typeAnnotation, context),
+      type: mapCheckerTypeToWasmType(ctx, p.inferredType!),
     }));
     const typeIndex = ctx.getRecordTypeIndex(fields);
     return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
   } else if (type.type === NodeType.TupleTypeAnnotation) {
     const tupleType = type as TupleTypeAnnotation;
-    const types = tupleType.elementTypes.map((t) => mapType(ctx, t, context));
+    const types = tupleType.elementTypes.map((t) =>
+      mapCheckerTypeToWasmType(ctx, t.inferredType!),
+    );
     const typeIndex = ctx.getTupleTypeIndex(types);
     return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
   } else if (type.type === NodeType.FunctionTypeAnnotation) {
