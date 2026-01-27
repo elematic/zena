@@ -13,7 +13,6 @@ import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
   getTypeKey,
   mapCheckerTypeToWasmType,
-  mapType,
   resolveAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
@@ -89,12 +88,23 @@ export function generateFunctionBody(
 
   ctx.pushFunctionScope();
 
+  // Build type map for substitution if we have a type context
+  let typeMap: Map<string, Type> | undefined;
+  if (typeContext && typeContext.size > 0 && ctx.checkerContext) {
+    typeMap = new Map();
+    for (const [name, annotation] of typeContext) {
+      if (annotation.inferredType) {
+        typeMap.set(name, annotation.inferredType);
+      }
+    }
+  }
+
   func.params.forEach((p) => {
-    ctx.defineParam(
-      p.name.name,
-      mapType(ctx, p.typeAnnotation, typeContext),
-      p,
-    );
+    let paramType = p.typeAnnotation.inferredType!;
+    if (typeMap && ctx.checkerContext) {
+      paramType = ctx.checkerContext.substituteTypeParams(paramType, typeMap);
+    }
+    ctx.defineParam(p.name.name, mapCheckerTypeToWasmType(ctx, paramType), p);
   });
 
   const body: number[] = [];
@@ -143,11 +153,32 @@ export function instantiateGenericFunction(
     }
   }
 
-  const params = funcDecl.params.map((p) =>
-    mapType(ctx, p.typeAnnotation, typeContext),
-  );
+  // Build type map for checker-based substitution
+  const typeMap = new Map<string, Type>();
+  for (const [name, annotation] of typeContext) {
+    if (annotation.inferredType) {
+      typeMap.set(name, annotation.inferredType);
+    }
+  }
+
+  const params = funcDecl.params.map((p) => {
+    let paramType = p.typeAnnotation.inferredType!;
+    if (ctx.checkerContext) {
+      paramType = ctx.checkerContext.substituteTypeParams(paramType, typeMap);
+    }
+    return mapCheckerTypeToWasmType(ctx, paramType);
+  });
   const mappedReturn = funcDecl.returnType
-    ? mapType(ctx, funcDecl.returnType, typeContext)
+    ? (() => {
+        let returnType = funcDecl.returnType!.inferredType!;
+        if (ctx.checkerContext) {
+          returnType = ctx.checkerContext.substituteTypeParams(
+            returnType,
+            typeMap,
+          );
+        }
+        return mapCheckerTypeToWasmType(ctx, returnType);
+      })()
     : (() => {
         throw new Error(
           `Generic function ${name} missing return type annotation`,
@@ -323,18 +354,34 @@ export function instantiateGenericMethod(
     ];
   }
 
+  // Build type map for checker-based substitution
+  const typeMap = new Map<string, Type>();
+  for (const [name, annotation] of typeContext) {
+    if (annotation.inferredType) {
+      typeMap.set(name, annotation.inferredType);
+    }
+  }
+
   const params: number[][] = [];
   if (!methodDecl.isStatic) {
     params.push(thisType);
   }
 
   for (const param of methodDecl.params) {
-    params.push(mapType(ctx, param.typeAnnotation, typeContext));
+    let paramType = param.typeAnnotation.inferredType!;
+    if (ctx.checkerContext) {
+      paramType = ctx.checkerContext.substituteTypeParams(paramType, typeMap);
+    }
+    params.push(mapCheckerTypeToWasmType(ctx, paramType));
   }
 
   let results: number[][] = [];
   if (methodDecl.returnType) {
-    const mapped = mapType(ctx, methodDecl.returnType, typeContext);
+    let returnType = methodDecl.returnType.inferredType!;
+    if (ctx.checkerContext) {
+      returnType = ctx.checkerContext.substituteTypeParams(returnType, typeMap);
+    }
+    const mapped = mapCheckerTypeToWasmType(ctx, returnType);
     if (mapped.length > 0) results = [mapped];
   }
 
@@ -410,12 +457,20 @@ function generateMethodBody(
     ctx.defineParam('this', thisType);
   }
 
+  // Build type map for checker-based substitution
+  const typeMap = new Map<string, Type>();
+  for (const [name, annotation] of typeContext) {
+    if (annotation.inferredType) {
+      typeMap.set(name, annotation.inferredType);
+    }
+  }
+
   method.params.forEach((p) => {
-    ctx.defineParam(
-      p.name.name,
-      mapType(ctx, p.typeAnnotation, typeContext),
-      p,
-    );
+    let paramType = p.typeAnnotation.inferredType!;
+    if (ctx.checkerContext) {
+      paramType = ctx.checkerContext.substituteTypeParams(paramType, typeMap);
+    }
+    ctx.defineParam(p.name.name, mapCheckerTypeToWasmType(ctx, paramType), p);
   });
 
   const body: number[] = [];
