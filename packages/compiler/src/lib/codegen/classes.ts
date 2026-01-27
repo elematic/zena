@@ -4296,9 +4296,7 @@ export function mapCheckerTypeToWasmType(
       // Fall through to anyref erasure if no inferredType
     }
 
-    // Unresolved type parameter - erase to anyref
-    // This can happen for unconstrained type parameters or when type info is incomplete
-    return [ValType.anyref];
+    throw new Error('Unresolved type parameter');
   }
 
   if (type.kind === TypeKind.Number) {
