@@ -351,13 +351,14 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Expose `checkerContext` getter on `Compiler`
       - [x] Add `CheckerContext` to `CodegenContext` constructor
       - [x] Pass through from `CodeGenerator` constructor
-    - [ ] **Phase 3: Codegen Maintains Type Parameter Stack** (Next)
+    - [x] **Phase 3: Codegen Maintains Type Parameter Stack** (Partial)
       - [x] Update `instantiateClass` to use `checkerContext.resolveFieldTypes()`
       - [x] Fix `superType` substitution in `instantiateGenericClass` and `substituteType`
-      - [ ] Add `currentTypeParamMap: Map<string, Type>` to `CodegenContext`
-      - [ ] When entering generic class, merge class type params into map
-      - [ ] When entering generic method, merge method type params into map
-      - [ ] Replace `mapType(ctx, annotation, ctx.currentTypeContext)` with `substituteTypeParams`
+      - [x] Add `currentTypeParamMap: Map<string, Type>` to `CodegenContext`
+      - [x] Add `pushTypeParamContext()` / `popTypeParamContext()` methods
+      - [x] When entering generic class, push class type params via `generateClassMethods`
+      - [x] Update variable declaration to use `substituteTypeParams` with `currentTypeParamMap`
+      - [ ] Replace remaining `mapType(ctx, annotation, ctx.currentTypeContext)` calls
       - [ ] Update method signature resolution to use `resolveMethodTypes()`
     - [ ] **Phase 4: Require checkerType for Extension Classes**
       - [x] Add check in `instantiateClass` requiring `checkerType.onType` for extension classes (when checkerType provided)

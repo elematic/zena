@@ -2158,6 +2158,13 @@ export function generateClassMethods(
     ctx.currentCheckerType = checkerType;
   }
 
+  // Push type param context for checker-based resolution
+  // This enables substituteTypeParams to resolve class type parameters
+  if (checkerType && ctx.checkerContext) {
+    const typeMap = ctx.checkerContext.buildTypeMap(checkerType);
+    ctx.pushTypeParamContext(typeMap);
+  }
+
   // Identity-based lookup using checker's type
   let classInfo: ClassInfo | undefined;
   if (checkerType) {
@@ -2510,6 +2517,9 @@ export function generateClassMethods(
   }
 
   // Restore previous context
+  if (checkerType && ctx.checkerContext) {
+    ctx.popTypeParamContext();
+  }
   ctx.currentTypeContext = previousTypeContext;
   ctx.currentCheckerType = previousCheckerType;
 }

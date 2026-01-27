@@ -281,12 +281,13 @@ export function generateLocalVariableDeclaration(
   let type: number[];
   if (decl.typeAnnotation) {
     // Prefer checker's inferredType (identity-based) when available
-    // If we're inside an instantiated generic class, resolve type parameters
+    // If we're inside a generic context, resolve type parameters using the
+    // current type param map (which may include both class and method params)
     let resolvedType = decl.inferredType;
-    if (resolvedType && ctx.currentCheckerType && ctx.checkerContext) {
-      resolvedType = ctx.checkerContext.resolveTypeInContext(
+    if (resolvedType && ctx.checkerContext && ctx.currentTypeParamMap.size > 0) {
+      resolvedType = ctx.checkerContext.substituteTypeParams(
         resolvedType,
-        ctx.currentCheckerType,
+        ctx.currentTypeParamMap,
       );
     }
     type = resolvedType

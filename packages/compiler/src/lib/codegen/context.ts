@@ -162,6 +162,28 @@ export class CodegenContext {
   public currentCheckerType: ClassType | undefined; // For resolving type parameters in instantiated generics
   public currentReturnType: number[] | undefined;
 
+  /**
+   * Type parameter substitution map for checker-based type resolution.
+   *
+   * Maps type parameter names (e.g., "T", "U") to their concrete Type values.
+   * This is used by checkerContext.substituteTypeParams() to resolve types
+   * in nested generic contexts (e.g., generic method inside generic class).
+   *
+   * The map is merged when entering nested contexts:
+   * - Entering generic class: add class type params (T → i32)
+   * - Entering generic method: add method type params (U → string)
+   * - Result: both T and U are resolvable
+   *
+   * Use pushTypeParamContext() / popTypeParamContext() to manage this.
+   */
+  public currentTypeParamMap: Map<string, Type> = new Map();
+
+  /**
+   * Stack of saved type param maps for nested contexts.
+   * Each entry saves the previous map when entering a new context.
+   */
+  readonly #typeParamMapStack: Map<string, Type>[] = [];
+
   // Type management
   public arrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
   public stringTypeIndex = -1;
@@ -520,6 +542,50 @@ export class CodegenContext {
 
   public popScope() {
     this.scopes.pop();
+  }
+
+  // ============================================================
+  // Type Parameter Context Management
+  // ============================================================
+
+  /**
+   * Enter a new type parameter context, merging new bindings into the map.
+   *
+   * Call this when entering a generic class or method context. The new bindings
+   * are merged with existing ones (for nested contexts like generic method in
+   * generic class).
+   *
+   * @param bindings Map of type parameter names to their concrete types
+   */
+  public pushTypeParamContext(bindings: Map<string, Type>): void {
+    // Save current map
+    this.#typeParamMapStack.push(new Map(this.currentTypeParamMap));
+
+    // Merge new bindings
+    for (const [name, type] of bindings) {
+      this.currentTypeParamMap.set(name, type);
+    }
+  }
+
+  /**
+   * Exit the current type parameter context, restoring the previous map.
+   */
+  public popTypeParamContext(): void {
+    const previous = this.#typeParamMapStack.pop();
+    if (previous) {
+      this.currentTypeParamMap = previous;
+    } else {
+      this.currentTypeParamMap = new Map();
+    }
+  }
+
+  /**
+   * Clear all type parameter bindings. Use this when starting a fresh
+   * context that shouldn't inherit any type parameters.
+   */
+  public clearTypeParamContext(): void {
+    this.#typeParamMapStack.length = 0;
+    this.currentTypeParamMap = new Map();
   }
 
   /**
