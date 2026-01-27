@@ -1348,11 +1348,16 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
       const memberName = getMemberName(member.name);
-      // Prefer checker's field type (already resolved) over AST annotation
-      const checkerFieldType = classType?.fields.get(memberName);
-      const wasmType = checkerFieldType
-        ? mapCheckerTypeToWasmType(ctx, checkerFieldType)
-        : mapType(ctx, member.typeAnnotation);
+      // Use the annotation's inferredType (set by the checker)
+      if (!member.typeAnnotation.inferredType) {
+        throw new Error(
+          `Field ${memberName} in ${decl.name.name} missing inferredType`,
+        );
+      }
+      const wasmType = mapCheckerTypeToWasmType(
+        ctx,
+        member.typeAnnotation.inferredType,
+      );
       const fieldName = manglePrivateName(decl.name.name, memberName);
 
       if (!fields.has(fieldName)) {
@@ -1544,14 +1549,18 @@ export function registerClassMethods(
       ) {
         params.push(thisType);
       }
-      // Prefer checker's method type (already resolved) over AST annotations
-      const checkerMethodType = classType?.methods.get(methodName);
+      // Use the annotation's inferredType (set by the checker)
       for (let i = 0; i < member.params.length; i++) {
         const param = member.params[i];
-        const checkerParamType = checkerMethodType?.parameters[i];
-        const mapped = checkerParamType
-          ? mapCheckerTypeToWasmType(ctx, checkerParamType)
-          : mapType(ctx, param.typeAnnotation);
+        if (!param.typeAnnotation.inferredType) {
+          throw new Error(
+            `Parameter ${i} of ${methodName} in ${decl.name.name} missing inferredType`,
+          );
+        }
+        const mapped = mapCheckerTypeToWasmType(
+          ctx,
+          param.typeAnnotation.inferredType,
+        );
         params.push(mapped);
       }
 
@@ -1560,19 +1569,29 @@ export function registerClassMethods(
         if (classInfo.isExtension && classInfo.onType) {
           results = [classInfo.onType];
         } else if (member.isStatic && member.returnType) {
-          const checkerReturnType = checkerMethodType?.returnType;
-          const mapped = checkerReturnType
-            ? mapCheckerTypeToWasmType(ctx, checkerReturnType)
-            : mapType(ctx, member.returnType);
+          if (!member.returnType.inferredType) {
+            throw new Error(
+              `Return type of ${methodName} in ${decl.name.name} missing inferredType`,
+            );
+          }
+          const mapped = mapCheckerTypeToWasmType(
+            ctx,
+            member.returnType.inferredType,
+          );
           if (mapped.length > 0) results = [mapped];
         } else {
           results = [];
         }
       } else if (member.returnType) {
-        const checkerReturnType = checkerMethodType?.returnType;
-        const mapped = checkerReturnType
-          ? mapCheckerTypeToWasmType(ctx, checkerReturnType)
-          : mapType(ctx, member.returnType);
+        if (!member.returnType.inferredType) {
+          throw new Error(
+            `Return type of ${methodName} in ${decl.name.name} missing inferredType`,
+          );
+        }
+        const mapped = mapCheckerTypeToWasmType(
+          ctx,
+          member.returnType.inferredType,
+        );
         if (mapped.length > 0) results = [mapped];
       } else {
         results = [];
@@ -1610,16 +1629,20 @@ export function registerClassMethods(
       });
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
-      // Try to get the property type from the checker's getter method
-      const getterMethodName = getGetterName(propName);
-      const checkerGetterType = classType?.methods.get(getterMethodName);
-      const propType = checkerGetterType
-        ? mapCheckerTypeToWasmType(ctx, checkerGetterType.returnType)
-        : mapType(ctx, member.typeAnnotation);
+      // Use the annotation's inferredType (set by the checker)
+      if (!member.typeAnnotation.inferredType) {
+        throw new Error(
+          `Accessor ${propName} in ${decl.name.name} missing inferredType`,
+        );
+      }
+      const propType = mapCheckerTypeToWasmType(
+        ctx,
+        member.typeAnnotation.inferredType,
+      );
 
       // Getter
       if (member.getter) {
-        const methodName = getterMethodName;
+        const methodName = getGetterName(propName);
         if (!vtable.includes(methodName)) {
           vtable.push(methodName);
         }
@@ -1735,11 +1758,16 @@ export function registerClassMethods(
         }
 
         const propName = getMemberName(member.name);
-        // Try to get the field type from the checker
-        const checkerFieldType = classType?.fields.get(propName);
-        const propType = checkerFieldType
-          ? mapCheckerTypeToWasmType(ctx, checkerFieldType)
-          : mapType(ctx, member.typeAnnotation);
+        // Use the annotation's inferredType (set by the checker)
+        if (!member.typeAnnotation.inferredType) {
+          throw new Error(
+            `Field ${propName} in ${decl.name.name} missing inferredType`,
+          );
+        }
+        const propType = mapCheckerTypeToWasmType(
+          ctx,
+          member.typeAnnotation.inferredType,
+        );
 
         // Getter
         const getterName = getGetterName(propName);
