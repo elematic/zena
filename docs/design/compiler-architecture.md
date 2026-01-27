@@ -117,6 +117,69 @@ The compiler supports intrinsics to map Zena methods directly to WASM instructio
   - **Checker**: Validates the decorator usage.
   - **Codegen**: Emits specific WASM opcodes instead of a function call.
 
+## Type Flow Architecture
+
+The compiler propagates type information from the checker to codegen via `inferredType` properties on AST nodes. Understanding this flow is essential for maintaining the checker-as-single-source-of-truth principle.
+
+### How Types Are Set
+
+| AST Node Category    | How `inferredType` is set                                                                     | Example                              |
+| -------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------ |
+| **Expressions**      | `checkExpression()` wrapper sets `expr.inferredType = type` after `checkExpressionInternal()` | `BinaryExpression`, `CallExpression` |
+| **Type Annotations** | `resolveTypeAnnotation()` sets `annotation.inferredType = result`                             | Function params, field types         |
+| **Declarations**     | Set explicitly in `checkClassDeclaration()`, `checkFunctionDeclaration()`, etc.               | `ClassDeclaration.inferredType`      |
+
+### Expression Types (Comprehensive Coverage)
+
+All expressions go through `checkExpression()` in `checker/expressions.ts`:
+
+```typescript
+export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
+  const type = checkExpressionInternal(ctx, expr);
+  expr.inferredType = type; // Always set
+  return type;
+}
+```
+
+This ensures **every expression** has an `inferredType`. Codegen relies on this:
+
+```typescript
+// In codegen/expressions.ts
+export function inferType(ctx: CodegenContext, expr: Expression): number[] {
+  // 1. Check context for 'this', locals (WASM types may differ from AST types)
+  // 2. Fall back to checker's type
+  if (expr.inferredType) {
+    return mapCheckerTypeToWasmType(ctx, expr.inferredType);
+  }
+  throw new Error(
+    `Type inference failed: Node ${expr.type} has no inferred type.`,
+  );
+}
+```
+
+### Type Annotation Types
+
+Type annotations (e.g., `x: i32`, `fn(a: string): void`) get their `inferredType` set by `resolveTypeAnnotation()` in `checker/types.ts`. This converts the syntactic annotation to a semantic `Type` object.
+
+Tests for annotation coverage are in `test/checker/inferred-type_test.ts`.
+
+### Why This Matters for Codegen
+
+**Goal**: Codegen should never re-infer types. The checker is the single source of truth.
+
+**Current state**:
+
+- Expressions: ✅ Always use `expr.inferredType`
+- Annotations: ✅ Use `annotation.inferredType` (via `mapType` which calls `mapCheckerTypeToWasmType`)
+- Generic instantiation: 🔄 Transitioning from annotation-based to checker-based
+
+**Future state**: All type resolution in codegen will go through checker types, enabling:
+
+- Intellisense (hover shows resolved types like `i32`, not `T`)
+- Compiler API (query assignability of instantiated types)
+- Multiple backends sharing semantic model
+- Incremental compilation
+
 ## Navigation Guide for LLMs
 
 When asked to modify the compiler, look in these files first:
