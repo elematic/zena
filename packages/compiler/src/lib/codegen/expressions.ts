@@ -551,7 +551,7 @@ function generateAsExpression(
   // Use checker types for semantic operations (lookups, type identity).
   // WASM types are computed lazily, only when needed for opcode emission.
   const sourceCheckerType = expr.expression.inferredType;
-  let targetCheckerType = expr.inferredType ?? expr.typeAnnotation.inferredType;
+  let targetCheckerType = expr.inferredType!;
 
   // Substitute type parameters if we're in a generic context
   if (

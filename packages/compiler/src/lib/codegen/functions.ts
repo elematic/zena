@@ -5,134 +5,21 @@ import {
   type Expression,
   type FunctionExpression,
   type MethodDefinition,
-  type Pattern,
-  type ReturnStatement,
   type TypeAnnotation,
-  type VariableDeclaration,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {Decorators, type FunctionType, type Type} from '../types.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
-  decodeTypeIndex,
-  getClassFromTypeIndex,
   getTypeKey,
   mapCheckerTypeToWasmType,
   mapType,
   resolveAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
-import {generateExpression, inferType} from './expressions.js';
+import {generateExpression} from './expressions.js';
 import {generateBlockStatement} from './statements.js';
 import type {ClassInfo} from './types.js';
-
-export function inferReturnTypeFromBlock(
-  ctx: CodegenContext,
-  block: BlockStatement,
-): number[] {
-  for (const stmt of block.body) {
-    if (stmt.type === NodeType.VariableDeclaration) {
-      const decl = stmt as VariableDeclaration;
-      // Prefer checker's inferredType (identity-based) over AST annotation
-      const type = decl.inferredType
-        ? mapCheckerTypeToWasmType(ctx, decl.inferredType)
-        : decl.typeAnnotation
-          ? mapType(ctx, decl.typeAnnotation)
-          : inferType(ctx, decl.init);
-
-      if (decl.pattern.type === NodeType.Identifier) {
-        ctx.defineParam(decl.pattern.name, type);
-      } else {
-        definePatternLocals(ctx, decl.pattern, type);
-      }
-    } else if (stmt.type === NodeType.ReturnStatement) {
-      const ret = stmt as ReturnStatement;
-      if (ret.argument) {
-        return inferType(ctx, ret.argument);
-      }
-      return [];
-    }
-  }
-  return [];
-}
-
-function definePatternLocals(
-  ctx: CodegenContext,
-  pattern: Pattern,
-  type: number[],
-) {
-  if (pattern.type === NodeType.Identifier) {
-    ctx.defineParam(pattern.name, type);
-    return;
-  }
-
-  if (pattern.type === NodeType.AssignmentPattern) {
-    definePatternLocals(ctx, pattern.left, type);
-    return;
-  }
-
-  const typeIndex = decodeTypeIndex(type);
-
-  if (pattern.type === NodeType.RecordPattern) {
-    // Find record key
-    let recordKey: string | undefined;
-    for (const [key, index] of ctx.recordTypes) {
-      if (index === typeIndex) {
-        recordKey = key;
-        break;
-      }
-    }
-
-    if (!recordKey) {
-      // Class?
-      const classInfo = getClassFromTypeIndex(ctx, typeIndex);
-      if (classInfo) {
-        for (const prop of pattern.properties) {
-          const fieldInfo = classInfo.fields.get(prop.name.name);
-          if (fieldInfo) {
-            definePatternLocals(ctx, prop.value, fieldInfo.type);
-          }
-        }
-        return;
-      }
-      return; // Unknown type, can't define locals
-    }
-
-    // Record
-    const fields = recordKey.split(';').map((s) => {
-      const [name, typeStr] = s.split(':');
-      const type = typeStr.split(',').map(Number);
-      return {name, type};
-    });
-
-    for (const prop of pattern.properties) {
-      const fieldIndex = fields.findIndex((f) => f.name === prop.name.name);
-      if (fieldIndex !== -1) {
-        definePatternLocals(ctx, prop.value, fields[fieldIndex].type);
-      }
-    }
-  } else if (pattern.type === NodeType.TuplePattern) {
-    // Tuple
-    let tupleKey: string | undefined;
-    for (const [key, index] of ctx.tupleTypes) {
-      if (index === typeIndex) {
-        tupleKey = key;
-        break;
-      }
-    }
-
-    if (!tupleKey) return;
-
-    const types = tupleKey.split(';').map((t) => t.split(',').map(Number));
-    for (let i = 0; i < pattern.elements.length; i++) {
-      const elem = pattern.elements[i];
-      if (!elem) continue;
-      if (i < types.length) {
-        definePatternLocals(ctx, elem, types[i]);
-      }
-    }
-  }
-}
 
 export function registerFunction(
   ctx: CodegenContext,
@@ -152,29 +39,10 @@ export function registerFunction(
     return mapCheckerTypeToWasmType(ctx, checkerParamType);
   });
 
-  let mappedReturn: number[];
-  if (checkerFuncType) {
-    mappedReturn = mapCheckerTypeToWasmType(ctx, checkerFuncType.returnType);
-  } else if (func.returnType) {
-    mappedReturn = mapCheckerTypeToWasmType(ctx, func.returnType.inferredType!);
-  } else {
-    // Setup temporary scope for inference
-    const savedContext = ctx.saveFunctionContext();
-    ctx.pushFunctionScope();
-
-    for (let i = 0; i < func.params.length; i++) {
-      const param = func.params[i];
-      ctx.defineParam(param.name.name, params[i], param);
-    }
-
-    if (func.body.type !== NodeType.BlockStatement) {
-      mappedReturn = inferType(ctx, func.body as Expression);
-    } else {
-      mappedReturn = inferReturnTypeFromBlock(ctx, func.body as BlockStatement);
-    }
-
-    ctx.restoreFunctionContext(savedContext);
-  }
+  const mappedReturn = mapCheckerTypeToWasmType(
+    ctx,
+    checkerFuncType.returnType,
+  );
 
   const results = mappedReturn.length > 0 ? [mappedReturn] : [];
 
