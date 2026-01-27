@@ -167,7 +167,11 @@ export function preRegisterInterface(
 /**
  * Defines the method and field types for an interface.
  * This must be called after all classes have been pre-registered so that
- * mapType can resolve class types correctly.
+ * class types can be resolved correctly.
+ *
+ * Uses checker-based type resolution: looks up method/field types from the
+ * InterfaceType's methods/fields maps, erases type parameters to anyref,
+ * and maps to WASM types via mapCheckerTypeToWasmType.
  */
 export function defineInterfaceMethods(
   ctx: CodegenContext,
@@ -252,31 +256,46 @@ export function defineInterfaceMethods(
     vtableFields.push(...parentFields);
   }
 
-  // Create type context for generics (erase to anyref)
-  const context = new Map<string, TypeAnnotation>();
-  if (decl.typeParameters) {
-    for (const param of decl.typeParameters) {
-      context.set(param.name, {
-        type: NodeType.TypeAnnotation,
-        name: TypeNames.AnyRef,
-      });
-    }
+  // Get the checker's InterfaceType for type-based lookups
+  if (!decl.inferredType || decl.inferredType.kind !== TypeKind.Interface) {
+    throw new Error(`Interface ${decl.name.name} missing inferredType`);
   }
+  const interfaceType = decl.inferredType as InterfaceType;
+
+  // Build type map for type parameter erasure (T -> anyref)
+  const typeMap = ctx.checkerContext.buildErasureTypeMap(interfaceType);
+
+  // Helper to erase type parameters and map to WASM
+  const eraseAndMap = (type: Type): number[] => {
+    const erased = ctx.checkerContext.substituteTypeParams(type, typeMap);
+    return mapCheckerTypeToWasmType(ctx, erased);
+  };
 
   for (const member of decl.body) {
     if (member.type === NodeType.MethodSignature) {
       if (member.typeParameters && member.typeParameters.length > 0) {
         continue;
       }
+      const memberName = getMemberName(member.name);
+      const methodType = interfaceType.methods.get(memberName);
+      if (!methodType) {
+        throw new Error(
+          `Method ${memberName} not found in interface ${decl.name.name}`,
+        );
+      }
+
       // Function type: (param any, ...params) -> result
       const params: number[][] = [[ValType.ref_null, ValType.anyref]]; // 'this' is (ref null any)
-      for (const param of member.params) {
-        params.push(mapType(ctx, param.typeAnnotation, context));
+      for (const paramType of methodType.parameters) {
+        params.push(eraseAndMap(paramType));
       }
       const results: number[][] = [];
       let returnType: number[] = [];
-      if (member.returnType) {
-        const mapped = mapType(ctx, member.returnType, context);
+      if (
+        methodType.returnType &&
+        methodType.returnType.kind !== TypeKind.Void
+      ) {
+        const mapped = eraseAndMap(methodType.returnType);
         if (mapped.length > 0) {
           results.push(mapped);
           returnType = mapped;
@@ -291,17 +310,25 @@ export function defineInterfaceMethods(
         mutable: false, // VTables are immutable
       });
 
-      methodIndices.set(getMemberName(member.name), {
+      methodIndices.set(memberName, {
         index: methodIndex++,
         typeIndex: funcTypeIndex,
         returnType,
       });
     } else if (member.type === NodeType.FieldDefinition) {
+      const memberName = getMemberName(member.name);
+      const fieldCheckerType = interfaceType.fields.get(memberName);
+      if (!fieldCheckerType) {
+        throw new Error(
+          `Field ${memberName} not found in interface ${decl.name.name}`,
+        );
+      }
+
       // Field getter: (param any) -> Type
       const params: number[][] = [[ValType.ref_null, ValType.anyref]];
       const results: number[][] = [];
       let fieldType: number[] = [];
-      const mapped = mapType(ctx, member.typeAnnotation, context);
+      const mapped = eraseAndMap(fieldCheckerType);
       if (mapped.length > 0) {
         results.push(mapped);
         fieldType = mapped;
@@ -315,14 +342,20 @@ export function defineInterfaceMethods(
         mutable: false,
       });
 
-      fieldIndices.set(getMemberName(member.name), {
+      fieldIndices.set(memberName, {
         index: methodIndex++,
         typeIndex: funcTypeIndex,
         type: fieldType,
       });
     } else if (member.type === NodeType.AccessorSignature) {
       const propName = getMemberName(member.name);
-      const propType = mapType(ctx, member.typeAnnotation, context);
+      const propCheckerType = interfaceType.fields.get(propName);
+      if (!propCheckerType) {
+        throw new Error(
+          `Accessor ${propName} not found in interface ${decl.name.name}`,
+        );
+      }
+      const propType = eraseAndMap(propCheckerType);
 
       if (member.hasGetter) {
         const methodName = getGetterName(propName);

@@ -958,6 +958,23 @@ export class CheckerContext {
   }
 
   /**
+   * Build a type map that erases all type parameters to AnyRef.
+   * Used for interface vtable generation where type parameters are erased.
+   *
+   * @param interfaceType The interface type with type parameters to erase
+   * @returns Map from type parameter names to AnyRef
+   */
+  buildErasureTypeMap(interfaceType: InterfaceType): Map<string, Type> {
+    const typeMap = new Map<string, Type>();
+    if (interfaceType.typeParameters) {
+      for (const param of interfaceType.typeParameters) {
+        typeMap.set(param.name, Types.AnyRef);
+      }
+    }
+    return typeMap;
+  }
+
+  /**
    * Compute a string key for a type map for memoization purposes.
    */
   #computeTypeMapKey(typeMap: Map<string, Type>): string {
