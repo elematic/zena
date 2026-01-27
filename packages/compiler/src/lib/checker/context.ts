@@ -851,100 +851,130 @@ export class CheckerContext {
 
   /**
    * Memoization cache for resolved types.
-   * Structure: sourceType -> (context -> resolvedType)
+   * Structure: sourceType -> (typeMapKey -> resolvedType)
    *
-   * Uses WeakMaps so that when types are no longer referenced elsewhere,
-   * their cached resolutions can be garbage collected.
+   * Uses a string key derived from the type map contents for memoization.
    */
-  readonly #resolvedTypes = new WeakMap<Type, WeakMap<Type, Type>>();
+  readonly #resolvedTypes = new Map<Type, Map<string, Type>>();
 
   /**
-   * Resolve a type within an instantiation context by substituting type parameters.
+   * Substitute type parameters in a type with concrete types.
    *
    * This is the canonical way to get the concrete type of any generic type member.
    * It handles field types, method parameter types, return types, local variable
    * types - anything that might contain type parameters.
    *
-   * Examples:
-   * - `resolveTypeInContext(K, Map<string, i32>)` → `StringType`
-   * - `resolveTypeInContext(FixedArray<K>, Map<string, i32>)` → `FixedArray<string>`
-   * - `resolveTypeInContext(Entry<K, V>, Map<string, i32>)` → `Entry<string, i32>`
-   * - `resolveTypeInContext(T, identity<i32>)` → `i32` (function context)
+   * The caller (typically codegen) maintains the substitution map, which can include
+   * type parameters from multiple nested contexts (e.g., class + method type params).
    *
-   * Results are memoized per (type, context) pair for O(1) repeated lookups.
+   * Examples:
+   * - `substituteTypeParams(K, {K: string, V: i32})` → `string`
+   * - `substituteTypeParams(FixedArray<K>, {K: string})` → `FixedArray<string>`
+   * - `substituteTypeParams(T, {T: i32, U: boolean})` → `i32`
+   *
+   * Results are memoized per (type, typeMap) pair for efficiency.
    *
    * @param type The type to resolve (may contain type parameters)
-   * @param context The instantiation context (ClassType or FunctionType with typeArguments)
+   * @param typeMap Map from type parameter names to concrete types
    * @returns The resolved type with all type parameters substituted
    */
-  resolveTypeInContext(type: Type, context: ClassType | FunctionType): Type {
-    // Fast path: if no type arguments in context, no substitution needed
-    const typeArgs = (context as ClassType).typeArguments;
-    if (!typeArgs || typeArgs.length === 0) {
-      return type;
-    }
-
-    // Check memoization cache
-    let contextMap = this.#resolvedTypes.get(type);
-    if (contextMap) {
-      const cached = contextMap.get(context);
-      if (cached) return cached;
-    }
-
-    // Build type parameter map from context
-    const typeMap = this.#buildTypeMap(context);
+  substituteTypeParams(type: Type, typeMap: Map<string, Type>): Type {
+    // Fast path: empty map means no substitution needed
     if (typeMap.size === 0) {
       return type;
+    }
+
+    // Compute a key for the type map for memoization
+    const mapKey = this.#computeTypeMapKey(typeMap);
+
+    // Check memoization cache
+    let typeCache = this.#resolvedTypes.get(type);
+    if (typeCache) {
+      const cached = typeCache.get(mapKey);
+      if (cached) return cached;
     }
 
     // Substitute type parameters
     const resolved = substituteType(type, typeMap, this);
 
     // Memoize the result
-    if (!contextMap) {
-      contextMap = new WeakMap();
-      this.#resolvedTypes.set(type, contextMap);
+    if (!typeCache) {
+      typeCache = new Map();
+      this.#resolvedTypes.set(type, typeCache);
     }
-    contextMap.set(context, resolved);
+    typeCache.set(mapKey, resolved);
 
     return resolved;
   }
 
   /**
-   * Build a type parameter map from an instantiation context.
-   * Maps type parameter names to their concrete type arguments.
+   * Build a type parameter map from an instantiated class type.
+   * This is a convenience method for the common case of resolving types
+   * within a single class context.
+   *
+   * For nested contexts (e.g., generic method in generic class), the caller
+   * should merge multiple maps.
+   *
+   * @param classType The instantiated class type (must have typeArguments)
+   * @returns Map from type parameter names to concrete type arguments
    */
-  #buildTypeMap(context: ClassType | FunctionType): Map<string, Type> {
+  buildTypeMap(classType: ClassType): Map<string, Type> {
     const typeMap = new Map<string, Type>();
+    const source = classType.genericSource || classType;
+    const typeParameters = source.typeParameters;
+    const typeArguments = classType.typeArguments;
 
-    if (context.kind === TypeKind.Class) {
-      const classType = context as ClassType;
-      const source = classType.genericSource || classType;
-      const typeParameters = source.typeParameters;
-      const typeArguments = classType.typeArguments;
-
-      if (typeParameters && typeArguments) {
-        typeParameters.forEach((param, index) => {
-          if (index < typeArguments.length) {
-            typeMap.set(param.name, typeArguments[index]);
-          }
-        });
-      }
-    } else if (context.kind === TypeKind.Function) {
-      const funcType = context as FunctionType;
-      const typeParameters = funcType.typeParameters;
-      const typeArguments = funcType.typeArguments;
-
-      if (typeParameters && typeArguments) {
-        typeParameters.forEach((param, index) => {
-          if (index < typeArguments.length) {
-            typeMap.set(param.name, typeArguments[index]);
-          }
-        });
-      }
+    if (typeParameters && typeArguments) {
+      typeParameters.forEach((param, index) => {
+        if (index < typeArguments.length) {
+          typeMap.set(param.name, typeArguments[index]);
+        }
+      });
     }
 
     return typeMap;
+  }
+
+  /**
+   * Build a type parameter map from an instantiated function type.
+   *
+   * @param funcType The instantiated function type (must have typeArguments)
+   * @returns Map from type parameter names to concrete type arguments
+   */
+  buildFunctionTypeMap(funcType: FunctionType): Map<string, Type> {
+    const typeMap = new Map<string, Type>();
+    const typeParameters = funcType.typeParameters;
+    const typeArguments = funcType.typeArguments;
+
+    if (typeParameters && typeArguments) {
+      typeParameters.forEach((param, index) => {
+        if (index < typeArguments.length) {
+          typeMap.set(param.name, typeArguments[index]);
+        }
+      });
+    }
+
+    return typeMap;
+  }
+
+  /**
+   * Compute a string key for a type map for memoization purposes.
+   */
+  #computeTypeMapKey(typeMap: Map<string, Type>): string {
+    const entries = Array.from(typeMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, type]) => `${name}:${this.computeTypeKey(type)}`);
+    return entries.join(',');
+  }
+
+  /**
+   * Convenience method: resolve a type in a class context.
+   * Equivalent to substituteTypeParams(type, buildTypeMap(classType)).
+   *
+   * @deprecated Use substituteTypeParams with an explicit type map for clarity
+   */
+  resolveTypeInContext(type: Type, context: ClassType): Type {
+    return this.substituteTypeParams(type, this.buildTypeMap(context));
   }
 
   /**

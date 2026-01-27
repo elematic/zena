@@ -60,7 +60,10 @@ Understanding these terms is crucial for working on the compiler:
   - **Generic Instantiation**: Creates specialized types for generic classes (e.g., `Box<i32>` from `Box<T>`), including proper substitution of `superType` and `onType`.
 - **Key Methods** (for codegen integration):
   - `resolveFieldTypes(classType)`: Returns resolved field types for an instantiated generic class.
-  - `resolveTypeInContext(type, context)`: Substitutes type parameters within a class/function context.
+  - `substituteTypeParams(type, typeMap)`: Substitutes type parameters using an explicit map. The canonical method for type parameter substitution.
+  - `buildTypeMap(classType)`: Builds a substitution map from an instantiated class type.
+  - `buildFunctionTypeMap(funcType)`: Builds a substitution map from an instantiated function type.
+  - `resolveTypeInContext(type, context)`: _(Deprecated)_ Convenience wrapper for `substituteTypeParams(type, buildTypeMap(context))`.
 
 ### 5. Code Generator (`packages/compiler/src/lib/codegen/index.ts`)
 

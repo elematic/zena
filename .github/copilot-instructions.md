@@ -339,20 +339,25 @@ This project is an **npm monorepo** managed with **Wireit**.
 
     **Solution**: Make the checker the single source of truth for all instantiated types.
     - [x] **Phase 1: General Type Resolution in CheckerContext**
-      - [x] Add `resolveTypeInContext(type, context)` to `CheckerContext`
+      - [x] Add `substituteTypeParams(type, typeMap)` - canonical substitution with explicit Map
+      - [x] Add `buildTypeMap(classType)` - builds Map from class context
+      - [x] Add `buildFunctionTypeMap(funcType)` - builds Map from function context
       - [x] Works for any type containing type parameters (fields, params, returns, locals)
-      - [x] Works with ClassType or FunctionType as context
-      - [x] Memoize results in `WeakMap<Type, WeakMap<Type, Type>>`
+      - [x] Memoize results per (type, typeMapKey) pair
       - [x] Add convenience methods: `resolveFieldTypes()`, `resolveMethodTypes()`
       - [x] Add `typeArguments` to `FunctionType` for instantiated generic functions
+      - [x] Deprecate `resolveTypeInContext(type, classType)` (convenience wrapper)
     - [x] **Phase 2: Pass CheckerContext to Codegen**
       - [x] Expose `checkerContext` getter on `Compiler`
       - [x] Add `CheckerContext` to `CodegenContext` constructor
       - [x] Pass through from `CodeGenerator` constructor
-    - [x] **Phase 3: Use Checker Types in Codegen** (Partial)
+    - [ ] **Phase 3: Codegen Maintains Type Parameter Stack** (Next)
       - [x] Update `instantiateClass` to use `checkerContext.resolveFieldTypes()`
       - [x] Fix `superType` substitution in `instantiateGenericClass` and `substituteType`
-      - [ ] Replace remaining `mapType(ctx, annotation, context)` calls with `resolveTypeInContext`
+      - [ ] Add `currentTypeParamMap: Map<string, Type>` to `CodegenContext`
+      - [ ] When entering generic class, merge class type params into map
+      - [ ] When entering generic method, merge method type params into map
+      - [ ] Replace `mapType(ctx, annotation, ctx.currentTypeContext)` with `substituteTypeParams`
       - [ ] Update method signature resolution to use `resolveMethodTypes()`
     - [ ] **Phase 4: Require checkerType for Extension Classes**
       - [x] Add check in `instantiateClass` requiring `checkerType.onType` for extension classes (when checkerType provided)
