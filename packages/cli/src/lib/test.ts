@@ -401,6 +401,7 @@ export let getNestedTestError = (index: i32): string | null => nested().tests[in
       compiledModules,
       entryPoint,
       compiler.semanticContext,
+      compiler.checkerContext,
     );
     const bytes = codegen.generate();
 

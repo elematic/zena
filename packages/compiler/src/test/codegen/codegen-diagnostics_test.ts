@@ -2,6 +2,7 @@ import assert from 'node:assert';
 import {suite, test} from 'node:test';
 import {Parser} from '../../lib/parser.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
+import {TypeChecker} from '../../lib/checker/index.js';
 import {DiagnosticCode} from '../../lib/diagnostics.js';
 import {wrapAsModule} from './utils.js';
 
@@ -14,7 +15,15 @@ suite('CodeGenerator: Diagnostics', () => {
     `;
     const parser = new Parser(source);
     const ast = parser.parse();
-    const codegen = new CodeGenerator(wrapAsModule(ast, source));
+    // Run type checker to get semantic context (even though code has errors)
+    const checker = TypeChecker.forProgram(ast);
+    checker.check();
+    const codegen = new CodeGenerator(
+      wrapAsModule(ast, source),
+      undefined,
+      checker.semanticContext,
+      checker.checkerContext,
+    );
     codegen.setFileName('test.zena');
 
     try {
@@ -44,7 +53,15 @@ suite('CodeGenerator: Diagnostics', () => {
     `;
     const parser = new Parser(source);
     const ast = parser.parse();
-    const codegen = new CodeGenerator(wrapAsModule(ast, source));
+    // Run type checker to get semantic context (even though code has errors)
+    const checker = TypeChecker.forProgram(ast);
+    checker.check();
+    const codegen = new CodeGenerator(
+      wrapAsModule(ast, source),
+      undefined,
+      checker.semanticContext,
+      checker.checkerContext,
+    );
     codegen.setFileName('myfile.zena');
 
     try {
@@ -70,7 +87,15 @@ suite('CodeGenerator: Diagnostics', () => {
     `;
     const parser = new Parser(source);
     const ast = parser.parse();
-    const codegen = new CodeGenerator(wrapAsModule(ast, source));
+    // Run type checker to get semantic context (even though code has errors)
+    const checker = TypeChecker.forProgram(ast);
+    checker.check();
+    const codegen = new CodeGenerator(
+      wrapAsModule(ast, source),
+      undefined,
+      checker.semanticContext,
+      checker.checkerContext,
+    );
     codegen.setFileName('test.zena');
 
     try {

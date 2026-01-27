@@ -38,7 +38,12 @@ console.log(
 );
 
 try {
-  const gen = new CodeGenerator(modules, '/main.zena');
+  const gen = new CodeGenerator(
+    modules,
+    '/main.zena',
+    compiler.semanticContext,
+    compiler.checkerContext,
+  );
   const bytes = gen.generate();
   console.log('Generated:', bytes.length, 'bytes');
 } catch (e: any) {

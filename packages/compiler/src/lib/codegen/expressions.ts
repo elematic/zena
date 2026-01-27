@@ -554,11 +554,14 @@ function generateAsExpression(
   // Use checker types for semantic operations (lookups, type identity).
   // WASM types are computed lazily, only when needed for opcode emission.
   const sourceCheckerType = expr.expression.inferredType;
-  let targetCheckerType =
-    expr.inferredType ?? expr.typeAnnotation.inferredType;
+  let targetCheckerType = expr.inferredType ?? expr.typeAnnotation.inferredType;
 
   // Substitute type parameters if we're in a generic context
-  if (targetCheckerType && ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+  if (
+    targetCheckerType &&
+    ctx.currentTypeParamMap.size > 0 &&
+    ctx.checkerContext
+  ) {
     targetCheckerType = ctx.checkerContext.substituteTypeParams(
       targetCheckerType,
       ctx.currentTypeParamMap,
@@ -567,9 +570,7 @@ function generateAsExpression(
 
   // Compute WASM types for opcode emission
   if (!targetCheckerType) {
-    throw new Error(
-      `AsExpression missing checker type for target`,
-    );
+    throw new Error(`AsExpression missing checker type for target`);
   }
   const targetWasmType = mapCheckerTypeToWasmType(ctx, targetCheckerType);
 
@@ -4003,7 +4004,7 @@ function generateFieldFromBinding(
   let {classType, fieldName} = binding;
 
   // Substitute type parameters in the classType when inside a generic context.
-  // This is needed for field access like `entry.key` where `entry: Entry<K, V>` 
+  // This is needed for field access like `entry.key` where `entry: Entry<K, V>`
   // and K, V need to be substituted with actual type arguments.
   if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
     classType = ctx.checkerContext.substituteTypeParams(

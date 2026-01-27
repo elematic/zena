@@ -1636,6 +1636,7 @@ function substituteInterfaceName(
 ```
 
 This is used in:
+
 - `generateInterfaceVTable()` - to build the correct key when registering
 - `generateInterfaceBoxing()` (expressions.ts) - to find the vtable for boxing
 
@@ -1659,17 +1660,17 @@ This is used in:
 ```typescript
 // Before
 interface ClassInfo {
-  implements?: Map<string, { vtableGlobalIndex: number }>;
+  implements?: Map<string, {vtableGlobalIndex: number}>;
 }
 
 // After
 interface ClassInfo {
-  implements?: Map<InterfaceType, { vtableGlobalIndex: number }>;
+  implements?: Map<InterfaceType, {vtableGlobalIndex: number}>;
   // Or using a wrapper to support WeakMap semantics
 }
 
 // Lookup changes from:
-const impl = classInfo.implements.get("Sequence<i32>");
+const impl = classInfo.implements.get('Sequence<i32>');
 
 // To:
 const impl = classInfo.implements.get(interfaceType);

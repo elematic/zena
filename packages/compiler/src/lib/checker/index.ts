@@ -76,6 +76,15 @@ export class TypeChecker {
     return this.#ctx.semanticContext;
   }
 
+  /**
+   * Get the checker context used by this checker.
+   * The checker context provides access to type interning and instantiation
+   * utilities needed by codegen for identity-based type lookups.
+   */
+  get checkerContext(): CheckerContext {
+    return this.#ctx;
+  }
+
   check(): Diagnostic[] {
     const ctx = this.#ctx;
 

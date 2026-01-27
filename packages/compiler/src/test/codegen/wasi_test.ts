@@ -1,10 +1,7 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Parser} from '../../lib/parser.js';
-import {CodeGenerator} from '../../lib/codegen/index.js';
-import {TypeChecker} from '../../lib/checker/index.js';
+import {compileAndInstantiate} from './utils.js';
 import {createWasiImports} from '../wasi_test_utils.js';
-import {wrapAsModule} from './utils.js';
 
 suite('CodeGenerator - WASI', () => {
   test('should compile and run WASI Hello World', async () => {
@@ -30,22 +27,9 @@ suite('CodeGenerator - WASI', () => {
         blocking_write_and_flush(stdout, 0, 5);
       };
     `;
-    const parser = new Parser(input);
-    const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
-    const errors = checker.check();
-    assert.deepStrictEqual(errors, []);
-
-    const codegen = new CodeGenerator(
-      wrapAsModule(ast, input),
-      undefined,
-      checker.semanticContext,
-    );
-    const wasmBuffer = codegen.generate();
-
     const {imports, setMemory, output} = createWasiImports();
-    const result = await WebAssembly.instantiate(wasmBuffer, imports);
-    const {main, memory} = (result as any).instance.exports;
+    const exports = await compileAndInstantiate(input, {imports});
+    const {main, memory} = exports as any;
 
     setMemory(memory);
     main();

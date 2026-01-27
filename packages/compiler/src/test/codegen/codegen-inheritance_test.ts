@@ -1,27 +1,6 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Parser} from '../../lib/parser.js';
-import {CodeGenerator} from '../../lib/codegen/index.js';
-import {TypeChecker} from '../../lib/checker/index.js';
-import {wrapAsModule} from './utils.js';
-
-async function compileAndRun(source: string): Promise<any> {
-  const parser = new Parser(source);
-  const ast = parser.parse();
-  const checker = TypeChecker.forProgram(ast);
-  const errors = checker.check();
-  if (errors.length > 0) {
-    throw new Error(errors.join('\n'));
-  }
-  const generator = new CodeGenerator(
-    wrapAsModule(ast, source),
-    undefined,
-    checker.semanticContext,
-  );
-  const wasmBytes = generator.generate();
-  const result = (await WebAssembly.instantiate(wasmBytes, {})) as any;
-  return result.instance.exports;
-}
+import {compileAndInstantiate} from './utils.js';
 
 suite('CodeGenerator - Inheritance', () => {
   test('should inherit fields', async () => {
@@ -50,7 +29,7 @@ suite('CodeGenerator - Inheritance', () => {
         return p.getX() + p.getZ();
       };
     `;
-    const exports = await compileAndRun(source);
+    const exports = await compileAndInstantiate(source);
     assert.strictEqual(exports.main(), 40);
   });
 
@@ -68,7 +47,7 @@ suite('CodeGenerator - Inheritance', () => {
         return d.speak();
       };
     `;
-    const exports = await compileAndRun(source);
+    const exports = await compileAndInstantiate(source);
     assert.strictEqual(exports.main(), 1);
   });
 
@@ -89,7 +68,7 @@ suite('CodeGenerator - Inheritance', () => {
         return d.speak();
       };
     `;
-    const exports = await compileAndRun(source);
+    const exports = await compileAndInstantiate(source);
     assert.strictEqual(exports.main(), 2);
   });
 });

@@ -1,28 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {Parser} from '../../lib/parser.js';
-import {CodeGenerator} from '../../lib/codegen/index.js';
-import {TypeChecker} from '../../lib/checker/index.js';
-import {wrapAsModule} from './utils.js';
-
-async function compileAndRun(
-  input: string,
-  entryPoint: string = 'main',
-): Promise<number> {
-  const parser = new Parser(input);
-  const ast = parser.parse();
-  const checker = TypeChecker.forProgram(ast);
-  checker.check();
-  const codegen = new CodeGenerator(
-    wrapAsModule(ast, input),
-    undefined,
-    checker.semanticContext,
-  );
-  const bytes = codegen.generate();
-  const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);
-  const exports = result.instance.exports as any;
-  return exports[entryPoint]();
-}
+import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Destructuring', () => {
   test('should destructure record', async () => {

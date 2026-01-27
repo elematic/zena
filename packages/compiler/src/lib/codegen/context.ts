@@ -123,7 +123,7 @@ export class CodegenContext {
    * This ensures codegen uses the same interned types as the checker,
    * avoiding duplicate WASM type indices for logically identical types.
    */
-  public checkerContext: CheckerContext | undefined;
+  public checkerContext: CheckerContext;
 
   /** File name used for diagnostic locations */
   public fileName = '<anonymous>';
@@ -297,9 +297,9 @@ export class CodegenContext {
 
   constructor(
     modules: Module[],
-    entryPointPath?: string,
-    semanticContext?: SemanticContext,
-    checkerContext?: CheckerContext,
+    entryPointPath: string | undefined,
+    semanticContext: SemanticContext,
+    checkerContext: CheckerContext,
   ) {
     this.modules = modules;
     // Find entry point by path, or default to last module (for backward compatibility)
@@ -307,7 +307,7 @@ export class CodegenContext {
       ? (modules.find((m) => m.path === entryPointPath) ??
         modules[modules.length - 1])
       : modules[modules.length - 1];
-    this.semanticContext = semanticContext ?? new SemanticContext();
+    this.semanticContext = semanticContext;
     this.checkerContext = checkerContext;
     this.#extractWellKnownTypes();
     this.module = new WasmModule();

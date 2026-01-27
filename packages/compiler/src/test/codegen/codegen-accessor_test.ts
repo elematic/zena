@@ -1,9 +1,6 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Parser} from '../../lib/parser.js';
-import {CodeGenerator} from '../../lib/codegen/index.js';
-import {TypeChecker} from '../../lib/checker/index.js';
-import {wrapAsModule} from './utils.js';
+import {compileAndInstantiate} from './utils.js';
 
 suite('CodeGenerator - Accessors', () => {
   test('should compile and run accessor getter and setter', async () => {
@@ -30,22 +27,8 @@ suite('CodeGenerator - Accessors', () => {
         return b.value;
       };
     `;
-    const parser = new Parser(input);
-    const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
-    const errors = checker.check();
-    assert.deepStrictEqual(errors, []);
-
-    const codegen = new CodeGenerator(
-      wrapAsModule(ast, input),
-      undefined,
-      checker.semanticContext,
-    );
-    const wasmBuffer = codegen.generate();
-
-    const result = await WebAssembly.instantiate(wasmBuffer);
-    const {main} = (result as any).instance.exports;
-    assert.strictEqual(main(), 20);
+    const exports = await compileAndInstantiate(input);
+    assert.strictEqual(exports.main(), 20);
   });
 
   test('should compile and run accessor with only getter', async () => {
@@ -68,21 +51,7 @@ suite('CodeGenerator - Accessors', () => {
         return b.value;
       };
     `;
-    const parser = new Parser(input);
-    const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
-    const errors = checker.check();
-    assert.deepStrictEqual(errors, []);
-
-    const codegen = new CodeGenerator(
-      wrapAsModule(ast, input),
-      undefined,
-      checker.semanticContext,
-    );
-    const wasmBuffer = codegen.generate();
-
-    const result = await WebAssembly.instantiate(wasmBuffer);
-    const {main} = (result as any).instance.exports;
-    assert.strictEqual(main(), 20);
+    const exports = await compileAndInstantiate(input);
+    assert.strictEqual(exports.main(), 20);
   });
 });

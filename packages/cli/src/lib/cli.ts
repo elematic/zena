@@ -120,6 +120,7 @@ const buildCommand = async (
       modules,
       entryPoint,
       compiler.semanticContext,
+      compiler.checkerContext,
     );
     const bytes = codegen.generate();
 
@@ -192,6 +193,7 @@ const runCommand = async (files: string[]): Promise<number> => {
       modules,
       entryPoint,
       compiler.semanticContext,
+      compiler.checkerContext,
     );
     const bytes = codegen.generate();
 

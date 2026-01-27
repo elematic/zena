@@ -1,24 +1,6 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {Parser} from '../../lib/parser.js';
-import {CodeGenerator} from '../../lib/codegen/index.js';
-import {TypeChecker} from '../../lib/checker/index.js';
-import {wrapAsModule} from './utils.js';
-
-async function compile(input: string) {
-  const parser = new Parser(input);
-  const ast = parser.parse();
-  const checker = TypeChecker.forProgram(ast);
-  checker.check();
-  const codegen = new CodeGenerator(
-    wrapAsModule(ast, input),
-    undefined,
-    checker.semanticContext,
-  );
-  const bytes = codegen.generate();
-  const result = await WebAssembly.instantiate(bytes.buffer as ArrayBuffer);
-  return result.instance.exports;
-}
+import {compileAndInstantiate} from './utils.js';
 
 suite('CodeGenerator - While Loops', () => {
   test('should compile and run basic while loop', async () => {
@@ -33,7 +15,9 @@ suite('CodeGenerator - While Loops', () => {
         return s;
       };
     `;
-    const {sum} = (await compile(input)) as {sum: (n: number) => number};
+    const {sum} = (await compileAndInstantiate(input)) as {
+      sum: (n: number) => number;
+    };
     assert.strictEqual(sum(5), 15); // 1+2+3+4+5 = 15
     assert.strictEqual(sum(0), 0);
     assert.strictEqual(sum(1), 1);
@@ -50,7 +34,7 @@ suite('CodeGenerator - While Loops', () => {
         return i;
       };
     `;
-    const {countTo} = (await compile(input)) as {
+    const {countTo} = (await compileAndInstantiate(input)) as {
       countTo: (n: number) => number;
     };
     assert.strictEqual(countTo(5), 5);
@@ -74,7 +58,7 @@ suite('CodeGenerator - While Loops', () => {
         return 0 - 1;
       };
     `;
-    const {findFirstMultipleOf3} = (await compile(input)) as {
+    const {findFirstMultipleOf3} = (await compileAndInstantiate(input)) as {
       findFirstMultipleOf3: (start: number, limit: number) => number;
     };
     assert.strictEqual(findFirstMultipleOf3(1, 10), 3);
@@ -99,7 +83,7 @@ suite('CodeGenerator - While Loops', () => {
         return total;
       };
     `;
-    const {nestedCount} = (await compile(input)) as {
+    const {nestedCount} = (await compileAndInstantiate(input)) as {
       nestedCount: (outer: number, inner: number) => number;
     };
     assert.strictEqual(nestedCount(3, 4), 12); // 3*4 = 12
@@ -120,7 +104,7 @@ suite('CodeGenerator - While Loops', () => {
         return result;
       };
     `;
-    const {factorial} = (await compile(input)) as {
+    const {factorial} = (await compileAndInstantiate(input)) as {
       factorial: (n: number) => number;
     };
     assert.strictEqual(factorial(0), 1);
@@ -147,7 +131,9 @@ suite('CodeGenerator - While Loops', () => {
         return b;
       };
     `;
-    const {fib} = (await compile(input)) as {fib: (n: number) => number};
+    const {fib} = (await compileAndInstantiate(input)) as {
+      fib: (n: number) => number;
+    };
     assert.strictEqual(fib(0), 0);
     assert.strictEqual(fib(1), 1);
     assert.strictEqual(fib(2), 1);
@@ -169,7 +155,7 @@ suite('CodeGenerator - While Loops', () => {
         return count;
       };
     `;
-    const {countWhileTrue} = (await compile(input)) as {
+    const {countWhileTrue} = (await compileAndInstantiate(input)) as {
       countWhileTrue: () => number;
     };
     assert.strictEqual(countWhileTrue(), 10);
@@ -187,7 +173,7 @@ suite('CodeGenerator - While Loops', () => {
         return result;
       };
     `;
-    const {power} = (await compile(input)) as {
+    const {power} = (await compileAndInstantiate(input)) as {
       power: (base: number, exp: number) => number;
     };
     assert.strictEqual(power(2, 0), 1);

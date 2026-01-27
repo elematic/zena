@@ -50,6 +50,7 @@ describe('Exports', () => {
       modules,
       '/main.zena',
       compiler.semanticContext,
+      compiler.checkerContext,
     );
     const wasmBytes = generator.generate();
 
@@ -107,6 +108,7 @@ describe('Exports', () => {
       modules,
       '/main.zena',
       compiler.semanticContext,
+      compiler.checkerContext,
     );
     const wasmBytes = generator.generate();
 
