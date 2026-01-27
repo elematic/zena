@@ -369,11 +369,12 @@ This project is an **npm monorepo** managed with **Wireit**.
         - Updated `defineInterfaceMethods()` to use identity-based lookup via `parentType` only
         - Removed `isInterfaceSubtype()` name-based helper function
         - Added `findInterfaceDeclarationByType()` helper
-      - [ ] **Generic interface type arguments** (blocked - see design doc):
-        - `isInterfaceSubtypeByType()` still compares base interface names because
-          `ClassInfo.implements` stores `Sequence<T>` (unbound) but boxing targets
-          `Sequence<i32>` (concrete). Proper fix requires updating `implements` map
-          during generic class instantiation.
+      - [x] **Generic interface type arguments** (completed 2025-01-27):
+        - Removed name-based fallback in `isInterfaceSubtypeByType()` - identity comparison
+          is sufficient because the checker interns interface types
+        - `ClassInfo.implements` now correctly stores concrete interface types (e.g.,
+          `Sequence<i32>`) because `ensureTypeInstantiated` ensures the checker's substituted
+          types are used
       - [ ] Replace remaining `mapType(ctx, annotation, ctx.currentTypeContext)` calls
       - [ ] Update method signature resolution to use `resolveMethodTypes()`
     - [ ] **Phase 4: Require checkerType for Extension Classes**

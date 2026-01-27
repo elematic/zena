@@ -8116,19 +8116,11 @@ function generateMatchPatternBindings(
 }
 
 /**
- * Check if one interface type is a subtype of another.
+ * Check if one interface type is a subtype of another using identity-based comparison.
+ *
  * For generic interfaces, this compares the base interface (via genericSource chain)
- * because all specializations share the same WASM struct type.
- *
- * Note: This uses a simplified comparison that ignores type arguments. This is
- * necessary because ClassInfo.implements maps from the declared interface type
- * (e.g., Sequence<T>) which has unbound type parameters, while the target type
- * at boxing time has concrete types (e.g., Sequence<i32>).
- *
- * A proper fix would be to instantiate ClassInfo.implements with concrete types
- * when specializing generic classes, but that's a larger change.
- *
- * TODO: Consider proper type argument handling when ClassInfo.implements is updated.
+ * because all specializations share the same WASM struct type. The checker interns
+ * interface types, so identical instantiations (e.g., Sequence<i32>) are the same object.
  */
 export function isInterfaceSubtypeByType(
   ctx: CodegenContext,
@@ -8139,14 +8131,14 @@ export function isInterfaceSubtypeByType(
   if (sub === sup) return true;
 
   // Follow genericSource chain to get base interface types
+  // All specializations of the same generic interface share the same WASM struct
   let subBase: InterfaceType = sub;
   while (subBase.genericSource) subBase = subBase.genericSource;
   let supBase: InterfaceType = sup;
   while (supBase.genericSource) supBase = supBase.genericSource;
 
-  // If base interfaces match (by identity or name), consider them subtypes
-  // This handles generic specializations sharing the same WASM struct
-  if (subBase === supBase || subBase.name === supBase.name) {
+  // Compare base interfaces by identity
+  if (subBase === supBase) {
     return true;
   }
 

@@ -1114,22 +1114,28 @@ export class CodegenContext {
   /**
    * Look up an InterfaceInfo by its checker InterfaceType using identity.
    * This is the preferred lookup method when you have an InterfaceType from the checker.
-   * For specialized generic interfaces, also checks the genericSource.
+   *
+   * For generic interfaces like `Sequence<T>`, all specializations (e.g., `Sequence<i32>`)
+   * share the same WASM struct. We only register the template InterfaceType, so lookups
+   * for specialized types follow the genericSource chain to find the template.
+   *
+   * Name-based fallback is still needed because some InterfaceType objects (e.g., from
+   * annotation-based code paths) may not have the genericSource chain properly set up.
    */
   public getInterfaceInfoByCheckerType(
     interfaceType: InterfaceType,
   ): InterfaceInfo | undefined {
     const result = this.#interfaceInfoByType.get(interfaceType);
     if (result) return result;
-    // For specialized generic interfaces, look up via genericSource
-    if (interfaceType.genericSource) {
-      const sourceResult = this.#interfaceInfoByType.get(
-        interfaceType.genericSource,
-      );
+    // For specialized generic interfaces, look up via genericSource chain
+    let source = interfaceType.genericSource;
+    while (source) {
+      const sourceResult = this.#interfaceInfoByType.get(source);
       if (sourceResult) return sourceResult;
+      source = source.genericSource;
     }
-    // Fall back to name-based lookup for generic interfaces with unbound type parameters
-    // This handles cases where the type identity doesn't match but the interface is the same
+    // Fall back to name-based lookup - still needed for InterfaceTypes without
+    // proper genericSource chain (e.g., from annotation-based code paths)
     return this.interfaces.get(interfaceType.name);
   }
 
