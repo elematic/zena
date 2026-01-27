@@ -4284,16 +4284,6 @@ export function mapCheckerTypeToWasmType(
       ) {
         return mapCheckerTypeToWasmType(ctx, resolved);
       }
-      // Fall through - resolved to self or to a type param not in the map
-    }
-
-    // Try annotation-based resolution (for generic methods that don't have checker types)
-    if (ctx.currentTypeContext?.has(typeParam.name)) {
-      const annotation = ctx.currentTypeContext.get(typeParam.name)!;
-      if (annotation.inferredType) {
-        return mapCheckerTypeToWasmType(ctx, annotation.inferredType);
-      }
-      // Fall through to anyref erasure if no inferredType
     }
 
     throw new Error('Unresolved type parameter');
