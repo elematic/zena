@@ -979,14 +979,17 @@ export function preRegisterClassStruct(
   // Handle extension classes (e.g. FixedArray extends array<T>)
   // These are handled entirely in preRegister since they don't need deferred definition
   if (decl.isExtension && decl.onType) {
-    // Try to get onType from checker if available
-    const classType =
-      decl.inferredType?.kind === TypeKind.Class
-        ? (decl.inferredType as ClassType)
-        : undefined;
-    const onType = classType?.onType
-      ? mapCheckerTypeToWasmType(ctx, classType.onType)
-      : mapType(ctx, decl.onType);
+    // Extension classes must have inferredType with onType set by the checker
+    if (!decl.inferredType || decl.inferredType.kind !== TypeKind.Class) {
+      throw new Error(`Extension class ${decl.name.name} missing inferredType`);
+    }
+    const classType = decl.inferredType as ClassType;
+    if (!classType.onType) {
+      throw new Error(
+        `Extension class ${decl.name.name} missing onType in inferredType`,
+      );
+    }
+    const onType = mapCheckerTypeToWasmType(ctx, classType.onType);
 
     // Create a dummy struct type for extensions so that we have a valid type index
     // This is needed because some parts of the compiler might try to reference the class type
@@ -1006,19 +1009,14 @@ export function preRegisterClassStruct(
     ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
 
     // Register type → struct index for identity-based lookups
-    if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
-      const classType = decl.inferredType as ClassType;
-      ctx.setClassStructIndex(classType, structTypeIndex);
-      // Register bundled name for identity-based lookups
-      ctx.setClassBundledName(classType, decl.name.name);
-      // Register ClassInfo for O(1) lookup
-      ctx.registerClassInfoByType(classType, classInfo);
+    ctx.setClassStructIndex(classType, structTypeIndex);
+    // Register bundled name for identity-based lookups
+    ctx.setClassBundledName(classType, decl.name.name);
+    // Register ClassInfo for O(1) lookup
+    ctx.registerClassInfoByType(classType, classInfo);
 
-      // Register extension class by its onType for O(1) lookup
-      if (classType.onType) {
-        ctx.registerExtensionClass(classType.onType, classInfo);
-      }
-    }
+    // Register extension class by its onType for O(1) lookup
+    ctx.registerExtensionClass(classType.onType, classInfo);
 
     // Check if this is the String class
     const isStringClass =
@@ -1379,10 +1377,13 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
   let onType: number[] | undefined;
   if (decl.isExtension && decl.onType) {
-    // Try to get onType from checker if available
-    onType = classType?.onType
-      ? mapCheckerTypeToWasmType(ctx, classType.onType)
-      : mapType(ctx, decl.onType);
+    // Extension classes must have onType set by the checker
+    if (!classType?.onType) {
+      throw new Error(
+        `Extension class ${decl.name.name} missing onType in inferredType`,
+      );
+    }
+    onType = mapCheckerTypeToWasmType(ctx, classType.onType);
   }
 
   // Update classInfo with full data
@@ -1395,240 +1396,6 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   // Register extension class by WASM type index for O(1) lookup
   if (classInfo.isExtension && classInfo.onType) {
     ctx.registerExtensionClassByWasmTypeIndex(classInfo);
-  }
-}
-
-/**
- * @deprecated Use preRegisterClassStruct followed by defineClassStruct instead.
- */
-export function registerClassStruct(
-  ctx: CodegenContext,
-  decl: ClassDeclaration,
-) {
-  if (decl.typeParameters && decl.typeParameters.length > 0) {
-    ctx.genericClasses.set(decl.name.name, decl);
-    return;
-  }
-
-  // Handle extension classes (e.g. FixedArray extends array<T>)
-  if (decl.isExtension && decl.onType) {
-    // Try to get onType from checker if available
-    const classType =
-      decl.inferredType?.kind === TypeKind.Class
-        ? (decl.inferredType as ClassType)
-        : undefined;
-    const onType = classType?.onType
-      ? mapCheckerTypeToWasmType(ctx, classType.onType)
-      : mapType(ctx, decl.onType);
-    // console.log(
-    //   `registerClassStruct: Extension ${decl.name.name} onType=${onType.join(',')}`,
-    // );
-
-    // Create a dummy struct type for extensions so that we have a valid type index
-    // This is needed because some parts of the compiler might try to reference the class type
-    const structTypeIndex = ctx.module.addStructType([]);
-
-    const classInfo: ClassInfo = {
-      name: decl.name.name,
-      structTypeIndex,
-      fields: new Map(),
-      methods: new Map(),
-      isExtension: true,
-      onType,
-    };
-    ctx.classes.set(decl.name.name, classInfo);
-    // Also register by struct index to support lookup when names collide
-    ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
-    // Register by WASM type index for O(1) lookup
-    ctx.registerExtensionClassByWasmTypeIndex(classInfo);
-
-    // Check if this is the String class
-    const isStringClass =
-      !!ctx.wellKnownTypes.String &&
-      decl.name.name === ctx.wellKnownTypes.String.name.name;
-
-    if (isStringClass) {
-      const typeIndex = getHeapTypeIndex(ctx, onType);
-      if (typeIndex >= 0) {
-        ctx.stringTypeIndex = typeIndex;
-      }
-    }
-
-    return;
-  }
-
-  const fields = new Map<
-    string,
-    {index: number; type: number[]; intrinsic?: string}
-  >();
-  const fieldTypes: {type: number[]; mutable: boolean}[] = [];
-  let fieldIndex = 0;
-
-  let superTypeIndex: number | undefined;
-  const methods = new Map<
-    string,
-    {
-      index: number;
-      returnType: number[];
-      typeIndex: number;
-      paramTypes: number[][];
-      isFinal?: boolean;
-      intrinsic?: string;
-    }
-  >();
-  const vtable: string[] = [];
-
-  // Get the checker's ClassType for this class (if available)
-  const classType =
-    decl.inferredType?.kind === TypeKind.Class
-      ? (decl.inferredType as ClassType)
-      : undefined;
-
-  let currentSuperClassInfo: ClassInfo | undefined;
-  let superClassType: ClassType | undefined;
-
-  if (decl.superClass) {
-    // Try identity-based lookup first using checker's type
-    if (classType?.superType) {
-      superClassType = classType.superType;
-      currentSuperClassInfo = ctx.getClassInfoByCheckerType(superClassType);
-    }
-
-    // Fall back to name-based lookup if identity lookup failed
-    if (!currentSuperClassInfo) {
-      const superClassName = getTypeAnnotationName(decl.superClass);
-      currentSuperClassInfo = ctx.classes.get(superClassName);
-    }
-
-    if (!currentSuperClassInfo) {
-      throw new Error(
-        `Unknown superclass ${getTypeAnnotationName(decl.superClass)}`,
-      );
-    }
-  }
-
-  if (decl.mixins && decl.mixins.length > 0) {
-    for (const mixinAnnotation of decl.mixins) {
-      if (mixinAnnotation.type !== NodeType.TypeAnnotation) {
-        throw new Error('Mixin must be a named type');
-      }
-      const mixinName = mixinAnnotation.name;
-      const mixinDecl = ctx.mixins.get(mixinName);
-      if (!mixinDecl) {
-        throw new Error(`Unknown mixin ${mixinName}`);
-      }
-      // TODO: Handle generic mixin instantiation in codegen
-      currentSuperClassInfo = applyMixin(ctx, currentSuperClassInfo, mixinDecl);
-    }
-  }
-
-  if (currentSuperClassInfo) {
-    superTypeIndex = currentSuperClassInfo.structTypeIndex;
-
-    // Inherit fields
-    const sortedSuperFields = Array.from(
-      currentSuperClassInfo.fields.entries(),
-    ).sort((a, b) => a[1].index - b[1].index);
-
-    for (const [name, info] of sortedSuperFields) {
-      fields.set(name, {index: fieldIndex++, type: info.type});
-      fieldTypes.push({type: info.type, mutable: true});
-    }
-  } else {
-    // Root class: Add vtable field
-    fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
-    fieldTypes.push({type: [ValType.eqref], mutable: true});
-  }
-
-  // Add unique brand field to ensure nominal typing
-  const brandId = ctx.classes.size + 1;
-  const brandTypeIndex = generateBrandType(ctx, brandId);
-  const brandFieldName = `__brand_${decl.name.name}`;
-  fields.set(brandFieldName, {
-    index: fieldIndex++,
-    type: [ValType.ref_null, ...WasmModule.encodeSignedLEB128(brandTypeIndex)],
-  });
-  fieldTypes.push({
-    type: [ValType.ref_null, ...WasmModule.encodeSignedLEB128(brandTypeIndex)],
-    mutable: true,
-  });
-
-  for (const member of decl.body) {
-    if (member.type === NodeType.FieldDefinition) {
-      const memberName = getMemberName(member.name);
-      // Prefer checker's field type (already resolved) over AST annotation
-      const checkerFieldType = classType?.fields.get(memberName);
-      const wasmType = checkerFieldType
-        ? mapCheckerTypeToWasmType(ctx, checkerFieldType)
-        : mapType(ctx, member.typeAnnotation);
-      const fieldName = manglePrivateName(decl.name.name, memberName);
-
-      if (!fields.has(fieldName)) {
-        let intrinsic: string | undefined;
-        if (member.decorators) {
-          const intrinsicDecorator = member.decorators.find(
-            (d) => d.name === Decorators.Intrinsic,
-          );
-          if (intrinsicDecorator && intrinsicDecorator.args.length === 1) {
-            intrinsic = intrinsicDecorator.args[0].value;
-          }
-        }
-
-        fields.set(fieldName, {index: fieldIndex++, type: wasmType, intrinsic});
-        fieldTypes.push({type: wasmType, mutable: true});
-      }
-    }
-  }
-
-  // Special handling for String class: reuse pre-allocated type index
-  // The String type is created early in CodegenContext to allow declared
-  // functions with string parameters to work correctly.
-  let structTypeIndex: number;
-  const isStringClass =
-    !!ctx.wellKnownTypes.String &&
-    decl.name.name === ctx.wellKnownTypes.String.name.name;
-
-  if (isStringClass && ctx.stringTypeIndex >= 0) {
-    // Reuse the pre-allocated String type index
-    structTypeIndex = ctx.stringTypeIndex;
-  } else {
-    structTypeIndex = ctx.module.addStructType(fieldTypes, superTypeIndex);
-    if (isStringClass) {
-      ctx.stringTypeIndex = structTypeIndex;
-    }
-  }
-
-  let onType: number[] | undefined;
-  if (decl.isExtension && decl.onType) {
-    // Try to get onType from checker if available
-    const classType =
-      decl.inferredType?.kind === TypeKind.Class
-        ? (decl.inferredType as ClassType)
-        : undefined;
-    onType = classType?.onType
-      ? mapCheckerTypeToWasmType(ctx, classType.onType)
-      : mapType(ctx, decl.onType);
-  }
-
-  const classInfo: ClassInfo = {
-    name: decl.name.name,
-    structTypeIndex,
-    superClass: currentSuperClassInfo?.name,
-    superClassType,
-    fields,
-    methods,
-    vtable,
-    isFinal: decl.isFinal,
-    isExtension: decl.isExtension,
-    onType,
-  };
-  ctx.classes.set(decl.name.name, classInfo);
-  // Also register by struct index to support lookup when names collide
-  ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
-
-  // Update identity-based lookup registration with the complete ClassInfo
-  if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
-    ctx.registerClassInfoByType(decl.inferredType as ClassType, classInfo);
   }
 }
 
@@ -5267,10 +5034,13 @@ function resolveExtensionClassInfo(
   }
 
   // Compute the correct onType using the type context
-  // Try to get onType from checker if available
-  const onType = classType.onType
-    ? mapCheckerTypeToWasmType(ctx, classType.onType)
-    : mapType(ctx, classInfo.onTypeAnnotation!, typeContext);
+  // The checker always sets onType for extension classes
+  if (!classType.onType) {
+    throw new Error(
+      `Extension class ${classInfo.name} missing onType in checker type`,
+    );
+  }
+  const onType = mapCheckerTypeToWasmType(ctx, classType.onType);
 
   // Return a modified ClassInfo with the correct onType
   // Note: We don't mutate the original classInfo to avoid affecting other use sites
