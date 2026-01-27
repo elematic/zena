@@ -825,10 +825,12 @@ export function generateInterfaceVTable(
   if (!classInfo.implements) classInfo.implements = new Map();
 
   // Get the checker's ClassType for identity-based interface lookups
-  const classType =
-    decl.inferredType?.kind === TypeKind.Class
-      ? (decl.inferredType as ClassType)
-      : undefined;
+  if (!decl.inferredType || decl.inferredType.kind !== TypeKind.Class) {
+    throw new Error(
+      `Class declaration ${decl.name.name} missing inferredType from checker`,
+    );
+  }
+  const classType = decl.inferredType as ClassType;
 
   for (let i = 0; i < decl.implements.length; i++) {
     const impl = decl.implements[i];
@@ -838,7 +840,7 @@ export function generateInterfaceVTable(
 
     // Get the checker's InterfaceType for this implementation (identity-based key)
     // The checker's classType.implements is in the same order as decl.implements
-    const checkerInterfaceType = classType?.implements[i];
+    const checkerInterfaceType = classType.implements[i];
 
     // Look up interface info by base name (e.g., "Sequence"), since we don't
     // instantiate generic interfaces separately - they share structure.
@@ -1038,11 +1040,13 @@ export function preRegisterClassStruct(
     !!ctx.wellKnownTypes.String &&
     decl.name.name === ctx.wellKnownTypes.String.name.name;
 
-  // Get the checker's ClassType for this class (if available)
-  const classType =
-    decl.inferredType?.kind === TypeKind.Class
-      ? (decl.inferredType as ClassType)
-      : undefined;
+  // Get the checker's ClassType for this class
+  if (!decl.inferredType || decl.inferredType.kind !== TypeKind.Class) {
+    throw new Error(
+      `Class declaration ${decl.name.name} missing inferredType from checker`,
+    );
+  }
+  const classType = decl.inferredType as ClassType;
 
   // If the superclass is generic, instantiate it first so it gets a lower type index
   if (decl.superClass) {
@@ -1062,20 +1066,21 @@ export function preRegisterClassStruct(
       if (!ctx.classes.has(specializedName)) {
         // Try identity-based lookup via checker's superType first
         let genericSuperDecl: ClassDeclaration | undefined;
-        if (classType?.superType) {
+        if (classType.superType) {
           const superGenericSource =
             classType.superType.genericSource ?? classType.superType;
           genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
         }
         if (genericSuperDecl) {
           // Pass the checker's superType to enable identity-based lookup
+          // superType is guaranteed to exist since genericSuperDecl is only set when superType exists
           instantiateClass(
             ctx,
             genericSuperDecl,
             specializedName,
             superTypeArgs,
             undefined,
-            classType?.superType,
+            classType.superType!,
           );
         }
       }
@@ -1088,7 +1093,7 @@ export function preRegisterClassStruct(
     let currentSuperClassInfo: ClassInfo | undefined;
 
     // Use identity-based lookup via checker's superType
-    if (classType?.superType) {
+    if (classType.superType) {
       currentSuperClassInfo = ctx.getClassInfoByCheckerType(
         classType.superType,
       );
@@ -1216,18 +1221,15 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
   let superTypeIndex: number | undefined;
 
-  // Get the checker's ClassType for this class (if available)
-  const classType =
-    decl.inferredType?.kind === TypeKind.Class
-      ? (decl.inferredType as ClassType)
-      : undefined;
+  // We already asserted decl.inferredType is a ClassType above
+  const classType = decl.inferredType as ClassType;
 
   let currentSuperClassInfo: ClassInfo | undefined;
   let superClassType: ClassType | undefined;
 
   if (decl.superClass) {
     // Try identity-based lookup first using checker's type
-    if (classType?.superType) {
+    if (classType.superType) {
       superClassType = classType.superType;
       currentSuperClassInfo = ctx.getClassInfoByCheckerType(superClassType);
     }
@@ -1256,13 +1258,14 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
           }
           if (genericSuperDecl) {
             // Pass the checker's superType to enable identity-based lookup
+            // superClassType is guaranteed since genericSuperDecl is only set when it exists
             instantiateClass(
               ctx,
               genericSuperDecl,
               superClassName,
               superTypeArgs,
               undefined,
-              superClassType,
+              superClassType!,
             );
           }
         }
@@ -1412,18 +1415,17 @@ export function registerClassMethods(
     return;
   }
 
-  // Identity-based lookup using checker's type
-  let classInfo: ClassInfo | undefined;
-  const classType =
-    decl.inferredType?.kind === TypeKind.Class
-      ? (decl.inferredType as ClassType)
-      : undefined;
-  if (classType) {
-    classInfo = ctx.getClassInfoByCheckerType(classType);
+  // Require inferredType for identity-based lookup
+  if (!decl.inferredType || decl.inferredType.kind !== TypeKind.Class) {
+    throw new Error(
+      `Class ${decl.name.name} missing inferredType in registerClassMethods`,
+    );
   }
+  const classType = decl.inferredType as ClassType;
+  const classInfo = ctx.getClassInfoByCheckerType(classType);
   if (!classInfo) {
     throw new Error(
-      `Class ${decl.name.name} not found in registerClassMethods - missing inferredType`,
+      `Class ${decl.name.name} not found in registerClassMethods`,
     );
   }
 
@@ -1997,12 +1999,15 @@ export function generateClassMethods(
   }
 
   // Identity-based lookup using checker's type
+  // Prefer the explicitly passed checkerType, fall back to decl.inferredType
+  const lookupType =
+    checkerType ??
+    (decl.inferredType?.kind === TypeKind.Class
+      ? (decl.inferredType as ClassType)
+      : undefined);
   let classInfo: ClassInfo | undefined;
-  if (checkerType) {
-    classInfo = ctx.getClassInfoByCheckerType(checkerType);
-  }
-  if (!classInfo && decl.inferredType?.kind === TypeKind.Class) {
-    classInfo = ctx.getClassInfoByCheckerType(decl.inferredType as ClassType);
+  if (lookupType) {
+    classInfo = ctx.getClassInfoByCheckerType(lookupType);
   }
   // Fall back to name-based lookup for generic instantiations created by codegen
   if (!classInfo) {
@@ -2973,18 +2978,23 @@ function mapTypeInternal(
               context,
             );
             if (!ctx.classes.has(specializedName)) {
-              // Note: We don't pass checkerType here because:
-              // 1. type.inferredType may not be the correctly instantiated ClassType
-              // 2. Extension classes should be instantiated via binding-based path,
-              //    not through mapType (which is annotation-based)
-              // 3. The runtime check in instantiateClass will catch any extension
-              //    class that incorrectly reaches this code path
+              // Pass the checker's ClassType for identity-based lookup
+              if (
+                !type.inferredType ||
+                type.inferredType.kind !== TypeKind.Class
+              ) {
+                throw new Error(
+                  `Type annotation ${type.name} missing inferredType from checker`,
+                );
+              }
+              const checkerClassType = type.inferredType as ClassType;
               instantiateClass(
                 ctx,
                 genericDecl,
                 specializedName,
                 type.typeArguments,
                 context,
+                checkerClassType,
               );
             }
             const classInfo = ctx.classes.get(specializedName)!;
@@ -3200,18 +3210,17 @@ export function instantiateClass(
   decl: ClassDeclaration,
   specializedName: string,
   typeArguments: TypeAnnotation[],
-  parentContext?: Map<string, TypeAnnotation>,
+  parentContext: Map<string, TypeAnnotation> | undefined,
   /**
-   * The checker's ClassType for this instantiation, if available.
-   * When provided, enables identity-based lookup via getClassInfoByCheckerType().
+   * The checker's ClassType for this instantiation.
+   * Enables identity-based lookup via getClassInfoByCheckerType().
    * With type interning, the same checker ClassType is shared across all uses of
    * identical instantiations (e.g., all Box<i32> references share one ClassType).
    *
-   * For extension classes, providing checkerType enables ArrayType interning
-   * (the checker's interned ArrayType is used for onType). Without checkerType,
-   * the annotation-based path still works but may create duplicate WASM types.
+   * For extension classes, checkerType enables ArrayType interning
+   * (the checker's interned ArrayType is used for onType).
    */
-  checkerType?: ClassType,
+  checkerType: ClassType,
 ) {
   // Guard against duplicate instantiation
   const existingInfo = ctx.classes.get(specializedName);
@@ -3219,19 +3228,50 @@ export function instantiateClass(
     // Even if already instantiated, register the new checkerType for identity lookup.
     // This handles cases where the same logical class is accessed via different
     // ClassType objects (due to substituteType creating new objects without interning).
-    if (checkerType) {
-      ctx.registerClassInfoByType(checkerType, existingInfo);
-    }
+    ctx.registerClassInfoByType(checkerType, existingInfo);
     return;
   }
 
   const context = new Map<string, TypeAnnotation>();
+  // Build checker-type-based type parameter map for substitution
+  const typeParamMap = new Map<string, Type>();
   if (decl.typeParameters) {
     decl.typeParameters.forEach((param, index) => {
       const arg = typeArguments[index];
       context.set(param.name, resolveAnnotation(arg, parentContext));
+      // Use the annotation's inferredType for checker-based substitution
+      if (arg.inferredType) {
+        // If the arg's inferredType is itself a type parameter, we need to resolve it
+        // through the parent context (which maps type param names to annotations with inferredTypes)
+        let resolvedArgType = arg.inferredType;
+        if (resolvedArgType.kind === TypeKind.TypeParameter && parentContext) {
+          const paramName = (resolvedArgType as TypeParameterType).name;
+          const parentAnnotation = parentContext.get(paramName);
+          if (parentAnnotation?.inferredType) {
+            resolvedArgType = parentAnnotation.inferredType;
+          }
+        }
+        typeParamMap.set(param.name, resolvedArgType);
+      }
     });
   }
+
+  // Helper to resolve a type annotation's inferredType with type parameter substitution
+  const resolveType = (annotation: TypeAnnotation): number[] => {
+    if (!annotation.inferredType) {
+      throw new Error(
+        `Type annotation missing inferredType in instantiateClass for ${specializedName}`,
+      );
+    }
+    if (typeContainsTypeParameter(annotation.inferredType)) {
+      const substituted = ctx.checkerContext.substituteTypeParams(
+        annotation.inferredType,
+        typeParamMap,
+      );
+      return mapCheckerTypeToWasmType(ctx, substituted);
+    }
+    return mapCheckerTypeToWasmType(ctx, annotation.inferredType);
+  };
 
   // Ensure all nested types within the checker's ClassType are instantiated.
   // This handles superclasses, implemented interfaces, mixins, onTypes, field types,
@@ -3285,13 +3325,14 @@ export function instantiateClass(
           if (genericSuperDecl) {
             const pendingCountBefore = ctx.pendingMethodGenerations.length;
             // Pass the checker's superType to enable identity-based lookup
+            // superClassType is guaranteed since genericSuperDecl is only set when it exists
             instantiateClass(
               ctx,
               genericSuperDecl,
               superClassName,
               superTypeArgs,
               context,
-              superClassType,
+              superClassType!,
             );
             // Execute any pending method registrations from the superclass
             // so that methods and vtable are available for inheritance
@@ -3342,9 +3383,8 @@ export function instantiateClass(
     // Two paths:
     // 1. Identity-based (checkerType provided): Use checkerType.onType which has
     //    substituted type arguments and interned ArrayType for consistent WASM indices.
-    // 2. Annotation-based (no checkerType): Use mapType on the declaration's onType
-    //    annotation with the type context. This path may create duplicate array types
-    //    but is needed for annotation-driven instantiation (e.g., method return types).
+    // 2. Checker-type-based (no checkerType): Use the annotation's inferredType with
+    //    type parameter substitution via resolveType.
     if (checkerType) {
       // When checkerType is provided, onType MUST be set (substituteType ensures this)
       if (!checkerType.onType) {
@@ -3355,8 +3395,8 @@ export function instantiateClass(
       }
       onType = mapCheckerTypeToWasmType(ctx, checkerType.onType);
     } else {
-      // Annotation-based path - compute onType from declaration
-      onType = mapType(ctx, decl.onType, context);
+      // Use the annotation's inferredType with type parameter substitution
+      onType = resolveType(decl.onType);
     }
   } else {
     // Check for superclass and inherit fields
@@ -3388,32 +3428,10 @@ export function instantiateClass(
       fieldTypes.push({type: [ValType.eqref], mutable: true});
     }
 
-    // Get resolved field types from checker if available (preferred path)
-    // This ensures proper type interning and avoids duplicate WASM types.
-    const resolvedFieldTypes =
-      checkerType && ctx.checkerContext
-        ? ctx.checkerContext.resolveFieldTypes(checkerType)
-        : undefined;
-
     for (const member of decl.body) {
       if (member.type === NodeType.FieldDefinition) {
         const memberName = getMemberName(member.name);
-
-        // Try to use resolved checker type (identity-based path)
-        let wasmType: number[];
-        if (resolvedFieldTypes) {
-          const checkerFieldType = resolvedFieldTypes.get(memberName);
-          if (checkerFieldType) {
-            wasmType = mapCheckerTypeToWasmType(ctx, checkerFieldType);
-          } else {
-            // Field not found in checker types - fall back to annotation
-            wasmType = mapType(ctx, member.typeAnnotation, context);
-          }
-        } else {
-          // No checker context - fall back to annotation-based path
-          wasmType = mapType(ctx, member.typeAnnotation, context);
-        }
-
+        const wasmType = resolveType(member.typeAnnotation);
         const fieldName = manglePrivateName(specializedName, memberName);
         fields.set(fieldName, {index: fieldIndex++, type: wasmType});
         fieldTypes.push({type: wasmType, mutable: true});
@@ -3566,13 +3584,6 @@ export function instantiateClass(
       } as MethodDefinition);
     }
 
-    // Get resolved method types from checker if available (preferred path)
-    // This ensures proper type interning and avoids duplicate WASM types.
-    const resolvedMethodTypes =
-      checkerType && ctx.checkerContext
-        ? ctx.checkerContext.resolveMethodTypes(checkerType)
-        : undefined;
-
     for (const member of members) {
       if (member.type === NodeType.MethodDefinition) {
         if (member.typeParameters && member.typeParameters.length > 0) {
@@ -3612,15 +3623,8 @@ export function instantiateClass(
         if (!member.isStatic && !(decl.isExtension && methodName === '#new')) {
           params.push(thisType);
         }
-        // Prefer checker's method type (already resolved) over AST annotations
-        const checkerMethodType = resolvedMethodTypes?.get(methodName);
-        for (let i = 0; i < member.params.length; i++) {
-          const param = member.params[i];
-          const checkerParamType = checkerMethodType?.parameters[i];
-          const pType = checkerParamType
-            ? mapCheckerTypeToWasmType(ctx, checkerParamType)
-            : mapType(ctx, param.typeAnnotation, context);
-          params.push(pType);
+        for (const param of member.params) {
+          params.push(resolveType(param.typeAnnotation));
         }
 
         let results: number[][] = [];
@@ -3628,19 +3632,13 @@ export function instantiateClass(
           if (decl.isExtension && onType) {
             results = [onType];
           } else if (member.isStatic && member.returnType) {
-            const checkerReturnType = checkerMethodType?.returnType;
-            const mapped = checkerReturnType
-              ? mapCheckerTypeToWasmType(ctx, checkerReturnType)
-              : mapType(ctx, member.returnType, context);
+            const mapped = resolveType(member.returnType);
             if (mapped.length > 0) results = [mapped];
           } else {
             results = [];
           }
         } else if (member.returnType) {
-          const checkerReturnType = checkerMethodType?.returnType;
-          const mapped = checkerReturnType
-            ? mapCheckerTypeToWasmType(ctx, checkerReturnType)
-            : mapType(ctx, member.returnType, context);
+          const mapped = resolveType(member.returnType);
           if (mapped.length > 0) results = [mapped];
         } else {
           results = [];
@@ -3664,12 +3662,7 @@ export function instantiateClass(
         });
       } else if (member.type === NodeType.AccessorDeclaration) {
         const propName = getMemberName(member.name);
-        // Try to get the property type from the checker's getter method
-        const getterMethodName = getGetterName(propName);
-        const checkerGetterType = resolvedMethodTypes?.get(getterMethodName);
-        const propType = checkerGetterType
-          ? mapCheckerTypeToWasmType(ctx, checkerGetterType.returnType)
-          : mapType(ctx, member.typeAnnotation, context);
+        const propType = resolveType(member.typeAnnotation);
 
         // Getter
         if (member.getter) {
@@ -3779,12 +3772,7 @@ export function instantiateClass(
           }
 
           const propName = getMemberName(member.name);
-          // Try to get the property type from checker's resolved field types
-          const checkerGetterName = getGetterName(propName);
-          const checkerGetterType = resolvedMethodTypes?.get(checkerGetterName);
-          const propType = checkerGetterType
-            ? mapCheckerTypeToWasmType(ctx, checkerGetterType.returnType)
-            : mapType(ctx, member.typeAnnotation, context);
+          const propType = resolveType(member.typeAnnotation);
 
           // Register Getter
           const regGetterName = getGetterName(propName);

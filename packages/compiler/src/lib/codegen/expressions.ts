@@ -6363,7 +6363,7 @@ function generateTaggedTemplateExpression(
   }
   // Prefer identity-based lookup using checker's type
   let tsaClassInfo: ClassInfo | undefined;
-  if (tsaDecl.inferredType?.kind === TypeKind.Class) {
+  if (tsaDecl.inferredType!.kind === TypeKind.Class) {
     tsaClassInfo = ctx.getClassInfoByCheckerType(
       tsaDecl.inferredType as ClassType,
     );
