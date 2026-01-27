@@ -156,7 +156,7 @@ export function registerFunction(
   if (checkerFuncType) {
     mappedReturn = mapCheckerTypeToWasmType(ctx, checkerFuncType.returnType);
   } else if (func.returnType) {
-    mappedReturn = mapType(ctx, func.returnType);
+    mappedReturn = mapCheckerTypeToWasmType(ctx, func.returnType.inferredType!);
   } else {
     // Setup temporary scope for inference
     const savedContext = ctx.saveFunctionContext();

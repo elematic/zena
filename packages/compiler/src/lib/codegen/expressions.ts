@@ -71,12 +71,10 @@ import {
   getSpecializedName,
   instantiateClass,
   mapCheckerTypeToWasmType,
-  mapType,
   typeToTypeAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {
-  inferReturnTypeFromBlock,
   instantiateGenericFunction,
   instantiateGenericMethod,
 } from './functions.js';
@@ -5353,44 +5351,13 @@ function generateFunctionExpression(
   let paramTypes: number[][];
   let returnType: number[];
 
-  // Use checker's inferredType when available (identity-based), fall back to AST
-  if (expr.inferredType && expr.inferredType.kind === TypeKind.Function) {
-    const funcType = expr.inferredType as FunctionType;
-    paramTypes = funcType.parameters.map((t) =>
-      mapCheckerTypeToWasmType(ctx, t),
-    );
-    returnType = mapCheckerTypeToWasmType(ctx, funcType.returnType);
-  } else {
-    paramTypes = expr.params.map((p) => mapType(ctx, p.typeAnnotation));
-    if (expr.returnType) {
-      returnType = mapType(ctx, expr.returnType);
-    } else {
-      // Simple inference: if body is expression, infer type.
-      // If block, assume void for now or implement block inference.
-      if (expr.body.type !== NodeType.BlockStatement) {
-        // We can't easily infer here without generating the body.
-        // But we need the signature BEFORE generating the body.
-        // This is a circular dependency if we rely on inference.
-        // For now, default to i32 if not specified? Or error?
-        // Let's assume i32 for expression bodies if not annotated, to match simple lambdas.
-        throw new Error(
-          'Missing return type annotation or inference for function expression',
-        );
-      } else {
-        // Setup temporary scope for inference
-        const savedContext = ctx.saveFunctionContext();
-        ctx.pushFunctionScope();
-
-        expr.params.forEach((p, i) => {
-          ctx.defineParam(p.name.name, paramTypes[i]);
-        });
-
-        returnType = inferReturnTypeFromBlock(ctx, expr.body as BlockStatement);
-
-        ctx.restoreFunctionContext(savedContext);
-      }
-    }
+  // Use checker's inferredType (identity-based)
+  if (!expr.inferredType || expr.inferredType.kind !== TypeKind.Function) {
+    throw new Error('Function expression missing inferredType');
   }
+  const funcType = expr.inferredType as FunctionType;
+  paramTypes = funcType.parameters.map((t) => mapCheckerTypeToWasmType(ctx, t));
+  returnType = mapCheckerTypeToWasmType(ctx, funcType.returnType);
 
   ctx.currentTypeContext = oldTypeContext;
 

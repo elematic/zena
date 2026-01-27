@@ -4163,7 +4163,11 @@ function applyMixin(
   // Add mixin fields
   for (const member of mixinDecl.body) {
     if (member.type === NodeType.FieldDefinition) {
-      const wasmType = mapType(ctx, member.typeAnnotation);
+      // Use checker's inferredType for identity-based resolution
+      const wasmType = mapCheckerTypeToWasmType(
+        ctx,
+        member.typeAnnotation.inferredType!,
+      );
       const fieldName = manglePrivateName(
         intermediateName,
         getMemberName(member.name),

@@ -20,7 +20,7 @@ import {
   preRegisterInterface,
   defineInterfaceMethods,
   getMemberName,
-  mapType,
+  mapCheckerTypeToWasmType,
   typeToTypeAnnotation,
 } from './classes.js';
 import {CodegenContext} from './context.js';
@@ -284,10 +284,15 @@ export class CodeGenerator {
               (varDecl as any).exportName,
             );
           } else {
-            // Global variable
-            const type = varDecl.typeAnnotation
-              ? mapType(this.#ctx, varDecl.typeAnnotation)
-              : inferType(this.#ctx, varDecl.init);
+            // Global variable - use checker's inferredType
+            const type = varDecl.inferredType
+              ? mapCheckerTypeToWasmType(this.#ctx, varDecl.inferredType)
+              : varDecl.typeAnnotation
+                ? mapCheckerTypeToWasmType(
+                    this.#ctx,
+                    varDecl.typeAnnotation.inferredType!,
+                  )
+                : inferType(this.#ctx, varDecl.init);
             let initBytes: number[] = [];
 
             // Default initialization
