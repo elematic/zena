@@ -13,6 +13,7 @@ import {
   type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
+import {TypeKind, type InterfaceType} from '../types.js';
 import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
 import {
   decodeTypeIndex,
@@ -27,6 +28,7 @@ import {
   generateAdaptedArgument,
   isAdaptable,
   boxPrimitive,
+  isInterfaceSubtypeByType,
 } from './expressions.js';
 
 export function generateStatement(
@@ -317,71 +319,47 @@ export function generateLocalVariableDeclaration(
     }
 
     // Check for interface boxing
-    if (
-      decl.typeAnnotation.type === NodeType.TypeAnnotation &&
-      ctx.interfaces.has(decl.typeAnnotation.name)
-    ) {
-      const initType = inferType(ctx, decl.init);
-      const typeIndex = decodeTypeIndex(initType);
-      const classInfo = getClassFromTypeIndex(ctx, typeIndex);
+    if (resolvedType?.kind === TypeKind.Interface) {
+      const targetInterfaceType = resolvedType as InterfaceType;
+      const interfaceInfo =
+        ctx.getInterfaceInfoByCheckerType(targetInterfaceType);
 
-      if (classInfo && classInfo.implements) {
-        const baseName = decl.typeAnnotation.name;
-        const interfaceInfo = ctx.interfaces.get(baseName)!;
+      if (interfaceInfo) {
+        const initType = inferType(ctx, decl.init);
+        const typeIndex = decodeTypeIndex(initType);
+        const classInfo = getClassFromTypeIndex(ctx, typeIndex);
 
-        // First try exact name match
-        let implInfo = classInfo.implements.get(baseName);
+        if (classInfo && classInfo.implements) {
+          // Identity-based lookup using the checker's InterfaceType
+          let implInfo = classInfo.implements.get(targetInterfaceType);
 
-        // If not found, try to find by generic interface match
-        // e.g., looking for "Box" should match "Box<i32>"
-        if (!implInfo) {
-          for (const [name, info] of classInfo.implements) {
-            // Check if name is a specialization of baseName
-            if (name.startsWith(baseName + '<')) {
-              implInfo = info;
-              break;
-            }
-          }
-        }
-
-        if (!implInfo) {
-          // Search for subtype
-          for (const [name, info] of classInfo.implements) {
-            let currentName: string | undefined = name;
-            // Extract base name from specialized name for comparison
-            const implBaseName = currentName.includes('<')
-              ? currentName.split('<')[0]
-              : currentName;
-            while (currentName) {
-              const checkName = currentName.includes('<')
-                ? currentName.split('<')[0]
-                : currentName;
-              if (checkName === baseName) {
+          // If not found, try to find by interface subtype
+          if (!implInfo) {
+            for (const [implInterface, info] of classInfo.implements) {
+              if (
+                isInterfaceSubtypeByType(
+                  ctx,
+                  implInterface,
+                  targetInterfaceType,
+                )
+              ) {
                 implInfo = info;
                 break;
               }
-              const currentInfo = ctx.interfaces.get(implBaseName);
-              currentName = currentInfo?.parent;
             }
-            if (implInfo) break;
           }
-        }
 
-        if (implInfo) {
-          body.push(
-            Opcode.global_get,
-            ...WasmModule.encodeSignedLEB128(implInfo.vtableGlobalIndex),
-          );
-          body.push(
-            0xfb,
-            GcOpcode.struct_new,
-            ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
-          );
-        } else {
-          // Fallback or error?
-          // If we are here, it means we think it implements the interface but we can't find the vtable.
-          // This might happen if the type checker passed it but we missed something in codegen.
-          // For now, let it fall through and likely trap or fail validation.
+          if (implInfo) {
+            body.push(
+              Opcode.global_get,
+              ...WasmModule.encodeSignedLEB128(implInfo.vtableGlobalIndex),
+            );
+            body.push(
+              0xfb,
+              GcOpcode.struct_new,
+              ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+            );
+          }
         }
       }
     }

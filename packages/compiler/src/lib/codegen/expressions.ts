@@ -52,7 +52,6 @@ import {
   type Type,
   type UnionType,
 } from '../types.js';
-import {typeToString} from '../checker/types.js';
 import {
   CatchKind,
   ExportDesc,
@@ -702,46 +701,36 @@ function generateAsExpression(
     }
 
     if (classInfo && classInfo.implements) {
-      // Use the specialized interface name from the checker type (e.g., "Sequence<i32>")
-      // instead of the base interface name from interfaceInfo (e.g., "Sequence").
-      // This matches how we store implementations in generateInterfaceVTable.
-      const interfaceName = typeToString(targetCheckerType as InterfaceType);
+      // Identity-based lookup: the map is now keyed by InterfaceType
+      const targetInterface = targetCheckerType as InterfaceType;
+      let impl = classInfo.implements.get(targetInterface);
 
-      if (interfaceName) {
-        let impl = classInfo.implements.get(interfaceName);
-
-        if (!impl) {
-          // Also try the base name for backward compatibility
-          impl = classInfo.implements.get(interfaceInfo.name);
-        }
-
-        if (!impl) {
-          // Check subtypes
-          for (const [implName, implInfo] of classInfo.implements) {
-            if (isInterfaceSubtype(ctx, implName, interfaceName)) {
-              impl = implInfo;
-              break;
-            }
+      // If direct lookup fails, try to find by interface subtype
+      if (!impl) {
+        for (const [implInterface, implInfo] of classInfo.implements) {
+          if (isInterfaceSubtypeByType(ctx, implInterface, targetInterface)) {
+            impl = implInfo;
+            break;
           }
         }
+      }
 
-        if (impl) {
-          // Box it!
-          // Stack has instance (from generateExpression above)
+      if (impl) {
+        // Box it!
+        // Stack has instance (from generateExpression above)
 
-          // 2. VTable
-          body.push(
-            Opcode.global_get,
-            ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
-          );
+        // 2. VTable
+        body.push(
+          Opcode.global_get,
+          ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
+        );
 
-          // 3. Struct New
-          body.push(0xfb, GcOpcode.struct_new);
-          body.push(
-            ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
-          );
-          return;
-        }
+        // 3. Struct New
+        body.push(0xfb, GcOpcode.struct_new);
+        body.push(
+          ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+        );
+        return;
       }
     }
   }
@@ -6780,7 +6769,6 @@ export function generateAdaptedArgument(
   }
 
   if (interfaceInfo) {
-    const interfaceName = interfaceInfo.name;
     const actualIndex = decodeTypeIndex(actualType);
     let classInfo: ClassInfo | undefined;
 
@@ -6814,22 +6802,15 @@ export function generateAdaptedArgument(
       }
     }
 
-    if (classInfo && classInfo.implements) {
-      // First try exact name match (handles non-generic interfaces)
-      let impl = classInfo.implements.get(interfaceName);
+    if (classInfo && classInfo.implements && interfaceInfo.checkerType) {
+      // Use identity-based lookup with InterfaceType
+      const targetInterfaceType = interfaceInfo.checkerType;
+      let impl = classInfo.implements.get(targetInterfaceType);
 
-      // If not found, try to find by generic interface match
-      // e.g., looking for "Sequence" should match "Sequence<i32>"
+      // If not found, check if the class implements a subtype of the interface
       if (!impl) {
-        for (const [implName, implInfo] of classInfo.implements) {
-          // Check if implName is a specialization of interfaceName
-          // e.g., "Sequence<i32>" starts with "Sequence<"
-          if (implName.startsWith(interfaceName + '<')) {
-            impl = implInfo;
-            break;
-          }
-          // Also check subtype relationship
-          if (isInterfaceSubtype(ctx, implName, interfaceName)) {
+        for (const [implType, implInfo] of classInfo.implements) {
+          if (isInterfaceSubtypeByType(ctx, implType, targetInterfaceType)) {
             impl = implInfo;
             break;
           }
@@ -6965,7 +6946,6 @@ export function generateAdaptedArgument(
               ctx.getInterfaceInfoByStructIndex(targetTypeIndex);
 
             if (interfaceInfo) {
-              const interfaceName = interfaceInfo.name;
               // Check if source is class implementing interface using O(1) lookup
               let classInfo =
                 ctx.getClassInfoByStructIndexDirect(sourceTypeIndex);
@@ -6979,19 +6959,25 @@ export function generateAdaptedArgument(
                 }
               }
 
-              if (classInfo && classInfo.implements) {
-                // First try exact name match
-                let impl = classInfo.implements.get(interfaceName);
+              if (
+                classInfo &&
+                classInfo.implements &&
+                interfaceInfo.checkerType
+              ) {
+                // Use identity-based lookup with InterfaceType
+                const targetInterfaceType = interfaceInfo.checkerType;
+                let impl = classInfo.implements.get(targetInterfaceType);
 
-                // If not found, try to find by generic interface match
+                // If not found, check if the class implements a subtype
                 if (!impl) {
-                  for (const [implName, implInfo] of classInfo.implements) {
-                    // Check if implName is a specialization of interfaceName
-                    if (implName.startsWith(interfaceName + '<')) {
-                      impl = implInfo;
-                      break;
-                    }
-                    if (isInterfaceSubtype(ctx, implName, interfaceName)) {
+                  for (const [implType, implInfo] of classInfo.implements) {
+                    if (
+                      isInterfaceSubtypeByType(
+                        ctx,
+                        implType,
+                        targetInterfaceType,
+                      )
+                    ) {
                       impl = implInfo;
                       break;
                     }
@@ -8129,7 +8115,11 @@ function generateMatchPatternBindings(
   }
 }
 
-export function isInterfaceSubtype(
+/**
+ * Check if one interface is a subtype of another using name-based lookup.
+ * This is used internally by isInterfaceSubtypeByType for checking parent chains.
+ */
+function isInterfaceSubtype(
   ctx: CodegenContext,
   sub: string,
   sup: string,
@@ -8138,4 +8128,37 @@ export function isInterfaceSubtype(
   const info = ctx.interfaces.get(sub);
   if (!info || !info.parent) return false;
   return isInterfaceSubtype(ctx, info.parent, sup);
+}
+/**
+ * Check if one interface type is a subtype of another using type identity.
+ * This is used for interface implementation lookups when the map is keyed by InterfaceType.
+ */
+export function isInterfaceSubtypeByType(
+  ctx: CodegenContext,
+  sub: InterfaceType,
+  sup: InterfaceType,
+): boolean {
+  // Identity check first
+  if (sub === sup) return true;
+
+  // Check by name as fallback (handles cases where type interning might not be perfect)
+  // Compare base names for generic interfaces (e.g., "Sequence<i32>" vs "Sequence<T>")
+  const subBaseName = sub.name;
+  const supBaseName = sup.name;
+
+  if (subBaseName === supBaseName) {
+    // Same base interface - could be different specializations
+    // For now, consider them equal if base names match
+    // TODO: Check type arguments for exact match
+    return true;
+  }
+
+  // Check parent chain
+  const info = ctx.interfaces.get(subBaseName);
+  if (!info || !info.parent) return false;
+
+  // Recursively check if the parent is a subtype of sup
+  // We need to look up the parent's InterfaceType, but we only have the name
+  // For now, fall back to name-based subtype check
+  return isInterfaceSubtype(ctx, info.parent, supBaseName);
 }

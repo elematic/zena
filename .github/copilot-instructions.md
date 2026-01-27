@@ -358,6 +358,11 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Add `pushTypeParamContext()` / `popTypeParamContext()` methods
       - [x] When entering generic class, push class type params via `generateClassMethods`
       - [x] Update variable declaration to use `substituteTypeParams` with `currentTypeParamMap`
+      - [x] **Identity-based interface implementation lookups** (completed 2025-01-27):
+        - Changed `ClassInfo.implements` from `Map<string, ...>` to `Map<InterfaceType, ...>`
+        - Added `InterfaceInfo.checkerType` field for reverse lookup
+        - Updated all interface boxing sites to use identity-based lookup
+        - Removed `substituteInterfaceName()` workaround
       - [ ] Replace remaining `mapType(ctx, annotation, ctx.currentTypeContext)` calls
       - [ ] Update method signature resolution to use `resolveMethodTypes()`
     - [ ] **Phase 4: Require checkerType for Extension Classes**

@@ -1,5 +1,5 @@
 import type {TypeAnnotation} from '../ast.js';
-import type {ClassType} from '../types.js';
+import type {ClassType, InterfaceType} from '../types.js';
 
 export interface ClassInfo {
   name: string;
@@ -28,7 +28,11 @@ export interface ClassInfo {
   vtable?: string[];
   vtableTypeIndex?: number;
   vtableGlobalIndex?: number;
-  implements?: Map<string, {vtableGlobalIndex: number}>; // interfaceName -> info
+  /**
+   * Maps implemented interfaces to their vtable info.
+   * Keyed by InterfaceType (identity-based) for proper lookup across modules.
+   */
+  implements?: Map<InterfaceType, {vtableGlobalIndex: number}>;
   isFinal?: boolean;
   isExtension?: boolean;
   /**
@@ -64,6 +68,11 @@ export interface InterfaceInfo {
   >; // name -> {vtableIndex, typeIndex, returnType}
   fields: Map<string, {index: number; typeIndex: number; type: number[]}>; // name -> {vtableIndex, typeIndex, type}
   parent?: string;
+  /**
+   * The checker's InterfaceType for this interface, if available.
+   * Enables identity-based lookups in ClassInfo.implements.
+   */
+  checkerType?: InterfaceType;
 }
 
 export interface LocalInfo {

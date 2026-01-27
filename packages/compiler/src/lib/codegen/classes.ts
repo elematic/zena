@@ -70,45 +70,13 @@ import {
   getHeapTypeIndex,
   boxPrimitive,
   unboxPrimitive,
-  isInterfaceSubtype,
+  isInterfaceSubtypeByType,
 } from './expressions.js';
 import {
   generateBlockStatement,
   generateFunctionStatement,
 } from './statements.js';
 import type {ClassInfo, InterfaceInfo} from './types.js';
-
-/**
- * Substitutes type parameters in an interface name.
- * For example, given `Sequence<T>` and a context mapping T -> i32,
- * this returns "Sequence<i32>".
- */
-function substituteInterfaceName(
-  impl: TypeAnnotation,
-  typeContext?: Map<string, TypeAnnotation>,
-): string {
-  if (impl.type !== NodeType.TypeAnnotation) {
-    return '';
-  }
-
-  // No type arguments, just return the base name
-  if (!impl.typeArguments || impl.typeArguments.length === 0) {
-    return impl.name;
-  }
-
-  // Substitute each type argument
-  const substitutedArgs = impl.typeArguments.map((arg) => {
-    if (arg.type === NodeType.TypeAnnotation && typeContext?.has(arg.name)) {
-      const substituted = typeContext.get(arg.name)!;
-      // Recursively substitute in case the substituted type has its own type arguments
-      return substituteInterfaceName(substituted, typeContext);
-    }
-    // Recursively handle nested type arguments
-    return substituteInterfaceName(arg, typeContext);
-  });
-
-  return `${impl.name}<${substitutedArgs.join(', ')}>`;
-}
 
 /**
  * Pre-registers an interface by reserving type indices for the fat pointer struct
@@ -182,6 +150,8 @@ export function preRegisterInterface(
   // Register type → struct index for identity-based lookups
   if (decl.inferredType && decl.inferredType.kind === TypeKind.Interface) {
     const interfaceType = decl.inferredType as InterfaceType;
+    // Store the checker type for identity-based lookups in ClassInfo.implements
+    interfaceInfo.checkerType = interfaceType;
     ctx.setInterfaceStructIndex(interfaceType, structTypeIndex);
     // Also register the bundled name for typeToTypeAnnotation lookups
     ctx.setInterfaceBundledName(interfaceType, decl.name.name);
@@ -708,43 +678,46 @@ export function generateTrampoline(
         );
 
         if (interfaceInfo) {
-          let interfaceName: string | undefined;
-          for (const [name, info] of ctx.interfaces) {
-            if (info === interfaceInfo) {
-              interfaceName = name;
-              break;
-            }
-          }
+          const resultClassInfo = getClassFromTypeIndex(ctx, classTypeIndex);
 
-          if (interfaceName) {
-            const resultClassInfo = getClassFromTypeIndex(ctx, classTypeIndex);
+          if (resultClassInfo && resultClassInfo.implements) {
+            let impl: {vtableGlobalIndex: number} | undefined;
 
-            if (resultClassInfo && resultClassInfo.implements) {
-              let impl = resultClassInfo.implements.get(interfaceName);
+            // Identity-based lookup using interfaceInfo.checkerType
+            if (interfaceInfo.checkerType) {
+              impl = resultClassInfo.implements.get(interfaceInfo.checkerType);
 
+              // If not found, try to find by interface subtype
               if (!impl) {
-                for (const [implName, implInfo] of resultClassInfo.implements) {
-                  if (isInterfaceSubtype(ctx, implName, interfaceName)) {
+                for (const [
+                  implInterface,
+                  implInfo,
+                ] of resultClassInfo.implements) {
+                  if (
+                    isInterfaceSubtypeByType(
+                      ctx,
+                      implInterface,
+                      interfaceInfo.checkerType,
+                    )
+                  ) {
                     impl = implInfo;
                     break;
                   }
                 }
               }
+            }
 
-              if (impl) {
-                // Box it!
-                body.push(
-                  Opcode.global_get,
-                  ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
-                );
+            if (impl) {
+              // Box it!
+              body.push(
+                Opcode.global_get,
+                ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
+              );
 
-                body.push(0xfb, GcOpcode.struct_new);
-                body.push(
-                  ...WasmModule.encodeSignedLEB128(
-                    interfaceInfo.structTypeIndex,
-                  ),
-                );
-              }
+              body.push(0xfb, GcOpcode.struct_new);
+              body.push(
+                ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+              );
             }
           }
         }
@@ -847,14 +820,21 @@ export function generateInterfaceVTable(
 
   if (!classInfo.implements) classInfo.implements = new Map();
 
-  for (const impl of decl.implements) {
+  // Get the checker's ClassType for identity-based interface lookups
+  const classType =
+    decl.inferredType?.kind === TypeKind.Class
+      ? (decl.inferredType as ClassType)
+      : undefined;
+
+  for (let i = 0; i < decl.implements.length; i++) {
+    const impl = decl.implements[i];
     if (impl.type !== NodeType.TypeAnnotation) {
       throw new Error('Interfaces cannot be union types');
     }
-    // Substitute type parameters in the interface name for generic classes
-    // e.g., "Sequence<T>" -> "Sequence<boolean>" when T=boolean
-    // This name is used as the key in classInfo.implements for correct lookup
-    const interfaceName = substituteInterfaceName(impl, typeContext);
+
+    // Get the checker's InterfaceType for this implementation (identity-based key)
+    // The checker's classType.implements is in the same order as decl.implements
+    const checkerInterfaceType = classType?.implements[i];
 
     // Look up interface info by base name (e.g., "Sequence"), since we don't
     // instantiate generic interfaces separately - they share structure.
@@ -909,7 +889,16 @@ export function generateInterfaceVTable(
       initExpr,
     );
 
-    classInfo.implements.set(interfaceName, {vtableGlobalIndex: globalIndex});
+    // Store by InterfaceType identity - requires checker type
+    if (!checkerInterfaceType) {
+      throw new Error(
+        `Missing checker InterfaceType for ${classInfo.name} implementing ${impl.name}. ` +
+          `Ensure class declaration has inferredType set by the checker.`,
+      );
+    }
+    classInfo.implements.set(checkerInterfaceType, {
+      vtableGlobalIndex: globalIndex,
+    });
   }
 }
 

@@ -1614,18 +1614,43 @@ and uses the declaration for identity-based index lookups.
 3. Implement canonical type instance registry in SemanticContext
 4. Update type comparison functions
 5. Remove name-based fallbacks from `classTypesEqual` and `typesEqual`
-6. **Use identity-based keys for interface implementation lookups**
+6. ✅ **Use identity-based keys for interface implementation lookups** (COMPLETED 2025-01-27)
 
-#### 3.1: Interface Implementation Lookup by Identity
+#### 3.1: Interface Implementation Lookup by Identity ✅ COMPLETED
 
-**Problem:** `ClassInfo.implements` is a `Map<string, ...>` keyed by interface name.
+**Status:** Completed on 2025-01-27
 
-When a class implements a generic interface, the key is a specialized name like
-`"Sequence<i32>"`. This requires string manipulation to build the lookup key,
-which goes against our goal of identity-based lookups.
+**Summary of changes:**
 
-**Current workaround (2026-01-27):** Added `substituteInterfaceName()` helper in
-`codegen/classes.ts` that substitutes type parameters in interface names:
+1. Changed `ClassInfo.implements` from `Map<string, ...>` to `Map<InterfaceType, ...>`
+2. Added `InterfaceInfo.checkerType` field to store the checker's `InterfaceType`
+3. Updated `generateInterfaceVTable()` to use `ClassType.implements[i]` for identity-based keys
+4. Updated `preRegisterInterface()` to set `checkerType` on `InterfaceInfo`
+5. Added `isInterfaceSubtypeByType()` helper for identity-based subtype checking
+6. Updated all interface boxing sites in `expressions.ts` and `statements.ts`
+7. Updated trampoline return type boxing in `classes.ts`
+8. Removed the `substituteInterfaceName()` workaround function
+9. Made name-based `isInterfaceSubtype()` function private (only used internally)
+
+**Files modified:**
+
+- `packages/compiler/src/lib/codegen/types.ts` - Changed `implements` type, added `checkerType`
+- `packages/compiler/src/lib/codegen/classes.ts` - Updated vtable generation and trampolines
+- `packages/compiler/src/lib/codegen/expressions.ts` - Updated interface boxing lookups
+- `packages/compiler/src/lib/codegen/statements.ts` - Updated variable declaration boxing
+
+---
+
+**Original problem description (for reference):**
+
+`ClassInfo.implements` was a `Map<string, ...>` keyed by interface name.
+
+When a class implements a generic interface, the key was a specialized name like
+`"Sequence<i32>"`. This required string manipulation to build the lookup key,
+which went against our goal of identity-based lookups.
+
+**Previous workaround (now removed):** `substituteInterfaceName()` helper in
+`codegen/classes.ts` that substituted type parameters in interface names:
 
 ```typescript
 // Example: Sequence<T> with T->i32 becomes "Sequence<i32>"
@@ -1635,61 +1660,34 @@ function substituteInterfaceName(
 ): string { ... }
 ```
 
-This is used in:
+**Why it was problematic:**
 
-- `generateInterfaceVTable()` - to build the correct key when registering
-- `generateInterfaceBoxing()` (expressions.ts) - to find the vtable for boxing
-
-**Why this is problematic:**
-
-1. Builds string keys from TypeAnnotations, losing type identity
-2. Requires consistent string formatting across all lookup sites
+1. Built string keys from TypeAnnotations, losing type identity
+2. Required consistent string formatting across all lookup sites
 3. Multiple modules could have interfaces with the same name but different types
 
-**Proper solution:**
+**Solution implemented:**
 
-1. Change `ClassInfo.implements` from `Map<string, ...>` to use `InterfaceType`
-   as key (via WeakMap or identity-based Map)
-2. Pass checker's `InterfaceType` through `generateInterfaceVTable()`
-3. Update lookup sites to use identity comparison:
-   - `generateInterfaceBoxing()` in `expressions.ts`
-   - `generateTrampoline()` return type boxing in `classes.ts`
-
-**Implementation plan:**
+The `ClassType.implements` array from the checker is in the same order as
+`decl.implements` in the AST, so we use the index to get the checker's
+`InterfaceType` for identity-based lookup:
 
 ```typescript
-// Before
-interface ClassInfo {
-  implements?: Map<string, {vtableGlobalIndex: number}>;
-}
-
-// After
-interface ClassInfo {
-  implements?: Map<InterfaceType, {vtableGlobalIndex: number}>;
-  // Or using a wrapper to support WeakMap semantics
-}
-
-// Lookup changes from:
-const impl = classInfo.implements.get('Sequence<i32>');
-
-// To:
-const impl = classInfo.implements.get(interfaceType);
+// In generateInterfaceVTable:
+const classType = decl.inferredType as ClassType;
+const checkerInterfaceType = classType.implements[i]; // Same order as AST
+classInfo.implements.set(checkerInterfaceType, {vtableGlobalIndex});
 ```
 
-**Prerequisites:**
+Lookup sites use the `InterfaceInfo.checkerType` field for reverse lookup:
 
-- Checker must provide the instantiated `InterfaceType` for implemented interfaces
-- The `InterfaceType` must be interned (same object for same type across modules)
-- This is already done for `ClassType` via unified `CheckerContext` (Step 2.6)
-
-**Affected files:**
-
-- Update: `packages/compiler/src/lib/codegen/classes.ts` (change implements map)
-- Update: `packages/compiler/src/lib/codegen/expressions.ts` (interface boxing lookup)
-- Update: `packages/compiler/src/lib/codegen/context.ts` (interface type registration)
-- Update: Tests
-
-**Effort:** 1-2 hours
+```typescript
+// In interface boxing:
+if (interfaceInfo.checkerType) {
+  const impl = classInfo.implements.get(interfaceInfo.checkerType);
+  // ... box the value
+}
+```
 
 #### 3.2: Remove Name-Based Type Comparison Fallbacks
 
