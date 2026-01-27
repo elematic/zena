@@ -67,7 +67,11 @@ export interface InterfaceInfo {
     {index: number; typeIndex: number; returnType: number[]}
   >; // name -> {vtableIndex, typeIndex, returnType}
   fields: Map<string, {index: number; typeIndex: number; type: number[]}>; // name -> {vtableIndex, typeIndex, type}
-  parent?: string;
+  /**
+   * The checker's InterfaceType for the parent interface, if available.
+   * Enables identity-based lookups for interface inheritance.
+   */
+  parentType?: InterfaceType;
   /**
    * The checker's InterfaceType for this interface, if available.
    * Enables identity-based lookups in ClassInfo.implements.

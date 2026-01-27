@@ -363,6 +363,17 @@ This project is an **npm monorepo** managed with **Wireit**.
         - Added `InterfaceInfo.checkerType` field for reverse lookup
         - Updated all interface boxing sites to use identity-based lookup
         - Removed `substituteInterfaceName()` workaround
+      - [x] **Identity-based interface parent lookups** (completed 2025-01-27):
+        - Removed `InterfaceInfo.parent` string field entirely
+        - Added `InterfaceInfo.parentType` field as the sole parent reference
+        - Updated `defineInterfaceMethods()` to use identity-based lookup via `parentType` only
+        - Removed `isInterfaceSubtype()` name-based helper function
+        - Added `findInterfaceDeclarationByType()` helper
+      - [ ] **Generic interface type arguments** (blocked - see design doc):
+        - `isInterfaceSubtypeByType()` still compares base interface names because
+          `ClassInfo.implements` stores `Sequence<T>` (unbound) but boxing targets
+          `Sequence<i32>` (concrete). Proper fix requires updating `implements` map
+          during generic class instantiation.
       - [ ] Replace remaining `mapType(ctx, annotation, ctx.currentTypeContext)` calls
       - [ ] Update method signature resolution to use `resolveMethodTypes()`
     - [ ] **Phase 4: Require checkerType for Extension Classes**

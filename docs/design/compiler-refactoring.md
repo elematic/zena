@@ -1689,7 +1689,60 @@ if (interfaceInfo.checkerType) {
 }
 ```
 
-#### 3.2: Remove Name-Based Type Comparison Fallbacks
+#### 3.2: InterfaceInfo.parent Identity-Based Lookup ✅ COMPLETED
+
+**Status:** Completed on 2025-01-27
+
+**Summary of changes:**
+
+1. **Removed** `parent?: string` field from `InterfaceInfo` entirely
+2. Added `parentType?: InterfaceType` field to `InterfaceInfo` as the sole parent reference
+3. Set `parentType` from checker's `InterfaceType.extends[0]` in `preRegisterInterface()`
+4. Updated `defineInterfaceMethods()` to use identity-based lookup via `parentType` only
+5. Updated `isInterfaceSubtypeByType()` to use checker's `InterfaceType.extends` for parent chain
+6. **Removed** `isInterfaceSubtype()` name-based helper function (no longer needed)
+7. Added `findInterfaceDeclarationByType()` helper to `CodegenContext`
+
+**Files modified:**
+
+- `packages/compiler/src/lib/codegen/types.ts` - Removed `parent`, added `parentType`
+- `packages/compiler/src/lib/codegen/classes.ts` - Removed `parentName`, use `parentType` only
+- `packages/compiler/src/lib/codegen/expressions.ts` - Removed `isInterfaceSubtype()`, simplified `isInterfaceSubtypeByType()`
+- `packages/compiler/src/lib/codegen/context.ts` - Added `findInterfaceDeclarationByType()`
+
+**Original problem:** `InterfaceInfo.parent` was a string, requiring name-based lookups
+for interface inheritance. Now uses checker's `InterfaceType.extends` for identity.
+
+#### 3.3: isInterfaceSubtypeByType Still Uses Name Comparison
+
+**Status:** Analyzed on 2025-01-27 - Cannot be fully removed yet
+
+**Problem discovered:** The `isInterfaceSubtypeByType()` function cannot fully delegate
+to the checker's `isAssignableTo()` because of how generic interfaces work:
+
+1. When a generic class `MyClass<T>` implements `Sequence<T>`, the `ClassInfo.implements`
+   map stores the key as `Sequence<T>` (with unbound type parameter `T`)
+2. When boxing at runtime, the target type is concrete like `Sequence<i32>`
+3. The checker's `isAssignableTo(Sequence<T>, Sequence<i32>)` correctly returns `false`
+   because `T` ≠ `i32`
+4. But in codegen, all generic specializations share the same WASM struct, so we need
+   to match based on the base interface name
+
+**Current solution:** `isInterfaceSubtypeByType()` compares base interface names
+(via `genericSource` chain) rather than full type arguments. This is correct for
+WASM type selection but semantically imprecise.
+
+**Proper fix (future work):** When instantiating a generic class `MyClass<i32>`, the
+`ClassInfo.implements` map should be updated to contain `Sequence<i32>` instead of
+`Sequence<T>`. This requires:
+
+1. Updating `instantiateClass()` to substitute type parameters in the `implements` map
+2. Ensuring the substituted `InterfaceType` objects are properly interned
+3. Using identity-based lookup instead of name comparison
+
+This is a larger change that should be done as part of the broader type interning work.
+
+#### 3.4: Remove Name-Based Type Comparison Fallbacks (FUTURE)
 
 **Affected files:**
 

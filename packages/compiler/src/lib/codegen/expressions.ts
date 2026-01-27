@@ -8116,22 +8116,19 @@ function generateMatchPatternBindings(
 }
 
 /**
- * Check if one interface is a subtype of another using name-based lookup.
- * This is used internally by isInterfaceSubtypeByType for checking parent chains.
- */
-function isInterfaceSubtype(
-  ctx: CodegenContext,
-  sub: string,
-  sup: string,
-): boolean {
-  if (sub === sup) return true;
-  const info = ctx.interfaces.get(sub);
-  if (!info || !info.parent) return false;
-  return isInterfaceSubtype(ctx, info.parent, sup);
-}
-/**
- * Check if one interface type is a subtype of another using type identity.
- * This is used for interface implementation lookups when the map is keyed by InterfaceType.
+ * Check if one interface type is a subtype of another.
+ * For generic interfaces, this compares the base interface (via genericSource chain)
+ * because all specializations share the same WASM struct type.
+ *
+ * Note: This uses a simplified comparison that ignores type arguments. This is
+ * necessary because ClassInfo.implements maps from the declared interface type
+ * (e.g., Sequence<T>) which has unbound type parameters, while the target type
+ * at boxing time has concrete types (e.g., Sequence<i32>).
+ *
+ * A proper fix would be to instantiate ClassInfo.implements with concrete types
+ * when specializing generic classes, but that's a larger change.
+ *
+ * TODO: Consider proper type argument handling when ClassInfo.implements is updated.
  */
 export function isInterfaceSubtypeByType(
   ctx: CodegenContext,
@@ -8141,24 +8138,26 @@ export function isInterfaceSubtypeByType(
   // Identity check first
   if (sub === sup) return true;
 
-  // Check by name as fallback (handles cases where type interning might not be perfect)
-  // Compare base names for generic interfaces (e.g., "Sequence<i32>" vs "Sequence<T>")
-  const subBaseName = sub.name;
-  const supBaseName = sup.name;
+  // Follow genericSource chain to get base interface types
+  let subBase: InterfaceType = sub;
+  while (subBase.genericSource) subBase = subBase.genericSource;
+  let supBase: InterfaceType = sup;
+  while (supBase.genericSource) supBase = supBase.genericSource;
 
-  if (subBaseName === supBaseName) {
-    // Same base interface - could be different specializations
-    // For now, consider them equal if base names match
-    // TODO: Check type arguments for exact match
+  // If base interfaces match (by identity or name), consider them subtypes
+  // This handles generic specializations sharing the same WASM struct
+  if (subBase === supBase || subBase.name === supBase.name) {
     return true;
   }
 
-  // Check parent chain
-  const info = ctx.interfaces.get(subBaseName);
-  if (!info || !info.parent) return false;
+  // Check parent chain using checker's InterfaceType.extends
+  if (sub.extends && sub.extends.length > 0) {
+    for (const parentType of sub.extends) {
+      if (isInterfaceSubtypeByType(ctx, parentType, sup)) {
+        return true;
+      }
+    }
+  }
 
-  // Recursively check if the parent is a subtype of sup
-  // We need to look up the parent's InterfaceType, but we only have the name
-  // For now, fall back to name-based subtype check
-  return isInterfaceSubtype(ctx, info.parent, supBaseName);
+  return false;
 }

@@ -128,11 +128,12 @@ export function preRegisterInterface(
   ];
   const structTypeIndex = ctx.module.addStructType(interfaceFields);
 
-  let parentName: string | undefined;
-  if (parentInfo) {
-    const ext = decl.extends![0];
-    if (ext.type === NodeType.TypeAnnotation) {
-      parentName = ext.name;
+  // Get the checker's parent InterfaceType for identity-based lookups
+  let parentType: InterfaceType | undefined;
+  if (decl.inferredType && decl.inferredType.kind === TypeKind.Interface) {
+    const interfaceType = decl.inferredType as InterfaceType;
+    if (interfaceType.extends && interfaceType.extends.length > 0) {
+      parentType = interfaceType.extends[0];
     }
   }
 
@@ -143,7 +144,7 @@ export function preRegisterInterface(
     vtableTypeIndex,
     methods: new Map(),
     fields: new Map(),
-    parent: parentName,
+    parentType,
   };
   ctx.interfaces.set(decl.name.name, interfaceInfo);
 
@@ -195,16 +196,17 @@ export function defineInterfaceMethods(
   }
 
   let parentInfo: InterfaceInfo | undefined;
-  if (interfaceInfo.parent) {
-    parentInfo = ctx.interfaces.get(interfaceInfo.parent);
+  if (interfaceInfo.parentType) {
+    parentInfo = ctx.getInterfaceInfoByCheckerType(interfaceInfo.parentType);
+  }
 
-    // Ensure parent methods are defined first
-    if (parentInfo && parentInfo.methods.size === 0) {
-      const parentDecl = ctx.findInterfaceDeclaration(interfaceInfo.parent!);
-      if (parentDecl) {
-        defineInterfaceMethods(ctx, parentDecl);
-        parentInfo = ctx.interfaces.get(interfaceInfo.parent);
-      }
+  // Ensure parent methods are defined first
+  if (parentInfo && parentInfo.methods.size === 0) {
+    const parentDecl = ctx.findInterfaceDeclarationByType(interfaceInfo.parentType!);
+    if (parentDecl) {
+      defineInterfaceMethods(ctx, parentDecl);
+      // Re-lookup after defining
+      parentInfo = ctx.getInterfaceInfoByCheckerType(interfaceInfo.parentType!);
     }
   }
 

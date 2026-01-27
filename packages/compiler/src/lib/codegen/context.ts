@@ -20,6 +20,7 @@ import {
 } from '../diagnostics.js';
 import {WasmModule} from '../emitter.js';
 import {
+  TypeKind,
   type ClassType,
   type FunctionType,
   type InterfaceType,
@@ -420,6 +421,31 @@ export class CodegenContext {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Find an interface declaration by checker InterfaceType using identity.
+   * This is the preferred lookup method when you have an InterfaceType from the checker.
+   */
+  findInterfaceDeclarationByType(
+    interfaceType: InterfaceType,
+  ): InterfaceDeclaration | undefined {
+    for (const mod of this.modules) {
+      for (const stmt of mod.ast.body) {
+        if (stmt.type === NodeType.InterfaceDeclaration) {
+          const decl = stmt as InterfaceDeclaration;
+          if (
+            decl.inferredType &&
+            decl.inferredType.kind === TypeKind.Interface &&
+            decl.inferredType === interfaceType
+          ) {
+            return decl;
+          }
+        }
+      }
+    }
+    // Fallback to name-based lookup
+    return this.findInterfaceDeclaration(interfaceType.name);
   }
 
   /**
