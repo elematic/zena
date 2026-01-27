@@ -202,7 +202,9 @@ export function defineInterfaceMethods(
 
   // Ensure parent methods are defined first
   if (parentInfo && parentInfo.methods.size === 0) {
-    const parentDecl = ctx.findInterfaceDeclarationByType(interfaceInfo.parentType!);
+    const parentDecl = ctx.findInterfaceDeclarationByType(
+      interfaceInfo.parentType!,
+    );
     if (parentDecl) {
       defineInterfaceMethods(ctx, parentDecl);
       // Re-lookup after defining
@@ -3419,6 +3421,14 @@ export function instantiateClass(
     });
   }
 
+  // Ensure all nested types within the checker's ClassType are instantiated.
+  // This handles superclasses, implemented interfaces, mixins, onTypes, field types,
+  // method parameters, and return types recursively.
+  // Pass checkerType as rootClassType to skip self-recursion (this class is being instantiated now).
+  if (checkerType) {
+    ensureTypeInstantiated(ctx, checkerType, checkerType);
+  }
+
   // Handle generic superclass instantiation
   let superClassName: string | undefined;
   // Don't use checkerType?.superType - use annotation-based lookup for superclasses
@@ -4582,6 +4592,247 @@ export function typeToTypeAnnotation(
         inferredType: type,
       };
   }
+}
+
+/**
+ * Ensures that a checker Type and all its nested types are properly instantiated
+ * in codegen. This triggers WASM type generation for all generic types within:
+ * - ClassTypes (including superType, implements, onType)
+ * - InterfaceTypes (including extends)
+ * - Field types, method parameters, and return types
+ * - ArrayTypes, FunctionTypes, RecordTypes, TupleTypes
+ *
+ * This function is idempotent - calling it multiple times with the same type
+ * will not cause duplicate instantiation due to caching in mapCheckerTypeToWasmType.
+ *
+ * To prevent infinite recursion with recursive types (e.g., class Node<T> with field
+ * child: Node<T>), this function uses a context-level visited set that persists
+ * across the entire instantiation process.
+ *
+ * @param ctx The codegen context
+ * @param type The checker Type to ensure is fully instantiated
+ * @param rootClassType Optional - the class being instantiated (to skip self-recursion)
+ */
+export function ensureTypeInstantiated(
+  ctx: CodegenContext,
+  type: Type,
+  rootClassType?: ClassType,
+): void {
+  // Use context-level visited set to handle recursion across nested instantiateClass calls
+  if (ctx.typeInstantiationVisited.has(type)) return;
+  ctx.typeInstantiationVisited.add(type);
+
+  // Skip type parameters - they're not instantiable
+  if (type.kind === TypeKind.TypeParameter) return;
+
+  // Handle class types - these are the main ones that need instantiation
+  if (type.kind === TypeKind.Class) {
+    const classType = type as ClassType;
+
+    // Skip if this is the root class we're currently instantiating (avoid infinite recursion)
+    if (rootClassType && classType === rootClassType) return;
+
+    // Trigger WASM type generation for this class (this may recursively call instantiateClass)
+    mapCheckerTypeToWasmType(ctx, classType);
+
+    // Recursively ensure nested types are instantiated
+    // SuperType
+    if (classType.superType) {
+      ensureTypeInstantiated(ctx, classType.superType, rootClassType);
+    }
+
+    // Implemented interfaces
+    for (const impl of classType.implements) {
+      ensureTypeInstantiated(ctx, impl, rootClassType);
+    }
+
+    // onType for extension classes
+    if (classType.onType) {
+      ensureTypeInstantiated(ctx, classType.onType, rootClassType);
+    }
+
+    // Type arguments
+    if (classType.typeArguments) {
+      for (const arg of classType.typeArguments) {
+        ensureTypeInstantiated(ctx, arg, rootClassType);
+      }
+    }
+
+    // Field types - use resolved types from checker if available
+    if (ctx.checkerContext) {
+      const resolvedFields = ctx.checkerContext.resolveFieldTypes(classType);
+      for (const fieldType of resolvedFields.values()) {
+        ensureTypeInstantiated(ctx, fieldType, rootClassType);
+      }
+    } else {
+      // Fall back to fields from the type itself
+      for (const fieldType of classType.fields.values()) {
+        ensureTypeInstantiated(ctx, fieldType, rootClassType);
+      }
+    }
+
+    // Method signatures
+    for (const method of classType.methods.values()) {
+      ensureTypeInstantiated(ctx, method, rootClassType);
+    }
+
+    // Constructor type
+    if (classType.constructorType) {
+      ensureTypeInstantiated(ctx, classType.constructorType, rootClassType);
+    }
+
+    return;
+  }
+
+  // Handle interface types
+  if (type.kind === TypeKind.Interface) {
+    const interfaceType = type as InterfaceType;
+
+    // Trigger WASM type generation
+    mapCheckerTypeToWasmType(ctx, interfaceType);
+
+    // Parent interfaces
+    if (interfaceType.extends) {
+      for (const ext of interfaceType.extends) {
+        ensureTypeInstantiated(ctx, ext, rootClassType);
+      }
+    }
+
+    // Type arguments
+    if (interfaceType.typeArguments) {
+      for (const arg of interfaceType.typeArguments) {
+        ensureTypeInstantiated(ctx, arg, rootClassType);
+      }
+    }
+
+    // Field types
+    for (const fieldType of interfaceType.fields.values()) {
+      ensureTypeInstantiated(ctx, fieldType, rootClassType);
+    }
+
+    // Method signatures
+    for (const method of interfaceType.methods.values()) {
+      ensureTypeInstantiated(ctx, method, rootClassType);
+    }
+
+    return;
+  }
+
+  // Handle mixin types
+  if (type.kind === TypeKind.Mixin) {
+    const mixinType = type as MixinType;
+
+    // onType (the base class for the mixin)
+    if (mixinType.onType) {
+      ensureTypeInstantiated(ctx, mixinType.onType, rootClassType);
+    }
+
+    // Type arguments
+    if (mixinType.typeArguments) {
+      for (const arg of mixinType.typeArguments) {
+        ensureTypeInstantiated(ctx, arg, rootClassType);
+      }
+    }
+
+    // Field types
+    for (const fieldType of mixinType.fields.values()) {
+      ensureTypeInstantiated(ctx, fieldType, rootClassType);
+    }
+
+    // Method signatures
+    for (const method of mixinType.methods.values()) {
+      ensureTypeInstantiated(ctx, method, rootClassType);
+    }
+
+    return;
+  }
+
+  // Handle function types (closures)
+  if (type.kind === TypeKind.Function) {
+    const funcType = type as FunctionType;
+
+    // Trigger WASM type generation for the closure struct
+    mapCheckerTypeToWasmType(ctx, funcType);
+
+    // Parameter types
+    for (const param of funcType.parameters) {
+      ensureTypeInstantiated(ctx, param, rootClassType);
+    }
+
+    // Return type
+    ensureTypeInstantiated(ctx, funcType.returnType, rootClassType);
+
+    return;
+  }
+
+  // Handle array types
+  if (type.kind === TypeKind.Array) {
+    const arrayType = type as ArrayType;
+
+    // Trigger WASM type generation
+    mapCheckerTypeToWasmType(ctx, arrayType);
+
+    // Element type
+    ensureTypeInstantiated(ctx, arrayType.elementType, rootClassType);
+
+    return;
+  }
+
+  // Handle record types
+  if (type.kind === TypeKind.Record) {
+    const recordType = type as RecordType;
+
+    // Trigger WASM type generation
+    mapCheckerTypeToWasmType(ctx, recordType);
+
+    // Property types
+    for (const propType of recordType.properties.values()) {
+      ensureTypeInstantiated(ctx, propType, rootClassType);
+    }
+
+    return;
+  }
+
+  // Handle tuple types
+  if (type.kind === TypeKind.Tuple) {
+    const tupleType = type as TupleType;
+
+    // Trigger WASM type generation
+    mapCheckerTypeToWasmType(ctx, tupleType);
+
+    // Element types
+    for (const elemType of tupleType.elementTypes) {
+      ensureTypeInstantiated(ctx, elemType, rootClassType);
+    }
+
+    return;
+  }
+
+  // Handle union types
+  if (type.kind === TypeKind.Union) {
+    const unionType = type as UnionType;
+
+    // Recursively ensure all union member types are instantiated
+    for (const memberType of unionType.types) {
+      ensureTypeInstantiated(ctx, memberType, rootClassType);
+    }
+
+    return;
+  }
+
+  // Handle type aliases
+  if (type.kind === TypeKind.TypeAlias) {
+    const aliasType = type as TypeAliasType;
+
+    // Ensure the target type is instantiated
+    ensureTypeInstantiated(ctx, aliasType.target, rootClassType);
+
+    return;
+  }
+
+  // For primitive types (Number, Boolean, Void, etc.), just trigger WASM mapping
+  // to ensure any associated type indices are created
+  mapCheckerTypeToWasmType(ctx, type);
 }
 
 export function mapCheckerTypeToWasmType(

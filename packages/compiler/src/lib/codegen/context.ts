@@ -233,6 +233,16 @@ export class CodegenContext {
   readonly #structIndexToClass = new Map<number, ClassType>();
   readonly #structIndexToInterface = new Map<number, InterfaceType>();
 
+  /**
+   * Tracks types currently being processed by ensureTypeInstantiated() to prevent
+   * infinite recursion. This set persists across nested instantiateClass() calls.
+   *
+   * For recursive types (e.g., class Node<T> { child: Node<T>; }), without this
+   * set, instantiating Node<i32> would try to instantiate Node<i32> again when
+   * processing the child field, causing infinite recursion.
+   */
+  public typeInstantiationVisited = new Set<Type>();
+
   // Struct index to ClassInfo mapping for fast lookup in code generation
   // This avoids issues with name collisions when multiple modules define same-named classes
   readonly #structIndexToClassInfo = new Map<number, ClassInfo>();
