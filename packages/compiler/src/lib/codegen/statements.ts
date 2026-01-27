@@ -284,7 +284,11 @@ export function generateLocalVariableDeclaration(
     // If we're inside a generic context, resolve type parameters using the
     // current type param map (which may include both class and method params)
     let resolvedType = decl.inferredType;
-    if (resolvedType && ctx.checkerContext && ctx.currentTypeParamMap.size > 0) {
+    if (
+      resolvedType &&
+      ctx.checkerContext &&
+      ctx.currentTypeParamMap.size > 0
+    ) {
       resolvedType = ctx.checkerContext.substituteTypeParams(
         resolvedType,
         ctx.currentTypeParamMap,

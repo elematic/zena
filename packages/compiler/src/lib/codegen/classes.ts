@@ -4544,17 +4544,34 @@ export function mapCheckerTypeToWasmType(
   ctx: CodegenContext,
   type: Type,
 ): number[] {
-  // First, resolve type parameters using ctx.currentTypeContext
-  // This ensures generic type parameters (T, K, V) are resolved to their
-  // concrete types before we try to map them to WASM types.
+  // First, resolve type parameters.
+  // Prefer checker-based resolution via currentTypeParamMap (contains Type values).
+  // Fall back to annotation-based resolution via currentTypeContext (contains TypeAnnotation).
   if (type.kind === TypeKind.TypeParameter) {
     const typeParam = type as TypeParameterType;
+
+    // Try checker-based resolution first (preferred)
+    if (ctx.currentTypeParamMap.has(typeParam.name)) {
+      const resolved = ctx.currentTypeParamMap.get(typeParam.name)!;
+      // If resolved to another type parameter that's also in the map, continue chaining
+      // Otherwise fall through to let annotation-based resolution handle it
+      if (resolved.kind !== TypeKind.TypeParameter) {
+        return mapCheckerTypeToWasmType(ctx, resolved);
+      }
+      // Check if the resolved type param is in the map (chain resolution)
+      const resolvedParam = resolved as TypeParameterType;
+      if (ctx.currentTypeParamMap.has(resolvedParam.name)) {
+        return mapCheckerTypeToWasmType(ctx, resolved);
+      }
+      // Fall through to annotation-based for the resolved type param
+    }
+
+    // Fall back to annotation-based resolution
     if (ctx.currentTypeContext?.has(typeParam.name)) {
       const resolved = ctx.currentTypeContext.get(typeParam.name)!;
-      // Convert the resolved TypeAnnotation back to a Type and recurse
-      // For now, use the annotation path for this resolution
       return mapType(ctx, resolved, ctx.currentTypeContext);
     }
+
     // Unresolved type parameter - erase to anyref
     return [ValType.anyref];
   }

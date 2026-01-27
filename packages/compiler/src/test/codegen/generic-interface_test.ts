@@ -71,7 +71,7 @@ suite('CodeGenerator - Generic Interfaces', () => {
     assert.strictEqual(result, 100);
   });
 
-  test.only('generic method call', async () => {
+  test('generic method call', async () => {
     const source = `
       export interface Sequence<T> {
         length: i32 { get; }
