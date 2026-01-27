@@ -375,8 +375,18 @@ This project is an **npm monorepo** managed with **Wireit**.
         - `ClassInfo.implements` now correctly stores concrete interface types (e.g.,
           `Sequence<i32>`) because `ensureTypeInstantiated` ensures the checker's substituted
           types are used
+      - [x] **Update method signature resolution to use `resolveMethodTypes()`** (completed 2025-01-27):
+        - Updated `instantiateClass` to use `resolveMethodTypes()` for method parameters and return types
+        - Added fallback to annotation-based resolution when checker type is not available
+        - Fixed `mapCheckerTypeToWasmType` to handle interfaces with name-based fallback
+        - Removed dead `mapType` call in `generateClassMethods` parameter loop
+      - [x] **Use checker-based substitution in `mapType`** (completed 2025-01-27):
+        - When `inferredType` has type parameters, try `substituteTypeParams` with `currentTypeParamMap`
+        - If substitution fully resolves, use `mapCheckerTypeToWasmType`
+        - Fall back to annotation-based only when checker path can't resolve
+        - Fixed infinite recursion in `mapCheckerTypeToWasmType` for self-referential type params
       - [ ] Replace remaining `mapType(ctx, annotation, ctx.currentTypeContext)` calls
-      - [ ] Update method signature resolution to use `resolveMethodTypes()`
+      - [ ] Ensure `currentTypeParamMap` is populated in all codegen contexts
     - [ ] **Phase 4: Require checkerType for Extension Classes**
       - [x] Add check in `instantiateClass` requiring `checkerType.onType` for extension classes (when checkerType provided)
       - [ ] Ensure all code paths provide checker types (blocked by Phase 3 completion)

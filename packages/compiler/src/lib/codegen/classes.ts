@@ -2275,7 +2275,7 @@ export function generateClassMethods(
 
       for (let i = 0; i < member.params.length; i++) {
         const param = member.params[i];
-        mapType(ctx, param.typeAnnotation!);
+        // Parameter type comes from methodInfo (already resolved during registration)
         // For extension constructors, params start at 0 (since no implicit this param)
         const paramTypeIndex =
           member.isStatic || (classInfo.isExtension && methodName === '#new')
@@ -3019,14 +3019,31 @@ function mapTypeInternal(
   // If the TypeAnnotation has an attached checker type (inferredType), use
   // identity-based lookup directly. This handles cases where the annotation
   // was created from a checker type with a unique bundled name.
-  // HOWEVER: if the inferredType contains unresolved type parameters, we need
-  // to fall through to the type parameter resolution logic below. Type parameters
-  // are resolved via ctx.currentTypeContext which maps names to TypeAnnotations.
-  if (type.inferredType && !typeContainsTypeParameter(type.inferredType)) {
-    return mapCheckerTypeToWasmType(ctx, type.inferredType);
+  if (type.inferredType) {
+    // If the type has no type parameters, use it directly
+    if (!typeContainsTypeParameter(type.inferredType)) {
+      return mapCheckerTypeToWasmType(ctx, type.inferredType);
+    }
+
+    // Try to substitute type parameters using the current type param map.
+    // This enables checker-driven type resolution even for generic types.
+    if (ctx.currentTypeParamMap.size > 0) {
+      const substituted = ctx.checkerContext.substituteTypeParams(
+        type.inferredType,
+        ctx.currentTypeParamMap,
+      );
+      // If substitution fully resolved all type parameters, use the result
+      if (!typeContainsTypeParameter(substituted)) {
+        return mapCheckerTypeToWasmType(ctx, substituted);
+      }
+    }
+    // Fall through to annotation-based resolution
   }
 
-  // Resolve generic type parameters
+  // LEGACY: Annotation-based type parameter resolution.
+  // This path handles cases where:
+  // 1. The annotation doesn't have inferredType
+  // 2. The inferredType has type parameters that couldn't be fully resolved
   if (
     type.type === NodeType.TypeAnnotation &&
     typeContext &&
@@ -3754,6 +3771,13 @@ export function instantiateClass(
       } as MethodDefinition);
     }
 
+    // Get resolved method types from checker if available (preferred path)
+    // This ensures proper type interning and avoids duplicate WASM types.
+    const resolvedMethodTypes =
+      checkerType && ctx.checkerContext
+        ? ctx.checkerContext.resolveMethodTypes(checkerType)
+        : undefined;
+
     for (const member of members) {
       if (member.type === NodeType.MethodDefinition) {
         if (member.typeParameters && member.typeParameters.length > 0) {
@@ -3793,8 +3817,14 @@ export function instantiateClass(
         if (!member.isStatic && !(decl.isExtension && methodName === '#new')) {
           params.push(thisType);
         }
-        for (const param of member.params) {
-          const pType = mapType(ctx, param.typeAnnotation, context);
+        // Prefer checker's method type (already resolved) over AST annotations
+        const checkerMethodType = resolvedMethodTypes?.get(methodName);
+        for (let i = 0; i < member.params.length; i++) {
+          const param = member.params[i];
+          const checkerParamType = checkerMethodType?.parameters[i];
+          const pType = checkerParamType
+            ? mapCheckerTypeToWasmType(ctx, checkerParamType)
+            : mapType(ctx, param.typeAnnotation, context);
           params.push(pType);
         }
 
@@ -3803,13 +3833,19 @@ export function instantiateClass(
           if (decl.isExtension && onType) {
             results = [onType];
           } else if (member.isStatic && member.returnType) {
-            const mapped = mapType(ctx, member.returnType, context);
+            const checkerReturnType = checkerMethodType?.returnType;
+            const mapped = checkerReturnType
+              ? mapCheckerTypeToWasmType(ctx, checkerReturnType)
+              : mapType(ctx, member.returnType, context);
             if (mapped.length > 0) results = [mapped];
           } else {
             results = [];
           }
         } else if (member.returnType) {
-          const mapped = mapType(ctx, member.returnType, context);
+          const checkerReturnType = checkerMethodType?.returnType;
+          const mapped = checkerReturnType
+            ? mapCheckerTypeToWasmType(ctx, checkerReturnType)
+            : mapType(ctx, member.returnType, context);
           if (mapped.length > 0) results = [mapped];
         } else {
           results = [];
@@ -3833,7 +3869,12 @@ export function instantiateClass(
         });
       } else if (member.type === NodeType.AccessorDeclaration) {
         const propName = getMemberName(member.name);
-        const propType = mapType(ctx, member.typeAnnotation, context);
+        // Try to get the property type from the checker's getter method
+        const getterMethodName = getGetterName(propName);
+        const checkerGetterType = resolvedMethodTypes?.get(getterMethodName);
+        const propType = checkerGetterType
+          ? mapCheckerTypeToWasmType(ctx, checkerGetterType.returnType)
+          : mapType(ctx, member.typeAnnotation, context);
 
         // Getter
         if (member.getter) {
@@ -3943,7 +3984,12 @@ export function instantiateClass(
           }
 
           const propName = getMemberName(member.name);
-          const propType = mapType(ctx, member.typeAnnotation, context);
+          // Try to get the property type from checker's resolved field types
+          const checkerGetterName = getGetterName(propName);
+          const checkerGetterType = resolvedMethodTypes?.get(checkerGetterName);
+          const propType = checkerGetterType
+            ? mapCheckerTypeToWasmType(ctx, checkerGetterType.returnType)
+            : mapType(ctx, member.typeAnnotation, context);
 
           // Register Getter
           const regGetterName = getGetterName(propName);
@@ -4848,17 +4894,19 @@ export function mapCheckerTypeToWasmType(
     // Try checker-based resolution first (preferred)
     if (ctx.currentTypeParamMap.has(typeParam.name)) {
       const resolved = ctx.currentTypeParamMap.get(typeParam.name)!;
-      // If resolved to another type parameter that's also in the map, continue chaining
-      // Otherwise fall through to let annotation-based resolution handle it
+      // If resolved to a non-type-parameter, use it directly
       if (resolved.kind !== TypeKind.TypeParameter) {
         return mapCheckerTypeToWasmType(ctx, resolved);
       }
-      // Check if the resolved type param is in the map (chain resolution)
+      // If resolved to a DIFFERENT type parameter that's also in the map, chain
       const resolvedParam = resolved as TypeParameterType;
-      if (ctx.currentTypeParamMap.has(resolvedParam.name)) {
+      if (
+        resolvedParam.name !== typeParam.name &&
+        ctx.currentTypeParamMap.has(resolvedParam.name)
+      ) {
         return mapCheckerTypeToWasmType(ctx, resolved);
       }
-      // Fall through to annotation-based resolution
+      // Fall through - resolved to self or to a type param not in the map
     }
 
     // Try annotation-based resolution (for generic methods that don't have checker types)
@@ -4992,7 +5040,18 @@ export function mapCheckerTypeToWasmType(
     if (structIndex !== undefined) {
       return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structIndex)];
     }
-    // Fall through to annotation-based lookup
+    // Fall back to name-based lookup - needed when interface is not yet
+    // registered by identity (e.g., during method signature resolution)
+    const interfaceInfo = ctx.interfaces.get(interfaceType.name);
+    if (interfaceInfo) {
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+      ];
+    }
+    // Still not found - interface may not be registered yet; erase to anyref
+    // This happens when an interface is used in a method signature before registration
+    return [ValType.anyref];
   }
 
   // Handle Union types - use anyref for nullable reference types

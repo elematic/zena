@@ -10,7 +10,7 @@ import {
   TypeNames,
   TypeKind,
 } from '../types.js';
-import {substituteType} from './types.js';
+import {substituteType, instantiateGenericClass} from './types.js';
 import type {
   ClassDeclaration,
   DeclareFunction,
@@ -1024,6 +1024,21 @@ export class CheckerContext {
       );
     }
     return resolved;
+  }
+
+  /**
+   * Instantiate a generic class with the given type arguments.
+   * Returns the interned ClassType for the instantiation.
+   *
+   * Use this to get the checker's ClassType for generic instantiations
+   * (e.g., Box<i32>) when codegen needs to create them programmatically.
+   *
+   * @param genericClass The generic class template (e.g., Box<T>)
+   * @param typeArguments The concrete type arguments (e.g., [Types.I32])
+   * @returns The instantiated and interned ClassType
+   */
+  instantiateClass(genericClass: ClassType, typeArguments: Type[]): ClassType {
+    return instantiateGenericClass(genericClass, typeArguments, this);
   }
 
   /**

@@ -812,28 +812,8 @@ function generateIsExpression(
   } else if (targetType.length === 1) {
     // Primitive type check (e.g. x is i32)
     // We check if it is an instance of Box<T>
-    const boxDecl = ctx.wellKnownTypes.Box;
-    if (!boxDecl) throw new Error('Box class not found');
-
-    const typeArg = expr.typeAnnotation;
-    const specializedName = getSpecializedName(
-      boxDecl.name.name,
-      [typeArg],
-      ctx,
-      ctx.currentTypeContext,
-    );
-
-    if (!ctx.classes.has(specializedName)) {
-      instantiateClass(
-        ctx,
-        boxDecl,
-        specializedName,
-        [typeArg],
-        ctx.currentTypeContext,
-      );
-    }
-
-    const boxClass = ctx.classes.get(specializedName)!;
+    const checkerType = wasmTypeToCheckerType(targetType);
+    const boxClass = getBoxClassInfo(ctx, checkerType);
 
     body.push(0xfb, GcOpcode.ref_test_null);
     body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
@@ -842,48 +822,33 @@ function generateIsExpression(
   }
 }
 
-function wasmTypeToTypeAnnotation(type: number[]): TypeAnnotation {
-  if (type.length === 1) {
-    if (type[0] === ValType.i32)
-      return {
-        type: NodeType.TypeAnnotation,
-        name: Types.I32.name,
-        inferredType: Types.I32,
-      };
-    if (type[0] === ValType.i64)
-      return {
-        type: NodeType.TypeAnnotation,
-        name: Types.I64.name,
-        inferredType: Types.I64,
-      };
-    if (type[0] === ValType.f32)
-      return {
-        type: NodeType.TypeAnnotation,
-        name: Types.F32.name,
-        inferredType: Types.F32,
-      };
-    if (type[0] === ValType.f64)
-      return {
-        type: NodeType.TypeAnnotation,
-        name: Types.F64.name,
-        inferredType: Types.F64,
-      };
-  }
-  throw new Error(`Unsupported type for boxing: ${type}`);
-}
-
-export function unboxPrimitive(
-  ctx: CodegenContext,
-  targetType: number[],
-  body: number[],
-) {
-  // Stack: [anyref]
-
-  // 1. Get Box<T> class info
+/**
+ * Get or create Box<T> ClassInfo for the given primitive type.
+ * Uses the checker's type interning for proper identity-based lookups.
+ */
+function getBoxClassInfo(ctx: CodegenContext, primitiveType: Type): ClassInfo {
   const boxDecl = ctx.wellKnownTypes.Box;
   if (!boxDecl) throw new Error('Box class not found');
 
-  const typeArg = wasmTypeToTypeAnnotation(targetType);
+  // Get the checker's Box<T> generic class type
+  const boxGenericType = boxDecl.inferredType as ClassType;
+  if (!boxGenericType || boxGenericType.kind !== TypeKind.Class) {
+    throw new Error('Box class missing inferredType');
+  }
+
+  // Use checker to instantiate Box<T> with proper interning
+  const boxClassType = ctx.checkerContext.instantiateClass(boxGenericType, [
+    primitiveType,
+  ]);
+
+  // Check if already instantiated in codegen
+  let classInfo = ctx.getClassInfoByCheckerType(boxClassType);
+  if (classInfo) {
+    return classInfo;
+  }
+
+  // Need to instantiate - convert type args to annotations for instantiateClass
+  const typeArg = typeToTypeAnnotation(primitiveType, undefined, ctx);
   const specializedName = getSpecializedName(
     boxDecl.name.name,
     [typeArg],
@@ -898,16 +863,29 @@ export function unboxPrimitive(
       specializedName,
       [typeArg],
       ctx.currentTypeContext,
+      boxClassType, // Pass checker type for registration!
     );
   }
 
-  const boxClass = ctx.classes.get(specializedName)!;
+  return ctx.classes.get(specializedName)!;
+}
 
-  // 2. Cast to Box<T>
+export function unboxPrimitive(
+  ctx: CodegenContext,
+  targetType: number[],
+  body: number[],
+) {
+  // Stack: [anyref]
+
+  // Convert WASM type to checker Type for identity-based lookup
+  const checkerType = wasmTypeToCheckerType(targetType);
+  const boxClass = getBoxClassInfo(ctx, checkerType);
+
+  // Cast to Box<T>
   body.push(0xfb, GcOpcode.ref_cast_null);
   body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
 
-  // 3. Get value
+  // Get value
   const valueField = boxClass.fields.get(BOX_VALUE_FIELD);
   if (!valueField) throw new Error("Box class missing 'value' field");
 
@@ -923,28 +901,9 @@ export function boxPrimitive(
 ) {
   // Stack: [primitive]
 
-  const boxDecl = ctx.wellKnownTypes.Box;
-  if (!boxDecl) throw new Error('Box class not found');
-
-  const typeArg = wasmTypeToTypeAnnotation(sourceType);
-  const specializedName = getSpecializedName(
-    boxDecl.name.name,
-    [typeArg],
-    ctx,
-    ctx.currentTypeContext,
-  );
-
-  if (!ctx.classes.has(specializedName)) {
-    instantiateClass(
-      ctx,
-      boxDecl,
-      specializedName,
-      [typeArg],
-      ctx.currentTypeContext,
-    );
-  }
-
-  const boxClass = ctx.classes.get(specializedName)!;
+  // Convert WASM type to checker Type for identity-based lookup
+  const checkerType = wasmTypeToCheckerType(sourceType);
+  const boxClass = getBoxClassInfo(ctx, checkerType);
 
   // Use a local to save value.
   const tempVal = ctx.declareLocal('$$box_val', sourceType);
@@ -964,6 +923,19 @@ export function boxPrimitive(
   // struct.new
   body.push(0xfb, GcOpcode.struct_new);
   body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
+}
+
+/**
+ * Convert a WASM primitive type to the corresponding checker Type.
+ */
+function wasmTypeToCheckerType(type: number[]): Type {
+  if (type.length === 1) {
+    if (type[0] === ValType.i32) return Types.I32;
+    if (type[0] === ValType.i64) return Types.I64;
+    if (type[0] === ValType.f32) return Types.F32;
+    if (type[0] === ValType.f64) return Types.F64;
+  }
+  throw new Error(`Unsupported type for boxing: ${type}`);
 }
 
 export function inferType(ctx: CodegenContext, expr: Expression): number[] {
@@ -1089,7 +1061,7 @@ function instantiateExtensionClassFromCheckerType(
 
 function resolveFixedArrayClass(
   ctx: CodegenContext,
-  checkerType: any,
+  checkerType: Type | undefined,
 ): ClassInfo | undefined {
   if (checkerType && checkerType.kind === TypeKind.Array) {
     let fixedArrayDecl = ctx.wellKnownTypes.FixedArray;
@@ -1098,31 +1070,53 @@ function resolveFixedArrayClass(
     }
 
     if (fixedArrayDecl) {
-      const elementType = (checkerType as any).elementType;
+      const arrayType = checkerType as import('../types.js').ArrayType;
+      const elementType = arrayType.elementType;
       if (elementType) {
-        const elementTypeAnnotation = typeToTypeAnnotation(
-          elementType,
-          undefined,
-          ctx,
-        );
-        const typeArgs = [elementTypeAnnotation];
-        const specializedName = getSpecializedName(
-          fixedArrayDecl.name.name,
-          typeArgs,
-          ctx,
-          ctx.currentTypeContext,
-        );
+        // Get the checker's FixedArray<T> generic class type
+        const fixedArrayGenericType = fixedArrayDecl.inferredType as ClassType;
+        if (
+          fixedArrayGenericType &&
+          fixedArrayGenericType.kind === TypeKind.Class
+        ) {
+          // Use checker to instantiate FixedArray<T> with proper interning
+          const fixedArrayClassType = ctx.checkerContext.instantiateClass(
+            fixedArrayGenericType,
+            [elementType],
+          );
 
-        if (!ctx.classes.has(specializedName)) {
-          instantiateClass(
+          // Check if already instantiated in codegen
+          let classInfo = ctx.getClassInfoByCheckerType(fixedArrayClassType);
+          if (classInfo) {
+            return classInfo;
+          }
+
+          // Need to instantiate
+          const elementTypeAnnotation = typeToTypeAnnotation(
+            elementType,
+            undefined,
             ctx,
-            fixedArrayDecl,
-            specializedName,
+          );
+          const typeArgs = [elementTypeAnnotation];
+          const specializedName = getSpecializedName(
+            fixedArrayDecl.name.name,
             typeArgs,
+            ctx,
             ctx.currentTypeContext,
           );
+
+          if (!ctx.classes.has(specializedName)) {
+            instantiateClass(
+              ctx,
+              fixedArrayDecl,
+              specializedName,
+              typeArgs,
+              ctx.currentTypeContext,
+              fixedArrayClassType, // Pass checker type for registration!
+            );
+          }
+          return ctx.classes.get(specializedName);
         }
-        return ctx.classes.get(specializedName);
       }
     }
   }
