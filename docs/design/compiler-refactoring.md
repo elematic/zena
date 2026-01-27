@@ -455,25 +455,32 @@ SemanticContext could be used for different backends (WASM, debugging, etc.).
 
 **Effort:** 2-3 hours
 
-### Investigation: mapType Suffix-Based Lookups
+### Investigation: mapType Suffix-Based Lookups ✅ RESOLVED
 
-**Problem:** `mapType()` in `codegen/classes.ts` uses suffix matching like
-`name.endsWith('_' + typeName)` to resolve bundled class names. This is fragile.
+**Status:** ✅ RESOLVED (2025-01-27) - `mapType()` and its suffix-based lookups have been
+completely removed. All type resolution now uses identity-based lookups via checker types.
 
-**Locations of suffix-based lookups:**
+**Original Problem:** `mapType()` in `codegen/classes.ts` used suffix matching like
+`name.endsWith('_' + typeName)` to resolve bundled class names. This was fragile.
 
-- Line ~2454: Type alias suffix lookup
-- Line ~2558: Generic class suffix lookup
-- Line ~2608: Class suffix lookup
-- Line ~2630: Interface suffix lookup
+**How it was resolved:**
 
-**Finding: Suffix matching IS required for some code paths.**
+Rather than fixing the suffix lookups, we eliminated the need for `mapType()` entirely
+by ensuring all TypeAnnotation nodes have `inferredType` populated by the checker. The
+`mapCheckerTypeToWasmType()` function now uses `annotation.inferredType` directly,
+enabling identity-based lookups that don't depend on naming conventions.
 
-Attempted to remove suffix lookups (2026-01-21) but discovered they are still
-needed. Debug logging showed the `map` test (using `Map<K,V>` from stdlib)
-fails without suffix lookups.
+**Deleted code (~410 lines):**
 
-**Root cause:**
+- `mapType()` function
+- `mapTypeInternal()` function (contained all suffix-based lookups)
+- `getArrayTypeIndex()` helper
+
+**Historical context preserved below for reference:**
+
+---
+
+**Original investigation (2026-01-21):**
 
 When the Map class uses its internal `Entry<K, V>` type, some TypeAnnotation
 nodes contain the unbundled name `Entry` instead of the bundled name `m2_Entry`.
@@ -485,42 +492,6 @@ This happens because:
 3. Example: `typeToTypeAnnotation()` can create TypeAnnotations from checker
    types, and if the checker type's name wasn't updated, the annotation has
    the unbundled name
-
-**Concrete example from debugging:**
-
-```
-typeName='Entry'  (unbundled - looking for this)
-ctx.classes keys: m2_Entry<m4_String,m3_Box<i32>>, m2_Entry<K,V>  (bundled)
-```
-
-The suffix lookup `'m2_Entry<K,V>'.endsWith('_Entry')` succeeds and finds the
-generic template.
-
-**Why previous "dead code" evidence was incorrect:**
-
-Initial testing with debug logging showed no suffix lookups triggered for most
-tests. However, this was misleading:
-
-1. Test caching (Wireit) skipped re-running tests after adding logging
-2. The Map test was the key case that triggers suffix lookups
-3. Simpler tests (user-defined classes in same module) don't need suffix lookups
-
-**Why suffix lookups are problematic:**
-
-1. Couples codegen to bundler naming conventions (fragile if conventions change)
-2. The fallback returns the FIRST match from Map iteration - non-deterministic
-   if two modules define classes ending with the same suffix
-3. Relies on naming convention (`m{N}_Name`) that could change
-
-**Resolution path:**
-
-To remove suffix lookups, we need to ensure `typeToTypeAnnotation()` always
-produces bundled names. This requires either:
-
-1. Updating checker types with bundled names (Step 2.5.4 approach - but this
-   creates identity issues for generic instantiations)
-2. Using identity-based lookups that bypass names entirely (Round 3 approach)
-3. Ensuring all TypeAnnotation creation uses bundled names from context
 
 This turned out to be incorrect - the bundler does update type annotations in
 generic class bodies correctly. The suffix matching was defensive coding that
@@ -1291,12 +1262,16 @@ path for correctness and to enable future bundler removal.
 - All 1142 tests pass
 - No changes to test code required
 
-#### Phase 2 Status Summary (2026-01-23)
+#### Phase 2 Status Summary ✅ COMPLETED
 
 **Goal:** Migrate codegen from AST-based type mapping (`mapType`) to checker-type-based
-mapping (`mapCheckerTypeToWasmType`) where possible, enabling identity-based lookups.
+mapping (`mapCheckerTypeToWasmType`), enabling identity-based lookups.
 
-**Completed migrations:**
+**Status:** ✅ COMPLETED (2025-01-27) - `mapType()` and `mapTypeInternal()` have been
+fully removed (~410 lines deleted). All type resolution now goes through
+`mapCheckerTypeToWasmType()` exclusively.
+
+**Key migrations completed:**
 
 | Location         | Function                      | Change                                                        |
 | ---------------- | ----------------------------- | ------------------------------------------------------------- |
@@ -1307,54 +1282,28 @@ mapping (`mapCheckerTypeToWasmType`) where possible, enabling identity-based loo
 | `classes.ts`     | Field/method/accessor types   | Uses checker types from `classType.fields/methods`            |
 | `classes.ts`     | Extension class `onType`      | Uses `classType.onType` when available                        |
 | `functions.ts`   | Function param/return types   | Uses checker's FunctionType when available                    |
+| `classes.ts`     | `mapCheckerTypeToWasmType`    | Bridge to `annotation.inferredType` (final piece)             |
 
-**Remaining `mapType` usages (~40 calls):**
+**How mapType was eliminated:**
 
-1. **Inside `mapTypeInternal` itself** - This IS the AST-based path, cannot use checker types
-2. **Interface method registration** - Works with raw AST declarations
-3. **Generic instantiation** (`instantiateClass`) - Uses AST-level type parameter substitution
-4. **Box/unbox operations** - Codegen-internal, construct TypeAnnotation from WASM types
+The original concern was that `mapType` couldn't be removed due to:
 
-**Why `mapType` cannot be fully removed:**
+1. AST-only contexts needing `TypeAnnotation`
+2. Side effects triggering generic instantiation
+3. Codegen-internal types without checker types
 
-1. **AST-only contexts:** Some codegen paths only have `TypeAnnotation` available (e.g., interface
-   declarations from AST, generic type parameter substitution via `context` map)
+The solution was ensuring all TypeAnnotation nodes have `inferredType` populated by the
+checker. Once this was true, `mapCheckerTypeToWasmType` could use `annotation.inferredType`
+directly, making `mapType`/`mapTypeInternal` unreachable and deletable.
 
-2. **Side effects:** `mapType` triggers generic class instantiation when encountering
-   `ClassName<TypeArgs>`. This is needed for AST-driven compilation paths.
+**Final architecture:**
 
-3. **Codegen-internal types:** Box/unbox operations construct `TypeAnnotation` on-the-fly from
-   WASM primitive types. These don't have corresponding checker types.
+- `mapCheckerTypeToWasmType(ctx, type)` is the ONLY function for Type → WASM conversion
+- All AST TypeAnnotations have `inferredType` from the checker
+- Identity-based lookups via WeakMaps keyed by checker Type objects
+- No more string-based suffix matching or name-based fallbacks
 
-**`instantiateClass` checker type coverage:**
-
-| Call Site                                 | Has checkerType? | Notes                               |
-| ----------------------------------------- | ---------------- | ----------------------------------- |
-| `preRegisterClassStruct` (superclass)     | ✅               | Passes `classType?.superType`       |
-| `defineClassStruct` (superclass)          | ✅               | Passes `superClassType`             |
-| `instantiateClass` (recursive superclass) | ✅               | Passes `superClassType`             |
-| `mapCheckerTypeToWasmType`                | ✅               | Passes `classType`                  |
-| `mapTypeInternal`                         | ❌               | AST path, no checker type available |
-| `generateIsExpression` (Box)              | ❌               | Codegen-internal boxing             |
-| `unboxPrimitive`                          | ❌               | Codegen-internal                    |
-| `boxPrimitive`                            | ❌               | Codegen-internal                    |
-| `resolveFixedArrayClass`                  | ❌               | Has ArrayType, not ClassType        |
-
-**Phase assessment:**
-
-Phase 2 is **effectively complete**. All call sites that CAN pass checker types DO pass them.
-The remaining sites are architecturally constrained:
-
-1. **AST-only paths** have no checker types by design (`mapTypeInternal`)
-2. **Codegen-internal** operations work with WASM types, not checker types
-3. **Type mismatch** - `FixedArray<T>` codegen receives `ArrayType`, not `ClassType`
-
-**Next steps:**
-
-1. **Phase 3 (optional):** Reduce AST-only paths by ensuring more codegen entry points have
-   checker types. This would require architectural changes to how `FixedArray` is represented.
-
-2. ~~**Step 2.7:** Remove the bundler.~~ **COMPLETED** (2026-01-23)
+~~**Step 2.7:** Remove the bundler.~~ **COMPLETED** (2026-01-23)
 
 #### Step 2.7: Remove Bundler Entirely ✅ COMPLETED
 

@@ -18,8 +18,7 @@ Understanding these terms is crucial for working on the compiler:
 - **`ValType`**: WASM Value Types (e.g., `i32`, `f64`, `ref`, `ref_null`). Defined in `packages/compiler/src/lib/wasm.ts`.
 - **`HeapType`**: WASM Heap Types for GC objects (e.g., `struct`, `array`, `func`, `any`, `eq`). Defined in `packages/compiler/src/lib/wasm.ts`.
 - **`CodegenContext`**: The central state object during code generation. It holds the `WasmModule` being built, symbol tables, and type maps.
-- **`mapType`**: A function (in `codegen/classes.ts`) that converts a Zena AST type (e.g., `TypeAnnotation`) into a WASM binary type encoding (an array of bytes/numbers). This is the **annotation-based** path.
-- **`mapCheckerTypeToWasmType`**: A function (in `codegen/classes.ts`) that converts a checker `Type` object into WASM bytes. This is the **identity-based** path (preferred for generic instantiation).
+- **`mapCheckerTypeToWasmType`**: A function (in `codegen/classes.ts`) that converts a checker `Type` object into WASM bytes. This is the **identity-based** path used for all type resolution.
 - **VTable**: A table of function references used for dynamic dispatch (method overriding). In Zena, this is implemented as a WASM struct containing `ref func` fields.
 - **Fat Pointer**: Interfaces in Zena are implemented as "fat pointers": a struct containing the object instance (`ref any`) and its VTable (`ref vtable`).
 
@@ -170,10 +169,10 @@ Tests for annotation coverage are in `test/checker/inferred-type_test.ts`.
 **Current state**:
 
 - Expressions: ✅ Always use `expr.inferredType`
-- Annotations: ✅ Use `annotation.inferredType` (via `mapType` which calls `mapCheckerTypeToWasmType`)
-- Generic instantiation: 🔄 Transitioning from annotation-based to checker-based
+- Annotations: ✅ Use `annotation.inferredType` via `mapCheckerTypeToWasmType`
+- Generic instantiation: ✅ Uses checker-based types via `mapCheckerTypeToWasmType`
 
-**Future state**: All type resolution in codegen will go through checker types, enabling:
+**Benefits**: All type resolution in codegen goes through checker types, enabling:
 
 - Intellisense (hover shows resolved types like `i32`, not `T`)
 - Compiler API (query assignability of instantiated types)

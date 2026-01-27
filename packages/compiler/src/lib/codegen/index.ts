@@ -191,7 +191,7 @@ export class CodeGenerator {
     }
 
     // 3. Define Interface Methods (Third pass)
-    // Now that all classes have reserved indices, mapType can resolve class types correctly.
+    // Now that all classes have reserved indices, class types can be resolved correctly.
     for (const statement of statements) {
       if (statement.type === NodeType.InterfaceDeclaration) {
         defineInterfaceMethods(this.#ctx, statement as InterfaceDeclaration);

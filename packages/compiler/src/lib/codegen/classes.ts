@@ -1,15 +1,10 @@
 import {
   NodeType,
   type ClassDeclaration,
-  type FunctionTypeAnnotation,
   type InterfaceDeclaration,
-  type LiteralTypeAnnotation,
   type MethodDefinition,
   type MixinDeclaration,
-  type RecordTypeAnnotation,
-  type TupleTypeAnnotation,
   type TypeAnnotation,
-  type UnionTypeAnnotation,
   type Identifier,
   type ComputedPropertyName,
 } from '../ast.js';
@@ -35,7 +30,6 @@ import {
 } from '../types.js';
 import {getGetterName, getSetterName} from '../names.js';
 import {WasmModule} from '../emitter.js';
-import {DiagnosticCode} from '../diagnostics.js';
 
 /**
  * Extracts the name from a TypeAnnotation.
@@ -2669,17 +2663,6 @@ export function getCheckerTypeKeyForSpecialization(
  * @param typeArgs The type arguments as checker Types
  * @param ctx CodegenContext for identity-based name lookups
  */
-export function getSpecializedNameFromTypes(
-  baseName: string,
-  typeArgs: Type[],
-  ctx: CodegenContext,
-): string {
-  const argKeys = typeArgs.map((arg) =>
-    getCheckerTypeKeyForSpecialization(arg, ctx),
-  );
-  return `${baseName}<${argKeys.join(',')}>`;
-}
-
 /**
  * Check if a checker Type contains any unresolved type parameters.
  * Returns true if the type (or any nested type) is a TypeParameterType.
@@ -2811,433 +2794,6 @@ function getTypeKeyWithContext(
     }
   }
   return 'unknown';
-}
-
-function getArrayTypeIndex(ctx: CodegenContext, elementType: number[]): number {
-  return ctx.getArrayTypeIndex(elementType);
-}
-
-export function mapType(
-  ctx: CodegenContext,
-  type: TypeAnnotation,
-  context?: Map<string, TypeAnnotation>,
-): number[] {
-  if (!type) {
-    // TODO (justinfagnani): what is this check?
-    return [ValType.i32];
-  }
-  return mapTypeInternal(ctx, type, context);
-}
-
-function mapTypeInternal(
-  ctx: CodegenContext,
-  type: TypeAnnotation,
-  context?: Map<string, TypeAnnotation>,
-): number[] {
-  const typeContext = context || ctx.currentTypeContext;
-  if (!type) return [ValType.i32];
-
-  // Handle `this` type - resolve to current class type
-  if (type.type === NodeType.ThisTypeAnnotation) {
-    if (ctx.currentClass) {
-      return [
-        ValType.ref_null,
-        ...WasmModule.encodeSignedLEB128(ctx.currentClass.structTypeIndex),
-      ];
-    }
-    // In interface context (no currentClass), use anyref since any class can implement
-    return [ValType.ref_null, ValType.anyref];
-  }
-
-  // If the TypeAnnotation has an attached checker type (inferredType), use
-  // identity-based lookup directly. This handles cases where the annotation
-  // was created from a checker type with a unique bundled name.
-  if (type.inferredType) {
-    // If the type has no type parameters, use it directly
-    if (!typeContainsTypeParameter(type.inferredType)) {
-      return mapCheckerTypeToWasmType(ctx, type.inferredType);
-    }
-
-    // Try to substitute type parameters using the current type param map.
-    // This enables checker-driven type resolution even for generic types.
-    if (ctx.currentTypeParamMap.size > 0) {
-      const substituted = ctx.checkerContext.substituteTypeParams(
-        type.inferredType,
-        ctx.currentTypeParamMap,
-      );
-      // If substitution fully resolved all type parameters, use the result
-      if (!typeContainsTypeParameter(substituted)) {
-        return mapCheckerTypeToWasmType(ctx, substituted);
-      }
-    }
-    // Fall through to annotation-based resolution
-  }
-
-  // LEGACY: Annotation-based type parameter resolution.
-  // This path handles cases where:
-  // 1. The annotation doesn't have inferredType
-  // 2. The inferredType has type parameters that couldn't be fully resolved
-  if (
-    type.type === NodeType.TypeAnnotation &&
-    typeContext &&
-    typeContext.has(type.name)
-  ) {
-    const resolved = typeContext.get(type.name)!;
-    // Avoid infinite recursion if type parameter maps to itself
-    if (
-      resolved.type === NodeType.TypeAnnotation &&
-      resolved.name === type.name
-    ) {
-      // Type parameter maps to itself - treat as a reference type (i32 pointer)
-      return [ValType.i32];
-    }
-    return mapTypeInternal(ctx, resolved, typeContext);
-  }
-
-  // Check type aliases
-  if (type.type === NodeType.TypeAnnotation && ctx.typeAliases.has(type.name)) {
-    return mapType(ctx, ctx.typeAliases.get(type.name)!, context);
-  }
-
-  if (type.type === NodeType.TypeAnnotation) {
-    switch (type.name) {
-      case Types.I32.name:
-        return [ValType.i32];
-      case Types.U32.name:
-        return [ValType.i32]; // u32 maps to i32 in WASM
-      case Types.I64.name:
-        return [ValType.i64];
-      case Types.F32.name:
-        return [ValType.f32];
-      case Types.F64.name:
-        return [ValType.f64];
-      case TypeNames.Boolean:
-        return [ValType.i32];
-      case TypeNames.String: {
-        if (ctx.stringTypeIndex !== -1) {
-          return [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-          ];
-        }
-        if (ctx.wellKnownTypes.String) {
-          const typeName = ctx.wellKnownTypes.String.name.name;
-          if (ctx.classes.has(typeName)) {
-            const classInfo = ctx.classes.get(typeName)!;
-            return [
-              ValType.ref_null,
-              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-            ];
-          }
-        }
-        // Report error - String type should always be available
-        ctx.reportError(
-          `String type not found in code generation. This may indicate a missing stdlib import.`,
-          DiagnosticCode.UnknownType,
-        );
-        return [ValType.i32];
-      }
-      case TypeNames.Void:
-        return [];
-      case TypeNames.Never:
-        // `never` type represents computations that never return (e.g., throw).
-        // In WASM, we can represent this as an empty result (like void) since
-        // code after a never-returning expression is unreachable.
-        return [];
-      case TypeNames.Null:
-        return [ValType.ref_null, HeapType.none];
-      case TypeNames.AnyRef:
-        return [ValType.anyref];
-      case TypeNames.Any:
-        return [ValType.anyref];
-      case TypeNames.EqRef:
-        return [ValType.eqref];
-      case TypeNames.Struct:
-        return [ValType.ref_null, HeapType.struct];
-      case TypeNames.Array:
-        if (type.typeArguments && type.typeArguments.length === 1) {
-          const elementType = mapType(ctx, type.typeArguments[0], context);
-          const typeIndex = getArrayTypeIndex(ctx, elementType);
-          return [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(typeIndex),
-          ];
-        }
-        return [ValType.ref_null, HeapType.array];
-      default: {
-        // Class or Interface
-        // Check for well-known types first (renamed by bundler)
-        let typeName = type.name;
-        if (typeName === Types.String.name && ctx.wellKnownTypes.String) {
-          typeName = ctx.wellKnownTypes.String.name.name;
-        }
-
-        if (typeName === TypeNames.ByteArray) {
-          return [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
-          ];
-        }
-
-        // Check if it's a generic class instantiation
-        if (type.typeArguments && type.typeArguments.length > 0) {
-          // Instantiate generic class
-          // We need to find the generic class declaration using identity-based lookup
-          let genericDecl: ClassDeclaration | undefined;
-          if (type.inferredType && type.inferredType.kind === TypeKind.Class) {
-            const classType = type.inferredType as ClassType;
-            const genericSource = classType.genericSource ?? classType;
-            genericDecl = ctx.getGenericDeclByType(genericSource);
-          }
-
-          // If not found, check if it's a well-known type that was renamed
-          if (!genericDecl) {
-            if (
-              ctx.wellKnownTypes.FixedArray &&
-              (typeName === 'FixedArray' ||
-                typeName === ctx.wellKnownTypes.FixedArray.name.name)
-            ) {
-              genericDecl = ctx.wellKnownTypes.FixedArray;
-            }
-          }
-
-          if (genericDecl) {
-            // Use the actual registered name from the declaration, not the type annotation name
-            const actualGenericName = genericDecl.name.name;
-            const specializedName = getSpecializedName(
-              actualGenericName,
-              type.typeArguments,
-              ctx,
-              context,
-            );
-            if (!ctx.classes.has(specializedName)) {
-              // Pass the checker's ClassType for identity-based lookup
-              if (
-                !type.inferredType ||
-                type.inferredType.kind !== TypeKind.Class
-              ) {
-                throw new Error(
-                  `Type annotation ${type.name} missing inferredType from checker`,
-                );
-              }
-              const checkerClassType = type.inferredType as ClassType;
-              instantiateClass(
-                ctx,
-                genericDecl,
-                specializedName,
-                type.typeArguments,
-                context,
-                checkerClassType,
-              );
-            }
-            const classInfo = ctx.classes.get(specializedName)!;
-            if (classInfo.isExtension && classInfo.onType) {
-              return classInfo.onType;
-            }
-            return [
-              ValType.ref_null,
-              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-            ];
-          }
-        }
-
-        if (ctx.classes.has(typeName)) {
-          const classInfo = ctx.classes.get(typeName)!;
-          if (classInfo.isExtension && classInfo.onType) {
-            return classInfo.onType;
-          }
-          return [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-          ];
-        }
-
-        if (ctx.interfaces.has(typeName)) {
-          const interfaceInfo = ctx.interfaces.get(typeName)!;
-          const res = [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
-          ];
-          return res;
-        }
-
-        // Check if this is an unbound type parameter (should have been erased)
-        // Type parameters should only appear in generic instantiation contexts
-        if (!typeContext || !typeContext.has(typeName)) {
-          // This is likely a type parameter from a generic function/class.
-          // Type parameters should never appear in WASM types - they should either:
-          // 1. Be substituted with concrete types (during instantiation), or
-          // 2. Not be mapped at all (generic functions aren't generated)
-          ctx.reportError(
-            `Unbound type parameter '${typeName}' in code generation. Type
-            parameters must be substituted with concrete types.`,
-            DiagnosticCode.UnknownType,
-          );
-          throw new Error(
-            `Unbound type parameter '${typeName}' in code generation`,
-          );
-        }
-
-        // Report error for truly unknown types
-        ctx.reportError(
-          `Unknown type '${typeName}' in code generation. This should have been caught by the type checker.`,
-          DiagnosticCode.UnknownType,
-        );
-        throw new Error(`Unknown type '${typeName}' in code generation`);
-      }
-    }
-  } else if (type.type === NodeType.RecordTypeAnnotation) {
-    const recordType = type as RecordTypeAnnotation;
-    const fields = recordType.properties.map((p) => ({
-      name: p.name.name,
-      type: mapCheckerTypeToWasmType(ctx, p.inferredType!),
-    }));
-    const typeIndex = ctx.getRecordTypeIndex(fields);
-    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
-  } else if (type.type === NodeType.TupleTypeAnnotation) {
-    const tupleType = type as TupleTypeAnnotation;
-    const types = tupleType.elementTypes.map((t) =>
-      mapCheckerTypeToWasmType(ctx, t.inferredType!),
-    );
-    const typeIndex = ctx.getTupleTypeIndex(types);
-    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
-  } else if (type.type === NodeType.FunctionTypeAnnotation) {
-    const funcType = type as FunctionTypeAnnotation;
-    const paramTypes = funcType.params.map((p: TypeAnnotation) =>
-      mapType(ctx, p, context),
-    );
-    const returnType = funcType.returnType
-      ? mapType(ctx, funcType.returnType, context)
-      : [];
-
-    const closureTypeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
-    return [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(closureTypeIndex),
-    ];
-  } else if (type.type === NodeType.UnionTypeAnnotation) {
-    // Check for T | null
-    const nonNullTypes = type.types.filter(
-      (t) => !(t.type === NodeType.TypeAnnotation && t.name === 'null'),
-    );
-
-    if (nonNullTypes.length === 1) {
-      const innerType = mapType(ctx, nonNullTypes[0], context);
-      const typeCode = innerType[0];
-
-      // Check if it is a reference type
-      if (
-        typeCode === ValType.ref ||
-        typeCode === ValType.ref_null ||
-        typeCode === ValType.anyref ||
-        typeCode === ValType.eqref ||
-        typeCode === ValType.externref ||
-        typeCode === ValType.funcref
-      ) {
-        if (typeCode === ValType.ref) {
-          return [ValType.ref_null, ...innerType.slice(1)];
-        }
-        return innerType;
-      }
-    }
-
-    // Check if this is a union of literals (e.g., enum values)
-    // All literal types should map to the same WASM type
-    if (
-      nonNullTypes.length > 0 &&
-      nonNullTypes.every((t) => t.type === NodeType.LiteralTypeAnnotation)
-    ) {
-      // For literal unions (like enum members), pick the first type
-      // All literals should have the same backing type
-      return mapType(ctx, nonNullTypes[0], context);
-    }
-
-    // Check if this is a union of reference types (classes, interfaces, functions, etc.)
-    // Reference type unions use anyref as the common supertype since different
-    // concrete types can't share a single WASM type index.
-    const isReferenceType = (t: TypeAnnotation): boolean => {
-      // Function types are reference types
-      if (t.type === NodeType.FunctionTypeAnnotation) return true;
-
-      // Tuple types are reference types (stored as WASM structs)
-      if (t.type === NodeType.TupleTypeAnnotation) return true;
-
-      // Record types are reference types (stored as WASM structs)
-      if (t.type === NodeType.RecordTypeAnnotation) return true;
-
-      // Resolve type aliases
-      if (t.type === NodeType.TypeAnnotation && ctx.typeAliases.has(t.name)) {
-        const resolved = ctx.typeAliases.get(t.name)!;
-        return isReferenceType(resolved);
-      }
-
-      // Named types that are classes or interfaces are reference types
-      if (t.type === NodeType.TypeAnnotation) {
-        // Check if it's a known class
-        if (ctx.classes.has(t.name)) return true;
-        // Check if it's a known interface
-        if (ctx.interfaces.has(t.name)) return true;
-        // Check for string type (which is a reference type)
-        if (t.name === 'string' || t.name === 'String') return true;
-        // Check for built-in reference types
-        if (t.name === 'ByteArray') return true;
-        // Generic types like array<T>, Box<T> are reference types
-        if (t.typeArguments && t.typeArguments.length > 0) {
-          // array<T>, Map<K,V>, Box<T>, etc. are all reference types
-          return true;
-        }
-      }
-
-      return false;
-    };
-    if (nonNullTypes.length > 0 && nonNullTypes.every(isReferenceType)) {
-      return [ValType.anyref];
-    }
-
-    // Union types that aren't T | null, literal unions, or reference unions are not supported
-    const unionType = type as UnionTypeAnnotation;
-    const typeStr = unionType.types
-      .map((t: TypeAnnotation) =>
-        t.type === NodeType.TypeAnnotation
-          ? t.name
-          : t.type === NodeType.LiteralTypeAnnotation
-            ? String((t as LiteralTypeAnnotation).value)
-            : t.type,
-      )
-      .join(' | ');
-    ctx.reportError(
-      `Unsupported union type '${typeStr}' in code generation. Only T | null, literal unions, and reference type unions are supported.`,
-      DiagnosticCode.TypeMismatch,
-    );
-    throw new Error(`Unsupported union type in code generation`);
-  } else if (type.type === NodeType.LiteralTypeAnnotation) {
-    // Literal types (number, string, boolean) map to their base types
-    const litType = type as LiteralTypeAnnotation;
-    if (typeof litType.value === 'number') {
-      return [ValType.i32]; // Integer literals are i32
-    } else if (typeof litType.value === 'string') {
-      // String literals map to string type
-      if (ctx.stringTypeIndex !== -1) {
-        return [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-        ];
-      }
-      throw new Error(
-        `String literal type encountered but string type not registered. This indicates a compiler initialization error.`,
-      );
-    } else if (typeof litType.value === 'boolean') {
-      return [ValType.i32]; // Booleans are i32
-    }
-    throw new Error(
-      `Unknown literal type: ${typeof litType.value}. Only number, string, and boolean literals are supported.`,
-    );
-  }
-
-  // This should be unreachable - all TypeAnnotation kinds should be handled above
-  throw new Error(
-    `Unhandled type annotation kind: ${(type as TypeAnnotation).type}. This is a compiler bug.`,
-  );
 }
 
 export function instantiateClass(
@@ -4734,7 +4290,10 @@ export function mapCheckerTypeToWasmType(
     // Try annotation-based resolution (for generic methods that don't have checker types)
     if (ctx.currentTypeContext?.has(typeParam.name)) {
       const annotation = ctx.currentTypeContext.get(typeParam.name)!;
-      return mapType(ctx, annotation, ctx.currentTypeContext);
+      if (annotation.inferredType) {
+        return mapCheckerTypeToWasmType(ctx, annotation.inferredType);
+      }
+      // Fall through to anyref erasure if no inferredType
     }
 
     // Unresolved type parameter - erase to anyref
@@ -5046,8 +4605,8 @@ function resolveClassInfo(
     return structInfo;
   }
 
-  // Identity lookup failed - caller will fall through to annotation-based
-  // instantiation via mapType(), which triggers instantiateClass().
+  // Identity lookup failed - caller will handle via mapCheckerTypeToWasmType,
+  // which triggers instantiateClass() for generic classes.
   return undefined;
 }
 

@@ -214,7 +214,7 @@ suite('Generic Class Context Consistency', () => {
     });
 
     test('generic self-referential class', async () => {
-      // Skipped: Maximum call stack exceeded in mapType during instantiation
+      // Skipped: Maximum call stack exceeded during instantiation
       const source = `
         class Wrapper {
           val: i32;

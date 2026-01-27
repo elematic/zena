@@ -18,8 +18,8 @@ suite('Interface Type Registration', () => {
   test('interface method with class parameter declared after interface', async () => {
     // This test verifies that an interface method parameter correctly
     // resolves to a class type even when the class is declared after the interface.
-    // Before the fix, mapType("Message") would return i32 because Message
-    // wasn't registered yet when the interface method types were created.
+    // Before the fix, class types weren't registered yet when the interface
+    // method types were created, causing incorrect WASM types.
     const source = `
       interface Logger {
         log(message: Message): void;

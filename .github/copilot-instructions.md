@@ -325,9 +325,8 @@ This project is an **npm monorepo** managed with **Wireit**.
     - **`ctx.currentClass` consistency**: Inside a generic class `Foo<T>`, `ctx.currentClass` should have `typeArguments = typeParameters` (i.e., represent `Foo<T>`, not just `Foo`). Currently, `checkThisExpression` creates a type with `typeArguments`, but `ctx.currentClass` doesn't have them, requiring a workaround in `isAssignableTo` to handle self-referential generic class comparisons. Fixing this at the source would eliminate that special case.
     - **Reject index assignment without `operator []=`**: Currently `x[0] = y` compiles even if the type only has `operator []` (getter). The checker should require `operator []=` for index assignment.
     - **Reject assignment to getter-only properties**: Currently `x.length = 5` compiles even if `length` only has a getter. The checker should require a setter for property assignment.
-    - **Suffix-based type lookup is unsafe**: In `codegen/classes.ts`, `mapType()` uses `name.endsWith('_' + typeName)` to resolve bundled class names (e.g., `m3_Array` for `Array`). This is fragile and could cause name collisions if two modules define classes with the same base name, or if a class name is a suffix of another (e.g., `MyArray` matching `Array`). The proper fix is for the bundler to update type annotations when renaming declarations, so codegen always sees the canonical name.
 
-2.  **Checker-Driven Type Instantiation** (IN PROGRESS):
+2.  **Checker-Driven Type Instantiation** (COMPLETED):
     Currently, codegen has two paths for type resolution:
     - **Identity-based**: Uses checker's `ClassType` objects directly (correct, uses interning)
     - **Annotation-based**: Rebuilds types from `TypeAnnotation` AST nodes (problematic, creates duplicate types)
@@ -379,23 +378,21 @@ This project is an **npm monorepo** managed with **Wireit**.
         - Updated `instantiateClass` to use `resolveMethodTypes()` for method parameters and return types
         - Added fallback to annotation-based resolution when checker type is not available
         - Fixed `mapCheckerTypeToWasmType` to handle interfaces with name-based fallback
-        - Removed dead `mapType` call in `generateClassMethods` parameter loop
-      - [x] **Use checker-based substitution in `mapType`** (completed 2025-01-27):
-        - When `inferredType` has type parameters, try `substituteTypeParams` with `currentTypeParamMap`
-        - If substitution fully resolves, use `mapCheckerTypeToWasmType`
-        - Fall back to annotation-based only when checker path can't resolve
-        - Fixed infinite recursion in `mapCheckerTypeToWasmType` for self-referential type params
-      - [ ] Replace remaining `mapType(ctx, annotation, ctx.currentTypeContext)` calls
-      - [ ] Ensure `currentTypeParamMap` is populated in all codegen contexts
-    - [ ] **Phase 4: Require checkerType for Extension Classes**
+      - [x] **Remove `mapType()` entirely** (completed 2025-01-27):
+        - Replaced the bridge call in `mapCheckerTypeToWasmType` to use `annotation.inferredType` directly
+        - Removed `mapType()` function (~10 lines) and `mapTypeInternal()` function (~400 lines)
+        - Removed `getArrayTypeIndex()` helper that was only used by `mapType`
+        - Cleaned up unused imports (`FunctionTypeAnnotation`, `LiteralTypeAnnotation`, etc.)
+        - All type resolution now goes through `mapCheckerTypeToWasmType()` exclusively
+    - [x] **Phase 4: Require checkerType for Extension Classes** (completed 2025-01-27)
       - [x] Add check in `instantiateClass` requiring `checkerType.onType` for extension classes (when checkerType provided)
-      - [ ] Ensure all code paths provide checker types (blocked by Phase 3 completion)
-    - [ ] **Phase 5: Remove Annotation-Based Instantiation** (Future)
-      - [ ] Simplify `mapType` to only handle non-generic types
-      - [ ] All generic instantiation goes through checker types
-      - [ ] Remove `context: Map<string, TypeAnnotation>` parameter threading
+      - [x] All code paths provide checker types (enabled by Phase 3 completion)
+    - [x] **Phase 5: Remove Annotation-Based Instantiation** (completed 2025-01-27)
+      - [x] Removed `mapType()` function entirely
+      - [x] All generic instantiation goes through checker types via `mapCheckerTypeToWasmType()`
+      - [x] `context: Map<string, TypeAnnotation>` parameter threading is now vestigial (only used for `typeToTypeAnnotation`)
 
-    **Benefits**:
+    **Benefits** (now realized):
     - Enables intellisense (hover shows `i32`, not `T`)
     - Supports compiler API (ask assignability of instantiated types)
     - Multiple backends share semantic model

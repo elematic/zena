@@ -82,7 +82,7 @@ suite('CodeGenerator - Casts', () => {
     // Note: 'anyref' might not be directly exposed as a type keyword in Zena yet,
     // but 'any' might be, or we might need to use a generic function to get an anyref.
     // Let's check if 'anyref' is a valid type annotation.
-    // Based on previous grep, 'anyref' maps to ValType.anyref in mapType.
+    // 'anyref' maps to ValType.anyref in mapCheckerTypeToWasmType.
 
     const result = await compileAndRun(source);
     assert.strictEqual(result, 42);
