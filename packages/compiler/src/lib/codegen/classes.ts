@@ -79,6 +79,38 @@ import {
 import type {ClassInfo, InterfaceInfo} from './types.js';
 
 /**
+ * Substitutes type parameters in an interface name.
+ * For example, given `Sequence<T>` and a context mapping T -> i32,
+ * this returns "Sequence<i32>".
+ */
+function substituteInterfaceName(
+  impl: TypeAnnotation,
+  typeContext?: Map<string, TypeAnnotation>,
+): string {
+  if (impl.type !== NodeType.TypeAnnotation) {
+    return '';
+  }
+
+  // No type arguments, just return the base name
+  if (!impl.typeArguments || impl.typeArguments.length === 0) {
+    return impl.name;
+  }
+
+  // Substitute each type argument
+  const substitutedArgs = impl.typeArguments.map((arg) => {
+    if (arg.type === NodeType.TypeAnnotation && typeContext?.has(arg.name)) {
+      const substituted = typeContext.get(arg.name)!;
+      // Recursively substitute in case the substituted type has its own type arguments
+      return substituteInterfaceName(substituted, typeContext);
+    }
+    // Recursively handle nested type arguments
+    return substituteInterfaceName(arg, typeContext);
+  });
+
+  return `${impl.name}<${substitutedArgs.join(', ')}>`;
+}
+
+/**
  * Pre-registers an interface by reserving type indices for the fat pointer struct
  * and vtable struct. This must be called before classes are registered so that
  * interface types are available for class implements clauses.
@@ -809,6 +841,7 @@ export function generateInterfaceVTable(
   ctx: CodegenContext,
   classInfo: ClassInfo,
   decl: ClassDeclaration,
+  typeContext?: Map<string, TypeAnnotation>,
 ) {
   if (!decl.implements) return;
 
@@ -818,8 +851,18 @@ export function generateInterfaceVTable(
     if (impl.type !== NodeType.TypeAnnotation) {
       throw new Error('Interfaces cannot be union types');
     }
-    const interfaceName = impl.name;
-    const interfaceInfo = ctx.interfaces.get(interfaceName)!;
+    // Substitute type parameters in the interface name for generic classes
+    // e.g., "Sequence<T>" -> "Sequence<boolean>" when T=boolean
+    // This name is used as the key in classInfo.implements for correct lookup
+    const interfaceName = substituteInterfaceName(impl, typeContext);
+
+    // Look up interface info by base name (e.g., "Sequence"), since we don't
+    // instantiate generic interfaces separately - they share structure.
+    const baseName = impl.name;
+    const interfaceInfo = ctx.interfaces.get(baseName);
+    if (!interfaceInfo) {
+      throw new Error(`Interface ${baseName} not found`);
+    }
 
     const vtableSize = interfaceInfo.methods.size + interfaceInfo.fields.size;
     const vtableEntries: number[] = new Array(vtableSize);
@@ -2254,6 +2297,10 @@ export function generateClassMethods(
         ctx.thisLocalIndex = thisLocalIndex;
       }
 
+      // Set return type for proper return statement adaptation (e.g., interface boxing)
+      const oldReturnType = ctx.currentReturnType;
+      ctx.currentReturnType = methodInfo.returnType;
+
       // Downcast 'this' if needed (e.g. overriding a method from a superclass)
       if (!member.isStatic) {
         const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
@@ -2282,14 +2329,17 @@ export function generateClassMethods(
         body.push(Opcode.unreachable);
         body.push(Opcode.end);
         ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+        ctx.currentReturnType = oldReturnType;
         continue;
       }
 
       if (methodInfo.intrinsic) {
+        ctx.currentReturnType = oldReturnType;
         continue;
       }
 
       if (member.isDeclare) {
+        ctx.currentReturnType = oldReturnType;
         continue;
       }
 
@@ -2369,6 +2419,9 @@ export function generateClassMethods(
         }
       }
       body.push(Opcode.end);
+
+      // Restore return type context
+      ctx.currentReturnType = oldReturnType;
 
       ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
     } else if (member.type === NodeType.AccessorDeclaration) {
@@ -3983,7 +4036,7 @@ export function instantiateClass(
         superClass: undefined,
       } as ClassDeclaration;
 
-      generateInterfaceVTable(ctx, classInfo, decl);
+      generateInterfaceVTable(ctx, classInfo, decl, context);
 
       ctx.bodyGenerators.push(() => {
         generateClassMethods(
@@ -4031,7 +4084,7 @@ export function instantiateClass(
     classInfo.vtableTypeIndex = vtableTypeIndex;
     classInfo.vtableGlobalIndex = vtableGlobalIndex;
 
-    generateInterfaceVTable(ctx, classInfo, decl);
+    generateInterfaceVTable(ctx, classInfo, decl, context);
 
     if (ctx.shouldExport(decl) && structTypeIndex !== -1) {
       const ctorInfo = methods.get('#new')!;
@@ -4563,16 +4616,17 @@ export function mapCheckerTypeToWasmType(
       if (ctx.currentTypeParamMap.has(resolvedParam.name)) {
         return mapCheckerTypeToWasmType(ctx, resolved);
       }
-      // Fall through to annotation-based for the resolved type param
+      // Fall through to annotation-based resolution
     }
 
-    // Fall back to annotation-based resolution
+    // Try annotation-based resolution (for generic methods that don't have checker types)
     if (ctx.currentTypeContext?.has(typeParam.name)) {
-      const resolved = ctx.currentTypeContext.get(typeParam.name)!;
-      return mapType(ctx, resolved, ctx.currentTypeContext);
+      const annotation = ctx.currentTypeContext.get(typeParam.name)!;
+      return mapType(ctx, annotation, ctx.currentTypeContext);
     }
 
     // Unresolved type parameter - erase to anyref
+    // This can happen for unconstrained type parameters or when type info is incomplete
     return [ValType.anyref];
   }
 
@@ -4668,6 +4722,11 @@ export function mapCheckerTypeToWasmType(
             ctx.currentTypeContext,
             classType, // Pass checker type for registration
           );
+        } else {
+          // Class was previously instantiated via annotation path (without checker type).
+          // Register our checker type so identity-based lookups work.
+          const existingInfo = ctx.classes.get(specializedName)!;
+          ctx.registerClassInfoByType(classType, existingInfo);
         }
         classInfo = ctx.classes.get(specializedName);
         if (classInfo) {
@@ -4724,15 +4783,13 @@ export function mapCheckerTypeToWasmType(
       return [ValType.i32];
     } else if (typeof litType.value === 'string') {
       // String literals map to the String type
-      if (ctx.stringTypeIndex !== -1) {
-        return [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-        ];
+      if (ctx.stringTypeIndex === -1) {
+        throw new Error('String type not initialized');
       }
-      // Fallback to annotation-based lookup
-      const annotation = typeToTypeAnnotation(type, undefined, ctx);
-      return mapType(ctx, annotation, ctx.currentTypeContext);
+      return [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+      ];
     } else if (typeof litType.value === 'boolean') {
       return [ValType.i32];
     }
@@ -4787,10 +4844,10 @@ export function mapCheckerTypeToWasmType(
     return mapCheckerTypeToWasmType(ctx, aliasType.target);
   }
 
-  // Fall through to annotation-based lookup for any remaining types
-  const annotation = typeToTypeAnnotation(type, undefined, ctx);
-  const result = mapType(ctx, annotation, ctx.currentTypeContext);
-  return result;
+  // All type kinds should be handled above
+  throw new Error(
+    `mapCheckerTypeToWasmType: unhandled type kind ${type.kind} (${TypeKind[type.kind]})`,
+  );
 }
 
 /**

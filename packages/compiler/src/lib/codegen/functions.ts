@@ -11,7 +11,7 @@ import {
   type VariableDeclaration,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {Decorators, TypeKind, type FunctionType} from '../types.js';
+import {Decorators, TypeKind, type FunctionType, type Type} from '../types.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
   decodeTypeIndex,
@@ -523,6 +523,20 @@ function generateMethodBody(
 ): number[] {
   const oldContext = ctx.currentTypeContext;
   const oldReturnType = ctx.currentReturnType;
+
+  // Push type param context for checker-based resolution
+  // This enables substituteTypeParams to resolve method type parameters
+  // (e.g., U in map<U>) in addition to class type parameters
+  if (typeContext.size > 0 && ctx.checkerContext) {
+    const typeMap = new Map<string, Type>();
+    for (const [name, annotation] of typeContext) {
+      if (annotation.inferredType) {
+        typeMap.set(name, annotation.inferredType);
+      } else {
+      }
+    }
+    ctx.pushTypeParamContext(typeMap);
+  }
   ctx.currentTypeContext = typeContext;
   ctx.currentReturnType = returnType;
   ctx.currentClass = classInfo;
@@ -563,6 +577,11 @@ function generateMethodBody(
   }
 
   body.push(Opcode.end);
+
+  // Pop type param context if we pushed one
+  if (typeContext.size > 0 && ctx.checkerContext) {
+    ctx.popTypeParamContext();
+  }
 
   ctx.currentTypeContext = oldContext;
   ctx.currentReturnType = oldReturnType;

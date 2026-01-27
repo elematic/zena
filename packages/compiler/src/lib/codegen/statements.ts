@@ -262,7 +262,10 @@ export function generateLocalVariableDeclaration(
     if (actualType.length > 0) {
       // Try to find a member type that requires adaptation
       for (const member of typeAnnotation.types) {
-        const memberWasmType = mapType(ctx, member, ctx.currentTypeContext);
+        // Prefer checker-based type resolution when available
+        const memberWasmType = member.inferredType
+          ? mapCheckerTypeToWasmType(ctx, member.inferredType)
+          : mapType(ctx, member, ctx.currentTypeContext);
         if (isAdaptable(ctx, actualType, memberWasmType)) {
           generateAdaptedArgument(ctx, decl.init, memberWasmType, body);
           adapted = true;
@@ -294,9 +297,10 @@ export function generateLocalVariableDeclaration(
         ctx.currentTypeParamMap,
       );
     }
-    type = resolvedType
-      ? mapCheckerTypeToWasmType(ctx, resolvedType)
-      : mapType(ctx, decl.typeAnnotation, ctx.currentTypeContext);
+    if (!resolvedType) {
+      throw new Error(`Variable declaration missing checker type`);
+    }
+    type = mapCheckerTypeToWasmType(ctx, resolvedType);
 
     // Union boxing (i32 -> anyref)
     const isAnyRef =
@@ -326,20 +330,41 @@ export function generateLocalVariableDeclaration(
       const classInfo = getClassFromTypeIndex(ctx, typeIndex);
 
       if (classInfo && classInfo.implements) {
-        const interfaceName = decl.typeAnnotation.name;
-        const interfaceInfo = ctx.interfaces.get(interfaceName)!;
-        let implInfo = classInfo.implements.get(interfaceName);
+        const baseName = decl.typeAnnotation.name;
+        const interfaceInfo = ctx.interfaces.get(baseName)!;
+
+        // First try exact name match
+        let implInfo = classInfo.implements.get(baseName);
+
+        // If not found, try to find by generic interface match
+        // e.g., looking for "Box" should match "Box<i32>"
+        if (!implInfo) {
+          for (const [name, info] of classInfo.implements) {
+            // Check if name is a specialization of baseName
+            if (name.startsWith(baseName + '<')) {
+              implInfo = info;
+              break;
+            }
+          }
+        }
 
         if (!implInfo) {
           // Search for subtype
           for (const [name, info] of classInfo.implements) {
             let currentName: string | undefined = name;
+            // Extract base name from specialized name for comparison
+            const implBaseName = currentName.includes('<')
+              ? currentName.split('<')[0]
+              : currentName;
             while (currentName) {
-              if (currentName === interfaceName) {
+              const checkName = currentName.includes('<')
+                ? currentName.split('<')[0]
+                : currentName;
+              if (checkName === baseName) {
                 implInfo = info;
                 break;
               }
-              const currentInfo = ctx.interfaces.get(currentName);
+              const currentInfo = ctx.interfaces.get(implBaseName);
               currentName = currentInfo?.parent;
             }
             if (implInfo) break;
@@ -366,6 +391,8 @@ export function generateLocalVariableDeclaration(
     }
   } else {
     type = inferType(ctx, decl.init);
+    if (decl.pattern.type === NodeType.Identifier) {
+    }
   }
 
   if (decl.pattern.type === NodeType.Identifier) {

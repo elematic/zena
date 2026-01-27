@@ -52,6 +52,7 @@ import {
   type Type,
   type UnionType,
 } from '../types.js';
+import {typeToString} from '../checker/types.js';
 import {
   CatchKind,
   ExportDesc,
@@ -69,11 +70,9 @@ import {
   decodeTypeIndex,
   getClassFromTypeIndex,
   getSpecializedName,
-  getTypeKey,
   instantiateClass,
   mapCheckerTypeToWasmType,
   mapType,
-  resolveAnnotation,
   typeToTypeAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
@@ -555,13 +554,24 @@ function generateAsExpression(
   // Use checker types for semantic operations (lookups, type identity).
   // WASM types are computed lazily, only when needed for opcode emission.
   const sourceCheckerType = expr.expression.inferredType;
-  const targetCheckerType =
+  let targetCheckerType =
     expr.inferredType ?? expr.typeAnnotation.inferredType;
 
+  // Substitute type parameters if we're in a generic context
+  if (targetCheckerType && ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+    targetCheckerType = ctx.checkerContext.substituteTypeParams(
+      targetCheckerType,
+      ctx.currentTypeParamMap,
+    );
+  }
+
   // Compute WASM types for opcode emission
-  const targetWasmType = targetCheckerType
-    ? mapCheckerTypeToWasmType(ctx, targetCheckerType)
-    : mapType(ctx, expr.typeAnnotation, ctx.currentTypeContext);
+  if (!targetCheckerType) {
+    throw new Error(
+      `AsExpression missing checker type for target`,
+    );
+  }
+  const targetWasmType = mapCheckerTypeToWasmType(ctx, targetCheckerType);
 
   let sourceWasmType: number[] | undefined;
   if (sourceCheckerType) {
@@ -691,10 +701,18 @@ function generateAsExpression(
     }
 
     if (classInfo && classInfo.implements) {
-      const interfaceName = interfaceInfo.name;
+      // Use the specialized interface name from the checker type (e.g., "Sequence<i32>")
+      // instead of the base interface name from interfaceInfo (e.g., "Sequence").
+      // This matches how we store implementations in generateInterfaceVTable.
+      const interfaceName = typeToString(targetCheckerType as InterfaceType);
 
       if (interfaceName) {
         let impl = classInfo.implements.get(interfaceName);
+
+        if (!impl) {
+          // Also try the base name for backward compatibility
+          impl = classInfo.implements.get(interfaceInfo.name);
+        }
 
         if (!impl) {
           // Check subtypes
@@ -757,7 +775,12 @@ function generateIsExpression(
   body: number[],
 ) {
   const sourceType = inferType(ctx, expr.expression);
-  const targetType = mapType(ctx, expr.typeAnnotation, ctx.currentTypeContext);
+  // Require checker-based type resolution
+  const targetCheckerType = expr.typeAnnotation.inferredType;
+  if (!targetCheckerType) {
+    throw new Error(`IsExpression missing checker type for target`);
+  }
+  const targetType = mapCheckerTypeToWasmType(ctx, targetCheckerType);
 
   // Handle primitive source types
   if (
@@ -987,7 +1010,16 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
   // 2. Fallback to Checker's inferred type.
   // For most expressions, the static type inferred by the checker is correct.
   if (expr.inferredType) {
-    return mapCheckerTypeToWasmType(ctx, expr.inferredType);
+    let resolvedType = expr.inferredType;
+    // When inside a generic context, the AST's inferredType may contain
+    // unsubstituted type parameters. Resolve them to concrete types.
+    if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+      resolvedType = ctx.checkerContext.substituteTypeParams(
+        resolvedType,
+        ctx.currentTypeParamMap,
+      );
+    }
+    return mapCheckerTypeToWasmType(ctx, resolvedType);
   }
 
   throw new Error(
@@ -1462,7 +1494,16 @@ function generateNewExpression(
 
   // Try identity-based lookup first using the checker's interned ClassType
   if (expr.inferredType && expr.inferredType.kind === TypeKind.Class) {
-    const classType = expr.inferredType as ClassType;
+    let classType = expr.inferredType as ClassType;
+    // When inside a generic context (e.g., generating Array<SuiteResult>.from),
+    // the AST's inferredType may be the unsubstituted Array<T>.
+    // Substitute type parameters to get the concrete type (Array<SuiteResult>).
+    if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+      classType = ctx.checkerContext.substituteTypeParams(
+        classType,
+        ctx.currentTypeParamMap,
+      ) as ClassType;
+    }
     classInfo = ctx.getClassInfoByCheckerType(classType);
 
     // If identity lookup failed, fall back to annotation-based path
@@ -1529,22 +1570,20 @@ function generateNewExpression(
       const actualClassName = resolvedGenericClass
         ? resolvedGenericClass.name.name
         : className;
-      const annotation: TypeAnnotation = {
-        type: NodeType.TypeAnnotation,
-        name: actualClassName,
-        typeArguments: typeArguments,
-        // Preserve the checker type for identity-based lookups
-        inferredType: expr.inferredType,
-      };
-      // Ensure the class is instantiated
-      mapType(ctx, annotation, ctx.currentTypeContext);
-      // Get the specialized name
-      const resolved = resolveAnnotation(annotation, ctx.currentTypeContext);
-      const newClassName = getTypeKey(resolved);
-      className = newClassName;
+      // Ensure the class is instantiated via checker type
+      if (!expr.inferredType) {
+        throw new Error(
+          `NewExpression missing checker type for class: ${actualClassName}`,
+        );
+      }
+      mapCheckerTypeToWasmType(ctx, expr.inferredType);
+      // Get class info directly from checker type
+      classInfo = ctx.getClassInfoByCheckerType(expr.inferredType as ClassType);
     }
 
-    classInfo = ctx.classes.get(className);
+    if (!classInfo) {
+      classInfo = ctx.classes.get(className);
+    }
   }
 
   if (!classInfo) throw new Error(`Class ${className} not found`);
@@ -1988,12 +2027,22 @@ function generateCallExpression(
     if (calleeBinding && calleeBinding.kind === 'method') {
       const methodBinding = calleeBinding as MethodBinding;
       if (methodBinding.classType.kind === TypeKind.Class) {
-        foundClass = ctx.getClassInfoByCheckerType(methodBinding.classType);
+        let bindingClassType = methodBinding.classType;
+        // When inside a generic context (e.g., generating Array<SuiteResult>.from),
+        // the binding's classType may be the unsubstituted Array<T>.
+        // Substitute type parameters to get the concrete type.
+        if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+          bindingClassType = ctx.checkerContext.substituteTypeParams(
+            bindingClassType,
+            ctx.currentTypeParamMap,
+          ) as ClassType;
+        }
+        foundClass = ctx.getClassInfoByCheckerType(bindingClassType);
         // If not found and this is an extension class, instantiate it now
-        if (!foundClass && methodBinding.classType.isExtension) {
+        if (!foundClass && bindingClassType.isExtension) {
           foundClass = instantiateExtensionClassFromCheckerType(
             ctx,
-            methodBinding.classType,
+            bindingClassType,
           );
         }
       }
@@ -2005,7 +2054,16 @@ function generateCallExpression(
       memberExpr.object.inferredType &&
       memberExpr.object.inferredType.kind === TypeKind.Class
     ) {
-      const classType = memberExpr.object.inferredType as ClassType;
+      let classType = memberExpr.object.inferredType as ClassType;
+      // When inside a generic context (e.g., generating Array<SuiteResult>.from),
+      // the AST's inferredType may still be the unsubstituted Array<T>.
+      // Substitute type parameters to get the concrete type (Array<SuiteResult>).
+      if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+        classType = ctx.checkerContext.substituteTypeParams(
+          classType,
+          ctx.currentTypeParamMap,
+        ) as ClassType;
+      }
       foundClass = ctx.getClassInfoByCheckerType(classType);
     }
 
@@ -2019,9 +2077,15 @@ function generateCallExpression(
 
     // Check for extension classes using O(1) lookup via checker type
     if (!foundClass && memberExpr.object.inferredType) {
-      const extensions = ctx.getExtensionClassesByOnType(
-        memberExpr.object.inferredType,
-      );
+      let lookupType = memberExpr.object.inferredType;
+      // Substitute type parameters if we're in a generic context
+      if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+        lookupType = ctx.checkerContext.substituteTypeParams(
+          lookupType,
+          ctx.currentTypeParamMap,
+        );
+      }
+      const extensions = ctx.getExtensionClassesByOnType(lookupType);
       if (extensions && extensions.length > 0) {
         foundClass = extensions[0];
       }
@@ -2568,9 +2632,15 @@ function generateAssignmentExpression(
 
       // Check for extension classes on non-class types (e.g., raw array<T>)
       if (!foundClass && indexExpr.object.inferredType) {
-        const extensions = ctx.getExtensionClassesByOnType(
-          indexExpr.object.inferredType,
-        );
+        // Substitute type parameters when in a generic context
+        let lookupType = indexExpr.object.inferredType;
+        if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+          lookupType = ctx.checkerContext.substituteTypeParams(
+            lookupType,
+            ctx.currentTypeParamMap,
+          );
+        }
+        const extensions = ctx.getExtensionClassesByOnType(lookupType);
         if (extensions && extensions.length > 0) {
           foundClass = extensions[0];
         }
@@ -2594,16 +2664,9 @@ function generateAssignmentExpression(
             foundClass.isExtension &&
             foundClass.onType
           ) {
-            // Decode array type index from onType
-            // onType is [ref_null, ...leb128(index)]
-            let arrayTypeIndex = 0;
-            let shift = 0;
-            for (let i = 1; i < foundClass.onType.length; i++) {
-              const byte = foundClass.onType[i];
-              arrayTypeIndex |= (byte & 0x7f) << shift;
-              shift += 7;
-              if ((byte & 0x80) === 0) break;
-            }
+            // Use the actual object type (already resolved via inferType with substitution)
+            // instead of foundClass.onType, which may be a generic template type
+            const arrayTypeIndex = decodeTypeIndex(objectType);
 
             generateExpression(ctx, indexExpr.object, body);
             generateExpression(ctx, indexExpr.index, body);
@@ -3939,6 +4002,16 @@ function generateFieldFromBinding(
 ): boolean {
   let {classType, fieldName} = binding;
 
+  // Substitute type parameters in the classType when inside a generic context.
+  // This is needed for field access like `entry.key` where `entry: Entry<K, V>` 
+  // and K, V need to be substituted with actual type arguments.
+  if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+    classType = ctx.checkerContext.substituteTypeParams(
+      classType,
+      ctx.currentTypeParamMap,
+    ) as ClassType;
+  }
+
   // Handle interface field access
   if (classType.kind === TypeKind.Interface) {
     return generateInterfaceFieldAccess(
@@ -4604,6 +4677,16 @@ function generateGetterFromBinding(
   body: number[],
 ): boolean {
   let {classType, methodName, isStaticDispatch} = binding;
+
+  // Substitute type parameters in the classType when inside a generic context.
+  // This is needed for getter access like `items.length` where `items: Array<T>`
+  // and T needs to be substituted with actual type arguments.
+  if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+    classType = ctx.checkerContext.substituteTypeParams(
+      classType,
+      ctx.currentTypeParamMap,
+    ) as ClassType;
+  }
 
   // Handle interface getter access
   if (classType.kind === TypeKind.Interface) {
@@ -5708,7 +5791,16 @@ function generateGlobalIntrinsic(
         throw new Error('__array_new_empty requires inferred type');
       }
 
-      const wasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+      // Substitute type parameters if we're in a generic context
+      let resolvedType = expr.inferredType;
+      if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+        resolvedType = ctx.checkerContext.substituteTypeParams(
+          resolvedType,
+          ctx.currentTypeParamMap,
+        );
+      }
+
+      const wasmType = mapCheckerTypeToWasmType(ctx, resolvedType);
       const arrayTypeIndex = decodeTypeIndex(wasmType);
 
       // array.new_default $type size
@@ -6722,11 +6814,20 @@ export function generateAdaptedArgument(
     }
 
     if (classInfo && classInfo.implements) {
+      // First try exact name match (handles non-generic interfaces)
       let impl = classInfo.implements.get(interfaceName);
 
+      // If not found, try to find by generic interface match
+      // e.g., looking for "Sequence" should match "Sequence<i32>"
       if (!impl) {
-        // Check if any implemented interface extends the target interface
         for (const [implName, implInfo] of classInfo.implements) {
+          // Check if implName is a specialization of interfaceName
+          // e.g., "Sequence<i32>" starts with "Sequence<"
+          if (implName.startsWith(interfaceName + '<')) {
+            impl = implInfo;
+            break;
+          }
+          // Also check subtype relationship
           if (isInterfaceSubtype(ctx, implName, interfaceName)) {
             impl = implInfo;
             break;
@@ -6878,9 +6979,17 @@ export function generateAdaptedArgument(
               }
 
               if (classInfo && classInfo.implements) {
+                // First try exact name match
                 let impl = classInfo.implements.get(interfaceName);
+
+                // If not found, try to find by generic interface match
                 if (!impl) {
                   for (const [implName, implInfo] of classInfo.implements) {
+                    // Check if implName is a specialization of interfaceName
+                    if (implName.startsWith(interfaceName + '<')) {
+                      impl = implInfo;
+                      break;
+                    }
                     if (isInterfaceSubtype(ctx, implName, interfaceName)) {
                       impl = implInfo;
                       break;
