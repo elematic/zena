@@ -11,9 +11,9 @@ import {WasmModule} from '../emitter.js';
 import {Decorators, type FunctionType, type Type} from '../types.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
-  getTypeKey,
+  getCheckerTypeKeyForSpecialization,
   mapCheckerTypeToWasmType,
-  resolveAnnotation,
+  typeToTypeAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {generateExpression} from './expressions.js';
@@ -127,13 +127,14 @@ export function generateFunctionBody(
 export function instantiateGenericFunction(
   ctx: CodegenContext,
   name: string,
-  typeArgs: TypeAnnotation[],
+  typeArgs: Type[],
 ): number {
   const funcDecl = ctx.genericFunctions.get(name);
   if (!funcDecl) throw new Error(`Generic function ${name} not found`);
 
+  // Use checker-based type key for specialization
   const key = `${name}<${typeArgs
-    .map((t) => getTypeKey(resolveAnnotation(t, ctx.currentTypeContext)))
+    .map((t) => getCheckerTypeKeyForSpecialization(t, ctx))
     .join(',')}>`;
 
   // Check if already instantiated
@@ -141,7 +142,8 @@ export function instantiateGenericFunction(
     return ctx.functions.get(key)!;
   }
 
-  const typeContext = new Map<string, TypeAnnotation>();
+  // Build type map directly from Type[] (checker-based)
+  const typeMap = new Map<string, Type>();
   if (funcDecl.typeParameters) {
     if (funcDecl.typeParameters.length !== typeArgs.length) {
       throw new Error(
@@ -149,16 +151,14 @@ export function instantiateGenericFunction(
       );
     }
     for (let i = 0; i < funcDecl.typeParameters.length; i++) {
-      typeContext.set(funcDecl.typeParameters[i].name, typeArgs[i]);
+      typeMap.set(funcDecl.typeParameters[i].name, typeArgs[i]);
     }
   }
 
-  // Build type map for checker-based substitution
-  const typeMap = new Map<string, Type>();
-  for (const [name, annotation] of typeContext) {
-    if (annotation.inferredType) {
-      typeMap.set(name, annotation.inferredType);
-    }
+  // Build typeContext for backward compatibility with currentTypeContext
+  const typeContext = new Map<string, TypeAnnotation>();
+  for (const [name, type] of typeMap) {
+    typeContext.set(name, typeToTypeAnnotation(type, undefined, ctx));
   }
 
   const params = funcDecl.params.map((p) => {
@@ -293,7 +293,7 @@ export function instantiateGenericMethod(
   ctx: CodegenContext,
   classInfo: ClassInfo,
   methodName: string,
-  typeArgs: TypeAnnotation[],
+  typeArgs: Type[],
 ): {
   index: number;
   returnType: number[];
@@ -313,8 +313,9 @@ export function instantiateGenericMethod(
 
   if (!methodDecl) throw new Error(`Generic method ${key} not found`);
 
+  // Use checker-based type key for specialization
   const specializedKey = `${methodName}<${typeArgs
-    .map((t) => getTypeKey(resolveAnnotation(t, ctx.currentTypeContext)))
+    .map((t) => getCheckerTypeKeyForSpecialization(t, ctx))
     .join(',')}>`;
 
   // Check if already instantiated in the class
@@ -322,16 +323,19 @@ export function instantiateGenericMethod(
     return classInfo.methods.get(specializedKey)!;
   }
 
-  const typeContext = new Map<string, TypeAnnotation>();
+  // Build type map directly from Type[] (checker-based)
+  const typeMap = new Map<string, Type>();
 
-  // Add class type parameters
+  // Add class type parameters from classInfo.typeArguments
   if (classInfo.typeArguments) {
-    for (const [name, type] of classInfo.typeArguments) {
-      typeContext.set(name, type);
+    for (const [name, annotation] of classInfo.typeArguments) {
+      if (annotation.inferredType) {
+        typeMap.set(name, annotation.inferredType);
+      }
     }
   }
 
-  // Add method type parameters
+  // Add method type parameters directly from Type[]
   if (methodDecl.typeParameters) {
     if (methodDecl.typeParameters.length !== typeArgs.length) {
       throw new Error(
@@ -339,8 +343,15 @@ export function instantiateGenericMethod(
       );
     }
     for (let i = 0; i < methodDecl.typeParameters.length; i++) {
-      typeContext.set(methodDecl.typeParameters[i].name, typeArgs[i]);
+      typeMap.set(methodDecl.typeParameters[i].name, typeArgs[i]);
     }
+  }
+
+  // Build typeContext for backward compatibility with currentTypeContext
+  // This converts Type -> TypeAnnotation for legacy code paths
+  const typeContext = new Map<string, TypeAnnotation>();
+  for (const [name, type] of typeMap) {
+    typeContext.set(name, typeToTypeAnnotation(type, undefined, ctx));
   }
 
   // Map types
@@ -352,14 +363,6 @@ export function instantiateGenericMethod(
       ValType.ref_null,
       ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
     ];
-  }
-
-  // Build type map for checker-based substitution
-  const typeMap = new Map<string, Type>();
-  for (const [name, annotation] of typeContext) {
-    if (annotation.inferredType) {
-      typeMap.set(name, annotation.inferredType);
-    }
   }
 
   const params: number[][] = [];

@@ -404,10 +404,13 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Static member/method access - uses `ResolvedBinding` from checker. Fixed: checker now passes `declaration` to `ctx.declare()` for classes, enabling `ClassBinding` creation.
       - [ ] Super class lookups (lines 1768, 1814, 2387) - already have identity-based first via `superClassType`, name-based is fallback for synthesized classes (mixin intermediates)
       - [ ] `generateNewExpression` fallback (line 1545) - last resort for non-generic classes
-      - [ ] Remove `typeToTypeAnnotation()` - still used for annotation-based context threading
+      - [ ] Remove `typeToTypeAnnotation()` - still used in `generateNewExpression` fallback and `instantiateClass`
     - [ ] **Phase 7: Remove `typeToTypeAnnotation()`**
-      - Used in `instantiateClass` to build `context: Map<string, TypeAnnotation>` for backward compatibility
-      - Once all callers use checker types directly, this can be removed
+      - [x] `instantiateGenericMethod` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
+      - [x] `instantiateGenericFunction` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
+      - [ ] `instantiateClass` - still builds `context: Map<string, TypeAnnotation>` for backward compatibility
+      - [ ] `generateNewExpression` fallback - still converts `inferredTypeArguments` to annotations
+      - [ ] `instantiateExtensionClassFromCheckerType` - still builds `typeContext` from type args
       - Blocked by: some code paths still thread annotation-based context
 
     **Benefits** (now realized):

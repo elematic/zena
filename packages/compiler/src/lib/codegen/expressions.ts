@@ -2124,20 +2124,15 @@ function generateCallExpression(
       }
 
       if (ctx.genericMethods.has(genericKey)) {
-        let typeArguments = expr.typeArguments;
+        // Use inferredTypeArguments (Type[]) directly if available
+        const checkerTypeArgs = expr.inferredTypeArguments;
 
-        if (expr.inferredTypeArguments) {
-          typeArguments = expr.inferredTypeArguments.map((t) =>
-            typeToTypeAnnotation(t, undefined, ctx),
-          );
-        }
-
-        if (typeArguments && typeArguments.length > 0) {
+        if (checkerTypeArgs && checkerTypeArgs.length > 0) {
           methodInfo = instantiateGenericMethod(
             ctx,
             foundClass,
             methodName,
-            typeArguments,
+            checkerTypeArgs,
           );
         }
       }
@@ -2493,39 +2488,18 @@ function generateCallExpression(
       let targetFuncIndex = -1;
 
       if (ctx.genericFunctions.has(name)) {
-        let typeArguments = expr.typeArguments;
+        // Use inferredTypeArguments (Type[]) directly if available
+        let checkerTypeArgs = expr.inferredTypeArguments;
 
-        if (expr.inferredTypeArguments) {
-          typeArguments = expr.inferredTypeArguments.map((t) =>
-            typeToTypeAnnotation(t, undefined, ctx),
-          );
-        } else if (!typeArguments || typeArguments.length === 0) {
+        if (!checkerTypeArgs || checkerTypeArgs.length === 0) {
           throw new Error(`Missing inferred type arguments for ${name}`);
-        } else {
-          // Check for partial type arguments
-          const funcDecl = ctx.genericFunctions.get(name)!;
-          if (
-            funcDecl.typeParameters &&
-            typeArguments.length < funcDecl.typeParameters.length
-          ) {
-            const newArgs = [...typeArguments];
-            for (
-              let i = typeArguments.length;
-              i < funcDecl.typeParameters.length;
-              i++
-            ) {
-              const param = funcDecl.typeParameters[i];
-              if (param.default) {
-                newArgs.push(param.default);
-              } else {
-                throw new Error(`Missing type argument for ${param.name}`);
-              }
-            }
-            typeArguments = newArgs;
-          }
         }
 
-        targetFuncIndex = instantiateGenericFunction(ctx, name, typeArguments!);
+        targetFuncIndex = instantiateGenericFunction(
+          ctx,
+          name,
+          checkerTypeArgs,
+        );
       } else if (ctx.functionOverloads.has(name)) {
         const overloads = ctx.functionOverloads.get(name)!;
         const argTypes = expr.arguments.map((arg) => inferType(ctx, arg));
