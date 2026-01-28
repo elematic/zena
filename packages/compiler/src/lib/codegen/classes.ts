@@ -1142,8 +1142,13 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
       if (!mixinDecl) {
         throw new Error(`Unknown mixin ${mixinName}`);
       }
-      // TODO: Handle generic mixin instantiation in codegen
-      currentSuperClassInfo = applyMixin(ctx, currentSuperClassInfo, mixinDecl);
+      // Pass type arguments to applyMixin for generic mixin instantiation
+      currentSuperClassInfo = applyMixin(
+        ctx,
+        currentSuperClassInfo,
+        mixinDecl,
+        mixinAnnotation.typeArguments,
+      );
     }
   }
 
@@ -1303,8 +1308,13 @@ export function registerClassStruct(
       if (!mixinDecl) {
         throw new Error(`Unknown mixin ${mixinName}`);
       }
-      // TODO: Handle generic mixin instantiation in codegen
-      currentSuperClassInfo = applyMixin(ctx, currentSuperClassInfo, mixinDecl);
+      // Pass type arguments to applyMixin for generic mixin instantiation
+      currentSuperClassInfo = applyMixin(
+        ctx,
+        currentSuperClassInfo,
+        mixinDecl,
+        mixinAnnotation.typeArguments,
+      );
     }
   }
 
@@ -3418,6 +3428,7 @@ function applyMixin(
   ctx: CodegenContext,
   baseClassInfo: ClassInfo | undefined,
   mixinDecl: MixinDeclaration,
+  typeArguments?: TypeAnnotation[],
 ): ClassInfo {
   const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
   const intermediateName = `${baseName}_${mixinDecl.name.name}`;
@@ -3429,7 +3440,7 @@ function applyMixin(
   }
 
   // Get or create the ClassInfo (might already be pre-registered)
-  const classInfo = existingInfo || {
+  const classInfo: ClassInfo = existingInfo || {
     name: intermediateName,
     structTypeIndex: ctx.module.reserveType(),
     superClass: baseClassInfo?.name,
@@ -3443,6 +3454,17 @@ function applyMixin(
   }
 
   const structTypeIndex = classInfo.structTypeIndex;
+
+  // Build type parameter context for generic mixins
+  const typeContext = new Map<string, TypeAnnotation>();
+  if (mixinDecl.typeParameters && typeArguments) {
+    mixinDecl.typeParameters.forEach((param, index) => {
+      if (index < typeArguments.length) {
+        const arg = typeArguments[index];
+        typeContext.set(param.name, resolveAnnotation(arg));
+      }
+    });
+  }
 
   const fields = new Map<string, {index: number; type: number[]}>();
   const fieldTypes: {type: number[]; mutable: boolean}[] = [];
@@ -3467,10 +3489,10 @@ function applyMixin(
     fieldTypes.push({type: [ValType.eqref], mutable: true});
   }
 
-  // Add mixin fields
+  // Add mixin fields with type parameter context
   for (const member of mixinDecl.body) {
     if (member.type === NodeType.FieldDefinition) {
-      const wasmType = mapType(ctx, member.typeAnnotation);
+      const wasmType = mapType(ctx, member.typeAnnotation, typeContext);
       const fieldName = manglePrivateName(
         intermediateName,
         getMemberName(member.name),
@@ -3490,6 +3512,10 @@ function applyMixin(
   classInfo.fields = fields;
   classInfo.methods = methods;
   classInfo.vtable = vtable;
+  // Store type arguments for method generation
+  if (typeContext.size > 0) {
+    classInfo.typeArguments = typeContext;
+  }
 
   const declForGen = {
     ...mixinDecl,
