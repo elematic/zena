@@ -1031,6 +1031,7 @@ export function preRegisterClassStruct(
         ctx,
         currentSuperClassInfo,
         mixinDecl,
+        mixinAnnotation.typeArguments,
       );
     }
   }
@@ -1544,7 +1545,7 @@ export function registerClassMethods(
         params.push(thisType);
       }
       for (const param of member.params) {
-        const mapped = mapType(ctx, param.typeAnnotation);
+        const mapped = mapType(ctx, param.typeAnnotation, classInfo.typeArguments);
         params.push(mapped);
       }
 
@@ -1553,13 +1554,13 @@ export function registerClassMethods(
         if (classInfo.isExtension && classInfo.onType) {
           results = [classInfo.onType];
         } else if (member.isStatic && member.returnType) {
-          const mapped = mapType(ctx, member.returnType);
+          const mapped = mapType(ctx, member.returnType, classInfo.typeArguments);
           if (mapped.length > 0) results = [mapped];
         } else {
           results = [];
         }
       } else if (member.returnType) {
-        const mapped = mapType(ctx, member.returnType);
+        const mapped = mapType(ctx, member.returnType, classInfo.typeArguments);
         if (mapped.length > 0) results = [mapped];
       } else {
         results = [];
@@ -1597,7 +1598,7 @@ export function registerClassMethods(
       });
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
-      const propType = mapType(ctx, member.typeAnnotation);
+      const propType = mapType(ctx, member.typeAnnotation, classInfo.typeArguments);
 
       // Getter
       if (member.getter) {
@@ -1913,7 +1914,7 @@ export function registerClassMethods(
   } as ClassDeclaration;
 
   ctx.bodyGenerators.push(() => {
-    generateClassMethods(ctx, declForGen);
+    generateClassMethods(ctx, declForGen, undefined, classInfo.typeArguments);
   });
 
   // Restore previous class context
@@ -1974,6 +1975,9 @@ export function generateClassMethods(
           : getMemberName(member.name);
       const methodInfo = classInfo.methods.get(methodName)!;
       const body: number[] = [];
+
+      const oldReturnType = ctx.currentReturnType;
+      ctx.currentReturnType = methodInfo.returnType;
 
       ctx.pushFunctionScope();
 
@@ -2120,6 +2124,7 @@ export function generateClassMethods(
       body.push(Opcode.end);
 
       ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+      ctx.currentReturnType = oldReturnType;
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
 
@@ -2128,6 +2133,9 @@ export function generateClassMethods(
         const methodName = getGetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
         const body: number[] = [];
+
+        const oldReturnType = ctx.currentReturnType;
+        ctx.currentReturnType = methodInfo.returnType;
 
         ctx.pushFunctionScope();
 
@@ -2161,6 +2169,7 @@ export function generateClassMethods(
         body.push(Opcode.end);
 
         ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+        ctx.currentReturnType = oldReturnType;
       }
 
       // Setter
@@ -2168,6 +2177,9 @@ export function generateClassMethods(
         const methodName = getSetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
         const body: number[] = [];
+
+        const oldReturnType = ctx.currentReturnType;
+        ctx.currentReturnType = methodInfo.returnType;
 
         ctx.pushFunctionScope();
 
@@ -2203,6 +2215,7 @@ export function generateClassMethods(
         body.push(Opcode.end);
 
         ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+        ctx.currentReturnType = oldReturnType;
       }
     } else if (member.type === NodeType.FieldDefinition) {
       if (member.isDeclare) continue;
@@ -3398,9 +3411,17 @@ function preRegisterMixin(
   ctx: CodegenContext,
   baseClassInfo: ClassInfo | undefined,
   mixinDecl: MixinDeclaration,
+  typeArguments?: TypeAnnotation[],
 ): ClassInfo {
   const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
-  const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+  
+  // Create specialized name for generic mixins
+  let mixinName = mixinDecl.name.name;
+  if (typeArguments && typeArguments.length > 0) {
+    mixinName = getSpecializedName(mixinDecl.name.name, typeArguments, ctx);
+  }
+  
+  const intermediateName = `${baseName}_${mixinName}`;
 
   // If already registered, return the existing info
   if (ctx.classes.has(intermediateName)) {
@@ -3431,7 +3452,14 @@ function applyMixin(
   typeArguments?: TypeAnnotation[],
 ): ClassInfo {
   const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
-  const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+  
+  // Create specialized name for generic mixins
+  let mixinName = mixinDecl.name.name;
+  if (typeArguments && typeArguments.length > 0) {
+    mixinName = getSpecializedName(mixinDecl.name.name, typeArguments, ctx);
+  }
+  
+  const intermediateName = `${baseName}_${mixinName}`;
 
   const existingInfo = ctx.classes.get(intermediateName);
   if (existingInfo && existingInfo.fields.size > 0) {
@@ -3525,6 +3553,7 @@ function applyMixin(
       ? {type: NodeType.Identifier, name: baseClassInfo.name}
       : undefined,
     isAbstract: false,
+    typeParameters: undefined, // Synthetic classes are specialized, not generic
   } as unknown as ClassDeclaration;
 
   ctx.syntheticClasses.push(declForGen);
