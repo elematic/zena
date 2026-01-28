@@ -402,14 +402,13 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] `resolveFixedArrayClass()` - uses identity lookup after instantiation
       - [x] `ClassPattern` in match expressions - identity lookup first, name-based fallback
       - [x] Static member/method access - uses `ResolvedBinding` from checker. Fixed: checker now passes `declaration` to `ctx.declare()` for classes, enabling `ClassBinding` creation.
+      - [x] `generateNewExpression` - simplified to use identity-based lookup via `expr.inferredType`, removed annotation-based fallback path
       - [ ] Super class lookups (lines 1768, 1814, 2387) - already have identity-based first via `superClassType`, name-based is fallback for synthesized classes (mixin intermediates)
-      - [ ] `generateNewExpression` fallback (line 1545) - last resort for non-generic classes
-      - [ ] Remove `typeToTypeAnnotation()` - still used in `generateNewExpression` fallback and `instantiateClass`
     - [ ] **Phase 7: Remove `typeToTypeAnnotation()`**
       - [x] `instantiateGenericMethod` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
       - [x] `instantiateGenericFunction` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
+      - [x] `generateNewExpression` - no longer uses `typeToTypeAnnotation`
       - [ ] `instantiateClass` - still builds `context: Map<string, TypeAnnotation>` for backward compatibility
-      - [ ] `generateNewExpression` fallback - still converts `inferredTypeArguments` to annotations
       - [ ] `instantiateExtensionClassFromCheckerType` - still builds `typeContext` from type args
       - Blocked by: some code paths still thread annotation-based context
 

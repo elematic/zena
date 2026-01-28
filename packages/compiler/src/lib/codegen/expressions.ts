@@ -8,7 +8,6 @@ import {
   type BlockStatement,
   type BooleanLiteral,
   type CallExpression,
-  type ClassDeclaration,
   type ClassPattern,
   type Expression,
   type FunctionExpression,
@@ -70,7 +69,6 @@ import {
   getSpecializedNameFromCheckerTypes,
   instantiateClass,
   mapCheckerTypeToWasmType,
-  typeToTypeAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {
@@ -1445,8 +1443,7 @@ function generateNewExpression(
   expr: NewExpression,
   body: number[],
 ) {
-  let className = expr.callee.name;
-  let typeArguments = expr.typeArguments;
+  const className = expr.callee.name;
   let classInfo: ClassInfo | undefined;
 
   // Try identity-based lookup first using the checker's interned ClassType
@@ -1463,84 +1460,16 @@ function generateNewExpression(
     }
     classInfo = ctx.getClassInfoByCheckerType(classType);
 
-    // If identity lookup failed, fall back to annotation-based path
-    // which will trigger instantiation if needed
+    // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
     if (!classInfo) {
-      // This path handles the case where the class was instantiated via codegen
-      // (AST-driven) rather than being pre-registered from checker types.
-      // The mapCheckerTypeToWasmType call will instantiate and cache the class.
       mapCheckerTypeToWasmType(ctx, classType);
       classInfo = ctx.getClassInfoByCheckerType(classType);
     }
   }
 
-  // Fall back to annotation-based lookup for edge cases
+  // Fall back to name-based lookup for non-generic classes without inferredType
   if (!classInfo) {
-    if (expr.inferredTypeArguments) {
-      typeArguments = expr.inferredTypeArguments.map((t) => {
-        const res = typeToTypeAnnotation(t, undefined, ctx);
-        return res;
-      });
-    }
-
-    // Resolve the generic class declaration using identity-based lookup
-    let resolvedGenericClass: ClassDeclaration | undefined;
-    if (expr.inferredType && expr.inferredType.kind === TypeKind.Class) {
-      const classType = expr.inferredType as ClassType;
-      const genericSource = classType.genericSource ?? classType;
-      resolvedGenericClass = ctx.getGenericDeclByType(genericSource);
-    }
-
-    if (
-      (!typeArguments || typeArguments.length === 0) &&
-      resolvedGenericClass
-    ) {
-      throw new Error(`Missing inferred type arguments for ${className}`);
-    }
-
-    if (typeArguments && typeArguments.length > 0) {
-      // Check for partial type arguments and fill with defaults
-      if (resolvedGenericClass) {
-        const classDecl = resolvedGenericClass;
-        if (
-          classDecl.typeParameters &&
-          typeArguments.length < classDecl.typeParameters.length
-        ) {
-          const newArgs = [...typeArguments];
-          for (
-            let i = typeArguments.length;
-            i < classDecl.typeParameters.length;
-            i++
-          ) {
-            const param = classDecl.typeParameters[i];
-            if (param.default) {
-              newArgs.push(param.default);
-            } else {
-              throw new Error(`Missing type argument for ${param.name}`);
-            }
-          }
-          typeArguments = newArgs;
-        }
-      }
-
-      // Use the actual class name from the declaration, not the import alias
-      const actualClassName = resolvedGenericClass
-        ? resolvedGenericClass.name.name
-        : className;
-      // Ensure the class is instantiated via checker type
-      if (!expr.inferredType) {
-        throw new Error(
-          `NewExpression missing checker type for class: ${actualClassName}`,
-        );
-      }
-      mapCheckerTypeToWasmType(ctx, expr.inferredType);
-      // Get class info directly from checker type
-      classInfo = ctx.getClassInfoByCheckerType(expr.inferredType as ClassType);
-    }
-
-    if (!classInfo) {
-      classInfo = ctx.classes.get(className);
-    }
+    classInfo = ctx.classes.get(className);
   }
 
   if (!classInfo) throw new Error(`Class ${className} not found`);
