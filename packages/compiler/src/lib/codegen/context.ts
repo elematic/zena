@@ -162,7 +162,6 @@ export class CodegenContext {
       type?: FunctionType;
     }[]
   >();
-  public classes = new Map<string, ClassInfo>();
   public mixins = new Map<string, MixinDeclaration>();
   public typeAliases = new Map<string, TypeAnnotation>();
 
@@ -255,8 +254,9 @@ export class CodegenContext {
    */
   public typeInstantiationVisited = new Set<Type>();
 
-  // Struct index to ClassInfo mapping for fast lookup in code generation
-  // This avoids issues with name collisions when multiple modules define same-named classes
+  // Struct index to ClassInfo mapping - the primary registry for all classes
+  // This replaces the old name-based `classes` Map and avoids issues with
+  // name collisions when multiple modules define same-named classes.
   readonly #structIndexToClassInfo = new Map<number, ClassInfo>();
   // Struct index to InterfaceInfo mapping for fast lookup
   readonly #structIndexToInterfaceInfo = new Map<number, InterfaceInfo>();
@@ -267,6 +267,10 @@ export class CodegenContext {
   // Counter for generating unique class names across modules
   // This ensures classes with the same name in different modules get unique keys
   #classNameCounter = 0;
+  // Counter for generating unique brand IDs for classes
+  // This must be incremented whenever a class is registered, including partial
+  // registrations where structTypeIndex is not yet valid
+  #brandIdCounter = 0;
   // Maps generic class declarations to their ClassType
   readonly #genericTemplates = new Map<string, ClassType>();
   // Reverse mapping: checker ClassType → ClassDeclaration for generic classes
@@ -799,7 +803,7 @@ export class CodegenContext {
 
   /**
    * Get a ClassInfo directly by its WASM struct index.
-   * This is faster than iterating over ctx.classes.values()
+   * This is the primary way to look up classes by struct index
    * and avoids issues with name collisions across modules.
    *
    * Unlike getClassInfoByStructIndex (which uses identity-based lookup via
@@ -809,6 +813,30 @@ export class CodegenContext {
     structIndex: number,
   ): ClassInfo | undefined {
     return this.#structIndexToClassInfo.get(structIndex);
+  }
+
+  /**
+   * Get all registered ClassInfo objects.
+   * Used for iterating over all classes (e.g., to generate method bodies).
+   */
+  public getAllClassInfos(): IterableIterator<ClassInfo> {
+    return this.#structIndexToClassInfo.values();
+  }
+
+  /**
+   * Get the total number of registered classes.
+   */
+  public getClassCount(): number {
+    return this.#structIndexToClassInfo.size;
+  }
+
+  /**
+   * Get the next brand ID for a class.
+   * This must be called for every class registration (including partial ones)
+   * to maintain consistent brand IDs with the old ctx.classes.size behavior.
+   */
+  public getNextBrandId(): number {
+    return ++this.#brandIdCounter;
   }
 
   // ===== Identity-Based Lookup Methods (Round 2.5 refactoring) =====

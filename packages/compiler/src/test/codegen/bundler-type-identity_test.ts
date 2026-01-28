@@ -355,13 +355,13 @@ suite('Bundler Type Identity', () => {
    * fallback. After Round 2, this should be converted to a regular test.
    *
    * The suffix lookup returns the FIRST match found when iterating
-   * ctx.classes (a Map). If two classes from different modules have
+   * class registrations. If two classes from different modules have
    * the same name:
    * - `m0_Data` (from module a)
    * - `m1_Data` (from module b)
    *
    * A suffix lookup for `Data` using `endsWith('_Data')` would match
-   * the first one encountered in the Map iteration order. Map iteration
+   * the first one encountered in iteration order. Map iteration
    * order is insertion order, so this is deterministic but fragile -
    * it depends on module processing order.
    *

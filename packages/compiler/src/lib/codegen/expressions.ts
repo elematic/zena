@@ -4057,7 +4057,7 @@ function generateFieldFromBinding(
 
   // For generic extension classes that weren't found through normal lookups,
   // try to create a ClassInfo on-the-fly. This is needed because generic extension classes
-  // (like FixedArray<T>) skip registerClassMethods and aren't in ctx.classes.
+  // (like FixedArray<T>) skip registerClassMethods and may not have been registered yet.
   if (!classInfo && classType.isExtension) {
     const genericSource = classType.genericSource ?? classType;
     const genericDecl = ctx.getGenericDeclByType(genericSource);
@@ -4078,7 +4078,6 @@ function generateFieldFromBinding(
       };
 
       // Register it so we don't recreate it next time
-      ctx.classes.set(genericDecl.name.name, classInfo);
       ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
       if (classType) {
         ctx.registerClassInfoByType(classType, classInfo);

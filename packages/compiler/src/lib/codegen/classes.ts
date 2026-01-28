@@ -1017,18 +1017,18 @@ export function getClassFromTypeIndex(
   ctx: CodegenContext,
   typeIndex: number,
 ): ClassInfo | undefined {
-  for (const info of ctx.classes.values()) {
-    if (info.structTypeIndex === typeIndex) {
-      return info;
-    }
-    // Check extensions
-    if (info.isExtension && info.onType) {
-      const onTypeIndex = decodeTypeIndex(info.onType);
-      if (onTypeIndex === typeIndex) {
-        return info;
-      }
-    }
+  // First, try direct struct index lookup (O(1))
+  const direct = ctx.getClassInfoByStructIndexDirect(typeIndex);
+  if (direct) {
+    return direct;
   }
+
+  // Check extension classes by their onType WASM index
+  const extensions = ctx.getExtensionClassesByWasmTypeIndex(typeIndex);
+  if (extensions && extensions.length > 0) {
+    return extensions[0];
+  }
+
   return undefined;
 }
 
@@ -1046,7 +1046,7 @@ export function decodeTypeIndex(type: number[]): number {
 }
 
 /**
- * Pre-registers a class by reserving a type index and adding minimal info to ctx.classes.
+ * Pre-registers a class by reserving a type index and adding minimal info to the class registry.
  * This must be called for all classes before calling defineClassStruct, to allow
  * self-referential and mutually-recursive class types to work.
  */
@@ -1101,8 +1101,7 @@ export function preRegisterClassStruct(
       onType,
       onTypeAnnotation: decl.onType,
     };
-    ctx.classes.set(decl.name.name, classInfo);
-    // Also register by struct index to support lookup when names collide
+    // Register by struct index for lookup
     ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
 
     // Register type → struct index for identity-based lookups
@@ -1112,8 +1111,11 @@ export function preRegisterClassStruct(
     // Register ClassInfo for O(1) lookup
     ctx.registerClassInfoByType(classType, classInfo);
 
-    // Register extension class by its onType for O(1) lookup
+    // Register extension class by its onType for O(1) lookup (checker type identity)
     ctx.registerExtensionClass(classType.onType, classInfo);
+
+    // Register extension class by WASM type index for O(1) lookup
+    ctx.registerExtensionClassByWasmTypeIndex(classInfo);
 
     // Check if this is the String class
     const isStringClass =
@@ -1228,7 +1230,7 @@ export function preRegisterClassStruct(
   // Generate brand type FIRST so it has a lower index than the struct
   // This avoids forward references in the type section (WASM requires types to only
   // reference types with lower indices, unless using rec groups)
-  const brandId = ctx.classes.size + 1;
+  const brandId = ctx.getNextBrandId();
   const brandTypeIndex = generateBrandType(ctx, brandId);
 
   let structTypeIndex: number;
@@ -1242,7 +1244,7 @@ export function preRegisterClassStruct(
     }
   }
 
-  // Add minimal info to ctx.classes so self-references work
+  // Add minimal info to class registry so self-references work
   const classInfo: ClassInfo = {
     name: decl.name.name,
     structTypeIndex,
@@ -1253,8 +1255,7 @@ export function preRegisterClassStruct(
     isFinal: decl.isFinal,
     isExtension: decl.isExtension,
   };
-  ctx.classes.set(decl.name.name, classInfo);
-  // Also register by struct index to support lookup when names collide
+  // Register by struct index for lookup
   ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
 
   // Register type → struct index for identity-based lookups
@@ -2944,9 +2945,9 @@ export function instantiateClass(
       vtable: [],
       isExtension: false,
     };
-    ctx.classes.set(specializedName, partialClassInfo);
+    // Register by checker type for identity-based lookup
+    // Note: Don't call setClassInfoByStructIndex yet - structTypeIndex is not valid
     ctx.registerClassInfoByType(checkerType, partialClassInfo);
-    // Don't call setClassInfoByStructIndex yet - structTypeIndex is not valid
   }
 
   try {
@@ -3250,8 +3251,7 @@ function instantiateClassImpl(
       onType,
       onTypeAnnotation: decl.isExtension ? decl.onType : undefined,
     };
-    ctx.classes.set(specializedName, classInfo);
-    // Also register by struct index to support lookup when names collide
+    // Register by struct index for lookup
     ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
   }
 
@@ -3807,8 +3807,7 @@ function preRegisterMixin(
     methods: new Map(),
     vtable: [],
   };
-  ctx.classes.set(intermediateName, classInfo);
-  // Also register by struct index to support lookup when names collide
+  // Register by struct index for lookup
   ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
 
   // Register for identity-based lookup if we have the checker type
@@ -3865,8 +3864,7 @@ function applyMixin(
   }
 
   if (!preRegistered) {
-    ctx.classes.set(intermediateName, classInfo);
-    // Also register by struct index to support lookup when names collide
+    // Register by struct index for lookup
     ctx.setClassInfoByStructIndex(classInfo.structTypeIndex, classInfo);
   }
 
