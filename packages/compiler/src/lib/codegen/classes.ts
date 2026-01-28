@@ -2488,70 +2488,6 @@ export function generateClassMethods(
   ctx.currentCheckerType = previousCheckerType;
 }
 
-export function resolveAnnotation(
-  type: TypeAnnotation,
-  context?: Map<string, TypeAnnotation>,
-): TypeAnnotation {
-  if (
-    type.type === NodeType.TypeAnnotation &&
-    context &&
-    context.has(type.name)
-  ) {
-    const resolved = context.get(type.name)!;
-    // Avoid infinite recursion if type parameter maps to itself
-    if (
-      resolved.type === NodeType.TypeAnnotation &&
-      resolved.name === type.name
-    ) {
-      return type;
-    }
-    return resolveAnnotation(resolved, context);
-  }
-
-  if (type.type === NodeType.TypeAnnotation && type.typeArguments) {
-    return {
-      ...type,
-      typeArguments: type.typeArguments.map((arg) =>
-        resolveAnnotation(arg, context),
-      ),
-    };
-  }
-
-  if (type.type === NodeType.RecordTypeAnnotation) {
-    return {
-      ...type,
-      properties: type.properties.map((p) => ({
-        ...p,
-        typeAnnotation: resolveAnnotation(p.typeAnnotation, context),
-      })),
-    };
-  }
-
-  if (type.type === NodeType.TupleTypeAnnotation) {
-    return {
-      ...type,
-      elementTypes: type.elementTypes.map((t) => resolveAnnotation(t, context)),
-    };
-  }
-
-  if (type.type === NodeType.FunctionTypeAnnotation) {
-    return {
-      ...type,
-      params: type.params.map((p) => resolveAnnotation(p, context)),
-      returnType: resolveAnnotation(type.returnType, context),
-    };
-  }
-
-  if (type.type === NodeType.UnionTypeAnnotation) {
-    return {
-      ...type,
-      types: type.types.map((t) => resolveAnnotation(t, context)),
-    };
-  }
-
-  return type;
-}
-
 export function getTypeKey(type: TypeAnnotation): string {
   if (type.type === NodeType.TypeAnnotation) {
     let key = type.name;
@@ -2813,91 +2749,6 @@ export function typeContainsTypeParameter(type: Type): boolean {
   }
 }
 
-export function getSpecializedName(
-  name: string,
-  args: TypeAnnotation[],
-  ctx: CodegenContext,
-  context?: Map<string, TypeAnnotation>,
-): string {
-  const argNames = args.map((arg) => {
-    const resolved = resolveAnnotation(arg, context);
-    // If the type annotation has a checker type (inferredType), use that for
-    // identity-based naming to avoid collisions with same-named types from
-    // different modules.
-    // HOWEVER: if the inferredType contains unresolved type parameters, we need
-    // to fall through to the context-based resolution, which will resolve names
-    // like 'K' and 'V' to their concrete types via the context map.
-    if (
-      resolved.inferredType &&
-      !typeContainsTypeParameter(resolved.inferredType)
-    ) {
-      return getCheckerTypeKeyForSpecialization(resolved.inferredType, ctx);
-    }
-    // Fallback for types containing type parameters (K, V, T, etc.)
-    // The context map resolves these to their concrete types.
-    return getTypeKeyWithContext(resolved, ctx);
-  });
-  return `${name}<${argNames.join(',')}>`;
-}
-
-/**
- * Get a canonical string key for a TypeAnnotation, using codegen context
- * to resolve class names to their bundled names (avoiding same-name collisions).
- * This is used as a fallback when inferredType contains type parameters.
- */
-function getTypeKeyWithContext(
-  type: TypeAnnotation,
-  ctx: CodegenContext,
-): string {
-  if (type.type === NodeType.TypeAnnotation) {
-    let key = type.name;
-
-    if (type.typeArguments && type.typeArguments.length > 0) {
-      key += `<${type.typeArguments.map((ta) => getTypeKeyWithContext(ta, ctx)).join(',')}>`;
-    }
-    return key;
-  } else if (type.type === NodeType.RecordTypeAnnotation) {
-    const props = type.properties
-      .map(
-        (p) => `${p.name.name}:${getTypeKeyWithContext(p.typeAnnotation, ctx)}`,
-      )
-      .sort()
-      .join(',');
-    return `{${props}}`;
-  } else if (type.type === NodeType.TupleTypeAnnotation) {
-    const elements = type.elementTypes
-      .map((t) => getTypeKeyWithContext(t, ctx))
-      .join(',');
-    return `[${elements}]`;
-  } else if (type.type === NodeType.FunctionTypeAnnotation) {
-    const params = type.params
-      .map((p) => getTypeKeyWithContext(p, ctx))
-      .join(',');
-    const ret = type.returnType
-      ? getTypeKeyWithContext(type.returnType, ctx)
-      : TypeNames.Void;
-    return `(${params})=>${ret}`;
-  } else if (type.type === NodeType.UnionTypeAnnotation) {
-    // Sort union members for consistent keys regardless of order
-    const members = type.types
-      .map((t) => getTypeKeyWithContext(t, ctx))
-      .sort()
-      .join('|');
-    return `(${members})`;
-  } else if (type.type === NodeType.LiteralTypeAnnotation) {
-    // Include the literal value in the key
-    const val = type.value;
-    if (typeof val === 'string') {
-      return `'${val}'`;
-    } else if (typeof val === 'boolean') {
-      return val ? 'true' : 'false';
-    } else {
-      return String(val);
-    }
-  }
-  return 'unknown';
-}
-
 export function instantiateClass(
   ctx: CodegenContext,
   decl: ClassDeclaration,
@@ -2940,7 +2791,6 @@ export function instantiateClass(
     partialClassInfo = {
       name: specializedName,
       originalName: decl.name.name,
-      typeArguments: new Map(),
       structTypeIndex: -1, // Will be set after superclass instantiation
       fields: new Map(),
       methods: new Map(),
@@ -2972,9 +2822,7 @@ function instantiateClassImpl(
   checkerType: ClassType,
   partialClassInfo: ClassInfo | undefined,
 ) {
-  // Build both annotation-based context (for backward compat) and checker-based type map
-  // from the checker's type arguments
-  const context = new Map<string, TypeAnnotation>();
+  // Build checker-based type map from the checker's type arguments
   const typeParamMap = new Map<string, Type>();
   const checkerTypeArgs = checkerType.typeArguments ?? [];
   if (decl.typeParameters) {
@@ -2992,9 +2840,6 @@ function instantiateClassImpl(
             checkerArg = resolved;
           }
         }
-        // Build annotation-based context for backward compatibility
-        const annotation = typeToTypeAnnotation(checkerArg, undefined, ctx);
-        context.set(param.name, annotation);
         // Build checker-based type map for substituteTypeParams
         typeParamMap.set(param.name, checkerArg);
       }
@@ -3111,12 +2956,10 @@ function instantiateClassImpl(
     structTypeIndex = ctx.module.reserveType();
     partialClassInfo.structTypeIndex = structTypeIndex;
     partialClassInfo.superClass = superClassName;
-    partialClassInfo.typeArguments = context;
     ctx.setClassInfoByStructIndex(structTypeIndex, partialClassInfo);
   } else if (partialClassInfo) {
     // Update existing partialClassInfo with resolved superclass
     partialClassInfo.superClass = superClassName;
-    partialClassInfo.typeArguments = context;
   }
 
   if (decl.isExtension && decl.onType) {
@@ -3241,7 +3084,6 @@ function instantiateClassImpl(
     classInfo = {
       name: specializedName,
       originalName: decl.name.name,
-      typeArguments: context,
       typeParamMap,
       structTypeIndex,
       superClass: superClassName,
@@ -3609,7 +3451,7 @@ function instantiateClassImpl(
         superClass: undefined,
       } as ClassDeclaration;
 
-      generateInterfaceVTable(ctx, classInfo, decl, context);
+      generateInterfaceVTable(ctx, classInfo, decl);
 
       ctx.bodyGenerators.push(() => {
         generateClassMethods(ctx, declForGen, specializedName, checkerType);
@@ -3651,7 +3493,7 @@ function instantiateClassImpl(
     classInfo.vtableTypeIndex = vtableTypeIndex;
     classInfo.vtableGlobalIndex = vtableGlobalIndex;
 
-    generateInterfaceVTable(ctx, classInfo, decl, context);
+    generateInterfaceVTable(ctx, classInfo, decl);
 
     if (ctx.shouldExport(decl) && structTypeIndex !== -1) {
       const ctorInfo = methods.get('#new')!;
@@ -3945,230 +3787,6 @@ function applyMixin(
   ctx.syntheticClasses.push(declForGen);
 
   return classInfo;
-}
-
-export function typeToTypeAnnotation(
-  type: Type,
-  erasedTypeParams: Set<string> | undefined,
-  ctx: CodegenContext,
-): TypeAnnotation {
-  switch (type.kind) {
-    case TypeKind.Number:
-      return {
-        type: NodeType.TypeAnnotation,
-        name: (type as NumberType).name,
-        inferredType: type,
-      };
-    case TypeKind.Boolean:
-      return {
-        type: NodeType.TypeAnnotation,
-        name: TypeNames.Boolean,
-        inferredType: type,
-      };
-    case TypeKind.Void:
-      return {
-        type: NodeType.TypeAnnotation,
-        name: TypeNames.Void,
-        inferredType: type,
-      };
-    case TypeKind.Never:
-      return {
-        type: NodeType.TypeAnnotation,
-        name: TypeNames.Never,
-        inferredType: type,
-      };
-    case TypeKind.Class: {
-      const classType = type as ClassType;
-      // Try identity-based lookup first
-      let canonicalName = ctx.getClassBundledName(classType);
-      if (!canonicalName) {
-        // Fall back to genericSource chain for backward compatibility
-        canonicalName = classType.name;
-        let source = classType.genericSource;
-        while (source) {
-          const sourceName = ctx.getClassBundledName(source);
-          if (sourceName) {
-            canonicalName = sourceName;
-            break;
-          }
-          canonicalName = source.name;
-          source = source.genericSource;
-        }
-      }
-      let args = classType.typeArguments
-        ? classType.typeArguments.map((t) =>
-            typeToTypeAnnotation(t, erasedTypeParams, ctx),
-          )
-        : [];
-
-      if (
-        args.length === 0 &&
-        classType.typeParameters &&
-        classType.typeParameters.length > 0
-      ) {
-        args = classType.typeParameters.map((tp) => ({
-          type: NodeType.TypeAnnotation,
-          name: tp.name,
-        }));
-      }
-
-      return {
-        type: NodeType.TypeAnnotation,
-        name: canonicalName,
-        typeArguments: args.length > 0 ? args : undefined,
-        // Preserve the checker type for identity-based lookups in getSpecializedName
-        inferredType: type,
-      };
-    }
-    case TypeKind.Interface: {
-      const ifaceType = type as InterfaceType;
-      // Try identity-based lookup first
-      let canonicalName = ctx.getInterfaceBundledName(ifaceType);
-      if (!canonicalName) {
-        // Fall back to genericSource chain for backward compatibility
-        canonicalName = ifaceType.name;
-        let source = ifaceType.genericSource;
-        while (source) {
-          const sourceName = ctx.getInterfaceBundledName(source);
-          if (sourceName) {
-            canonicalName = sourceName;
-            break;
-          }
-          canonicalName = source.name;
-          source = source.genericSource;
-        }
-      }
-      const args = ifaceType.typeArguments
-        ? ifaceType.typeArguments.map((t) =>
-            typeToTypeAnnotation(t, erasedTypeParams, ctx),
-          )
-        : [];
-      return {
-        type: NodeType.TypeAnnotation,
-        name: canonicalName,
-        typeArguments: args.length > 0 ? args : undefined,
-        // Preserve the checker type for identity-based lookups in getSpecializedName
-        inferredType: type,
-      };
-    }
-    case TypeKind.Array: {
-      const arrayType = type as ArrayType;
-      return {
-        type: NodeType.TypeAnnotation,
-        name: TypeNames.Array,
-        typeArguments: [
-          typeToTypeAnnotation(arrayType.elementType, erasedTypeParams, ctx),
-        ],
-      };
-    }
-    case TypeKind.Record: {
-      const recordType = type as RecordType;
-      const properties: any[] = [];
-      for (const [name, propType] of recordType.properties) {
-        properties.push({
-          type: NodeType.PropertySignature,
-          name: {type: NodeType.Identifier, name},
-          typeAnnotation: typeToTypeAnnotation(propType, erasedTypeParams, ctx),
-        });
-      }
-      return {
-        type: NodeType.RecordTypeAnnotation,
-        properties,
-      } as any;
-    }
-    case TypeKind.Tuple: {
-      const tupleType = type as TupleType;
-      return {
-        type: NodeType.TupleTypeAnnotation,
-        elementTypes: tupleType.elementTypes.map((t) =>
-          typeToTypeAnnotation(t, erasedTypeParams, ctx),
-        ),
-      } as any;
-    }
-    case TypeKind.Function: {
-      const funcType = type as FunctionType;
-      const newErased = new Set(erasedTypeParams);
-      if (funcType.typeParameters) {
-        for (const p of funcType.typeParameters) {
-          newErased.add(p.name);
-        }
-      }
-      return {
-        type: NodeType.FunctionTypeAnnotation,
-        params: funcType.parameters.map((p) =>
-          typeToTypeAnnotation(p, newErased, ctx),
-        ),
-        returnType: typeToTypeAnnotation(funcType.returnType, newErased, ctx),
-      } as any;
-    }
-    case TypeKind.TypeParameter: {
-      const name = (type as TypeParameterType).name;
-      if (erasedTypeParams && erasedTypeParams.has(name)) {
-        return {
-          type: NodeType.TypeAnnotation,
-          name: 'anyref',
-        };
-      }
-      return {
-        type: NodeType.TypeAnnotation,
-        name: name,
-      };
-    }
-    case TypeKind.TypeAlias: {
-      const aliasType = type as TypeAliasType;
-      if (aliasType.isDistinct) {
-        // For distinct type aliases, preserve the alias name and attach inferredType.
-        // This ensures Box<Meters> and Box<Seconds> get different specialization names
-        // even though both map to i32 at the WASM level.
-        return {
-          type: NodeType.TypeAnnotation,
-          name: aliasType.name,
-          inferredType: type,
-        };
-      }
-      // For regular type aliases (transparent), use the target type
-      return typeToTypeAnnotation(aliasType.target, erasedTypeParams, ctx);
-    }
-    case TypeKind.ByteArray:
-      return {
-        type: NodeType.TypeAnnotation,
-        name: 'ByteArray',
-      };
-    case TypeKind.AnyRef:
-      return {
-        type: NodeType.TypeAnnotation,
-        name: 'anyref',
-      };
-    case TypeKind.Null:
-      return {
-        type: NodeType.TypeAnnotation,
-        name: 'null',
-      };
-    case TypeKind.Literal: {
-      const literalType = type as LiteralType;
-      return {
-        type: NodeType.LiteralTypeAnnotation,
-        value: literalType.value,
-        inferredType: type,
-      };
-    }
-    case TypeKind.Union: {
-      const unionType = type as UnionType;
-      return {
-        type: NodeType.UnionTypeAnnotation,
-        types: unionType.types.map((t) =>
-          typeToTypeAnnotation(t, erasedTypeParams, ctx),
-        ),
-        inferredType: type,
-      } as any;
-    }
-    default:
-      return {
-        type: NodeType.TypeAnnotation,
-        name: 'any',
-        inferredType: type,
-      };
-  }
 }
 
 /**
@@ -4736,8 +4354,8 @@ function resolveClassInfo(
       // Only return if this is NOT a generic template
       // (i.e., it doesn't have unresolved type parameters)
       if (
-        !sourceInfo.typeArguments ||
-        sourceInfo.typeArguments.size === 0 ||
+        !sourceInfo.typeParamMap ||
+        sourceInfo.typeParamMap.size === 0 ||
         !classType.typeArguments ||
         classType.typeArguments.length === 0
       ) {

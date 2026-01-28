@@ -5,10 +5,6 @@ export interface ClassInfo {
   name: string;
   originalName?: string;
   /**
-   * @deprecated Use typeParamMap instead for checker-based type resolution.
-   */
-  typeArguments?: Map<string, TypeAnnotation>;
-  /**
    * Type parameter map for checker-based type resolution.
    * Maps type parameter names (e.g., "T") to their concrete Type values.
    */
