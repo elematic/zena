@@ -357,6 +357,9 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Add `pushTypeParamContext()` / `popTypeParamContext()` methods
       - [x] When entering generic class, push class type params via `generateClassMethods`
       - [x] Update variable declaration to use `substituteTypeParams` with `currentTypeParamMap`
+      - [x] **Fix `AsExpression` type substitution** (completed 2025-01-27):
+        - Both source and target types must be substituted via `substituteTypeParams`
+        - Previously only target was substituted, causing `Array<T>` to be instantiated instead of `Array<i32>`
       - [x] **Identity-based interface implementation lookups** (completed 2025-01-27):
         - Changed `ClassInfo.implements` from `Map<string, ...>` to `Map<InterfaceType, ...>`
         - Added `InterfaceInfo.checkerType` field for reverse lookup
@@ -391,6 +394,21 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Removed `mapType()` function entirely
       - [x] All generic instantiation goes through checker types via `mapCheckerTypeToWasmType()`
       - [x] `context: Map<string, TypeAnnotation>` parameter threading is now vestigial (only used for `typeToTypeAnnotation`)
+    - [ ] **Phase 6: Migrate `ctx.classes` to Identity-Based Lookups**
+      - `ctx.classes` is a `Map<string, ClassInfo>` keyed by specialized name (e.g., `"Array<i32>"`)
+      - Identity-based alternative: `ctx.getClassInfoByCheckerType(classType)` uses a `WeakMap<ClassType, ClassInfo>`
+      - [x] `getBoxClassInfo()` - uses identity lookup, removed name-based guard
+      - [x] `instantiateExtensionClassFromCheckerType()` - uses identity lookup after instantiation
+      - [x] `resolveFixedArrayClass()` - uses identity lookup after instantiation
+      - [x] `ClassPattern` in match expressions - identity lookup first, name-based fallback
+      - [ ] Static member/method access (lines 1670, 1840, 1844) - uses `ctx.classes.has()` to check if identifier is a class name vs instance variable. Needs different approach (checker binding or separate class name registry).
+      - [ ] Super class lookups (lines 1768, 1814, 2387) - already have identity-based first via `superClassType`, name-based is fallback for synthesized classes (mixin intermediates)
+      - [ ] `generateNewExpression` fallback (line 1545) - last resort for non-generic classes
+      - [ ] Remove `typeToTypeAnnotation()` - still used for annotation-based context threading
+    - [ ] **Phase 7: Remove `typeToTypeAnnotation()`**
+      - Used in `instantiateClass` to build `context: Map<string, TypeAnnotation>` for backward compatibility
+      - Once all callers use checker types directly, this can be removed
+      - Blocked by: some code paths still thread annotation-based context
 
     **Benefits** (now realized):
     - Enables intellisense (hover shows `i32`, not `T`)

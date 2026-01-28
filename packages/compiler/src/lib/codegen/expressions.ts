@@ -855,16 +855,15 @@ function getBoxClassInfo(ctx: CodegenContext, primitiveType: Type): ClassInfo {
     ctx,
   );
 
-  if (!ctx.classes.has(specializedName)) {
-    instantiateClass(
-      ctx,
-      boxDecl,
-      specializedName,
-      boxClassType, // Pass checker type directly - it contains all type info
-    );
-  }
+  instantiateClass(
+    ctx,
+    boxDecl,
+    specializedName,
+    boxClassType, // Pass checker type directly - it contains all type info
+  );
 
-  return ctx.classes.get(specializedName)!;
+  // Use identity-based lookup to get the instantiated class
+  return ctx.getClassInfoByCheckerType(boxClassType)!;
 }
 
 export function unboxPrimitive(
@@ -1029,11 +1028,6 @@ function instantiateExtensionClassFromCheckerType(
     ctx,
   );
 
-  // Check if already instantiated
-  if (ctx.classes.has(specializedName)) {
-    return ctx.classes.get(specializedName);
-  }
-
   // Instantiate the class with the checker's ClassType directly
   instantiateClass(
     ctx,
@@ -1042,7 +1036,8 @@ function instantiateExtensionClassFromCheckerType(
     classType, // Pass the checker's ClassType - it contains all type info
   );
 
-  return ctx.classes.get(specializedName);
+  // Use identity-based lookup to get the instantiated class
+  return ctx.getClassInfoByCheckerType(classType);
 }
 
 function resolveFixedArrayClass(
@@ -1084,15 +1079,15 @@ function resolveFixedArrayClass(
             ctx,
           );
 
-          if (!ctx.classes.has(specializedName)) {
-            instantiateClass(
-              ctx,
-              fixedArrayDecl,
-              specializedName,
-              fixedArrayClassType, // Pass checker type directly - it contains all type info
-            );
-          }
-          return ctx.classes.get(specializedName);
+          instantiateClass(
+            ctx,
+            fixedArrayDecl,
+            specializedName,
+            fixedArrayClassType, // Pass checker type directly - it contains all type info
+          );
+
+          // Use identity-based lookup to get the instantiated class
+          return ctx.getClassInfoByCheckerType(fixedArrayClassType);
         }
       }
     }
@@ -7340,7 +7335,17 @@ function generateMatchPatternCheck(
     case NodeType.ClassPattern: {
       const classPattern = pattern as ClassPattern;
       const className = classPattern.name.name;
-      const classInfo = ctx.classes.get(className);
+      // Prefer identity-based lookup using the pattern's inferred type
+      let classInfo: ClassInfo | undefined;
+      if (classPattern.inferredType?.kind === TypeKind.Class) {
+        classInfo = ctx.getClassInfoByCheckerType(
+          classPattern.inferredType as ClassType,
+        );
+      }
+      // Fall back to name-based lookup
+      if (!classInfo) {
+        classInfo = ctx.classes.get(className);
+      }
       if (!classInfo) throw new Error(`Class ${className} not found`);
 
       // 1. Check type
@@ -7837,7 +7842,18 @@ function generateMatchPatternBindings(
   } else if (pattern.type === NodeType.ClassPattern) {
     const classPattern = pattern as ClassPattern;
     const className = classPattern.name.name;
-    const classInfo = ctx.classes.get(className)!;
+    // Prefer identity-based lookup using the pattern's inferred type
+    let classInfo: ClassInfo | undefined;
+    if (classPattern.inferredType?.kind === TypeKind.Class) {
+      classInfo = ctx.getClassInfoByCheckerType(
+        classPattern.inferredType as ClassType,
+      );
+    }
+    // Fall back to name-based lookup
+    if (!classInfo) {
+      classInfo = ctx.classes.get(className);
+    }
+    if (!classInfo) throw new Error(`Class ${className} not found`);
 
     // Cast
     body.push(

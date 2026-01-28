@@ -1273,16 +1273,16 @@ fully removed (~410 lines deleted). All type resolution now goes through
 
 **Key migrations completed:**
 
-| Location         | Function                      | Change                                                        |
-| ---------------- | ----------------------------- | ------------------------------------------------------------- |
-| `expressions.ts` | `generateAsExpression`        | Uses `expr.inferredType` for target type of `as` casts        |
-| `expressions.ts` | `generateFunctionExpression`  | Uses `expr.inferredType` (FunctionType) for params and return |
-| `functions.ts`   | `inferReturnTypeFromBlock`    | Uses `decl.inferredType` for variable declarations            |
-| `statements.ts`  | `generateVariableDeclaration` | Uses `decl.inferredType` for variable type                    |
-| `classes.ts`     | Field/method/accessor types   | Uses checker types from `classType.fields/methods`            |
-| `classes.ts`     | Extension class `onType`      | Uses `classType.onType` when available                        |
-| `functions.ts`   | Function param/return types   | Uses checker's FunctionType when available                    |
-| `classes.ts`     | `mapCheckerTypeToWasmType`    | Bridge to `annotation.inferredType` (final piece)             |
+| Location         | Function                      | Change                                                              |
+| ---------------- | ----------------------------- | ------------------------------------------------------------------- |
+| `expressions.ts` | `generateAsExpression`        | Substitutes both source and target types via `substituteTypeParams` |
+| `expressions.ts` | `generateFunctionExpression`  | Uses `expr.inferredType` (FunctionType) for params and return       |
+| `functions.ts`   | `inferReturnTypeFromBlock`    | Uses `decl.inferredType` for variable declarations                  |
+| `statements.ts`  | `generateVariableDeclaration` | Uses `decl.inferredType` for variable type                          |
+| `classes.ts`     | Field/method/accessor types   | Uses checker types from `classType.fields/methods`                  |
+| `classes.ts`     | Extension class `onType`      | Uses `classType.onType` when available                              |
+| `functions.ts`   | Function param/return types   | Uses checker's FunctionType when available                          |
+| `classes.ts`     | `mapCheckerTypeToWasmType`    | Bridge to `annotation.inferredType` (final piece)                   |
 
 **How mapType was eliminated:**
 
@@ -1700,6 +1700,60 @@ This is a larger change that should be done as part of the broader type internin
 - Update: Tests
 
 **Effort:** 2 hours
+
+#### 3.5: Migrate ctx.classes to Identity-Based Lookups 🚧 IN PROGRESS
+
+**Goal:** Replace `ctx.classes.get(specializedName)` lookups with
+`ctx.getClassInfoByCheckerType(classType)` identity-based lookups.
+
+**Status:** IN PROGRESS (2025-01-27)
+
+**Background:**
+
+`ctx.classes` is a `Map<string, ClassInfo>` keyed by specialized class name
+(e.g., `"Array<i32>"`). This requires building string keys and is fragile when
+class names change. The identity-based alternative uses `WeakMap<ClassType, ClassInfo>`
+which is keyed by the checker's interned type objects.
+
+**Completed migrations:**
+
+| Function                                     | Change                                           |
+| -------------------------------------------- | ------------------------------------------------ |
+| `getBoxClassInfo()`                          | Removed redundant `ctx.classes.has()` guard      |
+| `instantiateExtensionClassFromCheckerType()` | Uses identity lookup after instantiation         |
+| `resolveFixedArrayClass()`                   | Uses identity lookup after instantiation         |
+| `ClassPattern` (match check)                 | Identity-first lookup via `pattern.inferredType` |
+| `ClassPattern` (match binding)               | Same pattern with name-based fallback            |
+
+**Remaining work:**
+
+| Location                    | Status   | Notes                                                    |
+| --------------------------- | -------- | -------------------------------------------------------- |
+| Static member/method access | Blocked  | Uses `ctx.classes.has()` to check if identifier is class |
+| Super class lookups         | Deferred | Already identity-first via `superClassType`              |
+| `generateNewExpression`     | Deferred | Last resort fallback for non-generic classes             |
+| `ctx.classes.set()`         | Keep     | Necessary for registering new classes                    |
+
+**Static member access challenge:**
+
+Lines 1670, 1840, 1844 in `expressions.ts` use `ctx.classes.has(identifier)` to
+distinguish between class names and instance variables. This cannot use identity
+lookup because we don't have a `ClassType` at that point—just a name string.
+
+**Possible solutions:**
+
+1. **Checker binding**: Checker resolves identifier and attaches `ResolvedBinding`
+   with `kind: 'class'` to the AST node. Codegen checks binding kind.
+2. **Separate registry**: Add `ctx.classNames: Set<string>` for O(1) name checks
+   without conflating with `ClassInfo` lookup.
+
+The first approach aligns with the broader "checker-driven resolution" direction
+and is preferred once `ResolvedBinding` infrastructure is fully wired up.
+
+**Files affected:**
+
+- `packages/compiler/src/lib/codegen/expressions.ts` - All migration sites
+- `packages/compiler/src/lib/codegen/classes.ts` - `resolveFixedArrayClass`, etc.
 
 ### Round 4: AST Immutability
 
