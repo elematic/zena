@@ -1076,16 +1076,12 @@ export function preRegisterClassStruct(
   const classType = decl.inferredType as ClassType;
 
   // If the superclass is generic, instantiate it first so it gets a lower type index
-  if (decl.superClass) {
-    const baseSuperName = getTypeAnnotationName(decl.superClass);
-    const superTypeArgs =
-      decl.superClass.type === NodeType.TypeAnnotation
-        ? decl.superClass.typeArguments
-        : undefined;
-
+  if (decl.superClass && classType.superType) {
+    const superTypeArgs = classType.superType.typeArguments;
     if (superTypeArgs && superTypeArgs.length > 0) {
       // Superclass is generic - need to instantiate it first
-      const specializedName = getSpecializedName(
+      const baseSuperName = getTypeAnnotationName(decl.superClass);
+      const specializedName = getSpecializedNameFromCheckerTypes(
         baseSuperName,
         superTypeArgs,
         ctx,
@@ -1093,21 +1089,16 @@ export function preRegisterClassStruct(
       if (!ctx.classes.has(specializedName)) {
         // Try identity-based lookup via checker's superType first
         let genericSuperDecl: ClassDeclaration | undefined;
-        if (classType.superType) {
-          const superGenericSource =
-            classType.superType.genericSource ?? classType.superType;
-          genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
-        }
+        const superGenericSource =
+          classType.superType.genericSource ?? classType.superType;
+        genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
         if (genericSuperDecl) {
-          // Pass the checker's superType to enable identity-based lookup
-          // superType is guaranteed to exist since genericSuperDecl is only set when superType exists
+          // Pass the checker's superType directly - it contains all type info
           instantiateClass(
             ctx,
             genericSuperDecl,
             specializedName,
-            superTypeArgs,
-            undefined,
-            classType.superType!,
+            classType.superType,
           );
         }
       }
@@ -1264,15 +1255,17 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
     // Fall back to name-based lookup if identity lookup failed
     if (!currentSuperClassInfo) {
       const baseSuperName = getTypeAnnotationName(decl.superClass);
-      const superTypeArgs =
-        decl.superClass.type === NodeType.TypeAnnotation
-          ? decl.superClass.typeArguments
-          : undefined;
 
+      // Check if superclass is generic using checker's type info
+      const superTypeArgs = superClassType?.typeArguments;
       let superClassName: string;
       if (superTypeArgs && superTypeArgs.length > 0) {
-        // Superclass is generic - need to get/instantiate the specialized version
-        superClassName = getSpecializedName(baseSuperName, superTypeArgs, ctx);
+        // Superclass is generic - compute name from checker types
+        superClassName = getSpecializedNameFromCheckerTypes(
+          baseSuperName,
+          superTypeArgs,
+          ctx,
+        );
 
         // Ensure the superclass is instantiated
         if (!ctx.classes.has(superClassName)) {
@@ -1284,14 +1277,11 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
             genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
           }
           if (genericSuperDecl) {
-            // Pass the checker's superType to enable identity-based lookup
-            // superClassType is guaranteed since genericSuperDecl is only set when it exists
+            // Pass the checker's superType directly - it contains all type info
             instantiateClass(
               ctx,
               genericSuperDecl,
               superClassName,
-              superTypeArgs,
-              undefined,
               superClassType!,
             );
           }
@@ -2006,6 +1996,13 @@ export function generateClassMethods(
   specializedName?: string,
   typeContext?: Map<string, TypeAnnotation>,
   checkerType?: ClassType,
+  /**
+   * Pre-resolved type parameter map. If provided, this is used directly for
+   * pushTypeParamContext instead of calling buildTypeMap(checkerType).
+   * This is needed when checkerType.typeArguments contains TypeParameterTypes
+   * that have already been resolved by the caller.
+   */
+  resolvedTypeParamMap?: Map<string, Type>,
 ) {
   const previousTypeContext = ctx.currentTypeContext;
   const previousCheckerType = ctx.currentCheckerType;
@@ -2020,7 +2017,10 @@ export function generateClassMethods(
 
   // Push type param context for checker-based resolution
   // This enables substituteTypeParams to resolve class type parameters
-  if (checkerType && ctx.checkerContext) {
+  if (resolvedTypeParamMap) {
+    // Use pre-resolved map from caller (handles nested generic instantiation)
+    ctx.pushTypeParamContext(resolvedTypeParamMap);
+  } else if (checkerType && ctx.checkerContext) {
     const typeMap = ctx.checkerContext.buildTypeMap(checkerType);
     ctx.pushTypeParamContext(typeMap);
   }
@@ -2663,6 +2663,17 @@ export function getCheckerTypeKeyForSpecialization(
  * @param typeArgs The type arguments as checker Types
  * @param ctx CodegenContext for identity-based name lookups
  */
+export function getSpecializedNameFromCheckerTypes(
+  baseName: string,
+  typeArgs: Type[],
+  ctx: CodegenContext,
+): string {
+  const argKeys = typeArgs.map((arg) =>
+    getCheckerTypeKeyForSpecialization(arg, ctx),
+  );
+  return `${baseName}<${argKeys.join(',')}>`;
+}
+
 /**
  * Check if a checker Type contains any unresolved type parameters.
  * Returns true if the type (or any nested type) is a TypeParameterType.
@@ -2800,8 +2811,6 @@ export function instantiateClass(
   ctx: CodegenContext,
   decl: ClassDeclaration,
   specializedName: string,
-  typeArguments: TypeAnnotation[],
-  parentContext: Map<string, TypeAnnotation> | undefined,
   /**
    * The checker's ClassType for this instantiation.
    * Enables identity-based lookup via getClassInfoByCheckerType().
@@ -2810,6 +2819,8 @@ export function instantiateClass(
    *
    * For extension classes, checkerType enables ArrayType interning
    * (the checker's interned ArrayType is used for onType).
+   *
+   * The type arguments are derived from checkerType.typeArguments.
    */
   checkerType: ClassType,
 ) {
@@ -2823,26 +2834,31 @@ export function instantiateClass(
     return;
   }
 
+  // Build both annotation-based context (for backward compat) and checker-based type map
+  // from the checker's type arguments
   const context = new Map<string, TypeAnnotation>();
-  // Build checker-type-based type parameter map for substitution
   const typeParamMap = new Map<string, Type>();
+  const checkerTypeArgs = checkerType.typeArguments ?? [];
   if (decl.typeParameters) {
     decl.typeParameters.forEach((param, index) => {
-      const arg = typeArguments[index];
-      context.set(param.name, resolveAnnotation(arg, parentContext));
-      // Use the annotation's inferredType for checker-based substitution
-      if (arg.inferredType) {
-        // If the arg's inferredType is itself a type parameter, we need to resolve it
-        // through the parent context (which maps type param names to annotations with inferredTypes)
-        let resolvedArgType = arg.inferredType;
-        if (resolvedArgType.kind === TypeKind.TypeParameter && parentContext) {
-          const paramName = (resolvedArgType as TypeParameterType).name;
-          const parentAnnotation = parentContext.get(paramName);
-          if (parentAnnotation?.inferredType) {
-            resolvedArgType = parentAnnotation.inferredType;
+      let checkerArg = checkerTypeArgs[index];
+      if (checkerArg) {
+        // If the type argument is itself a type parameter, resolve it through
+        // the current type param context. This handles cases like Entry<K, V>
+        // being instantiated inside Map<string, Box<i32>> where K and V need
+        // to be resolved to their concrete types.
+        if (checkerArg.kind === TypeKind.TypeParameter) {
+          const paramName = (checkerArg as TypeParameterType).name;
+          const resolved = ctx.currentTypeParamMap.get(paramName);
+          if (resolved) {
+            checkerArg = resolved;
           }
         }
-        typeParamMap.set(param.name, resolvedArgType);
+        // Build annotation-based context for backward compatibility
+        const annotation = typeToTypeAnnotation(checkerArg, undefined, ctx);
+        context.set(param.name, annotation);
+        // Build checker-based type map for substituteTypeParams
+        typeParamMap.set(param.name, checkerArg);
       }
     });
   }
@@ -2890,18 +2906,15 @@ export function instantiateClass(
     // Fall back to name-based lookup if identity lookup failed
     if (!superClassName) {
       const baseSuperName = getTypeAnnotationName(decl.superClass);
-      const superTypeArgs =
-        decl.superClass.type === NodeType.TypeAnnotation
-          ? decl.superClass.typeArguments
-          : undefined;
 
+      // Check if superclass is generic using checker's type info
+      const superTypeArgs = superClassType?.typeArguments;
       if (superTypeArgs && superTypeArgs.length > 0) {
-        // Superclass is generic - need to instantiate it with resolved type args
-        superClassName = getSpecializedName(
+        // Superclass is generic - compute name from checker types
+        superClassName = getSpecializedNameFromCheckerTypes(
           baseSuperName,
           superTypeArgs,
           ctx,
-          context,
         );
 
         // Ensure superclass is instantiated
@@ -2915,14 +2928,11 @@ export function instantiateClass(
           }
           if (genericSuperDecl) {
             const pendingCountBefore = ctx.pendingMethodGenerations.length;
-            // Pass the checker's superType to enable identity-based lookup
-            // superClassType is guaranteed since genericSuperDecl is only set when it exists
+            // Pass the checker's superType directly - it contains all type info
             instantiateClass(
               ctx,
               genericSuperDecl,
               superClassName,
-              superTypeArgs,
-              context,
               superClassType!,
             );
             // Execute any pending method registrations from the superclass
@@ -3585,6 +3595,7 @@ export function instantiateClass(
         specializedName,
         context,
         checkerType,
+        typeParamMap, // Pass pre-resolved type param map for nested generics
       );
     });
 
@@ -4286,7 +4297,9 @@ export function mapCheckerTypeToWasmType(
       }
     }
 
-    throw new Error('Unresolved type parameter');
+    throw new Error(
+      `Unresolved type parameter: ${typeParam.name}, currentTypeParamMap keys: [${Array.from(ctx.currentTypeParamMap.keys()).join(', ')}], currentClass: ${ctx.currentClass?.name}`,
+    );
   }
 
   if (type.kind === TypeKind.Number) {
@@ -4359,27 +4372,21 @@ export function mapCheckerTypeToWasmType(
       }
 
       if (genericDecl) {
-        const typeArgAnnotations = classType.typeArguments.map((ta) =>
-          typeToTypeAnnotation(ta, undefined, ctx),
-        );
         // Use bundled name to avoid collisions with same-named classes from different modules
         const genericSource = classType.genericSource ?? classType;
         const bundledName =
           ctx.getClassBundledName(genericSource) ?? genericDecl.name.name;
-        const specializedName = getSpecializedName(
+        const specializedName = getSpecializedNameFromCheckerTypes(
           bundledName,
-          typeArgAnnotations,
+          classType.typeArguments,
           ctx,
-          ctx.currentTypeContext,
         );
         if (!ctx.classes.has(specializedName)) {
           instantiateClass(
             ctx,
             genericDecl,
             specializedName,
-            typeArgAnnotations,
-            ctx.currentTypeContext,
-            classType, // Pass checker type for registration
+            classType, // Pass checker type directly - it contains all type info
           );
         } else {
           // Class was previously instantiated via annotation path (without checker type).

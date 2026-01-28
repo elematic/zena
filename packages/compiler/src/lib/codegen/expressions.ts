@@ -33,7 +33,6 @@ import {
   type TryExpression,
   type TupleLiteral,
   type TuplePattern,
-  type TypeAnnotation,
   type UnaryExpression,
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
@@ -68,7 +67,7 @@ const HASH_CODE_METHOD = 'hashCode';
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
-  getSpecializedName,
+  getSpecializedNameFromCheckerTypes,
   instantiateClass,
   mapCheckerTypeToWasmType,
   typeToTypeAnnotation,
@@ -550,19 +549,23 @@ function generateAsExpression(
 
   // Use checker types for semantic operations (lookups, type identity).
   // WASM types are computed lazily, only when needed for opcode emission.
-  const sourceCheckerType = expr.expression.inferredType;
+  let sourceCheckerType = expr.expression.inferredType;
   let targetCheckerType = expr.inferredType!;
 
   // Substitute type parameters if we're in a generic context
-  if (
-    targetCheckerType &&
-    ctx.currentTypeParamMap.size > 0 &&
-    ctx.checkerContext
-  ) {
-    targetCheckerType = ctx.checkerContext.substituteTypeParams(
-      targetCheckerType,
-      ctx.currentTypeParamMap,
-    );
+  if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+    if (targetCheckerType) {
+      targetCheckerType = ctx.checkerContext.substituteTypeParams(
+        targetCheckerType,
+        ctx.currentTypeParamMap,
+      );
+    }
+    if (sourceCheckerType) {
+      sourceCheckerType = ctx.checkerContext.substituteTypeParams(
+        sourceCheckerType,
+        ctx.currentTypeParamMap,
+      );
+    }
   }
 
   // Compute WASM types for opcode emission
@@ -845,13 +848,11 @@ function getBoxClassInfo(ctx: CodegenContext, primitiveType: Type): ClassInfo {
     return classInfo;
   }
 
-  // Need to instantiate - convert type args to annotations for instantiateClass
-  const typeArg = typeToTypeAnnotation(primitiveType, undefined, ctx);
-  const specializedName = getSpecializedName(
+  // Need to instantiate - compute name from checker types
+  const specializedName = getSpecializedNameFromCheckerTypes(
     boxDecl.name.name,
-    [typeArg],
+    boxClassType.typeArguments ?? [],
     ctx,
-    ctx.currentTypeContext,
   );
 
   if (!ctx.classes.has(specializedName)) {
@@ -859,9 +860,7 @@ function getBoxClassInfo(ctx: CodegenContext, primitiveType: Type): ClassInfo {
       ctx,
       boxDecl,
       specializedName,
-      [typeArg],
-      ctx.currentTypeContext,
-      boxClassType, // Pass checker type for registration!
+      boxClassType, // Pass checker type directly - it contains all type info
     );
   }
 
@@ -1023,20 +1022,11 @@ function instantiateExtensionClassFromCheckerType(
     return undefined;
   }
 
-  // Convert type arguments to annotations
-  const typeArgs: TypeAnnotation[] = [];
-  if (classType.typeArguments) {
-    for (const typeArg of classType.typeArguments) {
-      typeArgs.push(typeToTypeAnnotation(typeArg, undefined, ctx));
-    }
-  }
-
-  // Get specialized name
-  const specializedName = getSpecializedName(
+  // Get specialized name from checker types
+  const specializedName = getSpecializedNameFromCheckerTypes(
     genericDecl.name.name,
-    typeArgs,
+    classType.typeArguments ?? [],
     ctx,
-    ctx.currentTypeContext,
   );
 
   // Check if already instantiated
@@ -1044,14 +1034,12 @@ function instantiateExtensionClassFromCheckerType(
     return ctx.classes.get(specializedName);
   }
 
-  // Instantiate the class with the checker's ClassType for proper registration
+  // Instantiate the class with the checker's ClassType directly
   instantiateClass(
     ctx,
     genericDecl,
     specializedName,
-    typeArgs,
-    ctx.currentTypeContext,
-    classType, // Pass the checker's ClassType for O(1) lookup registration
+    classType, // Pass the checker's ClassType - it contains all type info
   );
 
   return ctx.classes.get(specializedName);
@@ -1089,18 +1077,11 @@ function resolveFixedArrayClass(
             return classInfo;
           }
 
-          // Need to instantiate
-          const elementTypeAnnotation = typeToTypeAnnotation(
-            elementType,
-            undefined,
-            ctx,
-          );
-          const typeArgs = [elementTypeAnnotation];
-          const specializedName = getSpecializedName(
+          // Need to instantiate - compute name from checker types
+          const specializedName = getSpecializedNameFromCheckerTypes(
             fixedArrayDecl.name.name,
-            typeArgs,
+            fixedArrayClassType.typeArguments ?? [],
             ctx,
-            ctx.currentTypeContext,
           );
 
           if (!ctx.classes.has(specializedName)) {
@@ -1108,9 +1089,7 @@ function resolveFixedArrayClass(
               ctx,
               fixedArrayDecl,
               specializedName,
-              typeArgs,
-              ctx.currentTypeContext,
-              fixedArrayClassType, // Pass checker type for registration!
+              fixedArrayClassType, // Pass checker type directly - it contains all type info
             );
           }
           return ctx.classes.get(specializedName);
