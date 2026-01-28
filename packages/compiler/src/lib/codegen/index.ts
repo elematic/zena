@@ -148,7 +148,7 @@ export class CodeGenerator {
         const mixinDecl = statement as MixinDeclaration;
         // Identity-based registration for O(1) lookup via checker types
         if (mixinDecl.inferredType?.kind === TypeKind.Mixin) {
-          this.#ctx.setMixinDeclByType(
+          this.#ctx.setMixinDeclaration(
             mixinDecl.inferredType as MixinType,
             mixinDecl,
           );

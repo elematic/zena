@@ -65,7 +65,7 @@ const HASH_CODE_METHOD = 'hashCode';
 import {
   decodeTypeIndex,
   getClassFromTypeIndex,
-  getSpecializedNameFromCheckerTypes,
+  getSpecializedName,
   instantiateClass,
   mapCheckerTypeToWasmType,
 } from './classes.js';
@@ -340,7 +340,7 @@ function generateTryExpression(
         errorDecl?.inferredType &&
         errorDecl.inferredType.kind === TypeKind.Class
       ) {
-        const errorClassInfo = ctx.getClassInfoByCheckerType(
+        const errorClassInfo = ctx.getClassInfo(
           errorDecl.inferredType as ClassType,
         );
         if (errorClassInfo) {
@@ -551,17 +551,17 @@ function generateAsExpression(
   let targetCheckerType = expr.inferredType!;
 
   // Substitute type parameters if we're in a generic context
-  if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+  if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
     if (targetCheckerType) {
       targetCheckerType = ctx.checkerContext.substituteTypeParams(
         targetCheckerType,
-        ctx.currentTypeParamMap,
+        ctx.currentTypeArguments,
       );
     }
     if (sourceCheckerType) {
       sourceCheckerType = ctx.checkerContext.substituteTypeParams(
         sourceCheckerType,
-        ctx.currentTypeParamMap,
+        ctx.currentTypeArguments,
       );
     }
   }
@@ -655,7 +655,7 @@ function generateAsExpression(
 
   // Interface Boxing - use checker types for all lookups
   if (targetCheckerType?.kind === TypeKind.Interface) {
-    const interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+    const interfaceInfo = ctx.getInterfaceInfo(
       targetCheckerType as InterfaceType,
     );
     if (!interfaceInfo) {
@@ -669,9 +669,7 @@ function generateAsExpression(
     // Primary: look up ClassInfo via checker type identity
     if (sourceCheckerType) {
       if (sourceCheckerType.kind === TypeKind.Class) {
-        classInfo = ctx.getClassInfoByCheckerType(
-          sourceCheckerType as ClassType,
-        );
+        classInfo = ctx.getClassInfo(sourceCheckerType as ClassType);
       }
 
       // Extension class lookup by onType (checker type identity)
@@ -707,7 +705,7 @@ function generateAsExpression(
       // If direct lookup fails, try to find by interface subtype
       if (!impl) {
         for (const [implInterface, implInfo] of classInfo.implements) {
-          if (isInterfaceSubtypeByType(ctx, implInterface, targetInterface)) {
+          if (isInterfaceSubtype(ctx, implInterface, targetInterface)) {
             impl = implInfo;
             break;
           }
@@ -841,13 +839,13 @@ function getBoxClassInfo(ctx: CodegenContext, primitiveType: Type): ClassInfo {
   ]);
 
   // Check if already instantiated in codegen
-  let classInfo = ctx.getClassInfoByCheckerType(boxClassType);
+  let classInfo = ctx.getClassInfo(boxClassType);
   if (classInfo) {
     return classInfo;
   }
 
   // Need to instantiate - compute name from checker types
-  const specializedName = getSpecializedNameFromCheckerTypes(
+  const specializedName = getSpecializedName(
     boxDecl.name.name,
     boxClassType.typeArguments ?? [],
     ctx,
@@ -861,7 +859,7 @@ function getBoxClassInfo(ctx: CodegenContext, primitiveType: Type): ClassInfo {
   );
 
   // Use identity-based lookup to get the instantiated class
-  return ctx.getClassInfoByCheckerType(boxClassType)!;
+  return ctx.getClassInfo(boxClassType)!;
 }
 
 export function unboxPrimitive(
@@ -969,10 +967,10 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
     let resolvedType = expr.inferredType;
     // When inside a generic context, the AST's inferredType may contain
     // unsubstituted type parameters. Resolve them to concrete types.
-    if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+    if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
       resolvedType = ctx.checkerContext.substituteTypeParams(
         resolvedType,
-        ctx.currentTypeParamMap,
+        ctx.currentTypeArguments,
       );
     }
     return mapCheckerTypeToWasmType(ctx, resolvedType);
@@ -1015,13 +1013,13 @@ function instantiateExtensionClassFromCheckerType(
 ): ClassInfo | undefined {
   // Get the generic class declaration using identity-based lookup
   const genericSource = classType.genericSource ?? classType;
-  const genericDecl = ctx.getGenericDeclByType(genericSource);
+  const genericDecl = ctx.getGenericDeclaration(genericSource);
   if (!genericDecl || !genericDecl.isExtension) {
     return undefined;
   }
 
   // Get specialized name from checker types
-  const specializedName = getSpecializedNameFromCheckerTypes(
+  const specializedName = getSpecializedName(
     genericDecl.name.name,
     classType.typeArguments ?? [],
     ctx,
@@ -1036,7 +1034,7 @@ function instantiateExtensionClassFromCheckerType(
   );
 
   // Use identity-based lookup to get the instantiated class
-  return ctx.getClassInfoByCheckerType(classType);
+  return ctx.getClassInfo(classType);
 }
 
 function resolveFixedArrayClass(
@@ -1067,13 +1065,13 @@ function resolveFixedArrayClass(
           );
 
           // Check if already instantiated in codegen
-          let classInfo = ctx.getClassInfoByCheckerType(fixedArrayClassType);
+          let classInfo = ctx.getClassInfo(fixedArrayClassType);
           if (classInfo) {
             return classInfo;
           }
 
           // Need to instantiate - compute name from checker types
-          const specializedName = getSpecializedNameFromCheckerTypes(
+          const specializedName = getSpecializedName(
             fixedArrayDecl.name.name,
             fixedArrayClassType.typeArguments ?? [],
             ctx,
@@ -1087,7 +1085,7 @@ function resolveFixedArrayClass(
           );
 
           // Use identity-based lookup to get the instantiated class
-          return ctx.getClassInfoByCheckerType(fixedArrayClassType);
+          return ctx.getClassInfo(fixedArrayClassType);
         }
       }
     }
@@ -1144,7 +1142,7 @@ function generateIndexExpression(
       expr.object.inferredType.kind === TypeKind.Class
     ) {
       const classType = expr.object.inferredType as ClassType;
-      foundClass = ctx.getClassInfoByCheckerType(classType);
+      foundClass = ctx.getClassInfo(classType);
     }
 
     // Fall back to struct index lookup for classes instantiated via annotation path
@@ -1227,7 +1225,7 @@ function generateIndexExpression(
         expr.object.inferredType &&
         expr.object.inferredType.kind === TypeKind.Interface
       ) {
-        interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+        interfaceInfo = ctx.getInterfaceInfo(
           expr.object.inferredType as InterfaceType,
         );
         if (!interfaceInfo) {
@@ -1453,18 +1451,18 @@ function generateNewExpression(
     // When inside a generic context (e.g., generating Array<SuiteResult>.from),
     // the AST's inferredType may be the unsubstituted Array<T>.
     // Substitute type parameters to get the concrete type (Array<SuiteResult>).
-    if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+    if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
       classType = ctx.checkerContext.substituteTypeParams(
         classType,
-        ctx.currentTypeParamMap,
+        ctx.currentTypeArguments,
       ) as ClassType;
     }
-    classInfo = ctx.getClassInfoByCheckerType(classType);
+    classInfo = ctx.getClassInfo(classType);
 
     // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
     if (!classInfo) {
       mapCheckerTypeToWasmType(ctx, classType);
-      classInfo = ctx.getClassInfoByCheckerType(classType);
+      classInfo = ctx.getClassInfo(classType);
     }
   }
 
@@ -1705,9 +1703,7 @@ function generateCallExpression(
           `superClassType not set for ${ctx.currentClass.name} (superClass: ${ctx.currentClass.superClass})`,
         );
       }
-      const superClassInfo = ctx.getClassInfoByCheckerType(
-        ctx.currentClass.superClassType,
-      );
+      const superClassInfo = ctx.getClassInfo(ctx.currentClass.superClassType);
       if (!superClassInfo) {
         throw new Error(
           `Super class not found for ${ctx.currentClass.name} via identity lookup (superClass: ${ctx.currentClass.superClass})`,
@@ -1754,9 +1750,7 @@ function generateCallExpression(
           `superClassType not set for ${ctx.currentClass.name} (superClass: ${ctx.currentClass.superClass})`,
         );
       }
-      const superClassInfo = ctx.getClassInfoByCheckerType(
-        ctx.currentClass.superClassType,
-      );
+      const superClassInfo = ctx.getClassInfo(ctx.currentClass.superClassType);
       if (!superClassInfo) {
         throw new Error(
           `Super class not found for ${ctx.currentClass.name} via identity lookup`,
@@ -1802,7 +1796,7 @@ function generateCallExpression(
         const className = classBinding.declaration.name.name;
 
         // Use identity-based lookup for ClassInfo (no fallback)
-        const classInfo = ctx.getClassInfoByCheckerType(classType);
+        const classInfo = ctx.getClassInfo(classType);
         if (!classInfo) {
           throw new Error(
             `Static method call: class ${className} not found via identity lookup`,
@@ -1830,7 +1824,7 @@ function generateCallExpression(
       memberExpr.object.inferredType &&
       memberExpr.object.inferredType.kind === TypeKind.Interface
     ) {
-      interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+      interfaceInfo = ctx.getInterfaceInfo(
         memberExpr.object.inferredType as InterfaceType,
       );
       if (!interfaceInfo) {
@@ -1958,13 +1952,13 @@ function generateCallExpression(
         // When inside a generic context (e.g., generating Array<SuiteResult>.from),
         // the binding's classType may be the unsubstituted Array<T>.
         // Substitute type parameters to get the concrete type.
-        if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+        if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
           bindingClassType = ctx.checkerContext.substituteTypeParams(
             bindingClassType,
-            ctx.currentTypeParamMap,
+            ctx.currentTypeArguments,
           ) as ClassType;
         }
-        foundClass = ctx.getClassInfoByCheckerType(bindingClassType);
+        foundClass = ctx.getClassInfo(bindingClassType);
         // If not found and this is an extension class, instantiate it now
         if (!foundClass && bindingClassType.isExtension) {
           foundClass = instantiateExtensionClassFromCheckerType(
@@ -1985,13 +1979,13 @@ function generateCallExpression(
       // When inside a generic context (e.g., generating Array<SuiteResult>.from),
       // the AST's inferredType may still be the unsubstituted Array<T>.
       // Substitute type parameters to get the concrete type (Array<SuiteResult>).
-      if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
         classType = ctx.checkerContext.substituteTypeParams(
           classType,
-          ctx.currentTypeParamMap,
+          ctx.currentTypeArguments,
         ) as ClassType;
       }
-      foundClass = ctx.getClassInfoByCheckerType(classType);
+      foundClass = ctx.getClassInfo(classType);
     }
 
     // Fall back to struct index lookup for classes instantiated via annotation path
@@ -2006,10 +2000,10 @@ function generateCallExpression(
     if (!foundClass && memberExpr.object.inferredType) {
       let lookupType = memberExpr.object.inferredType;
       // Substitute type parameters if we're in a generic context
-      if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
         lookupType = ctx.checkerContext.substituteTypeParams(
           lookupType,
-          ctx.currentTypeParamMap,
+          ctx.currentTypeArguments,
         );
       }
       const extensions = ctx.getExtensionClassesByOnType(lookupType);
@@ -2346,9 +2340,7 @@ function generateCallExpression(
         `superClassType not set for ${ctx.currentClass.name} (superClass: ${ctx.currentClass.superClass})`,
       );
     }
-    const superClassInfo = ctx.getClassInfoByCheckerType(
-      ctx.currentClass.superClassType,
-    );
+    const superClassInfo = ctx.getClassInfo(ctx.currentClass.superClassType);
     if (!superClassInfo) {
       throw new Error(
         `Super class not found for ${ctx.currentClass.name} via identity lookup`,
@@ -2538,10 +2530,10 @@ function generateAssignmentExpression(
       if (!foundClass && indexExpr.object.inferredType) {
         // Substitute type parameters when in a generic context
         let lookupType = indexExpr.object.inferredType;
-        if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+        if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
           lookupType = ctx.checkerContext.substituteTypeParams(
             lookupType,
-            ctx.currentTypeParamMap,
+            ctx.currentTypeArguments,
           );
         }
         const extensions = ctx.getExtensionClassesByOnType(lookupType);
@@ -2614,7 +2606,7 @@ function generateAssignmentExpression(
           indexExpr.object.inferredType &&
           indexExpr.object.inferredType.kind === TypeKind.Interface
         ) {
-          interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+          interfaceInfo = ctx.getInterfaceInfo(
             indexExpr.object.inferredType as InterfaceType,
           );
           if (!interfaceInfo) {
@@ -2844,7 +2836,7 @@ function generateAssignmentExpression(
         memberExpr.object.inferredType &&
         memberExpr.object.inferredType.kind === TypeKind.Interface
       ) {
-        interfaceInfo = ctx.getInterfaceInfoByCheckerType(
+        interfaceInfo = ctx.getInterfaceInfo(
           memberExpr.object.inferredType as InterfaceType,
         );
         if (!interfaceInfo) {
@@ -3909,10 +3901,10 @@ function generateFieldFromBinding(
   // Substitute type parameters in the classType when inside a generic context.
   // This is needed for field access like `entry.key` where `entry: Entry<K, V>`
   // and K, V need to be substituted with actual type arguments.
-  if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+  if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
     classType = ctx.checkerContext.substituteTypeParams(
       classType,
-      ctx.currentTypeParamMap,
+      ctx.currentTypeArguments,
     ) as ClassType;
   }
 
@@ -4038,7 +4030,7 @@ function generateFieldFromBinding(
   }
 
   // Look up the class info using O(1) identity-based lookup
-  let classInfo = ctx.getClassInfoByCheckerType(classType);
+  let classInfo = ctx.getClassInfo(classType);
 
   // If identity lookup fails (e.g., generic instantiation), try instantiating
   if (
@@ -4060,7 +4052,7 @@ function generateFieldFromBinding(
   // (like FixedArray<T>) skip registerClassMethods and may not have been registered yet.
   if (!classInfo && classType.isExtension) {
     const genericSource = classType.genericSource ?? classType;
-    const genericDecl = ctx.getGenericDeclByType(genericSource);
+    const genericDecl = ctx.getGenericDeclaration(genericSource);
     if (genericDecl && genericDecl.isExtension && genericDecl.onType) {
       const onType = mapCheckerTypeToWasmType(ctx, classType.onType!);
 
@@ -4080,7 +4072,7 @@ function generateFieldFromBinding(
       // Register it so we don't recreate it next time
       ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
       if (classType) {
-        ctx.registerClassInfoByType(classType, classInfo);
+        ctx.registerClassInfo(classType, classInfo);
       }
     }
   }
@@ -4234,7 +4226,7 @@ function generateInterfaceFieldAccess(
   body: number[],
 ): boolean {
   // Look up InterfaceInfo using identity-based lookup (no name-based fallback)
-  const interfaceInfo = ctx.getInterfaceInfoByCheckerType(interfaceType);
+  const interfaceInfo = ctx.getInterfaceInfo(interfaceType);
   if (!interfaceInfo) {
     throw new Error(
       `Interface not registered via identity lookup: ${interfaceType.name}`,
@@ -4380,7 +4372,7 @@ function generateInterfaceGetterAccess(
   body: number[],
 ): boolean {
   // Look up InterfaceInfo using identity-based lookup (no name-based fallback)
-  const interfaceInfo = ctx.getInterfaceInfoByCheckerType(interfaceType);
+  const interfaceInfo = ctx.getInterfaceInfo(interfaceType);
   if (!interfaceInfo) {
     throw new Error(
       `Interface not registered via identity lookup: ${interfaceType.name}`,
@@ -4570,10 +4562,10 @@ function generateGetterFromBinding(
   // Substitute type parameters in the classType when inside a generic context.
   // This is needed for getter access like `items.length` where `items: Array<T>`
   // and T needs to be substituted with actual type arguments.
-  if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+  if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
     classType = ctx.checkerContext.substituteTypeParams(
       classType,
-      ctx.currentTypeParamMap,
+      ctx.currentTypeArguments,
     ) as ClassType;
   }
 
@@ -4623,7 +4615,7 @@ function generateGetterFromBinding(
   }
 
   // Look up the class info using O(1) identity-based lookup
-  let classInfo = ctx.getClassInfoByCheckerType(classType);
+  let classInfo = ctx.getClassInfo(classType);
 
   // If identity lookup fails (e.g., generic instantiation), try instantiating
   if (
@@ -5150,9 +5142,9 @@ function generateRecordLiteral(
           if (classType.fields.has(key) && !key.startsWith('#')) {
             const spreadInfo = spreadLocals.get(prop)!;
             // Use identity-based lookup (O(1) via WeakMap), fall back to struct index lookup
-            let classInfo = ctx.getClassInfoByCheckerType(classType);
+            let classInfo = ctx.getClassInfo(classType);
             if (!classInfo) {
-              classInfo = ctx.getClassInfoByType(classType);
+              classInfo = ctx.getClassInfo(classType);
             }
             if (!classInfo) {
               throw new Error(`Class info not found for ${classType.name}`);
@@ -5244,9 +5236,11 @@ function generateFunctionExpression(
   }
 
   // 3. Determine Signature
-  // Note: For closures inside generic contexts, the currentTypeParamMap is already set
-  // by the enclosing method/function body generation. Generic closures (<T>(...) => ...)
-  // would need their own type param handling, but are not currently supported.
+  //
+  // Note: For closures inside generic contexts, the currentTypeArguments map is
+  // already set by the enclosing method/function body generation. Generic
+  // closures (<T>(...) => ...) would need their own type param handling, but
+  // are not currently supported.
   let paramTypes: number[][];
   let returnType: number[];
 
@@ -5269,9 +5263,10 @@ function generateFunctionExpression(
 
   ctx.module.declareFunction(implFuncIndex);
 
-  // Capture the current type param map for deferred body generation
-  // This ensures the closure body has access to the enclosing generic context's type params
-  const capturedTypeParamMap = new Map(ctx.currentTypeParamMap);
+  // Capture the current type arguments map for deferred body generation This
+  // ensures the closure body has access to the enclosing generic context's type
+  // params
+  const capturedTypeArguments = new Map(ctx.currentTypeArguments);
 
   ctx.bodyGenerators.push(() => {
     const funcBody: number[] = [];
@@ -5280,8 +5275,8 @@ function generateFunctionExpression(
     ctx.pushFunctionScope();
 
     // Push the captured type param map for this closure's body
-    if (capturedTypeParamMap.size > 0) {
-      ctx.pushTypeParamContext(capturedTypeParamMap);
+    if (capturedTypeArguments.size > 0) {
+      ctx.pushTypeArgumentsContext(capturedTypeArguments);
     }
 
     // Param 0: Context (eqref)
@@ -5352,7 +5347,7 @@ function generateFunctionExpression(
     ctx.module.addCode(implFuncIndex, ctx.extraLocals, funcBody);
 
     // Pop the type param context if we pushed one
-    if (capturedTypeParamMap.size > 0) {
+    if (capturedTypeArguments.size > 0) {
       ctx.popTypeParamContext();
     }
   });
@@ -5647,10 +5642,10 @@ function generateGlobalIntrinsic(
 
       // Substitute type parameters if we're in a generic context
       let resolvedType = expr.inferredType;
-      if (ctx.currentTypeParamMap.size > 0 && ctx.checkerContext) {
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
         resolvedType = ctx.checkerContext.substituteTypeParams(
           resolvedType,
-          ctx.currentTypeParamMap,
+          ctx.currentTypeArguments,
         );
       }
 
@@ -6237,9 +6232,7 @@ function generateTaggedTemplateExpression(
       `TemplateStringsArray declaration has unexpected inferredType kind: ${tsaDecl.inferredType?.kind}`,
     );
   }
-  const tsaClassInfo = ctx.getClassInfoByCheckerType(
-    tsaDecl.inferredType as ClassType,
-  );
+  const tsaClassInfo = ctx.getClassInfo(tsaDecl.inferredType as ClassType);
   if (!tsaClassInfo) {
     throw new Error('TemplateStringsArray class not found via identity lookup');
   }
@@ -6672,7 +6665,7 @@ export function generateAdaptedArgument(
       // If not found, check if the class implements a subtype of the interface
       if (!impl) {
         for (const [implType, implInfo] of classInfo.implements) {
-          if (isInterfaceSubtypeByType(ctx, implType, targetInterfaceType)) {
+          if (isInterfaceSubtype(ctx, implType, targetInterfaceType)) {
             impl = implInfo;
             break;
           }
@@ -6834,11 +6827,7 @@ export function generateAdaptedArgument(
                 if (!impl) {
                   for (const [implType, implInfo] of classInfo.implements) {
                     if (
-                      isInterfaceSubtypeByType(
-                        ctx,
-                        implType,
-                        targetInterfaceType,
-                      )
+                      isInterfaceSubtype(ctx, implType, targetInterfaceType)
                     ) {
                       impl = implInfo;
                       break;
@@ -7271,7 +7260,7 @@ function generateMatchPatternCheck(
           `ClassPattern for ${className} missing or invalid inferredType`,
         );
       }
-      const classInfo = ctx.getClassInfoByCheckerType(
+      const classInfo = ctx.getClassInfo(
         classPattern.inferredType as ClassType,
       );
       if (!classInfo) {
@@ -7780,9 +7769,7 @@ function generateMatchPatternBindings(
         `ClassPattern for ${className} missing or invalid inferredType`,
       );
     }
-    const classInfo = ctx.getClassInfoByCheckerType(
-      classPattern.inferredType as ClassType,
-    );
+    const classInfo = ctx.getClassInfo(classPattern.inferredType as ClassType);
     if (!classInfo) {
       throw new Error(
         `Class ${className} not found via identity lookup in ClassPattern`,
@@ -8009,7 +7996,7 @@ function generateMatchPatternBindings(
  * because all specializations share the same WASM struct type. The checker interns
  * interface types, so identical instantiations (e.g., Sequence<i32>) are the same object.
  */
-export function isInterfaceSubtypeByType(
+export function isInterfaceSubtype(
   ctx: CodegenContext,
   sub: InterfaceType,
   sup: InterfaceType,
@@ -8032,7 +8019,7 @@ export function isInterfaceSubtypeByType(
   // Check parent chain using checker's InterfaceType.extends
   if (sub.extends && sub.extends.length > 0) {
     for (const parentType of sub.extends) {
-      if (isInterfaceSubtypeByType(ctx, parentType, sup)) {
+      if (isInterfaceSubtype(ctx, parentType, sup)) {
         return true;
       }
     }

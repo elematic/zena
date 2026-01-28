@@ -31,7 +31,7 @@ import {
   generateAdaptedArgument,
   isAdaptable,
   boxPrimitive,
-  isInterfaceSubtypeByType,
+  isInterfaceSubtype,
 } from './expressions.js';
 
 export function generateStatement(
@@ -287,10 +287,10 @@ export function generateLocalVariableDeclaration(
     // If we're inside a generic context, resolve type parameters using the
     // current type param map (which may include both class and method params)
     let resolvedType = decl.inferredType;
-    if (resolvedType && ctx.currentTypeParamMap.size > 0) {
+    if (resolvedType && ctx.currentTypeArguments.size > 0) {
       resolvedType = ctx.checkerContext.substituteTypeParams(
         resolvedType,
-        ctx.currentTypeParamMap,
+        ctx.currentTypeArguments,
       );
     }
     if (!resolvedType) {
@@ -319,8 +319,7 @@ export function generateLocalVariableDeclaration(
     // Check for interface boxing
     if (resolvedType?.kind === TypeKind.Interface) {
       const targetInterfaceType = resolvedType as InterfaceType;
-      const interfaceInfo =
-        ctx.getInterfaceInfoByCheckerType(targetInterfaceType);
+      const interfaceInfo = ctx.getInterfaceInfo(targetInterfaceType);
 
       if (interfaceInfo) {
         const initType = inferType(ctx, decl.init);
@@ -334,13 +333,7 @@ export function generateLocalVariableDeclaration(
           // If not found, try to find by interface subtype
           if (!implInfo) {
             for (const [implInterface, info] of classInfo.implements) {
-              if (
-                isInterfaceSubtypeByType(
-                  ctx,
-                  implInterface,
-                  targetInterfaceType,
-                )
-              ) {
+              if (isInterfaceSubtype(ctx, implInterface, targetInterfaceType)) {
                 implInfo = info;
                 break;
               }

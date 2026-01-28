@@ -10,7 +10,7 @@ import {WasmModule} from '../emitter.js';
 import {Decorators, type FunctionType, type Type} from '../types.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
-  getCheckerTypeKeyForSpecialization,
+  getTypeKeyForSpecialization,
   mapCheckerTypeToWasmType,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
@@ -76,7 +76,7 @@ export function generateFunctionBody(
   ctx: CodegenContext,
   name: string,
   func: FunctionExpression,
-  typeParamMap?: Map<string, Type>,
+  typeArguments?: Map<string, Type>,
   returnType?: number[],
 ): number[] {
   const oldReturnType = ctx.currentReturnType;
@@ -85,16 +85,16 @@ export function generateFunctionBody(
   ctx.pushFunctionScope();
 
   // Push type param context for checker-based resolution
-  if (typeParamMap && typeParamMap.size > 0) {
-    ctx.pushTypeParamContext(typeParamMap);
+  if (typeArguments && typeArguments.size > 0) {
+    ctx.pushTypeArgumentsContext(typeArguments);
   }
 
   func.params.forEach((p) => {
     let paramType = p.typeAnnotation.inferredType!;
-    if (typeParamMap && ctx.checkerContext) {
+    if (typeArguments && ctx.checkerContext) {
       paramType = ctx.checkerContext.substituteTypeParams(
         paramType,
-        typeParamMap,
+        typeArguments,
       );
     }
     ctx.defineParam(p.name.name, mapCheckerTypeToWasmType(ctx, paramType), p);
@@ -113,7 +113,7 @@ export function generateFunctionBody(
   body.push(Opcode.end);
 
   // Pop type param context if we pushed one
-  if (typeParamMap && typeParamMap.size > 0) {
+  if (typeArguments && typeArguments.size > 0) {
     ctx.popTypeParamContext();
   }
 
@@ -131,7 +131,7 @@ export function instantiateGenericFunction(
 
   // Use checker-based type key for specialization
   const key = `${name}<${typeArgs
-    .map((t) => getCheckerTypeKeyForSpecialization(t, ctx))
+    .map((t) => getTypeKeyForSpecialization(t, ctx))
     .join(',')}>`;
 
   // Check if already instantiated
@@ -306,7 +306,7 @@ export function instantiateGenericMethod(
 
   // Use checker-based type key for specialization
   const specializedKey = `${methodName}<${typeArgs
-    .map((t) => getCheckerTypeKeyForSpecialization(t, ctx))
+    .map((t) => getTypeKeyForSpecialization(t, ctx))
     .join(',')}>`;
 
   // Check if already instantiated in the class
@@ -317,9 +317,9 @@ export function instantiateGenericMethod(
   // Build type map directly from Type[] (checker-based)
   const typeMap = new Map<string, Type>();
 
-  // Add class type parameters from classInfo.typeParamMap (checker-based)
-  if (classInfo.typeParamMap) {
-    for (const [name, type] of classInfo.typeParamMap) {
+  // Add class type parameters from classInfo.typeArguments (checker-based)
+  if (classInfo.typeArguments) {
+    for (const [name, type] of classInfo.typeArguments) {
       typeMap.set(name, type);
     }
   }
@@ -403,7 +403,7 @@ function generateMethodBody(
   ctx: CodegenContext,
   classInfo: ClassInfo,
   method: MethodDefinition,
-  typeParamMap: Map<string, Type>,
+  typeArguments: Map<string, Type>,
   returnType?: number[],
 ): number[] {
   const oldReturnType = ctx.currentReturnType;
@@ -411,8 +411,8 @@ function generateMethodBody(
   // Push type param context for checker-based resolution
   // This enables substituteTypeParams to resolve method type parameters
   // (e.g., U in map<U>) in addition to class type parameters
-  if (typeParamMap.size > 0) {
-    ctx.pushTypeParamContext(typeParamMap);
+  if (typeArguments.size > 0) {
+    ctx.pushTypeArgumentsContext(typeArguments);
   }
   ctx.currentReturnType = returnType;
   ctx.currentClass = classInfo;
@@ -438,7 +438,7 @@ function generateMethodBody(
     if (ctx.checkerContext) {
       paramType = ctx.checkerContext.substituteTypeParams(
         paramType,
-        typeParamMap,
+        typeArguments,
       );
     }
     ctx.defineParam(p.name.name, mapCheckerTypeToWasmType(ctx, paramType), p);
@@ -458,7 +458,7 @@ function generateMethodBody(
   body.push(Opcode.end);
 
   // Pop type param context if we pushed one
-  if (typeParamMap.size > 0) {
+  if (typeArguments.size > 0) {
     ctx.popTypeParamContext();
   }
 

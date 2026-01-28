@@ -186,13 +186,13 @@ export class CodegenContext {
    *
    * Use pushTypeParamContext() / popTypeParamContext() to manage this.
    */
-  public currentTypeParamMap: Map<string, Type> = new Map();
+  public currentTypeArguments: Map<string, Type> = new Map();
 
   /**
    * Stack of saved type param maps for nested contexts.
    * Each entry saves the previous map when entering a new context.
    */
-  readonly #typeParamMapStack: Map<string, Type>[] = [];
+  readonly #typeArgumentsStack: Map<string, Type>[] = [];
 
   // Type management
   public arrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
@@ -272,11 +272,11 @@ export class CodegenContext {
   // Maps generic class declarations to their ClassType
   readonly #genericTemplates = new Map<string, ClassType>();
   // Reverse mapping: checker ClassType → ClassDeclaration for generic classes
-  readonly #genericDeclsByType = new WeakMap<ClassType, ClassDeclaration>();
+  readonly #genericDeclarations = new WeakMap<ClassType, ClassDeclaration>();
   // Identity-based specialization lookup: ClassType -> ClassInfo
   // With type interning in the checker, identical instantiations share the
   // same ClassType object, so we can use a WeakMap for O(1) lookup.
-  readonly #classInfoByType = new WeakMap<ClassType, ClassInfo>();
+  readonly #classInfo = new WeakMap<ClassType, ClassInfo>();
 
   // Extension class lookup: onType (checker Type) -> ClassInfo[]
   // Maps the type being extended to all extension classes that extend it.
@@ -293,10 +293,10 @@ export class CodegenContext {
   readonly #extensionsByWasmValType = new Map<number, ClassInfo[]>();
 
   // Identity-based interface lookup: InterfaceType -> InterfaceInfo
-  readonly #interfaceInfoByType = new WeakMap<InterfaceType, InterfaceInfo>();
+  readonly #interfaceInfo = new WeakMap<InterfaceType, InterfaceInfo>();
 
   // Identity-based mixin lookup: MixinType -> MixinDeclaration
-  readonly #mixinDeclByType = new WeakMap<MixinType, MixinDeclaration>();
+  readonly #mixinDeclarations = new WeakMap<MixinType, MixinDeclaration>();
 
   // ===== Declaration → WASM Index Mappings =====
   // These enable identity-based lookup from resolved bindings to WASM indices.
@@ -431,27 +431,10 @@ export class CodegenContext {
   }
 
   /**
-   * Find an interface declaration by name across all modules.
-   */
-  findInterfaceDeclaration(name: string): InterfaceDeclaration | undefined {
-    for (const mod of this.modules) {
-      for (const stmt of mod.body) {
-        if (
-          stmt.type === NodeType.InterfaceDeclaration &&
-          (stmt as InterfaceDeclaration).name.name === name
-        ) {
-          return stmt as InterfaceDeclaration;
-        }
-      }
-    }
-    return undefined;
-  }
-
-  /**
    * Find an interface declaration by checker InterfaceType using identity.
    * This is the preferred lookup method when you have an InterfaceType from the checker.
    */
-  findInterfaceDeclarationByType(
+  findInterfaceDeclaration(
     interfaceType: InterfaceType,
   ): InterfaceDeclaration | undefined {
     for (const mod of this.modules) {
@@ -468,8 +451,7 @@ export class CodegenContext {
         }
       }
     }
-    // Fallback to name-based lookup
-    return this.findInterfaceDeclaration(interfaceType.name);
+    return undefined;
   }
 
   /**
@@ -607,13 +589,13 @@ export class CodegenContext {
    *
    * @param bindings Map of type parameter names to their concrete types
    */
-  public pushTypeParamContext(bindings: Map<string, Type>): void {
+  public pushTypeArgumentsContext(bindings: Map<string, Type>): void {
     // Save current map
-    this.#typeParamMapStack.push(new Map(this.currentTypeParamMap));
+    this.#typeArgumentsStack.push(new Map(this.currentTypeArguments));
 
     // Merge new bindings
     for (const [name, type] of bindings) {
-      this.currentTypeParamMap.set(name, type);
+      this.currentTypeArguments.set(name, type);
     }
   }
 
@@ -621,11 +603,11 @@ export class CodegenContext {
    * Exit the current type parameter context, restoring the previous map.
    */
   public popTypeParamContext(): void {
-    const previous = this.#typeParamMapStack.pop();
+    const previous = this.#typeArgumentsStack.pop();
     if (previous) {
-      this.currentTypeParamMap = previous;
+      this.currentTypeArguments = previous;
     } else {
-      this.currentTypeParamMap = new Map();
+      this.currentTypeArguments = new Map();
     }
   }
 
@@ -634,8 +616,8 @@ export class CodegenContext {
    * context that shouldn't inherit any type parameters.
    */
   public clearTypeParamContext(): void {
-    this.#typeParamMapStack.length = 0;
-    this.currentTypeParamMap = new Map();
+    this.#typeArgumentsStack.length = 0;
+    this.currentTypeArguments = new Map();
   }
 
   /**
@@ -916,31 +898,32 @@ export class CodegenContext {
   }
 
   /**
-   * Register a generic class declaration by its checker type for identity-based lookup.
-   * This enables looking up the AST declaration from an interned ClassType.
+   * Register a generic class declaration by its checker type for identity-based
+   * lookup. This enables looking up the AST declaration from an interned
+   * ClassType.
    */
-  public setGenericDeclByType(
+  public setGenericDeclaration(
     classType: ClassType,
     decl: ClassDeclaration,
   ): void {
-    this.#genericDeclsByType.set(classType, decl);
+    this.#genericDeclarations.set(classType, decl);
   }
 
   /**
    * Get the ClassDeclaration for a generic class by its checker type.
    * Follows genericSource chain to find the template.
    */
-  public getGenericDeclByType(
+  public getGenericDeclaration(
     classType: ClassType,
   ): ClassDeclaration | undefined {
     // Try direct lookup first
-    let decl = this.#genericDeclsByType.get(classType);
+    let decl = this.#genericDeclarations.get(classType);
     if (decl) return decl;
 
     // Follow genericSource chain
     let source = classType.genericSource;
     while (source) {
-      decl = this.#genericDeclsByType.get(source);
+      decl = this.#genericDeclarations.get(source);
       if (decl) return decl;
       source = source.genericSource;
     }
@@ -952,28 +935,28 @@ export class CodegenContext {
    * Register a mixin declaration by its checker MixinType for identity-based lookup.
    * This enables looking up the AST declaration from an interned MixinType.
    */
-  public setMixinDeclByType(
+  public setMixinDeclaration(
     mixinType: MixinType,
     decl: MixinDeclaration,
   ): void {
-    this.#mixinDeclByType.set(mixinType, decl);
+    this.#mixinDeclarations.set(mixinType, decl);
   }
 
   /**
    * Get the MixinDeclaration for a mixin by its checker MixinType.
    * Follows genericSource chain to find the template.
    */
-  public getMixinDeclByType(
+  public getMixinDeclaration(
     mixinType: MixinType,
   ): MixinDeclaration | undefined {
     // Try direct lookup first
-    let decl = this.#mixinDeclByType.get(mixinType);
+    let decl = this.#mixinDeclarations.get(mixinType);
     if (decl) return decl;
 
     // Follow genericSource chain for generic mixins
     let source = mixinType.genericSource;
     while (source) {
-      decl = this.#mixinDeclByType.get(source);
+      decl = this.#mixinDeclarations.get(source);
       if (decl) return decl;
       source = source.genericSource;
     }
@@ -986,11 +969,8 @@ export class CodegenContext {
    * With type interning, identical instantiations share the same ClassType
    * object, so this provides O(1) lookup without string key computation.
    */
-  public registerClassInfoByType(
-    classType: ClassType,
-    classInfo: ClassInfo,
-  ): void {
-    this.#classInfoByType.set(classType, classInfo);
+  public registerClassInfo(classType: ClassType, classInfo: ClassInfo): void {
+    this.#classInfo.set(classType, classInfo);
   }
 
   /**
@@ -1000,10 +980,8 @@ export class CodegenContext {
    * Returns undefined if not found - caller should fall back to other lookups
    * or the type hasn't been registered yet.
    */
-  public getClassInfoByCheckerType(
-    classType: ClassType,
-  ): ClassInfo | undefined {
-    const result = this.#classInfoByType.get(classType);
+  public getClassInfo(classType: ClassType): ClassInfo | undefined {
+    const result = this.#classInfo.get(classType);
     if (result) return result;
     // For specialized generic classes, look up via genericSource.
     // This handles cases where the same logical class (e.g., FixedArray<Entry<K,V>>)
@@ -1011,7 +989,7 @@ export class CodegenContext {
     // have different ClassType object identities due to substituteType creating
     // new ClassType objects without interning.
     if (classType.genericSource) {
-      return this.#classInfoByType.get(classType.genericSource);
+      return this.#classInfo.get(classType.genericSource);
     }
     return undefined;
   }
@@ -1025,7 +1003,7 @@ export class CodegenContext {
   public getClassInfoByStructIndex(structIndex: number): ClassInfo | undefined {
     const classType = this.#structIndexToClass.get(structIndex);
     if (!classType) return undefined;
-    return this.#classInfoByType.get(classType);
+    return this.#classInfo.get(classType);
   }
 
   /**
@@ -1116,11 +1094,11 @@ export class CodegenContext {
   /**
    * Register an InterfaceInfo by its checker InterfaceType for identity-based lookup.
    */
-  public registerInterfaceInfoByType(
+  public registerInterface(
     interfaceType: InterfaceType,
     interfaceInfo: InterfaceInfo,
   ): void {
-    this.#interfaceInfoByType.set(interfaceType, interfaceInfo);
+    this.#interfaceInfo.set(interfaceType, interfaceInfo);
     // Also register by struct index for O(1) lookup
     this.#structIndexToInterfaceInfo.set(
       interfaceInfo.structTypeIndex,
@@ -1157,20 +1135,18 @@ export class CodegenContext {
    * share the same WASM struct. We only register the template InterfaceType, so lookups
    * for specialized types follow the genericSource chain to find the template.
    */
-  public getInterfaceInfoByCheckerType(
+  public getInterfaceInfo(
     interfaceType: InterfaceType,
   ): InterfaceInfo | undefined {
-    const result = this.#interfaceInfoByType.get(interfaceType);
+    const result = this.#interfaceInfo.get(interfaceType);
     if (result) return result;
     // For specialized generic interfaces, look up via genericSource chain
     let source = interfaceType.genericSource;
     while (source) {
-      const sourceResult = this.#interfaceInfoByType.get(source);
+      const sourceResult = this.#interfaceInfo.get(source);
       if (sourceResult) return sourceResult;
       source = source.genericSource;
     }
-    // Identity-based lookup failed - don't fall back to name-based lookup
-    // as that causes bugs with same-named interfaces from different modules
     return undefined;
   }
 
@@ -1301,40 +1277,6 @@ export class CodegenContext {
       DiagnosticCode.InternalCompilerError,
       node,
     );
-  }
-
-  /**
-   * Look up a ClassInfo by its checker ClassType.
-   * Uses object identity to find the class, avoiding name-based lookups.
-   *
-   * @param classType The ClassType from the type checker
-   * @returns The ClassInfo if found, undefined otherwise
-   */
-  public getClassInfoByType(
-    classType: import('../types.js').ClassType,
-  ): ClassInfo | undefined {
-    const structIndex = this.getClassStructIndex(classType);
-    if (structIndex === undefined) return undefined;
-
-    // Use O(1) lookup by struct index
-    return this.#structIndexToClassInfo.get(structIndex);
-  }
-
-  /**
-   * Look up an InterfaceInfo by its checker InterfaceType.
-   * Uses object identity to find the interface, avoiding name-based lookups.
-   *
-   * @param interfaceType The InterfaceType from the type checker
-   * @returns The InterfaceInfo if found, undefined otherwise
-   */
-  public getInterfaceInfoByType(
-    interfaceType: import('../types.js').InterfaceType,
-  ): InterfaceInfo | undefined {
-    const structIndex = this.getInterfaceStructIndex(interfaceType);
-    if (structIndex === undefined) return undefined;
-
-    // Use O(1) lookup by struct index
-    return this.#structIndexToInterfaceInfo.get(structIndex);
   }
 
   // ===== Declaration-Based Index Management =====

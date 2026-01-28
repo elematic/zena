@@ -64,7 +64,7 @@ import {
   getHeapTypeIndex,
   boxPrimitive,
   unboxPrimitive,
-  isInterfaceSubtypeByType,
+  isInterfaceSubtype,
 } from './expressions.js';
 import {
   generateBlockStatement,
@@ -87,7 +87,7 @@ export function preRegisterInterface(
   // Use identity-based guard via checker type
   if (decl.inferredType && decl.inferredType.kind === TypeKind.Interface) {
     const interfaceType = decl.inferredType as InterfaceType;
-    if (ctx.getInterfaceInfoByCheckerType(interfaceType)) {
+    if (ctx.getInterfaceInfo(interfaceType)) {
       return; // Already registered
     }
   }
@@ -104,10 +104,10 @@ export function preRegisterInterface(
         if (interfaceType.extends && interfaceType.extends.length > 0) {
           const parentType = interfaceType.extends[0];
           // Ensure parent is registered first
-          const parentDecl = ctx.findInterfaceDeclarationByType(parentType);
+          const parentDecl = ctx.findInterfaceDeclaration(parentType);
           if (parentDecl) {
             preRegisterInterface(ctx, parentDecl);
-            parentInfo = ctx.getInterfaceInfoByCheckerType(parentType);
+            parentInfo = ctx.getInterfaceInfo(parentType);
           }
         }
       }
@@ -160,7 +160,7 @@ export function preRegisterInterface(
     // Also register the bundled name for typeToTypeAnnotation lookups
     ctx.setInterfaceBundledName(interfaceType, decl.name.name);
     // Register InterfaceInfo for identity-based lookup (also registers by struct index)
-    ctx.registerInterfaceInfoByType(interfaceType, interfaceInfo);
+    ctx.registerInterface(interfaceType, interfaceInfo);
   } else {
     // Still register by struct index for O(1) lookup even without checker type
     ctx.setInterfaceInfoByStructIndex(structTypeIndex, interfaceInfo);
@@ -187,7 +187,7 @@ export function defineInterfaceMethods(
     );
   }
   const checkerType = decl.inferredType as InterfaceType;
-  const interfaceInfo = ctx.getInterfaceInfoByCheckerType(checkerType);
+  const interfaceInfo = ctx.getInterfaceInfo(checkerType);
   if (!interfaceInfo) {
     throw new Error(
       `Interface ${decl.name.name} was not pre-registered before defineInterfaceMethods`,
@@ -211,18 +211,16 @@ export function defineInterfaceMethods(
 
   let parentInfo: InterfaceInfo | undefined;
   if (interfaceInfo.parentType) {
-    parentInfo = ctx.getInterfaceInfoByCheckerType(interfaceInfo.parentType);
+    parentInfo = ctx.getInterfaceInfo(interfaceInfo.parentType);
   }
 
   // Ensure parent methods are defined first
   if (parentInfo && parentInfo.methods.size === 0) {
-    const parentDecl = ctx.findInterfaceDeclarationByType(
-      interfaceInfo.parentType!,
-    );
+    const parentDecl = ctx.findInterfaceDeclaration(interfaceInfo.parentType!);
     if (parentDecl) {
       defineInterfaceMethods(ctx, parentDecl);
       // Re-lookup after defining
-      parentInfo = ctx.getInterfaceInfoByCheckerType(interfaceInfo.parentType!);
+      parentInfo = ctx.getInterfaceInfo(interfaceInfo.parentType!);
     }
   }
 
@@ -739,7 +737,7 @@ export function generateTrampoline(
                   implInfo,
                 ] of resultClassInfo.implements) {
                   if (
-                    isInterfaceSubtypeByType(
+                    isInterfaceSubtype(
                       ctx,
                       implInterface,
                       interfaceInfo.checkerType,
@@ -889,13 +887,12 @@ export function generateInterfaceVTable(
     }
 
     // Look up interface info by identity (no name-based fallback)
-    const interfaceInfo =
-      ctx.getInterfaceInfoByCheckerType(checkerInterfaceType);
+    const interfaceInfo = ctx.getInterfaceInfo(checkerInterfaceType);
     if (!interfaceInfo) {
       // For generic interfaces, try the genericSource
       const genericSource = checkerInterfaceType.genericSource;
       const baseInterfaceInfo = genericSource
-        ? ctx.getInterfaceInfoByCheckerType(genericSource)
+        ? ctx.getInterfaceInfo(genericSource)
         : undefined;
       if (!baseInterfaceInfo) {
         throw new Error(
@@ -1063,7 +1060,7 @@ export function preRegisterClassStruct(
       // Also register bundled name for the template itself
       ctx.setClassBundledName(templateType, decl.name.name);
       // Register declaration by type for identity-based lookup
-      ctx.setGenericDeclByType(templateType, decl);
+      ctx.setGenericDeclaration(templateType, decl);
       // Also register by original name (from checker) for bundled AST lookups
       // This allows code using pre-bundled type names to find the generic class
       if (templateType.name !== decl.name.name) {
@@ -1109,7 +1106,7 @@ export function preRegisterClassStruct(
     // Register bundled name for identity-based lookups
     ctx.setClassBundledName(classType, decl.name.name);
     // Register ClassInfo for O(1) lookup
-    ctx.registerClassInfoByType(classType, classInfo);
+    ctx.registerClassInfo(classType, classInfo);
 
     // Register extension class by its onType for O(1) lookup (checker type identity)
     ctx.registerExtensionClass(classType.onType, classInfo);
@@ -1151,16 +1148,16 @@ export function preRegisterClassStruct(
     if (superTypeArgs && superTypeArgs.length > 0) {
       // Superclass is generic - need to instantiate it first
       // Use identity-based lookup to check if already instantiated
-      if (!ctx.getClassInfoByCheckerType(classType.superType)) {
+      if (!ctx.getClassInfo(classType.superType)) {
         const baseSuperName = getTypeAnnotationName(decl.superClass);
-        const specializedName = getSpecializedNameFromCheckerTypes(
+        const specializedName = getSpecializedName(
           baseSuperName,
           superTypeArgs,
           ctx,
         );
         const superGenericSource =
           classType.superType.genericSource ?? classType.superType;
-        const genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
+        const genericSuperDecl = ctx.getGenericDeclaration(superGenericSource);
         if (genericSuperDecl) {
           // Pass the checker's superType directly - it contains all type info
           instantiateClass(
@@ -1197,7 +1194,7 @@ export function preRegisterClassStruct(
 
     // Use identity-based lookup via the base superclass type (no fallback)
     if (baseSuperType) {
-      currentSuperClassInfo = ctx.getClassInfoByCheckerType(baseSuperType);
+      currentSuperClassInfo = ctx.getClassInfo(baseSuperType);
       if (!currentSuperClassInfo) {
         throw new Error(
           `baseSuperType identity lookup failed for ${decl.name.name} (baseSuperType: ${baseSuperType.name})`,
@@ -1212,7 +1209,7 @@ export function preRegisterClassStruct(
       if (!mixinType || mixinType.kind !== TypeKind.Mixin) {
         continue;
       }
-      const mixinDecl = ctx.getMixinDeclByType(mixinType as MixinType);
+      const mixinDecl = ctx.getMixinDeclaration(mixinType as MixinType);
       if (!mixinDecl) {
         continue;
       }
@@ -1266,7 +1263,7 @@ export function preRegisterClassStruct(
     // Register bundled name for identity-based lookups
     ctx.setClassBundledName(classType, decl.name.name);
     // Register ClassInfo for O(1) lookup
-    ctx.registerClassInfoByType(classType, classInfo);
+    ctx.registerClassInfo(classType, classInfo);
   }
 }
 
@@ -1291,9 +1288,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
       `Class ${decl.name.name} missing inferredType in defineClassStruct`,
     );
   }
-  const classInfo = ctx.getClassInfoByCheckerType(
-    decl.inferredType as ClassType,
-  );
+  const classInfo = ctx.getClassInfo(decl.inferredType as ClassType);
   if (!classInfo) {
     throw new Error(`Class ${decl.name.name} not found in defineClassStruct`);
   }
@@ -1324,7 +1319,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
     // Identity-based lookup using checker's type (no fallback)
     if (classType.superType) {
       superClassType = classType.superType;
-      currentSuperClassInfo = ctx.getClassInfoByCheckerType(superClassType);
+      currentSuperClassInfo = ctx.getClassInfo(superClassType);
     }
 
     // If identity lookup failed but we have superClassType, try to instantiate
@@ -1336,17 +1331,14 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
       let superClassName: string;
       if (superTypeArgs && superTypeArgs.length > 0) {
         // Superclass is generic - compute name from checker types
-        superClassName = getSpecializedNameFromCheckerTypes(
-          baseSuperName,
-          superTypeArgs,
-          ctx,
-        );
+        superClassName = getSpecializedName(baseSuperName, superTypeArgs, ctx);
 
         // Ensure the superclass is instantiated (use identity-based check)
-        if (!ctx.getClassInfoByCheckerType(superClassType)) {
+        if (!ctx.getClassInfo(superClassType)) {
           const superGenericSource =
             superClassType.genericSource ?? superClassType;
-          const genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
+          const genericSuperDecl =
+            ctx.getGenericDeclaration(superGenericSource);
           if (genericSuperDecl) {
             // Pass the checker's superType directly - it contains all type info
             instantiateClass(
@@ -1362,7 +1354,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
       }
 
       // Retry identity lookup after potential instantiation
-      currentSuperClassInfo = ctx.getClassInfoByCheckerType(superClassType);
+      currentSuperClassInfo = ctx.getClassInfo(superClassType);
       if (!currentSuperClassInfo) {
         throw new Error(
           `superClassType identity lookup failed for ${decl.name.name} after instantiation (superClass: ${superClassName})`,
@@ -1391,7 +1383,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
       const baseSuperType = mixinIntermediateTypes[0].superType;
       if (baseSuperType) {
         // Identity-based lookup for the base class (no fallback)
-        const baseClassInfo = ctx.getClassInfoByCheckerType(baseSuperType);
+        const baseClassInfo = ctx.getClassInfo(baseSuperType);
         if (baseClassInfo) {
           currentSuperClassInfo = baseClassInfo;
         } else {
@@ -1412,7 +1404,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
       if (!mixinType || mixinType.kind !== TypeKind.Mixin) {
         throw new Error('Mixin annotation must have MixinType inferredType');
       }
-      const mixinDecl = ctx.getMixinDeclByType(mixinType as MixinType);
+      const mixinDecl = ctx.getMixinDeclaration(mixinType as MixinType);
       if (!mixinDecl) {
         throw new Error(`Unknown mixin (identity lookup failed)`);
       }
@@ -1539,7 +1531,7 @@ export function registerClassMethods(
     );
   }
   const classType = decl.inferredType as ClassType;
-  const classInfo = ctx.getClassInfoByCheckerType(classType);
+  const classInfo = ctx.getClassInfo(classType);
   if (!classInfo) {
     throw new Error(
       `Class ${decl.name.name} not found in registerClassMethods`,
@@ -1561,9 +1553,7 @@ export function registerClassMethods(
   let currentSuperClassInfo: ClassInfo | undefined;
   // Identity-based lookup using checker's superType
   if (classInfo.superClassType) {
-    currentSuperClassInfo = ctx.getClassInfoByCheckerType(
-      classInfo.superClassType,
-    );
+    currentSuperClassInfo = ctx.getClassInfo(classInfo.superClassType);
   }
   // Note: No name-based fallback - superClassType should always be set when
   // a superclass exists (including mixin intermediates)
@@ -2101,7 +2091,7 @@ export function generateClassMethods(
    * This is needed when checkerType.typeArguments contains TypeParameterTypes
    * that have already been resolved by the caller.
    */
-  resolvedTypeParamMap?: Map<string, Type>,
+  resolvedTypeArguments?: Map<string, Type>,
 ) {
   const previousCheckerType = ctx.currentCheckerType;
 
@@ -2112,12 +2102,12 @@ export function generateClassMethods(
 
   // Push type param context for checker-based resolution
   // This enables substituteTypeParams to resolve class type parameters
-  if (resolvedTypeParamMap) {
+  if (resolvedTypeArguments) {
     // Use pre-resolved map from caller (handles nested generic instantiation)
-    ctx.pushTypeParamContext(resolvedTypeParamMap);
+    ctx.pushTypeArgumentsContext(resolvedTypeArguments);
   } else if (checkerType && ctx.checkerContext) {
     const typeMap = ctx.checkerContext.buildTypeMap(checkerType);
-    ctx.pushTypeParamContext(typeMap);
+    ctx.pushTypeArgumentsContext(typeMap);
   }
 
   // Identity-based lookup using checker's type (no fallback)
@@ -2132,7 +2122,7 @@ export function generateClassMethods(
       `No checker type for generateClassMethods: ${specializedName || decl.name.name}`,
     );
   }
-  const classInfo = ctx.getClassInfoByCheckerType(lookupType);
+  const classInfo = ctx.getClassInfo(lookupType);
   if (!classInfo) {
     throw new Error(
       `Class ${specializedName || decl.name.name} not found via identity lookup in generateClassMethods`,
@@ -2482,57 +2472,18 @@ export function generateClassMethods(
   }
 
   // Restore previous context
-  if (resolvedTypeParamMap || (checkerType && ctx.checkerContext)) {
+  if (resolvedTypeArguments || (checkerType && ctx.checkerContext)) {
     ctx.popTypeParamContext();
   }
   ctx.currentCheckerType = previousCheckerType;
 }
 
-export function getTypeKey(type: TypeAnnotation): string {
-  if (type.type === NodeType.TypeAnnotation) {
-    let key = type.name;
-    if (type.typeArguments && type.typeArguments.length > 0) {
-      key += `<${type.typeArguments.map(getTypeKey).join(',')}>`;
-    }
-    return key;
-  } else if (type.type === NodeType.RecordTypeAnnotation) {
-    const props = type.properties
-      .map((p) => `${p.name.name}:${getTypeKey(p.typeAnnotation)}`)
-      .sort()
-      .join(',');
-    return `{${props}}`;
-  } else if (type.type === NodeType.TupleTypeAnnotation) {
-    const elements = type.elementTypes.map(getTypeKey).join(',');
-    return `[${elements}]`;
-  } else if (type.type === NodeType.FunctionTypeAnnotation) {
-    const params = type.params.map(getTypeKey).join(',');
-    const ret = type.returnType ? getTypeKey(type.returnType) : TypeNames.Void;
-    return `(${params})=>${ret}`;
-  } else if (type.type === NodeType.UnionTypeAnnotation) {
-    // Sort union members for consistent keys regardless of order
-    const members = type.types.map(getTypeKey).sort().join('|');
-    return `(${members})`;
-  } else if (type.type === NodeType.LiteralTypeAnnotation) {
-    // Include the literal value in the key
-    const val = type.value;
-    if (typeof val === 'string') {
-      return `'${val}'`;
-    } else if (typeof val === 'boolean') {
-      return val ? 'true' : 'false';
-    } else {
-      return String(val);
-    }
-  }
-  return 'unknown';
-}
-
 /**
- * Get a canonical string key for a checker Type, for use in specialization names.
- * This is the checker-type equivalent of getTypeKey(TypeAnnotation).
+ * Get a canonical string key for a Type, for use in specialization names.
  *
  * Uses identity-based lookups for class/interface names to avoid collisions.
  */
-export function getCheckerTypeKeyForSpecialization(
+export function getTypeKeyForSpecialization(
   type: Type,
   ctx: CodegenContext,
 ): string {
@@ -2575,7 +2526,7 @@ export function getCheckerTypeKeyForSpecialization(
       }
       if (classType.typeArguments && classType.typeArguments.length > 0) {
         const args = classType.typeArguments
-          .map((a) => getCheckerTypeKeyForSpecialization(a, ctx))
+          .map((a) => getTypeKeyForSpecialization(a, ctx))
           .join(',');
         return `${name}<${args}>`;
       }
@@ -2604,7 +2555,7 @@ export function getCheckerTypeKeyForSpecialization(
         interfaceType.typeArguments.length > 0
       ) {
         const args = interfaceType.typeArguments
-          .map((a) => getCheckerTypeKeyForSpecialization(a, ctx))
+          .map((a) => getTypeKeyForSpecialization(a, ctx))
           .join(',');
         return `${name}<${args}>`;
       }
@@ -2612,7 +2563,7 @@ export function getCheckerTypeKeyForSpecialization(
     }
     case TypeKind.Array: {
       const arrayType = type as ArrayType;
-      const elementKey = getCheckerTypeKeyForSpecialization(
+      const elementKey = getTypeKeyForSpecialization(
         arrayType.elementType,
         ctx,
       );
@@ -2623,7 +2574,7 @@ export function getCheckerTypeKeyForSpecialization(
       const props = Array.from(recordType.properties.entries())
         .map(
           ([name, propType]) =>
-            `${name}:${getCheckerTypeKeyForSpecialization(propType, ctx)}`,
+            `${name}:${getTypeKeyForSpecialization(propType, ctx)}`,
         )
         .sort()
         .join(',');
@@ -2632,22 +2583,22 @@ export function getCheckerTypeKeyForSpecialization(
     case TypeKind.Tuple: {
       const tupleType = type as TupleType;
       const elements = tupleType.elementTypes
-        .map((t) => getCheckerTypeKeyForSpecialization(t, ctx))
+        .map((t) => getTypeKeyForSpecialization(t, ctx))
         .join(',');
       return `[${elements}]`;
     }
     case TypeKind.Function: {
       const funcType = type as FunctionType;
       const params = funcType.parameters
-        .map((p) => getCheckerTypeKeyForSpecialization(p, ctx))
+        .map((p) => getTypeKeyForSpecialization(p, ctx))
         .join(',');
-      const ret = getCheckerTypeKeyForSpecialization(funcType.returnType, ctx);
+      const ret = getTypeKeyForSpecialization(funcType.returnType, ctx);
       return `(${params})=>${ret}`;
     }
     case TypeKind.Union: {
       const unionType = type as UnionType;
       const members = unionType.types
-        .map((t) => getCheckerTypeKeyForSpecialization(t, ctx))
+        .map((t) => getTypeKeyForSpecialization(t, ctx))
         .sort()
         .join('|');
       return `(${members})`;
@@ -2669,7 +2620,7 @@ export function getCheckerTypeKeyForSpecialization(
       if (aliasType.isDistinct) {
         return aliasType.name;
       }
-      return getCheckerTypeKeyForSpecialization(aliasType.target, ctx);
+      return getTypeKeyForSpecialization(aliasType.target, ctx);
     }
     case TypeKind.Symbol:
       return 'symbol';
@@ -2690,14 +2641,12 @@ export function getCheckerTypeKeyForSpecialization(
  * @param typeArgs The type arguments as checker Types
  * @param ctx CodegenContext for identity-based name lookups
  */
-export function getSpecializedNameFromCheckerTypes(
+export function getSpecializedName(
   baseName: string,
   typeArgs: Type[],
   ctx: CodegenContext,
 ): string {
-  const argKeys = typeArgs.map((arg) =>
-    getCheckerTypeKeyForSpecialization(arg, ctx),
-  );
+  const argKeys = typeArgs.map((arg) => getTypeKeyForSpecialization(arg, ctx));
   return `${baseName}<${argKeys.join(',')}>`;
 }
 
@@ -2767,7 +2716,7 @@ export function instantiateClass(
   checkerType: ClassType,
 ) {
   // Guard against duplicate instantiation using identity-based lookup
-  const existingInfo = ctx.getClassInfoByCheckerType(checkerType);
+  const existingInfo = ctx.getClassInfo(checkerType);
   if (existingInfo?.structDefined) {
     return;
   }
@@ -2799,7 +2748,7 @@ export function instantiateClass(
     };
     // Register by checker type for identity-based lookup
     // Note: Don't call setClassInfoByStructIndex yet - structTypeIndex is not valid
-    ctx.registerClassInfoByType(checkerType, partialClassInfo);
+    ctx.registerClassInfo(checkerType, partialClassInfo);
   }
 
   try {
@@ -2823,7 +2772,7 @@ function instantiateClassImpl(
   partialClassInfo: ClassInfo | undefined,
 ) {
   // Build checker-based type map from the checker's type arguments
-  const typeParamMap = new Map<string, Type>();
+  const typeArguments = new Map<string, Type>();
   const checkerTypeArgs = checkerType.typeArguments ?? [];
   if (decl.typeParameters) {
     decl.typeParameters.forEach((param, index) => {
@@ -2835,13 +2784,13 @@ function instantiateClassImpl(
         // to be resolved to their concrete types.
         if (checkerArg.kind === TypeKind.TypeParameter) {
           const paramName = (checkerArg as TypeParameterType).name;
-          const resolved = ctx.currentTypeParamMap.get(paramName);
+          const resolved = ctx.currentTypeArguments.get(paramName);
           if (resolved) {
             checkerArg = resolved;
           }
         }
         // Build checker-based type map for substituteTypeParams
-        typeParamMap.set(param.name, checkerArg);
+        typeArguments.set(param.name, checkerArg);
       }
     });
   }
@@ -2866,7 +2815,7 @@ function instantiateClassImpl(
     if (typeContainsTypeParameter(inferredType)) {
       const substituted = ctx.checkerContext.substituteTypeParams(
         inferredType,
-        typeParamMap,
+        typeArguments,
       );
       return mapCheckerTypeToWasmType(ctx, substituted);
     }
@@ -2890,7 +2839,7 @@ function instantiateClassImpl(
   if (decl.superClass) {
     // Try identity-based lookup first using checker's type
     if (superClassType) {
-      const superClassInfo = ctx.getClassInfoByCheckerType(superClassType);
+      const superClassInfo = ctx.getClassInfo(superClassType);
       if (superClassInfo) {
         superClassName = superClassInfo.name;
       }
@@ -2906,17 +2855,14 @@ function instantiateClassImpl(
       const superTypeArgs = superClassType?.typeArguments;
       if (superTypeArgs && superTypeArgs.length > 0) {
         // Superclass is generic - compute name from checker types
-        superClassName = getSpecializedNameFromCheckerTypes(
-          baseSuperName,
-          superTypeArgs,
-          ctx,
-        );
+        superClassName = getSpecializedName(baseSuperName, superTypeArgs, ctx);
 
         // Ensure superclass is instantiated (use identity-based check)
-        if (superClassType && !ctx.getClassInfoByCheckerType(superClassType)) {
+        if (superClassType && !ctx.getClassInfo(superClassType)) {
           const superGenericSource =
             superClassType.genericSource ?? superClassType;
-          const genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
+          const genericSuperDecl =
+            ctx.getGenericDeclaration(superGenericSource);
           if (genericSuperDecl) {
             const pendingCountBefore = ctx.pendingMethodGenerations.length;
             // Pass the checker's superType directly - it contains all type info
@@ -2987,7 +2933,7 @@ function instantiateClassImpl(
     // Identity-based lookup only (no fallback)
     let superClassInfo: ClassInfo | undefined;
     if (superClassType) {
-      superClassInfo = ctx.getClassInfoByCheckerType(superClassType);
+      superClassInfo = ctx.getClassInfo(superClassType);
       if (!superClassInfo) {
         throw new Error(
           `superClassType identity lookup failed for ${specializedName} (superClass: ${superClassName})`,
@@ -3043,7 +2989,7 @@ function instantiateClassImpl(
   // Identity-based lookup only (no fallback)
   let inheritFromSuperClass: ClassInfo | undefined;
   if (superClassType) {
-    inheritFromSuperClass = ctx.getClassInfoByCheckerType(superClassType);
+    inheritFromSuperClass = ctx.getClassInfo(superClassType);
     if (!inheritFromSuperClass) {
       throw new Error(
         `superClassType identity lookup for method inheritance failed for ${specializedName} (superClass: ${superClassName})`,
@@ -3076,7 +3022,7 @@ function instantiateClassImpl(
     classInfo.vtable = vtable;
     classInfo.onType = onType;
     classInfo.superClassType = superClassType;
-    classInfo.typeParamMap = typeParamMap;
+    classInfo.typeArguments = typeArguments;
     if (decl.isExtension && decl.onType) {
       classInfo.onTypeAnnotation = decl.onType;
     }
@@ -3084,7 +3030,7 @@ function instantiateClassImpl(
     classInfo = {
       name: specializedName,
       originalName: decl.name.name,
-      typeParamMap,
+      typeArguments,
       structTypeIndex,
       superClass: superClassName,
       superClassType,
@@ -3115,7 +3061,7 @@ function instantiateClassImpl(
   // This enables O(1) lookup via getClassInfoByCheckerType() when we have the
   // checker's interned ClassType (which is shared across all identical instantiations)
   if (checkerType) {
-    ctx.registerClassInfoByType(checkerType, classInfo);
+    ctx.registerClassInfo(checkerType, classInfo);
   }
 
   // Mark as fully defined to prevent duplicate instantiation
@@ -3130,7 +3076,7 @@ function instantiateClassImpl(
     // Identity-based lookup only (no fallback)
     let baseClassInfo: ClassInfo | undefined;
     if (superClassType) {
-      baseClassInfo = ctx.getClassInfoByCheckerType(superClassType);
+      baseClassInfo = ctx.getClassInfo(superClassType);
       if (!baseClassInfo) {
         throw new Error(
           `superClassType identity lookup for registerMethods failed for ${specializedName} (superClass: ${superClassName})`,
@@ -3572,7 +3518,8 @@ function instantiateClassImpl(
         declForGen,
         specializedName,
         checkerType,
-        typeParamMap, // Pass pre-resolved type param map for nested generics
+        // Pass pre-resolved type argument map for nested generics
+        typeArguments,
       );
     });
 
@@ -3632,7 +3579,7 @@ function preRegisterMixin(
 
   // If already registered, return existing (use identity-based lookup if available)
   if (checkerIntermediateType) {
-    const existingInfo = ctx.getClassInfoByCheckerType(checkerIntermediateType);
+    const existingInfo = ctx.getClassInfo(checkerIntermediateType);
     if (existingInfo) {
       return existingInfo;
     }
@@ -3656,7 +3603,7 @@ function preRegisterMixin(
 
   // Register for identity-based lookup if we have the checker type
   if (checkerIntermediateType) {
-    ctx.registerClassInfoByType(checkerIntermediateType, classInfo);
+    ctx.registerClassInfo(checkerIntermediateType, classInfo);
     ctx.setClassBundledName(checkerIntermediateType, intermediateName);
     ctx.setClassStructIndex(checkerIntermediateType, structTypeIndex);
   }
@@ -3675,7 +3622,7 @@ function applyMixin(
 
   // Check if already fully defined using identity-based lookup
   if (checkerIntermediateType) {
-    const existingInfo = ctx.getClassInfoByCheckerType(checkerIntermediateType);
+    const existingInfo = ctx.getClassInfo(checkerIntermediateType);
     if (existingInfo && existingInfo.fields.size > 0) {
       // Already fully defined
       return existingInfo;
@@ -3684,7 +3631,7 @@ function applyMixin(
 
   // Get pre-registered ClassInfo (from preRegisterMixin) using identity lookup
   const preRegistered = checkerIntermediateType
-    ? ctx.getClassInfoByCheckerType(checkerIntermediateType)
+    ? ctx.getClassInfo(checkerIntermediateType)
     : undefined;
 
   // Get or create the ClassInfo (might already be pre-registered)
@@ -3714,7 +3661,7 @@ function applyMixin(
 
   // Register by identity for O(1) lookup if we have the checker type
   if (checkerIntermediateType) {
-    ctx.registerClassInfoByType(checkerIntermediateType, classInfo);
+    ctx.registerClassInfo(checkerIntermediateType, classInfo);
     ctx.setClassBundledName(checkerIntermediateType, intermediateName);
     ctx.setClassStructIndex(checkerIntermediateType, classInfo.structTypeIndex);
   }
@@ -4034,13 +3981,13 @@ export function mapCheckerTypeToWasmType(
   ctx: CodegenContext,
   type: Type,
 ): number[] {
-  // Resolve type parameters via currentTypeParamMap (contains Type values).
+  // Resolve type parameters via currentTypeArguments (contains Type values).
   if (type.kind === TypeKind.TypeParameter) {
     const typeParam = type as TypeParameterType;
 
     // Try checker-based resolution
-    if (ctx.currentTypeParamMap.has(typeParam.name)) {
-      const resolved = ctx.currentTypeParamMap.get(typeParam.name)!;
+    if (ctx.currentTypeArguments.has(typeParam.name)) {
+      const resolved = ctx.currentTypeArguments.get(typeParam.name)!;
       // If resolved to a non-type-parameter, use it directly
       if (resolved.kind !== TypeKind.TypeParameter) {
         return mapCheckerTypeToWasmType(ctx, resolved);
@@ -4049,14 +3996,14 @@ export function mapCheckerTypeToWasmType(
       const resolvedParam = resolved as TypeParameterType;
       if (
         resolvedParam.name !== typeParam.name &&
-        ctx.currentTypeParamMap.has(resolvedParam.name)
+        ctx.currentTypeArguments.has(resolvedParam.name)
       ) {
         return mapCheckerTypeToWasmType(ctx, resolved);
       }
     }
 
     throw new Error(
-      `Unresolved type parameter: ${typeParam.name}, currentTypeParamMap keys: [${Array.from(ctx.currentTypeParamMap.keys()).join(', ')}], currentClass: ${ctx.currentClass?.name}`,
+      `Unresolved type parameter: ${typeParam.name}, currentTypeArguments keys: [${Array.from(ctx.currentTypeArguments.keys()).join(', ')}], currentClass: ${ctx.currentClass?.name}`,
     );
   }
 
@@ -4135,7 +4082,7 @@ export function mapCheckerTypeToWasmType(
       // Generic class - need to instantiate
       // Use identity-based lookup for the generic declaration
       const genericSource = classType.genericSource ?? classType;
-      let genericDecl = ctx.getGenericDeclByType(genericSource);
+      let genericDecl = ctx.getGenericDeclaration(genericSource);
 
       // Fallback: search by name (handles bundled names)
       if (!genericDecl) {
@@ -4153,13 +4100,13 @@ export function mapCheckerTypeToWasmType(
         const genericSource = classType.genericSource ?? classType;
         const bundledName =
           ctx.getClassBundledName(genericSource) ?? genericDecl.name.name;
-        const specializedName = getSpecializedNameFromCheckerTypes(
+        const specializedName = getSpecializedName(
           bundledName,
           classType.typeArguments,
           ctx,
         );
         // Use identity-based check instead of name-based
-        let classInfo = ctx.getClassInfoByCheckerType(classType);
+        let classInfo = ctx.getClassInfo(classType);
         if (!classInfo) {
           instantiateClass(
             ctx,
@@ -4167,7 +4114,7 @@ export function mapCheckerTypeToWasmType(
             specializedName,
             classType, // Pass checker type directly - it contains all type info
           );
-          classInfo = ctx.getClassInfoByCheckerType(classType);
+          classInfo = ctx.getClassInfo(classType);
         }
         if (classInfo) {
           if (classInfo.isExtension && classInfo.onType) {
@@ -4329,7 +4276,7 @@ function resolveClassInfo(
 ): ClassInfo | undefined {
   // Try identity-based WeakMap lookup first (fastest path - O(1))
   // This finds classes that have been registered by their exact checker type
-  const classInfo = ctx.getClassInfoByCheckerType(classType);
+  const classInfo = ctx.getClassInfo(classType);
   if (classInfo) {
     // For extension classes, recompute onType if we have type arguments
     if (classInfo.isExtension && classInfo.onTypeAnnotation) {
@@ -4349,13 +4296,13 @@ function resolveClassInfo(
   // template is registered - should be rare after type interning)
   let source = classType.genericSource;
   while (source) {
-    const sourceInfo = ctx.getClassInfoByCheckerType(source);
+    const sourceInfo = ctx.getClassInfo(source);
     if (sourceInfo) {
       // Only return if this is NOT a generic template
       // (i.e., it doesn't have unresolved type parameters)
       if (
-        !sourceInfo.typeParamMap ||
-        sourceInfo.typeParamMap.size === 0 ||
+        !sourceInfo.typeArguments ||
+        sourceInfo.typeArguments.size === 0 ||
         !classType.typeArguments ||
         classType.typeArguments.length === 0
       ) {
@@ -4371,7 +4318,7 @@ function resolveClassInfo(
   // WeakMap lookup failed - try struct index lookup as last resort (O(n))
   // This handles cases where the class was registered via struct index
   // but not yet registered in the WeakMap
-  const structInfo = ctx.getClassInfoByType(classType);
+  const structInfo = ctx.getClassInfo(classType);
   if (structInfo) {
     // For extension classes, recompute onType if we have type arguments
     if (structInfo.isExtension && structInfo.onTypeAnnotation) {

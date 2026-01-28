@@ -8,7 +8,7 @@ export interface ClassInfo {
    * Type parameter map for checker-based type resolution.
    * Maps type parameter names (e.g., "T") to their concrete Type values.
    */
-  typeParamMap?: Map<string, Type>;
+  typeArguments?: Map<string, Type>;
   structTypeIndex: number;
   brandTypeIndex?: number;
   superClass?: string;
