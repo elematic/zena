@@ -296,8 +296,7 @@ const runTestFile = async (filePath: string): Promise<TestResult> => {
       //
       // IMPORTANT: Reuse the same host and compiler to share semantic context.
       // Using a new Compiler would create a new CheckerContext with empty bindings,
-      // causing "Unknown identifier" errors for stdlib code that was checked but
-      // skipped on recompile (due to _checked flag).
+      // and the second compile() call would skip already-checked modules.
 
       const testFileName = basename(filePath);
       const wrapperPath = filePath.replace(/\.zena$/, '.__wrapper__.zena');

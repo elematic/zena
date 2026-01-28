@@ -572,34 +572,28 @@ Currently, the `Compiler.#checkModules()` method already handles this:
 1. Verify that prelude modules are checked in the correct order (dependencies first)
 2. Consider moving the topological logic to use `LibraryLoader.computeGraph()` for consistency
 
-#### Step 2.4: Remove `_checked` Flags from Types
+#### Step 2.4: Remove `_checked` Flags from Types ✅ COMPLETED
 
 **Goal:** Eliminate the `_checked` flag on ClassType/InterfaceType/MixinType.
 
-**Status:** BLOCKED - Requires eliminating double type-checking first.
+**Status:** ✅ COMPLETED (2026-01-27)
 
-**Finding:** The `_checked` flag must persist across CheckerContext instances because
-the current compilation flow runs the type checker twice:
+**Solution:** Instead of tracking checked state on individual types, we now track
+which **modules** have been checked at the Compiler level. The `#checkedModules`
+set persists across multiple `compile()` calls on the same Compiler instance.
 
-1. First in `compiler.bundle()` via `#checkModules()`
-2. Second explicitly in test utilities (e.g., `runZenaTestFile`) to "ensure types have correct bundled names"
+**Changes made:**
 
-The `_checked` flag is stored on the type object itself (not in CheckerContext) so it
-survives across multiple TypeChecker instantiations. If we move it to `ctx.checkedTypes`,
-the second type-check pass fails with "Duplicate constructor/field/method" errors.
+1. Added `#checkedModules = new Set<string>()` to `Compiler` class
+2. Changed `#checkModules()` to use `this.#checkedModules` instead of a local `checked` set
+3. Removed `_checked` property from `ClassType`, `InterfaceType`, and `MixinType` interfaces
+4. Removed `_checked` guards and assignments from `checkClassDeclaration`,
+   `checkInterfaceDeclaration`, and `checkMixinDeclaration` in statements.ts
 
-**Prerequisite:** Step 2.5 (Remove Bundler Renaming) must be completed first.
-Once we eliminate bundler renaming and the need for a second type-check pass, we can:
-
-1. Move `_checked` tracking to SemanticContext (shared across checker instances)
-2. Or simply remove the second type-check pass entirely
-
-**Tasks (deferred):**
-
-1. Add `checkedTypes: Set<Type>` to SemanticContext (not CheckerContext)
-2. Replace `type._checked = true` with `semanticContext.checkedTypes.add(type)`
-3. Replace `if (type._checked)` with `if (semanticContext.checkedTypes.has(type))`
-4. Remove `_checked` property from ClassType, InterfaceType, MixinType
+**Why this works:** When `compile()` is called multiple times on the same Compiler
+(e.g., the test runner compiles once to check for exports, then again with a wrapper),
+the `#checkedModules` set prevents re-calling `TypeChecker.check()` on modules that
+were already processed. This eliminates the need for per-type `_checked` flags.
 
 #### Step 2.5: Remove Bundler Renaming (Incremental Approach)
 
@@ -2040,7 +2034,7 @@ Each phase is somewhat independent:
 - [x] Type-checking is single-pass _(topological ordering already implemented)_
 - [ ] Types are registered in dependency order
 - [x] All existing tests pass ✅
-- [ ] No `_checked` flags on types
+- [x] No `_checked` flags on types ✅ (2026-01-27: module-level tracking in Compiler)
 - [x] **Unified CheckerContext** - one context per compilation, not per module ✅
 - [x] **Type interning is global** - same type object everywhere ✅
 - [x] **No name-based lookup fallbacks in generateMemberExpression** ✅ (specialized name lookup still needed for bundler name mismatch)

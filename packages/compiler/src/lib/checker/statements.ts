@@ -1225,12 +1225,6 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     return;
   }
 
-  // If the type has already been fully checked (e.g., from a previous type-check
-  // pass before bundling), skip re-checking to avoid duplicate member errors.
-  if (decl.inferredType && (decl.inferredType as ClassType)._checked) {
-    return;
-  }
-
   // Create type parameters without constraints/defaults
   const typeParameters: TypeParameterType[] = [];
   if (decl.typeParameters) {
@@ -2002,9 +1996,6 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
   ctx.exitClass();
   ctx.exitScope();
-
-  // Mark the type as fully checked to prevent re-checking after bundling
-  classType._checked = true;
 }
 
 function checkInterfaceDeclaration(
@@ -2012,11 +2003,6 @@ function checkInterfaceDeclaration(
   decl: InterfaceDeclaration,
 ) {
   const interfaceName = decl.name.name;
-
-  // Skip if already fully checked (e.g., from a previous type-check pass before bundling)
-  if (decl.inferredType && (decl.inferredType as InterfaceType)._checked) {
-    return;
-  }
 
   const typeParameters: TypeParameterType[] = [];
   if (decl.typeParameters) {
@@ -2225,9 +2211,6 @@ function checkInterfaceDeclaration(
 
   ctx.exitInterface();
   ctx.exitScope();
-
-  // Mark the type as fully checked to prevent re-checking after bundling
-  interfaceType._checked = true;
 }
 
 function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
@@ -2402,11 +2385,6 @@ function checkAccessorDeclaration(
 
 function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
   const mixinName = decl.name.name;
-
-  // Skip if already fully checked (e.g., from a previous type-check pass before bundling)
-  if (decl.inferredType && (decl.inferredType as MixinType)._checked) {
-    return;
-  }
 
   const typeParameters: TypeParameterType[] = [];
   if (decl.typeParameters) {
@@ -2771,9 +2749,6 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
   ctx.exitClass();
   ctx.exitScope();
-
-  // Mark the type as fully checked to prevent re-checking after bundling
-  mixinType._checked = true;
 }
 
 /**

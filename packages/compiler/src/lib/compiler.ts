@@ -29,6 +29,12 @@ export class Compiler {
   #entryPoint?: string;
 
   /**
+   * Tracks which modules have been type-checked.
+   * Persists across multiple compile() calls to avoid double type-checking.
+   */
+  #checkedModules = new Set<string>();
+
+  /**
    * Shared checker context for the entire compilation.
    * This ensures type interning is global across all modules,
    * enabling identity-based type comparisons.
@@ -140,11 +146,13 @@ export class Compiler {
   #checkModules() {
     this.#loadPrelude();
 
-    const checked = new Set<string>();
     const checking = new Set<string>();
 
     const checkModule = (module: Module) => {
-      if (checked.has(module.path!) || checking.has(module.path!)) {
+      if (
+        this.#checkedModules.has(module.path!) ||
+        checking.has(module.path!)
+      ) {
         return;
       }
 
@@ -186,7 +194,7 @@ export class Compiler {
       }
 
       checking.delete(module.path!);
-      checked.add(module.path!);
+      this.#checkedModules.add(module.path!);
     };
 
     for (const module of this.#modules.values()) {
