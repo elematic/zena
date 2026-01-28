@@ -162,7 +162,6 @@ export class CodegenContext {
       type?: FunctionType;
     }[]
   >();
-  public mixins = new Map<string, MixinDeclaration>();
   public typeAliases = new Map<string, TypeAnnotation>();
 
   // Exception handling

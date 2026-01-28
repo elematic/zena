@@ -148,7 +148,6 @@ export class CodeGenerator {
         preRegisterInterface(this.#ctx, statement as InterfaceDeclaration);
       } else if (statement.type === NodeType.MixinDeclaration) {
         const mixinDecl = statement as MixinDeclaration;
-        this.#ctx.mixins.set(mixinDecl.name.name, mixinDecl);
         // Identity-based registration for O(1) lookup via checker types
         if (mixinDecl.inferredType?.kind === TypeKind.Mixin) {
           this.#ctx.setMixinDeclByType(

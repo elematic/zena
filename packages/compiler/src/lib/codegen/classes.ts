@@ -1207,11 +1207,12 @@ export function preRegisterClassStruct(
 
     for (let i = 0; i < decl.mixins.length; i++) {
       const mixinAnnotation = decl.mixins[i];
-      if (mixinAnnotation.type !== NodeType.TypeAnnotation) {
+      // Use identity-based lookup via inferredType (set by checker)
+      const mixinType = mixinAnnotation.inferredType;
+      if (!mixinType || mixinType.kind !== TypeKind.Mixin) {
         continue;
       }
-      const mixinName = mixinAnnotation.name;
-      const mixinDecl = ctx.mixins.get(mixinName);
+      const mixinDecl = ctx.getMixinDeclByType(mixinType as MixinType);
       if (!mixinDecl) {
         continue;
       }
@@ -1406,13 +1407,14 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
     for (let i = 0; i < decl.mixins.length; i++) {
       const mixinAnnotation = decl.mixins[i];
-      if (mixinAnnotation.type !== NodeType.TypeAnnotation) {
-        throw new Error('Mixin must be a named type');
+      // Use identity-based lookup via inferredType (set by checker)
+      const mixinType = mixinAnnotation.inferredType;
+      if (!mixinType || mixinType.kind !== TypeKind.Mixin) {
+        throw new Error('Mixin annotation must have MixinType inferredType');
       }
-      const mixinName = mixinAnnotation.name;
-      const mixinDecl = ctx.mixins.get(mixinName);
+      const mixinDecl = ctx.getMixinDeclByType(mixinType as MixinType);
       if (!mixinDecl) {
-        throw new Error(`Unknown mixin ${mixinName}`);
+        throw new Error(`Unknown mixin (identity lookup failed)`);
       }
 
       // Get the corresponding checker intermediate type (if available)
