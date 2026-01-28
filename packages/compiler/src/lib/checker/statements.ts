@@ -320,8 +320,8 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
     const existingType = decl.inferredType as ClassType;
     // Update the name to match the (possibly renamed) declaration
     existingType.name = className;
-    ctx.declare(className, existingType, 'type');
-    ctx.declare(className, existingType, 'let');
+    ctx.declare(className, existingType, 'type', decl);
+    ctx.declare(className, existingType, 'let', decl);
 
     if (decl.exported && ctx.module) {
       ctx.module!.exports!.set(`type:${className}`, {
@@ -367,8 +367,8 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
     onType: undefined,
   };
 
-  ctx.declare(className, classType, 'type');
-  ctx.declare(className, classType, 'let');
+  ctx.declare(className, classType, 'type', decl);
+  ctx.declare(className, classType, 'let', decl);
 
   // Store reference for the full check pass to update
   decl.inferredType = classType;

@@ -401,7 +401,7 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] `instantiateExtensionClassFromCheckerType()` - uses identity lookup after instantiation
       - [x] `resolveFixedArrayClass()` - uses identity lookup after instantiation
       - [x] `ClassPattern` in match expressions - identity lookup first, name-based fallback
-      - [ ] Static member/method access (lines 1670, 1840, 1844) - uses `ctx.classes.has()` to check if identifier is a class name vs instance variable. Needs different approach (checker binding or separate class name registry).
+      - [x] Static member/method access - uses `ResolvedBinding` from checker. Fixed: checker now passes `declaration` to `ctx.declare()` for classes, enabling `ClassBinding` creation.
       - [ ] Super class lookups (lines 1768, 1814, 2387) - already have identity-based first via `superClassType`, name-based is fallback for synthesized classes (mixin intermediates)
       - [ ] `generateNewExpression` fallback (line 1545) - last resort for non-generic classes
       - [ ] Remove `typeToTypeAnnotation()` - still used for annotation-based context threading

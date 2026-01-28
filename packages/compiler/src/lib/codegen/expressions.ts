@@ -84,6 +84,7 @@ import {
 import type {ClassInfo, InterfaceInfo} from './types.js';
 import {
   resolveImport,
+  type ClassBinding,
   type FieldBinding,
   type GetterBinding,
   type MethodBinding,
@@ -1660,19 +1661,32 @@ function generateMemberExpression(
     }
   }
 
-  // Check for static member access
-  if (
-    expr.object.type === NodeType.Identifier &&
-    ctx.classes.has((expr.object as Identifier).name)
-  ) {
-    const className = (expr.object as Identifier).name;
-    const fieldName = expr.property.name;
-    const mangledName = `${className}_${fieldName}`;
-    const global = ctx.getGlobal(mangledName);
-    if (global) {
-      body.push(Opcode.global_get);
-      body.push(...WasmModule.encodeSignedLEB128(global.index));
-      return;
+  // Check for static member access using the object's binding
+  // If the object identifier resolves to a ClassBinding, this is static access
+  if (expr.object.type === NodeType.Identifier) {
+    const objectBinding = ctx.semanticContext.getResolvedBinding(
+      expr.object as Identifier,
+    );
+    const resolvedObjectBinding = objectBinding
+      ? resolveImport(objectBinding)
+      : undefined;
+
+    // Only treat as static if it's a class binding AND not a local variable shadowing it
+    if (
+      resolvedObjectBinding?.kind === 'class' &&
+      !ctx.getLocal((expr.object as Identifier).name)
+    ) {
+      const classBinding = resolvedObjectBinding as ClassBinding;
+      const className = classBinding.declaration.name.name;
+
+      const fieldName = expr.property.name;
+      const mangledName = `${className}_${fieldName}`;
+      const global = ctx.getGlobal(mangledName);
+      if (global) {
+        body.push(Opcode.global_get);
+        body.push(...WasmModule.encodeSignedLEB128(global.index));
+        return;
+      }
     }
   }
 
@@ -1831,23 +1845,45 @@ function generateCallExpression(
       return;
     }
 
-    if (
-      memberExpr.object.type === NodeType.Identifier &&
-      ctx.classes.has((memberExpr.object as Identifier).name) &&
-      !ctx.getLocal((memberExpr.object as Identifier).name)
-    ) {
-      const className = (memberExpr.object as Identifier).name;
-      const classInfo = ctx.classes.get(className)!;
-      const methodInfo = classInfo.methods.get(methodName);
+    // Check for static method call using the object's binding
+    // If the object identifier resolves to a ClassBinding (and is not shadowed by a local),
+    // this is a static method call like `ClassName.method()`
+    if (memberExpr.object.type === NodeType.Identifier) {
+      const objectBinding = ctx.semanticContext.getResolvedBinding(
+        memberExpr.object as Identifier,
+      );
+      const resolvedObjectBinding = objectBinding
+        ? resolveImport(objectBinding)
+        : undefined;
 
-      if (methodInfo) {
-        // Static method call
-        for (const arg of expr.arguments) {
-          generateExpression(ctx, arg, body);
+      // Only treat as static if it's a class binding AND not a local variable shadowing it
+      if (
+        resolvedObjectBinding?.kind === 'class' &&
+        !ctx.getLocal((memberExpr.object as Identifier).name)
+      ) {
+        const classBinding = resolvedObjectBinding as ClassBinding;
+        const classType = classBinding.type;
+        const className = classBinding.declaration.name.name;
+
+        // Use identity-based lookup for ClassInfo
+        let classInfo = ctx.getClassInfoByCheckerType(classType);
+        // Fall back to name-based lookup for edge cases
+        if (!classInfo) {
+          classInfo = ctx.classes.get(className);
         }
-        body.push(Opcode.call);
-        body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
-        return;
+
+        if (classInfo) {
+          const methodInfo = classInfo.methods.get(methodName);
+          if (methodInfo) {
+            // Static method call
+            for (const arg of expr.arguments) {
+              generateExpression(ctx, arg, body);
+            }
+            body.push(Opcode.call);
+            body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+            return;
+          }
+        }
       }
     }
 
