@@ -420,6 +420,14 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [ ] `instantiateClass` - still builds `context: Map<string, TypeAnnotation>` for `typeToTypeAnnotation` and `resolveAnnotation`
       - [ ] Remove `ClassInfo.typeArguments` (deprecated) and `typeToTypeAnnotation()` helper
       - Remaining work: `typeToTypeAnnotation()` and `resolveAnnotation()` still use annotation-based context for some vtable generation
+    - [ ] **Phase 8: Remove name-based lookups entirely**
+      - [x] Removed fallbacks in `expressions.ts` for super class lookups (super constructor, super method calls)
+      - [x] Removed fallbacks in `classes.ts` for super class lookups in `defineClassStruct` and `instantiateClass`
+      - [x] Removed fallbacks in `classes.ts` for mixin base class lookups
+      - [x] Removed fallbacks for `NewExpression`, static method calls, `TemplateStringsArray`, and `ClassPattern` matches
+      - [x] Fixed: Added `classPattern.inferredType = classType` in checker to enable identity-based lookup in codegen
+      - [x] All sites now throw errors instead of silently falling back to name-based lookup
+      - [ ] Remove remaining name-based uses: existence checks (`ctx.classes.has`), duplicate guards, update-existing patterns - these are fragile due to potential name collisions
 
     **Benefits** (now realized):
     - Enables intellisense (hover shows `i32`, not `T`)

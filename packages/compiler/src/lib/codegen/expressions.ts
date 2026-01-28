@@ -1467,12 +1467,12 @@ function generateNewExpression(
     }
   }
 
-  // Fall back to name-based lookup for non-generic classes without inferredType
+  // No fallback - require inferredType for class resolution
   if (!classInfo) {
-    classInfo = ctx.classes.get(className);
+    throw new Error(
+      `Class ${className} not found - missing inferredType on NewExpression`,
+    );
   }
-
-  if (!classInfo) throw new Error(`Class ${className} not found`);
 
   if (classInfo.isExtension && classInfo.onType) {
     // Extension class instantiation
@@ -1699,15 +1699,18 @@ function generateCallExpression(
 
     if (ctx.currentClass && ctx.currentClass.superClass) {
       // Normal class super call - identity-based lookup
-      let superClassInfo = ctx.currentClass.superClassType
-        ? ctx.getClassInfoByCheckerType(ctx.currentClass.superClassType)
-        : undefined;
-      // Fall back to name-based lookup for synthesized classes (e.g., mixin intermediates)
-      if (!superClassInfo) {
-        superClassInfo = ctx.classes.get(ctx.currentClass.superClass);
+      if (!ctx.currentClass.superClassType) {
+        throw new Error(
+          `superClassType not set for ${ctx.currentClass.name} (superClass: ${ctx.currentClass.superClass})`,
+        );
       }
+      const superClassInfo = ctx.getClassInfoByCheckerType(
+        ctx.currentClass.superClassType,
+      );
       if (!superClassInfo) {
-        throw new Error(`Super class not found for ${ctx.currentClass.name}`);
+        throw new Error(
+          `Super class not found for ${ctx.currentClass.name} via identity lookup (superClass: ${ctx.currentClass.superClass})`,
+        );
       }
       const ctorInfo = superClassInfo.methods.get('#new');
       if (!ctorInfo) {
@@ -1744,16 +1747,19 @@ function generateCallExpression(
       if (!ctx.currentClass || !ctx.currentClass.superClass) {
         throw new Error('Super call outside of class with superclass');
       }
-      // Prefer identity-based lookup
-      let superClassInfo = ctx.currentClass.superClassType
-        ? ctx.getClassInfoByCheckerType(ctx.currentClass.superClassType)
-        : undefined;
-      // Fall back to name-based lookup
-      if (!superClassInfo) {
-        superClassInfo = ctx.classes.get(ctx.currentClass.superClass);
+      // Identity-based lookup (no fallback)
+      if (!ctx.currentClass.superClassType) {
+        throw new Error(
+          `superClassType not set for ${ctx.currentClass.name} (superClass: ${ctx.currentClass.superClass})`,
+        );
       }
+      const superClassInfo = ctx.getClassInfoByCheckerType(
+        ctx.currentClass.superClassType,
+      );
       if (!superClassInfo) {
-        throw new Error(`Super class not found for ${ctx.currentClass.name}`);
+        throw new Error(
+          `Super class not found for ${ctx.currentClass.name} via identity lookup`,
+        );
       }
       const methodInfo = superClassInfo.methods.get(methodName);
       if (!methodInfo) {
@@ -1794,24 +1800,23 @@ function generateCallExpression(
         const classType = classBinding.type;
         const className = classBinding.declaration.name.name;
 
-        // Use identity-based lookup for ClassInfo
-        let classInfo = ctx.getClassInfoByCheckerType(classType);
-        // Fall back to name-based lookup for edge cases
+        // Use identity-based lookup for ClassInfo (no fallback)
+        const classInfo = ctx.getClassInfoByCheckerType(classType);
         if (!classInfo) {
-          classInfo = ctx.classes.get(className);
+          throw new Error(
+            `Static method call: class ${className} not found via identity lookup`,
+          );
         }
 
-        if (classInfo) {
-          const methodInfo = classInfo.methods.get(methodName);
-          if (methodInfo) {
-            // Static method call
-            for (const arg of expr.arguments) {
-              generateExpression(ctx, arg, body);
-            }
-            body.push(Opcode.call);
-            body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
-            return;
+        const methodInfo = classInfo.methods.get(methodName);
+        if (methodInfo) {
+          // Static method call
+          for (const arg of expr.arguments) {
+            generateExpression(ctx, arg, body);
           }
+          body.push(Opcode.call);
+          body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+          return;
         }
       }
     }
@@ -2334,16 +2339,19 @@ function generateCallExpression(
         'Super constructor call outside of class with superclass',
       );
     }
-    // Prefer identity-based lookup
-    let superClassInfo = ctx.currentClass.superClassType
-      ? ctx.getClassInfoByCheckerType(ctx.currentClass.superClassType)
-      : undefined;
-    // Fall back to name-based lookup
-    if (!superClassInfo) {
-      superClassInfo = ctx.classes.get(ctx.currentClass.superClass);
+    // Identity-based lookup (no fallback)
+    if (!ctx.currentClass.superClassType) {
+      throw new Error(
+        `superClassType not set for ${ctx.currentClass.name} (superClass: ${ctx.currentClass.superClass})`,
+      );
     }
+    const superClassInfo = ctx.getClassInfoByCheckerType(
+      ctx.currentClass.superClassType,
+    );
     if (!superClassInfo) {
-      throw new Error(`Super class not found for ${ctx.currentClass.name}`);
+      throw new Error(
+        `Super class not found for ${ctx.currentClass.name} via identity lookup`,
+      );
     }
     const methodInfo = superClassInfo.methods.get('#new');
     if (!methodInfo) {
@@ -6234,19 +6242,17 @@ function generateTaggedTemplateExpression(
   if (!tsaDecl) {
     throw new Error('TemplateStringsArray not available - stdlib not loaded');
   }
-  // Prefer identity-based lookup using checker's type
-  let tsaClassInfo: ClassInfo | undefined;
-  if (tsaDecl.inferredType!.kind === TypeKind.Class) {
-    tsaClassInfo = ctx.getClassInfoByCheckerType(
-      tsaDecl.inferredType as ClassType,
+  // Identity-based lookup using checker's type (no fallback)
+  if (tsaDecl.inferredType?.kind !== TypeKind.Class) {
+    throw new Error(
+      `TemplateStringsArray declaration has unexpected inferredType kind: ${tsaDecl.inferredType?.kind}`,
     );
   }
-  // Fall back to name-based lookup
+  const tsaClassInfo = ctx.getClassInfoByCheckerType(
+    tsaDecl.inferredType as ClassType,
+  );
   if (!tsaClassInfo) {
-    tsaClassInfo = ctx.classes.get(tsaDecl.name.name);
-  }
-  if (!tsaClassInfo) {
-    throw new Error('TemplateStringsArray class not found in codegen context');
+    throw new Error('TemplateStringsArray class not found via identity lookup');
   }
 
   const stringType = [
@@ -7270,18 +7276,20 @@ function generateMatchPatternCheck(
     case NodeType.ClassPattern: {
       const classPattern = pattern as ClassPattern;
       const className = classPattern.name.name;
-      // Prefer identity-based lookup using the pattern's inferred type
-      let classInfo: ClassInfo | undefined;
-      if (classPattern.inferredType?.kind === TypeKind.Class) {
-        classInfo = ctx.getClassInfoByCheckerType(
-          classPattern.inferredType as ClassType,
+      // Identity-based lookup using the pattern's inferred type (no fallback)
+      if (classPattern.inferredType?.kind !== TypeKind.Class) {
+        throw new Error(
+          `ClassPattern for ${className} missing or invalid inferredType`,
         );
       }
-      // Fall back to name-based lookup
+      const classInfo = ctx.getClassInfoByCheckerType(
+        classPattern.inferredType as ClassType,
+      );
       if (!classInfo) {
-        classInfo = ctx.classes.get(className);
+        throw new Error(
+          `Class ${className} not found via identity lookup in ClassPattern`,
+        );
       }
-      if (!classInfo) throw new Error(`Class ${className} not found`);
 
       // 1. Check type
       body.push(
@@ -7777,18 +7785,20 @@ function generateMatchPatternBindings(
   } else if (pattern.type === NodeType.ClassPattern) {
     const classPattern = pattern as ClassPattern;
     const className = classPattern.name.name;
-    // Prefer identity-based lookup using the pattern's inferred type
-    let classInfo: ClassInfo | undefined;
-    if (classPattern.inferredType?.kind === TypeKind.Class) {
-      classInfo = ctx.getClassInfoByCheckerType(
-        classPattern.inferredType as ClassType,
+    // Identity-based lookup using the pattern's inferred type (no fallback)
+    if (classPattern.inferredType?.kind !== TypeKind.Class) {
+      throw new Error(
+        `ClassPattern for ${className} missing or invalid inferredType`,
       );
     }
-    // Fall back to name-based lookup
+    const classInfo = ctx.getClassInfoByCheckerType(
+      classPattern.inferredType as ClassType,
+    );
     if (!classInfo) {
-      classInfo = ctx.classes.get(className);
+      throw new Error(
+        `Class ${className} not found via identity lookup in ClassPattern`,
+      );
     }
-    if (!classInfo) throw new Error(`Class ${className} not found`);
 
     // Cast
     body.push(

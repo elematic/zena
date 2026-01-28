@@ -451,6 +451,9 @@ function checkMatchPattern(
 
       const classType = type as ClassType;
 
+      // Store the resolved class type on the pattern for codegen
+      classPattern.inferredType = classType;
+
       // Check compatibility
       if (
         !isAssignableTo(ctx, classType, discriminantType) &&

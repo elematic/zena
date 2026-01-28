@@ -1126,27 +1126,14 @@ export function preRegisterClassStruct(
 
     let currentSuperClassInfo: ClassInfo | undefined;
 
-    // Use identity-based lookup via the base superclass type
+    // Use identity-based lookup via the base superclass type (no fallback)
     if (baseSuperType) {
       currentSuperClassInfo = ctx.getClassInfoByCheckerType(baseSuperType);
-    }
-
-    // Fall back to name-based lookup if identity lookup failed
-    // (e.g., base class not yet registered)
-    if (!currentSuperClassInfo && decl.superClass) {
-      const baseSuperName = getTypeAnnotationName(decl.superClass);
-      const superTypeArgs =
-        decl.superClass.type === NodeType.TypeAnnotation
-          ? decl.superClass.typeArguments
-          : undefined;
-
-      let superClassName: string;
-      if (superTypeArgs && superTypeArgs.length > 0) {
-        superClassName = getSpecializedName(baseSuperName, superTypeArgs, ctx);
-      } else {
-        superClassName = baseSuperName;
+      if (!currentSuperClassInfo) {
+        throw new Error(
+          `baseSuperType identity lookup failed for ${decl.name.name} (baseSuperType: ${baseSuperType.name})`,
+        );
       }
-      currentSuperClassInfo = ctx.classes.get(superClassName);
     }
 
     for (let i = 0; i < decl.mixins.length; i++) {
@@ -1265,20 +1252,18 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   let superClassType: ClassType | undefined;
 
   if (decl.superClass) {
-    // Try identity-based lookup first using checker's type
+    // Identity-based lookup using checker's type (no fallback)
     if (classType.superType) {
       superClassType = classType.superType;
       currentSuperClassInfo = ctx.getClassInfoByCheckerType(superClassType);
     }
 
-    // Fall back to name-based lookup if identity lookup failed.
-    // This is needed for mixin intermediates which are registered by preRegisterMixin
-    // before their checker types are available.
-    if (!currentSuperClassInfo) {
+    // If identity lookup failed but we have superClassType, try to instantiate
+    if (!currentSuperClassInfo && superClassType) {
       const baseSuperName = getTypeAnnotationName(decl.superClass);
 
       // Check if superclass is generic using checker's type info
-      const superTypeArgs = superClassType?.typeArguments;
+      const superTypeArgs = superClassType.typeArguments;
       let superClassName: string;
       if (superTypeArgs && superTypeArgs.length > 0) {
         // Superclass is generic - compute name from checker types
@@ -1292,18 +1277,16 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
         if (!ctx.classes.has(superClassName)) {
           // Try identity-based lookup via checker's superType
           let genericSuperDecl: ClassDeclaration | undefined;
-          if (superClassType) {
-            const superGenericSource =
-              superClassType.genericSource ?? superClassType;
-            genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
-          }
+          const superGenericSource =
+            superClassType.genericSource ?? superClassType;
+          genericSuperDecl = ctx.getGenericDeclByType(superGenericSource);
           if (genericSuperDecl) {
             // Pass the checker's superType directly - it contains all type info
             instantiateClass(
               ctx,
               genericSuperDecl,
               superClassName,
-              superClassType!,
+              superClassType,
             );
           }
         }
@@ -1311,7 +1294,13 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
         superClassName = baseSuperName;
       }
 
-      currentSuperClassInfo = ctx.classes.get(superClassName);
+      // Retry identity lookup after potential instantiation
+      currentSuperClassInfo = ctx.getClassInfoByCheckerType(superClassType);
+      if (!currentSuperClassInfo) {
+        throw new Error(
+          `superClassType identity lookup failed for ${decl.name.name} after instantiation (superClass: ${superClassName})`,
+        );
+      }
     }
 
     if (!currentSuperClassInfo) {
@@ -1334,14 +1323,14 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
       // The first intermediate's superType is the original base class
       const baseSuperType = mixinIntermediateTypes[0].superType;
       if (baseSuperType) {
-        // Try identity-based lookup for the base class
+        // Identity-based lookup for the base class (no fallback)
         const baseClassInfo = ctx.getClassInfoByCheckerType(baseSuperType);
         if (baseClassInfo) {
           currentSuperClassInfo = baseClassInfo;
-        } else if (decl.superClass) {
-          // Fall back to name-based lookup
-          const baseSuperName = getTypeAnnotationName(decl.superClass);
-          currentSuperClassInfo = ctx.classes.get(baseSuperName);
+        } else {
+          throw new Error(
+            `baseSuperType identity lookup failed in mixin chain for ${decl.name.name} (baseSuperType: ${baseSuperType.name})`,
+          );
         }
       } else {
         // No superType means mixin is applied to root (Object)
@@ -2063,25 +2052,22 @@ export function generateClassMethods(
     ctx.pushTypeParamContext(typeMap);
   }
 
-  // Identity-based lookup using checker's type
+  // Identity-based lookup using checker's type (no fallback)
   // Prefer the explicitly passed checkerType, fall back to decl.inferredType
   const lookupType =
     checkerType ??
     (decl.inferredType?.kind === TypeKind.Class
       ? (decl.inferredType as ClassType)
       : undefined);
-  let classInfo: ClassInfo | undefined;
-  if (lookupType) {
-    classInfo = ctx.getClassInfoByCheckerType(lookupType);
+  if (!lookupType) {
+    throw new Error(
+      `No checker type for generateClassMethods: ${specializedName || decl.name.name}`,
+    );
   }
-  // Fall back to name-based lookup for generic instantiations created by codegen
-  if (!classInfo) {
-    const className = specializedName || decl.name.name;
-    classInfo = ctx.classes.get(className);
-  }
+  const classInfo = ctx.getClassInfoByCheckerType(lookupType);
   if (!classInfo) {
     throw new Error(
-      `Class ${specializedName || decl.name.name} not found in generateClassMethods`,
+      `Class ${specializedName || decl.name.name} not found via identity lookup in generateClassMethods`,
     );
   }
   ctx.currentClass = classInfo;
@@ -3040,15 +3026,15 @@ export function instantiateClass(
     }
   } else {
     // Check for superclass and inherit fields
-    // Try identity-based lookup first
+    // Identity-based lookup only (no fallback)
     let superClassInfo: ClassInfo | undefined;
     if (superClassType) {
       superClassInfo = ctx.getClassInfoByCheckerType(superClassType);
-    }
-    // Fall back to name-based lookup for mixin intermediates which are registered
-    // by preRegisterMixin before their checker types are available.
-    if (!superClassInfo && superClassName && ctx.classes.has(superClassName)) {
-      superClassInfo = ctx.classes.get(superClassName);
+      if (!superClassInfo) {
+        throw new Error(
+          `superClassType identity lookup failed for ${specializedName} (superClass: ${superClassName})`,
+        );
+      }
     }
 
     if (superClassInfo) {
@@ -3096,18 +3082,15 @@ export function instantiateClass(
   const vtable: string[] = [];
 
   // Inherit methods from superclass
-  // Try identity-based lookup first
+  // Identity-based lookup only (no fallback)
   let inheritFromSuperClass: ClassInfo | undefined;
   if (superClassType) {
     inheritFromSuperClass = ctx.getClassInfoByCheckerType(superClassType);
-  }
-  // Fall back to name-based lookup
-  if (
-    !inheritFromSuperClass &&
-    superClassName &&
-    ctx.classes.has(superClassName)
-  ) {
-    inheritFromSuperClass = ctx.classes.get(superClassName);
+    if (!inheritFromSuperClass) {
+      throw new Error(
+        `superClassType identity lookup for method inheritance failed for ${specializedName} (superClass: ${superClassName})`,
+      );
+    }
   }
 
   if (inheritFromSuperClass) {
@@ -3186,14 +3169,15 @@ export function instantiateClass(
     ctx.currentClass = classInfo;
 
     // Cache superclass info for method inheritance lookups
-    // Try identity-based lookup first
+    // Identity-based lookup only (no fallback)
     let baseClassInfo: ClassInfo | undefined;
     if (superClassType) {
       baseClassInfo = ctx.getClassInfoByCheckerType(superClassType);
-    }
-    // Fall back to name-based lookup
-    if (!baseClassInfo && superClassName) {
-      baseClassInfo = ctx.classes.get(superClassName);
+      if (!baseClassInfo) {
+        throw new Error(
+          `superClassType identity lookup for registerMethods failed for ${specializedName} (superClass: ${superClassName})`,
+        );
+      }
     }
 
     // Register methods
