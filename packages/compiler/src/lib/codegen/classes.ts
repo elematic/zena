@@ -1108,16 +1108,31 @@ export function preRegisterClassStruct(
   // If the class uses mixins, pre-register the intermediate mixin classes first
   // They must have lower type indices than this class since they'll be its supertype chain
   if (decl.mixins && decl.mixins.length > 0) {
+    // Collect checker's mixin intermediate types for identity-based registration
+    const mixinIntermediateTypes = collectMixinIntermediateTypes(classType);
+
+    // Find the base superclass (before any mixin intermediates)
+    // Walk back through the mixin intermediates to find the original superclass
+    let baseSuperType: ClassType | undefined;
+    if (mixinIntermediateTypes.length > 0) {
+      // The first intermediate's superType is the original base class
+      baseSuperType = mixinIntermediateTypes[0].superType;
+    } else if (
+      classType.superType &&
+      !classType.superType.isMixinIntermediate
+    ) {
+      baseSuperType = classType.superType;
+    }
+
     let currentSuperClassInfo: ClassInfo | undefined;
 
-    // Use identity-based lookup via checker's superType
-    if (classType.superType) {
-      currentSuperClassInfo = ctx.getClassInfoByCheckerType(
-        classType.superType,
-      );
+    // Use identity-based lookup via the base superclass type
+    if (baseSuperType) {
+      currentSuperClassInfo = ctx.getClassInfoByCheckerType(baseSuperType);
     }
 
     // Fall back to name-based lookup if identity lookup failed
+    // (e.g., base class not yet registered)
     if (!currentSuperClassInfo && decl.superClass) {
       const baseSuperName = getTypeAnnotationName(decl.superClass);
       const superTypeArgs =
@@ -1134,7 +1149,8 @@ export function preRegisterClassStruct(
       currentSuperClassInfo = ctx.classes.get(superClassName);
     }
 
-    for (const mixinAnnotation of decl.mixins) {
+    for (let i = 0; i < decl.mixins.length; i++) {
+      const mixinAnnotation = decl.mixins[i];
       if (mixinAnnotation.type !== NodeType.TypeAnnotation) {
         continue;
       }
@@ -1143,11 +1159,14 @@ export function preRegisterClassStruct(
       if (!mixinDecl) {
         continue;
       }
-      // Pre-register the intermediate mixin class
+      // Get the corresponding checker intermediate type
+      const checkerIntermediateType = mixinIntermediateTypes[i];
+      // Pre-register the intermediate mixin class with the checker type
       currentSuperClassInfo = preRegisterMixin(
         ctx,
         currentSuperClassInfo,
         mixinDecl,
+        checkerIntermediateType,
       );
     }
   }
@@ -1252,7 +1271,9 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
       currentSuperClassInfo = ctx.getClassInfoByCheckerType(superClassType);
     }
 
-    // Fall back to name-based lookup if identity lookup failed
+    // Fall back to name-based lookup if identity lookup failed.
+    // This is needed for mixin intermediates which are registered by preRegisterMixin
+    // before their checker types are available.
     if (!currentSuperClassInfo) {
       const baseSuperName = getTypeAnnotationName(decl.superClass);
 
@@ -1305,6 +1326,28 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   if (decl.mixins && decl.mixins.length > 0) {
     // Collect checker's mixin intermediate types to pass to applyMixin
     const mixinIntermediateTypes = collectMixinIntermediateTypes(classType);
+
+    // If we found the mixin intermediate via identity lookup above, we need to find
+    // the base superclass (before any mixin intermediates) to start the mixin chain.
+    // The checker's type already has mixin intermediates in the superType chain.
+    if (mixinIntermediateTypes.length > 0) {
+      // The first intermediate's superType is the original base class
+      const baseSuperType = mixinIntermediateTypes[0].superType;
+      if (baseSuperType) {
+        // Try identity-based lookup for the base class
+        const baseClassInfo = ctx.getClassInfoByCheckerType(baseSuperType);
+        if (baseClassInfo) {
+          currentSuperClassInfo = baseClassInfo;
+        } else if (decl.superClass) {
+          // Fall back to name-based lookup
+          const baseSuperName = getTypeAnnotationName(decl.superClass);
+          currentSuperClassInfo = ctx.classes.get(baseSuperName);
+        }
+      } else {
+        // No superType means mixin is applied to root (Object)
+        currentSuperClassInfo = undefined;
+      }
+    }
 
     for (let i = 0; i < decl.mixins.length; i++) {
       const mixinAnnotation = decl.mixins[i];
@@ -2903,7 +2946,9 @@ export function instantiateClass(
       }
     }
 
-    // Fall back to name-based lookup if identity lookup failed
+    // Fall back to name-based lookup if identity lookup failed.
+    // This is needed for mixin intermediates which are registered by preRegisterMixin
+    // before their checker types are available.
     if (!superClassName) {
       const baseSuperName = getTypeAnnotationName(decl.superClass);
 
@@ -3006,7 +3051,8 @@ export function instantiateClass(
     if (superClassType) {
       superClassInfo = ctx.getClassInfoByCheckerType(superClassType);
     }
-    // Fall back to name-based lookup
+    // Fall back to name-based lookup for mixin intermediates which are registered
+    // by preRegisterMixin before their checker types are available.
     if (!superClassInfo && superClassName && ctx.classes.has(superClassName)) {
       superClassInfo = ctx.classes.get(superClassName);
     }
@@ -3642,18 +3688,29 @@ function collectMixinIntermediateTypes(
 /**
  * Pre-registers a mixin intermediate class. This reserves the type index so that
  * classes using this mixin can have it as their supertype.
+ * If checkerIntermediateType is provided, also registers for identity-based lookup.
  */
 function preRegisterMixin(
   ctx: CodegenContext,
   baseClassInfo: ClassInfo | undefined,
   mixinDecl: MixinDeclaration,
+  checkerIntermediateType?: ClassType,
 ): ClassInfo {
   const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
   const intermediateName = `${baseName}_${mixinDecl.name.name}`;
 
-  // If already registered, return the existing info
+  // If already registered, ensure identity-based lookup is also registered
   if (ctx.classes.has(intermediateName)) {
-    return ctx.classes.get(intermediateName)!;
+    const existingInfo = ctx.classes.get(intermediateName)!;
+    if (checkerIntermediateType) {
+      ctx.registerClassInfoByType(checkerIntermediateType, existingInfo);
+      ctx.setClassBundledName(checkerIntermediateType, intermediateName);
+      ctx.setClassStructIndex(
+        checkerIntermediateType,
+        existingInfo.structTypeIndex,
+      );
+    }
+    return existingInfo;
   }
 
   // Reserve type index for this intermediate class
@@ -3664,6 +3721,7 @@ function preRegisterMixin(
     name: intermediateName,
     structTypeIndex,
     superClass: baseClassInfo?.name,
+    superClassType: checkerIntermediateType?.superType,
     fields: new Map(),
     methods: new Map(),
     vtable: [],
@@ -3671,6 +3729,13 @@ function preRegisterMixin(
   ctx.classes.set(intermediateName, classInfo);
   // Also register by struct index to support lookup when names collide
   ctx.setClassInfoByStructIndex(structTypeIndex, classInfo);
+
+  // Register for identity-based lookup if we have the checker type
+  if (checkerIntermediateType) {
+    ctx.registerClassInfoByType(checkerIntermediateType, classInfo);
+    ctx.setClassBundledName(checkerIntermediateType, intermediateName);
+    ctx.setClassStructIndex(checkerIntermediateType, structTypeIndex);
+  }
 
   return classInfo;
 }

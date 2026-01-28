@@ -394,7 +394,7 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Removed `mapType()` function entirely
       - [x] All generic instantiation goes through checker types via `mapCheckerTypeToWasmType()`
       - [x] `context: Map<string, TypeAnnotation>` parameter threading is now vestigial (only used for `typeToTypeAnnotation`)
-    - [ ] **Phase 6: Migrate `ctx.classes` to Identity-Based Lookups**
+    - [x] **Phase 6: Migrate `ctx.classes` to Identity-Based Lookups** (completed 2025-01-28)
       - `ctx.classes` is a `Map<string, ClassInfo>` keyed by specialized name (e.g., `"Array<i32>"`)
       - Identity-based alternative: `ctx.getClassInfoByCheckerType(classType)` uses a `WeakMap<ClassType, ClassInfo>`
       - [x] `getBoxClassInfo()` - uses identity lookup, removed name-based guard
@@ -403,7 +403,8 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] `ClassPattern` in match expressions - identity lookup first, name-based fallback
       - [x] Static member/method access - uses `ResolvedBinding` from checker. Fixed: checker now passes `declaration` to `ctx.declare()` for classes, enabling `ClassBinding` creation.
       - [x] `generateNewExpression` - simplified to use identity-based lookup via `expr.inferredType`, removed annotation-based fallback path
-      - [ ] Super class lookups (lines 1768, 1814, 2387) - already have identity-based first via `superClassType`, name-based is fallback for synthesized classes (mixin intermediates)
+      - [x] Super class lookups - identity-based via `superClassType`. Fixed (2025-01-28): `defineClassStruct` now correctly finds the base class before mixin intermediates when processing mixin chains, preventing double-application of mixins (e.g., `Base_M_M` instead of `Base_M`).
+      - [x] Mixin intermediate registration - `preRegisterMixin` and `applyMixin` now receive checker intermediate types via `collectMixinIntermediateTypes()` for identity-based lookup.
     - [ ] **Phase 7: Remove `typeToTypeAnnotation()`**
       - [x] `instantiateGenericMethod` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
       - [x] `instantiateGenericFunction` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
