@@ -17,8 +17,8 @@ suite('Checker - Super', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.equal(diagnostics.length, 0);
@@ -34,8 +34,8 @@ suite('Checker - Super', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.ok(diagnostics.length > 0);
@@ -54,8 +54,8 @@ suite('Checker - Super', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.ok(diagnostics.length > 0);
@@ -74,8 +74,8 @@ suite('Checker - Super', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.equal(diagnostics.length, 0);
@@ -93,8 +93,8 @@ suite('Checker - Super', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.equal(diagnostics.length, 0);

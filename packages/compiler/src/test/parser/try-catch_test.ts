@@ -8,8 +8,8 @@ suite('Parser: Try/Catch', () => {
     const parser = new Parser(`
       let x = try { 1 } catch (e) { 2 };
     `);
-    const program = parser.parse();
-    const varDecl = program.body[0] as any;
+    const module = parser.parse();
+    const varDecl = module.body[0] as any;
     assert.strictEqual(varDecl.type, NodeType.VariableDeclaration);
     const tryExpr = varDecl.init;
     assert.strictEqual(tryExpr.type, NodeType.TryExpression);
@@ -24,8 +24,8 @@ suite('Parser: Try/Catch', () => {
     const parser = new Parser(`
       let x = try { 1 } catch { 2 };
     `);
-    const program = parser.parse();
-    const varDecl = program.body[0] as any;
+    const module = parser.parse();
+    const varDecl = module.body[0] as any;
     const tryExpr = varDecl.init;
     assert.strictEqual(tryExpr.type, NodeType.TryExpression);
     assert.notStrictEqual(tryExpr.handler, null);
@@ -36,8 +36,8 @@ suite('Parser: Try/Catch', () => {
     const parser = new Parser(`
       let x = try { 1 } finally { cleanup() };
     `);
-    const program = parser.parse();
-    const varDecl = program.body[0] as any;
+    const module = parser.parse();
+    const varDecl = module.body[0] as any;
     const tryExpr = varDecl.init;
     assert.strictEqual(tryExpr.type, NodeType.TryExpression);
     assert.strictEqual(tryExpr.handler, null);
@@ -49,8 +49,8 @@ suite('Parser: Try/Catch', () => {
     const parser = new Parser(`
       let x = try { 1 } catch (e) { 2 } finally { cleanup() };
     `);
-    const program = parser.parse();
-    const varDecl = program.body[0] as any;
+    const module = parser.parse();
+    const varDecl = module.body[0] as any;
     const tryExpr = varDecl.init;
     assert.strictEqual(tryExpr.type, NodeType.TryExpression);
     assert.notStrictEqual(tryExpr.handler, null);
@@ -66,8 +66,8 @@ suite('Parser: Try/Catch', () => {
         1
       };
     `);
-    const program = parser.parse();
-    const varDecl = program.body[0] as any;
+    const module = parser.parse();
+    const varDecl = module.body[0] as any;
     const outerTry = varDecl.init;
     assert.strictEqual(outerTry.type, NodeType.TryExpression);
     assert.strictEqual(outerTry.handler.param.name, 'outer');
@@ -83,8 +83,8 @@ suite('Parser: Try/Catch', () => {
     const parser = new Parser(`
       foo(try { 1 } catch (e) { 2 });
     `);
-    const program = parser.parse();
-    const exprStmt = program.body[0] as any;
+    const module = parser.parse();
+    const exprStmt = module.body[0] as any;
     const callExpr = exprStmt.expression;
     assert.strictEqual(callExpr.type, NodeType.CallExpression);
     const arg = callExpr.arguments[0];
@@ -100,8 +100,8 @@ suite('Parser: Try/Catch', () => {
         2
       };
     `);
-    const program = parser.parse();
-    const varDecl = program.body[0] as any;
+    const module = parser.parse();
+    const varDecl = module.body[0] as any;
     const tryExpr = varDecl.init;
     assert.strictEqual(tryExpr.type, NodeType.TryExpression);
 

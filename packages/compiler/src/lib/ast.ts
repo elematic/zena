@@ -1,7 +1,37 @@
 import type {Type} from './types.js';
+import type {Diagnostic} from './diagnostics.js';
+
+/**
+ * Declaration types that can be associated with a symbol.
+ * This enables tracking what AST node a name refers to.
+ */
+export type Declaration =
+  | Parameter
+  | VariableDeclaration
+  | Identifier
+  | FunctionExpression
+  | DeclareFunction
+  | ClassDeclaration
+  | InterfaceDeclaration
+  | MixinDeclaration
+  | TypeAliasDeclaration
+  | TypeParameter
+  | EnumDeclaration;
+
+/**
+ * Information about a symbol in a scope.
+ */
+export interface SymbolInfo {
+  type: Type;
+  kind: 'let' | 'var' | 'type';
+  /** The AST node that declares this symbol. */
+  declaration?: Declaration;
+  /** The module path where this symbol is declared. */
+  modulePath?: string;
+}
 
 export const NodeType = {
-  Program: 'Program',
+  Module: 'Module',
   VariableDeclaration: 'VariableDeclaration',
   ExpressionStatement: 'ExpressionStatement',
   BinaryExpression: 'BinaryExpression',
@@ -103,16 +133,40 @@ export interface Node {
   inferredTypeArguments?: Type[];
 }
 
-export interface Program extends Node {
-  type: typeof NodeType.Program;
+/**
+ * A Program represents a complete compilation unit.
+ * It contains all modules and tracks the entry point.
+ */
+export interface Program {
+  /** All modules in the program, keyed by path */
+  modules: Map<string, Module>;
+  /** The entry point module path */
+  entryPoint: string;
+  /** Modules from the prelude (auto-imported) */
+  preludeModules: Module[];
+}
+
+/**
+ * A Module represents a single source file.
+ * Contains both the AST and compilation metadata.
+ */
+export interface Module extends Node {
+  type: typeof NodeType.Module;
+  /** Statements in this module */
   body: Statement[];
-  wellKnownTypes: {
-    FixedArray?: ClassDeclaration;
-    String?: ClassDeclaration;
-    ByteArray?: ClassDeclaration;
-    Box?: ClassDeclaration;
-    TemplateStringsArray?: ClassDeclaration;
-  };
+
+  /** Canonical path identifying this module (e.g., "zena:string", "/abs/path.zena") */
+  readonly path: string;
+  /** Whether this module is part of the standard library */
+  readonly isStdlib: boolean;
+  /** The original source code */
+  readonly source: string;
+  /** Resolved import mappings: specifier -> resolvedPath */
+  readonly imports: Map<string, string>;
+  /** Exported symbols (populated by checker) */
+  readonly exports: Map<string, SymbolInfo>;
+  /** Type-checking diagnostics (initialized to [], populated by checker) */
+  diagnostics: Diagnostic[];
 }
 
 export type Statement =

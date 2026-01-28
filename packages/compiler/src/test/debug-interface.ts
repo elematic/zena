@@ -34,7 +34,7 @@ const modules = compiler.compile('/main.zena');
 console.log('Modules compiled:', modules.length);
 console.log(
   'Errors:',
-  modules.flatMap((m) => m.diagnostics).map((d) => d.message),
+  modules.flatMap((m) => m.diagnostics ?? []).map((d) => d.message),
 );
 
 try {

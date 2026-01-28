@@ -18,7 +18,7 @@ describe('Built-in Shadowing Tests', () => {
     `);
     const main = modules.find((m) => m.path === '/main.zena')!;
 
-    const errors = main.diagnostics.filter(
+    const errors = main.diagnostics!.filter(
       (d: Diagnostic) => d.severity === DiagnosticSeverity.Error,
     );
 
@@ -55,7 +55,7 @@ describe('Built-in Shadowing Tests', () => {
     `);
     const main = modules.find((m) => m.path === '/main.zena')!;
 
-    const errors = main.diagnostics.filter(
+    const errors = main.diagnostics!.filter(
       (d: Diagnostic) => d.severity === DiagnosticSeverity.Error,
     );
     assert.strictEqual(
@@ -79,7 +79,7 @@ describe('Built-in Shadowing Tests', () => {
     `);
     const main = modules.find((m) => m.path === '/main.zena')!;
 
-    const errors = main.diagnostics.filter(
+    const errors = main.diagnostics!.filter(
       (d: Diagnostic) => d.severity === DiagnosticSeverity.Error,
     );
 
@@ -113,7 +113,7 @@ describe('Built-in Shadowing Tests', () => {
     `);
     const main = modules.find((m) => m.path === '/main.zena')!;
 
-    const errors = main.diagnostics.filter(
+    const errors = main.diagnostics!.filter(
       (d: Diagnostic) => d.severity === DiagnosticSeverity.Error,
     );
     assert.strictEqual(

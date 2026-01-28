@@ -10,12 +10,9 @@ suite('Checker: Never Type', () => {
         unreachable();
       };
     `;
-    const parser = new Parser(input);
+    const parser = new Parser(input, {path: 'zena:test', isStdlib: true});
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast, {
-      path: 'zena:test',
-      isStdlib: true,
-    });
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -33,12 +30,9 @@ suite('Checker: Never Type', () => {
         let z: boolean = fail();
       };
     `;
-    const parser = new Parser(input);
+    const parser = new Parser(input, {path: 'zena:test', isStdlib: true});
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast, {
-      path: 'zena:test',
-      isStdlib: true,
-    });
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -50,12 +44,9 @@ suite('Checker: Never Type', () => {
         let y: string = x;
       };
     `;
-    const parser = new Parser(input);
+    const parser = new Parser(input, {path: 'zena:test', isStdlib: true});
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast, {
-      path: 'zena:test',
-      isStdlib: true,
-    });
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -67,12 +58,9 @@ suite('Checker: Never Type', () => {
         let x: never = unreachable();
       };
     `;
-    const parser = new Parser(input);
+    const parser = new Parser(input, {path: 'zena:test', isStdlib: true});
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast, {
-      path: 'zena:test',
-      isStdlib: true,
-    });
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);

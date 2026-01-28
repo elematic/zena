@@ -11,8 +11,8 @@ suite('Capture Analysis', () => {
   test('captures variables from outer scope', () => {
     const input = 'let x = 1; let f = () => x;';
     const parser = new Parser(input);
-    const program = parser.parse();
-    const funcDecl = program.body[1] as VariableDeclaration;
+    const module = parser.parse();
+    const funcDecl = module.body[1] as VariableDeclaration;
     const func = funcDecl.init as FunctionExpression;
 
     const captures = analyzeCaptures(func);
@@ -23,8 +23,8 @@ suite('Capture Analysis', () => {
   test('does not capture locals', () => {
     const input = 'let f = (x: i32) => x;';
     const parser = new Parser(input);
-    const program = parser.parse();
-    const funcDecl = program.body[0] as VariableDeclaration;
+    const module = parser.parse();
+    const funcDecl = module.body[0] as VariableDeclaration;
     const func = funcDecl.init as FunctionExpression;
 
     const captures = analyzeCaptures(func);
@@ -34,8 +34,8 @@ suite('Capture Analysis', () => {
   test('does not capture internal variables', () => {
     const input = 'let f = () => { let x = 1; return x; };';
     const parser = new Parser(input);
-    const program = parser.parse();
-    const funcDecl = program.body[0] as VariableDeclaration;
+    const module = parser.parse();
+    const funcDecl = module.body[0] as VariableDeclaration;
     const func = funcDecl.init as FunctionExpression;
 
     const captures = analyzeCaptures(func);
@@ -45,8 +45,8 @@ suite('Capture Analysis', () => {
   test('captures transitively from nested functions', () => {
     const input = 'let x = 1; let f = () => { let g = () => x; return g(); };';
     const parser = new Parser(input);
-    const program = parser.parse();
-    const funcDecl = program.body[1] as VariableDeclaration;
+    const module = parser.parse();
+    const funcDecl = module.body[1] as VariableDeclaration;
     const func = funcDecl.init as FunctionExpression;
 
     const captures = analyzeCaptures(func);

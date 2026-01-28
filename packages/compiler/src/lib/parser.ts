@@ -32,10 +32,10 @@ import {
   type MethodDefinition,
   type MethodSignature,
   type MixinDeclaration,
+  type Module,
   type NamedTypeAnnotation,
   type Parameter,
   type Pattern,
-  type Program,
   type PropertyAssignment,
   type PropertySignature,
   type RecordLiteral,
@@ -62,15 +62,26 @@ import {
 import {TokenType, tokenize, type Token} from './lexer.js';
 import {Decorators} from './types.js';
 
+export interface ParserOptions {
+  path?: string;
+  isStdlib?: boolean;
+}
+
 export class Parser {
   #tokens: Token[];
   #current = 0;
+  #source: string;
+  #path: string;
+  #isStdlib: boolean;
 
-  constructor(source: string) {
+  constructor(source: string, options: ParserOptions = {}) {
+    this.#source = source;
+    this.#path = options.path ?? '<anonymous>';
+    this.#isStdlib = options.isStdlib ?? false;
     this.#tokens = tokenize(source);
   }
 
-  public parse(): Program {
+  public parse(): Module {
     const body: Statement[] = [];
 
     while (this.#check(TokenType.Import) || this.#check(TokenType.From)) {
@@ -87,9 +98,14 @@ export class Parser {
       body.push(this.#parseStatement());
     }
     return {
-      type: NodeType.Program,
+      type: NodeType.Module,
       body,
-      wellKnownTypes: {},
+      path: this.#path,
+      isStdlib: this.#isStdlib,
+      source: this.#source,
+      imports: new Map(),
+      exports: new Map(),
+      diagnostics: [],
     };
   }
 

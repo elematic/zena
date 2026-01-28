@@ -6,7 +6,7 @@ import {TypeChecker} from '../../lib/checker/index.js';
 function check(input: string) {
   const parser = new Parser(input);
   const ast = parser.parse();
-  const checker = TypeChecker.forProgram(ast);
+  const checker = TypeChecker.forModule(ast);
   return checker.check();
 }
 

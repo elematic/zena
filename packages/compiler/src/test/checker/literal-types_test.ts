@@ -10,7 +10,7 @@ suite('Checker: Literal Types', () => {
     const input = "let x: 'hello' = 'hello';";
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -29,7 +29,7 @@ suite('Checker: Literal Types', () => {
     const input = 'let x: 42 = 42;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -48,7 +48,7 @@ suite('Checker: Literal Types', () => {
     const input = 'let x: true = true;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -70,7 +70,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -83,7 +83,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -96,7 +96,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -109,7 +109,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -122,7 +122,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -135,7 +135,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -147,7 +147,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length > 0, true);
@@ -159,7 +159,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length > 0, true);
@@ -171,7 +171,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length > 0, true);
@@ -186,7 +186,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -201,7 +201,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length > 0, true);
@@ -214,7 +214,7 @@ suite('Checker: Literal Types', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);

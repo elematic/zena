@@ -36,7 +36,7 @@ suite('Type Interning', () => {
       `);
 
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
-      const mainDecl = findVarDecl(mainModule.ast.body, 'main');
+      const mainDecl = findVarDecl(mainModule.body, 'main');
       const mainFn = mainDecl.init;
       const body = mainFn.body.body;
 
@@ -74,7 +74,7 @@ suite('Type Interning', () => {
       `);
 
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
-      const mainDecl = findVarDecl(mainModule.ast.body, 'main');
+      const mainDecl = findVarDecl(mainModule.body, 'main');
       const mainFn = mainDecl.init;
       const body = mainFn.body.body;
 
@@ -119,7 +119,7 @@ suite('Type Interning', () => {
       `);
 
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
-      const mainDecl = findVarDecl(mainModule.ast.body, 'main');
+      const mainDecl = findVarDecl(mainModule.body, 'main');
       const mainFn = mainDecl.init;
       const body = mainFn.body.body;
 
@@ -167,7 +167,7 @@ suite('Type Interning', () => {
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
 
       // Find Box class to check its implements list
-      const boxDecl = mainModule.ast.body.find(
+      const boxDecl = mainModule.body.find(
         (d: any) => d.type === 'ClassDeclaration' && d.name?.name === 'Box',
       ) as any;
       const boxType = boxDecl.inferredType as ClassType;
@@ -204,7 +204,7 @@ suite('Type Interning', () => {
       `);
 
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
-      const mainDecl = findVarDecl(mainModule.ast.body, 'main');
+      const mainDecl = findVarDecl(mainModule.body, 'main');
       const mainFn = mainDecl.init;
       const body = mainFn.body.body;
 
@@ -257,8 +257,8 @@ suite('Type Interning', () => {
 
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
 
-      const getUnionA = findVarDecl(mainModule.ast.body, 'getUnionA');
-      const getUnionB = findVarDecl(mainModule.ast.body, 'getUnionB');
+      const getUnionA = findVarDecl(mainModule.body, 'getUnionA');
+      const getUnionB = findVarDecl(mainModule.body, 'getUnionB');
 
       // Both functions should compile without errors
       assert.ok(getUnionA, 'getUnionA should exist');
@@ -276,8 +276,8 @@ suite('Type Interning', () => {
 
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
 
-      const getResultA = findVarDecl(mainModule.ast.body, 'getResultA');
-      const getResultB = findVarDecl(mainModule.ast.body, 'getResultB');
+      const getResultA = findVarDecl(mainModule.body, 'getResultA');
+      const getResultB = findVarDecl(mainModule.body, 'getResultB');
 
       assert.ok(getResultA, 'getResultA should exist');
       assert.ok(getResultB, 'getResultB should exist');
@@ -295,7 +295,7 @@ suite('Type Interning', () => {
       `);
 
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
-      const mainDecl = findVarDecl(mainModule.ast.body, 'main');
+      const mainDecl = findVarDecl(mainModule.body, 'main');
       const mainFn = mainDecl.init;
       const body = mainFn.body.body;
 
@@ -325,7 +325,7 @@ suite('Type Interning', () => {
       `);
 
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
-      const mainDecl = findVarDecl(mainModule.ast.body, 'main');
+      const mainDecl = findVarDecl(mainModule.body, 'main');
       const mainFn = mainDecl.init;
       const body = mainFn.body.body;
 
@@ -359,7 +359,7 @@ suite('Type Interning', () => {
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
 
       // Find the distinct type declaration
-      const metersDecl = mainModule.ast.body.find(
+      const metersDecl = mainModule.body.find(
         (d: any) =>
           d.type === 'TypeAliasDeclaration' && d.name?.name === 'Meters',
       ) as any;
@@ -386,8 +386,8 @@ suite('Type Interning', () => {
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
 
       // Find the two variable declarations
-      const meters100 = findVarDecl(mainModule.ast.body, 'meters100');
-      const meters200 = findVarDecl(mainModule.ast.body, 'meters200');
+      const meters100 = findVarDecl(mainModule.body, 'meters100');
+      const meters200 = findVarDecl(mainModule.body, 'meters200');
 
       // Get the types from the cast expressions
       const typeA = meters100.init.inferredType;
@@ -423,8 +423,8 @@ suite('Type Interning', () => {
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
 
       // Get return types of the two functions
-      const makeBox = findVarDecl(mainModule.ast.body, 'makeBox');
-      const makeAnotherBox = findVarDecl(mainModule.ast.body, 'makeAnotherBox');
+      const makeBox = findVarDecl(mainModule.body, 'makeBox');
+      const makeAnotherBox = findVarDecl(mainModule.body, 'makeAnotherBox');
 
       const type1 = makeBox.init.inferredType?.returnType;
       const type2 = makeAnotherBox.init.inferredType?.returnType;
@@ -458,13 +458,13 @@ suite('Type Interning', () => {
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
 
       // Find the Box class declaration
-      const boxDecl = mainModule.ast.body.find(
+      const boxDecl = mainModule.body.find(
         (d: any) => d.type === 'ClassDeclaration' && d.name?.name === 'Box',
       ) as any;
       const boxType = boxDecl.inferredType as ClassType;
 
       // Find the instantiated Box<i32>
-      const mainDecl = findVarDecl(mainModule.ast.body, 'main');
+      const mainDecl = findVarDecl(mainModule.body, 'main');
       const mainFn = mainDecl.init;
       const body = mainFn.body.body;
       const instantiatedType = findVarDecl(body, 'x').init

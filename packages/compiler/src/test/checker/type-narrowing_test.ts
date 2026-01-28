@@ -24,7 +24,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       assert.deepStrictEqual(
@@ -50,7 +50,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       assert.deepStrictEqual(
@@ -79,7 +79,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       assert.strictEqual(errors.length, 1);
@@ -106,7 +106,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       assert.deepStrictEqual(
@@ -134,7 +134,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       assert.deepStrictEqual(
@@ -163,7 +163,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       // Should error because node is null in this branch
@@ -191,7 +191,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       assert.deepStrictEqual(
@@ -220,7 +220,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       assert.deepStrictEqual(
@@ -254,7 +254,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       assert.deepStrictEqual(
@@ -291,7 +291,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       assert.deepStrictEqual(
@@ -321,7 +321,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       assert.deepStrictEqual(
@@ -352,7 +352,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       assert.deepStrictEqual(
@@ -382,7 +382,7 @@ suite('TypeChecker: Type Narrowing', () => {
       `;
       const parser = new Parser(input);
       const ast = parser.parse();
-      const checker = TypeChecker.forProgram(ast);
+      const checker = TypeChecker.forModule(ast);
       const errors = checker.check();
 
       // Expect at least one error about 'bark' not existing on Cat

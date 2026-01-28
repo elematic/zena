@@ -7,10 +7,10 @@ suite('Parser - Declare Function', () => {
   test('should parse simple declare function', () => {
     const source = 'declare function log(s: string): void;';
     const parser = new Parser(source);
-    const program = parser.parse();
+    const module = parser.parse();
 
-    assert.strictEqual(program.body.length, 1);
-    const decl = program.body[0] as DeclareFunction;
+    assert.strictEqual(module.body.length, 1);
+    const decl = module.body[0] as DeclareFunction;
     assert.strictEqual(decl.type, NodeType.DeclareFunction);
     assert.strictEqual(decl.name.name, 'log');
     assert.strictEqual(decl.params.length, 1);
@@ -23,10 +23,10 @@ suite('Parser - Declare Function', () => {
     const source =
       '@external("env", "print") declare function log(s: string): void;';
     const parser = new Parser(source);
-    const program = parser.parse();
+    const module = parser.parse();
 
-    assert.strictEqual(program.body.length, 1);
-    const decl = program.body[0] as DeclareFunction;
+    assert.strictEqual(module.body.length, 1);
+    const decl = module.body[0] as DeclareFunction;
     assert.strictEqual(decl.type, NodeType.DeclareFunction);
     assert.strictEqual(decl.name.name, 'log');
     assert.strictEqual(decl.externalModule, 'env');

@@ -1,7 +1,11 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
 import {compileWithDetails} from './utils.js';
-import {NodeType, type VariableDeclaration} from '../../lib/ast.js';
+import {
+  NodeType,
+  type VariableDeclaration,
+  type Statement,
+} from '../../lib/ast.js';
 
 suite('Codegen Declaration Registry', () => {
   test('should register functions by declaration', async () => {
@@ -14,17 +18,19 @@ export let sub = (a: i32, b: i32) => a - b;
     // Find the entry point module (the one with our declarations)
     const entryModule = modules.find((m) => m.path === '/main.zena');
     assert.ok(entryModule, 'Should find entry module');
-    const ast = entryModule.ast;
 
     // Find variable declarations
-    const varDecls = ast.body.filter(
-      (s): s is VariableDeclaration => s.type === NodeType.VariableDeclaration,
+    const varDecls = entryModule.body.filter(
+      (s: Statement): s is VariableDeclaration =>
+        s.type === NodeType.VariableDeclaration,
     );
     const addDecl = varDecls.find(
-      (d) => d.pattern.type === NodeType.Identifier && d.pattern.name === 'add',
+      (d: VariableDeclaration) =>
+        d.pattern.type === NodeType.Identifier && d.pattern.name === 'add',
     );
     const subDecl = varDecls.find(
-      (d) => d.pattern.type === NodeType.Identifier && d.pattern.name === 'sub',
+      (d: VariableDeclaration) =>
+        d.pattern.type === NodeType.Identifier && d.pattern.name === 'sub',
     );
 
     assert.ok(addDecl, 'Should find add declaration');
@@ -62,19 +68,19 @@ export let globalB: i32 = 100;
     // Find the entry point module
     const entryModule = modules.find((m) => m.path === '/main.zena');
     assert.ok(entryModule, 'Should find entry module');
-    const ast = entryModule.ast;
 
     // Find variable declarations
-    const varDecls = ast.body.filter(
-      (s): s is VariableDeclaration => s.type === NodeType.VariableDeclaration,
+    const varDecls = entryModule.body.filter(
+      (s: Statement): s is VariableDeclaration =>
+        s.type === NodeType.VariableDeclaration,
     );
 
     const globalADecl = varDecls.find(
-      (d) =>
+      (d: VariableDeclaration) =>
         d.pattern.type === NodeType.Identifier && d.pattern.name === 'globalA',
     );
     const globalBDecl = varDecls.find(
-      (d) =>
+      (d: VariableDeclaration) =>
         d.pattern.type === NodeType.Identifier && d.pattern.name === 'globalB',
     );
 

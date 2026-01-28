@@ -5,13 +5,11 @@ import {TypeChecker} from '../../lib/checker/index.js';
 import {DiagnosticCode} from '../../lib/diagnostics.js';
 
 function check(input: string, path = 'zena:test') {
-  const parser = new Parser(input);
-  const program = parser.parse();
+  const isStdlib = path.startsWith('zena:');
+  const parser = new Parser(input, {path, isStdlib});
+  const module = parser.parse();
 
-  const checker = TypeChecker.forProgram(program, {
-    path,
-    isStdlib: path.startsWith('zena:'),
-  });
+  const checker = TypeChecker.forModule(module);
   const diagnostics = checker.check();
   return {
     errors: diagnostics.filter((d) => d.severity === 1),

@@ -43,9 +43,9 @@ suite('Parser - Type Aliases', () => {
 
   test('should parse tuple type alias', () => {
     const parser = new Parser('type Foo = [string, i32];');
-    const program = parser.parse();
-    assert.strictEqual(program.body[0].type, NodeType.TypeAliasDeclaration);
-    const decl = program.body[0] as any;
+    const module = parser.parse();
+    assert.strictEqual(module.body[0].type, NodeType.TypeAliasDeclaration);
+    const decl = module.body[0] as any;
     assert.strictEqual(decl.typeAnnotation.type, NodeType.TupleTypeAnnotation);
   });
 });

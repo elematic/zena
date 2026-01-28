@@ -64,11 +64,11 @@ describe('Compiler', () => {
     assert.ok(main);
     assert.ok(math);
 
-    assert.strictEqual(main?.imports.get('./math.zena'), 'math.zena');
+    assert.strictEqual(main.imports!.get('./math.zena'), 'math.zena');
 
     // Check diagnostics
-    assert.strictEqual(main?.diagnostics.length, 0);
-    assert.strictEqual(math?.diagnostics.length, 0);
+    assert.strictEqual(main.diagnostics!.length, 0);
+    assert.strictEqual(math.diagnostics!.length, 0);
   });
 
   it('resolves imported types', () => {
@@ -99,7 +99,7 @@ describe('Compiler', () => {
     const modules = compiler.compile('main.zena');
 
     const main = modules.find((m) => m.path === 'main.zena');
-    assert.strictEqual(main?.diagnostics.length, 0);
+    assert.strictEqual(main?.diagnostics!.length, 0);
   });
 
   it('reports error for missing module', () => {
@@ -110,8 +110,8 @@ describe('Compiler', () => {
     try {
       const modules = compiler.compile('main.zena');
       const main = modules.find((m) => m.path === 'main.zena');
-      assert.strictEqual(main?.diagnostics.length, 1);
-      assert.match(main?.diagnostics[0].message!, /Could not resolve module/);
+      assert.strictEqual(main?.diagnostics!.length, 1);
+      assert.match(main?.diagnostics![0].message!, /Could not resolve module/);
     } catch (e) {
       // It might throw if load fails, but we want to check diagnostics if possible.
       // In our implementation, load throws if file not found.
@@ -131,8 +131,8 @@ describe('Compiler', () => {
     const modules = compiler.compile('main.zena');
     const main = modules.find((m) => m.path === 'main.zena');
 
-    assert.strictEqual(main?.diagnostics.length, 1);
-    assert.match(main?.diagnostics[0].message!, /does not export 'missing'/);
+    assert.strictEqual(main?.diagnostics!.length, 1);
+    assert.match(main?.diagnostics![0].message!, /does not export 'missing'/);
   });
 
   it('handles circular dependencies', () => {
@@ -173,6 +173,6 @@ describe('Compiler', () => {
     const modules = compiler.compile('main.zena');
 
     const main = modules.find((m) => m.path === 'main.zena');
-    assert.strictEqual(main?.diagnostics.length, 0);
+    assert.strictEqual(main?.diagnostics!.length, 0);
   });
 });

@@ -6,8 +6,8 @@ import {Parser} from '../../lib/parser.js';
 suite('Parser: Function Types', () => {
   test('parses a simple function type', () => {
     const parser = new Parser('var f: (a: i32) => i32 = null;');
-    const program = parser.parse();
-    const decl = program.body[0] as any;
+    const module = parser.parse();
+    const decl = module.body[0] as any;
     const type = decl.typeAnnotation;
 
     assert.equal(type.type, NodeType.FunctionTypeAnnotation);
@@ -18,8 +18,8 @@ suite('Parser: Function Types', () => {
 
   test('parses a function type with multiple parameters', () => {
     const parser = new Parser('var f: (a: i32, b: boolean) => void = null;');
-    const program = parser.parse();
-    const decl = program.body[0] as any;
+    const module = parser.parse();
+    const decl = module.body[0] as any;
     const type = decl.typeAnnotation;
 
     assert.equal(type.type, NodeType.FunctionTypeAnnotation);
@@ -31,8 +31,8 @@ suite('Parser: Function Types', () => {
 
   test('parses a function type with no parameters', () => {
     const parser = new Parser('var f: () => string = null;');
-    const program = parser.parse();
-    const decl = program.body[0] as any;
+    const module = parser.parse();
+    const decl = module.body[0] as any;
     const type = decl.typeAnnotation;
 
     assert.equal(type.type, NodeType.FunctionTypeAnnotation);
@@ -42,8 +42,8 @@ suite('Parser: Function Types', () => {
 
   test('parses nested function types', () => {
     const parser = new Parser('var f: (cb: (x: i32) => void) => void = null;');
-    const program = parser.parse();
-    const decl = program.body[0] as any;
+    const module = parser.parse();
+    const decl = module.body[0] as any;
     const type = decl.typeAnnotation;
 
     assert.equal(type.type, NodeType.FunctionTypeAnnotation);

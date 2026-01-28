@@ -36,14 +36,14 @@ Understanding these terms is crucial for working on the compiler:
 - **Input**: `Token` stream (from Lexer).
 - **Output**: Abstract Syntax Tree (AST).
 - **Key Class**: `Parser`
-- **Key Function**: `parse(): Program`
+- **Key Function**: `parse(): Module`
 - **Responsibility**: Performs recursive descent parsing to build the AST. It handles operator precedence and syntax validation.
 
 ### 3. AST (`packages/compiler/src/lib/ast.ts`)
 
 - **Responsibility**: Defines the `Node` types and the `NodeType` constants.
 - **Structure**: All nodes extend the base `Node` interface.
-- **Key Types**: `Program`, `ClassDeclaration`, `MethodDefinition`, `Expression`, `Statement`.
+- **Key Types**: `Module`, `ClassDeclaration`, `MethodDefinition`, `Expression`, `Statement`.
 
 ### 4. Type Checker (`packages/compiler/src/lib/checker/index.ts`)
 
@@ -203,7 +203,8 @@ When asked to modify the compiler, look in these files first:
 
 ## Key Data Structures
 
-- **Program**: The root AST node.
+- **Module**: The AST node for a single source file. Contains both the syntax tree (`body`) and compilation metadata (`path`, `isStdlib`, `source`, `imports`, `exports`, `diagnostics`). All metadata fields are set at parse time via `ParserOptions`.
+- **Program**: A compiler-created container (not an AST node) holding all modules in a compilation unit, plus the entry point and prelude modules.
 - **Scope**: A mapping of variable names to their types and indices.
 - **ClassInfo**: Metadata about a class (struct index, field layout, method table). Stored in `CodegenContext.classes`.
 - **InterfaceInfo**: Metadata about an interface (fat pointer layout, vtable layout). Stored in `CodegenContext.interfaces`.

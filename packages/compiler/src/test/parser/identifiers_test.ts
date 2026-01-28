@@ -6,8 +6,8 @@ import assert from 'node:assert';
 suite('Parser: Identifiers', () => {
   function parseStatement(source: string) {
     const parser = new Parser(source);
-    const program = parser.parse();
-    return program.body[0];
+    const module = parser.parse();
+    return module.body[0];
   }
 
   function parseExpression(source: string) {

@@ -324,11 +324,11 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
     ctx.declare(className, existingType, 'let');
 
     if (decl.exported && ctx.module) {
-      ctx.module.exports.set(`type:${className}`, {
+      ctx.module!.exports!.set(`type:${className}`, {
         type: existingType,
         kind: 'type',
       });
-      ctx.module.exports.set(`value:${className}`, {
+      ctx.module!.exports!.set(`value:${className}`, {
         type: existingType,
         kind: 'let',
       });
@@ -374,11 +374,11 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
   decl.inferredType = classType;
 
   if (decl.exported && ctx.module) {
-    ctx.module.exports.set(`type:${className}`, {
+    ctx.module!.exports!.set(`type:${className}`, {
       type: classType,
       kind: 'type',
     });
-    ctx.module.exports.set(`value:${className}`, {
+    ctx.module!.exports!.set(`value:${className}`, {
       type: classType,
       kind: 'let',
     });
@@ -403,7 +403,7 @@ const predeclareMixin = (ctx: CheckerContext, decl: MixinDeclaration) => {
     ctx.declare(mixinName, existingType, 'type');
 
     if (decl.exported && ctx.module) {
-      ctx.module.exports.set(`type:${mixinName}`, {
+      ctx.module!.exports!.set(`type:${mixinName}`, {
         type: existingType,
         kind: 'type',
       });
@@ -440,7 +440,7 @@ const predeclareMixin = (ctx: CheckerContext, decl: MixinDeclaration) => {
   decl.inferredType = mixinType;
 
   if (decl.exported && ctx.module) {
-    ctx.module.exports.set(`type:${mixinName}`, {
+    ctx.module!.exports!.set(`type:${mixinName}`, {
       type: mixinType,
       kind: 'type',
     });
@@ -470,7 +470,7 @@ const predeclareInterface = (
     ctx.declare(interfaceName, existingType, 'type');
 
     if (decl.exported && ctx.module) {
-      ctx.module.exports.set(`type:${interfaceName}`, {
+      ctx.module!.exports!.set(`type:${interfaceName}`, {
         type: existingType,
         kind: 'type',
       });
@@ -507,7 +507,7 @@ const predeclareInterface = (
   decl.inferredType = interfaceType;
 
   if (decl.exported && ctx.module) {
-    ctx.module.exports.set(`type:${interfaceName}`, {
+    ctx.module!.exports!.set(`type:${interfaceName}`, {
       type: interfaceType,
       kind: 'type',
     });
@@ -605,7 +605,7 @@ function checkTypeAliasDeclaration(
     existingType.name = name;
     ctx.declare(name, existingType, 'type');
     if (decl.exported && ctx.module) {
-      ctx.module.exports.set(`type:${name}`, {
+      ctx.module!.exports!.set(`type:${name}`, {
         type: existingType,
         kind: 'type',
       });
@@ -632,7 +632,7 @@ function checkTypeAliasDeclaration(
   decl.inferredType = typeAlias;
 
   if (decl.exported && ctx.module) {
-    ctx.module.exports.set(`type:${name}`, {type: typeAlias, kind: 'type'});
+    ctx.module!.exports!.set(`type:${name}`, {type: typeAlias, kind: 'type'});
   }
 }
 
@@ -645,7 +645,7 @@ function checkExportAllDeclaration(
   }
 
   const specifier = decl.moduleSpecifier.value;
-  const resolvedPath = ctx.module.imports.get(specifier);
+  const resolvedPath = ctx.module!.imports!.get(specifier);
 
   if (!resolvedPath) {
     ctx.diagnostics.reportError(
@@ -665,8 +665,8 @@ function checkExportAllDeclaration(
   }
 
   // Re-export all symbols
-  for (const [name, symbolInfo] of importedModule.exports) {
-    if (ctx.module.exports.has(name)) {
+  for (const [name, symbolInfo] of importedModule.exports!) {
+    if (ctx.module!.exports!.has(name)) {
       // Conflict?
       // If we have multiple export * from different modules exporting same name, it's a conflict.
       // Or if we have local export with same name, local wins (shadows).
@@ -677,12 +677,12 @@ function checkExportAllDeclaration(
       // If later we have export let x, it overwrites?
       // Usually explicit export wins.
       // For now, let's just warn or error on conflict if it's not identical.
-      const existing = ctx.module.exports.get(name)!;
+      const existing = ctx.module!.exports!.get(name)!;
       if (existing.type !== symbolInfo.type) {
         // Error?
       }
     }
-    ctx.module.exports.set(name, symbolInfo);
+    ctx.module!.exports!.set(name, symbolInfo);
   }
 }
 
@@ -694,7 +694,7 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
   }
 
   const specifier = decl.moduleSpecifier.value;
-  const resolvedPath = ctx.module.imports.get(specifier);
+  const resolvedPath = ctx.module!.imports!.get(specifier);
 
   if (!resolvedPath) {
     ctx.diagnostics.reportError(
@@ -726,9 +726,9 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
     const importedName = importSpecifier.imported.name;
     const localName = importSpecifier.local.name;
 
-    const valueExport = importedModule.exports.get(`value:${importedName}`);
-    const typeExport = importedModule.exports.get(`type:${importedName}`);
-    const legacyExport = importedModule.exports.get(importedName);
+    const valueExport = importedModule.exports!.get(`value:${importedName}`);
+    const typeExport = importedModule.exports!.get(`type:${importedName}`);
+    const legacyExport = importedModule.exports!.get(importedName);
 
     if (!valueExport && !typeExport && !legacyExport) {
       ctx.diagnostics.reportError(
@@ -804,7 +804,7 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
     // Retrieve the type from the scope to ensure we export the aggregated overloads
     // (if this is an overload)
     const exportedType = ctx.resolveValue(decl.name.name) || functionType;
-    ctx.module.exports.set(`value:${decl.name.name}`, {
+    ctx.module!.exports!.set(`value:${decl.name.name}`, {
       type: exportedType,
       kind: 'let',
     });
@@ -997,7 +997,7 @@ function checkVariableDeclaration(
     ctx.declare(decl.pattern.name, type, decl.kind, decl);
 
     if (decl.exported && ctx.module) {
-      ctx.module.exports.set(`value:${decl.pattern.name}`, {
+      ctx.module!.exports!.set(`value:${decl.pattern.name}`, {
         type,
         kind: decl.kind,
         declaration: decl,
@@ -1457,11 +1457,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     decl.inferredType = classType;
 
     if (decl.exported && ctx.module) {
-      ctx.module.exports.set(`type:${className}`, {
+      ctx.module!.exports!.set(`type:${className}`, {
         type: classType,
         kind: 'type',
       });
-      ctx.module.exports.set(`value:${className}`, {
+      ctx.module!.exports!.set(`value:${className}`, {
         type: classType,
         kind: 'let',
       });
@@ -1493,11 +1493,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   }
 
   if (decl.exported && ctx.module) {
-    ctx.module.exports.set(`type:${className}`, {
+    ctx.module!.exports!.set(`type:${className}`, {
       type: classType,
       kind: 'type',
     });
-    ctx.module.exports.set(`value:${className}`, {
+    ctx.module!.exports!.set(`value:${className}`, {
       type: classType,
       kind: 'let',
     });
@@ -2848,11 +2848,11 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
     ctx.declare(name, enumValueType, 'let', decl);
 
     if (decl.exported && ctx.module) {
-      ctx.module.exports.set(`type:${name}`, {
+      ctx.module!.exports!.set(`type:${name}`, {
         type: existingType,
         kind: 'type',
       });
-      ctx.module.exports.set(`value:${name}`, {
+      ctx.module!.exports!.set(`value:${name}`, {
         type: enumValueType,
         kind: 'let',
       });
@@ -2990,8 +2990,11 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
   ctx.declare(name, enumValueType, 'let', decl);
 
   if (decl.exported && ctx.module) {
-    ctx.module.exports.set(`type:${name}`, {type: enumType, kind: 'type'});
-    ctx.module.exports.set(`value:${name}`, {type: enumValueType, kind: 'let'});
+    ctx.module!.exports!.set(`type:${name}`, {type: enumType, kind: 'type'});
+    ctx.module!.exports!.set(`value:${name}`, {
+      type: enumValueType,
+      kind: 'let',
+    });
   }
 }
 

@@ -22,7 +22,7 @@ suite('TypeChecker - Inheritance', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -33,7 +33,7 @@ suite('TypeChecker - Inheritance', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /Unknown type 'Animal'/);
@@ -46,7 +46,7 @@ suite('TypeChecker - Inheritance', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /Unknown type 'Animal'/);
@@ -63,7 +63,7 @@ suite('TypeChecker - Inheritance', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(
@@ -83,7 +83,7 @@ suite('TypeChecker - Inheritance', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 0);
   });
@@ -99,7 +99,7 @@ suite('TypeChecker - Inheritance', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.deepStrictEqual(errors, []);
   });
@@ -115,7 +115,7 @@ suite('TypeChecker - Inheritance', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(
@@ -133,7 +133,7 @@ suite('TypeChecker - Inheritance', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /must be a class/);
@@ -148,7 +148,7 @@ suite('TypeChecker - Inheritance', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /must be a class/);
@@ -161,7 +161,7 @@ suite('TypeChecker - Inheritance', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /must be a class/);
@@ -173,7 +173,7 @@ suite('TypeChecker - Inheritance', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /must be a class/);

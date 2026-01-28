@@ -1,7 +1,8 @@
-import {Compiler, type CompilerHost, type Module} from '../../lib/compiler.js';
+import {Compiler, type CompilerHost} from '../../lib/compiler.js';
 import {CodeGenerator} from '../../lib/codegen/index.js';
 import {type Diagnostic} from '../../lib/diagnostics.js';
-import type {Program} from '../../lib/ast.js';
+import type {Module} from '../../lib/ast.js';
+import {Parser} from '../../lib/parser.js';
 import {readFileSync, existsSync} from 'node:fs';
 import {join, dirname, basename, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -13,29 +14,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export const stdlibPath = join(__dirname, '../../../stdlib/zena');
 
 /**
- * Wrap a parsed and type-checked AST as a single-module array for CodeGenerator.
+ * Parse source code and wrap it as a single-module array for CodeGenerator.
  * Use this for low-level codegen tests that bypass the full compiler pipeline.
  *
- * @param ast - A parsed and type-checked Program AST
- * @param source - Optional source code for error reporting
+ * @param source - Source code to parse
+ * @param path - Path for the module (default: '/test.zena')
  * @returns An array with a single Module
  */
-export const wrapAsModule = (
-  ast: Program,
-  source = '',
+export const parseAsModule = (
+  source: string,
   path = '/test.zena',
 ): Module[] => {
-  return [
-    {
-      path,
-      isStdlib: false,
-      source,
-      ast,
-      imports: new Map(),
-      exports: new Map(),
-      diagnostics: [],
-    },
-  ];
+  const parser = new Parser(source, {path, isStdlib: false});
+  const ast = parser.parse();
+  return [ast];
 };
 
 export interface CompileOptions {
@@ -96,7 +88,7 @@ export const checkSource = (
   // compile() runs type checking on all modules
   const modules = compiler.compile(path);
   // Collect diagnostics from all modules
-  return modules.flatMap((m) => m.diagnostics);
+  return modules.flatMap((m) => m.diagnostics ?? []);
 };
 
 /**
@@ -170,7 +162,7 @@ export async function compileAndInstantiate(
 
   // Check for errors from the initial compilation pass
   const modules = compiler.compile(path);
-  const allDiagnostics = modules.flatMap((m) => m.diagnostics);
+  const allDiagnostics = modules.flatMap((m) => m.diagnostics ?? []);
   if (allDiagnostics.length > 0) {
     throw new Error(
       `Compilation failed: ${allDiagnostics.map((d) => d.message).join(', ')}`,
@@ -261,7 +253,7 @@ export async function compileWithDetails(
   const host = createHost(input, path);
   const compiler = new Compiler(host);
   const modules = compiler.compile(path);
-  const allDiagnostics = modules.flatMap((m) => m.diagnostics);
+  const allDiagnostics = modules.flatMap((m) => m.diagnostics ?? []);
   if (allDiagnostics.length > 0) {
     throw new Error(
       `Compilation failed: ${allDiagnostics.map((d) => d.message).join(', ')}`,
@@ -563,7 +555,7 @@ export let getNestedTestError = (index: i32): string | null => nested().tests[in
 
   // compile() runs type checking on all modules
   const modules = compiler.compile(wrapperPath);
-  const diagnostics = modules.flatMap((m) => m.diagnostics);
+  const diagnostics = modules.flatMap((m) => m.diagnostics ?? []);
   if (diagnostics.length > 0) {
     const errors = diagnostics.map((d) => d.message).join(', ');
     throw new Error(`Compilation errors: ${errors}`);

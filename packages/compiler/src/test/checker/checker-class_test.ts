@@ -23,7 +23,7 @@ suite('TypeChecker - Classes', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
@@ -38,7 +38,7 @@ suite('TypeChecker - Classes', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -56,7 +56,7 @@ suite('TypeChecker - Classes', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -72,7 +72,7 @@ suite('TypeChecker - Classes', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -89,7 +89,7 @@ suite('TypeChecker - Classes', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -102,7 +102,7 @@ suite('TypeChecker - Classes', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);

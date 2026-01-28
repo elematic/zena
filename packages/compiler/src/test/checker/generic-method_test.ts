@@ -18,8 +18,8 @@ suite('Checker (Generic Methods)', () => {
       let t = new Test();
       let x = t.method<i32>(10);
     `;
-    const program = parse(input);
-    const checker = TypeChecker.forProgram(program);
+    const module = parse(input);
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.strictEqual(diagnostics.length, 0);
@@ -36,8 +36,8 @@ suite('Checker (Generic Methods)', () => {
       let t = new Test();
       let x = t.method<i32>(10);
     `;
-    const program = parse(input);
-    const checker = TypeChecker.forProgram(program);
+    const module = parse(input);
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.strictEqual(diagnostics.length, 0);

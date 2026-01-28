@@ -20,17 +20,17 @@ import {
   type FunctionTypeAnnotation,
   type AsExpression,
   type IsExpression,
-  type Program,
+  type Module,
   type MixinDeclaration,
 } from '../../lib/ast.js';
 
 /**
  * Helper to parse and check source, returning the AST.
  */
-function parseAndCheck(source: string): Program {
+function parseAndCheck(source: string): Module {
   const parser = new Parser(source);
   const ast = parser.parse();
-  const checker = TypeChecker.forProgram(ast);
+  const checker = TypeChecker.forModule(ast);
   const errors = checker.check();
   if (errors.length > 0) {
     throw new Error(

@@ -14,8 +14,8 @@ suite('Parser - Decorators', () => {
       }
     `;
     const parser = new Parser(input);
-    const program = parser.parse();
-    const classDecl = program.body[0] as any;
+    const module = parser.parse();
+    const classDecl = module.body[0] as any;
     const method = classDecl.body[0];
 
     assert.strictEqual(method.type, NodeType.MethodDefinition);

@@ -10,8 +10,8 @@ suite('Parser - Super', () => {
 
   test('should parse super constructor call (expression)', () => {
     const parser = new Parser('super(1, 2);');
-    const program = parser.parse();
-    const stmt = program.body[0] as any;
+    const module = parser.parse();
+    const stmt = module.body[0] as any;
     const expr = stmt.expression;
 
     assert.equal(expr.type, NodeType.CallExpression);
@@ -21,8 +21,8 @@ suite('Parser - Super', () => {
 
   test('should parse super method call (expression)', () => {
     const parser = new Parser('super.foo();');
-    const program = parser.parse();
-    const stmt = program.body[0] as any;
+    const module = parser.parse();
+    const stmt = module.body[0] as any;
     const expr = stmt.expression;
 
     assert.equal(expr.type, NodeType.CallExpression);
@@ -33,8 +33,8 @@ suite('Parser - Super', () => {
 
   test('should parse super field access (expression)', () => {
     const parser = new Parser('super.field;');
-    const program = parser.parse();
-    const stmt = program.body[0] as any;
+    const module = parser.parse();
+    const stmt = module.body[0] as any;
     const expr = stmt.expression;
 
     assert.equal(expr.type, NodeType.MemberExpression);
@@ -51,8 +51,8 @@ suite('Parser - Super', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const classDecl = program.body[0] as any;
+    const module = parser.parse();
+    const classDecl = module.body[0] as any;
     const constructor = classDecl.body[0];
     const body = constructor.body;
     const stmt = body.body[0];
@@ -71,8 +71,8 @@ suite('Parser - Super', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const classDecl = program.body[0] as any;
+    const module = parser.parse();
+    const classDecl = module.body[0] as any;
     const method = classDecl.body[0];
     const body = method.body;
     const stmt = body.body[0];

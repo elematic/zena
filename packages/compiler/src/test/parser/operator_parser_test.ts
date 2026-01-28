@@ -10,8 +10,8 @@ suite('Parser - Operator Overloading', () => {
       }
     `;
     const parser = new Parser(input);
-    const program = parser.parse();
-    assert.ok(program);
+    const module = parser.parse();
+    assert.ok(module);
   });
 
   test('should parse operator [] in class', () => {
@@ -21,7 +21,7 @@ suite('Parser - Operator Overloading', () => {
       }
     `;
     const parser = new Parser(input);
-    const program = parser.parse();
-    assert.ok(program);
+    const module = parser.parse();
+    assert.ok(module);
   });
 });

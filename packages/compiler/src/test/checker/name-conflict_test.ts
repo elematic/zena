@@ -14,7 +14,7 @@ suite('TypeChecker - Name Conflicts', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.ok(errors.length > 0);
@@ -30,7 +30,7 @@ suite('TypeChecker - Name Conflicts', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(
@@ -49,7 +49,7 @@ suite('TypeChecker - Name Conflicts', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(
@@ -68,7 +68,7 @@ suite('TypeChecker - Name Conflicts', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(
@@ -87,7 +87,7 @@ suite('TypeChecker - Name Conflicts', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(
@@ -106,7 +106,7 @@ suite('TypeChecker - Name Conflicts', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(

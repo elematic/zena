@@ -26,7 +26,7 @@ describe('Shadowing Tests', () => {
 
     // We expect an error here because our String is not indexable.
     // If diagnostics is empty, it means the compiler incorrectly allowed it.
-    if (main?.diagnostics.length === 0) {
+    if (main?.diagnostics!.length === 0) {
       assert.fail(
         'Expected diagnostics, but got none. Compiler incorrectly allowed indexing on user String class.',
       );

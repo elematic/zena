@@ -9,7 +9,7 @@ suite('Parser', () => {
     const parser = new Parser(input);
     const ast = parser.parse();
 
-    assert.strictEqual(ast.type, NodeType.Program);
+    assert.strictEqual(ast.type, NodeType.Module);
     assert.strictEqual(ast.body.length, 1);
 
     const decl = ast.body[0];

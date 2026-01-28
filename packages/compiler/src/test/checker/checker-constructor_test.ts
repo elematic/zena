@@ -15,8 +15,8 @@ suite('Checker - Constructor Rules', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.ok(diagnostics.length > 0);
@@ -30,8 +30,8 @@ suite('Checker - Constructor Rules', () => {
       class B extends A {}
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.equal(diagnostics.length, 0);
@@ -47,8 +47,8 @@ suite('Checker - Constructor Rules', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.equal(diagnostics.length, 0);
@@ -66,8 +66,8 @@ suite('Checker - Constructor Rules', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.ok(diagnostics.length > 0);
@@ -90,8 +90,8 @@ suite('Checker - Constructor Rules', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.equal(diagnostics.length, 0);
@@ -108,8 +108,8 @@ suite('Checker - Constructor Rules', () => {
       }
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
 
     assert.equal(diagnostics.length, 0);

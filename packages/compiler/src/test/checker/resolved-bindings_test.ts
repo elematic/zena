@@ -38,28 +38,13 @@ const findIdentifiersInInit = (decl: VariableDeclaration): Identifier[] => {
  * Create a TypeChecker with exposed semanticContext for testing.
  */
 const createCheckerWithContext = (source: string) => {
-  const parser = new Parser(source);
+  const parser = new Parser(source, {path: '<test>', isStdlib: false});
   const ast = parser.parse();
   const semanticContext = new SemanticContext();
   const ctx = new CheckerContext(undefined, semanticContext);
-  ctx.setCurrentLibrary({
-    path: '<test>',
-    isStdlib: false,
-    source,
-    ast,
-    imports: new Map(),
-    exports: new Map(),
-    diagnostics: [],
-  });
-  const checker = new TypeChecker(ctx, {
-    path: '<test>',
-    isStdlib: false,
-    source,
-    ast,
-    imports: new Map(),
-    exports: new Map(),
-    diagnostics: [],
-  });
+
+  ctx.setCurrentLibrary(ast);
+  const checker = new TypeChecker(ctx, ast);
   return {checker, semanticContext, ast};
 };
 

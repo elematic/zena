@@ -75,7 +75,7 @@ export function compile(source: string): Uint8Array {
   const modules = compiler.compile('main.zena');
 
   // Check for errors from any module
-  const errors = modules.flatMap((m) => m.diagnostics);
+  const errors = modules.flatMap((m) => m.diagnostics ?? []);
   if (errors.length > 0) {
     const errorMessage = errors
       .map(

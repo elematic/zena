@@ -5,6 +5,7 @@ import {
   type InterfaceDeclaration,
   type MethodDefinition,
   type MixinDeclaration,
+  type Module,
   type Node,
   type Statement,
   type TaggedTemplateExpression,
@@ -12,7 +13,6 @@ import {
 } from '../ast.js';
 import type {CheckerContext} from '../checker/context.js';
 import {SemanticContext} from '../checker/semantic-context.js';
-import type {Module} from '../compiler.js';
 import {
   DiagnosticBag,
   DiagnosticCode,
@@ -337,7 +337,7 @@ export class CodegenContext {
    */
   #extractWellKnownTypes() {
     for (const mod of this.modules) {
-      for (const stmt of mod.ast.body) {
+      for (const stmt of mod.body) {
         if (stmt.type !== NodeType.ClassDeclaration) continue;
         const decl = stmt as ClassDeclaration;
         const name = decl.name.name;
@@ -367,7 +367,7 @@ export class CodegenContext {
   get statements(): Statement[] {
     const result: Statement[] = [];
     for (const mod of this.modules) {
-      result.push(...mod.ast.body);
+      result.push(...mod.body);
     }
     return result;
   }
@@ -380,7 +380,7 @@ export class CodegenContext {
   *statementsWithModule(): Generator<Statement, void, undefined> {
     for (const mod of this.modules) {
       this.currentModule = mod;
-      for (const stmt of mod.ast.body) {
+      for (const stmt of mod.body) {
         yield stmt;
       }
     }
@@ -404,7 +404,7 @@ export class CodegenContext {
    */
   findClassDeclaration(name: string): ClassDeclaration | undefined {
     for (const mod of this.modules) {
-      for (const stmt of mod.ast.body) {
+      for (const stmt of mod.body) {
         if (
           stmt.type === NodeType.ClassDeclaration &&
           (stmt as ClassDeclaration).name.name === name
@@ -421,7 +421,7 @@ export class CodegenContext {
    */
   findInterfaceDeclaration(name: string): InterfaceDeclaration | undefined {
     for (const mod of this.modules) {
-      for (const stmt of mod.ast.body) {
+      for (const stmt of mod.body) {
         if (
           stmt.type === NodeType.InterfaceDeclaration &&
           (stmt as InterfaceDeclaration).name.name === name
@@ -441,7 +441,7 @@ export class CodegenContext {
     interfaceType: InterfaceType,
   ): InterfaceDeclaration | undefined {
     for (const mod of this.modules) {
-      for (const stmt of mod.ast.body) {
+      for (const stmt of mod.body) {
         if (stmt.type === NodeType.InterfaceDeclaration) {
           const decl = stmt as InterfaceDeclaration;
           if (
@@ -463,7 +463,7 @@ export class CodegenContext {
    * Only exports from the entry point module should become WASM exports.
    */
   isFromEntryPoint(stmt: Statement): boolean {
-    return this.entryPointModule.ast.body.includes(stmt);
+    return this.entryPointModule.body.includes(stmt);
   }
 
   /**
@@ -473,7 +473,7 @@ export class CodegenContext {
   shouldExport(stmt: {exported?: boolean}): boolean {
     // Only entry point exports become WASM exports
     return !!(
-      stmt.exported && this.entryPointModule.ast.body.includes(stmt as any)
+      stmt.exported && this.entryPointModule.body.includes(stmt as any)
     );
   }
 

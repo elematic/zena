@@ -6,12 +6,12 @@ import {
   type FunctionExpression,
   type InterfaceDeclaration,
   type MixinDeclaration,
+  type Module,
   type TypeAliasDeclaration,
   type VariableDeclaration,
 } from '../ast.js';
 import type {CheckerContext} from '../checker/context.js';
 import {SemanticContext} from '../checker/semantic-context.js';
-import type {Module} from '../compiler.js';
 import {TypeKind, type MixinType} from '../types.js';
 import {
   preRegisterClassStruct,
@@ -54,7 +54,7 @@ export class CodeGenerator {
 
   /**
    * Create a new CodeGenerator.
-   * @param modules - All modules/libraries to generate code for
+   * @param modules - All compiled modules to generate code for
    * @param entryPointPath - Path of the entry point module (its exports become WASM exports)
    * @param semanticContext - Semantic context for type lookups (required)
    * @param checkerContext - Checker context for type instantiation (required)

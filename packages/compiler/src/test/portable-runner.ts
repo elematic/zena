@@ -271,13 +271,13 @@ async function runCheckTest(
     // Collect all diagnostics
     diagnostics = [];
     for (const mod of modules) {
-      diagnostics.push(...mod.diagnostics);
+      diagnostics.push(...(mod.diagnostics ?? []));
     }
   } else {
     // Simple case - no imports, use TypeChecker directly
     const parser = new Parser(content);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     diagnostics = checker.check();
   }
 
@@ -333,7 +333,7 @@ async function runExecutionTest(
   const modules = compiler.compile('/main.zena');
 
   // Check for errors from individual modules
-  const diagnostics = modules.flatMap((m) => m.diagnostics);
+  const diagnostics = modules.flatMap((m) => m.diagnostics ?? []);
   if (diagnostics.length > 0) {
     throw new Error(
       `Compilation failed: ${diagnostics.map((d) => d.message).join(', ')}`,

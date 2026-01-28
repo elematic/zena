@@ -7,7 +7,7 @@ import {DiagnosticCode} from '../../lib/diagnostics.js';
 function checkSource(source: string) {
   const parser = new Parser(source);
   const ast = parser.parse();
-  const checker = TypeChecker.forProgram(ast);
+  const checker = TypeChecker.forModule(ast);
   return checker.check();
 }
 

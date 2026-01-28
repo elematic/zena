@@ -19,8 +19,8 @@ describe('Parser: Match Case with Block', () => {
       };
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const stmt = program.body[0] as any;
+    const module = parser.parse();
+    const stmt = module.body[0] as any;
     const matchExpr = stmt.expression as MatchExpression;
 
     assert.strictEqual(matchExpr.cases.length, 2);
@@ -44,8 +44,8 @@ describe('Parser: Match Case with Block', () => {
       };
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const stmt = program.body[0] as any;
+    const module = parser.parse();
+    const stmt = module.body[0] as any;
     const matchExpr = stmt.expression as MatchExpression;
 
     assert.strictEqual(matchExpr.cases.length, 2);
@@ -67,8 +67,8 @@ describe('Parser: Match Case with Block', () => {
       };
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const decl = program.body[0] as any;
+    const module = parser.parse();
+    const decl = module.body[0] as any;
     const fn = decl.init;
     assert.strictEqual(fn.body.type, NodeType.BlockStatement);
     const fnBody = fn.body as BlockStatement;

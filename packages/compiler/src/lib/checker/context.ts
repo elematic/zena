@@ -11,54 +11,12 @@ import {
   TypeKind,
 } from '../types.js';
 import {substituteType, instantiateGenericClass} from './types.js';
-import type {
-  ClassDeclaration,
-  DeclareFunction,
-  EnumDeclaration,
-  FunctionExpression,
-  Identifier,
-  InterfaceDeclaration,
-  MixinDeclaration,
-  Parameter,
-  Program,
-  TypeAliasDeclaration,
-  TypeParameter,
-  VariableDeclaration,
-} from '../ast.js';
-import type {Compiler, Module} from '../compiler.js';
+import {type Declaration, type Module, type SymbolInfo} from '../ast.js';
+import type {Compiler} from '../compiler.js';
 import {SemanticContext} from './semantic-context.js';
 
-/**
- * Declaration types that can be associated with a symbol.
- * This enables tracking what AST node a name refers to.
- */
-export type Declaration =
-  | Parameter
-  | VariableDeclaration
-  | Identifier
-  | FunctionExpression
-  | DeclareFunction
-  | ClassDeclaration
-  | InterfaceDeclaration
-  | MixinDeclaration
-  | TypeAliasDeclaration
-  | TypeParameter
-  | EnumDeclaration;
-
-export interface SymbolInfo {
-  type: Type;
-  kind: 'let' | 'var' | 'type';
-  /**
-   * The AST node that declares this symbol.
-   * Optional for backward compatibility with existing code.
-   */
-  declaration?: Declaration;
-  /**
-   * The module path where this symbol is declared.
-   * Set for top-level declarations to enable cross-module resolution.
-   */
-  modulePath?: string;
-}
+// Re-export for backward compatibility
+export type {Declaration, SymbolInfo} from '../ast.js';
 
 /**
  * Per-library state that gets reset when switching modules.
@@ -169,7 +127,7 @@ export class CheckerContext {
   // ============================================================
   // Global state (shared across all modules)
   // ============================================================
-  program!: Program;
+  /** The current module being checked */
   module?: Module;
   compiler?: Compiler;
 
@@ -212,7 +170,6 @@ export class CheckerContext {
    */
   setCurrentLibrary(module: Module): void {
     this.module = module;
-    this.program = module.ast;
     this.#lib = createLibraryState();
   }
 
@@ -593,20 +550,6 @@ export class CheckerContext {
     ]);
 
   getWellKnownType(name: string): Type | undefined {
-    // Check bundled well-known types first (already resolved during bundling)
-    if (
-      name === Types.String.name &&
-      this.program.wellKnownTypes?.String?.inferredType
-    ) {
-      return this.program.wellKnownTypes.String.inferredType;
-    }
-    if (
-      name === TypeNames.FixedArray &&
-      this.program.wellKnownTypes?.FixedArray?.inferredType
-    ) {
-      return this.program.wellKnownTypes.FixedArray.inferredType;
-    }
-
     // Look up from canonical module location
     if (!this.compiler) return undefined;
 
@@ -616,7 +559,7 @@ export class CheckerContext {
     const module = this.compiler.getModule(modulePath);
     if (!module) return undefined;
 
-    const symbol = module.exports.get(`type:${name}`);
+    const symbol = module.exports?.get(`type:${name}`);
     if (symbol) {
       // Record usage so it gets injected/bundled
       this.usedPreludeSymbols.set(`type:${name}`, {

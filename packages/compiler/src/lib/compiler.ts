@@ -1,9 +1,13 @@
-import {NodeType, type Program, type ImportDeclaration} from './ast.js';
+import {
+  NodeType,
+  type Module,
+  type Program,
+  type ImportDeclaration,
+} from './ast.js';
 import {Parser} from './parser.js';
 import {prelude} from './prelude.js';
-import {CheckerContext, type SymbolInfo} from './checker/context.js';
+import {CheckerContext} from './checker/context.js';
 import {TypeChecker} from './checker/index.js';
-import type {Diagnostic} from './diagnostics.js';
 import {LibraryLoader, type LibraryRecord} from './loader/index.js';
 
 export interface CompilerHost {
@@ -16,27 +20,13 @@ export interface CompilerOptions {
   stdlibPaths?: string[];
 }
 
-/**
- * A module with type-checking results.
- *
- * Extends LibraryRecord with checker-populated fields (exports, diagnostics).
- */
-export interface Module {
-  path: string;
-  isStdlib: boolean;
-  source: string;
-  ast: Program;
-  imports: Map<string, string>; // specifier -> resolvedPath
-  exports: Map<string, SymbolInfo>; // exported name -> symbol info (populated by checker)
-  diagnostics: Diagnostic[]; // type-checking diagnostics (populated by checker)
-}
-
 export class Compiler {
   #host: CompilerHost;
   #loader: LibraryLoader;
   #modules = new Map<string, Module>();
   #preludeModules: Module[] = [];
   #preludeLoaded = false;
+  #entryPoint?: string;
 
   /**
    * Shared checker context for the entire compilation.
@@ -77,13 +67,15 @@ export class Compiler {
   }
 
   public compile(entryPoint: string): Module[] {
+    this.#entryPoint = entryPoint;
+
     // Load entry point and all dependencies via LibraryLoader
     this.#loader.load(entryPoint);
 
-    // Convert all loaded libraries to Modules
+    // Populate Module metadata from LibraryRecords
     for (const lib of this.#loader.libraries()) {
       if (!this.#modules.has(lib.path)) {
-        this.#modules.set(lib.path, this.#libraryToModule(lib));
+        this.#modules.set(lib.path, this.#getModule(lib));
       }
     }
 
@@ -92,25 +84,33 @@ export class Compiler {
   }
 
   /**
-   * Convert a LibraryRecord to a Module by adding checker-specific fields.
+   * Get the compiled program with all modules and entry point.
+   * Must be called after compile().
    */
-  #libraryToModule(lib: LibraryRecord): Module {
+  public getProgram(): Program {
+    if (!this.#entryPoint) {
+      throw new Error('Must call compile() before getProgram()');
+    }
     return {
-      path: lib.path,
-      isStdlib: lib.isStdlib,
-      source: lib.source,
-      ast: lib.ast,
-      imports: new Map(lib.imports), // Convert ReadonlyMap to mutable Map
-      exports: new Map(),
-      diagnostics: [],
+      modules: this.#modules,
+      entryPoint: this.#entryPoint,
+      preludeModules: this.#preludeModules,
     };
+  }
+
+  /**
+   * Get the Module from a LibraryRecord.
+   * The Module already has all metadata set by the parser.
+   */
+  #getModule(lib: LibraryRecord): Module {
+    return lib.ast;
   }
 
   #loadPrelude() {
     if (this.#preludeLoaded) return;
     this.#preludeLoaded = true;
 
-    const parser = new Parser(prelude);
+    const parser = new Parser(prelude, {path: 'zena:prelude', isStdlib: true});
     const ast = parser.parse();
 
     for (const stmt of ast.body) {
@@ -125,7 +125,7 @@ export class Compiler {
         // Convert ALL loaded libraries to Modules (including transitive dependencies)
         for (const lib of this.#loader.libraries()) {
           if (!this.#modules.has(lib.path)) {
-            this.#modules.set(lib.path, this.#libraryToModule(lib));
+            this.#modules.set(lib.path, this.#getModule(lib));
           }
         }
 
@@ -144,14 +144,14 @@ export class Compiler {
     const checking = new Set<string>();
 
     const checkModule = (module: Module) => {
-      if (checked.has(module.path) || checking.has(module.path)) {
+      if (checked.has(module.path!) || checking.has(module.path!)) {
         return;
       }
 
-      checking.add(module.path);
+      checking.add(module.path!);
 
       // Check dependencies first
-      for (const importPath of module.imports.values()) {
+      for (const importPath of module.imports!.values()) {
         const imported = this.#modules.get(importPath);
         if (imported) {
           checkModule(imported);
@@ -181,12 +181,12 @@ export class Compiler {
       module.diagnostics = checker.check();
 
       // Inject used prelude imports
-      if (!module.isStdlib && !module.path.startsWith('zena:')) {
+      if (!module.isStdlib && !module.path!.startsWith('zena:')) {
         this.#injectPreludeImports(module, checker.usedPreludeSymbols);
       }
 
-      checking.delete(module.path);
-      checked.add(module.path);
+      checking.delete(module.path!);
+      checked.add(module.path!);
     };
 
     for (const module of this.#modules.values()) {
@@ -211,7 +211,7 @@ export class Compiler {
     const newImports: ImportDeclaration[] = [];
     for (const [modulePath, names] of importsByModule) {
       // Update module.imports so Bundler can resolve these
-      module.imports.set(modulePath, modulePath);
+      module.imports!.set(modulePath, modulePath);
 
       newImports.push({
         type: NodeType.ImportDeclaration,
@@ -224,6 +224,6 @@ export class Compiler {
       } as ImportDeclaration);
     }
 
-    module.ast.body.unshift(...newImports);
+    module.body.unshift(...newImports);
   }
 }

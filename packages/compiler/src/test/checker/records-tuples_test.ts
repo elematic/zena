@@ -6,10 +6,10 @@ import {Parser} from '../../lib/parser.js';
 suite('Checker: Records and Tuples', () => {
   function check(source: string) {
     const parser = new Parser(source);
-    const program = parser.parse();
-    const checker = TypeChecker.forProgram(program);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
     const diagnostics = checker.check();
-    return {body: program.body, diagnostics};
+    return {body: module.body, diagnostics};
   }
 
   test('infers record literal type', () => {

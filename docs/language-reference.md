@@ -1446,7 +1446,7 @@ The behavior depends on the type `T`:
 
 ## 10. Standard Library
 
-Zena includes a small standard library of utility classes. These are automatically imported into every program.
+Zena includes a small standard library of utility classes. These are automatically imported into every module.
 
 ### Map<K, V>
 
@@ -1536,7 +1536,7 @@ let code: i32 = s as i32; // Explicit cast required
 ## 14. Grammar (Simplified)
 
 ```ebnf
-Program ::= Statement*
+Module ::= Statement*
 
 Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement | BlockStatement | ReturnStatement | IfStatement | WhileStatement | ForStatement
 

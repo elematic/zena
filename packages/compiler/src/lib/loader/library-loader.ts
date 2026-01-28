@@ -33,7 +33,7 @@
  * @see docs/design/compiler-refactoring.md
  */
 
-import type {Program} from '../ast.js';
+import type {Module} from '../ast.js';
 import type {Diagnostic} from '../diagnostics.js';
 import {Parser} from '../parser.js';
 import type {CompilerHost} from '../compiler.js';
@@ -55,7 +55,7 @@ export interface LibraryRecord {
   readonly source: string;
 
   /** Parsed AST */
-  readonly ast: Program;
+  readonly ast: Module;
 
   /**
    * Resolved import mappings.
@@ -131,19 +131,18 @@ export class LibraryLoader {
     const isStdlib = path.startsWith('zena:') || this.#stdlibPaths.has(path);
 
     const source = this.#host.load(path);
-    const parser = new Parser(source);
+    const parser = new Parser(source, {path, isStdlib});
     const ast = parser.parse();
 
-    const imports = new Map<string, string>();
-
-    // Create record first (with empty imports) and add to cache
+    // Create record first and add to cache
     // This prevents infinite recursion on circular imports
+    // Note: ast.imports is the same Map we'll populate below
     const record: LibraryRecord = {
       path,
       isStdlib,
       source,
       ast,
-      imports,
+      imports: ast.imports,
       parseDiagnostics: [],
     };
 
@@ -157,7 +156,7 @@ export class LibraryLoader {
       ) {
         const specifier = (stmt as any).moduleSpecifier.value;
         const resolvedPath = this.resolve(specifier, path);
-        imports.set(specifier, resolvedPath);
+        ast.imports.set(specifier, resolvedPath);
 
         // Recursively load dependencies (safe - we're already in cache)
         this.load(resolvedPath);

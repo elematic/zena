@@ -127,7 +127,8 @@ To support mutable shared state, the exporting module must either:
 - Add `ImportDeclaration` node.
   - `specifier`: string
   - `imports`: Array of `{ name: string, alias?: string }`
-- Update `Program` node (optional, or just enforce structure in Parser).
+- ✅ `Module` node contains both AST and metadata (`path`, `isStdlib`, `source`, `imports`, `exports`, `diagnostics`).
+- ✅ `Program` is a compiler-created container (not an AST node) for all modules plus the entry point.
 
 ### 2. Parser Updates
 

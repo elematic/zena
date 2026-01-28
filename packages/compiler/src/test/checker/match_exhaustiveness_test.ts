@@ -7,7 +7,7 @@ suite('TypeChecker - Match Exhaustiveness', () => {
   function check(input: string) {
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     return errors;
   }

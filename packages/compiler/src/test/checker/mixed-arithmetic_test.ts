@@ -9,7 +9,7 @@ suite('Mixed Arithmetic', () => {
     const input = 'let x = 1 + 2.5;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -23,7 +23,7 @@ suite('Mixed Arithmetic', () => {
     const input = 'let x = 1 * 2.5;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -36,7 +36,7 @@ suite('Mixed Arithmetic', () => {
     const input = 'let x = 2.5 * 1;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -49,7 +49,7 @@ suite('Mixed Arithmetic', () => {
     const input = 'let x = 1 < 2.5;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -62,7 +62,7 @@ suite('Mixed Arithmetic', () => {
     const input = 'let x = 1 & 2.5;';
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);

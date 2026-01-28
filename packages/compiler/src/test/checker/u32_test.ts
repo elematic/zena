@@ -10,7 +10,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -22,7 +22,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -41,7 +41,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -61,7 +61,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -78,7 +78,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -90,7 +90,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -106,7 +106,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -122,7 +122,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -134,7 +134,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -146,7 +146,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -158,7 +158,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 0);
@@ -171,7 +171,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -186,7 +186,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
@@ -199,7 +199,7 @@ suite('TypeChecker - Unsigned Integers (u32)', () => {
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
-    const checker = TypeChecker.forProgram(ast);
+    const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);

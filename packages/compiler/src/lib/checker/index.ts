@@ -1,8 +1,7 @@
-import {type Program} from '../ast.js';
+import {type Module} from '../ast.js';
 import {type Diagnostic} from '../diagnostics.js';
 import {CheckerContext} from './context.js';
 import {checkStatement, predeclareType} from './statements.js';
-import type {Module} from '../compiler.js';
 import {
   TypeKind,
   type TypeParameterType,
@@ -32,28 +31,15 @@ export class TypeChecker {
   }
 
   /**
-   * Create a TypeChecker for a standalone Program (no Compiler context).
+   * Create a TypeChecker for a standalone Module AST (no Compiler context).
    * Useful for simple tests that don't need multi-module support.
    *
-   * @param program The AST to check
-   * @param options Optional module configuration
+   * @param ast The Module AST to check (must be created by Parser with options)
    */
-  static forProgram(
-    program: Program,
-    options?: {path?: string; isStdlib?: boolean},
-  ): TypeChecker {
-    const module: Module = {
-      path: options?.path ?? '<standalone>',
-      isStdlib: options?.isStdlib ?? false,
-      source: '',
-      ast: program,
-      imports: new Map(),
-      exports: new Map(),
-      diagnostics: [],
-    };
+  static forModule(ast: Module): TypeChecker {
     const ctx = new CheckerContext();
-    ctx.setCurrentLibrary(module);
-    return new TypeChecker(ctx, module);
+    ctx.setCurrentLibrary(ast);
+    return new TypeChecker(ctx, ast);
   }
 
   /**
@@ -96,11 +82,11 @@ export class TypeChecker {
     // Note: preludeExports is global, so modules checked later will see exports
     // from modules checked earlier.
     for (const mod of this.preludeModules) {
-      for (const [name, info] of mod.exports) {
+      for (const [name, info] of mod.exports ?? []) {
         // Don't overwrite if multiple prelude modules export the same name (first wins)
         if (!ctx.preludeExports.has(name)) {
           ctx.preludeExports.set(name, {
-            modulePath: mod.path,
+            modulePath: mod.path!,
             exportName: name,
             info,
           });
@@ -111,18 +97,18 @@ export class TypeChecker {
     ctx.enterScope();
 
     // Only register intrinsics for system modules
-    if (this.#module.path.startsWith('zena:') || this.#module.isStdlib) {
+    if (this.#module.path?.startsWith('zena:') || this.#module.isStdlib) {
       this.#registerIntrinsics(ctx);
     }
 
     // First pass: pre-declare all type names (classes, mixins, interfaces)
     // This enables forward references (e.g., a mixin field referencing a class that uses the mixin)
-    for (const stmt of ctx.program.body) {
+    for (const stmt of ctx.module!.body) {
       predeclareType(ctx, stmt);
     }
 
     // Second pass: fully check all statements
-    for (const stmt of ctx.program.body) {
+    for (const stmt of ctx.module!.body) {
       checkStatement(ctx, stmt);
     }
 

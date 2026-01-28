@@ -12,8 +12,8 @@ describe('Parser: Match Guard', () => {
       };
     `;
     const parser = new Parser(source);
-    const program = parser.parse();
-    const stmt = program.body[0] as any;
+    const module = parser.parse();
+    const stmt = module.body[0] as any;
     const matchExpr = stmt.expression as MatchExpression;
 
     assert.strictEqual(matchExpr.cases.length, 2);

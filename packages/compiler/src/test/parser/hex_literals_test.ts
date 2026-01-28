@@ -7,9 +7,9 @@ suite('Parser - Hex Literals', () => {
   test('should parse hex integer literals', () => {
     const input = 'let x = 0x10;';
     const parser = new Parser(input);
-    const program = parser.parse();
+    const module = parser.parse();
 
-    const decl = program.body[0];
+    const decl = module.body[0];
     assert.strictEqual(decl.type, NodeType.VariableDeclaration);
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
@@ -23,9 +23,9 @@ suite('Parser - Hex Literals', () => {
   test('should parse hex integer literals with uppercase X and digits', () => {
     const input = 'let x = 0XFF;';
     const parser = new Parser(input);
-    const program = parser.parse();
+    const module = parser.parse();
 
-    const decl = program.body[0];
+    const decl = module.body[0];
     assert.strictEqual(decl.type, NodeType.VariableDeclaration);
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
@@ -39,9 +39,9 @@ suite('Parser - Hex Literals', () => {
   test('should parse decimal integer literals', () => {
     const input = 'let x = 123;';
     const parser = new Parser(input);
-    const program = parser.parse();
+    const module = parser.parse();
 
-    const decl = program.body[0];
+    const decl = module.body[0];
     assert.strictEqual(decl.type, NodeType.VariableDeclaration);
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
@@ -55,9 +55,9 @@ suite('Parser - Hex Literals', () => {
   test('should parse decimal float literals', () => {
     const input = 'let x = 12.34;';
     const parser = new Parser(input);
-    const program = parser.parse();
+    const module = parser.parse();
 
-    const decl = program.body[0];
+    const decl = module.body[0];
     assert.strictEqual(decl.type, NodeType.VariableDeclaration);
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
@@ -71,9 +71,9 @@ suite('Parser - Hex Literals', () => {
   test('should parse large hex integer literals', () => {
     const input = 'let x = 0x7FFFFFFF;';
     const parser = new Parser(input);
-    const program = parser.parse();
+    const module = parser.parse();
 
-    const decl = program.body[0];
+    const decl = module.body[0];
     assert.strictEqual(decl.type, NodeType.VariableDeclaration);
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
