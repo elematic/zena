@@ -435,6 +435,8 @@ This project is an **npm monorepo** managed with **Wireit**.
         - Replaced `getInterfaceFromTypeIndex()` with `ctx.getInterfaceInfoByStructIndex()` (O(1) lookup)
         - Removed `ctx.interfaces.set()` call and the `interfaces` Map from `CodegenContext`
         - Added test `interface-name-collision_test.ts` proving interfaces with same name from different modules work correctly
+      - [x] Added `function-name-collision_test.ts` - functions already work correctly due to qualified names
+      - [ ] Remove `ctx.functions` Map - requires identity-based generic function instantiation tracking (see GitHub issue)
       - [ ] Remove `ctx.classes` Map entirely - migrate to identity-only registration via `ctx.registerClassInfoByType()`
 
     **Benefits** (now realized):

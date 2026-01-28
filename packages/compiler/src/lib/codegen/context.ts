@@ -138,6 +138,20 @@ export class CodegenContext {
   #extraLocals: number[][] = [];
   #nextLocalIndex = 0;
   #thisLocalIndex = 0;
+  /**
+   * Maps function names to their WASM function indices.
+   *
+   * Keys are qualified names (e.g., "/path/to/module.zena:funcName") to avoid
+   * collisions between modules. Generic function specializations use keys like
+   * "funcName<i32>" for deduplication.
+   *
+   * Identity-based lookup via `getFunctionIndexByDecl()` is preferred when a
+   * declaration is available. This map serves as fallback for generic function
+   * specializations which don't have a declaration node.
+   *
+   * @see getFunctionIndexByDecl for identity-based lookup
+   * @see registerFunctionByDecl for identity-based registration
+   */
   public functions = new Map<string, number>();
   public functionOverloads = new Map<
     string,
