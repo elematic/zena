@@ -408,9 +408,10 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] `instantiateGenericMethod` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
       - [x] `instantiateGenericFunction` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
       - [x] `generateNewExpression` - no longer uses `typeToTypeAnnotation`
+      - [x] `resolveExtensionClassInfo` - removed dead `typeContext` code, uses `classType.onType` directly
       - [ ] `instantiateClass` - still builds `context: Map<string, TypeAnnotation>` for backward compatibility
-      - [ ] `instantiateExtensionClassFromCheckerType` - still builds `typeContext` from type args
-      - Blocked by: some code paths still thread annotation-based context
+      - [ ] `instantiateGenericMethod/Function` - still builds `typeContext` for `currentTypeContext`
+      - Blocked by: `currentTypeContext` threading through body generation
 
     **Benefits** (now realized):
     - Enables intellisense (hover shows `i32`, not `T`)

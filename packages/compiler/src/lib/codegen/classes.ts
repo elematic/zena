@@ -4620,30 +4620,8 @@ function resolveExtensionClassInfo(
     return classInfo;
   }
 
-  // Build type context from the ClassType's type arguments
-  // The classInfo.typeArguments contains the parameter names (T -> TypeAnnotation)
-  // We need to map those names to the actual type arguments from classType
-  const typeContext = new Map<string, TypeAnnotation>();
-
-  if (classInfo.typeArguments) {
-    // classInfo.typeArguments maps type param names to their resolved annotations
-    // But for the onType computation, we need to use the classType's type arguments
-    // to build a fresh context
-    const paramNames = Array.from(classInfo.typeArguments.keys());
-    for (
-      let i = 0;
-      i < paramNames.length && i < classType.typeArguments.length;
-      i++
-    ) {
-      const paramName = paramNames[i];
-      const typeArg = classType.typeArguments[i];
-      const typeAnnotation = typeToTypeAnnotation(typeArg, undefined, ctx);
-      typeContext.set(paramName, typeAnnotation);
-    }
-  }
-
-  // Compute the correct onType using the type context
-  // The checker always sets onType for extension classes
+  // Compute the correct onType directly from the checker's ClassType.
+  // The checker always sets onType for extension classes with concrete type arguments.
   if (!classType.onType) {
     throw new Error(
       `Extension class ${classInfo.name} missing onType in checker type`,
