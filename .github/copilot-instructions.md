@@ -405,14 +405,21 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] `generateNewExpression` - simplified to use identity-based lookup via `expr.inferredType`, removed annotation-based fallback path
       - [x] Super class lookups - identity-based via `superClassType`. Fixed (2025-01-28): `defineClassStruct` now correctly finds the base class before mixin intermediates when processing mixin chains, preventing double-application of mixins (e.g., `Base_M_M` instead of `Base_M`).
       - [x] Mixin intermediate registration - `preRegisterMixin` and `applyMixin` now receive checker intermediate types via `collectMixinIntermediateTypes()` for identity-based lookup.
-    - [ ] **Phase 7: Remove `typeToTypeAnnotation()`**
+    - [x] **Phase 7: Remove `currentTypeContext` and migrate to `currentTypeParamMap`** (completed 2025-01-29)
       - [x] `instantiateGenericMethod` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
       - [x] `instantiateGenericFunction` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
       - [x] `generateNewExpression` - no longer uses `typeToTypeAnnotation`
       - [x] `resolveExtensionClassInfo` - removed dead `typeContext` code, uses `classType.onType` directly
-      - [ ] `instantiateClass` - still builds `context: Map<string, TypeAnnotation>` for backward compatibility
-      - [ ] `instantiateGenericMethod/Function` - still builds `typeContext` for `currentTypeContext`
-      - Blocked by: `currentTypeContext` threading through body generation
+      - [x] `generateFunctionBody` - now takes `typeParamMap: Map<string, Type>` directly instead of `typeContext`
+      - [x] `generateMethodBody` - now takes `typeParamMap: Map<string, Type>` directly instead of `typeContext`
+      - [x] `generateClassMethods` - removed `typeContext` parameter entirely
+      - [x] `generateFunctionExpression` (closures) - captures `currentTypeParamMap` for deferred body generation
+      - [x] Removed `currentTypeContext` field from `CodegenContext`
+      - [x] Added `ClassInfo.typeParamMap: Map<string, Type>` for checker-based type resolution
+      - [x] `instantiateGenericMethod` - now uses `classInfo.typeParamMap` instead of extracting `.inferredType` from `classInfo.typeArguments`
+      - [ ] `instantiateClass` - still builds `context: Map<string, TypeAnnotation>` for `typeToTypeAnnotation` and `resolveAnnotation`
+      - [ ] Remove `ClassInfo.typeArguments` (deprecated) and `typeToTypeAnnotation()` helper
+      - Remaining work: `typeToTypeAnnotation()` and `resolveAnnotation()` still use annotation-based context for some vtable generation
 
     **Benefits** (now realized):
     - Enables intellisense (hover shows `i32`, not `T`)

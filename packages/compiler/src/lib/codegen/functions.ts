@@ -5,7 +5,6 @@ import {
   type Expression,
   type FunctionExpression,
   type MethodDefinition,
-  type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {Decorators, type FunctionType, type Type} from '../types.js';
@@ -13,7 +12,6 @@ import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
   getCheckerTypeKeyForSpecialization,
   mapCheckerTypeToWasmType,
-  typeToTypeAnnotation,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
 import {generateExpression} from './expressions.js';
@@ -78,31 +76,26 @@ export function generateFunctionBody(
   ctx: CodegenContext,
   name: string,
   func: FunctionExpression,
-  typeContext?: Map<string, TypeAnnotation>,
+  typeParamMap?: Map<string, Type>,
   returnType?: number[],
 ): number[] {
-  const oldContext = ctx.currentTypeContext;
   const oldReturnType = ctx.currentReturnType;
-  ctx.currentTypeContext = typeContext;
   ctx.currentReturnType = returnType;
 
   ctx.pushFunctionScope();
 
-  // Build type map for substitution if we have a type context
-  let typeMap: Map<string, Type> | undefined;
-  if (typeContext && typeContext.size > 0 && ctx.checkerContext) {
-    typeMap = new Map();
-    for (const [name, annotation] of typeContext) {
-      if (annotation.inferredType) {
-        typeMap.set(name, annotation.inferredType);
-      }
-    }
+  // Push type param context for checker-based resolution
+  if (typeParamMap && typeParamMap.size > 0) {
+    ctx.pushTypeParamContext(typeParamMap);
   }
 
   func.params.forEach((p) => {
     let paramType = p.typeAnnotation.inferredType!;
-    if (typeMap && ctx.checkerContext) {
-      paramType = ctx.checkerContext.substituteTypeParams(paramType, typeMap);
+    if (typeParamMap && ctx.checkerContext) {
+      paramType = ctx.checkerContext.substituteTypeParams(
+        paramType,
+        typeParamMap,
+      );
     }
     ctx.defineParam(p.name.name, mapCheckerTypeToWasmType(ctx, paramType), p);
   });
@@ -119,7 +112,11 @@ export function generateFunctionBody(
 
   body.push(Opcode.end);
 
-  ctx.currentTypeContext = oldContext;
+  // Pop type param context if we pushed one
+  if (typeParamMap && typeParamMap.size > 0) {
+    ctx.popTypeParamContext();
+  }
+
   ctx.currentReturnType = oldReturnType;
   return body;
 }
@@ -153,12 +150,6 @@ export function instantiateGenericFunction(
     for (let i = 0; i < funcDecl.typeParameters.length; i++) {
       typeMap.set(funcDecl.typeParameters[i].name, typeArgs[i]);
     }
-  }
-
-  // Build typeContext for backward compatibility with currentTypeContext
-  const typeContext = new Map<string, TypeAnnotation>();
-  for (const [name, type] of typeMap) {
-    typeContext.set(name, typeToTypeAnnotation(type, undefined, ctx));
   }
 
   const params = funcDecl.params.map((p) => {
@@ -196,7 +187,7 @@ export function instantiateGenericFunction(
       ctx,
       key,
       funcDecl,
-      typeContext,
+      typeMap,
       mappedReturn,
     );
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
@@ -326,12 +317,10 @@ export function instantiateGenericMethod(
   // Build type map directly from Type[] (checker-based)
   const typeMap = new Map<string, Type>();
 
-  // Add class type parameters from classInfo.typeArguments
-  if (classInfo.typeArguments) {
-    for (const [name, annotation] of classInfo.typeArguments) {
-      if (annotation.inferredType) {
-        typeMap.set(name, annotation.inferredType);
-      }
+  // Add class type parameters from classInfo.typeParamMap (checker-based)
+  if (classInfo.typeParamMap) {
+    for (const [name, type] of classInfo.typeParamMap) {
+      typeMap.set(name, type);
     }
   }
 
@@ -345,13 +334,6 @@ export function instantiateGenericMethod(
     for (let i = 0; i < methodDecl.typeParameters.length; i++) {
       typeMap.set(methodDecl.typeParameters[i].name, typeArgs[i]);
     }
-  }
-
-  // Build typeContext for backward compatibility with currentTypeContext
-  // This converts Type -> TypeAnnotation for legacy code paths
-  const typeContext = new Map<string, TypeAnnotation>();
-  for (const [name, type] of typeMap) {
-    typeContext.set(name, typeToTypeAnnotation(type, undefined, ctx));
   }
 
   // Map types
@@ -408,7 +390,7 @@ export function instantiateGenericMethod(
       ctx,
       classInfo,
       methodDecl,
-      typeContext,
+      typeMap,
       returnType,
     );
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
@@ -421,26 +403,17 @@ function generateMethodBody(
   ctx: CodegenContext,
   classInfo: ClassInfo,
   method: MethodDefinition,
-  typeContext: Map<string, TypeAnnotation>,
+  typeParamMap: Map<string, Type>,
   returnType?: number[],
 ): number[] {
-  const oldContext = ctx.currentTypeContext;
   const oldReturnType = ctx.currentReturnType;
 
   // Push type param context for checker-based resolution
   // This enables substituteTypeParams to resolve method type parameters
   // (e.g., U in map<U>) in addition to class type parameters
-  if (typeContext.size > 0 && ctx.checkerContext) {
-    const typeMap = new Map<string, Type>();
-    for (const [name, annotation] of typeContext) {
-      if (annotation.inferredType) {
-        typeMap.set(name, annotation.inferredType);
-      } else {
-      }
-    }
-    ctx.pushTypeParamContext(typeMap);
+  if (typeParamMap.size > 0) {
+    ctx.pushTypeParamContext(typeParamMap);
   }
-  ctx.currentTypeContext = typeContext;
   ctx.currentReturnType = returnType;
   ctx.currentClass = classInfo;
 
@@ -460,18 +433,13 @@ function generateMethodBody(
     ctx.defineParam('this', thisType);
   }
 
-  // Build type map for checker-based substitution
-  const typeMap = new Map<string, Type>();
-  for (const [name, annotation] of typeContext) {
-    if (annotation.inferredType) {
-      typeMap.set(name, annotation.inferredType);
-    }
-  }
-
   method.params.forEach((p) => {
     let paramType = p.typeAnnotation.inferredType!;
     if (ctx.checkerContext) {
-      paramType = ctx.checkerContext.substituteTypeParams(paramType, typeMap);
+      paramType = ctx.checkerContext.substituteTypeParams(
+        paramType,
+        typeParamMap,
+      );
     }
     ctx.defineParam(p.name.name, mapCheckerTypeToWasmType(ctx, paramType), p);
   });
@@ -490,11 +458,10 @@ function generateMethodBody(
   body.push(Opcode.end);
 
   // Pop type param context if we pushed one
-  if (typeContext.size > 0 && ctx.checkerContext) {
+  if (typeParamMap.size > 0) {
     ctx.popTypeParamContext();
   }
 
-  ctx.currentTypeContext = oldContext;
   ctx.currentReturnType = oldReturnType;
   return body;
 }

@@ -5247,20 +5247,9 @@ function generateFunctionExpression(
   }
 
   // 3. Determine Signature
-  const typeContext = new Map(ctx.currentTypeContext);
-  if (expr.typeParameters) {
-    for (const param of expr.typeParameters) {
-      typeContext.set(param.name, {
-        type: NodeType.TypeAnnotation,
-        name: 'anyref',
-      } as any);
-    }
-  }
-
-  // Temporarily override context for signature determination
-  const oldTypeContext = ctx.currentTypeContext;
-  ctx.currentTypeContext = typeContext;
-
+  // Note: For closures inside generic contexts, the currentTypeParamMap is already set
+  // by the enclosing method/function body generation. Generic closures (<T>(...) => ...)
+  // would need their own type param handling, but are not currently supported.
   let paramTypes: number[][];
   let returnType: number[];
 
@@ -5271,8 +5260,6 @@ function generateFunctionExpression(
   const funcType = expr.inferredType as FunctionType;
   paramTypes = funcType.parameters.map((t) => mapCheckerTypeToWasmType(ctx, t));
   returnType = mapCheckerTypeToWasmType(ctx, funcType.returnType);
-
-  ctx.currentTypeContext = oldTypeContext;
 
   // 4. Get or create closure type (this must happen BEFORE creating the impl function
   // to ensure type indices match)
@@ -5285,14 +5272,20 @@ function generateFunctionExpression(
 
   ctx.module.declareFunction(implFuncIndex);
 
-  ctx.bodyGenerators.push(() => {
-    const oldTypeContext = ctx.currentTypeContext;
-    ctx.currentTypeContext = typeContext;
+  // Capture the current type param map for deferred body generation
+  // This ensures the closure body has access to the enclosing generic context's type params
+  const capturedTypeParamMap = new Map(ctx.currentTypeParamMap);
 
+  ctx.bodyGenerators.push(() => {
     const funcBody: number[] = [];
 
     // Setup Scope
     ctx.pushFunctionScope();
+
+    // Push the captured type param map for this closure's body
+    if (capturedTypeParamMap.size > 0) {
+      ctx.pushTypeParamContext(capturedTypeParamMap);
+    }
 
     // Param 0: Context (eqref)
     const ctxLocalIndex = ctx.defineParam('$$ctx', [ValType.eqref]);
@@ -5361,7 +5354,10 @@ function generateFunctionExpression(
 
     ctx.module.addCode(implFuncIndex, ctx.extraLocals, funcBody);
 
-    ctx.currentTypeContext = oldTypeContext;
+    // Pop the type param context if we pushed one
+    if (capturedTypeParamMap.size > 0) {
+      ctx.popTypeParamContext();
+    }
   });
 
   // 5. Instantiate Closure

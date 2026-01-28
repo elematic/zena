@@ -2026,7 +2026,7 @@ export function registerClassMethods(
 
   // Pass the checker type for identity-based lookup (classType is already declared at function top)
   ctx.bodyGenerators.push(() => {
-    generateClassMethods(ctx, declForGen, undefined, undefined, classType);
+    generateClassMethods(ctx, declForGen, undefined, classType);
   });
 
   // Restore previous class context
@@ -2037,7 +2037,6 @@ export function generateClassMethods(
   ctx: CodegenContext,
   decl: ClassDeclaration,
   specializedName?: string,
-  typeContext?: Map<string, TypeAnnotation>,
   checkerType?: ClassType,
   /**
    * Pre-resolved type parameter map. If provided, this is used directly for
@@ -2047,12 +2046,8 @@ export function generateClassMethods(
    */
   resolvedTypeParamMap?: Map<string, Type>,
 ) {
-  const previousTypeContext = ctx.currentTypeContext;
   const previousCheckerType = ctx.currentCheckerType;
 
-  if (typeContext) {
-    ctx.currentTypeContext = typeContext;
-  }
   // Set checker type for resolving type parameters in method bodies
   if (checkerType) {
     ctx.currentCheckerType = checkerType;
@@ -2433,10 +2428,9 @@ export function generateClassMethods(
   }
 
   // Restore previous context
-  if (checkerType && ctx.checkerContext) {
+  if (resolvedTypeParamMap || (checkerType && ctx.checkerContext)) {
     ctx.popTypeParamContext();
   }
-  ctx.currentTypeContext = previousTypeContext;
   ctx.currentCheckerType = previousCheckerType;
 }
 
@@ -3139,6 +3133,7 @@ export function instantiateClass(
     classInfo.vtable = vtable;
     classInfo.onType = onType;
     classInfo.superClassType = superClassType;
+    classInfo.typeParamMap = typeParamMap;
     if (decl.isExtension && decl.onType) {
       classInfo.onTypeAnnotation = decl.onType;
     }
@@ -3147,6 +3142,7 @@ export function instantiateClass(
       name: specializedName,
       originalName: decl.name.name,
       typeArguments: context,
+      typeParamMap,
       structTypeIndex,
       superClass: superClassName,
       superClassType,
@@ -3516,13 +3512,7 @@ export function instantiateClass(
       generateInterfaceVTable(ctx, classInfo, decl, context);
 
       ctx.bodyGenerators.push(() => {
-        generateClassMethods(
-          ctx,
-          declForGen,
-          specializedName,
-          context,
-          checkerType,
-        );
+        generateClassMethods(ctx, declForGen, specializedName, checkerType);
       });
 
       // Restore context before early return
@@ -3639,7 +3629,6 @@ export function instantiateClass(
         ctx,
         declForGen,
         specializedName,
-        context,
         checkerType,
         typeParamMap, // Pass pre-resolved type param map for nested generics
       );
@@ -4339,13 +4328,11 @@ export function mapCheckerTypeToWasmType(
   ctx: CodegenContext,
   type: Type,
 ): number[] {
-  // First, resolve type parameters.
-  // Prefer checker-based resolution via currentTypeParamMap (contains Type values).
-  // Fall back to annotation-based resolution via currentTypeContext (contains TypeAnnotation).
+  // Resolve type parameters via currentTypeParamMap (contains Type values).
   if (type.kind === TypeKind.TypeParameter) {
     const typeParam = type as TypeParameterType;
 
-    // Try checker-based resolution first (preferred)
+    // Try checker-based resolution
     if (ctx.currentTypeParamMap.has(typeParam.name)) {
       const resolved = ctx.currentTypeParamMap.get(typeParam.name)!;
       // If resolved to a non-type-parameter, use it directly

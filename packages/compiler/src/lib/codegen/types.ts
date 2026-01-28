@@ -1,10 +1,18 @@
 import type {TypeAnnotation} from '../ast.js';
-import type {ClassType, InterfaceType} from '../types.js';
+import type {ClassType, InterfaceType, Type} from '../types.js';
 
 export interface ClassInfo {
   name: string;
   originalName?: string;
+  /**
+   * @deprecated Use typeParamMap instead for checker-based type resolution.
+   */
   typeArguments?: Map<string, TypeAnnotation>;
+  /**
+   * Type parameter map for checker-based type resolution.
+   * Maps type parameter names (e.g., "T") to their concrete Type values.
+   */
+  typeParamMap?: Map<string, Type>;
   structTypeIndex: number;
   brandTypeIndex?: number;
   superClass?: string;

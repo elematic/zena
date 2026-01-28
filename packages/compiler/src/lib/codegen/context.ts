@@ -159,7 +159,6 @@ export class CodegenContext {
 
   // Current state
   public currentClass: ClassInfo | null = null;
-  public currentTypeContext: Map<string, TypeAnnotation> | undefined;
   public currentCheckerType: ClassType | undefined; // For resolving type parameters in instantiated generics
   public currentReturnType: number[] | undefined;
 
