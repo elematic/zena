@@ -1718,7 +1718,7 @@ export function registerClassMethods(
         }
 
         const propName = getMemberName(member.name);
-        const propType = mapType(ctx, member.typeAnnotation);
+        const propType = mapType(ctx, member.typeAnnotation, classInfo.typeArguments);
 
         // Getter
         const getterName = getGetterName(propName);
@@ -2755,12 +2755,22 @@ export function instantiateClass(
   typeArguments: TypeAnnotation[],
   parentContext?: Map<string, TypeAnnotation>,
 ) {
-  const context = new Map<string, TypeAnnotation>();
-  if (decl.typeParameters) {
-    decl.typeParameters.forEach((param, index) => {
-      const arg = typeArguments[index];
-      context.set(param.name, resolveAnnotation(arg, parentContext));
-    });
+  // Check if this class already has type arguments stored (e.g., from applyMixin)
+  const existingClassInfo = ctx.classes.get(specializedName);
+  let context: Map<string, TypeAnnotation>;
+  
+  if (existingClassInfo && existingClassInfo.typeArguments) {
+    // Use the existing type arguments (e.g., from mixin instantiation)
+    context = existingClassInfo.typeArguments;
+  } else {
+    // Build context from declaration
+    context = new Map<string, TypeAnnotation>();
+    if (decl.typeParameters) {
+      decl.typeParameters.forEach((param, index) => {
+        const arg = typeArguments[index];
+        context.set(param.name, resolveAnnotation(arg, parentContext));
+      });
+    }
   }
 
   // Handle generic superclass instantiation
@@ -3024,7 +3034,7 @@ export function instantiateClass(
 
         let funcIndex = -1;
         if (!intrinsic) {
-          funcIndex = ctx.module.addFunction(typeIndex);
+          funcIndex = ctx.module.addFunction(typeIndex, `${specializedName}.${member.name}`);
         }
 
         const returnType = results.length > 0 ? results[0] : [];
@@ -3081,7 +3091,7 @@ export function instantiateClass(
             typeIndex = ctx.module.addType(params, results);
           }
 
-          const funcIndex = ctx.module.addFunction(typeIndex!);
+          const funcIndex = ctx.module.addFunction(typeIndex!, `${specializedName}.${member.name}`);
 
           methods.set(methodName, {
             index: funcIndex,
@@ -3133,7 +3143,7 @@ export function instantiateClass(
             typeIndex = ctx.module.addType(params, results);
           }
 
-          const funcIndex = ctx.module.addFunction(typeIndex!);
+          const funcIndex = ctx.module.addFunction(typeIndex!, `${specializedName}.${member.name}`);
 
           methods.set(methodName, {
             index: funcIndex,
@@ -3203,7 +3213,7 @@ export function instantiateClass(
             typeIndex = ctx.module.addType(params, results);
           }
 
-          const funcIndex = intrinsic ? -1 : ctx.module.addFunction(typeIndex!);
+          const funcIndex = intrinsic ? -1 : ctx.module.addFunction(typeIndex!, `${specializedName}.${member.name} (getter)`);
 
           methods.set(regGetterName, {
             index: funcIndex,
@@ -3241,7 +3251,7 @@ export function instantiateClass(
 
             const setterFuncIndex = intrinsic
               ? -1
-              : ctx.module.addFunction(setterTypeIndex!);
+              : ctx.module.addFunction(setterTypeIndex!, `${specializedName}.${member.name} (setter)`);
 
             methods.set(regSetterName, {
               index: setterFuncIndex,

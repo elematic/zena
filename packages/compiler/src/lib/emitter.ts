@@ -141,7 +141,7 @@ export class WasmModule {
     return this.#types.length - 1;
   }
 
-  public addFunction(typeIndex: number): number {
+  public addFunction(typeIndex: number, debugName?: string): number {
     this.#functions.push(typeIndex);
     this.#codes.push([]);
     const index = this.#importedFunctionCount + this.#functions.length - 1;
