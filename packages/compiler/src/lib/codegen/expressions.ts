@@ -41,7 +41,6 @@ import {
   Decorators,
   TypeKind,
   Types,
-  TypeNames,
   type ClassType,
   type FunctionType,
   type InterfaceType,
@@ -1014,8 +1013,9 @@ function instantiateExtensionClassFromCheckerType(
   ctx: CodegenContext,
   classType: ClassType,
 ): ClassInfo | undefined {
-  // Get the generic class declaration
-  const genericDecl = ctx.genericClasses.get(classType.name);
+  // Get the generic class declaration using identity-based lookup
+  const genericSource = classType.genericSource ?? classType;
+  const genericDecl = ctx.getGenericDeclByType(genericSource);
   if (!genericDecl || !genericDecl.isExtension) {
     return undefined;
   }
@@ -1044,9 +1044,10 @@ function resolveFixedArrayClass(
   checkerType: Type | undefined,
 ): ClassInfo | undefined {
   if (checkerType && checkerType.kind === TypeKind.Array) {
-    let fixedArrayDecl = ctx.wellKnownTypes.FixedArray;
+    const fixedArrayDecl = ctx.wellKnownTypes.FixedArray;
     if (!fixedArrayDecl) {
-      fixedArrayDecl = ctx.genericClasses.get(TypeNames.FixedArray);
+      // FixedArray must be registered in wellKnownTypes during stdlib loading
+      return undefined;
     }
 
     if (fixedArrayDecl) {
@@ -4058,7 +4059,8 @@ function generateFieldFromBinding(
   // try to create a ClassInfo on-the-fly. This is needed because generic extension classes
   // (like FixedArray<T>) skip registerClassMethods and aren't in ctx.classes.
   if (!classInfo && classType.isExtension) {
-    const genericDecl = ctx.genericClasses.get(classType.name);
+    const genericSource = classType.genericSource ?? classType;
+    const genericDecl = ctx.getGenericDeclByType(genericSource);
     if (genericDecl && genericDecl.isExtension && genericDecl.onType) {
       const onType = mapCheckerTypeToWasmType(ctx, classType.onType!);
 
@@ -4232,21 +4234,11 @@ function generateInterfaceFieldAccess(
   objectExpr: Expression,
   body: number[],
 ): boolean {
-  // Look up InterfaceInfo using identity-based lookup
+  // Look up InterfaceInfo using identity-based lookup (no name-based fallback)
   const interfaceInfo = ctx.getInterfaceInfoByCheckerType(interfaceType);
   if (!interfaceInfo) {
-    // Try by name as fallback
-    const info = ctx.interfaces.get(interfaceType.name);
-    if (!info) {
-      throw new Error(`Interface not registered: ${interfaceType.name}`);
-    }
-    return generateInterfaceFieldAccessWithInfo(
-      ctx,
-      info,
-      fieldName,
-      expectedType,
-      objectExpr,
-      body,
+    throw new Error(
+      `Interface not registered via identity lookup: ${interfaceType.name}`,
     );
   }
 
@@ -4388,14 +4380,12 @@ function generateInterfaceGetterAccess(
   objectExpr: Expression,
   body: number[],
 ): boolean {
-  // Look up InterfaceInfo using identity-based lookup
-  let interfaceInfo = ctx.getInterfaceInfoByCheckerType(interfaceType);
+  // Look up InterfaceInfo using identity-based lookup (no name-based fallback)
+  const interfaceInfo = ctx.getInterfaceInfoByCheckerType(interfaceType);
   if (!interfaceInfo) {
-    // Try by name as fallback
-    interfaceInfo = ctx.interfaces.get(interfaceType.name);
-    if (!interfaceInfo) {
-      throw new Error(`Interface not registered: ${interfaceType.name}`);
-    }
+    throw new Error(
+      `Interface not registered via identity lookup: ${interfaceType.name}`,
+    );
   }
 
   // Look up the getter method in the interface

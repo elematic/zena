@@ -206,8 +206,8 @@ When asked to modify the compiler, look in these files first:
 - **Module**: The AST node for a single source file. Contains both the syntax tree (`body`) and compilation metadata (`path`, `isStdlib`, `source`, `imports`, `exports`, `diagnostics`). All metadata fields are set at parse time via `ParserOptions`.
 - **Program**: A compiler-created container (not an AST node) holding all modules in a compilation unit, plus the entry point and prelude modules.
 - **Scope**: A mapping of variable names to their types and indices.
-- **ClassInfo**: Metadata about a class (struct index, field layout, method table). Stored in `CodegenContext.classes`.
-- **InterfaceInfo**: Metadata about an interface (fat pointer layout, vtable layout). Stored in `CodegenContext.interfaces`.
+- **ClassInfo**: Metadata about a class (struct index, field layout, method table). Stored in `CodegenContext.classes` and looked up via `CodegenContext.getClassInfoByCheckerType()`.
+- **InterfaceInfo**: Metadata about an interface (fat pointer layout, vtable layout). Looked up via `CodegenContext.getInterfaceInfoByCheckerType()` or `CodegenContext.getInterfaceInfoByStructIndex()`.
 
 ## Debugging Tips
 

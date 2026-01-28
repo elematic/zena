@@ -427,7 +427,15 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Removed fallbacks for `NewExpression`, static method calls, `TemplateStringsArray`, and `ClassPattern` matches
       - [x] Fixed: Added `classPattern.inferredType = classType` in checker to enable identity-based lookup in codegen
       - [x] All sites now throw errors instead of silently falling back to name-based lookup
-      - [ ] Remove remaining name-based uses: existence checks (`ctx.classes.has`), duplicate guards, update-existing patterns - these are fragile due to potential name collisions
+      - [x] Removed `ctx.genericClasses.get()` lookups - replaced with `ctx.getGenericDeclByType()` identity-based lookups
+      - [x] Removed `ctx.classes.has()` existence checks - no longer used
+      - [x] Fixed self-referential generic types (e.g., `ListNode<T>.next: ListNode<T> | null`) by adding interning lookups in `mapCheckerTypeToWasmType` for class types extracted from unions
+      - [x] Removed `ctx.interfaces` Map entirely (completed 2025-01-29):
+        - Removed name-based fallback from `getInterfaceInfoByCheckerType()` - now identity-only
+        - Replaced `getInterfaceFromTypeIndex()` with `ctx.getInterfaceInfoByStructIndex()` (O(1) lookup)
+        - Removed `ctx.interfaces.set()` call and the `interfaces` Map from `CodegenContext`
+        - Added test `interface-name-collision_test.ts` proving interfaces with same name from different modules work correctly
+      - [ ] Remove `ctx.classes` Map entirely - migrate to identity-only registration via `ctx.registerClassInfoByType()`
 
     **Benefits** (now realized):
     - Enables intellisense (hover shows `i32`, not `T`)

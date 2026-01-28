@@ -150,7 +150,6 @@ export class CodegenContext {
   >();
   public classes = new Map<string, ClassInfo>();
   public mixins = new Map<string, MixinDeclaration>();
-  public interfaces = new Map<string, InterfaceInfo>();
   public typeAliases = new Map<string, TypeAnnotation>();
 
   // Exception handling
@@ -1117,9 +1116,6 @@ export class CodegenContext {
    * For generic interfaces like `Sequence<T>`, all specializations (e.g., `Sequence<i32>`)
    * share the same WASM struct. We only register the template InterfaceType, so lookups
    * for specialized types follow the genericSource chain to find the template.
-   *
-   * Name-based fallback is still needed because some InterfaceType objects (e.g., from
-   * annotation-based code paths) may not have the genericSource chain properly set up.
    */
   public getInterfaceInfoByCheckerType(
     interfaceType: InterfaceType,
@@ -1133,9 +1129,9 @@ export class CodegenContext {
       if (sourceResult) return sourceResult;
       source = source.genericSource;
     }
-    // Fall back to name-based lookup - still needed for InterfaceTypes without
-    // proper genericSource chain (e.g., from annotation-based code paths)
-    return this.interfaces.get(interfaceType.name);
+    // Identity-based lookup failed - don't fall back to name-based lookup
+    // as that causes bugs with same-named interfaces from different modules
+    return undefined;
   }
 
   public getRecordTypeIndex(fields: {name: string; type: number[]}[]): number {
