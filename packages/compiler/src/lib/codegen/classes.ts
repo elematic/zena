@@ -1031,6 +1031,7 @@ export function preRegisterClassStruct(
         ctx,
         currentSuperClassInfo,
         mixinDecl,
+        mixinAnnotation.typeArguments,
       );
     }
   }
@@ -1142,8 +1143,13 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
       if (!mixinDecl) {
         throw new Error(`Unknown mixin ${mixinName}`);
       }
-      // TODO: Handle generic mixin instantiation in codegen
-      currentSuperClassInfo = applyMixin(ctx, currentSuperClassInfo, mixinDecl);
+      // Pass type arguments to applyMixin for generic mixin instantiation
+      currentSuperClassInfo = applyMixin(
+        ctx,
+        currentSuperClassInfo,
+        mixinDecl,
+        mixinAnnotation.typeArguments,
+      );
     }
   }
 
@@ -1303,8 +1309,13 @@ export function registerClassStruct(
       if (!mixinDecl) {
         throw new Error(`Unknown mixin ${mixinName}`);
       }
-      // TODO: Handle generic mixin instantiation in codegen
-      currentSuperClassInfo = applyMixin(ctx, currentSuperClassInfo, mixinDecl);
+      // Pass type arguments to applyMixin for generic mixin instantiation
+      currentSuperClassInfo = applyMixin(
+        ctx,
+        currentSuperClassInfo,
+        mixinDecl,
+        mixinAnnotation.typeArguments,
+      );
     }
   }
 
@@ -1534,7 +1545,7 @@ export function registerClassMethods(
         params.push(thisType);
       }
       for (const param of member.params) {
-        const mapped = mapType(ctx, param.typeAnnotation);
+        const mapped = mapType(ctx, param.typeAnnotation, classInfo.typeArguments);
         params.push(mapped);
       }
 
@@ -1543,13 +1554,13 @@ export function registerClassMethods(
         if (classInfo.isExtension && classInfo.onType) {
           results = [classInfo.onType];
         } else if (member.isStatic && member.returnType) {
-          const mapped = mapType(ctx, member.returnType);
+          const mapped = mapType(ctx, member.returnType, classInfo.typeArguments);
           if (mapped.length > 0) results = [mapped];
         } else {
           results = [];
         }
       } else if (member.returnType) {
-        const mapped = mapType(ctx, member.returnType);
+        const mapped = mapType(ctx, member.returnType, classInfo.typeArguments);
         if (mapped.length > 0) results = [mapped];
       } else {
         results = [];
@@ -1587,7 +1598,7 @@ export function registerClassMethods(
       });
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
-      const propType = mapType(ctx, member.typeAnnotation);
+      const propType = mapType(ctx, member.typeAnnotation, classInfo.typeArguments);
 
       // Getter
       if (member.getter) {
@@ -1707,7 +1718,7 @@ export function registerClassMethods(
         }
 
         const propName = getMemberName(member.name);
-        const propType = mapType(ctx, member.typeAnnotation);
+        const propType = mapType(ctx, member.typeAnnotation, classInfo.typeArguments);
 
         // Getter
         const getterName = getGetterName(propName);
@@ -1903,7 +1914,7 @@ export function registerClassMethods(
   } as ClassDeclaration;
 
   ctx.bodyGenerators.push(() => {
-    generateClassMethods(ctx, declForGen);
+    generateClassMethods(ctx, declForGen, undefined, classInfo.typeArguments);
   });
 
   // Restore previous class context
@@ -1964,6 +1975,9 @@ export function generateClassMethods(
           : getMemberName(member.name);
       const methodInfo = classInfo.methods.get(methodName)!;
       const body: number[] = [];
+
+      const oldReturnType = ctx.currentReturnType;
+      ctx.currentReturnType = methodInfo.returnType;
 
       ctx.pushFunctionScope();
 
@@ -2110,6 +2124,7 @@ export function generateClassMethods(
       body.push(Opcode.end);
 
       ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+      ctx.currentReturnType = oldReturnType;
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
 
@@ -2118,6 +2133,9 @@ export function generateClassMethods(
         const methodName = getGetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
         const body: number[] = [];
+
+        const oldReturnType = ctx.currentReturnType;
+        ctx.currentReturnType = methodInfo.returnType;
 
         ctx.pushFunctionScope();
 
@@ -2151,6 +2169,7 @@ export function generateClassMethods(
         body.push(Opcode.end);
 
         ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+        ctx.currentReturnType = oldReturnType;
       }
 
       // Setter
@@ -2158,6 +2177,9 @@ export function generateClassMethods(
         const methodName = getSetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
         const body: number[] = [];
+
+        const oldReturnType = ctx.currentReturnType;
+        ctx.currentReturnType = methodInfo.returnType;
 
         ctx.pushFunctionScope();
 
@@ -2193,6 +2215,7 @@ export function generateClassMethods(
         body.push(Opcode.end);
 
         ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+        ctx.currentReturnType = oldReturnType;
       }
     } else if (member.type === NodeType.FieldDefinition) {
       if (member.isDeclare) continue;
@@ -2732,12 +2755,22 @@ export function instantiateClass(
   typeArguments: TypeAnnotation[],
   parentContext?: Map<string, TypeAnnotation>,
 ) {
-  const context = new Map<string, TypeAnnotation>();
-  if (decl.typeParameters) {
-    decl.typeParameters.forEach((param, index) => {
-      const arg = typeArguments[index];
-      context.set(param.name, resolveAnnotation(arg, parentContext));
-    });
+  // Check if this class already has type arguments stored (e.g., from applyMixin)
+  const existingClassInfo = ctx.classes.get(specializedName);
+  let context: Map<string, TypeAnnotation>;
+  
+  if (existingClassInfo && existingClassInfo.typeArguments) {
+    // Use the existing type arguments (e.g., from mixin instantiation)
+    context = existingClassInfo.typeArguments;
+  } else {
+    // Build context from declaration
+    context = new Map<string, TypeAnnotation>();
+    if (decl.typeParameters) {
+      decl.typeParameters.forEach((param, index) => {
+        const arg = typeArguments[index];
+        context.set(param.name, resolveAnnotation(arg, parentContext));
+      });
+    }
   }
 
   // Handle generic superclass instantiation
@@ -3001,7 +3034,7 @@ export function instantiateClass(
 
         let funcIndex = -1;
         if (!intrinsic) {
-          funcIndex = ctx.module.addFunction(typeIndex);
+          funcIndex = ctx.module.addFunction(typeIndex, `${specializedName}.${member.name}`);
         }
 
         const returnType = results.length > 0 ? results[0] : [];
@@ -3058,7 +3091,7 @@ export function instantiateClass(
             typeIndex = ctx.module.addType(params, results);
           }
 
-          const funcIndex = ctx.module.addFunction(typeIndex!);
+          const funcIndex = ctx.module.addFunction(typeIndex!, `${specializedName}.${member.name}`);
 
           methods.set(methodName, {
             index: funcIndex,
@@ -3110,7 +3143,7 @@ export function instantiateClass(
             typeIndex = ctx.module.addType(params, results);
           }
 
-          const funcIndex = ctx.module.addFunction(typeIndex!);
+          const funcIndex = ctx.module.addFunction(typeIndex!, `${specializedName}.${member.name}`);
 
           methods.set(methodName, {
             index: funcIndex,
@@ -3180,7 +3213,7 @@ export function instantiateClass(
             typeIndex = ctx.module.addType(params, results);
           }
 
-          const funcIndex = intrinsic ? -1 : ctx.module.addFunction(typeIndex!);
+          const funcIndex = intrinsic ? -1 : ctx.module.addFunction(typeIndex!, `${specializedName}.${member.name} (getter)`);
 
           methods.set(regGetterName, {
             index: funcIndex,
@@ -3218,7 +3251,7 @@ export function instantiateClass(
 
             const setterFuncIndex = intrinsic
               ? -1
-              : ctx.module.addFunction(setterTypeIndex!);
+              : ctx.module.addFunction(setterTypeIndex!, `${specializedName}.${member.name} (setter)`);
 
             methods.set(regSetterName, {
               index: setterFuncIndex,
@@ -3388,9 +3421,17 @@ function preRegisterMixin(
   ctx: CodegenContext,
   baseClassInfo: ClassInfo | undefined,
   mixinDecl: MixinDeclaration,
+  typeArguments?: TypeAnnotation[],
 ): ClassInfo {
   const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
-  const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+  
+  // Create specialized name for generic mixins
+  let mixinName = mixinDecl.name.name;
+  if (typeArguments && typeArguments.length > 0) {
+    mixinName = getSpecializedName(mixinDecl.name.name, typeArguments, ctx);
+  }
+  
+  const intermediateName = `${baseName}_${mixinName}`;
 
   // If already registered, return the existing info
   if (ctx.classes.has(intermediateName)) {
@@ -3418,9 +3459,17 @@ function applyMixin(
   ctx: CodegenContext,
   baseClassInfo: ClassInfo | undefined,
   mixinDecl: MixinDeclaration,
+  typeArguments?: TypeAnnotation[],
 ): ClassInfo {
   const baseName = baseClassInfo ? baseClassInfo.name : 'Object';
-  const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+  
+  // Create specialized name for generic mixins
+  let mixinName = mixinDecl.name.name;
+  if (typeArguments && typeArguments.length > 0) {
+    mixinName = getSpecializedName(mixinDecl.name.name, typeArguments, ctx);
+  }
+  
+  const intermediateName = `${baseName}_${mixinName}`;
 
   const existingInfo = ctx.classes.get(intermediateName);
   if (existingInfo && existingInfo.fields.size > 0) {
@@ -3429,7 +3478,7 @@ function applyMixin(
   }
 
   // Get or create the ClassInfo (might already be pre-registered)
-  const classInfo = existingInfo || {
+  const classInfo: ClassInfo = existingInfo || {
     name: intermediateName,
     structTypeIndex: ctx.module.reserveType(),
     superClass: baseClassInfo?.name,
@@ -3443,6 +3492,17 @@ function applyMixin(
   }
 
   const structTypeIndex = classInfo.structTypeIndex;
+
+  // Build type parameter context for generic mixins
+  const typeContext = new Map<string, TypeAnnotation>();
+  if (mixinDecl.typeParameters && typeArguments) {
+    mixinDecl.typeParameters.forEach((param, index) => {
+      if (index < typeArguments.length) {
+        const arg = typeArguments[index];
+        typeContext.set(param.name, resolveAnnotation(arg));
+      }
+    });
+  }
 
   const fields = new Map<string, {index: number; type: number[]}>();
   const fieldTypes: {type: number[]; mutable: boolean}[] = [];
@@ -3467,10 +3527,10 @@ function applyMixin(
     fieldTypes.push({type: [ValType.eqref], mutable: true});
   }
 
-  // Add mixin fields
+  // Add mixin fields with type parameter context
   for (const member of mixinDecl.body) {
     if (member.type === NodeType.FieldDefinition) {
-      const wasmType = mapType(ctx, member.typeAnnotation);
+      const wasmType = mapType(ctx, member.typeAnnotation, typeContext);
       const fieldName = manglePrivateName(
         intermediateName,
         getMemberName(member.name),
@@ -3490,6 +3550,10 @@ function applyMixin(
   classInfo.fields = fields;
   classInfo.methods = methods;
   classInfo.vtable = vtable;
+  // Store type arguments for method generation
+  if (typeContext.size > 0) {
+    classInfo.typeArguments = typeContext;
+  }
 
   const declForGen = {
     ...mixinDecl,
@@ -3499,6 +3563,7 @@ function applyMixin(
       ? {type: NodeType.Identifier, name: baseClassInfo.name}
       : undefined,
     isAbstract: false,
+    typeParameters: undefined, // Synthetic classes are specialized, not generic
   } as unknown as ClassDeclaration;
 
   ctx.syntheticClasses.push(declForGen);
