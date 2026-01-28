@@ -10,10 +10,14 @@ import {
   type TuplePattern,
   type VariableDeclaration,
   type WhileStatement,
-  type TypeAnnotation,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {TypeKind, type InterfaceType} from '../types.js';
+import {
+  TypeKind,
+  type InterfaceType,
+  type TypeAliasType,
+  type UnionType,
+} from '../types.js';
 import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
 import {
   decodeTypeIndex,
@@ -240,18 +244,16 @@ export function generateLocalVariableDeclaration(
   let exprType: number[] = [];
   let adapted = false;
 
-  // Resolve type alias if necessary
-  let typeAnnotation = decl.typeAnnotation;
-  if (
-    typeAnnotation &&
-    typeAnnotation.type === NodeType.TypeAnnotation &&
-    ctx.typeAliases.has(typeAnnotation.name)
-  ) {
-    typeAnnotation = resolveType(ctx, typeAnnotation);
+  // Resolve the declared type via the checker's inferredType
+  // This handles type aliases correctly by using TypeAliasType.target
+  let declaredType = decl.typeAnnotation?.inferredType;
+  if (declaredType?.kind === TypeKind.TypeAlias) {
+    declaredType = (declaredType as TypeAliasType).target;
   }
 
   // Check for Union Adaptation
-  if (typeAnnotation && typeAnnotation.type === NodeType.UnionTypeAnnotation) {
+  if (declaredType?.kind === TypeKind.Union) {
+    const unionType = declaredType as UnionType;
     // Infer actual type of initializer
     let actualType: number[] = [];
     try {
@@ -262,11 +264,8 @@ export function generateLocalVariableDeclaration(
 
     if (actualType.length > 0) {
       // Try to find a member type that requires adaptation
-      for (const member of typeAnnotation.types) {
-        const memberWasmType = mapCheckerTypeToWasmType(
-          ctx,
-          member.inferredType!,
-        );
+      for (const member of unionType.types) {
+        const memberWasmType = mapCheckerTypeToWasmType(ctx, member);
         if (isAdaptable(ctx, actualType, memberWasmType)) {
           generateAdaptedArgument(ctx, decl.init, memberWasmType, body);
           adapted = true;
@@ -559,14 +558,4 @@ export function generateReturnStatement(
   // If we are in a block, we might need 'return'.
   // Let's use 'return' opcode for explicit return statements.
   body.push(Opcode.return);
-}
-
-function resolveType(
-  ctx: CodegenContext,
-  type: TypeAnnotation,
-): TypeAnnotation {
-  if (type.type === NodeType.TypeAnnotation && ctx.typeAliases.has(type.name)) {
-    return resolveType(ctx, ctx.typeAliases.get(type.name)!);
-  }
-  return type;
 }

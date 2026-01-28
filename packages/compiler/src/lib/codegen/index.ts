@@ -7,7 +7,6 @@ import {
   type InterfaceDeclaration,
   type MixinDeclaration,
   type Module,
-  type TypeAliasDeclaration,
   type VariableDeclaration,
 } from '../ast.js';
 import type {CheckerContext} from '../checker/context.js';
@@ -21,7 +20,6 @@ import {
   defineInterfaceMethods,
   getMemberName,
   mapCheckerTypeToWasmType,
-  typeToTypeAnnotation,
 } from './classes.js';
 import {CodegenContext} from './context.js';
 import {registerDeclaredFunction, registerFunction} from './functions.js';
@@ -154,29 +152,6 @@ export class CodeGenerator {
             mixinDecl.inferredType as MixinType,
             mixinDecl,
           );
-        }
-      } else if (statement.type === NodeType.TypeAliasDeclaration) {
-        const aliasDecl = statement as TypeAliasDeclaration;
-        this.#ctx.typeAliases.set(
-          aliasDecl.name.name,
-          aliasDecl.typeAnnotation,
-        );
-      } else if (statement.type === NodeType.EnumDeclaration) {
-        // Enums create type aliases (distinct types) in the type system
-        // We need to register them so they can be found during type mapping
-        const enumDecl = statement as EnumDeclaration;
-        const enumName = enumDecl.name.name;
-
-        // Get the type from the checker (TypeAliasType with target = union of literals)
-        const checkerType = enumDecl.inferredType;
-        if (checkerType) {
-          // Convert the target type (union of literal values) to a TypeAnnotation
-          const targetAnnotation = typeToTypeAnnotation(
-            (checkerType as any)?.target || checkerType,
-            undefined,
-            this.#ctx,
-          );
-          this.#ctx.typeAliases.set(enumName, targetAnnotation);
         }
       }
     }

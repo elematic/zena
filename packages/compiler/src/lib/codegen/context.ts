@@ -162,7 +162,6 @@ export class CodegenContext {
       type?: FunctionType;
     }[]
   >();
-  public typeAliases = new Map<string, TypeAnnotation>();
 
   // Exception handling
   public exceptionTagIndex = -1;
