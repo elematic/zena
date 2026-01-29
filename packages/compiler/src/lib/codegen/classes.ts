@@ -719,7 +719,9 @@ export function generateTrampoline(
           ctx.getInterfaceInfoByStructIndex(interfaceTypeIndex);
 
         if (interfaceInfo) {
-          const resultClassInfo = getClassFromTypeIndex(ctx, classTypeIndex);
+          // Use struct index lookup since trampoline context only has WASM types
+          const resultClassInfo =
+            ctx.getClassInfoByStructIndexDirect(classTypeIndex);
 
           if (resultClassInfo && resultClassInfo.implements) {
             let impl: {vtableGlobalIndex: number} | undefined;

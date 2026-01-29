@@ -64,7 +64,6 @@ const HASH_CODE_METHOD = 'hashCode';
 
 import {
   decodeTypeIndex,
-  getClassFromTypeIndex,
   getSpecializedName,
   instantiateClass,
   mapCheckerTypeToWasmType,
@@ -679,21 +678,21 @@ function generateAsExpression(
           classInfo = extensions[0];
         }
       }
+
+      // On-demand FixedArray instantiation for raw array types
+      if (!classInfo && sourceCheckerType.kind === TypeKind.Array) {
+        const arrType = sourceCheckerType as import('../types.js').ArrayType;
+        if (arrType.elementType.kind !== TypeKind.TypeParameter) {
+          classInfo = resolveFixedArrayClass(ctx, sourceCheckerType);
+        }
+      }
     }
 
-    // Fallback: look up by WASM type index
-    // This handles cases where checker type identity doesn't match
+    // Fallback: look up by WASM struct index (for classes instantiated during codegen)
     if (!classInfo && sourceWasmType) {
       const sourceIndex = decodeTypeIndex(sourceWasmType);
       if (sourceIndex !== -1) {
-        classInfo = getClassFromTypeIndex(ctx, sourceIndex);
-        if (!classInfo) {
-          const extensions =
-            ctx.getExtensionClassesByWasmTypeIndex(sourceIndex);
-          if (extensions && extensions.length > 0) {
-            classInfo = extensions[0];
-          }
-        }
+        classInfo = ctx.getClassInfoByStructIndexDirect(sourceIndex);
       }
     }
 
@@ -2013,6 +2012,12 @@ function generateCallExpression(
         ) as ClassType;
       }
       foundClass = ctx.getClassInfo(classType);
+
+      // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
+      if (!foundClass) {
+        mapCheckerTypeToWasmType(ctx, classType);
+        foundClass = ctx.getClassInfo(classType);
+      }
     }
 
     // Fall back to struct index lookup for classes instantiated via annotation path
@@ -2039,16 +2044,6 @@ function generateCallExpression(
       }
     }
 
-    // Fallback: look up extension class by WASM type index
-    // This handles cases where type identity doesn't match (e.g., multiple ArrayType instances)
-    if (!foundClass && structTypeIndex !== -1) {
-      const extensions =
-        ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
-      if (extensions && extensions.length > 0) {
-        foundClass = extensions[0];
-      }
-    }
-
     // Look up extension class by WASM valtype (handles primitive types like i32)
     if (!foundClass && objectType.length === 1) {
       const extensions = ctx.getExtensionClassesByWasmValType(objectType[0]);
@@ -2059,7 +2054,19 @@ function generateCallExpression(
 
     if (!foundClass) {
       // Special handling for FixedArray: treat array<T> as FixedArray<T>
-      foundClass = resolveFixedArrayClass(ctx, expr.callee.object.inferredType);
+      let arrayType = expr.callee.object.inferredType;
+      // Substitute type parameters to get concrete array element type
+      if (
+        arrayType &&
+        ctx.currentTypeArguments.size > 0 &&
+        ctx.checkerContext
+      ) {
+        arrayType = ctx.checkerContext.substituteTypeParams(
+          arrayType,
+          ctx.currentTypeArguments,
+        );
+      }
+      foundClass = resolveFixedArrayClass(ctx, arrayType);
     }
 
     if (!foundClass) {
@@ -2550,8 +2557,34 @@ function generateAssignmentExpression(
     const structTypeIndex = getHeapTypeIndex(ctx, objectType);
 
     if (structTypeIndex !== -1) {
-      // Use O(1) lookup by struct index
-      let foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
+      let foundClass: ClassInfo | undefined;
+
+      // Use identity-based lookup via checker type
+      if (
+        indexExpr.object.inferredType &&
+        indexExpr.object.inferredType.kind === TypeKind.Class
+      ) {
+        let classType = indexExpr.object.inferredType as ClassType;
+        // Substitute type parameters when in a generic context
+        if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+          classType = ctx.checkerContext.substituteTypeParams(
+            classType,
+            ctx.currentTypeArguments,
+          ) as ClassType;
+        }
+        foundClass = ctx.getClassInfo(classType);
+
+        // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
+        if (!foundClass) {
+          mapCheckerTypeToWasmType(ctx, classType);
+          foundClass = ctx.getClassInfo(classType);
+        }
+      }
+
+      // Fall back to struct index lookup
+      if (!foundClass) {
+        foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
+      }
 
       // Check for extension classes on non-class types (e.g., raw array<T>)
       if (!foundClass && indexExpr.object.inferredType) {
@@ -2569,13 +2602,20 @@ function generateAssignmentExpression(
         }
       }
 
-      // Fallback: look up extension class by WASM type index
-      // This handles cases where type identity doesn't match (e.g., multiple ArrayType instances)
-      if (!foundClass) {
-        const extensions =
-          ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
-        if (extensions && extensions.length > 0) {
-          foundClass = extensions[0];
+      // On-demand FixedArray instantiation for raw array types
+      if (!foundClass && indexExpr.object.inferredType) {
+        let objType = indexExpr.object.inferredType;
+        if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+          objType = ctx.checkerContext.substituteTypeParams(
+            objType,
+            ctx.currentTypeArguments,
+          );
+        }
+        if (objType.kind === TypeKind.Array) {
+          const arrType = objType as import('../types.js').ArrayType;
+          if (arrType.elementType.kind !== TypeKind.TypeParameter) {
+            foundClass = resolveFixedArrayClass(ctx, objType);
+          }
         }
       }
 
@@ -3593,8 +3633,40 @@ function generateBinaryExpression(
     if (expr.operator === '==' || expr.operator === '!=') {
       const structTypeIndex = getHeapTypeIndex(ctx, leftType);
       let foundClass: ClassInfo | undefined;
-      if (structTypeIndex !== -1) {
-        foundClass = getClassFromTypeIndex(ctx, structTypeIndex);
+
+      // Primary: look up ClassInfo via checker type identity
+      if (expr.left.inferredType) {
+        let checkerType = expr.left.inferredType;
+        // Substitute type parameters when in a generic context
+        if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+          checkerType = ctx.checkerContext.substituteTypeParams(
+            checkerType,
+            ctx.currentTypeArguments,
+          );
+        }
+
+        if (checkerType.kind === TypeKind.Class) {
+          foundClass = ctx.getClassInfo(checkerType as ClassType);
+
+          // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
+          if (!foundClass) {
+            mapCheckerTypeToWasmType(ctx, checkerType);
+            foundClass = ctx.getClassInfo(checkerType as ClassType);
+          }
+        }
+
+        // Extension class lookup by onType (checker type identity)
+        if (!foundClass) {
+          const extensions = ctx.getExtensionClassesByOnType(checkerType);
+          if (extensions && extensions.length > 0) {
+            foundClass = extensions[0];
+          }
+        }
+      }
+
+      // Fallback: look up by struct index
+      if (!foundClass && structTypeIndex !== -1) {
+        foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
       }
 
       let hasOperator = false;
@@ -5505,8 +5577,40 @@ function generateGlobalIntrinsic(
         // Check for operator ==
         const structTypeIndex = getHeapTypeIndex(ctx, leftType);
         let foundClass: ClassInfo | undefined;
-        if (structTypeIndex !== -1) {
-          foundClass = getClassFromTypeIndex(ctx, structTypeIndex);
+
+        // Primary: look up ClassInfo via checker type identity
+        if (left.inferredType) {
+          let checkerType = left.inferredType;
+          // Substitute type parameters when in a generic context
+          if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+            checkerType = ctx.checkerContext.substituteTypeParams(
+              checkerType,
+              ctx.currentTypeArguments,
+            );
+          }
+
+          if (checkerType.kind === TypeKind.Class) {
+            foundClass = ctx.getClassInfo(checkerType as ClassType);
+
+            // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
+            if (!foundClass) {
+              mapCheckerTypeToWasmType(ctx, checkerType);
+              foundClass = ctx.getClassInfo(checkerType as ClassType);
+            }
+          }
+
+          // Extension class lookup by onType (checker type identity)
+          if (!foundClass) {
+            const extensions = ctx.getExtensionClassesByOnType(checkerType);
+            if (extensions && extensions.length > 0) {
+              foundClass = extensions[0];
+            }
+          }
+        }
+
+        // Fallback: look up by struct index
+        if (!foundClass && structTypeIndex !== -1) {
+          foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
         }
 
         let hasOperator = false;
@@ -5737,7 +5841,43 @@ function generateHash(ctx: CodegenContext, expr: Expression, body: number[]) {
   if (structTypeIndex !== -1) {
     // TODO: Support Records and Tuples (structural hashing)
 
-    const classInfo = getClassFromTypeIndex(ctx, structTypeIndex);
+    let classInfo: ClassInfo | undefined;
+
+    // Primary: look up ClassInfo via checker type identity
+    if (expr.inferredType) {
+      let checkerType = expr.inferredType;
+      // Substitute type parameters when in a generic context
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+        checkerType = ctx.checkerContext.substituteTypeParams(
+          checkerType,
+          ctx.currentTypeArguments,
+        );
+      }
+
+      if (checkerType.kind === TypeKind.Class) {
+        classInfo = ctx.getClassInfo(checkerType as ClassType);
+
+        // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
+        if (!classInfo) {
+          mapCheckerTypeToWasmType(ctx, checkerType);
+          classInfo = ctx.getClassInfo(checkerType as ClassType);
+        }
+      }
+
+      // Extension class lookup by onType (checker type identity)
+      if (!classInfo) {
+        const extensions = ctx.getExtensionClassesByOnType(checkerType);
+        if (extensions && extensions.length > 0) {
+          classInfo = extensions[0];
+        }
+      }
+    }
+
+    // Fallback: look up by struct index
+    if (!classInfo) {
+      classInfo = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
+    }
+
     if (classInfo) {
       const methodInfo = classInfo.methods.get(HASH_CODE_METHOD);
       if (methodInfo) {
@@ -6654,26 +6794,47 @@ export function generateAdaptedArgument(
     const actualIndex = decodeTypeIndex(actualType);
     let classInfo: ClassInfo | undefined;
 
-    // Check classes using O(1) lookup by struct index
-    if (actualIndex !== -1) {
-      classInfo = ctx.getClassInfoByStructIndexDirect(actualIndex);
-    }
+    // Primary: look up ClassInfo via checker type identity
+    if (arg.inferredType) {
+      let checkerType = arg.inferredType;
+      // Substitute type parameters when in a generic context
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+        checkerType = ctx.checkerContext.substituteTypeParams(
+          checkerType,
+          ctx.currentTypeArguments,
+        );
+      }
 
-    // Check extensions using O(1) lookup via checker type
-    if (!classInfo && arg.inferredType) {
-      const extensions = ctx.getExtensionClassesByOnType(arg.inferredType);
-      if (extensions && extensions.length > 0) {
-        classInfo = extensions[0];
+      if (checkerType.kind === TypeKind.Class) {
+        classInfo = ctx.getClassInfo(checkerType as ClassType);
+
+        // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
+        if (!classInfo) {
+          mapCheckerTypeToWasmType(ctx, checkerType);
+          classInfo = ctx.getClassInfo(checkerType as ClassType);
+        }
+      }
+
+      // Extension class lookup by onType (checker type identity)
+      if (!classInfo) {
+        const extensions = ctx.getExtensionClassesByOnType(checkerType);
+        if (extensions && extensions.length > 0) {
+          classInfo = extensions[0];
+        }
+      }
+
+      // On-demand FixedArray instantiation for raw array types
+      if (!classInfo && checkerType.kind === TypeKind.Array) {
+        const arrType = checkerType as import('../types.js').ArrayType;
+        if (arrType.elementType.kind !== TypeKind.TypeParameter) {
+          classInfo = resolveFixedArrayClass(ctx, checkerType);
+        }
       }
     }
 
-    // Fallback: look up extension class by WASM type index
-    // This handles cases where type identity doesn't match
+    // Fallback: look up by WASM struct index (for classes instantiated during codegen)
     if (!classInfo && actualIndex !== -1) {
-      const extensions = ctx.getExtensionClassesByWasmTypeIndex(actualIndex);
-      if (extensions && extensions.length > 0) {
-        classInfo = extensions[0];
-      }
+      classInfo = ctx.getClassInfoByStructIndexDirect(actualIndex);
     }
 
     // Check extensions using WASM valtype (for primitives)
@@ -7432,7 +7593,8 @@ function generateMatchPatternCheck(
       if (!recordKey) {
         // Fallback for classes used as records?
         // If discriminant is class, we can use class info.
-        const classInfo = getClassFromTypeIndex(ctx, structTypeIndex);
+        // Use struct index lookup since we don't have a checker type in pattern context
+        const classInfo = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
         if (classInfo) {
           for (const prop of recordPattern.properties) {
             const fieldName = prop.name.name;

@@ -14,17 +14,15 @@ import {
 import {WasmModule} from '../emitter.js';
 import {
   TypeKind,
+  type ClassType,
   type InterfaceType,
   type TypeAliasType,
   type UnionType,
 } from '../types.js';
 import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
-import {
-  decodeTypeIndex,
-  getClassFromTypeIndex,
-  mapCheckerTypeToWasmType,
-} from './classes.js';
+import {decodeTypeIndex, mapCheckerTypeToWasmType} from './classes.js';
 import type {CodegenContext} from './context.js';
+import type {ClassInfo} from './types.js';
 import {
   generateExpression,
   inferType,
@@ -322,11 +320,38 @@ export function generateLocalVariableDeclaration(
       const interfaceInfo = ctx.getInterfaceInfo(targetInterfaceType);
 
       if (interfaceInfo) {
-        const initType = inferType(ctx, decl.init);
-        const typeIndex = decodeTypeIndex(initType);
-        const classInfo = getClassFromTypeIndex(ctx, typeIndex);
+        let classInfo: ClassInfo | undefined;
 
-        if (classInfo && classInfo.implements) {
+        if (decl.init.inferredType) {
+          let checkerType = decl.init.inferredType;
+          // Substitute type parameters when in a generic context
+          if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+            checkerType = ctx.checkerContext.substituteTypeParams(
+              checkerType,
+              ctx.currentTypeArguments,
+            );
+          }
+
+          if (checkerType.kind === TypeKind.Class) {
+            classInfo = ctx.getClassInfo(checkerType as ClassType);
+
+            // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
+            if (!classInfo) {
+              mapCheckerTypeToWasmType(ctx, checkerType);
+              classInfo = ctx.getClassInfo(checkerType as ClassType);
+            }
+          }
+
+          // Extension class lookup by onType (checker type identity)
+          if (!classInfo) {
+            const extensions = ctx.getExtensionClassesByOnType(checkerType);
+            if (extensions && extensions.length > 0) {
+              classInfo = extensions[0];
+            }
+          }
+        }
+
+        if (classInfo?.implements !== undefined) {
           // Identity-based lookup using the checker's InterfaceType
           let implInfo = classInfo.implements.get(targetInterfaceType);
 
@@ -420,7 +445,8 @@ function generateRecordPattern(
 
   if (!recordKey) {
     // Maybe it's a class?
-    const classInfo = getClassFromTypeIndex(ctx, typeIndex);
+    // Use struct index lookup since we don't have a checker type in pattern context
+    const classInfo = ctx.getClassInfoByStructIndexDirect(typeIndex);
     if (classInfo) {
       for (const prop of pattern.properties) {
         const fieldName = prop.name.name;
