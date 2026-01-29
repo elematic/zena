@@ -8559,5 +8559,6 @@ function generateRangeExpression(
 
   // Now generate the struct.new instruction
   const typeIndex = ctx.getStructTypeIndex(classType);
-  body.push(Opcode.struct_new, ...WasmModule.encodeUnsignedLEB128(typeIndex));
+  body.push(0xfb, GcOpcode.struct_new);
+  body.push(...WasmModule.encodeSignedLEB128(typeIndex));
 }
