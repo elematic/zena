@@ -318,6 +318,13 @@ This project is an **npm monorepo** managed with **Wireit**.
 - [x] Implement Generic Constraints (`T extends Animal`).
 - [x] Implement Blocks (Lexical Scoping).
 - [x] Implement Type Narrowing (control-flow-based null checks).
+- [x] Implement Method Overloading:
+  - Multiple methods with same name but different signatures.
+  - Signature-based name mangling for codegen.
+  - Overload resolution by parameter type and count.
+  - Inheritance: override specific overloads, inherit others.
+  - Operator overloading (`operator []` with multiple signatures).
+  - Virtual dispatch with overloaded methods.
 
 ### Planned
 

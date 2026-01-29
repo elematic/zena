@@ -130,6 +130,48 @@ const typesEqual = (a: Type, b: Type): boolean => {
   return false;
 };
 
+// =============================================================================
+// Method Overloading Helpers
+// =============================================================================
+
+/**
+ * Check if two function types have the same signature (parameter types and arity).
+ * Used to detect duplicate method declarations vs valid overloads.
+ * Note: We compare parameter types structurally, not return types.
+ */
+const hasSameSignature = (a: FunctionType, b: FunctionType): boolean => {
+  if (a.parameters.length !== b.parameters.length) {
+    return false;
+  }
+  for (let i = 0; i < a.parameters.length; i++) {
+    if (typeToString(a.parameters[i]) !== typeToString(b.parameters[i])) {
+      return false;
+    }
+  }
+  return true;
+};
+
+/**
+ * Find a matching overload in a method (checking both the method itself and its overloads).
+ * Returns the matching FunctionType, or undefined if no match.
+ */
+const findMatchingOverload = (
+  method: FunctionType,
+  signature: FunctionType,
+): FunctionType | undefined => {
+  if (hasSameSignature(method, signature)) {
+    return method;
+  }
+  if (method.overloads) {
+    for (const overload of method.overloads) {
+      if (hasSameSignature(overload, signature)) {
+        return overload;
+      }
+    }
+  }
+  return undefined;
+};
+
 /**
  * Extract type narrowing information from a condition expression.
  * Returns narrowings that should be applied when the condition is TRUE.
@@ -1810,14 +1852,6 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
         classType.constructorType = methodType;
       } else {
-        if (localMethods.has(memberName)) {
-          ctx.diagnostics.reportError(
-            `Duplicate method '${memberName}' in class '${className}'.`,
-            DiagnosticCode.DuplicateDeclaration,
-          );
-        }
-        localMethods.add(memberName);
-
         if (classType.fields.has(memberName)) {
           if (localFields.has(memberName)) {
             ctx.diagnostics.reportError(
@@ -1833,51 +1867,88 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           }
         }
 
-        if (!memberName.startsWith('#') && !classType.methods.has(memberName)) {
-          classType.vtable.push(memberName);
-        }
-
-        if (classType.methods.has(memberName)) {
-          // Check for override
-          if (superType && superType.methods.has(memberName)) {
-            // Validate override
-            const superMethod = superType.methods.get(memberName)!;
-
-            if (superMethod.isFinal) {
-              ctx.diagnostics.reportError(
-                `Cannot override final method '${memberName}'.`,
-                DiagnosticCode.TypeMismatch,
-              );
-            }
-
-            // TODO: Check signature compatibility (covariant return, contravariant params)
-            // For now, require exact match
-            if (typeToString(methodType) !== typeToString(superMethod)) {
-              ctx.diagnostics.reportError(
-                `Method '${memberName}' in '${className}' incorrectly overrides method in '${superType.name}'.`,
-                DiagnosticCode.TypeMismatch,
-              );
-            }
+        // Check for method overloading or duplicate
+        if (localMethods.has(memberName)) {
+          // Method with same name exists locally - check if it's a valid overload
+          const existingMethod = classType.methods.get(memberName)!;
+          if (hasSameSignature(existingMethod, methodType)) {
+            ctx.diagnostics.reportError(
+              `Duplicate method '${memberName}' in class '${className}'.`,
+              DiagnosticCode.DuplicateDeclaration,
+            );
           } else {
-            // If it's not in superType, but in classType.methods, it must be a local duplicate
-            // But we already checked localMethods.
-            // Wait, if we have multiple methods with same name (overloading?), we might hit this.
-            // But Zena doesn't support overloading yet (except via adaptation which is different).
-            // If localMethods check passed, then it shouldn't be here unless...
-            // Ah, accessors add to methods too!
-            // If we have `get x()` and `x()`, they collide on `x`? No, `get x` is `get#x`.
-            // So `x()` is `x`.
-            // What if we have `x()` and `x()`? localMethods catches it.
-            // What if we have `x()` inherited and `x()` local?
-            // `classType.methods` has inherited `x`. `superType` has `x`. -> Override check.
-            // So the `else` block here (Duplicate method) should technically be unreachable if localMethods check works
-            // AND we correctly populated classType.methods from superType.
-            // However, if we have mixins, they might add methods to classType but not superType?
-            // No, mixins create intermediate super classes.
-            // So this else block might be redundant or for safety.
+            // Valid overload - add to the existing method's overloads array
+            if (!existingMethod.overloads) {
+              existingMethod.overloads = [];
+            }
+            existingMethod.overloads.push(methodType);
           }
+        } else {
+          localMethods.add(memberName);
+
+          if (
+            !memberName.startsWith('#') &&
+            !classType.methods.has(memberName)
+          ) {
+            classType.vtable.push(memberName);
+          }
+
+          if (classType.methods.has(memberName)) {
+            // Check for override from superclass
+            if (superType && superType.methods.has(memberName)) {
+              // Find which overload (if any) this matches
+              const superMethod = superType.methods.get(memberName)!;
+              const matchingSuper = findMatchingOverload(
+                superMethod,
+                methodType,
+              );
+
+              if (matchingSuper) {
+                if (matchingSuper.isFinal) {
+                  ctx.diagnostics.reportError(
+                    `Cannot override final method '${memberName}'.`,
+                    DiagnosticCode.TypeMismatch,
+                  );
+                }
+                // TODO: Check signature compatibility (covariant return, contravariant params)
+
+                // When overriding one overload, we need to preserve the other overloads from super
+                // The overriding method becomes the main method, and other overloads are copied
+                const newOverloads: FunctionType[] = [];
+
+                // Check if super's main method is NOT the one being overridden
+                if (!hasSameSignature(superMethod, methodType)) {
+                  // Keep super's main method as an overload
+                  newOverloads.push(superMethod);
+                }
+
+                // Copy any other overloads from super that aren't being overridden
+                if (superMethod.overloads) {
+                  for (const overload of superMethod.overloads) {
+                    if (!hasSameSignature(overload, methodType)) {
+                      newOverloads.push(overload);
+                    }
+                  }
+                }
+
+                // Set the overriding method as the main method with inherited overloads
+                if (newOverloads.length > 0) {
+                  methodType.overloads = newOverloads;
+                }
+              } else {
+                // No matching overload in super - this is a new overload, add to inherited method
+                const inheritedMethod = classType.methods.get(memberName)!;
+                if (!inheritedMethod.overloads) {
+                  inheritedMethod.overloads = [];
+                }
+                inheritedMethod.overloads.push(methodType);
+                // Don't set the main method, it's already the inherited one
+                continue;
+              }
+            }
+          }
+          classType.methods.set(memberName, methodType);
         }
-        classType.methods.set(memberName, methodType);
       }
     }
   }

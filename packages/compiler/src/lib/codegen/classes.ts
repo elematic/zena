@@ -28,7 +28,7 @@ import {
   type LiteralType,
   type MixinType,
 } from '../types.js';
-import {getGetterName, getSetterName} from '../names.js';
+import {getGetterName, getSetterName, getSignatureKey} from '../names.js';
 import {WasmModule} from '../emitter.js';
 
 /**
@@ -1592,6 +1592,38 @@ export function registerClassMethods(
     } as MethodDefinition);
   }
 
+  // Track which base method names have overloads (for vtable and mangling decisions)
+  const methodOverloadCounts = new Map<string, number>();
+
+  // First pass: count methods with same name to detect overloads
+  // Start with inherited methods - if the super class has mangled method names,
+  // that method name has overloads
+  if (currentSuperClassInfo) {
+    for (const name of currentSuperClassInfo.methods.keys()) {
+      // Check for mangled names (contain $) - extract base name
+      const dollarIndex = name.indexOf('$');
+      if (dollarIndex > 0 && !name.startsWith('#')) {
+        const baseName = name.substring(0, dollarIndex);
+        methodOverloadCounts.set(
+          baseName,
+          (methodOverloadCounts.get(baseName) ?? 0) + 1,
+        );
+      }
+    }
+  }
+
+  // Then count local methods
+  for (const member of members) {
+    if (member.type === NodeType.MethodDefinition) {
+      if (member.typeParameters && member.typeParameters.length > 0) continue;
+      const methodName = getMemberName(member.name);
+      methodOverloadCounts.set(
+        methodName,
+        (methodOverloadCounts.get(methodName) ?? 0) + 1,
+      );
+    }
+  }
+
   for (const member of members) {
     if (member.type === NodeType.MethodDefinition) {
       if (member.typeParameters && member.typeParameters.length > 0) {
@@ -1602,6 +1634,7 @@ export function registerClassMethods(
       }
 
       const methodName = getMemberName(member.name);
+      const isOverloaded = (methodOverloadCounts.get(methodName) ?? 0) > 1;
 
       let intrinsic: string | undefined;
       if (member.decorators) {
@@ -1613,15 +1646,10 @@ export function registerClassMethods(
         }
       }
 
-      if (
-        methodName !== '#new' &&
-        !methodName.startsWith('#') &&
-        !intrinsic &&
-        !vtable.includes(methodName) &&
-        !member.isStatic
-      ) {
-        vtable.push(methodName);
-      }
+      // For overloaded methods, each overload gets its own vtable entry with mangled name
+      // Non-overloaded methods use the base name
+      // We'll add to vtable after computing the mangled name below
+      // (see the vtable.push at the end of method registration)
 
       let thisType: number[];
       if (classInfo.isExtension && classInfo.onType) {
@@ -1651,6 +1679,8 @@ export function registerClassMethods(
         params.push(thisType);
       }
       // Use the param's inferredType (set by the checker), falling back to annotation
+      // Also build a signature key for overload mangling
+      const paramCheckerTypes: Type[] = [];
       for (let i = 0; i < member.params.length; i++) {
         const param = member.params[i];
         const paramType =
@@ -1660,6 +1690,7 @@ export function registerClassMethods(
             `Parameter ${i} of ${methodName} in ${decl.name.name} missing inferredType`,
           );
         }
+        paramCheckerTypes.push(paramType);
         const mapped = mapCheckerTypeToWasmType(ctx, paramType);
         params.push(mapped);
       }
@@ -1697,14 +1728,42 @@ export function registerClassMethods(
         results = [];
       }
 
+      // Determine mangled name for overloaded methods
+      let mangledMethodName = methodName;
+      if (isOverloaded) {
+        // Build a FunctionType for signature key generation
+        const funcTypeForSig: FunctionType = {
+          kind: TypeKind.Function,
+          parameters: paramCheckerTypes,
+          returnType: member.returnType?.inferredType ?? Types.Void,
+        };
+        mangledMethodName = methodName + getSignatureKey(funcTypeForSig);
+      }
+
+      // Add to vtable with the actual key (mangled for overloads, base name otherwise)
+      if (
+        methodName !== '#new' &&
+        !methodName.startsWith('#') &&
+        !intrinsic &&
+        !vtable.includes(mangledMethodName) &&
+        !member.isStatic
+      ) {
+        vtable.push(mangledMethodName);
+      }
+
       let typeIndex: number;
       let isOverride = false;
       if (currentSuperClassInfo) {
+        // Check for overrides - look up both base name and mangled name in super
         if (
           methodName !== '#new' &&
-          currentSuperClassInfo.methods.has(methodName)
+          (currentSuperClassInfo.methods.has(methodName) ||
+            currentSuperClassInfo.methods.has(mangledMethodName))
         ) {
-          typeIndex = currentSuperClassInfo.methods.get(methodName)!.typeIndex;
+          const superKey = currentSuperClassInfo.methods.has(mangledMethodName)
+            ? mangledMethodName
+            : methodName;
+          typeIndex = currentSuperClassInfo.methods.get(superKey)!.typeIndex;
           isOverride = true;
         }
       }
@@ -1719,7 +1778,7 @@ export function registerClassMethods(
       }
 
       const returnType = results.length > 0 ? results[0] : [];
-      methods.set(methodName, {
+      methods.set(mangledMethodName, {
         index: funcIndex,
         returnType,
         typeIndex: typeIndex!,
@@ -2155,11 +2214,39 @@ export function generateClassMethods(
       if (member.typeParameters && member.typeParameters.length > 0) {
         continue;
       }
-      const methodName =
+      const baseName =
         getMemberName(member.name) === 'constructor'
           ? '#new'
           : getMemberName(member.name);
-      const methodInfo = classInfo.methods.get(methodName)!;
+
+      // Compute mangled name (same logic as in defineClassMethods)
+      let methodName = baseName;
+      let methodInfo = classInfo.methods.get(baseName);
+
+      // If not found, this might be an overloaded method - try mangled name
+      if (!methodInfo) {
+        // Build signature from params
+        const paramCheckerTypes: Type[] = [];
+        for (const param of member.params) {
+          const paramType =
+            param.inferredType ?? param.typeAnnotation?.inferredType;
+          if (paramType) {
+            paramCheckerTypes.push(paramType);
+          }
+        }
+        const funcTypeForSig: FunctionType = {
+          kind: TypeKind.Function,
+          parameters: paramCheckerTypes,
+          returnType: member.returnType?.inferredType ?? Types.Void,
+        };
+        methodName = baseName + getSignatureKey(funcTypeForSig);
+        methodInfo = classInfo.methods.get(methodName);
+      }
+
+      if (!methodInfo) {
+        throw new Error(`Method ${baseName} not found in ${classInfo.name}`);
+      }
+
       const body: number[] = [];
 
       ctx.pushFunctionScope();

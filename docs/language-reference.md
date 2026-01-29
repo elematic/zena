@@ -1079,6 +1079,98 @@ let s = c.map<string>((v) => 'Value: ' + v); // Explicit
 let n = c.map((v) => v * 2); // Inferred
 ```
 
+### Method Overloading
+
+Zena supports method overloading, allowing multiple methods with the same name but different parameter types or counts.
+
+```zena
+class Printer {
+  print(val: i32): void {
+    console.log('i32: ' + val);
+  }
+
+  print(val: f32): void {
+    console.log('f32: ' + val);
+  }
+
+  print(val: string): void {
+    console.log('string: ' + val);
+  }
+}
+
+let p = new Printer();
+p.print(42);      // Calls print(i32)
+p.print(3.14);    // Calls print(f32)
+p.print('hello'); // Calls print(string)
+```
+
+The compiler resolves the correct overload based on argument types at compile time.
+
+#### Overloading with Different Parameter Counts
+
+Methods can also be overloaded by having different numbers of parameters:
+
+```zena
+class Calculator {
+  add(a: i32): i32 {
+    return a;
+  }
+
+  add(a: i32, b: i32): i32 {
+    return a + b;
+  }
+
+  add(a: i32, b: i32, c: i32): i32 {
+    return a + b + c;
+  }
+}
+```
+
+#### Operator Overloading
+
+Overloading also works with operator methods:
+
+```zena
+class MultiMap {
+  data: Map<i32, string>;
+
+  operator [](key: i32): string {
+    return this.data.get(key);
+  }
+
+  operator [](key: string): string {
+    // Lookup by string key (hashed)
+    return this.data.get(hash(key));
+  }
+}
+```
+
+#### Inheritance and Overloading
+
+Subclasses can override specific overloads while inheriting others:
+
+```zena
+class Base {
+  process(val: i32): i32 {
+    return val;
+  }
+
+  process(val: f32): i32 {
+    return 100;
+  }
+}
+
+class Child extends Base {
+  // Override only the i32 version
+  process(val: i32): i32 {
+    return val * 2;
+  }
+  // Inherits process(f32) from Base
+}
+```
+
+Subclasses can also add new overloads not present in the base class.
+
 ````
 
 - **Fields**: Declared with a type annotation.

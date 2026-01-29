@@ -129,16 +129,16 @@ class FixedArray<T> {
 }
 ```
 
-*Note: Since slicing is an O(N) memory copy operation, the cost of the runtime type checks (O(1)) is negligible.*
-  }
-
-
-  // arr[..] - Clone
-  operator [](r: RangeFull): FixedArray<T> {
-    return this.slice(0, this.length);
-  }
+_Note: Since slicing is an O(N) memory copy operation, the cost of the runtime type checks (O(1)) is negligible._
 }
-```
+
+// arr[..] - Clone
+operator [](r: RangeFull): FixedArray<T> {
+return this.slice(0, this.length);
+}
+}
+
+````
 
 ### 5. Implementation in Compiler
 
@@ -173,7 +173,7 @@ interface Iterable<T> {
 extension class BoundedRange implements Iterable<i32> {
   // ...
 }
-```
+````
 
 This enables:
 

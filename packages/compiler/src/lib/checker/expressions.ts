@@ -2325,20 +2325,50 @@ function checkIndexExpression(
         method,
         ctx,
       ) as FunctionType;
-      if (resolvedMethod.parameters.length !== 1) {
+
+      // Handle overloaded operator[]
+      let selectedOverload = resolvedMethod;
+      if (resolvedMethod.overloads && resolvedMethod.overloads.length > 0) {
+        const candidates = [resolvedMethod, ...resolvedMethod.overloads];
+        let bestMatch: FunctionType | undefined;
+
+        for (const candidate of candidates) {
+          const resolvedCandidate = resolveMemberType(
+            classType,
+            candidate,
+            ctx,
+          ) as FunctionType;
+          if (resolvedCandidate.parameters.length === 1) {
+            if (
+              isAssignableTo(ctx, indexType, resolvedCandidate.parameters[0])
+            ) {
+              bestMatch = resolvedCandidate;
+              break;
+            }
+          }
+        }
+
+        if (bestMatch) {
+          selectedOverload = bestMatch;
+        }
+      }
+
+      if (selectedOverload.parameters.length !== 1) {
         ctx.diagnostics.reportError(
           `Operator [] must take exactly one argument.`,
           DiagnosticCode.ArgumentCountMismatch,
         );
       } else {
-        if (!isAssignableTo(ctx, indexType, resolvedMethod.parameters[0])) {
+        if (!isAssignableTo(ctx, indexType, selectedOverload.parameters[0])) {
           ctx.diagnostics.reportError(
-            `Type mismatch in index: expected ${typeToString(resolvedMethod.parameters[0])}, got ${typeToString(indexType)}`,
+            `Type mismatch in index: expected ${typeToString(selectedOverload.parameters[0])}, got ${typeToString(indexType)}`,
             DiagnosticCode.TypeMismatch,
           );
         }
       }
-      return resolvedMethod.returnType;
+      // Store the resolved operator method for codegen
+      expr.resolvedOperatorMethod = selectedOverload;
+      return selectedOverload.returnType;
     }
   }
 

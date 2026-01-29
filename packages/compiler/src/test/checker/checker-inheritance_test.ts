@@ -104,7 +104,9 @@ suite('TypeChecker - Inheritance', () => {
     assert.deepStrictEqual(errors, []);
   });
 
-  test('should detect invalid method override', () => {
+  test('should allow adding new overload in subclass', () => {
+    // With method overloading, adding a method with a different signature is allowed
+    // It becomes a new overload, not an invalid override
     const input = `
       class Animal {
         speak(): void {}
@@ -117,11 +119,7 @@ suite('TypeChecker - Inheritance', () => {
     const ast = parser.parse();
     const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
-    assert.strictEqual(errors.length, 1);
-    assert.match(
-      errors[0].message,
-      /Method 'speak' in 'Dog' incorrectly overrides method in 'Animal'/,
-    );
+    assert.strictEqual(errors.length, 0);
   });
 
   test('should reject extending an interface', () => {

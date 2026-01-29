@@ -35,7 +35,7 @@ import {
   type UnaryExpression,
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
-import {getGetterName, getSetterName} from '../names.js';
+import {getGetterName, getSetterName, getSignatureKey} from '../names.js';
 import {WasmModule} from '../emitter.js';
 import {
   Decorators,
@@ -1130,6 +1130,44 @@ function generateIndexExpression(
   expr: IndexExpression,
   body: number[],
 ) {
+  // Check if this is an overloaded operator[] call on a user-defined class (not extension class)
+  if (expr.resolvedOperatorMethod && expr.object.inferredType) {
+    const objectCheckerType = expr.object.inferredType;
+
+    if (objectCheckerType.kind === TypeKind.Class) {
+      let classType = objectCheckerType as ClassType;
+      // Substitute type params if in generic context
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+        classType = ctx.checkerContext.substituteTypeParams(
+          classType,
+          ctx.currentTypeArguments,
+        ) as ClassType;
+      }
+
+      const classInfo = ctx.getClassInfo(classType);
+      // Only handle here if this is NOT an extension class (extension classes use intrinsics)
+      if (classInfo && !classInfo.isExtension) {
+        // Compute mangled name for the overloaded operator
+        const mangledName = '[]' + getSignatureKey(expr.resolvedOperatorMethod);
+        let methodInfo = classInfo.methods.get(mangledName);
+
+        // Fallback to base name if not mangled (single operator method)
+        if (!methodInfo) {
+          methodInfo = classInfo.methods.get('[]');
+        }
+
+        if (methodInfo) {
+          // Generate method call: obj, index, call
+          generateExpression(ctx, expr.object, body);
+          generateExpression(ctx, expr.index, body);
+          body.push(Opcode.call);
+          body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+          return;
+        }
+      }
+    }
+  }
+
   const objectType = inferType(ctx, expr.object);
   const structTypeIndex = getHeapTypeIndex(ctx, objectType);
 
@@ -2097,6 +2135,15 @@ function generateCallExpression(
     }
 
     let methodInfo = foundClass.methods.get(methodName);
+
+    // If not found, check for overloaded method with mangled name
+    if (methodInfo === undefined && expr.resolvedFunctionType) {
+      const resolvedFunc = expr.resolvedFunctionType as FunctionType;
+      if (resolvedFunc.kind === TypeKind.Function) {
+        const mangledName = methodName + getSignatureKey(resolvedFunc);
+        methodInfo = foundClass.methods.get(mangledName);
+      }
+    }
 
     if (methodInfo === undefined) {
       // Check if it's a generic method call
