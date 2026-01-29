@@ -5472,6 +5472,49 @@ function generateFunctionExpression(
 ) {
   // 1. Analyze captures
   const {captures, mutableCaptures} = analyzeCaptures(expr);
+  
+  // 2. Box mutable captures that aren't already boxed
+  // We need to do this BEFORE building the captureList so that subsequent
+  // code sees the boxed variables
+  for (const name of mutableCaptures) {
+    const local = ctx.getLocal(name);
+    if (local && !local.isBoxed) {
+      // Box this variable in the enclosing scope
+      const checkerType = wasmTypeToCheckerType(local.type);
+      const boxClass = getBoxClassInfo(ctx, checkerType);
+      const boxedType = [
+        ValType.ref,
+        ...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex),
+      ];
+      
+      // Create a new box with the current value
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(local.index));
+      boxPrimitive(ctx, local.type, body);
+      
+      // Create a new local for the box and update the scope
+      const newBoxLocal = ctx.declareLocal(
+        `$$boxed_${name}`,
+        boxedType,
+        undefined,
+        true,
+        local.type,
+      );
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeSignedLEB128(newBoxLocal));
+      
+      // Update the original variable's local info to point to the box
+      // We do this by updating the scope entry
+      const scope = ctx.scopes[ctx.scopes.length - 1];
+      scope.set(name, {
+        index: newBoxLocal,
+        type: boxedType,
+        isBoxed: true,
+        unboxedType: local.type,
+      });
+    }
+  }
+  
   const captureList: {
     name: string;
     type: number[];
