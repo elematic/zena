@@ -54,7 +54,7 @@ We propose using `..` for the range operator.
 
 | Syntax  | Meaning                  | Type                            |
 | :------ | :----------------------- | :------------------------------ |
-| `a..b`  | Half-open `[a, b)`       | `Range`                         |
+| `a..b`  | Half-open `[a, b)`       | `BoundedRange`                  |
 | `a..=b` | Closed `[a, b]`          | `InclusiveRange` (Future/Maybe) |
 | `a..`   | Start to Infinity/Length | `RangeFrom`                     |
 | `..b`   | Zero to `b`              | `RangeTo`                       |
@@ -80,7 +80,7 @@ To support `arr[..5]`, `arr[1..]`, and `arr[1..5]` efficiently without boxing `i
 // stdlib/range.zena
 
 // a..b
-struct Range {
+struct BoundedRange {
   start: i32;
   end: i32;
 }
@@ -103,22 +103,35 @@ struct RangeFull {}
 
 Collection classes will overload `operator []` to accept these types.
 
+**Note on Performance**:
+We must separate `operator [](i32)` from `operator [](Range)` to avoid boxing the integer index. Slicing operations can share a single implementation (dispatching on the specific range type) because they all return a new array (copy overhead dominates dispatch overhead).
+
 ```zena
+// Union of all range types
+type Range = BoundedRange | RangeFrom | RangeTo | RangeFull;
+
 class FixedArray<T> {
-  // arr[1..5]
+  // Fast path: Direct index access (Intrinsically optimized)
+  operator [](index: i32): T { ... }
+
+  // Slicing path: Handles all range types
   operator [](r: Range): FixedArray<T> {
-    return this.slice(r.start, r.end);
+    if (r is BoundedRange) {
+      return this.slice(r.start, r.end);
+    } else if (r is RangeFrom) {
+      return this.slice(r.start, this.length);
+    } else if (r is RangeTo) {
+      return this.slice(0, r.end);
+    } else { // RangeFull
+      return this.slice(0, this.length);
+    }
+  }
+}
+```
+
+*Note: Since slicing is an O(N) memory copy operation, the cost of the runtime type checks (O(1)) is negligible.*
   }
 
-  // arr[1..]
-  operator [](r: RangeFrom): FixedArray<T> {
-    return this.slice(r.start, this.length);
-  }
-
-  // arr[..5]
-  operator [](r: RangeTo): FixedArray<T> {
-    return this.slice(0, r.end);
-  }
 
   // arr[..] - Clone
   operator [](r: RangeFull): FixedArray<T> {
@@ -130,12 +143,12 @@ class FixedArray<T> {
 ### 5. Implementation in Compiler
 
 1.  **Parser**: Update `Parser` to handle `DOT_DOT` token.
-    - Binary expression `expr .. expr` -> `Range`.
+    - Binary expression `expr .. expr` -> `BoundedRange`.
     - Prefix expression `.. expr` -> `RangeTo`.
     - Suffix expression `expr ..` -> `RangeFrom` (Need to handle carefully in parser to avoid ambiguity).
     - Standalone `..` -> `RangeFull`.
 2.  **Desugaring**: The parser or checker should treat these literals as constructor calls to the corresponding stdlib structs.
-    - `1..5` -> `new Range(1, 5)`.
+    - `1..5` -> `new BoundedRange(1, 5)`.
 
 ### 6. Slice Semantics (Refresher)
 
@@ -157,7 +170,7 @@ interface Iterable<T> {
   iterator(): Iterator<T>;
 }
 
-extension class Range implements Iterable<i32> {
+extension class BoundedRange implements Iterable<i32> {
   // ...
 }
 ```

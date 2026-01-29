@@ -83,7 +83,7 @@ Since AST nodes are often immutable or simple data structures, we may need a sid
 ## 5. Roadmap
 
 1.  **Phase 1**: Support overloading for `declare function` (Interop).
-2.  **Phase 2**: Support overloading for class methods.
+2.  **Phase 2**: Support overloading for class methods. (See `method-overloading.md` for detailed design).
 3.  **Phase 3**: Support overloading for regular exported functions (requires name mangling scheme).
 
 ## 6. Interaction with Method Tear-offs
