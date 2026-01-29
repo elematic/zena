@@ -89,26 +89,6 @@ import {
 } from '../bindings.js';
 
 /**
- * Decode a signed LEB128 integer from a byte array starting at offset.
- */
-function decodeSignedLEB128(bytes: number[], offset: number): number {
-  let result = 0;
-  let shift = 0;
-  let byte: number;
-  let i = offset;
-  do {
-    byte = bytes[i++];
-    result |= (byte & 0x7f) << shift;
-    shift += 7;
-  } while (byte & 0x80);
-  // Sign extend if needed
-  if (shift < 32 && byte & 0x40) {
-    result |= ~0 << shift;
-  }
-  return result;
-}
-
-/**
  * Generates WASM instructions for an expression.
  * Appends the instructions to the `body` array.
  * The generated code leaves the result of the expression on the stack.
@@ -668,7 +648,31 @@ function generateAsExpression(
     // Primary: look up ClassInfo via checker type identity
     if (sourceCheckerType) {
       if (sourceCheckerType.kind === TypeKind.Class) {
-        classInfo = ctx.getClassInfo(sourceCheckerType as ClassType);
+        // Ensure we use the interned version of the classType for identity-based lookup
+        let classType = sourceCheckerType as ClassType;
+        if (
+          classType.genericSource &&
+          classType.typeArguments &&
+          classType.typeArguments.length > 0
+        ) {
+          const interned = ctx.checkerContext.getInternedClass(
+            classType.genericSource,
+            classType.typeArguments,
+          );
+          if (interned) {
+            classType = interned;
+          }
+        }
+        classInfo = ctx.getClassInfo(classType);
+        // If identity lookup fails, trigger instantiation and retry
+        if (
+          !classInfo &&
+          classType.typeArguments &&
+          classType.typeArguments.length > 0
+        ) {
+          mapCheckerTypeToWasmType(ctx, classType);
+          classInfo = ctx.getClassInfo(classType);
+        }
       }
 
       // Extension class lookup by onType (checker type identity)
@@ -685,14 +689,6 @@ function generateAsExpression(
         if (arrType.elementType.kind !== TypeKind.TypeParameter) {
           classInfo = resolveFixedArrayClass(ctx, sourceCheckerType);
         }
-      }
-    }
-
-    // Fallback: look up by WASM struct index (for classes instantiated during codegen)
-    if (!classInfo && sourceWasmType) {
-      const sourceIndex = decodeTypeIndex(sourceWasmType);
-      if (sourceIndex !== -1) {
-        classInfo = ctx.getClassInfoByStructIndexDirect(sourceIndex);
       }
     }
 
@@ -1150,21 +1146,31 @@ function generateIndexExpression(
           ctx.currentTypeArguments,
         ) as ClassType;
       }
+      // Ensure we use the interned version for identity-based lookup
+      if (
+        classType.genericSource &&
+        classType.typeArguments &&
+        classType.typeArguments.length > 0
+      ) {
+        const interned = ctx.checkerContext.getInternedClass(
+          classType.genericSource,
+          classType.typeArguments,
+        );
+        if (interned) {
+          classType = interned;
+        }
+      }
       foundClass = ctx.getClassInfo(classType);
 
-      // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
-      if (!foundClass) {
+      // If identity lookup failed, instantiate via mapCheckerTypeToWasmType and retry
+      if (
+        !foundClass &&
+        classType.typeArguments &&
+        classType.typeArguments.length > 0
+      ) {
         mapCheckerTypeToWasmType(ctx, classType);
         foundClass = ctx.getClassInfo(classType);
       }
-    }
-
-    // Fall back to struct index lookup for classes instantiated via annotation path
-    // (e.g., generic specializations created during codegen that don't have
-    // checker types registered in the WeakMap)
-    if (!foundClass) {
-      // Use direct struct index lookup instead of O(n) iteration
-      foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
     }
 
     // Check for extension classes (e.g., FixedArray on array<T>) using O(1) lookup
@@ -2011,21 +2017,31 @@ function generateCallExpression(
           ctx.currentTypeArguments,
         ) as ClassType;
       }
+      // Ensure we use the interned version for identity-based lookup
+      if (
+        classType.genericSource &&
+        classType.typeArguments &&
+        classType.typeArguments.length > 0
+      ) {
+        const interned = ctx.checkerContext.getInternedClass(
+          classType.genericSource,
+          classType.typeArguments,
+        );
+        if (interned) {
+          classType = interned;
+        }
+      }
       foundClass = ctx.getClassInfo(classType);
 
-      // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
-      if (!foundClass) {
+      // If identity lookup failed, instantiate via mapCheckerTypeToWasmType and retry
+      if (
+        !foundClass &&
+        classType.typeArguments &&
+        classType.typeArguments.length > 0
+      ) {
         mapCheckerTypeToWasmType(ctx, classType);
         foundClass = ctx.getClassInfo(classType);
       }
-    }
-
-    // Fall back to struct index lookup for classes instantiated via annotation path
-    // (e.g., generic specializations created during codegen that don't have
-    // checker types registered in the WeakMap)
-    if (!foundClass && structTypeIndex !== -1) {
-      // Use direct struct index lookup instead of O(n) iteration
-      foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
     }
 
     // Check for extension classes using O(1) lookup via checker type
@@ -2572,18 +2588,31 @@ function generateAssignmentExpression(
             ctx.currentTypeArguments,
           ) as ClassType;
         }
+        // Ensure we use the interned version for identity-based lookup
+        if (
+          classType.genericSource &&
+          classType.typeArguments &&
+          classType.typeArguments.length > 0
+        ) {
+          const interned = ctx.checkerContext.getInternedClass(
+            classType.genericSource,
+            classType.typeArguments,
+          );
+          if (interned) {
+            classType = interned;
+          }
+        }
         foundClass = ctx.getClassInfo(classType);
 
-        // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
-        if (!foundClass) {
+        // If identity lookup failed, instantiate via mapCheckerTypeToWasmType and retry
+        if (
+          !foundClass &&
+          classType.typeArguments &&
+          classType.typeArguments.length > 0
+        ) {
           mapCheckerTypeToWasmType(ctx, classType);
           foundClass = ctx.getClassInfo(classType);
         }
-      }
-
-      // Fall back to struct index lookup
-      if (!foundClass) {
-        foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
       }
 
       // Check for extension classes on non-class types (e.g., raw array<T>)
@@ -2889,12 +2918,61 @@ function generateAssignmentExpression(
 
     const objectType = inferType(ctx, memberExpr.object);
     const structTypeIndex = getHeapTypeIndex(ctx, objectType);
-    if (structTypeIndex === -1) {
-      throw new Error(`Invalid object type for field assignment: ${fieldName}`);
+
+    // Identity-based lookup using checker type
+    let foundClass: ClassInfo | undefined;
+    if (
+      memberExpr.object.inferredType &&
+      memberExpr.object.inferredType.kind === TypeKind.Class
+    ) {
+      let classType = memberExpr.object.inferredType as ClassType;
+
+      // Substitute type parameters in the classType when inside a generic context
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+        classType = ctx.checkerContext.substituteTypeParams(
+          classType,
+          ctx.currentTypeArguments,
+        ) as ClassType;
+      }
+
+      // Intern the classType to ensure we use the canonical object
+      if (
+        classType.genericSource &&
+        classType.typeArguments &&
+        classType.typeArguments.length > 0
+      ) {
+        const interned = ctx.checkerContext.getInternedClass(
+          classType.genericSource,
+          classType.typeArguments,
+        );
+        if (interned) {
+          classType = interned;
+        }
+      }
+
+      foundClass = ctx.getClassInfo(classType);
+
+      // If not found, trigger instantiation then trust the cache
+      if (!foundClass && classType.typeArguments?.length) {
+        mapCheckerTypeToWasmType(ctx, classType);
+        foundClass = ctx.getClassInfo(classType);
+      }
+
+      // Verify the struct type index matches - if not, there's an interning issue
+      if (
+        foundClass &&
+        structTypeIndex !== -1 &&
+        foundClass.structTypeIndex !== structTypeIndex
+      ) {
+        // Identity lookup gave wrong ClassInfo - use struct index lookup instead
+        foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
+      }
     }
 
-    // Use O(1) struct index lookup
-    const foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
+    // Fallback to struct index lookup if identity-based lookup failed
+    if (!foundClass && structTypeIndex !== -1) {
+      foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
+    }
 
     if (!foundClass) {
       // Identity-based lookup for interface
@@ -3020,7 +3098,7 @@ function generateAssignmentExpression(
         return;
       }
 
-      throw new Error(`Class not found for object type ${structTypeIndex}`);
+      throw new Error(`Class not found for field assignment to '${fieldName}'`);
     }
 
     let lookupName = fieldName;
@@ -4128,22 +4206,37 @@ function generateFieldFromBinding(
     return true;
   }
 
+  // Ensure we use the interned version of the classType for identity-based lookup.
+  // This is critical because bindings may have a classType that's structurally equal
+  // but not the same object as the one registered during instantiation.
+  if (
+    classType.genericSource &&
+    classType.typeArguments &&
+    classType.typeArguments.length > 0
+  ) {
+    const interned = ctx.checkerContext.getInternedClass(
+      classType.genericSource,
+      classType.typeArguments,
+    );
+    if (interned) {
+      classType = interned;
+    }
+  }
+
   // Look up the class info using O(1) identity-based lookup
   let classInfo = ctx.getClassInfo(classType);
 
-  // If identity lookup fails (e.g., generic instantiation), try instantiating
+  // If identity lookup fails (e.g., generic instantiation not yet done), instantiate it
   if (
     !classInfo &&
     classType.typeArguments &&
     classType.typeArguments.length > 0
   ) {
-    const wasmType = mapCheckerTypeToWasmType(ctx, classType);
-    // mapCheckerTypeToWasmType registers the instantiated class.
-    // We can find it via direct struct index lookup.
-    if (wasmType.length >= 2 && wasmType[0] === ValType.ref_null) {
-      const structIndex = decodeSignedLEB128(wasmType, 1);
-      classInfo = ctx.getClassInfoByStructIndexDirect(structIndex);
-    }
+    // mapCheckerTypeToWasmType will instantiate and register the class.
+    // Since we already interned the classType above, the registered ClassInfo
+    // will use the same object, so we can retry identity lookup.
+    mapCheckerTypeToWasmType(ctx, classType);
+    classInfo = ctx.getClassInfo(classType);
   }
 
   // For generic extension classes that weren't found through normal lookups,
@@ -4714,26 +4807,37 @@ function generateGetterFromBinding(
   }
 
   // Look up the class info using O(1) identity-based lookup
+
+  // Ensure we use the interned version of the classType for identity-based lookup.
+  // This is critical because bindings may have a classType that's structurally equal
+  // but not the same object as the one registered during instantiation.
+  if (
+    classType.genericSource &&
+    classType.typeArguments &&
+    classType.typeArguments.length > 0
+  ) {
+    const interned = ctx.checkerContext.getInternedClass(
+      classType.genericSource,
+      classType.typeArguments,
+    );
+    if (interned) {
+      classType = interned;
+    }
+  }
+
   let classInfo = ctx.getClassInfo(classType);
 
-  // If identity lookup fails (e.g., generic instantiation), try instantiating
+  // If identity lookup fails (e.g., generic instantiation not yet done), instantiate it
   if (
     !classInfo &&
     classType.typeArguments &&
     classType.typeArguments.length > 0
   ) {
-    // mapCheckerTypeToWasmType triggers instantiation and registration
-    const wasmType = mapCheckerTypeToWasmType(ctx, classType);
-
-    // Find the class by struct index via direct lookup
-    if (
-      !classInfo &&
-      wasmType.length >= 2 &&
-      wasmType[0] === ValType.ref_null
-    ) {
-      const structIndex = decodeSignedLEB128(wasmType, 1);
-      classInfo = ctx.getClassInfoByStructIndexDirect(structIndex);
-    }
+    // mapCheckerTypeToWasmType will instantiate and register the class.
+    // Since we already interned the classType above, the registered ClassInfo
+    // will use the same object, so we can retry identity lookup.
+    mapCheckerTypeToWasmType(ctx, classType);
+    classInfo = ctx.getClassInfo(classType);
   }
 
   if (!classInfo) {
