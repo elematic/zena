@@ -659,9 +659,16 @@ export class CodegenContext {
     name: string,
     type: number[] = [ValType.i32],
     declaration?: Node,
+    isBoxed?: boolean,
+    unboxedType?: number[],
   ): number {
     const index = this.#nextLocalIndex++;
-    this.scopes[this.scopes.length - 1].set(name, {index, type});
+    this.scopes[this.scopes.length - 1].set(name, {
+      index,
+      type,
+      isBoxed,
+      unboxedType,
+    });
     this.#extraLocals.push(type);
     // Register by declaration for identity-based lookup (new name resolution)
     if (declaration) {
