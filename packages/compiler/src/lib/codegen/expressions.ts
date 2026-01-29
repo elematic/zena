@@ -700,7 +700,7 @@ function generateAsExpression(
       // If direct lookup fails, try to find by interface subtype
       if (!impl) {
         for (const [implInterface, implInfo] of classInfo.implements) {
-          if (isInterfaceSubtype(ctx, implInterface, targetInterface)) {
+          if (ctx.checkerContext.isInterfaceAssignableTo(implInterface, targetInterface)) {
             impl = implInfo;
             break;
           }
@@ -6957,7 +6957,7 @@ export function generateAdaptedArgument(
       // If not found, check if the class implements a subtype of the interface
       if (!impl) {
         for (const [implType, implInfo] of classInfo.implements) {
-          if (isInterfaceSubtype(ctx, implType, targetInterfaceType)) {
+          if (ctx.checkerContext.isInterfaceAssignableTo(implType, targetInterfaceType)) {
             impl = implInfo;
             break;
           }
@@ -7119,7 +7119,7 @@ export function generateAdaptedArgument(
                 if (!impl) {
                   for (const [implType, implInfo] of classInfo.implements) {
                     if (
-                      isInterfaceSubtype(ctx, implType, targetInterfaceType)
+                      ctx.checkerContext.isInterfaceAssignableTo(implType, targetInterfaceType)
                     ) {
                       impl = implInfo;
                       break;
@@ -8280,43 +8280,4 @@ function generateMatchPatternBindings(
       }
     }
   }
-}
-
-/**
- * Check if one interface type is a subtype of another using identity-based comparison.
- *
- * For generic interfaces, this compares the base interface (via genericSource chain)
- * because all specializations share the same WASM struct type. The checker interns
- * interface types, so identical instantiations (e.g., Sequence<i32>) are the same object.
- */
-export function isInterfaceSubtype(
-  ctx: CodegenContext,
-  sub: InterfaceType,
-  sup: InterfaceType,
-): boolean {
-  // Identity check first
-  if (sub === sup) return true;
-
-  // Follow genericSource chain to get base interface types
-  // All specializations of the same generic interface share the same WASM struct
-  let subBase: InterfaceType = sub;
-  while (subBase.genericSource) subBase = subBase.genericSource;
-  let supBase: InterfaceType = sup;
-  while (supBase.genericSource) supBase = supBase.genericSource;
-
-  // Compare base interfaces by identity
-  if (subBase === supBase) {
-    return true;
-  }
-
-  // Check parent chain using checker's InterfaceType.extends
-  if (sub.extends && sub.extends.length > 0) {
-    for (const parentType of sub.extends) {
-      if (isInterfaceSubtype(ctx, parentType, sup)) {
-        return true;
-      }
-    }
-  }
-
-  return false;
 }

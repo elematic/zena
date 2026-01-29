@@ -221,3 +221,9 @@ export const TypeNames = {
   U32: 'u32',
   ByteArray: 'ByteArray',
 } as const;
+
+// ============================================================
+// Semantic Analysis Results
+// These types describe backend-independent analysis results that
+// both WASM binary and WAT text backends can use.
+// ============================================================

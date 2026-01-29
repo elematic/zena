@@ -64,7 +64,6 @@ import {
   getHeapTypeIndex,
   boxPrimitive,
   unboxPrimitive,
-  isInterfaceSubtype,
 } from './expressions.js';
 import {
   generateBlockStatement,
@@ -737,8 +736,7 @@ export function generateTrampoline(
                   implInfo,
                 ] of resultClassInfo.implements) {
                   if (
-                    isInterfaceSubtype(
-                      ctx,
+                    ctx.checkerContext.isInterfaceAssignableTo(
                       implInterface,
                       interfaceInfo.checkerType,
                     )

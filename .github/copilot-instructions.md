@@ -438,6 +438,16 @@ This project is an **npm monorepo** managed with **Wireit**.
       - [x] Added `function-name-collision_test.ts` - functions already work correctly due to qualified names
       - [ ] Remove `ctx.functions` Map - requires identity-based generic function instantiation tracking (see GitHub issue)
       - [ ] Remove `ctx.classes` Map entirely - migrate to identity-only registration via `ctx.registerClassInfoByType()`
+    - [x] **Phase 9: Backend-Independent Semantic Analysis** (completed 2025-01-28)
+      - Added `BoxingKind`, `MethodDispatchKind`, `ArgumentAdaptationKind` types to `types.ts`
+      - Added `CheckerContext.analyzeBoxing(sourceType, targetType)` - returns boxing transformation needed
+      - Added `CheckerContext.analyzeMethodDispatch(classType, methodName)` - returns dispatch mechanism
+      - Added `CheckerContext.analyzeArgumentAdaptation(argType, paramType)` - returns argument transformation
+      - Added `CheckerContext.findInterfaceImplementation(classType, interfaceType)` - finds interface impl
+      - Added `CheckerContext.isInterfaceAssignableTo(sub, sup)` - interface subtype check
+      - Added `CheckerContext.isPrimitive(type)` - primitive type check
+      - Added tests in `semantic-analysis_test.ts` (20 tests)
+      - **Purpose**: These utilities enable a future WAT backend or other backends to share semantic analysis logic
 
     **Benefits** (now realized):
     - Enables intellisense (hover shows `i32`, not `T`)

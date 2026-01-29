@@ -63,6 +63,13 @@ Understanding these terms is crucial for working on the compiler:
   - `buildTypeMap(classType)`: Builds a substitution map from an instantiated class type.
   - `buildFunctionTypeMap(funcType)`: Builds a substitution map from an instantiated function type.
   - `resolveTypeInContext(type, context)`: _(Deprecated)_ Convenience wrapper for `substituteTypeParams(type, buildTypeMap(context))`.
+- **Backend-Independent Semantic Analysis** (for multi-backend support):
+  - `analyzeBoxing(sourceType, targetType)`: Returns a `BoxingKind` describing what boxing transformation is needed (none, primitive-box, or interface-box).
+  - `analyzeMethodDispatch(classType, methodName)`: Returns a `MethodDispatchKind` describing how to dispatch a method call (static, virtual, or interface).
+  - `analyzeArgumentAdaptation(argType, paramType)`: Returns an `ArgumentAdaptationKind` describing what transformation is needed for an argument (none, box-primitive, box-interface, or wrap-closure).
+  - `findInterfaceImplementation(classType, interfaceType)`: Finds which interface a class implements that satisfies the target interface, handling inheritance.
+  - `isInterfaceAssignableTo(sub, sup)`: Checks if one interface is assignable to another, handling generic interface bases.
+  - `isPrimitive(type)`: Checks if a type is a primitive numeric or boolean type.
 
 ### 5. Code Generator (`packages/compiler/src/lib/codegen/index.ts`)
 

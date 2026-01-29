@@ -1036,4 +1036,47 @@ export class CheckerContext {
     const argKeys = typeArguments.map((a) => this.computeTypeKey(a)).join(',');
     return `${prefix}:${sourceId}<${argKeys}>`;
   }
+
+  // ============================================================
+  // Semantic Analysis Utilities
+  // ============================================================
+
+  /**
+   * Check if one interface is assignable to another (subtype relationship).
+   *
+   * For generic interfaces, this compares the base interface identity because
+   * all specializations share the same structure. The checker interns interface
+   * types, so identical instantiations are the same object.
+   *
+   * @param sub The potentially more specific interface
+   * @param sup The potentially more general interface
+   * @returns true if sub is assignable to sup
+   */
+  isInterfaceAssignableTo(sub: InterfaceType, sup: InterfaceType): boolean {
+    // Identity check first
+    if (sub === sup) return true;
+
+    // Follow genericSource chain to get base interface types
+    // All specializations of the same generic interface share the same structure
+    let subBase: InterfaceType = sub;
+    while (subBase.genericSource) subBase = subBase.genericSource;
+    let supBase: InterfaceType = sup;
+    while (supBase.genericSource) supBase = supBase.genericSource;
+
+    // Compare base interfaces by identity
+    if (subBase === supBase) {
+      return true;
+    }
+
+    // Check parent chain using InterfaceType.extends
+    if (sub.extends && sub.extends.length > 0) {
+      for (const parentType of sub.extends) {
+        if (this.isInterfaceAssignableTo(parentType, sup)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
 }
