@@ -747,6 +747,8 @@ export class Parser {
     // () => ...
     // (a: i32) => ...
     // (a: i32, b: i32) => ...
+    // (a) => ...  (contextual typing - no type annotation)
+    // (a, b) => ...  (multiple params without types)
     // <T>(a: T) => ...
 
     if (this.#check(TokenType.Less)) {
@@ -776,6 +778,26 @@ export class Parser {
       ) {
         return this.#parseArrowFunctionDefinition();
       }
+
+      // Case 3: (param) => ... or (param, ...) => ...
+      // Contextual typing - parameter without type annotation
+      if (this.#isIdentifier(this.#peek(1).type)) {
+        const afterIdent = this.#peek(2).type;
+        // (x) followed by => or : (return type)
+        if (afterIdent === TokenType.RParen) {
+          const afterParen = this.#peek(3).type;
+          if (
+            afterParen === TokenType.Arrow ||
+            afterParen === TokenType.Colon
+          ) {
+            return this.#parseArrowFunctionDefinition();
+          }
+        }
+        // (x, ...) - multiple parameters
+        if (afterIdent === TokenType.Comma) {
+          return this.#parseArrowFunctionDefinition();
+        }
+      }
     }
 
     return this.#parseLogicalOr();
@@ -796,8 +818,11 @@ export class Parser {
           seenOptional = true;
         }
 
-        this.#consume(TokenType.Colon, "Expected ':' for type annotation");
-        const typeAnnotation = this.#parseTypeAnnotation();
+        // Type annotation is optional - allows contextual typing
+        let typeAnnotation: TypeAnnotation | undefined;
+        if (this.#match(TokenType.Colon)) {
+          typeAnnotation = this.#parseTypeAnnotation();
+        }
 
         let initializer: Expression | undefined;
         if (this.#match(TokenType.Equals)) {

@@ -33,7 +33,7 @@ suite('Parser: Union Types', () => {
       const fn = decl.init;
       if (fn.type === NodeType.FunctionExpression) {
         const param = fn.params[0];
-        const type = param.typeAnnotation;
+        const type = param.typeAnnotation!;
         assert.strictEqual(type.type, NodeType.UnionTypeAnnotation);
         if (type.type === NodeType.UnionTypeAnnotation) {
           assert.strictEqual(type.types.length, 2);

@@ -573,6 +573,15 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
 }
 
 function resolveParameterType(ctx: CheckerContext, param: Parameter): Type {
+  if (!param.typeAnnotation) {
+    // This function is used for class methods which always require type annotations.
+    // If called on a contextually-typed closure parameter, this is a bug.
+    ctx.diagnostics.reportError(
+      `Parameter '${param.name.name}' requires a type annotation in this context.`,
+      DiagnosticCode.TypeMismatch,
+    );
+    return Types.Unknown;
+  }
   let type = resolveTypeAnnotation(ctx, param.typeAnnotation);
   if (param.optional && !param.initializer) {
     if (type.kind === TypeKind.Union) {

@@ -132,11 +132,11 @@ suite('Checker - inferredType on TypeAnnotations', () => {
     const decl = ast.body[0] as VariableDeclaration;
     const arrow = decl.init as FunctionExpression;
     assertAnnotationHasInferredType(
-      arrow.params[0].typeAnnotation,
+      arrow.params[0].typeAnnotation!,
       'first parameter',
     );
     assertAnnotationHasInferredType(
-      arrow.params[1].typeAnnotation,
+      arrow.params[1].typeAnnotation!,
       'second parameter',
     );
   });
@@ -185,11 +185,11 @@ suite('Checker - inferredType on TypeAnnotations', () => {
       (m) => m.type === NodeType.MethodDefinition,
     ) as MethodDefinition;
     assertAnnotationHasInferredType(
-      method.params[0].typeAnnotation,
+      method.params[0].typeAnnotation!,
       'method param a',
     );
     assertAnnotationHasInferredType(
-      method.params[1].typeAnnotation,
+      method.params[1].typeAnnotation!,
       'method param b',
     );
     assertAnnotationHasInferredType(method.returnType!, 'method return type');
@@ -348,11 +348,11 @@ suite('Checker - inferredType on TypeAnnotations', () => {
       (m) => m.type === NodeType.MethodSignature,
     ) as MethodSignature;
     assertAnnotationHasInferredType(
-      method.params[0].typeAnnotation,
+      method.params[0].typeAnnotation!,
       'interface method param a',
     );
     assertAnnotationHasInferredType(
-      method.params[1].typeAnnotation,
+      method.params[1].typeAnnotation!,
       'interface method param b',
     );
     assertAnnotationHasInferredType(
@@ -497,7 +497,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
     const decl = ast.body[0] as VariableDeclaration;
     const arrow = decl.init as FunctionExpression;
     assertAnnotationHasInferredType(
-      arrow.params[0].typeAnnotation,
+      arrow.params[0].typeAnnotation!,
       'optional parameter type',
     );
   });
@@ -563,11 +563,11 @@ suite('Checker - inferredType on TypeAnnotations', () => {
         ((m as MethodDefinition).name as any).name === '#new',
     ) as MethodDefinition;
     assertAnnotationHasInferredType(
-      ctor.params[0].typeAnnotation,
+      ctor.params[0].typeAnnotation!,
       'constructor param x',
     );
     assertAnnotationHasInferredType(
-      ctor.params[1].typeAnnotation,
+      ctor.params[1].typeAnnotation!,
       'constructor param y',
     );
   });
@@ -584,7 +584,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
     ) as MethodDefinition;
     // The function parameter type (x: i32) => U
     assertAnnotationHasInferredType(
-      method.params[0].typeAnnotation,
+      method.params[0].typeAnnotation!,
       'generic method param f',
     );
     const funcType = method.params[0].typeAnnotation as FunctionTypeAnnotation;

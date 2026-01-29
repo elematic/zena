@@ -632,9 +632,11 @@ export interface ForStatement extends Node {
 export interface Parameter extends Node {
   type: typeof NodeType.Parameter;
   name: Identifier;
-  typeAnnotation: TypeAnnotation;
+  typeAnnotation?: TypeAnnotation;
   optional: boolean;
   initializer?: Expression;
+  /** Inferred type, populated by the checker. Used for contextual typing. */
+  inferredType?: Type;
 }
 
 export interface TypeParameter extends Node {

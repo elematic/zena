@@ -357,7 +357,12 @@ export function generateLocalVariableDeclaration(
           // If not found, try to find by interface subtype
           if (!implInfo) {
             for (const [implInterface, info] of classInfo.implements) {
-              if (ctx.checkerContext.isInterfaceAssignableTo(implInterface, targetInterfaceType)) {
+              if (
+                ctx.checkerContext.isInterfaceAssignableTo(
+                  implInterface,
+                  targetInterfaceType,
+                )
+              ) {
                 implInfo = info;
                 break;
               }

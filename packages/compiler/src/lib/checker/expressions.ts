@@ -111,13 +111,21 @@ function resolveMemberType(
   return substituteType(memberType, typeMap, ctx);
 }
 
-export function checkExpression(ctx: CheckerContext, expr: Expression): Type {
-  const type = checkExpressionInternal(ctx, expr);
+export function checkExpression(
+  ctx: CheckerContext,
+  expr: Expression,
+  expectedType?: Type,
+): Type {
+  const type = checkExpressionInternal(ctx, expr, expectedType);
   expr.inferredType = type;
   return type;
 }
 
-function checkExpressionInternal(ctx: CheckerContext, expr: Expression): Type {
+function checkExpressionInternal(
+  ctx: CheckerContext,
+  expr: Expression,
+  expectedType?: Type,
+): Type {
   switch (expr.type) {
     case NodeType.NumberLiteral: {
       const lit = expr as any; // Cast to access raw if needed, or update AST type definition
@@ -165,7 +173,11 @@ function checkExpressionInternal(ctx: CheckerContext, expr: Expression): Type {
     case NodeType.BinaryExpression:
       return checkBinaryExpression(ctx, expr as BinaryExpression);
     case NodeType.FunctionExpression:
-      return checkFunctionExpression(ctx, expr as FunctionExpression);
+      return checkFunctionExpression(
+        ctx,
+        expr as FunctionExpression,
+        expectedType,
+      );
     case NodeType.CallExpression:
       return checkCallExpression(ctx, expr as CallExpression);
     case NodeType.NewExpression:
@@ -951,8 +963,24 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
 
   const calleeType = checkExpression(ctx, expr.callee);
 
-  // Always check arguments to ensure they have inferred types attached
-  const argTypes = expr.arguments.map((arg) => checkExpression(ctx, arg));
+  // Determine expected parameter types for contextual typing of closures
+  // For non-generic functions, we know the parameter types immediately.
+  // For generic functions with type parameters, we can still provide partial contextual types
+  // that help infer closure parameter types from the parts that are already known.
+  // E.g., for `map<U>(f: (item: T) => U)` where T=i32, we can tell that `item` should be i32
+  // even before we know U.
+  let expectedParamTypes: Type[] | undefined;
+  if (calleeType.kind === TypeKind.Function) {
+    // Use parameter types for contextual typing - even if the function is generic,
+    // class type parameters (like T in FixedArray<T>) are already substituted
+    expectedParamTypes = (calleeType as FunctionType).parameters;
+  }
+
+  // Check arguments with contextual types where available
+  const argTypes = expr.arguments.map((arg, i) => {
+    const expectedType = expectedParamTypes?.[i];
+    return checkExpression(ctx, arg, expectedType);
+  });
 
   if (calleeType.kind === TypeKind.Union) {
     const unionType = calleeType as UnionType;
@@ -1093,6 +1121,24 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
 
     // Constraint validation is done inside instantiateGenericFunction
     funcType = instantiateGenericFunction(funcType, typeArguments, ctx);
+
+    // Re-check closure arguments with instantiated parameter types for contextual typing
+    // This allows closures like `(x) => x * 2` to infer parameter types in generic calls
+    for (let i = 0; i < expr.arguments.length; i++) {
+      const arg = expr.arguments[i];
+      if (arg.type === NodeType.FunctionExpression) {
+        const funcExpr = arg as FunctionExpression;
+        // Check if any parameter lacks a type annotation
+        const needsContextualTyping = funcExpr.params.some(
+          (p) => !p.typeAnnotation,
+        );
+        if (needsContextualTyping && i < funcType.parameters.length) {
+          // Re-check with contextual type to infer parameter types
+          const newType = checkExpression(ctx, arg, funcType.parameters[i]);
+          argTypes[i] = newType;
+        }
+      }
+    }
   }
 
   expr.resolvedFunctionType = funcType;
@@ -1604,8 +1650,15 @@ function checkBinaryExpression(
 function checkFunctionExpression(
   ctx: CheckerContext,
   expr: FunctionExpression,
+  contextualType?: Type,
 ): Type {
   ctx.enterScope();
+
+  // Extract expected parameter types from contextual type (if it's a function type)
+  const expectedFuncType =
+    contextualType?.kind === TypeKind.Function
+      ? (contextualType as FunctionType)
+      : undefined;
 
   const typeParameters: TypeParameterType[] = [];
   if (expr.typeParameters) {
@@ -1640,9 +1693,25 @@ function checkFunctionExpression(
   const optionalParameters: boolean[] = [];
   const parameterInitializers: any[] = [];
 
-  for (const param of expr.params) {
-    // Resolve type annotation
-    let type = resolveTypeAnnotation(ctx, param.typeAnnotation);
+  for (let i = 0; i < expr.params.length; i++) {
+    const param = expr.params[i];
+
+    // Resolve type: use annotation if present, otherwise infer from contextual type
+    let type: Type;
+    if (param.typeAnnotation) {
+      type = resolveTypeAnnotation(ctx, param.typeAnnotation);
+    } else if (expectedFuncType && i < expectedFuncType.parameters.length) {
+      // Contextual typing: infer parameter type from expected function type
+      type = expectedFuncType.parameters[i];
+    } else {
+      // No annotation and no contextual type - error
+      ctx.diagnostics.reportError(
+        `Parameter '${param.name.name}' has no type annotation and cannot be inferred from context.`,
+        DiagnosticCode.TypeMismatch,
+      );
+      type = Types.Unknown;
+    }
+
     if (param.optional && !param.initializer) {
       if (type.kind === TypeKind.Union) {
         type = {
@@ -1657,6 +1726,10 @@ function checkFunctionExpression(
       }
       validateType(type, ctx);
     }
+
+    // Store the inferred type on the parameter for codegen
+    param.inferredType = type;
+
     ctx.declare(param.name.name, type, 'let', param);
     paramTypes.push(type);
     optionalParameters.push(param.optional);
@@ -1674,13 +1747,13 @@ function checkFunctionExpression(
   }
 
   // Check return type if annotated
-  let expectedType: Type = Types.Unknown;
+  let expectedReturnType: Type = Types.Unknown;
   if (expr.returnType) {
-    expectedType = resolveTypeAnnotation(ctx, expr.returnType);
+    expectedReturnType = resolveTypeAnnotation(ctx, expr.returnType);
   }
 
   const previousReturnType = ctx.currentFunctionReturnType;
-  ctx.currentFunctionReturnType = expectedType;
+  ctx.currentFunctionReturnType = expectedReturnType;
 
   const previousInferredReturns = ctx.inferredReturnTypes;
   ctx.inferredReturnTypes = [];
@@ -1689,7 +1762,7 @@ function checkFunctionExpression(
   if (expr.body.type === NodeType.BlockStatement) {
     checkStatement(ctx, expr.body);
 
-    if (expectedType.kind === Types.Unknown.kind) {
+    if (expectedReturnType.kind === Types.Unknown.kind) {
       if (ctx.inferredReturnTypes.length === 0) {
         bodyType = Types.Void;
       } else {
@@ -1697,17 +1770,17 @@ function checkFunctionExpression(
         bodyType = ctx.inferredReturnTypes[0];
       }
     } else {
-      bodyType = expectedType;
+      bodyType = expectedReturnType;
     }
   } else {
     bodyType = checkExpression(ctx, expr.body as Expression);
 
     if (
-      expectedType.kind !== Types.Unknown.kind &&
-      !isAssignableTo(ctx, bodyType, expectedType)
+      expectedReturnType.kind !== Types.Unknown.kind &&
+      !isAssignableTo(ctx, bodyType, expectedReturnType)
     ) {
       ctx.diagnostics.reportError(
-        `Type mismatch: expected return type ${typeToString(expectedType)}, got ${typeToString(bodyType)}`,
+        `Type mismatch: expected return type ${typeToString(expectedReturnType)}, got ${typeToString(bodyType)}`,
         DiagnosticCode.TypeMismatch,
       );
     }

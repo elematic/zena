@@ -173,7 +173,7 @@ suite('Parser: Literal Types', () => {
       const fn = decl.init;
       if (fn.type === NodeType.FunctionExpression) {
         const param = fn.params[0];
-        const type = param.typeAnnotation;
+        const type = param.typeAnnotation!;
         assert.strictEqual(type.type, NodeType.UnionTypeAnnotation);
       }
     }

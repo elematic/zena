@@ -1650,18 +1650,17 @@ export function registerClassMethods(
       ) {
         params.push(thisType);
       }
-      // Use the annotation's inferredType (set by the checker)
+      // Use the param's inferredType (set by the checker), falling back to annotation
       for (let i = 0; i < member.params.length; i++) {
         const param = member.params[i];
-        if (!param.typeAnnotation.inferredType) {
+        const paramType =
+          param.inferredType ?? param.typeAnnotation?.inferredType;
+        if (!paramType) {
           throw new Error(
             `Parameter ${i} of ${methodName} in ${decl.name.name} missing inferredType`,
           );
         }
-        const mapped = mapCheckerTypeToWasmType(
-          ctx,
-          param.typeAnnotation.inferredType,
-        );
+        const mapped = mapCheckerTypeToWasmType(ctx, paramType);
         params.push(mapped);
       }
 
@@ -3119,6 +3118,12 @@ function instantiateClassImpl(
           params.push(thisType);
         }
         for (const param of member.params) {
+          // Class method params require type annotations; use resolveType for proper substitution
+          if (!param.typeAnnotation) {
+            throw new Error(
+              `Parameter ${param.name.name} of ${methodName} missing type annotation`,
+            );
+          }
           params.push(resolveType(param.typeAnnotation));
         }
 

@@ -700,7 +700,12 @@ function generateAsExpression(
       // If direct lookup fails, try to find by interface subtype
       if (!impl) {
         for (const [implInterface, implInfo] of classInfo.implements) {
-          if (ctx.checkerContext.isInterfaceAssignableTo(implInterface, targetInterface)) {
+          if (
+            ctx.checkerContext.isInterfaceAssignableTo(
+              implInterface,
+              targetInterface,
+            )
+          ) {
             impl = implInfo;
             break;
           }
@@ -6957,7 +6962,12 @@ export function generateAdaptedArgument(
       // If not found, check if the class implements a subtype of the interface
       if (!impl) {
         for (const [implType, implInfo] of classInfo.implements) {
-          if (ctx.checkerContext.isInterfaceAssignableTo(implType, targetInterfaceType)) {
+          if (
+            ctx.checkerContext.isInterfaceAssignableTo(
+              implType,
+              targetInterfaceType,
+            )
+          ) {
             impl = implInfo;
             break;
           }
@@ -7119,7 +7129,10 @@ export function generateAdaptedArgument(
                 if (!impl) {
                   for (const [implType, implInfo] of classInfo.implements) {
                     if (
-                      ctx.checkerContext.isInterfaceAssignableTo(implType, targetInterfaceType)
+                      ctx.checkerContext.isInterfaceAssignableTo(
+                        implType,
+                        targetInterfaceType,
+                      )
                     ) {
                       impl = implInfo;
                       break;

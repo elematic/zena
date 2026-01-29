@@ -90,7 +90,11 @@ export function generateFunctionBody(
   }
 
   func.params.forEach((p) => {
-    let paramType = p.typeAnnotation.inferredType!;
+    // Use param.inferredType (from checker) which works for both explicit and contextual typing
+    let paramType = p.inferredType ?? p.typeAnnotation?.inferredType;
+    if (!paramType) {
+      throw new Error(`Parameter ${p.name.name} missing inferredType`);
+    }
     if (typeArguments && ctx.checkerContext) {
       paramType = ctx.checkerContext.substituteTypeParams(
         paramType,
@@ -153,7 +157,10 @@ export function instantiateGenericFunction(
   }
 
   const params = funcDecl.params.map((p) => {
-    let paramType = p.typeAnnotation.inferredType!;
+    let paramType = p.inferredType ?? p.typeAnnotation?.inferredType;
+    if (!paramType) {
+      throw new Error(`Parameter ${p.name.name} missing inferredType`);
+    }
     if (ctx.checkerContext) {
       paramType = ctx.checkerContext.substituteTypeParams(paramType, typeMap);
     }
@@ -353,7 +360,10 @@ export function instantiateGenericMethod(
   }
 
   for (const param of methodDecl.params) {
-    let paramType = param.typeAnnotation.inferredType!;
+    let paramType = param.inferredType ?? param.typeAnnotation?.inferredType;
+    if (!paramType) {
+      throw new Error(`Parameter ${param.name.name} missing inferredType`);
+    }
     if (ctx.checkerContext) {
       paramType = ctx.checkerContext.substituteTypeParams(paramType, typeMap);
     }
@@ -434,7 +444,10 @@ function generateMethodBody(
   }
 
   method.params.forEach((p) => {
-    let paramType = p.typeAnnotation.inferredType!;
+    let paramType = p.inferredType ?? p.typeAnnotation?.inferredType;
+    if (!paramType) {
+      throw new Error(`Parameter ${p.name.name} missing inferredType`);
+    }
     if (ctx.checkerContext) {
       paramType = ctx.checkerContext.substituteTypeParams(
         paramType,
