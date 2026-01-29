@@ -28,6 +28,7 @@ import {
   templateStringsArrayModule,
   assertModule,
   testModule,
+  rangeModule,
 } from './stdlib.js';
 
 class InMemoryHost implements CompilerHost {
@@ -66,6 +67,7 @@ export function compile(source: string): Uint8Array {
       ['zena:template-strings-array', templateStringsArrayModule],
       ['zena:assert', assertModule],
       ['zena:test', testModule],
+      ['zena:range', rangeModule],
     ]),
   );
 

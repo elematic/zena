@@ -104,6 +104,7 @@ export const NodeType = {
   ComputedPropertyName: 'ComputedPropertyName',
   EnumDeclaration: 'EnumDeclaration',
   EnumMember: 'EnumMember',
+  RangeExpression: 'RangeExpression',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -354,7 +355,8 @@ export type Expression =
   | ThrowExpression
   | TryExpression
   | MatchExpression
-  | IfExpression;
+  | IfExpression
+  | RangeExpression;
 
 export interface MatchExpression extends Node {
   type: typeof NodeType.MatchExpression;
@@ -423,6 +425,12 @@ export interface UnaryExpression extends Node {
   operator: string;
   argument: Expression;
   prefix: boolean;
+}
+
+export interface RangeExpression extends Node {
+  type: typeof NodeType.RangeExpression;
+  start: Expression | null;
+  end: Expression | null;
 }
 
 export interface ThrowExpression extends Node {

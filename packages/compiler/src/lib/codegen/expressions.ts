@@ -22,6 +22,7 @@ import {
   type NullLiteral,
   type NumberLiteral,
   type Pattern,
+  type RangeExpression,
   type RecordLiteral,
   type RecordPattern,
   type StringLiteral,
@@ -185,6 +186,9 @@ export function generateExpression(
       break;
     case NodeType.IfExpression:
       generateIfExpression(ctx, expression as IfExpression, body);
+      break;
+    case NodeType.RangeExpression:
+      generateRangeExpression(ctx, expression as RangeExpression, body);
       break;
     default:
       // TODO: Handle other expressions
@@ -8496,4 +8500,64 @@ function generateMatchPatternBindings(
       }
     }
   }
+}
+
+function generateRangeExpression(
+  ctx: CodegenContext,
+  expr: RangeExpression,
+  body: number[],
+) {
+  const exprType = expr.inferredType;
+  if (!exprType || exprType.kind !== TypeKind.Class) {
+    throw new CompilerError(
+      'Range expression must have a class type',
+      DiagnosticCode.CodegenError,
+    );
+  }
+
+  const classType = exprType as ClassType;
+  const className = classType.name;
+
+  // Generate constructor call: new RangeType(start, end)
+  // First, push arguments onto stack
+  if (className === 'BoundedRange') {
+    // new BoundedRange(start, end)
+    if (!expr.start || !expr.end) {
+      throw new CompilerError(
+        'BoundedRange requires both start and end',
+        DiagnosticCode.CodegenError,
+      );
+    }
+    generateExpression(ctx, expr.start, body);
+    generateExpression(ctx, expr.end, body);
+  } else if (className === 'FromRange') {
+    // new FromRange(start)
+    if (!expr.start) {
+      throw new CompilerError(
+        'FromRange requires start',
+        DiagnosticCode.CodegenError,
+      );
+    }
+    generateExpression(ctx, expr.start, body);
+  } else if (className === 'ToRange') {
+    // new ToRange(end)
+    if (!expr.end) {
+      throw new CompilerError(
+        'ToRange requires end',
+        DiagnosticCode.CodegenError,
+      );
+    }
+    generateExpression(ctx, expr.end, body);
+  } else if (className === 'FullRange') {
+    // new FullRange() - no arguments
+  } else {
+    throw new CompilerError(
+      `Unknown range type: ${className}`,
+      DiagnosticCode.CodegenError,
+    );
+  }
+
+  // Now generate the struct.new instruction
+  const typeIndex = ctx.getStructTypeIndex(classType);
+  body.push(Opcode.struct_new, ...WasmModule.encodeUnsignedLEB128(typeIndex));
 }

@@ -62,3 +62,7 @@ export const testModule = fs.readFileSync(
   path.join(stdlibDir, 'test.zena'),
   'utf-8',
 );
+export const rangeModule = fs.readFileSync(
+  path.join(stdlibDir, 'range.zena'),
+  'utf-8',
+);

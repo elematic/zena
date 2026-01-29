@@ -88,6 +88,7 @@ export const TokenType = {
   Semi: 'Semi',
   Comma: 'Comma',
   Dot: 'Dot',
+  DotDot: 'DotDot',
   DotDotDot: 'DotDotDot',
   Hash: 'Hash',
   At: 'At',
@@ -780,6 +781,16 @@ export function tokenize(source: string): Token[] {
           tokens.push({
             type: TokenType.DotDotDot,
             value: '...',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else if (peek() === '.') {
+          advance();
+          tokens.push({
+            type: TokenType.DotDot,
+            value: '..',
             line,
             column: startColumn,
             start: startIndex,
