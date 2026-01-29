@@ -5,65 +5,11 @@ import {
   type Identifier,
   type Node,
   type VariableDeclaration,
-  type BlockStatement,
 } from '../ast.js';
 
 export interface CaptureInfo {
   captures: Set<string>;
   mutableCaptures: Set<string>;
-}
-
-/**
- * Analyzes which variables in a function's scope need to be boxed because they are
- * mutably captured by closures within the function.
- */
-export function analyzeVariablesToBox(func: BlockStatement | FunctionExpression): Set<string> {
-  const needsBoxing = new Set<string>();
-  let bodyNode: Node;
-  
-  if ('body' in func && func.body) {
-    bodyNode = func.body as Node;
-  } else {
-    bodyNode = func as Node;
-  }
-  
-  // Find all closures in the function
-  const closures: FunctionExpression[] = [];
-  findClosures(bodyNode, closures);
-  
-  // For each closure, check which variables it mutably captures
-  for (const closure of closures) {
-    const {mutableCaptures} = analyzeCaptures(closure);
-    for (const cap of mutableCaptures) {
-      needsBoxing.add(cap);
-    }
-  }
-  
-  return needsBoxing;
-}
-
-function findClosures(node: Node, closures: FunctionExpression[]) {
-  if (!node) return;
-  
-  if (node.type === NodeType.FunctionExpression) {
-    closures.push(node as FunctionExpression);
-    // Don't recurse into nested closures - we only want immediate children
-    return;
-  }
-  
-  for (const key in node) {
-    if (key === 'type') continue;
-    const value = (node as any)[key];
-    if (Array.isArray(value)) {
-      value.forEach((child) => {
-        if (child && typeof child.type === 'string') {
-          findClosures(child, closures);
-        }
-      });
-    } else if (value && typeof value.type === 'string') {
-      findClosures(value, closures);
-    }
-  }
 }
 
 export function analyzeCaptures(func: FunctionExpression): CaptureInfo {

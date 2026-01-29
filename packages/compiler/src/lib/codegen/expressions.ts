@@ -5528,34 +5528,21 @@ function generateFunctionExpression(
     if (local) {
       const isMutable = mutableCaptures.has(name);
       if (isMutable) {
-        // Check if this variable is already boxed (from an outer closure)
-        if (local.isBoxed && local.unboxedType) {
-          // Already boxed, just capture the box as-is
-          // Preserve the original unboxed type from the outer scope
-          captureList.push({
-            name,
-            type: local.type, // This is already a box type
-            mutable: true,
-            boxedType: local.type,
-            unboxedType: local.unboxedType, // Preserve the primitive type
-          });
-        } else {
-          // Not yet boxed, need to box it
-          const checkerType = wasmTypeToCheckerType(local.type);
-          const boxClass = getBoxClassInfo(ctx, checkerType);
-          const boxedType = [
-            ValType.ref,
-            ...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex),
-          ];
-          captureList.push({
-            name,
-            type: local.type, // The primitive type
-            mutable: true,
-            boxedType,
-            unboxedType: local.type, // Store the primitive type
-          });
+        // All mutable captures should already be boxed by the boxing loop above
+        if (!local.isBoxed || !local.unboxedType) {
+          throw new Error(`Mutable capture ${name} should be boxed but isn't`);
         }
+        
+        // Capture the already-boxed variable
+        captureList.push({
+          name,
+          type: local.type, // This is already a box type
+          mutable: true,
+          boxedType: local.type,
+          unboxedType: local.unboxedType, // Preserve the primitive type
+        });
       } else {
+        // Immutable captures are passed by value
         captureList.push({name, type: local.type, mutable: false});
       }
     }
