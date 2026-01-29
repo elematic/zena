@@ -157,8 +157,6 @@ export function preRegisterInterface(
     // Store the checker type for identity-based lookups in ClassInfo.implements
     interfaceInfo.checkerType = interfaceType;
     ctx.setInterfaceStructIndex(interfaceType, structTypeIndex);
-    // Also register the bundled name for typeToTypeAnnotation lookups
-    ctx.setInterfaceBundledName(interfaceType, decl.name.name);
     // Register InterfaceInfo for identity-based lookup (also registers by struct index)
     ctx.registerInterface(interfaceType, interfaceInfo);
   } else {
@@ -1057,8 +1055,6 @@ export function preRegisterClassStruct(
     if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
       const templateType = decl.inferredType as ClassType;
       ctx.setGenericTemplate(decl.name.name, templateType);
-      // Also register bundled name for the template itself
-      ctx.setClassBundledName(templateType, decl.name.name);
       // Register declaration by type for identity-based lookup
       ctx.setGenericDeclaration(templateType, decl);
       // Also register by original name (from checker) for bundled AST lookups
@@ -1103,8 +1099,6 @@ export function preRegisterClassStruct(
 
     // Register type → struct index for identity-based lookups
     ctx.setClassStructIndex(classType, structTypeIndex);
-    // Register bundled name for identity-based lookups
-    ctx.setClassBundledName(classType, decl.name.name);
     // Register ClassInfo for O(1) lookup
     ctx.registerClassInfo(classType, classInfo);
 
@@ -1260,8 +1254,6 @@ export function preRegisterClassStruct(
   if (decl.inferredType && decl.inferredType.kind === TypeKind.Class) {
     const classType = decl.inferredType as ClassType;
     ctx.setClassStructIndex(classType, structTypeIndex);
-    // Register bundled name for identity-based lookups
-    ctx.setClassBundledName(classType, decl.name.name);
     // Register ClassInfo for O(1) lookup
     ctx.registerClassInfo(classType, classInfo);
   }
@@ -2508,48 +2500,20 @@ export function getTypeKeyForSpecialization(
       return (type as TypeParameterType).name;
     case TypeKind.Class: {
       const classType = type as ClassType;
-      // Use bundled name via identity lookup if available
-      let name = ctx.getClassBundledName(classType);
-      if (!name) {
-        // Fall back to genericSource chain
-        name = classType.name;
-        let source = classType.genericSource;
-        while (source) {
-          const sourceName = ctx.getClassBundledName(source);
-          if (sourceName) {
-            name = sourceName;
-            break;
-          }
-          name = source.name;
-          source = source.genericSource;
-        }
-      }
+      // Use type ID for unique identification (avoids name collisions)
+      const typeId = ctx.checkerContext.getTypeId(classType);
       if (classType.typeArguments && classType.typeArguments.length > 0) {
         const args = classType.typeArguments
           .map((a) => getTypeKeyForSpecialization(a, ctx))
           .join(',');
-        return `${name}<${args}>`;
+        return `$${typeId}<${args}>`;
       }
-      return name;
+      return `$${typeId}`;
     }
     case TypeKind.Interface: {
       const interfaceType = type as InterfaceType;
-      // Use bundled name via identity lookup if available
-      let name = ctx.getInterfaceBundledName(interfaceType);
-      if (!name) {
-        // Fall back to genericSource chain
-        name = interfaceType.name;
-        let source = interfaceType.genericSource;
-        while (source) {
-          const sourceName = ctx.getInterfaceBundledName(source);
-          if (sourceName) {
-            name = sourceName;
-            break;
-          }
-          name = source.name;
-          source = source.genericSource;
-        }
-      }
+      // Use type ID for unique identification (avoids name collisions)
+      const typeId = ctx.checkerContext.getTypeId(interfaceType);
       if (
         interfaceType.typeArguments &&
         interfaceType.typeArguments.length > 0
@@ -2557,9 +2521,9 @@ export function getTypeKeyForSpecialization(
         const args = interfaceType.typeArguments
           .map((a) => getTypeKeyForSpecialization(a, ctx))
           .join(',');
-        return `${name}<${args}>`;
+        return `$${typeId}<${args}>`;
       }
-      return name;
+      return `$${typeId}`;
     }
     case TypeKind.Array: {
       const arrayType = type as ArrayType;
@@ -3604,7 +3568,6 @@ function preRegisterMixin(
   // Register for identity-based lookup if we have the checker type
   if (checkerIntermediateType) {
     ctx.registerClassInfo(checkerIntermediateType, classInfo);
-    ctx.setClassBundledName(checkerIntermediateType, intermediateName);
     ctx.setClassStructIndex(checkerIntermediateType, structTypeIndex);
   }
 
@@ -3662,7 +3625,6 @@ function applyMixin(
   // Register by identity for O(1) lookup if we have the checker type
   if (checkerIntermediateType) {
     ctx.registerClassInfo(checkerIntermediateType, classInfo);
-    ctx.setClassBundledName(checkerIntermediateType, intermediateName);
     ctx.setClassStructIndex(checkerIntermediateType, classInfo.structTypeIndex);
   }
 
@@ -4096,12 +4058,10 @@ export function mapCheckerTypeToWasmType(
       }
 
       if (genericDecl) {
-        // Use bundled name to avoid collisions with same-named classes from different modules
-        const genericSource = classType.genericSource ?? classType;
-        const bundledName =
-          ctx.getClassBundledName(genericSource) ?? genericDecl.name.name;
+        // Use declaration name for specialized name (display purposes only)
+        // Lookup is identity-based via ctx.getClassInfo(classType)
         const specializedName = getSpecializedName(
-          bundledName,
+          genericDecl.name.name,
           classType.typeArguments,
           ctx,
         );

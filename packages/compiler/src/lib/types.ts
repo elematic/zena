@@ -96,6 +96,7 @@ export interface FunctionType extends Type {
   kind: typeof TypeKind.Function;
   typeParameters?: TypeParameterType[];
   typeArguments?: Type[]; // Concrete types when this is an instantiated generic function
+  genericSource?: FunctionType; // For instantiated generics, points to the template
   parameters: Type[];
   returnType: Type;
   isFinal?: boolean;

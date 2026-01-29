@@ -258,13 +258,6 @@ export class CodegenContext {
   readonly #structIndexToClassInfo = new Map<number, ClassInfo>();
   // Struct index to InterfaceInfo mapping for fast lookup
   readonly #structIndexToInterfaceInfo = new Map<number, InterfaceInfo>();
-  // Identity-based lookup infrastructure (Round 2.5 refactoring)
-  // Maps checker types to their bundled names for lookup
-  readonly #classBundledNames = new Map<ClassType, string>();
-  readonly #interfaceBundledNames = new Map<InterfaceType, string>();
-  // Counter for generating unique class names across modules
-  // This ensures classes with the same name in different modules get unique keys
-  #classNameCounter = 0;
   // Counter for generating unique brand IDs for classes
   // This must be incremented whenever a class is registered, including partial
   // registrations where structTypeIndex is not yet valid
@@ -829,58 +822,6 @@ export class CodegenContext {
   // - Generic extension classes (via onTypeAnnotation recomputation)
   //
   // See docs/design/compiler-refactoring.md Step 2.5.6 for full details.
-
-  /**
-   * Register the bundled name for a checker ClassType.
-   * Called during class registration to track the name mapping.
-   *
-   * If the bundled name has already been used by a different ClassType,
-   * a unique suffix is added to avoid collisions.
-   */
-  public setClassBundledName(classType: ClassType, bundledName: string): void {
-    // Check if we've already registered this ClassType
-    if (this.#classBundledNames.has(classType)) {
-      return; // Already registered
-    }
-
-    // Check if this bundled name is already in use by a different ClassType
-    let finalName = bundledName;
-    for (const existingName of this.#classBundledNames.values()) {
-      if (existingName === finalName) {
-        // Name collision - generate a unique name
-        finalName = `${bundledName}$${this.#classNameCounter++}`;
-        break;
-      }
-    }
-    this.#classBundledNames.set(classType, finalName);
-  }
-
-  /**
-   * Get the bundled name for a checker ClassType.
-   */
-  public getClassBundledName(classType: ClassType): string | undefined {
-    return this.#classBundledNames.get(classType);
-  }
-
-  /**
-   * Register the bundled name for a checker InterfaceType.
-   * Called during interface registration to track the name mapping.
-   */
-  public setInterfaceBundledName(
-    interfaceType: InterfaceType,
-    bundledName: string,
-  ): void {
-    this.#interfaceBundledNames.set(interfaceType, bundledName);
-  }
-
-  /**
-   * Get the bundled name for a checker InterfaceType.
-   */
-  public getInterfaceBundledName(
-    interfaceType: InterfaceType,
-  ): string | undefined {
-    return this.#interfaceBundledNames.get(interfaceType);
-  }
 
   /**
    * Register a generic class template's checker type.

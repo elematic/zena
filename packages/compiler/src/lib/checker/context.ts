@@ -777,6 +777,29 @@ export class CheckerContext {
   }
 
   /**
+   * Get an interned generic function instantiation, or undefined if not cached.
+   */
+  getInternedFunction(
+    genericSource: FunctionType,
+    typeArguments: Type[],
+  ): FunctionType | undefined {
+    const key = this.computeInstantiationKey('F', genericSource, typeArguments);
+    return this.#internedTypes.get(key) as FunctionType | undefined;
+  }
+
+  /**
+   * Store an interned generic function instantiation.
+   */
+  internFunction(
+    genericSource: FunctionType,
+    typeArguments: Type[],
+    instance: FunctionType,
+  ): void {
+    const key = this.computeInstantiationKey('F', genericSource, typeArguments);
+    this.#internedTypes.set(key, instance);
+  }
+
+  /**
    * Get or create an interned array type.
    * ArrayType interning ensures that `array<T>` has a single identity for each element type.
    */

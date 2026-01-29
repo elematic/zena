@@ -910,6 +910,10 @@ export function instantiateGenericFunction(
   typeArguments: Type[],
   ctx: CheckerContext,
 ): FunctionType {
+  // Check for cached interned version first
+  const cached = ctx.getInternedFunction(genericFunc, typeArguments);
+  if (cached) return cached;
+
   // Validate type argument constraints
   if (genericFunc.typeParameters) {
     validateTypeArgumentConstraints(
@@ -926,15 +930,20 @@ export function instantiateGenericFunction(
 
   const substitute = (type: Type) => substituteType(type, typeMap, ctx);
 
-  const newFunc = {
+  const newFunc: FunctionType = {
     ...genericFunc,
     typeParameters: undefined,
+    typeArguments, // Store the concrete type arguments
+    genericSource: genericFunc, // Link back to the template
     parameters: genericFunc.parameters.map(substitute),
     returnType: substitute(genericFunc.returnType),
   };
 
   newFunc.parameters.forEach((p) => validateType(p, ctx));
   validateType(newFunc.returnType, ctx);
+
+  // Intern the result for identity-based lookup
+  ctx.internFunction(genericFunc, typeArguments, newFunc);
 
   return newFunc;
 }
