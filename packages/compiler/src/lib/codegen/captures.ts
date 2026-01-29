@@ -1,13 +1,20 @@
 import {
   NodeType,
+  type AssignmentExpression,
   type FunctionExpression,
   type Identifier,
   type Node,
   type VariableDeclaration,
 } from '../ast.js';
 
-export function analyzeCaptures(func: FunctionExpression): Set<string> {
+export interface CaptureInfo {
+  captures: Set<string>;
+  mutableCaptures: Set<string>;
+}
+
+export function analyzeCaptures(func: FunctionExpression): CaptureInfo {
   const captures = new Set<string>();
+  const mutableCaptures = new Set<string>();
   const locals = new Set<string>();
 
   // Add params to locals
@@ -16,15 +23,16 @@ export function analyzeCaptures(func: FunctionExpression): Set<string> {
   // We need a better visitor that handles scoping.
   // Since we don't have a full visitor infrastructure, I'll write a specific one.
 
-  traverseWithScope(func.body, locals, captures);
+  traverseWithScope(func.body, locals, captures, mutableCaptures);
 
-  return captures;
+  return {captures, mutableCaptures};
 }
 
 function traverseWithScope(
   node: Node,
   locals: Set<string>,
   captures: Set<string>,
+  mutableCaptures: Set<string>,
 ) {
   if (!node) return;
 
@@ -36,12 +44,31 @@ function traverseWithScope(
       }
       break;
     }
+    case NodeType.AssignmentExpression: {
+      const assign = node as AssignmentExpression;
+      // Check if the assignment target is a captured variable
+      if (assign.left.type === NodeType.Identifier) {
+        const name = (assign.left as Identifier).name;
+        if (!locals.has(name)) {
+          captures.add(name);
+          mutableCaptures.add(name);
+        }
+      } else {
+        // For non-identifier targets (e.g., arr[0] = x), traverse to capture
+        // any identifiers used (e.g., arr)
+        traverseWithScope(assign.left, locals, captures, mutableCaptures);
+      }
+      // Traverse the assignment value
+      traverseWithScope(assign.value, locals, captures, mutableCaptures);
+      return;
+    }
     case NodeType.VariableDeclaration: {
       const decl = node as VariableDeclaration;
       if (decl.pattern.type === NodeType.Identifier) {
         locals.add(decl.pattern.name);
       }
-      if (decl.init) traverseWithScope(decl.init, locals, captures);
+      if (decl.init)
+        traverseWithScope(decl.init, locals, captures, mutableCaptures);
       break;
     }
     case NodeType.FunctionExpression: {
@@ -55,12 +82,23 @@ function traverseWithScope(
       // If it's NOT in *our* locals, it's a capture from *outside* us, so we must capture it too.
 
       const nestedCaptures = new Set<string>();
+      const nestedMutableCaptures = new Set<string>();
       // Recurse
-      traverseWithScope(func.body, newLocals, nestedCaptures);
+      traverseWithScope(
+        func.body,
+        newLocals,
+        nestedCaptures,
+        nestedMutableCaptures,
+      );
 
       for (const cap of nestedCaptures) {
         if (!locals.has(cap)) {
           captures.add(cap);
+        }
+      }
+      for (const cap of nestedMutableCaptures) {
+        if (!locals.has(cap)) {
+          mutableCaptures.add(cap);
         }
       }
       return; // Don't traverse children again
@@ -81,10 +119,10 @@ function traverseWithScope(
     if (Array.isArray(value)) {
       value.forEach((child) => {
         if (child && typeof child.type === 'string')
-          traverseWithScope(child, locals, captures);
+          traverseWithScope(child, locals, captures, mutableCaptures);
       });
     } else if (value && typeof value.type === 'string') {
-      traverseWithScope(value, locals, captures);
+      traverseWithScope(value, locals, captures, mutableCaptures);
     }
   }
 }

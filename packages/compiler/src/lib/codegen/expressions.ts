@@ -3259,33 +3259,73 @@ function generateAssignmentExpression(
     body.push(Opcode.local_get);
     body.push(...WasmModule.encodeSignedLEB128(tempVal));
   } else if (expr.left.type === NodeType.Identifier) {
-    generateExpression(ctx, expr.value, body);
     const local = ctx.getLocal(expr.left.name);
 
     if (local) {
       const index = local.index;
 
-      const valueType = inferType(ctx, expr.value);
-      if (
-        ((local.type.length > 1 &&
-          local.type[0] === ValType.ref_null &&
-          local.type[1] === ValType.anyref) ||
-          (local.type.length === 1 && local.type[0] === ValType.anyref)) &&
-        valueType.length === 1 &&
-        (valueType[0] === ValType.i32 ||
-          valueType[0] === ValType.i64 ||
-          valueType[0] === ValType.f32 ||
-          valueType[0] === ValType.f64)
-      ) {
-        boxPrimitive(ctx, valueType, body);
-      }
+      if (local.isBoxed && local.unboxedType) {
+        // For boxed mutable captures, we need to write through the box
+        // Generate the value first and save it
+        generateExpression(ctx, expr.value, body);
+        // Stack: [value]
 
-      // Assignment is an expression that evaluates to the assigned value.
-      // So we use local.tee to set the local and keep the value on the stack.
-      body.push(Opcode.local_tee);
-      body.push(...WasmModule.encodeSignedLEB128(index));
+        const valueType = inferType(ctx, expr.value);
+        const tempVal = ctx.declareLocal('$$temp_boxed_assign', valueType);
+        body.push(Opcode.local_tee);
+        body.push(...WasmModule.encodeSignedLEB128(tempVal));
+        // Stack: [value]
+
+        // Load the box
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(index));
+        // Stack: [value, box]
+
+        // Swap: we need [box, value] for struct.set
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(tempVal));
+        // Stack: [value, box, value]
+
+        // Write the value into the box
+        const boxClass = getBoxClassInfo(
+          ctx,
+          wasmTypeToCheckerType(local.unboxedType),
+        );
+        const valueField = boxClass.fields.get(BOX_VALUE_FIELD);
+        if (!valueField) throw new Error("Box class missing 'value' field");
+
+        body.push(0xfb, GcOpcode.struct_set);
+        body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
+        body.push(...WasmModule.encodeSignedLEB128(valueField.index));
+        // Stack: [value] (from the original local.tee)
+      } else {
+        // Normal local assignment
+        generateExpression(ctx, expr.value, body);
+
+        const valueType = inferType(ctx, expr.value);
+        if (
+          ((local.type.length > 1 &&
+            local.type[0] === ValType.ref_null &&
+            local.type[1] === ValType.anyref) ||
+            (local.type.length === 1 && local.type[0] === ValType.anyref)) &&
+          valueType.length === 1 &&
+          (valueType[0] === ValType.i32 ||
+            valueType[0] === ValType.i64 ||
+            valueType[0] === ValType.f32 ||
+            valueType[0] === ValType.f64)
+        ) {
+          boxPrimitive(ctx, valueType, body);
+        }
+
+        // Assignment is an expression that evaluates to the assigned value.
+        // So we use local.tee to set the local and keep the value on the stack.
+        body.push(Opcode.local_tee);
+        body.push(...WasmModule.encodeSignedLEB128(index));
+      }
     } else {
       // Use binding-based lookup for global assignment
+      generateExpression(ctx, expr.value, body);
+      
       const binding = ctx.semanticContext.getResolvedBinding(expr.left);
       if (!binding) {
         throw new Error(`Unknown identifier: ${expr.left.name}`);
@@ -3992,6 +4032,22 @@ function generateFromBinding(
       if (local) {
         body.push(Opcode.local_get);
         body.push(...WasmModule.encodeSignedLEB128(local.index));
+
+        // If this is a boxed mutable capture, unbox it
+        if (local.isBoxed && local.unboxedType) {
+          const boxClass = getBoxClassInfo(
+            ctx,
+            wasmTypeToCheckerType(local.unboxedType),
+          );
+          const valueField = boxClass.fields.get(BOX_VALUE_FIELD);
+          if (!valueField)
+            throw new Error("Box class missing 'value' field");
+
+          body.push(0xfb, GcOpcode.struct_get);
+          body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
+          body.push(...WasmModule.encodeSignedLEB128(valueField.index));
+        }
+
         return true;
       }
       return false;
@@ -5422,13 +5478,80 @@ function generateFunctionExpression(
   body: number[],
 ) {
   // 1. Analyze captures
-  const captures = analyzeCaptures(expr);
-  const captureList: {name: string; type: number[]}[] = [];
+  const {captures, mutableCaptures} = analyzeCaptures(expr);
+  
+  // 2. Box mutable captures that aren't already boxed
+  // We need to do this BEFORE building the captureList so that subsequent
+  // code sees the boxed variables
+  for (const name of mutableCaptures) {
+    const local = ctx.getLocal(name);
+    if (local && !local.isBoxed) {
+      // Box this variable in the enclosing scope
+      const checkerType = wasmTypeToCheckerType(local.type);
+      const boxClass = getBoxClassInfo(ctx, checkerType);
+      const boxedType = [
+        ValType.ref,
+        ...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex),
+      ];
+      
+      // Create a new box with the current value
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(local.index));
+      boxPrimitive(ctx, local.type, body);
+      
+      // Create a new local for the box and update the scope
+      const newBoxLocal = ctx.declareLocal(
+        `$$boxed_${name}`,
+        boxedType,
+        undefined,
+        true,
+        local.type,
+      );
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeSignedLEB128(newBoxLocal));
+      
+      // Update the original variable's local info to point to the box
+      // We do this by updating the scope entry
+      const scope = ctx.scopes[ctx.scopes.length - 1];
+      scope.set(name, {
+        index: newBoxLocal,
+        type: boxedType,
+        isBoxed: true,
+        unboxedType: local.type,
+      });
+    }
+  }
+  
+  const captureList: {
+    name: string;
+    type: number[];
+    mutable: boolean;
+    boxedType?: number[];
+    unboxedType?: number[];
+  }[] = [];
 
   for (const name of Array.from(captures).sort()) {
     const local = ctx.getLocal(name);
     if (local) {
-      captureList.push({name, type: local.type});
+      const isMutable = mutableCaptures.has(name);
+      if (isMutable) {
+        // All mutable captures should already be boxed by the boxing loop above
+        if (!local.isBoxed || !local.unboxedType) {
+          throw new Error(`Mutable capture ${name} should be boxed but isn't`);
+        }
+        
+        // Capture the already-boxed variable
+        captureList.push({
+          name,
+          type: local.type, // This is already a box type
+          mutable: true,
+          boxedType: local.type,
+          unboxedType: local.unboxedType, // Preserve the primitive type
+        });
+      } else {
+        // Immutable captures are passed by value
+        captureList.push({name, type: local.type, mutable: false});
+      }
     }
     // Globals don't need to be captured
   }
@@ -5437,8 +5560,8 @@ function generateFunctionExpression(
   let contextStructTypeIndex = -1;
   if (captureList.length > 0) {
     const fields = captureList.map((c) => ({
-      type: c.type,
-      mutable: false, // Capture by value (immutable context)
+      type: c.mutable ? c.boxedType! : c.type,
+      mutable: false, // Context fields are always immutable (boxes handle mutability)
     }));
     contextStructTypeIndex = ctx.module.addStructType(fields);
   }
@@ -5513,18 +5636,37 @@ function generateFunctionExpression(
 
       // Define captured variables as locals
       captureList.forEach((c, i) => {
-        // We define a new local for the captured variable
-        // and initialize it from the struct.
-        const localIndex = ctx.declareLocal(c.name, c.type);
+        if (c.mutable) {
+          // For mutable captures, store the box itself as a local and mark it as boxed
+          const localIndex = ctx.declareLocal(
+            c.name,
+            c.boxedType!,
+            undefined,
+            true,
+            c.unboxedType!, // Use the preserved primitive type
+          );
 
-        funcBody.push(Opcode.local_get, typedCtxLocal);
-        funcBody.push(
-          0xfb,
-          GcOpcode.struct_get,
-          ...WasmModule.encodeSignedLEB128(contextStructTypeIndex),
-          ...WasmModule.encodeSignedLEB128(i),
-        );
-        funcBody.push(Opcode.local_set, localIndex);
+          funcBody.push(Opcode.local_get, typedCtxLocal);
+          funcBody.push(
+            0xfb,
+            GcOpcode.struct_get,
+            ...WasmModule.encodeSignedLEB128(contextStructTypeIndex),
+            ...WasmModule.encodeSignedLEB128(i),
+          );
+          funcBody.push(Opcode.local_set, localIndex);
+        } else {
+          // For immutable captures, extract the value directly
+          const localIndex = ctx.declareLocal(c.name, c.type);
+
+          funcBody.push(Opcode.local_get, typedCtxLocal);
+          funcBody.push(
+            0xfb,
+            GcOpcode.struct_get,
+            ...WasmModule.encodeSignedLEB128(contextStructTypeIndex),
+            ...WasmModule.encodeSignedLEB128(i),
+          );
+          funcBody.push(Opcode.local_set, localIndex);
+        }
       });
     }
 
@@ -5569,12 +5711,26 @@ function generateFunctionExpression(
 
   // Push Context
   if (captureList.length > 0) {
-    // Push captured values
+    // Push captured values (boxing mutable ones)
     for (const c of captureList) {
       const local = ctx.getLocal(c.name);
       if (!local) throw new Error(`Captured variable ${c.name} not found`);
-      body.push(Opcode.local_get);
-      body.push(...WasmModule.encodeSignedLEB128(local.index));
+
+      if (c.mutable) {
+        // Load the variable
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(local.index));
+
+        // Box it if not already boxed
+        if (!local.isBoxed) {
+          boxPrimitive(ctx, c.type, body);
+        }
+        // If already boxed, the local.get above loaded the box directly
+      } else {
+        // For immutable captures, just get the value
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(local.index));
+      }
     }
     // Create Context Struct
     body.push(0xfb, GcOpcode.struct_new);

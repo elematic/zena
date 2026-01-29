@@ -15,9 +15,10 @@ suite('Capture Analysis', () => {
     const funcDecl = module.body[1] as VariableDeclaration;
     const func = funcDecl.init as FunctionExpression;
 
-    const captures = analyzeCaptures(func);
+    const {captures, mutableCaptures} = analyzeCaptures(func);
     assert.ok(captures.has('x'));
     assert.strictEqual(captures.size, 1);
+    assert.strictEqual(mutableCaptures.size, 0);
   });
 
   test('does not capture locals', () => {
@@ -27,7 +28,7 @@ suite('Capture Analysis', () => {
     const funcDecl = module.body[0] as VariableDeclaration;
     const func = funcDecl.init as FunctionExpression;
 
-    const captures = analyzeCaptures(func);
+    const {captures} = analyzeCaptures(func);
     assert.strictEqual(captures.size, 0);
   });
 
@@ -38,7 +39,7 @@ suite('Capture Analysis', () => {
     const funcDecl = module.body[0] as VariableDeclaration;
     const func = funcDecl.init as FunctionExpression;
 
-    const captures = analyzeCaptures(func);
+    const {captures} = analyzeCaptures(func);
     assert.strictEqual(captures.size, 0);
   });
 
@@ -49,7 +50,44 @@ suite('Capture Analysis', () => {
     const funcDecl = module.body[1] as VariableDeclaration;
     const func = funcDecl.init as FunctionExpression;
 
-    const captures = analyzeCaptures(func);
+    const {captures} = analyzeCaptures(func);
     assert.ok(captures.has('x'));
+  });
+
+  test('detects mutable captures', () => {
+    const input = 'var x = 0; let f = () => { x = 1; };';
+    const parser = new Parser(input);
+    const module = parser.parse();
+    const funcDecl = module.body[1] as VariableDeclaration;
+    const func = funcDecl.init as FunctionExpression;
+
+    const {captures, mutableCaptures} = analyzeCaptures(func);
+    assert.ok(captures.has('x'));
+    assert.ok(mutableCaptures.has('x'));
+    assert.strictEqual(mutableCaptures.size, 1);
+  });
+
+  test('detects mutable captures in nested closures', () => {
+    const input = 'var x = 0; let f = () => { let g = () => { x = 1; }; };';
+    const parser = new Parser(input);
+    const module = parser.parse();
+    const funcDecl = module.body[1] as VariableDeclaration;
+    const func = funcDecl.init as FunctionExpression;
+
+    const {captures, mutableCaptures} = analyzeCaptures(func);
+    assert.ok(captures.has('x'));
+    assert.ok(mutableCaptures.has('x'));
+  });
+
+  test('does not mark read-only captures as mutable', () => {
+    const input = 'let x = 0; let f = () => x + 1;';
+    const parser = new Parser(input);
+    const module = parser.parse();
+    const funcDecl = module.body[1] as VariableDeclaration;
+    const func = funcDecl.init as FunctionExpression;
+
+    const {captures, mutableCaptures} = analyzeCaptures(func);
+    assert.ok(captures.has('x'));
+    assert.strictEqual(mutableCaptures.size, 0);
   });
 });

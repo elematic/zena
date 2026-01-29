@@ -86,4 +86,7 @@ export interface InterfaceInfo {
 export interface LocalInfo {
   index: number;
   type: number[];
+  // For boxed mutable captures: stores the boxed type and original unboxed type
+  isBoxed?: boolean;
+  unboxedType?: number[];
 }
