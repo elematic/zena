@@ -282,12 +282,25 @@ focus on removing remaining fallback code and preparing for alternative backends
 
 ### Phase 5: Remove Dead Fallback Code (Low Effort, High Impact)
 
-The fallback paths in `generateMemberExpression` now throw if reached. This
-phase removes that dead code and adds similar verification to other areas.
+**Status:** Partially Complete
 
-1. Remove the dead fallback code after binding checks in `generateMemberExpression`
-2. Add throws to other fallback paths to verify they're not hit
-3. Gradually remove verified-dead fallback code throughout codegen
+The fallback path in `generateMemberExpression` now throws if reached after
+binding-based lookup. Two legitimate alternate paths remain:
+- Static member access (`ClassName.field`) via global lookup
+- Array/string `length` property via direct WASM `array_len`
+
+The struct index fallbacks in `generateIndexExpression` and `generateCallExpression`
+are **still needed** because:
+1. Extension classes (e.g., `FixedArray<T>` on `array<T>`) may have WASM type index
+   but not matching checker type identity (multiple `ArrayType` instances)
+2. Generic specializations created during codegen may not have checker types
+   registered in the WeakMap
+
+**Remaining Work:**
+1. ✅ `generateMemberExpression` - throws for unhandled cases
+2. ⏳ Consolidate extension class lookups to use checker type identity
+3. ⏳ Ensure all generic specializations register checker types
+4. ⏳ Remove struct index fallbacks once identity-based lookup is complete
 
 ### Phase 6: Move Interface Resolution to Checker
 

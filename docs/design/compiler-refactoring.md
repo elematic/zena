@@ -686,11 +686,33 @@ return {
 
 All 1118 tests pass.
 
-##### Step 2.5.6: Remove Bundled Name Bridge Infrastructure (OPTIONAL)
+##### Step 2.5.6: Remove Bundled Name Bridge Infrastructure ✅ COMPLETED
 
-**Status:** PARTIALLY COMPLETE - `mapCheckerTypeToWasmType()` works for most cases.
-Removing `#classBundledNames`/`#interfaceBundledNames` is blocked until `instantiateClass`
-can register by type identity.
+**Status:** ✅ COMPLETED (2026-01-28) - Bundled name infrastructure fully removed.
+
+**Solution:** Instead of using name-based keys for specialization lookups, we now
+use `checkerContext.getTypeId()` which assigns unique numeric IDs to interned
+type objects. This produces keys like `$42<$17>` instead of `Box<i32>`, but
+they're stable and unique per type object identity.
+
+**Changes made:**
+
+1. Added `genericSource` field to `FunctionType` for tracking templates
+2. Added function type interning in checker (`getInternedFunction`/`internFunction`)
+3. Updated `instantiateGenericFunction` to use interning and set `genericSource`
+4. Changed `getTypeKeyForSpecialization` to use `checkerContext.getTypeId()`
+   instead of `getClassBundledName`/`getInterfaceBundledName`
+5. Removed bundled name infrastructure:
+   - `#classBundledNames` and `#interfaceBundledNames` maps
+   - `#classNameCounter`
+   - `setClassBundledName`, `getClassBundledName`, `setInterfaceBundledName`,
+     `getInterfaceBundledName` methods
+   - All call sites that populated these maps
+
+**Key insight:** Since types are interned in the checker, type object identity
+provides a stable, unique key. The checker's `getTypeId()` assigns numeric IDs
+to type objects, which can be used to build composite string keys for Maps
+(since JS doesn't support composite keys directly).
 
 **Background:** The `#classBundledNames` and `#interfaceBundledNames` maps in
 `CodegenContext` exist as a bridge solution. They allow `typeToTypeAnnotation`
@@ -766,7 +788,9 @@ the correct WASM array type index for the current context.
    - Removed `registerGenericSpecialization()` and `findGenericSpecialization()`
 8. Audit all `typeToTypeAnnotation` call sites - DEFERRED
 9. Replace calls that have checker types available - DEFERRED
-10. Remove `#classBundledNames`, `#interfaceBundledNames` - BLOCKED (see below)
+10. ✅ Remove `#classBundledNames`, `#interfaceBundledNames` - DONE (2026-01-28)
+    - Used `checkerContext.getTypeId()` for unique type identification
+    - Also added function type interning to checker
 
 **Progress (2026-01-22) - instantiateClass checker type registration:**
 
@@ -2315,12 +2339,14 @@ objects through the pipeline.
 Before tackling late type lowering, complete the name resolution work:
 
 1. ✅ MemberExpression bindings (done January 2026)
-2. Remove dead fallback code from codegen (see name-resolution.md Phase 5)
+2. ⏳ Remove dead fallback code from codegen (see name-resolution.md Phase 5)
+   - `generateMemberExpression` now throws for unhandled cases ✅
+   - Struct index fallbacks still needed for extension classes and generic specializations
 3. Move interface resolution to checker (see name-resolution.md Phase 6)
 
 **Implementation Priority:**
 
-1. **Phase 5: Remove Dead Code** - Low effort, validates bindings work everywhere
+1. **Phase 5: Remove Dead Code** - Partially done; some fallbacks still needed
 2. **Phase 6: Interface Bindings** - Medium effort, removes complex vtable logic from codegen
 3. **Late Type Lowering** - High effort, enables WAT backend
 
