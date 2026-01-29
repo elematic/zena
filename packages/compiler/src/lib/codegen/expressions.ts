@@ -8509,10 +8509,7 @@ function generateRangeExpression(
 ) {
   const exprType = expr.inferredType;
   if (!exprType || exprType.kind !== TypeKind.Class) {
-    throw new CompilerError(
-      'Range expression must have a class type',
-      DiagnosticCode.CodegenError,
-    );
+    throw new CompilerError('Range expression must have a class type');
   }
 
   const classType = exprType as ClassType;
@@ -8523,42 +8520,34 @@ function generateRangeExpression(
   if (className === 'BoundedRange') {
     // new BoundedRange(start, end)
     if (!expr.start || !expr.end) {
-      throw new CompilerError(
-        'BoundedRange requires both start and end',
-        DiagnosticCode.CodegenError,
-      );
+      throw new CompilerError('BoundedRange requires both start and end');
     }
     generateExpression(ctx, expr.start, body);
     generateExpression(ctx, expr.end, body);
   } else if (className === 'FromRange') {
     // new FromRange(start)
     if (!expr.start) {
-      throw new CompilerError(
-        'FromRange requires start',
-        DiagnosticCode.CodegenError,
-      );
+      throw new CompilerError('FromRange requires start');
     }
     generateExpression(ctx, expr.start, body);
   } else if (className === 'ToRange') {
     // new ToRange(end)
     if (!expr.end) {
-      throw new CompilerError(
-        'ToRange requires end',
-        DiagnosticCode.CodegenError,
-      );
+      throw new CompilerError('ToRange requires end');
     }
     generateExpression(ctx, expr.end, body);
   } else if (className === 'FullRange') {
     // new FullRange() - no arguments
   } else {
-    throw new CompilerError(
-      `Unknown range type: ${className}`,
-      DiagnosticCode.CodegenError,
-    );
+    throw new CompilerError(`Unknown range type: ${className}`);
   }
 
   // Now generate the struct.new instruction
-  const typeIndex = ctx.getStructTypeIndex(classType);
+  const classInfo = ctx.getClassInfo(classType);
+  if (!classInfo) {
+    throw new CompilerError(`Class info not found for range type: ${classType.name}`);
+  }
+  const typeIndex = classInfo.structTypeIndex;
   body.push(0xfb, GcOpcode.struct_new);
   body.push(...WasmModule.encodeSignedLEB128(typeIndex));
 }

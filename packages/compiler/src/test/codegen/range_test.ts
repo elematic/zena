@@ -9,7 +9,7 @@
 
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
-import {compileAndRun, compileAndInstantiate} from '../utils.js';
+import {compileAndRun, compileAndInstantiate} from './utils.js';
 
 suite('Codegen - Range expressions', () => {
   test('should create BoundedRange with a..b', async () => {
