@@ -1141,8 +1141,23 @@ function generateIndexExpression(
       expr.object.inferredType &&
       expr.object.inferredType.kind === TypeKind.Class
     ) {
-      const classType = expr.object.inferredType as ClassType;
+      let classType = expr.object.inferredType as ClassType;
+      // When inside a generic context (e.g., generating Map<K,V>.set),
+      // the AST's inferredType may be the unsubstituted FixedArray<Entry<K,V>>.
+      // Substitute type parameters to get the concrete type (FixedArray<Entry<string,Box<i32>>>).
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+        classType = ctx.checkerContext.substituteTypeParams(
+          classType,
+          ctx.currentTypeArguments,
+        ) as ClassType;
+      }
       foundClass = ctx.getClassInfo(classType);
+
+      // If identity lookup failed, instantiate via mapCheckerTypeToWasmType
+      if (!foundClass) {
+        mapCheckerTypeToWasmType(ctx, classType);
+        foundClass = ctx.getClassInfo(classType);
+      }
     }
 
     // Fall back to struct index lookup for classes instantiated via annotation path
@@ -1163,13 +1178,25 @@ function generateIndexExpression(
       }
     }
 
-    // Fallback: look up extension class by WASM type index
-    // This handles cases where type identity doesn't match (e.g., multiple ArrayType instances)
-    if (!foundClass) {
-      const extensions =
-        ctx.getExtensionClassesByWasmTypeIndex(structTypeIndex);
-      if (extensions && extensions.length > 0) {
-        foundClass = extensions[0];
+    // If still not found and this is a concrete array type, try to instantiate FixedArray
+    // This ensures FixedArray<T> is created on-demand for array literals
+    // We must NOT do this for abstract types (TypeParameter) - those are handled during
+    // instantiation when the type parameter gets substituted with a concrete type
+    if (!foundClass && expr.object.inferredType) {
+      let objType = expr.object.inferredType;
+      // Substitute type parameters to get concrete array element type
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+        objType = ctx.checkerContext.substituteTypeParams(
+          objType,
+          ctx.currentTypeArguments,
+        );
+      }
+      if (objType.kind === TypeKind.Array) {
+        const arrType = objType as import('../types.js').ArrayType;
+        // Only instantiate if element type is concrete (not a type parameter)
+        if (arrType.elementType.kind !== TypeKind.TypeParameter) {
+          foundClass = resolveFixedArrayClass(ctx, objType);
+        }
       }
     }
 
