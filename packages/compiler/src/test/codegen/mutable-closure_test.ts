@@ -124,4 +124,27 @@ suite('Codegen: Mutable Closures', () => {
     const result = await compileAndRun(source, 'test');
     assert.strictEqual(result, 14);
   });
+
+  test('class method closes over module variable', async () => {
+    const source = `
+      var moduleVar = 0;
+
+      let increment = () => {
+        moduleVar = moduleVar + 1;
+      };
+
+      let getValue = () => {
+        return moduleVar;
+      };
+
+      export let test = () => {
+        increment();
+        increment();
+        increment();
+        return getValue(); // should return 3
+      };
+    `;
+    const result = await compileAndRun(source, 'test');
+    assert.strictEqual(result, 3);
+  });
 });

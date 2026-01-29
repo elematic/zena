@@ -3319,6 +3319,8 @@ function generateAssignmentExpression(
       }
     } else {
       // Use binding-based lookup for global assignment
+      generateExpression(ctx, expr.value, body);
+      
       const binding = ctx.semanticContext.getResolvedBinding(expr.left);
       if (!binding) {
         throw new Error(`Unknown identifier: ${expr.left.name}`);
