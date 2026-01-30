@@ -9,6 +9,7 @@ export {
   immutableArrayModule,
   mapModule,
   mathModule,
+  rangeModule,
   sequenceModule,
   stringModule,
   templateStringsArrayModule,

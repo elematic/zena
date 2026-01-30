@@ -724,6 +724,68 @@ These operators return a boolean value. **Comparing `i32` and `u32` directly is 
 
 Operands must be of type `boolean`.
 
+### Range Operators
+
+Range operators create range objects that represent sequences of indices. They are primarily used for array slicing and iteration. The range operator is `..` (two dots).
+
+Range types must be imported from `zena:range`:
+
+```zena
+import { BoundedRange, FromRange, ToRange, FullRange, Range } from 'zena:range';
+```
+
+#### Bounded Range: `a..b`
+
+Creates a half-open range `[a, b)` that includes `a` but excludes `b`.
+
+```zena
+let r = 1..10;  // BoundedRange from 1 to 10 (exclusive)
+// Represents indices: 1, 2, 3, 4, 5, 6, 7, 8, 9
+```
+
+#### From Range: `a..`
+
+Creates a range from `a` to the end of a collection.
+
+```zena
+let r = 5..;  // FromRange starting at 5
+// When used with an array, goes from index 5 to the end
+```
+
+#### To Range: `..b`
+
+Creates a range from the beginning to `b` (exclusive).
+
+```zena
+let r = ..10;  // ToRange from 0 to 10 (exclusive)
+// Represents indices: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+```
+
+#### Full Range: `..`
+
+Creates a range representing all elements.
+
+```zena
+let r = ..;  // FullRange (all elements)
+```
+
+#### Range Type
+
+The `Range` type is a union of all range types:
+
+```zena
+type Range = BoundedRange | FromRange | ToRange | FullRange;
+```
+
+**Note**: Range bounds must be valid array/loop indices (type `i32`). Ranges with arithmetic expressions are evaluated at creation time:
+
+```zena
+let start = 5;
+let end = 10;
+let r = start..end;           // BoundedRange(5, 10)
+let r2 = (x + 1)..(y * 2);    // Expressions evaluated before range creation
+```
+
 ## 6. Control Flow
 
 ### Optional Semicolons

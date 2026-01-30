@@ -989,7 +989,7 @@ export class Parser {
   }
 
   #parseComparison(): Expression {
-    let left = this.#parseAs();
+    let left = this.#parseRange();
 
     while (
       this.#match(
@@ -1000,7 +1000,7 @@ export class Parser {
       )
     ) {
       const operator = this.#previous().value;
-      const right = this.#parseAs();
+      const right = this.#parseRange();
       left = {
         type: NodeType.BinaryExpression,
         left,
@@ -1008,6 +1008,70 @@ export class Parser {
         right,
         loc: this.#loc(left, right),
       };
+    }
+
+    return left;
+  }
+
+  #parseRange(): Expression {
+    const startToken = this.#peek();
+
+    // Handle prefix range: ..end or ..
+    if (this.#match(TokenType.DotDot)) {
+      if (
+        this.#check(TokenType.Comma) ||
+        this.#check(TokenType.Semi) ||
+        this.#check(TokenType.RParen) ||
+        this.#check(TokenType.RBracket) ||
+        this.#check(TokenType.RBrace)
+      ) {
+        // .. with no end -> FullRange
+        return {
+          type: NodeType.RangeExpression,
+          start: null,
+          end: null,
+          loc: this.#loc(startToken, this.#previous()),
+        };
+      } else {
+        // ..end -> ToRange
+        const end = this.#parseAs();
+        return {
+          type: NodeType.RangeExpression,
+          start: null,
+          end,
+          loc: this.#loc(startToken, end),
+        };
+      }
+    }
+
+    let left = this.#parseAs();
+
+    // Handle postfix range: start.. or bounded range: start..end
+    if (this.#match(TokenType.DotDot)) {
+      if (
+        this.#check(TokenType.Comma) ||
+        this.#check(TokenType.Semi) ||
+        this.#check(TokenType.RParen) ||
+        this.#check(TokenType.RBracket) ||
+        this.#check(TokenType.RBrace)
+      ) {
+        // start.. with no end -> FromRange
+        return {
+          type: NodeType.RangeExpression,
+          start: left,
+          end: null,
+          loc: this.#loc(left, this.#previous()),
+        };
+      } else {
+        // start..end -> BoundedRange
+        const end = this.#parseAs();
+        return {
+          type: NodeType.RangeExpression,
+          start: left,
+          end,
+          loc: this.#loc(left, end),
+        };
+      }
     }
 
     return left;

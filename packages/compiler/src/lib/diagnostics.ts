@@ -36,6 +36,7 @@ export const DiagnosticCode = {
   MissingDecorator: 2020,
   UnexpectedBody: 2021,
   UnreachableCode: 2022,
+  TypeNotFound: 2023,
 
   // Codegen Errors (3000-3999)
   UnknownType: 3001,
@@ -46,6 +47,7 @@ export const DiagnosticCode = {
   UnknownField: 3006,
   UnsupportedFeature: 3007,
   InvalidExpression: 3008,
+  CodegenError: 3009,
 
   // Internal Compiler Errors (9000-9998)
   InternalCompilerError: 9000,

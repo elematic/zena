@@ -23,6 +23,7 @@ import {
   type NullLiteral,
   type NumberLiteral,
   type Pattern,
+  type RangeExpression,
   type RecordLiteral,
   type RecordPattern,
   type StringLiteral,
@@ -217,6 +218,8 @@ function checkExpressionInternal(
       return checkMatchExpression(ctx, expr as MatchExpression);
     case NodeType.IfExpression:
       return checkIfExpression(ctx, expr as IfExpression);
+    case NodeType.RangeExpression:
+      return checkRangeExpression(ctx, expr as RangeExpression);
     default:
       return Types.Unknown;
   }
@@ -2641,4 +2644,58 @@ function subtractType(
   }
 
   return type;
+}
+
+function checkRangeExpression(
+  ctx: CheckerContext,
+  expr: RangeExpression,
+): Type {
+  // Check that start and end, if present, are i32
+  if (expr.start) {
+    const startType = checkExpression(ctx, expr.start);
+    if (!isAssignableTo(ctx, startType, Types.I32)) {
+      ctx.diagnostics.reportError(
+        `Range start must be i32, got ${typeToString(startType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+  }
+
+  if (expr.end) {
+    const endType = checkExpression(ctx, expr.end);
+    if (!isAssignableTo(ctx, endType, Types.I32)) {
+      ctx.diagnostics.reportError(
+        `Range end must be i32, got ${typeToString(endType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+  }
+
+  // Determine which Range type to return based on start/end presence
+  // BoundedRange: both start and end
+  // FromRange: start only
+  // ToRange: end only
+  // FullRange: neither
+  let rangeTypeName: string;
+  if (expr.start && expr.end) {
+    rangeTypeName = 'BoundedRange';
+  } else if (expr.start) {
+    rangeTypeName = 'FromRange';
+  } else if (expr.end) {
+    rangeTypeName = 'ToRange';
+  } else {
+    rangeTypeName = 'FullRange';
+  }
+
+  // Look up the Range type from the zena:range module
+  const rangeType = ctx.resolveType(rangeTypeName);
+  if (!rangeType) {
+    ctx.diagnostics.reportError(
+      `Range type '${rangeTypeName}' not found. Import from 'zena:range'.`,
+      DiagnosticCode.TypeNotFound,
+    );
+    return Types.Unknown;
+  }
+
+  return rangeType;
 }
