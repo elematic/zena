@@ -8,4 +8,5 @@ import { Array } from 'zena:growable-array';
 import { console } from 'zena:console';
 import { Map } from 'zena:map';
 import { Box } from 'zena:box';
+import { BoundedRange, FromRange, ToRange, FullRange } from 'zena:range';
 `;

@@ -42,6 +42,7 @@ import {
   Decorators,
   TypeKind,
   Types,
+  type ArrayType,
   type ClassType,
   type FunctionType,
   type InterfaceType,
@@ -1261,14 +1262,38 @@ function generateIndexExpression(
           foundClass.isExtension &&
           foundClass.onType
         ) {
-          // Decode array type index from onType
-          let arrayTypeIndex = 0;
-          let shift = 0;
-          for (let i = 1; i < foundClass.onType.length; i++) {
-            const byte = foundClass.onType[i];
-            arrayTypeIndex |= (byte & 0x7f) << shift;
-            shift += 7;
-            if ((byte & 0x80) === 0) break;
+          // Get array type index from the object's inferred type
+          // This is more reliable than decoding from onType which may reference
+          // types that haven't been fully defined yet
+          let arrayTypeIndex: number;
+          let objType = expr.object.inferredType;
+
+          // Substitute type parameters when in a generic context
+          if (
+            objType &&
+            ctx.currentTypeArguments.size > 0 &&
+            ctx.checkerContext
+          ) {
+            objType = ctx.checkerContext.substituteTypeParams(
+              objType,
+              ctx.currentTypeArguments,
+            );
+          }
+
+          if (objType && objType.kind === TypeKind.Array) {
+            // Resolve to WASM type via checker context
+            const wasmType = mapCheckerTypeToWasmType(ctx, objType);
+            arrayTypeIndex = decodeTypeIndex(wasmType);
+          } else {
+            // Fallback: Decode array type index from onType
+            arrayTypeIndex = 0;
+            let shift = 0;
+            for (let i = 1; i < foundClass.onType.length; i++) {
+              const byte = foundClass.onType[i];
+              arrayTypeIndex |= (byte & 0x7f) << shift;
+              shift += 7;
+              if ((byte & 0x80) === 0) break;
+            }
           }
 
           generateExpression(ctx, expr.object, body);
@@ -1486,16 +1511,24 @@ function generateIndexExpression(
     if (intrinsic) {
       generateIntrinsic(ctx, intrinsic, expr.object, [expr.index], body);
 
-      const elementType = ctx.module.getArrayElementType(arrayTypeIndex);
-      if (elementType.length === 1 && elementType[0] === ValType.anyref) {
-        const expectedType = inferType(ctx, expr);
+      // Use checker type to determine if element is anyref
+      const objCheckerType = expr.object.inferredType;
+      if (objCheckerType && objCheckerType.kind === TypeKind.Array) {
+        const arrayType = objCheckerType as ArrayType;
+        // If element type is 'any' or 'anyref', we may need to cast
         if (
-          expectedType.length > 1 &&
-          (expectedType[0] === ValType.ref ||
-            expectedType[0] === ValType.ref_null)
+          arrayType.elementType.kind === TypeKind.Any ||
+          arrayType.elementType.kind === TypeKind.AnyRef
         ) {
-          body.push(0xfb, GcOpcode.ref_cast_null);
-          body.push(...expectedType.slice(1));
+          const expectedType = inferType(ctx, expr);
+          if (
+            expectedType.length > 1 &&
+            (expectedType[0] === ValType.ref ||
+              expectedType[0] === ValType.ref_null)
+          ) {
+            body.push(0xfb, GcOpcode.ref_cast_null);
+            body.push(...expectedType.slice(1));
+          }
         }
       }
       return;
@@ -2913,11 +2946,17 @@ function generateAssignmentExpression(
       }
     }
 
+    // Use checker type to determine if this is an array assignment
+    const objCheckerType = indexExpr.object.inferredType;
+    const isCheckerArray =
+      objCheckerType && objCheckerType.kind === TypeKind.Array;
+
     let arrayTypeIndex = -1;
     if (indexExpr.object.type === NodeType.Identifier) {
       const localInfo = ctx.getLocal((indexExpr.object as Identifier).name);
       if (localInfo && localInfo.type.length > 1) {
-        arrayTypeIndex = localInfo.type[1];
+        // Decode the LEB128 type index, don't use the raw byte
+        arrayTypeIndex = decodeTypeIndex(localInfo.type);
       }
     }
     if (arrayTypeIndex === -1) {
@@ -2931,35 +2970,25 @@ function generateAssignmentExpression(
       }
     }
 
-    if (arrayTypeIndex !== -1) {
-      let isArray = false;
-      try {
-        ctx.module.getArrayElementType(arrayTypeIndex);
-        isArray = true;
-      } catch (e) {
-        isArray = false;
-      }
+    if (arrayTypeIndex !== -1 && isCheckerArray) {
+      const intrinsic = findArrayIntrinsic(ctx, '[]=');
+      if (intrinsic === 'array.set') {
+        generateExpression(ctx, indexExpr.object, body);
+        generateExpression(ctx, indexExpr.index, body);
+        generateExpression(ctx, expr.value, body);
 
-      if (isArray) {
-        const intrinsic = findArrayIntrinsic(ctx, '[]=');
-        if (intrinsic === 'array.set') {
-          generateExpression(ctx, indexExpr.object, body);
-          generateExpression(ctx, indexExpr.index, body);
-          generateExpression(ctx, expr.value, body);
+        const valueType = inferType(ctx, expr.value);
+        const tempLocal = ctx.declareLocal('$$temp_array_set', valueType);
 
-          const valueType = inferType(ctx, expr.value);
-          const tempLocal = ctx.declareLocal('$$temp_array_set', valueType);
+        body.push(Opcode.local_tee);
+        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
 
-          body.push(Opcode.local_tee);
-          body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+        body.push(0xfb, GcOpcode.array_set);
+        body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
 
-          body.push(0xfb, GcOpcode.array_set);
-          body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
-
-          body.push(Opcode.local_get);
-          body.push(...WasmModule.encodeSignedLEB128(tempLocal));
-          return;
-        }
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+        return;
       }
     }
 
@@ -3376,7 +3405,7 @@ function generateAssignmentExpression(
     } else {
       // Use binding-based lookup for global assignment
       generateExpression(ctx, expr.value, body);
-      
+
       const binding = ctx.semanticContext.getResolvedBinding(expr.left);
       if (!binding) {
         throw new Error(`Unknown identifier: ${expr.left.name}`);
@@ -4091,8 +4120,7 @@ function generateFromBinding(
             wasmTypeToCheckerType(local.unboxedType),
           );
           const valueField = boxClass.fields.get(BOX_VALUE_FIELD);
-          if (!valueField)
-            throw new Error("Box class missing 'value' field");
+          if (!valueField) throw new Error("Box class missing 'value' field");
 
           body.push(0xfb, GcOpcode.struct_get);
           body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
@@ -5530,7 +5558,7 @@ function generateFunctionExpression(
 ) {
   // 1. Analyze captures
   const {captures, mutableCaptures} = analyzeCaptures(expr);
-  
+
   // 2. Box mutable captures that aren't already boxed
   // We need to do this BEFORE building the captureList so that subsequent
   // code sees the boxed variables
@@ -5544,12 +5572,12 @@ function generateFunctionExpression(
         ValType.ref,
         ...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex),
       ];
-      
+
       // Create a new box with the current value
       body.push(Opcode.local_get);
       body.push(...WasmModule.encodeSignedLEB128(local.index));
       boxPrimitive(ctx, local.type, body);
-      
+
       // Create a new local for the box and update the scope
       const newBoxLocal = ctx.declareLocal(
         `$$boxed_${name}`,
@@ -5560,7 +5588,7 @@ function generateFunctionExpression(
       );
       body.push(Opcode.local_set);
       body.push(...WasmModule.encodeSignedLEB128(newBoxLocal));
-      
+
       // Update the original variable's local info to point to the box
       // We do this by updating the scope entry
       const scope = ctx.scopes[ctx.scopes.length - 1];
@@ -5572,7 +5600,7 @@ function generateFunctionExpression(
       });
     }
   }
-  
+
   const captureList: {
     name: string;
     type: number[];
@@ -5590,7 +5618,7 @@ function generateFunctionExpression(
         if (!local.isBoxed || !local.unboxedType) {
           throw new Error(`Mutable capture ${name} should be boxed but isn't`);
         }
-        
+
         // Capture the already-boxed variable
         captureList.push({
           name,
@@ -8515,39 +8543,76 @@ function generateRangeExpression(
   const classType = exprType as ClassType;
   const className = classType.name;
 
-  // Generate constructor call: new RangeType(start, end)
-  // First, push arguments onto stack
+  // Get the class info for the range type
+  const classInfo = ctx.getClassInfo(classType);
+  if (!classInfo) {
+    throw new CompilerError(
+      `Class info not found for range type: ${classType.name}`,
+    );
+  }
+
+  // Allocate struct with default values (same pattern as generateNewExpression)
+  body.push(0xfb, GcOpcode.struct_new_default);
+  body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+
+  // Store ref in temp local to return it later and pass to constructor
+  const type = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+  ];
+  const tempLocal = ctx.declareLocal('$$temp_range', type);
+  body.push(Opcode.local_tee);
+  body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+  // Initialize vtable
+  if (classInfo.vtableGlobalIndex !== undefined) {
+    body.push(Opcode.global_get);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex));
+    body.push(0xfb, GcOpcode.struct_set);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(0)); // vtable is field 0
+  }
+
+  // Call constructor with this and appropriate args
+  const ctorInfo = classInfo.methods.get('#new');
+  if (!ctorInfo) {
+    throw new CompilerError(
+      `No constructor found for range type: ${className}`,
+    );
+  }
+
+  // Push this
+  body.push(Opcode.local_get);
+  body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+  // Push constructor arguments based on range type
   if (className === 'BoundedRange') {
-    // new BoundedRange(start, end)
     if (!expr.start || !expr.end) {
       throw new CompilerError('BoundedRange requires both start and end');
     }
     generateExpression(ctx, expr.start, body);
     generateExpression(ctx, expr.end, body);
   } else if (className === 'FromRange') {
-    // new FromRange(start)
     if (!expr.start) {
       throw new CompilerError('FromRange requires start');
     }
     generateExpression(ctx, expr.start, body);
   } else if (className === 'ToRange') {
-    // new ToRange(end)
     if (!expr.end) {
       throw new CompilerError('ToRange requires end');
     }
     generateExpression(ctx, expr.end, body);
   } else if (className === 'FullRange') {
-    // new FullRange() - no arguments
+    // FullRange has no constructor arguments
   } else {
     throw new CompilerError(`Unknown range type: ${className}`);
   }
 
-  // Now generate the struct.new instruction
-  const classInfo = ctx.getClassInfo(classType);
-  if (!classInfo) {
-    throw new CompilerError(`Class info not found for range type: ${classType.name}`);
-  }
-  const typeIndex = classInfo.structTypeIndex;
-  body.push(0xfb, GcOpcode.struct_new);
-  body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+  // Call constructor
+  body.push(Opcode.call);
+  body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+
+  // Return the instance
+  body.push(Opcode.local_get);
+  body.push(...WasmModule.encodeSignedLEB128(tempLocal));
 }

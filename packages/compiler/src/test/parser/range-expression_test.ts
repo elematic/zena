@@ -13,8 +13,8 @@ suite('Parser - Range expressions', () => {
     assert.strictEqual(module.body.length, 1);
     const decl = module.body[0];
     assert.strictEqual(decl.type, NodeType.VariableDeclaration);
-    
-    const init = (decl as any).initializer;
+
+    const init = (decl as any).init;
     assert.strictEqual(init.type, NodeType.RangeExpression);
     assert.ok(init.start);
     assert.ok(init.end);
@@ -31,7 +31,7 @@ suite('Parser - Range expressions', () => {
 
     assert.ok(module);
     const decl = module.body[0];
-    const init = (decl as any).initializer;
+    const init = (decl as any).init;
     assert.strictEqual(init.type, NodeType.RangeExpression);
     assert.ok(init.start);
     assert.strictEqual(init.end, null);
@@ -46,7 +46,7 @@ suite('Parser - Range expressions', () => {
 
     assert.ok(module);
     const decl = module.body[0];
-    const init = (decl as any).initializer;
+    const init = (decl as any).init;
     assert.strictEqual(init.type, NodeType.RangeExpression);
     assert.strictEqual(init.start, null);
     assert.ok(init.end);
@@ -61,7 +61,7 @@ suite('Parser - Range expressions', () => {
 
     assert.ok(module);
     const decl = module.body[0];
-    const init = (decl as any).initializer;
+    const init = (decl as any).init;
     assert.strictEqual(init.type, NodeType.RangeExpression);
     assert.strictEqual(init.start, null);
     assert.strictEqual(init.end, null);
@@ -74,7 +74,7 @@ suite('Parser - Range expressions', () => {
 
     assert.ok(module);
     const decl = module.body[0];
-    const init = (decl as any).initializer;
+    const init = (decl as any).init;
     assert.strictEqual(init.type, NodeType.RangeExpression);
     assert.ok(init.start);
     assert.ok(init.end);
@@ -82,15 +82,15 @@ suite('Parser - Range expressions', () => {
     assert.strictEqual(init.end.type, NodeType.BinaryExpression);
   });
 
-  test('should parse range in array context', () => {
+  test('should parse range in tuple context', () => {
     const input = 'let ranges = [1..5, 10..20];';
     const parser = new Parser(input);
     const module = parser.parse();
 
     assert.ok(module);
     const decl = module.body[0];
-    const init = (decl as any).initializer;
-    assert.strictEqual(init.type, NodeType.ArrayLiteral);
+    const init = (decl as any).init;
+    assert.strictEqual(init.type, NodeType.TupleLiteral);
     assert.strictEqual(init.elements.length, 2);
     assert.strictEqual(init.elements[0].type, NodeType.RangeExpression);
     assert.strictEqual(init.elements[1].type, NodeType.RangeExpression);
@@ -117,7 +117,7 @@ suite('Parser - Range expressions', () => {
 
     assert.ok(module);
     const decl = module.body[0];
-    const init = (decl as any).initializer;
+    const init = (decl as any).init;
     // Should parse as (1 + 2)..(10 - 3)
     assert.strictEqual(init.type, NodeType.RangeExpression);
     assert.strictEqual(init.start.type, NodeType.BinaryExpression);

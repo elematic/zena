@@ -55,8 +55,8 @@ describe('Compiler', () => {
     const compiler = new Compiler(host);
     const modules = compiler.compile('main.zena');
 
-    // 2 user modules + 9 stdlib modules (from prelude)
-    assert.strictEqual(modules.length, 11);
+    // 2 user modules + 10 stdlib modules (from prelude)
+    assert.strictEqual(modules.length, 12);
 
     const main = modules.find((m) => m.path === 'main.zena');
     const math = modules.find((m) => m.path === 'math.zena');
@@ -143,8 +143,8 @@ describe('Compiler', () => {
     const compiler = new Compiler(host);
     const modules = compiler.compile('a.zena');
 
-    // 2 user modules + 9 stdlib modules (from prelude)
-    assert.strictEqual(modules.length, 11);
+    // 2 user modules + 10 stdlib modules (from prelude)
+    assert.strictEqual(modules.length, 12);
   });
 
   it('handles export * re-exports', () => {

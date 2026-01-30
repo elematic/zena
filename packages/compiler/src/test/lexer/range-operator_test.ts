@@ -62,12 +62,12 @@ suite('Lexer - Range operator', () => {
     const input = '1....3';
     const tokens = tokenize(input);
 
-    // 1, .., ., ., 3
-    assert.strictEqual(tokens.length, 6); // Number, DotDot, Dot, Dot, Number, EOF
+    // Lexer uses maximal munch: ... is matched before ..
+    // So 1....3 -> 1, ..., ., 3, EOF
+    assert.strictEqual(tokens.length, 5); // Number, DotDotDot, Dot, Number, EOF
     assert.strictEqual(tokens[0].type, TokenType.Number);
-    assert.strictEqual(tokens[1].type, TokenType.DotDot);
+    assert.strictEqual(tokens[1].type, TokenType.DotDotDot);
     assert.strictEqual(tokens[2].type, TokenType.Dot);
-    assert.strictEqual(tokens[3].type, TokenType.Dot);
-    assert.strictEqual(tokens[4].type, TokenType.Number);
+    assert.strictEqual(tokens[3].type, TokenType.Number);
   });
 });
