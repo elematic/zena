@@ -11,6 +11,8 @@ export * from './diagnostics.js';
 export * from './codegen/index.js';
 export * from './compiler.js';
 export * from './loader/index.js';
+export * from './visitor.js';
+export * from './analysis/index.js';
 
 import {Compiler, type CompilerHost} from './compiler.js';
 import {CodeGenerator} from './codegen/index.js';
