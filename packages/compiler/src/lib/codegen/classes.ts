@@ -1103,6 +1103,15 @@ export function preRegisterClassStruct(
         `Extension class ${decl.name.name} missing onType in inferredType`,
       );
     }
+
+    // Check if this is the String class - ensure string type is created first
+    const isStringClass =
+      !!ctx.wellKnownTypes.String &&
+      decl.name.name === ctx.wellKnownTypes.String.name.name;
+    if (isStringClass) {
+      ctx.ensureStringType();
+    }
+
     const onType = mapCheckerTypeToWasmType(ctx, classType.onType);
 
     // Create a dummy struct type for extensions so that we have a valid type index
@@ -1132,11 +1141,8 @@ export function preRegisterClassStruct(
     // Register extension class by WASM type index for O(1) lookup
     ctx.registerExtensionClassByWasmTypeIndex(classInfo);
 
-    // Check if this is the String class
-    const isStringClass =
-      !!ctx.wellKnownTypes.String &&
-      decl.name.name === ctx.wellKnownTypes.String.name.name;
-
+    // For String class, ensure stringTypeIndex is set to the byte array type
+    // (ensureStringType() was already called above, but this double-checks)
     if (isStringClass) {
       const typeIndex = getHeapTypeIndex(ctx, onType);
       if (typeIndex >= 0) {
@@ -1250,14 +1256,12 @@ export function preRegisterClassStruct(
   const brandTypeIndex = generateBrandType(ctx, brandId);
 
   let structTypeIndex: number;
-  if (isStringClass && ctx.stringTypeIndex >= 0) {
-    // Reuse the pre-allocated String type index
-    structTypeIndex = ctx.stringTypeIndex;
+  if (isStringClass) {
+    // String is an extension class on ByteArray - ensure the byte array type exists
+    // and reuse it as the String's struct type index
+    structTypeIndex = ctx.ensureStringType();
   } else {
     structTypeIndex = ctx.module.reserveType();
-    if (isStringClass) {
-      ctx.stringTypeIndex = structTypeIndex;
-    }
   }
 
   // Add minimal info to class registry so self-references work
@@ -1509,15 +1513,8 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   ctx.module.defineStructType(structTypeIndex, fieldTypes, superTypeIndex);
 
   let onType: number[] | undefined;
-  if (decl.isExtension && decl.onType) {
-    // Extension classes must have onType set by the checker
-    if (!classType?.onType) {
-      throw new Error(
-        `Extension class ${decl.name.name} missing onType in inferredType`,
-      );
-    }
-    onType = mapCheckerTypeToWasmType(ctx, classType.onType);
-  }
+  // Note: Extension classes return early at the top of this function,
+  // so decl.isExtension is always false here. No onType handling needed.
 
   // Update classInfo with full data
   classInfo.superClass = currentSuperClassInfo?.name;
@@ -4336,9 +4333,8 @@ export function mapCheckerTypeToWasmType(
       return [ValType.i32];
     } else if (typeof litType.value === 'string') {
       // String literals map to the String type
-      if (ctx.stringTypeIndex === -1) {
-        throw new Error('String type not initialized');
-      }
+      // Ensure string type is created lazily
+      ctx.ensureStringType();
       return [
         ValType.ref_null,
         ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),

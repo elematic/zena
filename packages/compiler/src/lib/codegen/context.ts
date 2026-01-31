@@ -27,7 +27,7 @@ import {
   type MixinType,
   type Type,
 } from '../types.js';
-import {ValType} from '../wasm.js';
+import {ExportDesc, HeapType, Opcode, ValType} from '../wasm.js';
 import type {ClassInfo, InterfaceInfo, LocalInfo} from './types.js';
 
 /**
@@ -329,13 +329,91 @@ export class CodegenContext {
     this.checkerContext = checkerContext;
     this.#extractWellKnownTypes();
     this.module = new WasmModule();
-    // Define backing array type: array<i8> (mutable for construction)
-    this.byteArrayTypeIndex = this.module.addArrayType([ValType.i8], true);
+    // Note: byteArrayTypeIndex and stringTypeIndex are now created lazily
+    // via ensureStringType() to avoid including them when not needed.
+  }
 
-    // Pre-initialize String struct type so that declared functions can use string params.
-    // The String class definition in the prelude will reuse this type index.
-    // String is now an extension class on ByteArray, so it shares the same type index.
-    this.stringTypeIndex = this.byteArrayTypeIndex;
+  // ============================================
+  // Lazy Infrastructure Initialization
+  // ============================================
+  // These methods create WASM infrastructure on-demand to minimize binary size.
+  // Only call them when the feature is actually needed.
+
+  /**
+   * Ensure the string/byte array type is created.
+   * Call this before using stringTypeIndex or byteArrayTypeIndex.
+   * Returns the type index.
+   */
+  ensureStringType(): number {
+    if (this.byteArrayTypeIndex === -1) {
+      // Define backing array type: array<i8> (mutable for construction)
+      this.byteArrayTypeIndex = this.module.addArrayType([ValType.i8], true);
+      // String is an extension class on ByteArray, so they share the type index
+      this.stringTypeIndex = this.byteArrayTypeIndex;
+    }
+    return this.stringTypeIndex;
+  }
+
+  /**
+   * Ensure exception handling infrastructure is created.
+   * Call this before using exceptionTagIndex or exceptionPayloadGlobalIndex.
+   * Creates the exception tag and payload global.
+   */
+  ensureExceptionInfra(): void {
+    if (this.exceptionTagIndex === -1) {
+      // Tag type: () -> void (no parameters)
+      const tagTypeIndex = this.module.addType([], []);
+      this.exceptionTagIndex = this.module.addTag(tagTypeIndex);
+      this.module.addExport(
+        'zena_exception',
+        ExportDesc.Tag,
+        this.exceptionTagIndex,
+      );
+
+      // Add global for exception payload (mutable eqref, initially null)
+      this.exceptionPayloadGlobalIndex = this.module.addGlobal(
+        [ValType.eqref],
+        true, // mutable
+        [Opcode.ref_null, HeapType.eq], // init: ref.null eq
+      );
+    }
+  }
+
+  #memoryIndex = -1;
+
+  /**
+   * Ensure memory is created.
+   * Call this before using memory (e.g., for data segments).
+   * Returns the memory index.
+   */
+  ensureMemory(): number {
+    if (this.#memoryIndex === -1) {
+      this.#memoryIndex = this.module.addMemory(1);
+      this.module.addExport('memory', ExportDesc.Mem, this.#memoryIndex);
+    }
+    return this.#memoryIndex;
+  }
+
+  /**
+   * Check if string type has been initialized.
+   * Use this to conditionally generate string helpers.
+   */
+  hasStringType(): boolean {
+    return this.stringTypeIndex !== -1;
+  }
+
+  /**
+   * Check if exception infrastructure has been initialized.
+   */
+  hasExceptionInfra(): boolean {
+    return this.exceptionTagIndex !== -1;
+  }
+
+  /**
+   * Check if memory has been initialized.
+   */
+  hasMemory(): boolean {
+    return this.#memoryIndex !== -1;
   }
 
   /**

@@ -152,32 +152,9 @@ export class CodeGenerator {
 
     const statements = this.#ctx.statements;
 
-    // Initialize exception tag
-    // Tag type: () -> void (no parameters)
-    // The exception payload is stored in a global variable before throwing
-    // and read from the global in the catch handler.
-    // This is necessary because WASM EH catch clauses push tag params to the stack,
-    // and the target block would need matching input arity, which creates
-    // control flow issues (can't enter block with params from normal flow).
-    const tagTypeIndex = this.#ctx.module.addType([], []);
-    this.#ctx.exceptionTagIndex = this.#ctx.module.addTag(tagTypeIndex);
-    this.#ctx.module.addExport(
-      'zena_exception',
-      ExportDesc.Tag,
-      this.#ctx.exceptionTagIndex,
-    );
-
-    // Add global for exception payload (mutable eqref, initially null)
-    // Note: addGlobal adds the 0x0b end opcode automatically
-    this.#ctx.exceptionPayloadGlobalIndex = this.#ctx.module.addGlobal(
-      [ValType.eqref],
-      true, // mutable
-      [Opcode.ref_null, HeapType.eq], // init: ref.null eq
-    );
-
-    // Add default memory (1 page = 64KB)
-    const memoryIndex = this.#ctx.module.addMemory(1);
-    this.#ctx.module.addExport('memory', ExportDesc.Mem, memoryIndex);
+    // NOTE: Exception tag, payload global, and memory are now created lazily
+    // via ctx.ensureExceptionInfra() and ctx.ensureMemory() to minimize binary size.
+    // They are only created when actually needed (throw/try or data segments).
 
     const globalInitializers: {index: number; init: any}[] = [];
 

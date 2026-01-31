@@ -202,6 +202,9 @@ function generateThrowExpression(
   expr: ThrowExpression,
   body: number[],
 ) {
+  // Ensure exception infrastructure is created lazily
+  ctx.ensureExceptionInfra();
+
   // Generate the exception payload (e.g., Error object)
   generateExpression(ctx, expr.argument, body);
   // Store payload in the global variable
@@ -241,6 +244,9 @@ function generateTryExpression(
   expr: TryExpression,
   body: number[],
 ) {
+  // Ensure exception infrastructure is created lazily
+  ctx.ensureExceptionInfra();
+
   // Get result type from inferred type
   let resultType: number[] = [];
   if (expr.inferredType) {
@@ -5123,6 +5129,9 @@ function generateStringLiteral(
   expr: StringLiteral,
   body: number[],
 ) {
+  // Ensure string type is created lazily
+  ctx.ensureStringType();
+
   let dataIndex: number;
   if (ctx.stringLiterals.has(expr.value)) {
     dataIndex = ctx.stringLiterals.get(expr.value)!;
@@ -5933,12 +5942,14 @@ function generateGlobalIntrinsic(
   const args = expr.arguments;
   switch (name) {
     case 'i32.store': {
+      ctx.ensureMemory(); // Memory operations require memory
       generateExpression(ctx, args[0], body); // ptr
       generateExpression(ctx, args[1], body); // value
       body.push(Opcode.i32_store, 0, 0); // align=0, offset=0
       break;
     }
     case 'i32.store8': {
+      ctx.ensureMemory(); // Memory operations require memory
       generateExpression(ctx, args[0], body); // ptr
       generateExpression(ctx, args[1], body); // value
       body.push(Opcode.i32_store8, 0, 0); // align=0, offset=0
