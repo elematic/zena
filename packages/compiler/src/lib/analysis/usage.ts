@@ -154,6 +154,13 @@ class UsageAnalyzer {
   // Map from type to its declaration (for type-based lookups)
   readonly #declarationsByType = new WeakMap<Type, Declaration>();
 
+  // Map from FunctionExpression to parent VariableDeclaration
+  // (for marking the VariableDeclaration when a function binding is used)
+  readonly #funcToVarDecl = new WeakMap<
+    FunctionExpression,
+    VariableDeclaration
+  >();
+
   constructor(program: Program, options: UsageAnalysisOptions) {
     this.#program = program;
     this.#options = options;
@@ -196,12 +203,15 @@ class UsageAnalyzer {
         }
         // Also index the function expression if it's a function declaration
         if (decl.init?.type === NodeType.FunctionExpression) {
+          const funcExpr = decl.init as FunctionExpression;
           this.#addDeclarationByName(
             decl.pattern.type === NodeType.Identifier
               ? decl.pattern.name
               : '<anon>',
-            decl.init as FunctionExpression,
+            funcExpr,
           );
+          // Map function expression back to its variable declaration
+          this.#funcToVarDecl.set(funcExpr, decl);
         }
         break;
       }
@@ -256,6 +266,11 @@ class UsageAnalyzer {
       existing.push(decl);
     } else {
       this.#declarationsByName.set(name, [decl]);
+    }
+    // Pre-mark all declarations as unused initially.
+    // The worklist will mark used ones as used.
+    if (!this.#usageMap.has(decl)) {
+      this.#usageMap.set(decl, {isUsed: false});
     }
   }
 
@@ -334,6 +349,14 @@ class UsageAnalyzer {
     if (!this.#inWorklist.has(decl)) {
       this.#worklist.push(decl);
       this.#inWorklist.add(decl);
+    }
+
+    // If this is a FunctionExpression, also mark its parent VariableDeclaration
+    if (decl.type === NodeType.FunctionExpression) {
+      const parentDecl = this.#funcToVarDecl.get(decl as FunctionExpression);
+      if (parentDecl && !this.#usedDeclarations.has(parentDecl)) {
+        this.#markUsed(parentDecl, reason);
+      }
     }
   }
 
@@ -527,6 +550,7 @@ class UsageAnalyzer {
    * Handle an identifier that may reference a declaration.
    */
   #handleIdentifierReference(node: Identifier): void {
+    // Try to resolve using semantic context first (most accurate)
     // Try to resolve using semantic context first (most accurate)
     if (this.#semanticContext) {
       const binding = this.#semanticContext.getResolvedBinding(node);

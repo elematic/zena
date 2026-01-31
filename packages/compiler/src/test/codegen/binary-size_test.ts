@@ -10,31 +10,14 @@ import assert from 'node:assert';
 import {compileToWasm} from './utils.js';
 
 /**
- * Options for binary size compilation.
- * Will be extended to support DCE toggle.
+ * Compile source with optional DCE and verify it produces valid WASM.
+ * Returns the binary size in bytes.
  */
-export interface BinarySizeOptions {
-  /** Enable dead code elimination (default: false until implemented) */
-  dce?: boolean;
-}
-
-/**
- * Compile source and return the binary size in bytes.
- */
-export const getBinarySize = (
+const compileAndValidate = async (
   source: string,
-  _options: BinarySizeOptions = {},
-): number => {
-  // TODO: Pass DCE option to compiler once implemented
-  const bytes = compileToWasm(source);
-  return bytes.length;
-};
-
-/**
- * Compile source and verify it produces valid WASM that can be instantiated.
- */
-const compileAndValidate = async (source: string): Promise<number> => {
-  const bytes = compileToWasm(source);
+  dce = false,
+): Promise<number> => {
+  const bytes = compileToWasm(source, '/main.zena', {dce});
 
   // Validate the WASM is structurally correct
   await WebAssembly.compile(bytes.buffer as ArrayBuffer);
@@ -47,27 +30,33 @@ suite('Binary Size', () => {
     test('export main only - no stdlib', async () => {
       const source = `export let main = () => 42;`;
 
-      const size = await compileAndValidate(source);
+      const sizeNoDce = await compileAndValidate(source, false);
+      const sizeWithDce = await compileAndValidate(source, true);
 
-      // Log size for visibility during development
-      console.log(`  Minimal program size: ${size} bytes`);
+      console.log(`  Without DCE: ${sizeNoDce} bytes`);
+      console.log(`  With DCE: ${sizeWithDce} bytes`);
 
-      // This is a baseline measurement. With DCE enabled, this should be
-      // very small (< 100 bytes). Without DCE, stdlib may be included.
-      // For now, just verify it compiles.
-      assert.ok(size > 0, 'Should produce non-empty WASM');
+      assert.ok(sizeNoDce > 0, 'Should produce non-empty WASM');
+      assert.ok(sizeWithDce > 0, 'Should produce non-empty WASM with DCE');
 
-      // TODO: When DCE is implemented, add constraint:
-      // assert.ok(size < 100, `Minimal program should be < 100 bytes, got ${size}`);
+      // With DCE, size should be smaller or equal
+      assert.ok(
+        sizeWithDce <= sizeNoDce,
+        `DCE should not increase size (${sizeWithDce} > ${sizeNoDce})`,
+      );
     });
 
     test('export constant value', async () => {
       const source = `export let answer = 42;`;
 
-      const size = await compileAndValidate(source);
-      console.log(`  Constant export size: ${size} bytes`);
+      const sizeNoDce = await compileAndValidate(source, false);
+      const sizeWithDce = await compileAndValidate(source, true);
 
-      assert.ok(size > 0, 'Should produce non-empty WASM');
+      console.log(`  Without DCE: ${sizeNoDce} bytes`);
+      console.log(`  With DCE: ${sizeWithDce} bytes`);
+
+      assert.ok(sizeNoDce > 0, 'Should produce non-empty WASM');
+      assert.ok(sizeWithDce > 0, 'Should produce non-empty WASM with DCE');
     });
   });
 
@@ -75,31 +64,32 @@ suite('Binary Size', () => {
     test('export string literal', async () => {
       const source = `export let main = () => "hello";`;
 
-      const size = await compileAndValidate(source);
-      console.log(`  String literal size: ${size} bytes`);
+      const sizeNoDce = await compileAndValidate(source, false);
+      const sizeWithDce = await compileAndValidate(source, true);
 
-      // String usage requires:
-      // - String class (minimal)
-      // - $stringGetByte export (for runtime)
-      // - String data in memory
-      assert.ok(size > 0, 'Should produce non-empty WASM');
+      console.log(`  Without DCE: ${sizeNoDce} bytes`);
+      console.log(`  With DCE: ${sizeWithDce} bytes`);
 
-      // TODO: When DCE is implemented, verify this is reasonably small
-      // but larger than the minimal program
+      assert.ok(sizeNoDce > 0, 'Should produce non-empty WASM');
+      assert.ok(sizeWithDce > 0, 'Should produce non-empty WASM with DCE');
     });
 
     test('string with length access', async () => {
       const source = `export let main = () => "hello".length;`;
 
-      const size = await compileAndValidate(source);
-      console.log(`  String.length size: ${size} bytes`);
+      const sizeNoDce = await compileAndValidate(source, false);
+      const sizeWithDce = await compileAndValidate(source, true);
 
-      assert.ok(size > 0, 'Should produce non-empty WASM');
+      console.log(`  Without DCE: ${sizeNoDce} bytes`);
+      console.log(`  With DCE: ${sizeWithDce} bytes`);
+
+      assert.ok(sizeNoDce > 0, 'Should produce non-empty WASM');
+      assert.ok(sizeWithDce > 0, 'Should produce non-empty WASM with DCE');
     });
   });
 
   suite('Unused Declarations', () => {
-    test('unused function should not increase size with DCE', async () => {
+    test('unused function is eliminated with DCE', async () => {
       const withUnused = `
         let unused = () => 999;
         export let main = () => 42;
@@ -108,20 +98,34 @@ suite('Binary Size', () => {
         export let main = () => 42;
       `;
 
-      const sizeWith = await compileAndValidate(withUnused);
-      const sizeWithout = await compileAndValidate(withoutUnused);
+      // Without DCE
+      const sizeWithNoDce = await compileAndValidate(withUnused, false);
+      const sizeWithoutNoDce = await compileAndValidate(withoutUnused, false);
 
-      console.log(`  With unused function: ${sizeWith} bytes`);
-      console.log(`  Without unused function: ${sizeWithout} bytes`);
+      // With DCE
+      const sizeWithDce = await compileAndValidate(withUnused, true);
+      const sizeWithoutDce = await compileAndValidate(withoutUnused, true);
 
-      // TODO: With DCE enabled, these should be equal (or very close)
-      // assert.ok(
-      //   Math.abs(sizeWith - sizeWithout) < 10,
-      //   'Unused function should be eliminated'
-      // );
+      console.log(`  Without DCE - with unused: ${sizeWithNoDce} bytes`);
+      console.log(`  Without DCE - without unused: ${sizeWithoutNoDce} bytes`);
+      console.log(`  With DCE - with unused: ${sizeWithDce} bytes`);
+      console.log(`  With DCE - without unused: ${sizeWithoutDce} bytes`);
+
+      // Without DCE, unused function adds size
+      assert.ok(
+        sizeWithNoDce > sizeWithoutNoDce,
+        'Without DCE, unused function should add size',
+      );
+
+      // With DCE, unused function should be eliminated - sizes should be equal
+      assert.strictEqual(
+        sizeWithDce,
+        sizeWithoutDce,
+        `With DCE, unused function should be eliminated (${sizeWithDce} != ${sizeWithoutDce})`,
+      );
     });
 
-    test('unused class should not increase size with DCE', async () => {
+    test('unused class is eliminated with DCE', async () => {
       const withUnused = `
         class Unused {
           x: i32;
@@ -133,29 +137,57 @@ suite('Binary Size', () => {
         export let main = () => 42;
       `;
 
-      const sizeWith = await compileAndValidate(withUnused);
-      const sizeWithout = await compileAndValidate(withoutUnused);
+      // Without DCE
+      const sizeWithNoDce = await compileAndValidate(withUnused, false);
+      const sizeWithoutNoDce = await compileAndValidate(withoutUnused, false);
 
-      console.log(`  With unused class: ${sizeWith} bytes`);
-      console.log(`  Without unused class: ${sizeWithout} bytes`);
+      // With DCE
+      const sizeWithDce = await compileAndValidate(withUnused, true);
+      const sizeWithoutDce = await compileAndValidate(withoutUnused, true);
 
-      // TODO: With DCE enabled, these should be equal (or very close)
+      console.log(`  Without DCE - with unused: ${sizeWithNoDce} bytes`);
+      console.log(`  Without DCE - without unused: ${sizeWithoutNoDce} bytes`);
+      console.log(`  With DCE - with unused: ${sizeWithDce} bytes`);
+      console.log(`  With DCE - without unused: ${sizeWithoutDce} bytes`);
+
+      // Without DCE, unused class adds significant size
+      assert.ok(
+        sizeWithNoDce > sizeWithoutNoDce,
+        'Without DCE, unused class should add size',
+      );
+
+      // With DCE, unused class should be eliminated - sizes should be equal
+      assert.strictEqual(
+        sizeWithDce,
+        sizeWithoutDce,
+        `With DCE, unused class should be eliminated (${sizeWithDce} != ${sizeWithoutDce})`,
+      );
     });
   });
 
   suite('Transitive Usage', () => {
-    test('transitively used function is kept', async () => {
+    test('transitively used function is kept with DCE', async () => {
       const source = `
         let helper = () => 1;
         let used = () => helper();
         export let main = () => used();
       `;
 
-      const size = await compileAndValidate(source);
-      console.log(`  Transitive usage size: ${size} bytes`);
+      const sizeNoDce = await compileAndValidate(source, false);
+      const sizeWithDce = await compileAndValidate(source, true);
 
-      // Verify the program works correctly
-      const bytes = compileToWasm(source);
+      console.log(`  Without DCE: ${sizeNoDce} bytes`);
+      console.log(`  With DCE: ${sizeWithDce} bytes`);
+
+      // With DCE, transitive dependencies should still be included
+      // Size will be much smaller because stdlib is eliminated, but program should work
+      assert.ok(
+        sizeWithDce < sizeNoDce,
+        'DCE should reduce size by eliminating stdlib',
+      );
+
+      // Verify the program works correctly with DCE
+      const bytes = compileToWasm(source, '/main.zena', {dce: true});
       const result = await WebAssembly.instantiate(
         bytes.buffer as ArrayBuffer,
         {
@@ -184,15 +216,14 @@ suite('Binary Size', () => {
       const minimal = `export let main = () => 42;`;
       const withString = `export let main = () => "hello";`;
 
-      const minimalSize = await compileAndValidate(minimal);
-      const stringSize = await compileAndValidate(withString);
+      const minimalSize = await compileAndValidate(minimal, true);
+      const stringSize = await compileAndValidate(withString, true);
 
-      console.log(`  Minimal: ${minimalSize} bytes`);
-      console.log(`  With string: ${stringSize} bytes`);
+      console.log(`  Minimal (DCE): ${minimalSize} bytes`);
+      console.log(`  With string (DCE): ${stringSize} bytes`);
       console.log(`  Difference: ${stringSize - minimalSize} bytes`);
 
       // String usage should add size (String class, data, helpers)
-      // This test documents the overhead of string support
       assert.ok(
         stringSize > minimalSize,
         'String usage should require more code than minimal program',

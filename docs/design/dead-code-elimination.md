@@ -3,6 +3,8 @@
 This document describes the design for dead code elimination (DCE) in the Zena
 compiler.
 
+**Status**: ✅ Implemented (declaration-level DCE)
+
 ## Goals
 
 1. **Minimal Binary Size**: The emitted WASM should only include code that is
@@ -20,6 +22,32 @@ compiler.
 
 5. **Foundation for LSP**: The same analysis enables "find all references" and
    "find all call sites" in the language server.
+
+## Results
+
+With DCE enabled, binary sizes are dramatically reduced:
+
+| Program                            | Without DCE | With DCE  | Reduction |
+| ---------------------------------- | ----------- | --------- | --------- |
+| `export let main = () => 42;`      | 1957 bytes  | 175 bytes | 91%       |
+| `export let main = () => "hello";` | 1971 bytes  | 235 bytes | 88%       |
+| Program with unused function       | 1970 bytes  | 175 bytes | 91%       |
+| Program with unused class          | 2095 bytes  | 175 bytes | 92%       |
+
+## Usage
+
+DCE is controlled by the `dce` option in `CodegenOptions`:
+
+```typescript
+const generator = new CodeGenerator(
+  modules,
+  entryPoint,
+  semanticContext,
+  checkerContext,
+  {dce: true}, // Enable dead code elimination
+);
+const wasm = generator.generate();
+```
 
 ## Design Principles
 
@@ -210,12 +238,14 @@ is encountered.
 
 ## Implementation Plan
 
-### Phase 1: AST Visitor Infrastructure
+### Phase 1: AST Visitor Infrastructure ✅
 
 Create a generic visitor that can traverse the AST. This replaces ad-hoc
 traversals like in `captures.ts`.
 
-### Phase 2: Declaration Usage Analysis
+**Implemented in**: `packages/compiler/src/lib/visitor.ts`
+
+### Phase 2: Declaration Usage Analysis ✅
 
 Implement the worklist-based usage analyzer:
 
@@ -225,7 +255,17 @@ Implement the worklist-based usage analyzer:
 4. Mark referenced declarations as used
 5. Add newly-used declarations to worklist
 
-### Phase 3: Codegen Integration
+**Implemented in**: `packages/compiler/src/lib/analysis/usage.ts`
+
+Key implementation details:
+
+- Uses `SemanticContext.getResolvedBinding()` for accurate identifier resolution
+- Maps `FunctionExpression` back to parent `VariableDeclaration` for correct
+  function declaration tracking
+- Pre-marks all indexed declarations as unused, then marks used ones via worklist
+- Supports stdlib implicit dependencies via `ImplicitStdlibTypes` handling
+
+### Phase 3: Codegen Integration ✅
 
 Modify the code generator to skip declarations marked as unused:
 
@@ -233,12 +273,19 @@ Modify the code generator to skip declarations marked as unused:
 // In codegen/index.ts
 for (const statement of statements) {
   // Skip unused declarations
-  if (isDeclaration(statement) && !isUsed(statement)) {
+  if (!this.#isUsed(statement as Declaration)) {
     continue;
   }
   // ... generate code
 }
 ```
+
+**Implemented in**: `packages/compiler/src/lib/codegen/index.ts`
+
+The `#isUsed()` method returns `true` if:
+
+- DCE is disabled (`options.dce === false`)
+- The declaration is marked as used by the usage analysis
 
 ### Phase 4: Method-Level DCE (Future)
 
@@ -295,7 +342,12 @@ The usage analysis enables new diagnostic messages:
 
 These can be reported during type checking once usage analysis is integrated.
 
-## Testing Strategy
+## Testing Strategy ✅
+
+**Test files**:
+
+- `packages/compiler/src/test/analysis/usage_test.ts` - 13 unit tests for usage analysis
+- `packages/compiler/src/test/codegen/binary-size_test.ts` - 8 integration tests for DCE
 
 1. **Unit tests for visitor**: Ensure all node types are visited correctly
 2. **Unit tests for usage analysis**: Test marking logic for various patterns

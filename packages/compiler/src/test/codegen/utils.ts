@@ -105,12 +105,21 @@ export const compileModules = (
 };
 
 /**
+ * Options for compileToWasm.
+ */
+export interface CompileToWasmOptions {
+  /** Enable dead code elimination */
+  dce?: boolean;
+}
+
+/**
  * Compile source to WASM bytes without instantiating.
  * Useful for tests that compare binary output or check WASM structure.
  */
 export const compileToWasm = (
   input: string | Record<string, string>,
   path = '/main.zena',
+  options: CompileToWasmOptions = {},
 ): Uint8Array => {
   const host = createHost(input, path);
   const compiler = new Compiler(host);
@@ -120,6 +129,7 @@ export const compileToWasm = (
     path,
     compiler.semanticContext,
     compiler.checkerContext,
+    {dce: options.dce},
   );
   return generator.generate();
 };

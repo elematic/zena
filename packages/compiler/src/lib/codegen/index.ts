@@ -1,6 +1,7 @@
 import {
   NodeType,
   type ClassDeclaration,
+  type Declaration,
   type DeclareFunction,
   type EnumDeclaration,
   type FunctionExpression,
@@ -9,6 +10,7 @@ import {
   type Module,
   type VariableDeclaration,
 } from '../ast.js';
+import {analyzeUsage, type UsageAnalysisResult} from '../analysis/usage.js';
 import type {CheckerContext} from '../checker/context.js';
 import {SemanticContext} from '../checker/semantic-context.js';
 import {TypeKind, type MixinType} from '../types.js';
@@ -47,8 +49,23 @@ import {WasmModule} from '../emitter.js';
  * 2. Generate method bodies and function bodies.
  * 3. Emit the final WASM binary.
  */
+
+/**
+ * Options for code generation.
+ */
+export interface CodegenOptions {
+  /**
+   * Enable dead code elimination.
+   * When true, unused declarations are not included in the output.
+   * Default: false
+   */
+  dce?: boolean;
+}
+
 export class CodeGenerator {
   #ctx: CodegenContext;
+  #options: CodegenOptions;
+  #usageResult: UsageAnalysisResult | null = null;
 
   /**
    * Create a new CodeGenerator.
@@ -56,12 +73,14 @@ export class CodeGenerator {
    * @param entryPointPath - Path of the entry point module (its exports become WASM exports)
    * @param semanticContext - Semantic context for type lookups (required)
    * @param checkerContext - Checker context for type instantiation (required)
+   * @param options - Code generation options
    */
   constructor(
     modules: Module[],
     entryPointPath: string | undefined,
     semanticContext: SemanticContext,
     checkerContext: CheckerContext,
+    options: CodegenOptions = {},
   ) {
     this.#ctx = new CodegenContext(
       modules,
@@ -69,6 +88,18 @@ export class CodeGenerator {
       semanticContext,
       checkerContext,
     );
+    this.#options = options;
+  }
+
+  /**
+   * Check if a declaration should be included in code generation.
+   * Returns true if DCE is disabled or if the declaration is used.
+   */
+  #isUsed(decl: Declaration): boolean {
+    if (!this.#options.dce || !this.#usageResult) {
+      return true; // DCE disabled, include everything
+    }
+    return this.#usageResult.isUsed(decl);
   }
 
   /**
@@ -107,6 +138,18 @@ export class CodeGenerator {
    * @returns The generated WASM binary as a Uint8Array.
    */
   public generate(): Uint8Array {
+    // Run usage analysis if DCE is enabled
+    if (this.#options.dce) {
+      const program = {
+        modules: new Map(this.#ctx.modules.map((m) => [m.path!, m])),
+        entryPoint: this.#ctx.entryPointModule.path!,
+        preludeModules: [], // Prelude modules are already in the modules list
+      };
+      this.#usageResult = analyzeUsage(program, {
+        semanticContext: this.#ctx.semanticContext,
+      });
+    }
+
     const statements = this.#ctx.statements;
 
     // Initialize exception tag
@@ -143,8 +186,10 @@ export class CodeGenerator {
     // Interface method types are NOT defined yet since they may reference classes.
     for (const statement of statements) {
       if (statement.type === NodeType.InterfaceDeclaration) {
+        if (!this.#isUsed(statement as InterfaceDeclaration)) continue;
         preRegisterInterface(this.#ctx, statement as InterfaceDeclaration);
       } else if (statement.type === NodeType.MixinDeclaration) {
+        if (!this.#isUsed(statement as MixinDeclaration)) continue;
         const mixinDecl = statement as MixinDeclaration;
         // Identity-based registration for O(1) lookup via checker types
         if (mixinDecl.inferredType?.kind === TypeKind.Mixin) {
@@ -160,6 +205,7 @@ export class CodeGenerator {
     // This reserves type indices so self-referential types can work
     for (const statement of statements) {
       if (statement.type === NodeType.ClassDeclaration) {
+        if (!this.#isUsed(statement as ClassDeclaration)) continue;
         preRegisterClassStruct(this.#ctx, statement as ClassDeclaration);
       }
     }
@@ -168,6 +214,7 @@ export class CodeGenerator {
     // Now that all classes have reserved indices, class types can be resolved correctly.
     for (const statement of statements) {
       if (statement.type === NodeType.InterfaceDeclaration) {
+        if (!this.#isUsed(statement as InterfaceDeclaration)) continue;
         defineInterfaceMethods(this.#ctx, statement as InterfaceDeclaration);
       }
     }
@@ -176,6 +223,7 @@ export class CodeGenerator {
     // Now that all classes have reserved indices, define the actual struct types
     for (const statement of statements) {
       if (statement.type === NodeType.ClassDeclaration) {
+        if (!this.#isUsed(statement as ClassDeclaration)) continue;
         defineClassStruct(this.#ctx, statement as ClassDeclaration);
       }
     }
@@ -185,6 +233,7 @@ export class CodeGenerator {
     for (const statement of statements) {
       if (statement.type === NodeType.DeclareFunction) {
         const decl = statement as DeclareFunction;
+        if (!this.#isUsed(decl)) continue;
         registerDeclaredFunction(this.#ctx, decl, this.#ctx.shouldExport(decl));
       }
     }
@@ -204,6 +253,7 @@ export class CodeGenerator {
 
     for (const statement of statements) {
       if (statement.type === NodeType.ClassDeclaration) {
+        if (!this.#isUsed(statement as ClassDeclaration)) continue;
         registerClassMethods(this.#ctx, statement as ClassDeclaration);
       }
     }
@@ -212,6 +262,7 @@ export class CodeGenerator {
     // Use statementsWithModule to track current module for qualified names
     for (const statement of this.#ctx.statementsWithModule()) {
       if (statement.type === NodeType.ClassDeclaration) {
+        if (!this.#isUsed(statement as ClassDeclaration)) continue;
         const classDecl = statement as ClassDeclaration;
         for (const member of classDecl.body) {
           if (
@@ -244,9 +295,11 @@ export class CodeGenerator {
           }
         }
       } else if (statement.type === NodeType.EnumDeclaration) {
+        if (!this.#isUsed(statement as EnumDeclaration)) continue;
         this.#generateEnum(statement as EnumDeclaration);
       } else if (statement.type === NodeType.VariableDeclaration) {
         const varDecl = statement as VariableDeclaration;
+        if (!this.#isUsed(varDecl)) continue;
         if (varDecl.pattern.type === NodeType.Identifier) {
           const name = varDecl.pattern.name;
           if (varDecl.init.type === NodeType.FunctionExpression) {
