@@ -5451,6 +5451,177 @@ export function generateStringGetLengthFunction(ctx: CodegenContext): number {
   return funcIndex;
 }
 
+/**
+ * Memory layout for WASI I/O (first 64 bytes):
+ * 0-3:   iovec.buf (pointer to string data)
+ * 4-7:   iovec.len (length of string)
+ * 8-11:  nwritten (result from fd_write)
+ * 12-63: reserved
+ * 64+:   string buffer
+ */
+const WASI_IOVEC_BUF = 0;
+const WASI_IOVEC_LEN = 4;
+const WASI_NWRITTEN = 8;
+const WASI_STRING_BUF = 64;
+
+/**
+ * Generates a helper function to write a GC string to a WASI file descriptor.
+ * This copies the string bytes to linear memory and calls fd_write.
+ *
+ * Function signature: $wasiWriteString(fd: i32, str: ref $ByteArray) -> void
+ *
+ * Generated WASM:
+ * - Copies string bytes to linear memory at offset 64
+ * - Sets up iovec struct at offset 0
+ * - Calls fd_write
+ */
+export function generateWasiWriteStringFunction(ctx: CodegenContext): number {
+  // Ensure WASI infra exists
+  ctx.ensureWasiInfra();
+  ctx.ensureStringType();
+
+  if (ctx.wasiWriteStringIndex !== -1) {
+    return ctx.wasiWriteStringIndex;
+  }
+
+  // Type: (i32, ref null $ByteArray) -> void
+  // Use nullable ref to match typical string variable types
+  const stringRefType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
+  ];
+  const typeIndex = ctx.module.addType([[ValType.i32], stringRefType], []);
+
+  const funcIndex = ctx.module.addFunction(typeIndex);
+  ctx.wasiWriteStringIndex = funcIndex;
+
+  ctx.pendingHelperFunctions.push(() => {
+    // Locals: i (loop counter), len (string length)
+    const locals: number[][] = [[ValType.i32], [ValType.i32]];
+    const body: number[] = [];
+
+    const fdParam = 0;
+    const strParam = 1;
+    const iLocal = 2;
+    const lenLocal = 3;
+
+    // Check for null string - if null, just return
+    body.push(Opcode.local_get, strParam);
+    body.push(Opcode.ref_is_null);
+    body.push(Opcode.if, 0x40); // void block
+    body.push(Opcode.return);
+    body.push(Opcode.end);
+
+    // Get string length and store in local
+    // len = array.len(str)
+    body.push(Opcode.local_get, strParam);
+    body.push(0xfb, GcOpcode.array_len);
+    body.push(Opcode.local_set, lenLocal);
+
+    // if (len == 0) return
+    body.push(Opcode.local_get, lenLocal);
+    body.push(Opcode.i32_eqz);
+    body.push(Opcode.if, 0x40); // void block
+    body.push(Opcode.return);
+    body.push(Opcode.end);
+
+    // i = 0
+    body.push(Opcode.i32_const, 0);
+    body.push(Opcode.local_set, iLocal);
+
+    // Loop: copy bytes to linear memory
+    // block $break
+    //   loop $continue
+    //     if (i >= len) br $break
+    //     memory.store8(WASI_STRING_BUF + i, array.get_u(str, i))
+    //     i = i + 1
+    //     br $continue
+    //   end
+    // end
+    body.push(Opcode.block, 0x40); // $break
+    body.push(Opcode.loop, 0x40); // $continue
+
+    // if (i >= len) br $break
+    body.push(Opcode.local_get, iLocal);
+    body.push(Opcode.local_get, lenLocal);
+    body.push(Opcode.i32_ge_u);
+    body.push(Opcode.br_if, 1); // br $break
+
+    // memory.store8(WASI_STRING_BUF + i, array.get_u(str, i))
+    // First, compute address: WASI_STRING_BUF + i
+    body.push(
+      Opcode.i32_const,
+      ...WasmModule.encodeSignedLEB128(WASI_STRING_BUF),
+    );
+    body.push(Opcode.local_get, iLocal);
+    body.push(Opcode.i32_add);
+
+    // Get byte: array.get_u(str, i)
+    body.push(Opcode.local_get, strParam);
+    body.push(Opcode.local_get, iLocal);
+    body.push(0xfb, GcOpcode.array_get_u);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
+
+    // i32.store8 (memarg: align=0, offset=0)
+    body.push(Opcode.i32_store8, 0, 0);
+
+    // i = i + 1
+    body.push(Opcode.local_get, iLocal);
+    body.push(Opcode.i32_const, 1);
+    body.push(Opcode.i32_add);
+    body.push(Opcode.local_set, iLocal);
+
+    // br $continue
+    body.push(Opcode.br, 0);
+
+    body.push(Opcode.end); // end loop
+    body.push(Opcode.end); // end block
+
+    // Set up iovec: {buf: WASI_STRING_BUF, len: len}
+    // i32.store(WASI_IOVEC_BUF, WASI_STRING_BUF)
+    body.push(
+      Opcode.i32_const,
+      ...WasmModule.encodeSignedLEB128(WASI_IOVEC_BUF),
+    );
+    body.push(
+      Opcode.i32_const,
+      ...WasmModule.encodeSignedLEB128(WASI_STRING_BUF),
+    );
+    body.push(Opcode.i32_store, 2, 0); // align=2 (4 bytes), offset=0
+
+    // i32.store(WASI_IOVEC_LEN, len)
+    body.push(
+      Opcode.i32_const,
+      ...WasmModule.encodeSignedLEB128(WASI_IOVEC_LEN),
+    );
+    body.push(Opcode.local_get, lenLocal);
+    body.push(Opcode.i32_store, 2, 0);
+
+    // Call fd_write(fd, iovs=0, iovs_len=1, nwritten=WASI_NWRITTEN)
+    body.push(Opcode.local_get, fdParam); // fd
+    body.push(
+      Opcode.i32_const,
+      ...WasmModule.encodeSignedLEB128(WASI_IOVEC_BUF),
+    ); // iovs pointer
+    body.push(Opcode.i32_const, 1); // iovs_len
+    body.push(
+      Opcode.i32_const,
+      ...WasmModule.encodeSignedLEB128(WASI_NWRITTEN),
+    ); // nwritten pointer
+    body.push(
+      Opcode.call,
+      ...WasmModule.encodeSignedLEB128(ctx.wasiFdWriteIndex),
+    );
+    body.push(Opcode.drop); // Ignore return value (errno)
+
+    body.push(Opcode.end);
+
+    ctx.module.addCode(funcIndex, locals, body);
+  });
+
+  return funcIndex;
+}
+
 function generateRecordLiteral(
   ctx: CodegenContext,
   expr: RecordLiteral,
@@ -6200,6 +6371,15 @@ function generateGlobalIntrinsic(
     }
     case 'unreachable': {
       body.push(Opcode.unreachable);
+      break;
+    }
+    case 'wasi_write_string': {
+      // Intrinsic: write a string to a WASI file descriptor
+      // Args: (fd: i32, str: string)
+      const writeStringFunc = generateWasiWriteStringFunction(ctx);
+      generateExpression(ctx, args[0], body); // fd
+      generateExpression(ctx, args[1], body); // str
+      body.push(Opcode.call, ...WasmModule.encodeSignedLEB128(writeStringFunc));
       break;
     }
     default: {

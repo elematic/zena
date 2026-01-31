@@ -115,7 +115,19 @@ The official language reference is maintained in `docs/language-reference.md`.
 
 This project is an **npm monorepo** managed with **Wireit**.
 
-- **Wireit Behavior**:
+### Nix Development Environment
+
+The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, wasm-tools).
+
+- **With direnv** (recommended): Run `direnv allow` once. The environment
+  auto-activates when you enter the directory.
+- **Without direnv**: Prefix commands with `nix develop -c`, e.g.,
+  `nix develop -c wasmtime run program.wasm`.
+- **When is Nix needed?**: Only for WASI testing (wasmtime) and WASM debugging
+  (wasm-tools). Regular `npm test` and `npm run build` work without Nix if you
+  have Node.js installed.
+
+### Wireit Behavior
   - Wireit caches script results and only re-runs scripts when inputs change.
     Remember this when debugging or running tasks repeatedly.
   - You do not need to build before testing; Wireit handles dependencies

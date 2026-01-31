@@ -13,7 +13,7 @@ import {
 import {analyzeUsage, type UsageAnalysisResult} from '../analysis/usage.js';
 import type {CheckerContext} from '../checker/context.js';
 import {SemanticContext} from '../checker/semantic-context.js';
-import {TypeKind, type MixinType} from '../types.js';
+import {TypeKind, type MixinType, type Target} from '../types.js';
 import {
   preRegisterClassStruct,
   defineClassStruct,
@@ -60,6 +60,13 @@ export interface CodegenOptions {
    * Default: false
    */
   dce?: boolean;
+
+  /**
+   * Compilation target.
+   * - 'host': Custom console imports for @zena-lang/runtime (default)
+   * - 'wasi': WASI Preview 1 imports for wasmtime
+   */
+  target?: Target;
 }
 
 export class CodeGenerator {
@@ -87,6 +94,7 @@ export class CodeGenerator {
       entryPointPath,
       semanticContext,
       checkerContext,
+      options.target ?? 'host',
     );
     this.#options = options;
   }
@@ -155,6 +163,13 @@ export class CodeGenerator {
     // NOTE: Exception tag, payload global, and memory are now created lazily
     // via ctx.ensureExceptionInfra() and ctx.ensureMemory() to minimize binary size.
     // They are only created when actually needed (throw/try or data segments).
+
+    // WASI infrastructure must be initialized early (before class methods are registered)
+    // because fd_write import must be added before any defined functions.
+    // Imports always come before defined functions in WASM's function index space.
+    if (this.#ctx.target === 'wasi') {
+      this.#ctx.ensureWasiInfra();
+    }
 
     const globalInitializers: {index: number; init: any}[] = [];
 

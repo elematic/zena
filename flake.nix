@@ -11,7 +11,7 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        nodejs = pkgs.nodejs_24;
+        nodejs = pkgs.nodePackages_latest.nodejs;
 
         zena = pkgs.buildNpmPackage {
           pname = "zena";
@@ -75,12 +75,16 @@
         devShells.default = pkgs.mkShell {
           buildInputs = [
             nodejs
+            pkgs.wasmtime
+            pkgs.wasm-tools
           ];
 
           shellHook = ''
             echo "Zena development environment"
             echo "Node.js version: $(node --version)"
             echo "npm version: $(npm --version)"
+            echo "wasmtime version: $(wasmtime --version)"
+            echo "wasm-tools version: $(wasm-tools --version)"
             echo ""
             echo "Run 'npm install' to install dependencies"
             echo "Run 'npm run build' to build the compiler"

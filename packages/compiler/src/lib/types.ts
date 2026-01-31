@@ -1,3 +1,10 @@
+/**
+ * Compilation target for code generation.
+ * - 'host': Custom console imports for @zena-lang/runtime (Node.js, browser)
+ * - 'wasi': WASI Preview 1 imports for wasmtime and other WASI runtimes
+ */
+export type Target = 'host' | 'wasi';
+
 export const TypeKind = {
   Number: 'Number',
   Boolean: 'Boolean',

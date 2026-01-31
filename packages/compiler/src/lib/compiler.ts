@@ -9,6 +9,7 @@ import {prelude} from './prelude.js';
 import {CheckerContext} from './checker/context.js';
 import {TypeChecker} from './checker/index.js';
 import {LibraryLoader, type LibraryRecord} from './loader/index.js';
+import type {Target} from './types.js';
 
 export interface CompilerHost {
   resolve(specifier: string, referrer: string): string;
@@ -18,6 +19,8 @@ export interface CompilerHost {
 export interface CompilerOptions {
   /** Paths that should be treated as stdlib (enabling intrinsics) */
   stdlibPaths?: string[];
+  /** Compilation target: 'host' (default) or 'wasi' */
+  target?: Target;
 }
 
 export class Compiler {

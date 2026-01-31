@@ -25,6 +25,7 @@ import {
   type FunctionType,
   type InterfaceType,
   type MixinType,
+  type Target,
   type Type,
 } from '../types.js';
 import {ExportDesc, HeapType, Opcode, ValType} from '../wasm.js';
@@ -313,11 +314,19 @@ export class CodegenContext {
   // Template Literals
   public templateLiteralGlobals = new Map<TaggedTemplateExpression, number>();
 
+  /**
+   * Compilation target.
+   * - 'host': Custom console imports for @zena-lang/runtime
+   * - 'wasi': WASI Preview 1 imports for wasmtime
+   */
+  public target: Target = 'host';
+
   constructor(
     modules: Module[],
     entryPointPath: string | undefined,
     semanticContext: SemanticContext,
     checkerContext: CheckerContext,
+    target: Target = 'host',
   ) {
     this.modules = modules;
     // Find entry point by path, or default to last module (for backward compatibility)
@@ -327,6 +336,7 @@ export class CodegenContext {
       : modules[modules.length - 1];
     this.semanticContext = semanticContext;
     this.checkerContext = checkerContext;
+    this.target = target;
     this.#extractWellKnownTypes();
     this.module = new WasmModule();
     // Note: byteArrayTypeIndex and stringTypeIndex are now created lazily
@@ -414,6 +424,44 @@ export class CodegenContext {
    */
   hasMemory(): boolean {
     return this.#memoryIndex !== -1;
+  }
+
+  // ============================================
+  // WASI Support
+  // ============================================
+  // These fields and methods support WASI target compilation.
+
+  /** WASI fd_write import function index (-1 if not initialized) */
+  wasiFdWriteIndex = -1;
+
+  /** WASI string write helper function index (-1 if not initialized) */
+  wasiWriteStringIndex = -1;
+
+  /**
+   * Ensure WASI infrastructure is created.
+   * Creates memory, imports fd_write, and generates helper functions.
+   * Only call this when target === 'wasi'.
+   */
+  ensureWasiInfra(): void {
+    if (this.wasiFdWriteIndex !== -1) return;
+
+    // WASI requires linear memory
+    this.ensureMemory();
+
+    // Import fd_write from wasi_snapshot_preview1
+    // fd_write(fd: i32, iovs: i32, iovs_len: i32, nwritten: i32) -> i32
+    // Use preRec: true to emit this type outside the rec block for WASI compatibility
+    const fdWriteTypeIndex = this.module.addType(
+      [[ValType.i32], [ValType.i32], [ValType.i32], [ValType.i32]],
+      [[ValType.i32]],
+      {preRec: true},
+    );
+    this.wasiFdWriteIndex = this.module.addImport(
+      'wasi_snapshot_preview1',
+      'fd_write',
+      ExportDesc.Func,
+      fdWriteTypeIndex,
+    );
   }
 
   /**

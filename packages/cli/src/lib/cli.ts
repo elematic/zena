@@ -54,12 +54,18 @@ Commands:
   help     Show this help message
 
 Options:
-  -o, --output <file>  Output file path (for build command)
-  -v, --verbose        Verbose output (for test command)
-  -h, --help           Show help
+  -o, --output <file>   Output file path (for build command)
+  -t, --target <target> Compilation target: 'host' (default) or 'wasi'
+  -v, --verbose         Verbose output (for test command)
+  -h, --help            Show help
+
+Targets:
+  host    Output core WASM-GC with custom console imports (for @zena-lang/runtime)
+  wasi    Output core WASM-GC with WASI imports (for wasmtime, jco)
 
 Examples:
   zena build main.zena -o main.wasm
+  zena build main.zena -o main.wasm --target wasi
   zena check main.zena
   zena run main.zena
   zena test                           # Run all *_test.zena files
@@ -88,14 +94,15 @@ const printErrors = (file: string, errors: Diagnostic[]): void => {
 const buildCommand = async (
   files: string[],
   output?: string,
+  target: Target = 'host',
 ): Promise<number> => {
   if (files.length === 0) {
     console.error('Error: No input files specified');
     return 1;
   }
 
-  const host = new NodeCompilerHost();
-  const compiler = new Compiler(host);
+  const host = new NodeCompilerHost(target);
+  const compiler = new Compiler(host, {target});
 
   // For now, assume first file is entry point
   const entryPoint = resolve(process.cwd(), files[0]);
@@ -121,6 +128,7 @@ const buildCommand = async (
       entryPoint,
       compiler.semanticContext,
       compiler.checkerContext,
+      {target},
     );
     const bytes = codegen.generate();
 
@@ -140,7 +148,7 @@ const checkCommand = async (files: string[]): Promise<number> => {
     return 1;
   }
 
-  const host = new NodeCompilerHost();
+  const host = new NodeCompilerHost('host');
   const compiler = new Compiler(host);
 
   // For now, assume first file is entry point
@@ -164,14 +172,24 @@ const checkCommand = async (files: string[]): Promise<number> => {
   }
 };
 
-const runCommand = async (files: string[]): Promise<number> => {
+const runCommand = async (
+  files: string[],
+  target: Target = 'host',
+): Promise<number> => {
   if (files.length === 0) {
     console.error('Error: No input files specified');
     return 1;
   }
 
-  const host = new NodeCompilerHost();
-  const compiler = new Compiler(host);
+  if (target === 'wasi') {
+    console.error('Error: --target wasi is not supported for run command.');
+    console.error('Use: zena build main.zena --target wasi -o main.wasm');
+    console.error('Then: wasmtime run -W gc=y main.wasm');
+    return 1;
+  }
+
+  const host = new NodeCompilerHost(target);
+  const compiler = new Compiler(host, {target});
   const entryPoint = resolve(process.cwd(), files[0]);
 
   try {
@@ -194,6 +212,7 @@ const runCommand = async (files: string[]): Promise<number> => {
       entryPoint,
       compiler.semanticContext,
       compiler.checkerContext,
+      {target},
     );
     const bytes = codegen.generate();
 
@@ -221,12 +240,18 @@ const runCommand = async (files: string[]): Promise<number> => {
   }
 };
 
+export type Target = 'host' | 'wasi';
+
+const isTarget = (value: string): value is Target =>
+  value === 'host' || value === 'wasi';
+
 export const main = async (args: string[]): Promise<number> => {
   const {values, positionals} = parseArgs({
     args,
     options: {
       help: {type: 'boolean', short: 'h', default: false},
       output: {type: 'string', short: 'o'},
+      target: {type: 'string', short: 't', default: 'host'},
       verbose: {type: 'boolean', short: 'v', default: false},
     },
     allowPositionals: true,
@@ -241,13 +266,21 @@ export const main = async (args: string[]): Promise<number> => {
     return 0;
   }
 
+  // Validate target
+  const target: Target = isTarget(values.target!) ? values.target : 'host';
+  if (values.target && !isTarget(values.target)) {
+    console.error(
+      `Warning: Unknown target '${values.target}', using 'host' instead.`,
+    );
+  }
+
   switch (command) {
     case 'build':
-      return buildCommand(files, values.output);
+      return buildCommand(files, values.output, target);
     case 'check':
       return checkCommand(files);
     case 'run':
-      return runCommand(files);
+      return runCommand(files, target);
     case 'test':
       return testCommand(files, {verbose: values.verbose});
     default:

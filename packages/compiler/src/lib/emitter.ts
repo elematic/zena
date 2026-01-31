@@ -16,12 +16,21 @@ export class WasmModule {
   #importedFunctionCount = 0;
   #startFunctionIndex: number | undefined;
 
-  public addType(params: number[][], results: number[][]): number {
-    // Function type wrapped in sub final for compatibility with rec blocks
+  #preRecTypes: number[][] = []; // Types to emit before the rec block (for WASI imports)
+
+  public addType(
+    params: number[][],
+    results: number[][],
+    options?: {preRec?: boolean},
+  ): number {
+    // Function type - optionally placed before rec block for WASI compatibility
     // sub final (func ...) = 0x4f 0x00 0x60 ...
+    // plain func = 0x60 ...
     const buffer: number[] = [];
-    buffer.push(0x4f); // sub final
-    buffer.push(0x00); // 0 supertypes
+    if (!options?.preRec) {
+      buffer.push(0x4f); // sub final
+      buffer.push(0x00); // 0 supertypes
+    }
     buffer.push(0x60); // func
 
     this.#writeUnsignedLEB128(buffer, params.length);
@@ -34,9 +43,17 @@ export class WasmModule {
       buffer.push(...result);
     }
 
+    if (options?.preRec) {
+      // Pre-rec types are emitted before the rec block
+      this.#preRecTypes.push(buffer);
+      // Return index accounting for pre-rec types being at the start
+      return this.#preRecTypes.length - 1;
+    }
+
     // Simple deduplication could go here, but for now just push
     this.#types.push(buffer);
-    const index = this.#types.length - 1;
+    // Index is preRecTypes.length + position in #types
+    const index = this.#preRecTypes.length + this.#types.length - 1;
     return index;
   }
 
@@ -60,7 +77,15 @@ export class WasmModule {
    */
   public reserveType(): number {
     this.#types.push(null);
-    return this.#types.length - 1;
+    // Index accounts for pre-rec types
+    return this.#preRecTypes.length + this.#types.length - 1;
+  }
+
+  /**
+   * Convert external type index to internal #types array index.
+   */
+  #toInternalIndex(externalIndex: number): number {
+    return externalIndex - this.#preRecTypes.length;
   }
 
   /**
@@ -71,11 +96,12 @@ export class WasmModule {
     fields: {type: number[]; mutable: boolean}[],
     superTypeIndex?: number,
   ): void {
-    if (this.#types[index] !== null) {
+    const internalIndex = this.#toInternalIndex(index);
+    if (this.#types[internalIndex] !== null) {
       throw new Error(`Type at index ${index} is already defined`);
     }
     const buffer = this.#encodeStructType(fields, superTypeIndex);
-    this.#types[index] = buffer;
+    this.#types[internalIndex] = buffer;
   }
 
   /**
@@ -88,11 +114,12 @@ export class WasmModule {
     fields: {type: number[]; mutable: boolean}[],
     superTypeIndex?: number,
   ): void {
-    if (index < 0 || index >= this.#types.length) {
+    const internalIndex = this.#toInternalIndex(index);
+    if (internalIndex < 0 || internalIndex >= this.#types.length) {
       throw new Error(`Invalid type index: ${index}`);
     }
     const buffer = this.#encodeStructType(fields, superTypeIndex);
-    this.#types[index] = buffer;
+    this.#types[internalIndex] = buffer;
   }
 
   #encodeStructType(
@@ -124,8 +151,8 @@ export class WasmModule {
   ): number {
     const buffer = this.#encodeStructType(fields, superTypeIndex);
     this.#types.push(buffer);
-    const index = this.#types.length - 1;
-    return index;
+    // External index accounts for pre-rec types
+    return this.#preRecTypes.length + this.#types.length - 1;
   }
 
   public addArrayType(elementType: number[], mutable: boolean): number {
@@ -138,7 +165,8 @@ export class WasmModule {
     buffer.push(...elementType);
     buffer.push(mutable ? 1 : 0);
     this.#types.push(buffer);
-    return this.#types.length - 1;
+    // External index accounts for pre-rec types
+    return this.#preRecTypes.length + this.#types.length - 1;
   }
 
   public addFunction(typeIndex: number): number {
@@ -260,21 +288,36 @@ export class WasmModule {
     buffer.push(0x00, 0x61, 0x73, 0x6d);
     buffer.push(0x01, 0x00, 0x00, 0x00);
 
-    // Type Section - wrapped in a single rec block for mutually recursive types
-    if (this.#types.length > 0) {
+    // Type Section - pre-rec types first, then rec block for mutually recursive types
+    const totalTypes = this.#preRecTypes.length + this.#types.length;
+    if (totalTypes > 0) {
       const sectionBuffer: number[] = [];
-      // Write 1 for the count (one rec group containing all types)
-      this.#writeUnsignedLEB128(sectionBuffer, 1);
-      // rec opcode
-      sectionBuffer.push(0x4e);
-      // Count of types in the rec group
-      this.#writeUnsignedLEB128(sectionBuffer, this.#types.length);
-      for (let i = 0; i < this.#types.length; i++) {
-        const type = this.#types[i];
-        if (type === null) {
-          throw new Error(`Type at index ${i} was reserved but never defined`);
-        }
+
+      // Total count: preRecTypes.length individual types + 1 rec group (if #types > 0)
+      const typeCount =
+        this.#preRecTypes.length + (this.#types.length > 0 ? 1 : 0);
+      this.#writeUnsignedLEB128(sectionBuffer, typeCount);
+
+      // Emit pre-rec types first (plain function types for WASI imports)
+      for (const type of this.#preRecTypes) {
         sectionBuffer.push(...type);
+      }
+
+      // Emit rec block containing all other types
+      if (this.#types.length > 0) {
+        // rec opcode
+        sectionBuffer.push(0x4e);
+        // Count of types in the rec group
+        this.#writeUnsignedLEB128(sectionBuffer, this.#types.length);
+        for (let i = 0; i < this.#types.length; i++) {
+          const type = this.#types[i];
+          if (type === null) {
+            throw new Error(
+              `Type at index ${i} was reserved but never defined`,
+            );
+          }
+          sectionBuffer.push(...type);
+        }
       }
       this.#writeSection(buffer, SectionId.Type, sectionBuffer);
     }
@@ -487,12 +530,23 @@ export class WasmModule {
     this.#startFunctionIndex = functionIndex;
   }
 
+  /**
+   * Get type bytes for any type index (handles both pre-rec and rec types).
+   */
+  #getTypeBytes(typeIndex: number): number[] | null {
+    if (typeIndex < this.#preRecTypes.length) {
+      return this.#preRecTypes[typeIndex];
+    }
+    const internalIndex = this.#toInternalIndex(typeIndex);
+    return this.#types[internalIndex];
+  }
+
   public getType(index: number): number[] | null {
-    return this.#types[index];
+    return this.#getTypeBytes(index);
   }
 
   public getFunctionTypeArity(typeIndex: number): number {
-    const typeBytes = this.#types[typeIndex];
+    const typeBytes = this.#getTypeBytes(typeIndex);
     if (!typeBytes) {
       throw new Error(`Type ${typeIndex} is not a function type`);
     }
@@ -525,9 +579,17 @@ export class WasmModule {
   }
 
   public getFunctionTypeParams(typeIndex: number): number[][] {
-    const typeBytes = this.#types[typeIndex];
+    // Determine which array to look in based on index
+    let typeBytes: number[] | null;
+    if (typeIndex < this.#preRecTypes.length) {
+      typeBytes = this.#preRecTypes[typeIndex];
+    } else {
+      const adjustedIndex = typeIndex - this.#preRecTypes.length;
+      typeBytes = this.#types[adjustedIndex];
+    }
+
     if (!typeBytes) {
-      throw new Error(`Type ${typeIndex} is not a function type`);
+      throw new Error(`Type ${typeIndex} is not defined`);
     }
 
     // Handle sub final wrapped function types (0x4f 0x00 0x60 ...)
@@ -610,7 +672,7 @@ export class WasmModule {
   }
 
   public getFunctionTypeResults(typeIndex: number): number[][] {
-    const typeBytes = this.#types[typeIndex];
+    const typeBytes = this.#getTypeBytes(typeIndex);
     if (!typeBytes) {
       throw new Error(`Type ${typeIndex} is not a function type`);
     }
@@ -702,7 +764,7 @@ export class WasmModule {
   }
 
   public getStructFieldType(typeIndex: number, fieldIndex: number): number[] {
-    const typeBytes = this.#types[typeIndex];
+    const typeBytes = this.#getTypeBytes(typeIndex);
     if (!typeBytes) {
       throw new Error(`Type ${typeIndex} is reserved but not defined`);
     }
@@ -774,7 +836,7 @@ export class WasmModule {
   }
 
   public getArrayElementType(typeIndex: number): number[] {
-    const typeBytes = this.#types[typeIndex];
+    const typeBytes = this.#getTypeBytes(typeIndex);
     if (!typeBytes) {
       throw new Error(`Type ${typeIndex} is reserved but not defined`);
     }

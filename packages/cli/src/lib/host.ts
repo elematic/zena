@@ -1,4 +1,4 @@
-import {type CompilerHost} from '@zena-lang/compiler';
+import {type CompilerHost, type Target} from '@zena-lang/compiler';
 import {readFileSync, existsSync} from 'node:fs';
 import {resolve, dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -6,8 +6,10 @@ import {fileURLToPath} from 'node:url';
 export class NodeCompilerHost implements CompilerHost {
   #stdlibPath: string;
   #virtualFiles: Map<string, string> = new Map();
+  #target: Target;
 
-  constructor() {
+  constructor(target: Target = 'host') {
+    this.#target = target;
     this.#stdlibPath = this.#findStdlibPath();
   }
 
@@ -46,7 +48,13 @@ export class NodeCompilerHost implements CompilerHost {
     }
 
     if (path.startsWith('zena:')) {
-      const name = path.substring(5); // remove 'zena:'
+      let name = path.substring(5); // remove 'zena:'
+
+      // For WASI target, use console-wasi instead of console
+      if (this.#target === 'wasi' && name === 'console') {
+        name = 'console-wasi';
+      }
+
       const filePath = join(this.#stdlibPath, `${name}.zena`);
       if (!existsSync(filePath)) {
         throw new Error(

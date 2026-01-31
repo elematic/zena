@@ -98,3 +98,35 @@ We will use **`jco` (JavaScript Component Toolchain)**.
 2.  `jco transpile` -> JS.
 3.  Run in Node.js.
     `jco` provides polyfills for WASI Preview 2, allowing us to run tests in our existing Node environment without needing a separate `wasmtime` binary for every test.
+
+## Development Environment
+
+The Nix flake (`flake.nix`) provides development tools:
+
+```bash
+nix develop  # Enter dev shell with Node.js 25+, wasmtime, wasm-tools
+```
+
+Tools available:
+
+- **Node.js 25+**: Required for WASM GC exception handling support
+- **wasmtime 39+**: Native WASM runtime with GC support (`-W gc=y -W exceptions=y -W function-references=y`)
+- **wasm-tools**: Inspect and manipulate WASM binaries
+
+### Building for wasmtime
+
+```bash
+# Build a Zena file and inspect the WASM output
+npm run wasmtime:build examples/wasmtime-test.zena
+```
+
+**Current limitation**: Zena modules import `console` functions from the host. wasmtime doesn't provide these by default. To run in wasmtime, we need either:
+
+1. A WASI-based `console` implementation (maps to `wasi:cli/stdout`)
+2. A `--no-stdlib` compiler flag to omit console imports
+
+For now, use Node.js runtime for full execution:
+
+```bash
+node packages/cli/lib/cli.js run examples/wasmtime-test.zena
+```
