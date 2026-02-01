@@ -230,4 +230,210 @@ suite('Binary Size', () => {
       );
     });
   });
+
+  suite('Method-level DCE', () => {
+    test('unused method is eliminated with DCE', async () => {
+      const withUnusedMethod = `
+        class Counter {
+          #value: i32;
+          #new() { this.#value = 0; }
+          increment(): i32 { return this.#value = this.#value + 1; }
+          decrement(): i32 { return this.#value = this.#value - 1; }
+          getValue(): i32 { return this.#value; }
+        }
+        export let main = () => {
+          let c = new Counter();
+          c.increment();
+          return c.getValue();
+        };
+      `;
+      const withoutUnusedMethod = `
+        class Counter {
+          #value: i32;
+          #new() { this.#value = 0; }
+          increment(): i32 { return this.#value = this.#value + 1; }
+          getValue(): i32 { return this.#value; }
+        }
+        export let main = () => {
+          let c = new Counter();
+          c.increment();
+          return c.getValue();
+        };
+      `;
+
+      // With DCE
+      const sizeWithUnused = await compileAndValidate(withUnusedMethod, true);
+      const sizeWithoutUnused = await compileAndValidate(
+        withoutUnusedMethod,
+        true,
+      );
+
+      console.log(`  With unused method (DCE): ${sizeWithUnused} bytes`);
+      console.log(`  Without unused method (DCE): ${sizeWithoutUnused} bytes`);
+
+      // With DCE, unused method should be eliminated - sizes should be equal
+      assert.strictEqual(
+        sizeWithUnused,
+        sizeWithoutUnused,
+        `With DCE, unused method should be eliminated (${sizeWithUnused} != ${sizeWithoutUnused})`,
+      );
+    });
+
+    test('unused getter is eliminated with DCE', async () => {
+      const withUnusedGetter = `
+        class Point {
+          #x: i32;
+          #y: i32;
+          #new(x: i32, y: i32) { this.#x = x; this.#y = y; }
+          x: i32 { get { return this.#x; } }
+          y: i32 { get { return this.#y; } }
+        }
+        export let main = () => {
+          let p = new Point(10, 20);
+          return p.x;
+        };
+      `;
+      const withoutUnusedGetter = `
+        class Point {
+          #x: i32;
+          #y: i32;
+          #new(x: i32, y: i32) { this.#x = x; this.#y = y; }
+          x: i32 { get { return this.#x; } }
+        }
+        export let main = () => {
+          let p = new Point(10, 20);
+          return p.x;
+        };
+      `;
+
+      // With DCE
+      const sizeWithUnused = await compileAndValidate(withUnusedGetter, true);
+      const sizeWithoutUnused = await compileAndValidate(
+        withoutUnusedGetter,
+        true,
+      );
+
+      console.log(`  With unused getter (DCE): ${sizeWithUnused} bytes`);
+      console.log(`  Without unused getter (DCE): ${sizeWithoutUnused} bytes`);
+
+      // With DCE, unused getter should be eliminated - sizes should be equal
+      assert.strictEqual(
+        sizeWithUnused,
+        sizeWithoutUnused,
+        `With DCE, unused getter should be eliminated (${sizeWithUnused} != ${sizeWithoutUnused})`,
+      );
+    });
+
+    test('unused implicit field getter is eliminated with DCE', async () => {
+      // Test that a field's getter is eliminated when it's never read
+      // Both programs have 2 fields, but only the first reads both, second reads only one
+      const usesAllGetters = `
+        class Person {
+          name: i32;
+          age: i32;
+          #new(n: i32, a: i32) { this.name = n; this.age = a; }
+        }
+        export let main = () => {
+          let p = new Person(1, 25);
+          return p.name + p.age;
+        };
+      `;
+      const usesOneGetter = `
+        class Person {
+          name: i32;
+          age: i32;
+          #new(n: i32, a: i32) { this.name = n; this.age = a; }
+        }
+        export let main = () => {
+          let p = new Person(1, 25);
+          return p.name;
+        };
+      `;
+
+      // With DCE
+      const sizeUsesAll = await compileAndValidate(usesAllGetters, true);
+      const sizeUsesOne = await compileAndValidate(usesOneGetter, true);
+
+      console.log(`  Uses both getters (DCE): ${sizeUsesAll} bytes`);
+      console.log(`  Uses one getter (DCE): ${sizeUsesOne} bytes`);
+
+      // With DCE, unused getter (get#age) should be eliminated
+      // Size difference should be significant (getter function = ~15-30 bytes)
+      assert.ok(
+        sizeUsesOne < sizeUsesAll,
+        `With DCE, unused getter should be eliminated (${sizeUsesOne} should be < ${sizeUsesAll})`,
+      );
+    });
+
+    test('polymorphic method is kept for all subclasses', async () => {
+      // When a method is called polymorphically through a base class,
+      // all overrides must be kept (cannot be eliminated)
+      const source = `
+        class Animal {
+          speak(): i32 { return 0; }
+        }
+        class Dog extends Animal {
+          speak(): i32 { return 1; }
+        }
+        class Cat extends Animal {
+          speak(): i32 { return 2; }
+        }
+        export let main = () => {
+          let a: Animal = new Dog();
+          return a.speak();
+        };
+      `;
+
+      // This should compile successfully with DCE
+      // Even though Cat is not instantiated, its speak() is kept because
+      // Animal.speak() is called polymorphically
+      const size = await compileAndValidate(source, true);
+      console.log(`  Polymorphic method call (DCE): ${size} bytes`);
+      assert.ok(size > 0, 'Should produce valid WASM');
+    });
+
+    test('multiple unused methods are all eliminated', async () => {
+      const manyUnusedMethods = `
+        class BigClass {
+          #value: i32;
+          #new() { this.#value = 0; }
+          method1(): i32 { return 1; }
+          method2(): i32 { return 2; }
+          method3(): i32 { return 3; }
+          method4(): i32 { return 4; }
+          method5(): i32 { return 5; }
+          getValue(): i32 { return this.#value; }
+        }
+        export let main = () => {
+          let b = new BigClass();
+          return b.getValue();
+        };
+      `;
+      const minimalMethods = `
+        class BigClass {
+          #value: i32;
+          #new() { this.#value = 0; }
+          getValue(): i32 { return this.#value; }
+        }
+        export let main = () => {
+          let b = new BigClass();
+          return b.getValue();
+        };
+      `;
+
+      // With DCE
+      const sizeWithUnused = await compileAndValidate(manyUnusedMethods, true);
+      const sizeMinimal = await compileAndValidate(minimalMethods, true);
+
+      console.log(`  With 5 unused methods (DCE): ${sizeWithUnused} bytes`);
+      console.log(`  Minimal methods (DCE): ${sizeMinimal} bytes`);
+
+      // With DCE, all 5 unused methods should be eliminated - sizes should be equal
+      assert.strictEqual(
+        sizeWithUnused,
+        sizeMinimal,
+        `With DCE, all unused methods should be eliminated (${sizeWithUnused} != ${sizeMinimal})`,
+      );
+    });
+  });
 });

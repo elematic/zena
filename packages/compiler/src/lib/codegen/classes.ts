@@ -1761,21 +1761,32 @@ export function registerClassMethods(
         mangledMethodName = methodName + getSignatureKey(funcTypeForSig);
       }
 
+      // Method-level DCE: determine if this method should be registered
+      // Constructors are always needed if the class is used
+      const shouldRegister =
+        methodName === '#new' ||
+        intrinsic !== undefined ||
+        member.isDeclare ||
+        ctx.isMethodUsed(classType, mangledMethodName);
+
       // Add to vtable with the actual key (mangled for overloads, base name otherwise)
+      // Skip vtable entry for unused methods (DCE)
       if (
         methodName !== '#new' &&
         !methodName.startsWith('#') &&
         !intrinsic &&
         !vtable.includes(mangledMethodName) &&
-        !member.isStatic
+        !member.isStatic &&
+        shouldRegister
       ) {
         vtable.push(mangledMethodName);
       }
 
       // For intrinsics (isDeclare or @intrinsic), skip type creation
       // since intrinsic calls are inlined and don't use function types
+      // Also skip for unused methods (DCE)
       let typeIndex = -1;
-      if (!intrinsic && !member.isDeclare) {
+      if (!intrinsic && !member.isDeclare && shouldRegister) {
         let isOverride = false;
         if (currentSuperClassInfo) {
           // Check for overrides - look up both base name and mangled name in super
@@ -1800,7 +1811,7 @@ export function registerClassMethods(
       }
 
       let funcIndex = -1;
-      if (!intrinsic && !member.isDeclare) {
+      if (!intrinsic && !member.isDeclare && shouldRegister) {
         funcIndex = ctx.module.addFunction(typeIndex!);
       }
 
@@ -1829,7 +1840,12 @@ export function registerClassMethods(
       // Getter
       if (member.getter) {
         const methodName = getGetterName(propName);
-        if (!vtable.includes(methodName)) {
+
+        // Method-level DCE: only add to vtable if getter is used
+        if (
+          !vtable.includes(methodName) &&
+          ctx.isMethodUsed(classType, methodName)
+        ) {
           vtable.push(methodName);
         }
 
@@ -1853,21 +1869,26 @@ export function registerClassMethods(
         const params = [thisType];
         const results = propType.length > 0 ? [propType] : [];
 
-        let typeIndex: number;
-        let isOverride = false;
-        if (currentSuperClassInfo) {
-          if (currentSuperClassInfo.methods.has(methodName)) {
-            typeIndex =
-              currentSuperClassInfo.methods.get(methodName)!.typeIndex;
-            isOverride = true;
+        let typeIndex: number = -1;
+        let funcIndex = -1;
+
+        // Method-level DCE: skip type and function creation for unused getters
+        if (ctx.isMethodUsed(classType, methodName)) {
+          let isOverride = false;
+          if (currentSuperClassInfo) {
+            if (currentSuperClassInfo.methods.has(methodName)) {
+              typeIndex =
+                currentSuperClassInfo.methods.get(methodName)!.typeIndex;
+              isOverride = true;
+            }
           }
-        }
 
-        if (!isOverride) {
-          typeIndex = ctx.module.addType(params, results);
-        }
+          if (!isOverride) {
+            typeIndex = ctx.module.addType(params, results);
+          }
 
-        const funcIndex = ctx.module.addFunction(typeIndex!);
+          funcIndex = ctx.module.addFunction(typeIndex!);
+        }
 
         methods.set(methodName, {
           index: funcIndex,
@@ -1881,7 +1902,12 @@ export function registerClassMethods(
       // Setter
       if (member.setter) {
         const methodName = getSetterName(propName);
-        if (!vtable.includes(methodName)) {
+
+        // Method-level DCE: only add to vtable if setter is used
+        if (
+          !vtable.includes(methodName) &&
+          ctx.isMethodUsed(classType, methodName)
+        ) {
           vtable.push(methodName);
         }
 
@@ -1905,21 +1931,26 @@ export function registerClassMethods(
         const params = [thisType, propType];
         const results: number[][] = [];
 
-        let typeIndex: number;
-        let isOverride = false;
-        if (currentSuperClassInfo) {
-          if (currentSuperClassInfo.methods.has(methodName)) {
-            typeIndex =
-              currentSuperClassInfo.methods.get(methodName)!.typeIndex;
-            isOverride = true;
+        let typeIndex: number = -1;
+        let funcIndex = -1;
+
+        // Method-level DCE: skip type and function creation for unused setters
+        if (ctx.isMethodUsed(classType, methodName)) {
+          let isOverride = false;
+          if (currentSuperClassInfo) {
+            if (currentSuperClassInfo.methods.has(methodName)) {
+              typeIndex =
+                currentSuperClassInfo.methods.get(methodName)!.typeIndex;
+              isOverride = true;
+            }
           }
-        }
 
-        if (!isOverride) {
-          typeIndex = ctx.module.addType(params, results);
-        }
+          if (!isOverride) {
+            typeIndex = ctx.module.addType(params, results);
+          }
 
-        const funcIndex = ctx.module.addFunction(typeIndex!);
+          funcIndex = ctx.module.addFunction(typeIndex!);
+        }
 
         methods.set(methodName, {
           index: funcIndex,
@@ -1957,7 +1988,12 @@ export function registerClassMethods(
 
         // Getter
         const getterName = getGetterName(propName);
-        if (!intrinsic && !vtable.includes(getterName)) {
+        // Method-level DCE: only add to vtable if getter is used
+        if (
+          !intrinsic &&
+          !vtable.includes(getterName) &&
+          ctx.isMethodUsed(classType, getterName)
+        ) {
           vtable.push(getterName);
         }
 
@@ -1984,8 +2020,13 @@ export function registerClassMethods(
 
         // For intrinsics (isDeclare or @intrinsic), skip type creation
         // since intrinsic calls are inlined and don't use function types
+        // Also skip for unused methods (DCE)
         let typeIndex = -1;
-        if (!intrinsic && !member.isDeclare) {
+        if (
+          !intrinsic &&
+          !member.isDeclare &&
+          ctx.isMethodUsed(classType, getterName)
+        ) {
           let isOverride = false;
           if (currentSuperClassInfo) {
             if (currentSuperClassInfo.methods.has(getterName)) {
@@ -2001,7 +2042,11 @@ export function registerClassMethods(
         }
 
         let funcIndex = -1;
-        if (!intrinsic && !member.isDeclare) {
+        if (
+          !intrinsic &&
+          !member.isDeclare &&
+          ctx.isMethodUsed(classType, getterName)
+        ) {
           funcIndex = ctx.module.addFunction(typeIndex!);
         }
 
@@ -2017,7 +2062,12 @@ export function registerClassMethods(
         // Setter (if mutable)
         if (!member.isFinal) {
           const setterName = getSetterName(propName);
-          if (!intrinsic && !vtable.includes(setterName)) {
+          // Method-level DCE: only add to vtable if setter is used
+          if (
+            !intrinsic &&
+            !vtable.includes(setterName) &&
+            ctx.isMethodUsed(classType, setterName)
+          ) {
             vtable.push(setterName);
           }
 
@@ -2025,8 +2075,13 @@ export function registerClassMethods(
           const setterResults: number[][] = [];
 
           // For intrinsics (isDeclare or @intrinsic), skip type creation
+          // Also skip for unused methods (DCE)
           let setterTypeIndex = -1;
-          if (!intrinsic && !member.isDeclare) {
+          if (
+            !intrinsic &&
+            !member.isDeclare &&
+            ctx.isMethodUsed(classType, setterName)
+          ) {
             let isSetterOverride = false;
             if (currentSuperClassInfo) {
               if (currentSuperClassInfo.methods.has(setterName)) {
@@ -2042,7 +2097,11 @@ export function registerClassMethods(
           }
 
           let setterFuncIndex = -1;
-          if (!intrinsic && !member.isDeclare) {
+          if (
+            !intrinsic &&
+            !member.isDeclare &&
+            ctx.isMethodUsed(classType, setterName)
+          ) {
             setterFuncIndex = ctx.module.addFunction(setterTypeIndex!);
           }
 
@@ -2302,18 +2361,17 @@ export function generateClassMethods(
       }
 
       // Method-level DCE: Skip body generation for unused methods.
+      // Since unused methods are no longer registered (funcIndex === -1),
+      // we simply skip them entirely - no stub needed.
       // Constructors are always needed if the class is used.
-      // Intrinsic and declared methods don't have bodies to generate anyway.
       if (
-        checkerType &&
-        methodName !== '#new' &&
-        !methodInfo.intrinsic &&
-        !member.isDeclare &&
-        !ctx.isMethodUsed(checkerType, methodName)
+        methodInfo.index === -1 ||
+        (checkerType &&
+          methodName !== '#new' &&
+          !methodInfo.intrinsic &&
+          !member.isDeclare &&
+          !ctx.isMethodUsed(checkerType, methodName))
       ) {
-        // Emit minimal stub: just unreachable + end
-        const stubBody: number[] = [Opcode.unreachable, Opcode.end];
-        ctx.module.addCode(methodInfo.index, [], stubBody);
         continue;
       }
 
@@ -2482,10 +2540,12 @@ export function generateClassMethods(
         const methodName = getGetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
 
-        // Method-level DCE: Skip body generation for unused getters
-        if (checkerType && !ctx.isMethodUsed(checkerType, methodName)) {
-          const stubBody: number[] = [Opcode.unreachable, Opcode.end];
-          ctx.module.addCode(methodInfo.index, [], stubBody);
+        // Method-level DCE: Skip body generation for unused getters (not registered)
+        if (
+          methodInfo.index === -1 ||
+          (checkerType && !ctx.isMethodUsed(checkerType, methodName))
+        ) {
+          // Not registered, skip entirely
         } else {
           const body: number[] = [];
 
@@ -2529,10 +2589,12 @@ export function generateClassMethods(
         const methodName = getSetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
 
-        // Method-level DCE: Skip body generation for unused setters
-        if (checkerType && !ctx.isMethodUsed(checkerType, methodName)) {
-          const stubBody: number[] = [Opcode.unreachable, Opcode.end];
-          ctx.module.addCode(methodInfo.index, [], stubBody);
+        // Method-level DCE: Skip body generation for unused setters (not registered)
+        if (
+          methodInfo.index === -1 ||
+          (checkerType && !ctx.isMethodUsed(checkerType, methodName))
+        ) {
+          // Not registered, skip entirely
         } else {
           const body: number[] = [];
 
@@ -2599,11 +2661,11 @@ export function generateClassMethods(
         const getterName = getGetterName(propName);
         const getterInfo = classInfo.methods.get(getterName)!;
 
-        // Method-level DCE for implicit field getters
-        if (checkerType && !ctx.isMethodUsed(checkerType, getterName)) {
-          const stubBody: number[] = [Opcode.unreachable, Opcode.end];
-          ctx.module.addCode(getterInfo.index, [], stubBody);
-        } else {
+        // Method-level DCE for implicit field getters (not registered if unused)
+        if (
+          getterInfo.index !== -1 &&
+          (!checkerType || ctx.isMethodUsed(checkerType, getterName))
+        ) {
           const getterBody: number[] = [];
 
           // this.field
@@ -2623,11 +2685,11 @@ export function generateClassMethods(
           const setterName = getSetterName(propName);
           const setterInfo = classInfo.methods.get(setterName)!;
 
-          // Method-level DCE for implicit field setters
-          if (checkerType && !ctx.isMethodUsed(checkerType, setterName)) {
-            const stubBody: number[] = [Opcode.unreachable, Opcode.end];
-            ctx.module.addCode(setterInfo.index, [], stubBody);
-          } else {
+          // Method-level DCE for implicit field setters (not registered if unused)
+          if (
+            setterInfo.index !== -1 &&
+            (!checkerType || ctx.isMethodUsed(checkerType, setterName))
+          ) {
             const setterBody: number[] = [];
 
             // this.field = val

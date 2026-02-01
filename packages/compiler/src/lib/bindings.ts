@@ -197,6 +197,20 @@ export interface GetterBinding {
 }
 
 /**
+ * A setter access on a class or interface (used when assigning to a property).
+ * Example: `obj.value = 5` where `value` is implemented via `set value(v)`.
+ */
+export interface SetterBinding {
+  readonly kind: 'setter';
+  /** The class or interface type containing the setter */
+  readonly classType: ClassType | InterfaceType;
+  /** The setter method name (e.g., `set:value`) */
+  readonly methodName: string;
+  /** Whether static dispatch can be used (final class/method or extension) */
+  readonly isStaticDispatch: boolean;
+}
+
+/**
  * A method access on a class or interface (not a call, just the method reference).
  * Example: `obj.toString` (without call parens).
  */
@@ -246,6 +260,7 @@ export type ResolvedBinding =
   | ImportBinding
   | FieldBinding
   | GetterBinding
+  | SetterBinding
   | MethodBinding
   | RecordFieldBinding;
 
@@ -255,6 +270,7 @@ export type ResolvedBinding =
 export type MemberBinding =
   | FieldBinding
   | GetterBinding
+  | SetterBinding
   | MethodBinding
   | RecordFieldBinding;
 
@@ -274,6 +290,7 @@ export const isValueBinding = (binding: ResolvedBinding): boolean => {
     case 'import':
     case 'field':
     case 'getter':
+    case 'setter':
     case 'method':
     case 'record-field':
       return true;
@@ -302,6 +319,7 @@ export const isTypeBinding = (binding: ResolvedBinding): boolean => {
     case 'function':
     case 'field':
     case 'getter':
+    case 'setter':
     case 'method':
     case 'record-field':
       return false;
@@ -358,6 +376,7 @@ export const getDeclaration = (
     case 'import':
       return binding.importDeclaration;
     case 'getter':
+    case 'setter':
     case 'method':
     case 'field':
     case 'record-field':

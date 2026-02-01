@@ -1383,6 +1383,20 @@ function checkAssignmentExpression(
           DiagnosticCode.TypeMismatch,
         );
       }
+
+      // Record setter binding for DCE tracking - public fields have implicit setters
+      // that codegen uses for virtual dispatch
+      const setterName = getSetterName(memberName);
+      const isFinalClass =
+        classType.kind === TypeKind.Class &&
+        (classType as ClassType).isFinal === true;
+      ctx.semanticContext.setResolvedBinding(memberExpr, {
+        kind: 'setter',
+        classType: classType as ClassType | InterfaceType,
+        methodName: setterName,
+        isStaticDispatch: isFinalClass,
+      });
+
       return valueType;
     }
 
@@ -1391,6 +1405,18 @@ function checkAssignmentExpression(
     if (classType.methods.has(setterName)) {
       const setter = classType.methods.get(setterName)!;
       const valueType = checkExpression(ctx, expr.value);
+
+      // Record binding for DCE tracking
+      // Setters use dynamic dispatch unless the class is final
+      const isFinalClass =
+        classType.kind === TypeKind.Class &&
+        (classType as ClassType).isFinal === true;
+      ctx.semanticContext.setResolvedBinding(memberExpr, {
+        kind: 'setter',
+        classType: classType as ClassType | InterfaceType,
+        methodName: setterName,
+        isStaticDispatch: isFinalClass,
+      });
 
       // Setter param type
       const paramType = setter.parameters[0];

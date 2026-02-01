@@ -595,8 +595,21 @@ class UsageAnalyzer {
                 binding.methodName,
                 !binding.isStaticDispatch,
               );
+            } else if (binding.kind === 'setter') {
+              // Setters are also methods
+              this.#markMethodUsed(
+                binding.classType,
+                binding.methodName,
+                !binding.isStaticDispatch,
+              );
             } else if (binding.kind === 'field') {
-              // Field access - mark field as used (future: field-level DCE)
+              // Public field access - mark the implicit getter as used
+              // because codegen uses implicit getters for virtual dispatch
+              const getterName = `get#${binding.fieldName}`;
+              const isFinal =
+                binding.classType.kind === TypeKind.Class &&
+                (binding.classType as ClassType).isFinal === true;
+              this.#markMethodUsed(binding.classType, getterName, !isFinal);
             }
           }
         }
