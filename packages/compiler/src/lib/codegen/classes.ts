@@ -463,7 +463,31 @@ export function generateTrampoline(
     ctx.defineParam(`arg${i}`, params[i]);
   }
 
-  const classMethod = classInfo.methods.get(methodName);
+  // Look up class method - try exact name first, then look for mangled names
+  let classMethod = classInfo.methods.get(methodName);
+
+  if (!classMethod) {
+    // The class might have method overloading with mangled names (e.g., []$i32).
+    // Search for methods that start with the base name and match by count of parameters.
+    // Interface methods have type-erased signatures, so we match by parameter count.
+    // Note: params[0] is 'this', so the method param count is params.length - 1.
+    const interfaceParamCount = params.length - 1;
+
+    for (const [mangledName, methodInfo] of classInfo.methods.entries()) {
+      if (
+        mangledName.startsWith(methodName) &&
+        (mangledName === methodName || mangledName[methodName.length] === '$')
+      ) {
+        // Check parameter count (excluding 'this' param at index 0)
+        const classParamCount = methodInfo.paramTypes.length - 1;
+        if (classParamCount === interfaceParamCount) {
+          classMethod = methodInfo;
+          break;
+        }
+      }
+    }
+  }
+
   if (!classMethod) {
     throw new Error(
       `Method ${methodName} not found in class ${classInfo.name} for trampoline generation`,
@@ -3165,6 +3189,39 @@ function instantiateClassImpl(
       } as MethodDefinition);
     }
 
+    // Track which base method names have overloads (for vtable and mangling decisions)
+    const methodOverloadCounts = new Map<string, number>();
+
+    // First pass: count inherited overloaded methods (from superclass mangled names)
+    if (inheritFromSuperClass) {
+      for (const name of inheritFromSuperClass.methods.keys()) {
+        // Check for mangled names (contain $) - extract base name
+        const dollarIndex = name.indexOf('$');
+        if (dollarIndex > 0 && !name.startsWith('#')) {
+          const baseName = name.substring(0, dollarIndex);
+          methodOverloadCounts.set(
+            baseName,
+            (methodOverloadCounts.get(baseName) ?? 0) + 1,
+          );
+        }
+      }
+    }
+
+    // Count local methods
+    for (const member of members) {
+      if (member.type === NodeType.MethodDefinition) {
+        if (member.typeParameters && member.typeParameters.length > 0) continue;
+        const baseName =
+          getMemberName(member.name) === 'constructor'
+            ? '#new'
+            : getMemberName(member.name);
+        methodOverloadCounts.set(
+          baseName,
+          (methodOverloadCounts.get(baseName) ?? 0) + 1,
+        );
+      }
+    }
+
     for (const member of members) {
       if (member.type === NodeType.MethodDefinition) {
         if (member.typeParameters && member.typeParameters.length > 0) {
@@ -3178,6 +3235,8 @@ function instantiateClassImpl(
             ? '#new'
             : getMemberName(member.name);
 
+        const isOverloaded = (methodOverloadCounts.get(methodName) ?? 0) > 1;
+
         let intrinsic: string | undefined;
         if (member.decorators) {
           const intrinsicDecorator = member.decorators.find(
@@ -3187,8 +3246,6 @@ function instantiateClassImpl(
             intrinsic = intrinsicDecorator.args[0].value;
           }
         }
-
-        if (methodName !== '#new' && !intrinsic) vtable.push(methodName);
 
         let thisType: number[];
         if (decl.isExtension && onType) {
@@ -3201,6 +3258,9 @@ function instantiateClassImpl(
         }
 
         const params: number[][] = [];
+        // Build checker types for signature mangling
+        const paramCheckerTypes: Type[] = [];
+
         if (!member.isStatic && !(decl.isExtension && methodName === '#new')) {
           params.push(thisType);
         }
@@ -3212,6 +3272,43 @@ function instantiateClassImpl(
             );
           }
           params.push(resolveType(param.typeAnnotation));
+          // Build checker type for signature - use the resolved type from annotation
+          // Need to substitute type parameters to get concrete types for mangling
+          if (param.typeAnnotation.inferredType) {
+            const resolvedParamType = ctx.checkerContext
+              ? ctx.checkerContext.substituteTypeParams(
+                  param.typeAnnotation.inferredType,
+                  typeArguments,
+                )
+              : param.typeAnnotation.inferredType;
+            paramCheckerTypes.push(resolvedParamType);
+          }
+        }
+
+        // Determine mangled name for overloaded methods
+        let mangledMethodName = methodName;
+        if (isOverloaded && paramCheckerTypes.length > 0) {
+          const funcTypeForSig: FunctionType = {
+            kind: TypeKind.Function,
+            parameters: paramCheckerTypes,
+            returnType:
+              member.returnType?.inferredType && ctx.checkerContext
+                ? ctx.checkerContext.substituteTypeParams(
+                    member.returnType.inferredType,
+                    typeArguments,
+                  )
+                : Types.Void,
+          };
+          mangledMethodName = methodName + getSignatureKey(funcTypeForSig);
+        }
+
+        // Add to vtable with the actual key (mangled for overloads, base name otherwise)
+        if (
+          methodName !== '#new' &&
+          !intrinsic &&
+          !vtable.includes(mangledMethodName)
+        ) {
+          vtable.push(mangledMethodName);
         }
 
         let results: number[][] = [];
@@ -3239,7 +3336,7 @@ function instantiateClassImpl(
         }
 
         const returnType = results.length > 0 ? results[0] : [];
-        methods.set(methodName, {
+        methods.set(mangledMethodName, {
           index: funcIndex,
           returnType,
           typeIndex,

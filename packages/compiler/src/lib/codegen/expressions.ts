@@ -1221,6 +1221,21 @@ function generateIndexExpression(
       }
     }
 
+    // Use checker-resolved extension class type when available (e.g., for array[Range] operations)
+    if (!foundClass && expr.extensionClassType) {
+      let extClassType = expr.extensionClassType;
+      // Substitute type parameters when in generic context
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+        extClassType = ctx.checkerContext.substituteTypeParams(
+          extClassType,
+          ctx.currentTypeArguments,
+        ) as ClassType;
+      }
+      // Ensure the extension class is instantiated
+      mapCheckerTypeToWasmType(ctx, extClassType);
+      foundClass = ctx.getClassInfo(extClassType);
+    }
+
     // Check for extension classes (e.g., FixedArray on array<T>) using O(1) lookup
     if (!foundClass && expr.object.inferredType) {
       const extensions = ctx.getExtensionClassesByOnType(
@@ -1254,7 +1269,37 @@ function generateIndexExpression(
     }
 
     if (foundClass) {
-      const methodInfo = foundClass.methods.get('[]');
+      // Look for operator[] - determine the correct mangled name based on resolved operator
+      let methodInfo:
+        | {
+            index: number;
+            intrinsic?: string;
+            paramTypes: number[][];
+            returnType: number[];
+          }
+        | undefined;
+
+      if (expr.resolvedOperatorMethod) {
+        // When checker resolved to a specific overload, use the mangled name
+        const mangledName = '[]' + getSignatureKey(expr.resolvedOperatorMethod);
+        methodInfo = foundClass.methods.get(mangledName);
+
+        // Fallback to base name for single operator methods
+        if (!methodInfo) {
+          methodInfo = foundClass.methods.get('[]');
+        }
+      } else {
+        // No resolved operator - try base name first, then search for any operator[]
+        methodInfo = foundClass.methods.get('[]');
+        if (!methodInfo) {
+          for (const [name, info] of foundClass.methods.entries()) {
+            if (name.startsWith('[]') && (name === '[]' || name[2] === '$')) {
+              methodInfo = info;
+              break;
+            }
+          }
+        }
+      }
       if (methodInfo) {
         if (
           (methodInfo.intrinsic === 'array.get' ||
@@ -7481,7 +7526,15 @@ function generateMatchExpression(
 
   let resultType: number[] = [];
   if (expr.inferredType) {
-    resultType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+    // Substitute type parameters using current context before mapping to WASM
+    let resolvedType = expr.inferredType;
+    if (ctx.checkerContext && ctx.currentTypeArguments.size > 0) {
+      resolvedType = ctx.checkerContext.substituteTypeParams(
+        expr.inferredType,
+        ctx.currentTypeArguments,
+      );
+    }
+    resultType = mapCheckerTypeToWasmType(ctx, resolvedType);
   }
 
   // Block for the entire match expression (exit when a case succeeds)

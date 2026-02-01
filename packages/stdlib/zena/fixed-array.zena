@@ -1,4 +1,5 @@
 import { Sequence, MutableSequence } from 'zena:sequence';
+import { BoundedRange, FromRange, ToRange, FullRange } from 'zena:range';
 
 export final extension class FixedArray<T> on array<T> implements MutableSequence<T> {
   @intrinsic('array.len')
@@ -13,6 +14,34 @@ export final extension class FixedArray<T> on array<T> implements MutableSequenc
 
   @intrinsic('array.set')
   declare operator []=(index: i32, value: T): void;
+
+  /**
+   * Returns a slice of the array using BoundedRange (a..b).
+   */
+  operator [](r: BoundedRange): FixedArray<T> {
+    return this.slice(r.start, r.end);
+  }
+
+  /** 
+   * Returns a slice from start to end of array (a..).
+   */
+  operator [](r: FromRange): FixedArray<T> {
+    return this.slice(r.start, this.length);
+  }
+
+  /**
+   * Returns a slice from beginning to end index (..b).
+   */
+  operator [](r: ToRange): FixedArray<T> {
+    return this.slice(0, r.end);
+  }
+
+  /**
+   * Returns a copy of the entire array (..).
+   */
+  operator [](r: FullRange): FixedArray<T> {
+    return this.slice(0, this.length);
+  }
 
   static from(seq: Sequence<T>): FixedArray<T> {
     let len = seq.length;
@@ -42,6 +71,32 @@ export final extension class FixedArray<T> on array<T> implements MutableSequenc
     var i = 0;
     while (i < len) {
       result[i] = this[len - 1 - i];
+      i = i + 1;
+    }
+    return result;
+  }
+
+  /**
+   * Returns a shallow copy of a portion of the array.
+   * The start index is inclusive, the end index is exclusive.
+   * Negative indices are not supported.
+   */
+  slice(start: i32, end: i32): FixedArray<T> {
+    // Clamp indices to valid range
+    let len = this.length;
+    var s = start;
+    var e = end;
+    if (s < 0) { s = 0; }
+    if (e > len) { e = len; }
+    if (s >= e) {
+      return __array_new_empty<T>(0);
+    }
+    
+    let resultLen = e - s;
+    let result = __array_new_empty<T>(resultLen);
+    var i = 0;
+    while (i < resultLen) {
+      result[i] = this[s + i];
       i = i + 1;
     }
     return result;

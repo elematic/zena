@@ -2395,6 +2395,61 @@ function checkIndexExpression(
     return tupleType.elementTypes[index];
   }
 
+  // Check for extension class operator[] on Array types (e.g., FixedArray<T>.operator[](Range))
+  if (objectType.kind === TypeKind.Array) {
+    const genericArrayType = ctx.getWellKnownType(TypeNames.FixedArray);
+    if (genericArrayType && genericArrayType.kind === TypeKind.Class) {
+      const genericClassType = genericArrayType as ClassType;
+      const elementType = (objectType as ArrayType).elementType;
+
+      // Instantiate FixedArray<T> with the actual element type
+      let instantiatedClassType = genericClassType;
+      if (
+        genericClassType.typeParameters &&
+        genericClassType.typeParameters.length > 0
+      ) {
+        instantiatedClassType = instantiateGenericClass(
+          genericClassType,
+          [elementType],
+          ctx,
+        );
+      }
+
+      // Look for operator[] with matching parameter type
+      const method = genericClassType.methods.get('[]');
+      if (method) {
+        const resolvedMethod = resolveMemberType(
+          instantiatedClassType,
+          method,
+          ctx,
+        ) as FunctionType;
+
+        // Handle overloaded operator[]
+        const candidates = resolvedMethod.overloads
+          ? [resolvedMethod, ...resolvedMethod.overloads]
+          : [resolvedMethod];
+
+        for (const candidate of candidates) {
+          const resolvedCandidate = resolveMemberType(
+            instantiatedClassType,
+            candidate,
+            ctx,
+          ) as FunctionType;
+          if (
+            resolvedCandidate.parameters.length === 1 &&
+            isAssignableTo(ctx, indexType, resolvedCandidate.parameters[0])
+          ) {
+            // Found a matching overload - store it for codegen
+            expr.resolvedOperatorMethod = resolvedCandidate;
+            // Store the extension class type for codegen to use
+            expr.extensionClassType = instantiatedClassType;
+            return resolvedCandidate.returnType;
+          }
+        }
+      }
+    }
+  }
+
   if (
     indexType.kind !== TypeKind.Number ||
     (indexType as NumberType).name !== Types.I32.name

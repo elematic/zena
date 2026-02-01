@@ -72,4 +72,144 @@ export let tests = suite('FixedArray', (): void => {
     
     equal(arr[0], 999);
   });
+
+  // === Slice tests ===
+
+  test('slice returns portion of array', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(5, 0);
+    arr[0] = 10;
+    arr[1] = 20;
+    arr[2] = 30;
+    arr[3] = 40;
+    arr[4] = 50;
+    
+    let sliced = arr.slice(1, 4);
+    
+    equal(sliced.length, 3);
+    equal(sliced[0], 20);
+    equal(sliced[1], 30);
+    equal(sliced[2], 40);
+  });
+
+  test('slice with start >= end returns empty array', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(5, 42);
+    
+    let empty1 = arr.slice(3, 3);
+    equal(empty1.length, 0);
+    
+    let empty2 = arr.slice(4, 2);
+    equal(empty2.length, 0);
+  });
+
+  test('slice clamps end to length', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(3, 0);
+    arr[0] = 1;
+    arr[1] = 2;
+    arr[2] = 3;
+    
+    let sliced = arr.slice(1, 100);
+    
+    equal(sliced.length, 2);
+    equal(sliced[0], 2);
+    equal(sliced[1], 3);
+  });
+
+  test('slice clamps negative start to 0', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(3, 0);
+    arr[0] = 1;
+    arr[1] = 2;
+    arr[2] = 3;
+    
+    let sliced = arr.slice(0 - 5, 2);
+    
+    equal(sliced.length, 2);
+    equal(sliced[0], 1);
+    equal(sliced[1], 2);
+  });
+
+  test('slice with full range copies entire array', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(3, 0);
+    arr[0] = 1;
+    arr[1] = 2;
+    arr[2] = 3;
+    
+    let copy = arr.slice(0, arr.length);
+    
+    equal(copy.length, 3);
+    equal(copy[0], 1);
+    equal(copy[1], 2);
+    equal(copy[2], 3);
+    
+    // Verify it's a copy (modify original, copy unchanged)
+    arr[0] = 999;
+    equal(copy[0], 1);
+  });
+
+  // === Range slice operator tests ===
+
+  test('operator [] with BoundedRange (a..b)', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(5, 0);
+    arr[0] = 10;
+    arr[1] = 20;
+    arr[2] = 30;
+    arr[3] = 40;
+    arr[4] = 50;
+    
+    let sliced = arr[1..4];
+    
+    equal(sliced.length, 3);
+    equal(sliced[0], 20);
+    equal(sliced[1], 30);
+    equal(sliced[2], 40);
+  });
+
+  test('operator [] with FromRange (a..)', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(5, 0);
+    arr[0] = 10;
+    arr[1] = 20;
+    arr[2] = 30;
+    arr[3] = 40;
+    arr[4] = 50;
+    
+    let sliced = arr[2..];
+    
+    equal(sliced.length, 3);
+    equal(sliced[0], 30);
+    equal(sliced[1], 40);
+    equal(sliced[2], 50);
+  });
+
+  test('operator [] with ToRange (..b)', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(5, 0);
+    arr[0] = 10;
+    arr[1] = 20;
+    arr[2] = 30;
+    arr[3] = 40;
+    arr[4] = 50;
+    
+    let sliced = arr[..3];
+    
+    equal(sliced.length, 3);
+    equal(sliced[0], 10);
+    equal(sliced[1], 20);
+    equal(sliced[2], 30);
+  });
+
+  test('operator [] with FullRange (..) clones array', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(3, 0);
+    arr[0] = 1;
+    arr[1] = 2;
+    arr[2] = 3;
+    
+    let copy = arr[..];
+    
+    equal(copy.length, 3);
+    equal(copy[0], 1);
+    equal(copy[1], 2);
+    equal(copy[2], 3);
+    
+    // Verify it's a copy
+    arr[0] = 999;
+    equal(copy[0], 1);
+  });
 });
