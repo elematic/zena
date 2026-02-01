@@ -33,9 +33,13 @@ import {
   type RangeExpression,
   type CallExpression,
   type MemberExpression,
+  type BinaryExpression,
+  type IndexExpression,
+  type AssignmentExpression,
 } from '../ast.js';
 import {visit, type Visitor} from '../visitor.js';
 import type {SemanticContext} from '../checker/semantic-context.js';
+import {getSignatureKey} from '../names.js';
 import {
   TypeKind,
   type ClassType,
@@ -631,6 +635,80 @@ class UsageAnalyzer {
               binding.methodName,
               !binding.isStaticDispatch,
             );
+          }
+        }
+      },
+
+      // Handle binary expressions for operator methods (operator ==, operator !=, etc.)
+      visitBinaryExpression: (node: BinaryExpression) => {
+        // Check if this is an equality operator that could use operator ==
+        if (node.operator === '==' || node.operator === '!=') {
+          // Check if the left operand has a class type with operator ==
+          const leftType = node.left.inferredType;
+          if (leftType && leftType.kind === TypeKind.Class) {
+            const classType = leftType as ClassType;
+            // Check if this class has operator ==
+            if (classType.methods.has('==')) {
+              // Mark operator == as used
+              // For operator !=, the same operator == method is used
+              const isFinal = classType.isFinal === true;
+              this.#markMethodUsed(classType, '==', !isFinal);
+            }
+          }
+        }
+        // Future: add support for other binary operators (operator +, operator -, etc.)
+      },
+
+      // Handle index expressions for operator []
+      visitIndexExpression: (node: IndexExpression) => {
+        // Check if resolvedOperatorMethod was set by the checker
+        if (node.resolvedOperatorMethod) {
+          // Get the class type from the object expression
+          const objectType = node.object.inferredType;
+          if (objectType && objectType.kind === TypeKind.Class) {
+            const classType = objectType as ClassType;
+            // The operator [] method name needs to include signature for overloads
+            // Use the same mangling approach as codegen
+            const methodName = '[]' + getSignatureKey(node.resolvedOperatorMethod);
+            const isFinal = classType.isFinal === true;
+            this.#markMethodUsed(classType, methodName, !isFinal);
+          }
+        }
+        // Also handle extension class operators
+        if (node.extensionClassType) {
+          const classType = node.extensionClassType;
+          if (node.resolvedOperatorMethod) {
+            const methodName = '[]' + getSignatureKey(node.resolvedOperatorMethod);
+            const isFinal = classType.isFinal === true;
+            this.#markMethodUsed(classType, methodName, !isFinal);
+          }
+        }
+      },
+
+      // Handle assignment expressions for operator []=
+      visitAssignmentExpression: (node: AssignmentExpression) => {
+        // Check if the left side is an index expression (for operator []=)
+        if (node.left.type === NodeType.IndexExpression) {
+          const indexExpr = node.left as IndexExpression;
+          // Check if resolvedOperatorMethod was set by the checker for operator []=
+          if (indexExpr.resolvedOperatorMethod) {
+            const objectType = indexExpr.object.inferredType;
+            if (objectType && objectType.kind === TypeKind.Class) {
+              const classType = objectType as ClassType;
+              // The operator []= method name needs to include signature for overloads
+              const methodName = '[]=' + getSignatureKey(indexExpr.resolvedOperatorMethod);
+              const isFinal = classType.isFinal === true;
+              this.#markMethodUsed(classType, methodName, !isFinal);
+            }
+          }
+          // Also handle extension class operators
+          if (indexExpr.extensionClassType) {
+            const classType = indexExpr.extensionClassType;
+            if (indexExpr.resolvedOperatorMethod) {
+              const methodName = '[]=' + getSignatureKey(indexExpr.resolvedOperatorMethod);
+              const isFinal = classType.isFinal === true;
+              this.#markMethodUsed(classType, methodName, !isFinal);
+            }
           }
         }
       },
