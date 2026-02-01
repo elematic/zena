@@ -641,22 +641,33 @@ class UsageAnalyzer {
 
       // Handle binary expressions for operator methods (operator ==, operator !=, etc.)
       visitBinaryExpression: (node: BinaryExpression) => {
-        // Check if this is an equality operator that could use operator ==
-        if (node.operator === '==' || node.operator === '!=') {
-          // Check if the left operand has a class type with operator ==
+        // Map binary operators to their operator method names
+        // Currently only == is implemented, but this is designed to support
+        // future operators like +, -, *, etc.
+        const operatorMap: Record<string, string | undefined> = {
+          '==': '==',
+          '!=': '==', // != uses the same operator == method (result is negated)
+          // Future: uncomment when these operators are implemented
+          // '+': '+',
+          // '-': '-',
+          // '*': '*',
+          // '/': '/',
+        };
+
+        const operatorMethodName = operatorMap[node.operator];
+        if (operatorMethodName) {
+          // Check if the left operand has a class type with this operator
           const leftType = node.left.inferredType;
           if (leftType && leftType.kind === TypeKind.Class) {
             const classType = leftType as ClassType;
-            // Check if this class has operator ==
-            if (classType.methods.has('==')) {
-              // Mark operator == as used
-              // For operator !=, the same operator == method is used
+            // Check if this class has the operator method
+            if (classType.methods.has(operatorMethodName)) {
+              // Mark operator method as used
               const isFinal = classType.isFinal === true;
-              this.#markMethodUsed(classType, '==', !isFinal);
+              this.#markMethodUsed(classType, operatorMethodName, !isFinal);
             }
           }
         }
-        // Future: add support for other binary operators (operator +, operator -, etc.)
       },
 
       // Handle index expressions for operator []
