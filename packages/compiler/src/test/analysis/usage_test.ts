@@ -9,7 +9,7 @@ import {
   type VariableDeclaration,
   type ClassDeclaration,
 } from '../../lib/ast.js';
-import {TypeKind} from '../../lib/types.js';
+import {TypeKind, type ClassType} from '../../lib/types.js';
 
 suite('Usage Analysis', () => {
   /**
@@ -310,21 +310,21 @@ suite('Usage Analysis', () => {
 
     // Get the class type
     const classType = boxDecl.inferredType;
-    if (classType && classType.kind === TypeKind.Class) {
-      // Check that operator [] method is marked as used
-      // Note: The exact method name includes a signature key for overloads,
-      // but since we only have one operator[] in this test, we can check for any method starting with '[]'
-      const methodNames = Array.from((classType as any).methods.keys());
-      const operatorMethod = methodNames.find((name) => name.startsWith('[]'));
-      assert.ok(
-        operatorMethod,
-        'operator [] method should exist in class methods',
-      );
-      assert.ok(
-        result.isMethodUsed(classType as any, operatorMethod),
-        'operator [] should be marked as used',
-      );
-    }
+    assert.ok(classType?.kind === TypeKind.Class, 'Box should have a class type');
+
+    // Check that operator [] method is marked as used
+    // Note: The exact method name includes a signature key for overloads,
+    // but since we only have one operator[] in this test, we can check for any method starting with '[]'
+    const methodNames = Array.from((classType as ClassType).methods.keys());
+    const operatorMethod = methodNames.find((name) => name.startsWith('[]'));
+    assert.ok(
+      operatorMethod,
+      'operator [] method should exist in class methods',
+    );
+    assert.ok(
+      result.isMethodUsed(classType as ClassType, operatorMethod),
+      'operator [] should be marked as used',
+    );
   });
 
   test('marks operator []= as used when called via index assignment', () => {
@@ -360,13 +360,13 @@ suite('Usage Analysis', () => {
 
     // Get the class type
     const classType = boxDecl.inferredType;
-    if (classType && classType.kind === TypeKind.Class) {
-      // Check that operator []= method is marked as used
-      assert.ok(
-        result.isMethodUsed(classType as any, '[]='),
-        'operator []= should be marked as used',
-      );
-    }
+    assert.ok(classType?.kind === TypeKind.Class, 'Box should have a class type');
+
+    // Check that operator []= method is marked as used
+    assert.ok(
+      result.isMethodUsed(classType as ClassType, '[]='),
+      'operator []= should be marked as used',
+    );
   });
 
   test('marks operator == as used when called via equality syntax', () => {
@@ -407,12 +407,15 @@ suite('Usage Analysis', () => {
 
     // Get the class type
     const classType = pointDecl.inferredType;
-    if (classType && classType.kind === TypeKind.Class) {
-      // Check that operator == method is marked as used
-      assert.ok(
-        result.isMethodUsed(classType as any, '=='),
-        'operator == should be marked as used',
-      );
-    }
+    assert.ok(
+      classType?.kind === TypeKind.Class,
+      'Point should have a class type',
+    );
+
+    // Check that operator == method is marked as used
+    assert.ok(
+      result.isMethodUsed(classType as ClassType, '=='),
+      'operator == should be marked as used',
+    );
   });
 });
