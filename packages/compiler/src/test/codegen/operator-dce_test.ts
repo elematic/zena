@@ -142,7 +142,7 @@ suite('Operator Method DCE', () => {
       class Container {
         #data: FixedArray<i32>;
         
-        constructor() {
+        #new() {
           this.#data = #[10, 20, 30, 40, 50];
         }
         
@@ -153,8 +153,8 @@ suite('Operator Method DCE', () => {
         operator [](r: BoundedRange): i32 {
           // Return sum of slice
           let slice = this.#data.slice(r.start, r.end);
-          var sum = 0;
-          for (var i = 0; i < slice.length; i = i + 1) {
+          let sum = 0;
+          for (let i = 0; i < slice.length; i = i + 1) {
             sum = sum + slice[i];
           }
           return sum;
