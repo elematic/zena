@@ -75,6 +75,21 @@ export const GcOpcode = {
   i31_get_u: 0x1e,
 } as const;
 
+/**
+ * Saturating truncate opcodes (0xFC prefix)
+ * Non-trapping float-to-int conversions
+ */
+export const SatOpcode = {
+  i32_trunc_sat_f32_s: 0x00,
+  i32_trunc_sat_f32_u: 0x01,
+  i32_trunc_sat_f64_s: 0x02,
+  i32_trunc_sat_f64_u: 0x03,
+  i64_trunc_sat_f32_s: 0x04,
+  i64_trunc_sat_f32_u: 0x05,
+  i64_trunc_sat_f64_s: 0x06,
+  i64_trunc_sat_f64_u: 0x07,
+} as const;
+
 export const Opcode = {
   unreachable: 0x00,
   nop: 0x01,
@@ -140,6 +155,7 @@ export const Opcode = {
   f64_const: 0x44,
 
   gc_prefix: 0xfb,
+  sat_prefix: 0xfc,
 
   i32_eqz: 0x45,
   i32_eq: 0x46,
