@@ -680,19 +680,17 @@ class UsageAnalyzer {
             const classType = objectType as ClassType;
             // The operator [] method name needs to include signature for overloads
             // Use the same mangling approach as codegen
-            const methodName = '[]' + getSignatureKey(node.resolvedOperatorMethod);
+            const methodName = `[]${getSignatureKey(node.resolvedOperatorMethod)}`;
             const isFinal = classType.isFinal === true;
             this.#markMethodUsed(classType, methodName, !isFinal);
           }
         }
         // Also handle extension class operators
-        if (node.extensionClassType) {
+        if (node.extensionClassType && node.resolvedOperatorMethod) {
           const classType = node.extensionClassType;
-          if (node.resolvedOperatorMethod) {
-            const methodName = '[]' + getSignatureKey(node.resolvedOperatorMethod);
-            const isFinal = classType.isFinal === true;
-            this.#markMethodUsed(classType, methodName, !isFinal);
-          }
+          const methodName = `[]${getSignatureKey(node.resolvedOperatorMethod)}`;
+          const isFinal = classType.isFinal === true;
+          this.#markMethodUsed(classType, methodName, !isFinal);
         }
       },
 

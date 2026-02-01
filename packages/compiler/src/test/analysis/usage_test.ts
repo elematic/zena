@@ -9,6 +9,7 @@ import {
   type VariableDeclaration,
   type ClassDeclaration,
 } from '../../lib/ast.js';
+import {TypeKind} from '../../lib/types.js';
 
 suite('Usage Analysis', () => {
   /**
@@ -309,16 +310,20 @@ suite('Usage Analysis', () => {
 
     // Get the class type
     const classType = boxDecl.inferredType;
-    if (classType && classType.kind === 7 /* TypeKind.Class */) {
+    if (classType && classType.kind === TypeKind.Class) {
       // Check that operator [] method is marked as used
+      // Note: The exact method name includes a signature key for overloads,
+      // but since we only have one operator[] in this test, we can check for any method starting with '[]'
       const methodNames = Array.from((classType as any).methods.keys());
       const operatorMethod = methodNames.find((name) => name.startsWith('[]'));
-      if (operatorMethod) {
-        assert.ok(
-          result.isMethodUsed(classType as any, operatorMethod),
-          'operator [] should be marked as used',
-        );
-      }
+      assert.ok(
+        operatorMethod,
+        'operator [] method should exist in class methods',
+      );
+      assert.ok(
+        result.isMethodUsed(classType as any, operatorMethod),
+        'operator [] should be marked as used',
+      );
     }
   });
 
@@ -355,7 +360,7 @@ suite('Usage Analysis', () => {
 
     // Get the class type
     const classType = boxDecl.inferredType;
-    if (classType && classType.kind === 7 /* TypeKind.Class */) {
+    if (classType && classType.kind === TypeKind.Class) {
       // Check that operator []= method is marked as used
       assert.ok(
         result.isMethodUsed(classType as any, '[]='),
@@ -402,7 +407,7 @@ suite('Usage Analysis', () => {
 
     // Get the class type
     const classType = pointDecl.inferredType;
-    if (classType && classType.kind === 7 /* TypeKind.Class */) {
+    if (classType && classType.kind === TypeKind.Class) {
       // Check that operator == method is marked as used
       assert.ok(
         result.isMethodUsed(classType as any, '=='),
