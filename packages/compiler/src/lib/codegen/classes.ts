@@ -1772,25 +1772,31 @@ export function registerClassMethods(
         vtable.push(mangledMethodName);
       }
 
-      let typeIndex: number;
-      let isOverride = false;
-      if (currentSuperClassInfo) {
-        // Check for overrides - look up both base name and mangled name in super
-        if (
-          methodName !== '#new' &&
-          (currentSuperClassInfo.methods.has(methodName) ||
-            currentSuperClassInfo.methods.has(mangledMethodName))
-        ) {
-          const superKey = currentSuperClassInfo.methods.has(mangledMethodName)
-            ? mangledMethodName
-            : methodName;
-          typeIndex = currentSuperClassInfo.methods.get(superKey)!.typeIndex;
-          isOverride = true;
+      // For intrinsics (isDeclare or @intrinsic), skip type creation
+      // since intrinsic calls are inlined and don't use function types
+      let typeIndex = -1;
+      if (!intrinsic && !member.isDeclare) {
+        let isOverride = false;
+        if (currentSuperClassInfo) {
+          // Check for overrides - look up both base name and mangled name in super
+          if (
+            methodName !== '#new' &&
+            (currentSuperClassInfo.methods.has(methodName) ||
+              currentSuperClassInfo.methods.has(mangledMethodName))
+          ) {
+            const superKey = currentSuperClassInfo.methods.has(
+              mangledMethodName,
+            )
+              ? mangledMethodName
+              : methodName;
+            typeIndex = currentSuperClassInfo.methods.get(superKey)!.typeIndex;
+            isOverride = true;
+          }
         }
-      }
 
-      if (!isOverride) {
-        typeIndex = ctx.module.addType(params, results);
+        if (!isOverride) {
+          typeIndex = ctx.module.addType(params, results);
+        }
       }
 
       let funcIndex = -1;
@@ -1955,10 +1961,16 @@ export function registerClassMethods(
           vtable.push(getterName);
         }
 
-        let thisType = [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(structTypeIndex),
-        ];
+        // For extension classes, use onType for this parameter
+        let thisType: number[];
+        if (classInfo.isExtension && classInfo.onType) {
+          thisType = classInfo.onType;
+        } else {
+          thisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(structTypeIndex),
+          ];
+        }
 
         if (currentSuperClassInfo) {
           if (currentSuperClassInfo.methods.has(getterName)) {
@@ -1970,18 +1982,22 @@ export function registerClassMethods(
         const params = [thisType];
         const results = [propType];
 
-        let typeIndex: number;
-        let isOverride = false;
-        if (currentSuperClassInfo) {
-          if (currentSuperClassInfo.methods.has(getterName)) {
-            typeIndex =
-              currentSuperClassInfo.methods.get(getterName)!.typeIndex;
-            isOverride = true;
+        // For intrinsics (isDeclare or @intrinsic), skip type creation
+        // since intrinsic calls are inlined and don't use function types
+        let typeIndex = -1;
+        if (!intrinsic && !member.isDeclare) {
+          let isOverride = false;
+          if (currentSuperClassInfo) {
+            if (currentSuperClassInfo.methods.has(getterName)) {
+              typeIndex =
+                currentSuperClassInfo.methods.get(getterName)!.typeIndex;
+              isOverride = true;
+            }
           }
-        }
 
-        if (!isOverride) {
-          typeIndex = ctx.module.addType(params, results);
+          if (!isOverride) {
+            typeIndex = ctx.module.addType(params, results);
+          }
         }
 
         let funcIndex = -1;
@@ -2008,18 +2024,21 @@ export function registerClassMethods(
           const setterParams = [thisType, propType];
           const setterResults: number[][] = [];
 
-          let setterTypeIndex: number;
-          let isSetterOverride = false;
-          if (currentSuperClassInfo) {
-            if (currentSuperClassInfo.methods.has(setterName)) {
-              setterTypeIndex =
-                currentSuperClassInfo.methods.get(setterName)!.typeIndex;
-              isSetterOverride = true;
+          // For intrinsics (isDeclare or @intrinsic), skip type creation
+          let setterTypeIndex = -1;
+          if (!intrinsic && !member.isDeclare) {
+            let isSetterOverride = false;
+            if (currentSuperClassInfo) {
+              if (currentSuperClassInfo.methods.has(setterName)) {
+                setterTypeIndex =
+                  currentSuperClassInfo.methods.get(setterName)!.typeIndex;
+                isSetterOverride = true;
+              }
             }
-          }
 
-          if (!isSetterOverride) {
-            setterTypeIndex = ctx.module.addType(setterParams, setterResults);
+            if (!isSetterOverride) {
+              setterTypeIndex = ctx.module.addType(setterParams, setterResults);
+            }
           }
 
           let setterFuncIndex = -1;
@@ -2039,6 +2058,20 @@ export function registerClassMethods(
       }
     }
   }
+
+  // Skip vtable creation for extension classes with no virtual methods and no super vtable
+  // This avoids creating empty struct types and unused globals
+  if (
+    classInfo.isExtension &&
+    vtable.length === 0 &&
+    !currentSuperClassInfo?.vtableTypeIndex
+  ) {
+    generateInterfaceVTable(ctx, classInfo, decl);
+
+    ctx.currentClass = previousCurrentClass;
+    return;
+  }
+
   // Create VTable Struct Type
   let vtableSuperTypeIndex: number | undefined;
   if (currentSuperClassInfo) {
