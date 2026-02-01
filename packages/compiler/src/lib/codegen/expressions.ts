@@ -57,6 +57,7 @@ import {
   GcOpcode,
   HeapType,
   Opcode,
+  SatOpcode,
   ValType,
 } from '../wasm.js';
 import {analyzeCaptures} from './captures.js';
@@ -6383,6 +6384,17 @@ function generateGlobalIntrinsic(
       break;
     }
     default: {
+      // Handle saturating truncate intrinsics (e.g. i32.trunc_sat_f32_s)
+      const satOpcodeName = name.replace(/\./g, '_');
+      if (satOpcodeName in SatOpcode) {
+        for (const arg of args) {
+          generateExpression(ctx, arg, body);
+        }
+        body.push(Opcode.sat_prefix);
+        body.push((SatOpcode as any)[satOpcodeName]);
+        return;
+      }
+      
       // Handle math intrinsics (e.g. i32.clz, f64.abs)
       const opcodeName = name.replace('.', '_');
       if (opcodeName in Opcode) {
