@@ -123,6 +123,50 @@ The compiler supports intrinsics to map Zena methods directly to WASM instructio
   - **Checker**: Validates the decorator usage.
   - **Codegen**: Emits specific WASM opcodes instead of a function call.
 
+### 9. AST Visitor (`packages/compiler/src/lib/visitor.ts`)
+
+- **Key Type**: `Visitor<T>`
+- **Key Function**: `visit(node, visitor, context)`
+- **Responsibility**: Provides a generic, reusable infrastructure for traversing AST nodes.
+- **Pattern**: Pre-order traversal with optional callbacks per node type.
+- **Usage**: The visitor is used by the usage analysis pass and can be reused for other AST-based analyses.
+
+Example usage:
+
+```typescript
+const visitor: Visitor<MyContext> = {
+  visitCallExpression: (node, ctx) => {
+    // Process call expression
+    return true; // Continue visiting children
+  },
+};
+visit(ast, visitor, myContext);
+```
+
+**Note for future agents**: When adding new AST node types, always add corresponding visit methods to `visitor.ts` to ensure DCE and other analyses cover them.
+
+### 10. Usage Analysis (`packages/compiler/src/lib/analysis/usage.ts`)
+
+- **Key Function**: `analyzeUsage(program, options): UsageAnalysisResult`
+- **Key Interface**: `UsageAnalysisResult` with `isUsed(decl)`, `getUsage()`, `isModuleUsed(path)`
+- **Responsibility**: Determines which declarations are reachable from entry point exports.
+- **Algorithm**: Starts from exported declarations and recursively marks reachable declarations via the AST visitor.
+- **Integration**: Called by `CodeGenerator` when DCE is enabled.
+
+### 11. Dead Code Elimination (DCE)
+
+The compiler implements aggressive DCE at multiple levels:
+
+- **Declaration-level**: Unused functions, classes, and interfaces are not generated.
+- **Type-level**: WASM types for intrinsic methods/fields are not created if unused.
+- **VTable-level**: Extension classes with empty vtables skip vtable creation entirely.
+
+**Binary size optimization** is a key design goal for Zena. The DCE system ensures that:
+
+- Standard library components (like `Map`) are only included if actually used.
+- Intrinsic operations (like `String.length`) don't generate function definitions.
+- Minimal programs can be as small as 41 bytes.
+
 ## Type Flow Architecture
 
 The compiler propagates type information from the checker to codegen via `inferredType` properties on AST nodes. Understanding this flow is essential for maintaining the checker-as-single-source-of-truth principle.

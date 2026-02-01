@@ -172,6 +172,7 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Use `suite` and `test` syntax from `node:test`.
   - Write tests for each compiler stage (Lexer, Parser, Codegen).
   - New syntax features MUST have dedicated parser tests (and lexer tests, if new tokens are introduced).
+  - **New AST nodes**: When adding new AST node types, always add corresponding visit methods to `visitor.ts` to ensure DCE and other analyses cover them.
   - Assertions should NOT be followed by conditionals that check the same thing. Assertions act as guards.
   - **Isolating Tests**: To isolate tests, pass the `--test-only` flag to Node and use `test.only()` in the test file.
   - **Codegen Tests**:
@@ -325,15 +326,27 @@ This project is an **npm monorepo** managed with **Wireit**.
   - Inheritance: override specific overloads, inherit others.
   - Operator overloading (`operator []` with multiple signatures).
   - Virtual dispatch with overloaded methods.
+- [x] Implement Dead Code Elimination (DCE):
+  - AST Visitor infrastructure (`visitor.ts`) for reusable tree traversal.
+  - Usage analysis pass (`analysis/usage.ts`) to determine reachable declarations.
+  - Declaration-level DCE: skip codegen for unused functions, classes, and interfaces.
+  - Type-level DCE: skip WASM type/function creation for intrinsic methods and fields.
+  - VTable elimination: skip vtable creation for extension classes with empty vtables.
+  - Binary size results: 21% reduction on string programs, minimal programs at 41 bytes.
 
 ### Planned
 
-1.  **Type Checker Refactoring**:
+1.  **Visitor Infrastructure Improvements**:
+    - **Ensure new syntax is visited**: When adding new AST node types, always add corresponding visit methods to `visitor.ts` to ensure DCE and other analyses cover them.
+    - **Type Object Visitor**: Consider implementing a `TypeVisitor` for traversing checker `Type` objects (ClassType, FunctionType, etc.), which would be useful for type-level analyses.
+    - **Migrate existing passes to visitors**: Convert capture analysis (`captures.ts`) and other AST-traversing code to use the generic visitor infrastructure for consistency and maintainability.
+
+2.  **Type Checker Refactoring**:
     - **`ctx.currentClass` consistency**: Inside a generic class `Foo<T>`, `ctx.currentClass` should have `typeArguments = typeParameters` (i.e., represent `Foo<T>`, not just `Foo`). Currently, `checkThisExpression` creates a type with `typeArguments`, but `ctx.currentClass` doesn't have them, requiring a workaround in `isAssignableTo` to handle self-referential generic class comparisons. Fixing this at the source would eliminate that special case.
     - **Reject index assignment without `operator []=`**: Currently `x[0] = y` compiles even if the type only has `operator []` (getter). The checker should require `operator []=` for index assignment.
     - **Reject assignment to getter-only properties**: Currently `x.length = 5` compiles even if `length` only has a getter. The checker should require a setter for property assignment.
 
-2.  **Checker-Driven Type Instantiation** (COMPLETED):
+3.  **Checker-Driven Type Instantiation** (COMPLETED):
     Currently, codegen has two paths for type resolution:
     - **Identity-based**: Uses checker's `ClassType` objects directly (correct, uses interning)
     - **Annotation-based**: Rebuilds types from `TypeAnnotation` AST nodes (problematic, creates duplicate types)
@@ -462,7 +475,7 @@ This project is an **npm monorepo** managed with **Wireit**.
     - Multiple backends share semantic model
     - Foundation for query-based incremental compilation
 
-3.  **Host Interop**:
+4.  **Host Interop**:
     - **WASM GC Interop Notes**:
       - WASM GC structs and arrays are OPAQUE from JavaScript.
       - JS cannot access struct fields or iterate GC arrays.
@@ -475,29 +488,29 @@ This project is an **npm monorepo** managed with **Wireit**.
       - JS usage: `exports['Suite.run'](suiteInstance)`.
       - The inverse of `@external` - exposes Zena methods to hosts instead of importing host functions.
 
-4.  **Data Structures**:
+5.  **Data Structures**:
     - **Maps**: Implement map literal syntax (`#{ key: value }`).
     - **Sets**: Implement mutable sets.
 
-5.  **Top-Level Statement Execution**:
+6.  **Top-Level Statement Execution**:
     - Currently, top-level expression statements (like `test('name', fn)`) are ignored in codegen.
     - Only global variable initializers run via the WASM start function.
     - This blocks DSL-style test registration. See `docs/design/testing.md` for workaround.
     - **Solution**: Extend the start function to execute top-level statements, or add module initialization support.
 
-6.  **Standard Library**:
+7.  **Standard Library**:
     - Math functions (`sqrt`, `abs`, etc.).
     - String manipulation (`substring`, `indexOf`).
     - Regexes.
 
-7.  **Self-Hosting**:
+8.  **Self-Hosting**:
     - Rewrite the compiler in Zena.
 
-8.  **Pattern Matching (Advanced)**:
+9.  **Pattern Matching (Advanced)**:
     - Array element matching (requires `FixedArray` support or `Sequence` interface).
     - Rest patterns (`...tail`).
 
-9.  **Future Features**:
+10. **Future Features**:
     - **Syntax**:
       - Blocks.
       - For/of loops.

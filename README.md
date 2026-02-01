@@ -23,6 +23,9 @@ around efficient WASM output.
   - **Polymorphism** uses vtables where necessary (inheritance, interfaces), but
     we prefer static dispatch when possible. Private and final class members are
     guareteed to use static dispatch.
+  - **Dead Code Elimination (DCE)**: Aggressive tree-shaking removes unused
+    functions, classes, and even WASM types at compile time, producing minimal
+    binaries optimized for network delivery.
 - **Familiar yet AOT**: While Zena looks like TypeScript, it is entirely
   designed for **ahead-of-time (AOT) compilation**. It breaks away from
   JavaScript's dynamic semantics to allow for efficient compilation and small
@@ -151,6 +154,7 @@ some of my thoughts and motivations at the moment:
 - [x] Compiler implemented in TypeScript
 - [x] CLI
 - [x] Website
+- [x] Dead Code Elimination (tree-shaking)
 - [ ] Self-hosted compiler written in Zena
 - [ ] VS Code extension
 - [ ] Syntax highlighter plugins

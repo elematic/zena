@@ -1687,7 +1687,30 @@ let s: Status = Status.Ok;
 let code: i32 = s as i32; // Explicit cast required
 ```
 
-## 14. Grammar (Simplified)
+## 14. Compilation
+
+### Dead Code Elimination
+
+The Zena compiler performs aggressive dead code elimination (DCE) to produce minimal WASM binaries. This tree-shaking operates at multiple levels:
+
+- **Declaration-level**: Functions, classes, and interfaces that are not reachable from exported entry points are excluded from the output.
+- **Type-level**: WASM types for intrinsic methods and fields are not generated if the intrinsic is not actually called.
+- **VTable-level**: Classes with no virtual methods skip vtable generation entirely.
+
+DCE ensures that standard library components (like `Map` or `Console`) are only included in the output if they are actually used by the program. This is critical for network delivery of WASM modules.
+
+### Binary Size
+
+Zena is designed to produce the smallest possible WASM binaries. Key optimizations include:
+
+- **Monomorphization**: Generic types are specialized at compile time, avoiding runtime type metadata.
+- **Static dispatch**: Private and final methods use direct calls instead of vtable lookups.
+- **Intrinsics**: Built-in operations compile to inline WASM instructions, not function calls.
+- **No runtime**: Zena programs have no mandatory runtime overhead beyond WASM-GC's garbage collector.
+
+A minimal Zena program can compile to as few as 41 bytes.
+
+## 15. Grammar (Simplified)
 
 ```ebnf
 Module ::= Statement*
