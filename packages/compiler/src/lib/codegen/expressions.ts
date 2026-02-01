@@ -6394,7 +6394,7 @@ function generateGlobalIntrinsic(
         body.push((SatOpcode as any)[satOpcodeName]);
         return;
       }
-      
+
       // Handle math intrinsics (e.g. i32.clz, f64.abs)
       const opcodeName = name.replace('.', '_');
       if (opcodeName in Opcode) {
