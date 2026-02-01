@@ -31,6 +31,17 @@ suite('Math Intrinsics', () => {
     assert.strictEqual(intDiv64(-10n, -3n), 3n);
   });
 
+  test('div u32', async () => {
+    const source = `
+      import {div} from 'zena:math';
+      export let uintDiv = (a: u32, b: u32) => div(a, b);
+    `;
+    const {uintDiv} = await compileAndInstantiate(source);
+
+    assert.strictEqual(uintDiv(10, 3), 3);
+    assert.strictEqual(uintDiv(0xFFFFFFFE, 2), 0x7FFFFFFF); // Large unsigned value
+  });
+
   test('i32_trunc_s f32 to i32', async () => {
     const source = `
       import {i32_trunc_s} from 'zena:math';
