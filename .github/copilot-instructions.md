@@ -228,12 +228,15 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
 
 ## Future Considerations
 
-- **Strings & Unicode**:
-  - **Consolidation**: Consolidate `string` type and `String` class.
-  - **Interning**: Implement runtime string interning.
-  - **Hashing**: Implement fast string hashing and comparison.
-  - **Multiple Implementations**: Support host strings and potentially UTF-16.
-  - **Indexing**: Disallow indexed access (`str[i]`) and implement iterators.
+- **Strings**:
+  - **Design**: See `docs/design/strings.md` for the full design.
+  - **Wrapper Class**: Replace `string` primitive and `String` extension class with
+    a final `String` wrapper class that encapsulates a `ByteArray`.
+  - **Multi-Encoding**: Track encoding per string (UTF-8 or UTF-16). Compiler flag
+    `--default-encoding` controls literal encoding. UTF-16 enables efficient JS interop.
+  - **StringBuilder**: Implement for efficient string construction.
+  - **Interning**: Implement runtime string interning for fast literal equality.
+  - **Iterators**: Implement Unicode-aware iteration over code points.
 - **Numeric Literals**:
   - **Defaults**: Revisit default types for literals. Consider making `f64` the default for floating-point literals (matching JS).
   - **Suffixes**: Implement syntax for numeric suffixes (e.g., `1L` for `i64`, `1f` for `f32`) to avoid verbose casting (`1 as i64`).
