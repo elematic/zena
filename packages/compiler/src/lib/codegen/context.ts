@@ -11,6 +11,7 @@ import {
   type TaggedTemplateExpression,
   type TypeAnnotation,
 } from '../ast.js';
+import type {UsageAnalysisResult} from '../analysis/usage.js';
 import type {CheckerContext} from '../checker/context.js';
 import {SemanticContext} from '../checker/semantic-context.js';
 import {
@@ -320,6 +321,33 @@ export class CodegenContext {
    * - 'wasi': WASI Preview 1 imports for wasmtime
    */
   public target: Target = 'host';
+
+  /**
+   * Usage analysis result for DCE.
+   * Set by CodeGenerator when DCE is enabled.
+   */
+  #usageResult: UsageAnalysisResult | null = null;
+
+  /**
+   * Set the usage analysis result for method-level DCE.
+   */
+  setUsageResult(result: UsageAnalysisResult): void {
+    this.#usageResult = result;
+  }
+
+  /**
+   * Check if a method is used according to DCE analysis.
+   * Returns true if DCE is disabled or if the method is used.
+   */
+  isMethodUsed(
+    classType: ClassType | InterfaceType,
+    methodName: string,
+  ): boolean {
+    if (!this.#usageResult) {
+      return true; // DCE disabled, include everything
+    }
+    return this.#usageResult.isMethodUsed(classType, methodName);
+  }
 
   constructor(
     modules: Module[],

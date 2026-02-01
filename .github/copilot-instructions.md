@@ -128,15 +128,16 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
   have Node.js installed.
 
 ### Wireit Behavior
-  - Wireit caches script results and only re-runs scripts when inputs change.
-    Remember this when debugging or running tasks repeatedly.
-  - You do not need to build before testing; Wireit handles dependencies
-    automatically.
-  - You NEVER need to delete build outputs manually; Wireit tracks
-    inputs/outputs. If a script doesn't run because it was cached, its outputs
-    remain unchanged. A passing test is still passing if it's skipped.
-  - If you want to see more output for a script, set the WIREIT_LOGGER environment
-    variable to `simple` (e.g., `WIREIT_LOGGER=simple npm test`).
+
+- Wireit caches script results and only re-runs scripts when inputs change.
+  Remember this when debugging or running tasks repeatedly.
+- You do not need to build before testing; Wireit handles dependencies
+  automatically.
+- You NEVER need to delete build outputs manually; Wireit tracks
+  inputs/outputs. If a script doesn't run because it was cached, its outputs
+  remain unchanged. A passing test is still passing if it's skipped.
+- If you want to see more output for a script, set the WIREIT_LOGGER environment
+  variable to `simple` (e.g., `WIREIT_LOGGER=simple npm test`).
 
 - **Root**: Contains the workspace configuration and global scripts.
 - **packages/compiler**: The core compiler implementation (`@zena-lang/compiler`).
@@ -344,6 +345,12 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
   - Declaration-level DCE: skip codegen for unused functions, classes, and interfaces.
   - Type-level DCE: skip WASM type/function creation for intrinsic methods and fields.
   - VTable elimination: skip vtable creation for extension classes with empty vtables.
+  - Method-level DCE: skip body generation for unused methods (emit `unreachable` stub).
+    - Tracks method calls via `SemanticContext.getResolvedBinding()`.
+    - Handles polymorphic dispatch: if a method is called through a base class/interface, all overrides are kept.
+    - Subclass tracking: propagates polymorphic calls to known subclasses.
+    - Covers regular methods, accessors (getters/setters), and implicit field accessors.
+    - Constructors (`#new`) are always kept if the class is used.
   - Binary size results: 21% reduction on string programs, minimal programs at 41 bytes.
 
 ### Planned

@@ -32,6 +32,7 @@ import {
   type ArrayLiteral,
   type RangeExpression,
   type CallExpression,
+  type MemberExpression,
 } from '../ast.js';
 import {visit, type Visitor} from '../visitor.js';
 import type {SemanticContext} from '../checker/semantic-context.js';
@@ -42,6 +43,17 @@ import {
   type MixinType,
   type Type,
 } from '../types.js';
+
+/**
+ * Key for identifying a method: combines class type and method name.
+ * We use the class type's identity for proper tracking across modules.
+ */
+export interface MethodKey {
+  /** The class type (by identity) */
+  classType: ClassType | InterfaceType;
+  /** The method name */
+  methodName: string;
+}
 
 /**
  * Information about a declaration's usage status.
@@ -78,6 +90,19 @@ export interface UsageAnalysisResult {
    * A module with no used declarations can be entirely skipped.
    */
   isModuleUsed(module: Module): boolean;
+
+  /**
+   * Check if a method is used on a class or interface.
+   * Returns true if the method is called directly or via polymorphic dispatch.
+   *
+   * @param classType - The class or interface type
+   * @param methodName - The method name (including signature key for overloads)
+   * @returns true if the method is used, false if it can be eliminated
+   */
+  isMethodUsed(
+    classType: ClassType | InterfaceType,
+    methodName: string,
+  ): boolean;
 
   /** Get all used declarations */
   readonly usedDeclarations: Set<Declaration>;
@@ -161,6 +186,20 @@ class UsageAnalyzer {
     VariableDeclaration
   >();
 
+  // Track used methods by class/interface type
+  // Maps ClassType/InterfaceType -> Set of method names that are used
+  readonly #usedMethods = new WeakMap<ClassType | InterfaceType, Set<string>>();
+
+  // Track classes that have polymorphic method calls (calls through base class/interface)
+  // For these, all overrides in subclasses must be kept
+  readonly #polymorphicMethods = new WeakMap<
+    ClassType | InterfaceType,
+    Set<string>
+  >();
+
+  // Map from ClassType to all known subclasses (for propagating polymorphic calls)
+  readonly #subclasses = new WeakMap<ClassType, Set<ClassType>>();
+
   constructor(program: Program, options: UsageAnalysisOptions) {
     this.#program = program;
     this.#options = options;
@@ -220,6 +259,16 @@ class UsageAnalyzer {
         this.#addDeclarationByName(decl.name.name, decl);
         if (decl.inferredType) {
           this.#declarationsByType.set(decl.inferredType, decl);
+          // Build subclass map for polymorphic call propagation
+          const classType = decl.inferredType as ClassType;
+          if (classType.superType) {
+            let subclasses = this.#subclasses.get(classType.superType);
+            if (!subclasses) {
+              subclasses = new Set();
+              this.#subclasses.set(classType.superType, subclasses);
+            }
+            subclasses.add(classType);
+          }
         }
         break;
       }
@@ -526,10 +575,51 @@ class UsageAnalyzer {
         this.#handleTypeReference('Error');
       },
 
-      // Handle member expressions for method calls
+      // Handle member expressions for method/getter access
+      visitMemberExpression: (node: MemberExpression) => {
+        // Try to get the resolved binding for this member access
+        if (this.#semanticContext) {
+          const binding = this.#semanticContext.getResolvedBinding(node);
+          if (binding) {
+            if (binding.kind === 'method') {
+              // Mark this method as used on the specific class type
+              this.#markMethodUsed(
+                binding.classType,
+                binding.methodName,
+                !binding.isStaticDispatch,
+              );
+            } else if (binding.kind === 'getter') {
+              // Getters are also methods
+              this.#markMethodUsed(
+                binding.classType,
+                binding.methodName,
+                !binding.isStaticDispatch,
+              );
+            } else if (binding.kind === 'field') {
+              // Field access - mark field as used (future: field-level DCE)
+            }
+          }
+        }
+      },
+
+      // Handle call expressions - mark methods and constructors
       visitCallExpression: (node: CallExpression) => {
-        // If calling a method, mark the method as used
-        // This is handled by the callee expression visitor
+        // Check if this is a method call via resolved binding on callee
+        if (
+          node.callee.type === NodeType.MemberExpression &&
+          this.#semanticContext
+        ) {
+          const binding = this.#semanticContext.getResolvedBinding(
+            node.callee as MemberExpression,
+          );
+          if (binding && binding.kind === 'method') {
+            this.#markMethodUsed(
+              binding.classType,
+              binding.methodName,
+              !binding.isStaticDispatch,
+            );
+          }
+        }
       },
 
       // Don't recurse into nested function bodies by default
@@ -685,12 +775,139 @@ class UsageAnalyzer {
   }
 
   /**
+   * Mark a method as used on a class or interface.
+   *
+   * @param classType - The class or interface type
+   * @param methodName - The method name
+   * @param isPolymorphic - Whether the call could dispatch to subclass overrides
+   */
+  #markMethodUsed(
+    classType: ClassType | InterfaceType,
+    methodName: string,
+    isPolymorphic: boolean,
+  ): void {
+    // Get or create the used methods set for this type
+    let usedSet = this.#usedMethods.get(classType);
+    if (!usedSet) {
+      usedSet = new Set();
+      this.#usedMethods.set(classType, usedSet);
+    }
+    usedSet.add(methodName);
+
+    // If polymorphic, we need to mark all overrides in subclasses as used too
+    if (isPolymorphic) {
+      let polySet = this.#polymorphicMethods.get(classType);
+      if (!polySet) {
+        polySet = new Set();
+        this.#polymorphicMethods.set(classType, polySet);
+      }
+      polySet.add(methodName);
+
+      // For class types, propagate to all known subclasses
+      if (classType.kind === TypeKind.Class) {
+        this.#propagateMethodToSubclasses(classType as ClassType, methodName);
+      }
+
+      // For interface types, we'll handle this conservatively in isMethodUsed
+      // by checking if any base interface has the method marked as polymorphic
+    }
+  }
+
+  /**
+   * Propagate a polymorphic method call to all known subclasses.
+   */
+  #propagateMethodToSubclasses(classType: ClassType, methodName: string): void {
+    const subclasses = this.#subclasses.get(classType);
+    if (!subclasses) return;
+
+    for (const subclass of subclasses) {
+      // Mark the method as used in the subclass
+      let usedSet = this.#usedMethods.get(subclass);
+      if (!usedSet) {
+        usedSet = new Set();
+        this.#usedMethods.set(subclass, usedSet);
+      }
+      usedSet.add(methodName);
+
+      // Recursively propagate to subclass's subclasses
+      this.#propagateMethodToSubclasses(subclass, methodName);
+    }
+  }
+
+  /**
+   * Check if a method is used on a class or interface.
+   * Accounts for polymorphic dispatch from base classes/interfaces.
+   */
+  #isMethodUsedInternal(
+    classType: ClassType | InterfaceType,
+    methodName: string,
+  ): boolean {
+    // Check if directly marked as used
+    const usedSet = this.#usedMethods.get(classType);
+    if (usedSet?.has(methodName)) {
+      return true;
+    }
+
+    // For classes, check if any base class has polymorphic call to this method
+    if (classType.kind === TypeKind.Class) {
+      const ct = classType as ClassType;
+      let current: ClassType | undefined = ct.superType;
+      while (current) {
+        const polySet = this.#polymorphicMethods.get(current);
+        if (polySet?.has(methodName)) {
+          return true;
+        }
+        current = current.superType;
+      }
+
+      // Also check implemented interfaces for polymorphic calls
+      for (const iface of ct.implements) {
+        if (this.#isMethodUsedViaInterface(iface, methodName)) {
+          return true;
+        }
+      }
+    }
+
+    // For interfaces, check parent interfaces
+    if (classType.kind === TypeKind.Interface) {
+      const it = classType as InterfaceType;
+      for (const parent of it.extends ?? []) {
+        const polySet = this.#polymorphicMethods.get(parent);
+        if (polySet?.has(methodName)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if a method is used via an interface (polymorphic).
+   */
+  #isMethodUsedViaInterface(iface: InterfaceType, methodName: string): boolean {
+    const polySet = this.#polymorphicMethods.get(iface);
+    if (polySet?.has(methodName)) {
+      return true;
+    }
+    // Check parent interfaces
+    for (const parent of iface.extends ?? []) {
+      if (this.#isMethodUsedViaInterface(parent, methodName)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Create the final result object.
    */
   #createResult(): UsageAnalysisResult {
     const usageMap = this.#usageMap;
     const usedDeclarations = this.#usedDeclarations;
     const usedModules = this.#usedModules;
+    // Capture 'this' for the closure
+    const analyzer = this;
 
     return {
       getUsage(decl: Declaration): UsageInfo | undefined {
@@ -705,6 +922,13 @@ class UsageAnalyzer {
 
       isModuleUsed(module: Module): boolean {
         return usedModules.has(module);
+      },
+
+      isMethodUsed(
+        classType: ClassType | InterfaceType,
+        methodName: string,
+      ): boolean {
+        return analyzer.#isMethodUsedInternal(classType, methodName);
       },
 
       get usedDeclarations() {

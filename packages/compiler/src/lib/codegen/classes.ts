@@ -2301,6 +2301,22 @@ export function generateClassMethods(
         throw new Error(`Method ${baseName} not found in ${classInfo.name}`);
       }
 
+      // Method-level DCE: Skip body generation for unused methods.
+      // Constructors are always needed if the class is used.
+      // Intrinsic and declared methods don't have bodies to generate anyway.
+      if (
+        checkerType &&
+        methodName !== '#new' &&
+        !methodInfo.intrinsic &&
+        !member.isDeclare &&
+        !ctx.isMethodUsed(checkerType, methodName)
+      ) {
+        // Emit minimal stub: just unreachable + end
+        const stubBody: number[] = [Opcode.unreachable, Opcode.end];
+        ctx.module.addCode(methodInfo.index, [], stubBody);
+        continue;
+      }
+
       const body: number[] = [];
 
       ctx.pushFunctionScope();
@@ -2465,86 +2481,100 @@ export function generateClassMethods(
       if (member.getter) {
         const methodName = getGetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
-        const body: number[] = [];
 
-        ctx.pushFunctionScope();
+        // Method-level DCE: Skip body generation for unused getters
+        if (checkerType && !ctx.isMethodUsed(checkerType, methodName)) {
+          const stubBody: number[] = [Opcode.unreachable, Opcode.end];
+          ctx.module.addCode(methodInfo.index, [], stubBody);
+        } else {
+          const body: number[] = [];
 
-        // Params
-        // 0: this
-        ctx.defineParam('this', methodInfo.paramTypes[0]);
+          ctx.pushFunctionScope();
 
-        // Downcast 'this' if needed
-        const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
-        let targetTypeIndex = classInfo.structTypeIndex;
-        if (classInfo.isExtension && classInfo.onType) {
-          targetTypeIndex = decodeTypeIndex(classInfo.onType);
+          // Params
+          // 0: this
+          ctx.defineParam('this', methodInfo.paramTypes[0]);
+
+          // Downcast 'this' if needed
+          const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
+          let targetTypeIndex = classInfo.structTypeIndex;
+          if (classInfo.isExtension && classInfo.onType) {
+            targetTypeIndex = decodeTypeIndex(classInfo.onType);
+          }
+
+          if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
+            const realThisType = [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(targetTypeIndex),
+            ];
+            const realThisLocal = ctx.declareLocal('this', realThisType);
+
+            body.push(Opcode.local_get, 0);
+            body.push(0xfb, GcOpcode.ref_cast_null);
+            body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
+            body.push(Opcode.local_set, realThisLocal);
+
+            ctx.thisLocalIndex = realThisLocal;
+          }
+
+          generateBlockStatement(ctx, member.getter, body);
+          body.push(Opcode.end);
+
+          ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
         }
-
-        if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
-          const realThisType = [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(targetTypeIndex),
-          ];
-          const realThisLocal = ctx.declareLocal('this', realThisType);
-
-          body.push(Opcode.local_get, 0);
-          body.push(0xfb, GcOpcode.ref_cast_null);
-          body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
-          body.push(Opcode.local_set, realThisLocal);
-
-          ctx.thisLocalIndex = realThisLocal;
-        }
-
-        generateBlockStatement(ctx, member.getter, body);
-        body.push(Opcode.end);
-
-        ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
       }
 
       // Setter
       if (member.setter) {
         const methodName = getSetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
-        const body: number[] = [];
 
-        ctx.pushFunctionScope();
+        // Method-level DCE: Skip body generation for unused setters
+        if (checkerType && !ctx.isMethodUsed(checkerType, methodName)) {
+          const stubBody: number[] = [Opcode.unreachable, Opcode.end];
+          ctx.module.addCode(methodInfo.index, [], stubBody);
+        } else {
+          const body: number[] = [];
 
-        // Params
-        // 0: this
-        ctx.defineParam('this', methodInfo.paramTypes[0]);
-        // 1: value - pass the Identifier node for binding resolution
-        ctx.defineParam(
-          member.setter.param.name,
-          methodInfo.paramTypes[1],
-          member.setter.param,
-        );
+          ctx.pushFunctionScope();
 
-        // Downcast 'this' if needed
-        const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
-        let targetTypeIndex = classInfo.structTypeIndex;
-        if (classInfo.isExtension && classInfo.onType) {
-          targetTypeIndex = decodeTypeIndex(classInfo.onType);
+          // Params
+          // 0: this
+          ctx.defineParam('this', methodInfo.paramTypes[0]);
+          // 1: value - pass the Identifier node for binding resolution
+          ctx.defineParam(
+            member.setter.param.name,
+            methodInfo.paramTypes[1],
+            member.setter.param,
+          );
+
+          // Downcast 'this' if needed
+          const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
+          let targetTypeIndex = classInfo.structTypeIndex;
+          if (classInfo.isExtension && classInfo.onType) {
+            targetTypeIndex = decodeTypeIndex(classInfo.onType);
+          }
+
+          if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
+            const realThisType = [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(targetTypeIndex),
+            ];
+            const realThisLocal = ctx.declareLocal('this', realThisType);
+
+            body.push(Opcode.local_get, 0);
+            body.push(0xfb, GcOpcode.ref_cast_null);
+            body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
+            body.push(Opcode.local_set, realThisLocal);
+
+            ctx.thisLocalIndex = realThisLocal;
+          }
+
+          generateBlockStatement(ctx, member.setter.body, body);
+          body.push(Opcode.end);
+
+          ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
         }
-
-        if (thisTypeIndex !== -1 && thisTypeIndex !== targetTypeIndex) {
-          const realThisType = [
-            ValType.ref_null,
-            ...WasmModule.encodeSignedLEB128(targetTypeIndex),
-          ];
-          const realThisLocal = ctx.declareLocal('this', realThisType);
-
-          body.push(Opcode.local_get, 0);
-          body.push(0xfb, GcOpcode.ref_cast_null);
-          body.push(...WasmModule.encodeSignedLEB128(targetTypeIndex));
-          body.push(Opcode.local_set, realThisLocal);
-
-          ctx.thisLocalIndex = realThisLocal;
-        }
-
-        generateBlockStatement(ctx, member.setter.body, body);
-        body.push(Opcode.end);
-
-        ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
       }
     } else if (member.type === NodeType.FieldDefinition) {
       if (member.isDeclare) continue;
@@ -2568,36 +2598,50 @@ export function generateClassMethods(
         // Getter
         const getterName = getGetterName(propName);
         const getterInfo = classInfo.methods.get(getterName)!;
-        const getterBody: number[] = [];
 
-        // this.field
-        getterBody.push(Opcode.local_get, 0); // this
-        getterBody.push(0xfb, GcOpcode.struct_get);
-        getterBody.push(
-          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-        );
-        getterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
-        getterBody.push(Opcode.end);
+        // Method-level DCE for implicit field getters
+        if (checkerType && !ctx.isMethodUsed(checkerType, getterName)) {
+          const stubBody: number[] = [Opcode.unreachable, Opcode.end];
+          ctx.module.addCode(getterInfo.index, [], stubBody);
+        } else {
+          const getterBody: number[] = [];
 
-        ctx.module.addCode(getterInfo.index, [], getterBody);
+          // this.field
+          getterBody.push(Opcode.local_get, 0); // this
+          getterBody.push(0xfb, GcOpcode.struct_get);
+          getterBody.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+          getterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+          getterBody.push(Opcode.end);
+
+          ctx.module.addCode(getterInfo.index, [], getterBody);
+        }
 
         // Setter
         if (!member.isFinal) {
           const setterName = getSetterName(propName);
           const setterInfo = classInfo.methods.get(setterName)!;
-          const setterBody: number[] = [];
 
-          // this.field = val
-          setterBody.push(Opcode.local_get, 0); // this
-          setterBody.push(Opcode.local_get, 1); // val
-          setterBody.push(0xfb, GcOpcode.struct_set);
-          setterBody.push(
-            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
-          );
-          setterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
-          setterBody.push(Opcode.end);
+          // Method-level DCE for implicit field setters
+          if (checkerType && !ctx.isMethodUsed(checkerType, setterName)) {
+            const stubBody: number[] = [Opcode.unreachable, Opcode.end];
+            ctx.module.addCode(setterInfo.index, [], stubBody);
+          } else {
+            const setterBody: number[] = [];
 
-          ctx.module.addCode(setterInfo.index, [], setterBody);
+            // this.field = val
+            setterBody.push(Opcode.local_get, 0); // this
+            setterBody.push(Opcode.local_get, 1); // val
+            setterBody.push(0xfb, GcOpcode.struct_set);
+            setterBody.push(
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            );
+            setterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+            setterBody.push(Opcode.end);
+
+            ctx.module.addCode(setterInfo.index, [], setterBody);
+          }
         }
       }
     }

@@ -156,6 +156,8 @@ export class CodeGenerator {
       this.#usageResult = analyzeUsage(program, {
         semanticContext: this.#ctx.semanticContext,
       });
+      // Share the usage result with the context for method-level DCE
+      this.#ctx.setUsageResult(this.#usageResult);
     }
 
     const statements = this.#ctx.statements;
