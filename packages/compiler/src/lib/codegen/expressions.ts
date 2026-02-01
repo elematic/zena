@@ -3636,7 +3636,7 @@ function generateBinaryExpression(
         sourceZenaType &&
         sourceZenaType.kind === TypeKind.Number &&
         (sourceZenaType as NumberType).name === Types.U32.name;
-      
+
       const isU64 =
         sourceZenaType &&
         sourceZenaType.kind === TypeKind.Number &&
