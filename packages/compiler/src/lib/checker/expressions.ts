@@ -1622,13 +1622,14 @@ function checkBinaryExpression(
     return Types.Unknown;
   }
 
-  // Helper to check if a type is an integer type (i32, u32, i64)
+  // Helper to check if a type is an integer type (i32, u32, i64, u64)
   const isIntegerType = (type: Type): boolean =>
     type === Types.I32 ||
     type === Types.U32 ||
     type === Types.I64 ||
+    type === Types.U64 ||
     (type.kind === TypeKind.Number &&
-      [Types.I32.name, Types.U32.name, Types.I64.name].includes(
+      [Types.I32.name, Types.U32.name, Types.I64.name, Types.U64.name].includes(
         (type as NumberType).name,
       ));
 

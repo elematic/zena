@@ -42,6 +42,17 @@ suite('Math Intrinsics', () => {
     assert.strictEqual(uintDiv(0xFFFFFFFE, 2), 0x7FFFFFFF); // Large unsigned value
   });
 
+  test('div u64', async () => {
+    const source = `
+      import {div} from 'zena:math';
+      export let uintDiv64 = (a: u64, b: u64) => div(a, b);
+    `;
+    const {uintDiv64} = await compileAndInstantiate(source);
+
+    assert.strictEqual(uintDiv64(10n, 3n), 3n);
+    assert.strictEqual(uintDiv64(0xFFFFFFFFFFFFFFFFn, 2n), 0x7FFFFFFFFFFFFFFFn); // Large unsigned value
+  });
+
   test('i32_trunc_s f32 to i32', async () => {
     const source = `
       import {i32_trunc_s} from 'zena:math';

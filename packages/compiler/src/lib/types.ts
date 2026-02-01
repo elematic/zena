@@ -166,6 +166,7 @@ export interface ClassType extends Type {
 const I32 = {kind: TypeKind.Number, name: 'i32'} as NumberType;
 const U32 = {kind: TypeKind.Number, name: 'u32'} as NumberType;
 const I64 = {kind: TypeKind.Number, name: 'i64'} as NumberType;
+const U64 = {kind: TypeKind.Number, name: 'u64'} as NumberType;
 const F32 = {kind: TypeKind.Number, name: 'f32'} as NumberType;
 const F64 = {kind: TypeKind.Number, name: 'f64'} as NumberType;
 
@@ -191,6 +192,7 @@ export const Types = {
   I32: I32,
   U32: U32,
   I64: I64,
+  U64: U64,
   F32: F32,
   F64: F64,
   AnyRef: {kind: TypeKind.AnyRef} as Type,
@@ -226,6 +228,7 @@ export const TypeNames = {
   F32: 'f32',
   F64: 'f64',
   U32: 'u32',
+  U64: 'u64',
   ByteArray: 'ByteArray',
 } as const;
 
