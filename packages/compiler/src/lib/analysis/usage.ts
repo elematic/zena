@@ -690,24 +690,22 @@ class UsageAnalyzer {
         // Check if the left side is an index expression (for operator []=)
         if (node.left.type === NodeType.IndexExpression) {
           const indexExpr = node.left as IndexExpression;
-          // Check if resolvedOperatorMethod was set by the checker for operator []=
-          if (indexExpr.resolvedOperatorMethod) {
-            const objectType = indexExpr.object.inferredType;
-            if (objectType && objectType.kind === TypeKind.Class) {
-              const classType = objectType as ClassType;
-              // The operator []= method name needs to include signature for overloads
-              const methodName = '[]=' + getSignatureKey(indexExpr.resolvedOperatorMethod);
-              const isFinal = classType.isFinal === true;
-              this.#markMethodUsed(classType, methodName, !isFinal);
-            }
-          }
-          // Also handle extension class operators
-          if (indexExpr.extensionClassType) {
-            const classType = indexExpr.extensionClassType;
-            if (indexExpr.resolvedOperatorMethod) {
-              const methodName = '[]=' + getSignatureKey(indexExpr.resolvedOperatorMethod);
-              const isFinal = classType.isFinal === true;
-              this.#markMethodUsed(classType, methodName, !isFinal);
+          const objectType = indexExpr.object.inferredType;
+          
+          // Check if the object type is a class or interface with operator []=
+          if (
+            objectType &&
+            (objectType.kind === TypeKind.Class ||
+              objectType.kind === TypeKind.Interface)
+          ) {
+            const classType = objectType as ClassType | InterfaceType;
+            // Check if this class/interface has operator []=
+            if (classType.methods.has('[]=')) {
+              // Mark operator []= as used
+              const isFinal =
+                objectType.kind === TypeKind.Class &&
+                (classType as ClassType).isFinal === true;
+              this.#markMethodUsed(classType, '[]=', !isFinal);
             }
           }
         }
