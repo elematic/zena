@@ -177,8 +177,7 @@ export const StringClass: ClassType = {
   statics: new Map(),
   implements: [],
   vtable: [],
-  isExtension: true,
-  onType: {kind: TypeKind.ByteArray} as Type,
+  isFinal: true,
 };
 
 export const Types = {

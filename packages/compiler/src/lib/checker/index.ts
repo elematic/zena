@@ -196,6 +196,60 @@ export class TypeChecker {
       'let',
     );
 
+    // __byte_array_new(size: i32): ByteArray
+    ctx.declare(
+      '__byte_array_new',
+      {
+        kind: TypeKind.Function,
+        typeParameters: [],
+        parameters: [Types.I32],
+        returnType: Types.ByteArray,
+      } as FunctionType,
+      'let',
+    );
+
+    // __byte_array_length(arr: ByteArray): i32
+    ctx.declare(
+      '__byte_array_length',
+      {
+        kind: TypeKind.Function,
+        typeParameters: [],
+        parameters: [Types.ByteArray],
+        returnType: Types.I32,
+      } as FunctionType,
+      'let',
+    );
+
+    // __byte_array_get(arr: ByteArray, index: i32): i32
+    ctx.declare(
+      '__byte_array_get',
+      {
+        kind: TypeKind.Function,
+        typeParameters: [],
+        parameters: [Types.ByteArray, Types.I32],
+        returnType: Types.I32,
+      } as FunctionType,
+      'let',
+    );
+
+    // __byte_array_copy(dest: ByteArray, destOffset: i32, src: ByteArray, srcOffset: i32, len: i32): void
+    ctx.declare(
+      '__byte_array_copy',
+      {
+        kind: TypeKind.Function,
+        typeParameters: [],
+        parameters: [
+          Types.ByteArray,
+          Types.I32,
+          Types.ByteArray,
+          Types.I32,
+          Types.I32,
+        ],
+        returnType: Types.Void,
+      } as FunctionType,
+      'let',
+    );
+
     // unreachable(): never
     ctx.declare(
       'unreachable',

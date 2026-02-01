@@ -1,7 +1,39 @@
-export final extension class String on ByteArray {
-  @intrinsic('array.len')
-  declare length: i32;
+// String class - wrapper around internal ByteArray
+// Encoding tags: WTF-8 = 0, WTF-16 = 1
+export let ENCODING_WTF8: i32 = 0;
+export let ENCODING_WTF16: i32 = 1;
 
-  @intrinsic('array.get_u')
-  declare getByteAt(index: i32): i32;
+export final class String {
+  // Internal storage - accessed by compiler intrinsics
+  #data: ByteArray;
+  #encoding: i32;
+
+  // Private constructor - strings are created by the compiler for literals
+  // or by StringBuilder/transcoding functions
+  #new(data: ByteArray, encoding: i32) {
+    this.#data = data;
+    this.#encoding = encoding;
+  }
+
+  // Length in bytes (code units for WTF-8).
+  // For ASCII and most UTF-8, this equals the number of characters.
+  // TODO: For WTF-16, return code units (byteLen / 2) once integer division is supported.
+  length: i32 {
+    get {
+      return __byte_array_length(this.#data);
+    }
+  }
+
+  // Get byte at index. Returns the byte value as i32.
+  // For WTF-8 strings, this is the UTF-8 byte at the given index.
+  // For WTF-16 strings, this is the byte (not code unit) at the given index.
+  getByteAt(index: i32): i32 {
+    return __byte_array_get(this.#data, index);
+  }
+
+  // String operations (concat, equality, hash) are implemented
+  // by the compiler in codegen/expressions.ts:
+  // - generateConcatFunction: extracts #data, copies bytes, creates new String
+  // - generateStrEqFunction: extracts #data, compares bytes
+  // - generateStringHashFunction: extracts #data, FNV-1a hash bytes
 }

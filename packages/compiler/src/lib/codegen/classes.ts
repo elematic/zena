@@ -1256,12 +1256,13 @@ export function preRegisterClassStruct(
   const brandTypeIndex = generateBrandType(ctx, brandId);
 
   let structTypeIndex: number;
+  structTypeIndex = ctx.module.reserveType();
+
+  // For String class, track the struct type index for string literal generation
   if (isStringClass) {
-    // String is an extension class on ByteArray - ensure the byte array type exists
-    // and reuse it as the String's struct type index
-    structTypeIndex = ctx.ensureStringType();
-  } else {
-    structTypeIndex = ctx.module.reserveType();
+    ctx.stringTypeIndex = structTypeIndex;
+    // Also ensure ByteArray type exists (needed for string data)
+    ctx.ensureByteArrayType();
   }
 
   // Add minimal info to class registry so self-references work

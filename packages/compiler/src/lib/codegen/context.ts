@@ -378,16 +378,38 @@ export class CodegenContext {
   // Only call them when the feature is actually needed.
 
   /**
-   * Ensure the string/byte array type is created.
-   * Call this before using stringTypeIndex or byteArrayTypeIndex.
+   * Ensure the ByteArray type is created.
+   * Call this before using byteArrayTypeIndex.
    * Returns the type index.
    */
-  ensureStringType(): number {
+  ensureByteArrayType(): number {
     if (this.byteArrayTypeIndex === -1) {
       // Define backing array type: array<i8> (mutable for construction)
       this.byteArrayTypeIndex = this.module.addArrayType([ValType.i8], true);
-      // String is an extension class on ByteArray, so they share the type index
-      this.stringTypeIndex = this.byteArrayTypeIndex;
+    }
+    return this.byteArrayTypeIndex;
+  }
+
+  /**
+   * Ensure the String struct type is created.
+   * String is a struct with two fields:
+   *   - #data: ref $ByteArray (field 0)
+   *   - #encoding: i32 (field 1)
+   * Call this before using stringTypeIndex.
+   * Returns the type index.
+   */
+  ensureStringType(): number {
+    // Note: This method no longer creates its own String struct type.
+    // The String class from stdlib defines the actual struct type with:
+    //   0: __vtable (eqref)
+    //   1: __brand_String (ref null $brandType)
+    //   2: String#data (ref $ByteArray)
+    //   3: String#encoding (i32)
+    // The stringTypeIndex is set when the String class is processed.
+    // If called before the String class is defined, returns -1.
+    if (this.stringTypeIndex === -1) {
+      // Ensure ByteArray type exists (needed by String class)
+      this.ensureByteArrayType();
     }
     return this.stringTypeIndex;
   }
