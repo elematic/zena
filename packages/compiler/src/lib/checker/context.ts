@@ -452,6 +452,8 @@ export class CheckerContext {
         return Types.U32;
       case Types.I64.name:
         return Types.I64;
+      case Types.U64.name:
+        return Types.U64;
       case Types.F32.name:
         return Types.F32;
       case Types.F64.name:
