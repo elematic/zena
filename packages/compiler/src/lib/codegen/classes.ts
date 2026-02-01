@@ -4298,7 +4298,9 @@ export function mapCheckerTypeToWasmType(
   if (type.kind === TypeKind.Number) {
     const name = (type as NumberType).name;
     if (name === Types.I32.name) return [ValType.i32];
+    if (name === Types.U32.name) return [ValType.i32];
     if (name === Types.I64.name) return [ValType.i64];
+    if (name === Types.U64.name) return [ValType.i64];
     if (name === Types.F32.name) return [ValType.f32];
     if (name === Types.F64.name) return [ValType.f64];
     return [ValType.i32];

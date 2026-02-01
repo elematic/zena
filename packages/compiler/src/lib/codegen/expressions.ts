@@ -3637,6 +3637,11 @@ function generateBinaryExpression(
         sourceZenaType.kind === TypeKind.Number &&
         (sourceZenaType as NumberType).name === Types.U32.name;
 
+      const isU64 =
+        sourceZenaType &&
+        sourceZenaType.kind === TypeKind.Number &&
+        (sourceZenaType as NumberType).name === Types.U64.name;
+
       if (source[0] === ValType.i32) {
         if (target === ValType.i64)
           body.push(isU32 ? Opcode.i64_extend_i32_u : Opcode.i64_extend_i32_s);
@@ -3649,8 +3654,8 @@ function generateBinaryExpression(
             isU32 ? Opcode.f64_convert_i32_u : Opcode.f64_convert_i32_s,
           );
       } else if (source[0] === ValType.i64) {
-        if (target === ValType.f32) body.push(Opcode.f32_convert_i64_s);
-        else if (target === ValType.f64) body.push(Opcode.f64_convert_i64_s);
+        if (target === ValType.f32) body.push(isU64 ? Opcode.f32_convert_i64_u : Opcode.f32_convert_i64_s);
+        else if (target === ValType.f64) body.push(isU64 ? Opcode.f64_convert_i64_u : Opcode.f64_convert_i64_s);
       } else if (source[0] === ValType.f32) {
         if (target === ValType.f64) body.push(Opcode.f64_promote_f32);
       }
@@ -3665,8 +3670,13 @@ function generateBinaryExpression(
       t &&
       t.kind === TypeKind.Number &&
       (t as NumberType).name === Types.U32.name;
+    const isU64Type = (t: any) =>
+      t &&
+      t.kind === TypeKind.Number &&
+      (t as NumberType).name === Types.U64.name;
     const useUnsigned =
-      isU32Type(expr.left.inferredType) || isU32Type(expr.right.inferredType);
+      isU32Type(expr.left.inferredType) || isU32Type(expr.right.inferredType) ||
+      isU64Type(expr.left.inferredType) || isU64Type(expr.right.inferredType);
 
     switch (targetType) {
       case ValType.i32:
@@ -3733,10 +3743,10 @@ function generateBinaryExpression(
             body.push(Opcode.i64_mul);
             break;
           case '/':
-            body.push(Opcode.i64_div_s);
+            body.push(useUnsigned ? Opcode.i64_div_u : Opcode.i64_div_s);
             break; // Should not happen
           case '%':
-            body.push(Opcode.i64_rem_s);
+            body.push(useUnsigned ? Opcode.i64_rem_u : Opcode.i64_rem_s);
             break;
           case '&':
             body.push(Opcode.i64_and);
@@ -3756,16 +3766,16 @@ function generateBinaryExpression(
             body.push(Opcode.i64_ne);
             break;
           case '<':
-            body.push(Opcode.i64_lt_s);
+            body.push(useUnsigned ? Opcode.i64_lt_u : Opcode.i64_lt_s);
             break;
           case '<=':
-            body.push(Opcode.i64_le_s);
+            body.push(useUnsigned ? Opcode.i64_le_u : Opcode.i64_le_s);
             break;
           case '>':
-            body.push(Opcode.i64_gt_s);
+            body.push(useUnsigned ? Opcode.i64_gt_u : Opcode.i64_gt_s);
             break;
           case '>=':
-            body.push(Opcode.i64_ge_s);
+            body.push(useUnsigned ? Opcode.i64_ge_u : Opcode.i64_ge_s);
             break;
           default:
             throw new Error(`Unsupported operator for i64: ${expr.operator}`);
@@ -4092,10 +4102,10 @@ function generateNumberLiteral(
     } else if (name === Types.F64.name) {
       isFloat = true;
       isF64 = true;
-    } else if (name === Types.I64.name) {
+    } else if (name === Types.I64.name || name === Types.U64.name) {
       isI64 = true;
       isFloat = false;
-    } else if (name === Types.I32.name) {
+    } else if (name === Types.I32.name || name === Types.U32.name) {
       isFloat = false;
     }
   }

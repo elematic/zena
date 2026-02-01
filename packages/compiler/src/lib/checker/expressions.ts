@@ -1544,6 +1544,7 @@ function checkBinaryExpression(
 
     const isU32 = (n: string) => n === Types.U32.name;
     const isI64 = (n: string) => n === Types.I64.name;
+    const isU64 = (n: string) => n === Types.U64.name;
     const isF32 = (n: string) => n === Types.F32.name;
     const isF64 = (n: string) => n === Types.F64.name;
 
@@ -1555,7 +1556,9 @@ function checkBinaryExpression(
         isF64(leftName) ||
         isF64(rightName) ||
         isI64(leftName) ||
-        isI64(rightName)
+        isI64(rightName) ||
+        isU64(leftName) ||
+        isU64(rightName)
       ) {
         commonType = Types.F64;
       } else {
@@ -1571,12 +1574,14 @@ function checkBinaryExpression(
       } else if (isF64(leftName) || isF64(rightName)) {
         commonType = Types.F64;
       } else if (isF32(leftName) || isF32(rightName)) {
-        // If one is f32 and other is i64, promote to f64 to preserve precision
-        if (isI64(leftName) || isI64(rightName)) {
+        // If one is f32 and other is i64/u64, promote to f64 to preserve precision
+        if (isI64(leftName) || isI64(rightName) || isU64(leftName) || isU64(rightName)) {
           commonType = Types.F64;
         } else {
           commonType = Types.F32;
         }
+      } else if (isU64(leftName) || isU64(rightName)) {
+        commonType = Types.U64;
       } else if (isI64(leftName) || isI64(rightName)) {
         commonType = Types.I64;
       } else {
@@ -1622,13 +1627,14 @@ function checkBinaryExpression(
     return Types.Unknown;
   }
 
-  // Helper to check if a type is an integer type (i32, u32, i64)
+  // Helper to check if a type is an integer type (i32, u32, i64, u64)
   const isIntegerType = (type: Type): boolean =>
     type === Types.I32 ||
     type === Types.U32 ||
     type === Types.I64 ||
+    type === Types.U64 ||
     (type.kind === TypeKind.Number &&
-      [Types.I32.name, Types.U32.name, Types.I64.name].includes(
+      [Types.I32.name, Types.U32.name, Types.I64.name, Types.U64.name].includes(
         (type as NumberType).name,
       ));
 
