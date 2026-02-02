@@ -538,7 +538,6 @@ function generateAsExpression(
 
   // Use checker types for semantic operations (lookups, type identity).
   // WASM types are computed lazily, only when needed for opcode emission.
-  let sourceCheckerType = expr.expression.inferredType;
   let targetCheckerType = expr.inferredType!;
 
   // Substitute type parameters if we're in a generic context
@@ -546,12 +545,6 @@ function generateAsExpression(
     if (targetCheckerType) {
       targetCheckerType = ctx.checkerContext.substituteTypeParams(
         targetCheckerType,
-        ctx.currentTypeArguments,
-      );
-    }
-    if (sourceCheckerType) {
-      sourceCheckerType = ctx.checkerContext.substituteTypeParams(
-        sourceCheckerType,
         ctx.currentTypeArguments,
       );
     }
@@ -563,17 +556,14 @@ function generateAsExpression(
   }
   const targetWasmType = mapCheckerTypeToWasmType(ctx, targetCheckerType);
 
-  let sourceWasmType: number[] | undefined;
-  if (sourceCheckerType) {
-    try {
-      sourceWasmType = mapCheckerTypeToWasmType(ctx, sourceCheckerType);
-    } catch {
-      // Ignore inference errors, just don't optimize
-    }
-  }
+  // For the source type, use inferType() instead of expr.expression.inferredType
+  // to get the actual WASM storage type. This is important because the checker's
+  // inferredType may be narrowed (e.g., inside an `if (x is T)` block, x's
+  // inferredType is T, but the actual local storage type is still the wider type).
+  const sourceWasmType = inferType(ctx, expr.expression);
 
   // No-op cast: same WASM representation
-  if (sourceWasmType && typesAreEqual(sourceWasmType, targetWasmType)) {
+  if (typesAreEqual(sourceWasmType, targetWasmType)) {
     return;
   }
 
@@ -645,6 +635,8 @@ function generateAsExpression(
   }
 
   // Interface Boxing - use checker types for all lookups
+  // For interface boxing, we need the checker's source type for class lookup
+  const sourceCheckerType = expr.expression.inferredType;
   if (targetCheckerType?.kind === TypeKind.Interface) {
     const interfaceInfo = ctx.getInterfaceInfo(
       targetCheckerType as InterfaceType,
@@ -951,6 +943,20 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
   // - Generics/Specialization: The context may have specialized types.
   // - Casts: We may have shadowed a variable with a downcasted version in the context.
   if (expr.type === NodeType.ThisExpression) {
+    // If we have a dedicated 'this' local index (e.g., for downcasted 'this' in overrides),
+    // use its type instead of relying on name lookup which might find the parameter type.
+    if (
+      ctx.thisLocalIndex !== undefined &&
+      ctx.thisLocalIndex !== -1 &&
+      ctx.thisLocalIndex !== 0
+    ) {
+      for (let i = ctx.scopes.length - 1; i >= 0; i--) {
+        for (const info of ctx.scopes[i].values()) {
+          if (info.index === ctx.thisLocalIndex) return info.type;
+        }
+      }
+    }
+
     const local = ctx.getLocal('this');
     if (local) return local.type;
   }
@@ -3903,8 +3909,16 @@ function generateBinaryExpression(
       const structTypeIndex = getHeapTypeIndex(ctx, leftType);
       let foundClass: ClassInfo | undefined;
 
-      // Primary: look up ClassInfo via checker type identity
-      if (expr.left.inferredType) {
+      // Primary: look up ClassInfo via WASM struct index
+      // This ensures we use the class matching the local storage type, avoiding unsafe downcasts
+      // (e.g. calling Base::operator== on a Derived instance stored in a Base variable)
+      if (structTypeIndex !== -1) {
+        foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
+      }
+
+      // Secondary: look up ClassInfo via checker type identity
+      // This handles extension classes (e.g. on Arrays) and cases where WASM type is erased
+      if (!foundClass && expr.left.inferredType) {
         let checkerType = expr.left.inferredType;
         // Substitute type parameters when in a generic context
         if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
@@ -3933,11 +3947,6 @@ function generateBinaryExpression(
         }
       }
 
-      // Fallback: look up by struct index
-      if (!foundClass && structTypeIndex !== -1) {
-        foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
-      }
-
       let hasOperator = false;
       if (foundClass) {
         const methodInfo = foundClass.methods.get('==');
@@ -3959,6 +3968,10 @@ function generateBinaryExpression(
             const tempLeft = ctx.declareLocal('$$eq_left', leftType);
             body.push(
               Opcode.local_tee,
+              ...WasmModule.encodeSignedLEB128(tempLeft),
+            );
+            body.push(
+              Opcode.local_get,
               ...WasmModule.encodeSignedLEB128(tempLeft),
             );
 

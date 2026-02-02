@@ -33,9 +33,13 @@ import {
   type RangeExpression,
   type CallExpression,
   type MemberExpression,
+  type BinaryExpression,
+  type IndexExpression,
+  type AssignmentExpression,
 } from '../ast.js';
 import {visit, type Visitor} from '../visitor.js';
 import type {SemanticContext} from '../checker/semantic-context.js';
+import {getSignatureKey} from '../names.js';
 import {
   TypeKind,
   type ClassType,
@@ -631,6 +635,99 @@ class UsageAnalyzer {
               binding.methodName,
               !binding.isStaticDispatch,
             );
+          }
+        }
+      },
+
+      // Handle binary expressions for operator methods (operator ==, operator !=, etc.)
+      visitBinaryExpression: (node: BinaryExpression) => {
+        // Map binary operators to their operator method names
+        // Currently only == is implemented, but this is designed to support
+        // future operators like +, -, *, etc.
+        const operatorMap: Record<string, string | undefined> = {
+          '==': '==',
+          '!=': '==', // != uses the same operator == method (result is negated)
+          // Future: uncomment when these operators are implemented
+          // '+': '+',
+          // '-': '-',
+          // '*': '*',
+          // '/': '/',
+        };
+
+        const operatorMethodName = operatorMap[node.operator];
+        if (operatorMethodName) {
+          // Check if the left operand has a class type with this operator
+          const leftType = node.left.inferredType;
+          if (leftType && leftType.kind === TypeKind.Class) {
+            const classType = leftType as ClassType;
+            // Check if this class has the operator method
+            if (classType.methods.has(operatorMethodName)) {
+              // Mark operator method as used
+              const isFinal = classType.isFinal === true;
+              this.#markMethodUsed(classType, operatorMethodName, !isFinal);
+            }
+          }
+        }
+      },
+
+      // Handle index expressions for operator []
+      visitIndexExpression: (node: IndexExpression) => {
+        if (!node.resolvedOperatorMethod) {
+          return;
+        }
+
+        const signatureKey = getSignatureKey(node.resolvedOperatorMethod);
+
+        // Mark operator [] as used on the main class type
+        const objectType = node.object.inferredType;
+        if (objectType && objectType.kind === TypeKind.Class) {
+          const classType = objectType as ClassType;
+          const isFinal = classType.isFinal === true;
+
+          const method = classType.methods.get('[]');
+          const isOverloaded =
+            method?.overloads && method.overloads.length > 0;
+          const methodName = isOverloaded ? `[]${signatureKey}` : '[]';
+
+          this.#markMethodUsed(classType, methodName, !isFinal);
+        }
+
+        // Also mark operator [] as used on extension class (if applicable)
+        if (node.extensionClassType) {
+          const classType = node.extensionClassType;
+          const isFinal = classType.isFinal === true;
+
+          const method = classType.methods.get('[]');
+          const isOverloaded =
+            method?.overloads && method.overloads.length > 0;
+          const methodName = isOverloaded ? `[]${signatureKey}` : '[]';
+
+          this.#markMethodUsed(classType, methodName, !isFinal);
+        }
+      },
+
+      // Handle assignment expressions for operator []=
+      visitAssignmentExpression: (node: AssignmentExpression) => {
+        // Check if the left side is an index expression (for operator []=)
+        if (node.left.type === NodeType.IndexExpression) {
+          const indexExpr = node.left as IndexExpression;
+          const objectType = indexExpr.object.inferredType;
+          
+          // Check if the object type is a class or interface with operator []=
+          if (
+            objectType &&
+            (objectType.kind === TypeKind.Class ||
+              objectType.kind === TypeKind.Interface)
+          ) {
+            const classType = objectType as ClassType | InterfaceType;
+            // Check if this class/interface has operator []=
+            if (classType.methods.has('[]=')) {
+              // Mark operator []= as used
+              const isFinal =
+                objectType.kind === TypeKind.Class &&
+                (classType as ClassType).isFinal === true;
+              this.#markMethodUsed(classType, '[]=', !isFinal);
+            }
           }
         }
       },

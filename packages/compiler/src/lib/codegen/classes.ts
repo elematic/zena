@@ -1673,36 +1673,10 @@ export function registerClassMethods(
       // We'll add to vtable after computing the mangled name below
       // (see the vtable.push at the end of method registration)
 
-      let thisType: number[];
-      if (classInfo.isExtension && classInfo.onType) {
-        thisType = classInfo.onType;
-      } else {
-        thisType = [
-          ValType.ref_null,
-          ...WasmModule.encodeSignedLEB128(structTypeIndex),
-        ];
-      }
-
-      if (currentSuperClassInfo) {
-        if (
-          methodName !== '#new' &&
-          currentSuperClassInfo.methods.has(methodName)
-        ) {
-          thisType =
-            currentSuperClassInfo.methods.get(methodName)!.paramTypes[0];
-        }
-      }
-
-      const params: number[][] = [];
-      if (
-        !member.isStatic &&
-        !(classInfo.isExtension && methodName === '#new')
-      ) {
-        params.push(thisType);
-      }
       // Use the param's inferredType (set by the checker), falling back to annotation
       // Also build a signature key for overload mangling
       const paramCheckerTypes: Type[] = [];
+      const mappedParams: number[][] = [];
       for (let i = 0; i < member.params.length; i++) {
         const param = member.params[i];
         const paramType =
@@ -1713,8 +1687,7 @@ export function registerClassMethods(
           );
         }
         paramCheckerTypes.push(paramType);
-        const mapped = mapCheckerTypeToWasmType(ctx, paramType);
-        params.push(mapped);
+        mappedParams.push(mapCheckerTypeToWasmType(ctx, paramType));
       }
 
       let results: number[][] = [];
@@ -1761,6 +1734,38 @@ export function registerClassMethods(
         };
         mangledMethodName = methodName + getSignatureKey(funcTypeForSig);
       }
+
+      let thisType: number[];
+      if (classInfo.isExtension && classInfo.onType) {
+        thisType = classInfo.onType;
+      } else {
+        thisType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(structTypeIndex),
+        ];
+      }
+
+      // Fix for overridden methods: verify which method we are actually overriding
+      // (base name or mangled name) and use its 'this' parameter type to ensure
+      // the function signature matches the superclass for vtable compatibility.
+      if (currentSuperClassInfo && methodName !== '#new') {
+        if (currentSuperClassInfo.methods.has(mangledMethodName)) {
+          thisType =
+            currentSuperClassInfo.methods.get(mangledMethodName)!.paramTypes[0];
+        } else if (currentSuperClassInfo.methods.has(methodName)) {
+          thisType =
+            currentSuperClassInfo.methods.get(methodName)!.paramTypes[0];
+        }
+      }
+
+      const params: number[][] = [];
+      if (
+        !member.isStatic &&
+        !(classInfo.isExtension && methodName === '#new')
+      ) {
+        params.push(thisType);
+      }
+      params.push(...mappedParams);
 
       // Method-level DCE: determine if this method should be registered
       // Constructors are always needed if the class is used
@@ -2166,6 +2171,7 @@ export function registerClassMethods(
   generateInterfaceVTable(ctx, classInfo, decl);
 
   if (ctx.shouldExport(decl) && !decl.isExtension) {
+
     const ctorInfo = methods.get('#new')!;
 
     // Wrapper signature: params -> (ref null struct)
@@ -2532,7 +2538,7 @@ export function generateClassMethods(
       // Restore return type context
       ctx.currentReturnType = oldReturnType;
 
-      ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
+      ctx.module.addCode(methodInfo.index, ctx.extraLocals, body, `${classInfo.name}::${methodName}`);
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
 

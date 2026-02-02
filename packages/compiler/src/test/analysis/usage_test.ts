@@ -9,6 +9,7 @@ import {
   type VariableDeclaration,
   type ClassDeclaration,
 } from '../../lib/ast.js';
+import {TypeKind, type ClassType} from '../../lib/types.js';
 
 suite('Usage Analysis', () => {
   /**
@@ -274,6 +275,154 @@ suite('Usage Analysis', () => {
     assert.ok(
       usage?.reason?.includes('export'),
       'Reason should mention export',
+    );
+  });
+
+  test('marks operator [] as used when called via index syntax', () => {
+    const source = `
+      class Box {
+        operator [](index: i32): i32 {
+          return index;
+        }
+      }
+      export let main = () => {
+        let b = new Box();
+        return b[0];
+      };
+    `;
+    const parser = new Parser(source, {path: 'main.zena', isStdlib: false});
+    const module = parser.parse();
+
+    // Type check for inferredType population
+    const checker = TypeChecker.forModule(module);
+    checker.check();
+
+    const program: Program = {
+      modules: new Map([['main.zena', module]]),
+      entryPoint: 'main.zena',
+      preludeModules: [],
+    };
+
+    // Pass semantic context to usage analysis
+    const result = analyzeUsage(program, {
+      semanticContext: checker.semanticContext,
+    });
+
+    const boxDecl = module.body[0] as ClassDeclaration;
+    assert.ok(result.isUsed(boxDecl), 'Box class should be used');
+
+    // Get the class type
+    const classType = boxDecl.inferredType;
+    assert.ok(classType?.kind === TypeKind.Class, 'Box should have a class type');
+
+    // Check that operator [] method is marked as used
+    // Note: The exact method name includes a signature key for overloads,
+    // but since we only have one operator[] in this test, we can check for any method starting with '[]'
+    const methodNames = Array.from((classType as ClassType).methods.keys());
+    const operatorMethod = methodNames.find((name) => name.startsWith('[]'));
+    assert.ok(
+      operatorMethod,
+      'operator [] method should exist in class methods',
+    );
+
+    // Usage analysis uses mangled names with signature only if overloaded.
+    // In this case, it's not overloaded, so it should match the method name.
+    assert.ok(
+      result.isMethodUsed(classType as ClassType, operatorMethod!),
+      'operator [] should be marked as used',
+    );
+  });
+
+  test('marks operator []= as used when called via index assignment', () => {
+    const source = `
+      class Box {
+        operator []=(index: i32, value: i32): void {
+        }
+      }
+      export let main = () => {
+        let b = new Box();
+        b[0] = 1;
+      };
+    `;
+    const parser = new Parser(source, {path: 'main.zena', isStdlib: false});
+    const module = parser.parse();
+
+    // Type check for inferredType population
+    const checker = TypeChecker.forModule(module);
+    checker.check();
+
+    const program: Program = {
+      modules: new Map([['main.zena', module]]),
+      entryPoint: 'main.zena',
+      preludeModules: [],
+    };
+
+    // Pass semantic context to usage analysis
+    const result = analyzeUsage(program, {
+      semanticContext: checker.semanticContext,
+    });
+
+    const boxDecl = module.body[0] as ClassDeclaration;
+    assert.ok(result.isUsed(boxDecl), 'Box class should be used');
+
+    // Get the class type
+    const classType = boxDecl.inferredType;
+    assert.ok(classType?.kind === TypeKind.Class, 'Box should have a class type');
+
+    // Check that operator []= method is marked as used
+    assert.ok(
+      result.isMethodUsed(classType as ClassType, '[]='),
+      'operator []= should be marked as used',
+    );
+  });
+
+  test('marks operator == as used when called via equality syntax', () => {
+    const source = `
+      class Point {
+        x: i32;
+        #new(x: i32) {
+          this.x = x;
+        }
+        operator ==(other: Point): boolean {
+          return this.x == other.x;
+        }
+      }
+      export let main = () => {
+        return new Point(1) == new Point(1);
+      };
+    `;
+    const parser = new Parser(source, {path: 'main.zena', isStdlib: false});
+    const module = parser.parse();
+
+    // Type check for inferredType population
+    const checker = TypeChecker.forModule(module);
+    checker.check();
+
+    const program: Program = {
+      modules: new Map([['main.zena', module]]),
+      entryPoint: 'main.zena',
+      preludeModules: [],
+    };
+
+    // Pass semantic context to usage analysis
+    const result = analyzeUsage(program, {
+      semanticContext: checker.semanticContext,
+    });
+
+    const pointDecl = module.body[0] as ClassDeclaration;
+    assert.ok(result.isUsed(pointDecl), 'Point class should be used');
+
+    // Get the class type
+    const classType = pointDecl.inferredType;
+    assert.ok(
+      classType?.kind === TypeKind.Class,
+      'Point should have a class type',
+    );
+
+    // Check that operator == method is marked as used
+    assert.ok(
+      result.isMethodUsed(classType as ClassType, '=='),
+      'operator == should be marked as used',
     );
   });
 });
