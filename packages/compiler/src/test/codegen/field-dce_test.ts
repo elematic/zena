@@ -3,12 +3,11 @@ import assert from 'node:assert';
 import {compileAndRun} from './utils.js';
 
 suite('Field-level DCE', () => {
-  test('write-only @pure field is eliminated', async () => {
+  test('write-only plain field is eliminated', async () => {
     const source = `
       class User {
         name: i32;
-        @pure
-        unusedId: i32;
+        unusedId: i32;  // Plain field - no decorator needed
         
         #new(n: i32, id: i32) {
           this.name = n;
@@ -22,15 +21,14 @@ suite('Field-level DCE', () => {
       };
     `;
 
-    // unusedId is @pure and only written, so getter/setter should be eliminated
+    // unusedId is a plain field and only written, so getter/setter should be eliminated
     const result = await compileAndRun(source);
     assert.strictEqual(result, 42);
   });
 
-  test('read field is kept even with @pure', async () => {
+  test('read field is kept', async () => {
     const source = `
       class User {
-        @pure
         id: i32;
         
         #new(id: i32) {
@@ -49,11 +47,11 @@ suite('Field-level DCE', () => {
     assert.strictEqual(result, 123);
   });
 
-  test('field without @pure decorator is kept when write-only', async () => {
+  test('plain fields are eliminated when write-only', async () => {
     const source = `
       class Counter {
         value: i32;
-        writeOnly: i32;  // No @pure decorator
+        writeOnly: i32;  // Plain field - automatically pure
         
         #new() {
           this.value = 0;
@@ -76,19 +74,16 @@ suite('Field-level DCE', () => {
       };
     `;
 
-    // writeOnly is not @pure, so it should be kept (conservative)
+    // writeOnly is a plain field and write-only, so it's eliminated
     const result = await compileAndRun(source);
     assert.strictEqual(result, 1);
   });
 
-  test('multiple @pure write-only fields eliminated', async () => {
+  test('multiple write-only plain fields eliminated', async () => {
     const source = `
       class Metadata {
-        @pure
         timestamp: i32;
-        @pure
         userId: i32;
-        @pure
         sessionId: i32;
         actualData: i32;
         
@@ -110,15 +105,14 @@ suite('Field-level DCE', () => {
       };
     `;
 
-    // timestamp, userId, sessionId are all @pure and write-only
+    // timestamp, userId, sessionId are all plain fields and write-only
     const result = await compileAndRun(source);
     assert.strictEqual(result, 55);
   });
 
-  test('@pure field both read and written is kept', async () => {
+  test('field both read and written is kept', async () => {
     const source = `
       class Box {
-        @pure
         value: i32;
         
         #new(v: i32) {
@@ -146,12 +140,10 @@ suite('Field-level DCE', () => {
     assert.strictEqual(result, 20);
   });
 
-  test('@pure write-only field in constructor only', async () => {
+  test('write-only plain field in constructor only', async () => {
     const source = `
       class Config {
-        @pure
         setting1: i32;
-        @pure
         setting2: i32;
         usedSetting: i32;
         
@@ -172,21 +164,20 @@ suite('Field-level DCE', () => {
       };
     `;
 
-    // setting1 and setting2 are @pure and only written in constructor
+    // setting1 and setting2 are plain fields and only written in constructor
     const result = await compileAndRun(source);
     assert.strictEqual(result, 300);
   });
 
-  test('private fields are not affected by @pure DCE', async () => {
+  test('private fields are not affected by field DCE', async () => {
     const source = `
       class Secret {
         #privateValue: i32;
-        @pure
         publicValue: i32;
         
         #new() {
           this.#privateValue = 42;
-          this.publicValue = 100;  // @pure and write-only, should be eliminated
+          this.publicValue = 100;  // Plain field, write-only, should be eliminated
         }
         
         getPrivate(): i32 {
@@ -200,13 +191,13 @@ suite('Field-level DCE', () => {
       };
     `;
 
-    // Private fields don't have implicit getters/setters, so @pure doesn't apply
-    // Only publicValue (which is @pure and write-only) should be eliminated
+    // Private fields don't have implicit getters/setters, so field DCE doesn't apply
+    // Only publicValue (plain field, write-only) should be eliminated
     const result = await compileAndRun(source);
     assert.strictEqual(result, 42);
   });
 
-  test('@pure field with explicit getter/setter', async () => {
+  test('@pure on explicit accessor enables elimination when write-only', async () => {
     const source = `
       class Item {
         #backingStore: i32;
@@ -222,7 +213,7 @@ suite('Field-level DCE', () => {
         }
         
         #new() {
-          this.metadata = 999;  // Written
+          this.metadata = 999;  // Written but never read
         }
         
         getValue(): i32 {
@@ -236,15 +227,51 @@ suite('Field-level DCE', () => {
       };
     `;
 
-    // metadata accessor is @pure and write-only
+    // metadata accessor is @pure and write-only, so it's eliminated
     const result = await compileAndRun(source);
     assert.strictEqual(result, 42);
   });
 
-  test('polymorphic @pure field access keeps field', async () => {
+  test('explicit accessor without @pure is kept even if write-only', async () => {
+    const source = `
+      class Logger {
+        #logCount: i32;
+        
+        // Accessor without @pure - might have side effects
+        logLevel: i32 {
+          get {
+            return 0;
+          }
+          set(v) {
+            // Could have side effects like logging
+            this.#logCount = this.#logCount + 1;
+          }
+        }
+        
+        #new() {
+          this.#logCount = 0;
+          this.logLevel = 1;  // Written but never read
+        }
+        
+        getCount(): i32 {
+          return this.#logCount;
+        }
+      }
+      
+      export let main = (): i32 => {
+        let logger = new Logger();
+        return logger.getCount();
+      };
+    `;
+
+    // logLevel setter has side effects (increments counter), so kept even if write-only
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 1);
+  });
+
+  test('polymorphic field access keeps field', async () => {
     const source = `
       class Base {
-        @pure
         value: i32;
         
         #new(v: i32) {

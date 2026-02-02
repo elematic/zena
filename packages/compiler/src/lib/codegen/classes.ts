@@ -2558,17 +2558,32 @@ export function generateClassMethods(
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
 
+      // Check if accessor is @pure and write-only for DCE
+      // Explicit setters might have side effects, so require @pure decorator
+      const isPure =
+        member.decorators?.some((d) => d.name === 'pure') ?? false;
+      const fieldUsage =
+        isPure && checkerType && ctx.usageResult
+          ? ctx.usageResult.getFieldUsage(checkerType, propName)
+          : undefined;
+      const isWriteOnly =
+        fieldUsage !== undefined &&
+        fieldUsage.isWritten &&
+        !fieldUsage.isRead;
+
       // Getter
       if (member.getter) {
         const methodName = getGetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
 
         // Method-level DCE: Skip body generation for unused getters (not registered)
+        // or for @pure write-only getters
         if (
           methodInfo.index === -1 ||
-          (checkerType && !ctx.isMethodUsed(checkerType, methodName))
+          (checkerType && !ctx.isMethodUsed(checkerType, methodName)) ||
+          isWriteOnly
         ) {
-          // Not registered, skip entirely
+          // Not registered or write-only, skip entirely
         } else {
           const body: number[] = [];
 
@@ -2613,11 +2628,13 @@ export function generateClassMethods(
         const methodInfo = classInfo.methods.get(methodName)!;
 
         // Method-level DCE: Skip body generation for unused setters (not registered)
+        // or for @pure write-only setters
         if (
           methodInfo.index === -1 ||
-          (checkerType && !ctx.isMethodUsed(checkerType, methodName))
+          (checkerType && !ctx.isMethodUsed(checkerType, methodName)) ||
+          isWriteOnly
         ) {
-          // Not registered, skip entirely
+          // Not registered or write-only, skip entirely
         } else {
           const body: number[] = [];
 
@@ -2680,18 +2697,16 @@ export function generateClassMethods(
           );
         }
 
-        // Check if field is @pure and write-only for DCE
-        const isPure =
-          member.decorators?.some((d) => d.name === 'pure') ?? false;
+        // Check if field is write-only for DCE
+        // Plain fields are always pure (no side effects), so we can eliminate write-only fields
         // Get field usage if DCE is enabled and checker type is available
         const fieldUsage =
           checkerType && ctx.usageResult
             ? ctx.usageResult.getFieldUsage(checkerType, propName)
             : undefined;
-        // Only eliminate if: field is @pure AND we have usage info AND it's write-only
+        // Eliminate if: field is write-only (written but never read)
         // If fieldUsage is undefined, we conservatively keep the field
         const isWriteOnly =
-          isPure &&
           fieldUsage !== undefined &&
           fieldUsage.isWritten &&
           !fieldUsage.isRead;
@@ -2701,7 +2716,7 @@ export function generateClassMethods(
         const getterInfo = classInfo.methods.get(getterName)!;
 
         // Method-level DCE for implicit field getters (not registered if unused)
-        // Skip getter if field is @pure and write-only
+        // Skip getter if field is write-only (plain fields are always pure)
         if (
           !isWriteOnly &&
           getterInfo.index !== -1 &&
@@ -2727,7 +2742,7 @@ export function generateClassMethods(
           const setterInfo = classInfo.methods.get(setterName)!;
 
           // Method-level DCE for implicit field setters (not registered if unused)
-          // Skip setter if field is @pure and write-only
+          // Skip setter if field is write-only (plain fields are always pure)
           if (
             !isWriteOnly &&
             setterInfo.index !== -1 &&
