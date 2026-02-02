@@ -402,6 +402,8 @@ export interface BinaryExpression extends Node {
   operator: string;
   left: Expression;
   right: Expression;
+  /** Set by checker when an operator method (e.g., `operator +`) is resolved on the left operand's type */
+  resolvedOperatorMethod?: FunctionType;
 }
 
 export interface AssignmentExpression extends Node {

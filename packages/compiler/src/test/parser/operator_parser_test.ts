@@ -24,4 +24,29 @@ suite('Parser - Operator Overloading', () => {
     const module = parser.parse();
     assert.ok(module);
   });
+
+  test('should parse operator + in class', () => {
+    const input = `
+      class Vector {
+        x: i32;
+        operator +(other: Vector): Vector {
+          return new Vector();
+        }
+      }
+    `;
+    const parser = new Parser(input);
+    const module = parser.parse();
+    assert.ok(module);
+  });
+
+  test('should parse operator + in interface', () => {
+    const input = `
+      interface Addable {
+        operator +(other: Addable): Addable;
+      }
+    `;
+    const parser = new Parser(input);
+    const module = parser.parse();
+    assert.ok(module);
+  });
 });

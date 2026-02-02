@@ -1535,6 +1535,41 @@ function checkBinaryExpression(
     return Types.Never;
   }
 
+  // Check for operator overloading on class types (e.g., operator +)
+  if (expr.operator === '+' && left.kind === TypeKind.Class) {
+    const classType = left as ClassType;
+    const method = classType.methods.get('+');
+    if (method) {
+      // Resolve the method type with generic substitution for the class's type arguments
+      const resolvedMethod = resolveMemberType(
+        classType,
+        method,
+        ctx,
+      ) as FunctionType;
+
+      // Check parameter types
+      if (resolvedMethod.parameters.length !== 1) {
+        ctx.diagnostics.reportError(
+          `Operator + must take exactly one argument.`,
+          DiagnosticCode.ArgumentCountMismatch,
+        );
+        return Types.Unknown;
+      }
+
+      if (!isAssignableTo(ctx, right, resolvedMethod.parameters[0])) {
+        ctx.diagnostics.reportError(
+          `Type mismatch in operator +: expected ${typeToString(resolvedMethod.parameters[0])}, got ${typeToString(right)}`,
+          DiagnosticCode.TypeMismatch,
+        );
+        return Types.Unknown;
+      }
+
+      // Store the resolved operator method for codegen
+      expr.resolvedOperatorMethod = resolvedMethod;
+      return resolvedMethod.returnType;
+    }
+  }
+
   let typesMatch = false;
   let resultType = left;
 

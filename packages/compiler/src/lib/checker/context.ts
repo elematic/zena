@@ -342,22 +342,6 @@ export class CheckerContext {
       };
     }
 
-    // Fallback for legacy/unmangled prelude exports
-    if (this.preludeExports.has(name)) {
-      const exportInfo = this.preludeExports.get(name)!;
-      if (exportInfo.info.kind !== 'type') {
-        this.usedPreludeSymbols.set(name, {
-          modulePath: exportInfo.modulePath,
-          exportName: exportInfo.exportName,
-        });
-        // Return info with modulePath set to mark it as a global from another module
-        return {
-          ...exportInfo.info,
-          modulePath: exportInfo.modulePath,
-        };
-      }
-    }
-
     return undefined;
   }
 

@@ -2137,6 +2137,8 @@ export class Parser {
       } else {
         if (this.#match(TokenType.EqualsEquals)) {
           name = {type: NodeType.Identifier, name: '=='};
+        } else if (this.#match(TokenType.Plus)) {
+          name = {type: NodeType.Identifier, name: '+'};
         } else {
           this.#consume(TokenType.LBracket, "Expected '[' after 'operator'.");
           this.#consume(TokenType.RBracket, "Expected ']' after '['.");
@@ -2401,6 +2403,8 @@ export class Parser {
       } else {
         if (this.#match(TokenType.EqualsEquals)) {
           name = {type: NodeType.Identifier, name: '=='};
+        } else if (this.#match(TokenType.Plus)) {
+          name = {type: NodeType.Identifier, name: '+'};
         } else {
           this.#consume(TokenType.LBracket, "Expected '[' after 'operator'.");
           this.#consume(TokenType.RBracket, "Expected ']' after '['.");

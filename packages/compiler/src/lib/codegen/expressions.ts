@@ -1965,11 +1965,16 @@ function generateCallExpression(
         const classType = classBinding.type;
         const className = classBinding.declaration.name.name;
 
-        // Use identity-based lookup for ClassInfo (no fallback)
+        // Use identity-based lookup for ClassInfo
         const classInfo = ctx.getClassInfo(classType);
+
+        // If not found by identity, the classType might be from a different compilation unit
+        // or the binding may reference a different ClassType object than what was registered.
+        // This should not happen after we added declaration to class exports.
         if (!classInfo) {
           throw new Error(
-            `Static method call: class ${className} not found via identity lookup`,
+            `Static method call: class ${className} not found by identity lookup. ` +
+              `This indicates a type identity mismatch.`,
           );
         }
 
@@ -2571,6 +2576,7 @@ function generateCallExpression(
       if (
         name.startsWith('__array_') ||
         name.startsWith('__byte_array_') ||
+        name.startsWith('__string_') ||
         name === 'unreachable'
       ) {
         generateGlobalIntrinsic(ctx, name, expr, body);
@@ -3565,6 +3571,99 @@ function generateBinaryExpression(
     return;
   }
 
+  // Handle operator overloading (e.g., operator +)
+  if (expr.resolvedOperatorMethod && expr.left.inferredType) {
+    const classType = expr.left.inferredType as ClassType;
+    const classInfo = ctx.getClassInfo(classType);
+
+    if (classInfo) {
+      const methodName = expr.operator;
+      const methodInfo = classInfo.methods.get(methodName);
+
+      if (methodInfo) {
+        if (classInfo.isFinal || methodInfo.isFinal) {
+          // Static dispatch for final classes/methods
+          // Generate operands: left (this), right (argument)
+          generateExpression(ctx, expr.left, body);
+          generateExpression(ctx, expr.right, body);
+          body.push(
+            Opcode.call,
+            ...WasmModule.encodeSignedLEB128(methodInfo.index),
+          );
+        } else {
+          // Dynamic dispatch via vtable
+          // Generate left operand first and save to local
+          generateExpression(ctx, expr.left, body);
+          const leftWasmType = inferType(ctx, expr.left);
+          const tempLeft = ctx.declareLocal('$$op_left', leftWasmType);
+          body.push(
+            Opcode.local_tee,
+            ...WasmModule.encodeSignedLEB128(tempLeft),
+          );
+
+          // Get vtable from object
+          body.push(0xfb, GcOpcode.struct_get);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+          body.push(
+            ...WasmModule.encodeSignedLEB128(
+              classInfo.fields.get('__vtable')!.index,
+            ),
+          );
+
+          // Cast to concrete vtable type
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
+          );
+
+          // Get method from vtable
+          const vtableIndex = classInfo.vtable!.indexOf(methodName);
+          body.push(0xfb, GcOpcode.struct_get);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex!),
+          );
+          body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
+
+          // Cast to method type
+          body.push(0xfb, GcOpcode.ref_cast_null);
+          body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+          // Save method reference to local
+          const funcRefType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+          ];
+          const tempFunc = ctx.declareLocal('$$op_func', funcRefType);
+          body.push(
+            Opcode.local_set,
+            ...WasmModule.encodeSignedLEB128(tempFunc),
+          );
+
+          // Push arguments for call_ref: this, arg
+          body.push(
+            Opcode.local_get,
+            ...WasmModule.encodeSignedLEB128(tempLeft),
+          );
+          generateExpression(ctx, expr.right, body);
+
+          // Get the function reference
+          body.push(
+            Opcode.local_get,
+            ...WasmModule.encodeSignedLEB128(tempFunc),
+          );
+
+          // call_ref
+          body.push(Opcode.call_ref);
+          body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+        }
+
+        return;
+      }
+    }
+  }
+
   // Optimization for null checks
   if (
     expr.operator === '==' ||
@@ -3880,10 +3979,7 @@ function generateBinaryExpression(
   generateExpression(ctx, expr.right, body);
 
   if (isStringType(ctx, leftType) && isStringType(ctx, rightType)) {
-    if (expr.operator === '+') {
-      generateStringConcat(ctx, body);
-      return;
-    } else if (expr.operator === '==') {
+    if (expr.operator === '==') {
       generateStringEq(ctx, body);
       return;
     } else if (expr.operator === '!=') {
@@ -5265,136 +5361,40 @@ function generateStringEq(ctx: CodegenContext, body: number[]) {
   body.push(...WasmModule.encodeSignedLEB128(ctx.strEqFunctionIndex));
 }
 
-function generateStringConcat(ctx: CodegenContext, body: number[]) {
-  if (ctx.concatFunctionIndex === -1) {
-    ctx.concatFunctionIndex = generateConcatFunction(ctx);
-  }
-  body.push(Opcode.call);
-  body.push(...WasmModule.encodeSignedLEB128(ctx.concatFunctionIndex));
-}
-
-function generateConcatFunction(ctx: CodegenContext): number {
-  // String class struct layout:
-  //   0: __vtable (eqref)
-  //   1: __brand_String (ref null $brandType)
-  //   2: String#data (ref $ByteArray)
-  //   3: String#encoding (i32)
-  const STRING_DATA_FIELD = 2;
-  const STRING_ENCODING_FIELD = 3;
-
+/**
+ * Get the type index for array<String>.
+ */
+function getStringArrayTypeIndex(ctx: CodegenContext): number {
   const stringType = [
     ValType.ref_null,
     ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
   ];
-  const typeIndex = ctx.module.addType([stringType, stringType], [stringType]);
+  return getArrayTypeIndex(ctx, stringType);
+}
 
-  const funcIndex = ctx.module.addFunction(typeIndex);
-
-  ctx.pendingHelperFunctions.push(() => {
-    const byteArrayType = [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
-    ];
-    const locals: number[][] = [
-      byteArrayType, // data1 (local 2)
-      byteArrayType, // data2 (local 3)
-      [ValType.i32], // len1 (local 4)
-      [ValType.i32], // len2 (local 5)
-      [ValType.i32], // newLen (local 6)
-      byteArrayType, // newBytes (local 7)
-      stringType, // newString (local 8)
-    ];
-    const body: number[] = [];
-
-    // Params: s1 (0), s2 (1)
-    // Locals: data1 (2), data2 (3), len1 (4), len2 (5), newLen (6), newBytes (7), newString (8)
-
-    // data1 = s1.#data (field 2)
-    body.push(Opcode.local_get, 0);
-    body.push(0xfb, GcOpcode.struct_get);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(STRING_DATA_FIELD);
-    body.push(Opcode.local_set, 2);
-
-    // data2 = s2.#data (field 2)
-    body.push(Opcode.local_get, 1);
-    body.push(0xfb, GcOpcode.struct_get);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(STRING_DATA_FIELD);
-    body.push(Opcode.local_set, 3);
-
-    // len1 = data1.length
-    body.push(Opcode.local_get, 2);
-    body.push(0xfb, GcOpcode.array_len);
-    body.push(Opcode.local_set, 4);
-
-    // len2 = data2.length
-    body.push(Opcode.local_get, 3);
-    body.push(0xfb, GcOpcode.array_len);
-    body.push(Opcode.local_set, 5);
-
-    // newLen = len1 + len2
-    body.push(Opcode.local_get, 4);
-    body.push(Opcode.local_get, 5);
-    body.push(Opcode.i32_add);
-    body.push(Opcode.local_set, 6);
-
-    // newBytes = array.new_default(newLen)
-    body.push(Opcode.local_get, 6);
-    body.push(0xfb, GcOpcode.array_new_default);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
-    body.push(Opcode.local_set, 7);
-
-    // array.copy(dest=newBytes, destOffset=0, src=data1, srcOffset=0, len=len1)
-    body.push(Opcode.local_get, 7); // dest
-    body.push(Opcode.i32_const, 0); // destOffset
-    body.push(Opcode.local_get, 2); // src = data1
-    body.push(Opcode.i32_const, 0); // srcOffset
-    body.push(Opcode.local_get, 4); // len = len1
-    body.push(0xfb, GcOpcode.array_copy);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
-
-    // array.copy(dest=newBytes, destOffset=len1, src=data2, srcOffset=0, len=len2)
-    body.push(Opcode.local_get, 7); // dest
-    body.push(Opcode.local_get, 4); // destOffset = len1
-    body.push(Opcode.local_get, 3); // src = data2
-    body.push(Opcode.i32_const, 0); // srcOffset
-    body.push(Opcode.local_get, 5); // len = len2
-    body.push(0xfb, GcOpcode.array_copy);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
-    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
-
-    // Create new String struct using struct_new_default and struct_set
-    body.push(0xfb, GcOpcode.struct_new_default);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(Opcode.local_tee, 8); // newString
-
-    // Set #data field (index 2)
-    body.push(Opcode.local_get, 7); // newBytes
-    body.push(0xfb, GcOpcode.struct_set);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(STRING_DATA_FIELD);
-
-    // Set #encoding field (index 3) from s1.#encoding
-    body.push(Opcode.local_get, 8); // newString
-    body.push(Opcode.local_get, 0); // s1
-    body.push(0xfb, GcOpcode.struct_get);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(STRING_ENCODING_FIELD);
-    body.push(0xfb, GcOpcode.struct_set);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(STRING_ENCODING_FIELD);
-
-    // Return newString
-    body.push(Opcode.local_get, 8);
-
-    body.push(Opcode.end);
-
-    ctx.module.addCode(funcIndex, locals, body);
-  });
-
-  return funcIndex;
+/**
+ * Get the function index for String.fromParts() (cached).
+ */
+function getStringFromPartsIndex(ctx: CodegenContext): number {
+  if (ctx.stringFromPartsFunctionIndex !== -1) {
+    return ctx.stringFromPartsFunctionIndex;
+  }
+  const stringDecl = ctx.wellKnownTypes.String;
+  if (!stringDecl?.inferredType) {
+    throw new Error('String class not available');
+  }
+  const stringClassInfo = ctx.getClassInfo(
+    stringDecl.inferredType as ClassType,
+  );
+  if (!stringClassInfo) {
+    throw new Error('String ClassInfo not found');
+  }
+  const fromPartsMethod = stringClassInfo.methods.get('fromParts');
+  if (!fromPartsMethod) {
+    throw new Error('String.fromParts not found');
+  }
+  ctx.stringFromPartsFunctionIndex = fromPartsMethod.index;
+  return fromPartsMethod.index;
 }
 
 function generateStrEqFunction(ctx: CodegenContext): number {
@@ -7187,7 +7187,12 @@ function generateTemplateLiteral(
   expr: TemplateLiteral,
   body: number[],
 ) {
-  if (expr.quasis.length === 0) {
+  // Count total parts: quasis interleaved with expressions
+  // For `a${b}c${d}e`, quasis = [a, c, e], expressions = [b, d]
+  // Parts = [a, b, c, d, e] (5 parts)
+  const totalParts = expr.quasis.length + expr.expressions.length;
+
+  if (totalParts === 0) {
     generateStringLiteral(
       ctx,
       {type: NodeType.StringLiteral, value: ''} as StringLiteral,
@@ -7196,37 +7201,53 @@ function generateTemplateLiteral(
     return;
   }
 
+  // For a single quasi with no expressions, just return the string
+  if (expr.expressions.length === 0) {
+    generateStringLiteral(
+      ctx,
+      {
+        type: NodeType.StringLiteral,
+        value: expr.quasis[0].value.raw,
+      } as StringLiteral,
+      body,
+    );
+    return;
+  }
+
+  // Build array of all string parts for String.fromParts()
+  // Push parts in order: quasi[0], expr[0], quasi[1], expr[1], ..., quasi[n]
+  for (let i = 0; i < expr.expressions.length; i++) {
+    // Push quasi[i]
+    generateStringLiteral(
+      ctx,
+      {
+        type: NodeType.StringLiteral,
+        value: expr.quasis[i].value.raw,
+      } as StringLiteral,
+      body,
+    );
+    // Push expression[i] (must be a string)
+    generateExpression(ctx, expr.expressions[i], body);
+  }
+  // Push final quasi
   generateStringLiteral(
     ctx,
     {
       type: NodeType.StringLiteral,
-      value: expr.quasis[0].value.raw,
+      value: expr.quasis[expr.quasis.length - 1].value.raw,
     } as StringLiteral,
     body,
   );
 
-  for (let i = 0; i < expr.expressions.length; i++) {
-    const expression = expr.expressions[i];
-    const quasi = expr.quasis[i + 1];
+  // Create array<String> with all parts
+  const stringArrayTypeIndex = getStringArrayTypeIndex(ctx);
+  body.push(0xfb, GcOpcode.array_new_fixed);
+  body.push(...WasmModule.encodeSignedLEB128(stringArrayTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(totalParts));
 
-    generateExpression(ctx, expression, body);
-
-    // Ensure expression is a string.
-    // For now, we assume it is or rely on runtime/implicit behavior if any.
-    // But since we don't have implicit conversion, this might fail at runtime or compile time if types mismatch.
-    // Ideally we should check type and convert.
-    // But for "adding back" support, we'll keep it simple.
-
-    generateStringConcat(ctx, body);
-
-    generateStringLiteral(
-      ctx,
-      {type: NodeType.StringLiteral, value: quasi.value.raw} as StringLiteral,
-      body,
-    );
-
-    generateStringConcat(ctx, body);
-  }
+  // Call String.fromParts(parts)
+  body.push(Opcode.call);
+  body.push(...WasmModule.encodeSignedLEB128(getStringFromPartsIndex(ctx)));
 }
 
 function generateTaggedTemplateExpression(

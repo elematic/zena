@@ -708,11 +708,13 @@ let query = sql`SELECT * FROM users WHERE id = ${userId}`;
 
 Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`):
 
-- `+` (Addition / String Concatenation)
+- `+` (Addition / String Concatenation / Custom via `operator +`)
 - `-` (Subtraction)
 - `*` (Multiplication)
 - `/` (Division) - Always returns a floating-point value (`f32` or `f64`).
 - `%` (Modulo - integer types only) - Signed for `i32`, unsigned for `u32`.
+
+Classes can define custom behavior for `+` via `operator +`. See [Operator Overloading](#operator-overloading).
 
 Supported bitwise operators for integer types (`i32`, `u32`):
 
@@ -726,7 +728,7 @@ Operands must be of the same type, with the exception of mixing `i32` and `f32`.
 let a = 10;
 let b = 20;
 let c = a + b; // Valid
-let s = 'Hello' + ' World'; // Valid (String Concatenation)
+let s = 'Hello' + ' World'; // Valid (String Concatenation via operator +)
 // let d = a + "string"; // Error: Type mismatch
 
 // Unsigned example
@@ -1256,7 +1258,48 @@ class Calculator {
 
 #### Operator Overloading
 
-Overloading also works with operator methods:
+Classes can define custom behavior for operators like `+`, `==`, `[]`, and `[]=`.
+
+##### Binary Operators
+
+The `operator +` method enables custom addition behavior:
+
+```zena
+class Vector {
+  x: i32;
+  y: i32;
+
+  #new(x: i32, y: i32) {
+    this.x = x;
+    this.y = y;
+  }
+
+  operator +(other: Vector): Vector {
+    return new Vector(this.x + other.x, this.y + other.y);
+  }
+}
+
+let v1 = new Vector(1, 2);
+let v2 = new Vector(3, 4);
+let v3 = v1 + v2; // Vector(4, 6)
+```
+
+The `operator ==` method enables custom equality comparison:
+
+```zena
+class Point {
+  x: i32;
+  y: i32;
+
+  operator ==(other: Point): boolean {
+    return this.x == other.x && this.y == other.y;
+  }
+}
+```
+
+##### Index Operators
+
+Overloading also works with index operator methods:
 
 ```zena
 class MultiMap {

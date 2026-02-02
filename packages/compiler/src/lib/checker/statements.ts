@@ -369,10 +369,12 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
       ctx.module!.exports!.set(`type:${className}`, {
         type: existingType,
         kind: 'type',
+        declaration: decl,
       });
       ctx.module!.exports!.set(`value:${className}`, {
         type: existingType,
         kind: 'let',
+        declaration: decl,
       });
     }
     return;
@@ -419,10 +421,12 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
     ctx.module!.exports!.set(`type:${className}`, {
       type: classType,
       kind: 'type',
+      declaration: decl,
     });
     ctx.module!.exports!.set(`value:${className}`, {
       type: classType,
       kind: 'let',
+      declaration: decl,
     });
   }
 };
@@ -1505,10 +1509,12 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       ctx.module!.exports!.set(`type:${className}`, {
         type: classType,
         kind: 'type',
+        declaration: decl,
       });
       ctx.module!.exports!.set(`value:${className}`, {
         type: classType,
         kind: 'let',
+        declaration: decl,
       });
     }
   }
@@ -1541,10 +1547,12 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     ctx.module!.exports!.set(`type:${className}`, {
       type: classType,
       kind: 'type',
+      declaration: decl,
     });
     ctx.module!.exports!.set(`value:${className}`, {
       type: classType,
       kind: 'let',
+      declaration: decl,
     });
   }
 

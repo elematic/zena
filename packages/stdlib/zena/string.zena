@@ -15,6 +15,46 @@ export final class String {
     this.#encoding = encoding;
   }
 
+  /**
+   * Creates a new string by concatenating all parts.
+   * This is more efficient than chained + operators for multiple strings,
+   * as it allocates the result array only once.
+   *
+   * Used internally by template literals.
+   */
+  static fromParts(parts: array<String>): String {
+    // First pass: calculate total length
+    let partsLen = __array_len(parts);
+    var totalLen = 0;
+    var i = 0;
+    while (i < partsLen) {
+      totalLen = totalLen + __byte_array_length(__array_get(parts, i).#data);
+      i = i + 1;
+    }
+
+    // Allocate result array
+    let data = __byte_array_new(totalLen);
+
+    // Second pass: copy all parts
+    var offset = 0;
+    i = 0;
+    while (i < partsLen) {
+      let part = __array_get(parts, i);
+      let partData = part.#data;
+      let partLen = __byte_array_length(partData);
+      __byte_array_copy(data, offset, partData, 0, partLen);
+      offset = offset + partLen;
+      i = i + 1;
+    }
+
+    // Use encoding from first part, or default to WTF-8
+    var encoding = ENCODING_WTF8;
+    if (partsLen > 0) {
+      encoding = __array_get(parts, 0).#encoding;
+    }
+    return new String(data, encoding);
+  }
+
   // Length in bytes (code units for WTF-8).
   // For ASCII and most UTF-8, this equals the number of characters.
   // TODO: For WTF-16, return code units (byteLen / 2) once integer division is supported.
@@ -31,9 +71,18 @@ export final class String {
     return __byte_array_get(this.#data, index);
   }
 
-  // String operations (concat, equality, hash) are implemented
-  // by the compiler in codegen/expressions.ts:
-  // - generateConcatFunction: extracts #data, copies bytes, creates new String
+  // Concatenation operator - implemented in pure Zena
+  operator +(other: String): String {
+    let len1 = __byte_array_length(this.#data);
+    let len2 = __byte_array_length(other.#data);
+    let newData = __byte_array_new(len1 + len2);
+    __byte_array_copy(newData, 0, this.#data, 0, len1);
+    __byte_array_copy(newData, len1, other.#data, 0, len2);
+    return new String(newData, this.#encoding);
+  }
+
+  // String equality and hash are implemented by the compiler in codegen/expressions.ts:
   // - generateStrEqFunction: extracts #data, compares bytes
   // - generateStringHashFunction: extracts #data, FNV-1a hash bytes
+  // Template literals also use a compiler-generated concat function for efficiency.
 }
