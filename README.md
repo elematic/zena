@@ -123,14 +123,15 @@ some of my thoughts and motivations at the moment:
 - [x] Tagged template literals
 - [x] Record and tuple literal syntax (`{...}` and `[ ... ]`)
 - [x] Console built-in
-- [ ] Mutable Maps and map literals (`#{...}`)
-- [ ] More primitive types
 - [x] Blocks
-- [ ] Do/while loops
 - [x] Pattern matching (Basic, Logical, Guards)
 - [x] Record spread syntax (`{ ...p }`)
 - [x] Exceptions (`throw`)
 - [x] `never` type
+- [x] Enums
+- [ ] Do/while loops
+- [ ] Mutable Maps and map literals (`#{...}`)
+- [ ] More primitive types
 - [ ] For/of loops
 - [ ] Iterators
 - [ ] More operators: exponentiation
@@ -146,7 +147,6 @@ some of my thoughts and motivations at the moment:
 - [ ] Regexes
 - [ ] Decorators
 - [ ] JSX-like builder syntax
-- [ ] Enums
 - [ ] Workers
 
 ### Tools

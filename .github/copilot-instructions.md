@@ -355,6 +355,7 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
     - Covers regular methods, accessors (getters/setters), and implicit field accessors.
     - Constructors (`#new`) are always kept if the class is used.
   - Binary size results: 21% reduction on string programs, minimal programs at 41 bytes.
+- [x] Implement untagged enums with nominal typing.
 
 ### Planned
 
@@ -541,7 +542,6 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
     - **Type System**:
       - Numeric unit types.
       - Intersection types.
-      - Enums.
       - Contextual typing for closures: Infer parameter types from context (e.g., `arr.map(x => x * 2)`). Requires parser support for `(a, b) =>` without type annotations, and checker support to propagate expected function type.
     - **OOP & Functions**:
       - Extension methods.

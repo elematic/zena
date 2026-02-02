@@ -88,6 +88,72 @@ let s = y as string;   // Cast to string
 
 The `any` type is useful for generic data structures or interop scenarios where the type is not known at compile time. Under the hood, it maps to the WASM `anyref` type.
 
+## 2.1 Enums
+
+Enums allow you to define a set of named constants. Zena enums are nominal types that wrap a union of literal values.
+
+### Syntax
+
+```zena
+enum Color {
+  Red,
+  Green,
+  Blue
+}
+
+enum Direction {
+  Up = "UP",
+  Down = "DOWN"
+}
+```
+
+### Semantics
+
+An enum declaration is conceptually equivalent to defining:
+
+1.  A **Distinct Type** named `Color` (e.g. `distinct type Color = 0 | 1 | 2`).
+2.  A **Global Constant** named `Color` containing the members as properties (e.g. `const Color = { Red: 0 as Color, ... }`).
+
+```zena
+let c: Color = Color.Red;
+```
+
+### Backing Types
+
+Enums can be backed by integers (`i32`) or strings.
+
+- **Integer Enums**: If no initializer is provided, values start at 0 and increment by 1.
+  ```zena
+  enum Status {
+    Ok = 200,
+    NotFound = 404
+  }
+  ```
+- **String Enums**: Members are initialized with string literals.
+  ```zena
+  enum Direction {
+    Up = "UP",
+    Down = "DOWN"
+  }
+  ```
+
+### Type Safety
+
+Enums are **distinct types**, meaning they are not assignable to or from their underlying primitive types without an explicit cast.
+
+```zena
+let c: Color = Color.Red;
+
+// Error: Type 'i32' is not assignable to type 'Color'.
+// let x: Color = 0;
+
+// Error: Type 'Color' is not assignable to type 'i32'.
+// let y: i32 = c;
+
+// Explicit casting is allowed
+let z: i32 = c as i32;
+```
+
 ### Type Inference
 
 Local variable types are inferred from their initializer expression.
@@ -1364,85 +1430,7 @@ Since extension classes and distinct types are erased at runtime, they have some
       case A {}: ...
     ```
 
-## 8. Enums
-
-Enums allow you to define a set of named constants. Zena enums are nominal types that wrap a union of literal values.
-
-### Syntax
-
-```zena
-enum Color {
-  Red,
-  Green,
-  Blue
-}
-
-enum Direction {
-  Up = "UP",
-  Down = "DOWN"
-}
-```
-
-### Semantics
-
-An enum declaration creates:
-
-1.  A **Distinct Type** named `Color` which is a union of the member values (e.g., `0 | 1 | 2`).
-2.  A **Runtime Object** named `Color` containing the members as properties.
-
-```zena
-let c: Color = Color.Red;
-```
-
-### Backing Types
-
-Enums can be backed by integers (`i32`) or strings.
-
-- **Integer Enums**: If no initializer is provided, values start at 0 and increment by 1.
-  ```zena
-  enum Status {
-    Ok = 200,
-    NotFound = 404
-  }
-  ```
-- **String Enums**: Members are initialized with string literals.
-  ```zena
-  enum Direction {
-    Up = "UP",
-    Down = "DOWN"
-  }
-  ```
-
-### Type Safety
-
-Enums are **distinct types**, meaning they are not assignable to or from their underlying primitive types without an explicit cast.
-
-```zena
-let c: Color = Color.Red;
-
-// Error: Type 'i32' is not assignable to type 'Color'.
-// let x: Color = 0;
-
-// Error: Type 'Color' is not assignable to type 'i32'.
-// let y: i32 = c;
-
-// Explicit casting is allowed
-let z: i32 = c as i32;
-```
-
-Because the Enum type is defined as a union of its member values (e.g., `0 | 1 | 2`), the type checker enforces that variables of the Enum type can only hold one of the valid member values (within the limits of compile-time analysis).
-
-### Built-in Types
-
-#### `array<T>`
-
-Zena provides a low-level built-in array type `array<T>`. This maps directly to WASM GC arrays.
-
-- **Creation**: `__array_new(length, default_value)` (Intrinsic) or via `FixedArray` wrapper.
-- **Indexing**: `arr[index]`
-- **Length**: `arr.length` (via extension)
-
-## 7. Data Structures
+## 8. Modules & Exports
 
 ### Records
 
@@ -1652,42 +1640,7 @@ class Error {
 }
 ```
 
-## 12. Enums
-
-Enums allow you to define a set of named constants. In Zena, enums are nominal types backed by `i32` values.
-
-```zena
-enum Color {
-  Red,
-  Green,
-  Blue
-}
-
-let c: Color = Color.Red;
-```
-
-### Backing Values
-
-By default, enum members are assigned integer values starting from 0. You can manually specify values.
-
-```zena
-enum Status {
-  Ok = 200,
-  NotFound = 404,
-  Error = 500
-}
-```
-
-### Usage
-
-Enums are treated as distinct types. You cannot assign an integer directly to an enum variable without casting, nor can you assign an enum to an integer variable without casting.
-
-```zena
-let s: Status = Status.Ok;
-let code: i32 = s as i32; // Explicit cast required
-```
-
-## 14. Compilation
+## 13. Compilation
 
 ### Dead Code Elimination
 
