@@ -2683,9 +2683,11 @@ export function generateClassMethods(
         // Check if field is @pure and write-only for DCE
         const isPure =
           member.decorators?.some((d) => d.name === 'pure') ?? false;
-        const fieldUsage = checkerType
-          ? ctx.usageResult.getFieldUsage(checkerType, propName)
-          : undefined;
+        // Get field usage if DCE is enabled and checker type is available
+        const fieldUsage =
+          checkerType && ctx.usageResult
+            ? ctx.usageResult.getFieldUsage(checkerType, propName)
+            : undefined;
         // Only eliminate if: field is @pure AND we have usage info AND it's write-only
         // If fieldUsage is undefined, we conservatively keep the field
         const isWriteOnly =

@@ -349,6 +349,14 @@ export class CodegenContext {
     return this.#usageResult.isMethodUsed(classType, methodName);
   }
 
+  /**
+   * Get the usage analysis result.
+   * Returns the current usage analysis result or null if DCE is disabled.
+   */
+  get usageResult(): UsageAnalysisResult | null {
+    return this.#usageResult;
+  }
+
   constructor(
     modules: Module[],
     entryPointPath: string | undefined,
