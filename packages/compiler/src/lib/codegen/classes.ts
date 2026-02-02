@@ -2680,12 +2680,23 @@ export function generateClassMethods(
           );
         }
 
+        // Check if field is @pure and write-only for DCE
+        const isPure =
+          member.decorators?.some((d) => d.name === 'pure') ?? false;
+        const fieldUsage = checkerType
+          ? ctx.usageResult.getFieldUsage(checkerType, propName)
+          : undefined;
+        const isWriteOnly =
+          isPure && fieldUsage && fieldUsage.isWritten && !fieldUsage.isRead;
+
         // Getter
         const getterName = getGetterName(propName);
         const getterInfo = classInfo.methods.get(getterName)!;
 
         // Method-level DCE for implicit field getters (not registered if unused)
+        // Skip getter if field is @pure and write-only
         if (
+          !isWriteOnly &&
           getterInfo.index !== -1 &&
           (!checkerType || ctx.isMethodUsed(checkerType, getterName))
         ) {
@@ -2709,7 +2720,9 @@ export function generateClassMethods(
           const setterInfo = classInfo.methods.get(setterName)!;
 
           // Method-level DCE for implicit field setters (not registered if unused)
+          // Skip setter if field is @pure and write-only
           if (
+            !isWriteOnly &&
             setterInfo.index !== -1 &&
             (!checkerType || ctx.isMethodUsed(checkerType, setterName))
           ) {

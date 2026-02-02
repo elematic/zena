@@ -60,6 +60,16 @@ export interface MethodKey {
 }
 
 /**
+ * Information about a field's usage - tracking reads and writes separately.
+ */
+export interface FieldUsageInfo {
+  /** Whether this field has been read */
+  isRead: boolean;
+  /** Whether this field has been written */
+  isWritten: boolean;
+}
+
+/**
  * Information about a declaration's usage status.
  */
 export interface UsageInfo {
@@ -107,6 +117,19 @@ export interface UsageAnalysisResult {
     classType: ClassType | InterfaceType,
     methodName: string,
   ): boolean;
+
+  /**
+   * Get field usage information for a specific field.
+   * Returns information about whether the field has been read or written.
+   *
+   * @param classType - The class or interface type
+   * @param fieldName - The field name
+   * @returns Field usage info, or undefined if not tracked
+   */
+  getFieldUsage(
+    classType: ClassType | InterfaceType,
+    fieldName: string,
+  ): FieldUsageInfo | undefined;
 
   /** Get all used declarations */
   readonly usedDeclarations: Set<Declaration>;
@@ -203,6 +226,13 @@ class UsageAnalyzer {
 
   // Map from ClassType to all known subclasses (for propagating polymorphic calls)
   readonly #subclasses = new WeakMap<ClassType, Set<ClassType>>();
+
+  // Track field usage (reads and writes separately)
+  // Maps ClassType/InterfaceType -> field name -> FieldUsageInfo
+  readonly #fieldUsage = new WeakMap<
+    ClassType | InterfaceType,
+    Map<string, FieldUsageInfo>
+  >();
 
   constructor(program: Program, options: UsageAnalysisOptions) {
     this.#program = program;
@@ -614,6 +644,8 @@ class UsageAnalyzer {
                 binding.classType.kind === TypeKind.Class &&
                 (binding.classType as ClassType).isFinal === true;
               this.#markMethodUsed(binding.classType, getterName, !isFinal);
+              // Track that this field was read
+              this.#markFieldRead(binding.classType, binding.fieldName);
             }
           }
         }
@@ -704,7 +736,7 @@ class UsageAnalyzer {
         }
       },
 
-      // Handle assignment expressions for operator []=
+      // Handle assignment expressions for operator []= and field writes
       visitAssignmentExpression: (node: AssignmentExpression) => {
         // Check if the left side is an index expression (for operator []=)
         if (node.left.type === NodeType.IndexExpression) {
@@ -725,6 +757,33 @@ class UsageAnalyzer {
                 objectType.kind === TypeKind.Class &&
                 (classType as ClassType).isFinal === true;
               this.#markMethodUsed(classType, '[]=', !isFinal);
+            }
+          }
+        }
+        // Check if the left side is a member expression (for field writes)
+        else if (node.left.type === NodeType.MemberExpression) {
+          const memberExpr = node.left as MemberExpression;
+          // Try to get the resolved binding for this member access
+          if (this.#semanticContext) {
+            const binding = this.#semanticContext.getResolvedBinding(memberExpr);
+            if (binding) {
+              if (binding.kind === 'setter') {
+                // Mark setter as used
+                this.#markMethodUsed(
+                  binding.classType,
+                  binding.methodName,
+                  !binding.isStaticDispatch,
+                );
+              } else if (binding.kind === 'field') {
+                // Public field assignment - mark the implicit setter as used
+                const setterName = `set#${binding.fieldName}`;
+                const isFinal =
+                  binding.classType.kind === TypeKind.Class &&
+                  (binding.classType as ClassType).isFinal === true;
+                this.#markMethodUsed(binding.classType, setterName, !isFinal);
+                // Track that this field was written
+                this.#markFieldWritten(binding.classType, binding.fieldName);
+              }
             }
           }
         }
@@ -943,6 +1002,40 @@ class UsageAnalyzer {
   }
 
   /**
+   * Mark a field as read on a class or interface.
+   */
+  #markFieldRead(
+    classType: ClassType | InterfaceType,
+    fieldName: string,
+  ): void {
+    let fieldMap = this.#fieldUsage.get(classType);
+    if (!fieldMap) {
+      fieldMap = new Map();
+      this.#fieldUsage.set(classType, fieldMap);
+    }
+    const usage = fieldMap.get(fieldName) ?? {isRead: false, isWritten: false};
+    usage.isRead = true;
+    fieldMap.set(fieldName, usage);
+  }
+
+  /**
+   * Mark a field as written on a class or interface.
+   */
+  #markFieldWritten(
+    classType: ClassType | InterfaceType,
+    fieldName: string,
+  ): void {
+    let fieldMap = this.#fieldUsage.get(classType);
+    if (!fieldMap) {
+      fieldMap = new Map();
+      this.#fieldUsage.set(classType, fieldMap);
+    }
+    const usage = fieldMap.get(fieldName) ?? {isRead: false, isWritten: false};
+    usage.isWritten = true;
+    fieldMap.set(fieldName, usage);
+  }
+
+  /**
    * Check if a method is used on a class or interface.
    * Accounts for polymorphic dispatch from base classes/interfaces.
    */
@@ -1037,6 +1130,14 @@ class UsageAnalyzer {
         methodName: string,
       ): boolean {
         return analyzer.#isMethodUsedInternal(classType, methodName);
+      },
+
+      getFieldUsage(
+        classType: ClassType | InterfaceType,
+        fieldName: string,
+      ): FieldUsageInfo | undefined {
+        const fieldMap = analyzer.#fieldUsage.get(classType);
+        return fieldMap?.get(fieldName);
       },
 
       get usedDeclarations() {

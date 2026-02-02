@@ -434,4 +434,139 @@ suite('Usage Analysis', () => {
       'operator == method should be marked as used when called via equality syntax',
     );
   });
+
+  test('tracks field reads via member expression', () => {
+    const source = `
+      class Point {
+        x: i32;
+        y: i32;
+        #new(x: i32, y: i32) {
+          this.x = x;
+          this.y = y;
+        }
+      }
+      export let main = () => {
+        let p = new Point(1, 2);
+        return p.x;  // Read x, not y
+      };
+    `;
+    const parser = new Parser(source, {path: 'main.zena', isStdlib: false});
+    const module = parser.parse();
+
+    const checker = TypeChecker.forModule(module);
+    checker.check();
+
+    const program: Program = {
+      modules: new Map([['main.zena', module]]),
+      entryPoint: 'main.zena',
+      preludeModules: [],
+    };
+
+    const result = analyzeUsage(program, {
+      semanticContext: checker.getSemanticContext(),
+    });
+
+    const pointDecl = module.body[0] as ClassDeclaration;
+    const classType = pointDecl.inferredType as ClassType;
+
+    // Check field usage
+    const xUsage = result.getFieldUsage(classType, 'x');
+    const yUsage = result.getFieldUsage(classType, 'y');
+
+    assert.ok(xUsage?.isRead, 'x should be marked as read');
+    assert.ok(xUsage?.isWritten, 'x should be marked as written (in constructor)');
+    assert.ok(!yUsage?.isRead, 'y should not be marked as read');
+    assert.ok(yUsage?.isWritten, 'y should be marked as written (in constructor)');
+  });
+
+  test('tracks field writes via assignment expression', () => {
+    const source = `
+      class Counter {
+        value: i32;
+        #new() {
+          this.value = 0;
+        }
+        increment(): void {
+          this.value = this.value + 1;
+        }
+      }
+      export let main = () => {
+        let c = new Counter();
+        c.increment();
+      };
+    `;
+    const parser = new Parser(source, {path: 'main.zena', isStdlib: false});
+    const module = parser.parse();
+
+    const checker = TypeChecker.forModule(module);
+    checker.check();
+
+    const program: Program = {
+      modules: new Map([['main.zena', module]]),
+      entryPoint: 'main.zena',
+      preludeModules: [],
+    };
+
+    const result = analyzeUsage(program, {
+      semanticContext: checker.getSemanticContext(),
+    });
+
+    const counterDecl = module.body[0] as ClassDeclaration;
+    const classType = counterDecl.inferredType as ClassType;
+
+    const valueUsage = result.getFieldUsage(classType, 'value');
+
+    // value is both read and written (in increment)
+    assert.ok(valueUsage?.isRead, 'value should be marked as read');
+    assert.ok(valueUsage?.isWritten, 'value should be marked as written');
+  });
+
+  test('tracks write-only field', () => {
+    const source = `
+      class Logger {
+        timestamp: i32;
+        message: i32;
+        #new() {
+          this.timestamp = 0;
+          this.message = 1;
+        }
+        log(): i32 {
+          return this.message;
+        }
+      }
+      export let main = () => {
+        let l = new Logger();
+        return l.log();
+      };
+    `;
+    const parser = new Parser(source, {path: 'main.zena', isStdlib: false});
+    const module = parser.parse();
+
+    const checker = TypeChecker.forModule(module);
+    checker.check();
+
+    const program: Program = {
+      modules: new Map([['main.zena', module]]),
+      entryPoint: 'main.zena',
+      preludeModules: [],
+    };
+
+    const result = analyzeUsage(program, {
+      semanticContext: checker.getSemanticContext(),
+    });
+
+    const loggerDecl = module.body[0] as ClassDeclaration;
+    const classType = loggerDecl.inferredType as ClassType;
+
+    const timestampUsage = result.getFieldUsage(classType, 'timestamp');
+    const messageUsage = result.getFieldUsage(classType, 'message');
+
+    // timestamp is write-only
+    assert.ok(!timestampUsage?.isRead, 'timestamp should not be marked as read');
+    assert.ok(timestampUsage?.isWritten, 'timestamp should be marked as written');
+
+    // message is read and written
+    assert.ok(messageUsage?.isRead, 'message should be marked as read');
+    assert.ok(messageUsage?.isWritten, 'message should be marked as written');
+  });
 });

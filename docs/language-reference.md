@@ -1629,6 +1629,46 @@ The behavior depends on the type `T`:
   - If the class implements a `hashCode(): i32` method, it is called.
   - Otherwise, returns 0 (fallback).
 
+### Pure Field Decorator (`@pure`)
+
+The `@pure` decorator can be applied to class fields to indicate that they are "pure" - meaning their setters have no side effects beyond storing the value. This enables the compiler to perform more aggressive dead code elimination.
+
+```zena
+class User {
+  @pure
+  timestamp: i32;
+  
+  @pure
+  sessionId: i32;
+  
+  name: string;
+  
+  #new(name: string) {
+    this.timestamp = 1000;  // Written but never read
+    this.sessionId = 999;   // Written but never read
+    this.name = name;
+  }
+  
+  getName(): string {
+    return this.name;
+  }
+}
+```
+
+**Dead Code Elimination**: If a field marked with `@pure` is only written to but never read in the program, the compiler will eliminate both the getter and setter for that field. This is particularly useful for generated code (like protocol buffers) where large schemas are defined but only a small subset of fields are actually used.
+
+**Rules**:
+- Fields **without** `@pure` are always kept (conservative behavior).
+- Fields **with** `@pure` that are **never read** will have their getters and setters eliminated.
+- Fields **with** `@pure` that are **read** are always kept.
+- Polymorphic field access (through base class references) prevents elimination.
+
+**Example**:
+```zena
+// In the example above, timestamp and sessionId are eliminated
+// because they are @pure and never read, reducing the binary size.
+```
+
 ## 10. Standard Library
 
 Zena includes a small standard library of utility classes. These are automatically imported into every module.
