@@ -3978,17 +3978,6 @@ function generateBinaryExpression(
   generateExpression(ctx, expr.left, body);
   generateExpression(ctx, expr.right, body);
 
-  if (isStringType(ctx, leftType) && isStringType(ctx, rightType)) {
-    if (expr.operator === '==') {
-      generateStringEq(ctx, body);
-      return;
-    } else if (expr.operator === '!=') {
-      generateStringEq(ctx, body);
-      body.push(Opcode.i32_eqz); // Invert result
-      return;
-    }
-  }
-
   // Check for reference equality
   const isRefType = (t: number[]) =>
     t.length > 0 &&
@@ -5353,14 +5342,6 @@ function generateStringLiteral(
   body.push(...WasmModule.encodeSignedLEB128(tempLocal));
 }
 
-function generateStringEq(ctx: CodegenContext, body: number[]) {
-  if (ctx.strEqFunctionIndex === -1) {
-    ctx.strEqFunctionIndex = generateStrEqFunction(ctx);
-  }
-  body.push(Opcode.call);
-  body.push(...WasmModule.encodeSignedLEB128(ctx.strEqFunctionIndex));
-}
-
 /**
  * Get the type index for array<String>.
  */
@@ -5397,123 +5378,29 @@ function getStringFromPartsIndex(ctx: CodegenContext): number {
   return fromPartsMethod.index;
 }
 
-function generateStrEqFunction(ctx: CodegenContext): number {
-  // String class struct layout:
-  //   0: __vtable (eqref)
-  //   1: __brand_String (ref null $brandType)
-  //   2: String#data (ref $ByteArray)
-  //   3: String#encoding (i32)
-  const STRING_DATA_FIELD = 2;
-
-  const stringType = [
-    ValType.ref_null,
-    ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
-  ];
-  const typeIndex = ctx.module.addType(
-    [stringType, stringType],
-    [[ValType.i32]],
+/**
+ * Get the function index for String.operator== (cached).
+ */
+function getStringEqIndex(ctx: CodegenContext): number {
+  if (ctx.stringEqFunctionIndex !== -1) {
+    return ctx.stringEqFunctionIndex;
+  }
+  const stringDecl = ctx.wellKnownTypes.String;
+  if (!stringDecl?.inferredType) {
+    throw new Error('String class not available');
+  }
+  const stringClassInfo = ctx.getClassInfo(
+    stringDecl.inferredType as ClassType,
   );
-
-  const funcIndex = ctx.module.addFunction(typeIndex);
-
-  ctx.pendingHelperFunctions.push(() => {
-    const byteArrayType = [
-      ValType.ref_null,
-      ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
-    ];
-    const locals: number[][] = [
-      byteArrayType, // data1 (local 2)
-      byteArrayType, // data2 (local 3)
-      [ValType.i32], // len1 (local 4)
-      [ValType.i32], // len2 (local 5)
-      [ValType.i32], // i (local 6)
-    ];
-    const body: number[] = [];
-
-    // Params: s1 (0), s2 (1)
-    // Locals: data1 (2), data2 (3), len1 (4), len2 (5), i (6)
-
-    // data1 = s1.#data (field 2)
-    body.push(Opcode.local_get, 0);
-    body.push(0xfb, GcOpcode.struct_get);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(STRING_DATA_FIELD);
-    body.push(Opcode.local_set, 2);
-
-    // data2 = s2.#data (field 2)
-    body.push(Opcode.local_get, 1);
-    body.push(0xfb, GcOpcode.struct_get);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
-    body.push(STRING_DATA_FIELD);
-    body.push(Opcode.local_set, 3);
-
-    // len1 = data1.length
-    body.push(Opcode.local_get, 2);
-    body.push(0xfb, GcOpcode.array_len);
-    body.push(Opcode.local_set, 4);
-
-    // len2 = data2.length
-    body.push(Opcode.local_get, 3);
-    body.push(0xfb, GcOpcode.array_len);
-    body.push(Opcode.local_set, 5);
-
-    // if len1 != len2 return 0
-    body.push(Opcode.local_get, 4);
-    body.push(Opcode.local_get, 5);
-    body.push(Opcode.i32_ne);
-    body.push(Opcode.if, ValType.void);
-    body.push(Opcode.i32_const, 0);
-    body.push(Opcode.return);
-    body.push(Opcode.end);
-
-    // loop i from 0 to len1
-    body.push(Opcode.i32_const, 0);
-    body.push(Opcode.local_set, 6); // i = 0
-
-    body.push(Opcode.block, ValType.void);
-    body.push(Opcode.loop, ValType.void);
-
-    // if i == len1 break
-    body.push(Opcode.local_get, 6);
-    body.push(Opcode.local_get, 4);
-    body.push(Opcode.i32_ge_u);
-    body.push(Opcode.br_if, 1); // break to block
-
-    // if data1[i] != data2[i] return 0
-    body.push(Opcode.local_get, 2); // data1
-    body.push(Opcode.local_get, 6); // i
-    body.push(0xfb, GcOpcode.array_get_u);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
-
-    body.push(Opcode.local_get, 3); // data2
-    body.push(Opcode.local_get, 6); // i
-    body.push(0xfb, GcOpcode.array_get_u);
-    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
-
-    body.push(Opcode.i32_ne);
-    body.push(Opcode.if, ValType.void);
-    body.push(Opcode.i32_const, 0);
-    body.push(Opcode.return);
-    body.push(Opcode.end);
-
-    // i++
-    body.push(Opcode.local_get, 6);
-    body.push(Opcode.i32_const, 1);
-    body.push(Opcode.i32_add);
-    body.push(Opcode.local_set, 6);
-
-    body.push(Opcode.br, 0); // continue loop
-    body.push(Opcode.end); // end loop
-    body.push(Opcode.end); // end block
-
-    // return 1
-    body.push(Opcode.i32_const, 1);
-    body.push(Opcode.end);
-
-    ctx.module.addCode(funcIndex, locals, body);
-  });
-
-  return funcIndex;
+  if (!stringClassInfo) {
+    throw new Error('String ClassInfo not found');
+  }
+  const eqMethod = stringClassInfo.methods.get('==');
+  if (!eqMethod) {
+    throw new Error('String.operator== not found');
+  }
+  ctx.stringEqFunctionIndex = eqMethod.index;
+  return eqMethod.index;
 }
 
 /**
@@ -6337,7 +6224,9 @@ function generateGlobalIntrinsic(
       } else if (isF32(leftType) && isF32(rightType)) {
         body.push(Opcode.f32_eq);
       } else if (isStringType(ctx, leftType) && isStringType(ctx, rightType)) {
-        generateStringEq(ctx, body);
+        // Call String.operator==
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(getStringEqIndex(ctx)));
       } else {
         // Check for operator ==
         const structTypeIndex = getHeapTypeIndex(ctx, leftType);
@@ -8305,7 +8194,9 @@ function generateMatchPatternCheck(
       );
       if (isStringType(ctx, discriminantType)) {
         generateStringLiteral(ctx, pattern as StringLiteral, body);
-        generateStringEq(ctx, body);
+        // Call String.operator==
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(getStringEqIndex(ctx)));
       } else {
         body.push(Opcode.drop);
         body.push(Opcode.i32_const, 0);

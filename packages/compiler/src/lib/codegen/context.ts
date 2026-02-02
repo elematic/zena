@@ -204,7 +204,7 @@ export class CodegenContext {
 
   // Deferred generation
   public pendingHelperFunctions: (() => void)[] = [];
-  public strEqFunctionIndex = -1;
+  public stringEqFunctionIndex = -1; // Cached index for String.operator==
   public stringFromPartsFunctionIndex = -1; // Cached index for String.fromParts
   public stringHashFunctionIndex = -1;
   public byteArrayGetFunctionIndex = -1; // Exported helper for JS to read ByteArray

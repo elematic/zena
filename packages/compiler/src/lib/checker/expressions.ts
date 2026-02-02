@@ -1535,10 +1535,13 @@ function checkBinaryExpression(
     return Types.Never;
   }
 
-  // Check for operator overloading on class types (e.g., operator +)
-  if (expr.operator === '+' && left.kind === TypeKind.Class) {
+  // Check for operator overloading on class types (e.g., operator +, operator ==)
+  if (
+    (expr.operator === '+' || expr.operator === '==') &&
+    left.kind === TypeKind.Class
+  ) {
     const classType = left as ClassType;
-    const method = classType.methods.get('+');
+    const method = classType.methods.get(expr.operator);
     if (method) {
       // Resolve the method type with generic substitution for the class's type arguments
       const resolvedMethod = resolveMemberType(
@@ -1550,7 +1553,7 @@ function checkBinaryExpression(
       // Check parameter types
       if (resolvedMethod.parameters.length !== 1) {
         ctx.diagnostics.reportError(
-          `Operator + must take exactly one argument.`,
+          `Operator ${expr.operator} must take exactly one argument.`,
           DiagnosticCode.ArgumentCountMismatch,
         );
         return Types.Unknown;
@@ -1558,7 +1561,7 @@ function checkBinaryExpression(
 
       if (!isAssignableTo(ctx, right, resolvedMethod.parameters[0])) {
         ctx.diagnostics.reportError(
-          `Type mismatch in operator +: expected ${typeToString(resolvedMethod.parameters[0])}, got ${typeToString(right)}`,
+          `Type mismatch in operator ${expr.operator}: expected ${typeToString(resolvedMethod.parameters[0])}, got ${typeToString(right)}`,
           DiagnosticCode.TypeMismatch,
         );
         return Types.Unknown;

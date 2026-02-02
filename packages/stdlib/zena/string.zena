@@ -81,8 +81,29 @@ export final class String {
     return new String(newData, this.#encoding);
   }
 
-  // String equality and hash are implemented by the compiler in codegen/expressions.ts:
-  // - generateStrEqFunction: extracts #data, compares bytes
+  // Equality operator - implemented in pure Zena
+  operator ==(other: String): boolean {
+    let data1 = this.#data;
+    let data2 = other.#data;
+    let len1 = __byte_array_length(data1);
+    let len2 = __byte_array_length(data2);
+
+    // Quick length check
+    if (len1 != len2) {
+      return false;
+    }
+
+    // Compare bytes
+    var i = 0;
+    while (i < len1) {
+      if (__byte_array_get(data1, i) != __byte_array_get(data2, i)) {
+        return false;
+      }
+      i = i + 1;
+    }
+    return true;
+  }
+
+  // String hash is implemented by the compiler in codegen/expressions.ts:
   // - generateStringHashFunction: extracts #data, FNV-1a hash bytes
-  // Template literals also use a compiler-generated concat function for efficiency.
 }
