@@ -131,6 +131,8 @@ export interface Visitor<T = void> {
   visitExportAllDeclaration?(node: ExportAllDeclaration, context: T): void;
   visitTypeAliasDeclaration?(node: TypeAliasDeclaration, context: T): void;
   visitEnumDeclaration?(node: EnumDeclaration, context: T): void;
+  visitEnumMember?(node: EnumMember, context: T): void;
+  visitEnumDeclaration?(node: EnumDeclaration, context: T): void;
 
   // ===== Expressions =====
   visitBinaryExpression?(node: BinaryExpression, context: T): void;
@@ -332,6 +334,10 @@ export function visit<T>(
     case NodeType.EnumDeclaration:
       visitor.visitEnumDeclaration?.(node as EnumDeclaration, context);
       visitEnumDeclarationChildren(node as EnumDeclaration, visitor, context);
+      break;
+    case NodeType.EnumMember:
+      visitor.visitEnumMember?.(node as EnumMember, context);
+      visitEnumMemberChildren(node as EnumMember, visitor, context);
       break;
 
     // Expressions
@@ -849,8 +855,20 @@ function visitEnumDeclarationChildren<T>(
   visitor: Visitor<T>,
   context: T,
 ): void {
-  for (const member of (node as any).members ?? []) {
+  visit(node.name, visitor, context);
+  for (const member of node.members) {
     visit(member, visitor, context);
+  }
+}
+
+function visitEnumMemberChildren<T>(
+  node: EnumMember,
+  visitor: Visitor<T>,
+  context: T,
+): void {
+  visit(node.name, visitor, context);
+  if (node.initializer) {
+    visit(node.initializer, visitor, context);
   }
 }
 
