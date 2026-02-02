@@ -1,17 +1,29 @@
-// String class - wrapper around internal ByteArray
-// Encoding tags: WTF-8 = 0, WTF-16 = 1
-export let ENCODING_WTF8: i32 = 0;
-export let ENCODING_WTF16: i32 = 1;
+// String class - view-based design (like Go)
+// Every String is a view into a backing ByteArray with start/end offsets.
+// Slicing is O(1) and zero-copy. Use copy() to release parent memory.
+//
+// SAFETY: Use StringReader for parsing to ensure slices are at code point
+// boundaries. Direct use of sliceBytes() with computed indices can split
+// multi-byte UTF-8 sequences.
+
+export enum Encoding {
+  WTF8,    // 0 - UTF-8 with unpaired surrogates allowed
+  WTF16    // 1 - UTF-16 for JS interop
+}
 
 export final class String {
   // Internal storage - accessed by compiler intrinsics
-  #data: ByteArray;
-  #encoding: i32;
+  #data: ByteArray;    // Backing storage (may be shared with other Strings)
+  #start: i32;         // Start offset into #data (inclusive)
+  #end: i32;           // End offset into #data (exclusive)
+  #encoding: Encoding;
 
   // Private constructor - strings are created by the compiler for literals
   // or by StringBuilder/transcoding functions
-  #new(data: ByteArray, encoding: i32) {
+  #new(data: ByteArray, start: i32, end: i32, encoding: Encoding) {
     this.#data = data;
+    this.#start = start;
+    this.#end = end;
     this.#encoding = encoding;
   }
 
@@ -28,7 +40,8 @@ export final class String {
     var totalLen = 0;
     var i = 0;
     while (i < partsLen) {
-      totalLen = totalLen + __byte_array_length(__array_get(parts, i).#data);
+      let part = __array_get(parts, i);
+      totalLen = totalLen + (part.#end - part.#start);
       i = i + 1;
     }
 
@@ -40,19 +53,18 @@ export final class String {
     i = 0;
     while (i < partsLen) {
       let part = __array_get(parts, i);
-      let partData = part.#data;
-      let partLen = __byte_array_length(partData);
-      __byte_array_copy(data, offset, partData, 0, partLen);
+      let partLen = part.#end - part.#start;
+      __byte_array_copy(data, offset, part.#data, part.#start, partLen);
       offset = offset + partLen;
       i = i + 1;
     }
 
     // Use encoding from first part, or default to WTF-8
-    var encoding = ENCODING_WTF8;
+    var encoding = Encoding.WTF8;
     if (partsLen > 0) {
       encoding = __array_get(parts, 0).#encoding;
     }
-    return new String(data, encoding);
+    return new String(data, 0, totalLen, encoding);
   }
 
   // Length in bytes (code units for WTF-8).
@@ -60,33 +72,65 @@ export final class String {
   // TODO: For WTF-16, return code units (byteLen / 2) once integer division is supported.
   length: i32 {
     get {
-      return __byte_array_length(this.#data);
+      return this.#end - this.#start;
     }
   }
 
-  // Get byte at index. Returns the byte value as i32.
+  // Get byte at index (relative to this view). Returns the byte value as i32.
   // For WTF-8 strings, this is the UTF-8 byte at the given index.
   // For WTF-16 strings, this is the byte (not code unit) at the given index.
   getByteAt(index: i32): i32 {
-    return __byte_array_get(this.#data, index);
+    return __byte_array_get(this.#data, this.#start + index);
   }
 
-  // Concatenation operator - implemented in pure Zena
+  /**
+   * O(1) zero-copy slice by byte indices.
+   * Returns a new String sharing the backing array.
+   * 
+   * SAFETY: Indices are byte offsets, not code point offsets.
+   * Slicing in the middle of a multi-byte UTF-8 sequence produces
+   * an invalid string. Use StringReader.mark() to get safe positions.
+   */
+  sliceBytes(start: i32, end: i32): String {
+    // Clamp indices to valid range
+    var s = start;
+    var e = end;
+    let len = this.#end - this.#start;
+    if (s < 0) { s = 0; }
+    if (e > len) { e = len; }
+    if (s > e) { s = e; }
+    
+    return new String(
+      this.#data,
+      this.#start + s,
+      this.#start + e,
+      this.#encoding
+    );
+  }
+
+  // Force a copy - creates a new String with its own backing array.
+  // Use this when you need to release the parent string's memory.
+  copy(): String {
+    let len = this.#end - this.#start;
+    let newData = __byte_array_new(len);
+    __byte_array_copy(newData, 0, this.#data, this.#start, len);
+    return new String(newData, 0, len, this.#encoding);
+  }
+
+  // Concatenation operator - always allocates a new backing array
   operator +(other: String): String {
-    let len1 = __byte_array_length(this.#data);
-    let len2 = __byte_array_length(other.#data);
+    let len1 = this.#end - this.#start;
+    let len2 = other.#end - other.#start;
     let newData = __byte_array_new(len1 + len2);
-    __byte_array_copy(newData, 0, this.#data, 0, len1);
-    __byte_array_copy(newData, len1, other.#data, 0, len2);
-    return new String(newData, this.#encoding);
+    __byte_array_copy(newData, 0, this.#data, this.#start, len1);
+    __byte_array_copy(newData, len1, other.#data, other.#start, len2);
+    return new String(newData, 0, len1 + len2, this.#encoding);
   }
 
-  // Equality operator - implemented in pure Zena
+  // Equality operator - compares the bytes in each view
   operator ==(other: String): boolean {
-    let data1 = this.#data;
-    let data2 = other.#data;
-    let len1 = __byte_array_length(data1);
-    let len2 = __byte_array_length(data2);
+    let len1 = this.#end - this.#start;
+    let len2 = other.#end - other.#start;
 
     // Quick length check
     if (len1 != len2) {
@@ -96,7 +140,7 @@ export final class String {
     // Compare bytes
     var i = 0;
     while (i < len1) {
-      if (__byte_array_get(data1, i) != __byte_array_get(data2, i)) {
+      if (__byte_array_get(this.#data, this.#start + i) != __byte_array_get(other.#data, other.#start + i)) {
         return false;
       }
       i = i + 1;
@@ -105,5 +149,5 @@ export final class String {
   }
 
   // String hash is implemented by the compiler in codegen/expressions.ts:
-  // - generateStringHashFunction: extracts #data, FNV-1a hash bytes
+  // - generateStringHashFunction: extracts #data, #start, #end, FNV-1a hash bytes
 }

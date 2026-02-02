@@ -392,9 +392,11 @@ export class CodegenContext {
 
   /**
    * Ensure the String struct type is created.
-   * String is a struct with two fields:
-   *   - #data: ref $ByteArray (field 0)
-   *   - #encoding: i32 (field 1)
+   * String is a view-based struct with fields:
+   *   - #data: ref $ByteArray
+   *   - #start: i32
+   *   - #end: i32
+   *   - #encoding: i32
    * Call this before using stringTypeIndex.
    * Returns the type index.
    */
@@ -404,7 +406,9 @@ export class CodegenContext {
     //   0: __vtable (eqref)
     //   1: __brand_String (ref null $brandType)
     //   2: String#data (ref $ByteArray)
-    //   3: String#encoding (i32)
+    //   3: String#start (i32)
+    //   4: String#end (i32)
+    //   5: String#encoding (i32)
     // The stringTypeIndex is set when the String class is processed.
     // If called before the String class is defined, returns -1.
     if (this.stringTypeIndex === -1) {

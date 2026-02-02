@@ -1,0 +1,318 @@
+/**
+ * StringReader - A cursor-based string parser that tracks byte positions.
+ * 
+ * Use StringReader for parsing to ensure slices are always at valid UTF-8
+ * code point boundaries. Positions from mark() are safe to use with sliceBytes().
+ * 
+ * Example usage:
+ * ```
+ * let r = new StringReader(input);
+ * r.skipWhitespace();
+ * let start = r.mark();
+ * while (!r.isAtEnd && r.peekByte() != 34) {  // 34 = '"'
+ *   r.advance();  // Move by code point (safe for Unicode)
+ * }
+ * let token = r.sliceFrom(start);  // Safe: positions from mark()
+ * ```
+ */
+export final class StringReader {
+  #source: String;
+  #pos: i32;
+
+  #new(source: String) {
+    this.#source = source;
+    this.#pos = 0;
+  }
+
+  // === Position tracking ===
+
+  /** Current byte position in the string. */
+  position: i32 {
+    get {
+      return this.#pos;
+    }
+  }
+
+  /** True if at end of string. */
+  isAtEnd: boolean {
+    get {
+      return this.#pos >= this.#source.length;
+    }
+  }
+
+  /** The source string being read. */
+  source: String {
+    get {
+      return this.#source;
+    }
+  }
+
+  /** Remaining length in bytes. */
+  remaining: i32 {
+    get {
+      return this.#source.length - this.#pos;
+    }
+  }
+
+  // === Byte-level operations (for ASCII delimiters) ===
+
+  /**
+   * Peek at the current byte without consuming it.
+   * Returns -1 if at end of string.
+   * Use for ASCII characters (< 128) like delimiters: { } [ ] , : " etc.
+   */
+  peekByte(): i32 {
+    if (this.#pos >= this.#source.length) {
+      return 0 - 1;
+    }
+    return this.#source.getByteAt(this.#pos);
+  }
+
+  /**
+   * Peek at a byte at offset from current position.
+   * Returns -1 if out of bounds.
+   */
+  peekByteAt(offset: i32): i32 {
+    let idx = this.#pos + offset;
+    if (idx < 0 || idx >= this.#source.length) {
+      return 0 - 1;
+    }
+    return this.#source.getByteAt(idx);
+  }
+
+  /**
+   * Consume and return the current byte.
+   * Returns -1 if at end.
+   * WARNING: Only use for ASCII (< 128). For Unicode text, use advance().
+   */
+  advanceByte(): i32 {
+    if (this.#pos >= this.#source.length) {
+      return 0 - 1;
+    }
+    let b = this.#source.getByteAt(this.#pos);
+    this.#pos = this.#pos + 1;
+    return b;
+  }
+
+  // === Code point operations (Unicode-safe) ===
+
+  /**
+   * Peek at the current Unicode code point without consuming it.
+   * Returns -1 if at end of string.
+   * Decodes UTF-8 sequences properly.
+   *
+   * TODO: Use shift operators (<< 6, << 12, << 18) when available in Zena.
+   * Currently using multiplication as a workaround.
+   */
+  peek(): i32 {
+    if (this.#pos >= this.#source.length) {
+      return 0 - 1;
+    }
+    let b0 = this.#source.getByteAt(this.#pos);
+    
+    // ASCII (0xxxxxxx)
+    if ((b0 & 0x80) == 0) {
+      return b0;
+    }
+    
+    // 2-byte sequence (110xxxxx 10xxxxxx)
+    // TODO: (b0 & 0x1F) << 6 | (b1 & 0x3F)
+    if ((b0 & 0xE0) == 0xC0) {
+      if (this.#pos + 1 >= this.#source.length) {
+        return 0 - 1;  // Incomplete sequence
+      }
+      let b1 = this.#source.getByteAt(this.#pos + 1);
+      return (b0 & 0x1F) * 64 + (b1 & 0x3F);
+    }
+    
+    // 3-byte sequence (1110xxxx 10xxxxxx 10xxxxxx)
+    // TODO: (b0 & 0x0F) << 12 | (b1 & 0x3F) << 6 | (b2 & 0x3F)
+    if ((b0 & 0xF0) == 0xE0) {
+      if (this.#pos + 2 >= this.#source.length) {
+        return 0 - 1;  // Incomplete sequence
+      }
+      let b1 = this.#source.getByteAt(this.#pos + 1);
+      let b2 = this.#source.getByteAt(this.#pos + 2);
+      return (b0 & 0x0F) * 4096 + (b1 & 0x3F) * 64 + (b2 & 0x3F);
+    }
+    
+    // 4-byte sequence (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx)
+    // TODO: (b0 & 0x07) << 18 | (b1 & 0x3F) << 12 | (b2 & 0x3F) << 6 | (b3 & 0x3F)
+    if ((b0 & 0xF8) == 0xF0) {
+      if (this.#pos + 3 >= this.#source.length) {
+        return 0 - 1;  // Incomplete sequence
+      }
+      let b1 = this.#source.getByteAt(this.#pos + 1);
+      let b2 = this.#source.getByteAt(this.#pos + 2);
+      let b3 = this.#source.getByteAt(this.#pos + 3);
+      return (b0 & 0x07) * 262144 + (b1 & 0x3F) * 4096 + (b2 & 0x3F) * 64 + (b3 & 0x3F);
+    }
+    
+    // Invalid UTF-8 lead byte, return as-is
+    return b0;
+  }
+
+  /**
+   * Consume and return the current Unicode code point.
+   * Returns -1 if at end.
+   * Advances by the correct number of bytes (1-4 for UTF-8).
+   *
+   * TODO: Use shift operators (<< 6, << 12, << 18) when available in Zena.
+   * Currently using multiplication as a workaround.
+   */
+  advance(): i32 {
+    if (this.#pos >= this.#source.length) {
+      return 0 - 1;
+    }
+    let b0 = this.#source.getByteAt(this.#pos);
+    
+    // ASCII (0xxxxxxx) - 1 byte
+    if ((b0 & 0x80) == 0) {
+      this.#pos = this.#pos + 1;
+      return b0;
+    }
+    
+    // 2-byte sequence (110xxxxx)
+    // TODO: (b0 & 0x1F) << 6 | (b1 & 0x3F)
+    if ((b0 & 0xE0) == 0xC0) {
+      if (this.#pos + 1 >= this.#source.length) {
+        this.#pos = this.#pos + 1;
+        return 0 - 1;
+      }
+      let b1 = this.#source.getByteAt(this.#pos + 1);
+      this.#pos = this.#pos + 2;
+      return (b0 & 0x1F) * 64 + (b1 & 0x3F);
+    }
+    
+    // 3-byte sequence (1110xxxx)
+    // TODO: (b0 & 0x0F) << 12 | (b1 & 0x3F) << 6 | (b2 & 0x3F)
+    if ((b0 & 0xF0) == 0xE0) {
+      if (this.#pos + 2 >= this.#source.length) {
+        this.#pos = this.#pos + 1;
+        return 0 - 1;
+      }
+      let b1 = this.#source.getByteAt(this.#pos + 1);
+      let b2 = this.#source.getByteAt(this.#pos + 2);
+      this.#pos = this.#pos + 3;
+      return (b0 & 0x0F) * 4096 + (b1 & 0x3F) * 64 + (b2 & 0x3F);
+    }
+    
+    // 4-byte sequence (11110xxx)
+    // TODO: (b0 & 0x07) << 18 | (b1 & 0x3F) << 12 | (b2 & 0x3F) << 6 | (b3 & 0x3F)
+    if ((b0 & 0xF8) == 0xF0) {
+      if (this.#pos + 3 >= this.#source.length) {
+        this.#pos = this.#pos + 1;
+        return 0 - 1;
+      }
+      let b1 = this.#source.getByteAt(this.#pos + 1);
+      let b2 = this.#source.getByteAt(this.#pos + 2);
+      let b3 = this.#source.getByteAt(this.#pos + 3);
+      this.#pos = this.#pos + 4;
+      return (b0 & 0x07) * 262144 + (b1 & 0x3F) * 4096 + (b2 & 0x3F) * 64 + (b3 & 0x3F);
+    }
+    
+    // Invalid UTF-8 lead byte, skip 1 byte
+    this.#pos = this.#pos + 1;
+    return b0;
+  }
+
+  /**
+   * Skip N code points (not bytes).
+   * Properly handles multi-byte UTF-8 sequences.
+   */
+  skip(count: i32): void {
+    var i = 0;
+    while (i < count && this.#pos < this.#source.length) {
+      this.advance();
+      i = i + 1;
+    }
+  }
+
+  // === Marking and slicing (the safe way to extract substrings) ===
+
+  /**
+   * Mark the current position for later slicing.
+   * Returns an opaque position value safe to use with sliceFrom/sliceRange.
+   */
+  mark(): i32 {
+    return this.#pos;
+  }
+
+  /**
+   * Reset to a previously marked position.
+   */
+  reset(pos: i32): void {
+    this.#pos = pos;
+  }
+
+  /**
+   * Extract a slice from a marked position to current position.
+   * This is SAFE because both positions are at code point boundaries.
+   */
+  sliceFrom(start: i32): String {
+    return this.#source.sliceBytes(start, this.#pos);
+  }
+
+  /**
+   * Extract a slice between two marked positions.
+   * This is SAFE because both positions are at code point boundaries.
+   */
+  sliceRange(start: i32, end: i32): String {
+    return this.#source.sliceBytes(start, end);
+  }
+
+  // === Convenience parsing helpers ===
+
+  /**
+   * Check if current byte matches, and advance if it does.
+   * Returns true if matched.
+   */
+  matchByte(expected: i32): boolean {
+    if (this.#pos < this.#source.length && this.#source.getByteAt(this.#pos) == expected) {
+      this.#pos = this.#pos + 1;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Skip ASCII whitespace (space, tab, newline, carriage return).
+   */
+  skipWhitespace(): void {
+    while (this.#pos < this.#source.length) {
+      let b = this.#source.getByteAt(this.#pos);
+      // space=32, tab=9, newline=10, carriage return=13
+      if (b == 32 || b == 9 || b == 10 || b == 13) {
+        this.#pos = this.#pos + 1;
+      } else {
+        return;
+      }
+    }
+  }
+
+  /**
+   * Skip N bytes (not code points).
+   * Use with caution - only when you know the bytes are at valid boundaries.
+   */
+  skipBytes(n: i32): void {
+    this.#pos = this.#pos + n;
+    if (this.#pos > this.#source.length) {
+      this.#pos = this.#source.length;
+    }
+  }
+
+  /**
+   * Skip bytes while predicate returns true.
+   * Predicate receives byte value (not code point).
+   * Useful for ASCII character classes: digits, letters, etc.
+   */
+  skipBytesWhile(predicate: (i32) => boolean): void {
+    while (this.#pos < this.#source.length) {
+      let b = this.#source.getByteAt(this.#pos);
+      if (!predicate(b)) {
+        return;
+      }
+      this.#pos = this.#pos + 1;
+    }
+  }
+}

@@ -6,13 +6,19 @@ Strings in Zena are immutable sequences of characters represented by a final
 `String` class. There is no separate `string` primitive type—`String` is the
 one and only string type in the language.
 
-The `String` class wraps a `ByteArray` internally and tracks encoding metadata.
+The `String` class uses a **view-based design** (similar to Go): every string
+is a view into a backing `ByteArray`, with `#start` and `#end` offsets. This
+enables **O(1) zero-copy slicing** while maintaining a single `String` type.
+
 This design provides:
 
 - **Encapsulation**: The backing `ByteArray` is private; users cannot mutate
   string contents.
+- **Zero-copy slicing**: `slice()` returns a new `String` that shares the
+  backing array—no allocation or copying required.
 - **Multi-encoding support**: Strings can be UTF-8 or UTF-16 encoded, making
   interop with JS hosts efficient.
+- **Single type**: No separate `StringSlice` or `StringView` type. Just `String`.
 - **Future extensibility**: The wrapper design allows for alternative
   implementations (ropes, host strings) later without changing the public API.
 
@@ -20,31 +26,81 @@ This design provides:
 
 ```zena
 final class String {
-  #data: ByteArray;
-  #encoding: i32;  // 0 = UTF-8, 1 = UTF-16
+  #data: ByteArray;    // Backing storage (may be shared with other Strings)
+  #start: i32;         // Start offset into #data (inclusive)
+  #end: i32;           // End offset into #data (exclusive)
+  #encoding: i32;      // 0 = WTF-8, 1 = WTF-16
 
-  // Length in bytes (not characters)
-  byteLength: i32 {
-    get() => this.#data.length;
-  }
-
-  // Length in code units (bytes for UTF-8, 2-byte units for UTF-16)
+  // Length in code units (bytes for WTF-8, 2-byte units for WTF-16)
   length: i32 {
-    get() {
+    get {
       if (this.#encoding == 0) {
-        return this.#data.length;
+        return this.#end - this.#start;
       } else {
-        return this.#data.length / 2;
+        return (this.#end - this.#start) / 2;
       }
     }
   }
 
-  // Internal: get byte at index
-  #getByteAt(index: i32): i32 => this.#data[index];
+  // Length in bytes
+  byteLength: i32 {
+    get => this.#end - this.#start;
+  }
 
-  // ... methods like substring, indexOf, etc.
+  // Get byte at index (relative to this view)
+  getByteAt(index: i32): i32 {
+    return this.#data[this.#start + index];
+  }
+
+  // O(1) zero-copy slice - returns a new String sharing the backing array
+  slice(start: i32, end: i32): String {
+    return new String(
+      this.#data,
+      this.#start + start,
+      this.#start + end,
+      this.#encoding
+    );
+  }
+
+  // Force a copy - use when you need to release the parent string's memory
+  copy(): String {
+    let len = this.#end - this.#start;
+    let newData = new ByteArray(len);
+    // Copy bytes from this view to new array
+    __byte_array_copy(newData, 0, this.#data, this.#start, len);
+    return new String(newData, 0, len, this.#encoding);
+  }
 }
 ```
+
+### Memory Sharing
+
+Slicing creates a new `String` that shares the backing `ByteArray`:
+
+```zena
+let json = readFile("data.json");   // String: #start=0, #end=10000
+let key = json.slice(100, 110);     // String: shares #data, #start=100, #end=110
+let owned = key.copy();             // New String: owns its own ByteArray
+```
+
+**Memory retention**: A slice keeps its parent's backing array alive. A 10-byte
+slice of a 10MB string retains 10MB until the slice is garbage collected. Use
+`copy()` when you need to release the parent string's memory:
+
+```zena
+// Parser example: copy extracted values to release input
+let parse = (input: String): array<String> => {
+  var results = #[];
+  // ... parsing logic ...
+  // Copy string values to release input buffer
+  results.push(extractedValue.copy());
+  return results;
+};
+```
+
+This is the same tradeoff Go makes with its `string` type, and it works well
+in practice. For most use cases, the memory sharing is beneficial (fast slicing,
+no allocation). When memory is a concern, `copy()` makes ownership explicit.
 
 ### Encoding
 
@@ -80,9 +136,11 @@ differ.
 ### WASM Representation
 
 ```wat
-;; String struct type
+;; String struct type (view-based)
 (type $String (struct
-  (field $data (ref $ByteArray))  ;; Backing byte array
+  (field $data (ref $ByteArray))  ;; Backing byte array (may be shared)
+  (field $start i32)              ;; Start offset (inclusive)
+  (field $end i32)                ;; End offset (exclusive)
   (field $encoding i32)           ;; Encoding tag
 ))
 
@@ -90,10 +148,9 @@ differ.
 (type $ByteArray (array (mut i8)))
 ```
 
-The extra struct indirection (compared to using `ByteArray` directly) costs one
-`struct.get` per field access. This is ~1 cycle and negligible for most
-operations. For performance-critical code that builds strings incrementally,
-use `StringBuilder`.
+The view-based design adds 8 bytes per string (start + end fields). This is a
+small cost for O(1) slicing. The extra `struct.get` for offset calculation is
+~1 cycle and negligible.
 
 ## StringBuilder
 
@@ -176,30 +233,41 @@ shows hashing is a bottleneck, we can add optional caching.
 
 ### Substring Operations
 
+With the view-based design, slicing is O(1) and zero-copy:
+
 ```zena
-// Code unit operations (O(1) index calculation, matches JS)
+// O(1) zero-copy slice - returns String sharing backing array
+slice(start: i32, end: i32): String
+
+// Convenience: slice from start to end of string
+slice(start: i32): String  // equivalent to slice(start, length)
+
+// Force a copy - releases reference to parent's backing array
+copy(): String
+
+// Substring is an alias for slice().copy() - always copies
 substring(start: i32, end: i32): String
-slice(start: i32, end?: i32): String
+```
 
+**Recommended usage**:
+
+- Use `slice()` for parsing and intermediate operations (zero-copy, fast)
+- Use `copy()` when you need to release the parent string's memory
+- Use `substring()` when you want a copied substring in one call
+
+**Code unit indices**: All slice operations use code unit indices (bytes for
+WTF-8, 2-byte units for WTF-16). Slicing in the middle of a multi-byte
+character or surrogate pair can produce invalid sequences. This matches
+JavaScript behavior.
+
+```zena
 // Code point operations (O(n) to find boundaries, always well-formed output)
-substringByCodePoint(start: i32, end: i32): String
+sliceByCodePoint(start: i32, end: i32): String
 ```
 
-**Code unit slicing** (`substring`, `slice`) operates on code unit indices and
-can produce unpaired surrogates if you slice in the middle of a surrogate pair.
-This matches JavaScript behavior:
-
-```javascript
-'😀'.substring(0, 1); // JS: lone high surrogate (length 1)
-```
-
-**Code point slicing** (`substringByCodePoint`) treats indices as code point
-offsets, ensuring the result is always well-formed Unicode. This is O(n) to
-find the byte offset but guarantees no broken surrogates.
-
-**Recommendation**: For most text processing, use code-unit operations (fast,
-familiar to JS developers). Use code-point operations when Unicode correctness
-is critical and you're working with user-visible text boundaries.
+**Code point slicing** treats indices as code point offsets, ensuring the
+result is always well-formed Unicode. This is O(n) to find the byte offset
+but guarantees no broken surrogates.
 
 ### Length
 
@@ -252,3 +320,15 @@ back to JS.
   by deduplicating identical literals in the data section.
 - **Cached Hash Codes**: If hashing becomes a bottleneck, add an optional cached
   hash field (increases `String` size by 4 bytes).
+
+## Summary: Operation Costs
+
+| Operation             | Time | Allocates?               | Shares Memory? |
+| --------------------- | ---- | ------------------------ | -------------- |
+| `str.slice(a, b)`     | O(1) | Yes (String struct only) | Yes            |
+| `str.copy()`          | O(n) | Yes (ByteArray + String) | No             |
+| `str.substring(a, b)` | O(n) | Yes (ByteArray + String) | No             |
+| `str + other`         | O(n) | Yes (ByteArray + String) | No             |
+| `str == other`        | O(n) | No                       | N/A            |
+| `str.length`          | O(1) | No                       | N/A            |
+| `str.getByteAt(i)`    | O(1) | No                       | N/A            |
