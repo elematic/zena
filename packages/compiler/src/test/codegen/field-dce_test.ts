@@ -177,7 +177,7 @@ suite('Field-level DCE', () => {
     assert.strictEqual(result, 300);
   });
 
-  test('private field is not affected by @pure DCE', async () => {
+  test('private fields are not affected by @pure DCE', async () => {
     const source = `
       class Secret {
         #privateValue: i32;
@@ -186,7 +186,7 @@ suite('Field-level DCE', () => {
         
         #new() {
           this.#privateValue = 42;
-          this.publicValue = 100;
+          this.publicValue = 100;  // @pure and write-only, should be eliminated
         }
         
         getPrivate(): i32 {
@@ -200,7 +200,8 @@ suite('Field-level DCE', () => {
       };
     `;
 
-    // Private fields use different mechanism, @pure should only affect public fields
+    // Private fields don't have implicit getters/setters, so @pure doesn't apply
+    // Only publicValue (which is @pure and write-only) should be eliminated
     const result = await compileAndRun(source);
     assert.strictEqual(result, 42);
   });

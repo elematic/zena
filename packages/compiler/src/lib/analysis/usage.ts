@@ -1002,20 +1002,34 @@ class UsageAnalyzer {
   }
 
   /**
+   * Get or create field usage info for a field.
+   */
+  #getOrCreateFieldUsage(
+    classType: ClassType | InterfaceType,
+    fieldName: string,
+  ): FieldUsageInfo {
+    let fieldMap = this.#fieldUsage.get(classType);
+    if (!fieldMap) {
+      fieldMap = new Map();
+      this.#fieldUsage.set(classType, fieldMap);
+    }
+    let usage = fieldMap.get(fieldName);
+    if (!usage) {
+      usage = {isRead: false, isWritten: false};
+      fieldMap.set(fieldName, usage);
+    }
+    return usage;
+  }
+
+  /**
    * Mark a field as read on a class or interface.
    */
   #markFieldRead(
     classType: ClassType | InterfaceType,
     fieldName: string,
   ): void {
-    let fieldMap = this.#fieldUsage.get(classType);
-    if (!fieldMap) {
-      fieldMap = new Map();
-      this.#fieldUsage.set(classType, fieldMap);
-    }
-    const usage = fieldMap.get(fieldName) ?? {isRead: false, isWritten: false};
+    const usage = this.#getOrCreateFieldUsage(classType, fieldName);
     usage.isRead = true;
-    fieldMap.set(fieldName, usage);
   }
 
   /**
@@ -1025,14 +1039,8 @@ class UsageAnalyzer {
     classType: ClassType | InterfaceType,
     fieldName: string,
   ): void {
-    let fieldMap = this.#fieldUsage.get(classType);
-    if (!fieldMap) {
-      fieldMap = new Map();
-      this.#fieldUsage.set(classType, fieldMap);
-    }
-    const usage = fieldMap.get(fieldName) ?? {isRead: false, isWritten: false};
+    const usage = this.#getOrCreateFieldUsage(classType, fieldName);
     usage.isWritten = true;
-    fieldMap.set(fieldName, usage);
   }
 
   /**

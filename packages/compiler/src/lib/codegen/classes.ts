@@ -2686,8 +2686,13 @@ export function generateClassMethods(
         const fieldUsage = checkerType
           ? ctx.usageResult.getFieldUsage(checkerType, propName)
           : undefined;
+        // Only eliminate if: field is @pure AND we have usage info AND it's write-only
+        // If fieldUsage is undefined, we conservatively keep the field
         const isWriteOnly =
-          isPure && fieldUsage && fieldUsage.isWritten && !fieldUsage.isRead;
+          isPure &&
+          fieldUsage !== undefined &&
+          fieldUsage.isWritten &&
+          !fieldUsage.isRead;
 
         // Getter
         const getterName = getGetterName(propName);
