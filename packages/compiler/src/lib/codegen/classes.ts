@@ -2563,10 +2563,12 @@ export function generateClassMethods(
       const isPure =
         member.decorators?.some((d) => d.name === 'pure') ?? false;
       const fieldUsage =
-        isPure && checkerType && ctx.usageResult
+        checkerType && ctx.usageResult
           ? ctx.usageResult.getFieldUsage(checkerType, propName)
           : undefined;
+      // Only eliminate if @pure AND write-only
       const isWriteOnly =
+        isPure &&
         fieldUsage !== undefined &&
         fieldUsage.isWritten &&
         !fieldUsage.isRead;
