@@ -716,11 +716,37 @@ Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`):
 
 Classes can define custom behavior for `+` via `operator +`. See [Operator Overloading](#operator-overloading).
 
-Supported bitwise operators for integer types (`i32`, `u32`):
+Supported bitwise operators for integer types (`i32`, `u32`, `i64`, `u64`):
 
 - `&` (Bitwise AND)
 - `|` (Bitwise OR)
 - `^` (Bitwise XOR)
+- `<<` (Left Shift)
+- `>>` (Right Shift) - Arithmetic shift (sign-extends for signed types, zero-fills for unsigned types)
+- `>>>` (Unsigned Right Shift) - Always zero-fills (logical shift)
+
+**Examples:**
+
+```zena
+// Bitwise operations
+let mask = 0b1111 & 0b1010;  // 0b1010 (10)
+let bits = 0b1100 | 0b0011;  // 0b1111 (15)
+let flip = 0b1100 ^ 0b1010;  // 0b0110 (6)
+
+// Shift operations
+let doubled = 5 << 1;        // 10 (shift left by 1 = multiply by 2)
+let halved = 10 >> 1;        // 5 (shift right by 1 = divide by 2)
+let quadrupled = 3 << 2;     // 12 (shift left by 2 = multiply by 4)
+
+// Signed vs unsigned right shift
+let negative: i32 = -8;
+let signExtended = negative >> 1;    // -4 (sign bit preserved)
+let zeroFilled = negative >>> 1;     // 2147483644 (zero-filled)
+
+// With unsigned types
+let value: u32 = 16 as u32;
+let shifted = value >> 2;    // 4 (always zero-fills for u32)
+```
 
 Operands must be of the same type, with the exception of mixing `i32` and `f32`. **Mixing other numeric types (e.g., `i32` and `i64`) is not allowed**; you must explicitly cast using `as`.
 
@@ -791,6 +817,31 @@ These operators return a boolean value. **Comparing `i32` and `u32` directly is 
 - `||` (Logical OR) - Short-circuiting OR. Returns `true` if at least one operand is `true`.
 
 Operands must be of type `boolean`.
+
+### Operator Precedence
+
+Operators are listed from highest to lowest precedence:
+
+1. Unary (`!`, `-`)
+2. Multiplicative (`*`, `/`, `%`)
+3. Additive (`+`, `-`)
+4. Shift (`<<`, `>>`, `>>>`)
+5. Comparison (`<`, `<=`, `>`, `>=`)
+6. Equality (`==`, `!=`, `===`, `!==`)
+7. Bitwise AND (`&`)
+8. Bitwise XOR (`^`)
+9. Bitwise OR (`|`)
+10. Logical AND (`&&`)
+11. Logical OR (`||`)
+
+Operators at the same precedence level are left-associative (evaluated left-to-right).
+
+```zena
+let x = 2 + 3 * 4;      // 2 + (3 * 4) = 14
+let y = 8 << 1 + 1;     // 8 << (1 + 1) = 8 << 2 = 32
+let z = 5 & 3 == 1;     // Type error: Cannot mix integer and boolean
+let w = (5 & 3) == 1;   // OK: (5 & 3) == 1 -> 1 == 1 -> true
+```
 
 ### Range Operators
 

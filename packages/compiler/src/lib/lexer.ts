@@ -62,8 +62,11 @@ export const TokenType = {
   BangEqualsEquals: 'BangEqualsEquals',
   Less: 'Less',
   LessEquals: 'LessEquals',
+  LessLess: 'LessLess',
   Greater: 'Greater',
   GreaterEquals: 'GreaterEquals',
+  GreaterGreater: 'GreaterGreater',
+  GreaterGreaterGreater: 'GreaterGreaterGreater',
   Arrow: 'Arrow',
   Plus: 'Plus',
   Minus: 'Minus',
@@ -484,6 +487,16 @@ export function tokenize(source: string): Token[] {
             start: startIndex,
             end: current,
           });
+        } else if (peek() === '<') {
+          advance();
+          tokens.push({
+            type: TokenType.LessLess,
+            value: '<<',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
         } else {
           tokens.push({
             type: TokenType.Less,
@@ -506,6 +519,28 @@ export function tokenize(source: string): Token[] {
             start: startIndex,
             end: current,
           });
+        } else if (peek() === '>') {
+          advance();
+          if (peek() === '>') {
+            advance();
+            tokens.push({
+              type: TokenType.GreaterGreaterGreater,
+              value: '>>>',
+              line,
+              column: startColumn,
+              start: startIndex,
+              end: current,
+            });
+          } else {
+            tokens.push({
+              type: TokenType.GreaterGreater,
+              value: '>>',
+              line,
+              column: startColumn,
+              start: startIndex,
+              end: current,
+            });
+          }
         } else {
           tokens.push({
             type: TokenType.Greater,

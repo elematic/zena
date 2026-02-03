@@ -1710,6 +1710,21 @@ function checkBinaryExpression(
       }
       return resultType;
     }
+    case '<<':
+    case '>>':
+    case '>>>': {
+      // Shift operators require integer types
+      // The result type is the type of the left operand
+      if (!isIntegerType(left) || !isIntegerType(right)) {
+        ctx.diagnostics.reportError(
+          `Operator '${expr.operator}' cannot be applied to types '${typeToString(left)}' and '${typeToString(right)}'.`,
+          DiagnosticCode.TypeMismatch,
+        );
+        return Types.Unknown;
+      }
+      // Return the left operand's type (shift count doesn't affect result type)
+      return left;
+    }
     case '&&':
     case '||':
       if (left !== Types.Boolean || right !== Types.Boolean) {
