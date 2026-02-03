@@ -551,6 +551,12 @@ export function generateTrampoline(
           classParamType[0] === ValType.f32 ||
           classParamType[0] === ValType.f64)
       ) {
+        // TODO(primitive-boxing): Pass semantic type once MethodInfo tracks checker types.
+        // Trampoline generation only has WASM types from the interface/class signatures.
+        // This causes boolean vs i32 confusion when unboxing. To fix properly, we need to:
+        // 1. Store checker types in MethodInfo alongside WASM types
+        // 2. Pass semantic type through generateTrampoline
+        // See docs/design/primitive-boxing-semantic-types.md for details.
         unboxPrimitive(ctx, classParamType, body);
       } else if (
         classParamType.length > 1 &&
@@ -726,6 +732,12 @@ export function generateTrampoline(
         classReturnType[0] === ValType.f32 ||
         classReturnType[0] === ValType.f64)
     ) {
+      // TODO(primitive-boxing): Pass semantic type once MethodInfo tracks checker types.
+      // Trampoline generation only has WASM types from the interface/class signatures.
+      // This causes boolean vs i32 confusion when boxing. To fix properly, we need to:
+      // 1. Store checker types in MethodInfo alongside WASM types
+      // 2. Pass semantic type through generateTrampoline
+      // See docs/design/primitive-boxing-semantic-types.md for details.
       boxPrimitive(ctx, classReturnType, body);
     }
     // 2. Interface Boxing

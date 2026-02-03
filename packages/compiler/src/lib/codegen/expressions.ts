@@ -538,6 +538,7 @@ function generateAsExpression(
 
   // Use checker types for semantic operations (lookups, type identity).
   // WASM types are computed lazily, only when needed for opcode emission.
+  const sourceCheckerType = expr.expression.inferredType;
   let targetCheckerType = expr.inferredType!;
 
   // Substitute type parameters if we're in a generic context
@@ -636,7 +637,6 @@ function generateAsExpression(
 
   // Interface Boxing - use checker types for all lookups
   // For interface boxing, we need the checker's source type for class lookup
-  const sourceCheckerType = expr.expression.inferredType;
   if (targetCheckerType?.kind === TypeKind.Interface) {
     const interfaceInfo = ctx.getInterfaceInfo(
       targetCheckerType as InterfaceType,
@@ -747,7 +747,8 @@ function generateAsExpression(
     sourceWasmType.length === 1 &&
     sourceWasmType[0] === ValType.anyref
   ) {
-    unboxPrimitive(ctx, targetWasmType, body);
+    // Pass targetCheckerType to preserve semantic type (boolean vs i32)
+    unboxPrimitive(ctx, targetWasmType, body, targetCheckerType);
     return;
   }
 
@@ -811,10 +812,10 @@ function generateIsExpression(
     body.push(0xfb, GcOpcode.ref_test);
     body.push(...WasmModule.encodeSignedLEB128(typeIndex));
   } else if (targetType.length === 1) {
-    // Primitive type check (e.g. x is i32)
+    // Primitive type check (e.g. x is i32, x is boolean)
     // We check if it is an instance of Box<T>
-    const checkerType = wasmTypeToCheckerType(targetType);
-    const boxClass = getBoxClassInfo(ctx, checkerType);
+    // Use targetCheckerType directly to preserve semantic type (boolean vs i32)
+    const boxClass = getBoxClassInfo(ctx, targetCheckerType);
 
     body.push(0xfb, GcOpcode.ref_test_null);
     body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
@@ -870,11 +871,14 @@ export function unboxPrimitive(
   ctx: CodegenContext,
   targetType: number[],
   body: number[],
+  /** Optional semantic type from checker - use when available to distinguish boolean from i32 */
+  semanticType?: Type,
 ) {
   // Stack: [anyref]
 
-  // Convert WASM type to checker Type for identity-based lookup
-  const checkerType = wasmTypeToCheckerType(targetType);
+  // Use semantic type if provided, otherwise fall back to WASM type mapping
+  // This is important for distinguishing boolean from i32 (both are ValType.i32)
+  const checkerType = semanticType ?? wasmTypeToCheckerType(targetType);
   const boxClass = getBoxClassInfo(ctx, checkerType);
 
   // Cast to Box<T>
@@ -894,11 +898,14 @@ export function boxPrimitive(
   ctx: CodegenContext,
   sourceType: number[],
   body: number[],
+  /** Optional semantic type from checker - use when available to distinguish boolean from i32 */
+  semanticType?: Type,
 ) {
   // Stack: [primitive]
 
-  // Convert WASM type to checker Type for identity-based lookup
-  const checkerType = wasmTypeToCheckerType(sourceType);
+  // Use semantic type if provided, otherwise fall back to WASM type mapping
+  // This is important for distinguishing boolean from i32 (both are ValType.i32)
+  const checkerType = semanticType ?? wasmTypeToCheckerType(sourceType);
   const boxClass = getBoxClassInfo(ctx, checkerType);
 
   // Use a local to save value.
@@ -1491,6 +1498,9 @@ function generateIndexExpression(
                 expectedType[0] === ValType.f32 ||
                 expectedType[0] === ValType.f64)
             ) {
+              // NOTE: Do NOT pass semantic type here. The value was boxed by a trampoline
+              // which only has WASM types (no semantic type). We must unbox using the same
+              // type the trampoline used for boxing. See docs/design/primitive-boxing-semantic-types.md
               unboxPrimitive(ctx, expectedType, body);
             } else if (
               expectedType.length > 1 &&
@@ -2099,6 +2109,9 @@ function generateCallExpression(
               expectedType[0] === ValType.f32 ||
               expectedType[0] === ValType.f64)
           ) {
+            // NOTE: Do NOT pass semantic type here. The value was boxed by a trampoline
+            // which only has WASM types (no semantic type). We must unbox using the same
+            // type the trampoline used for boxing. See docs/design/primitive-boxing-semantic-types.md
             unboxPrimitive(ctx, expectedType, body);
           } else if (
             expectedType.length > 1 &&
@@ -2957,7 +2970,12 @@ function generateAssignmentExpression(
                     indexType[0] === ValType.f32 ||
                     indexType[0] === ValType.f64)
                 ) {
-                  boxPrimitive(ctx, indexType, body);
+                  boxPrimitive(
+                    ctx,
+                    indexType,
+                    body,
+                    indexExpr.index.inferredType,
+                  );
                 }
               }
             }
@@ -2986,7 +3004,7 @@ function generateAssignmentExpression(
                     valueType[0] === ValType.f32 ||
                     valueType[0] === ValType.f64)
                 ) {
-                  boxPrimitive(ctx, valueType, body);
+                  boxPrimitive(ctx, valueType, body, expr.value.inferredType);
                 }
               }
             }
@@ -3229,7 +3247,7 @@ function generateAssignmentExpression(
                 valueType[0] === ValType.f32 ||
                 valueType[0] === ValType.f64)
             ) {
-              boxPrimitive(ctx, valueType, body);
+              boxPrimitive(ctx, valueType, body, expr.value.inferredType);
             }
           }
         }
@@ -3393,7 +3411,7 @@ function generateAssignmentExpression(
         valueType[0] === ValType.f32 ||
         valueType[0] === ValType.f64)
     ) {
-      boxPrimitive(ctx, valueType, body);
+      boxPrimitive(ctx, valueType, body, expr.value.inferredType);
     }
 
     const tempVal = ctx.declareLocal('$$temp_field_set', fieldInfo.type);
@@ -3462,7 +3480,7 @@ function generateAssignmentExpression(
             valueType[0] === ValType.f32 ||
             valueType[0] === ValType.f64)
         ) {
-          boxPrimitive(ctx, valueType, body);
+          boxPrimitive(ctx, valueType, body, expr.value.inferredType);
         }
 
         // Assignment is an expression that evaluates to the assigned value.
@@ -3502,7 +3520,7 @@ function generateAssignmentExpression(
           valueType[0] === ValType.f32 ||
           valueType[0] === ValType.f64)
       ) {
-        boxPrimitive(ctx, valueType, body);
+        boxPrimitive(ctx, valueType, body, expr.value.inferredType);
       }
 
       const temp = ctx.declareLocal('$$temp_global_assign', valueType);
@@ -4849,6 +4867,9 @@ function generateInterfaceFieldAccessWithInfo(
         wasmExpectedType[0] === ValType.f32 ||
         wasmExpectedType[0] === ValType.f64)
     ) {
+      // NOTE: Do NOT pass semantic type here. The value was boxed by a trampoline
+      // which only has WASM types (no semantic type). We must unbox using the same
+      // type the trampoline used for boxing. See docs/design/primitive-boxing-semantic-types.md
       unboxPrimitive(ctx, wasmExpectedType, body);
     } else if (
       wasmExpectedType.length > 1 &&
@@ -4961,6 +4982,9 @@ function generateInterfaceGetterAccess(
         wasmExpectedType[0] === ValType.f32 ||
         wasmExpectedType[0] === ValType.f64)
     ) {
+      // NOTE: Do NOT pass semantic type here. The value was boxed by a trampoline
+      // which only has WASM types (no semantic type). We must unbox using the same
+      // type the trampoline used for boxing. See docs/design/primitive-boxing-semantic-types.md
       unboxPrimitive(ctx, wasmExpectedType, body);
     } else if (
       wasmExpectedType.length > 1 &&
@@ -5964,7 +5988,10 @@ function generateFunctionExpression(
   for (const name of mutableCaptures) {
     const local = ctx.getLocal(name);
     if (local && !local.isBoxed) {
-      // Box this variable in the enclosing scope
+      // TODO(primitive-boxing): We use wasmTypeToCheckerType here because we only have
+      // the WASM type of the captured variable, not its checker Type. To fix this properly,
+      // we'd need to track semantic types in LocalInfo. This causes boolean vs i32 confusion.
+      // See docs/design/primitive-boxing-semantic-types.md for details.
       const checkerType = wasmTypeToCheckerType(local.type);
       const boxClass = getBoxClassInfo(ctx, checkerType);
       const boxedType = [
@@ -5975,6 +6002,7 @@ function generateFunctionExpression(
       // Create a new box with the current value
       body.push(Opcode.local_get);
       body.push(...WasmModule.encodeSignedLEB128(local.index));
+      // TODO(primitive-boxing): Pass semantic type once LocalInfo tracks checker types
       boxPrimitive(ctx, local.type, body);
 
       // Create a new local for the box and update the scope
@@ -6201,6 +6229,9 @@ function generateFunctionExpression(
 
         // Box it if not already boxed
         if (!local.isBoxed) {
+          // TODO(primitive-boxing): Pass semantic type once capture analysis tracks checker types.
+          // Currently we only have WASM type (c.type), causing boolean vs i32 confusion.
+          // See docs/design/primitive-boxing-semantic-types.md for details.
           boxPrimitive(ctx, c.type, body);
         }
         // If already boxed, the local.get above loaded the box directly
@@ -7635,7 +7666,7 @@ export function generateAdaptedArgument(
       actualType[0] === ValType.f64)
   ) {
     generateExpression(ctx, arg, body);
-    boxPrimitive(ctx, actualType, body);
+    boxPrimitive(ctx, actualType, body, arg.inferredType);
     return;
   }
 

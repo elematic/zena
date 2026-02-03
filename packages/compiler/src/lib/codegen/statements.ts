@@ -310,7 +310,9 @@ export function generateLocalVariableDeclaration(
         exprType[0] === ValType.f32 ||
         exprType[0] === ValType.f64)
     ) {
-      boxPrimitive(ctx, exprType, body);
+      // Pass the semantic type from the initializer expression to preserve
+      // type identity (e.g., boolean vs i32) for proper Box<T> selection
+      boxPrimitive(ctx, exprType, body, decl.init.inferredType);
     }
 
     // Check for interface boxing
