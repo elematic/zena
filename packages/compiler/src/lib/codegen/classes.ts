@@ -2171,7 +2171,6 @@ export function registerClassMethods(
   generateInterfaceVTable(ctx, classInfo, decl);
 
   if (ctx.shouldExport(decl) && !decl.isExtension) {
-
     const ctorInfo = methods.get('#new')!;
 
     // Wrapper signature: params -> (ref null struct)
@@ -2538,7 +2537,12 @@ export function generateClassMethods(
       // Restore return type context
       ctx.currentReturnType = oldReturnType;
 
-      ctx.module.addCode(methodInfo.index, ctx.extraLocals, body, `${classInfo.name}::${methodName}`);
+      ctx.module.addCode(
+        methodInfo.index,
+        ctx.extraLocals,
+        body,
+        `${classInfo.name}::${methodName}`,
+      );
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
 

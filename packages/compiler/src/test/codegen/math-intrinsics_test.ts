@@ -39,7 +39,7 @@ suite('Math Intrinsics', () => {
     const {uintDiv} = await compileAndInstantiate(source);
 
     assert.strictEqual(uintDiv(10, 3), 3);
-    assert.strictEqual(uintDiv(0xFFFFFFFE, 2), 0x7FFFFFFF); // Large unsigned value
+    assert.strictEqual(uintDiv(0xfffffffe, 2), 0x7fffffff); // Large unsigned value
   });
 
   test('div u64', async () => {
@@ -50,7 +50,7 @@ suite('Math Intrinsics', () => {
     const {uintDiv64} = await compileAndInstantiate(source);
 
     assert.strictEqual(uintDiv64(10n, 3n), 3n);
-    assert.strictEqual(uintDiv64(0xFFFFFFFFFFFFFFFFn, 2n), 0x7FFFFFFFFFFFFFFFn); // Large unsigned value
+    assert.strictEqual(uintDiv64(0xffffffffffffffffn, 2n), 0x7fffffffffffffffn); // Large unsigned value
   });
 
   test('i32_trunc_s f32 to i32', async () => {

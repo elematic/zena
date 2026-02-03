@@ -1575,7 +1575,12 @@ function checkBinaryExpression(
         commonType = Types.F64;
       } else if (isF32(leftName) || isF32(rightName)) {
         // If one is f32 and other is i64/u64, promote to f64 to preserve precision
-        if (isI64(leftName) || isI64(rightName) || isU64(leftName) || isU64(rightName)) {
+        if (
+          isI64(leftName) ||
+          isI64(rightName) ||
+          isU64(leftName) ||
+          isU64(rightName)
+        ) {
           commonType = Types.F64;
         } else {
           commonType = Types.F32;

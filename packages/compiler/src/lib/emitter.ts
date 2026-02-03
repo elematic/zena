@@ -192,8 +192,6 @@ export class WasmModule {
       throw new Error(`Invalid function index for code: ${index}`);
     }
 
-
-
     const compressedLocals: {count: number; type: number[]}[] = [];
     if (locals.length > 0) {
       let currentType = locals[0];

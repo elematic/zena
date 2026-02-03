@@ -685,8 +685,7 @@ class UsageAnalyzer {
           const isFinal = classType.isFinal === true;
 
           const method = classType.methods.get('[]');
-          const isOverloaded =
-            method?.overloads && method.overloads.length > 0;
+          const isOverloaded = method?.overloads && method.overloads.length > 0;
           const methodName = isOverloaded ? `[]${signatureKey}` : '[]';
 
           this.#markMethodUsed(classType, methodName, !isFinal);
@@ -698,8 +697,7 @@ class UsageAnalyzer {
           const isFinal = classType.isFinal === true;
 
           const method = classType.methods.get('[]');
-          const isOverloaded =
-            method?.overloads && method.overloads.length > 0;
+          const isOverloaded = method?.overloads && method.overloads.length > 0;
           const methodName = isOverloaded ? `[]${signatureKey}` : '[]';
 
           this.#markMethodUsed(classType, methodName, !isFinal);
@@ -712,7 +710,7 @@ class UsageAnalyzer {
         if (node.left.type === NodeType.IndexExpression) {
           const indexExpr = node.left as IndexExpression;
           const objectType = indexExpr.object.inferredType;
-          
+
           // Check if the object type is a class or interface with operator []=
           if (
             objectType &&

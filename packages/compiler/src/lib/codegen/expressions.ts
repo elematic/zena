@@ -3661,8 +3661,14 @@ function generateBinaryExpression(
             isU32 ? Opcode.f64_convert_i32_u : Opcode.f64_convert_i32_s,
           );
       } else if (source[0] === ValType.i64) {
-        if (target === ValType.f32) body.push(isU64 ? Opcode.f32_convert_i64_u : Opcode.f32_convert_i64_s);
-        else if (target === ValType.f64) body.push(isU64 ? Opcode.f64_convert_i64_u : Opcode.f64_convert_i64_s);
+        if (target === ValType.f32)
+          body.push(
+            isU64 ? Opcode.f32_convert_i64_u : Opcode.f32_convert_i64_s,
+          );
+        else if (target === ValType.f64)
+          body.push(
+            isU64 ? Opcode.f64_convert_i64_u : Opcode.f64_convert_i64_s,
+          );
       } else if (source[0] === ValType.f32) {
         if (target === ValType.f64) body.push(Opcode.f64_promote_f32);
       }
@@ -3682,8 +3688,10 @@ function generateBinaryExpression(
       t.kind === TypeKind.Number &&
       (t as NumberType).name === Types.U64.name;
     const useUnsigned =
-      isU32Type(expr.left.inferredType) || isU32Type(expr.right.inferredType) ||
-      isU64Type(expr.left.inferredType) || isU64Type(expr.right.inferredType);
+      isU32Type(expr.left.inferredType) ||
+      isU32Type(expr.right.inferredType) ||
+      isU64Type(expr.left.inferredType) ||
+      isU64Type(expr.right.inferredType);
 
     switch (targetType) {
       case ValType.i32:

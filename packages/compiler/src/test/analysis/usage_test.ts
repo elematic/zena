@@ -313,7 +313,10 @@ suite('Usage Analysis', () => {
 
     // Get the class type
     const classType = boxDecl.inferredType;
-    assert.ok(classType?.kind === TypeKind.Class, 'Box should have a class type');
+    assert.ok(
+      classType?.kind === TypeKind.Class,
+      'Box should have a class type',
+    );
 
     // Check that operator [] method is marked as used
     // Note: The exact method name includes a signature key for overloads,
@@ -367,7 +370,10 @@ suite('Usage Analysis', () => {
 
     // Get the class type
     const classType = boxDecl.inferredType;
-    assert.ok(classType?.kind === TypeKind.Class, 'Box should have a class type');
+    assert.ok(
+      classType?.kind === TypeKind.Class,
+      'Box should have a class type',
+    );
 
     // Check that operator []= method is marked as used
     assert.ok(

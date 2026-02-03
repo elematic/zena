@@ -247,6 +247,10 @@ suite('Operator Method DCE', () => {
     `;
 
     const result = await compileAndRun(source);
-    assert.strictEqual(result, 1, 'Overridden operator == should work polymorphically');
+    assert.strictEqual(
+      result,
+      1,
+      'Overridden operator == should work polymorphically',
+    );
   });
 });
