@@ -3708,6 +3708,15 @@ function generateBinaryExpression(
           case '^':
             body.push(Opcode.i32_xor);
             break;
+          case '<<':
+            body.push(Opcode.i32_shl);
+            break;
+          case '>>':
+            body.push(useUnsigned ? Opcode.i32_shr_u : Opcode.i32_shr_s);
+            break;
+          case '>>>':
+            body.push(Opcode.i32_shr_u);
+            break;
           case '==':
           case '===':
             body.push(Opcode.i32_eq);
@@ -3757,6 +3766,15 @@ function generateBinaryExpression(
             break;
           case '^':
             body.push(Opcode.i64_xor);
+            break;
+          case '<<':
+            body.push(Opcode.i64_shl);
+            break;
+          case '>>':
+            body.push(useUnsigned ? Opcode.i64_shr_u : Opcode.i64_shr_s);
+            break;
+          case '>>>':
+            body.push(Opcode.i64_shr_u);
             break;
           case '==':
           case '===':

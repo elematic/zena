@@ -95,4 +95,71 @@ suite('Bitwise Operators', () => {
       assert.match(e.message, /Operator '\^' cannot be applied/);
     }
   });
+
+  test('left shift <<', async () => {
+    const source = `
+      export let leftShift = (a: i32, b: i32) => a << b;
+    `;
+    const {leftShift} = await compileAndInstantiate(source);
+
+    assert.strictEqual(leftShift(5, 1), 10); // 5 << 1 = 10
+    assert.strictEqual(leftShift(5, 2), 20); // 5 << 2 = 20
+    assert.strictEqual(leftShift(1, 3), 8); // 1 << 3 = 8
+    assert.strictEqual(leftShift(7, 4), 112); // 7 << 4 = 112
+  });
+
+  test('right shift >> (signed)', async () => {
+    const source = `
+      export let rightShift = (a: i32, b: i32) => a >> b;
+    `;
+    const {rightShift} = await compileAndInstantiate(source);
+
+    assert.strictEqual(rightShift(10, 1), 5); // 10 >> 1 = 5
+    assert.strictEqual(rightShift(20, 2), 5); // 20 >> 2 = 5
+    assert.strictEqual(rightShift(8, 3), 1); // 8 >> 3 = 1
+    assert.strictEqual(rightShift(-8, 1), -4); // -8 >> 1 = -4 (sign extension)
+  });
+
+  test('unsigned right shift >>>', async () => {
+    const source = `
+      export let unsignedRightShift = (a: i32, b: i32) => a >>> b;
+    `;
+    const {unsignedRightShift} = await compileAndInstantiate(source);
+
+    assert.strictEqual(unsignedRightShift(10, 1), 5); // 10 >>> 1 = 5
+    assert.strictEqual(unsignedRightShift(20, 2), 5); // 20 >>> 2 = 5
+    assert.strictEqual(unsignedRightShift(8, 3), 1); // 8 >>> 3 = 1
+    // -8 in i32 is 0xFFFFFFF8, >>> 1 gives 0x7FFFFFFC (2147483644)
+    assert.strictEqual(unsignedRightShift(-8, 1), 2147483644);
+  });
+
+  test('shift with u32 types', async () => {
+    const source = `
+      export let leftShiftU32 = (a: u32, b: u32) => a << b;
+      export let rightShiftU32 = (a: u32, b: u32) => a >> b;
+    `;
+    const {leftShiftU32, rightShiftU32} = await compileAndInstantiate(source);
+
+    assert.strictEqual(leftShiftU32(5, 2), 20);
+    assert.strictEqual(rightShiftU32(20, 2), 5);
+  });
+
+  test('shift operators have correct precedence', async () => {
+    const source = `
+      export let shiftAddPrecedence = (a: i32, b: i32, c: i32) => a << b + c;
+      export let shiftCompPrecedence = (a: i32, b: i32, c: i32) => (a << b) < c;
+    `;
+    const {shiftAddPrecedence, shiftCompPrecedence} =
+      await compileAndInstantiate(source);
+
+    // a << b + c should be a << (b + c)
+    // 2 << 1 + 1 = 2 << 2 = 8
+    assert.strictEqual(shiftAddPrecedence(2, 1, 1), 8);
+
+    // (a << b) < c
+    // (2 << 2) < 10 -> 8 < 10 -> true (1)
+    assert.strictEqual(shiftCompPrecedence(2, 2, 10), 1);
+    // (2 << 2) < 5 -> 8 < 5 -> false (0)
+    assert.strictEqual(shiftCompPrecedence(2, 2, 5), 0);
+  });
 });

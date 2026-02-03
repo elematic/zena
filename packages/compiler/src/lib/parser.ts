@@ -989,7 +989,7 @@ export class Parser {
   }
 
   #parseComparison(): Expression {
-    let left = this.#parseRange();
+    let left = this.#parseShift();
 
     while (
       this.#match(
@@ -997,6 +997,30 @@ export class Parser {
         TokenType.LessEquals,
         TokenType.Greater,
         TokenType.GreaterEquals,
+      )
+    ) {
+      const operator = this.#previous().value;
+      const right = this.#parseShift();
+      left = {
+        type: NodeType.BinaryExpression,
+        left,
+        operator,
+        right,
+        loc: this.#loc(left, right),
+      };
+    }
+
+    return left;
+  }
+
+  #parseShift(): Expression {
+    let left = this.#parseRange();
+
+    while (
+      this.#match(
+        TokenType.LessLess,
+        TokenType.GreaterGreater,
+        TokenType.GreaterGreaterGreater,
       )
     ) {
       const operator = this.#previous().value;
