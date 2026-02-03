@@ -2564,7 +2564,7 @@ export class Parser {
           loc: this.#loc(id, defaultValue || constraint || id),
         });
       } while (this.#match(TokenType.Comma));
-      this.#consume(TokenType.Greater, "Expected '>' after type parameters.");
+      this.#consumeGreater("Expected '>' after type parameters.");
       return params;
     }
     return undefined;
@@ -2576,7 +2576,7 @@ export class Parser {
       do {
         args.push(this.#parseTypeAnnotation());
       } while (this.#match(TokenType.Comma));
-      this.#consume(TokenType.Greater, "Expected '>' after type arguments.");
+      this.#consumeGreater("Expected '>' after type arguments.");
       return args;
     }
     return undefined;
@@ -3058,6 +3058,75 @@ export class Parser {
 
   #consume(type: TokenType, message: string): Token {
     if (this.#check(type)) return this.#advance();
+    throw new Error(
+      message + ` Got ${this.#peek().type} at line ${this.#peek().line}`,
+    );
+  }
+
+  /**
+   * Special version of consume for '>' that handles '>>' and '>>>' in type contexts.
+   * When we expect '>' but encounter '>>' or '>>>', this consumes one '>' and
+   * leaves the rest for subsequent parsing.
+   */
+  #consumeGreater(message: string): Token {
+    const current = this.#peek();
+    
+    if (current.type === TokenType.Greater) {
+      return this.#advance();
+    } else if (current.type === TokenType.GreaterGreater) {
+      // Replace '>>' with two '>' tokens
+      const firstGreater: Token = {
+        type: TokenType.Greater,
+        value: '>',
+        line: current.line,
+        column: current.column,
+        start: current.start,
+        end: current.start + 1,
+      };
+      const secondGreater: Token = {
+        type: TokenType.Greater,
+        value: '>',
+        line: current.line,
+        column: current.column + 1,
+        start: current.start + 1,
+        end: current.end,
+      };
+      // Replace current token with first '>', insert second '>' after
+      this.#tokens[this.#current] = firstGreater;
+      this.#tokens.splice(this.#current + 1, 0, secondGreater);
+      return this.#advance();
+    } else if (current.type === TokenType.GreaterGreaterGreater) {
+      // Replace '>>>' with three '>' tokens
+      const firstGreater: Token = {
+        type: TokenType.Greater,
+        value: '>',
+        line: current.line,
+        column: current.column,
+        start: current.start,
+        end: current.start + 1,
+      };
+      const secondGreater: Token = {
+        type: TokenType.Greater,
+        value: '>',
+        line: current.line,
+        column: current.column + 1,
+        start: current.start + 1,
+        end: current.start + 2,
+      };
+      const thirdGreater: Token = {
+        type: TokenType.Greater,
+        value: '>',
+        line: current.line,
+        column: current.column + 2,
+        start: current.start + 2,
+        end: current.end,
+      };
+      // Replace current token with first '>', insert second and third '>' after
+      this.#tokens[this.#current] = firstGreater;
+      this.#tokens.splice(this.#current + 1, 0, secondGreater, thirdGreater);
+      return this.#advance();
+    }
+    
     throw new Error(
       message + ` Got ${this.#peek().type} at line ${this.#peek().line}`,
     );
