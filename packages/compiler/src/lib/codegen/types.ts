@@ -18,6 +18,11 @@ export interface ClassInfo {
    */
   superClassType?: ClassType;
   fields: Map<string, {index: number; type: number[]; intrinsic?: string}>;
+  /**
+   * Set of field names that were eliminated due to DCE (never read).
+   * Used to skip assignment statements to these fields during codegen.
+   */
+  eliminatedFields?: Set<string>;
   methods: Map<
     string,
     {

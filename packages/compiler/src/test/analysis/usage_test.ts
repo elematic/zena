@@ -463,7 +463,7 @@ suite('Usage Analysis', () => {
     };
 
     const result = analyzeUsage(program, {
-      semanticContext: checker.getSemanticContext(),
+      semanticContext: checker.semanticContext,
     });
 
     const pointDecl = module.body[0] as ClassDeclaration;
@@ -474,9 +474,15 @@ suite('Usage Analysis', () => {
     const yUsage = result.getFieldUsage(classType, 'y');
 
     assert.ok(xUsage?.isRead, 'x should be marked as read');
-    assert.ok(xUsage?.isWritten, 'x should be marked as written (in constructor)');
+    assert.ok(
+      xUsage?.isWritten,
+      'x should be marked as written (in constructor)',
+    );
     assert.ok(!yUsage?.isRead, 'y should not be marked as read');
-    assert.ok(yUsage?.isWritten, 'y should be marked as written (in constructor)');
+    assert.ok(
+      yUsage?.isWritten,
+      'y should be marked as written (in constructor)',
+    );
   });
 
   test('tracks field writes via assignment expression', () => {
@@ -508,7 +514,7 @@ suite('Usage Analysis', () => {
     };
 
     const result = analyzeUsage(program, {
-      semanticContext: checker.getSemanticContext(),
+      semanticContext: checker.semanticContext,
     });
 
     const counterDecl = module.body[0] as ClassDeclaration;
@@ -552,7 +558,7 @@ suite('Usage Analysis', () => {
     };
 
     const result = analyzeUsage(program, {
-      semanticContext: checker.getSemanticContext(),
+      semanticContext: checker.semanticContext,
     });
 
     const loggerDecl = module.body[0] as ClassDeclaration;
@@ -562,8 +568,14 @@ suite('Usage Analysis', () => {
     const messageUsage = result.getFieldUsage(classType, 'message');
 
     // timestamp is write-only
-    assert.ok(!timestampUsage?.isRead, 'timestamp should not be marked as read');
-    assert.ok(timestampUsage?.isWritten, 'timestamp should be marked as written');
+    assert.ok(
+      !timestampUsage?.isRead,
+      'timestamp should not be marked as read',
+    );
+    assert.ok(
+      timestampUsage?.isWritten,
+      'timestamp should be marked as written',
+    );
 
     // message is read and written
     assert.ok(messageUsage?.isRead, 'message should be marked as read');

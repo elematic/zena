@@ -765,7 +765,8 @@ class UsageAnalyzer {
           const memberExpr = node.left as MemberExpression;
           // Try to get the resolved binding for this member access
           if (this.#semanticContext) {
-            const binding = this.#semanticContext.getResolvedBinding(memberExpr);
+            const binding =
+              this.#semanticContext.getResolvedBinding(memberExpr);
             if (binding) {
               if (binding.kind === 'setter') {
                 // Mark setter as used
@@ -774,6 +775,12 @@ class UsageAnalyzer {
                   binding.methodName,
                   !binding.isStaticDispatch,
                 );
+                // Track field write if this is an implicit setter for a field
+                // Implicit setters have names like "set#fieldName"
+                if (binding.methodName.startsWith('set#')) {
+                  const fieldName = binding.methodName.slice(4); // Remove "set#" prefix
+                  this.#markFieldWritten(binding.classType, fieldName);
+                }
               } else if (binding.kind === 'field') {
                 // Public field assignment - mark the implicit setter as used
                 const setterName = `set#${binding.fieldName}`;

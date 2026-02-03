@@ -1490,6 +1490,9 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
     mutable: true,
   });
 
+  // Track eliminated fields for this class
+  const eliminatedFields = new Set<string>();
+
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
       const memberName = getMemberName(member.name);
@@ -1499,6 +1502,19 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
           `Field ${memberName} in ${decl.name.name} missing inferredType`,
         );
       }
+
+      // Check if PUBLIC field is eliminable (unobservable - never read)
+      // Private fields are accessed directly and not tracked by usage analysis,
+      // so we cannot eliminate them based on read/write tracking.
+      if (
+        !memberName.startsWith('#') &&
+        ctx.isFieldEliminable(classType, memberName)
+      ) {
+        // Field is never read - eliminate it from the struct entirely
+        eliminatedFields.add(memberName);
+        continue;
+      }
+
       const wasmType = mapCheckerTypeToWasmType(
         ctx,
         member.typeAnnotation.inferredType,
@@ -1533,6 +1549,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   classInfo.superClass = currentSuperClassInfo?.name;
   classInfo.superClassType = superClassType;
   classInfo.fields = fields;
+  classInfo.eliminatedFields = eliminatedFields;
   classInfo.onType = onType;
   classInfo.structDefined = true;
 
@@ -1982,6 +1999,14 @@ export function registerClassMethods(
       if (member.isStatic) continue;
       // Register implicit accessors for public fields
       if (!getMemberName(member.name).startsWith('#')) {
+        const propName = getMemberName(member.name);
+
+        // Check if this field was eliminated due to DCE (never read)
+        // If so, skip registering getter/setter entirely
+        if (classInfo.eliminatedFields?.has(propName)) {
+          continue;
+        }
+
         let intrinsic: string | undefined;
         if (member.decorators) {
           const intrinsicDecorator = member.decorators.find(
@@ -1992,7 +2017,6 @@ export function registerClassMethods(
           }
         }
 
-        const propName = getMemberName(member.name);
         // Use the annotation's inferredType (set by the checker)
         if (!member.typeAnnotation.inferredType) {
           throw new Error(
@@ -2560,8 +2584,7 @@ export function generateClassMethods(
 
       // Check if accessor is @pure and write-only for DCE
       // Explicit setters might have side effects, so require @pure decorator
-      const isPure =
-        member.decorators?.some((d) => d.name === 'pure') ?? false;
+      const isPure = member.decorators?.some((d) => d.name === 'pure') ?? false;
       const fieldUsage =
         checkerType && ctx.usageResult
           ? ctx.usageResult.getFieldUsage(checkerType, propName)
@@ -2691,6 +2714,13 @@ export function generateClassMethods(
 
       if (!getMemberName(member.name).startsWith('#')) {
         const propName = getMemberName(member.name);
+
+        // Check if this field was eliminated due to DCE (never read)
+        // If so, skip generating getter/setter entirely - assignments are also skipped
+        if (classInfo.eliminatedFields?.has(propName)) {
+          continue;
+        }
+
         const fieldName = manglePrivateName(classInfo.name, propName);
         const fieldInfo = classInfo.fields.get(fieldName);
         if (!fieldInfo) {
@@ -2699,28 +2729,12 @@ export function generateClassMethods(
           );
         }
 
-        // Check if field is write-only for DCE
-        // Plain fields are always pure (no side effects), so we can eliminate write-only fields
-        // Get field usage if DCE is enabled and checker type is available
-        const fieldUsage =
-          checkerType && ctx.usageResult
-            ? ctx.usageResult.getFieldUsage(checkerType, propName)
-            : undefined;
-        // Eliminate if: field is write-only (written but never read)
-        // If fieldUsage is undefined, we conservatively keep the field
-        const isWriteOnly =
-          fieldUsage !== undefined &&
-          fieldUsage.isWritten &&
-          !fieldUsage.isRead;
-
         // Getter
         const getterName = getGetterName(propName);
         const getterInfo = classInfo.methods.get(getterName)!;
 
         // Method-level DCE for implicit field getters (not registered if unused)
-        // Skip getter if field is write-only (plain fields are always pure)
         if (
-          !isWriteOnly &&
           getterInfo.index !== -1 &&
           (!checkerType || ctx.isMethodUsed(checkerType, getterName))
         ) {
@@ -2744,9 +2758,7 @@ export function generateClassMethods(
           const setterInfo = classInfo.methods.get(setterName)!;
 
           // Method-level DCE for implicit field setters (not registered if unused)
-          // Skip setter if field is write-only (plain fields are always pure)
           if (
-            !isWriteOnly &&
             setterInfo.index !== -1 &&
             (!checkerType || ctx.isMethodUsed(checkerType, setterName))
           ) {

@@ -1,6 +1,6 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
-import {compileAndRun} from './utils.js';
+import {compileAndRun, compileToWasm} from './utils.js';
 
 suite('Field-level DCE', () => {
   test('write-only plain field is eliminated', async () => {
@@ -169,6 +169,40 @@ suite('Field-level DCE', () => {
     assert.strictEqual(result, 300);
   });
 
+  test('multiple assignments to eliminated field are all skipped', async () => {
+    const source = `
+      class Tracker {
+        counter: i32;
+        unused: i32;  // Never read - should be eliminated
+        
+        #new() {
+          this.counter = 0;
+          this.unused = 0;
+        }
+        
+        track(): i32 {
+          // Multiple assignments to unused field - all should be eliminated
+          this.unused = 1;
+          this.unused = 2;
+          this.unused = 3;  // Third assignment, still never read
+          this.counter = this.counter + 1;
+          return this.counter;
+        }
+      }
+      
+      export let main = (): i32 => {
+        let t = new Tracker();
+        t.track();
+        t.track();
+        return t.track();
+      };
+    `;
+
+    // All assignments to 'unused' should be eliminated, only 'counter' is kept
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 3);
+  });
+
   test('private fields are not affected by field DCE', async () => {
     const source = `
       class Secret {
@@ -294,5 +328,55 @@ suite('Field-level DCE', () => {
     // Polymorphic access means the field must be kept
     const result = await compileAndRun(source);
     assert.strictEqual(result, 50);
+  });
+
+  test('eliminated fields reduce struct size', async () => {
+    // Version with eliminated field
+    const withEliminated = `
+      class Data {
+        used: i32;
+        unused: i32;  // Never read
+        
+        #new(u: i32) {
+          this.used = u;
+          this.unused = 999;
+        }
+      }
+      
+      export let main = (): i32 => {
+        let d = new Data(42);
+        return d.used;
+      };
+    `;
+
+    // Version without the unused field
+    const withoutUnused = `
+      class Data {
+        used: i32;
+        
+        #new(u: i32) {
+          this.used = u;
+        }
+      }
+      
+      export let main = (): i32 => {
+        let d = new Data(42);
+        return d.used;
+      };
+    `;
+
+    const sizeWithEliminated = compileToWasm(withEliminated, '/test.zena', {
+      dce: true,
+    }).length;
+    const sizeWithout = compileToWasm(withoutUnused, '/test.zena', {
+      dce: true,
+    }).length;
+
+    // Both should have the same size since the unused field is eliminated
+    // Allow a small tolerance for potential encoding differences
+    assert.ok(
+      Math.abs(sizeWithEliminated - sizeWithout) < 10,
+      `Eliminated field version (${sizeWithEliminated}) should be close to version without field (${sizeWithout})`,
+    );
   });
 });

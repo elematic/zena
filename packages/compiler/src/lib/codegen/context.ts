@@ -350,6 +350,29 @@ export class CodegenContext {
   }
 
   /**
+   * Check if a field is eliminable (unobservable - never read).
+   * A field is eliminable if DCE is enabled and the field is never read.
+   * This allows eliminating the field from the struct, eliminating assignments,
+   * and eliminating both getter and setter.
+   *
+   * @param classType - The class type
+   * @param fieldName - The field name (without class prefix)
+   * @returns true if the field can be eliminated, false if it must be kept
+   */
+  isFieldEliminable(
+    classType: ClassType | InterfaceType,
+    fieldName: string,
+  ): boolean {
+    if (!this.#usageResult) {
+      return false; // DCE disabled, keep everything
+    }
+    const fieldUsage = this.#usageResult.getFieldUsage(classType, fieldName);
+    // Field is eliminable if it's never read (writes are unobservable)
+    // If fieldUsage is undefined (field not tracked), conservatively keep it
+    return fieldUsage !== undefined && !fieldUsage.isRead;
+  }
+
+  /**
    * Get the usage analysis result.
    * Returns the current usage analysis result or null if DCE is disabled.
    */
