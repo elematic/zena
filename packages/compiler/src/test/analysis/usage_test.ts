@@ -302,7 +302,7 @@ suite('Usage Analysis', () => {
 
     // Pass semantic context to usage analysis
     const result = analyzeUsage(program, {
-      semanticContext: checker.getSemanticContext(),
+      semanticContext: checker.semanticContext,
     });
 
     const boxDecl = module.body[0] as ClassDeclaration;
@@ -352,7 +352,7 @@ suite('Usage Analysis', () => {
 
     // Pass semantic context to usage analysis
     const result = analyzeUsage(program, {
-      semanticContext: checker.getSemanticContext(),
+      semanticContext: checker.semanticContext,
     });
 
     const boxDecl = module.body[0] as ClassDeclaration;
@@ -399,7 +399,7 @@ suite('Usage Analysis', () => {
 
     // Pass semantic context to usage analysis
     const result = analyzeUsage(program, {
-      semanticContext: checker.getSemanticContext(),
+      semanticContext: checker.semanticContext,
     });
 
     const pointDecl = module.body[0] as ClassDeclaration;
