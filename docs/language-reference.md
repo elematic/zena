@@ -1629,6 +1629,68 @@ The behavior depends on the type `T`:
   - If the class implements a `hashCode(): i32` method, it is called.
   - Otherwise, returns 0 (fallback).
 
+### Pure Accessor Decorator (`@pure`)
+
+The `@pure` decorator is used on **explicit accessor declarations** (properties with custom getters/setters) to indicate that the setter has no side effects beyond storing the value. This enables the compiler to perform dead code elimination on write-only accessors.
+
+**Plain fields are always pure** - they don't need the `@pure` decorator because they simply store values without side effects. Write-only plain fields are automatically eliminated.
+
+```zena
+class Message {
+  // Plain fields - automatically eliminated if write-only (no decorator needed)
+  timestamp: i32;
+  sessionId: i32;
+
+  // Field that is used - kept
+  content: i32;
+
+  // Explicit accessor with side effects - requires @pure to enable elimination
+  @pure
+  metadata: i32 {
+    get {
+      return this.#backingStore;
+    }
+    set(v) {
+      this.#backingStore = v;  // Pure setter - just stores value
+    }
+  }
+
+  #backingStore: i32;
+
+  #new(content: i32) {
+    this.timestamp = 1000;  // Written but never read → eliminated
+    this.sessionId = 999;   // Written but never read → eliminated
+    this.content = content;
+    this.metadata = 42;     // Written but never read → eliminated (marked @pure)
+  }
+
+  getContent(): i32 {
+    return this.content;  // Only content is read
+  }
+}
+```
+
+**Dead Code Elimination Rules**:
+
+- **Plain fields**: Write-only fields are automatically eliminated (they're always pure).
+- **Explicit accessors with `@pure`**: Write-only accessors marked `@pure` are eliminated.
+- **Explicit accessors without `@pure`**: Kept even if write-only (may have side effects).
+- **Read fields**: Always kept, regardless of `@pure` decorator.
+- **Polymorphic access**: Prevents elimination.
+
+**Use Cases**:
+This is particularly useful for generated code (like protocol buffers) where large schemas are defined but only a small subset of fields are actually used.
+
+**Example**:
+
+```zena
+// In the example above:
+// - timestamp, sessionId → eliminated (plain fields, write-only)
+// - metadata → eliminated (accessor marked @pure, write-only)
+// - content → kept (read in getContent)
+// Binary size reduced by eliminating 6 methods (3 getters + 3 setters)
+```
+
 ## 10. Standard Library
 
 Zena includes a small standard library of utility classes. These are automatically imported into every module.

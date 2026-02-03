@@ -3145,6 +3145,18 @@ function generateAssignmentExpression(
       foundClass = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
     }
 
+    // Check if the field was eliminated due to DCE (never read)
+    // If so, evaluate object and value for side effects but skip storage
+    if (foundClass?.eliminatedFields?.has(fieldName)) {
+      // Evaluate object for potential side effects, then drop
+      generateExpression(ctx, memberExpr.object, body);
+      body.push(Opcode.drop);
+
+      // Evaluate value for side effects, keep for return value
+      generateExpression(ctx, expr.value, body);
+      return;
+    }
+
     if (!foundClass) {
       // Identity-based lookup for interface
       let interfaceInfo: InterfaceInfo | undefined;
