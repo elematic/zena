@@ -4,10 +4,12 @@ import {
   type AccessorSignature,
   type BindingProperty,
   type BlockStatement,
+  type BreakStatement,
   type CallExpression,
   type CatchClause,
   type ClassDeclaration,
   type ComputedPropertyName,
+  type ContinueStatement,
   type Decorator,
   type DeclareFunction,
   type EnumDeclaration,
@@ -239,6 +241,12 @@ export class Parser {
     }
     if (this.#match(TokenType.For)) {
       return this.#parseForStatement();
+    }
+    if (this.#match(TokenType.Break)) {
+      return this.#parseBreakStatement();
+    }
+    if (this.#match(TokenType.Continue)) {
+      return this.#parseContinueStatement();
     }
     if (this.#match(TokenType.Final)) {
       // Disambiguate `final class` vs `final + 1`
@@ -1930,6 +1938,26 @@ export class Parser {
     };
   }
 
+  #parseBreakStatement(): BreakStatement {
+    const startToken = this.#previous();
+    this.#consume(TokenType.Semi, "Expected ';' after break.");
+    const endToken = this.#previous();
+    return {
+      type: NodeType.BreakStatement,
+      loc: this.#loc(startToken, endToken),
+    };
+  }
+
+  #parseContinueStatement(): ContinueStatement {
+    const startToken = this.#previous();
+    this.#consume(TokenType.Semi, "Expected ';' after continue.");
+    const endToken = this.#previous();
+    return {
+      type: NodeType.ContinueStatement,
+      loc: this.#loc(startToken, endToken),
+    };
+  }
+
   #parseClassDeclaration(
     exported: boolean,
     isFinal: boolean = false,
@@ -3098,7 +3126,7 @@ export class Parser {
    */
   #consumeGreater(message: string): Token {
     const current = this.#peek();
-    
+
     if (current.type === TokenType.Greater) {
       return this.#advance();
     } else if (current.type === TokenType.GreaterGreater) {
@@ -3117,7 +3145,7 @@ export class Parser {
       this.#tokens.splice(this.#current + 1, 0, secondGreater, thirdGreater);
       return this.#advance();
     }
-    
+
     throw new Error(
       message + ` Got ${this.#peek().type} at line ${this.#peek().line}`,
     );

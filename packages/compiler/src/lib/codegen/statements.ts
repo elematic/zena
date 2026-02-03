@@ -75,6 +75,12 @@ export function generateFunctionStatement(
     case NodeType.ReturnStatement:
       generateReturnStatement(ctx, stmt as ReturnStatement, body);
       break;
+    case NodeType.BreakStatement:
+      generateBreakStatement(ctx, body);
+      break;
+    case NodeType.ContinueStatement:
+      generateContinueStatement(ctx, body);
+      break;
     case NodeType.ExpressionStatement: {
       const expr = (stmt as any).expression;
       generateExpression(ctx, expr, body);
@@ -110,12 +116,32 @@ export function generateIfStatement(
   generateExpression(ctx, stmt.test, body);
   body.push(Opcode.if);
   body.push(ValType.void);
+  ctx.enterBlockStructure();
   generateFunctionStatement(ctx, stmt.consequent, body);
   if (stmt.alternate) {
     body.push(Opcode.else);
     generateFunctionStatement(ctx, stmt.alternate, body);
   }
+  ctx.exitBlockStructure();
   body.push(Opcode.end);
+}
+
+export function generateBreakStatement(ctx: CodegenContext, body: number[]) {
+  const depth = ctx.getBreakDepth();
+  if (depth === undefined) {
+    throw new Error('Break statement outside of loop');
+  }
+  body.push(Opcode.br);
+  body.push(...WasmModule.encodeSignedLEB128(depth));
+}
+
+export function generateContinueStatement(ctx: CodegenContext, body: number[]) {
+  const depth = ctx.getContinueDepth();
+  if (depth === undefined) {
+    throw new Error('Continue statement outside of loop');
+  }
+  body.push(Opcode.br);
+  body.push(...WasmModule.encodeSignedLEB128(depth));
 }
 
 export function generateWhileStatement(
@@ -143,7 +169,9 @@ export function generateWhileStatement(
   body.push(Opcode.br_if);
   body.push(...WasmModule.encodeSignedLEB128(1)); // Break to block (depth 1)
 
+  ctx.enterLoop();
   generateFunctionStatement(ctx, stmt.body, body);
+  ctx.exitLoop();
 
   body.push(Opcode.br);
   body.push(...WasmModule.encodeSignedLEB128(0)); // Continue to loop (depth 0)
@@ -158,27 +186,28 @@ export function generateForStatement(
   body: number[],
 ) {
   // For loop: for (init; test; update) body
-  // Equivalent to:
-  //   {
-  //     init;
-  //     while (test) {
-  //       body;
-  //       update;
-  //     }
-  //   }
+  //
+  // For loops need special handling for continue - continue should skip
+  // to the update, not back to the test. We use a nested block structure:
   //
   // WASM structure:
   //   init
   //   block $break
-  //     loop $continue
+  //     loop $loop_start
   //       test
   //       i32.eqz
   //       br_if $break
-  //       body
+  //       block $continue_target   ; continue jumps here (exits to update)
+  //         body
+  //       end
   //       update
-  //       br $continue
+  //       br $loop_start
   //     end
   //   end
+  //
+  // From inside body:
+  //   - break: br 2 (exits $break)
+  //   - continue: br 0 (exits $continue_target, falls through to update)
 
   ctx.pushScope();
 
@@ -199,9 +228,9 @@ export function generateForStatement(
     }
   }
 
-  body.push(Opcode.block);
+  body.push(Opcode.block); // $break
   body.push(ValType.void);
-  body.push(Opcode.loop);
+  body.push(Opcode.loop); // $loop_start
   body.push(ValType.void);
 
   // Generate test
@@ -209,11 +238,19 @@ export function generateForStatement(
     generateExpression(ctx, stmt.test, body);
     body.push(Opcode.i32_eqz); // Invert condition
     body.push(Opcode.br_if);
-    body.push(...WasmModule.encodeSignedLEB128(1)); // Break to block (depth 1)
+    body.push(...WasmModule.encodeSignedLEB128(1)); // Break to $break (depth 1)
   }
 
-  // Generate body
+  body.push(Opcode.block); // $continue_target
+  body.push(ValType.void);
+
+  // Generate body with for-loop specific depths:
+  // From inside body: break=2 (to $break), continue=0 (to $continue_target)
+  ctx.enterForLoop();
   generateFunctionStatement(ctx, stmt.body, body);
+  ctx.exitLoop();
+
+  body.push(Opcode.end); // End $continue_target
 
   // Generate update
   if (stmt.update) {
@@ -225,10 +262,10 @@ export function generateForStatement(
   }
 
   body.push(Opcode.br);
-  body.push(...WasmModule.encodeSignedLEB128(0)); // Continue to loop (depth 0)
+  body.push(...WasmModule.encodeSignedLEB128(0)); // Jump to $loop_start (depth 0)
 
-  body.push(Opcode.end); // End loop
-  body.push(Opcode.end); // End block
+  body.push(Opcode.end); // End $loop_start
+  body.push(Opcode.end); // End $break
 
   ctx.popScope();
 }

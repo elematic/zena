@@ -43,6 +43,8 @@ The official language reference is maintained in `docs/language-reference.md`.
 - **If**: `if (cond) { ... } else { ... }`
 - **While**: `while (cond) { ... }`
 - **For**: `for (var i = 0; i < 10; i = i + 1) { ... }` (C-style).
+- **Break**: `break;` (exits innermost loop).
+- **Continue**: `continue;` (skips to next iteration).
 
 ### Functions
 

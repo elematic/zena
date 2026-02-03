@@ -45,6 +45,8 @@ export const NodeType = {
   CallExpression: 'CallExpression',
   BlockStatement: 'BlockStatement',
   ReturnStatement: 'ReturnStatement',
+  BreakStatement: 'BreakStatement',
+  ContinueStatement: 'ContinueStatement',
   IfStatement: 'IfStatement',
   WhileStatement: 'WhileStatement',
   ForStatement: 'ForStatement',
@@ -175,6 +177,8 @@ export type Statement =
   | ExpressionStatement
   | BlockStatement
   | ReturnStatement
+  | BreakStatement
+  | ContinueStatement
   | IfStatement
   | WhileStatement
   | ForStatement
@@ -620,6 +624,14 @@ export interface CallExpression extends Node {
 export interface ReturnStatement extends Node {
   type: typeof NodeType.ReturnStatement;
   argument?: Expression;
+}
+
+export interface BreakStatement extends Node {
+  type: typeof NodeType.BreakStatement;
+}
+
+export interface ContinueStatement extends Node {
+  type: typeof NodeType.ContinueStatement;
 }
 
 export interface IfStatement extends Node {

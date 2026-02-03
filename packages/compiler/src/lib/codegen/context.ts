@@ -175,6 +175,17 @@ export class CodegenContext {
   public currentReturnType: number[] | undefined;
 
   /**
+   * Stack of loop targets for break/continue statements.
+   * Each entry represents a loop's block nesting depth.
+   * - breakDepth: depth from current position to break target (outer block)
+   * - continueDepth: depth from current position to continue target (loop)
+   *
+   * When generating loop body, these start at {break: 1, continue: 0}.
+   * When entering nested blocks (like if), depths increase by 1.
+   */
+  readonly #loopStack: {breakDepth: number; continueDepth: number}[] = [];
+
+  /**
    * Type parameter substitution map for checker-based type resolution.
    *
    * Maps type parameter names (e.g., "T", "U") to their concrete Type values.
@@ -778,6 +789,78 @@ export class CodegenContext {
 
   public popScope() {
     this.scopes.pop();
+  }
+
+  // ============================================================
+  // Loop Context Management (for break/continue)
+  // ============================================================
+
+  /**
+   * Enter a while loop context for break/continue targeting.
+   * Call this when emitting the block/loop structure for while loops.
+   *
+   * While loop structure: block $break -> loop $continue -> body
+   * From inside body: break=1 (to $break), continue=0 (to $continue/loop start)
+   */
+  public enterLoop() {
+    this.#loopStack.push({breakDepth: 1, continueDepth: 0});
+  }
+
+  /**
+   * Enter a for loop context for break/continue targeting.
+   * For loops have an extra block for the continue target.
+   *
+   * For loop structure: block $break -> loop -> block $continue -> body
+   * From inside body: break=2 (to $break), continue=0 (to $continue/update)
+   */
+  public enterForLoop() {
+    this.#loopStack.push({breakDepth: 2, continueDepth: 0});
+  }
+
+  /**
+   * Exit the current loop context.
+   */
+  public exitLoop() {
+    this.#loopStack.pop();
+  }
+
+  /**
+   * Notify that we're entering a WASM block structure (if, block, etc.)
+   * that increments the br depth for any break/continue inside.
+   */
+  public enterBlockStructure() {
+    for (const loop of this.#loopStack) {
+      loop.breakDepth++;
+      loop.continueDepth++;
+    }
+  }
+
+  /**
+   * Notify that we're exiting a WASM block structure.
+   */
+  public exitBlockStructure() {
+    for (const loop of this.#loopStack) {
+      loop.breakDepth--;
+      loop.continueDepth--;
+    }
+  }
+
+  /**
+   * Get the br depth for a break statement.
+   * Returns undefined if not inside a loop.
+   */
+  public getBreakDepth(): number | undefined {
+    if (this.#loopStack.length === 0) return undefined;
+    return this.#loopStack[this.#loopStack.length - 1].breakDepth;
+  }
+
+  /**
+   * Get the br depth for a continue statement.
+   * Returns undefined if not inside a loop.
+   */
+  public getContinueDepth(): number | undefined {
+    if (this.#loopStack.length === 0) return undefined;
+    return this.#loopStack[this.#loopStack.length - 1].continueDepth;
   }
 
   // ============================================================

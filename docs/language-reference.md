@@ -1025,7 +1025,7 @@ Any of these parts can be omitted:
 ```zena
 // Infinite loop (test omitted)
 for (;;) {
-  // Use return to exit
+  // Use return or break to exit
 }
 
 // Init omitted
@@ -1038,6 +1038,53 @@ for (; i < 10; i = i + 1) {
 for (var i = 0; i < 10; ) {
   i = i + 1;
 }
+```
+
+### Break and Continue Statements
+
+The `break` statement exits the innermost enclosing loop immediately.
+
+```zena
+var i = 0;
+while (true) {
+  if (i >= 10) {
+    break;  // Exit the loop
+  }
+  i = i + 1;
+}
+// i == 10
+```
+
+The `continue` statement skips the rest of the current iteration and proceeds to the next iteration. In a `while` loop, this jumps to the condition check. In a `for` loop, this executes the update expression first, then checks the condition.
+
+```zena
+var sum = 0;
+for (var i = 0; i < 10; i = i + 1) {
+  if (i - ((i / 2) as i32) * 2 == 0) {
+    continue;  // Skip even numbers
+  }
+  sum = sum + i;
+}
+// sum == 25 (1 + 3 + 5 + 7 + 9)
+```
+
+Both `break` and `continue` apply only to the innermost loop:
+
+```zena
+var count = 0;
+var i = 0;
+while (i < 3) {
+  var j = 0;
+  while (j < 5) {
+    j = j + 1;
+    if (j == 3) {
+      break;  // Only exits inner loop
+    }
+    count = count + 1;
+  }
+  i = i + 1;
+}
+// count == 6 (2 iterations per outer loop × 3 outer loops)
 ```
 
 ### Match Expression
@@ -1824,7 +1871,7 @@ A minimal Zena program can compile to as few as 41 bytes.
 ```ebnf
 Module ::= Statement*
 
-Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement | BlockStatement | ReturnStatement | IfStatement | WhileStatement | ForStatement
+Statement ::= ExportStatement | VariableDeclaration | ExpressionStatement | BlockStatement | ReturnStatement | BreakStatement | ContinueStatement | IfStatement | WhileStatement | ForStatement
 
 ExportStatement ::= "export" (VariableDeclaration | ClassDeclaration | InterfaceDeclaration | MixinDeclaration | DeclareFunction)
 
@@ -1835,6 +1882,10 @@ ExpressionStatement ::= Expression ";"
 BlockStatement ::= "{" Statement* "}"
 
 ReturnStatement ::= "return" Expression? ";"
+
+BreakStatement ::= "break" ";"
+
+ContinueStatement ::= "continue" ";"
 
 IfStatement ::= "if" "(" Expression ")" Statement ("else" Statement)?
 

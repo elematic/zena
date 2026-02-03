@@ -34,6 +34,7 @@ interface LibraryState {
   currentMethod: string | null;
   isThisInitialized: boolean;
   isCheckingFieldInitializer: boolean;
+  loopDepth: number;
   initializedFields: Set<string>;
   inferredReturnTypes: Type[];
   usedPreludeSymbols: Map<string, {modulePath: string; exportName: string}>;
@@ -54,6 +55,7 @@ const createLibraryState = (): LibraryState => ({
   currentMethod: null,
   isThisInitialized: true,
   isCheckingFieldInitializer: false,
+  loopDepth: 0,
   initializedFields: new Set(),
   inferredReturnTypes: [],
   usedPreludeSymbols: new Map(),
@@ -107,6 +109,9 @@ export class CheckerContext {
   }
   set isCheckingFieldInitializer(v: boolean) {
     this.#lib.isCheckingFieldInitializer = v;
+  }
+  get loopDepth() {
+    return this.#lib.loopDepth;
   }
   get initializedFields() {
     return this.#lib.initializedFields;
@@ -230,6 +235,14 @@ export class CheckerContext {
   exitScope() {
     this.scopes.pop();
     this.#lib.narrowedTypes.pop();
+  }
+
+  enterLoop() {
+    this.#lib.loopDepth++;
+  }
+
+  exitLoop() {
+    this.#lib.loopDepth--;
   }
 
   /**

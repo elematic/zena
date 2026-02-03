@@ -18,6 +18,8 @@ export const DiagnosticCode = {
   DuplicateDeclaration: 2003,
   InvalidAssignment: 2004,
   ReturnOutsideFunction: 2005,
+  BreakOutsideLoop: 2024,
+  ContinueOutsideLoop: 2025,
   ArgumentCountMismatch: 2006,
   PropertyNotFound: 2007,
   NotCallable: 2008,

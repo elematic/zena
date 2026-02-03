@@ -4,8 +4,10 @@ import {
   type AsPattern,
   type AssignmentPattern,
   type BinaryExpression,
+  type BreakStatement,
   type ClassDeclaration,
   type ComputedPropertyName,
+  type ContinueStatement,
   type DeclareFunction,
   type EnumDeclaration,
   type ExportAllDeclaration,
@@ -588,6 +590,12 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
     case NodeType.ReturnStatement:
       checkReturnStatement(ctx, stmt as ReturnStatement);
       break;
+    case NodeType.BreakStatement:
+      checkBreakStatement(ctx, stmt as BreakStatement);
+      break;
+    case NodeType.ContinueStatement:
+      checkContinueStatement(ctx, stmt as ContinueStatement);
+      break;
     case NodeType.IfStatement:
       checkIfStatement(ctx, stmt as IfStatement);
       break;
@@ -919,7 +927,9 @@ function checkWhileStatement(ctx: CheckerContext, stmt: WhileStatement) {
     );
   }
 
+  ctx.enterLoop();
   checkStatement(ctx, stmt.body);
+  ctx.exitLoop();
 }
 
 function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
@@ -954,9 +964,29 @@ function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
   }
 
   // Check body
+  ctx.enterLoop();
   checkStatement(ctx, stmt.body);
+  ctx.exitLoop();
 
   ctx.exitScope();
+}
+
+function checkBreakStatement(ctx: CheckerContext, stmt: BreakStatement) {
+  if (ctx.loopDepth === 0) {
+    ctx.diagnostics.reportError(
+      'Break statement outside of loop.',
+      DiagnosticCode.BreakOutsideLoop,
+    );
+  }
+}
+
+function checkContinueStatement(ctx: CheckerContext, stmt: ContinueStatement) {
+  if (ctx.loopDepth === 0) {
+    ctx.diagnostics.reportError(
+      'Continue statement outside of loop.',
+      DiagnosticCode.ContinueOutsideLoop,
+    );
+  }
 }
 
 function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {

@@ -31,6 +31,8 @@ import {
   type ExpressionStatement,
   type BlockStatement,
   type ReturnStatement,
+  type BreakStatement,
+  type ContinueStatement,
   type IfStatement,
   type WhileStatement,
   type ForStatement,
@@ -120,6 +122,8 @@ export interface Visitor<T = void> {
   visitExpressionStatement?(node: ExpressionStatement, context: T): void;
   visitBlockStatement?(node: BlockStatement, context: T): void;
   visitReturnStatement?(node: ReturnStatement, context: T): void;
+  visitBreakStatement?(node: BreakStatement, context: T): void;
+  visitContinueStatement?(node: ContinueStatement, context: T): void;
   visitIfStatement?(node: IfStatement, context: T): void;
   visitWhileStatement?(node: WhileStatement, context: T): void;
   visitForStatement?(node: ForStatement, context: T): void;
@@ -269,6 +273,12 @@ export function visit<T>(
     case NodeType.ReturnStatement:
       visitor.visitReturnStatement?.(node as ReturnStatement, context);
       visit((node as ReturnStatement).argument, visitor, context);
+      break;
+    case NodeType.BreakStatement:
+      visitor.visitBreakStatement?.(node as BreakStatement, context);
+      break;
+    case NodeType.ContinueStatement:
+      visitor.visitContinueStatement?.(node as ContinueStatement, context);
       break;
     case NodeType.IfStatement:
       visitor.visitIfStatement?.(node as IfStatement, context);
