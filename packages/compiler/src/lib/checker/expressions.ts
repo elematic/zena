@@ -1674,7 +1674,7 @@ function checkBinaryExpression(
       // The result type is the type of the left operand
       if (!isIntegerType(left) || !isIntegerType(right)) {
         ctx.diagnostics.reportError(
-          `Operator '${expr.operator}' cannot be applied to type '${typeToString(left)}' and '${typeToString(right)}'.`,
+          `Operator '${expr.operator}' cannot be applied to types '${typeToString(left)}' and '${typeToString(right)}'.`,
           DiagnosticCode.TypeMismatch,
         );
         return Types.Unknown;

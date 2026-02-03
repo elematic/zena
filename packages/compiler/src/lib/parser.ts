@@ -3064,6 +3064,20 @@ export class Parser {
   }
 
   /**
+   * Helper to create a '>' token at a specific offset from a source token.
+   */
+  #createGreaterToken(source: Token, offset: number): Token {
+    return {
+      type: TokenType.Greater,
+      value: '>',
+      line: source.line,
+      column: source.column + offset,
+      start: source.start + offset,
+      end: source.start + offset + 1,
+    };
+  }
+
+  /**
    * Special version of consume for '>' that handles '>>' and '>>>' in type contexts.
    * When we expect '>' but encounter '>>' or '>>>', this consumes one '>' and
    * leaves the rest for subsequent parsing.
@@ -3075,53 +3089,16 @@ export class Parser {
       return this.#advance();
     } else if (current.type === TokenType.GreaterGreater) {
       // Replace '>>' with two '>' tokens
-      const firstGreater: Token = {
-        type: TokenType.Greater,
-        value: '>',
-        line: current.line,
-        column: current.column,
-        start: current.start,
-        end: current.start + 1,
-      };
-      const secondGreater: Token = {
-        type: TokenType.Greater,
-        value: '>',
-        line: current.line,
-        column: current.column + 1,
-        start: current.start + 1,
-        end: current.end,
-      };
-      // Replace current token with first '>', insert second '>' after
+      const firstGreater = this.#createGreaterToken(current, 0);
+      const secondGreater = this.#createGreaterToken(current, 1);
       this.#tokens[this.#current] = firstGreater;
       this.#tokens.splice(this.#current + 1, 0, secondGreater);
       return this.#advance();
     } else if (current.type === TokenType.GreaterGreaterGreater) {
       // Replace '>>>' with three '>' tokens
-      const firstGreater: Token = {
-        type: TokenType.Greater,
-        value: '>',
-        line: current.line,
-        column: current.column,
-        start: current.start,
-        end: current.start + 1,
-      };
-      const secondGreater: Token = {
-        type: TokenType.Greater,
-        value: '>',
-        line: current.line,
-        column: current.column + 1,
-        start: current.start + 1,
-        end: current.start + 2,
-      };
-      const thirdGreater: Token = {
-        type: TokenType.Greater,
-        value: '>',
-        line: current.line,
-        column: current.column + 2,
-        start: current.start + 2,
-        end: current.end,
-      };
-      // Replace current token with first '>', insert second and third '>' after
+      const firstGreater = this.#createGreaterToken(current, 0);
+      const secondGreater = this.#createGreaterToken(current, 1);
+      const thirdGreater = this.#createGreaterToken(current, 2);
       this.#tokens[this.#current] = firstGreater;
       this.#tokens.splice(this.#current + 1, 0, secondGreater, thirdGreater);
       return this.#advance();
