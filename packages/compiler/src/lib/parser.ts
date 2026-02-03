@@ -1227,6 +1227,16 @@ export class Parser {
             property,
             loc: this.#loc(expr, property),
           };
+        } else if (this.#match(TokenType.LBracket)) {
+          const index = this.#parseExpression();
+          this.#consume(TokenType.RBracket, "Expected ']' after index.");
+          const endToken = this.#previous();
+          expr = {
+            type: NodeType.IndexExpression,
+            object: expr,
+            index,
+            loc: this.#loc(expr, endToken),
+          };
         } else {
           break;
         }

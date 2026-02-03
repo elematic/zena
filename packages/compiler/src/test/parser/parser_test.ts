@@ -273,6 +273,46 @@ suite('Parser', () => {
     }
   });
 
+  test('should parse new expression with index access', () => {
+    const input = 'new Foo()[0];';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const stmt = ast.body[0];
+    assert.strictEqual(stmt.type, NodeType.ExpressionStatement);
+    if (stmt.type === NodeType.ExpressionStatement) {
+      const expr = stmt.expression;
+      assert.strictEqual(expr.type, NodeType.IndexExpression);
+      if (expr.type === NodeType.IndexExpression) {
+        assert.strictEqual(expr.object.type, NodeType.NewExpression);
+        if (expr.object.type === NodeType.NewExpression) {
+          assert.strictEqual(expr.object.callee.name, 'Foo');
+        }
+        assert.strictEqual(expr.index.type, NodeType.NumberLiteral);
+        if (expr.index.type === NodeType.NumberLiteral) {
+          assert.strictEqual(expr.index.value, 0);
+        }
+      }
+    }
+  });
+
+  test('should parse chained access on new expression', () => {
+    const input = 'new Foo()[0].bar;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const stmt = ast.body[0];
+    assert.strictEqual(stmt.type, NodeType.ExpressionStatement);
+    if (stmt.type === NodeType.ExpressionStatement) {
+      const expr = stmt.expression;
+      assert.strictEqual(expr.type, NodeType.MemberExpression);
+      if (expr.type === NodeType.MemberExpression) {
+        assert.strictEqual(expr.property.name, 'bar');
+        assert.strictEqual(expr.object.type, NodeType.IndexExpression);
+      }
+    }
+  });
+
   test('should parse class inheritance', () => {
     const input = 'class Dog extends Animal { }';
     const parser = new Parser(input);
