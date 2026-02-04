@@ -227,6 +227,7 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
     - **Weak References**: `docs/design/weak-references.md`
     - **Runtime Type Tags**: `docs/design/runtime-type-tags.md`
     - **This Type**: `docs/design/this-type.md`
+    - **Multi-Return Values**: `docs/design/multi-return-values.md`
 
 ## Future Considerations
 
@@ -535,11 +536,46 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
     - Array element matching (requires `FixedArray` support or `Sequence` interface).
     - Rest patterns (`...tail`).
 
-10. **Future Features**:
+10. **Multi-Return Values & Zero-Allocation Iteration**:
+    - **Design**: See `docs/design/multi-return-values.md` for full design.
+    - **Goal**: Enable ergonomic, zero-allocation iteration via WASM multi-value returns.
+    - **Literal Boolean Types** (`true`, `false`):
+      - Add `true` and `false` as literal types (subtype of `boolean`).
+      - Parser: Extend type annotation parsing for `true` and `false` keywords.
+      - Checker: Add `TrueLiteralType` and `FalseLiteralType` to type system.
+      - Enable discriminated unions like `(true, T) | (false, never)`.
+    - **Unboxed Tuple Types** (`(T1, T2)`):
+      - Parser: Parse `(T1, T2)` as return type annotation.
+      - Parser: Parse `(expr1, expr2)` as tuple return expression.
+      - Parser: Parse `let (a, b) = expr` destructuring.
+      - Checker: Add `UnboxedTupleType` to type system.
+      - Checker: Validate unboxed tuples only in return position (not first-class).
+      - Codegen: Emit WASM multi-value function signatures.
+      - Codegen: Generate tuple returns (push values in order).
+      - Codegen: Generate destructuring (pop in reverse order to locals).
+    - **Union of Tuples with Narrowing**:
+      - Support `(true, T) | (false, never)` return types.
+      - Control-flow narrowing: after `if (hasMore)`, narrow `value` from `T | never` to `T`.
+      - Pattern matching: `case (true, value)` binds `value: T` (not `T | never`).
+    - **`__default<T>()` Intrinsic**:
+      - Returns zero value for any type (`null` for refs, `0` for ints, etc.).
+      - Used by iterators to return unspecified value when exhausted.
+    - **Iterator Redesign**:
+      - Change `Iterator<T>.next()` to return `(true, T) | (false, never)`.
+      - Update `ArrayIterator<T>` implementation.
+      - Update `FixedArray<T>.iterator()` return type.
+    - **For-Of Loops** (depends on multi-return):
+      - Parser: Add `for (let x of collection)` syntax.
+      - Codegen: Use WASM block/loop parameters for efficient iteration.
+      - Desugar to `while (let (true, x) = iter.next())`.
+    - **`if (let pattern = expr)` and `while (let pattern = expr)`**:
+      - Parser: Support `let` pattern in condition position.
+      - Checker: Bind pattern variables only when pattern matches.
+      - Codegen: Generate conditional with pattern destructuring.
+
+11. **Future Features**:
     - **Syntax**:
       - Blocks.
-      - For/of loops.
-      - Iterators.
       - JSX-like builder syntax.
     - **Type System**:
       - Numeric unit types.
