@@ -66,3 +66,11 @@ export const rangeModule = fs.readFileSync(
   path.join(stdlibDir, 'range.zena'),
   'utf-8',
 );
+export const iteratorModule = fs.readFileSync(
+  path.join(stdlibDir, 'iterator.zena'),
+  'utf-8',
+);
+export const arrayIteratorModule = fs.readFileSync(
+  path.join(stdlibDir, 'array-iterator.zena'),
+  'utf-8',
+);

@@ -1,4 +1,5 @@
 export {
+  arrayIteratorModule,
   arrayModule,
   assertModule,
   boxModule,
@@ -7,6 +8,7 @@ export {
   fixedArrayModule,
   growableArrayModule,
   immutableArrayModule,
+  iteratorModule,
   mapModule,
   mathModule,
   rangeModule,

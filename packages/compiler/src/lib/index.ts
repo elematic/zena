@@ -32,6 +32,8 @@ import {
   testModule,
   rangeModule,
   mathModule,
+  iteratorModule,
+  arrayIteratorModule,
 } from './stdlib.js';
 
 class InMemoryHost implements CompilerHost {
@@ -72,6 +74,8 @@ export function compile(source: string): Uint8Array {
       ['zena:test', testModule],
       ['zena:range', rangeModule],
       ['zena:math', mathModule],
+      ['zena:iterator', iteratorModule],
+      ['zena:array-iterator', arrayIteratorModule],
     ]),
   );
 

@@ -169,22 +169,33 @@ export class Compiler {
         }
       }
 
-      // Ensure prelude modules are checked
-      // If the current module is a prelude module, we only check prelude modules
-      // that appear BEFORE it in the prelude list. This prevents circular dependencies
-      // and enforces a topological order for the standard library.
-      let preludeLimit = this.#preludeModules.length;
+      // Ensure prelude modules are checked before this module.
+      //
+      // For prelude modules: we only check prelude modules that appear BEFORE
+      // this one in the prelude list. This enforces topological order for stdlib.
+      //
+      // For stdlib modules NOT in prelude (like zena:iterator): don't check any
+      // prelude modules automatically. They rely on explicit import dependencies.
+      // This prevents cycles when a non-prelude stdlib module is a dependency of
+      // a prelude module (e.g., zena:fixed-array depends on zena:iterator).
+      //
+      // For non-stdlib modules (user code): check all prelude modules first.
       const preludeIndex = this.#preludeModules.findIndex(
         (pm) => pm.path === module.path,
       );
 
       if (preludeIndex !== -1) {
-        preludeLimit = preludeIndex;
+        // This IS a prelude module - only check earlier prelude modules
+        for (let i = 0; i < preludeIndex; i++) {
+          checkModule(this.#preludeModules[i]);
+        }
+      } else if (!module.path!.startsWith('zena:')) {
+        // This is NOT a stdlib module (user code) - check all prelude modules first
+        for (const preludeMod of this.#preludeModules) {
+          checkModule(preludeMod);
+        }
       }
-
-      for (let i = 0; i < preludeLimit; i++) {
-        checkModule(this.#preludeModules[i]);
-      }
+      // For non-prelude stdlib modules: rely on explicit imports, don't check prelude
 
       // Use shared checker context - TypeChecker will call setCurrentLibrary
       const checker = new TypeChecker(this.#checkerContext, module);

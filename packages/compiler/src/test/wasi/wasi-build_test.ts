@@ -57,6 +57,8 @@ function loadStdlib(target: 'host' | 'wasi' = 'host'): Map<string, string> {
     'growable-array',
     'map',
     'box',
+    'iterator',
+    'array-iterator',
     // Load appropriate console based on target
     target === 'wasi' ? 'console-wasi' : 'console',
   ];
