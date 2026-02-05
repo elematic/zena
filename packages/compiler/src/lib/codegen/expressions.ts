@@ -51,6 +51,7 @@ import {
   type NumberType,
   type RecordType,
   type Type,
+  type UnboxedTupleType,
   type UnionType,
 } from '../types.js';
 import {
@@ -6026,15 +6027,117 @@ function generateTupleLiteral(
  * Generates an unboxed tuple literal for multi-value returns.
  * Simply pushes each element's value onto the stack in order.
  * The values stay on the stack for the return instruction.
+ *
+ * Handles the special `_` hole literal which is used to satisfy `never` in
+ * discriminated unions like `(false, _)` where the return type is
+ * `(true, T) | (false, never)`.
  */
 function generateUnboxedTupleLiteral(
   ctx: CodegenContext,
   expr: UnboxedTupleLiteral,
   body: number[],
 ) {
-  for (const element of expr.elements) {
-    generateExpression(ctx, element, body);
+  // Get the expected element types from the function's return type.
+  // This is needed for `_` which needs to generate a zero-value of the appropriate type.
+  const expectedElementTypes = getExpectedTupleElementTypes(
+    ctx,
+    expr.elements.length,
+  );
+
+  for (let i = 0; i < expr.elements.length; i++) {
+    const element = expr.elements[i];
+
+    // Check for `_` hole literal
+    if (
+      element.type === NodeType.Identifier &&
+      (element as Identifier).name === '_'
+    ) {
+      // Generate a zero-value for the expected type
+      const expectedType = expectedElementTypes?.[i];
+      generateDefaultValue(ctx, expectedType, body);
+    } else {
+      generateExpression(ctx, element, body);
+    }
   }
+}
+
+/**
+ * Get the expected element types for an unboxed tuple from the current function's return type.
+ * Handles both plain unboxed tuples and unions of unboxed tuples.
+ */
+function getExpectedTupleElementTypes(
+  ctx: CodegenContext,
+  arity: number,
+): Type[] | undefined {
+  const returnType = ctx.currentCheckerReturnType;
+  if (!returnType) return undefined;
+
+  if (returnType.kind === TypeKind.UnboxedTuple) {
+    return (returnType as UnboxedTupleType).elementTypes;
+  }
+
+  if (returnType.kind === TypeKind.Union) {
+    // For unions of tuples, get element types from the first member
+    // (all members must have compatible WASM representations)
+    const unionType = returnType as UnionType;
+    for (const member of unionType.types) {
+      if (member.kind === TypeKind.UnboxedTuple) {
+        return (member as UnboxedTupleType).elementTypes;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Generate a default/zero value for a given checker type.
+ * Used for `_` hole literals in unboxed tuples.
+ */
+function generateDefaultValue(
+  ctx: CodegenContext,
+  checkerType: Type | undefined,
+  body: number[],
+) {
+  if (!checkerType) {
+    // Fallback: generate i32 0
+    body.push(Opcode.i32_const, 0);
+    return;
+  }
+
+  const wasmType = mapCheckerTypeToWasmType(ctx, checkerType);
+
+  if (wasmType.length === 1) {
+    switch (wasmType[0]) {
+      case ValType.i32:
+        body.push(Opcode.i32_const, 0);
+        return;
+      case ValType.i64:
+        body.push(Opcode.i64_const, 0);
+        return;
+      case ValType.f32:
+        body.push(Opcode.f32_const, 0, 0, 0, 0);
+        return;
+      case ValType.f64:
+        body.push(Opcode.f64_const, 0, 0, 0, 0, 0, 0, 0, 0);
+        return;
+      case ValType.eqref:
+        body.push(Opcode.ref_null, HeapType.eq);
+        return;
+      case ValType.anyref:
+        body.push(Opcode.ref_null, HeapType.any);
+        return;
+    }
+  }
+
+  // Reference types (ref null T)
+  if (wasmType[0] === ValType.ref_null || wasmType[0] === ValType.ref) {
+    body.push(Opcode.ref_null, HeapType.none);
+    return;
+  }
+
+  // Fallback: i32 0
+  body.push(Opcode.i32_const, 0);
 }
 
 function generateFunctionExpression(

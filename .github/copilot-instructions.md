@@ -560,16 +560,17 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
       - Codegen: Emit WASM multi-value function signatures.
       - Codegen: Generate tuple returns (push values in order).
       - Codegen: Generate destructuring (pop in reverse order to locals).
+    - **Hole Literal (`_`)**: ✅ COMPLETED
+      - `_` as expression has type `never`, generates zero/null for expected type.
+      - Used in discriminated union returns: `return (false, _);`
+      - Symmetric with `_` wildcard pattern (both mean "don't care").
     - **Union of Tuples with Narrowing**:
       - Support `(true, T) | (false, never)` return types.
       - Control-flow narrowing: after `if (hasMore)`, narrow `value` from `T | never` to `T`.
       - Pattern matching: `case (true, value)` binds `value: T` (not `T | never`).
-    - **`__default<T>()` Intrinsic**:
-      - Returns zero value for any type (`null` for refs, `0` for ints, etc.).
-      - Used by iterators to return unspecified value when exhausted.
     - **Iterator Redesign**:
       - Change `Iterator<T>.next()` to return `(true, T) | (false, never)`.
-      - Update `ArrayIterator<T>` implementation.
+      - Update `ArrayIterator<T>` implementation to use `return (false, _);`.
       - Update `FixedArray<T>.iterator()` return type.
     - **For-Of Loops** (depends on multi-return):
       - Parser: Add `for (let x of collection)` syntax.

@@ -193,16 +193,49 @@ class ArrayIterator<T> implements Iterator<T> {
     if (this.#index < __array_len(this.#array)) {
       return (true, __array_get(this.#array, this.#index));
     }
-    // Return false with unspecified value
-    // For reference types, this would be null
-    // The compiler generates appropriate "zero" for type T
-    return (false, __default<T>());
+    // Return false with hole literal
+    // _ generates a zero-value for the expected type T
+    return (false, _);
   }
 }
 ```
 
-The `__default<T>()` intrinsic would return the zero/null value for any type -
-similar to Go's zero values or Rust's `Default::default()`.
+### The Hole Literal (`_`)
+
+The `_` identifier, when used as an expression, is a **hole literal** that
+generates a zero/null value for the expected type. It has type `never`, making
+it only assignable where `never` is expected (e.g., in discriminated union
+returns).
+
+**Behavior by type:**
+
+| Expected Type   | `_` generates   |
+| --------------- | --------------- |
+| `i32`, `u32`    | `0`             |
+| `i64`, `u64`    | `0`             |
+| `f32`           | `0.0`           |
+| `f64`           | `0.0`           |
+| `boolean`       | `false` (i32 0) |
+| Reference types | `null`          |
+
+**Usage:**
+
+```zena
+// In iterator exhausted case
+return (false, _);
+
+// Multiple holes
+return (_, _, 99);
+
+// NOT allowed outside of unboxed tuples (type is never)
+let x = _;  // Error: cannot infer type
+foo(_);     // Error: _ (never) not assignable to parameter type
+```
+
+The `_` literal is symmetric with `_` as a pattern wildcard:
+
+- **Pattern position:** "I don't need this value"
+- **Expression position:** "There is no meaningful value here"
 
 ## Code Generation
 

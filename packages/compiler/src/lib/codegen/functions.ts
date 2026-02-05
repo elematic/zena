@@ -98,6 +98,7 @@ export function registerFunction(
       func,
       undefined,
       flattenedReturn,
+      checkerFuncType.returnType,
     );
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
     ctx.currentModule = savedModule;
@@ -110,9 +111,12 @@ export function generateFunctionBody(
   func: FunctionExpression,
   typeArguments?: Map<string, Type>,
   returnType?: number[],
+  checkerReturnType?: Type,
 ): number[] {
   const oldReturnType = ctx.currentReturnType;
+  const oldCheckerReturnType = ctx.currentCheckerReturnType;
   ctx.currentReturnType = returnType;
+  ctx.currentCheckerReturnType = checkerReturnType;
 
   ctx.pushFunctionScope();
 
@@ -154,6 +158,7 @@ export function generateFunctionBody(
   }
 
   ctx.currentReturnType = oldReturnType;
+  ctx.currentCheckerReturnType = oldCheckerReturnType;
   return body;
 }
 
@@ -229,6 +234,7 @@ export function instantiateGenericFunction(
       funcDecl,
       typeMap,
       flattenedReturn,
+      substitutedReturnType,
     );
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
   });
@@ -404,12 +410,16 @@ export function instantiateGenericMethod(
   }
 
   let results: number[][] = [];
+  let checkerReturnType: Type | undefined;
   if (methodDecl.returnType) {
-    let returnType = methodDecl.returnType.inferredType!;
+    checkerReturnType = methodDecl.returnType.inferredType!;
     if (ctx.checkerContext) {
-      returnType = ctx.checkerContext.substituteTypeParams(returnType, typeMap);
+      checkerReturnType = ctx.checkerContext.substituteTypeParams(
+        checkerReturnType,
+        typeMap,
+      );
     }
-    results = mapReturnTypeToWasmResults(ctx, returnType);
+    results = mapReturnTypeToWasmResults(ctx, checkerReturnType);
   }
 
   const typeIndex = ctx.module.addType(params, results);
@@ -434,6 +444,7 @@ export function instantiateGenericMethod(
       methodDecl,
       typeMap,
       returnType,
+      checkerReturnType,
     );
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
   });
@@ -447,8 +458,10 @@ function generateMethodBody(
   method: MethodDefinition,
   typeArguments: Map<string, Type>,
   returnType?: number[],
+  checkerReturnType?: Type,
 ): number[] {
   const oldReturnType = ctx.currentReturnType;
+  const oldCheckerReturnType = ctx.currentCheckerReturnType;
 
   // Push type param context for checker-based resolution
   // This enables substituteTypeParams to resolve method type parameters
@@ -457,6 +470,7 @@ function generateMethodBody(
     ctx.pushTypeArgumentsContext(typeArguments);
   }
   ctx.currentReturnType = returnType;
+  ctx.currentCheckerReturnType = checkerReturnType;
   ctx.currentClass = classInfo;
 
   ctx.pushFunctionScope();
@@ -508,5 +522,6 @@ function generateMethodBody(
   }
 
   ctx.currentReturnType = oldReturnType;
+  ctx.currentCheckerReturnType = oldCheckerReturnType;
   return body;
 }

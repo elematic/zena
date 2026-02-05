@@ -153,6 +153,13 @@ function checkExpressionInternal(
     case NodeType.NullLiteral:
       return Types.Null;
     case NodeType.Identifier: {
+      // Special case: _ is a "hole" literal that has type `never`.
+      // It can only be used to satisfy `never` in discriminated union returns.
+      // Example: return (false, _);  // where return type is (true, T) | (false, never)
+      if (expr.name === '_') {
+        return Types.Never;
+      }
+
       const symbolInfo = ctx.resolveValueInfo(expr.name);
       if (!symbolInfo) {
         ctx.diagnostics.reportError(

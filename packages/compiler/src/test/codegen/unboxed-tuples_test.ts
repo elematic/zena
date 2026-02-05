@@ -182,4 +182,119 @@ suite('codegen: unboxed tuples', () => {
       assert.strictEqual(result, 30);
     });
   });
+
+  suite('hole literal (_)', () => {
+    test('(false, _) with i32 never slot', async () => {
+      const source = `
+        let getOrZero = (hasValue: boolean): (boolean, i32) => {
+          if (hasValue) {
+            return (true, 42);
+          } else {
+            return (false, _);
+          }
+        };
+        
+        export let main = (): i32 => {
+          let (has1, val1) = getOrZero(true);
+          let (has2, val2) = getOrZero(false);
+          // val1 should be 42, val2 is unspecified (hole)
+          if (has1) {
+            return val1;
+          }
+          return 0;
+        };
+      `;
+      const result = await compileAndRun(source);
+      assert.strictEqual(result, 42);
+    });
+
+    test('(false, _) with reference type never slot', async () => {
+      const source = `
+        class Box { value: i32; #new(v: i32) { this.value = v; } }
+        
+        let maybeBox = (hasValue: boolean): (boolean, Box | null) => {
+          if (hasValue) {
+            return (true, new Box(100));
+          } else {
+            return (false, _);
+          }
+        };
+        
+        export let main = (): i32 => {
+          let (has, box) = maybeBox(true);
+          // After destructuring, box has type Box | null
+          // We need to check separately since we don't have && narrowing in destructuring
+          if (has) {
+            if (box !== null) {
+              return box.value;
+            }
+          }
+          return 0;
+        };
+      `;
+      const result = await compileAndRun(source);
+      assert.strictEqual(result, 100);
+    });
+
+    test('triple tuple with hole (i32, _, i32)', async () => {
+      const source = `
+        let getValues = (flag: boolean): (i32, i32, i32) => {
+          if (flag) {
+            return (1, 2, 3);
+          } else {
+            return (10, _, 30);
+          }
+        };
+        
+        export let main = (): i32 => {
+          let (a, b, c) = getValues(true);
+          let (x, y, z) = getValues(false);
+          return a + c + x + z;
+        };
+      `;
+      const result = await compileAndRun(source);
+      // a=1, c=3, x=10, z=30 -> 44
+      assert.strictEqual(result, 44);
+    });
+
+    test('multiple holes (_, _, i32)', async () => {
+      const source = `
+        let getThird = (): (i32, i32, i32) => {
+          return (_, _, 99);
+        };
+        
+        export let main = (): i32 => {
+          let (a, b, c) = getThird();
+          return c;
+        };
+      `;
+      const result = await compileAndRun(source);
+      assert.strictEqual(result, 99);
+    });
+
+    test('hole with f64 type', async () => {
+      // Note: Using integer comparison because f64 literals have a pre-existing
+      // typing issue (3.14 defaults to f32, causing type mismatch)
+      const source = `
+        let maybeFloat = (has: boolean): (boolean, f64) => {
+          if (has) {
+            // Use an integer that gets promoted to f64
+            return (true, 100 as f64);
+          }
+          return (false, _);
+        };
+        
+        export let main = (): i32 => {
+          let (has, val) = maybeFloat(true);
+          // val should be 100.0, hole case returns 0.0
+          if (has && val > 50 as f64) {
+            return 1;
+          }
+          return 0;
+        };
+      `;
+      const result = await compileAndRun(source);
+      assert.strictEqual(result, 1);
+    });
+  });
 });
