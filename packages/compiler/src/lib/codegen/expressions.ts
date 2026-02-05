@@ -34,6 +34,7 @@ import {
   type TupleLiteral,
   type TuplePattern,
   type UnaryExpression,
+  type UnboxedTupleLiteral,
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
 import {getGetterName, getSetterName, getSignatureKey} from '../names.js';
@@ -192,6 +193,9 @@ export function generateExpression(
       break;
     case NodeType.RangeExpression:
       generateRangeExpression(ctx, expression as RangeExpression, body);
+      break;
+    case NodeType.UnboxedTupleLiteral:
+      generateUnboxedTupleLiteral(ctx, expression as UnboxedTupleLiteral, body);
       break;
     default:
       // TODO: Handle other expressions
@@ -6016,6 +6020,21 @@ function generateTupleLiteral(
   // 4. struct.new
   body.push(0xfb, GcOpcode.struct_new);
   body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+}
+
+/**
+ * Generates an unboxed tuple literal for multi-value returns.
+ * Simply pushes each element's value onto the stack in order.
+ * The values stay on the stack for the return instruction.
+ */
+function generateUnboxedTupleLiteral(
+  ctx: CodegenContext,
+  expr: UnboxedTupleLiteral,
+  body: number[],
+) {
+  for (const element of expr.elements) {
+    generateExpression(ctx, element, body);
+  }
 }
 
 function generateFunctionExpression(

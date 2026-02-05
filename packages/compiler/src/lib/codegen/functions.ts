@@ -7,7 +7,13 @@ import {
   type MethodDefinition,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
-import {Decorators, type FunctionType, type Type} from '../types.js';
+import {
+  Decorators,
+  TypeKind,
+  type FunctionType,
+  type Type,
+  type UnboxedTupleType,
+} from '../types.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
   getTypeKeyForSpecialization,
@@ -18,6 +24,29 @@ import {generateExpression} from './expressions.js';
 import {generateBlockStatement} from './statements.js';
 import type {ClassInfo} from './types.js';
 
+/**
+ * Maps a checker type to an array of WASM value types for use in function signatures.
+ * For most types, returns a single-element array containing the mapped type.
+ * For UnboxedTupleType, returns multiple elements (one per tuple element) to
+ * support WASM multi-value returns.
+ */
+export function mapReturnTypeToWasmResults(
+  ctx: CodegenContext,
+  type: Type,
+): number[][] {
+  if (type.kind === TypeKind.Void || type.kind === TypeKind.Never) {
+    return [];
+  }
+  if (type.kind === TypeKind.UnboxedTuple) {
+    const tupleType = type as UnboxedTupleType;
+    return tupleType.elementTypes.map((el) =>
+      mapCheckerTypeToWasmType(ctx, el),
+    );
+  }
+  // For all other types, wrap in an array
+  const mapped = mapCheckerTypeToWasmType(ctx, type);
+  return mapped.length > 0 ? [mapped] : [];
+}
 export function registerFunction(
   ctx: CodegenContext,
   name: string,
@@ -36,12 +65,9 @@ export function registerFunction(
     return mapCheckerTypeToWasmType(ctx, checkerParamType);
   });
 
-  const mappedReturn = mapCheckerTypeToWasmType(
-    ctx,
-    checkerFuncType.returnType,
-  );
-
-  const results = mappedReturn.length > 0 ? [mappedReturn] : [];
+  const results = mapReturnTypeToWasmResults(ctx, checkerFuncType.returnType);
+  // Flatten for legacy storage - used by generateFunctionBody
+  const flattenedReturn = results.flat();
 
   const typeIndex = ctx.module.addType(params, results);
   const funcIndex = ctx.module.addFunction(typeIndex);
@@ -55,7 +81,7 @@ export function registerFunction(
   ctx.functions.set(qualifiedName, funcIndex);
   // Also register unqualified for backward compatibility with single-module tests
   ctx.functions.set(name, funcIndex);
-  ctx.functionReturnTypes.set(name, mappedReturn);
+  ctx.functionReturnTypes.set(name, flattenedReturn);
 
   // Register by declaration for identity-based lookup (new name resolution)
   ctx.registerFunctionByDecl(func, funcIndex);
@@ -66,7 +92,13 @@ export function registerFunction(
     // Restore the module context for import resolution during body generation
     const savedModule = ctx.currentModule;
     ctx.currentModule = capturedModule;
-    const body = generateFunctionBody(ctx, name, func, undefined, mappedReturn);
+    const body = generateFunctionBody(
+      ctx,
+      name,
+      func,
+      undefined,
+      flattenedReturn,
+    );
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
     ctx.currentModule = savedModule;
   });
@@ -166,7 +198,7 @@ export function instantiateGenericFunction(
     }
     return mapCheckerTypeToWasmType(ctx, paramType);
   });
-  const mappedReturn = funcDecl.returnType
+  const substitutedReturnType = funcDecl.returnType
     ? (() => {
         let returnType = funcDecl.returnType!.inferredType!;
         if (ctx.checkerContext) {
@@ -175,14 +207,15 @@ export function instantiateGenericFunction(
             typeMap,
           );
         }
-        return mapCheckerTypeToWasmType(ctx, returnType);
+        return returnType;
       })()
     : (() => {
         throw new Error(
           `Generic function ${name} missing return type annotation`,
         );
       })();
-  const results = mappedReturn.length > 0 ? [mappedReturn] : [];
+  const results = mapReturnTypeToWasmResults(ctx, substitutedReturnType);
+  const flattenedReturn = results.flat();
 
   const typeIndex = ctx.module.addType(params, results);
   const funcIndex = ctx.module.addFunction(typeIndex);
@@ -195,7 +228,7 @@ export function instantiateGenericFunction(
       key,
       funcDecl,
       typeMap,
-      mappedReturn,
+      flattenedReturn,
     );
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
   });
@@ -241,7 +274,7 @@ export function registerDeclaredFunction(
   let funcIndex = -1;
 
   if (!intrinsicName) {
-    const results = returnType.length > 0 ? [returnType] : [];
+    const results = mapReturnTypeToWasmResults(ctx, checkerFuncType.returnType);
 
     const typeIndex = ctx.module.addType(params, results);
 
@@ -376,8 +409,7 @@ export function instantiateGenericMethod(
     if (ctx.checkerContext) {
       returnType = ctx.checkerContext.substituteTypeParams(returnType, typeMap);
     }
-    const mapped = mapCheckerTypeToWasmType(ctx, returnType);
-    if (mapped.length > 0) results = [mapped];
+    results = mapReturnTypeToWasmResults(ctx, returnType);
   }
 
   const typeIndex = ctx.module.addType(params, results);

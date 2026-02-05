@@ -36,6 +36,7 @@ import {
   type TupleLiteral,
   type TuplePattern,
   type UnaryExpression,
+  type UnboxedTupleLiteral,
 } from '../ast.js';
 import {
   createBinding,
@@ -60,6 +61,7 @@ import {
   type TupleType,
   type Type,
   type TypeParameterType,
+  type UnboxedTupleType,
   type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
@@ -199,6 +201,8 @@ function checkExpressionInternal(
       return checkRecordLiteral(ctx, expr as RecordLiteral);
     case NodeType.TupleLiteral:
       return checkTupleLiteral(ctx, expr as TupleLiteral);
+    case NodeType.UnboxedTupleLiteral:
+      return checkUnboxedTupleLiteral(ctx, expr as UnboxedTupleLiteral);
     case NodeType.IndexExpression:
       return checkIndexExpression(ctx, expr as IndexExpression);
     case NodeType.TemplateLiteral:
@@ -2443,6 +2447,24 @@ function checkTupleLiteral(ctx: CheckerContext, expr: TupleLiteral): Type {
     kind: TypeKind.Tuple,
     elementTypes,
   } as TupleType;
+}
+
+/**
+ * Check an unboxed tuple literal expression like ((1, 2)).
+ * This is only valid in return position (expression body or return statement).
+ * Returns an UnboxedTupleType.
+ */
+function checkUnboxedTupleLiteral(
+  ctx: CheckerContext,
+  expr: UnboxedTupleLiteral,
+): Type {
+  const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
+  const resultType: UnboxedTupleType = {
+    kind: TypeKind.UnboxedTuple,
+    elementTypes,
+  };
+  expr.inferredType = resultType;
+  return resultType;
 }
 
 function checkIndexExpression(

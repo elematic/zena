@@ -8,6 +8,7 @@ import {
   type ReturnStatement,
   type Statement,
   type TuplePattern,
+  type UnboxedTuplePattern,
   type VariableDeclaration,
   type WhileStatement,
 } from '../ast.js';
@@ -17,6 +18,7 @@ import {
   type ClassType,
   type InterfaceType,
   type TypeAliasType,
+  type UnboxedTupleType,
   type UnionType,
 } from '../types.js';
 import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
@@ -275,6 +277,13 @@ export function generateLocalVariableDeclaration(
   decl: VariableDeclaration,
   body: number[],
 ) {
+  // Special handling for unboxed tuple patterns: let (a, b) = expr
+  // The expr returns multiple values on the stack, we pop them in reverse order
+  if (decl.pattern.type === NodeType.UnboxedTuplePattern) {
+    generateUnboxedTuplePatternBinding(ctx, decl, body);
+    return;
+  }
+
   let exprType: number[] = [];
   let adapted = false;
 
@@ -434,6 +443,63 @@ export function generateLocalVariableDeclaration(
     body.push(...WasmModule.encodeSignedLEB128(index));
   } else {
     generatePatternBinding(ctx, decl.pattern, type, body);
+  }
+}
+
+/**
+ * Generate binding for unboxed tuple pattern: let (a, b) = expr
+ *
+ * Unlike boxed tuples where values are in a struct, unboxed tuples
+ * have their values directly on the WASM stack. We need to:
+ * 1. Generate the expression (pushes N values onto stack)
+ * 2. Pop values in REVERSE order to locals (WASM stack is LIFO)
+ */
+function generateUnboxedTuplePatternBinding(
+  ctx: CodegenContext,
+  decl: VariableDeclaration,
+  body: number[],
+) {
+  const pattern = decl.pattern as UnboxedTuplePattern;
+  const initType = decl.init.inferredType;
+
+  if (initType?.kind !== TypeKind.UnboxedTuple) {
+    throw new Error(
+      `Expected UnboxedTupleType for unboxed tuple pattern, got ${initType?.kind}`,
+    );
+  }
+
+  const tupleType = initType as UnboxedTupleType;
+
+  if (pattern.elements.length !== tupleType.elementTypes.length) {
+    throw new Error(
+      `Unboxed tuple pattern has ${pattern.elements.length} elements but type has ${tupleType.elementTypes.length}`,
+    );
+  }
+
+  // 1. Generate the expression - this pushes all values onto the stack
+  generateExpression(ctx, decl.init, body);
+
+  // 2. Pop values in REVERSE order (WASM stack is LIFO)
+  // For `let (a, b) = expr`, expr pushes [a_value, b_value] onto stack
+  // Stack state: ... a_value b_value (top)
+  // We need to pop b first, then a
+  for (let i = pattern.elements.length - 1; i >= 0; i--) {
+    const elemPattern = pattern.elements[i];
+    const elemType = tupleType.elementTypes[i];
+    const wasmType = mapCheckerTypeToWasmType(ctx, elemType);
+
+    if (elemPattern.type === NodeType.Identifier) {
+      const index = ctx.declareLocal(elemPattern.name, wasmType, elemPattern);
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeSignedLEB128(index));
+    } else {
+      // For nested patterns, store in temp and recurse
+      const tempIndex = ctx.declareLocal('$$temp_unboxed', wasmType);
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeSignedLEB128(tempIndex));
+      // TODO: Generate nested pattern binding from temp local
+      throw new Error('Nested patterns in unboxed tuple not yet supported');
+    }
   }
 }
 
@@ -608,7 +674,11 @@ export function generateReturnStatement(
   body: number[],
 ) {
   if (stmt.argument) {
-    if (ctx.currentReturnType) {
+    // For unboxed tuple returns, just generate the expression directly
+    // (it pushes multiple values onto the stack)
+    if (stmt.argument.type === NodeType.UnboxedTupleLiteral) {
+      generateExpression(ctx, stmt.argument, body);
+    } else if (ctx.currentReturnType) {
       generateAdaptedArgument(ctx, stmt.argument, ctx.currentReturnType, body);
     } else {
       generateExpression(ctx, stmt.argument, body);

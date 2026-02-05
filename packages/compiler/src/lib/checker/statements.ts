@@ -29,6 +29,7 @@ import {
   type TuplePattern,
   type TypeAliasDeclaration,
   type TypeParameter,
+  type UnboxedTuplePattern,
   type VariableDeclaration,
   type WhileStatement,
 } from '../ast.js';
@@ -56,6 +57,7 @@ import {
   type Type,
   type TypeAliasType,
   type TypeParameterType,
+  type UnboxedTupleType,
   type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
@@ -1125,6 +1127,16 @@ function checkPattern(
       checkTuplePattern(ctx, pattern, type, kind, declaration);
       break;
 
+    case NodeType.UnboxedTuplePattern:
+      checkUnboxedTuplePattern(
+        ctx,
+        pattern as UnboxedTuplePattern,
+        type,
+        kind,
+        declaration,
+      );
+      break;
+
     case NodeType.AssignmentPattern:
       checkAssignmentPattern(ctx, pattern, type, kind, declaration);
       break;
@@ -1201,6 +1213,46 @@ function checkTuplePattern(
     ctx.diagnostics.reportError(
       `Type '${typeToString(type)}' is not a tuple or array`,
       DiagnosticCode.TypeMismatch,
+    );
+  }
+}
+
+/**
+ * Check an unboxed tuple pattern like `let (a, b) = expr`.
+ * The initializer must be an UnboxedTupleType with matching element count.
+ */
+function checkUnboxedTuplePattern(
+  ctx: CheckerContext,
+  pattern: UnboxedTuplePattern,
+  type: Type,
+  kind: 'let' | 'var',
+  declaration?: VariableDeclaration,
+) {
+  if (type.kind !== TypeKind.UnboxedTuple) {
+    ctx.diagnostics.reportError(
+      `Unboxed tuple pattern requires an unboxed tuple type, got '${typeToString(type)}'`,
+      DiagnosticCode.TypeMismatch,
+    );
+    return;
+  }
+
+  const tupleType = type as UnboxedTupleType;
+
+  if (pattern.elements.length !== tupleType.elementTypes.length) {
+    ctx.diagnostics.reportError(
+      `Unboxed tuple pattern has ${pattern.elements.length} elements but type has ${tupleType.elementTypes.length}`,
+      DiagnosticCode.TypeMismatch,
+    );
+    return;
+  }
+
+  for (let i = 0; i < pattern.elements.length; i++) {
+    checkPattern(
+      ctx,
+      pattern.elements[i],
+      tupleType.elementTypes[i],
+      kind,
+      declaration,
     );
   }
 }

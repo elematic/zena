@@ -20,6 +20,7 @@ import {
   type ArrayType,
   type RecordType,
   type TupleType,
+  type UnboxedTupleType,
   type FunctionType,
   type UnionType,
   type TypeParameterType,
@@ -4579,7 +4580,7 @@ export function mapCheckerTypeToWasmType(
     return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
   }
 
-  // Handle TupleType directly
+  // Handle TupleType directly (boxed - allocates struct)
   if (type.kind === TypeKind.Tuple) {
     const tupleType = type as TupleType;
     const elementTypes = tupleType.elementTypes.map((el) =>
@@ -4587,6 +4588,17 @@ export function mapCheckerTypeToWasmType(
     );
     const typeIndex = ctx.getTupleTypeIndex(elementTypes);
     return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+  }
+
+  // Handle UnboxedTupleType directly (unboxed - multi-value)
+  // This flattens the element types for WASM multi-value returns
+  if (type.kind === TypeKind.UnboxedTuple) {
+    const tupleType = type as UnboxedTupleType;
+    const result: number[] = [];
+    for (const el of tupleType.elementTypes) {
+      result.push(...mapCheckerTypeToWasmType(ctx, el));
+    }
+    return result;
   }
 
   // Handle FunctionType directly (closure struct)
