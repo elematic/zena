@@ -2624,33 +2624,85 @@ export class Parser {
     return undefined;
   }
 
-  #parseTypeAnnotation(): TypeAnnotation {
-    const startToken = this.#peek();
-    let left: TypeAnnotation;
-    if (this.#match(TokenType.LParen)) {
-      const params: TypeAnnotation[] = [];
-      if (!this.#check(TokenType.RParen)) {
-        do {
-          // Check for "Identifier :" (named parameter)
-          if (
-            this.#check(TokenType.Identifier) &&
-            this.#peek(1).type === TokenType.Colon
-          ) {
-            this.#advance(); // consume identifier
-            this.#advance(); // consume colon
-          }
-          params.push(this.#parseTypeAnnotation());
-        } while (this.#match(TokenType.Comma));
-      }
-      this.#consume(TokenType.RParen, "Expected ')'");
-      this.#consume(TokenType.Arrow, "Expected '=>'");
+  /**
+   * Check if the token at offset can start a type annotation that is NOT ambiguous with an expression.
+   * Used for look-ahead when disambiguating function types from unboxed tuples.
+   *
+   * Excludes literal tokens (Number, String, True, False) because they can also start expressions.
+   * This means `(T1, T2) => 0` will be parsed as unboxed tuple + function body,
+   * while `(T1, T2) => i32` will be parsed as function type.
+   *
+   * @param offset Look-ahead offset (0 = current token, 1 = next token, etc.)
+   */
+  #canStartType(offset = 0): boolean {
+    const t = this.#peek(offset).type;
+    return (
+      t === TokenType.Identifier ||
+      t === TokenType.LParen ||
+      t === TokenType.LBrace ||
+      t === TokenType.LBracket ||
+      t === TokenType.This ||
+      t === TokenType.Null
+    );
+  }
+
+  /**
+   * Parse a parenthesized type, which could be:
+   * - Function type: (T1, T2) => R
+   * - Unboxed tuple: (T1, T2)
+   * - Grouping: (T)
+   */
+  #parseParenthesizedType(startToken: Token): TypeAnnotation {
+    const params: TypeAnnotation[] = [];
+    if (!this.#check(TokenType.RParen)) {
+      do {
+        // Check for "Identifier :" (named parameter)
+        if (
+          this.#check(TokenType.Identifier) &&
+          this.#peek(1).type === TokenType.Colon
+        ) {
+          this.#advance(); // consume identifier
+          this.#advance(); // consume colon
+        }
+        params.push(this.#parseTypeAnnotation());
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RParen, "Expected ')'");
+    const endToken = this.#previous();
+    // Check if this is a function type: (T1, T2) => R
+    // We only consume '=>' if it's followed by something that looks like a type.
+    // This distinguishes `(): (i32, i32) => 0` (unboxed tuple return, body `0`)
+    // from `let f: (i32, i32) => i32` (function type).
+    if (this.#check(TokenType.Arrow) && this.#canStartType(1)) {
+      this.#advance(); // consume '=>'
       const returnType = this.#parseTypeAnnotation();
-      left = {
+      return {
         type: NodeType.FunctionTypeAnnotation,
         params,
         returnType,
         loc: this.#loc(startToken, returnType),
       };
+    } else if (params.length >= 2) {
+      // Unboxed tuple type: (T1, T2)
+      return {
+        type: NodeType.UnboxedTupleTypeAnnotation,
+        elementTypes: params,
+        loc: this.#loc(startToken, endToken),
+      };
+    } else if (params.length === 1) {
+      // Grouping parens: (T) just returns T
+      return params[0];
+    } else {
+      // Empty parens () without => is an error
+      throw new Error("Expected type annotation or '=>'");
+    }
+  }
+
+  #parseTypeAnnotation(): TypeAnnotation {
+    const startToken = this.#peek();
+    let left: TypeAnnotation;
+    if (this.#match(TokenType.LParen)) {
+      left = this.#parseParenthesizedType(startToken);
     } else if (this.#match(TokenType.LBrace)) {
       left = this.#parseRecordTypeAnnotation(this.#previous());
     } else if (this.#match(TokenType.LBracket)) {
@@ -2662,7 +2714,9 @@ export class Parser {
     if (this.#match(TokenType.Pipe)) {
       const types: TypeAnnotation[] = [left];
       do {
-        if (this.#match(TokenType.LBrace)) {
+        if (this.#match(TokenType.LParen)) {
+          types.push(this.#parseParenthesizedType(this.#previous()));
+        } else if (this.#match(TokenType.LBrace)) {
           types.push(this.#parseRecordTypeAnnotation(this.#previous()));
         } else if (this.#match(TokenType.LBracket)) {
           types.push(this.#parseTupleTypeAnnotation(this.#previous()));

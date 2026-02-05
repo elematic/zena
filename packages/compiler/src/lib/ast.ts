@@ -62,6 +62,7 @@ export const NodeType = {
   RecordLiteral: 'RecordLiteral',
   PropertyAssignment: 'PropertyAssignment',
   TupleLiteral: 'TupleLiteral',
+  UnboxedTupleLiteral: 'UnboxedTupleLiteral',
   IndexExpression: 'IndexExpression',
   TypeParameter: 'TypeParameter',
   InterfaceDeclaration: 'InterfaceDeclaration',
@@ -76,6 +77,7 @@ export const NodeType = {
   RecordTypeAnnotation: 'RecordTypeAnnotation',
   PropertySignature: 'PropertySignature',
   TupleTypeAnnotation: 'TupleTypeAnnotation',
+  UnboxedTupleTypeAnnotation: 'UnboxedTupleTypeAnnotation',
   RecordPattern: 'RecordPattern',
   TuplePattern: 'TuplePattern',
   BindingProperty: 'BindingProperty',
@@ -277,6 +279,15 @@ export interface TupleLiteral extends Node {
   elements: Expression[];
 }
 
+/**
+ * Unboxed tuple literal for multi-value returns: (expr1, expr2, ...)
+ * Unlike boxed tuples [a, b], these exist only on the WASM stack.
+ */
+export interface UnboxedTupleLiteral extends Node {
+  type: typeof NodeType.UnboxedTupleLiteral;
+  elements: Expression[];
+}
+
 export interface IndexExpression extends Node {
   type: typeof NodeType.IndexExpression;
   object: Expression;
@@ -351,6 +362,7 @@ export type Expression =
   | ArrayLiteral
   | RecordLiteral
   | TupleLiteral
+  | UnboxedTupleLiteral
   | IndexExpression
   | SuperExpression
   | TemplateLiteral
@@ -677,6 +689,7 @@ export type TypeAnnotation =
   | UnionTypeAnnotation
   | RecordTypeAnnotation
   | TupleTypeAnnotation
+  | UnboxedTupleTypeAnnotation
   | FunctionTypeAnnotation
   | LiteralTypeAnnotation
   | ThisTypeAnnotation;
@@ -706,6 +719,15 @@ export interface RecordTypeAnnotation extends Node {
 
 export interface TupleTypeAnnotation extends Node {
   type: typeof NodeType.TupleTypeAnnotation;
+  elementTypes: TypeAnnotation[];
+}
+
+/**
+ * Unboxed tuple type annotation for multi-value returns: (T1, T2, ...)
+ * Unlike boxed tuple types [T1, T2], these compile to WASM multi-value returns.
+ */
+export interface UnboxedTupleTypeAnnotation extends Node {
+  type: typeof NodeType.UnboxedTupleTypeAnnotation;
   elementTypes: TypeAnnotation[];
 }
 

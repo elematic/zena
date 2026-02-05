@@ -18,6 +18,7 @@ export const TypeKind = {
   Array: 'Array',
   Record: 'Record',
   Tuple: 'Tuple',
+  UnboxedTuple: 'UnboxedTuple',
   Union: 'Union',
   TypeParameter: 'TypeParameter',
   TypeAlias: 'TypeAlias',
@@ -82,6 +83,16 @@ export interface RecordType extends Type {
 
 export interface TupleType extends Type {
   kind: typeof TypeKind.Tuple;
+  elementTypes: Type[];
+}
+
+/**
+ * Unboxed tuple type for multi-value returns.
+ * Unlike boxed tuples [T1, T2], unboxed tuples (T1, T2) exist only on the WASM stack
+ * and compile to WASM multi-value returns. They are not first-class values.
+ */
+export interface UnboxedTupleType extends Type {
+  kind: typeof TypeKind.UnboxedTuple;
   elementTypes: Type[];
 }
 

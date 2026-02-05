@@ -17,6 +17,7 @@ import {
   type Type,
   type TypeAliasType,
   type TypeParameterType,
+  type UnboxedTupleType,
   type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
@@ -504,6 +505,16 @@ function resolveTypeAnnotationInternal(
       kind: TypeKind.Tuple,
       elementTypes,
     } as TupleType;
+  }
+
+  if (annotation.type === NodeType.UnboxedTupleTypeAnnotation) {
+    const elementTypes = annotation.elementTypes.map((t) =>
+      resolveTypeAnnotation(ctx, t),
+    );
+    return {
+      kind: TypeKind.UnboxedTuple,
+      elementTypes,
+    } as UnboxedTupleType;
   }
 
   if (annotation.type === NodeType.FunctionTypeAnnotation) {
