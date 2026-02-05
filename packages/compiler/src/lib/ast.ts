@@ -80,6 +80,7 @@ export const NodeType = {
   UnboxedTupleTypeAnnotation: 'UnboxedTupleTypeAnnotation',
   RecordPattern: 'RecordPattern',
   TuplePattern: 'TuplePattern',
+  UnboxedTuplePattern: 'UnboxedTuplePattern',
   BindingProperty: 'BindingProperty',
   AssignmentPattern: 'AssignmentPattern',
   AsPattern: 'AsPattern',
@@ -314,6 +315,11 @@ export interface TuplePattern extends Node {
   elements: (Pattern | null)[];
 }
 
+export interface UnboxedTuplePattern extends Node {
+  type: typeof NodeType.UnboxedTuplePattern;
+  elements: Pattern[];
+}
+
 export interface AssignmentPattern extends Node {
   type: typeof NodeType.AssignmentPattern;
   left: Pattern;
@@ -324,6 +330,7 @@ export type Pattern =
   | Identifier
   | RecordPattern
   | TuplePattern
+  | UnboxedTuplePattern
   | AssignmentPattern
   | NumberLiteral
   | StringLiteral

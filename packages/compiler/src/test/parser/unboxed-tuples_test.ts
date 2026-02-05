@@ -94,3 +94,69 @@ suite('Parser: Unboxed Tuples', () => {
     assert.ok(returnType.elementTypes[1].typeArguments);
   });
 });
+
+suite('Parser: Unboxed Tuple Destructuring', () => {
+  test('parses basic unboxed tuple destructuring', () => {
+    const parser = new Parser('let (a, b) = getTuple();');
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    assert.strictEqual(decl.type, NodeType.VariableDeclaration);
+    assert.strictEqual(decl.pattern.type, NodeType.UnboxedTuplePattern);
+    assert.strictEqual(decl.pattern.elements.length, 2);
+    assert.strictEqual(decl.pattern.elements[0].type, NodeType.Identifier);
+    assert.strictEqual(decl.pattern.elements[0].name, 'a');
+    assert.strictEqual(decl.pattern.elements[1].type, NodeType.Identifier);
+    assert.strictEqual(decl.pattern.elements[1].name, 'b');
+  });
+
+  test('parses unboxed tuple destructuring with three elements', () => {
+    const parser = new Parser('let (x, y, z) = getTriple();');
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    assert.strictEqual(decl.pattern.type, NodeType.UnboxedTuplePattern);
+    assert.strictEqual(decl.pattern.elements.length, 3);
+  });
+
+  test('parses single element in parens as grouping (not tuple pattern)', () => {
+    const parser = new Parser('let (x) = getValue();');
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    // Single element is just grouping, pattern is the inner identifier
+    assert.strictEqual(decl.pattern.type, NodeType.Identifier);
+    assert.strictEqual(decl.pattern.name, 'x');
+  });
+
+  test('parses unboxed tuple pattern with nested patterns', () => {
+    const parser = new Parser('let (a, (b, c)) = nested();');
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    assert.strictEqual(decl.pattern.type, NodeType.UnboxedTuplePattern);
+    assert.strictEqual(decl.pattern.elements.length, 2);
+    assert.strictEqual(decl.pattern.elements[0].name, 'a');
+    assert.strictEqual(
+      decl.pattern.elements[1].type,
+      NodeType.UnboxedTuplePattern,
+    );
+    assert.strictEqual(decl.pattern.elements[1].elements.length, 2);
+  });
+
+  test('parses unboxed tuple pattern in match expression', () => {
+    const parser = new Parser(`
+      let x = 1;
+      let result = match (x) {
+        case (true, value): value
+        case (false, _): 0
+      };
+    `);
+    const module = parser.parse();
+    const decl = module.body[1] as any;
+    const match = decl.init;
+    assert.strictEqual(match.type, NodeType.MatchExpression);
+    // First case pattern should be unboxed tuple
+    assert.strictEqual(
+      match.cases[0].pattern.type,
+      NodeType.UnboxedTuplePattern,
+    );
+    assert.strictEqual(match.cases[0].pattern.elements.length, 2);
+  });
+});

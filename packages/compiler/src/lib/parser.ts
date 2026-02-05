@@ -582,8 +582,7 @@ export class Parser {
     } else if (this.#match(TokenType.LBracket)) {
       pattern = this.#parseTuplePattern();
     } else if (this.#match(TokenType.LParen)) {
-      pattern = this.#parsePattern();
-      this.#consume(TokenType.RParen, "Expected ')' after pattern.");
+      pattern = this.#parseUnboxedTuplePattern();
     } else if (this.#isIdentifier(this.#peek().type)) {
       const identifier = this.#parseIdentifier();
 
@@ -686,6 +685,39 @@ export class Parser {
     return {
       type: NodeType.TuplePattern,
       elements,
+    };
+  }
+
+  /**
+   * Parse an unboxed tuple pattern: (a, b) or (a, b, c)
+   * Single element (a) is treated as grouping, not a tuple.
+   */
+  #parseUnboxedTuplePattern(): Pattern {
+    const startToken = this.#previous(); // LParen was already consumed
+    const elements: Pattern[] = [];
+
+    if (!this.#check(TokenType.RParen)) {
+      do {
+        elements.push(this.#parsePattern());
+      } while (this.#match(TokenType.Comma));
+    }
+
+    this.#consume(TokenType.RParen, "Expected ')' after pattern.");
+
+    // Single element is just grouping: (x) -> x
+    if (elements.length === 1) {
+      return elements[0];
+    }
+
+    // Empty or 2+ elements is an unboxed tuple pattern
+    if (elements.length === 0) {
+      throw new Error('Empty unboxed tuple pattern is not allowed');
+    }
+
+    return {
+      type: NodeType.UnboxedTuplePattern,
+      elements,
+      loc: this.#loc(startToken, this.#previous()),
     };
   }
 
