@@ -833,9 +833,19 @@ export class Parser {
             return this.#parseArrowFunctionDefinition();
           }
         }
-        // (x, ...) - multiple parameters
+        // (x, ...) - multiple parameters without type annotations
+        // Must verify there's an arrow or colon after the closing paren
         if (afterIdent === TokenType.Comma) {
-          return this.#parseArrowFunctionDefinition();
+          const closeOffset = this.#findMatchingParenOffset(0);
+          if (closeOffset > 0) {
+            const afterClose = this.#peek(closeOffset + 1).type;
+            if (
+              afterClose === TokenType.Arrow ||
+              afterClose === TokenType.Colon
+            ) {
+              return this.#parseArrowFunctionDefinition();
+            }
+          }
         }
       }
     }
@@ -1519,9 +1529,7 @@ export class Parser {
       return this.#parseTupleLiteral();
     }
     if (this.#match(TokenType.LParen)) {
-      const expr = this.#parseExpression();
-      this.#consume(TokenType.RParen, "Expected ')' after expression.");
-      return expr;
+      return this.#parseParenthesizedExpression();
     }
     // Template literals (untagged)
     if (this.#isTemplateStart()) {
@@ -2661,21 +2669,31 @@ export class Parser {
    * Used for look-ahead when disambiguating function types from unboxed tuples.
    *
    * Excludes literal tokens (Number, String, True, False) because they can also start expressions.
+   * Also excludes LParen because (a, b) could be an unboxed tuple expression, not a type.
    * This means `(T1, T2) => 0` will be parsed as unboxed tuple + function body,
-   * while `(T1, T2) => i32` will be parsed as function type.
+   * and `(T1, T2) => (a, b)` will be parsed as unboxed tuple + unboxed tuple expression body.
    *
    * @param offset Look-ahead offset (0 = current token, 1 = next token, etc.)
    */
   #canStartType(offset = 0): boolean {
     const t = this.#peek(offset).type;
-    return (
+    if (
       t === TokenType.Identifier ||
-      t === TokenType.LParen ||
-      t === TokenType.LBrace ||
       t === TokenType.LBracket ||
       t === TokenType.This ||
       t === TokenType.Null
-    );
+    ) {
+      return true;
+    }
+    // LBrace could be a record type {x: T} or a block statement.
+    // It's a type if the next token is an identifier (field name) or } (empty record).
+    if (t === TokenType.LBrace) {
+      const afterBrace = this.#peek(offset + 1).type;
+      return (
+        afterBrace === TokenType.Identifier || afterBrace === TokenType.RBrace
+      );
+    }
+    return false;
   }
 
   /**
@@ -2854,6 +2872,40 @@ export class Parser {
     return {
       type: NodeType.TupleLiteral,
       elements,
+    };
+  }
+
+  /**
+   * Parse a parenthesized expression, which could be:
+   * - Grouping: (expr) -> returns the inner expression
+   * - Unboxed tuple: (expr1, expr2) -> UnboxedTupleLiteral
+   */
+  #parseParenthesizedExpression(): Expression {
+    const startToken = this.#previous(); // LParen was already consumed
+    const elements: Expression[] = [];
+
+    if (!this.#check(TokenType.RParen)) {
+      do {
+        elements.push(this.#parseExpression());
+      } while (this.#match(TokenType.Comma));
+    }
+
+    this.#consume(TokenType.RParen, "Expected ')' after expression.");
+
+    // Single element is just grouping: (x) -> x
+    if (elements.length === 1) {
+      return elements[0];
+    }
+
+    // Empty or 2+ elements is an unboxed tuple literal
+    if (elements.length === 0) {
+      throw new Error('Empty unboxed tuple expression is not allowed');
+    }
+
+    return {
+      type: NodeType.UnboxedTupleLiteral,
+      elements,
+      loc: this.#loc(startToken, this.#previous()),
     };
   }
 
@@ -3170,6 +3222,24 @@ export class Parser {
 
   #isAtEnd(): boolean {
     return this.#peek().type === TokenType.EOF;
+  }
+
+  /**
+   * Find the offset to the matching closing paren from a given start offset.
+   * Returns the offset to the RParen token, or -1 if not found.
+   * Assumes the token at startOffset is LParen.
+   */
+  #findMatchingParenOffset(startOffset: number): number {
+    let depth = 1;
+    let offset = startOffset + 1;
+    while (depth > 0) {
+      const token = this.#peek(offset);
+      if (token.type === TokenType.EOF) return -1;
+      if (token.type === TokenType.LParen) depth++;
+      if (token.type === TokenType.RParen) depth--;
+      offset++;
+    }
+    return offset - 1; // offset of the RParen
   }
 
   #peek(distance = 0): Token {

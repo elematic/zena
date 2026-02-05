@@ -160,3 +160,79 @@ suite('Parser: Unboxed Tuple Destructuring', () => {
     assert.strictEqual(match.cases[0].pattern.elements.length, 2);
   });
 });
+
+suite('Parser: Unboxed Tuple Expressions', () => {
+  test('parses unboxed tuple expression as function body (double parens)', () => {
+    // Double parens required: outer parens are grouping, inner parens are the tuple
+    const parser = new Parser(
+      'let f = (a: i32, b: i32): (i32, i32) => ((a, b));',
+    );
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    const func = decl.init;
+    assert.strictEqual(func.type, NodeType.FunctionExpression);
+    assert.strictEqual(func.body.type, NodeType.UnboxedTupleLiteral);
+    assert.strictEqual(func.body.elements.length, 2);
+    assert.strictEqual(func.body.elements[0].name, 'a');
+    assert.strictEqual(func.body.elements[1].name, 'b');
+  });
+
+  test('parses unboxed tuple expression with expressions (double parens)', () => {
+    const parser = new Parser(
+      'let f = (a: i32, b: i32): (i32, i32) => ((a / b, a % b));',
+    );
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    const func = decl.init;
+    const tuple = func.body;
+    assert.strictEqual(tuple.type, NodeType.UnboxedTupleLiteral);
+    assert.strictEqual(tuple.elements.length, 2);
+    assert.strictEqual(tuple.elements[0].type, NodeType.BinaryExpression);
+    assert.strictEqual(tuple.elements[1].type, NodeType.BinaryExpression);
+  });
+
+  test('parses unboxed tuple with three elements (double parens)', () => {
+    const parser = new Parser('let f = (): (i32, i32, i32) => ((1, 2, 3));');
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    const tuple = decl.init.body;
+    assert.strictEqual(tuple.type, NodeType.UnboxedTupleLiteral);
+    assert.strictEqual(tuple.elements.length, 3);
+  });
+
+  test('parses single element in parens as grouping (not tuple)', () => {
+    const parser = new Parser('let x = (1 + 2);');
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    // Single element is just grouping, returns the inner expression
+    assert.strictEqual(decl.init.type, NodeType.BinaryExpression);
+  });
+
+  test('parses nested unboxed tuples (double parens)', () => {
+    const parser = new Parser(
+      'let f = (): ((i32, i32), i32) => (((1, 2), 3));',
+    );
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    const tuple = decl.init.body;
+    assert.strictEqual(tuple.type, NodeType.UnboxedTupleLiteral);
+    assert.strictEqual(tuple.elements.length, 2);
+    assert.strictEqual(tuple.elements[0].type, NodeType.UnboxedTupleLiteral);
+    assert.strictEqual(tuple.elements[1].type, NodeType.NumberLiteral);
+  });
+
+  test('parses unboxed tuple in return statement', () => {
+    const parser = new Parser(`
+      let f = (): (i32, i32) => {
+        return (1, 2);
+      };
+    `);
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    const func = decl.init;
+    const returnStmt = func.body.body[0];
+    assert.strictEqual(returnStmt.type, NodeType.ReturnStatement);
+    assert.strictEqual(returnStmt.argument.type, NodeType.UnboxedTupleLiteral);
+    assert.strictEqual(returnStmt.argument.elements.length, 2);
+  });
+});

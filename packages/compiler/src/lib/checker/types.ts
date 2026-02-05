@@ -645,6 +645,11 @@ function resolveTypeAnnotationInternal(
         resolveTypeAnnotation(ctx, arg),
       );
 
+      // Unboxed tuples cannot appear as type arguments
+      for (const arg of resolvedArgs) {
+        validateNoUnboxedTuple(arg, ctx, 'type arguments');
+      }
+
       if (type.kind === TypeKind.Class) {
         return instantiateGenericClass(type as ClassType, resolvedArgs, ctx);
       } else if (type.kind === TypeKind.Interface) {
@@ -676,6 +681,56 @@ function resolveTypeAnnotationInternal(
   }
 
   return type;
+}
+
+/**
+ * Checks if a type contains an unboxed tuple type anywhere in its structure.
+ * Used to validate that unboxed tuples only appear in return positions.
+ */
+export function containsUnboxedTuple(type: Type): boolean {
+  switch (type.kind) {
+    case TypeKind.UnboxedTuple:
+      return true;
+    case TypeKind.Union:
+      return (type as UnionType).types.some(containsUnboxedTuple);
+    case TypeKind.Array:
+      return containsUnboxedTuple((type as ArrayType).elementType);
+    case TypeKind.Tuple:
+      return (type as TupleType).elementTypes.some(containsUnboxedTuple);
+    case TypeKind.Record:
+      // RecordType.properties is a Map<string, Type>
+      for (const propType of (type as RecordType).properties.values()) {
+        if (containsUnboxedTuple(propType)) return true;
+      }
+      return false;
+    case TypeKind.Function:
+      // Return type of nested function may contain unboxed tuple - that's valid
+      // But parameters cannot
+      return (type as FunctionType).parameters.some(containsUnboxedTuple);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Validates that a type does not contain unboxed tuples.
+ * Unboxed tuples are only allowed in function return types, not in:
+ * - Variable types
+ * - Field types
+ * - Parameter types
+ * - Generic type arguments
+ */
+export function validateNoUnboxedTuple(
+  type: Type,
+  ctx: CheckerContext,
+  context: string,
+) {
+  if (containsUnboxedTuple(type)) {
+    ctx.diagnostics.reportError(
+      `Unboxed tuple types can only appear in function return types, not in ${context}.`,
+      DiagnosticCode.TypeMismatch,
+    );
+  }
 }
 
 export function validateType(type: Type, ctx: CheckerContext) {

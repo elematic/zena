@@ -67,6 +67,7 @@ import {
   substituteType,
   typeToString,
   validateType,
+  validateNoUnboxedTuple,
   widenLiteralType,
 } from './types.js';
 
@@ -1047,6 +1048,9 @@ function checkVariableDeclaration(
   if (decl.typeAnnotation) {
     const explicitType = resolveTypeAnnotation(ctx, decl.typeAnnotation);
 
+    // Unboxed tuples cannot appear in variable type annotations
+    validateNoUnboxedTuple(explicitType, ctx, 'variable types');
+
     // Special handling for literal types
     let compatible = isAssignableTo(ctx, type, explicitType);
     if (!compatible) {
@@ -1655,6 +1659,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       const memberNameInfo = resolveMemberName(ctx, member.name);
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
 
+      // Unboxed tuples cannot appear in field types
+      validateNoUnboxedTuple(fieldType, ctx, 'field types');
+
       if (memberNameInfo.isSymbol) {
         classType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);
         continue;
@@ -1743,6 +1750,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     } else if (member.type === NodeType.AccessorDeclaration) {
       const memberNameInfo = resolveMemberName(ctx, member.name);
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+
+      // Unboxed tuples cannot appear in accessor types
+      validateNoUnboxedTuple(fieldType, ctx, 'accessor types');
 
       if (memberNameInfo.isSymbol) {
         classType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);
@@ -2253,6 +2263,10 @@ function checkInterfaceDeclaration(
       }
     } else if (member.type === NodeType.FieldDefinition) {
       const type = resolveTypeAnnotation(ctx, member.typeAnnotation);
+
+      // Unboxed tuples cannot appear in interface field types
+      validateNoUnboxedTuple(type, ctx, 'field types');
+
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
         interfaceType.symbolFields!.set(memberNameInfo.symbolId!, type);
@@ -2288,6 +2302,10 @@ function checkInterfaceDeclaration(
       }
     } else if (member.type === NodeType.AccessorSignature) {
       const type = resolveTypeAnnotation(ctx, member.typeAnnotation);
+
+      // Unboxed tuples cannot appear in accessor types
+      validateNoUnboxedTuple(type, ctx, 'accessor types');
+
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
         interfaceType.symbolFields!.set(memberNameInfo.symbolId!, type);
@@ -2645,6 +2663,10 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
     if (member.type === NodeType.FieldDefinition) {
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+
+      // Unboxed tuples cannot appear in mixin field types
+      validateNoUnboxedTuple(fieldType, ctx, 'field types');
+
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
         mixinType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);
@@ -2722,6 +2744,10 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       }
     } else if (member.type === NodeType.AccessorDeclaration) {
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+
+      // Unboxed tuples cannot appear in accessor types
+      validateNoUnboxedTuple(fieldType, ctx, 'accessor types');
+
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
         mixinType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);

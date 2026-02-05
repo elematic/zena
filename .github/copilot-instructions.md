@@ -548,12 +548,15 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
       - Checker: Generic function inference widens conflicting literals.
       - Codegen: Boxing literal types uses widened base type (Box<boolean>).
       - Enables discriminated unions like `(true, T) | (false, never)`.
-    - **Unboxed Tuple Types** (`(T1, T2)`):
-      - Parser: Parse `(T1, T2)` as return type annotation.
-      - Parser: Parse `(expr1, expr2)` as tuple return expression.
-      - Parser: Parse `let (a, b) = expr` destructuring.
-      - Checker: Add `UnboxedTupleType` to type system.
-      - Checker: Validate unboxed tuples only in return position (not first-class).
+    - **Unboxed Tuple Types** (`(T1, T2)`): ✅ Parser & Checker COMPLETED
+      - Parser: Parse `(T1, T2)` as return type annotation. ✅
+      - Parser: Parse `((expr1, expr2))` as tuple return expression (double parens for expression body). ✅
+      - Parser: Parse `return (expr1, expr2)` in block body. ✅
+      - Parser: Parse `let (a, b) = expr` destructuring. ✅
+      - Checker: Add `UnboxedTupleType` to type system. ✅
+      - Checker: Validate unboxed tuples only in return position (not first-class). ✅
+        - Rejects: variable types, field types, parameter types, accessor types, type arguments
+        - Allows: function return types, return expressions, destructuring patterns
       - Codegen: Emit WASM multi-value function signatures.
       - Codegen: Generate tuple returns (push values in order).
       - Codegen: Generate destructuring (pop in reverse order to locals).

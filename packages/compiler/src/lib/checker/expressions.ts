@@ -75,6 +75,7 @@ import {
   isAssignableTo,
   substituteType,
   validateType,
+  validateNoUnboxedTuple,
 } from './types.js';
 import {checkStatement} from './statements.js';
 
@@ -1837,6 +1838,8 @@ function checkFunctionExpression(
     let type: Type;
     if (param.typeAnnotation) {
       type = resolveTypeAnnotation(ctx, param.typeAnnotation);
+      // Unboxed tuples cannot appear in parameter types
+      validateNoUnboxedTuple(type, ctx, 'parameter types');
     } else if (expectedFuncType && i < expectedFuncType.parameters.length) {
       // Contextual typing: infer parameter type from expected function type
       type = expectedFuncType.parameters[i];
