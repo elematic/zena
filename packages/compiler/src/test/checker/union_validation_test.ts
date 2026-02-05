@@ -16,7 +16,7 @@ suite('Union Validation Tests', () => {
     } catch (e: any) {
       assert.match(
         e.message,
-        /Union types cannot contain primitive types like 'i32'/,
+        /cannot mix primitive types with reference types/,
       );
     }
   });
@@ -39,7 +39,7 @@ suite('Union Validation Tests', () => {
     } catch (e: any) {
       assert.match(
         e.message,
-        /Union types cannot contain primitive types like 'i32'/,
+        /cannot mix primitive types with reference types/,
       );
       // assert.match(e.message, /This occurred during generic instantiation/);
     }

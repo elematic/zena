@@ -107,7 +107,7 @@ See [Interfaces Design](./interfaces.md) for implementation details.
 
 **Status: Implemented**
 
-- `i32`, `f32`, `boolean`, `string`: **Implemented**
+- `i32`, `f32`, `boolean`, `String`: **Implemented**
 - `i64`, `f64`: **Implemented**
 
 Zena maps its primitive types directly to WebAssembly value types to ensure maximum performance and zero ovezenad.
@@ -162,47 +162,49 @@ Zena supports union types, but with specific constraints regarding primitive typ
 
 #### Constraints
 
-- **Reference Types Only**: Union types may only consist of **Reference Types**.
+- **Reference-Only Unions**: Unions of reference types are always allowed.
   - ✅ `String | null`
   - ✅ `Point | Shape`
   - ✅ `Box<i32> | null`
   - ✅ `array<i32> | null`
-- **No Value Primitives**: "True" primitive value types (`i32`, `f32`, `boolean`) cannot be used directly in unions.
+
+- **Same-Base Primitive Unions**: Primitives may union with other primitives **of the same base type**.
+  - ✅ `true | false` (both are `boolean`)
+  - ✅ `1 | 2 | 3` (all are `i32`, when numeric literal types are implemented)
+
+- **No Mixing Primitives with References**: Value primitives cannot union with reference types.
   - ❌ `i32 | null`
-  - ❌ `i32 | string`
+  - ❌ `boolean | String`
+  - ❌ `true | null`
+
+- **No Mixing Different Primitive Base Types**: Primitives of different base types cannot be unioned.
+  - ❌ `i32 | f32`
+  - ❌ `1 | 1.0` (when numeric literal types are implemented)
 
 #### Rationale
 
 1.  **WASM Representation**:
     - **Value Types** (`i32`, `f32`) live on the stack or in locals. They are not GC-managed references.
     - **Reference Types** (`ref $T`, `ref null $T`) live on the heap.
-    - A union like `i32 | string` would require a storage location that can hold either 4 bytes of raw integer data OR a GC reference. While WASM has `anyref`, converting `i32` to `anyref` requires **boxing** (`i31ref` exists but is limited to 31 bits).
-    - To avoid implicit allocation and performance cliffs, Zena requires explicit boxing for primitives in unions.
+    - A union like `i32 | String` would require a storage location that can hold either 4 bytes of raw integer data OR a GC reference. WASM has no such type.
+    - To avoid implicit allocation and performance cliffs, Zena requires explicit boxing for primitives in unions with references.
 
 2.  **Runtime Disambiguation**:
     - To safely use a value from a union `A | B`, the runtime must be able to determine if the value is `A` or `B`.
     - Reference types (Classes, Arrays) carry runtime type information (RTTI) or can be checked via `ref.test`.
     - Value types (`i32`) are just raw bits and carry no type information. Distinguishing `i32` from `f32` in a union is impossible without a tag (boxing).
+    - Primitives of the same base type (like `true | false`) don't need runtime discrimination—they're all represented the same way.
 
 #### "Primitives" vs Reference Types
 
-It is important to distinguish between **Value Primitives** and **Reference Primitives**:
+It is important to distinguish between **Value Primitives** and **Reference Types**:
 
-- **Value Primitives** (Disallowed in Unions): `i32`, `f32`, `boolean`.
-- **Reference Primitives** (Allowed in Unions): `string`, `ByteArray`, `array<T>`.
-  - Even though `string` feels like a primitive, in Zena/WASM it is implemented as a reference to a GC array. Therefore, `string | null` is valid.
-
-#### Future Considerations: Distinguishability
-
-Currently, `string` is implemented as a wrapper around `ByteArray` (or directly as bytes). If we allow `string | ByteArray`, we must ensure they are distinguishable at runtime.
-
-- If `string` is just a type alias for `ByteArray`, `string | ByteArray` collapses to `ByteArray`.
-- If we want them to be distinct (e.g. to support `is string`), `string` must be a distinct nominal type (likely a class wrapping the bytes) or carry encoding information.
-- **Design Goal**: We may eventually disallow unions of types that cannot be distinguished at runtime (e.g. two structurally identical but nominally distinct types, if the nominal distinction is erased at runtime).
+- **Value Primitives** (Cannot mix with references in unions): `i32`, `i64`, `f32`, `f64`, `boolean`, `true`, `false`.
+- **Reference Types** (Can freely union with each other): `String`, `ByteArray`, `array<T>`, classes, interfaces.
 
 #### Solution: `Box<T>`
 
-To store a primitive in a union (e.g. a nullable integer), use the standard library `Box<T>` class.
+To store a primitive in a union with references (e.g. a nullable integer), use the standard library `Box<T>` class.
 
 ```zena
 let x: Box<i32> | null = new Box(10);
@@ -251,10 +253,10 @@ The `type` keyword is used to create aliases for types, not to define new shapes
 
 ```zena
 // ✅ Valid: Union Alias
-type ID = i32 | string;
+type MaybeString = String | null;
 
 // ✅ Valid: Function Signature
-type Handler = (event: string) => void;
+type Handler = (event: String) => void;
 
 // ❌ Invalid: Object Literal Shape (Use Interface instead)
 // type Point = { x: i32, y: i32 };

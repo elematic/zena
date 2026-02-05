@@ -69,6 +69,7 @@ const LENGTH_PROPERTY = 'length';
 import {
   instantiateGenericClass,
   instantiateGenericFunction,
+  isBooleanType,
   resolveTypeAnnotation,
   typeToString,
   isAssignableTo,
@@ -142,8 +143,10 @@ function checkExpressionInternal(
       const stringType = ctx.getWellKnownType(Types.String.name);
       return stringType || Types.String;
     }
-    case NodeType.BooleanLiteral:
-      return Types.Boolean;
+    case NodeType.BooleanLiteral: {
+      const boolLit = expr as BooleanLiteral;
+      return {kind: TypeKind.Literal, value: boolLit.value} as LiteralType;
+    }
     case NodeType.NullLiteral:
       return Types.Null;
     case NodeType.Identifier: {
@@ -318,10 +321,7 @@ function checkMatchCaseBody(
 
 function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
   const testType = checkExpression(ctx, expr.test);
-  if (
-    testType.kind !== TypeKind.Boolean &&
-    testType.kind !== TypeKind.Unknown
-  ) {
+  if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
     ctx.diagnostics.reportError(
       `Expected boolean condition in if expression, got ${typeToString(testType)}`,
       DiagnosticCode.TypeMismatch,
@@ -436,9 +436,10 @@ function checkMatchPattern(
       break;
     }
     case NodeType.BooleanLiteral: {
+      // Boolean literal pattern can match boolean type or boolean literal types
       if (
-        discriminantType !== Types.Boolean &&
-        discriminantType !== Types.Unknown
+        !isBooleanType(discriminantType) &&
+        discriminantType.kind !== TypeKind.Unknown
       ) {
         ctx.diagnostics.reportError(
           `Type mismatch: cannot match boolean against ${typeToString(discriminantType)}`,
@@ -748,7 +749,7 @@ function checkUnaryExpression(
 ): Type {
   const argType = checkExpression(ctx, expr.argument);
   if (expr.operator === '!') {
-    if (argType !== Types.Boolean) {
+    if (!isBooleanType(argType)) {
       ctx.diagnostics.reportError(
         `Operator '!' requires boolean operand, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
@@ -1251,6 +1252,33 @@ function inferTypeArguments(
         const existing = inferred.get(name);
         if (!existing) {
           inferred.set(name, argType);
+        } else {
+          // If we have conflicting literal types of the same base type, widen to the base type
+          if (
+            existing.kind === TypeKind.Literal &&
+            argType.kind === TypeKind.Literal
+          ) {
+            const existingLit = existing as LiteralType;
+            const argLit = argType as LiteralType;
+            // If both are boolean literals but different values, widen to boolean
+            if (
+              typeof existingLit.value === 'boolean' &&
+              typeof argLit.value === 'boolean'
+            ) {
+              if (existingLit.value !== argLit.value) {
+                inferred.set(name, Types.Boolean);
+              }
+            }
+            // Similarly for numbers (though less common)
+            else if (
+              typeof existingLit.value === 'number' &&
+              typeof argLit.value === 'number'
+            ) {
+              if (existingLit.value !== argLit.value) {
+                inferred.set(name, Types.I32);
+              }
+            }
+          }
         }
       }
     } else if (
@@ -1650,13 +1678,29 @@ function checkBinaryExpression(
 
   if (!typesMatch) {
     if (expr.operator === '==' || expr.operator === '!=') {
-      typesMatch =
-        isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
+      // Allow comparing boolean literal types with each other
+      if (isBooleanType(left) && isBooleanType(right)) {
+        typesMatch = true;
+      } else {
+        typesMatch =
+          isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
+      }
       resultType = Types.Boolean;
     } else if (expr.operator === '===' || expr.operator === '!==') {
-      typesMatch =
-        isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
+      // Allow comparing boolean literal types with each other
+      if (isBooleanType(left) && isBooleanType(right)) {
+        typesMatch = true;
+      } else {
+        typesMatch =
+          isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
+      }
       resultType = Types.Boolean;
+    } else if (expr.operator === '&&' || expr.operator === '||') {
+      // Allow boolean literal types in logical operators
+      if (isBooleanType(left) && isBooleanType(right)) {
+        typesMatch = true;
+        resultType = Types.Boolean;
+      }
     } else if (left === right) {
       typesMatch = true;
     }
@@ -1727,7 +1771,7 @@ function checkBinaryExpression(
     }
     case '&&':
     case '||':
-      if (left !== Types.Boolean || right !== Types.Boolean) {
+      if (!isBooleanType(left) || !isBooleanType(right)) {
         ctx.diagnostics.reportError(
           `Operator '${expr.operator}' requires boolean operands, got ${typeToString(left)} and ${typeToString(right)}.`,
           DiagnosticCode.TypeMismatch,

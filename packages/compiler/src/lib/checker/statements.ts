@@ -61,11 +61,13 @@ import {
 import type {CheckerContext} from './context.js';
 import {checkExpression} from './expressions.js';
 import {
+  isBooleanType,
   isAssignableTo,
   resolveTypeAnnotation,
   substituteType,
   typeToString,
   validateType,
+  widenLiteralType,
 } from './types.js';
 
 // =============================================================================
@@ -876,10 +878,7 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
 
 function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
   const testType = checkExpression(ctx, stmt.test);
-  if (
-    testType.kind !== TypeKind.Boolean &&
-    testType.kind !== TypeKind.Unknown
-  ) {
+  if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
     ctx.diagnostics.reportError(
       `Expected boolean condition in if statement, got ${typeToString(testType)}`,
       DiagnosticCode.TypeMismatch,
@@ -917,10 +916,7 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
 
 function checkWhileStatement(ctx: CheckerContext, stmt: WhileStatement) {
   const testType = checkExpression(ctx, stmt.test);
-  if (
-    testType.kind !== TypeKind.Boolean &&
-    testType.kind !== TypeKind.Unknown
-  ) {
+  if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
     ctx.diagnostics.reportError(
       `Expected boolean condition in while statement, got ${typeToString(testType)}`,
       DiagnosticCode.TypeMismatch,
@@ -947,10 +943,7 @@ function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
   // Check test
   if (stmt.test) {
     const testType = checkExpression(ctx, stmt.test);
-    if (
-      testType.kind !== TypeKind.Boolean &&
-      testType.kind !== TypeKind.Unknown
-    ) {
+    if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
       ctx.diagnostics.reportError(
         `Expected boolean condition in for statement, got ${typeToString(testType)}`,
         DiagnosticCode.TypeMismatch,
@@ -1044,6 +1037,12 @@ function checkVariableDeclaration(
   decl: VariableDeclaration,
 ) {
   let type = checkExpression(ctx, decl.init);
+
+  // For mutable variables (var), widen literal types to their base types
+  // This allows reassignment like: var x = true; x = false;
+  if (decl.kind === 'var' && !decl.typeAnnotation) {
+    type = widenLiteralType(type, ctx);
+  }
 
   if (decl.typeAnnotation) {
     const explicitType = resolveTypeAnnotation(ctx, decl.typeAnnotation);

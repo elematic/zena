@@ -21,19 +21,71 @@ import {
 } from '../types.js';
 import type {CheckerContext} from './context.js';
 
-function isPrimitive(type: Type): boolean {
-  // Literal types are NOT considered primitives for union validation
-  // because they are singleton types that can be discriminated at runtime
-  if (type.kind === TypeKind.Number || type.kind === TypeKind.Boolean) {
-    return true;
+/**
+ * Returns the primitive base type for union validation.
+ * Returns a string identifier if the type is a primitive, null otherwise.
+ * Used to check that all primitives in a union share the same base type.
+ */
+function getPrimitiveBase(type: Type): string | null {
+  if (type.kind === TypeKind.Number) {
+    // For NumberType, use the specific numeric name (i32, f64, etc.)
+    return (type as NumberType).name;
+  }
+  if (type.kind === TypeKind.Boolean) {
+    return 'boolean';
+  }
+  if (type.kind === TypeKind.Literal) {
+    const lit = type as LiteralType;
+    if (typeof lit.value === 'boolean') {
+      return 'boolean';
+    }
+    // TODO: Handle numeric literal types when implemented
   }
   if (type.kind === TypeKind.TypeAlias) {
-    return isPrimitive((type as TypeAliasType).target);
+    return getPrimitiveBase((type as TypeAliasType).target);
   }
   if (type.kind === TypeKind.Class && (type as ClassType).isExtension) {
-    return isPrimitive((type as ClassType).onType!);
+    return getPrimitiveBase((type as ClassType).onType!);
+  }
+  return null;
+}
+
+/**
+ * Checks if a type is a boolean type (either TypeKind.Boolean or a boolean literal type).
+ * This is used to validate boolean conditions in if/while/for statements.
+ */
+export function isBooleanType(type: Type): boolean {
+  if (type.kind === TypeKind.Boolean) return true;
+  if (type.kind === TypeKind.Literal) {
+    const lit = type as LiteralType;
+    return typeof lit.value === 'boolean';
+  }
+  // Handle union of boolean literal types (true | false)
+  if (type.kind === TypeKind.Union) {
+    const union = type as UnionType;
+    return union.types.every((member) => isBooleanType(member));
   }
   return false;
+}
+
+/**
+ * Widens a literal type to its base type.
+ * For example, LiteralType{value: true} -> Types.Boolean
+ * This is used for mutable variables (var) to allow reassignment.
+ */
+export function widenLiteralType(type: Type, ctx: CheckerContext): Type {
+  if (type.kind !== TypeKind.Literal) return type;
+
+  const lit = type as LiteralType;
+  if (typeof lit.value === 'boolean') {
+    return Types.Boolean;
+  } else if (typeof lit.value === 'number') {
+    return Types.I32; // Default to i32 for number literals
+  } else if (typeof lit.value === 'string') {
+    // String literals widen to the stdlib String type
+    return ctx.getWellKnownType(Types.String.name) || Types.String;
+  }
+  return type;
 }
 
 /**
@@ -335,13 +387,36 @@ function resolveTypeAnnotationInternal(
 
   if (annotation.type === NodeType.UnionTypeAnnotation) {
     const types = annotation.types.map((t) => resolveTypeAnnotation(ctx, t));
+
+    // Validate primitive/reference mixing in unions.
+    // Rules:
+    // 1. Primitives can union with primitives of the SAME base type (true | false, 1 | 2)
+    // 2. Primitives CANNOT union with references (true | null, i32 | String)
+    // 3. Primitives CANNOT union with primitives of DIFFERENT base types (i32 | f32, 1 | 1.0)
+    const primitiveBases = new Set<string>();
+    let hasPrimitive = false;
+    let hasReference = false;
+
     for (const t of types) {
-      if (isPrimitive(t)) {
-        ctx.diagnostics.reportError(
-          `Union types cannot contain primitive types like '${typeToString(t)}'. Use 'Box<T>' or a reference type.`,
-          DiagnosticCode.TypeMismatch,
-        );
+      const base = getPrimitiveBase(t);
+      if (base !== null) {
+        hasPrimitive = true;
+        primitiveBases.add(base);
+      } else {
+        hasReference = true;
       }
+    }
+
+    if (hasPrimitive && hasReference) {
+      ctx.diagnostics.reportError(
+        `Union types cannot mix primitive types with reference types. Use 'Box<T>' to box primitives.`,
+        DiagnosticCode.TypeMismatch,
+      );
+    } else if (primitiveBases.size > 1) {
+      ctx.diagnostics.reportError(
+        `Union types cannot mix primitives of different base types (e.g., i32 | f32). All primitives must share the same base type.`,
+        DiagnosticCode.TypeMismatch,
+      );
     }
 
     for (let i = 0; i < types.length; i++) {
@@ -595,13 +670,35 @@ function resolveTypeAnnotationInternal(
 export function validateType(type: Type, ctx: CheckerContext) {
   if (type.kind === TypeKind.Union) {
     const ut = type as UnionType;
+
+    // Same validation as in resolveTypeAnnotation
+    const primitiveBases = new Set<string>();
+    let hasPrimitive = false;
+    let hasReference = false;
+
     for (const t of ut.types) {
-      if (isPrimitive(t)) {
-        ctx.diagnostics.reportError(
-          `Union types cannot contain primitive types like '${typeToString(t)}'. Use 'Box<T>' or a reference type.`,
-          DiagnosticCode.TypeMismatch,
-        );
+      const base = getPrimitiveBase(t);
+      if (base !== null) {
+        hasPrimitive = true;
+        primitiveBases.add(base);
+      } else {
+        hasReference = true;
       }
+    }
+
+    if (hasPrimitive && hasReference) {
+      ctx.diagnostics.reportError(
+        `Union types cannot mix primitive types with reference types. Use 'Box<T>' to box primitives.`,
+        DiagnosticCode.TypeMismatch,
+      );
+    } else if (primitiveBases.size > 1) {
+      ctx.diagnostics.reportError(
+        `Union types cannot mix primitives of different base types (e.g., i32 | f32). All primitives must share the same base type.`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+
+    for (const t of ut.types) {
       validateType(t, ctx);
     }
   } else if (type.kind === TypeKind.Array) {

@@ -359,8 +359,9 @@ type Level = 1 | 2 | 3;
 let level: Level = 2;
 
 // Boolean literal types
-type Flag = true | false;  // Equivalent to boolean, but more explicit
-let flag: Flag = true;
+let t: true = true;    // Type is exactly `true`
+let f: false = false;  // Type is exactly `false`
+type Flag = true | false;  // Equivalent to boolean
 ```
 
 Literal types are checked at compile time and allow precise type constraints:
@@ -374,11 +375,46 @@ setMode('read');    // OK
 setMode('append');  // Error: Type '"append"' is not assignable to type '"read" | "write"'
 ```
 
+#### Type Inference and Widening
+
+The type of a literal expression depends on whether the binding is mutable:
+
+- **Immutable bindings (`let`)**: Literal types are preserved.
+- **Mutable bindings (`var`)**: Literal types are widened to their base types.
+
+```zena
+let x = true;   // x has type `true` (literal type)
+var y = true;   // y has type `boolean` (widened)
+
+x = false;      // Error: Cannot assign `false` to `true`
+y = false;      // OK: `boolean` allows both values
+```
+
+This behavior is intentional: mutable variables need a wider type to allow reassignment. If you want a mutable variable with a literal type, use an explicit type annotation:
+
+```zena
+var z: true = true;  // z has type `true`, but this limits assignments
+z = false;           // Error: Cannot assign `false` to `true`
+```
+
+#### Boolean Literal Types in Generic Functions
+
+When a generic function receives arguments with different boolean literal types, the type parameter is widened to `boolean`:
+
+```zena
+@intrinsic('eq')
+declare function equals<T>(a: T, b: T): boolean;
+
+equals(true, true);   // T = true
+equals(true, false);  // T = boolean (widened from conflicting true and false)
+```
+
 **Key points:**
 
 - Literal types are **singleton types** - they represent exactly one value.
 - Unlike regular primitive types, literal types **can be used in unions** because they are distinguishable at runtime.
 - A literal value is assignable to its literal type and to the corresponding base type (e.g., `'hello'` is assignable to both `'hello'` and `string`).
+- `let` preserves literal types; `var` widens them to base types (unless explicitly annotated).
 - Literal types enable precise API contracts and exhaustive pattern matching.
 
 ## 3. Variables

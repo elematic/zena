@@ -13,7 +13,10 @@ suite('Optional Primitive Parameters', () => {
       await compileAndRun(source, 'main');
       assert.fail('Should have failed');
     } catch (e: any) {
-      assert.match(e.message, /Union types cannot contain primitive types/);
+      assert.match(
+        e.message,
+        /cannot mix primitive types with reference types/,
+      );
     }
   });
 

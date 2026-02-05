@@ -59,7 +59,7 @@ suite('TypeChecker - Match Exhaustiveness', () => {
 
   test('should report error for non-exhaustive boolean match', () => {
     const input = `
-      let x = true;
+      let x: boolean = true;
       match (x) {
         case true: "true"
       };

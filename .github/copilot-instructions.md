@@ -539,11 +539,15 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
 10. **Multi-Return Values & Zero-Allocation Iteration**:
     - **Design**: See `docs/design/multi-return-values.md` for full design.
     - **Goal**: Enable ergonomic, zero-allocation iteration via WASM multi-value returns.
-    - **Literal Boolean Types** (`true`, `false`):
-      - Add `true` and `false` as literal types (subtype of `boolean`).
-      - Parser: Extend type annotation parsing for `true` and `false` keywords.
-      - Checker: Add `TrueLiteralType` and `FalseLiteralType` to type system.
-      - Enable discriminated unions like `(true, T) | (false, never)`.
+    - **Literal Boolean Types** (`true`, `false`): ✅ COMPLETED
+      - `true` and `false` are now literal types (subtype of `boolean`).
+      - Parser already handled `true`/`false` as type annotations.
+      - Checker: Updated `checkExpression` to return `LiteralType` for boolean literals.
+      - Checker: Added `isBooleanType()` helper for condition validation.
+      - Checker: `var` bindings widen literal types to base types.
+      - Checker: Generic function inference widens conflicting literals.
+      - Codegen: Boxing literal types uses widened base type (Box<boolean>).
+      - Enables discriminated unions like `(true, T) | (false, never)`.
     - **Unboxed Tuple Types** (`(T1, T2)`):
       - Parser: Parse `(T1, T2)` as return type annotation.
       - Parser: Parse `(expr1, expr2)` as tuple return expression.

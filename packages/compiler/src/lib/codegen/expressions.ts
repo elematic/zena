@@ -46,6 +46,7 @@ import {
   type ClassType,
   type FunctionType,
   type InterfaceType,
+  type LiteralType,
   type NumberType,
   type RecordType,
   type Type,
@@ -838,9 +839,22 @@ function getBoxClassInfo(ctx: CodegenContext, primitiveType: Type): ClassInfo {
     throw new Error('Box class missing inferredType');
   }
 
+  // Widen literal types to their base types for boxing
+  // Box<true> and Box<false> should both be Box<boolean>
+  let boxedType = primitiveType;
+  if (primitiveType.kind === TypeKind.Literal) {
+    const lit = primitiveType as LiteralType;
+    if (typeof lit.value === 'boolean') {
+      boxedType = Types.Boolean;
+    } else if (typeof lit.value === 'number') {
+      boxedType = Types.I32;
+    }
+    // String literals stay as-is since they're reference types
+  }
+
   // Use checker to instantiate Box<T> with proper interning
   const boxClassType = ctx.checkerContext.instantiateClass(boxGenericType, [
-    primitiveType,
+    boxedType,
   ]);
 
   // Check if already instantiated in codegen

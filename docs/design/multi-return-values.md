@@ -330,6 +330,7 @@ the loop body uses the value exactly once.
 ### Interface Method Calls
 
 For interface methods returning multi-values, the vtable dispatch works normally
+
 - WASM handles multi-value returns through any call:
 
 ```wasm
