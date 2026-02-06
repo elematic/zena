@@ -2,6 +2,7 @@ import {
   NodeType,
   type BlockStatement,
   type BooleanLiteral,
+  type ForInStatement,
   type ForStatement,
   type Identifier,
   type IfStatement,
@@ -35,6 +36,9 @@ import {
   generateAdaptedArgument,
   isAdaptable,
   boxPrimitive,
+  unboxPrimitive,
+  resolveFixedArrayClass,
+  ensureClassInstantiated,
 } from './expressions.js';
 
 export function generateStatement(
@@ -110,6 +114,9 @@ export function generateFunctionStatement(
       break;
     case NodeType.ForStatement:
       generateForStatement(ctx, stmt as ForStatement, body);
+      break;
+    case NodeType.ForInStatement:
+      generateForInStatement(ctx, stmt as ForInStatement, body);
       break;
   }
 }
@@ -363,6 +370,341 @@ function generateWhileLetStatement(
 
   body.push(Opcode.end); // end loop
   body.push(Opcode.end); // end block
+}
+
+/**
+ * Generate code for `for (let pattern in iterable) body`
+ *
+ * Desugars to:
+ *   let $$iter = iterable.iterator();
+ *   while (let (true, elem) = $$iter.next()) {
+ *     let pattern = elem;
+ *     body
+ *   }
+ *
+ * For simplicity, we currently only support identifier patterns.
+ * The iterator type must be an interface (Iterator<T>).
+ */
+function generateForInStatement(
+  ctx: CodegenContext,
+  stmt: ForInStatement,
+  body: number[],
+) {
+  const iterableType = stmt.iterable.inferredType;
+  const iteratorType = stmt.iteratorType as InterfaceType | undefined;
+  const elementType = stmt.elementType;
+
+  if (!iterableType || !iteratorType || !elementType) {
+    throw new Error('for-in statement missing type information from checker');
+  }
+
+  // For now, only support identifier patterns
+  if (stmt.pattern.type !== NodeType.Identifier) {
+    throw new Error(
+      `for-in currently only supports identifier patterns, got ${stmt.pattern.type}`,
+    );
+  }
+
+  const varName = (stmt.pattern as Identifier).name;
+
+  // 1. Generate iterable expression and call .iterator()
+  generateExpression(ctx, stmt.iterable, body);
+  generateIteratorMethodCall(ctx, iterableType, body);
+
+  // 2. Store iterator in temp local
+  const iteratorWasmType = getInterfaceWasmType(ctx, iteratorType);
+  const iterLocal = ctx.declareLocal('$$for_in_iter', iteratorWasmType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(iterLocal));
+
+  // 3. Pre-declare temp locals for next() return values
+  // next() returns (true, T) | (false, never), which is (i32, T) in WASM
+  const boolTemp = ctx.declareLocal('$$for_in_hasMore', [ValType.i32]);
+  const elemWasmType = mapCheckerTypeToWasmType(ctx, elementType);
+  const elemTemp = ctx.declareLocal('$$for_in_elem', elemWasmType);
+
+  // 4. Generate loop structure
+  // block $break
+  body.push(Opcode.block);
+  body.push(ValType.void);
+
+  // loop $continue
+  body.push(Opcode.loop);
+  body.push(ValType.void);
+
+  // Call iter.next() - pushes (i32, T) onto stack
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(iterLocal));
+  generateIteratorNextCall(ctx, iteratorType, elemWasmType, body);
+
+  // Store values in temp locals (reverse order - elem first, then bool)
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(elemTemp));
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(boolTemp));
+
+  // Check if hasMore is false, break if so
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(boolTemp));
+  body.push(Opcode.i32_eqz);
+  body.push(Opcode.br_if);
+  body.push(...WasmModule.encodeSignedLEB128(1)); // break to outer block
+
+  // Bind pattern variable
+  ctx.enterLoop();
+  ctx.pushScope();
+
+  // Declare and initialize the loop variable
+  const varLocal = ctx.declareLocal(varName, elemWasmType);
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(elemTemp));
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(varLocal));
+
+  // Generate loop body
+  generateFunctionStatement(ctx, stmt.body, body);
+
+  ctx.popScope();
+  ctx.exitLoop();
+
+  // Continue to next iteration
+  body.push(Opcode.br);
+  body.push(...WasmModule.encodeSignedLEB128(0)); // continue to loop
+
+  body.push(Opcode.end); // end loop
+  body.push(Opcode.end); // end block
+}
+
+/**
+ * Generate code to call .iterator() on an iterable.
+ * Expects the iterable object to already be on the stack.
+ * Pushes the Iterator interface (fat pointer) onto the stack.
+ *
+ * Uses the same static vs dynamic dispatch logic as regular method calls:
+ * - Static dispatch for final classes, final methods, or extension classes
+ * - Dynamic dispatch (vtable) otherwise
+ */
+function generateIteratorMethodCall(
+  ctx: CodegenContext,
+  iterableType: Type,
+  body: number[],
+) {
+  let classInfo: ClassInfo | undefined;
+
+  // Handle class types directly
+  if (iterableType.kind === TypeKind.Class) {
+    const classType = iterableType as ClassType;
+    // Try direct lookup first, then ensure instantiated if not found
+    classInfo = ctx.getClassInfo(classType);
+    if (!classInfo) {
+      classInfo = ensureClassInstantiated(ctx, classType);
+    }
+    if (!classInfo) {
+      throw new Error(`Class info not found for ${classType.name}`);
+    }
+  }
+  // Handle array types via FixedArray extension class
+  else if (iterableType.kind === TypeKind.Array) {
+    classInfo = resolveFixedArrayClass(ctx, iterableType);
+    if (!classInfo) {
+      throw new Error(
+        `Failed to resolve FixedArray extension class for array type`,
+      );
+    }
+  }
+  // Unsupported type
+  else {
+    throw new Error(
+      `for-in iterable must be a class or array type, got ${iterableType.kind}`,
+    );
+  }
+
+  // Look up the 'iterator' method
+  const methodInfo = classInfo.methods.get('iterator');
+  if (!methodInfo) {
+    throw new Error(`Method 'iterator' not found in ${classInfo.name}`);
+  }
+
+  // Determine static vs dynamic dispatch (same logic as regular method calls)
+  const useStaticDispatch =
+    classInfo.isFinal || methodInfo.isFinal || classInfo.isExtension;
+
+  if (useStaticDispatch) {
+    // Static dispatch - direct call
+    body.push(Opcode.call, ...WasmModule.encodeSignedLEB128(methodInfo.index));
+  } else {
+    // Dynamic dispatch via vtable
+    if (!classInfo.vtable || classInfo.vtableTypeIndex === undefined) {
+      throw new Error(`VTable not found for ${classInfo.name}`);
+    }
+
+    // Stack has object. Store in temp for vtable access.
+    const objectWasmType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+    ];
+    const tempThis = ctx.declareLocal('$$iter_this', objectWasmType);
+    body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempThis));
+
+    // Load VTable (field 0)
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(0));
+
+    // Cast vtable to correct type
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex));
+
+    // Get function from vtable
+    const vtableIndex = classInfo.vtable.indexOf('iterator');
+    if (vtableIndex < 0) {
+      throw new Error(
+        `Method 'iterator' not found in vtable for ${classInfo.name}`,
+      );
+    }
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(vtableIndex));
+
+    // Cast to function type
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+    // Store function ref
+    const funcRefType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+    ];
+    const funcRefLocal = ctx.declareLocal('$$iter_method', funcRefType);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+
+    // Load 'this' and function ref, then call
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempThis));
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+    body.push(
+      Opcode.call_ref,
+      ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+    );
+  }
+}
+
+/**
+ * Generate code to call .next() on an Iterator interface.
+ * Expects the iterator (fat pointer) to already be on the stack.
+ * Pushes (i32, T) onto the stack (the unboxed tuple return).
+ *
+ * TODO: This duplicates interface dispatch logic from generateCallExpression.
+ * Consider extracting a shared helper for interface method dispatch so that
+ * optimizations (like static dispatch when concrete type is known) apply
+ * consistently across all interface calls.
+ */
+function generateIteratorNextCall(
+  ctx: CodegenContext,
+  iteratorType: InterfaceType,
+  elemWasmType: number[],
+  body: number[],
+) {
+  // Get the interface info for Iterator<T>
+  const interfaceInfo = ctx.getInterfaceInfo(iteratorType);
+  if (!interfaceInfo) {
+    throw new Error(`Interface info not found for ${iteratorType.name}`);
+  }
+
+  // Look up the 'next' method
+  const methodInfo = interfaceInfo.methods.get('next');
+  if (!methodInfo) {
+    throw new Error(`Method 'next' not found in ${iteratorType.name}`);
+  }
+
+  // Store interface fat pointer in temp
+  const fatPtrType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+  ];
+  const tempLocal = ctx.declareLocal('$$iter_temp', fatPtrType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempLocal));
+
+  // Get vtable from fat pointer (field 1)
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(1)); // vtable field
+
+  // Cast vtable
+  body.push(0xfb, GcOpcode.ref_cast_null);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex));
+
+  // Get function from vtable (methodInfo.index is the vtable index)
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+
+  // Cast function to specific type
+  body.push(0xfb, GcOpcode.ref_cast_null);
+  body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+  // Store function ref in temp
+  const funcRefType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  ];
+  const funcRefLocal = ctx.declareLocal('$$iter_func', funcRefType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+
+  // Load instance (this) from fat pointer (field 0)
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(0)); // instance field
+
+  // Load function ref and call
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+  body.push(
+    Opcode.call_ref,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  );
+
+  // The call returns (i32, anyref) since interface methods box return values.
+  // We need to unbox the second value to the concrete element type.
+  // First store the anyref, then unbox it.
+  const anyrefTemp = ctx.declareLocal('$$iter_anyref', [ValType.anyref]);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(anyrefTemp));
+  // Now stack has just i32 (hasMore)
+  // We need to return (i32, T) so push i32, then unboxed T
+
+  // Unbox the element if needed
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(anyrefTemp));
+
+  // Check if we need to unbox (primitive types need unboxing)
+  if (
+    elemWasmType.length === 1 &&
+    (elemWasmType[0] === ValType.i32 ||
+      elemWasmType[0] === ValType.i64 ||
+      elemWasmType[0] === ValType.f32 ||
+      elemWasmType[0] === ValType.f64)
+  ) {
+    unboxPrimitive(ctx, elemWasmType, body);
+  } else if (
+    elemWasmType[0] === ValType.ref_null ||
+    elemWasmType[0] === ValType.ref
+  ) {
+    // Reference type - cast from anyref to the concrete type
+    // elemWasmType is [ref_null/ref, typeIndex...]
+    const typeIndex = decodeTypeIndex(elemWasmType);
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+  }
+  // else: already anyref, nothing to do
+}
+
+/**
+ * Get the WASM type for an interface (fat pointer struct reference).
+ */
+function getInterfaceWasmType(
+  ctx: CodegenContext,
+  interfaceType: InterfaceType,
+): number[] {
+  const interfaceInfo = ctx.getInterfaceInfo(interfaceType);
+  if (!interfaceInfo) {
+    throw new Error(`Interface info not found for ${interfaceType.name}`);
+  }
+  return [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+  ];
 }
 
 /**

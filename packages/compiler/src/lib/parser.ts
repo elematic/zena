@@ -17,6 +17,7 @@ import {
   type Expression,
   type ExportAllDeclaration,
   type FieldDefinition,
+  type ForInStatement,
   type ForStatement,
   type FunctionExpression,
   type Identifier,
@@ -2079,24 +2080,108 @@ export class Parser {
     };
   }
 
-  #parseForStatement(): ForStatement {
+  #parseForStatement(): ForStatement | ForInStatement {
     const startToken = this.#previous();
     this.#consume(TokenType.LParen, "Expected '(' after 'for'.");
 
-    // Parse init (optional variable declaration or expression)
-    let init: VariableDeclaration | Expression | undefined;
-    if (!this.#check(TokenType.Semi)) {
-      if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
-        // Variable declaration - don't consume the semicolon
-        init = this.#parseVariableDeclaration(false, false);
-        this.#consume(TokenType.Semi, "Expected ';' after for initializer.");
-      } else {
-        init = this.#parseExpression();
-        this.#consume(TokenType.Semi, "Expected ';' after for initializer.");
+    // Check for for-in: `for (let pattern in iterable)`
+    if (this.#match(TokenType.Let)) {
+      // Could be for-in or C-style for with let declaration
+      // Parse as pattern first, then check for 'in'
+      const pattern = this.#parsePattern();
+
+      if (this.#match(TokenType.In)) {
+        // It's a for-in loop
+        return this.#parseForInStatement(startToken, pattern);
       }
-    } else {
-      this.#consume(TokenType.Semi, "Expected ';' in for statement.");
+
+      // It's a C-style for with let declaration
+      // We've already parsed the pattern, need to convert to variable declaration
+      // This handles `for (let x = 0; ...)`
+      this.#consume(
+        TokenType.Equals,
+        "Expected '=' or 'in' after pattern in for statement.",
+      );
+      const init = this.#parseExpression();
+
+      // Build a variable declaration from the pattern
+      const varDecl: VariableDeclaration = this.#patternToVariableDeclaration(
+        pattern,
+        init,
+        'let',
+        startToken,
+      );
+
+      return this.#parseCStyleForStatement(startToken, varDecl);
     }
+
+    if (this.#match(TokenType.Var)) {
+      // C-style for with var declaration
+      const varDecl = this.#parseVariableDeclaration(false, false);
+      return this.#parseCStyleForStatement(startToken, varDecl);
+    }
+
+    // Parse init as expression (or empty)
+    let initExpr: Expression | undefined;
+    if (!this.#check(TokenType.Semi)) {
+      initExpr = this.#parseExpression();
+    }
+
+    return this.#parseCStyleForStatement(startToken, initExpr);
+  }
+
+  /**
+   * Parse the rest of a for-in statement after `for (let pattern in`
+   */
+  #parseForInStatement(startToken: Token, pattern: Pattern): ForInStatement {
+    const iterable = this.#parseExpression();
+    this.#consume(TokenType.RParen, "Expected ')' after for-in iterable.");
+
+    const body = this.#parseStatement();
+
+    return {
+      type: NodeType.ForInStatement,
+      pattern,
+      iterable,
+      body,
+      loc: this.#loc(startToken, body),
+    };
+  }
+
+  /**
+   * Convert a pattern back to a variable declaration for C-style for loops.
+   * This is needed when we speculatively parsed a pattern but found `=` instead of `in`.
+   */
+  #patternToVariableDeclaration(
+    pattern: Pattern,
+    init: Expression,
+    kind: 'let' | 'var',
+    startToken: Token,
+  ): VariableDeclaration {
+    // For now, only support identifier patterns in C-style for
+    if (pattern.type === NodeType.Identifier) {
+      return {
+        type: NodeType.VariableDeclaration,
+        kind,
+        pattern,
+        init,
+        exported: false,
+        loc: this.#loc(startToken, init),
+      };
+    }
+    throw new Error(
+      'Destructuring patterns not supported in C-style for loops',
+    );
+  }
+
+  /**
+   * Parse the rest of a C-style for statement after the init clause.
+   */
+  #parseCStyleForStatement(
+    startToken: Token,
+    init?: VariableDeclaration | Expression,
+  ): ForStatement {
+    this.#consume(TokenType.Semi, "Expected ';' after for initializer.");
 
     // Parse test (optional)
     let test: Expression | undefined;

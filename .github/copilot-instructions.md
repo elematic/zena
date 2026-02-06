@@ -572,15 +572,16 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
     - **Union of Tuples with Narrowing**: (future)
       - Control-flow narrowing: after `if (hasMore)`, narrow `value` from `T | never` to `T`.
       - Pattern matching: `case (true, value)` binds `value: T` (not `T | never`).
-    - **Iterator Redesign**:
+    - [x] **Iterator Redesign**: ✅ COMPLETED
       - Change `Iterator<T>.next()` to return `(true, T) | (false, never)`.
       - Update `ArrayIterator<T>` implementation to use `return (false, _);`.
       - Update `FixedArray<T>.iterator()` return type.
-    - **For-Of Loops** (depends on multi-return):
-      - Parser: Add `for (let x of collection)` syntax.
-      - Codegen: Use WASM block/loop parameters for efficient iteration.
-      - Desugar to `while (let (true, x) = iter.next())`.
-    - **`if (let pattern = expr)` and `while (let pattern = expr)`**:
+    - [x] **For-In Loops**: ✅ COMPLETED
+      - Parser: `for (let pattern in iterable)` syntax with disambiguation from C-style for.
+      - Checker: Validates iterable implements `Iterable<T>`, supports arrays via FixedArray extension.
+      - Codegen: Direct WASM generation for iterator calls with interface dispatch.
+      - Handles primitive unboxing and reference type casting for element values.
+    - [x] **`if (let pattern = expr)` and `while (let pattern = expr)`**: ✅ COMPLETED
       - Parser: Support `let` pattern in condition position.
       - Checker: Bind pattern variables only when pattern matches.
       - Codegen: Generate conditional with pattern destructuring.

@@ -36,6 +36,7 @@ import {
   type IfStatement,
   type WhileStatement,
   type ForStatement,
+  type ForInStatement,
   type ClassDeclaration,
   type InterfaceDeclaration,
   type MixinDeclaration,
@@ -127,6 +128,7 @@ export interface Visitor<T = void> {
   visitIfStatement?(node: IfStatement, context: T): void;
   visitWhileStatement?(node: WhileStatement, context: T): void;
   visitForStatement?(node: ForStatement, context: T): void;
+  visitForInStatement?(node: ForInStatement, context: T): void;
   visitClassDeclaration?(node: ClassDeclaration, context: T): void;
   visitInterfaceDeclaration?(node: InterfaceDeclaration, context: T): void;
   visitMixinDeclaration?(node: MixinDeclaration, context: T): void;
@@ -292,6 +294,12 @@ export function visit<T>(
     case NodeType.ForStatement:
       visitor.visitForStatement?.(node as ForStatement, context);
       visitForStatementChildren(node as ForStatement, visitor, context);
+      break;
+    case NodeType.ForInStatement:
+      visitor.visitForInStatement?.(node as ForInStatement, context);
+      visit((node as ForInStatement).pattern, visitor, context);
+      visit((node as ForInStatement).iterable, visitor, context);
+      visit((node as ForInStatement).body, visitor, context);
       break;
     case NodeType.ClassDeclaration:
       visitor.visitClassDeclaration?.(node as ClassDeclaration, context);

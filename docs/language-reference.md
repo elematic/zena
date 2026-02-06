@@ -1121,6 +1121,63 @@ for (var i = 0; i < 10; ) {
 }
 ```
 
+### For-In Statement
+
+The `for-in` loop iterates over collections that implement the `Iterable<T>` interface.
+
+```zena
+let arr = #[10, 20, 30];
+var sum = 0;
+for (let x in arr) {
+  sum = sum + x;
+}
+// sum == 60
+```
+
+The iterable expression must implement `Iterable<T>`:
+
+```zena
+// Works with FixedArray (implements Iterable)
+let numbers = #[1, 2, 3, 4, 5];
+for (let n in numbers) {
+  console.log(n);
+}
+
+// Works with any class implementing Iterable<T>
+class Counter implements Iterable<i32> {
+  #max: i32;
+
+  #new(max: i32) { this.#max = max; }
+
+  iterator(): Iterator<i32> {
+    return new CounterIterator(this.#max);
+  }
+}
+
+let counter = new Counter(5);
+for (let n in counter) {
+  console.log(n);  // Prints 1, 2, 3, 4, 5
+}
+```
+
+The loop variable is immutable (`let`) and scoped to the loop body. `break` and `continue` work as expected:
+
+```zena
+let arr = #[1, 2, 3, 4, 5];
+var sum = 0;
+
+for (let x in arr) {
+  if (x == 3) {
+    continue;  // Skip 3
+  }
+  if (x > 4) {
+    break;  // Stop at 5
+  }
+  sum = sum + x;
+}
+// sum == 7 (1 + 2 + 4)
+```
+
 ### Break and Continue Statements
 
 The `break` statement exits the innermost enclosing loop immediately.

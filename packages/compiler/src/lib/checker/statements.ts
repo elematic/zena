@@ -12,6 +12,7 @@ import {
   type EnumDeclaration,
   type ExportAllDeclaration,
   type Expression,
+  type ForInStatement,
   type ForStatement,
   type Identifier,
   type IfStatement,
@@ -45,6 +46,7 @@ import {
 import {
   Decorators,
   TypeKind,
+  TypeNames,
   Types,
   type ClassType,
   type ArrayType,
@@ -64,6 +66,7 @@ import {
 import type {CheckerContext} from './context.js';
 import {checkExpression, checkMatchPattern} from './expressions.js';
 import {
+  instantiateGenericClass,
   isBooleanType,
   isAssignableTo,
   resolveTypeAnnotation,
@@ -611,6 +614,9 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
     case NodeType.ForStatement:
       checkForStatement(ctx, stmt as ForStatement);
       break;
+    case NodeType.ForInStatement:
+      checkForInStatement(ctx, stmt as ForInStatement);
+      break;
     case NodeType.ClassDeclaration:
       checkClassDeclaration(ctx, stmt as ClassDeclaration);
       break;
@@ -999,6 +1005,180 @@ function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
   ctx.exitLoop();
 
   ctx.exitScope();
+}
+
+/**
+ * Check a for-in statement: `for (let pattern in iterable) body`
+ * The iterable must implement Iterable<T>, and pattern variables are typed as T.
+ */
+function checkForInStatement(ctx: CheckerContext, stmt: ForInStatement) {
+  // Check the iterable expression
+  const iterableType = checkExpression(ctx, stmt.iterable);
+
+  // Find if the type implements Iterable<T>
+  const iterableInfo = getIterableInfo(ctx, iterableType);
+
+  if (!iterableInfo) {
+    ctx.diagnostics.reportError(
+      `Type '${typeToString(iterableType)}' does not implement Iterable<T>`,
+      DiagnosticCode.TypeMismatch,
+    );
+    // Use unknown type to continue checking
+    stmt.elementType = Types.Unknown;
+  } else {
+    stmt.elementType = iterableInfo.elementType;
+    stmt.iteratorType = iterableInfo.iteratorType;
+  }
+
+  // Enter scope for pattern bindings and loop body
+  ctx.enterScope();
+  ctx.enterLoop();
+
+  // Bind pattern variables with element type
+  checkMatchPattern(ctx, stmt.pattern, stmt.elementType);
+
+  // Check body
+  checkStatement(ctx, stmt.body);
+
+  ctx.exitLoop();
+  ctx.exitScope();
+}
+
+interface IterableInfo {
+  elementType: Type;
+  iteratorType: InterfaceType;
+}
+
+/**
+ * Find the element type T and Iterator type if the type implements Iterable<T>.
+ * Returns undefined if the type does not implement Iterable.
+ */
+function getIterableInfo(
+  ctx: CheckerContext,
+  type: Type,
+): IterableInfo | undefined {
+  // Handle class types
+  if (type.kind === TypeKind.Class) {
+    const classType = type as ClassType;
+    return findIterableInImplements(ctx, classType);
+  }
+
+  // Handle interface types (if the iterable is typed as Iterable<T> directly)
+  if (type.kind === TypeKind.Interface) {
+    const interfaceType = type as InterfaceType;
+    const iterableInterface = findIterableInterface(interfaceType);
+    if (iterableInterface) {
+      const elementType = iterableInterface.typeArguments?.[0] ?? Types.Unknown;
+      // Get the Iterator type from Iterable's iterator() method return type
+      const iteratorMethod = iterableInterface.methods.get('iterator');
+      if (iteratorMethod && iteratorMethod.returnType) {
+        return {
+          elementType,
+          iteratorType: iteratorMethod.returnType as InterfaceType,
+        };
+      }
+    }
+  }
+
+  // Handle array types via FixedArray extension class
+  if (type.kind === TypeKind.Array) {
+    const arrayType = type as ArrayType;
+    const genericArrayType = ctx.getWellKnownType(TypeNames.FixedArray);
+    if (genericArrayType && genericArrayType.kind === TypeKind.Class) {
+      const genericClassType = genericArrayType as ClassType;
+
+      // Instantiate FixedArray<T> with the actual element type
+      let instantiatedClassType = genericClassType;
+      if (
+        genericClassType.typeParameters &&
+        genericClassType.typeParameters.length > 0
+      ) {
+        instantiatedClassType = instantiateGenericClass(
+          genericClassType,
+          [arrayType.elementType],
+          ctx,
+        );
+      }
+
+      return findIterableInImplements(ctx, instantiatedClassType);
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Search through a class's implements list (and superclasses) for Iterable<T>.
+ */
+function findIterableInImplements(
+  ctx: CheckerContext,
+  classType: ClassType,
+): IterableInfo | undefined {
+  let current: ClassType | undefined = classType;
+
+  while (current) {
+    let implementsList = current.implements;
+
+    // If implements is empty but we have genericSource, re-instantiate
+    if (
+      implementsList.length === 0 &&
+      current.genericSource &&
+      current.genericSource.implements.length > 0 &&
+      current.typeArguments
+    ) {
+      const typeMap = new Map<string, Type>();
+      current.genericSource.typeParameters!.forEach((param, index) => {
+        typeMap.set(param.name, current!.typeArguments![index]);
+      });
+      implementsList = current.genericSource.implements.map(
+        (impl) => substituteType(impl, typeMap, ctx) as InterfaceType,
+      );
+    }
+
+    for (const impl of implementsList) {
+      const iterableInterface = findIterableInterface(impl);
+      if (iterableInterface) {
+        const elementType =
+          iterableInterface.typeArguments?.[0] ?? Types.Unknown;
+        // Get the Iterator type from Iterable's iterator() method
+        const iteratorMethod = iterableInterface.methods.get('iterator');
+        if (iteratorMethod && iteratorMethod.returnType) {
+          return {
+            elementType,
+            iteratorType: iteratorMethod.returnType as InterfaceType,
+          };
+        }
+      }
+    }
+
+    current = current.superType;
+  }
+
+  return undefined;
+}
+
+/**
+ * Check if an interface is Iterable or extends Iterable.
+ * Returns the Iterable interface type if found, undefined otherwise.
+ */
+function findIterableInterface(
+  interfaceType: InterfaceType,
+): InterfaceType | undefined {
+  // Check if this interface is Iterable
+  const name = interfaceType.genericSource?.name ?? interfaceType.name;
+  if (name === 'Iterable') {
+    return interfaceType;
+  }
+
+  // Check extended interfaces
+  if (interfaceType.extends) {
+    for (const ext of interfaceType.extends) {
+      const found = findIterableInterface(ext);
+      if (found) return found;
+    }
+  }
+
+  return undefined;
 }
 
 function checkBreakStatement(ctx: CheckerContext, stmt: BreakStatement) {

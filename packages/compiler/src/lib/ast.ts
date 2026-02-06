@@ -50,6 +50,7 @@ export const NodeType = {
   IfStatement: 'IfStatement',
   WhileStatement: 'WhileStatement',
   ForStatement: 'ForStatement',
+  ForInStatement: 'ForInStatement',
   Parameter: 'Parameter',
   TypeAnnotation: 'TypeAnnotation',
   ClassDeclaration: 'ClassDeclaration',
@@ -186,6 +187,7 @@ export type Statement =
   | IfStatement
   | WhileStatement
   | ForStatement
+  | ForInStatement
   | ClassDeclaration
   | InterfaceDeclaration
   | MixinDeclaration
@@ -687,6 +689,23 @@ export interface ForStatement extends Node {
   test?: Expression;
   update?: Expression;
   body: Statement;
+}
+
+/**
+ * For-in loop: `for (let pattern in iterable) body`
+ * The iterable expression must implement Iterable<T>.
+ */
+export interface ForInStatement extends Node {
+  type: typeof NodeType.ForInStatement;
+  /** The pattern to bind each element to (identifier or destructuring) */
+  pattern: Pattern;
+  /** The iterable expression (must implement Iterable<T>) */
+  iterable: Expression;
+  body: Statement;
+  /** Inferred element type, populated by the checker */
+  elementType?: Type;
+  /** The Iterator<T> type returned by .iterator(), populated by the checker */
+  iteratorType?: Type;
 }
 
 export interface Parameter extends Node {

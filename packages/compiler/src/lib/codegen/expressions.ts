@@ -1110,7 +1110,7 @@ function instantiateExtensionClassFromCheckerType(
   return ctx.getClassInfo(classType);
 }
 
-function resolveFixedArrayClass(
+export function resolveFixedArrayClass(
   ctx: CodegenContext,
   checkerType: Type | undefined,
 ): ClassInfo | undefined {
@@ -1163,6 +1163,47 @@ function resolveFixedArrayClass(
       }
     }
   }
+  return undefined;
+}
+
+/**
+ * Ensure a ClassType (e.g., FixedArray<i32>) is instantiated in codegen.
+ * This is needed when the type comes from method returns (like slice())
+ * rather than from direct array literals.
+ */
+export function ensureClassInstantiated(
+  ctx: CodegenContext,
+  classType: ClassType,
+): ClassInfo | undefined {
+  // First try direct lookup
+  let classInfo = ctx.getClassInfo(classType);
+  if (classInfo) {
+    return classInfo;
+  }
+
+  // Check if this is a FixedArray instantiation that needs to be created
+  const fixedArrayDecl = ctx.wellKnownTypes.FixedArray;
+  if (fixedArrayDecl) {
+    const fixedArrayGenericType = fixedArrayDecl.inferredType as ClassType;
+    // Check if classType is an instantiation of FixedArray
+    if (
+      classType.genericSource === fixedArrayGenericType ||
+      classType.name === 'FixedArray' ||
+      (classType.genericSource && classType.genericSource.name === 'FixedArray')
+    ) {
+      // Need to instantiate
+      const specializedName = getSpecializedName(
+        fixedArrayDecl.name.name,
+        classType.typeArguments ?? [],
+        ctx,
+      );
+
+      instantiateClass(ctx, fixedArrayDecl, specializedName, classType);
+
+      return ctx.getClassInfo(classType);
+    }
+  }
+
   return undefined;
 }
 

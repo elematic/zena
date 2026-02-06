@@ -133,10 +133,10 @@ some of my thoughts and motivations at the moment:
 - [x] Boolean literal types (`true` and `false` as types)
 - [x] Unions of tuples (`(true, T) | (false, never)`)
 - [x] Let-pattern conditions (`if (let pattern = expr)`, `while (let pattern = expr)`)
+- [x] For/in loops
 - [ ] Do/while loops
 - [ ] Mutable Maps and map literals (`#{...}`)
 - [ ] More primitive types
-- [ ] For/of loops
 - [ ] Iterators
 - [ ] More operators: exponentiation
 - [ ] Standard library
