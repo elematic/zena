@@ -1,31 +1,24 @@
 /**
  * A stateful iterator over elements of type T.
  * 
- * Usage pattern:
+ * Usage pattern with let-pattern conditions:
  * ```
  * let iter = collection.iterator();
- * while (iter.next()) {
- *   let item = iter.current;
+ * while (let (true, item) = iter.next()) {
  *   // use item
  * }
  * ```
  * 
- * Design: Uses next()/current pattern to minimize allocations.
- * - next() advances and returns false when exhausted
- * - current is only valid after next() returns true
+ * Design: Uses unboxed tuple returns for zero-allocation iteration.
+ * - next() returns (true, T) when there's an element
+ * - next() returns (false, _) when exhausted
  */
 export interface Iterator<T> {
   /**
-   * Advances the iterator to the next element.
-   * Returns true if there is an element, false if exhausted.
+   * Advances the iterator and returns the next element.
+   * Returns (true, element) if there is an element, (false, _) if exhausted.
    */
-  next(): boolean;
-
-  /**
-   * Returns the current element.
-   * Only valid after next() has returned true.
-   */
-  current: T { get; }
+  next(): (true, T) | (false, never);
 }
 
 /**

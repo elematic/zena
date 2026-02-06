@@ -26,8 +26,8 @@ suite('iterator', () => {
         let arr = #[10, 20, 30];
         let iter: Iterator<i32> = new ArrayIterator<i32>(arr);
         var sum = 0;
-        while (iter.next()) {
-          sum = sum + iter.current;
+        while (let (true, item) = iter.next()) {
+          sum = sum + item;
         }
         return sum;
       };
@@ -45,7 +45,7 @@ suite('iterator', () => {
         let empty = arr.slice(0, 0);  // Empty slice
         let iter = empty.iterator();
         var count = 0;
-        while (iter.next()) {
+        while (let (true, _item) = iter.next()) {
           count = count + 1;
         }
         return count;
@@ -65,8 +65,8 @@ suite('iterator', () => {
         let arr = #[1, 2, 3, 4, 5];
         let iter = arr.iterator();
         var sum = 0;
-        while (iter.next()) {
-          sum = sum + iter.current;
+        while (let (true, item) = iter.next()) {
+          sum = sum + item;
         }
         return sum;
       };

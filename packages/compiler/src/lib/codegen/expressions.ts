@@ -95,6 +95,35 @@ import {
 } from '../bindings.js';
 
 /**
+ * Get the expected WASM return types for a checker type.
+ * For unboxed tuples and unions of unboxed tuples, returns array of WASM types for each element.
+ * For single values, returns array with one element.
+ */
+function getExpectedReturnTypes(ctx: CodegenContext, type: Type): number[][] {
+  if (type.kind === TypeKind.UnboxedTuple) {
+    const tupleType = type as UnboxedTupleType;
+    return tupleType.elementTypes.map((el) =>
+      mapCheckerTypeToWasmType(ctx, el),
+    );
+  }
+  if (type.kind === TypeKind.Union) {
+    const unionType = type as UnionType;
+    // For unions of unboxed tuples, find the first tuple and use its types
+    for (const t of unionType.types) {
+      if (t.kind === TypeKind.UnboxedTuple) {
+        const tupleType = t as UnboxedTupleType;
+        return tupleType.elementTypes.map((el) =>
+          mapCheckerTypeToWasmType(ctx, el),
+        );
+      }
+    }
+    // Fall through to single value
+  }
+  // Single value
+  return [mapCheckerTypeToWasmType(ctx, type)];
+}
+
+/**
  * Generates WASM instructions for an expression.
  * Appends the instructions to the `body` array.
  * The generated code leaves the result of the expression on the stack.
@@ -2116,29 +2145,117 @@ function generateCallExpression(
       );
 
       // Handle return value adaptation (unbox)
-      if (expr.inferredType) {
-        const expectedType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
-        const actualType = methodInfo.returnType;
+      // Get the actual return types from the interface method's function type
+      const actualResults = ctx.module.getFunctionTypeResults(
+        methodInfo.typeIndex,
+      );
 
-        if (actualType.length === 1 && actualType[0] === ValType.anyref) {
-          if (
-            expectedType.length === 1 &&
-            (expectedType[0] === ValType.i32 ||
-              expectedType[0] === ValType.i64 ||
-              expectedType[0] === ValType.f32 ||
-              expectedType[0] === ValType.f64)
-          ) {
-            // NOTE: Do NOT pass semantic type here. The value was boxed by a trampoline
-            // which only has WASM types (no semantic type). We must unbox using the same
-            // type the trampoline used for boxing. See docs/design/primitive-boxing-semantic-types.md
-            unboxPrimitive(ctx, expectedType, body);
-          } else if (
-            expectedType.length > 1 &&
-            (expectedType[0] === ValType.ref ||
-              expectedType[0] === ValType.ref_null)
-          ) {
-            body.push(0xfb, GcOpcode.ref_cast_null);
-            body.push(...expectedType.slice(1));
+      if (expr.inferredType && actualResults.length > 0) {
+        // Get the expected types from the caller's perspective
+        const expectedTypes = getExpectedReturnTypes(ctx, expr.inferredType);
+
+        // Check if we need adaptation (any anyref -> primitive unboxing needed)
+        const needsAdaptation =
+          actualResults.length > 1 &&
+          actualResults.some((actualType, i) => {
+            const expectedType = expectedTypes[i];
+            if (!expectedType) return false;
+
+            // Interface returns anyref but caller expects primitive
+            const isAnyRef =
+              (actualType.length === 1 && actualType[0] === ValType.anyref) ||
+              (actualType.length === 2 &&
+                actualType[0] === ValType.ref_null &&
+                actualType[1] === ValType.anyref);
+
+            return (
+              isAnyRef &&
+              expectedType.length === 1 &&
+              (expectedType[0] === ValType.i32 ||
+                expectedType[0] === ValType.i64 ||
+                expectedType[0] === ValType.f32 ||
+                expectedType[0] === ValType.f64)
+            );
+          });
+
+        if (needsAdaptation) {
+          // Multi-value return: store all results, unbox as needed, push back
+          const resultLocals: number[] = [];
+          for (let i = actualResults.length - 1; i >= 0; i--) {
+            const local = ctx.declareLocal(
+              `$$interface_ret_${i}`,
+              actualResults[i],
+            );
+            resultLocals[i] = local;
+            body.push(
+              Opcode.local_set,
+              ...WasmModule.encodeSignedLEB128(local),
+            );
+          }
+
+          // Push back with unboxing as needed
+          for (let i = 0; i < actualResults.length; i++) {
+            const actualType = actualResults[i];
+            const expectedType = expectedTypes[i];
+            const local = resultLocals[i];
+
+            body.push(
+              Opcode.local_get,
+              ...WasmModule.encodeSignedLEB128(local),
+            );
+
+            const isAnyRef =
+              (actualType.length === 1 && actualType[0] === ValType.anyref) ||
+              (actualType.length === 2 &&
+                actualType[0] === ValType.ref_null &&
+                actualType[1] === ValType.anyref);
+
+            if (isAnyRef && expectedType) {
+              if (
+                expectedType.length === 1 &&
+                (expectedType[0] === ValType.i32 ||
+                  expectedType[0] === ValType.i64 ||
+                  expectedType[0] === ValType.f32 ||
+                  expectedType[0] === ValType.f64)
+              ) {
+                unboxPrimitive(ctx, expectedType, body);
+              } else if (
+                expectedType.length > 1 &&
+                (expectedType[0] === ValType.ref ||
+                  expectedType[0] === ValType.ref_null)
+              ) {
+                body.push(0xfb, GcOpcode.ref_cast_null);
+                body.push(...expectedType.slice(1));
+              }
+            }
+          }
+        } else if (actualResults.length === 1) {
+          // Single return value - use existing logic
+          const expectedType = expectedTypes[0];
+          const actualType = actualResults[0];
+
+          if (actualType.length === 1 && actualType[0] === ValType.anyref) {
+            if (
+              expectedType &&
+              expectedType.length === 1 &&
+              (expectedType[0] === ValType.i32 ||
+                expectedType[0] === ValType.i64 ||
+                expectedType[0] === ValType.f32 ||
+                expectedType[0] === ValType.f64)
+            ) {
+              // NOTE: Do NOT pass semantic type here. The value was boxed by a trampoline
+              // which only has WASM types (no semantic type). We must unbox using the same
+              // type the trampoline used for boxing. See docs/design/primitive-boxing-semantic-types.md
+              unboxPrimitive(ctx, expectedType, body);
+            } else if (
+              expectedType &&
+              expectedType.length > 1 &&
+              (expectedType[0] === ValType.ref ||
+                expectedType[0] === ValType.ref_null)
+            ) {
+              body.push(0xfb, GcOpcode.ref_cast_null);
+              body.push(...expectedType.slice(1));
+            }
           }
         }
       }

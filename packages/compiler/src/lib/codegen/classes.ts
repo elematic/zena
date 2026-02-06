@@ -302,10 +302,45 @@ export function defineInterfaceMethods(
         methodType.returnType &&
         methodType.returnType.kind !== TypeKind.Void
       ) {
-        const mapped = eraseAndMap(methodType.returnType);
-        if (mapped.length > 0) {
-          results.push(mapped);
-          returnType = mapped;
+        const erasedReturnType = ctx.checkerContext.substituteTypeParams(
+          methodType.returnType,
+          typeMap,
+        );
+        // Handle unboxed tuple types (multi-value returns)
+        if (erasedReturnType.kind === TypeKind.UnboxedTuple) {
+          const tupleType = erasedReturnType as UnboxedTupleType;
+          for (const el of tupleType.elementTypes) {
+            results.push(mapCheckerTypeToWasmType(ctx, el));
+          }
+          returnType = results.length > 0 ? results[0] : [];
+        } else if (erasedReturnType.kind === TypeKind.Union) {
+          // Check if it's a union of unboxed tuples
+          const unionType = erasedReturnType as UnionType;
+          let foundTuple = false;
+          for (const t of unionType.types) {
+            if (t.kind === TypeKind.UnboxedTuple) {
+              const tupleType = t as UnboxedTupleType;
+              for (const el of tupleType.elementTypes) {
+                results.push(mapCheckerTypeToWasmType(ctx, el));
+              }
+              returnType = results.length > 0 ? results[0] : [];
+              foundTuple = true;
+              break;
+            }
+          }
+          if (!foundTuple) {
+            const mapped = mapCheckerTypeToWasmType(ctx, erasedReturnType);
+            if (mapped.length > 0) {
+              results.push(mapped);
+              returnType = mapped;
+            }
+          }
+        } else {
+          const mapped = mapCheckerTypeToWasmType(ctx, erasedReturnType);
+          if (mapped.length > 0) {
+            results.push(mapped);
+            returnType = mapped;
+          }
         }
       }
 
@@ -721,32 +756,45 @@ export function generateTrampoline(
   }
 
   // Handle return type adaptation (boxing)
-  const classReturnType = classMethod.returnType;
+  // Get the class method's return types from its function type
+  const classResults = ctx.module.getFunctionTypeResults(classMethod.typeIndex);
 
-  if (interfaceResults.length > 0 && classReturnType.length > 0) {
-    // 1. Primitive Boxing
-    if (
-      interfaceResults[0].length === 1 &&
-      interfaceResults[0][0] === ValType.anyref &&
-      classReturnType.length === 1 &&
-      (classReturnType[0] === ValType.i32 ||
-        classReturnType[0] === ValType.i64 ||
-        classReturnType[0] === ValType.f32 ||
-        classReturnType[0] === ValType.f64)
-    ) {
-      // TODO(primitive-boxing): Pass semantic type once MethodInfo tracks checker types.
-      // Trampoline generation only has WASM types from the interface/class signatures.
-      // This causes boolean vs i32 confusion when boxing. To fix properly, we need to:
-      // 1. Store checker types in MethodInfo alongside WASM types
-      // 2. Pass semantic type through generateTrampoline
-      // See docs/design/primitive-boxing-semantic-types.md for details.
-      boxPrimitive(ctx, classReturnType, body);
-    }
-    // 2. Interface Boxing
-    else {
-      const interfaceTypeIndex = decodeTypeIndex(interfaceResults[0]);
-      const classTypeIndex = decodeTypeIndex(classReturnType);
+  if (interfaceResults.length > 0 && classResults.length > 0) {
+    // Check if any return values need adaptation
+    const needsAdaptation = interfaceResults.some((interfaceType, i) => {
+      const classType = classResults[i];
+      if (!classType) return false;
 
+      // Check if interface expects anyref but class returns primitive
+      const isAnyRef =
+        (interfaceType.length === 1 && interfaceType[0] === ValType.anyref) ||
+        (interfaceType.length === 2 &&
+          interfaceType[0] === ValType.ref_null &&
+          interfaceType[1] === ValType.anyref);
+
+      if (isAnyRef) {
+        // Check if class returns primitive
+        if (
+          classType.length === 1 &&
+          (classType[0] === ValType.i32 ||
+            classType[0] === ValType.i64 ||
+            classType[0] === ValType.f32 ||
+            classType[0] === ValType.f64)
+        ) {
+          return true; // Needs primitive boxing
+        }
+        // Check if class returns specific ref type (needs no adaptation, but different type)
+        if (
+          classType.length > 1 &&
+          (classType[0] === ValType.ref || classType[0] === ValType.ref_null)
+        ) {
+          return false; // Specific ref is subtype of anyref, no adaptation needed
+        }
+      }
+
+      // Check for interface boxing
+      const interfaceTypeIndex = decodeTypeIndex(interfaceType);
+      const classTypeIndex = decodeTypeIndex(classType);
       if (
         interfaceTypeIndex !== -1 &&
         classTypeIndex !== -1 &&
@@ -754,49 +802,183 @@ export function generateTrampoline(
       ) {
         const interfaceInfo =
           ctx.getInterfaceInfoByStructIndex(interfaceTypeIndex);
+        if (interfaceInfo) return true;
+      }
 
-        if (interfaceInfo) {
-          // Use struct index lookup since trampoline context only has WASM types
-          const resultClassInfo =
-            ctx.getClassInfoByStructIndexDirect(classTypeIndex);
+      return false;
+    });
 
-          if (resultClassInfo && resultClassInfo.implements) {
-            let impl: {vtableGlobalIndex: number} | undefined;
+    if (needsAdaptation && interfaceResults.length > 1) {
+      // Multi-value returns: store each result in a local, adapt, then push all
+      const resultLocals: number[] = [];
 
-            // Identity-based lookup using interfaceInfo.checkerType
-            if (interfaceInfo.checkerType) {
-              impl = resultClassInfo.implements.get(interfaceInfo.checkerType);
+      // Pop results in reverse order and store in locals
+      for (let i = classResults.length - 1; i >= 0; i--) {
+        const local = ctx.declareLocal(`$$ret${i}`, classResults[i]);
+        resultLocals[i] = local;
+        body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(local));
+      }
 
-              // If not found, try to find by interface subtype
-              if (!impl) {
-                for (const [
-                  implInterface,
-                  implInfo,
-                ] of resultClassInfo.implements) {
-                  if (
-                    ctx.checkerContext.isInterfaceAssignableTo(
+      // Push adapted values in order
+      for (let i = 0; i < interfaceResults.length; i++) {
+        const interfaceType = interfaceResults[i];
+        const classType = classResults[i];
+        const local = resultLocals[i];
+
+        body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(local));
+
+        // Check if needs adaptation
+        const isAnyRef =
+          (interfaceType.length === 1 && interfaceType[0] === ValType.anyref) ||
+          (interfaceType.length === 2 &&
+            interfaceType[0] === ValType.ref_null &&
+            interfaceType[1] === ValType.anyref);
+
+        if (isAnyRef) {
+          // Check if class returns primitive - needs boxing
+          if (
+            classType.length === 1 &&
+            (classType[0] === ValType.i32 ||
+              classType[0] === ValType.i64 ||
+              classType[0] === ValType.f32 ||
+              classType[0] === ValType.f64)
+          ) {
+            // TODO(primitive-boxing): Pass semantic type once MethodInfo tracks checker types.
+            boxPrimitive(ctx, classType, body);
+          }
+          // Specific ref types are subtypes of anyref - no adaptation needed
+        } else {
+          // Check for interface boxing
+          const interfaceTypeIndex = decodeTypeIndex(interfaceType);
+          const classTypeIndex = decodeTypeIndex(classType);
+
+          if (
+            interfaceTypeIndex !== -1 &&
+            classTypeIndex !== -1 &&
+            interfaceTypeIndex !== classTypeIndex
+          ) {
+            const interfaceInfo =
+              ctx.getInterfaceInfoByStructIndex(interfaceTypeIndex);
+
+            if (interfaceInfo) {
+              const resultClassInfo =
+                ctx.getClassInfoByStructIndexDirect(classTypeIndex);
+
+              if (resultClassInfo && resultClassInfo.implements) {
+                let impl: {vtableGlobalIndex: number} | undefined;
+
+                if (interfaceInfo.checkerType) {
+                  impl = resultClassInfo.implements.get(
+                    interfaceInfo.checkerType,
+                  );
+
+                  if (!impl) {
+                    for (const [
                       implInterface,
-                      interfaceInfo.checkerType,
-                    )
-                  ) {
-                    impl = implInfo;
-                    break;
+                      implInfo,
+                    ] of resultClassInfo.implements) {
+                      if (
+                        ctx.checkerContext.isInterfaceAssignableTo(
+                          implInterface,
+                          interfaceInfo.checkerType,
+                        )
+                      ) {
+                        impl = implInfo;
+                        break;
+                      }
+                    }
                   }
+                }
+
+                if (impl) {
+                  body.push(
+                    Opcode.global_get,
+                    ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
+                  );
+                  body.push(0xfb, GcOpcode.struct_new);
+                  body.push(
+                    ...WasmModule.encodeSignedLEB128(
+                      interfaceInfo.structTypeIndex,
+                    ),
+                  );
                 }
               }
             }
+          }
+        }
+      }
+    } else if (needsAdaptation) {
+      // Single return value - use existing logic
+      const classReturnType = classResults[0];
 
-            if (impl) {
-              // Box it!
-              body.push(
-                Opcode.global_get,
-                ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
-              );
+      // 1. Primitive Boxing
+      if (
+        interfaceResults[0].length === 1 &&
+        interfaceResults[0][0] === ValType.anyref &&
+        classReturnType.length === 1 &&
+        (classReturnType[0] === ValType.i32 ||
+          classReturnType[0] === ValType.i64 ||
+          classReturnType[0] === ValType.f32 ||
+          classReturnType[0] === ValType.f64)
+      ) {
+        // TODO(primitive-boxing): Pass semantic type once MethodInfo tracks checker types.
+        boxPrimitive(ctx, classReturnType, body);
+      }
+      // 2. Interface Boxing
+      else {
+        const interfaceTypeIndex = decodeTypeIndex(interfaceResults[0]);
+        const classTypeIndex = decodeTypeIndex(classReturnType);
 
-              body.push(0xfb, GcOpcode.struct_new);
-              body.push(
-                ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
-              );
+        if (
+          interfaceTypeIndex !== -1 &&
+          classTypeIndex !== -1 &&
+          interfaceTypeIndex !== classTypeIndex
+        ) {
+          const interfaceInfo =
+            ctx.getInterfaceInfoByStructIndex(interfaceTypeIndex);
+
+          if (interfaceInfo) {
+            const resultClassInfo =
+              ctx.getClassInfoByStructIndexDirect(classTypeIndex);
+
+            if (resultClassInfo && resultClassInfo.implements) {
+              let impl: {vtableGlobalIndex: number} | undefined;
+
+              if (interfaceInfo.checkerType) {
+                impl = resultClassInfo.implements.get(
+                  interfaceInfo.checkerType,
+                );
+
+                if (!impl) {
+                  for (const [
+                    implInterface,
+                    implInfo,
+                  ] of resultClassInfo.implements) {
+                    if (
+                      ctx.checkerContext.isInterfaceAssignableTo(
+                        implInterface,
+                        interfaceInfo.checkerType,
+                      )
+                    ) {
+                      impl = implInfo;
+                      break;
+                    }
+                  }
+                }
+              }
+
+              if (impl) {
+                body.push(
+                  Opcode.global_get,
+                  ...WasmModule.encodeSignedLEB128(impl.vtableGlobalIndex),
+                );
+                body.push(0xfb, GcOpcode.struct_new);
+                body.push(
+                  ...WasmModule.encodeSignedLEB128(
+                    interfaceInfo.structTypeIndex,
+                  ),
+                );
+              }
             }
           }
         }
@@ -2476,6 +2658,10 @@ export function generateClassMethods(
       const oldReturnType = ctx.currentReturnType;
       ctx.currentReturnType = methodInfo.returnType;
 
+      // Also set the checker return type for unboxed tuple hole literal generation
+      const oldCheckerReturnType = ctx.currentCheckerReturnType;
+      ctx.currentCheckerReturnType = member.returnType?.inferredType;
+
       // Downcast 'this' if needed (e.g. overriding a method from a superclass)
       if (!member.isStatic) {
         const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
@@ -2505,16 +2691,19 @@ export function generateClassMethods(
         body.push(Opcode.end);
         ctx.module.addCode(methodInfo.index, ctx.extraLocals, body);
         ctx.currentReturnType = oldReturnType;
+        ctx.currentCheckerReturnType = oldCheckerReturnType;
         continue;
       }
 
       if (methodInfo.intrinsic) {
         ctx.currentReturnType = oldReturnType;
+        ctx.currentCheckerReturnType = oldCheckerReturnType;
         continue;
       }
 
       if (member.isDeclare) {
         ctx.currentReturnType = oldReturnType;
+        ctx.currentCheckerReturnType = oldCheckerReturnType;
         continue;
       }
 
@@ -2597,6 +2786,7 @@ export function generateClassMethods(
 
       // Restore return type context
       ctx.currentReturnType = oldReturnType;
+      ctx.currentCheckerReturnType = oldCheckerReturnType;
 
       ctx.module.addCode(
         methodInfo.index,

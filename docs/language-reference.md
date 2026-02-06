@@ -1065,7 +1065,7 @@ This is particularly useful for iterating over discriminated union iterators:
 class Counter {
   value: i32;
   #new() { this.value = 0; }
-  
+
   next(): (true, i32) | (false, never) {
     this.value = this.value + 1;
     if (this.value <= 3) {
@@ -1712,6 +1712,7 @@ let (quot, rem) = divide(17, 5);
 ```
 
 **Key differences from boxed tuples:**
+
 - Unboxed tuples use parentheses `(T1, T2)` instead of brackets `[T1, T2]`
 - They only exist in return position and destructuring - they cannot be stored in variables or passed as arguments
 - They compile to zero-allocation WASM multi-value returns
