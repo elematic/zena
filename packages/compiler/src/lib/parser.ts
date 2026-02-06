@@ -27,6 +27,7 @@ import {
   type IndexExpression,
   type InterfaceDeclaration,
   type IsExpression,
+  type LetPatternCondition,
   type LiteralTypeAnnotation,
   type MatchCase,
   type MatchExpression,
@@ -1898,7 +1899,12 @@ export class Parser {
   #parseIfStatement(): IfStatement {
     const startToken = this.#previous();
     this.#consume(TokenType.LParen, "Expected '(' after 'if'.");
-    const test = this.#parseExpression();
+
+    // Check for let-pattern condition: if (let pattern = expr)
+    const test = this.#match(TokenType.Let)
+      ? this.#parseLetPatternCondition()
+      : this.#parseExpression();
+
     this.#consume(TokenType.RParen, "Expected ')' after if condition.");
 
     const consequent = this.#parseStatement();
@@ -1920,7 +1926,12 @@ export class Parser {
   #parseWhileStatement(): WhileStatement {
     const startToken = this.#previous();
     this.#consume(TokenType.LParen, "Expected '(' after 'while'.");
-    const test = this.#parseExpression();
+
+    // Check for let-pattern condition: while (let pattern = expr)
+    const test = this.#match(TokenType.Let)
+      ? this.#parseLetPatternCondition()
+      : this.#parseExpression();
+
     this.#consume(TokenType.RParen, "Expected ')' after while condition.");
 
     const body = this.#parseStatement();
@@ -1930,6 +1941,33 @@ export class Parser {
       test,
       body,
       loc: this.#loc(startToken, body),
+    };
+  }
+
+  /**
+   * Parse a let-pattern condition: `let pattern = expr`
+   * Used in if/while conditions for pattern matching.
+   * The `let` keyword has already been consumed.
+   */
+  #parseLetPatternCondition(): LetPatternCondition {
+    const startToken = this.#previous(); // 'let' token
+
+    // Parse the pattern
+    const pattern = this.#parsePattern();
+
+    // Expect '=' followed by expression
+    this.#consume(
+      TokenType.Equals,
+      "Expected '=' after pattern in let condition.",
+    );
+
+    const init = this.#parseExpression();
+
+    return {
+      type: NodeType.LetPatternCondition,
+      pattern,
+      init,
+      loc: this.#loc(startToken, init),
     };
   }
 

@@ -1,8 +1,11 @@
 import {
   NodeType,
   type BlockStatement,
+  type BooleanLiteral,
   type ForStatement,
+  type Identifier,
   type IfStatement,
+  type LetPatternCondition,
   type Pattern,
   type RecordPattern,
   type ReturnStatement,
@@ -116,6 +119,17 @@ export function generateIfStatement(
   stmt: IfStatement,
   body: number[],
 ) {
+  if (stmt.test.type === NodeType.LetPatternCondition) {
+    generateIfLetStatement(
+      ctx,
+      stmt.test,
+      stmt.consequent,
+      stmt.alternate,
+      body,
+    );
+    return;
+  }
+
   generateExpression(ctx, stmt.test, body);
   body.push(Opcode.if);
   body.push(ValType.void);
@@ -152,6 +166,11 @@ export function generateWhileStatement(
   stmt: WhileStatement,
   body: number[],
 ) {
+  if (stmt.test.type === NodeType.LetPatternCondition) {
+    generateWhileLetStatement(ctx, stmt.test, stmt.body, body);
+    return;
+  }
+
   // block $break
   //   loop $continue
   //     condition
@@ -181,6 +200,259 @@ export function generateWhileStatement(
 
   body.push(Opcode.end); // End loop
   body.push(Opcode.end); // End block
+}
+
+/**
+ * Generate code for `if (let pattern = expr) { consequent } else { alternate }`
+ *
+ * For unboxed tuple patterns like `if (let (true, value) = getResult())`:
+ * 1. Evaluate the expression (pushes values onto stack)
+ * 2. Store values in temp locals
+ * 3. Check if pattern matches (e.g., first value == true)
+ * 4. If matches: bind remaining values and execute consequent
+ * 5. If doesn't match: execute alternate
+ */
+function generateIfLetStatement(
+  ctx: CodegenContext,
+  letPattern: LetPatternCondition,
+  consequent: Statement,
+  alternate: Statement | undefined,
+  body: number[],
+) {
+  const initType = letPattern.init.inferredType;
+  const pattern = letPattern.pattern;
+
+  // For now, only support unboxed tuple patterns
+  if (pattern.type !== NodeType.UnboxedTuplePattern) {
+    throw new Error(
+      `if (let ...) only supports unboxed tuple patterns, got ${pattern.type}`,
+    );
+  }
+
+  const tuplePattern = pattern as UnboxedTuplePattern;
+  const elementTypes = getUnboxedTupleElementTypes(initType);
+
+  if (elementTypes === null) {
+    throw new Error(
+      `if (let ...) expected unboxed tuple type, got ${initType?.kind}`,
+    );
+  }
+
+  // Generate expression - pushes values onto stack
+  generateExpression(ctx, letPattern.init, body);
+
+  // Store all values in temp locals (in reverse order since stack is LIFO)
+  const tempLocals: number[] = [];
+  for (let i = tuplePattern.elements.length - 1; i >= 0; i--) {
+    const elemType = elementTypes[i];
+    const wasmType = mapCheckerTypeToWasmType(ctx, elemType);
+    const tempLocal = ctx.declareLocal(`$$let_temp_${i}`, wasmType);
+    tempLocals.unshift(tempLocal); // prepend to maintain order
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempLocal));
+  }
+
+  // Generate pattern check condition
+  generateLetPatternCheck(ctx, tuplePattern, tempLocals, elementTypes, body);
+
+  // if (pattern matches)
+  body.push(Opcode.if);
+  body.push(ValType.void);
+  ctx.enterBlockStructure();
+
+  // Bind pattern variables and execute consequent
+  ctx.pushScope();
+  generateLetPatternBindings(ctx, tuplePattern, tempLocals, elementTypes, body);
+  generateFunctionStatement(ctx, consequent, body);
+  ctx.popScope();
+
+  if (alternate) {
+    body.push(Opcode.else);
+    generateFunctionStatement(ctx, alternate, body);
+  }
+
+  ctx.exitBlockStructure();
+  body.push(Opcode.end);
+}
+
+/**
+ * Generate code for `while (let pattern = expr) { body }`
+ *
+ * Similar to if-let but with loop structure:
+ *   block $break
+ *     loop $continue
+ *       eval expr -> store in temps
+ *       check pattern
+ *       br_if 1 (to break) if not matched
+ *       bind variables
+ *       body
+ *       br 0 (continue)
+ *     end
+ *   end
+ */
+function generateWhileLetStatement(
+  ctx: CodegenContext,
+  letPattern: LetPatternCondition,
+  loopBody: Statement,
+  body: number[],
+) {
+  const initType = letPattern.init.inferredType;
+  const pattern = letPattern.pattern;
+
+  if (pattern.type !== NodeType.UnboxedTuplePattern) {
+    throw new Error(
+      `while (let ...) only supports unboxed tuple patterns, got ${pattern.type}`,
+    );
+  }
+
+  const tuplePattern = pattern as UnboxedTuplePattern;
+  const elementTypes = getUnboxedTupleElementTypes(initType);
+
+  if (elementTypes === null) {
+    throw new Error(
+      `while (let ...) expected unboxed tuple type, got ${initType?.kind}`,
+    );
+  }
+
+  // Pre-declare temp locals outside the loop (they're reused each iteration)
+  const tempLocals: number[] = [];
+  for (let i = 0; i < tuplePattern.elements.length; i++) {
+    const elemType = elementTypes[i];
+    const wasmType = mapCheckerTypeToWasmType(ctx, elemType);
+    const tempLocal = ctx.declareLocal(`$$while_let_temp_${i}`, wasmType);
+    tempLocals.push(tempLocal);
+  }
+
+  // block $break
+  body.push(Opcode.block);
+  body.push(ValType.void);
+
+  // loop $continue
+  body.push(Opcode.loop);
+  body.push(ValType.void);
+
+  // Evaluate expression - pushes values onto stack
+  generateExpression(ctx, letPattern.init, body);
+
+  // Store all values in temp locals (in reverse order since stack is LIFO)
+  for (let i = tuplePattern.elements.length - 1; i >= 0; i--) {
+    body.push(
+      Opcode.local_set,
+      ...WasmModule.encodeSignedLEB128(tempLocals[i]),
+    );
+  }
+
+  // Check pattern
+  generateLetPatternCheck(ctx, tuplePattern, tempLocals, elementTypes, body);
+
+  // If not matched (condition is false), break out
+  body.push(Opcode.i32_eqz);
+  body.push(Opcode.br_if);
+  body.push(...WasmModule.encodeSignedLEB128(1)); // break to outer block (depth 1)
+
+  // Pattern matched - bind variables and execute body
+  ctx.enterLoop();
+  ctx.pushScope();
+  generateLetPatternBindings(ctx, tuplePattern, tempLocals, elementTypes, body);
+  generateFunctionStatement(ctx, loopBody, body);
+  ctx.popScope();
+  ctx.exitLoop();
+
+  // Continue to next iteration
+  body.push(Opcode.br);
+  body.push(...WasmModule.encodeSignedLEB128(0)); // continue to loop (depth 0)
+
+  body.push(Opcode.end); // end loop
+  body.push(Opcode.end); // end block
+}
+
+/**
+ * Generate code to check if an unboxed tuple pattern matches.
+ * Pushes i32 (1 = match, 0 = no match) onto the stack.
+ *
+ * For pattern `(true, value)`:
+ * - Check if first element equals `true`
+ * - Identifier patterns always match (wildcard)
+ */
+function generateLetPatternCheck(
+  ctx: CodegenContext,
+  pattern: UnboxedTuplePattern,
+  tempLocals: number[],
+  elementTypes: Type[],
+  body: number[],
+) {
+  // Start with true (1), AND with each element check
+  body.push(Opcode.i32_const, 1);
+
+  for (let i = 0; i < pattern.elements.length; i++) {
+    const elemPattern = pattern.elements[i];
+
+    // Identifier patterns (including wildcards) always match
+    if (elemPattern.type === NodeType.Identifier) {
+      continue;
+    }
+
+    // Boolean literal pattern
+    if (elemPattern.type === NodeType.BooleanLiteral) {
+      const boolLit = elemPattern as BooleanLiteral;
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(tempLocals[i]),
+      );
+      body.push(Opcode.i32_const, boolLit.value ? 1 : 0);
+      body.push(Opcode.i32_eq);
+      body.push(Opcode.i32_and);
+      continue;
+    }
+
+    // TODO: Support other pattern types (number literals, nested patterns, etc.)
+    throw new Error(
+      `Unsupported pattern type in let-pattern condition: ${elemPattern.type}`,
+    );
+  }
+}
+
+/**
+ * Generate code to bind variables from an unboxed tuple pattern.
+ * Called after pattern check succeeds - copies temp locals to named locals.
+ */
+function generateLetPatternBindings(
+  ctx: CodegenContext,
+  pattern: UnboxedTuplePattern,
+  tempLocals: number[],
+  elementTypes: Type[],
+  body: number[],
+) {
+  for (let i = 0; i < pattern.elements.length; i++) {
+    const elemPattern = pattern.elements[i];
+
+    if (elemPattern.type === NodeType.Identifier) {
+      const id = elemPattern as Identifier;
+      // Skip wildcards
+      if (id.name === '_') continue;
+
+      const wasmType = mapCheckerTypeToWasmType(ctx, elementTypes[i]);
+      const localIndex = ctx.declareLocal(id.name, wasmType, elemPattern);
+
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(tempLocals[i]),
+      );
+      body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(localIndex));
+      continue;
+    }
+
+    // Literal patterns don't bind variables
+    if (
+      elemPattern.type === NodeType.BooleanLiteral ||
+      elemPattern.type === NodeType.NumberLiteral ||
+      elemPattern.type === NodeType.StringLiteral
+    ) {
+      continue;
+    }
+
+    // TODO: Nested patterns
+    throw new Error(`Unsupported binding pattern type: ${elemPattern.type}`);
+  }
 }
 
 export function generateForStatement(

@@ -1040,6 +1040,49 @@ while (condition) {
 }
 ```
 
+### Let-Pattern Conditions
+
+Both `if` and `while` statements support let-pattern conditions, which combine pattern matching with control flow. The pattern variables are only in scope inside the statement body.
+
+```zena
+// With if - execute body only if pattern matches
+if (let (true, value) = maybeGetValue()) {
+  // value is in scope here
+  console.log(value);
+}
+// value is NOT in scope here
+
+// With while - iterate while pattern matches
+while (let (true, item) = iterator.next()) {
+  // Process item
+  console.log(item);
+}
+```
+
+This is particularly useful for iterating over discriminated union iterators:
+
+```zena
+class Counter {
+  value: i32;
+  #new() { this.value = 0; }
+  
+  next(): (true, i32) | (false, never) {
+    this.value = this.value + 1;
+    if (this.value <= 3) {
+      return (true, this.value);
+    }
+    return (false, _);
+  }
+}
+
+let counter = new Counter();
+var sum = 0;
+while (let (true, v) = counter.next()) {
+  sum = sum + v;
+}
+// sum = 6 (1 + 2 + 3)
+```
+
 ### For Statement
 
 Zena supports C-style `for` loops. The loop variable must be declared with `var` since it is mutable.
@@ -1653,6 +1696,40 @@ let t = [1, "hello"];
 let n = t[0];
 ```
 
+### Unboxed Tuples (Multi-Value Returns)
+
+Unboxed tuples enable functions to return multiple values without heap allocation. Unlike regular tuples which are boxed structs, unboxed tuples compile directly to WASM multi-value returns.
+
+```zena
+// Function returning an unboxed tuple
+let divide = (a: i32, b: i32): (i32, i32) => {
+  return (a / b, a % b);  // quotient and remainder
+};
+
+// Destructuring the result
+let (quot, rem) = divide(17, 5);
+// quot = 3, rem = 2
+```
+
+**Key differences from boxed tuples:**
+- Unboxed tuples use parentheses `(T1, T2)` instead of brackets `[T1, T2]`
+- They only exist in return position and destructuring - they cannot be stored in variables or passed as arguments
+- They compile to zero-allocation WASM multi-value returns
+
+#### Boolean Literal Types
+
+The types `true` and `false` are literal types that are subtypes of `boolean`. This enables discriminated unions with unboxed tuples.
+
+```zena
+// A function that may or may not return a value
+let tryParse = (s: string): (true, i32) | (false, never) => {
+  if (s == "42") {
+    return (true, 42);
+  }
+  return (false, _);  // _ is the hole literal for 'never'
+};
+```
+
 ## 8. Modules & Exports
 
 ### Exports
@@ -1923,9 +2000,11 @@ BreakStatement ::= "break" ";"
 
 ContinueStatement ::= "continue" ";"
 
-IfStatement ::= "if" "(" Expression ")" Statement ("else" Statement)?
+IfStatement ::= "if" "(" (Expression | LetPatternCondition) ")" Statement ("else" Statement)?
 
-WhileStatement ::= "while" "(" Expression ")" Statement
+WhileStatement ::= "while" "(" (Expression | LetPatternCondition) ")" Statement
+
+LetPatternCondition ::= "let" Pattern "=" Expression
 
 ForStatement ::= "for" "(" ForInit? ";" Expression? ";" Expression? ")" Statement
 

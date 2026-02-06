@@ -110,6 +110,7 @@ export const NodeType = {
   EnumDeclaration: 'EnumDeclaration',
   EnumMember: 'EnumMember',
   RangeExpression: 'RangeExpression',
+  LetPatternCondition: 'LetPatternCondition',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -653,16 +654,30 @@ export interface ContinueStatement extends Node {
   type: typeof NodeType.ContinueStatement;
 }
 
+/**
+ * A let-pattern condition for use in if/while statements.
+ * Syntax: `let pattern = expr`
+ *
+ * The pattern must match the expression for the condition to be true.
+ * For tuple patterns with literal elements, this enables discriminated union matching:
+ *   if (let (true, value) = iter.next()) { ... }
+ */
+export interface LetPatternCondition extends Node {
+  type: typeof NodeType.LetPatternCondition;
+  pattern: Pattern;
+  init: Expression;
+}
+
 export interface IfStatement extends Node {
   type: typeof NodeType.IfStatement;
-  test: Expression;
+  test: Expression | LetPatternCondition;
   consequent: Statement;
   alternate?: Statement;
 }
 
 export interface WhileStatement extends Node {
   type: typeof NodeType.WhileStatement;
-  test: Expression;
+  test: Expression | LetPatternCondition;
   body: Statement;
 }
 

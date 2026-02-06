@@ -18,6 +18,7 @@ import {
   type ImportDeclaration,
   type InterfaceDeclaration,
   type IsExpression,
+  // type LetPatternCondition,
   type MethodDefinition,
   type MixinDeclaration,
   type Parameter,
@@ -61,7 +62,7 @@ import {
   type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
-import {checkExpression} from './expressions.js';
+import {checkExpression, checkMatchPattern} from './expressions.js';
 import {
   isBooleanType,
   isAssignableTo,
@@ -880,6 +881,27 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
 }
 
 function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
+  if (stmt.test.type === NodeType.LetPatternCondition) {
+    // if (let pattern = expr) { consequent } else { alternate }
+    // Pattern variables are bound inside the consequent scope only
+    const initType = checkExpression(ctx, stmt.test.init);
+
+    // Check the consequent with pattern bindings
+    ctx.enterScope();
+    checkMatchPattern(ctx, stmt.test.pattern, initType);
+    checkStatement(ctx, stmt.consequent);
+    ctx.exitScope();
+
+    // Check the alternate (no pattern bindings)
+    if (stmt.alternate) {
+      ctx.enterScope();
+      checkStatement(ctx, stmt.alternate);
+      ctx.exitScope();
+    }
+    return;
+  }
+
+  // Regular expression condition
   const testType = checkExpression(ctx, stmt.test);
   if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
     ctx.diagnostics.reportError(
@@ -918,6 +940,18 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
 }
 
 function checkWhileStatement(ctx: CheckerContext, stmt: WhileStatement) {
+  if (stmt.test.type === NodeType.LetPatternCondition) {
+    // while (let pattern = expr) { body }
+    // Pattern variables are bound inside the loop body
+    const initType = checkExpression(ctx, stmt.test.init);
+    ctx.enterLoop();
+    ctx.enterScope();
+    checkMatchPattern(ctx, stmt.test.pattern, initType);
+    checkStatement(ctx, stmt.body);
+    ctx.exitScope();
+    ctx.exitLoop();
+    return;
+  }
   const testType = checkExpression(ctx, stmt.test);
   if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
     ctx.diagnostics.reportError(

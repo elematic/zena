@@ -129,9 +129,10 @@ some of my thoughts and motivations at the moment:
 - [x] Exceptions (`throw`)
 - [x] `never` type
 - [x] Enums
-- [ ] Unboxed tuples and multi-value return (`(i32, i32)`)
-- [ ] Boolean literal types (`true` and `false` as types)
-- [ ] Unions of tuples (`(true, T) | (false, never)`)
+- [x] Unboxed tuples and multi-value return (`(i32, i32)`)
+- [x] Boolean literal types (`true` and `false` as types)
+- [x] Unions of tuples (`(true, T) | (false, never)`)
+- [x] Let-pattern conditions (`if (let pattern = expr)`, `while (let pattern = expr)`)
 - [ ] Do/while loops
 - [ ] Mutable Maps and map literals (`#{...}`)
 - [ ] More primitive types

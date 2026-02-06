@@ -385,7 +385,7 @@ function checkBlockExpressionType(
   return resultType;
 }
 
-function checkMatchPattern(
+export function checkMatchPattern(
   ctx: CheckerContext,
   pattern:
     | Pattern
@@ -625,9 +625,15 @@ function checkMatchPattern(
       }
       break;
     }
+    case NodeType.UnboxedTuplePattern:
     case NodeType.TuplePattern: {
       const tuplePattern = pattern as TuplePattern;
-      if (discriminantType.kind === TypeKind.Tuple) {
+
+      // Handle direct tuple types
+      if (
+        discriminantType.kind === TypeKind.Tuple ||
+        discriminantType.kind === TypeKind.UnboxedTuple
+      ) {
         const tupleType = discriminantType as TupleType;
         if (tuplePattern.elements.length > tupleType.elementTypes.length) {
           ctx.diagnostics.reportError(
@@ -640,6 +646,47 @@ function checkMatchPattern(
           const elemPattern = tuplePattern.elements[i];
           if (elemPattern && i < tupleType.elementTypes.length) {
             checkMatchPattern(ctx, elemPattern, tupleType.elementTypes[i]);
+          }
+        }
+      } else if (discriminantType.kind === TypeKind.Union) {
+        // Handle union of tuples - for each position, compute union of element types
+        const unionType = discriminantType as UnionType;
+        const tupleMembers = unionType.types.filter(
+          (t) => t.kind === TypeKind.Tuple || t.kind === TypeKind.UnboxedTuple,
+        ) as TupleType[];
+
+        if (tupleMembers.length === 0) {
+          ctx.diagnostics.reportError(
+            `Cannot destructure non-tuple type '${typeToString(discriminantType)}'.`,
+            DiagnosticCode.TypeMismatch,
+          );
+          break;
+        }
+
+        // Use the first tuple's element count as reference
+        const elemCount = tupleMembers[0].elementTypes.length;
+        if (tuplePattern.elements.length > elemCount) {
+          ctx.diagnostics.reportError(
+            `Tuple pattern has ${tuplePattern.elements.length} elements but type has ${elemCount}.`,
+            DiagnosticCode.TypeMismatch,
+          );
+        }
+
+        // For each element position, compute the union of types at that position
+        for (let i = 0; i < tuplePattern.elements.length; i++) {
+          const elemPattern = tuplePattern.elements[i];
+          if (elemPattern && i < elemCount) {
+            // Collect types at position i from all tuple members
+            const elemTypes = tupleMembers
+              .filter((t) => i < t.elementTypes.length)
+              .map((t) => t.elementTypes[i]);
+
+            // Create union of element types (or single type if all same)
+            const elemType =
+              elemTypes.length === 1
+                ? elemTypes[0]
+                : createUnionType(elemTypes);
+            checkMatchPattern(ctx, elemPattern, elemType);
           }
         }
       } else if (discriminantType.kind === TypeKind.Array) {
@@ -714,6 +761,7 @@ function checkMatchPattern(
       break;
     }
     default:
+      // pattern.type satisfies never;
       break;
   }
 }
@@ -2740,7 +2788,7 @@ function checkTaggedTemplateExpression(
   return funcType.returnType;
 }
 
-function getPatternType(
+export function getPatternType(
   ctx: CheckerContext,
   pattern:
     | Pattern

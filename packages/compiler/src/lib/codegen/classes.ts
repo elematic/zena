@@ -7,6 +7,7 @@ import {
   type TypeAnnotation,
   type Identifier,
   type ComputedPropertyName,
+  type UnboxedTupleTypeAnnotation,
 } from '../ast.js';
 import {
   Decorators,
@@ -1744,11 +1745,34 @@ export function registerClassMethods(
             `Return type of ${methodName} in ${decl.name.name} missing inferredType`,
           );
         }
-        const mapped = mapCheckerTypeToWasmType(
-          ctx,
-          member.returnType.inferredType,
-        );
-        if (mapped.length > 0) results = [mapped];
+        const returnType = member.returnType.inferredType;
+        // Handle unboxed tuple types (multi-value returns)
+        if (returnType.kind === TypeKind.UnboxedTuple) {
+          const tupleType = returnType as UnboxedTupleType;
+          results = tupleType.elementTypes.map((el) =>
+            mapCheckerTypeToWasmType(ctx, el),
+          );
+        } else if (returnType.kind === TypeKind.Union) {
+          // Check if it's a union of unboxed tuples
+          const unionType = returnType as UnionType;
+          for (const t of unionType.types) {
+            if (t.kind === TypeKind.UnboxedTuple) {
+              const tupleType = t as UnboxedTupleType;
+              results = tupleType.elementTypes.map((el) =>
+                mapCheckerTypeToWasmType(ctx, el),
+              );
+              break;
+            }
+          }
+          // If not a union of tuples, fall back to regular handling
+          if (results.length === 0) {
+            const mapped = mapCheckerTypeToWasmType(ctx, returnType);
+            if (mapped.length > 0) results = [mapped];
+          }
+        } else {
+          const mapped = mapCheckerTypeToWasmType(ctx, returnType);
+          if (mapped.length > 0) results = [mapped];
+        }
       } else {
         results = [];
       }
@@ -3531,8 +3555,56 @@ function instantiateClassImpl(
             results = [];
           }
         } else if (member.returnType) {
-          const mapped = resolveType(member.returnType);
-          if (mapped.length > 0) results = [mapped];
+          // Get the resolved checker type for proper multi-value return handling
+          const checkerReturnType = member.returnType.inferredType
+            ? ctx.checkerContext
+              ? ctx.checkerContext.substituteTypeParams(
+                  member.returnType.inferredType,
+                  typeArguments,
+                )
+              : member.returnType.inferredType
+            : null;
+
+          // Handle unboxed tuple types (multi-value returns) and unions of unboxed tuples
+          if (
+            checkerReturnType &&
+            checkerReturnType.kind === TypeKind.UnboxedTuple
+          ) {
+            const tupleType = checkerReturnType as UnboxedTupleType;
+            results = tupleType.elementTypes.map((el) =>
+              mapCheckerTypeToWasmType(ctx, el),
+            );
+          } else if (
+            checkerReturnType &&
+            checkerReturnType.kind === TypeKind.Union
+          ) {
+            // Check if it's a union of unboxed tuples
+            const unionType = checkerReturnType as UnionType;
+            for (const t of unionType.types) {
+              if (t.kind === TypeKind.UnboxedTuple) {
+                const tupleType = t as UnboxedTupleType;
+                results = tupleType.elementTypes.map((el) =>
+                  mapCheckerTypeToWasmType(ctx, el),
+                );
+                break;
+              }
+            }
+            // If not a union of tuples, fall back to regular handling
+            if (results.length === 0) {
+              const mapped = resolveType(member.returnType);
+              if (mapped.length > 0) results = [mapped];
+            }
+          } else if (
+            member.returnType.type === NodeType.UnboxedTupleTypeAnnotation
+          ) {
+            // Fallback: check annotation type directly if inferredType wasn't populated
+            const tupleAnnotation =
+              member.returnType as UnboxedTupleTypeAnnotation;
+            results = tupleAnnotation.elementTypes.map((el) => resolveType(el));
+          } else {
+            const mapped = resolveType(member.returnType);
+            if (mapped.length > 0) results = [mapped];
+          }
         } else {
           results = [];
         }
