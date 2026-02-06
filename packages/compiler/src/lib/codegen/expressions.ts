@@ -3477,13 +3477,17 @@ function generateAssignmentExpression(
         if (!foundClass.vtable || foundClass.vtableTypeIndex === undefined) {
           throw new Error(`Class ${foundClass.name} has no vtable`);
         }
+        const vtableField = foundClass.fields.get('__vtable');
+        if (!vtableField) {
+          throw new Error(
+            `Class ${foundClass.name} has vtable but no __vtable field. Fields: ${Array.from(foundClass.fields.keys()).join(', ')}. Setter: ${setterName}`,
+          );
+        }
         body.push(
           0xfb,
           GcOpcode.struct_get,
           ...WasmModule.encodeSignedLEB128(foundClass.structTypeIndex),
-          ...WasmModule.encodeSignedLEB128(
-            foundClass.fields.get('__vtable')!.index,
-          ),
+          ...WasmModule.encodeSignedLEB128(vtableField.index),
         );
 
         // Cast VTable to correct type

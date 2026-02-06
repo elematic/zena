@@ -81,8 +81,18 @@ export class Compiler {
     // Load entry point and all dependencies via LibraryLoader
     this.#loader.load(entryPoint);
 
-    // Populate Module metadata from LibraryRecords
-    for (const lib of this.#loader.libraries()) {
+    // Get the entry point library record
+    const entryLib = this.#loader.get(entryPoint);
+    if (!entryLib) {
+      throw new Error(`Failed to load entry point: ${entryPoint}`);
+    }
+
+    // Compute topological order (dependencies before dependents)
+    // This is required for correct cross-module class inheritance
+    const graph = this.#loader.computeGraph(entryLib);
+
+    // Populate Module metadata from LibraryRecords in topological order
+    for (const lib of graph.libraries) {
       if (!this.#modules.has(lib.path)) {
         this.#modules.set(lib.path, this.#getModule(lib));
       }
