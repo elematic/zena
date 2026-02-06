@@ -1,0 +1,781 @@
+import {Map} from 'zena:map';
+import {Array} from 'zena:growable-array';
+import {Box} from 'zena:box';
+import {Error} from 'zena:error';
+import {StringReader} from 'zena:string-reader';
+
+// === Source Location ===
+
+export final class SourceLocation {
+  line: i32;
+  column: i32;
+  endLine: i32;
+  endColumn: i32;
+
+  #new(line: i32, column: i32, endLine: i32, endColumn: i32) {
+    this.line = line;
+    this.column = column;
+    this.endLine = endLine;
+    this.endColumn = endColumn;
+  }
+}
+
+// === JSON Value Types ===
+
+// Forward declaration for recursive type
+// type JsonValue = JsonObject | JsonArray | string | Box<f64> | Box<boolean> | null;
+
+export class JsonObject {
+  // TODO Phase 2: Use OrderedMap for key insertion order preservation
+  #fields: Map<string, any>;  // any = JsonValue
+  #locations: Map<string, SourceLocation> | null;
+
+  #new() {
+    this.#fields = new Map<string, any>();
+    this.#locations = null;
+  }
+
+  static withLocations(): JsonObject {
+    let obj = new JsonObject();
+    obj.#locations = new Map<string, SourceLocation>();
+    return obj;
+  }
+
+  operator [](key: string): any {
+    if (!this.#fields.has(key)) {
+      return null;
+    }
+    return this.#fields.get(key, null);
+  }
+
+  operator []=(key: string, value: any): void {
+    this.#fields.set(key, value);
+  }
+
+  has(key: string): boolean {
+    return this.#fields.has(key);
+  }
+
+  delete(key: string): boolean {
+    return this.#fields.delete(key);
+  }
+
+  size: i32 {
+    get {
+      return this.#fields.size;
+    }
+  }
+
+  // Source location for a key (only if tracking enabled)
+  locationOf(key: string): SourceLocation | null {
+    let locs = this.#locations;
+    if (locs == null) {
+      return null;
+    }
+    let locsMap = locs as Map<string, SourceLocation>;
+    if (!locsMap.has(key)) {
+      return null;
+    }
+    // Use get with dummy default since we already checked has()
+    return locsMap.get(key, new SourceLocation(0, 0, 0, 0));
+  }
+
+  // Internal: set location for a key
+  setLocation(key: string, loc: SourceLocation): void {
+    let locs = this.#locations;
+    if (locs != null) {
+      let locsMap = locs as Map<string, SourceLocation>;
+      locsMap.set(key, loc);
+    }
+  }
+}
+
+export class JsonArray {
+  #elements: Array<any>;  // any = JsonValue
+  #locations: Array<SourceLocation> | null;
+
+  #new() {
+    this.#elements = new Array<any>();
+    this.#locations = null;
+  }
+
+  static withLocations(): JsonArray {
+    let arr = new JsonArray();
+    arr.#locations = new Array<SourceLocation>();
+    return arr;
+  }
+
+  operator [](index: i32): any {
+    return this.#elements[index];
+  }
+
+  operator []=(index: i32, value: any): void {
+    this.#elements[index] = value;
+  }
+
+  length: i32 {
+    get {
+      return this.#elements.length;
+    }
+  }
+
+  push(value: any): void {
+    this.#elements.push(value);
+  }
+
+  pushWithLocation(value: any, loc: SourceLocation): void {
+    this.#elements.push(value);
+    let locs = this.#locations;
+    if (locs != null) {
+      let locsArr = locs as Array<SourceLocation>;
+      locsArr.push(loc);
+    }
+  }
+
+  // Source location for an index (only if tracking enabled)
+  locationOf(index: i32): SourceLocation | null {
+    let locs = this.#locations;
+    if (locs == null) {
+      return null;
+    }
+    let locsArr = locs as Array<SourceLocation>;
+    if (index < 0 || index >= locsArr.length) {
+      return null;
+    }
+    return locsArr[index];
+  }
+}
+
+// === Parse Options ===
+
+// TODO: Use optional record fields when supported, e.g.:
+//   type JsonOptions = { allowComments?: boolean, trackLocations?: boolean };
+// This would allow: parseJson(input, { allowComments: true })
+export type JsonOptions = { allowComments: boolean, trackLocations: boolean };
+
+// === Parse Error ===
+
+export class JsonParseError extends Error {
+  #line: i32;
+  #column: i32;
+
+  #new(message: string, line: i32, column: i32) {
+    super(message);
+    this.#line = line;
+    this.#column = column;
+  }
+
+  line: i32 {
+    get { return this.#line; }
+  }
+
+  column: i32 {
+    get { return this.#column; }
+  }
+}
+
+// === Parser ===
+
+class JsonParser {
+  #reader: StringReader;
+  #line: i32;
+  #column: i32;
+  #lineStart: i32;  // byte position where current line started
+  #allowComments: boolean;
+  #trackLocations: boolean;
+
+  #new(input: string, options: JsonOptions | null) {
+    this.#reader = new StringReader(input);
+    this.#line = 1;
+    this.#column = 1;
+    this.#lineStart = 0;
+    if (options != null) {
+      this.#allowComments = options.allowComments;
+      this.#trackLocations = options.trackLocations;
+    } else {
+      this.#allowComments = false;
+      this.#trackLocations = false;
+    }
+  }
+
+  parse(): any {
+    this.#skipWhitespaceAndComments();
+    let value = this.#parseValue();
+    this.#skipWhitespaceAndComments();
+    if (!this.#reader.isAtEnd) {
+      this.#error("Unexpected content after JSON value");
+    }
+    return value;
+  }
+
+  #parseValue(): any {
+    let b = this.#reader.peekByte();
+    
+    if (b == 123) {  // '{'
+      return this.#parseObject();
+    }
+    if (b == 91) {   // '['
+      return this.#parseArray();
+    }
+    if (b == 34) {   // '"'
+      return this.#parseString();
+    }
+    if (b == 116) {  // 't' (true)
+      return this.#parseTrue();
+    }
+    if (b == 102) {  // 'f' (false)
+      return this.#parseFalse();
+    }
+    if (b == 110) {  // 'n' (null)
+      return this.#parseNull();
+    }
+    if (b == 45 || (b >= 48 && b <= 57)) {  // '-' or digit
+      return this.#parseNumber();
+    }
+    
+    this.#error("Unexpected character");
+    // Unreachable, but need to return something
+    return null;
+  }
+
+  #parseObject(): JsonObject {
+    let obj = if (this.#trackLocations) {
+      JsonObject.withLocations()
+    } else {
+      new JsonObject()
+    };
+    
+    this.#expect(123);  // '{'
+    this.#skipWhitespaceAndComments();
+    
+    if (this.#reader.peekByte() == 125) {  // '}'
+      this.#advance();
+      return obj;
+    }
+    
+    while (true) {
+      this.#skipWhitespaceAndComments();
+      
+      // Parse key
+      if (this.#reader.peekByte() != 34) {  // '"'
+        this.#error("Expected string key");
+      }
+      let keyStartLine = this.#line;
+      let keyStartCol = this.#column;
+      let key = this.#parseString();
+      
+      this.#skipWhitespaceAndComments();
+      this.#expect(58);  // ':'
+      this.#skipWhitespaceAndComments();
+      
+      // Parse value
+      let valueStartLine = this.#line;
+      let valueStartCol = this.#column;
+      let value = this.#parseValue();
+      let valueEndLine = this.#line;
+      let valueEndCol = this.#column;
+      
+      obj[key] = value;
+      if (this.#trackLocations) {
+        obj.setLocation(key, new SourceLocation(
+          valueStartLine, valueStartCol, valueEndLine, valueEndCol
+        ));
+      }
+      
+      this.#skipWhitespaceAndComments();
+      
+      let next = this.#reader.peekByte();
+      if (next == 125) {  // '}'
+        this.#advance();
+        return obj;
+      }
+      if (next == 44) {  // ','
+        this.#advance();
+      } else {
+        this.#error("Expected ',' or '}'");
+      }
+    }
+    
+    // Unreachable
+    return obj;
+  }
+
+  #parseArray(): JsonArray {
+    let arr = if (this.#trackLocations) {
+      JsonArray.withLocations()
+    } else {
+      new JsonArray()
+    };
+    
+    this.#expect(91);  // '['
+    this.#skipWhitespaceAndComments();
+    
+    if (this.#reader.peekByte() == 93) {  // ']'
+      this.#advance();
+      return arr;
+    }
+    
+    while (true) {
+      this.#skipWhitespaceAndComments();
+      
+      let valueStartLine = this.#line;
+      let valueStartCol = this.#column;
+      let value = this.#parseValue();
+      let valueEndLine = this.#line;
+      let valueEndCol = this.#column;
+      
+      if (this.#trackLocations) {
+        arr.pushWithLocation(value, new SourceLocation(
+          valueStartLine, valueStartCol, valueEndLine, valueEndCol
+        ));
+      } else {
+        arr.push(value);
+      }
+      
+      this.#skipWhitespaceAndComments();
+      
+      let next = this.#reader.peekByte();
+      if (next == 93) {  // ']'
+        this.#advance();
+        return arr;
+      }
+      if (next == 44) {  // ','
+        this.#advance();
+      } else {
+        this.#error("Expected ',' or ']'");
+      }
+    }
+    
+    // Unreachable
+    return arr;
+  }
+
+  #parseString(): string {
+    this.#expect(34);  // '"'
+    
+    let start = this.#reader.mark();
+    var hasEscape = false;
+    
+    while (true) {
+      let b = this.#reader.peekByte();
+      if (b == 0 - 1) {
+        this.#error("Unterminated string");
+      }
+      if (b == 34) {  // '"'
+        break;
+      }
+      if (b == 92) {  // '\\'
+        hasEscape = true;
+        this.#advance();
+        // Skip the escaped character
+        if (this.#reader.isAtEnd) {
+          this.#error("Unterminated escape sequence");
+        }
+        this.#advance();
+      } else if (b < 32) {
+        this.#error("Control character in string");
+      } else {
+        this.#advance();
+      }
+    }
+    
+    let raw = this.#reader.sliceFrom(start);
+    this.#expect(34);  // '"'
+    
+    if (hasEscape) {
+      return this.#unescapeString(raw);
+    }
+    return raw;
+  }
+
+  #unescapeString(raw: string): string {
+    // TODO: Implement proper string unescaping
+    // For now, handle common escapes
+    let reader = new StringReader(raw);
+    var parts = new Array<string>();
+    var start = reader.mark();
+    
+    while (!reader.isAtEnd) {
+      let b = reader.peekByte();
+      if (b == 92) {  // '\\'
+        // Flush accumulated text
+        if (reader.position > start) {
+          parts.push(reader.sliceRange(start, reader.position));
+        }
+        reader.advanceByte();  // skip backslash
+        
+        let escaped = reader.advanceByte();
+        if (escaped == 110) {  // 'n'
+          parts.push("\n");
+        } else if (escaped == 114) {  // 'r'
+          parts.push("\r");
+        } else if (escaped == 116) {  // 't'
+          parts.push("\t");
+        } else if (escaped == 34) {   // '"'
+          parts.push("\"");
+        } else if (escaped == 92) {   // '\\'
+          parts.push("\\");
+        } else if (escaped == 47) {   // '/'
+          parts.push("/");
+        } else if (escaped == 98) {   // 'b'
+          // TODO: backspace - need character from code point
+          parts.push("");
+        } else if (escaped == 102) {  // 'f'
+          // TODO: form feed
+          parts.push("");
+        } else if (escaped == 117) {  // 'u' - unicode escape
+          // TODO: parse \uXXXX
+          reader.skipBytes(4);
+          parts.push("?");  // placeholder
+        }
+        start = reader.mark();
+      } else {
+        reader.advanceByte();
+      }
+    }
+    
+    // Flush remaining text
+    if (reader.position > start) {
+      parts.push(reader.sliceRange(start, reader.position));
+    }
+    
+    // Join parts
+    // TODO: Use String.fromParts or similar
+    var result = "";
+    var i = 0;
+    while (i < parts.length) {
+      result = result + parts[i];
+      i = i + 1;
+    }
+    return result;
+  }
+
+  #parseNumber(): Box<f64> {
+    let start = this.#reader.mark();
+    
+    // Optional minus
+    if (this.#reader.peekByte() == 45) {  // '-'
+      this.#advance();
+    }
+    
+    // Integer part
+    let first = this.#reader.peekByte();
+    if (first == 48) {  // '0'
+      this.#advance();
+    } else if (first >= 49 && first <= 57) {  // '1'-'9'
+      this.#advance();
+      while (true) {
+        let b = this.#reader.peekByte();
+        if (b >= 48 && b <= 57) {
+          this.#advance();
+        } else {
+          break;
+        }
+      }
+    } else {
+      this.#error("Invalid number");
+    }
+    
+    // Fractional part
+    if (this.#reader.peekByte() == 46) {  // '.'
+      this.#advance();
+      var hasDigit = false;
+      while (true) {
+        let b = this.#reader.peekByte();
+        if (b >= 48 && b <= 57) {
+          this.#advance();
+          hasDigit = true;
+        } else {
+          break;
+        }
+      }
+      if (!hasDigit) {
+        this.#error("Invalid number: expected digit after decimal point");
+      }
+    }
+    
+    // Exponent part
+    let e = this.#reader.peekByte();
+    if (e == 101 || e == 69) {  // 'e' or 'E'
+      this.#advance();
+      let sign = this.#reader.peekByte();
+      if (sign == 43 || sign == 45) {  // '+' or '-'
+        this.#advance();
+      }
+      var hasExpDigit = false;
+      while (true) {
+        let b = this.#reader.peekByte();
+        if (b >= 48 && b <= 57) {
+          this.#advance();
+          hasExpDigit = true;
+        } else {
+          break;
+        }
+      }
+      if (!hasExpDigit) {
+        this.#error("Invalid number: expected digit in exponent");
+      }
+    }
+    
+    let numStr = this.#reader.sliceFrom(start);
+    let value = this.#parseFloat(numStr);
+    return new Box(value);
+  }
+
+  #parseFloat(s: string): f64 {
+    // TODO: Implement proper string-to-float conversion
+    // For now, use a simple integer parser
+    let reader = new StringReader(s);
+    var negative = false;
+    var intPart: f64 = 0.0 as f64;
+    var fracPart: f64 = 0.0 as f64;
+    var fracDiv: f64 = 1.0 as f64;
+    var expPart: i32 = 0;
+    var expNeg = false;
+    
+    // Sign
+    if (reader.peekByte() == 45) {  // '-'
+      negative = true;
+      reader.advanceByte();
+    }
+    
+    // Integer part
+    while (!reader.isAtEnd) {
+      let b = reader.peekByte();
+      if (b >= 48 && b <= 57) {
+        intPart = intPart * (10.0 as f64) + ((b - 48) as f64);
+        reader.advanceByte();
+      } else {
+        break;
+      }
+    }
+    
+    // Fractional part
+    if (reader.peekByte() == 46) {
+      reader.advanceByte();
+      while (!reader.isAtEnd) {
+        let b = reader.peekByte();
+        if (b >= 48 && b <= 57) {
+          fracDiv = fracDiv * (10.0 as f64);
+          fracPart = fracPart + ((b - 48) as f64) / fracDiv;
+          reader.advanceByte();
+        } else {
+          break;
+        }
+      }
+    }
+    
+    // Exponent
+    let e = reader.peekByte();
+    if (e == 101 || e == 69) {
+      reader.advanceByte();
+      let sign = reader.peekByte();
+      if (sign == 45) {
+        expNeg = true;
+        reader.advanceByte();
+      } else if (sign == 43) {
+        reader.advanceByte();
+      }
+      while (!reader.isAtEnd) {
+        let b = reader.peekByte();
+        if (b >= 48 && b <= 57) {
+          expPart = expPart * 10 + (b - 48);
+          reader.advanceByte();
+        } else {
+          break;
+        }
+      }
+    }
+    
+    var result = intPart + fracPart;
+    
+    // Apply exponent
+    // TODO: Use Math.pow when available
+    var exp: f64 = 1.0 as f64;
+    var i = 0;
+    while (i < expPart) {
+      exp = exp * (10.0 as f64);
+      i = i + 1;
+    }
+    if (expNeg) {
+      result = result / exp;
+    } else {
+      result = result * exp;
+    }
+    
+    if (negative) {
+      result = (0.0 as f64) - result;
+    }
+    
+    return result;
+  }
+
+  #parseTrue(): Box<boolean> {
+    this.#expectWord("true");
+    return new Box(true as boolean);
+  }
+
+  #parseFalse(): Box<boolean> {
+    this.#expectWord("false");
+    return new Box(false as boolean);
+  }
+
+  #parseNull(): any {
+    this.#expectWord("null");
+    return null;
+  }
+
+  #expectWord(word: string): void {
+    let reader = new StringReader(word);
+    while (!reader.isAtEnd) {
+      let expected = reader.advanceByte();
+      let actual = this.#reader.peekByte();
+      if (actual != expected) {
+        this.#error("Expected '" + word + "'");
+      }
+      this.#advance();
+    }
+  }
+
+  #skipWhitespaceAndComments(): void {
+    while (true) {
+      let b = this.#reader.peekByte();
+      
+      // Whitespace
+      if (b == 32 || b == 9 || b == 13) {  // space, tab, CR
+        this.#advance();
+      } else if (b == 10) {  // newline
+        this.#advance();
+        this.#line = this.#line + 1;
+        this.#lineStart = this.#reader.position;
+        this.#column = 1;
+      } else if (this.#allowComments && b == 47) {  // '/'
+        let next = this.#reader.peekByteAt(1);
+        if (next == 47) {  // '//' line comment
+          this.#advance();
+          this.#advance();
+          while (!this.#reader.isAtEnd) {
+            let c = this.#reader.peekByte();
+            if (c == 10) {  // newline
+              break;
+            }
+            this.#advance();
+          }
+        } else if (next == 42) {  // '/*' block comment
+          this.#advance();
+          this.#advance();
+          while (!this.#reader.isAtEnd) {
+            let c = this.#reader.peekByte();
+            if (c == 42 && this.#reader.peekByteAt(1) == 47) {  // '*/'
+              this.#advance();
+              this.#advance();
+              break;
+            }
+            if (c == 10) {  // newline
+              this.#line = this.#line + 1;
+              this.#lineStart = this.#reader.position + 1;
+              this.#column = 0;
+            }
+            this.#advance();
+          }
+        } else {
+          break;  // Not a comment
+        }
+      } else {
+        break;
+      }
+    }
+  }
+
+  #expect(expected: i32): void {
+    let actual = this.#reader.peekByte();
+    if (actual != expected) {
+      this.#error("Expected character");
+    }
+    this.#advance();
+  }
+
+  #advance(): void {
+    this.#reader.advanceByte();
+    this.#column = this.#column + 1;
+  }
+
+  #error(message: string): never {
+    throw new JsonParseError(message, this.#line, this.#column);
+  }
+}
+
+// === Public API ===
+
+export let parseJson = (input: string, options: JsonOptions | null = null): any => {
+  let parser = new JsonParser(input, options);
+  return parser.parse();
+};
+
+// === jq-Style Query Functions ===
+
+// Get a value by path (e.g., ".foo.bar[0].baz")
+export let jsonGet = (value: any, path: string): any => {
+  let reader = new StringReader(path);
+  var current: any = value;
+  
+  while (!reader.isAtEnd && current != null) {
+    let b = reader.peekByte();
+    
+    if (b == 46) {  // '.'
+      reader.advanceByte();
+      
+      // Parse field name
+      let start = reader.mark();
+      while (!reader.isAtEnd) {
+        let c = reader.peekByte();
+        if (c == 46 || c == 91) {  // '.' or '['
+          break;
+        }
+        reader.advanceByte();
+      }
+      let key = reader.sliceFrom(start);
+      
+      if (key.length > 0) {
+        if (current is JsonObject) {
+          current = (current as JsonObject)[key];
+        } else {
+          return null;  // Not an object
+        }
+      }
+    } else if (b == 91) {  // '['
+      reader.advanceByte();
+      
+      // Parse index
+      var index = 0;
+      while (!reader.isAtEnd) {
+        let c = reader.peekByte();
+        if (c == 93) {  // ']'
+          reader.advanceByte();
+          break;
+        }
+        if (c >= 48 && c <= 57) {
+          index = index * 10 + (c - 48);
+          reader.advanceByte();
+        } else {
+          return null;  // Invalid index
+        }
+      }
+      
+      if (current is JsonArray) {
+        let arr = current as JsonArray;
+        if (index >= 0 && index < arr.length) {
+          current = arr[index];
+        } else {
+          return null;  // Out of bounds
+        }
+      } else {
+        return null;  // Not an array
+      }
+    } else {
+      return null;  // Invalid path syntax
+    }
+  }
+  
+  return current;
+};

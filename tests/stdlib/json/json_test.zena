@@ -1,0 +1,640 @@
+// JSON parser stdlib tests using zena:test
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse, throws} from 'zena:assert';
+import {parseJson, jsonGet, JsonObject, JsonArray, JsonOptions, JsonParseError} from 'zena:json';
+import {Box} from 'zena:box';
+
+// Helper to test that parsing throws JsonParseError
+let expectParseError = (input: string): void => {
+  throws(() => {
+    parseJson(input);
+  });
+};
+
+let expectParseErrorWithComments = (input: string): void => {
+  let opts: JsonOptions = { allowComments: true, trackLocations: false };
+  throws(() => {
+    parseJson(input, opts);
+  });
+};
+
+export let tests = suite('JSON Parser', (): void => {
+
+  // ==========================================================================
+  // STRINGS
+  // ==========================================================================
+
+  suite('strings - valid', (): void => {
+    test('empty string', (ctx: TestContext): void => {
+      let s: string = parseJson('""') as string;
+      equal(s, '');
+    });
+
+    test('simple ASCII', (ctx: TestContext): void => {
+      let s: string = parseJson('"hello world"') as string;
+      equal(s, 'hello world');
+    });
+
+    test('whitespace only', (ctx: TestContext): void => {
+      let s: string = parseJson('"   "') as string;
+      equal(s, '   ');
+    });
+
+    test('escape sequence - newline', (ctx: TestContext): void => {
+      let s: string = parseJson('"line1\\nline2"') as string;
+      // Check length includes newline
+      equal(s.length, 11);
+    });
+
+    test('escape sequence - tab', (ctx: TestContext): void => {
+      let s: string = parseJson('"a\\tb"') as string;
+      equal(s.length, 3);
+    });
+
+    test('escape sequence - carriage return', (ctx: TestContext): void => {
+      let s: string = parseJson('"a\\rb"') as string;
+      equal(s.length, 3);
+    });
+
+    test('escape sequence - quote', (ctx: TestContext): void => {
+      let s: string = parseJson('"say \\"hello\\""') as string;
+      // Contains actual quote characters
+      isTrue(s.length > 0);
+    });
+
+    test('escape sequence - backslash', (ctx: TestContext): void => {
+      let s: string = parseJson('"path\\\\to\\\\file"') as string;
+      isTrue(s.length > 0);
+    });
+
+    test('escape sequence - forward slash', (ctx: TestContext): void => {
+      let s: string = parseJson('"a\\/b"') as string;
+      equal(s, 'a/b');
+    });
+  });
+
+  suite('strings - errors', (): void => {
+    test('unterminated string', (ctx: TestContext): void => {
+      expectParseError('"hello');
+    });
+
+    test('single quotes not allowed', (ctx: TestContext): void => {
+      expectParseError("'hello'");
+    });
+
+    test('newline in string', (ctx: TestContext): void => {
+      // Actual newline character inside string is not allowed
+      expectParseError('"hello\nworld"');
+    });
+  });
+
+  // ==========================================================================
+  // NUMBERS
+  // ==========================================================================
+
+  suite('numbers - valid', (): void => {
+    test('zero', (ctx: TestContext): void => {
+      let n = parseJson('0') as f64;
+      isTrue(n == 0.0);
+    });
+
+    test('positive integer', (ctx: TestContext): void => {
+      let n = parseJson('42') as f64;
+      isTrue(n == 42.0);
+    });
+
+    test('negative integer', (ctx: TestContext): void => {
+      let n = parseJson('-42') as f64;
+      isTrue(n == (0.0 - 42.0));
+    });
+
+    test('decimal', (ctx: TestContext): void => {
+      let n = parseJson('3.14159') as f64;
+      isTrue(n > 3.14 && n < 3.15);
+    });
+
+    test('negative decimal', (ctx: TestContext): void => {
+      let n = parseJson('-3.14') as f64;
+      // n should be between -4 and -3
+      let negFour = 0.0 - 4.0;
+      let negThree = 0.0 - 3.0;
+      isTrue(n > negFour && n < negThree);
+    });
+
+    test('exponent lowercase', (ctx: TestContext): void => {
+      let n = parseJson('1e3') as f64;
+      isTrue(n == 1000.0);
+    });
+
+    test('exponent uppercase', (ctx: TestContext): void => {
+      let n = parseJson('1E3') as f64;
+      isTrue(n == 1000.0);
+    });
+
+    test('negative exponent', (ctx: TestContext): void => {
+      let n = parseJson('1e-5') as f64;
+      isTrue(n < 0.001 && n > 0.0);
+    });
+
+    test('positive exponent with sign', (ctx: TestContext): void => {
+      let n = parseJson('1e+5') as f64;
+      isTrue(n == 100000.0);
+    });
+
+    test('decimal with exponent', (ctx: TestContext): void => {
+      let n = parseJson('1.5e2') as f64;
+      isTrue(n == 150.0);
+    });
+
+    test('small decimal', (ctx: TestContext): void => {
+      let n = parseJson('0.001') as f64;
+      isTrue(n > 0.0009 && n < 0.0011);
+    });
+  });
+
+  suite('numbers - errors', (): void => {
+    test('leading decimal', (ctx: TestContext): void => {
+      expectParseError('.5');
+    });
+
+    test('trailing decimal', (ctx: TestContext): void => {
+      expectParseError('5.');
+    });
+
+    test('multiple decimals', (ctx: TestContext): void => {
+      expectParseError('1.2.3');
+    });
+
+    test('leading zeros', (ctx: TestContext): void => {
+      expectParseError('007');
+    });
+
+    test('plus sign', (ctx: TestContext): void => {
+      expectParseError('+5');
+    });
+
+    test('hex notation', (ctx: TestContext): void => {
+      expectParseError('0xFF');
+    });
+
+    test('empty exponent', (ctx: TestContext): void => {
+      expectParseError('1e');
+    });
+
+    test('exponent with only sign', (ctx: TestContext): void => {
+      expectParseError('1e+');
+    });
+  });
+
+  // ==========================================================================
+  // OBJECTS
+  // ==========================================================================
+
+  suite('objects - valid', (): void => {
+    test('empty object', (ctx: TestContext): void => {
+      let obj = parseJson('{}') as JsonObject;
+      equal(obj.size, 0);
+    });
+
+    test('single property', (ctx: TestContext): void => {
+      let obj = parseJson('{"key": "value"}') as JsonObject;
+      equal(obj.size, 1);
+      let v: string = obj['key'] as string;
+      equal(v, 'value');
+    });
+
+    test('multiple properties', (ctx: TestContext): void => {
+      let obj = parseJson('{"a": 1, "b": 2, "c": 3}') as JsonObject;
+      equal(obj.size, 3);
+    });
+
+    test('null value', (ctx: TestContext): void => {
+      let obj = parseJson('{"key": null}') as JsonObject;
+      isTrue(obj['key'] == null);
+    });
+
+    test('boolean values', (ctx: TestContext): void => {
+      let obj = parseJson('{"t": true, "f": false}') as JsonObject;
+      let t: boolean = obj['t'] as boolean;
+      let f: boolean = obj['f'] as boolean;
+      isTrue(t);
+      isFalse(f);
+    });
+
+    test('number value', (ctx: TestContext): void => {
+      let obj = parseJson('{"n": 42}') as JsonObject;
+      let n = obj['n'] as f64;
+      isTrue(n == 42.0);
+    });
+
+    test('nested object', (ctx: TestContext): void => {
+      let obj = parseJson('{"outer": {"inner": "value"}}') as JsonObject;
+      let inner = obj['outer'] as JsonObject;
+      let v: string = inner['inner'] as string;
+      equal(v, 'value');
+    });
+
+    test('array value', (ctx: TestContext): void => {
+      let obj = parseJson('{"arr": [1, 2, 3]}') as JsonObject;
+      let arr = obj['arr'] as JsonArray;
+      equal(arr.length, 3);
+    });
+
+    test('whitespace variations', (ctx: TestContext): void => {
+      let obj = parseJson('{  "a"  :  1  ,  "b"  :  2  }') as JsonObject;
+      equal(obj.size, 2);
+    });
+
+    test('newlines in object', (ctx: TestContext): void => {
+      let obj = parseJson('{\n  "a": 1,\n  "b": 2\n}') as JsonObject;
+      equal(obj.size, 2);
+    });
+  });
+
+  suite('objects - errors', (): void => {
+    test('missing colon', (ctx: TestContext): void => {
+      expectParseError('{"key" "value"}');
+    });
+
+    test('missing comma', (ctx: TestContext): void => {
+      expectParseError('{"a": 1 "b": 2}');
+    });
+
+    test('trailing comma', (ctx: TestContext): void => {
+      expectParseError('{"a": 1,}');
+    });
+
+    test('unquoted key', (ctx: TestContext): void => {
+      expectParseError('{key: "value"}');
+    });
+
+    test('single-quoted key', (ctx: TestContext): void => {
+      expectParseError("{\'key\': \"value\"}");
+    });
+
+    test('missing value', (ctx: TestContext): void => {
+      expectParseError('{"key":}');
+    });
+
+    test('missing key', (ctx: TestContext): void => {
+      expectParseError('{: "value"}');
+    });
+
+    test('unclosed object', (ctx: TestContext): void => {
+      expectParseError('{"key": "value"');
+    });
+
+    test('extra comma between properties', (ctx: TestContext): void => {
+      expectParseError('{"a": 1,, "b": 2}');
+    });
+  });
+
+  // ==========================================================================
+  // ARRAYS
+  // ==========================================================================
+
+  suite('arrays - valid', (): void => {
+    test('empty array', (ctx: TestContext): void => {
+      let arr = parseJson('[]') as JsonArray;
+      equal(arr.length, 0);
+    });
+
+    test('single element', (ctx: TestContext): void => {
+      let arr = parseJson('[42]') as JsonArray;
+      equal(arr.length, 1);
+      let n = arr[0] as f64;
+      isTrue(n == 42.0);
+    });
+
+    test('multiple elements', (ctx: TestContext): void => {
+      let arr = parseJson('[1, 2, 3, 4, 5]') as JsonArray;
+      equal(arr.length, 5);
+    });
+
+    test('mixed types', (ctx: TestContext): void => {
+      let arr = parseJson('[1, "two", true, null, {}]') as JsonArray;
+      equal(arr.length, 5);
+      isTrue(arr[0] is Box<f64>);
+      isTrue(arr[1] is string);
+      isTrue(arr[2] is Box<boolean>);
+      isTrue(arr[3] == null);
+      isTrue(arr[4] is JsonObject);
+    });
+
+    test('nested arrays', (ctx: TestContext): void => {
+      let arr = parseJson('[[1, 2], [3, 4]]') as JsonArray;
+      equal(arr.length, 2);
+      let inner = arr[0] as JsonArray;
+      equal(inner.length, 2);
+    });
+
+    test('deeply nested', (ctx: TestContext): void => {
+      let arr = parseJson('[[[1]]]') as JsonArray;
+      let a1 = arr[0] as JsonArray;
+      let a2 = a1[0] as JsonArray;
+      let n = a2[0] as f64;
+      isTrue(n == 1.0);
+    });
+
+    test('whitespace variations', (ctx: TestContext): void => {
+      let arr = parseJson('[  1  ,  2  ,  3  ]') as JsonArray;
+      equal(arr.length, 3);
+    });
+
+    test('newlines in array', (ctx: TestContext): void => {
+      let arr = parseJson('[\n  1,\n  2\n]') as JsonArray;
+      equal(arr.length, 2);
+    });
+  });
+
+  suite('arrays - errors', (): void => {
+    test('missing comma', (ctx: TestContext): void => {
+      expectParseError('[1 2]');
+    });
+
+    test('trailing comma', (ctx: TestContext): void => {
+      expectParseError('[1, 2,]');
+    });
+
+    test('double comma', (ctx: TestContext): void => {
+      expectParseError('[1,, 2]');
+    });
+
+    test('unclosed array', (ctx: TestContext): void => {
+      expectParseError('[1, 2');
+    });
+
+    test('leading comma', (ctx: TestContext): void => {
+      expectParseError('[, 1, 2]');
+    });
+  });
+
+  // ==========================================================================
+  // KEYWORDS (true, false, null)
+  // ==========================================================================
+
+  suite('keywords - valid', (): void => {
+    test('true', (ctx: TestContext): void => {
+      let b: boolean = parseJson('true') as boolean;
+      isTrue(b);
+    });
+
+    test('false', (ctx: TestContext): void => {
+      let b: boolean = parseJson('false') as boolean;
+      isFalse(b);
+    });
+
+    test('null', (ctx: TestContext): void => {
+      isTrue(parseJson('null') == null);
+    });
+  });
+
+  suite('keywords - errors', (): void => {
+    test('tru (incomplete)', (ctx: TestContext): void => {
+      expectParseError('tru');
+    });
+
+    test('fals (incomplete)', (ctx: TestContext): void => {
+      expectParseError('fals');
+    });
+
+    test('nul (incomplete)', (ctx: TestContext): void => {
+      expectParseError('nul');
+    });
+
+    test('nulll (extra letter)', (ctx: TestContext): void => {
+      expectParseError('nulll');
+    });
+
+    test('True (wrong case)', (ctx: TestContext): void => {
+      expectParseError('True');
+    });
+
+    test('FALSE (wrong case)', (ctx: TestContext): void => {
+      expectParseError('FALSE');
+    });
+
+    test('Null (wrong case)', (ctx: TestContext): void => {
+      expectParseError('Null');
+    });
+
+    test('undefined (not JSON)', (ctx: TestContext): void => {
+      expectParseError('undefined');
+    });
+
+    test('NaN (not JSON)', (ctx: TestContext): void => {
+      expectParseError('NaN');
+    });
+
+    test('Infinity (not JSON)', (ctx: TestContext): void => {
+      expectParseError('Infinity');
+    });
+  });
+
+  // ==========================================================================
+  // STRUCTURAL / GENERAL
+  // ==========================================================================
+
+  suite('structural - valid', (): void => {
+    test('string as root', (ctx: TestContext): void => {
+      let s: string = parseJson('"hello"') as string;
+      equal(s, 'hello');
+    });
+
+    test('number as root', (ctx: TestContext): void => {
+      let n = parseJson('42') as f64;
+      isTrue(n == 42.0);
+    });
+
+    test('true as root', (ctx: TestContext): void => {
+      let b: boolean = parseJson('true') as boolean;
+      isTrue(b);
+    });
+
+    test('null as root', (ctx: TestContext): void => {
+      isTrue(parseJson('null') == null);
+    });
+
+    test('leading whitespace', (ctx: TestContext): void => {
+      let n = parseJson('   42') as f64;
+      isTrue(n == 42.0);
+    });
+
+    test('trailing whitespace', (ctx: TestContext): void => {
+      let n = parseJson('42   ') as f64;
+      isTrue(n == 42.0);
+    });
+
+    test('tabs and newlines', (ctx: TestContext): void => {
+      let n = parseJson('\t\n42\n\t') as f64;
+      isTrue(n == 42.0);
+    });
+  });
+
+  suite('structural - errors', (): void => {
+    test('empty input', (ctx: TestContext): void => {
+      expectParseError('');
+    });
+
+    test('whitespace only', (ctx: TestContext): void => {
+      expectParseError('   ');
+    });
+
+    test('multiple values', (ctx: TestContext): void => {
+      expectParseError('1 2');
+    });
+
+    test('trailing content after object', (ctx: TestContext): void => {
+      expectParseError('{} extra');
+    });
+
+    test('trailing content after array', (ctx: TestContext): void => {
+      expectParseError('[] extra');
+    });
+  });
+
+  // ==========================================================================
+  // jq-STYLE QUERIES
+  // ==========================================================================
+
+  suite('jq-style queries', (): void => {
+    test('jsonGet with simple path', (ctx: TestContext): void => {
+      let value = parseJson('{"name": "Alice"}');
+      let name = jsonGet(value, '.name');
+      isTrue(name is string);
+      let s: string = name as string;
+      equal(s, 'Alice');
+    });
+
+    test('jsonGet with nested path', (ctx: TestContext): void => {
+      let value = parseJson('{"user": {"name": "Alice"}}');
+      let name = jsonGet(value, '.user.name');
+      isTrue(name is string);
+      let s: string = name as string;
+      equal(s, 'Alice');
+    });
+
+    test('jsonGet with array index', (ctx: TestContext): void => {
+      let value = parseJson('{"items": ["a", "b", "c"]}');
+      let item = jsonGet(value, '.items[1]');
+      isTrue(item is string);
+      let s: string = item as string;
+      equal(s, 'b');
+    });
+
+    test('jsonGet returns null for missing key', (ctx: TestContext): void => {
+      let value = parseJson('{"name": "Alice"}');
+      let missing = jsonGet(value, '.age');
+      isTrue(missing == null);
+    });
+  });
+
+  // ==========================================================================
+  // JSONC (comments)
+  // ==========================================================================
+
+  suite('JSONC (comments)', (): void => {
+    let opts: JsonOptions = { allowComments: true, trackLocations: false };
+
+    test('line comment', (ctx: TestContext): void => {
+      let obj = parseJson('{"a": 1} // comment', opts) as JsonObject;
+      equal(obj.size, 1);
+    });
+
+    test('line comment before value', (ctx: TestContext): void => {
+      let obj = parseJson('// comment\n{"a": 1}', opts) as JsonObject;
+      equal(obj.size, 1);
+    });
+
+    test('line comment inside object', (ctx: TestContext): void => {
+      let input = '{ // comment
+        "name": "Alice"  // another comment
+      }';
+      let obj = parseJson(input, opts) as JsonObject;
+      let name: string = obj['name'] as string;
+      equal(name, 'Alice');
+    });
+
+    test('block comment', (ctx: TestContext): void => {
+      let obj = parseJson('{"a": /* comment */ 1}', opts) as JsonObject;
+      let n = obj['a'] as f64;
+      isTrue(n == 1.0);
+    });
+
+    test('block comment spanning lines', (ctx: TestContext): void => {
+      let input = '/* multi\nline\ncomment */{"a": 1}';
+      let obj = parseJson(input, opts) as JsonObject;
+      equal(obj.size, 1);
+    });
+
+    test('comments not allowed by default', (ctx: TestContext): void => {
+      expectParseError('{"a": 1} // comment');
+    });
+  });
+
+  // ==========================================================================
+  // SOURCE LOCATIONS
+  // ==========================================================================
+
+  suite('source locations', (): void => {
+    let opts: JsonOptions = { allowComments: false, trackLocations: true };
+
+    test('tracks location of object fields', (ctx: TestContext): void => {
+      let input = '{"name": "Alice"}';
+      let obj = parseJson(input, opts) as JsonObject;
+      let loc = obj.locationOf('name');
+      isTrue(loc != null);
+      // Value "Alice" starts at column 10 (1-indexed)
+      if (loc != null) {
+        equal(loc.line, 1);
+        equal(loc.column, 10);
+      }
+    });
+  });
+
+  // ==========================================================================
+  // ERROR INFORMATION
+  // ==========================================================================
+
+  suite('error handling', (): void => {
+    test('throws JsonParseError', (ctx: TestContext): void => {
+      let result = try {
+        parseJson('{invalid}');
+        0
+      } catch (e) {
+        if (e is JsonParseError) { 1 } else { 2 }
+      };
+      equal(result, 1);
+    });
+
+    test('error has line number', (ctx: TestContext): void => {
+      let result = try {
+        parseJson('{invalid}');
+        0
+      } catch (e) {
+        if (e is JsonParseError) {
+          let err = e as JsonParseError;
+          if (err.line == 1) { 1 } else { 2 }
+        } else {
+          3
+        }
+      };
+      equal(result, 1);
+    });
+
+    test('error line number for multiline', (ctx: TestContext): void => {
+      let result = try {
+        parseJson('{\n  "a": invalid\n}');
+        0
+      } catch (e) {
+        if (e is JsonParseError) {
+          let err = e as JsonParseError;
+          if (err.line == 2) { 1 } else { 2 }
+        } else {
+          3
+        }
+      };
+      equal(result, 1);
+    });
+  });
+});
