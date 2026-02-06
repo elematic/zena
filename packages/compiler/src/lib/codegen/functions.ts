@@ -13,6 +13,7 @@ import {
   type FunctionType,
   type Type,
   type UnboxedTupleType,
+  type UnionType,
 } from '../types.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
 import {
@@ -29,6 +30,10 @@ import type {ClassInfo} from './types.js';
  * For most types, returns a single-element array containing the mapped type.
  * For UnboxedTupleType, returns multiple elements (one per tuple element) to
  * support WASM multi-value returns.
+ *
+ * For unions of unboxed tuples (e.g., (true, T) | (false, never)), extracts
+ * the first tuple variant to determine the WASM signature. At runtime, all
+ * variants must have the same WASM representation.
  */
 export function mapReturnTypeToWasmResults(
   ctx: CodegenContext,
@@ -42,6 +47,19 @@ export function mapReturnTypeToWasmResults(
     return tupleType.elementTypes.map((el) =>
       mapCheckerTypeToWasmType(ctx, el),
     );
+  }
+  // Handle union of unboxed tuples: (true, T) | (false, never)
+  if (type.kind === TypeKind.Union) {
+    const unionType = type as UnionType;
+    // Find the first unboxed tuple in the union to get the WASM signature
+    for (const t of unionType.types) {
+      if (t.kind === TypeKind.UnboxedTuple) {
+        const tupleType = t as UnboxedTupleType;
+        return tupleType.elementTypes.map((el) =>
+          mapCheckerTypeToWasmType(ctx, el),
+        );
+      }
+    }
   }
   // For all other types, wrap in an array
   const mapped = mapCheckerTypeToWasmType(ctx, type);

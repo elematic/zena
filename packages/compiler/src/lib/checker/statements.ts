@@ -1219,7 +1219,8 @@ function checkTuplePattern(
 
 /**
  * Check an unboxed tuple pattern like `let (a, b) = expr`.
- * The initializer must be an UnboxedTupleType with matching element count.
+ * The initializer must be an UnboxedTupleType or a union of UnboxedTupleTypes
+ * with matching element count.
  */
 function checkUnboxedTuplePattern(
   ctx: CheckerContext,
@@ -1228,7 +1229,11 @@ function checkUnboxedTuplePattern(
   kind: 'let' | 'var',
   declaration?: VariableDeclaration,
 ) {
-  if (type.kind !== TypeKind.UnboxedTuple) {
+  // Handle union of unboxed tuples: (true, T) | (false, never)
+  // Compute element types as unions across all tuple variants
+  const elementTypes = getUnboxedTupleElementTypes(type);
+
+  if (elementTypes === null) {
     ctx.diagnostics.reportError(
       `Unboxed tuple pattern requires an unboxed tuple type, got '${typeToString(type)}'`,
       DiagnosticCode.TypeMismatch,
@@ -1236,25 +1241,92 @@ function checkUnboxedTuplePattern(
     return;
   }
 
-  const tupleType = type as UnboxedTupleType;
-
-  if (pattern.elements.length !== tupleType.elementTypes.length) {
+  if (pattern.elements.length !== elementTypes.length) {
     ctx.diagnostics.reportError(
-      `Unboxed tuple pattern has ${pattern.elements.length} elements but type has ${tupleType.elementTypes.length}`,
+      `Unboxed tuple pattern has ${pattern.elements.length} elements but type has ${elementTypes.length}`,
       DiagnosticCode.TypeMismatch,
     );
     return;
   }
 
   for (let i = 0; i < pattern.elements.length; i++) {
-    checkPattern(
-      ctx,
-      pattern.elements[i],
-      tupleType.elementTypes[i],
-      kind,
-      declaration,
-    );
+    checkPattern(ctx, pattern.elements[i], elementTypes[i], kind, declaration);
   }
+}
+
+/**
+ * Extract element types from an unboxed tuple type or union of unboxed tuples.
+ * For unions, returns the union of element types at each position.
+ * Returns null if the type is not an unboxed tuple or union of unboxed tuples.
+ *
+ * Examples:
+ * - `(i32, boolean)` -> [i32, boolean]
+ * - `(true, i32) | (false, never)` -> [true | false, i32 | never]
+ */
+function getUnboxedTupleElementTypes(type: Type): Type[] | null {
+  if (type.kind === TypeKind.UnboxedTuple) {
+    return (type as UnboxedTupleType).elementTypes;
+  }
+
+  if (type.kind === TypeKind.Union) {
+    const unionType = type as UnionType;
+    const tuples: UnboxedTupleType[] = [];
+
+    for (const t of unionType.types) {
+      if (t.kind !== TypeKind.UnboxedTuple) {
+        return null; // Union contains non-tuple type
+      }
+      tuples.push(t as UnboxedTupleType);
+    }
+
+    if (tuples.length === 0) {
+      return null;
+    }
+
+    // All tuples must have the same arity
+    const arity = tuples[0].elementTypes.length;
+    for (const tuple of tuples) {
+      if (tuple.elementTypes.length !== arity) {
+        return null; // Mismatched arity
+      }
+    }
+
+    // Compute union of element types at each position
+    const elementTypes: Type[] = [];
+    for (let i = 0; i < arity; i++) {
+      const typesAtPosition = tuples.map((t) => t.elementTypes[i]);
+      // Create a union of all types at this position
+      // Simplify if all types are the same
+      const uniqueTypes = deduplicateTypes(typesAtPosition);
+      if (uniqueTypes.length === 1) {
+        elementTypes.push(uniqueTypes[0]);
+      } else {
+        elementTypes.push({
+          kind: TypeKind.Union,
+          types: uniqueTypes,
+        } as UnionType);
+      }
+    }
+
+    return elementTypes;
+  }
+
+  return null;
+}
+
+/**
+ * Deduplicate types by comparing with typeToString.
+ * This is a simple deduplication that works for most cases.
+ */
+function deduplicateTypes(types: Type[]): Type[] {
+  const seen = new Map<string, Type>();
+  for (const t of types) {
+    const key = typeToString(t);
+    if (!seen.has(key)) {
+      seen.set(key, t);
+    }
+  }
+  return Array.from(seen.values());
 }
 
 function checkAssignmentPattern(

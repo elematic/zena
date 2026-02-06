@@ -333,6 +333,13 @@ export function substituteType(
       elementTypes: tt.elementTypes.map((t) => substituteType(t, typeMap, ctx)),
     } as TupleType;
   }
+  if (type.kind === TypeKind.UnboxedTuple) {
+    const ut = type as UnboxedTupleType;
+    return {
+      ...ut,
+      elementTypes: ut.elementTypes.map((t) => substituteType(t, typeMap, ctx)),
+    } as UnboxedTupleType;
+  }
   return type;
 }
 

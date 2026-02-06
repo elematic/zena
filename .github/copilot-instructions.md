@@ -557,15 +557,19 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
       - Checker: Validate unboxed tuples only in return position (not first-class). ✅
         - Rejects: variable types, field types, parameter types, accessor types, type arguments
         - Allows: function return types, return expressions, destructuring patterns
-      - Codegen: Emit WASM multi-value function signatures.
-      - Codegen: Generate tuple returns (push values in order).
-      - Codegen: Generate destructuring (pop in reverse order to locals).
+      - Codegen: Emit WASM multi-value function signatures. ✅
+      - Codegen: Generate tuple returns (push values in order). ✅
+      - Codegen: Generate destructuring (pop in reverse order to locals). ✅
     - **Hole Literal (`_`)**: ✅ COMPLETED
       - `_` as expression has type `never`, generates zero/null for expected type.
       - Used in discriminated union returns: `return (false, _);`
       - Symmetric with `_` wildcard pattern (both mean "don't care").
-    - **Union of Tuples with Narrowing**:
+    - **Union of Tuples**: ✅ COMPLETED (basic support)
       - Support `(true, T) | (false, never)` return types.
+      - Destructuring computes union of element types at each position.
+      - WASM signature uses first tuple variant (all variants have same representation).
+      - **NOT YET**: Control-flow narrowing (checking first element doesn't narrow second).
+    - **Union of Tuples with Narrowing**: (future)
       - Control-flow narrowing: after `if (hasMore)`, narrow `value` from `T | never` to `T`.
       - Pattern matching: `case (true, value)` binds `value: T` (not `T | never`).
     - **Iterator Redesign**:

@@ -17,6 +17,7 @@ import {
   TypeKind,
   type ClassType,
   type InterfaceType,
+  type Type,
   type TypeAliasType,
   type UnboxedTupleType,
   type UnionType,
@@ -453,6 +454,9 @@ export function generateLocalVariableDeclaration(
  * have their values directly on the WASM stack. We need to:
  * 1. Generate the expression (pushes N values onto stack)
  * 2. Pop values in REVERSE order to locals (WASM stack is LIFO)
+ *
+ * Supports unions of unboxed tuples (e.g., (true, T) | (false, never)):
+ * At runtime, the union is erased - we just have the WASM values on the stack.
  */
 function generateUnboxedTuplePatternBinding(
   ctx: CodegenContext,
@@ -462,17 +466,18 @@ function generateUnboxedTuplePatternBinding(
   const pattern = decl.pattern as UnboxedTuplePattern;
   const initType = decl.init.inferredType;
 
-  if (initType?.kind !== TypeKind.UnboxedTuple) {
+  // Extract element types from unboxed tuple or union of unboxed tuples
+  const elementTypes = getUnboxedTupleElementTypes(initType);
+
+  if (elementTypes === null) {
     throw new Error(
       `Expected UnboxedTupleType for unboxed tuple pattern, got ${initType?.kind}`,
     );
   }
 
-  const tupleType = initType as UnboxedTupleType;
-
-  if (pattern.elements.length !== tupleType.elementTypes.length) {
+  if (pattern.elements.length !== elementTypes.length) {
     throw new Error(
-      `Unboxed tuple pattern has ${pattern.elements.length} elements but type has ${tupleType.elementTypes.length}`,
+      `Unboxed tuple pattern has ${pattern.elements.length} elements but type has ${elementTypes.length}`,
     );
   }
 
@@ -485,7 +490,7 @@ function generateUnboxedTuplePatternBinding(
   // We need to pop b first, then a
   for (let i = pattern.elements.length - 1; i >= 0; i--) {
     const elemPattern = pattern.elements[i];
-    const elemType = tupleType.elementTypes[i];
+    const elemType = elementTypes[i];
     const wasmType = mapCheckerTypeToWasmType(ctx, elemType);
 
     if (elemPattern.type === NodeType.Identifier) {
@@ -501,6 +506,32 @@ function generateUnboxedTuplePatternBinding(
       throw new Error('Nested patterns in unboxed tuple not yet supported');
     }
   }
+}
+
+/**
+ * Extract element types from an unboxed tuple type or union of unboxed tuples.
+ * For unions, uses the first variant's element types (they must all have the same
+ * WASM representation, just different static types).
+ * Returns null if the type is not an unboxed tuple or union of unboxed tuples.
+ */
+function getUnboxedTupleElementTypes(type: Type | undefined): Type[] | null {
+  if (!type) return null;
+
+  if (type.kind === TypeKind.UnboxedTuple) {
+    return (type as UnboxedTupleType).elementTypes;
+  }
+
+  if (type.kind === TypeKind.Union) {
+    const unionType = type as UnionType;
+    // Find the first unboxed tuple in the union
+    for (const t of unionType.types) {
+      if (t.kind === TypeKind.UnboxedTuple) {
+        return (t as UnboxedTupleType).elementTypes;
+      }
+    }
+  }
+
+  return null;
 }
 
 function generatePatternBinding(
