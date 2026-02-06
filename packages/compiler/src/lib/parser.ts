@@ -335,7 +335,115 @@ export class Parser {
     if (this.#match(TokenType.LBrace)) {
       return this.#parseBlockStatement();
     }
+    // Before falling through to expression statement, check for common
+    // variable declaration mistakes
+    this.#checkForVariableDeclarationMistake();
     return this.#parseExpressionStatement();
+  }
+
+  /**
+   * Detects common mistakes that look like variable declarations but use
+   * incorrect keywords or misspellings. Provides helpful error messages.
+   */
+  #checkForVariableDeclarationMistake(): void {
+    const current = this.#peek();
+    if (current.type !== TokenType.Identifier) return;
+
+    const name = current.value;
+    const next = this.#peek(1);
+
+    // Check if this looks like a variable declaration pattern:
+    // `name identifier` or `name {` or `name [` or `name identifier =`
+    const looksLikeVarDecl =
+      this.#isIdentifier(next.type) ||
+      next.type === TokenType.LBrace ||
+      next.type === TokenType.LBracket;
+
+    if (!looksLikeVarDecl) return;
+
+    // Check for specific known mistakes
+    if (name === 'const') {
+      throw new Error(
+        `'const' is not a keyword in Zena. Use 'let' for immutable bindings. ` +
+          `(line ${current.line})`,
+      );
+    }
+
+    // Check for misspellings of 'let'
+    if (this.#isSimilarTo(name, 'let')) {
+      throw new Error(
+        `Unknown keyword '${name}'. Did you mean 'let'? (line ${current.line})`,
+      );
+    }
+
+    // Check for misspellings of 'var'
+    if (this.#isSimilarTo(name, 'var')) {
+      throw new Error(
+        `Unknown keyword '${name}'. Did you mean 'var'? (line ${current.line})`,
+      );
+    }
+
+    // Check for wrong case of keywords (e.g., 'Let', 'Var', 'Symbol')
+    const lowerName = name.toLowerCase();
+    const keywordSuggestions: Record<string, string> = {
+      let: 'let',
+      var: 'var',
+      class: 'class',
+      interface: 'interface',
+      type: 'type',
+      enum: 'enum',
+      mixin: 'mixin',
+      symbol: 'symbol',
+    };
+
+    if (lowerName in keywordSuggestions && name !== lowerName) {
+      throw new Error(
+        `Keywords are case-sensitive. Did you mean '${keywordSuggestions[lowerName]}'? ` +
+          `(line ${current.line})`,
+      );
+    }
+  }
+
+  /**
+   * Checks if a string is similar to a target keyword (allowing for common typos).
+   * Handles case differences, single character insertions, deletions, and substitutions.
+   */
+  #isSimilarTo(input: string, target: string): boolean {
+    // Case-insensitive exact match is handled separately
+    if (input.toLowerCase() === target) return false;
+
+    // Check for edit distance of 1 (single character typo)
+    return this.#editDistance(input.toLowerCase(), target) === 1;
+  }
+
+  /**
+   * Computes the Levenshtein edit distance between two strings.
+   */
+  #editDistance(a: string, b: string): number {
+    const m = a.length;
+    const n = b.length;
+
+    // Early termination if difference is too large
+    if (Math.abs(m - n) > 2) return Math.abs(m - n);
+
+    const dp: number[][] = Array.from({length: m + 1}, () =>
+      Array.from({length: n + 1}, () => 0),
+    );
+
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        if (a[i - 1] === b[j - 1]) {
+          dp[i][j] = dp[i - 1][j - 1];
+        } else {
+          dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+        }
+      }
+    }
+
+    return dp[m][n];
   }
 
   #parseTypeAliasDeclaration(

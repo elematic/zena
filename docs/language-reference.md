@@ -424,6 +424,8 @@ Variables are declared using `let` or `var`.
 - **`let`**: Declares a block-scoped immutable binding.
 - **`var`**: Declares a block-scoped mutable binding.
 
+> **Note for TypeScript/JavaScript developers**: Zena does not have the `const` keyword. Use `let` for immutable bindings. Keywords in Zena are case-sensitive and must be lowercase.
+
 ### Syntax
 
 ```zena
