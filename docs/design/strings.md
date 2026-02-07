@@ -307,15 +307,157 @@ A future `HostString` implementation could wrap a JS string reference directly,
 avoiding any copying for strings that originate from JS and are only passed
 back to JS.
 
+## Unified String Architecture
+
+### Design Principle
+
+From the user's perspective, there is **one `String` type**. Internally, `String`
+is an abstract class with multiple final implementations optimized for different
+backing stores. This mirrors JavaScript's approach, where V8 internally has
+SeqString, ConsString, SlicedString, ExternalString, etc., but users only see
+`string`.
+
+### Internal Implementations
+
+```zena
+// String is an abstract class (not exported by default)
+abstract class String {
+  abstract get length(): i32;
+  abstract byteAt(index: i32): i32;
+
+  // All methods implemented once, using abstract primitives
+  indexOf(needle: String): i32 { ... }
+  startsWith(prefix: String): boolean { ... }
+  slice(start: i32, end: i32): String { ... }
+  operator +(other: String): String { ... }
+  // ... 30+ methods, implemented once
+}
+
+// GC-backed string (default for literals, concatenation)
+final class GCString extends String {
+  #data: ByteArray;
+  #start: i32;
+  #end: i32;
+  #encoding: i32;
+
+  byteAt(index: i32): i32 {
+    return this.#data[this.#start + index];
+  }
+}
+
+// Linear memory-backed string (for WASI I/O, FFI)
+final class LinearString extends String {
+  #ptr: i32;
+  #len: i32;
+  #encoding: i32;
+
+  @intrinsic('i32.load8_u')
+  declare byteAt(index: i32): i32;
+}
+
+// Host-backed string (for JS/DOM interop)
+final class HostString extends String {
+  #handle: externref;
+
+  @external("host", "stringByteAt")
+  declare byteAt(index: i32): i32;
+}
+
+// Rope string (for efficient concatenation in text editors)
+final class RopeString extends String {
+  #left: String;
+  #right: String;
+
+  byteAt(index: i32): i32 {
+    if (index < this.#left.length) return this.#left.byteAt(index);
+    return this.#right.byteAt(index - this.#left.length);
+  }
+}
+
+// Literal string (backed by WASM data segment, no GC allocation)
+final class LiteralString extends String {
+  #dataOffset: i32;  // Offset into WASM data segment
+  #len: i32;
+
+  @intrinsic('i32.load8_u')
+  declare byteAt(index: i32): i32;
+}
+```
+
+### User-Facing API
+
+Users interact only with `String`:
+
+```zena
+let a: String = "hello";              // LiteralString or GCString
+let b: String = a.slice(0, 3);        // View (shares backing)
+let c: String = a + b;                // GCString (or RopeString)
+let d: String = File.read(path);      // LinearString from WASI
+let e: String = element.textContent;  // HostString from DOM
+
+// All work the same way
+func process(s: String): void { ... }
+process(a); process(b); process(c); process(d); process(e);
+```
+
+### Performance Considerations
+
+**Virtual Dispatch**: Method calls on `String` are virtual calls since the
+concrete type is unknown at compile time.
+
+**Code Sharing Strategy**: The abstract `String` class uses the **template method
+pattern** - shared algorithms are implemented once on the base class, calling
+abstract primitives (`byteAt`, etc.) that each subclass implements. This is
+different from mixins:
+
+| Approach | Code Duplication | Internal Call Overhead |
+|----------|------------------|------------------------|
+| Template method (current) | None - shared code in base | Virtual dispatch for primitives |
+| Mixins | Full duplication per class | Direct calls (monomorphized) |
+| Swappable backing store | None | Virtual dispatch for every backing access |
+
+We chose template method because:
+1. **Minimal binary bloat**: ~30 String methods × ~5 implementations = code shared
+2. **Hot path optimization**: The abstract primitives (`byteAt`, `length`) are tiny,
+   so virtual call overhead is amortized over the algorithm's work
+3. **Devirtualization**: When concrete type is known, the entire call chain devirtualizes
+
+**The internal polymorphism concern**: Yes, `indexOf` calling `this.byteAt()` is a
+virtual call. But this is acceptable because:
+- Most string algorithms are O(n), so one vtable lookup per byte is negligible
+- JIT inline caching makes repeated calls to the same concrete type fast
+- When the caller knows the concrete type, the JIT can specialize the entire method
+
+**Devirtualization**: The compiler can eliminate virtual dispatch when:
+
+1. **Single implementation**: If a program doesn't use `LinearString` or
+   `HostString`, only `GCString` exists → all calls devirtualize.
+2. **Known concrete type**: After `new GCString(...)` or type narrowing with
+   `is`, calls devirtualize.
+3. **JIT optimization**: WASM JITs use inline caching for monomorphic call sites.
+
+**Escape hatch**: For performance-critical code, concrete types can be imported:
+
+```zena
+// Standard import - just String
+import {String} from 'zena:core';
+
+// Performance import - concrete types available
+import {LinearString, GCString} from 'zena:core/internal';
+
+func processIO(s: LinearString): void {
+  s.indexOf("x");  // Direct call, guaranteed no virtual dispatch
+}
+```
+
+See [optimizations.md](optimizations.md) for the complete devirtualization strategy.
+
 ## Future Considerations
 
 - **Unicode Support**: Iterators will handle Unicode code points or grapheme
   clusters, abstracting over the underlying encoding.
 - **Single Quotes**: Reserved for character literals (code points) in the
   future: `'A'` would be an `i32` code point, not a string.
-- **Ropes**: For applications with heavy string manipulation (text editors),
-  a rope-based `String` variant could be added. The public API remains
-  unchanged.
 - **Compile-Time Interning**: String literals could be interned at compile time
   by deduplicating identical literals in the data section.
 - **Cached Hash Codes**: If hashing becomes a bottleneck, add an optional cached

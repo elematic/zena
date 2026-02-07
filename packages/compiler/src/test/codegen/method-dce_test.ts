@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import {compileAndRun} from './utils.js';
 
 suite('Method-level DCE', () => {
-  test('unused method is replaced with unreachable stub', async () => {
+  test('unused method is fully eliminated', async () => {
     const source = `
       class Counter {
         #value: i32;
@@ -32,7 +32,7 @@ suite('Method-level DCE', () => {
       };
     `;
 
-    // The decrement method is not called, so it should be replaced with unreachable
+    // The decrement method is not called, so it should be fully eliminated (no vtable entry)
     const result = await compileAndRun(source);
     assert.strictEqual(result, 1);
   });
@@ -62,7 +62,7 @@ suite('Method-level DCE', () => {
     assert.strictEqual(result, 1);
   });
 
-  test('unused getter is replaced with unreachable stub', async () => {
+  test('unused getter is fully eliminated', async () => {
     const source = `
       class Point {
         #x: i32;

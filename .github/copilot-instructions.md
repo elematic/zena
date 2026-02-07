@@ -206,6 +206,7 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
     - **Arrays**: `docs/design/arrays.md`
     - **Capabilities**: `docs/design/capabilities.md`
     - **Classes**: `docs/design/classes.md`
+    - **Dead Code Elimination**: `docs/design/dead-code-elimination.md`
     - **Decorators**: `docs/design/decorators.md`
     - **Destructuring**: `docs/design/destructuring.md`
     - **Diagnostics**: `docs/design/diagnostics.md`
@@ -214,11 +215,12 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
     - **Generics**: `docs/design/generics.md`
     - **Host Interop**: `docs/design/host-interop.md`
     - **Interfaces**: `docs/design/interfaces.md`
+    - **Linear Memory**: `docs/design/linear-memory.md`
     - **Maps**: `docs/design/map.md`
     - **Mixins**: `docs/design/mixins.md`
     - **Modules**: `docs/design/modules.md`
     - **Name Resolution**: `docs/design/name-resolution.md`
-    - **Optimization**: `docs/design/optimization-strategy.md`
+    - **Optimizations**: `docs/design/optimizations.md`
     - **Records & Tuples**: `docs/design/records-and-tuples.md`
     - **Standard Library**: `docs/design/standard-library.md`
     - **Strings**: `docs/design/strings.md`
@@ -232,9 +234,8 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
 ## Future Considerations
 
 - **Strings**:
-  - **Design**: See `docs/design/strings.md` for the full design.
-  - **Wrapper Class**: Replace `string` primitive and `String` extension class with
-    a final `String` wrapper class that encapsulates a `ByteArray`.
+  - **Design**: See `docs/design/strings.md` for the full design (including unified
+    String architecture with internal implementations like GCString, LinearString).
   - **Multi-Encoding**: Track encoding per string (UTF-8 or UTF-16). Compiler flag
     `--default-encoding` controls literal encoding. UTF-16 enables efficient JS interop.
   - **StringBuilder**: Implement for efficient string construction.
@@ -351,7 +352,7 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
   - Declaration-level DCE: skip codegen for unused functions, classes, and interfaces.
   - Type-level DCE: skip WASM type/function creation for intrinsic methods and fields.
   - VTable elimination: skip vtable creation for extension classes with empty vtables.
-  - Method-level DCE: skip body generation for unused methods (emit `unreachable` stub).
+  - Method-level DCE: fully eliminate unused methods (no function allocation, no vtable entry).
     - Tracks method calls via `SemanticContext.getResolvedBinding()`.
     - Handles polymorphic dispatch: if a method is called through a base class/interface, all overrides are kept.
     - Subclass tracking: propagates polymorphic calls to known subclasses.
