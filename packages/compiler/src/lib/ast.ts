@@ -16,7 +16,8 @@ export type Declaration =
   | MixinDeclaration
   | TypeAliasDeclaration
   | TypeParameter
-  | EnumDeclaration;
+  | EnumDeclaration
+  | SymbolDeclaration;
 
 /**
  * Information about a symbol in a scope.
@@ -112,6 +113,7 @@ export const NodeType = {
   EnumMember: 'EnumMember',
   RangeExpression: 'RangeExpression',
   LetPatternCondition: 'LetPatternCondition',
+  SymbolDeclaration: 'SymbolDeclaration',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -195,7 +197,8 @@ export type Statement =
   | ImportDeclaration
   | ExportAllDeclaration
   | TypeAliasDeclaration
-  | EnumDeclaration;
+  | EnumDeclaration
+  | SymbolDeclaration;
 
 export interface ImportSpecifier extends Node {
   type: typeof NodeType.ImportSpecifier;
@@ -234,6 +237,18 @@ export interface TypeAliasDeclaration extends Node {
   exported: boolean;
   isDistinct: boolean;
   /** Inferred type, populated by the checker. */
+  inferredType?: Type;
+}
+
+/**
+ * A symbol declaration: `symbol name;` or `export symbol name;`
+ * Symbols are compile-time unique identifiers for methods/fields.
+ */
+export interface SymbolDeclaration extends Node {
+  type: typeof NodeType.SymbolDeclaration;
+  name: Identifier;
+  exported: boolean;
+  /** The SymbolType, populated by the checker. */
   inferredType?: Type;
 }
 

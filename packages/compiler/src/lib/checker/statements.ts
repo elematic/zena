@@ -28,6 +28,7 @@ import {
   type ReturnStatement,
   type SourceLocation,
   type Statement,
+  type SymbolDeclaration,
   type TuplePattern,
   type TypeAliasDeclaration,
   type TypeParameter,
@@ -635,6 +636,9 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
     case NodeType.EnumDeclaration:
       checkEnumDeclaration(ctx, stmt as EnumDeclaration);
       break;
+    case NodeType.SymbolDeclaration:
+      checkSymbolDeclaration(ctx, stmt as SymbolDeclaration);
+      break;
   }
 }
 
@@ -708,6 +712,35 @@ function checkTypeAliasDeclaration(
 
   if (decl.exported && ctx.module) {
     ctx.module!.exports!.set(`type:${name}`, {type: typeAlias, kind: 'type'});
+  }
+}
+
+/**
+ * Check a symbol declaration: `symbol name;` or `export symbol name;`
+ * Symbols are compile-time unique identifiers used for method/field names.
+ */
+function checkSymbolDeclaration(ctx: CheckerContext, decl: SymbolDeclaration) {
+  const name = decl.name.name;
+
+  // Generate a debug name based on module path + symbol name for diagnostics
+  const modulePath = ctx.module?.path ?? '<anonymous>';
+  const debugName = `${modulePath}:${name}`;
+
+  const symbolType: SymbolType = {
+    kind: TypeKind.Symbol,
+    debugName,
+  };
+
+  // Declare the symbol as a 'let' binding (it's a value, not a type)
+  ctx.declare(name, symbolType, 'let', decl);
+  decl.inferredType = symbolType;
+
+  if (decl.exported && ctx.module) {
+    ctx.module!.exports!.set(`value:${name}`, {
+      type: symbolType,
+      kind: 'let',
+      declaration: decl,
+    });
   }
 }
 
@@ -1615,7 +1648,7 @@ function getPropertyType(
 function resolveMemberName(
   ctx: CheckerContext,
   name: Identifier | ComputedPropertyName,
-): {name: string; isSymbol: boolean; symbolId?: string} {
+): {name: string; isSymbol: boolean; symbolType?: SymbolType} {
   if (name.type === NodeType.Identifier) {
     return {name: name.name, isSymbol: false};
   } else {
@@ -1623,13 +1656,12 @@ function resolveMemberName(
     const type = checkExpression(ctx, name.expression);
     if (type.kind === TypeKind.Symbol) {
       const symbolType = type as SymbolType;
-      if (symbolType.uniqueId) {
-        return {
-          name: symbolType.uniqueId,
-          isSymbol: true,
-          symbolId: symbolType.uniqueId,
-        };
-      }
+      // Use the SymbolType object for identity; debugName is for diagnostics
+      return {
+        name: symbolType.debugName ?? '<symbol>',
+        isSymbol: true,
+        symbolType,
+      };
     }
     ctx.diagnostics.reportError(
       `Computed property name must resolve to a unique symbol.`,
@@ -1985,10 +2017,12 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         member.name.type === NodeType.Identifier
       ) {
         const symbolName = member.name.name;
-        const uniqueId = `${className}.${symbolName}`;
+        // Use module-qualified name for debug name
+        const modulePath = ctx.module?.path ?? '<anonymous>';
+        const debugName = `${modulePath}:${className}.${symbolName}`;
         const symbolType: SymbolType = {
           kind: TypeKind.Symbol,
-          uniqueId,
+          debugName,
         };
         classType.statics.set(symbolName, symbolType);
         continue;
@@ -2001,7 +2035,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       validateNoUnboxedTuple(fieldType, ctx, 'field types');
 
       if (memberNameInfo.isSymbol) {
-        classType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);
+        classType.symbolFields!.set(memberNameInfo.symbolType!, fieldType);
         continue;
       }
 
@@ -2093,9 +2127,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       validateNoUnboxedTuple(fieldType, ctx, 'accessor types');
 
       if (memberNameInfo.isSymbol) {
-        classType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);
+        classType.symbolFields!.set(memberNameInfo.symbolType!, fieldType);
         if (member.getter) {
-          classType.symbolMethods!.set(memberNameInfo.symbolId!, {
+          classType.symbolMethods!.set(memberNameInfo.symbolType!, {
             kind: TypeKind.Function,
             parameters: [],
             returnType: fieldType,
@@ -2197,7 +2231,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
-        classType.symbolMethods!.set(memberNameInfo.symbolId!, methodType);
+        classType.symbolMethods!.set(memberNameInfo.symbolType!, methodType);
         continue;
       }
       const memberName = memberNameInfo.name;
@@ -2586,7 +2620,10 @@ function checkInterfaceDeclaration(
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
-        interfaceType.symbolMethods!.set(memberNameInfo.symbolId!, methodType);
+        interfaceType.symbolMethods!.set(
+          memberNameInfo.symbolType!,
+          methodType,
+        );
         continue;
       }
       const memberName = memberNameInfo.name;
@@ -2607,7 +2644,7 @@ function checkInterfaceDeclaration(
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
-        interfaceType.symbolFields!.set(memberNameInfo.symbolId!, type);
+        interfaceType.symbolFields!.set(memberNameInfo.symbolType!, type);
         continue;
       }
       const memberName = memberNameInfo.name;
@@ -2646,7 +2683,7 @@ function checkInterfaceDeclaration(
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
-        interfaceType.symbolFields!.set(memberNameInfo.symbolId!, type);
+        interfaceType.symbolFields!.set(memberNameInfo.symbolType!, type);
         continue;
       }
       const memberName = memberNameInfo.name;
@@ -2736,7 +2773,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
 
   const memberNameInfo = resolveMemberName(ctx, method.name);
   const methodName = memberNameInfo.isSymbol
-    ? memberNameInfo.symbolId!
+    ? (memberNameInfo.symbolType!.debugName ?? '<symbol>')
     : memberNameInfo.name;
 
   const previousMethod = ctx.currentMethod;
@@ -3007,7 +3044,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
-        mixinType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);
+        mixinType.symbolFields!.set(memberNameInfo.symbolType!, fieldType);
         continue;
       }
       const memberName = memberNameInfo.name;
@@ -3076,7 +3113,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
-        mixinType.symbolMethods!.set(memberNameInfo.symbolId!, methodType);
+        mixinType.symbolMethods!.set(memberNameInfo.symbolType!, methodType);
       } else {
         mixinType.methods.set(memberNameInfo.name, methodType);
       }
@@ -3088,9 +3125,9 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
-        mixinType.symbolFields!.set(memberNameInfo.symbolId!, fieldType);
+        mixinType.symbolFields!.set(memberNameInfo.symbolType!, fieldType);
         if (member.getter) {
-          mixinType.symbolMethods!.set(memberNameInfo.symbolId!, {
+          mixinType.symbolMethods!.set(memberNameInfo.symbolType!, {
             kind: TypeKind.Function,
             parameters: [],
             returnType: fieldType,
@@ -3161,15 +3198,13 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
   for (const member of decl.body) {
     if (member.type === NodeType.MethodDefinition) {
       const memberNameInfo = resolveMemberName(ctx, member.name);
-      const methodName = memberNameInfo.isSymbol
-        ? memberNameInfo.symbolId!
-        : memberNameInfo.name;
+      const methodName = memberNameInfo.name; // For error messages
 
       if (methodName === '#new') continue; // Skip constructor check as it's already reported
 
       let methodType: FunctionType | undefined;
       if (memberNameInfo.isSymbol) {
-        methodType = mixinType.symbolMethods!.get(methodName);
+        methodType = mixinType.symbolMethods!.get(memberNameInfo.symbolType!);
       } else {
         methodType = mixinType.methods.get(methodName);
       }

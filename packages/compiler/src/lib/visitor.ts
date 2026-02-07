@@ -99,6 +99,7 @@ import {
   type FunctionTypeAnnotation,
   type LiteralTypeAnnotation,
   type ComputedPropertyName,
+  type SymbolDeclaration,
 } from './ast.js';
 
 /**
@@ -138,7 +139,7 @@ export interface Visitor<T = void> {
   visitTypeAliasDeclaration?(node: TypeAliasDeclaration, context: T): void;
   visitEnumDeclaration?(node: EnumDeclaration, context: T): void;
   visitEnumMember?(node: EnumMember, context: T): void;
-  visitEnumDeclaration?(node: EnumDeclaration, context: T): void;
+  visitSymbolDeclaration?(node: SymbolDeclaration, context: T): void;
 
   // ===== Expressions =====
   visitBinaryExpression?(node: BinaryExpression, context: T): void;
@@ -356,6 +357,10 @@ export function visit<T>(
     case NodeType.EnumMember:
       visitor.visitEnumMember?.(node as EnumMember, context);
       visitEnumMemberChildren(node as EnumMember, visitor, context);
+      break;
+    case NodeType.SymbolDeclaration:
+      visitor.visitSymbolDeclaration?.(node as SymbolDeclaration, context);
+      // No children to visit - symbols only have a name identifier
       break;
 
     // Expressions

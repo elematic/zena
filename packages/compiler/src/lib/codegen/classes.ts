@@ -52,9 +52,9 @@ export function getMemberName(name: Identifier | ComputedPropertyName): string {
   if (
     symbolType &&
     symbolType.kind === TypeKind.Symbol &&
-    symbolType.uniqueId
+    symbolType.debugName
   ) {
-    return symbolType.uniqueId;
+    return symbolType.debugName;
   }
   throw new Error(`Could not resolve member name for ${name.type}`);
 }

@@ -26,6 +26,7 @@ import {
   type DeclareFunction,
   type TypeAliasDeclaration,
   type EnumDeclaration,
+  type SymbolDeclaration,
   type FunctionExpression,
   type Identifier,
   type NewExpression,
@@ -340,6 +341,11 @@ class UsageAnalyzer {
         this.#addDeclarationByName(decl.name.name, decl);
         break;
       }
+      case NodeType.SymbolDeclaration: {
+        const decl = stmt as SymbolDeclaration;
+        this.#addDeclarationByName(decl.name.name, decl);
+        break;
+      }
     }
   }
 
@@ -391,6 +397,8 @@ class UsageAnalyzer {
         return (stmt as TypeAliasDeclaration).exported;
       case NodeType.EnumDeclaration:
         return (stmt as EnumDeclaration).exported;
+      case NodeType.SymbolDeclaration:
+        return (stmt as SymbolDeclaration).exported;
       default:
         return false;
     }
@@ -409,6 +417,7 @@ class UsageAnalyzer {
       case NodeType.DeclareFunction:
       case NodeType.TypeAliasDeclaration:
       case NodeType.EnumDeclaration:
+      case NodeType.SymbolDeclaration:
         return stmt as Declaration;
       default:
         return null;
@@ -540,6 +549,9 @@ class UsageAnalyzer {
         break;
       case NodeType.EnumDeclaration:
         // Enum members don't reference external declarations
+        break;
+      case NodeType.SymbolDeclaration:
+        // Symbols don't reference external declarations
         break;
     }
   }
@@ -1202,6 +1214,7 @@ export function getStatementDeclaration(stmt: Statement): Declaration | null {
     case NodeType.DeclareFunction:
     case NodeType.TypeAliasDeclaration:
     case NodeType.EnumDeclaration:
+    case NodeType.SymbolDeclaration:
       return stmt as Declaration;
     default:
       return null;

@@ -50,6 +50,7 @@ import {
   type SpreadElement,
   type Statement,
   type StringLiteral,
+  type SymbolDeclaration,
   type TaggedTemplateExpression,
   type TemplateElement,
   type TemplateLiteral,
@@ -219,6 +220,9 @@ export class Parser {
       if (this.#match(TokenType.Enum)) {
         return this.#parseEnumDeclaration(true, startToken);
       }
+      if (this.#match(TokenType.Symbol)) {
+        return this.#parseSymbolDeclaration(true, startToken);
+      }
       if (this.#match(TokenType.Declare)) {
         return this.#parseDeclareFunction(
           undefined,
@@ -325,6 +329,13 @@ export class Parser {
     }
     if (this.#match(TokenType.Enum)) {
       return this.#parseEnumDeclaration(false, startToken);
+    }
+    if (this.#match(TokenType.Symbol)) {
+      // Disambiguate `symbol name` vs `symbol + 1`
+      if (this.#isIdentifier(this.#peek().type)) {
+        return this.#parseSymbolDeclaration(false, startToken);
+      }
+      this.#current--;
     }
     if (this.#match(TokenType.Distinct)) {
       // Disambiguate `distinct type` vs `distinct + 1`
@@ -555,6 +566,25 @@ export class Parser {
       type: NodeType.EnumDeclaration,
       name,
       members,
+      exported,
+      loc: this.#loc(actualStartToken, endToken),
+    };
+  }
+
+  /**
+   * Parse a symbol declaration: `symbol name;` or `export symbol name;`
+   */
+  #parseSymbolDeclaration(
+    exported: boolean,
+    startToken?: Token,
+  ): SymbolDeclaration {
+    const actualStartToken = startToken || this.#previous();
+    const name = this.#parseIdentifier();
+    this.#consume(TokenType.Semi, "Expected ';' after symbol declaration.");
+    const endToken = this.#previous();
+    return {
+      type: NodeType.SymbolDeclaration,
+      name,
       exported,
       loc: this.#loc(actualStartToken, endToken),
     };

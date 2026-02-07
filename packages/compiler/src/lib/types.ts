@@ -40,7 +40,8 @@ export interface Type {
 
 export interface SymbolType extends Type {
   kind: typeof TypeKind.Symbol;
-  uniqueId?: string;
+  /** Human-readable name for debugging/diagnostics. Not used for identity. */
+  debugName?: string;
 }
 
 /**
@@ -132,8 +133,8 @@ export interface InterfaceType extends Type {
   extends?: InterfaceType[];
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
-  symbolFields?: Map<string, Type>;
-  symbolMethods?: Map<string, FunctionType>;
+  symbolFields?: Map<SymbolType, Type>;
+  symbolMethods?: Map<SymbolType, FunctionType>;
   /** For instantiated generics, points to the original generic type definition. */
   genericSource?: InterfaceType;
 }
@@ -146,8 +147,8 @@ export interface MixinType extends Type {
   onType?: ClassType;
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
-  symbolFields?: Map<string, Type>;
-  symbolMethods?: Map<string, FunctionType>;
+  symbolFields?: Map<SymbolType, Type>;
+  symbolMethods?: Map<SymbolType, FunctionType>;
   genericSource?: MixinType;
 }
 
@@ -161,8 +162,8 @@ export interface ClassType extends Type {
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
   statics: Map<string, Type>;
-  symbolFields?: Map<string, Type>;
-  symbolMethods?: Map<string, FunctionType>;
+  symbolFields?: Map<SymbolType, Type>;
+  symbolMethods?: Map<SymbolType, FunctionType>;
   constructorType?: FunctionType;
   vtable: string[]; // Ordered list of method names
   isFinal?: boolean;

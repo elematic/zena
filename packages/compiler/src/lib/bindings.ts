@@ -20,6 +20,7 @@ import type {
   InterfaceDeclaration,
   MixinDeclaration,
   Parameter,
+  SymbolDeclaration,
   TypeAliasDeclaration,
   TypeParameter,
   VariableDeclaration,
@@ -425,7 +426,8 @@ type Declaration =
   | MixinDeclaration
   | TypeAliasDeclaration
   | TypeParameter
-  | EnumDeclaration;
+  | EnumDeclaration
+  | SymbolDeclaration;
 
 /**
  * Create a ResolvedBinding from symbol information.
