@@ -159,4 +159,80 @@ suite('Checker: Symbol Declarations', () => {
       );
     }
   });
+
+  test('symbol-keyed field access', () => {
+    const source = `
+      symbol key;
+      class Container {
+        [key]: i32;
+        #new() {
+          this[key] = 42;
+        }
+      }
+      let c = new Container();
+      let x = c[key];
+    `;
+    const parser = new Parser(source);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 0, 'No diagnostics expected');
+
+    // Find the last variable declaration (let x = c[key])
+    const varDecls = module.body.filter(
+      (stmt) => stmt.type === NodeType.VariableDeclaration,
+    );
+    const xDecl = varDecls[varDecls.length - 1];
+    if (xDecl.type === NodeType.VariableDeclaration) {
+      assert.strictEqual(xDecl.inferredType?.kind, TypeKind.Number);
+    }
+  });
+
+  test('symbol-keyed method definition and access returns function type', () => {
+    const source = `
+      symbol iterator;
+      class MyIterable {
+        [iterator](): i32 {
+          return 0;
+        }
+      }
+      let iter = new MyIterable();
+      let fn = iter[iterator];
+    `;
+    const parser = new Parser(source);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 0, 'No diagnostics expected');
+
+    // Find the last variable declaration (let fn = iter[iterator])
+    const varDecls = module.body.filter(
+      (stmt) => stmt.type === NodeType.VariableDeclaration,
+    );
+    const fnDecl = varDecls[varDecls.length - 1];
+    if (fnDecl.type === NodeType.VariableDeclaration) {
+      assert.strictEqual(fnDecl.inferredType?.kind, TypeKind.Function);
+    }
+  });
+
+  test('symbol-keyed access on non-existent symbol reports error', () => {
+    const source = `
+      symbol key1;
+      symbol key2;
+      class Container {
+        [key1]: i32;
+      }
+      let c = new Container();
+      let x = c[key2];
+    `;
+    const parser = new Parser(source);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.ok(errors[0].message.includes('key2'));
+  });
 });

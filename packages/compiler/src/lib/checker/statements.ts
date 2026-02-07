@@ -729,6 +729,7 @@ function checkSymbolDeclaration(ctx: CheckerContext, decl: SymbolDeclaration) {
   const symbolType: SymbolType = {
     kind: TypeKind.Symbol,
     debugName,
+    id: ctx.nextSymbolId(),
   };
 
   // Declare the symbol as a 'let' binding (it's a value, not a type)
@@ -2023,6 +2024,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         const symbolType: SymbolType = {
           kind: TypeKind.Symbol,
           debugName,
+          id: ctx.nextSymbolId(),
         };
         classType.statics.set(symbolName, symbolType);
         continue;

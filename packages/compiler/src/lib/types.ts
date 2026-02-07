@@ -42,6 +42,8 @@ export interface SymbolType extends Type {
   kind: typeof TypeKind.Symbol;
   /** Human-readable name for debugging/diagnostics. Not used for identity. */
   debugName?: string;
+  /** Unique ID for codegen. Assigned at symbol declaration time. */
+  id: number;
 }
 
 /**
@@ -209,7 +211,8 @@ export const Types = {
   AnyRef: {kind: TypeKind.AnyRef} as Type,
   Any: {kind: TypeKind.Any} as Type,
   Never: {kind: TypeKind.Never} as Type,
-  Symbol: {kind: TypeKind.Symbol} as SymbolType,
+  /** Base symbol type used for 'symbol' type annotations. ID -1 means "any symbol". */
+  Symbol: {kind: TypeKind.Symbol, id: -1} as SymbolType,
   Array: {
     kind: TypeKind.Array,
     elementType: {kind: TypeKind.Unknown} as Type,

@@ -1,4 +1,4 @@
-import type {ClassType, FunctionType, Type} from './types.js';
+import type {ClassType, FunctionType, SymbolType, Type} from './types.js';
 import type {Diagnostic} from './diagnostics.js';
 
 /**
@@ -315,6 +315,8 @@ export interface IndexExpression extends Node {
   resolvedOperatorMethod?: FunctionType;
   /** Set by checker for extension class operator[] (e.g., FixedArray on array types) */
   extensionClassType?: ClassType;
+  /** Set by checker when index is a symbol - the resolved symbol type for identity-based lookup */
+  resolvedSymbol?: SymbolType;
 }
 
 export interface RecordPattern extends Node {

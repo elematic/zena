@@ -58,6 +58,7 @@ import {
   type LiteralType,
   type NumberType,
   type RecordType,
+  type SymbolType,
   type TupleType,
   type Type,
   type TypeParameterType,
@@ -2651,6 +2652,43 @@ function checkIndexExpression(
 ): Type {
   const objectType = checkExpression(ctx, expr.object);
   const indexType = checkExpression(ctx, expr.index);
+
+  // Handle symbol-keyed member access: obj[symbol]
+  if (indexType.kind === TypeKind.Symbol) {
+    const symbolType = indexType as SymbolType;
+    expr.resolvedSymbol = symbolType;
+
+    if (
+      objectType.kind === TypeKind.Class ||
+      objectType.kind === TypeKind.Interface
+    ) {
+      const classType = objectType as ClassType | InterfaceType;
+
+      // Check symbolFields first
+      if (classType.symbolFields?.has(symbolType)) {
+        const fieldType = classType.symbolFields.get(symbolType)!;
+        return resolveMemberType(classType, fieldType, ctx);
+      }
+
+      // Check symbolMethods
+      if (classType.symbolMethods?.has(symbolType)) {
+        const methodType = classType.symbolMethods.get(symbolType)!;
+        return resolveMemberType(classType, methodType, ctx);
+      }
+
+      ctx.diagnostics.reportError(
+        `Symbol '${symbolType.debugName ?? '<symbol>'}' does not exist on type '${objectType.kind === TypeKind.Class ? (objectType as ClassType).name : (objectType as InterfaceType).name}'.`,
+        DiagnosticCode.PropertyNotFound,
+      );
+      return Types.Unknown;
+    }
+
+    ctx.diagnostics.reportError(
+      `Symbol-keyed access is only supported on classes and interfaces.`,
+      DiagnosticCode.TypeMismatch,
+    );
+    return Types.Unknown;
+  }
 
   if (
     objectType.kind === TypeKind.Class ||

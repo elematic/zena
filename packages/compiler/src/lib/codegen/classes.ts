@@ -49,14 +49,18 @@ export function getMemberName(name: Identifier | ComputedPropertyName): string {
     return name.name;
   }
   const symbolType = name.expression.inferredType as SymbolType;
-  if (
-    symbolType &&
-    symbolType.kind === TypeKind.Symbol &&
-    symbolType.debugName
-  ) {
-    return symbolType.debugName;
+  if (symbolType && symbolType.kind === TypeKind.Symbol) {
+    return getSymbolMemberName(symbolType);
   }
   throw new Error(`Could not resolve member name for ${name.type}`);
+}
+
+/**
+ * Get the field/method name for a symbol-keyed member.
+ * Uses the symbol's unique ID for codegen to ensure no collisions.
+ */
+export function getSymbolMemberName(symbolType: SymbolType): string {
+  return `[symbol#${symbolType.id}]`;
 }
 
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';

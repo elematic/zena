@@ -164,6 +164,14 @@ export class CheckerContext {
   /** Map from generic source types to their unique IDs (GLOBAL) */
   #typeIds = new WeakMap<Type, number>();
 
+  /** Counter for assigning unique IDs to symbols (GLOBAL) */
+  #symbolIdCounter = 0;
+
+  /** Get the next symbol ID */
+  nextSymbolId(): number {
+    return this.#symbolIdCounter++;
+  }
+
   constructor(compiler?: Compiler, semanticContext?: SemanticContext) {
     this.compiler = compiler;
     this.semanticContext = semanticContext ?? new SemanticContext();
