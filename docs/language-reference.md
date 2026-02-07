@@ -1790,6 +1790,38 @@ let tryParse = (s: string): (true, i32) | (false, never) => {
 };
 ```
 
+#### Pattern-Based Narrowing for Union Tuples
+
+When destructuring a union of tuples with a pattern that contains literal values, the type system automatically narrows the union based on the literal pattern. This enables ergonomic iteration with discriminated unions.
+
+```zena
+// Iterator.next() returns (true, T) | (false, never)
+// When pattern includes 'true', only (true, T) variants are considered
+while (let (true, elem) = iterator.next()) {
+  // elem is narrowed to T (not T | never)
+  process(elem);
+}
+
+// Works with if-let as well
+if (let (true, value) = maybeValue()) {
+  // value is narrowed to the actual type
+  return value * 2;
+}
+```
+
+The narrowing works by filtering tuple union variants based on literal patterns:
+
+```zena
+let data = (): (true, true, i32) | (true, false, never) | (false, never, never) => { ... };
+
+// Pattern (true, true, value) filters to just the first variant
+if (let (true, true, value) = data()) {
+  // value is i32, not i32 | never
+}
+```
+
+This feature enables zero-allocation iteration idioms like `for-in` loops, which internally use `while (let (true, elem) = iter.next())`.
+
 ## 8. Modules & Exports
 
 ### Exports

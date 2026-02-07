@@ -651,7 +651,7 @@ export function checkMatchPattern(
       } else if (discriminantType.kind === TypeKind.Union) {
         // Handle union of tuples - for each position, compute union of element types
         const unionType = discriminantType as UnionType;
-        const tupleMembers = unionType.types.filter(
+        let tupleMembers = unionType.types.filter(
           (t) => t.kind === TypeKind.Tuple || t.kind === TypeKind.UnboxedTuple,
         ) as TupleType[];
 
@@ -660,6 +660,20 @@ export function checkMatchPattern(
             `Cannot destructure non-tuple type '${typeToString(discriminantType)}'.`,
             DiagnosticCode.TypeMismatch,
           );
+          break;
+        }
+
+        // Narrow tuple union based on literal patterns
+        // If a pattern element is a literal (e.g., `true`), filter tuple members
+        // to only those where that position's type is compatible with the literal.
+        tupleMembers = narrowTupleUnionByLiteralPatterns(
+          tupleMembers,
+          tuplePattern.elements,
+        );
+
+        if (tupleMembers.length === 0) {
+          // Pattern is unreachable (no tuple member matches the literal patterns)
+          // This could be a warning, but for now we'll just skip binding
           break;
         }
 
@@ -764,6 +778,115 @@ export function checkMatchPattern(
       // pattern.type satisfies never;
       break;
   }
+}
+
+/**
+ * Narrows a union of tuple types based on literal patterns.
+ *
+ * When a pattern element is a literal (e.g., `true`, `42`, `"foo"`), we filter
+ * the tuple members to only those where that position's type is compatible
+ * with the literal value.
+ *
+ * For example, with pattern `(true, elem)` matching `(true, T) | (false, never)`:
+ * - Position 0 is literal `true`
+ * - Filter tuples: only `(true, T)` has first element compatible with `true`
+ * - Result: `[(true, T)]`
+ * - Position 1 then becomes just `T` instead of `T | never`
+ */
+function narrowTupleUnionByLiteralPatterns(
+  tupleMembers: TupleType[],
+  patternElements: (Pattern | null)[],
+): TupleType[] {
+  let filtered = tupleMembers;
+
+  for (let i = 0; i < patternElements.length && filtered.length > 0; i++) {
+    const pattern = patternElements[i];
+    if (!pattern) continue;
+
+    // Check if pattern at this position is a literal
+    const literalType = getLiteralPatternType(pattern);
+    if (!literalType) continue;
+
+    // Filter tuple members to only those where position i is compatible with the literal
+    filtered = filtered.filter((tuple) => {
+      if (i >= tuple.elementTypes.length) return false;
+      const elemType = tuple.elementTypes[i];
+      return isTypeCompatibleWithLiteral(elemType, literalType);
+    });
+  }
+
+  return filtered;
+}
+
+/**
+ * Extracts a literal type from a pattern if the pattern is a literal pattern.
+ * Returns null for non-literal patterns (identifiers, wildcards, etc.).
+ */
+function getLiteralPatternType(pattern: Pattern): LiteralType | null {
+  switch (pattern.type) {
+    case NodeType.BooleanLiteral:
+      return {
+        kind: TypeKind.Literal,
+        value: (pattern as BooleanLiteral).value,
+      } as LiteralType;
+    case NodeType.NumberLiteral:
+      return {
+        kind: TypeKind.Literal,
+        value: (pattern as NumberLiteral).value,
+      } as LiteralType;
+    case NodeType.StringLiteral:
+      return {
+        kind: TypeKind.Literal,
+        value: (pattern as StringLiteral).value,
+      } as LiteralType;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Checks if a type is compatible with a literal pattern.
+ * - A literal type is compatible if it has the same value
+ * - A non-literal type of the same base type is compatible (e.g., `boolean` matches `true`)
+ * - never is never compatible (patterns can't match never)
+ */
+function isTypeCompatibleWithLiteral(
+  type: Type,
+  literal: LiteralType,
+): boolean {
+  // never is never compatible
+  if (type.kind === TypeKind.Never) return false;
+
+  // If the type is itself a literal, it must have the same value
+  if (type.kind === TypeKind.Literal) {
+    const typeLiteral = type as LiteralType;
+    return typeLiteral.value === literal.value;
+  }
+
+  // Union type: any member must be compatible
+  if (type.kind === TypeKind.Union) {
+    return (type as UnionType).types.some((t) =>
+      isTypeCompatibleWithLiteral(t, literal),
+    );
+  }
+
+  // Non-literal type: check if the base type matches
+  // e.g., `boolean` matches literal `true`, `i32` matches literal `42`
+  const literalValueType = typeof literal.value;
+  if (literalValueType === 'boolean') {
+    return isBooleanType(type);
+  }
+  if (literalValueType === 'number') {
+    return type.kind === TypeKind.Number;
+  }
+  if (literalValueType === 'string') {
+    // String type is TypeKind.Class with name 'String'
+    return (
+      type.kind === TypeKind.Class && (type as ClassType).name === 'String'
+    );
+  }
+
+  return false;
 }
 
 function createUnionType(types: Type[]): Type {

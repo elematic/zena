@@ -568,10 +568,11 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
       - Support `(true, T) | (false, never)` return types.
       - Destructuring computes union of element types at each position.
       - WASM signature uses first tuple variant (all variants have same representation).
-      - **NOT YET**: Control-flow narrowing (checking first element doesn't narrow second).
-    - **Union of Tuples with Narrowing**: (future)
-      - Control-flow narrowing: after `if (hasMore)`, narrow `value` from `T | never` to `T`.
-      - Pattern matching: `case (true, value)` binds `value: T` (not `T | never`).
+    - [x] **Union of Tuples with Narrowing**: ✅ COMPLETED
+      - Pattern-based narrowing: `(true, value)` against `(true, T) | (false, never)` narrows `value` to `T`.
+      - Works in if-let, while-let, and match patterns.
+      - Filters tuple union variants based on literal pattern values before computing element types.
+      - **NOT YET**: Control-flow narrowing based on separate boolean check (e.g., `if (hasMore) { value }` after separate destructuring).
     - [x] **Iterator Redesign**: ✅ COMPLETED
       - Change `Iterator<T>.next()` to return `(true, T) | (false, never)`.
       - Update `ArrayIterator<T>` implementation to use `return (false, _);`.
