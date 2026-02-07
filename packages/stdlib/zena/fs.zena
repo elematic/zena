@@ -1,0 +1,744 @@
+// Filesystem Standard Library - WASI 0.2 Implementation
+// Provides file and directory operations using wasi:filesystem interfaces.
+//
+// See docs/design/filesystem.md for the full design.
+
+import { ByteArray } from 'zena:byte-array';
+import { String, Encoding } from 'zena:string';
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+// WASI filesystem error codes (subset of wasi:filesystem/types.error-code)
+enum FsErrorCode {
+  Access,           // Permission denied
+  BadDescriptor,    // Invalid file descriptor
+  Exist,            // File already exists
+  NotFound,         // No such file or directory
+  IsDirectory,      // Is a directory (expected file)
+  NotDirectory,     // Not a directory (expected directory)
+  NotEmpty,         // Directory not empty
+  ReadOnly,         // Read-only filesystem
+  InvalidSeek,      // Invalid seek position
+  Io,               // I/O error
+  InvalidArgument,  // Invalid argument
+  TooManyLinks,     // Too many symbolic links
+  NameTooLong,      // Filename too long
+  NoSpace,          // No space left on device
+  NotPermitted,     // Operation not permitted
+}
+
+export class FsError extends Error {
+  code: FsErrorCode;
+
+  #new(code: FsErrorCode, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+// ============================================================================
+// File Types
+// ============================================================================
+
+// Type of filesystem entry
+enum FileType {
+  Unknown,
+  Directory,
+  RegularFile,
+  SymbolicLink,
+  BlockDevice,
+  CharacterDevice,
+  Fifo,
+  Socket,
+}
+
+// File metadata
+export type FileStat = {
+  fileType: FileType,
+  size: i64,
+};
+
+// Directory entry
+export type DirEntry = {
+  name: string,
+  fileType: FileType,
+};
+
+// Open flags for openAt
+enum OpenFlags {
+  None,       // No special flags
+  Create,     // Create file if it doesn't exist
+  Directory,  // Fail if not a directory
+  Exclusive,  // Fail if file exists (with Create)
+  Truncate,   // Truncate file to zero length
+}
+
+// Descriptor flags (permissions)
+enum DescriptorFlags {
+  Read,           // Allow reads
+  Write,          // Allow writes
+  ReadWrite,      // Allow both
+  MutateDirectory, // Allow directory modifications
+}
+
+// ============================================================================
+// Low-Level WASI Bindings
+// ============================================================================
+
+// Memory intrinsics for linear memory operations
+@intrinsic("i32.store8")
+declare function __store8(ptr: i32, value: i32): void;
+
+@intrinsic("i32.load8_u")
+declare function __load8(ptr: i32): i32;
+
+@intrinsic("i32.store")
+declare function __store32(ptr: i32, value: i32): void;
+
+@intrinsic("i32.load")
+declare function __load32(ptr: i32): i32;
+
+@intrinsic("i64.store")
+declare function __store64(ptr: i32, value: i64): void;
+
+@intrinsic("i64.load")
+declare function __load64(ptr: i32): i64;
+
+// --- wasi:filesystem/preopens ---
+
+// get-directories returns a list of (descriptor, path) tuples
+// For simplicity, we expose a lower-level interface that returns count and
+// allows iteration
+@external("wasi:filesystem/preopens", "get-directories")
+declare function __wasi_preopens_get_directories(
+  retPtr: i32  // Pointer to store [listPtr, listLen]
+): void;
+
+// --- wasi:filesystem/types - Descriptor methods ---
+
+// Open a file/directory relative to this descriptor
+// Returns descriptor handle on success, or error code (negative)
+@external("wasi:filesystem/types", "[method]descriptor.open-at")
+declare function __wasi_descriptor_open_at(
+  handle: i32,      // Base descriptor handle
+  pathFlags: i32,   // Path flags (follow symlinks, etc.)
+  pathPtr: i32,     // Path string pointer
+  pathLen: i32,     // Path string length
+  openFlags: i32,   // Open flags (create, truncate, etc.)
+  descFlags: i32    // Descriptor flags (read, write, etc.)
+): i32;
+
+// Read bytes from a file at a given offset
+// Writes result to retPtr: [dataPtr, dataLen, eof: i32, errorCode: i32]
+@external("wasi:filesystem/types", "[method]descriptor.read")
+declare function __wasi_descriptor_read(
+  handle: i32,
+  length: i64,      // Max bytes to read
+  offset: i64,      // File offset
+  retPtr: i32       // Return value pointer
+): void;
+
+// Write bytes to a file at a given offset
+// Returns bytes written on success, or error code (negative)
+@external("wasi:filesystem/types", "[method]descriptor.write")
+declare function __wasi_descriptor_write(
+  handle: i32,
+  bufferPtr: i32,   // Data pointer
+  bufferLen: i32,   // Data length
+  offset: i64       // File offset
+): i64;
+
+// Get file statistics
+// Writes result to retPtr
+@external("wasi:filesystem/types", "[method]descriptor.stat")
+declare function __wasi_descriptor_stat(
+  handle: i32,
+  retPtr: i32       // Return value pointer
+): void;
+
+// Get statistics of a path relative to this descriptor
+@external("wasi:filesystem/types", "[method]descriptor.stat-at")
+declare function __wasi_descriptor_stat_at(
+  handle: i32,
+  pathFlags: i32,
+  pathPtr: i32,
+  pathLen: i32,
+  retPtr: i32
+): void;
+
+// Start reading directory entries
+// Returns stream handle on success, or error code (negative)
+@external("wasi:filesystem/types", "[method]descriptor.read-directory")
+declare function __wasi_descriptor_read_directory(handle: i32): i32;
+
+// Create a directory
+@external("wasi:filesystem/types", "[method]descriptor.create-directory-at")
+declare function __wasi_descriptor_create_directory_at(
+  handle: i32,
+  pathPtr: i32,
+  pathLen: i32
+): i32;
+
+// Remove a file
+@external("wasi:filesystem/types", "[method]descriptor.unlink-file-at")
+declare function __wasi_descriptor_unlink_file_at(
+  handle: i32,
+  pathPtr: i32,
+  pathLen: i32
+): i32;
+
+// Remove a directory
+@external("wasi:filesystem/types", "[method]descriptor.remove-directory-at")
+declare function __wasi_descriptor_remove_directory_at(
+  handle: i32,
+  pathPtr: i32,
+  pathLen: i32
+): i32;
+
+// --- wasi:filesystem/types - Directory entry stream methods ---
+
+// Read next directory entry
+// Writes result to retPtr
+@external("wasi:filesystem/types", "[method]directory-entry-stream.read-directory-entry")
+declare function __wasi_directory_entry_stream_read(
+  handle: i32,
+  retPtr: i32
+): void;
+
+// --- Resource lifecycle ---
+
+// Drop a descriptor resource
+@external("wasi:filesystem/types", "[resource-drop]descriptor")
+declare function __wasi_descriptor_drop(handle: i32): void;
+
+// Drop a directory-entry-stream resource
+@external("wasi:filesystem/types", "[resource-drop]directory-entry-stream")
+declare function __wasi_directory_entry_stream_drop(handle: i32): void;
+
+// ============================================================================
+// Memory Allocator (Simple Bump Allocator)
+// ============================================================================
+
+// Linear memory starts at offset 1024 to leave room for scratch space
+var __heap_ptr: i32 = 1024;
+
+let __alloc = (size: i32): i32 => {
+  let ptr = __heap_ptr;
+  __heap_ptr = __heap_ptr + size;
+  // Align to 8 bytes
+  __heap_ptr = (__heap_ptr + 7) & (~7);
+  return ptr;
+};
+
+let __free = (ptr: i32, size: i32): void => {
+  // Simple bump allocator doesn't really free
+  // If this is the last allocation, we can reclaim it
+  let alignedSize = (size + 7) & (~7);
+  if (ptr + alignedSize == __heap_ptr) {
+    __heap_ptr = ptr;
+  }
+};
+
+// Scratch buffer at fixed location for small operations
+let SCRATCH_PTR: i32 = 0;
+let SCRATCH_SIZE: i32 = 1024;
+
+// ============================================================================
+// String/Memory Conversion Utilities
+// ============================================================================
+
+// Copy a Zena string to linear memory, return (ptr, len)
+let __stringToLinear = (s: string): [i32, i32] => {
+  let len = s.length;
+  let ptr = __alloc(len);
+  for (var i = 0; i < len; i = i + 1) {
+    __store8(ptr + i, s.getByteAt(i));
+  }
+  return [ptr, len];
+};
+
+// Read a string from linear memory
+let __linearToString = (ptr: i32, len: i32): string => {
+  // Build a GC byte array from linear memory
+  let bytes = ByteArray.new(len);
+  for (var i = 0; i < len; i = i + 1) {
+    bytes[i] = __load8(ptr + i);
+  }
+  // Create string from the byte array
+  return new String(bytes, 0, len, Encoding.WTF8);
+};
+
+// Convert error code from WASI to FsError
+let __checkError = (code: i32, operation: string): void => {
+  if (code >= 0) {
+    return;
+  }
+  
+  let errCode = match (-code) {
+    case 1 => FsErrorCode.Access,
+    case 6 => FsErrorCode.BadDescriptor,
+    case 12 => FsErrorCode.Exist,
+    case 28 => FsErrorCode.NotFound,
+    case 21 => FsErrorCode.IsDirectory,
+    case 29 => FsErrorCode.NotDirectory,
+    case 30 => FsErrorCode.NotEmpty,
+    case 44 => FsErrorCode.ReadOnly,
+    case _ => FsErrorCode.Io,
+  };
+  
+  throw new FsError(errCode, operation + " failed");
+};
+
+// ============================================================================
+// Descriptor Class
+// ============================================================================
+
+export class Descriptor {
+  #handle: i32;
+  #closed: boolean;
+
+  #new(handle: i32) {
+    this.#handle = handle;
+    this.#closed = false;
+  }
+
+  // Read the entire file contents as bytes
+  readAllBytes(): Array<i32> {
+    if (this.#closed) {
+      throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
+    }
+
+    let result = new Array<i32>();
+    var offset: i64 = 0;
+    let chunkSize: i64 = 4096;
+    
+    while (true) {
+      // Allocate buffer for this chunk
+      let bufPtr = __alloc(4096);
+      
+      // Read chunk - result written to scratch area
+      // Format: [dataLen: i32, eof: i32, errorCode: i32]
+      __wasi_descriptor_read(this.#handle, chunkSize, offset, SCRATCH_PTR);
+      
+      let dataLen = __load32(SCRATCH_PTR);
+      let eof = __load32(SCRATCH_PTR + 4);
+      let errorCode = __load32(SCRATCH_PTR + 8);
+      
+      __checkError(errorCode, "read");
+      
+      // Copy bytes to result array
+      for (var i = 0; i < dataLen; i = i + 1) {
+        result.push(__load8(bufPtr + i));
+      }
+      
+      __free(bufPtr, 4096);
+      
+      if (eof != 0) {
+        break;
+      }
+      
+      offset = offset + (dataLen as i64);
+    }
+    
+    return result;
+  }
+
+  // Read the entire file as a UTF-8 string
+  readString(): string {
+    let bytes = this.readAllBytes();
+    let len = bytes.length;
+    let byteArr = ByteArray.new(len);
+    for (var i = 0; i < len; i = i + 1) {
+      byteArr[i] = bytes[i];
+    }
+    return new String(byteArr, 0, len, Encoding.WTF8);
+  }
+
+  // Write bytes to the file
+  writeBytes(data: Array<i32>): void {
+    if (this.#closed) {
+      throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
+    }
+
+    let len = data.length;
+    let ptr = __alloc(len);
+    
+    // Copy data to linear memory
+    for (var i = 0; i < len; i = i + 1) {
+      __store8(ptr + i, data[i]);
+    }
+    
+    let written = __wasi_descriptor_write(this.#handle, ptr, len, 0);
+    __free(ptr, len);
+    
+    if (written < 0) {
+      __checkError(written as i32, "write");
+    }
+  }
+
+  // Write a string (UTF-8) to the file
+  writeString(data: string): void {
+    if (this.#closed) {
+      throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
+    }
+
+    let [ptr, len] = __stringToLinear(data);
+    let written = __wasi_descriptor_write(this.#handle, ptr, len, 0);
+    __free(ptr, len);
+    
+    if (written < 0) {
+      __checkError(written as i32, "write");
+    }
+  }
+
+  // Open a file or directory relative to this descriptor
+  openAt(path: string, flags: DescriptorFlags): Descriptor {
+    if (this.#closed) {
+      throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
+    }
+
+    let [pathPtr, pathLen] = __stringToLinear(path);
+    
+    // Map DescriptorFlags to WASI flags
+    let descFlags = match flags {
+      case DescriptorFlags.Read => 1,
+      case DescriptorFlags.Write => 2,
+      case DescriptorFlags.ReadWrite => 3,
+      case DescriptorFlags.MutateDirectory => 4,
+      case _ => 1,
+    };
+    
+    let result = __wasi_descriptor_open_at(
+      this.#handle,
+      1,        // pathFlags: follow symlinks
+      pathPtr,
+      pathLen,
+      0,        // openFlags: none
+      descFlags
+    );
+    
+    __free(pathPtr, pathLen);
+    __checkError(result, "open");
+    
+    return new Descriptor(result);
+  }
+
+  // Create a new file for writing (truncate if exists)
+  createAt(path: string): Descriptor {
+    if (this.#closed) {
+      throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
+    }
+
+    let [pathPtr, pathLen] = __stringToLinear(path);
+    
+    let result = __wasi_descriptor_open_at(
+      this.#handle,
+      1,        // pathFlags: follow symlinks
+      pathPtr,
+      pathLen,
+      5,        // openFlags: create | truncate
+      2         // descFlags: write
+    );
+    
+    __free(pathPtr, pathLen);
+    __checkError(result, "create");
+    
+    return new Descriptor(result);
+  }
+
+  // Get file metadata
+  stat(): FileStat {
+    if (this.#closed) {
+      throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
+    }
+
+    __wasi_descriptor_stat(this.#handle, SCRATCH_PTR);
+    
+    let errorCode = __load32(SCRATCH_PTR);
+    __checkError(errorCode, "stat");
+    
+    // Parse stat result from scratch buffer
+    // Format depends on WASI encoding - simplified here
+    let fileTypeRaw = __load32(SCRATCH_PTR + 4);
+    let size = __load64(SCRATCH_PTR + 8);
+    
+    let fileType = match fileTypeRaw {
+      case 3 => FileType.Directory,
+      case 4 => FileType.RegularFile,
+      case 5 => FileType.SymbolicLink,
+      case _ => FileType.Unknown,
+    };
+    
+    return { fileType: fileType, size: size };
+  }
+
+  // Get metadata for a path relative to this descriptor
+  statAt(path: string): FileStat {
+    if (this.#closed) {
+      throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
+    }
+
+    let [pathPtr, pathLen] = __stringToLinear(path);
+    
+    __wasi_descriptor_stat_at(
+      this.#handle,
+      1,        // pathFlags: follow symlinks
+      pathPtr,
+      pathLen,
+      SCRATCH_PTR
+    );
+    
+    __free(pathPtr, pathLen);
+    
+    let errorCode = __load32(SCRATCH_PTR);
+    __checkError(errorCode, "stat-at");
+    
+    let fileTypeRaw = __load32(SCRATCH_PTR + 4);
+    let size = __load64(SCRATCH_PTR + 8);
+    
+    let fileType = match fileTypeRaw {
+      case 3 => FileType.Directory,
+      case 4 => FileType.RegularFile,
+      case 5 => FileType.SymbolicLink,
+      case _ => FileType.Unknown,
+    };
+    
+    return { fileType: fileType, size: size };
+  }
+
+  // List directory contents
+  readDir(): Array<DirEntry> {
+    if (this.#closed) {
+      throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
+    }
+
+    let streamHandle = __wasi_descriptor_read_directory(this.#handle);
+    __checkError(streamHandle, "read-directory");
+    
+    let entries = new Array<DirEntry>();
+    
+    while (true) {
+      __wasi_directory_entry_stream_read(streamHandle, SCRATCH_PTR);
+      
+      let hasEntry = __load32(SCRATCH_PTR);
+      if (hasEntry == 0) {
+        break;  // No more entries
+      }
+      
+      let errorCode = __load32(SCRATCH_PTR + 4);
+      __checkError(errorCode, "read-directory-entry");
+      
+      // Parse entry from scratch buffer
+      let fileTypeRaw = __load32(SCRATCH_PTR + 8);
+      let namePtr = __load32(SCRATCH_PTR + 12);
+      let nameLen = __load32(SCRATCH_PTR + 16);
+      
+      let name = __linearToString(namePtr, nameLen);
+      let fileType = match fileTypeRaw {
+        case 3 => FileType.Directory,
+        case 4 => FileType.RegularFile,
+        case 5 => FileType.SymbolicLink,
+        case _ => FileType.Unknown,
+      };
+      
+      entries.push({ name: name, fileType: fileType });
+    }
+    
+    __wasi_directory_entry_stream_drop(streamHandle);
+    
+    return entries;
+  }
+
+  // Create a directory
+  mkdirAt(path: string): void {
+    if (this.#closed) {
+      throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
+    }
+
+    let [pathPtr, pathLen] = __stringToLinear(path);
+    let result = __wasi_descriptor_create_directory_at(this.#handle, pathPtr, pathLen);
+    __free(pathPtr, pathLen);
+    __checkError(result, "mkdir");
+  }
+
+  // Delete a file
+  unlinkAt(path: string): void {
+    if (this.#closed) {
+      throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
+    }
+
+    let [pathPtr, pathLen] = __stringToLinear(path);
+    let result = __wasi_descriptor_unlink_file_at(this.#handle, pathPtr, pathLen);
+    __free(pathPtr, pathLen);
+    __checkError(result, "unlink");
+  }
+
+  // Delete a directory
+  rmdirAt(path: string): void {
+    if (this.#closed) {
+      throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
+    }
+
+    let [pathPtr, pathLen] = __stringToLinear(path);
+    let result = __wasi_descriptor_remove_directory_at(this.#handle, pathPtr, pathLen);
+    __free(pathPtr, pathLen);
+    __checkError(result, "rmdir");
+  }
+
+  // Close the descriptor
+  close(): void {
+    if (!this.#closed) {
+      __wasi_descriptor_drop(this.#handle);
+      this.#closed = true;
+    }
+  }
+}
+
+// ============================================================================
+// Preopened Directories
+// ============================================================================
+
+// Cache of preopened directories
+var __preopensCache: Array<[Descriptor, string]> | null = null;
+
+// Get all preopened directories
+export let getPreopens = (): Array<[Descriptor, string]> => {
+  if (__preopensCache != null) {
+    return __preopensCache!;
+  }
+  
+  // Call WASI to get preopens list
+  __wasi_preopens_get_directories(SCRATCH_PTR);
+  
+  let listPtr = __load32(SCRATCH_PTR);
+  let listLen = __load32(SCRATCH_PTR + 4);
+  
+  let result = new Array<[Descriptor, string]>();
+  
+  for (var i = 0; i < listLen; i = i + 1) {
+    // Each entry is (handle: i32, pathPtr: i32, pathLen: i32)
+    let entryPtr = listPtr + (i * 12);
+    let handle = __load32(entryPtr);
+    let pathPtr = __load32(entryPtr + 4);
+    let pathLen = __load32(entryPtr + 8);
+    
+    let path = __linearToString(pathPtr, pathLen);
+    result.push([new Descriptor(handle), path]);
+  }
+  
+  __preopensCache = result;
+  return result;
+};
+
+// Get the root preopened directory (first one, typically ".")
+export let getRootDir = (): Descriptor => {
+  let preopens = getPreopens();
+  if (preopens.length == 0) {
+    throw new FsError(FsErrorCode.NotFound, "No preopened directories available");
+  }
+  return preopens[0][0];
+};
+
+// ============================================================================
+// High-Level Convenience Functions
+// ============================================================================
+
+// Read a file as a string
+export let readFile = (path: string): string => {
+  let root = getRootDir();
+  let file = root.openAt(path, DescriptorFlags.Read);
+  let content = file.readString();
+  file.close();
+  return content;
+};
+
+// Read a file as bytes
+export let readFileBytes = (path: string): Array<i32> => {
+  let root = getRootDir();
+  let file = root.openAt(path, DescriptorFlags.Read);
+  let content = file.readAllBytes();
+  file.close();
+  return content;
+};
+
+// Write a string to a file (creates or truncates)
+export let writeFile = (path: string, content: string): void => {
+  let root = getRootDir();
+  let file = root.createAt(path);
+  file.writeString(content);
+  file.close();
+};
+
+// Write bytes to a file (creates or truncates)
+export let writeFileBytes = (path: string, content: Array<i32>): void => {
+  let root = getRootDir();
+  let file = root.createAt(path);
+  file.writeBytes(content);
+  file.close();
+};
+
+// List directory contents
+export let listDir = (path: string): Array<DirEntry> => {
+  let root = getRootDir();
+  let dir = root.openAt(path, DescriptorFlags.Read);
+  let entries = dir.readDir();
+  dir.close();
+  return entries;
+};
+
+// Check if a path exists
+export let exists = (path: string): boolean => {
+  let root = getRootDir();
+  return try {
+    root.statAt(path);
+    true
+  } catch (e: FsError) {
+    if (e.code == FsErrorCode.NotFound) {
+      false
+    } else {
+      throw e
+    }
+  };
+};
+
+// Check if a path is a file
+export let isFile = (path: string): boolean => {
+  let root = getRootDir();
+  return try {
+    let stat = root.statAt(path);
+    stat.fileType == FileType.RegularFile
+  } catch (e: FsError) {
+    false
+  };
+};
+
+// Check if a path is a directory
+export let isDirectory = (path: string): boolean => {
+  let root = getRootDir();
+  return try {
+    let stat = root.statAt(path);
+    stat.fileType == FileType.Directory
+  } catch (e: FsError) {
+    false
+  };
+};
+
+// Create a directory
+export let mkdir = (path: string): void => {
+  let root = getRootDir();
+  root.mkdirAt(path);
+};
+
+// Delete a file
+export let unlink = (path: string): void => {
+  let root = getRootDir();
+  root.unlinkAt(path);
+};
+
+// Delete a directory
+export let rmdir = (path: string): void => {
+  let root = getRootDir();
+  root.rmdirAt(path);
+};

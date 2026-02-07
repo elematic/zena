@@ -6881,6 +6881,30 @@ function generateGlobalIntrinsic(
       body.push(Opcode.i32_store8, 0, 0); // align=0, offset=0
       break;
     }
+    case 'i32.load': {
+      ctx.ensureMemory(); // Memory operations require memory
+      generateExpression(ctx, args[0], body); // ptr
+      body.push(Opcode.i32_load, 2, 0); // align=2 (4-byte alignment), offset=0
+      break;
+    }
+    case 'i32.load8_u': {
+      ctx.ensureMemory(); // Memory operations require memory
+      generateExpression(ctx, args[0], body); // ptr
+      body.push(Opcode.i32_load8_u, 0, 0); // align=0 (1-byte alignment), offset=0
+      break;
+    }
+    case 'i32.load8_s': {
+      ctx.ensureMemory(); // Memory operations require memory
+      generateExpression(ctx, args[0], body); // ptr
+      body.push(Opcode.i32_load8_s, 0, 0); // align=0 (1-byte alignment), offset=0
+      break;
+    }
+    case 'i64.load': {
+      ctx.ensureMemory(); // Memory operations require memory
+      generateExpression(ctx, args[0], body); // ptr
+      body.push(Opcode.i64_load, 3, 0); // align=3 (8-byte alignment), offset=0
+      break;
+    }
     case 'eq': {
       const left = args[0];
       const right = args[1];
@@ -7145,6 +7169,16 @@ function generateGlobalIntrinsic(
       generateExpression(ctx, args[0], body); // arr
       generateExpression(ctx, args[1], body); // index
       body.push(0xfb, GcOpcode.array_get_u);
+      body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
+      break;
+    }
+    case '__byte_array_set': {
+      // __byte_array_set(arr: ByteArray, index: i32, value: i32): void
+      ctx.ensureByteArrayType();
+      generateExpression(ctx, args[0], body); // arr
+      generateExpression(ctx, args[1], body); // index
+      generateExpression(ctx, args[2], body); // value
+      body.push(0xfb, GcOpcode.array_set);
       body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
       break;
     }

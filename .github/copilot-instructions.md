@@ -230,6 +230,7 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
     - **Runtime Type Tags**: `docs/design/runtime-type-tags.md`
     - **This Type**: `docs/design/this-type.md`
     - **Multi-Return Values**: `docs/design/multi-return-values.md`
+    - **Filesystem**: `docs/design/filesystem.md`
 
 ## Future Considerations
 

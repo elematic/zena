@@ -232,6 +232,18 @@ export class TypeChecker {
       'let',
     );
 
+    // __byte_array_set(arr: ByteArray, index: i32, value: i32): void
+    ctx.declare(
+      '__byte_array_set',
+      {
+        kind: TypeKind.Function,
+        typeParameters: [],
+        parameters: [Types.ByteArray, Types.I32, Types.I32],
+        returnType: Types.Void,
+      } as FunctionType,
+      'let',
+    );
+
     // __byte_array_copy(dest: ByteArray, destOffset: i32, src: ByteArray, srcOffset: i32, len: i32): void
     ctx.declare(
       '__byte_array_copy',
