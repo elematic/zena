@@ -60,11 +60,13 @@ class TestCase {
   name: string;
   fn: (ctx: TestContext) => void;
   only: boolean;
+  skip: boolean;
 
-  #new(name: string, fn: (ctx: TestContext) => void, only: boolean) {
+  #new(name: string, fn: (ctx: TestContext) => void, only: boolean, skip: boolean) {
     this.name = name;
     this.fn = fn;
     this.only = only;
+    this.skip = skip;
   }
 
   run(): TestResult {
@@ -104,6 +106,11 @@ export class Suite {
     var i: i32 = 0;
     while (i < this.tests.length) {
       let testCase = this.tests[i];
+      // Skip tests that are explicitly skipped
+      if (testCase.skip) {
+        i = i + 1;
+        continue;
+      }
       // Skip non-only tests if we have .only tests
       let shouldRun = !runOnlyTests || testCase.only;
       if (shouldRun) {
@@ -132,15 +139,22 @@ var currentSuite: Suite | null = null;
 // Register a test in the current suite
 export let test = (name: string, fn: (ctx: TestContext) => void): void => {
   if (currentSuite !== null) {
-    currentSuite.tests.push(new TestCase(name, fn, false));
+    currentSuite.tests.push(new TestCase(name, fn, false, false));
   }
 };
 
 // Register a test that will be the only one to run (for debugging)
 export let testOnly = (name: string, fn: (ctx: TestContext) => void): void => {
   if (currentSuite !== null) {
-    currentSuite.tests.push(new TestCase(name, fn, true));
+    currentSuite.tests.push(new TestCase(name, fn, true, false));
     currentSuite.hasOnly = true;
+  }
+};
+
+// Register a test that will be skipped
+export let testSkip = (name: string, fn: (ctx: TestContext) => void): void => {
+  if (currentSuite !== null) {
+    currentSuite.tests.push(new TestCase(name, fn, false, true));
   }
 };
 
@@ -153,6 +167,12 @@ export let suite = (name: string, fn: () => void): Suite => {
   }
   currentSuite = newSuite;
   fn();
+  // Propagate hasOnly up to parent suite
+  if (newSuite.hasOnly) {
+    if (parentSuite !== null) {
+      parentSuite.hasOnly = true;
+    }
+  }
   currentSuite = parentSuite;
   return newSuite;
 };

@@ -1,4 +1,8 @@
-import {DiagnosticBag, DiagnosticCode} from '../diagnostics.js';
+import {
+  DiagnosticBag,
+  DiagnosticCode,
+  type DiagnosticLocation,
+} from '../diagnostics.js';
 import {
   type Type,
   type ArrayType,
@@ -11,7 +15,12 @@ import {
   TypeKind,
 } from '../types.js';
 import {substituteType, instantiateGenericClass} from './types.js';
-import {type Declaration, type Module, type SymbolInfo} from '../ast.js';
+import {
+  type Declaration,
+  type Module,
+  type SourceLocation,
+  type SymbolInfo,
+} from '../ast.js';
 import type {Compiler} from '../compiler.js';
 import {SemanticContext} from './semantic-context.js';
 
@@ -243,6 +252,21 @@ export class CheckerContext {
   exitScope() {
     this.scopes.pop();
     this.#lib.narrowedTypes.pop();
+  }
+
+  /**
+   * Convert a source location to a diagnostic location.
+   * Returns undefined if the source location is missing.
+   */
+  getLocation(loc: SourceLocation | undefined): DiagnosticLocation | undefined {
+    if (!loc) return undefined;
+    return {
+      file: this.module?.path ?? 'unknown',
+      start: loc.start,
+      length: loc.end - loc.start,
+      line: loc.line,
+      column: loc.column,
+    };
   }
 
   enterLoop() {

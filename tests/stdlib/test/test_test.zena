@@ -1,6 +1,6 @@
 // Test stdlib tests using zena:test
 // Tests the test framework's data structures (Suite, TestResult, test registration)
-import {suite, test, Suite, SuiteResult, TestResult, TestContext} from 'zena:test';
+import {suite, test, testOnly, testSkip, Suite, SuiteResult, TestResult, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse, isNull, isNotNull, fail} from 'zena:assert';
 
 export let tests = suite('Test Framework', (): void => {
@@ -158,6 +158,72 @@ export let tests = suite('Test Framework', (): void => {
       equal(result.passed, 2);
       equal(result.failed, 1);
       equal(result.suites.length, 1);
+    });
+  });
+
+  suite('testSkip', (): void => {
+    test('testSkip() registers a skipped test', (ctx: TestContext): void => {
+      let s = suite('skip suite', (): void => {
+        testSkip('skipped test', (ctx: TestContext): void => {
+          fail('should not run');
+        });
+      });
+      equal(s.tests.length, 1);
+    });
+
+    test('skipped tests do not run', (ctx: TestContext): void => {
+      let s = suite('skip suite', (): void => {
+        test('runs', (ctx: TestContext): void => {});
+        testSkip('skipped', (ctx: TestContext): void => {
+          fail('should not run');
+        });
+        test('also runs', (ctx: TestContext): void => {});
+      });
+      let result = s.run();
+      // Only 2 tests run (the skipped one doesn't)
+      equal(result.tests.length, 2);
+      equal(result.passed, 2);
+      equal(result.failed, 0);
+    });
+  });
+
+  suite('testOnly', (): void => {
+    test('testOnly() filters to only that test', (ctx: TestContext): void => {
+      let s = suite('only suite', (): void => {
+        test('skipped', (ctx: TestContext): void => {});
+        testOnly('only this', (ctx: TestContext): void => {});
+        test('also skipped', (ctx: TestContext): void => {});
+      });
+      let result = s.run();
+      // Only 1 test runs
+      equal(result.tests.length, 1);
+      equal(result.passed, 1);
+    });
+
+    test('testOnly() in nested suite filters parent tests', (ctx: TestContext): void => {
+      let s = suite('outer', (): void => {
+        test('outer test - should be skipped', (ctx: TestContext): void => {});
+        suite('inner', (): void => {
+          test('inner test - should be skipped', (ctx: TestContext): void => {});
+          testOnly('only this runs', (ctx: TestContext): void => {});
+        });
+        test('another outer - should be skipped', (ctx: TestContext): void => {});
+      });
+      let result = s.run();
+      // Outer tests are skipped, only the testOnly runs
+      equal(result.tests.length, 0);
+      equal(result.suites.length, 1);
+      equal(result.suites[0].tests.length, 1);
+      equal(result.passed, 1);
+    });
+
+    test('hasOnly propagates from nested to parent', (ctx: TestContext): void => {
+      let s = suite('outer', (): void => {
+        suite('inner', (): void => {
+          testOnly('only test', (ctx: TestContext): void => {});
+        });
+      });
+      isTrue(s.hasOnly);
     });
   });
 });

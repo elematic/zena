@@ -25,7 +25,6 @@ import {
   type Pattern,
   type RecordPattern,
   type ReturnStatement,
-  type SourceLocation,
   type Statement,
   type SymbolDeclaration,
   type SymbolPropertyName,
@@ -36,7 +35,7 @@ import {
   type VariableDeclaration,
   type WhileStatement,
 } from '../ast.js';
-import {DiagnosticCode, type DiagnosticLocation} from '../diagnostics.js';
+import {DiagnosticCode} from '../diagnostics.js';
 import {
   getGetterName,
   getPropertyNameFromAccessor,
@@ -1238,6 +1237,7 @@ function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {
     ctx.diagnostics.reportError(
       'Return statement outside of function.',
       DiagnosticCode.ReturnOutsideFunction,
+      ctx.getLocation(stmt.loc),
     );
     return;
   }
@@ -1252,6 +1252,7 @@ function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {
       ctx.diagnostics.reportError(
         `Type mismatch: expected return type ${typeToString(ctx.currentFunctionReturnType)}, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(stmt.argument?.loc ?? stmt.loc),
       );
     }
   } else {
@@ -1323,6 +1324,7 @@ function checkVariableDeclaration(
       ctx.diagnostics.reportError(
         `Type mismatch: expected ${typeToString(explicitType)}, got ${typeToString(type)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(decl.init.loc),
       );
     }
     type = explicitType;
@@ -3385,7 +3387,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
           ctx.diagnostics.reportError(
             `Enum member initializer must be assignable to '${Types.I32.name}'.`,
             DiagnosticCode.TypeMismatch,
-            toDiagnosticLocation(member.initializer.loc, ctx),
+            ctx.getLocation(member.initializer.loc),
           );
         }
 
@@ -3397,7 +3399,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
           ctx.diagnostics.reportError(
             `Enum member initializer must be a number literal.`,
             DiagnosticCode.TypeMismatch,
-            toDiagnosticLocation(member.initializer.loc, ctx),
+            ctx.getLocation(member.initializer.loc),
           );
         }
       } else {
@@ -3405,7 +3407,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
           ctx.diagnostics.reportError(
             `Enum member initializer must be assignable to '${Types.String.name}'.`,
             DiagnosticCode.TypeMismatch,
-            toDiagnosticLocation(member.initializer.loc, ctx),
+            ctx.getLocation(member.initializer.loc),
           );
         }
 
@@ -3415,7 +3417,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
           ctx.diagnostics.reportError(
             `Enum member initializer must be a string literal.`,
             DiagnosticCode.TypeMismatch,
-            toDiagnosticLocation(member.initializer.loc, ctx),
+            ctx.getLocation(member.initializer.loc),
           );
         }
       }
@@ -3424,7 +3426,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
         ctx.diagnostics.reportError(
           `String enum member '${member.name.name}' must have an initializer.`,
           DiagnosticCode.TypeMismatch,
-          toDiagnosticLocation(member.name.loc, ctx),
+          ctx.getLocation(member.name.loc),
         );
       } else {
         member.resolvedValue = nextValue++;
@@ -3491,18 +3493,4 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
       kind: 'let',
     });
   }
-}
-
-function toDiagnosticLocation(
-  loc: SourceLocation | undefined,
-  ctx: CheckerContext,
-): DiagnosticLocation | undefined {
-  if (!loc) return undefined;
-  return {
-    file: ctx.module?.path || 'unknown',
-    start: loc.start,
-    length: loc.end - loc.start,
-    line: loc.line,
-    column: loc.column,
-  };
 }
