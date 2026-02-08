@@ -410,13 +410,14 @@ pattern** - shared algorithms are implemented once on the base class, calling
 abstract primitives (`byteAt`, etc.) that each subclass implements. This is
 different from mixins:
 
-| Approach | Code Duplication | Internal Call Overhead |
-|----------|------------------|------------------------|
-| Template method (current) | None - shared code in base | Virtual dispatch for primitives |
-| Mixins | Full duplication per class | Direct calls (monomorphized) |
-| Swappable backing store | None | Virtual dispatch for every backing access |
+| Approach                  | Code Duplication           | Internal Call Overhead                    |
+| ------------------------- | -------------------------- | ----------------------------------------- |
+| Template method (current) | None - shared code in base | Virtual dispatch for primitives           |
+| Mixins                    | Full duplication per class | Direct calls (monomorphized)              |
+| Swappable backing store   | None                       | Virtual dispatch for every backing access |
 
 We chose template method because:
+
 1. **Minimal binary bloat**: ~30 String methods × ~5 implementations = code shared
 2. **Hot path optimization**: The abstract primitives (`byteAt`, `length`) are tiny,
    so virtual call overhead is amortized over the algorithm's work
@@ -424,6 +425,7 @@ We chose template method because:
 
 **The internal polymorphism concern**: Yes, `indexOf` calling `this.byteAt()` is a
 virtual call. But this is acceptable because:
+
 - Most string algorithms are O(n), so one vtable lookup per byte is negligible
 - JIT inline caching makes repeated calls to the same concrete type fast
 - When the caller knows the concrete type, the JIT can specialize the entire method

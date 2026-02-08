@@ -74,3 +74,7 @@ export const arrayIteratorModule = fs.readFileSync(
   path.join(stdlibDir, 'array-iterator.zena'),
   'utf-8',
 );
+export const memoryModule = fs.readFileSync(
+  path.join(stdlibDir, 'memory.zena'),
+  'utf-8',
+);

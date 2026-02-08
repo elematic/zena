@@ -90,9 +90,9 @@ interface types {
 
 | WIT Type       | Zena Type           | Notes                           |
 | -------------- | ------------------- | ------------------------------- |
-| `string`       | `LinearString`      | Zero-copy view on linear memory |
-| `list<u8>`     | `U8Buffer`          | Zero-copy view, see below       |
-| `list<T>`      | `LinearBuffer<T>`   | Typed view on linear memory     |
+| `string`       | `String`            | GC string (see strings.md)      |
+| `list<u8>`     | `i32` (ptr) + `i32` | Pointer + length in linear mem  |
+| `list<T>`      | `i32` (ptr) + `i32` | Pointer + length in linear mem  |
 | `result<T, E>` | `Result<T, E>`      | Value type, see below           |
 | `option<T>`    | `T \| null`         | Nullable union                  |
 | `tuple<A, B>`  | `(A, B)`            | Unboxed tuple (multi-return)    |
@@ -104,25 +104,42 @@ interface types {
 
 ### Detailed Type Mappings
 
-#### `list<u8>` → `U8Buffer`
+#### `list<u8>` → Linear Memory Buffer
 
-WASI byte arrays map to `U8Buffer` from [linear-memory.md](linear-memory.md):
+WASI byte arrays use linear memory via `Memory` from [linear-memory.md](linear-memory.md):
 
 ```zena
-// Zero-copy view on linear memory - no GC allocation
-let bytes: U8Buffer = wasi_read(fd, 1024);
-let firstByte = bytes[0];  // @intrinsic('i32.load8_u')
+import {Memory, defaultAllocator} from 'zena:memory';
 
-// Convert to GC ByteArray when needed (copies)
-let gcBytes: ByteArray = bytes.toByteArray();
+// Read returns data in linear memory (pointer + length)
+if (let (true, ptr) = defaultAllocator.alloc(1024)) {
+  let bytesRead = wasi_read(fd, ptr, 1024);
+  let firstByte = Memory.default.getU8(ptr);  // @intrinsic('i32.load8_u')
+  
+  // Convert to GC FixedArray when needed (copies element by element)
+  let gcBytes = new FixedArray<i32>(bytesRead);
+  for (var i = 0; i < bytesRead; i = i + 1) {
+    gcBytes[i] = Memory.default.getU8(ptr + i);
+  }
+  
+  defaultAllocator.free(ptr);
+}
 ```
 
-For write operations, `U8Buffer.alloc()` creates writable linear memory:
+For write operations, allocate linear memory and copy GC data:
 
 ```zena
-using buf = U8Buffer.alloc(data.length);
-data.copyTo(buf);  // Copy GC ByteArray → linear memory
-wasi_write(fd, buf.ptr, buf.length);
+import {Memory, defaultAllocator} from 'zena:memory';
+
+if (let (true, ptr) = defaultAllocator.alloc(data.length)) {
+  let mem = Memory.default;
+  // Copy GC FixedArray → linear memory
+  for (var i = 0; i < data.length; i = i + 1) {
+    mem.setU8(ptr + i, data[i]);
+  }
+  wasi_write(fd, ptr, data.length);
+  defaultAllocator.free(ptr);
+}
 ```
 
 #### `result<T, E>` → `Result<T, E>` or Exceptions
@@ -510,7 +527,36 @@ WASI 0.2 uses **linear memory** for passing strings and byte arrays. Zena uses
 WASM-GC, so we need a bridge. See [linear-memory.md](linear-memory.md) for the
 full design.
 
-### The `using` Declaration
+### Current Implementation
+
+The current `zena:fs` module uses `Memory` and `Allocator` from `zena:memory`:
+
+```zena
+import {Memory, Allocator, defaultAllocator} from 'zena:memory';
+
+const allocOrPanic = (alloc: Allocator, bytes: i32): i32 => {
+  if (let (true, ptr) = alloc.alloc(bytes)) {
+    return ptr;
+  }
+  throw new Error('out of memory');
+};
+
+// Write a string to linear memory, call WASI, free buffer
+const writeString = (fd: i32, s: String): i32 => {
+  let ptr = allocOrPanic(defaultAllocator, s.length);
+  let mem = Memory.default;
+  
+  for (var i = 0; i < s.length; i = i + 1) {
+    mem.setU8(ptr + i, s.byteAt(i));
+  }
+  
+  let result = __wasi_write(fd, ptr, s.length);
+  defaultAllocator.free(ptr);
+  return result;
+};
+```
+
+### Future: The `using` Declaration
 
 Linear memory buffers must be explicitly freed. The `using` declaration
 provides automatic cleanup:

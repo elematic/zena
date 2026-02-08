@@ -1261,7 +1261,7 @@ function generateIndexExpression(
       }
 
       const classInfo = ctx.getClassInfo(classType);
-      // Only handle here if this is NOT an extension class (extension classes use intrinsics)
+      // Only handle here if this is NOT an extension class (extension classes use intrinsics below)
       if (classInfo && !classInfo.isExtension) {
         // Compute mangled name for the overloaded operator
         const mangledName = '[]' + getSignatureKey(expr.resolvedOperatorMethod);
@@ -1273,6 +1273,17 @@ function generateIndexExpression(
         }
 
         if (methodInfo) {
+          // Handle intrinsic operator [] (e.g., Memory.operator [])
+          if (methodInfo.intrinsic) {
+            generateIntrinsic(
+              ctx,
+              methodInfo.intrinsic,
+              expr.object,
+              [expr.index],
+              body,
+            );
+            return;
+          }
           // Generate method call: obj, index, call
           generateExpression(ctx, expr.object, body);
           generateExpression(ctx, expr.index, body);
@@ -1461,6 +1472,19 @@ function generateIndexExpression(
               : GcOpcode.array_get,
           );
           body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
+          return;
+        }
+
+        // Handle other intrinsics for operator [] (e.g., memory load intrinsics)
+        if (methodInfo.intrinsic) {
+          // Generate the intrinsic call with object as this and index as first arg
+          generateIntrinsic(
+            ctx,
+            methodInfo.intrinsic,
+            expr.object,
+            [expr.index],
+            body,
+          );
           return;
         }
 
@@ -3243,6 +3267,37 @@ function generateAssignmentExpression(
             body.push(0xfb, GcOpcode.array_set);
             body.push(...WasmModule.encodeSignedLEB128(arrayTypeIndex));
 
+            body.push(Opcode.local_get);
+            body.push(...WasmModule.encodeSignedLEB128(tempVal));
+            return;
+          }
+
+          // Handle other intrinsics for operator []= (e.g., memory store intrinsics)
+          if (methodInfo.intrinsic) {
+            // Generate: object, index, value on stack
+            generateExpression(ctx, expr.value, body);
+
+            const valueType = inferType(ctx, expr.value);
+            const tempVal = ctx.declareLocal('$$temp_assign_val', valueType);
+
+            body.push(Opcode.local_tee);
+            body.push(...WasmModule.encodeSignedLEB128(tempVal));
+
+            // Generate the intrinsic call with object as this and [index, value] as args
+            // Note: We already generated value above with local_tee
+            // The intrinsic expects: ptr, value on stack
+            // We need to push ptr (index), then value again
+            // So let's do it properly: generate ptr first
+            body.push(Opcode.drop); // Remove the temp value
+            generateIntrinsic(
+              ctx,
+              methodInfo.intrinsic,
+              indexExpr.object,
+              [indexExpr.index, expr.value],
+              body,
+            );
+
+            // Return the assigned value
             body.push(Opcode.local_get);
             body.push(...WasmModule.encodeSignedLEB128(tempVal));
             return;
@@ -6979,6 +7034,90 @@ function generateIntrinsic(
       );
       break;
     }
+    // Memory intrinsics (memory.size, memory.grow)
+    case 'memory.size': {
+      ctx.ensureMemory();
+      body.push(Opcode.memory_size, 0); // memory index 0
+      break;
+    }
+    case 'memory.grow': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body);
+      body.push(Opcode.memory_grow, 0);
+      break;
+    }
+    // Load/store intrinsics
+    case 'i32.load': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body); // ptr
+      body.push(Opcode.i32_load, 2, 0); // align=2 (4-byte), offset=0
+      break;
+    }
+    case 'i32.load8_u': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body); // ptr
+      body.push(Opcode.i32_load8_u, 0, 0); // align=0, offset=0
+      break;
+    }
+    case 'i32.load8_s': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body); // ptr
+      body.push(Opcode.i32_load8_s, 0, 0);
+      break;
+    }
+    case 'i32.store': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body); // ptr
+      generateExpression(ctx, args[1], body); // value
+      body.push(Opcode.i32_store, 0, 0);
+      break;
+    }
+    case 'i32.store8': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body); // ptr
+      generateExpression(ctx, args[1], body); // value
+      body.push(Opcode.i32_store8, 0, 0);
+      break;
+    }
+    case 'i64.load': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body); // ptr
+      body.push(Opcode.i64_load, 3, 0); // align=3 (8-byte), offset=0
+      break;
+    }
+    case 'i64.store': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body); // ptr
+      generateExpression(ctx, args[1], body); // value
+      body.push(Opcode.i64_store, 3, 0);
+      break;
+    }
+    case 'f32.load': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body); // ptr
+      body.push(Opcode.f32_load, 2, 0); // align=2 (4-byte), offset=0
+      break;
+    }
+    case 'f32.store': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body); // ptr
+      generateExpression(ctx, args[1], body); // value
+      body.push(Opcode.f32_store, 2, 0);
+      break;
+    }
+    case 'f64.load': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body); // ptr
+      body.push(Opcode.f64_load, 3, 0); // align=3 (8-byte), offset=0
+      break;
+    }
+    case 'f64.store': {
+      ctx.ensureMemory();
+      generateExpression(ctx, args[0], body); // ptr
+      generateExpression(ctx, args[1], body); // value
+      body.push(Opcode.f64_store, 3, 0);
+      break;
+    }
     default:
       throw new Error(`Unsupported intrinsic: ${intrinsic}`);
   }
@@ -7028,6 +7167,17 @@ function generateGlobalIntrinsic(
       ctx.ensureMemory(); // Memory operations require memory
       generateExpression(ctx, args[0], body); // ptr
       body.push(Opcode.i64_load, 3, 0); // align=3 (8-byte alignment), offset=0
+      break;
+    }
+    case 'memory.size': {
+      ctx.ensureMemory(); // Memory operations require memory
+      body.push(Opcode.memory_size, 0); // memory index 0
+      break;
+    }
+    case 'memory.grow': {
+      ctx.ensureMemory(); // Memory operations require memory
+      generateExpression(ctx, args[0], body); // pages to grow
+      body.push(Opcode.memory_grow, 0); // memory index 0
       break;
     }
     case 'eq': {

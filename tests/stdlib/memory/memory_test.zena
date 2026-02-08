@@ -1,0 +1,231 @@
+// Memory stdlib tests using zena:test
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {Memory, Allocator, BumpAllocator, FreeListAllocator, defaultAllocator} from 'zena:memory';
+
+export let tests = suite('Memory', (): void => {
+  // =========================================================================
+  // Memory class tests
+  // =========================================================================
+
+  test('array-like byte access', (ctx: TestContext): void => {
+    let mem = Memory.default;
+    
+    // Write bytes at safe addresses (after allocator region)
+    mem[1000] = 42;
+    mem[1001] = 100;
+    mem[1002] = 255;
+    
+    // Read them back
+    equal(mem[1000], 42);
+    equal(mem[1001], 100);
+    equal(mem[1002], 255);
+  });
+
+  test('i32 typed accessors', (ctx: TestContext): void => {
+    let mem = Memory.default;
+    
+    mem.setI32(1004, 12345);
+    equal(mem.getI32(1004), 12345);
+    
+    mem.setI32(1008, -9999);
+    equal(mem.getI32(1008), -9999);
+  });
+
+  test('size and grow', (ctx: TestContext): void => {
+    let mem = Memory.default;
+    
+    let sizeBefore = mem.size();
+    equal(sizeBefore >= 1, true);  // At least 1 page
+    
+    let byteLengthBefore = mem.byteLength;
+    equal(byteLengthBefore, sizeBefore * 65536);
+    
+    mem.grow(1);
+    
+    let sizeAfter = mem.size();
+    equal(sizeAfter, sizeBefore + 1);
+    
+    let byteLengthAfter = mem.byteLength;
+    equal(byteLengthAfter, sizeAfter * 65536);
+  });
+
+  // =========================================================================
+  // BumpAllocator tests
+  // =========================================================================
+
+  test('BumpAllocator alloc returns sequential addresses', (ctx: TestContext): void => {
+    if (let (true, region) = defaultAllocator.alloc(1024)) {
+      let alloc = new BumpAllocator(region, 1024);
+      
+      if (let (true, p1) = alloc.alloc(16)) {
+        if (let (true, p2) = alloc.alloc(32)) {
+          if (let (true, p3) = alloc.alloc(8)) {
+            // Verify sequential allocation
+            equal(p2 - p1, 16);
+            equal(p3 - p2, 32);
+          }
+        }
+      }
+      
+      defaultAllocator.free(region);
+    }
+  });
+
+  test('BumpAllocator returns failure when exhausted', (ctx: TestContext): void => {
+    if (let (true, region) = defaultAllocator.alloc(100)) {
+      let alloc = new BumpAllocator(region, 100);
+      
+      var p1Ok = false;
+      var p2Ok = false;
+      var p3Fail = false;
+      
+      // This should succeed
+      if (let (true, _) = alloc.alloc(50)) {
+        p1Ok = true;
+      }
+      
+      // This should succeed (50 + 40 = 90 < 100)
+      if (let (true, _) = alloc.alloc(40)) {
+        p2Ok = true;
+      }
+      
+      // This should fail (90 + 20 = 110 > 100)
+      if (let (true, _) = alloc.alloc(20)) {
+        p3Fail = false;  // Succeeded when it shouldn't
+      } else {
+        p3Fail = true;  // Failed as expected
+      }
+      
+      equal(p1Ok, true);
+      equal(p2Ok, true);
+      equal(p3Fail, true);
+      
+      defaultAllocator.free(region);
+    }
+  });
+
+  test('BumpAllocator allocAligned respects alignment', (ctx: TestContext): void => {
+    if (let (true, region) = defaultAllocator.alloc(1024)) {
+      let alloc = new BumpAllocator(region, 1024);
+      
+      // Allocate 1 byte to move nextPtr by 1
+      if (let (true, p1) = alloc.alloc(1)) {
+        // Allocate with 16-byte alignment - should round up
+        if (let (true, p2) = alloc.allocAligned(8, 16)) {
+          // Verify p2 is aligned to 16
+          equal(p2 % 16, 0);
+          // Verify p2 > p1 (it advanced)
+          equal(p2 > p1, true);
+        }
+      }
+      
+      defaultAllocator.free(region);
+    }
+  });
+
+  test('BumpAllocator reset allows reuse', (ctx: TestContext): void => {
+    if (let (true, region) = defaultAllocator.alloc(256)) {
+      let arena = new BumpAllocator(region, 256);
+      let mem = Memory.default;
+      
+      // First allocation
+      if (let (true, p1) = arena.alloc(64)) {
+        mem.setI32(p1, 111);
+        
+        // Reset
+        arena.reset();
+        
+        // Second allocation - should get same address
+        if (let (true, p2) = arena.alloc(64)) {
+          equal(p1, p2);
+          
+          mem.setI32(p2, 222);
+          equal(mem.getI32(p2), 222);
+        }
+      }
+      
+      defaultAllocator.free(region);
+    }
+  });
+
+  // =========================================================================
+  // FreeListAllocator tests
+  // =========================================================================
+
+  test('FreeListAllocator alloc and free', (ctx: TestContext): void => {
+    let alloc = FreeListAllocator.default;
+    let mem = Memory.default;
+    
+    // Allocate three blocks
+    if (let (true, p1) = alloc.alloc(16)) {
+      if (let (true, p2) = alloc.alloc(32)) {
+        if (let (true, p3) = alloc.alloc(16)) {
+          // Write to them to verify they're usable
+          mem.setI32(p1, 111);
+          mem.setI32(p2, 222);
+          mem.setI32(p3, 333);
+          
+          equal(mem.getI32(p1), 111);
+          equal(mem.getI32(p2), 222);
+          equal(mem.getI32(p3), 333);
+          
+          // Free the middle block
+          alloc.free(p2);
+          
+          // Allocate again - should reuse the freed block
+          if (let (true, p4) = alloc.alloc(24)) {
+            mem.setI32(p4, 444);
+            equal(mem.getI32(p4), 444);
+          }
+        }
+      }
+    }
+  });
+
+  test('FreeListAllocator reuses freed memory', (ctx: TestContext): void => {
+    let alloc = FreeListAllocator.default;
+    
+    // Allocate and free repeatedly
+    if (let (true, p1) = alloc.alloc(64)) {
+      alloc.free(p1);
+      
+      if (let (true, p2) = alloc.alloc(64)) {
+        alloc.free(p2);
+        
+        if (let (true, p3) = alloc.alloc(64)) {
+          // If reusing works, p1, p2, p3 should all be the same address
+          equal(p1, p2);
+          equal(p2, p3);
+        }
+      }
+    }
+  });
+
+  // =========================================================================
+  // Allocator interface polymorphism
+  // =========================================================================
+
+  test('Allocator interface polymorphism', (ctx: TestContext): void => {
+    let useAllocator = (alloc: Allocator): i32 => {
+      if (let (true, p) = alloc.alloc(32)) {
+        Memory.default.setI32(p, 42);
+        let result = Memory.default.getI32(p);
+        alloc.free(p);  // Works with both (no-op for bump)
+        return result;
+      }
+      return 0;
+    };
+
+    // Test with BumpAllocator
+    if (let (true, region) = defaultAllocator.alloc(1024)) {
+      let bump = new BumpAllocator(region, 1024);
+      equal(useAllocator(bump), 42);
+      defaultAllocator.free(region);
+    }
+    
+    // Test with FreeListAllocator
+    let freelist = FreeListAllocator.default;
+    equal(useAllocator(freelist), 42);
+  });
+});

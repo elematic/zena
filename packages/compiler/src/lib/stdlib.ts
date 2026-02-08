@@ -9,6 +9,7 @@ export {
   growableArrayModule,
   immutableArrayModule,
   iteratorModule,
+  memoryModule,
   mapModule,
   mathModule,
   rangeModule,

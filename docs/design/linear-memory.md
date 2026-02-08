@@ -3,16 +3,15 @@
 ## Overview
 
 Zena is a WASM-GC language, but many WASI APIs and external libraries (like
-re2-wasm, sqlite-wasm) operate on **linear memory**. This document designs the
-bridge between Zena's GC heap and linear memory, enabling:
+re2-wasm, sqlite-wasm) operate on **linear memory**. This document describes
+the `zena:memory` module which provides the bridge between Zena's GC heap and
+linear memory, enabling:
 
-1. Zero-copy string handling for WASI I/O
-2. Type-safe buffer access with familiar `[]` syntax
-3. Integration with linear-memory libraries (regex, compression, crypto)
-4. Memory management patterns for linear memory lifetime
+1. Type-safe access to linear memory with intrinsic-backed methods
+2. Memory management with pluggable allocators
+3. Integration with WASI and linear-memory libraries (regex, compression, crypto)
 
 For string design including `LinearString`, see [strings.md](strings.md).
-For devirtualization optimizations, see [optimizations.md](optimizations.md).
 
 ## The Two Memory Worlds
 
@@ -35,315 +34,364 @@ For devirtualization optimizations, see [optimizations.md](optimizations.md).
 ```
 
 **The X marks the problem**: GC objects can't be passed to linear memory APIs.
-We need a bridge.
+The `Memory` class and allocators provide this bridge.
 
 ---
 
-## Buffer Classes
+## The Memory Class
 
-### Hierarchy
+The `Memory` class provides type-safe, array-like access to WASM linear memory.
+All methods are backed by `@intrinsic` decorators that compile directly to WASM
+memory instructions.
 
 ```zena
-// Base interface for all linear memory views
-interface LinearBuffer<T> extends Sequence<T> {
-  get ptr(): i32;
-  get byteLength(): i32;
+export final class Memory {
+  /** The default memory instance (memory index 0). */
+  static default: Memory = new Memory();
 
-  // Create a view (zero-copy)
-  slice(start: i32, end: i32): LinearBuffer<T>;
-}
+  /** Get the current size of linear memory in 64KB pages. */
+  @intrinsic('memory.size')
+  declare size(): i32;
 
-// Typed buffer implementations
-final class U8Buffer implements LinearBuffer<i32> {
-  #ptr: i32;
-  #len: i32;
+  /** Grow linear memory by pages. Returns old size, or -1 on failure. */
+  @intrinsic('memory.grow')
+  declare grow(pages: i32): i32;
 
-  #new(ptr: i32, len: i32) {
-    this.#ptr = ptr;
-    this.#len = len;
+  /** The current size in bytes. */
+  byteLength: i32 {
+    get { return this.size() << 16; }
   }
 
-  // Allocate new buffer in linear memory
-  static alloc(len: i32): U8Buffer {
-    let ptr = LinearMemory.alloc(len);
-    return new U8Buffer(ptr, len);
-  }
+  // Byte access (u8)
+  @intrinsic('i32.load8_u')
+  declare getU8(ptr: i32): i32;
 
-  // Wrap existing linear memory region
-  static wrap(ptr: i32, len: i32): U8Buffer {
-    return new U8Buffer(ptr, len);
-  }
+  @intrinsic('i32.store8')
+  declare setU8(ptr: i32, value: i32): void;
 
-  get length(): i32 { return this.#len; }
-  get ptr(): i32 { return this.#ptr; }
-  get byteLength(): i32 { return this.#len; }
+  // 32-bit integer access
+  @intrinsic('i32.load')
+  declare getI32(ptr: i32): i32;
 
+  @intrinsic('i32.store')
+  declare setI32(ptr: i32, value: i32): void;
+
+  // 64-bit integer access
+  @intrinsic('i64.load')
+  declare getI64(ptr: i32): i64;
+
+  @intrinsic('i64.store')
+  declare setI64(ptr: i32, value: i64): void;
+
+  // Floating point access
+  @intrinsic('f32.load')
+  declare getF32(ptr: i32): f32;
+
+  @intrinsic('f32.store')
+  declare setF32(ptr: i32, value: f32): void;
+
+  @intrinsic('f64.load')
+  declare getF64(ptr: i32): f64;
+
+  @intrinsic('f64.store')
+  declare setF64(ptr: i32, value: f64): void;
+
+  // Array-like byte access via operator overloading
   @intrinsic('i32.load8_u')
   declare operator [](index: i32): i32;
 
   @intrinsic('i32.store8')
   declare operator []=(index: i32, value: i32): void;
-
-  slice(start: i32, end: i32): U8Buffer {
-    return new U8Buffer(this.#ptr + start, end - start);
-  }
-
-  // Copy from GC array
-  copyFrom(source: ByteArray, sourceStart: i32 = 0, len: i32 = -1): void;
-
-  // Copy to GC array
-  copyTo(dest: ByteArray, destStart: i32 = 0, len: i32 = -1): void;
 }
+```
 
-final class I32Buffer implements LinearBuffer<i32> {
-  #ptr: i32;
-  #len: i32;  // Length in elements
+### Usage
 
-  get byteLength(): i32 { return this.#len * 4; }
+```zena
+let mem = Memory.default;
 
-  @intrinsic('i32.load')
-  declare operator [](index: i32): i32;  // Compiler emits: ptr + index * 4
+// Size operations
+let pages = mem.size();        // Current size in pages
+let bytes = mem.byteLength;    // Current size in bytes
+mem.grow(1);                   // Add one 64KB page
 
-  @intrinsic('i32.store')
-  declare operator []=(index: i32, value: i32): void;
-}
+// Typed access (explicit methods)
+mem.setI32(100, 42);
+let value = mem.getI32(100);   // 42
 
-final class F64Buffer implements LinearBuffer<f64> {
+// Array-like byte access
+mem[0] = 65;                   // Write byte at address 0
+let b = mem[0];                // Read byte (unsigned): 65
+```
+
+### Why Simple Methods over Buffer Classes?
+
+An earlier design proposed typed buffer classes (U8Buffer, I32Buffer, etc.):
+
+```zena
+// NOT IMPLEMENTED - earlier design
+final class I32Buffer {
   #ptr: i32;
   #len: i32;
-
-  get byteLength(): i32 { return this.#len * 8; }
-
-  @intrinsic('f64.load')
-  declare operator [](index: i32): f64;  // Compiler emits: ptr + index * 8
+  @intrinsic('i32.load')
+  declare operator [](index: i32): i32;  // Would need ptr + index * 4
 }
 ```
 
-### Intrinsic Stride Calculation
+We chose simple typed methods instead because:
 
-For `I32Buffer[i]`, we need `i32.load(ptr + i * 4)`:
+1. **No stride inference needed**: `getI32(ptr)` takes the exact address;
+   the caller handles offsets. Buffer classes would need compiler magic to
+   infer stride (4 for i32, 8 for f64) from the element type.
 
-```wat
-;; Compiler transformation for @intrinsic('i32.load') on I32Buffer:
-;; Source: buffer[index]
-;;
-;; Emitted WASM:
-local.get $this
-struct.get $I32Buffer #ptr    ;; Get base pointer
-local.get $index
-i32.const 4
-i32.mul
-i32.add                        ;; ptr + index * 4
-i32.load align=4 offset=0
-```
+2. **Maps to WASM 1:1**: Each method is exactly one WASM instruction.
+   No hidden multiplication or addition.
 
-The compiler infers stride from the intrinsic name and buffer element type:
+3. **Simpler for WASI/FFI**: Most APIs pass raw pointers. Wrapping in buffer
+   objects adds ceremony without benefit.
 
-- `i32.load` on `I32Buffer` → stride 4
-- `f64.load` on `F64Buffer` → stride 8
-- `i32.load8_u` on `U8Buffer` → stride 1
+4. **Works today**: No new compiler features required.
 
-### Bounds Checking
-
-Debug builds insert bounds checks:
+Stride calculation is the caller's responsibility:
 
 ```zena
-// Debug mode expansion of buffer[i]
-if (i < 0 || i >= this.#len) {
-  throw new IndexOutOfBoundsError(i, this.#len);
+// Reading an i32 array at ptr with length n:
+let mem = Memory.default;
+for (var i = 0; i < n; i = i + 1) {
+  let value = mem.getI32(ptr + i * 4);
+  // ...
 }
-__intrinsic_i32_load(this.#ptr + i * 4)
-```
-
-Release mode omits the check. For explicit unchecked access:
-
-```zena
-buffer.getUnchecked(index);  // Never bounds-checks
-buffer.setUnchecked(index, value);
-```
-
----
-
-## Memory Management
-
-### Basic Operations
-
-```zena
-final class LinearMemory {
-  @intrinsic('memory.size')
-  declare static size(): i32;  // In pages (64KB each)
-
-  @intrinsic('memory.grow')
-  declare static grow(pages: i32): i32;  // Returns old size, -1 on failure
-
-  // Simple bump allocator (for MVP)
-  static #nextPtr: i32 = 64;  // Skip WASI reserved area
-
-  static alloc(bytes: i32): i32 {
-    let ptr = LinearMemory.#nextPtr;
-    LinearMemory.#nextPtr = ptr + bytes;
-
-    // Grow memory if needed
-    let needed = (LinearMemory.#nextPtr + 65535) / 65536;
-    if (needed > LinearMemory.size()) {
-      LinearMemory.grow(needed - LinearMemory.size());
-    }
-
-    return ptr;
-  }
-
-  // Note: No free() in MVP - use arena/region patterns instead
-}
-```
-
-### The Lifetime Problem
-
-WASM GC manages GC objects automatically, but linear memory has no automatic
-cleanup. When a `U8Buffer` GC object becomes unreachable, the linear memory it
-points to is NOT freed.
-
-```zena
-func leak(): void {
-  let buf = U8Buffer.alloc(1024);
-  // buf goes out of scope, GC object is collected
-  // BUT: 1024 bytes of linear memory are leaked!
-}
-```
-
-### Solution: `using` Declaration
-
-Inspired by C# `using` and TC39 Explicit Resource Management:
-
-```zena
-func process(): void {
-  using buf = U8Buffer.alloc(1024);
-  // use buf
-}  // buf.dispose() called automatically here
-
-// Desugars to:
-func process(): void {
-  let buf = U8Buffer.alloc(1024);
-  try {
-    // use buf
-  } finally {
-    buf.dispose();
-  }
-}
-```
-
-**Interface:**
-
-```zena
-interface Disposable {
-  dispose(): void;
-}
-
-// Compiler ensures `using` variables implement Disposable
-using buf = U8Buffer.alloc(1024);  // OK: U8Buffer implements Disposable
-using x = 42;  // Error: i32 does not implement Disposable
-```
-
-**Multiple resources:**
-
-```zena
-func copy(src: string, dst: string): void {
-  using srcBuf = U8Buffer.alloc(src.length);
-  using dstBuf = U8Buffer.alloc(src.length);
-
-  src.copyTo(srcBuf);
-  transform(srcBuf, dstBuf);
-  // Both disposed in reverse order: dstBuf, then srcBuf
-}
-```
-
-### Arena Pattern
-
-For many small allocations with shared lifetime:
-
-```zena
-func processFile(filename: string): Result {
-  using arena = new Arena(LinearMemory.defaultAllocator);
-
-  // All allocations from arena
-  let pathBuf = U8Buffer.alloc(256, arena);
-  let dataBuf = U8Buffer.alloc(4096, arena);
-  let resultBuf = U8Buffer.alloc(1024, arena);
-
-  // ... lots of work with buffers ...
-
-  // Copy result to GC before arena dies
-  let result = resultBuf.toByteArray();
-  return result;
-}  // arena.dispose() frees ALL linear memory at once
 ```
 
 ---
 
 ## Allocator Interface
 
-Different scenarios need different allocation strategies:
+The `Allocator` interface abstracts memory allocation strategies. The key design
+decision is using **multi-return values** to force error handling:
 
 ```zena
 interface Allocator {
-  alloc(bytes: i32): i32;       // Returns ptr, or 0 on failure
-  free(ptr: i32, bytes: i32): void;
-  realloc(ptr: i32, oldBytes: i32, newBytes: i32): i32;
-}
-
-// Bump allocator - fast, no individual free
-final class BumpAllocator implements Allocator {
-  #memory: Memory;
-  #base: i32;
-  #offset: i32;
-  #limit: i32;
-
-  alloc(bytes: i32): i32 {
-    let ptr = this.#base + this.#offset;
-    this.#offset = this.#offset + bytes;
-    if (this.#base + this.#offset > this.#limit) {
-      this.#memory.grow(1);
-      this.#limit = this.#limit + 65536;
-    }
-    return ptr;
-  }
-
-  free(ptr: i32, bytes: i32): void {
-    // No-op for bump allocator
-  }
-
-  reset(): void {
-    this.#offset = 0;
-  }
-}
-
-// Arena allocator - bulk free
-final class Arena implements Allocator {
-  #allocator: Allocator;
-  #allocations: Array<{ptr: i32, size: i32}>;
-
-  alloc(bytes: i32): i32 {
-    let ptr = this.#allocator.alloc(bytes);
-    this.#allocations.push({ptr, size: bytes});
-    return ptr;
-  }
-
-  free(ptr: i32, bytes: i32): void {
-    // No-op - freed in bulk
-  }
-
-  dispose(): void {
-    for (let a in this.#allocations) {
-      this.#allocator.free(a.ptr, a.size);
-    }
-    this.#allocations.clear();
-  }
-}
-
-// Free-list allocator - supports individual free
-final class FreeListAllocator implements Allocator {
-  // Traditional malloc/free implementation
+  /** Returns (true, ptr) on success, (false, _) on failure. */
+  alloc(bytes: i32): (true, i32) | (false, never);
+  
+  /** Allocate with alignment (align must be power of 2). */
+  allocAligned(bytes: i32, align: i32): (true, i32) | (false, never);
+  
+  /** Free a previously allocated pointer. May be a no-op for some allocators. */
+  free(ptr: i32): void;
 }
 ```
+
+### Why Multi-Return Instead of Returning 0?
+
+The traditional C pattern returns 0 (NULL) on failure:
+
+```c
+void* ptr = malloc(size);
+if (ptr == NULL) { /* handle error */ }  // Easy to forget!
+```
+
+This is dangerous because 0 IS a valid linear memory address (unlike GC where
+null is special). The multi-return pattern forces callers to handle both cases:
+
+```zena
+// Must use pattern matching - compiler enforces handling both cases
+if (let (true, ptr) = alloc.alloc(size)) {
+  // use ptr
+} else {
+  // handle out of memory
+}
+```
+
+### FreeListAllocator (Default)
+
+The default allocator supports both `alloc()` and `free()`. Uses a first-fit
+free list with 8-byte headers:
+
+```zena
+export final class FreeListAllocator implements Allocator {
+  /** The default allocator, starting at byte 64 (after WASI reserved area). */
+  static default: FreeListAllocator = new FreeListAllocator(64);
+
+  #startPtr: i32;
+  #nextPtr: i32;      // Bump pointer for fresh allocations
+  #freeList: i32;     // Head of free list (0 = empty)
+
+  alloc(bytes: i32): (true, i32) | (false, never) {
+    // 1. Search free list for suitable block
+    // 2. If found, split if large enough, return
+    // 3. Otherwise bump allocate, grow memory if needed
+    // 4. Return (false, _) if grow fails
+  }
+
+  free(ptr: i32): void {
+    // Add block to free list
+  }
+}
+```
+
+Memory layout:
+```
+[8-byte header: size, next_free][user data...]
+```
+
+### BumpAllocator (Arena)
+
+A fast allocator for temporary allocations with known lifetime. Does not support
+individual `free()` - use `reset()` to free all at once.
+
+**Key design**: BumpAllocator is **bounded** over a pre-allocated region from
+the root allocator. It cannot grow memory - when exhausted, allocation fails.
+
+```zena
+export final class BumpAllocator implements Allocator {
+  #startPtr: i32;
+  #endPtr: i32;
+  #nextPtr: i32;
+
+  /** Create over a pre-allocated region. */
+  #new(startPtr: i32, size: i32) {
+    this.#startPtr = startPtr;
+    this.#endPtr = startPtr + size;
+    this.#nextPtr = startPtr;
+  }
+
+  alloc(bytes: i32): (true, i32) | (false, never) {
+    let ptr = this.#nextPtr;
+    let newNext = ptr + bytes;
+    if (newNext > this.#endPtr) {
+      return (false, _);  // Arena exhausted
+    }
+    this.#nextPtr = newNext;
+    return (true, ptr);
+  }
+
+  /** Reset to initial state. WARNING: invalidates all pointers! */
+  reset(): void {
+    this.#nextPtr = this.#startPtr;
+  }
+
+  /** Bytes remaining in arena. */
+  remaining: i32 { get { return this.#endPtr - this.#nextPtr; } }
+}
+```
+
+### Usage Patterns
+
+**General allocation:**
+
+```zena
+import {defaultAllocator} from 'zena:memory';
+
+if (let (true, ptr) = defaultAllocator.alloc(1024)) {
+  // use ptr
+  defaultAllocator.free(ptr);
+} else {
+  // handle out of memory
+}
+```
+
+**Helper for critical allocations:**
+
+```zena
+const allocOrPanic = (alloc: Allocator, bytes: i32): i32 => {
+  if (let (true, ptr) = alloc.alloc(bytes)) {
+    return ptr;
+  }
+  throw new Error('out of memory');
+};
+```
+
+**Arena pattern for scratch memory:**
+
+```zena
+// Allocate a 4KB arena from the root allocator
+if (let (true, region) = defaultAllocator.alloc(4096)) {
+  let arena = new BumpAllocator(region, 4096);
+  
+  // Fast allocations - no free list overhead
+  if (let (true, buf1) = arena.alloc(256)) { /* ... */ }
+  if (let (true, buf2) = arena.alloc(512)) { /* ... */ }
+  
+  // Reuse arena for next batch
+  arena.reset();
+  
+  // When done, free the underlying region
+  defaultAllocator.free(region);
+}
+```
+
+---
+
+## The Lifetime Problem (Future)
+
+WASM GC manages GC objects automatically, but linear memory has no automatic
+cleanup. When a GC object holding a linear memory pointer becomes unreachable,
+the linear memory it points to is NOT freed.
+
+```zena
+const leak = (): void => {
+  if (let (true, ptr) = defaultAllocator.alloc(1024)) {
+    // ptr goes out of scope without free()
+    // 1024 bytes of linear memory are leaked!
+  }
+};
+```
+
+### Future: `using` Declaration
+
+Inspired by C# `using` and TC39 Explicit Resource Management:
+
+```zena
+// Future syntax - not yet implemented
+func process(): void {
+  using buf = allocOrPanic(defaultAllocator, 1024);
+  // use buf
+}  // buf automatically freed here
+
+// Desugars to:
+func process(): void {
+  let buf = allocOrPanic(defaultAllocator, 1024);
+  try {
+    // use buf
+  } finally {
+    defaultAllocator.free(buf);
+  }
+}
+```
+
+---
+
+## GC ↔ Linear Memory Transfer
+
+A key limitation: **GC arrays are opaque to WASM bulk memory operations**.
+You cannot use `memory.copy` to transfer between GC arrays and linear memory.
+
+Transfer must be done element-by-element:
+
+```zena
+/** Copy from GC array to linear memory. */
+const copyToLinear = (src: FixedArray<i32>, srcOffset: i32, 
+                       dst: i32, len: i32): void => {
+  let mem = Memory.default;
+  for (var i = 0; i < len; i = i + 1) {
+    mem.setU8(dst + i, src[srcOffset + i]);
+  }
+};
+
+/** Copy from linear memory to GC array. */
+const copyFromLinear = (src: i32, dst: FixedArray<i32>, 
+                         dstOffset: i32, len: i32): void => {
+  let mem = Memory.default;
+  for (var i = 0; i < len; i = i + 1) {
+    dst[dstOffset + i] = mem.getU8(src + i);
+  }
+};
+```
+
+For performance-critical code, consider keeping data in linear memory
+throughout the hot path, only converting at boundaries.
 
 ---
 
@@ -391,6 +439,7 @@ a small virtual dispatch overhead for the primitives.
 
 **Performance**: The virtual `byteAt()` calls inside shared methods are acceptable
 because:
+
 - String algorithms are O(n), amortizing the vtable lookup cost
 - JIT inline caching makes repeated calls to the same type fast
 - When concrete type is known, entire method specializes (see devirtualization)
@@ -433,23 +482,25 @@ final class LinearString extends String {
 
 ---
 
-## FFI: C/Rust Library Integration
+## FFI: C/Rust Library Integration (Future)
 
 ### The Bridge Pattern
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
 │   Zena Code     │────▶│  Linear Memory   │────▶│  C/Rust WASM    │
-│  (GC Objects)   │◀────│    (Bridge)      │◀────│   (Library)     │
+│  (GC Objects)   │◀────│   (Allocator)    │◀────│   (Library)     │
 └─────────────────┘     └──────────────────┘     └─────────────────┘
-     String              U8Buffer / ptr           const char*
-     FixedArray<i32>     I32Buffer / ptr          int32_t*
+     String              Memory + ptr             const char*
+     FixedArray<i32>     Memory + ptr             int32_t*
      Record {x, y}       Struct in linear mem     struct point
 ```
 
 ### Example: zlib Integration
 
 ```zena
+import {Memory, defaultAllocator} from 'zena:memory';
+
 // Import the C function
 @external("zlib", "compress")
 declare func zlib_compress(
@@ -459,39 +510,61 @@ declare func zlib_compress(
   sourceLen: i32
 ): i32;
 
+// Helper to copy GC array to linear memory
+const copyToLinear = (src: FixedArray<i32>, ptr: i32, len: i32): void => {
+  let mem = Memory.default;
+  for (var i = 0; i < len; i = i + 1) {
+    mem.setU8(ptr + i, src[i]);
+  }
+};
+
+// Helper to copy linear memory to GC array  
+const copyFromLinear = (ptr: i32, len: i32): FixedArray<i32> => {
+  let mem = Memory.default;
+  let result = new FixedArray<i32>(len);
+  for (var i = 0; i < len; i = i + 1) {
+    result[i] = mem.getU8(ptr + i);
+  }
+  return result;
+};
+
 // High-level Zena API
 class Compression {
-  static compress(data: ByteSequence): ByteArray {
-    // 1. Copy input to linear memory
-    using sourceBuf = U8Buffer.alloc(data.length);
-    data.copyTo(sourceBuf);
-
-    // 2. Allocate output buffer
-    let maxDestLen = data.length + (data.length / 10) + 12;
-    using destBuf = U8Buffer.alloc(maxDestLen);
-
-    // 3. Allocate space for destLen output parameter
-    using destLenBuf = I32Buffer.alloc(1);
-    destLenBuf[0] = maxDestLen;
-
-    // 4. Call C function
-    let result = zlib_compress(
-      destBuf.ptr,
-      destLenBuf.ptr,
-      sourceBuf.ptr,
-      data.length
-    );
-
-    if (result != 0) {
-      throw new CompressionError(result);
+  static compress(data: FixedArray<i32>): FixedArray<i32> {
+    let mem = Memory.default;
+    let alloc = defaultAllocator;
+    
+    // 1. Allocate and copy input to linear memory
+    if (let (true, sourcePtr) = alloc.alloc(data.length)) {
+      copyToLinear(data, sourcePtr, data.length);
+      
+      // 2. Allocate output buffer
+      let maxDestLen = data.length + div(data.length, 10) + 12;
+      if (let (true, destPtr) = alloc.alloc(maxDestLen)) {
+        // 3. Allocate space for destLen output parameter
+        if (let (true, destLenPtr) = alloc.alloc(4)) {
+          mem.setI32(destLenPtr, maxDestLen);
+          
+          // 4. Call C function
+          let result = zlib_compress(destPtr, destLenPtr, sourcePtr, data.length);
+          
+          // 5. Copy result back to GC heap
+          let actualLen = mem.getI32(destLenPtr);
+          let output = copyFromLinear(destPtr, actualLen);
+          
+          // 6. Free all allocations
+          alloc.free(destLenPtr);
+          alloc.free(destPtr);
+          alloc.free(sourcePtr);
+          
+          if (result != 0) {
+            throw new Error('compression failed');
+          }
+          return output;
+        }
+      }
     }
-
-    // 5. Copy result back to GC heap
-    let actualLen = destLenBuf[0];
-    let output = new ByteArray(actualLen);
-    destBuf.slice(0, actualLen).copyTo(output);
-
-    return output;
+    throw new Error('out of memory');
   }
 }
 
@@ -499,9 +572,11 @@ class Compression {
 let compressed = Compression.compress(myData);
 ```
 
-### Example: re2-wasm (Regex)
+### Example: re2-wasm (Regex) (Future)
 
 ```zena
+import {Memory, defaultAllocator} from 'zena:memory';
+
 @external("re2", "re2_compile")
 declare func re2_compile(patternPtr: i32, patternLen: i32, flags: i32): i32;
 
@@ -519,26 +594,55 @@ class Regex {
   #handle: i32;
 
   #new(pattern: String) {
-    using buf = U8Buffer.alloc(pattern.length);
-    pattern.copyTo(buf);
-    this.#handle = re2_compile(buf.ptr, buf.byteLength, 0);
-    if (this.#handle == 0) {
-      throw new RegexError("Invalid pattern");
+    let mem = Memory.default;
+    let alloc = defaultAllocator;
+    
+    if (let (true, ptr) = alloc.alloc(pattern.length)) {
+      // Copy string to linear memory
+      for (var i = 0; i < pattern.length; i = i + 1) {
+        mem.setU8(ptr + i, pattern.byteAt(i));
+      }
+      this.#handle = re2_compile(ptr, pattern.length, 0);
+      alloc.free(ptr);
+      
+      if (this.#handle == 0) {
+        throw new Error("Invalid pattern");
+      }
+    } else {
+      throw new Error("out of memory");
     }
   }
 
   match(input: String): FixedArray<Match>? {
-    // Optimize: if input is already linear, use directly
-    let (ptr, len) = input.toLinearRef();
-
-    using matchBuf = I32Buffer.alloc(20);  // 10 matches * 2
-    let count = re2_match(this.#handle, ptr, len, matchBuf.ptr, 10);
-
-    if (count == 0) return null;
-
-    return FixedArray.generate(count, (i) => {
-      new Match(matchBuf[i * 2], matchBuf[i * 2 + 1])
-    });
+    let mem = Memory.default;
+    let alloc = defaultAllocator;
+    
+    // Allocate buffers for input and match results
+    if (let (true, inputPtr) = alloc.alloc(input.length)) {
+      // Copy input to linear memory
+      for (var i = 0; i < input.length; i = i + 1) {
+        mem.setU8(inputPtr + i, input.byteAt(i));
+      }
+      
+      // 10 matches * 2 ints (start, end) * 4 bytes = 80 bytes
+      if (let (true, matchPtr) = alloc.alloc(80)) {
+        let count = re2_match(this.#handle, inputPtr, input.length, matchPtr, 10);
+        
+        let result: FixedArray<Match>? = null;
+        if (count > 0) {
+          result = FixedArray.generate(count, (i) => {
+            new Match(mem.getI32(matchPtr + i * 8), 
+                      mem.getI32(matchPtr + i * 8 + 4))
+          });
+        }
+        
+        alloc.free(matchPtr);
+        alloc.free(inputPtr);
+        return result;
+      }
+      alloc.free(inputPtr);
+    }
+    throw new Error("out of memory");
   }
 
   dispose(): void {
@@ -550,79 +654,58 @@ class Regex {
 }
 ```
 
-### Zero-Copy Pipeline
+### Struct Marshaling (Future)
 
-The real win is when you can avoid copies entirely:
-
-```zena
-// Read file -> regex match -> no copies until we need GC objects!
-let fd = Filesystem.open("log.txt");
-let content = fd.readLinear();  // Returns LinearString (zero-copy)
-
-let regex = new Regex("error: (.*)");
-let matches = regex.match(content);  // LinearString.ptr passed directly to re2!
-
-// Only copy the matches we care about
-for (let m in matches) {
-  let errorMsg: String = content.slice(m.start, m.end).toString();  // Copy here
-  Console.log(errorMsg);
-}
-```
-
-### FFI Helper: `toLinearRef()`
-
-A key method for efficient FFI:
+For C structs, access fields via Memory at known offsets:
 
 ```zena
-extension class StringExt on String {
-  // Returns (ptr, len) - either existing linear ptr or temp copy
-  toLinearRef(): (i32, i32) {
-    if (this is LinearString) {
-      return (this.ptr, this.byteLength);  // Zero-copy!
-    }
-    // Must copy to linear memory
-    let buf = U8Buffer.alloc(this.length);
-    this.copyTo(buf);
-    return (buf.ptr, buf.byteLength);
-  }
-}
-```
+import {Memory, defaultAllocator} from 'zena:memory';
 
-### Struct Marshaling
-
-For C structs, define layout-compatible linear memory views:
-
-```zena
 // C struct: struct Point { int32_t x; int32_t y; };
 
 class LinearPoint {
   #ptr: i32;
 
-  static alloc(): LinearPoint {
-    return new LinearPoint(LinearMemory.alloc(8));
+  #new(ptr: i32) {
+    this.#ptr = ptr;
+  }
+
+  static alloc(): LinearPoint? {
+    if (let (true, ptr) = defaultAllocator.alloc(8)) {
+      return new LinearPoint(ptr);
+    }
+    return null;
   }
 
   static wrap(ptr: i32): LinearPoint {
     return new LinearPoint(ptr);
   }
 
-  get x(): i32 { return I32Buffer.wrap(this.#ptr, 1)[0]; }
-  set x(v: i32) { I32Buffer.wrap(this.#ptr, 1)[0] = v; }
+  x: i32 {
+    get { return Memory.default.getI32(this.#ptr); }
+    set { Memory.default.setI32(this.#ptr, value); }
+  }
 
-  get y(): i32 { return I32Buffer.wrap(this.#ptr + 4, 1)[0]; }
-  set y(v: i32) { I32Buffer.wrap(this.#ptr + 4, 1)[0] = v; }
+  y: i32 {
+    get { return Memory.default.getI32(this.#ptr + 4); }
+    set { Memory.default.setI32(this.#ptr + 4, value); }
+  }
 
   get ptr(): i32 { return this.#ptr; }
 
   toRecord(): {x: i32, y: i32} {
     return {x: this.x, y: this.y};
   }
+  
+  free(): void {
+    defaultAllocator.free(this.#ptr);
+  }
 }
 ```
 
 ---
 
-## WASM Tables and Function Pointers
+## WASM Tables and Function Pointers (Future)
 
 C libraries often take function pointer callbacks. In WASM, function pointers
 are **table indices** (i32).
@@ -650,11 +733,15 @@ qsort(arrayPtr, count, 4, funcIndex);
 Closures capture variables, but C callbacks often pass a `void* userData`:
 
 ```zena
+import {Memory, defaultAllocator} from 'zena:memory';
+
 // GC object table for passing closures via userData
 let gcTable: Table<Object> = new Table(100);
 
-func execWithCallback(db: Database, sql: string,
-                      callback: (row: Row) => void): void {
+const execWithCallback = (db: Database, sql: string,
+                          callback: (row: Row) => void): void => {
+  let mem = Memory.default;
+  
   // Store the closure in a GC table, get index
   let closureIndex = gcTable.add(callback);
 
@@ -668,16 +755,26 @@ func execWithCallback(db: Database, sql: string,
 
   let trampolineIndex = callbackTable.add(trampoline);
 
-  using sqlBuf = U8Buffer.allocNullTerminated(sql);
-  let errBuf = I32Buffer.alloc(1);
-
-  sqlite3_exec(db.handle, sqlBuf.ptr, trampolineIndex, closureIndex, errBuf.ptr);
+  // Allocate null-terminated SQL string
+  if (let (true, sqlPtr) = defaultAllocator.alloc(sql.length + 1)) {
+    for (var i = 0; i < sql.length; i = i + 1) {
+      mem.setU8(sqlPtr + i, sql.byteAt(i));
+    }
+    mem.setU8(sqlPtr + sql.length, 0);  // Null terminator
+    
+    if (let (true, errPtr) = defaultAllocator.alloc(4)) {
+      sqlite3_exec(db.handle, sqlPtr, trampolineIndex, closureIndex, errPtr);
+      defaultAllocator.free(errPtr);
+    }
+    defaultAllocator.free(sqlPtr);
+  }
 
   gcTable.remove(closureIndex);
-}
+};
+```
 ```
 
-### Callback Helper
+### Callback Helper (Future)
 
 ```zena
 class Callback<F> implements Disposable {
@@ -696,51 +793,31 @@ class Callback<F> implements Disposable {
   }
 }
 
-// Usage with automatic cleanup
-func sortArray(arr: I32Buffer): void {
+// Usage with automatic cleanup (once `using` is implemented)
+const sortArray = (arrPtr: i32, arrLen: i32): void => {
   using cmp = Callback.create((a: i32, b: i32): i32 => a - b);
-  qsort(arr.ptr, arr.length, 4, cmp.index);
-}
+  qsort(arrPtr, arrLen, 4, cmp.index);
+};
 ```
 
 ---
 
-## Advanced Topics
+## Advanced Topics (Future)
 
 ### Multiple Memories
 
-The WASM multi-memory proposal allows modules to have multiple linear memories:
+The WASM multi-memory proposal allows modules to have multiple linear memories.
+The current `Memory` class design supports this through instances:
 
 ```zena
-// Memory is a first-class concept
+// Memory can be extended to support multiple memories
 final class Memory {
-  static let default: Memory = Memory.#fromIndex(0);
-
-  @external("env", "memory")
-  static declare let shared: Memory;
-
-  @intrinsic('memory.size')
-  declare size(): i32;
-
-  @intrinsic('memory.grow')
-  declare grow(pages: i32): i32;
+  static default: Memory = new Memory();  // Memory index 0
+  
+  // Future: import additional memories
+  // @external("re2", "memory")
+  // static declare let re2Memory: Memory;
 }
-
-// Buffers are parameterized by memory
-final class U8Buffer {
-  #memory: Memory;
-  #ptr: i32;
-  #len: i32;
-
-  static allocIn(memory: Memory, len: i32): U8Buffer {
-    let ptr = memory.alloc(len);
-    return new U8Buffer(memory, ptr, len);
-  }
-}
-
-// Library-specific memories
-let re2Memory = Memory.import("re2", "memory");
-let patternBuf = U8Buffer.allocIn(re2Memory, 1024);
 ```
 
 **Current status**: Multi-memory is a proposal, not yet widely supported.
@@ -748,87 +825,59 @@ For MVP, we assume a single memory (index 0).
 
 ### Future: WASM Weak References
 
-WASM GC has a post-MVP proposal for weak references. Once available:
+WASM GC has a post-MVP proposal for weak references. Once available, this could
+enable automatic cleanup of linear memory:
 
 ```zena
-final class U8Buffer {
-  #new(ptr: i32, len: i32) {
+// Future: automatic cleanup when GC object is collected
+class LinearBuffer {
+  #ptr: i32;
+  
+  #new(ptr: i32) {
     this.#ptr = ptr;
-    this.#len = len;
-    // When this GC object is collected, free linear memory
+    // Register cleanup when this GC object dies
     __weak_ref_register(this, () => {
-      LinearMemory.defaultAllocator.free(ptr, len);
+      defaultAllocator.free(ptr);
     });
   }
 }
 ```
 
-Until then, explicit lifetime management via `using` is required.
+Until then, explicit lifetime management via manual `free()` calls is required.
 
 ---
 
-## Implementation Plan
+## Implementation Status
 
-### Phase 1: Memory Intrinsics
+### Completed ✓
 
-- Add all load/store intrinsics to codegen
-- Add `memory.size`, `memory.grow`
-- Basic `LinearMemory` static class with bump allocator
+- **Memory intrinsics**: All load/store intrinsics (i32, i64, f32, f64, u8)
+- **memory.size, memory.grow**: Memory management intrinsics
+- **Memory class**: Type-safe access with `@intrinsic` decorators
+- **Allocator interface**: With multi-return for safe error handling
+- **FreeListAllocator**: Default allocator with alloc/free support
+- **BumpAllocator**: Arena-style allocator with reset()
+- **defaultAllocator export**: Standard entry point for allocation
 
-### Phase 2: `using` Declaration
+### Planned
 
-- Parser: `using` statement syntax
-- Checker: Validate `Disposable` interface
-- Codegen: Desugar to try/finally with dispose()
-- Define `Disposable` interface in stdlib
-
-### Phase 3: Buffer Classes
-
-- Implement `U8Buffer`, `I32Buffer`, `F32Buffer`, `F64Buffer`
-- Intrinsic-backed `[]` operators with stride calculation
-- `alloc`, `wrap`, `slice` methods
-- `copyTo`/`copyFrom` for GC ↔ linear transfers
-- `Disposable` implementation
-
-### Phase 4: Allocator Interface
-
-- Define `Allocator` interface
-- Implement `BumpAllocator`, `Arena`
-- Update buffer classes to accept allocator
-
-### Phase 5: LinearString
-
-- Implement `LinearString` extending `String`
-- Add `toLinearRef()` extension method
-- Implement `LinearStringBuilder`
-
-### Phase 6: Tables and Callbacks
-
-- Table type and operations
-- `Callback<F>` wrapper class
-- Integration with `using` for automatic cleanup
-
-### Phase 7: FFI Helpers & Testing
-
-- `withLinearString`, `withArena` helpers
-- Null-terminated string helpers
-- Integration tests with real libraries
+1. **`using` Declaration**: Automatic cleanup syntax for linear memory lifetime
+2. **LinearString**: String implementation backed by linear memory for zero-copy I/O
+3. **Tables and Callbacks**: Function pointer support for C library integration
+4. **Multi-memory support**: When WASM multi-memory is widely supported
 
 ---
 
 ## Open Questions
 
-1. **Memory growth strategy**: Should we expose control over when/how linear
-   memory grows, or always auto-grow?
+1. **`using` syntax**: Should we implement `using` declarations for automatic
+   cleanup, or is manual `free()` sufficient?
 
-2. **`@linear struct` syntax**: Worth adding compiler support for auto-generating
-   linear memory struct wrappers, or is manual definition sufficient?
+2. **LinearString**: How should `LinearString` integrate with the current String
+   implementation? Via inheritance or as a separate type?
 
-3. **Multi-memory support**: When should we add support for multiple memories?
-   Wait for broader runtime support, or design the API now?
-
-4. **Table management**: Should tables auto-grow? How do we handle table indices
+3. **Table management**: Should tables auto-grow? How do we handle table indices
    becoming invalid after `remove()`?
 
-5. **Async FFI**: How do we handle C libraries that use callbacks for async?
+4. **Async FFI**: How do we handle C libraries that use callbacks for async?
    Should we bridge to Zena's future async model?

@@ -2748,6 +2748,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
         } else {
           const name = decorator.args[0].value;
           const validIntrinsics = new Set([
+            // Array intrinsics
             'array.len',
             'array.get',
             'array.get_u',
@@ -2760,6 +2761,21 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
             'array.fill',
             'array.init_data',
             'array.init_elem',
+            // Memory intrinsics
+            'memory.size',
+            'memory.grow',
+            // Load/store intrinsics
+            'i32.load',
+            'i32.load8_u',
+            'i32.load8_s',
+            'i32.store',
+            'i32.store8',
+            'i64.load',
+            'i64.store',
+            'f32.load',
+            'f32.store',
+            'f64.load',
+            'f64.store',
           ]);
           if (!validIntrinsics.has(name)) {
             ctx.diagnostics.reportError(
