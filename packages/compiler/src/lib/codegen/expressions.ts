@@ -93,6 +93,7 @@ import {
   type MethodBinding,
   type RecordFieldBinding,
   type ResolvedBinding,
+  type SetterBinding,
 } from '../bindings.js';
 
 /**
@@ -3486,6 +3487,81 @@ function generateAssignmentExpression(
     const memberExpr = expr.left as MemberExpression;
     const fieldName = memberExpr.property.name;
 
+    // Check if this is a static field assignment using the resolved binding
+    const leftBinding = ctx.semanticContext.getResolvedBinding(memberExpr);
+
+    // Handle static setter assignment (public static fields use implicit setters)
+    if (leftBinding?.kind === 'setter' && leftBinding.isStatic) {
+      const binding = leftBinding as SetterBinding;
+      const className = binding.classType.name;
+      // Extract actual field name from setter name (e.g., "set#value" -> "value")
+      const actualFieldName = binding.methodName.replace('set#', '');
+
+      // Static fields are stored as globals with mangled name: ClassName_fieldName
+      const mangledName = `${className}_${actualFieldName}`;
+      const global = ctx.getGlobal(mangledName);
+      if (!global) {
+        throw new Error(`Static field global not found: ${mangledName}`);
+      }
+
+      // Generate the value
+      generateExpression(ctx, expr.value, body);
+
+      // Store in temp to return the assigned value (assignment is an expression)
+      const valueType = inferType(ctx, expr.value);
+      const tempVal = ctx.declareLocal('$$temp_static_assign', valueType);
+      body.push(Opcode.local_tee);
+      body.push(...WasmModule.encodeSignedLEB128(tempVal));
+
+      // Set the global
+      body.push(Opcode.global_set);
+      body.push(...WasmModule.encodeSignedLEB128(global.index));
+
+      // Return the assigned value
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(tempVal));
+      return;
+    }
+
+    // Handle static private field assignment
+    // (Public static fields use implicit setters, handled above)
+    if (leftBinding?.kind === 'field' && leftBinding.isStatic) {
+      const binding = leftBinding as FieldBinding;
+
+      // Private field names are mangled as "ClassName::#fieldName" by the checker
+      if (!binding.fieldName.includes('::')) {
+        throw new Error(
+          `Expected private static field to have mangled name with '::': ${binding.fieldName}`,
+        );
+      }
+      const [className, actualFieldName] = binding.fieldName.split('::');
+
+      // Static fields are stored as globals with mangled name: ClassName_fieldName
+      const mangledName = `${className}_${actualFieldName}`;
+      const global = ctx.getGlobal(mangledName);
+      if (!global) {
+        throw new Error(`Static field global not found: ${mangledName}`);
+      }
+
+      // Generate the value
+      generateExpression(ctx, expr.value, body);
+
+      // Store in temp to return the assigned value (assignment is an expression)
+      const valueType = inferType(ctx, expr.value);
+      const tempVal = ctx.declareLocal('$$temp_static_assign', valueType);
+      body.push(Opcode.local_tee);
+      body.push(...WasmModule.encodeSignedLEB128(tempVal));
+
+      // Set the global
+      body.push(Opcode.global_set);
+      body.push(...WasmModule.encodeSignedLEB128(global.index));
+
+      // Return the assigned value
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(tempVal));
+      return;
+    }
+
     const objectType = inferType(ctx, memberExpr.object);
     const structTypeIndex = getHeapTypeIndex(ctx, objectType);
 
@@ -4838,6 +4914,36 @@ function generateFieldFromBinding(
 ): boolean {
   let {classType, fieldName} = binding;
 
+  // Handle static field access (e.g., ClassName.#field or ClassName.staticField)
+  // Static fields are stored as WASM globals, not struct fields.
+  if (binding.isStatic) {
+    // Extract the class name from the mangled field name if present
+    // For private fields: "ClassName::#fieldName" -> className="ClassName", fieldName="#fieldName"
+    // For public fields: just the field name
+    let className: string;
+    let actualFieldName: string;
+
+    if (fieldName.includes('::')) {
+      const parts = fieldName.split('::');
+      className = parts[0];
+      actualFieldName = parts[1];
+    } else {
+      className = classType.name;
+      actualFieldName = fieldName;
+    }
+
+    // Static fields are stored as globals with mangled name: ClassName_fieldName
+    const mangledName = `${className}_${actualFieldName}`;
+    const global = ctx.getGlobal(mangledName);
+    if (global) {
+      body.push(Opcode.global_get);
+      body.push(...WasmModule.encodeSignedLEB128(global.index));
+      return true;
+    }
+    // If no global found, fall through to return false (let caller handle error)
+    return false;
+  }
+
   // Substitute type parameters in the classType when inside a generic context.
   // This is needed for field access like `entry.key` where `entry: Entry<K, V>`
   // and K, V need to be substituted with actual type arguments.
@@ -5519,6 +5625,25 @@ function generateGetterFromBinding(
   body: number[],
 ): boolean {
   let {classType, methodName, isStaticDispatch} = binding;
+
+  // Handle static getter access (e.g., ClassName.value for static fields)
+  // Static fields are stored as WASM globals, accessed via implicit getters.
+  if (binding.isStatic) {
+    const className = classType.name;
+    // Extract actual field name from getter name (e.g., "get#value" -> "value")
+    const actualFieldName = methodName.replace('get#', '');
+
+    // Static fields are stored as globals with mangled name: ClassName_fieldName
+    const mangledName = `${className}_${actualFieldName}`;
+    const global = ctx.getGlobal(mangledName);
+    if (global) {
+      body.push(Opcode.global_get);
+      body.push(...WasmModule.encodeSignedLEB128(global.index));
+      return true;
+    }
+    // If no global found, fall through to return false (let caller handle error)
+    return false;
+  }
 
   // Substitute type parameters in the classType when inside a generic context.
   // This is needed for getter access like `items.length` where `items: Array<T>`

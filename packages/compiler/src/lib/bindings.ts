@@ -179,6 +179,8 @@ export interface FieldBinding {
   readonly type: Type;
   /** If this field is an intrinsic (e.g., 'array.len'), the intrinsic name */
   readonly intrinsic?: string;
+  /** Whether this is a static field */
+  readonly isStatic?: boolean;
 }
 
 /**
@@ -195,6 +197,8 @@ export interface GetterBinding {
   readonly isStaticDispatch: boolean;
   /** The return type of the getter */
   readonly type: Type;
+  /** Whether this is a static getter */
+  readonly isStatic?: boolean;
 }
 
 /**
@@ -209,6 +213,8 @@ export interface SetterBinding {
   readonly methodName: string;
   /** Whether static dispatch can be used (final class/method or extension) */
   readonly isStaticDispatch: boolean;
+  /** Whether this is a static setter */
+  readonly isStatic?: boolean;
 }
 
 /**

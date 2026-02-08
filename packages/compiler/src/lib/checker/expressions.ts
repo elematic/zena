@@ -1635,6 +1635,13 @@ function checkAssignmentExpression(
         );
       }
 
+      // Determine if this is static field access:
+      // - Object is an Identifier that resolves to a class binding (e.g., ClassName.field)
+      const isStaticAccess =
+        memberExpr.object.type === NodeType.Identifier &&
+        ctx.semanticContext.getResolvedBinding(memberExpr.object)?.kind ===
+          'class';
+
       // Record setter binding for DCE tracking - public fields have implicit setters
       // that codegen uses for virtual dispatch
       const setterName = getSetterName(memberName);
@@ -1646,6 +1653,7 @@ function checkAssignmentExpression(
         classType: classType as ClassType | InterfaceType,
         methodName: setterName,
         isStaticDispatch: isFinalClass,
+        isStatic: isStaticAccess,
       });
 
       return valueType;
@@ -1657,6 +1665,13 @@ function checkAssignmentExpression(
       const setter = classType.methods.get(setterName)!;
       const valueType = checkExpression(ctx, expr.value);
 
+      // Determine if this is static setter access:
+      // - Object is an Identifier that resolves to a class binding (e.g., ClassName.field)
+      const isStaticAccess =
+        memberExpr.object.type === NodeType.Identifier &&
+        ctx.semanticContext.getResolvedBinding(memberExpr.object)?.kind ===
+          'class';
+
       // Record binding for DCE tracking
       // Setters use dynamic dispatch unless the class is final
       const isFinalClass =
@@ -1667,6 +1682,7 @@ function checkAssignmentExpression(
         classType: classType as ClassType | InterfaceType,
         methodName: setterName,
         isStaticDispatch: isFinalClass,
+        isStatic: isStaticAccess,
       });
 
       // Setter param type
@@ -2527,6 +2543,14 @@ function checkMemberExpression(
       return Types.Unknown;
     }
 
+    // Determine if this is static field access:
+    // - Object is an Identifier that resolves to a class binding (e.g., ClassName.#field)
+    // vs instance access:
+    // - Object is ThisExpression (e.g., this.#field)
+    const isStaticAccess =
+      expr.object.type === NodeType.Identifier &&
+      ctx.semanticContext.getResolvedBinding(expr.object)?.kind === 'class';
+
     if (ctx.currentClass.fields.has(memberName)) {
       const fieldType = ctx.currentClass.fields.get(memberName)!;
 
@@ -2536,6 +2560,7 @@ function checkMemberExpression(
         classType: ctx.currentClass,
         fieldName: `${ctx.currentClass.name}::${memberName}`,
         type: fieldType,
+        isStatic: isStaticAccess,
       };
       ctx.semanticContext.setResolvedBinding(expr, binding);
 
@@ -2562,12 +2587,21 @@ function checkMemberExpression(
     const fieldType = classType.fields.get(memberName)!;
     const resolvedType = resolveMemberType(classType, fieldType, ctx);
 
+    // Determine if this is static field access:
+    // - Object is an Identifier that resolves to a class binding (e.g., ClassName.field)
+    // vs instance access:
+    // - Object is ThisExpression or other expression (e.g., this.field, instance.field)
+    const isStaticAccess =
+      expr.object.type === NodeType.Identifier &&
+      ctx.semanticContext.getResolvedBinding(expr.object)?.kind === 'class';
+
     // Store field binding
     const binding: FieldBinding = {
       kind: 'field',
       classType,
       fieldName: memberName,
       type: resolvedType,
+      isStatic: isStaticAccess,
     };
     ctx.semanticContext.setResolvedBinding(expr, binding);
 
@@ -2608,6 +2642,12 @@ function checkMemberExpression(
       ctx,
     ) as FunctionType;
 
+    // Determine if this is static getter access:
+    // - Object is an Identifier that resolves to a class binding (e.g., ClassName.field)
+    const isStaticAccess =
+      expr.object.type === NodeType.Identifier &&
+      ctx.semanticContext.getResolvedBinding(expr.object)?.kind === 'class';
+
     // Store getter binding
     // Static dispatch is possible if: class is final/extension, or getter is final
     const binding: GetterBinding = {
@@ -2617,6 +2657,7 @@ function checkMemberExpression(
       isStaticDispatch:
         canUseStaticDispatch(classType) || getterType.isFinal === true,
       type: resolvedGetter.returnType,
+      isStatic: isStaticAccess,
     };
     ctx.semanticContext.setResolvedBinding(expr, binding);
 
