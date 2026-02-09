@@ -13,6 +13,9 @@ export class WasmModule {
   #datas: number[][] = [];
   #declaredFunctions: Set<number> = new Set();
 
+  // Debug info: function names for the name section
+  #functionNames = new Map<number, string>();
+
   #importedFunctionCount = 0;
   #startFunctionIndex: number | undefined;
 
@@ -273,6 +276,16 @@ export class WasmModule {
     this.#declaredFunctions.add(index);
   }
 
+  /**
+   * Set the debug name for a function.
+   * Used to populate the WASM name section for better stack traces.
+   * @param funcIndex - The function index
+   * @param name - The human-readable function name
+   */
+  public setFunctionName(funcIndex: number, name: string): void {
+    this.#functionNames.set(funcIndex, name);
+  }
+
   #areTypesEqual(a: number[], b: number[]): boolean {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
@@ -452,6 +465,37 @@ export class WasmModule {
         sectionBuffer.push(...data);
       }
       this.#writeSection(buffer, SectionId.Data, sectionBuffer);
+    }
+
+    // Name Section (custom section with name "name")
+    // Only emitted if function names have been set
+    if (this.#functionNames.size > 0) {
+      const sectionBuffer: number[] = [];
+
+      // Custom section name: "name"
+      this.#writeString(sectionBuffer, 'name');
+
+      // Subsection 1: Function names
+      const funcNamesBuffer: number[] = [];
+
+      // Sort function names by index (required by spec)
+      const sortedNames = Array.from(this.#functionNames.entries()).sort(
+        (a, b) => a[0] - b[0],
+      );
+
+      // Name map: vec(nameassoc)
+      this.#writeUnsignedLEB128(funcNamesBuffer, sortedNames.length);
+      for (const [funcIndex, name] of sortedNames) {
+        this.#writeUnsignedLEB128(funcNamesBuffer, funcIndex);
+        this.#writeString(funcNamesBuffer, name);
+      }
+
+      // Write subsection: id (1 byte) + size (u32) + content
+      sectionBuffer.push(1); // subsection id for function names
+      this.#writeUnsignedLEB128(sectionBuffer, funcNamesBuffer.length);
+      sectionBuffer.push(...funcNamesBuffer);
+
+      this.#writeSection(buffer, SectionId.Custom, sectionBuffer);
     }
 
     return new Uint8Array(buffer);

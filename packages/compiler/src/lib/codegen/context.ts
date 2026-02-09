@@ -392,12 +392,18 @@ export class CodegenContext {
     return this.#usageResult;
   }
 
+  /**
+   * Whether debug information (name section) should be emitted.
+   */
+  public debug: boolean;
+
   constructor(
     modules: Module[],
     entryPointPath: string | undefined,
     semanticContext: SemanticContext,
     checkerContext: CheckerContext,
     target: Target = 'host',
+    debug: boolean = false,
   ) {
     this.modules = modules;
     // Find entry point by path, or default to last module (for backward compatibility)
@@ -408,6 +414,7 @@ export class CodegenContext {
     this.semanticContext = semanticContext;
     this.checkerContext = checkerContext;
     this.target = target;
+    this.debug = debug;
     this.#extractWellKnownTypes();
     this.module = new WasmModule();
     // Note: byteArrayTypeIndex and stringTypeIndex are now created lazily
@@ -615,6 +622,18 @@ export class CodegenContext {
       }
     }
     this.currentModule = null;
+  }
+
+  /**
+   * Set the debug name for a function (only if debug mode is enabled).
+   * This populates the WASM name section for better stack traces.
+   * @param funcIndex - The WASM function index
+   * @param name - The human-readable function name
+   */
+  setFunctionDebugName(funcIndex: number, name: string): void {
+    if (this.debug) {
+      this.module.setFunctionName(funcIndex, name);
+    }
   }
 
   /**

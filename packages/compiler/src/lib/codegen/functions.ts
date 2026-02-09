@@ -87,15 +87,19 @@ export function registerFunction(
   // Flatten for legacy storage - used by generateFunctionBody
   const flattenedReturn = results.flat();
 
+  // Register with qualified name for multi-module support
+  const qualifiedName = ctx.qualifyName(name);
+
   const typeIndex = ctx.module.addType(params, results);
   const funcIndex = ctx.module.addFunction(typeIndex);
+
+  // Set debug name for name section (if debug mode enabled)
+  ctx.setFunctionDebugName(funcIndex, qualifiedName);
 
   if (exported) {
     ctx.module.addExport(exportName || name, ExportDesc.Func, funcIndex);
   }
 
-  // Register with qualified name for multi-module support
-  const qualifiedName = ctx.qualifyName(name);
   ctx.functions.set(qualifiedName, funcIndex);
   // Also register unqualified for backward compatibility with single-module tests
   ctx.functions.set(name, funcIndex);
@@ -242,6 +246,9 @@ export function instantiateGenericFunction(
 
   const typeIndex = ctx.module.addType(params, results);
   const funcIndex = ctx.module.addFunction(typeIndex);
+
+  // Set debug name for name section (if debug mode enabled)
+  ctx.setFunctionDebugName(funcIndex, key);
 
   ctx.functions.set(key, funcIndex);
 

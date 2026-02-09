@@ -487,6 +487,11 @@ export function generateTrampoline(
   typeIndex: number,
 ): number {
   const trampolineIndex = ctx.module.addFunction(typeIndex);
+  // Set debug name for interface trampoline
+  ctx.setFunctionDebugName(
+    trampolineIndex,
+    `${classInfo.name}.$trampoline.${methodName}`,
+  );
 
   // Save context state for nested function generation
   const savedContext = ctx.saveFunctionContext();
@@ -631,6 +636,11 @@ export function generateTrampoline(
             classClosure.funcTypeIndex,
           );
           ctx.module.declareFunction(wrapperFuncIndex);
+          // Set debug name for interface closure wrapper
+          ctx.setFunctionDebugName(
+            wrapperFuncIndex,
+            '$interface_closure_wrapper',
+          );
 
           // Store the interface closure in a temp local for the wrapper
           const tempClosureLocal = ctx.declareLocal(
@@ -1008,6 +1018,11 @@ function generateFieldGetterTrampoline(
   typeIndex: number,
 ): number {
   const trampolineIndex = ctx.module.addFunction(typeIndex);
+  // Set debug name for field getter trampoline
+  ctx.setFunctionDebugName(
+    trampolineIndex,
+    `${classInfo.name}.$field_get.${fieldName}`,
+  );
   const locals: number[][] = [];
   const body: number[] = [];
 
@@ -2060,6 +2075,11 @@ export function registerClassMethods(
       let funcIndex = -1;
       if (!intrinsic && !member.isDeclare && shouldRegister) {
         funcIndex = ctx.module.addFunction(typeIndex!);
+        // Set debug name for name section
+        ctx.setFunctionDebugName(
+          funcIndex,
+          `${decl.name.name}.${mangledMethodName}`,
+        );
       }
 
       const returnType = results.length > 0 ? results[0] : [];
@@ -2135,6 +2155,11 @@ export function registerClassMethods(
           }
 
           funcIndex = ctx.module.addFunction(typeIndex!);
+          // Set debug name for getter
+          ctx.setFunctionDebugName(
+            funcIndex,
+            `${decl.name.name}.${methodName}`,
+          );
         }
 
         methods.set(methodName, {
@@ -2197,6 +2222,11 @@ export function registerClassMethods(
           }
 
           funcIndex = ctx.module.addFunction(typeIndex!);
+          // Set debug name for setter
+          ctx.setFunctionDebugName(
+            funcIndex,
+            `${decl.name.name}.${methodName}`,
+          );
         }
 
         methods.set(methodName, {
@@ -2302,6 +2332,11 @@ export function registerClassMethods(
           ctx.isMethodUsed(classType, getterName)
         ) {
           funcIndex = ctx.module.addFunction(typeIndex!);
+          // Set debug name for field getter
+          ctx.setFunctionDebugName(
+            funcIndex,
+            `${decl.name.name}.${getterName}`,
+          );
         }
 
         methods.set(getterName, {
@@ -2357,6 +2392,11 @@ export function registerClassMethods(
             ctx.isMethodUsed(classType, setterName)
           ) {
             setterFuncIndex = ctx.module.addFunction(setterTypeIndex!);
+            // Set debug name for field setter
+            ctx.setFunctionDebugName(
+              setterFuncIndex,
+              `${decl.name.name}.${setterName}`,
+            );
           }
 
           methods.set(setterName, {
@@ -2429,6 +2469,8 @@ export function registerClassMethods(
 
     const wrapperTypeIndex = ctx.module.addType(params, results);
     const wrapperFuncIndex = ctx.module.addFunction(wrapperTypeIndex);
+    // Set debug name for exported constructor wrapper
+    ctx.setFunctionDebugName(wrapperFuncIndex, `${decl.name.name}.$new`);
 
     const exportName = decl.exportName || decl.name.name;
     ctx.module.addExport(exportName, ExportDesc.Func, wrapperFuncIndex);
@@ -3809,6 +3851,11 @@ function instantiateClassImpl(
         let funcIndex = -1;
         if (!intrinsic) {
           funcIndex = ctx.module.addFunction(typeIndex);
+          // Set debug name for generic class method
+          ctx.setFunctionDebugName(
+            funcIndex,
+            `${specializedName}.${mangledMethodName}`,
+          );
         }
 
         const returnType = results.length > 0 ? results[0] : [];
@@ -3860,6 +3907,11 @@ function instantiateClassImpl(
           }
 
           const funcIndex = ctx.module.addFunction(typeIndex!);
+          // Set debug name for generic class getter
+          ctx.setFunctionDebugName(
+            funcIndex,
+            `${specializedName}.${methodName}`,
+          );
 
           methods.set(methodName, {
             index: funcIndex,
@@ -3906,6 +3958,11 @@ function instantiateClassImpl(
           }
 
           const funcIndex = ctx.module.addFunction(typeIndex!);
+          // Set debug name for generic class setter
+          ctx.setFunctionDebugName(
+            funcIndex,
+            `${specializedName}.${methodName}`,
+          );
 
           methods.set(methodName, {
             index: funcIndex,
@@ -3969,6 +4026,13 @@ function instantiateClassImpl(
           }
 
           const funcIndex = intrinsic ? -1 : ctx.module.addFunction(typeIndex!);
+          // Set debug name for generic class field getter
+          if (funcIndex >= 0) {
+            ctx.setFunctionDebugName(
+              funcIndex,
+              `${specializedName}.${regGetterName}`,
+            );
+          }
 
           methods.set(regGetterName, {
             index: funcIndex,
@@ -4004,6 +4068,13 @@ function instantiateClassImpl(
             const setterFuncIndex = intrinsic
               ? -1
               : ctx.module.addFunction(setterTypeIndex!);
+            // Set debug name for generic class field setter
+            if (setterFuncIndex >= 0) {
+              ctx.setFunctionDebugName(
+                setterFuncIndex,
+                `${specializedName}.${regSetterName}`,
+              );
+            }
 
             methods.set(regSetterName, {
               index: setterFuncIndex,
@@ -4081,6 +4152,8 @@ function instantiateClassImpl(
 
       const wrapperTypeIndex = ctx.module.addType(params, results);
       const wrapperFuncIndex = ctx.module.addFunction(wrapperTypeIndex);
+      // Set debug name for generic class constructor wrapper
+      ctx.setFunctionDebugName(wrapperFuncIndex, `${specializedName}.$new`);
 
       const exportName = specializedName;
       ctx.module.addExport(exportName, ExportDesc.Func, wrapperFuncIndex);

@@ -67,6 +67,14 @@ export interface CodegenOptions {
    * - 'wasi': WASI Preview 1 imports for wasmtime
    */
   target?: Target;
+
+  /**
+   * Enable debug information.
+   * When true, emits the WASM name section with function names
+   * for improved stack traces and debugging.
+   * Default: false
+   */
+  debug?: boolean;
 }
 
 export class CodeGenerator {
@@ -95,6 +103,7 @@ export class CodeGenerator {
       semanticContext,
       checkerContext,
       options.target ?? 'host',
+      options.debug ?? false,
     );
     this.#options = options;
   }
