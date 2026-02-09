@@ -164,13 +164,13 @@ suite('Checker: Symbol Declarations', () => {
     const source = `
       symbol key;
       class Container {
-        [key]: i32;
+        :key: i32;
         #new() {
-          this[key] = 42;
+          this.:key = 42;
         }
       }
       let c = new Container();
-      let x = c[key];
+      let x = c.:key;
     `;
     const parser = new Parser(source);
     const module = parser.parse();
@@ -179,7 +179,7 @@ suite('Checker: Symbol Declarations', () => {
 
     assert.strictEqual(errors.length, 0, 'No diagnostics expected');
 
-    // Find the last variable declaration (let x = c[key])
+    // Find the last variable declaration (let x = c.:key)
     const varDecls = module.body.filter(
       (stmt) => stmt.type === NodeType.VariableDeclaration,
     );
@@ -193,12 +193,12 @@ suite('Checker: Symbol Declarations', () => {
     const source = `
       symbol iterator;
       class MyIterable {
-        [iterator](): i32 {
+        :iterator(): i32 {
           return 0;
         }
       }
       let iter = new MyIterable();
-      let fn = iter[iterator];
+      let fn = iter.:iterator;
     `;
     const parser = new Parser(source);
     const module = parser.parse();
@@ -207,7 +207,7 @@ suite('Checker: Symbol Declarations', () => {
 
     assert.strictEqual(errors.length, 0, 'No diagnostics expected');
 
-    // Find the last variable declaration (let fn = iter[iterator])
+    // Find the last variable declaration (let fn = iter.:iterator)
     const varDecls = module.body.filter(
       (stmt) => stmt.type === NodeType.VariableDeclaration,
     );
@@ -222,10 +222,10 @@ suite('Checker: Symbol Declarations', () => {
       symbol key1;
       symbol key2;
       class Container {
-        [key1]: i32;
+        :key1: i32;
       }
       let c = new Container();
-      let x = c[key2];
+      let x = c.:key2;
     `;
     const parser = new Parser(source);
     const module = parser.parse();

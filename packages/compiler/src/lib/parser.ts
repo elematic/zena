@@ -8,7 +8,6 @@ import {
   type CallExpression,
   type CatchClause,
   type ClassDeclaration,
-  type ComputedPropertyName,
   type ContinueStatement,
   type Decorator,
   type DeclareFunction,
@@ -51,6 +50,7 @@ import {
   type Statement,
   type StringLiteral,
   type SymbolDeclaration,
+  type SymbolPropertyName,
   type TaggedTemplateExpression,
   type TemplateElement,
   type TemplateLiteral,
@@ -1417,6 +1417,76 @@ export class Parser {
 
       while (true) {
         if (this.#match(TokenType.Dot)) {
+          // Check for symbol member access: obj.:symbol
+          if (this.#match(TokenType.Colon)) {
+            const property = this.#parseIdentifier();
+            expr = {
+              type: NodeType.MemberExpression,
+              object: expr,
+              property,
+              isSymbolAccess: true,
+              loc: this.#loc(expr, property),
+            };
+          } else {
+            let property: Identifier;
+            if (this.#match(TokenType.Hash)) {
+              const id = this.#parseIdentifier();
+              property = {
+                type: NodeType.Identifier,
+                name: '#' + id.name,
+                loc: id.loc,
+              };
+            } else if (this.#match(TokenType.New)) {
+              const token = this.#previous();
+              property = {
+                type: NodeType.Identifier,
+                name: 'new',
+                loc: this.#locFromToken(token),
+              };
+            } else {
+              property = this.#parseIdentifier();
+            }
+            expr = {
+              type: NodeType.MemberExpression,
+              object: expr,
+              property,
+              loc: this.#loc(expr, property),
+            };
+          }
+        } else if (this.#match(TokenType.LBracket)) {
+          const index = this.#parseExpression();
+          this.#consume(TokenType.RBracket, "Expected ']' after index.");
+          const endToken = this.#previous();
+          expr = {
+            type: NodeType.IndexExpression,
+            object: expr,
+            index,
+            loc: this.#loc(expr, endToken),
+          };
+        } else {
+          break;
+        }
+      }
+      return expr;
+    }
+
+    let expr = this.#parsePrimary();
+
+    while (true) {
+      if (this.#match(TokenType.LParen)) {
+        expr = this.#finishCall(expr);
+      } else if (this.#match(TokenType.Dot)) {
+        // Check for symbol member access: obj.:symbol
+        if (this.#match(TokenType.Colon)) {
+          const property = this.#parseIdentifier();
+          expr = {
+            type: NodeType.MemberExpression,
+            object: expr,
+            property,
+            isSymbolAccess: true,
+            loc: this.#loc(expr, property),
+          };
+        } else {
           let property: Identifier;
           if (this.#match(TokenType.Hash)) {
             const id = this.#parseIdentifier();
@@ -1441,53 +1511,7 @@ export class Parser {
             property,
             loc: this.#loc(expr, property),
           };
-        } else if (this.#match(TokenType.LBracket)) {
-          const index = this.#parseExpression();
-          this.#consume(TokenType.RBracket, "Expected ']' after index.");
-          const endToken = this.#previous();
-          expr = {
-            type: NodeType.IndexExpression,
-            object: expr,
-            index,
-            loc: this.#loc(expr, endToken),
-          };
-        } else {
-          break;
         }
-      }
-      return expr;
-    }
-
-    let expr = this.#parsePrimary();
-
-    while (true) {
-      if (this.#match(TokenType.LParen)) {
-        expr = this.#finishCall(expr);
-      } else if (this.#match(TokenType.Dot)) {
-        let property: Identifier;
-        if (this.#match(TokenType.Hash)) {
-          const id = this.#parseIdentifier();
-          property = {
-            type: NodeType.Identifier,
-            name: '#' + id.name,
-            loc: id.loc,
-          };
-        } else if (this.#match(TokenType.New)) {
-          const token = this.#previous();
-          property = {
-            type: NodeType.Identifier,
-            name: 'new',
-            loc: this.#locFromToken(token),
-          };
-        } else {
-          property = this.#parseIdentifier();
-        }
-        expr = {
-          type: NodeType.MemberExpression,
-          object: expr,
-          property,
-          loc: this.#loc(expr, property),
-        };
       } else if (this.#match(TokenType.LBracket)) {
         const index = this.#parseExpression();
         this.#consume(TokenType.RBracket, "Expected ']' after index.");
@@ -2459,19 +2483,15 @@ export class Parser {
       };
     }
 
-    let name: Identifier | ComputedPropertyName;
-    if (this.#match(TokenType.LBracket)) {
+    let name: Identifier | SymbolPropertyName;
+    // Symbol member: :symbolName or :symbolName() for methods
+    if (this.#match(TokenType.Colon)) {
       const start = this.#previous();
-      const expression = this.#parseExpression();
-      this.#consume(
-        TokenType.RBracket,
-        "Expected ']' after computed property name.",
-      );
-      const end = this.#previous();
+      const symbol = this.#parseIdentifier();
       name = {
-        type: NodeType.ComputedPropertyName,
-        expression,
-        loc: this.#loc(start, end),
+        type: NodeType.SymbolPropertyName,
+        symbol,
+        loc: this.#loc(start, symbol),
       };
     } else if (this.#match(TokenType.Operator)) {
       // Disambiguate `operator []` vs `operator: i32`
@@ -2648,7 +2668,7 @@ export class Parser {
   }
 
   #parseAccessorDeclaration(
-    name: Identifier | ComputedPropertyName,
+    name: Identifier | SymbolPropertyName,
     typeAnnotation: TypeAnnotation,
     isFinal: boolean,
     isStatic: boolean,

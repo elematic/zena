@@ -8,16 +8,16 @@ suite('Codegen: Symbol-Keyed Access', () => {
 symbol myField;
 
 class Data {
-  [myField]: i32;
+  :myField: i32;
   
   #new(val: i32) {
-    this[myField] = val;
+    this.:myField = val;
   }
 }
 
 export let main = () => {
   let d = new Data(42);
-  return d[myField];
+  return d.:myField;
 };
 `);
     assert.strictEqual(result, 42);
@@ -34,14 +34,14 @@ class Calculator {
     this.value = v;
   }
   
-  [compute](x: i32): i32 {
+  :compute(x: i32): i32 {
     return this.value + x;
   }
 }
 
 export let main = () => {
   let c = new Calculator(10);
-  return c[compute](5);
+  return c.:compute(5);
 };
 `);
     assert.strictEqual(result, 15);
@@ -53,18 +53,18 @@ symbol first;
 symbol second;
 
 class Pair {
-  [first]: i32;
-  [second]: i32;
+  :first: i32;
+  :second: i32;
   
   #new(a: i32, b: i32) {
-    this[first] = a;
-    this[second] = b;
+    this.:first = a;
+    this.:second = b;
   }
 }
 
 export let main = () => {
   let p = new Pair(3, 7);
-  return p[first] + p[second];
+  return p.:first + p.:second;
 };
 `);
     assert.strictEqual(result, 10);
@@ -80,23 +80,23 @@ import {sym as otherSym} from '/other.zena';
 symbol sym;
 
 class Data {
-  [sym]: i32;
-  [otherSym]: i32;
+  :sym: i32;
+  :otherSym: i32;
   
   #new() {
-    this[sym] = 10;
-    this[otherSym] = 20;
+    this.:sym = 10;
+    this.:otherSym = 20;
   }
 }
 
 export let getFirst = () => {
   let d = new Data();
-  return d[sym];
+  return d.:sym;
 };
 
 export let getSecond = () => {
   let d = new Data();
-  return d[otherSym];
+  return d.:otherSym;
 };
 `,
       '/other.zena': `
@@ -118,14 +118,14 @@ class Box {
     this.value = v;
   }
   
-  [getValue](): i32 {
+  :getValue(): i32 {
     return this.value;
   }
 }
 
 export let main = () => {
   let b = new Box(99);
-  return b[getValue]();
+  return b.:getValue();
 };
 `);
     assert.strictEqual(result, 99);
@@ -137,15 +137,15 @@ symbol secretValue;
 
 class Mixed {
   publicValue: i32;
-  [secretValue]: i32;
+  :secretValue: i32;
   
   #new(pub: i32, secret: i32) {
     this.publicValue = pub;
-    this[secretValue] = secret;
+    this.:secretValue = secret;
   }
   
   getSum(): i32 {
-    return this.publicValue + this[secretValue];
+    return this.publicValue + this.:secretValue;
   }
 }
 

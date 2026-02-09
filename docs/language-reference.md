@@ -1628,25 +1628,27 @@ interface Iterable<T> {
 
 #### Usage
 
-To define or call a method using a symbol, use the bracket syntax `[symbol]`.
+To define a member using a symbol, prefix the symbol name with `:`. To access a symbol-keyed member, use `.:` followed by the symbol name.
 
 ```zena
 class MyList<T> implements Iterable<T> {
-  // Implementation
-  [Iterable.iterator](): Iterator<T> {
+  // Define a method with a symbol key
+  :Iterable.iterator(): Iterator<T> {
     // ...
   }
 }
 
 let list = new MyList();
-let it = list[Iterable.iterator]();
+// Access a symbol-keyed method
+let it = list.:Iterable.iterator();
 ```
 
 #### Semantics
 
-- **Compile-Time Resolution**: Symbols are resolved at compile time. The expression inside `[...]` must be a constant expression that resolves to a symbol.
+- **Compile-Time Resolution**: Symbols are resolved at compile time. The symbol name after `:` must refer to a constant symbol.
 - **No Collisions**: Two interfaces can define methods with the same _name_ but different _symbols_, allowing a class to implement both without conflict.
 - **Access Control**: Visibility is controlled via standard `export` rules. If a symbol is not exported, it cannot be used outside the module.
+- **Distinct from Indexing**: The `:symbol` / `.:symbol` syntax is distinct from the `[expr]` indexing syntax (operator `[]`), avoiding ambiguity.
 
 ### Distinguishable Types & Erasure
 

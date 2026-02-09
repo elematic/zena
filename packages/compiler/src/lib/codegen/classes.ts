@@ -6,7 +6,7 @@ import {
   type MixinDeclaration,
   type TypeAnnotation,
   type Identifier,
-  type ComputedPropertyName,
+  type SymbolPropertyName,
   type UnboxedTupleTypeAnnotation,
 } from '../ast.js';
 import {
@@ -44,11 +44,12 @@ const getTypeAnnotationName = (annotation: TypeAnnotation): string => {
   throw new Error(`Expected NamedTypeAnnotation, got ${annotation.type}`);
 };
 
-export function getMemberName(name: Identifier | ComputedPropertyName): string {
+export function getMemberName(name: Identifier | SymbolPropertyName): string {
   if (name.type === NodeType.Identifier) {
     return name.name;
   }
-  const symbolType = name.expression.inferredType as SymbolType;
+  // SymbolPropertyName - look up the symbol from the identifier's inferredType
+  const symbolType = name.symbol.inferredType as SymbolType;
   if (symbolType && symbolType.kind === TypeKind.Symbol) {
     return getSymbolMemberName(symbolType);
   }

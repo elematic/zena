@@ -1583,6 +1583,45 @@ function checkAssignmentExpression(
     }
 
     const classType = objectType as ClassType | InterfaceType;
+
+    // Handle symbol member assignment: obj.:symbol = value
+    if (memberExpr.isSymbolAccess) {
+      const symbolName = memberExpr.property.name;
+      const symbolTypeValue = ctx.resolveValue(symbolName);
+
+      if (!symbolTypeValue || symbolTypeValue.kind !== TypeKind.Symbol) {
+        ctx.diagnostics.reportError(
+          `'${symbolName}' is not defined or is not a symbol.`,
+          DiagnosticCode.TypeMismatch,
+        );
+        return Types.Unknown;
+      }
+
+      const symbolType = symbolTypeValue as SymbolType;
+      memberExpr.resolvedSymbol = symbolType;
+
+      // Check symbolFields
+      if (classType.symbolFields?.has(symbolType)) {
+        const fieldType = classType.symbolFields.get(symbolType)!;
+        const resolvedFieldType = resolveMemberType(classType, fieldType, ctx);
+        const valueType = checkExpression(ctx, expr.value);
+
+        if (!isAssignableTo(ctx, valueType, resolvedFieldType)) {
+          ctx.diagnostics.reportError(
+            `Type mismatch in assignment: expected ${typeToString(resolvedFieldType)}, got ${typeToString(valueType)}`,
+            DiagnosticCode.TypeMismatch,
+          );
+        }
+        return valueType;
+      }
+
+      ctx.diagnostics.reportError(
+        `Symbol '${symbolType.debugName ?? '<symbol>'}' does not exist on type '${classType.name}'.`,
+        DiagnosticCode.PropertyNotFound,
+      );
+      return Types.Unknown;
+    }
+
     const memberName = memberExpr.property.name;
 
     if (classType.fields.has(memberName)) {
@@ -2260,11 +2299,71 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
   return classType;
 }
 
+/**
+ * Check symbol member access: obj.:symbol
+ * The property name is an identifier that must resolve to a symbol.
+ */
+function checkSymbolMemberAccess(
+  ctx: CheckerContext,
+  expr: MemberExpression,
+  objectType: Type,
+): Type {
+  const symbolName = expr.property.name;
+  const symbolTypeValue = ctx.resolveValue(symbolName);
+
+  if (!symbolTypeValue || symbolTypeValue.kind !== TypeKind.Symbol) {
+    ctx.diagnostics.reportError(
+      `'${symbolName}' is not defined or is not a symbol.`,
+      DiagnosticCode.TypeMismatch,
+    );
+    return Types.Unknown;
+  }
+
+  const symbolType = symbolTypeValue as SymbolType;
+  expr.resolvedSymbol = symbolType;
+
+  if (
+    objectType.kind !== TypeKind.Class &&
+    objectType.kind !== TypeKind.Interface
+  ) {
+    ctx.diagnostics.reportError(
+      `Symbol member access is only supported on classes and interfaces.`,
+      DiagnosticCode.TypeMismatch,
+    );
+    return Types.Unknown;
+  }
+
+  const classType = objectType as ClassType | InterfaceType;
+
+  // Check symbolFields first
+  if (classType.symbolFields?.has(symbolType)) {
+    const fieldType = classType.symbolFields.get(symbolType)!;
+    return resolveMemberType(classType, fieldType, ctx);
+  }
+
+  // Check symbolMethods
+  if (classType.symbolMethods?.has(symbolType)) {
+    const methodType = classType.symbolMethods.get(symbolType)!;
+    return resolveMemberType(classType, methodType, ctx);
+  }
+
+  ctx.diagnostics.reportError(
+    `Symbol '${symbolType.debugName ?? '<symbol>'}' does not exist on type '${classType.name}'.`,
+    DiagnosticCode.PropertyNotFound,
+  );
+  return Types.Unknown;
+}
+
 function checkMemberExpression(
   ctx: CheckerContext,
   expr: MemberExpression,
 ): Type {
   const objectType = checkExpression(ctx, expr.object);
+
+  // Handle symbol member access: obj.:symbol
+  if (expr.isSymbolAccess) {
+    return checkSymbolMemberAccess(ctx, expr, objectType);
+  }
 
   if (
     ctx.isCheckingFieldInitializer &&
@@ -2652,43 +2751,6 @@ function checkIndexExpression(
 ): Type {
   const objectType = checkExpression(ctx, expr.object);
   const indexType = checkExpression(ctx, expr.index);
-
-  // Handle symbol-keyed member access: obj[symbol]
-  if (indexType.kind === TypeKind.Symbol) {
-    const symbolType = indexType as SymbolType;
-    expr.resolvedSymbol = symbolType;
-
-    if (
-      objectType.kind === TypeKind.Class ||
-      objectType.kind === TypeKind.Interface
-    ) {
-      const classType = objectType as ClassType | InterfaceType;
-
-      // Check symbolFields first
-      if (classType.symbolFields?.has(symbolType)) {
-        const fieldType = classType.symbolFields.get(symbolType)!;
-        return resolveMemberType(classType, fieldType, ctx);
-      }
-
-      // Check symbolMethods
-      if (classType.symbolMethods?.has(symbolType)) {
-        const methodType = classType.symbolMethods.get(symbolType)!;
-        return resolveMemberType(classType, methodType, ctx);
-      }
-
-      ctx.diagnostics.reportError(
-        `Symbol '${symbolType.debugName ?? '<symbol>'}' does not exist on type '${objectType.kind === TypeKind.Class ? (objectType as ClassType).name : (objectType as InterfaceType).name}'.`,
-        DiagnosticCode.PropertyNotFound,
-      );
-      return Types.Unknown;
-    }
-
-    ctx.diagnostics.reportError(
-      `Symbol-keyed access is only supported on classes and interfaces.`,
-      DiagnosticCode.TypeMismatch,
-    );
-    return Types.Unknown;
-  }
 
   if (
     objectType.kind === TypeKind.Class ||

@@ -98,7 +98,7 @@ import {
   type TupleTypeAnnotation,
   type FunctionTypeAnnotation,
   type LiteralTypeAnnotation,
-  type ComputedPropertyName,
+  type SymbolPropertyName,
   type SymbolDeclaration,
 } from './ast.js';
 
@@ -208,7 +208,7 @@ export interface Visitor<T = void> {
   visitBindingProperty?(node: BindingProperty, context: T): void;
   visitImportSpecifier?(node: ImportSpecifier, context: T): void;
   visitEnumMember?(node: EnumMember, context: T): void;
-  visitComputedPropertyName?(node: ComputedPropertyName, context: T): void;
+  visitSymbolPropertyName?(node: SymbolPropertyName, context: T): void;
 
   // ===== Generic Hooks =====
   /**
@@ -658,12 +658,10 @@ export function visit<T>(
     case NodeType.EnumMember:
       visitor.visitEnumMember?.(node as EnumMember, context);
       break;
-    case NodeType.ComputedPropertyName:
-      visitor.visitComputedPropertyName?.(
-        node as ComputedPropertyName,
-        context,
-      );
-      visit((node as ComputedPropertyName).expression, visitor, context);
+    case NodeType.SymbolPropertyName:
+      visitor.visitSymbolPropertyName?.(node as SymbolPropertyName, context);
+      // symbol is an identifier reference to the symbol variable
+      visit((node as SymbolPropertyName).symbol, visitor, context);
       break;
 
     // Nodes we skip (template elements, etc.)
@@ -975,7 +973,7 @@ function visitFieldDefinitionChildren<T>(
   visitor: Visitor<T>,
   context: T,
 ): void {
-  if (node.name.type === NodeType.ComputedPropertyName) {
+  if (node.name.type === NodeType.SymbolPropertyName) {
     visit(node.name, visitor, context);
   }
   visitTypeAnnotation(node.typeAnnotation, visitor, context);
@@ -987,7 +985,7 @@ function visitMethodDefinitionChildren<T>(
   visitor: Visitor<T>,
   context: T,
 ): void {
-  if (node.name.type === NodeType.ComputedPropertyName) {
+  if (node.name.type === NodeType.SymbolPropertyName) {
     visit(node.name, visitor, context);
   }
   for (const tp of node.typeParameters ?? []) {
@@ -1005,7 +1003,7 @@ function visitAccessorDeclarationChildren<T>(
   visitor: Visitor<T>,
   context: T,
 ): void {
-  if (node.name.type === NodeType.ComputedPropertyName) {
+  if (node.name.type === NodeType.SymbolPropertyName) {
     visit(node.name, visitor, context);
   }
   visitTypeAnnotation(node.typeAnnotation, visitor, context);
@@ -1020,7 +1018,7 @@ function visitMethodSignatureChildren<T>(
   visitor: Visitor<T>,
   context: T,
 ): void {
-  if (node.name.type === NodeType.ComputedPropertyName) {
+  if (node.name.type === NodeType.SymbolPropertyName) {
     visit(node.name, visitor, context);
   }
   for (const tp of node.typeParameters ?? []) {

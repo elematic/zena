@@ -6,7 +6,6 @@ import {
   type BinaryExpression,
   type BreakStatement,
   type ClassDeclaration,
-  type ComputedPropertyName,
   type ContinueStatement,
   type DeclareFunction,
   type EnumDeclaration,
@@ -29,6 +28,7 @@ import {
   type SourceLocation,
   type Statement,
   type SymbolDeclaration,
+  type SymbolPropertyName,
   type TuplePattern,
   type TypeAliasDeclaration,
   type TypeParameter,
@@ -1648,15 +1648,17 @@ function getPropertyType(
 
 function resolveMemberName(
   ctx: CheckerContext,
-  name: Identifier | ComputedPropertyName,
+  name: Identifier | SymbolPropertyName,
 ): {name: string; isSymbol: boolean; symbolType?: SymbolType} {
   if (name.type === NodeType.Identifier) {
     return {name: name.name, isSymbol: false};
   } else {
-    // ComputedPropertyName
-    const type = checkExpression(ctx, name.expression);
-    if (type.kind === TypeKind.Symbol) {
+    // SymbolPropertyName - look up the symbol identifier
+    const type = ctx.resolveValue(name.symbol.name);
+    if (type && type.kind === TypeKind.Symbol) {
       const symbolType = type as SymbolType;
+      // Set inferredType on the symbol identifier so codegen can access it
+      name.symbol.inferredType = symbolType;
       // Use the SymbolType object for identity; debugName is for diagnostics
       return {
         name: symbolType.debugName ?? '<symbol>',
@@ -1665,7 +1667,7 @@ function resolveMemberName(
       };
     }
     ctx.diagnostics.reportError(
-      `Computed property name must resolve to a unique symbol.`,
+      `Symbol '${name.symbol.name}' is not defined or is not a symbol.`,
       DiagnosticCode.TypeMismatch,
     );
     return {name: '<error>', isSymbol: false};

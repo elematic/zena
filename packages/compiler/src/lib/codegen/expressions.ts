@@ -1245,12 +1245,6 @@ function generateIndexExpression(
   expr: IndexExpression,
   body: number[],
 ) {
-  // Handle symbol-keyed member access: obj[symbol]
-  if (expr.resolvedSymbol && expr.object.inferredType) {
-    generateSymbolKeyedAccess(ctx, expr, body);
-    return;
-  }
-
   // Check if this is an overloaded operator[] call on a user-defined class (not extension class)
   if (expr.resolvedOperatorMethod && expr.object.inferredType) {
     const objectCheckerType = expr.object.inferredType;
@@ -1714,12 +1708,12 @@ function generateIndexExpression(
 }
 
 /**
- * Generate code for symbol-keyed member access: obj[symbol]
+ * Generate code for symbol member access: obj.:symbol
  * Symbol-keyed fields/methods are stored in the class struct with names like `[symbol#0]`.
  */
-function generateSymbolKeyedAccess(
+function generateSymbolMemberAccess(
   ctx: CodegenContext,
-  expr: IndexExpression,
+  expr: MemberExpression,
   body: number[],
 ) {
   const symbolType = expr.resolvedSymbol!;
@@ -1737,7 +1731,7 @@ function generateSymbolKeyedAccess(
 
   if (objectCheckerType.kind !== TypeKind.Class) {
     throw new Error(
-      `Symbol-keyed access on non-class type: ${objectCheckerType.kind}`,
+      `Symbol member access on non-class type: ${objectCheckerType.kind}`,
     );
   }
 
@@ -1745,7 +1739,9 @@ function generateSymbolKeyedAccess(
   const classInfo = ctx.getClassInfo(classType);
 
   if (!classInfo) {
-    throw new Error(`Class ${classType.name} not found for symbol-keyed access`);
+    throw new Error(
+      `Class ${classType.name} not found for symbol member access`,
+    );
   }
 
   // Check if it's a field access
@@ -1767,28 +1763,28 @@ function generateSymbolKeyedAccess(
     // This would be used for passing methods as callbacks
     // For now, throw since this needs ref.func handling
     throw new Error(
-      `Symbol-keyed method access as value not yet implemented: ${memberName}`,
+      `Symbol method access as value not yet implemented: ${memberName}`,
     );
   }
 
   throw new Error(
-    `Symbol-keyed member '${memberName}' (symbol: ${symbolType.debugName ?? '<unnamed>'}) not found on class ${classType.name}`,
+    `Symbol member '${memberName}' (symbol: ${symbolType.debugName ?? '<unnamed>'}) not found on class ${classType.name}`,
   );
 }
 
 /**
- * Generate code for a symbol-keyed method call: obj[symbol](args)
+ * Generate code for a symbol method call: obj.:symbol(args)
  */
-function generateSymbolKeyedMethodCall(
+function generateSymbolMethodCall(
   ctx: CodegenContext,
   expr: CallExpression,
   body: number[],
 ) {
-  const indexExpr = expr.callee as IndexExpression;
-  const symbolType = indexExpr.resolvedSymbol!;
+  const memberExpr = expr.callee as MemberExpression;
+  const symbolType = memberExpr.resolvedSymbol!;
   const memberName = getSymbolMemberName(symbolType);
 
-  let objectCheckerType = indexExpr.object.inferredType!;
+  let objectCheckerType = memberExpr.object.inferredType!;
 
   // Substitute type params if in generic context
   if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
@@ -1800,7 +1796,7 @@ function generateSymbolKeyedMethodCall(
 
   if (objectCheckerType.kind !== TypeKind.Class) {
     throw new Error(
-      `Symbol-keyed method call on non-class type: ${objectCheckerType.kind}`,
+      `Symbol method call on non-class type: ${objectCheckerType.kind}`,
     );
   }
 
@@ -1808,20 +1804,20 @@ function generateSymbolKeyedMethodCall(
   const classInfo = ctx.getClassInfo(classType);
 
   if (!classInfo) {
-    throw new Error(`Class ${classType.name} not found for symbol-keyed method call`);
+    throw new Error(`Class ${classType.name} not found for symbol method call`);
   }
 
   // Look up the method by symbol name
   const methodInfo = classInfo.methods.get(memberName);
   if (!methodInfo) {
     throw new Error(
-      `Symbol-keyed method '${memberName}' (symbol: ${symbolType.debugName ?? '<unnamed>'}) not found on class ${classType.name}`,
+      `Symbol method '${memberName}' (symbol: ${symbolType.debugName ?? '<unnamed>'}) not found on class ${classType.name}`,
     );
   }
 
   // Generate the method call (static dispatch for now)
   // 1. Generate object (this)
-  generateExpression(ctx, indexExpr.object, body);
+  generateExpression(ctx, memberExpr.object, body);
 
   // 2. Generate arguments
   const funcTypeIndex = ctx.module.getFunctionTypeIndex(methodInfo.index);
@@ -1840,18 +1836,18 @@ function generateSymbolKeyedMethodCall(
 }
 
 /**
- * Generate code for symbol-keyed field assignment: obj[symbol] = value
+ * Generate code for symbol field assignment: obj.:symbol = value
  */
-function generateSymbolKeyedFieldAssignment(
+function generateSymbolFieldAssignment(
   ctx: CodegenContext,
-  indexExpr: IndexExpression,
+  memberExpr: MemberExpression,
   valueExpr: Expression,
   body: number[],
 ) {
-  const symbolType = indexExpr.resolvedSymbol!;
+  const symbolType = memberExpr.resolvedSymbol!;
   const memberName = getSymbolMemberName(symbolType);
 
-  let objectCheckerType = indexExpr.object.inferredType!;
+  let objectCheckerType = memberExpr.object.inferredType!;
 
   // Substitute type params if in generic context
   if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
@@ -1863,7 +1859,7 @@ function generateSymbolKeyedFieldAssignment(
 
   if (objectCheckerType.kind !== TypeKind.Class) {
     throw new Error(
-      `Symbol-keyed field assignment on non-class type: ${objectCheckerType.kind}`,
+      `Symbol field assignment on non-class type: ${objectCheckerType.kind}`,
     );
   }
 
@@ -1871,20 +1867,22 @@ function generateSymbolKeyedFieldAssignment(
   const classInfo = ctx.getClassInfo(classType);
 
   if (!classInfo) {
-    throw new Error(`Class ${classType.name} not found for symbol-keyed field assignment`);
+    throw new Error(
+      `Class ${classType.name} not found for symbol field assignment`,
+    );
   }
 
   // Look up the field by symbol name
   const fieldInfo = classInfo.fields.get(memberName);
   if (!fieldInfo) {
     throw new Error(
-      `Symbol-keyed field '${memberName}' (symbol: ${symbolType.debugName ?? '<unnamed>'}) not found on class ${classType.name}`,
+      `Symbol field '${memberName}' (symbol: ${symbolType.debugName ?? '<unnamed>'}) not found on class ${classType.name}`,
     );
   }
 
   // Generate field assignment: struct.set
   // 1. Generate object
-  generateExpression(ctx, indexExpr.object, body);
+  generateExpression(ctx, memberExpr.object, body);
 
   // 2. Generate value
   generateExpression(ctx, valueExpr, body);
@@ -2032,6 +2030,12 @@ function generateMemberExpression(
   expr: MemberExpression,
   body: number[],
 ) {
+  // Handle symbol member access: obj.:symbol
+  if (expr.isSymbolAccess && expr.resolvedSymbol) {
+    generateSymbolMemberAccess(ctx, expr, body);
+    return;
+  }
+
   // Try to use the resolved binding from the checker for O(1) lookup
   const binding = ctx.semanticContext.getResolvedBinding(expr);
 
@@ -2205,6 +2209,13 @@ function generateCallExpression(
 
   if (expr.callee.type === NodeType.MemberExpression) {
     const memberExpr = expr.callee as MemberExpression;
+
+    // Handle symbol method call: obj.:symbol(args)
+    if (memberExpr.isSymbolAccess) {
+      generateSymbolMethodCall(ctx, expr, body);
+      return;
+    }
+
     const methodName = memberExpr.property.name;
 
     if (memberExpr.object.type === NodeType.SuperExpression) {
@@ -2907,13 +2918,6 @@ function generateCallExpression(
       }
       body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
     }
-  } else if (
-    expr.callee.type === NodeType.IndexExpression &&
-    (expr.callee as IndexExpression).resolvedSymbol
-  ) {
-    // Symbol-keyed method call: obj[symbol](args)
-    generateSymbolKeyedMethodCall(ctx, expr, body);
-    return;
   } else if (expr.callee.type === NodeType.SuperExpression) {
     // Super constructor call
     if (ctx.currentClass && ctx.currentClass.isExtension) {
@@ -3119,14 +3123,20 @@ function generateAssignmentExpression(
   expr: AssignmentExpression,
   body: number[],
 ) {
-  if (expr.left.type === NodeType.IndexExpression) {
-    const indexExpr = expr.left as IndexExpression;
-
-    // Handle symbol-keyed field assignment: obj[symbol] = value
-    if (indexExpr.resolvedSymbol && indexExpr.object.inferredType) {
-      generateSymbolKeyedFieldAssignment(ctx, indexExpr, expr.value, body);
+  // Handle symbol field assignment: obj.:symbol = value
+  if (
+    expr.left.type === NodeType.MemberExpression &&
+    (expr.left as MemberExpression).isSymbolAccess
+  ) {
+    const memberExpr = expr.left as MemberExpression;
+    if (memberExpr.resolvedSymbol && memberExpr.object.inferredType) {
+      generateSymbolFieldAssignment(ctx, memberExpr, expr.value, body);
       return;
     }
+  }
+
+  if (expr.left.type === NodeType.IndexExpression) {
+    const indexExpr = expr.left as IndexExpression;
 
     const objectType = inferType(ctx, indexExpr.object);
     const structTypeIndex = getHeapTypeIndex(ctx, objectType);

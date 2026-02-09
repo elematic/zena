@@ -108,7 +108,7 @@ export const NodeType = {
   ThisTypeAnnotation: 'ThisTypeAnnotation',
   SpreadElement: 'SpreadElement',
   ExportAllDeclaration: 'ExportAllDeclaration',
-  ComputedPropertyName: 'ComputedPropertyName',
+  SymbolPropertyName: 'SymbolPropertyName',
   EnumDeclaration: 'EnumDeclaration',
   EnumMember: 'EnumMember',
   RangeExpression: 'RangeExpression',
@@ -315,8 +315,6 @@ export interface IndexExpression extends Node {
   resolvedOperatorMethod?: FunctionType;
   /** Set by checker for extension class operator[] (e.g., FixedArray on array types) */
   extensionClassType?: ClassType;
-  /** Set by checker when index is a symbol - the resolved symbol type for identity-based lookup */
-  resolvedSymbol?: SymbolType;
 }
 
 export interface RecordPattern extends Node {
@@ -554,14 +552,15 @@ export interface MixinDeclaration extends Node {
   exportName?: string;
 }
 
-export interface ComputedPropertyName extends Node {
-  type: typeof NodeType.ComputedPropertyName;
-  expression: Expression;
+export interface SymbolPropertyName extends Node {
+  type: typeof NodeType.SymbolPropertyName;
+  /** The identifier referencing the symbol */
+  symbol: Identifier;
 }
 
 export interface AccessorDeclaration extends Node {
   type: typeof NodeType.AccessorDeclaration;
-  name: Identifier | ComputedPropertyName;
+  name: Identifier | SymbolPropertyName;
   typeAnnotation: TypeAnnotation;
   getter?: BlockStatement;
   setter?: {param: Identifier; body: BlockStatement};
@@ -582,7 +581,7 @@ export interface InterfaceDeclaration extends Node {
 
 export interface AccessorSignature extends Node {
   type: typeof NodeType.AccessorSignature;
-  name: Identifier | ComputedPropertyName;
+  name: Identifier | SymbolPropertyName;
   typeAnnotation: TypeAnnotation;
   hasGetter: boolean;
   hasSetter: boolean;
@@ -590,7 +589,7 @@ export interface AccessorSignature extends Node {
 
 export interface MethodSignature extends Node {
   type: typeof NodeType.MethodSignature;
-  name: Identifier | ComputedPropertyName;
+  name: Identifier | SymbolPropertyName;
   typeParameters?: TypeParameter[];
   params: Parameter[];
   returnType?: TypeAnnotation;
@@ -598,7 +597,7 @@ export interface MethodSignature extends Node {
 
 export interface FieldDefinition extends Node {
   type: typeof NodeType.FieldDefinition;
-  name: Identifier | ComputedPropertyName;
+  name: Identifier | SymbolPropertyName;
   typeAnnotation: TypeAnnotation;
   value?: Expression;
   isFinal: boolean;
@@ -615,7 +614,7 @@ export interface Decorator extends Node {
 
 export interface MethodDefinition extends Node {
   type: typeof NodeType.MethodDefinition;
-  name: Identifier | ComputedPropertyName;
+  name: Identifier | SymbolPropertyName;
   typeParameters?: TypeParameter[];
   params: Parameter[];
   returnType?: TypeAnnotation;
@@ -638,6 +637,10 @@ export interface MemberExpression extends Node {
   type: typeof NodeType.MemberExpression;
   object: Expression;
   property: Identifier;
+  /** True if this is symbol member access (obj.:symbol) */
+  isSymbolAccess?: boolean;
+  /** Set by checker for symbol access - the resolved symbol type for identity-based lookup */
+  resolvedSymbol?: SymbolType;
 }
 
 export interface ThisExpression extends Node {
