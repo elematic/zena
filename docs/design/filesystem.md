@@ -88,19 +88,19 @@ interface types {
 
 ### Compound Types
 
-| WIT Type       | Zena Type           | Notes                           |
-| -------------- | ------------------- | ------------------------------- |
-| `string`       | `String`            | GC string (see strings.md)      |
-| `list<u8>`     | `i32` (ptr) + `i32` | Pointer + length in linear mem  |
-| `list<T>`      | `i32` (ptr) + `i32` | Pointer + length in linear mem  |
-| `result<T, E>` | `Result<T, E>`      | Value type, see below           |
-| `option<T>`    | `T \| null`         | Nullable union                  |
-| `tuple<A, B>`  | `(A, B)`            | Unboxed tuple (multi-return)    |
-| `resource`     | `distinct type` u32 | Newtype wrapper, see below      |
-| `enum`         | `enum`              | Untagged enum                   |
-| `flags`        | `u32` / `u64`       | Bitfield (unsigned)             |
-| `record`       | `type R = {...}`    | Zena record type                |
-| `variant`      | `enum` + union      | Tagged union (when needed)      |
+| WIT Type       | Zena Type           | Notes                          |
+| -------------- | ------------------- | ------------------------------ |
+| `string`       | `String`            | GC string (see strings.md)     |
+| `list<u8>`     | `i32` (ptr) + `i32` | Pointer + length in linear mem |
+| `list<T>`      | `i32` (ptr) + `i32` | Pointer + length in linear mem |
+| `result<T, E>` | `Result<T, E>`      | Value type, see below          |
+| `option<T>`    | `T \| null`         | Nullable union                 |
+| `tuple<A, B>`  | `(A, B)`            | Unboxed tuple (multi-return)   |
+| `resource`     | `distinct type` u32 | Newtype wrapper, see below     |
+| `enum`         | `enum`              | Untagged enum                  |
+| `flags`        | `u32` / `u64`       | Bitfield (unsigned)            |
+| `record`       | `type R = {...}`    | Zena record type               |
+| `variant`      | `enum` + union      | Tagged union (when needed)     |
 
 ### Detailed Type Mappings
 
@@ -115,13 +115,13 @@ import {Memory, defaultAllocator} from 'zena:memory';
 if (let (true, ptr) = defaultAllocator.alloc(1024)) {
   let bytesRead = wasi_read(fd, ptr, 1024);
   let firstByte = Memory.default.getU8(ptr);  // @intrinsic('i32.load8_u')
-  
+
   // Convert to GC FixedArray when needed (copies element by element)
   let gcBytes = new FixedArray<i32>(bytesRead);
   for (var i = 0; i < bytesRead; i = i + 1) {
     gcBytes[i] = Memory.default.getU8(ptr + i);
   }
-  
+
   defaultAllocator.free(ptr);
 }
 ```
@@ -545,11 +545,11 @@ const allocOrPanic = (alloc: Allocator, bytes: i32): i32 => {
 const writeString = (fd: i32, s: String): i32 => {
   let ptr = allocOrPanic(defaultAllocator, s.length);
   let mem = Memory.default;
-  
+
   for (var i = 0; i < s.length; i = i + 1) {
     mem.setU8(ptr + i, s.byteAt(i));
   }
-  
+
   let result = __wasi_write(fd, ptr, s.length);
   defaultAllocator.free(ptr);
   return result;

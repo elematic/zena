@@ -30,6 +30,18 @@ Directives are single-line comments starting with `// @`.
 - `// @stdout: <string>`: Expected stdout output for execution tests.
 - `// @throws: <type>`: Expected exception type. Currently supports `wasm` for WebAssembly.Exception.
 - `// @error: <regex>`: Expected compiler error message (for checker tests). Can be placed on the line of the error or at the top.
+- `// @requires: <runtime>`: Specifies runtime requirements for the test. Options: `wasmtime`, `wasi`, `node`. Tests with unmet requirements are skipped by the corresponding runner.
+
+### Runtime Requirements
+
+Tests may require specific runtime features not available in all environments:
+
+- **`wasmtime`**: Test requires wasmtime runtime (e.g., for WASI filesystem access)
+- **`wasi`**: Test uses WASI interfaces (implies wasmtime or jco)
+- **`node`**: Test requires Node.js runtime (default for most tests)
+
+Tests with `@requires: wasmtime` are run via `npm run test:wasmtime -w @zena-lang/stdlib` using wasmtime.
+Tests without this directive are run via `npm test` using Node.js.
 
 ### Suite Metadata
 
@@ -177,20 +189,80 @@ The test runner will wrap this in a `main` function automatically.
 ## Directory Structure
 
 ```
-tests/
+tests/                       # Language tests (in repo root)
   language/
-    syntax/          # Parser tests (.zena + .ast.json)
+    syntax/                  # Parser tests (.zena + .ast.json)
       basic/
       classes/
-    semantics/       # Checker tests (.zena with @error)
+    semantics/               # Checker tests (.zena with @error)
       types/
       control-flow/
-    execution/       # Codegen tests (.zena with @result)
+    execution/               # Codegen tests (.zena with @result)
       arithmetic/
       functions/
-    stdlib/          # Standard library tests (.zena with @result/@throws)
-      array/         # Array class tests + test-suite.json
-      map/           # Map class tests + test-suite.json
+
+packages/stdlib/tests/       # Standard library tests (with stdlib package)
+  array/                     # Array class tests + test-suite.json
+  map/                       # Map class tests + test-suite.json
+  fs/                        # Filesystem tests (@requires: wasmtime)
+  hello_test.zena            # Basic WASI smoke test (@requires: wasmtime)
+  memory_test.zena           # Linear memory tests (@requires: wasmtime)
+  out/                       # Compiled .wasm files (gitignored)
+
+packages/stdlib/scripts/     # Build and test runner scripts
+  build-wasi-tests.js        # Compiles tests with @requires:wasmtime to .wasm
+  run-wasmtime.js            # Runs .wasm tests with wasmtime
+```
+
+## Running Tests
+
+### Node.js Tests (Default)
+
+```bash
+npm test                    # Run all Node.js tests
+npm test -w @zena-lang/cli  # Run CLI package tests
+```
+
+### WASI Tests (wasmtime)
+
+WASI tests require features that Node.js doesn't provide (filesystem, etc.).
+These are run via wasmtime using the Nix development environment:
+
+```bash
+npm run test:wasmtime -w @zena-lang/stdlib    # Build and run all WASI tests
+```
+
+The tests are built using Wireit, which caches the `.wasm` files and only
+rebuilds when source files change. This makes subsequent runs very fast.
+
+**Note**: wasmtime tests require the Nix environment (`direnv allow` or `nix develop`).
+
+### Building WASI Tests Manually
+
+```bash
+npm run build:wasi-tests -w @zena-lang/stdlib   # Build WASI tests to .wasm
+```
+
+### Writing WASI Tests
+
+WASI tests must export a `main` function that returns the number of failed tests:
+
+```zena
+// @requires: wasmtime
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+
+let tests = suite('My WASI Tests', (): void => {
+  test('example', (ctx: TestContext): void => {
+    equal(1, 1);
+  });
+});
+
+// Entry point - returns number of failed tests (0 = success)
+export let main = (): i32 => {
+  let result = tests.run();
+  return result.failed;
+};
 ```
 
 ## Test Runner Implementation
@@ -199,15 +271,16 @@ The portable test runner is implemented in `packages/compiler/src/test/portable-
 
 **Responsibilities**:
 
-1.  **Discovery**: Walk the `tests/` directory.
-2.  **Parsing**: Read `.zena` files and parse directives.
-3.  **Suite Metadata**: Load `test-suite.json` files for folder metadata.
-4.  **Execution**:
+1.  **Discovery**: Walk `tests/` and `packages/stdlib/tests/` directories.
+2.  **Filtering**: Skip tests with `@requires: wasmtime` (those run separately via wasmtime).
+3.  **Parsing**: Read `.zena` files and parse directives.
+4.  **Suite Metadata**: Load `test-suite.json` files for folder metadata.
+5.  **Execution**:
     - **Parse Mode**: Call Compiler Parser -> Serialize AST -> Compare with JSON.
     - **Check Mode**: Call Compiler Checker -> Collect Diagnostics -> Match against `@error` regexes.
     - **Run Mode**: Call Compiler Codegen -> Instantiate WASM -> Run `main` -> Compare result/stdout/throws.
-5.  **Validation**: Verify test counts match suite expectations.
-6.  **Reporting**: Output pass/fail statistics.
+6.  **Validation**: Verify test counts match suite expectations.
+7.  **Reporting**: Output pass/fail statistics.
 
 ## Migration Plan
 

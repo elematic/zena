@@ -1,0 +1,45 @@
+// Memory-based WASI test  
+// Tests linear memory operations which are needed for WASI interop
+//
+// @requires: wasmtime
+//
+// This test validates that memory operations work correctly when running
+// under wasmtime, which is essential for any WASI-based functionality.
+
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {Memory} from 'zena:memory';
+
+let tests = suite('Memory in WASI', (): void => {
+  test('linear memory is accessible', (ctx: TestContext): void => {
+    let mem = Memory.default;
+    
+    // Write a byte at a safe address
+    mem[1000] = 42;
+    equal(mem[1000], 42);
+  });
+
+  test('i32 read/write works', (ctx: TestContext): void => {
+    let mem = Memory.default;
+    
+    // Write and read an i32
+    mem.setI32(1004, 12345);
+    equal(mem.getI32(1004), 12345);
+  });
+
+  test('memory can be grown', (ctx: TestContext): void => {
+    let mem = Memory.default;
+    
+    let sizeBefore = mem.size();
+    mem.grow(1);
+    let sizeAfter = mem.size();
+    
+    equal(sizeAfter, sizeBefore + 1);
+  });
+});
+
+// Entry point - returns number of failed tests (0 = success)
+export let main = (): i32 => {
+  let result = tests.run();
+  return result.failed;
+};

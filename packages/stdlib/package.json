@@ -14,7 +14,9 @@
   ],
   "scripts": {
     "build": "wireit",
-    "test": "wireit"
+    "test": "wireit",
+    "build:wasi-tests": "wireit",
+    "test:wasmtime": "wireit"
   },
   "wireit": {
     "build": {
@@ -29,12 +31,44 @@
       ],
       "clean": "if-file-deleted"
     },
-    "test": {
-      "command": "echo 'No tests for stdlib yet'",
+    "build:wasi-tests": {
+      "command": "node scripts/build-wasi-tests.js",
+      "files": [
+        "scripts/build-wasi-tests.js",
+        "tests/fs/**/*.zena",
+        "tests/memory_test.zena"
+      ],
+      "output": [
+        "tests/out/**/*.wasm"
+      ],
       "dependencies": [
-        "build"
+        "../cli:build"
+      ]
+    },
+    "test": {
+      "dependencies": [
+        "test:wasmtime",
+        "test:node"
+      ]
+    },
+    "test:node": {
+      "dependencies": [
+        "../compiler:test:portable"
+      ]
+    },
+    "test:wasmtime": {
+      "command": "node scripts/run-wasmtime.js",
+      "files": [
+        "scripts/run-wasmtime.js"
+      ],
+      "output": [],
+      "dependencies": [
+        "build:wasi-tests"
       ]
     }
+  },
+  "dependencies": {
+    "glob": "^11.1.0"
   },
   "devDependencies": {
     "typescript": "^5.3.3",

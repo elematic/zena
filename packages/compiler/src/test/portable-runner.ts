@@ -22,6 +22,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Root is ../../../
 const rootDir = resolve(__dirname, '../../..');
 const testsDir = join(rootDir, 'tests');
+const stdlibTestsDir = join(rootDir, 'packages/stdlib/tests');
 
 // Colors (kept for snapshot generation messages)
 const gray = (s: string) => `\x1b[90m${s}\x1b[0m`;
@@ -104,15 +105,23 @@ function getAllTests(dir: string): {directive: string[]; zenaTest: string[]} {
     const filePath = join(dir, file);
     const stat = statSync(filePath);
     if (stat && stat.isDirectory()) {
+      // Skip directories that require wasmtime or contain build artifacts
+      if (file === 'wasi' || file === 'fs' || file === 'out') continue;
       const sub = getAllTests(filePath);
       directive.push(...sub.directive);
       zenaTest.push(...sub.zenaTest);
-    } else if (file.endsWith('_test.zena')) {
-      // *_test.zena files use zena:test format
-      zenaTest.push(filePath);
     } else if (file.endsWith('.zena')) {
-      // Other .zena files use directive format
-      directive.push(filePath);
+      // Skip tests that require wasmtime
+      const content = readFileSync(filePath, 'utf-8');
+      if (content.includes('@requires: wasmtime')) continue;
+
+      if (file.endsWith('_test.zena')) {
+        // *_test.zena files use zena:test format
+        zenaTest.push(filePath);
+      } else {
+        // Other .zena files use directive format
+        directive.push(filePath);
+      }
     }
   }
   return {directive, zenaTest};
@@ -164,7 +173,11 @@ function stripLocation(obj: any): any {
 async function runTestFile(filePath: string): Promise<void> {
   const content = readFileSync(filePath, 'utf-8');
   const {directives, errors} = parseDirectives(content);
-  const relPath = relative(testsDir, filePath);
+
+  // Compute relative path from the correct base
+  const relPath = filePath.startsWith(stdlibTestsDir)
+    ? relative(stdlibTestsDir, filePath)
+    : relative(testsDir, filePath);
 
   // Infer mode if not specified
   let mode = directives.mode;
@@ -172,7 +185,7 @@ async function runTestFile(filePath: string): Promise<void> {
     if (relPath.includes('syntax')) mode = 'parse';
     else if (relPath.includes('semantics')) mode = 'check';
     else if (relPath.includes('execution')) mode = 'run';
-    else if (relPath.includes('stdlib'))
+    else if (filePath.startsWith(stdlibTestsDir))
       mode = 'run'; // Stdlib tests are execution tests
     else mode = 'parse'; // Default
   }
@@ -480,10 +493,22 @@ function groupTestsByDirectory(testFiles: string[]): TestGroup[] {
   const groups = new Map<string, {tests: string[]; dirPath: string}>();
 
   for (const filePath of testFiles) {
-    const relPath = relative(testsDir, filePath);
+    // Compute relative path from the correct base (either testsDir or stdlibTestsDir)
+    let relPath: string;
+    let baseDir: string;
+    if (filePath.startsWith(stdlibTestsDir)) {
+      relPath = relative(stdlibTestsDir, filePath);
+      baseDir = stdlibTestsDir;
+    } else {
+      relPath = relative(testsDir, filePath);
+      baseDir = testsDir;
+    }
     const dir = dirname(relPath);
-    const suiteName = dir.replace(/\//g, ' / ') || 'root';
-    const dirPath = join(testsDir, dir);
+
+    // Prefix stdlib tests to distinguish them
+    const prefix = baseDir === stdlibTestsDir ? 'stdlib / ' : '';
+    const suiteName = prefix + (dir.replace(/\//g, ' / ') || 'root');
+    const dirPath = join(baseDir, dir);
 
     if (!groups.has(suiteName)) {
       groups.set(suiteName, {tests: [], dirPath});
@@ -500,7 +525,13 @@ function groupTestsByDirectory(testFiles: string[]): TestGroup[] {
 }
 
 // Register all tests with Node's test runner
-const {directive: directiveTests, zenaTest: zenaTests} = getAllTests(testsDir);
+// Collect tests from both the main tests/ directory and packages/stdlib/tests/
+const {directive: directiveTests1, zenaTest: zenaTests1} =
+  getAllTests(testsDir);
+const {directive: directiveTests2, zenaTest: zenaTests2} =
+  getAllTests(stdlibTestsDir);
+const directiveTests = [...directiveTests1, ...directiveTests2];
+const zenaTests = [...zenaTests1, ...zenaTests2];
 
 // --- Directive-based tests (*.zena, not *_test.zena) ---
 const directiveGroups = groupTestsByDirectory(directiveTests);

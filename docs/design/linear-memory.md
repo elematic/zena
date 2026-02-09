@@ -174,10 +174,10 @@ decision is using **multi-return values** to force error handling:
 interface Allocator {
   /** Returns (true, ptr) on success, (false, _) on failure. */
   alloc(bytes: i32): (true, i32) | (false, never);
-  
+
   /** Allocate with alignment (align must be power of 2). */
   allocAligned(bytes: i32, align: i32): (true, i32) | (false, never);
-  
+
   /** Free a previously allocated pointer. May be a no-op for some allocators. */
   free(ptr: i32): void;
 }
@@ -232,6 +232,7 @@ export final class FreeListAllocator implements Allocator {
 ```
 
 Memory layout:
+
 ```
 [8-byte header: size, next_free][user data...]
 ```
@@ -309,14 +310,14 @@ const allocOrPanic = (alloc: Allocator, bytes: i32): i32 => {
 // Allocate a 4KB arena from the root allocator
 if (let (true, region) = defaultAllocator.alloc(4096)) {
   let arena = new BumpAllocator(region, 4096);
-  
+
   // Fast allocations - no free list overhead
   if (let (true, buf1) = arena.alloc(256)) { /* ... */ }
   if (let (true, buf2) = arena.alloc(512)) { /* ... */ }
-  
+
   // Reuse arena for next batch
   arena.reset();
-  
+
   // When done, free the underlying region
   defaultAllocator.free(region);
 }
@@ -372,7 +373,7 @@ Transfer must be done element-by-element:
 
 ```zena
 /** Copy from GC array to linear memory. */
-const copyToLinear = (src: FixedArray<i32>, srcOffset: i32, 
+const copyToLinear = (src: FixedArray<i32>, srcOffset: i32,
                        dst: i32, len: i32): void => {
   let mem = Memory.default;
   for (var i = 0; i < len; i = i + 1) {
@@ -381,7 +382,7 @@ const copyToLinear = (src: FixedArray<i32>, srcOffset: i32,
 };
 
 /** Copy from linear memory to GC array. */
-const copyFromLinear = (src: i32, dst: FixedArray<i32>, 
+const copyFromLinear = (src: i32, dst: FixedArray<i32>,
                          dstOffset: i32, len: i32): void => {
   let mem = Memory.default;
   for (var i = 0; i < len; i = i + 1) {
@@ -518,7 +519,7 @@ const copyToLinear = (src: FixedArray<i32>, ptr: i32, len: i32): void => {
   }
 };
 
-// Helper to copy linear memory to GC array  
+// Helper to copy linear memory to GC array
 const copyFromLinear = (ptr: i32, len: i32): FixedArray<i32> => {
   let mem = Memory.default;
   let result = new FixedArray<i32>(len);
@@ -533,30 +534,30 @@ class Compression {
   static compress(data: FixedArray<i32>): FixedArray<i32> {
     let mem = Memory.default;
     let alloc = defaultAllocator;
-    
+
     // 1. Allocate and copy input to linear memory
     if (let (true, sourcePtr) = alloc.alloc(data.length)) {
       copyToLinear(data, sourcePtr, data.length);
-      
+
       // 2. Allocate output buffer
       let maxDestLen = data.length + div(data.length, 10) + 12;
       if (let (true, destPtr) = alloc.alloc(maxDestLen)) {
         // 3. Allocate space for destLen output parameter
         if (let (true, destLenPtr) = alloc.alloc(4)) {
           mem.setI32(destLenPtr, maxDestLen);
-          
+
           // 4. Call C function
           let result = zlib_compress(destPtr, destLenPtr, sourcePtr, data.length);
-          
+
           // 5. Copy result back to GC heap
           let actualLen = mem.getI32(destLenPtr);
           let output = copyFromLinear(destPtr, actualLen);
-          
+
           // 6. Free all allocations
           alloc.free(destLenPtr);
           alloc.free(destPtr);
           alloc.free(sourcePtr);
-          
+
           if (result != 0) {
             throw new Error('compression failed');
           }
@@ -596,7 +597,7 @@ class Regex {
   #new(pattern: String) {
     let mem = Memory.default;
     let alloc = defaultAllocator;
-    
+
     if (let (true, ptr) = alloc.alloc(pattern.length)) {
       // Copy string to linear memory
       for (var i = 0; i < pattern.length; i = i + 1) {
@@ -604,7 +605,7 @@ class Regex {
       }
       this.#handle = re2_compile(ptr, pattern.length, 0);
       alloc.free(ptr);
-      
+
       if (this.#handle == 0) {
         throw new Error("Invalid pattern");
       }
@@ -616,26 +617,26 @@ class Regex {
   match(input: String): FixedArray<Match>? {
     let mem = Memory.default;
     let alloc = defaultAllocator;
-    
+
     // Allocate buffers for input and match results
     if (let (true, inputPtr) = alloc.alloc(input.length)) {
       // Copy input to linear memory
       for (var i = 0; i < input.length; i = i + 1) {
         mem.setU8(inputPtr + i, input.byteAt(i));
       }
-      
+
       // 10 matches * 2 ints (start, end) * 4 bytes = 80 bytes
       if (let (true, matchPtr) = alloc.alloc(80)) {
         let count = re2_match(this.#handle, inputPtr, input.length, matchPtr, 10);
-        
+
         let result: FixedArray<Match>? = null;
         if (count > 0) {
           result = FixedArray.generate(count, (i) => {
-            new Match(mem.getI32(matchPtr + i * 8), 
+            new Match(mem.getI32(matchPtr + i * 8),
                       mem.getI32(matchPtr + i * 8 + 4))
           });
         }
-        
+
         alloc.free(matchPtr);
         alloc.free(inputPtr);
         return result;
@@ -696,7 +697,7 @@ class LinearPoint {
   toRecord(): {x: i32, y: i32} {
     return {x: this.x, y: this.y};
   }
-  
+
   free(): void {
     defaultAllocator.free(this.#ptr);
   }
@@ -741,7 +742,7 @@ let gcTable: Table<Object> = new Table(100);
 const execWithCallback = (db: Database, sql: string,
                           callback: (row: Row) => void): void => {
   let mem = Memory.default;
-  
+
   // Store the closure in a GC table, get index
   let closureIndex = gcTable.add(callback);
 
@@ -761,7 +762,7 @@ const execWithCallback = (db: Database, sql: string,
       mem.setU8(sqlPtr + i, sql.byteAt(i));
     }
     mem.setU8(sqlPtr + sql.length, 0);  // Null terminator
-    
+
     if (let (true, errPtr) = defaultAllocator.alloc(4)) {
       sqlite3_exec(db.handle, sqlPtr, trampolineIndex, closureIndex, errPtr);
       defaultAllocator.free(errPtr);
@@ -772,7 +773,8 @@ const execWithCallback = (db: Database, sql: string,
   gcTable.remove(closureIndex);
 };
 ```
-```
+
+````
 
 ### Callback Helper (Future)
 
@@ -798,7 +800,7 @@ const sortArray = (arrPtr: i32, arrLen: i32): void => {
   using cmp = Callback.create((a: i32, b: i32): i32 => a - b);
   qsort(arrPtr, arrLen, 4, cmp.index);
 };
-```
+````
 
 ---
 
@@ -813,7 +815,7 @@ The current `Memory` class design supports this through instances:
 // Memory can be extended to support multiple memories
 final class Memory {
   static default: Memory = new Memory();  // Memory index 0
-  
+
   // Future: import additional memories
   // @external("re2", "memory")
   // static declare let re2Memory: Memory;
@@ -832,7 +834,7 @@ enable automatic cleanup of linear memory:
 // Future: automatic cleanup when GC object is collected
 class LinearBuffer {
   #ptr: i32;
-  
+
   #new(ptr: i32) {
     this.#ptr = ptr;
     // Register cleanup when this GC object dies
