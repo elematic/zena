@@ -1,0 +1,147 @@
+// Tests ported from Go's regexp/all_test.go
+// https://github.com/golang/go/blob/master/src/regexp/all_test.go
+
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {Regex} from 'zena:regex';
+
+export let tests = suite('Go regexp/all_test.go ReplaceAll', (): void => {
+  // Test empty input and/or replacement, with pattern that matches the empty string.
+  test('empty pattern, empty replacement, empty input', (ctx: TestContext): void => {
+    let re = new Regex('');
+    equal(re.replaceAll('', ''), '');
+  });
+
+  test('empty pattern, x replacement, empty input', (ctx: TestContext): void => {
+    let re = new Regex('');
+    equal(re.replaceAll('', 'x'), 'x');
+  });
+
+  test('empty pattern, empty replacement, abc input', (ctx: TestContext): void => {
+    let re = new Regex('');
+    equal(re.replaceAll('abc', ''), 'abc');
+  });
+
+  test('empty pattern, x replacement, abc input', (ctx: TestContext): void => {
+    let re = new Regex('');
+    equal(re.replaceAll('abc', 'x'), 'xaxbxcx');
+  });
+
+  // Test empty input and/or replacement, with pattern that does not match the empty string.
+  test('b pattern removes from abc', (ctx: TestContext): void => {
+    let re = new Regex('b');
+    equal(re.replaceAll('abc', ''), 'ac');
+  });
+
+  test('b pattern replaces in abc', (ctx: TestContext): void => {
+    let re = new Regex('b');
+    equal(re.replaceAll('abc', 'x'), 'axc');
+  });
+
+  test('y pattern no match in abc', (ctx: TestContext): void => {
+    let re = new Regex('y');
+    equal(re.replaceAll('abc', 'x'), 'abc');
+  });
+
+  // Start and end of a string.
+  test('^[a-c]* at start', (ctx: TestContext): void => {
+    let re = new Regex('^[a-c]*');
+    equal(re.replaceAll('abcdabc', 'x'), 'xdabc');
+  });
+
+  test('[a-c]*$ at end', (ctx: TestContext): void => {
+    let re = new Regex('[a-c]*$');
+    equal(re.replaceAll('abcdabc', 'x'), 'abcdx');
+  });
+
+  test('^[a-c]*$ full match fails', (ctx: TestContext): void => {
+    let re = new Regex('^[a-c]*$');
+    equal(re.replaceAll('abcdabc', 'x'), 'abcdabc');
+  });
+
+  test('^[a-c]* on abc', (ctx: TestContext): void => {
+    let re = new Regex('^[a-c]*');
+    equal(re.replaceAll('abc', 'x'), 'x');
+  });
+
+  test('[a-c]*$ on abc', (ctx: TestContext): void => {
+    let re = new Regex('[a-c]*$');
+    equal(re.replaceAll('abc', 'x'), 'x');
+  });
+
+  test('^[a-c]*$ on abc', (ctx: TestContext): void => {
+    let re = new Regex('^[a-c]*$');
+    equal(re.replaceAll('abc', 'x'), 'x');
+  });
+
+  test('^[a-c]* no match at start', (ctx: TestContext): void => {
+    let re = new Regex('^[a-c]*');
+    equal(re.replaceAll('dabce', 'xdabce'), 'xdabcedabce');
+  });
+
+  test('[a-c]*$ appends at end', (ctx: TestContext): void => {
+    let re = new Regex('[a-c]*$');
+    equal(re.replaceAll('dabce', 'x'), 'dabcex');
+  });
+
+  test('^[a-c]+ requires at least one', (ctx: TestContext): void => {
+    let re = new Regex('^[a-c]+');
+    equal(re.replaceAll('abcdabc', 'x'), 'xdabc');
+  });
+
+  test('[a-c]+$ requires at least one', (ctx: TestContext): void => {
+    let re = new Regex('[a-c]+$');
+    equal(re.replaceAll('abcdabc', 'x'), 'abcdx');
+  });
+
+  test('^[a-c]+$ full match', (ctx: TestContext): void => {
+    let re = new Regex('^[a-c]+$');
+    equal(re.replaceAll('abc', 'x'), 'x');
+  });
+
+  test('^[a-c]+ no match on dabce', (ctx: TestContext): void => {
+    let re = new Regex('^[a-c]+');
+    equal(re.replaceAll('dabce', 'x'), 'dabce');
+  });
+
+  // Other cases.
+  test('abc -> def', (ctx: TestContext): void => {
+    let re = new Regex('abc');
+    equal(re.replaceAll('abcdefg', 'def'), 'defdefg');
+  });
+
+  test('bc -> BC multiple', (ctx: TestContext): void => {
+    let re = new Regex('bc');
+    equal(re.replaceAll('abcbcdcdedef', 'BC'), 'aBCBCdcdedef');
+  });
+
+  test('abc removed', (ctx: TestContext): void => {
+    let re = new Regex('abc');
+    equal(re.replaceAll('abcdabc', ''), 'd');
+  });
+
+  test('x -> xXx multiple', (ctx: TestContext): void => {
+    let re = new Regex('x');
+    equal(re.replaceAll('xxxXxxx', 'xXx'), 'xXxxXxxXxXxXxxXxxXx');
+  });
+
+  test('.+ matches all', (ctx: TestContext): void => {
+    let re = new Regex('.+');
+    equal(re.replaceAll('abc', 'x'), 'x');
+  });
+
+  test('[a-c]* on def', (ctx: TestContext): void => {
+    let re = new Regex('[a-c]*');
+    equal(re.replaceAll('def', 'x'), 'xdxexfx');
+  });
+
+  test('[a-c]+ on mixed', (ctx: TestContext): void => {
+    let re = new Regex('[a-c]+');
+    equal(re.replaceAll('abcbcdcdedef', 'x'), 'xdxdedef');
+  });
+
+  test('[a-c]* on mixed', (ctx: TestContext): void => {
+    let re = new Regex('[a-c]*');
+    equal(re.replaceAll('abcbcdcdedef', 'x'), 'xdxdxexdxexfx');
+  });
+});

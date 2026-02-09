@@ -1,0 +1,127 @@
+// Tests ported from Go's regexp/all_test.go (splitTests)
+// https://cs.opensource.google/go/go/+/refs/tags/go1.24.4:src/regexp/all_test.go
+
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {Regex} from 'zena:regex';
+
+export let tests = suite('Go regexp/all_test.go Split', (): void => {
+  test('split on colon', (ctx: TestContext): void => {
+    let re = new Regex(':');
+    let parts = re.split('foo:and:bar');
+    equal(parts.length, 3);
+    equal(parts[0], 'foo');
+    equal(parts[1], 'and');
+    equal(parts[2], 'bar');
+  });
+
+  test('split on foo at start', (ctx: TestContext): void => {
+    let re = new Regex('foo');
+    let parts = re.split('foo:and:bar');
+    equal(parts.length, 2);
+    equal(parts[0], '');
+    equal(parts[1], ':and:bar');
+  });
+
+  test('split on bar at end', (ctx: TestContext): void => {
+    let re = new Regex('bar');
+    let parts = re.split('foo:and:bar');
+    equal(parts.length, 2);
+    equal(parts[0], 'foo:and:');
+    equal(parts[1], '');
+  });
+
+  test('split on baz no match', (ctx: TestContext): void => {
+    let re = new Regex('baz');
+    let parts = re.split('foo:and:bar');
+    equal(parts.length, 1);
+    equal(parts[0], 'foo:and:bar');
+  });
+
+  test('split on a', (ctx: TestContext): void => {
+    let re = new Regex('a');
+    let parts = re.split('baabaab');
+    equal(parts.length, 5);
+    equal(parts[0], 'b');
+    equal(parts[1], '');
+    equal(parts[2], 'b');
+    equal(parts[3], '');
+    equal(parts[4], 'b');
+  });
+
+  test('split on a*', (ctx: TestContext): void => {
+    let re = new Regex('a*');
+    let parts = re.split('baabaab');
+    equal(parts.length, 3);
+    equal(parts[0], 'b');
+    equal(parts[1], 'b');
+    equal(parts[2], 'b');
+  });
+
+  test('split on ba*', (ctx: TestContext): void => {
+    let re = new Regex('ba*');
+    let parts = re.split('baabaab');
+    equal(parts.length, 4);
+    equal(parts[0], '');
+    equal(parts[1], '');
+    equal(parts[2], '');
+    equal(parts[3], '');
+  });
+
+  test('split on o{2}', (ctx: TestContext): void => {
+    let re = new Regex('o{2}');
+    let parts = re.split('foobooboar');
+    equal(parts.length, 3);
+    equal(parts[0], 'f');
+    equal(parts[1], 'b');
+    equal(parts[2], 'boar');
+  });
+
+  test('split single comma', (ctx: TestContext): void => {
+    let re = new Regex(',');
+    let parts = re.split(',');
+    equal(parts.length, 2);
+    equal(parts[0], '');
+    equal(parts[1], '');
+  });
+
+  test('split multiple commas', (ctx: TestContext): void => {
+    let re = new Regex(',');
+    let parts = re.split(',,,');
+    equal(parts.length, 4);
+    equal(parts[0], '');
+    equal(parts[1], '');
+    equal(parts[2], '');
+    equal(parts[3], '');
+  });
+
+  test('split empty string on comma', (ctx: TestContext): void => {
+    let re = new Regex(',');
+    let parts = re.split('');
+    equal(parts.length, 1);
+    equal(parts[0], '');
+  });
+
+  test('split on empty pattern', (ctx: TestContext): void => {
+    let re = new Regex('');
+    let parts = re.split('foobar');
+    equal(parts.length, 6);
+    equal(parts[0], 'f');
+    equal(parts[1], 'o');
+    equal(parts[2], 'o');
+    equal(parts[3], 'b');
+    equal(parts[4], 'a');
+    equal(parts[5], 'r');
+  });
+
+  test('split colons with empty parts', (ctx: TestContext): void => {
+    let re = new Regex(':');
+    let parts = re.split(':x:y:z:');
+    equal(parts.length, 5);
+    equal(parts[0], '');
+    equal(parts[1], 'x');
+    equal(parts[2], 'y');
+    equal(parts[3], 'z');
+    equal(parts[4], '');
+  });
+});

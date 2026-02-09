@@ -1,0 +1,1047 @@
+// Ported from Go's regexp/find_test.go
+// Copyright 2010 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+//
+// Source: https://github.com/golang/go/blob/master/src/regexp/find_test.go
+//
+// These tests verify the Find* family of methods on the Regex class.
+// The test data is a table of (pattern, text, expected_matches).
+//
+// Note: Go's tests use submatch indices which we don't support yet.
+// For now, we only test the first match position (indices 0 and 1).
+
+import {suite, test, testSkip, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {Regex, Match} from 'zena:regex';
+
+// Test case structure: pattern, text, expected first match [start, end] or null for no match
+// Ported from Go's findTests slice
+
+export let tests = suite('Go regexp/find_test.go', (): void => {
+
+  // ============================================================================
+  // Basic literals and empty patterns
+  // ============================================================================
+
+  test('empty pattern matches empty string at position 0', (ctx: TestContext): void => {
+    let re = new Regex('');
+    let m = re.exec('');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, '');
+    }
+  });
+
+  test('^abcdefg matches at start', (ctx: TestContext): void => {
+    let re = new Regex('^abcdefg');
+    let m = re.exec('abcdefg');
+    // Note: ^ anchor not fully implemented yet, this tests pattern without anchor behavior
+    isTrue(m != null);
+  });
+
+  test('a+ matches baaab at 1-4', (ctx: TestContext): void => {
+    let re = new Regex('a+');
+    let m = re.exec('baaab');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 1);
+      equal(m.value, 'aaa');
+    }
+  });
+
+  test('abcd.. matches abcdef at 0-6', (ctx: TestContext): void => {
+    let re = new Regex('abcd..');
+    let m = re.exec('abcdef');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'abcdef');
+    }
+  });
+
+  test('a matches a', (ctx: TestContext): void => {
+    let re = new Regex('a');
+    let m = re.exec('a');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'a');
+    }
+  });
+
+  test('x does not match y', (ctx: TestContext): void => {
+    let re = new Regex('x');
+    let m = re.exec('y');
+    isTrue(m == null);
+  });
+
+  test('b matches abc at position 1', (ctx: TestContext): void => {
+    let re = new Regex('b');
+    let m = re.exec('abc');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 1);
+      equal(m.value, 'b');
+    }
+  });
+
+  // ============================================================================
+  // Dot (any character)
+  // ============================================================================
+
+  test('. matches a', (ctx: TestContext): void => {
+    let re = new Regex('.');
+    let m = re.exec('a');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'a');
+    }
+  });
+
+  test('.* matches abcdef', (ctx: TestContext): void => {
+    let re = new Regex('.*');
+    let m = re.exec('abcdef');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'abcdef');
+    }
+  });
+
+  // ============================================================================
+  // Anchors (^ and $)
+  // ============================================================================
+
+  test('^ matches at position 0', (ctx: TestContext): void => {
+    let re = new Regex('^');
+    let m = re.exec('abcde');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, '');
+    }
+  });
+
+  test('$ matches at end', (ctx: TestContext): void => {
+    let re = new Regex('$');
+    let m = re.exec('abcde');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 5);
+      equal(m.value, '');
+    }
+  });
+
+  test('^abc matches abc at start', (ctx: TestContext): void => {
+    let re = new Regex('^abc');
+    let m = re.exec('abcdef');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'abc');
+    }
+  });
+
+  test('^abc does not match abc in middle', (ctx: TestContext): void => {
+    let re = new Regex('^abc');
+    let m = re.exec('xyzabc');
+    isTrue(m == null);
+  });
+
+  test('abc$ matches abc at end', (ctx: TestContext): void => {
+    let re = new Regex('abc$');
+    let m = re.exec('xyzabc');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 3);
+      equal(m.value, 'abc');
+    }
+  });
+
+  test('abc$ does not match abc in middle', (ctx: TestContext): void => {
+    let re = new Regex('abc$');
+    let m = re.exec('abcxyz');
+    isTrue(m == null);
+  });
+
+  test('^abc$ matches exact string', (ctx: TestContext): void => {
+    let re = new Regex('^abc$');
+    let m = re.exec('abc');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'abc');
+    }
+  });
+
+  test('^abc$ does not match with extra chars', (ctx: TestContext): void => {
+    let re = new Regex('^abc$');
+    isFalse(re.test('abcd'));
+    isFalse(re.test('xabc'));
+    isFalse(re.test('xabcy'));
+  });
+
+  test('/$ matches trailing slash', (ctx: TestContext): void => {
+    // Go: {`/$`, "/abc/", build(1, 4, 5)}
+    let re = new Regex('/$');
+    let m = re.exec('/abc/');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 4);
+      equal(m.value, '/');
+    }
+  });
+
+  test('/$ does not match without trailing slash', (ctx: TestContext): void => {
+    // Go: {`/$`, "/abc", nil}
+    let re = new Regex('/$');
+    let m = re.exec('/abc');
+    isTrue(m == null);
+  });
+
+  // ============================================================================
+  // Character classes
+  // ============================================================================
+
+  test('[a-z]+ matches abcd', (ctx: TestContext): void => {
+    let re = new Regex('[a-z]+');
+    let m = re.exec('abcd');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'abcd');
+    }
+  });
+
+  test('[^a-z]+ matches digits in ab1234cd', (ctx: TestContext): void => {
+    let re = new Regex('[^a-z]+');
+    let m = re.exec('ab1234cd');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 2);
+      equal(m.value, '1234');
+    }
+  });
+
+  test('[^\\n]+ matches abcd before newline', (ctx: TestContext): void => {
+    let re = new Regex('[^\\n]+');
+    let m = re.exec('abcd\n');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'abcd');
+    }
+  });
+
+  // ============================================================================
+  // Quantifiers
+  // ============================================================================
+
+  test('a* matches empty at start of baaab', (ctx: TestContext): void => {
+    let re = new Regex('a*');
+    let m = re.exec('baaab');
+    isTrue(m != null);
+    if (m != null) {
+      // a* can match empty string at position 0
+      equal(m.index, 0);
+    }
+  });
+
+  test('ab* matches a, ab, abb, abbb', (ctx: TestContext): void => {
+    let re = new Regex('ab*');
+    isTrue(re.test('a'));
+    isTrue(re.test('ab'));
+    isTrue(re.test('abb'));
+    isTrue(re.test('abbb'));
+  });
+
+  test('ab+ requires at least one b', (ctx: TestContext): void => {
+    let re = new Regex('ab+');
+    isFalse(re.test('a'));
+    isTrue(re.test('ab'));
+    isTrue(re.test('abb'));
+  });
+
+  test('ab? matches a or ab', (ctx: TestContext): void => {
+    let re = new Regex('ab?');
+    let m1 = re.exec('a');
+    isTrue(m1 != null);
+    if (m1 != null) {
+      equal(m1.value, 'a');
+    }
+    let m2 = re.exec('ab');
+    isTrue(m2 != null);
+    if (m2 != null) {
+      equal(m2.value, 'ab');
+    }
+  });
+
+  // ============================================================================
+  // Alternation
+  // ============================================================================
+
+  test('cat|dog matches cat', (ctx: TestContext): void => {
+    let re = new Regex('cat|dog');
+    let m = re.exec('cat');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'cat');
+    }
+  });
+
+  test('cat|dog matches dog', (ctx: TestContext): void => {
+    let re = new Regex('cat|dog');
+    let m = re.exec('dog');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'dog');
+    }
+  });
+
+  // ============================================================================
+  // Groups
+  // ============================================================================
+
+  test('(a) matches a', (ctx: TestContext): void => {
+    let re = new Regex('(a)');
+    let m = re.exec('a');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'a');
+    }
+  });
+
+  test('(.)(.) matches two characters', (ctx: TestContext): void => {
+    let re = new Regex('(.)(.)');
+    let m = re.exec('ab');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'ab');
+    }
+  });
+
+  test('(.*) matches entire string', (ctx: TestContext): void => {
+    let re = new Regex('(.*)');
+    let m = re.exec('abcd');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'abcd');
+    }
+  });
+
+  test('(..)(..) matches abcd', (ctx: TestContext): void => {
+    let re = new Regex('(..)(..)');
+    let m = re.exec('abcd');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'abcd');
+    }
+  });
+
+  // ============================================================================
+  // Escape sequences
+  // ============================================================================
+
+  test('\\n matches newline', (ctx: TestContext): void => {
+    let re = new Regex('\\n');
+    let m = re.exec('a\nb');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 1);
+      equal(m.value, '\n');
+    }
+  });
+
+  test('\\t matches tab', (ctx: TestContext): void => {
+    let re = new Regex('\\t');
+    let m = re.exec('a\tb');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 1);
+      equal(m.value, '\t');
+    }
+  });
+
+  // ============================================================================
+  // Escaped metacharacters
+  // ============================================================================
+
+  test('[.] matches literal dot', (ctx: TestContext): void => {
+    let re = new Regex('[.]');
+    let m = re.exec('.');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, '.');
+    }
+    // Should not match other characters
+    let m2 = re.exec('a');
+    isTrue(m2 == null);
+  });
+
+  test('\\. matches literal dot', (ctx: TestContext): void => {
+    let re = new Regex('\\.');
+    let m = re.exec('a.b');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 1);
+      equal(m.value, '.');
+    }
+  });
+
+  // ============================================================================
+  // Fixed bugs from Go tests
+  // ============================================================================
+
+  test('data matches daXY data at position 5', (ctx: TestContext): void => {
+    let re = new Regex('data');
+    let m = re.exec('daXY data');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 5);
+      equal(m.value, 'data');
+    }
+  });
+
+  test('zx+ matches zzx at position 1', (ctx: TestContext): void => {
+    let re = new Regex('zx+');
+    let m = re.exec('zzx');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 1);
+      equal(m.value, 'zx');
+    }
+  });
+
+  // ============================================================================
+  // Multiple matches (matchAll)
+  // ============================================================================
+
+  test('. finds 3 matches in abc', (ctx: TestContext): void => {
+    let re = new Regex('.');
+    let matches = re.matchAll('abc');
+    equal(matches.length, 3);
+    equal(matches[0].index, 0);
+    equal(matches[1].index, 1);
+    equal(matches[2].index, 2);
+  });
+
+  test('ab* finds 3 matches in abbaab', (ctx: TestContext): void => {
+    let re = new Regex('ab*');
+    let matches = re.matchAll('abbaab');
+    equal(matches.length, 3);
+    equal(matches[0].value, 'abb');
+    equal(matches[0].index, 0);
+    equal(matches[1].value, 'a');
+    equal(matches[1].index, 3);
+    equal(matches[2].value, 'ab');
+    equal(matches[2].index, 4);
+  });
+
+  // ============================================================================
+  // Character class with special chars: [a\-\]z]+ 
+  // Go test: {`[a\-\]z]+`, "az]-bcz", build(2, 0, 4, 6, 7)}
+  // ============================================================================
+
+  test('[a\\-\\]z]+ matches az]- and z', (ctx: TestContext): void => {
+    let re = new Regex('[a\\-\\]z]+');
+    let matches = re.matchAll('az]-bcz');
+    equal(matches.length, 2);
+    equal(matches[0].value, 'az]-');
+    equal(matches[0].index, 0);
+    equal(matches[1].value, 'z');
+    equal(matches[1].index, 6);
+  });
+
+  // ============================================================================
+  // Nested groups and complex patterns from Go tests
+  // ============================================================================
+
+  test('() empty group matches empty string', (ctx: TestContext): void => {
+    let re = new Regex('()');
+    let m = re.exec('');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, '');
+    }
+  });
+
+  test('(([^xyz]*)(d)) matches abcd', (ctx: TestContext): void => {
+    // Go: {`(([^xyz]*)(d))`, "abcd", build(1, 0, 4, 0, 4, 0, 3, 3, 4)}
+    let re = new Regex('(([^xyz]*)(d))');
+    let m = re.exec('abcd');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'abcd');
+    }
+  });
+
+  test('((a|b|c)*(d)) matches abcd', (ctx: TestContext): void => {
+    // Go: {`((a|b|c)*(d))`, "abcd", build(1, 0, 4, 0, 4, 2, 3, 3, 4)}
+    let re = new Regex('((a|b|c)*(d))');
+    let m = re.exec('abcd');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'abcd');
+    }
+  });
+
+  // ============================================================================
+  // More escape sequences from Go tests
+  // ============================================================================
+
+  // TODO: Re-enable once StringBuilder is available to construct test strings
+  // Zena doesn't support \a, \f, \v or \uXXXX escapes in string literals
+  testSkip('\\a\\f\\n\\r\\t\\v matches control characters', (ctx: TestContext): void => {
+    // Go: {`\a\f\n\r\t\v`, "\a\f\n\r\t\v", build(1, 0, 6)}
+    // Note: Zena doesn't support \a, \f, \v as string escapes, so use unicode
+    let re = new Regex('\\a\\f\\n\\r\\t\\v');
+    let m = re.exec('\u0007\u000c\n\r\t\u000b');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value.length, 6);
+    }
+  });
+
+  testSkip('[\\a\\f\\n\\r\\t\\v]+ matches control characters', (ctx: TestContext): void => {
+    // Go: {`[\a\f\n\r\t\v]+`, "\a\f\n\r\t\v", build(1, 0, 6)}
+    // Note: Zena doesn't support \a, \f, \v as string escapes, so use unicode
+    let re = new Regex('[\\a\\f\\n\\r\\t\\v]+');
+    let m = re.exec('\u0007\u000c\n\r\t\u000b');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value.length, 6);
+    }
+  });
+
+  // ============================================================================
+  // Greedy vs non-greedy from Go tests
+  // ============================================================================
+
+  test('(.*).*  matches ab greedily', (ctx: TestContext): void => {
+    // Go: {`(.*).*`, "ab", build(1, 0, 2, 0, 2)}
+    let re = new Regex('(.*).*');
+    let m = re.exec('ab');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'ab');
+    }
+  });
+
+  // ============================================================================
+  // Non-capturing groups
+  // ============================================================================
+
+  test('(?:a) non-capturing group matches a', (ctx: TestContext): void => {
+    let re = new Regex('(?:a)');
+    let m = re.exec('a');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'a');
+    }
+  });
+
+  test('(?:A(?:A|a)) matches Aa', (ctx: TestContext): void => {
+    // Go: {`(?:A(?:A|a))`, "Aa", build(1, 0, 2)}
+    let re = new Regex('(?:A(?:A|a))');
+    let m = re.exec('Aa');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'Aa');
+    }
+  });
+
+  test('(?:A|(?:A|a)) matches a', (ctx: TestContext): void => {
+    // Go: {`(?:A|(?:A|a))`, "a", build(1, 0, 1)}
+    let re = new Regex('(?:A|(?:A|a))');
+    let m = re.exec('a');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'a');
+    }
+  });
+
+  // ============================================================================
+  // Repetition with zero matches
+  // ============================================================================
+
+  test('(a){0} matches empty string', (ctx: TestContext): void => {
+    // Go: {`(a){0}`, "", build(1, 0, 0, -1, -1)}
+    let re = new Regex('(a){0}');
+    let m = re.exec('');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, '');
+    }
+  });
+
+  // ============================================================================
+  // RE2 tests from Go
+  // ============================================================================
+
+  test('[^\\S\\s] matches nothing (empty charset)', (ctx: TestContext): void => {
+    // Go: {`[^\S\s]`, "abcd", nil}
+    let re = new Regex('[^\\S\\s]');
+    let m = re.exec('abcd');
+    isTrue(m == null);
+  });
+
+  test('a{0,1} is same as a?', (ctx: TestContext): void => {
+    let re = new Regex('a{0,1}');
+    isTrue(re.test(''));
+    isTrue(re.test('a'));
+    isTrue(re.test('b'));  // matches empty at start
+  });
+
+  test('a{1,2} matches 1 or 2 a\'s', (ctx: TestContext): void => {
+    let re = new Regex('a{1,2}');
+    isFalse(re.exec('b') != null && (re.exec('b') as Match).value.length > 0);
+    let m1 = re.exec('a');
+    isTrue(m1 != null);
+    if (m1 != null) {
+      equal(m1.value, 'a');
+    }
+    let m2 = re.exec('aa');
+    isTrue(m2 != null);
+    if (m2 != null) {
+      equal(m2.value, 'aa');
+    }
+    let m3 = re.exec('aaa');
+    isTrue(m3 != null);
+    if (m3 != null) {
+      equal(m3.value, 'aa');  // greedy, but max 2
+    }
+  });
+
+  test('a{2,} matches 2 or more a\'s', (ctx: TestContext): void => {
+    let re = new Regex('a{2,}');
+    let m1 = re.exec('a');
+    isTrue(m1 == null);
+    let m2 = re.exec('aa');
+    isTrue(m2 != null);
+    if (m2 != null) {
+      equal(m2.value, 'aa');
+    }
+    let m3 = re.exec('aaaa');
+    isTrue(m3 != null);
+    if (m3 != null) {
+      equal(m3.value, 'aaaa');
+    }
+  });
+
+  test('a{3} matches exactly 3 a\'s', (ctx: TestContext): void => {
+    let re = new Regex('a{3}');
+    let m1 = re.exec('aa');
+    isTrue(m1 == null);
+    let m2 = re.exec('aaa');
+    isTrue(m2 != null);
+    if (m2 != null) {
+      equal(m2.value, 'aaa');
+    }
+    let m3 = re.exec('aaaa');
+    isTrue(m3 != null);
+    if (m3 != null) {
+      equal(m3.value, 'aaa');  // matches first 3
+    }
+  });
+
+  // ============================================================================
+  // Alternation edge cases
+  // ============================================================================
+
+  test('0A|0[aA] matches 0a', (ctx: TestContext): void => {
+    // Go: {`0A|0[aA]`, "0a", build(1, 0, 2)}
+    let re = new Regex('0A|0[aA]');
+    let m = re.exec('0a');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, '0a');
+    }
+  });
+
+  test('0[aA]|0A matches 0a', (ctx: TestContext): void => {
+    // Go: {`0[aA]|0A`, "0a", build(1, 0, 2)}
+    let re = new Regex('0[aA]|0A');
+    let m = re.exec('0a');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, '0a');
+    }
+  });
+
+  // ============================================================================
+  // Complex alternation with empty alternatives
+  // ============================================================================
+
+  test('a*(|(b))c* matches aacc', (ctx: TestContext): void => {
+    // Go: {`a*(|(b))c*`, "aacc", build(1, 0, 4, 2, 2, -1, -1)}
+    let re = new Regex('a*(|(b))c*');
+    let m = re.exec('aacc');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'aacc');
+    }
+  });
+
+  // ============================================================================
+  // Repeat with captured groups
+  // ============================================================================
+
+  test('a(b*)c matches abbbc', (ctx: TestContext): void => {
+    let re = new Regex('a(b*)c');
+    let m = re.exec('abbbc');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'abbbc');
+    }
+  });
+
+  // ============================================================================
+  // Digit and word character classes
+  // ============================================================================
+
+  test('\\d+ matches digits', (ctx: TestContext): void => {
+    let re = new Regex('\\d+');
+    let m = re.exec('abc123def');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 3);
+      equal(m.value, '123');
+    }
+  });
+
+  test('\\D+ matches non-digits', (ctx: TestContext): void => {
+    let re = new Regex('\\D+');
+    let m = re.exec('123abc456');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 3);
+      equal(m.value, 'abc');
+    }
+  });
+
+  test('\\w+ matches word characters', (ctx: TestContext): void => {
+    let re = new Regex('\\w+');
+    let m = re.exec('hello_world123!');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'hello_world123');
+    }
+  });
+
+  test('\\W+ matches non-word characters', (ctx: TestContext): void => {
+    let re = new Regex('\\W+');
+    let m = re.exec('hello world');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 5);
+      equal(m.value, ' ');
+    }
+  });
+
+  test('\\s+ matches whitespace', (ctx: TestContext): void => {
+    let re = new Regex('\\s+');
+    let m = re.exec('hello   world');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 5);
+      equal(m.value, '   ');
+    }
+  });
+
+  test('\\S+ matches non-whitespace', (ctx: TestContext): void => {
+    let re = new Regex('\\S+');
+    let m = re.exec('  hello  ');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 2);
+      equal(m.value, 'hello');
+    }
+  });
+
+  // ============================================================================
+  // Word boundaries (\b and \B)
+  // ============================================================================
+
+  test('\\bword\\b matches whole word', (ctx: TestContext): void => {
+    let re = new Regex('\\bword\\b');
+    let m = re.exec('a word here');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 2);
+      equal(m.value, 'word');
+    }
+  });
+
+  test('\\bword\\b does not match partial word', (ctx: TestContext): void => {
+    let re = new Regex('\\bword\\b');
+    let m = re.exec('keywords');
+    isTrue(m == null);
+  });
+
+  test('\\bcat matches cat at word start', (ctx: TestContext): void => {
+    let re = new Regex('\\bcat');
+    isTrue(re.test('cat'));
+    isTrue(re.test('cats'));
+    isTrue(re.test('the cat'));
+    isFalse(re.test('scat'));
+  });
+
+  test('cat\\b matches cat at word end', (ctx: TestContext): void => {
+    let re = new Regex('cat\\b');
+    isTrue(re.test('cat'));
+    isTrue(re.test('the cat'));
+    isTrue(re.test('scat'));
+    isFalse(re.test('cats'));
+  });
+
+  test('\\b matches at start of string', (ctx: TestContext): void => {
+    let re = new Regex('\\bfoo');
+    let m = re.exec('foobar');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 0);
+      equal(m.value, 'foo');
+    }
+  });
+
+  test('\\b matches at end of string', (ctx: TestContext): void => {
+    let re = new Regex('bar\\b');
+    let m = re.exec('foobar');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 3);
+      equal(m.value, 'bar');
+    }
+  });
+
+  test('\\B matches inside word', (ctx: TestContext): void => {
+    let re = new Regex('\\Boo\\B');
+    let m = re.exec('foobar');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.index, 1);
+      equal(m.value, 'oo');
+    }
+  });
+
+  test('\\B does not match at word boundary', (ctx: TestContext): void => {
+    let re = new Regex('\\Bfoo');
+    let m = re.exec('foobar');
+    isTrue(m == null);  // foo is at word start, so \B fails
+  });
+
+  test('\\b with numbers', (ctx: TestContext): void => {
+    let re = new Regex('\\b123\\b');
+    isTrue(re.test('abc 123 def'));
+    isFalse(re.test('abc123def'));
+  });
+
+  test('\\b with underscore (word char)', (ctx: TestContext): void => {
+    let re = new Regex('\\bfoo_bar\\b');
+    isTrue(re.test('foo_bar'));
+    isTrue(re.test('x foo_bar y'));
+    isFalse(re.test('afoo_bar'));
+  });
+
+  // ============================================================================
+  // Fixed bugs from Go tests - more cases
+  // ============================================================================
+
+  test('(a)+ matches multiple a groups', (ctx: TestContext): void => {
+    let re = new Regex('(a)+');
+    let m = re.exec('aaa');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'aaa');
+    }
+  });
+
+  test('((a))+ matches nested groups', (ctx: TestContext): void => {
+    let re = new Regex('((a))+');
+    let m = re.exec('aaa');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'aaa');
+    }
+  });
+
+  // ============================================================================
+  // Capturing group tests (ported from Go's submatch tests)
+  // ============================================================================
+
+  test('(a) captures single character', (ctx: TestContext): void => {
+    let re = new Regex('(a)');
+    let m = re.exec('a');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'a');
+      equal(m.groups.length, 1);
+      equal(m.groups[0], 'a');
+    }
+  });
+
+  test('(ab) captures two characters', (ctx: TestContext): void => {
+    let re = new Regex('(ab)');
+    let m = re.exec('ab');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'ab');
+      equal(m.groups.length, 1);
+      equal(m.groups[0], 'ab');
+    }
+  });
+
+  test('(.)(.) captures two separate characters', (ctx: TestContext): void => {
+    let re = new Regex('(.)(.)');
+    let m = re.exec('ab');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'ab');
+      equal(m.groups.length, 2);
+      equal(m.groups[0], 'a');
+      equal(m.groups[1], 'b');
+    }
+  });
+
+  test('(.*) captures everything', (ctx: TestContext): void => {
+    let re = new Regex('(.*)');
+    let m = re.exec('abcd');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'abcd');
+      equal(m.groups.length, 1);
+      equal(m.groups[0], 'abcd');
+    }
+  });
+
+  test('(..)(..) captures two pairs', (ctx: TestContext): void => {
+    let re = new Regex('(..)(..)');
+    let m = re.exec('abcd');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'abcd');
+      equal(m.groups.length, 2);
+      equal(m.groups[0], 'ab');
+      equal(m.groups[1], 'cd');
+    }
+  });
+
+  test('(a)(b)(c) captures three groups', (ctx: TestContext): void => {
+    let re = new Regex('(a)(b)(c)');
+    let m = re.exec('abc');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'abc');
+      equal(m.groups.length, 3);
+      equal(m.groups[0], 'a');
+      equal(m.groups[1], 'b');
+      equal(m.groups[2], 'c');
+    }
+  });
+
+  test('((a)) nested group captures', (ctx: TestContext): void => {
+    let re = new Regex('((a))');
+    let m = re.exec('a');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'a');
+      equal(m.groups.length, 2);
+      equal(m.groups[0], 'a');  // outer group
+      equal(m.groups[1], 'a');  // inner group
+    }
+  });
+
+  test('(a|b) alternation group', (ctx: TestContext): void => {
+    let re = new Regex('(a|b)');
+    let m = re.exec('b');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'b');
+      equal(m.groups.length, 1);
+      equal(m.groups[0], 'b');
+    }
+  });
+
+  test('(a+) greedy capture', (ctx: TestContext): void => {
+    let re = new Regex('(a+)');
+    let m = re.exec('aaa');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'aaa');
+      equal(m.groups.length, 1);
+      equal(m.groups[0], 'aaa');
+    }
+  });
+
+  test('(a*) captures zero or more', (ctx: TestContext): void => {
+    let re = new Regex('(a*)b');
+    let m = re.exec('aaab');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'aaab');
+      equal(m.groups.length, 1);
+      equal(m.groups[0], 'aaa');
+    }
+  });
+
+  test('(a?) optional capture', (ctx: TestContext): void => {
+    let re = new Regex('(a?)b');
+    let m = re.exec('ab');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'ab');
+      equal(m.groups.length, 1);
+      equal(m.groups[0], 'a');
+    }
+  });
+
+  test('([a-z]+) character class capture', (ctx: TestContext): void => {
+    let re = new Regex('([a-z]+)');
+    let m = re.exec('hello');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'hello');
+      equal(m.groups.length, 1);
+      equal(m.groups[0], 'hello');
+    }
+  });
+
+  test('pattern without groups has empty groups array', (ctx: TestContext): void => {
+    let re = new Regex('abc');
+    let m = re.exec('abc');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'abc');
+      equal(m.groups.length, 0);
+    }
+  });
+
+  test('non-capturing group (?:a) does not capture', (ctx: TestContext): void => {
+    let re = new Regex('(?:a)(b)');
+    let m = re.exec('ab');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'ab');
+      equal(m.groups.length, 1);
+      equal(m.groups[0], 'b');  // Only (b) is captured, not (?:a)
+    }
+  });
+
+});

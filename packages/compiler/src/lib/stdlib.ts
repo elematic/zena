@@ -13,6 +13,7 @@ export {
   mapModule,
   mathModule,
   rangeModule,
+  regexModule,
   sequenceModule,
   stringModule,
   templateStringsArrayModule,

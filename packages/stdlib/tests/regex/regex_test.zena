@@ -1,0 +1,496 @@
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {Regex, Match, parsePattern, Ast, Op, Flags} from 'zena:regex';
+
+export let tests = suite('Regex (literal engine)', (): void => {
+  test('test() matches literal substring', (ctx: TestContext): void => {
+    let re = new Regex('ab');
+    isTrue(re.test('zabz'));
+    isFalse(re.test('acb'));
+  });
+
+  test('exec() returns match info', (ctx: TestContext): void => {
+    let re = new Regex('bc');
+    let m = re.exec('zbcdef');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'bc');
+      equal(m.index, 1);
+      equal(m.groups.length, 0);
+    }
+  });
+
+  test('matchAll() returns all matches', (ctx: TestContext): void => {
+    let re = new Regex('aa');
+    let matches = re.matchAll('aaaa');
+    equal(matches.length, 2);
+    equal(matches[0].index, 0);
+    equal(matches[1].index, 2);
+  });
+
+  test('replace() replaces first match', (ctx: TestContext): void => {
+    let re = new Regex('cat');
+    equal(re.replace('cat cat', 'dog'), 'dog cat');
+  });
+
+  test('replace() replaces match not at start', (ctx: TestContext): void => {
+    let re = new Regex('cat');
+    equal(re.replace('the cat sat', 'dog'), 'the dog sat');
+  });
+
+  test('replace() returns input when no match', (ctx: TestContext): void => {
+    let re = new Regex('cat');
+    equal(re.replace('no match here', 'dog'), 'no match here');
+  });
+
+  test('replaceAll() replaces all matches', (ctx: TestContext): void => {
+    let re = new Regex('cat');
+    equal(re.replaceAll('cat cat', 'dog'), 'dog dog');
+  });
+
+  test('replace() with function replacer', (ctx: TestContext): void => {
+    let re = new Regex('cat');
+    equal(re.replace('the cat sat', (m: Match) => m.value + '!'), 'the cat! sat');
+  });
+
+  test('replaceAll() with function replacer', (ctx: TestContext): void => {
+    let re = new Regex('a');
+    equal(re.replaceAll('banana', (m: Match) => m.value + m.value), 'baanaanaa');
+  });
+
+  test('split() splits around literal matches', (ctx: TestContext): void => {
+    let re = new Regex('::');
+    let parts = re.split('a::b::c');
+    equal(parts.length, 3);
+    equal(parts[0], 'a');
+    equal(parts[1], 'b');
+    equal(parts[2], 'c');
+  });
+});
+
+export let nfaTests = suite('Regex (NFA engine)', (): void => {
+  test('dot matches any character', (ctx: TestContext): void => {
+    let re = new Regex('a.c');
+    isTrue(re.test('abc'));
+    isTrue(re.test('aXc'));
+    isFalse(re.test('ac'));
+  });
+
+  test('star matches zero or more', (ctx: TestContext): void => {
+    let re = new Regex('ab*c');
+    isTrue(re.test('ac'));
+    isTrue(re.test('abc'));
+    isTrue(re.test('abbbc'));
+    isFalse(re.test('adc'));
+  });
+
+  test('plus matches one or more', (ctx: TestContext): void => {
+    let re = new Regex('ab+c');
+    isFalse(re.test('ac'));
+    isTrue(re.test('abc'));
+    isTrue(re.test('abbbc'));
+  });
+
+  test('question matches zero or one', (ctx: TestContext): void => {
+    let re = new Regex('ab?c');
+    isTrue(re.test('ac'));
+    isTrue(re.test('abc'));
+    isFalse(re.test('abbc'));
+  });
+
+  test('alternation matches either', (ctx: TestContext): void => {
+    let re = new Regex('cat|dog');
+    isTrue(re.test('I have a cat'));
+    isTrue(re.test('I have a dog'));
+    isFalse(re.test('I have a bird'));
+  });
+
+  test('character class matches set', (ctx: TestContext): void => {
+    let re = new Regex('[abc]');
+    isTrue(re.test('a'));
+    isTrue(re.test('b'));
+    isTrue(re.test('c'));
+    isFalse(re.test('d'));
+  });
+
+  test('character range matches range', (ctx: TestContext): void => {
+    let re = new Regex('[a-z]');
+    isTrue(re.test('m'));
+    isFalse(re.test('5'));
+    isFalse(re.test('M'));
+  });
+
+  test('digit escape matches digits', (ctx: TestContext): void => {
+    let re = new Regex('\\d+');
+    isTrue(re.test('abc123'));
+    isFalse(re.test('abc'));
+  });
+
+  test('groups work', (ctx: TestContext): void => {
+    let re = new Regex('(ab)+');
+    isTrue(re.test('ab'));
+    isTrue(re.test('abab'));
+    isFalse(re.test('a'));
+  });
+
+  test('complex pattern', (ctx: TestContext): void => {
+    let re = new Regex('a(b|c)*d');
+    isTrue(re.test('ad'));
+    isTrue(re.test('abd'));
+    isTrue(re.test('acd'));
+    isTrue(re.test('abcd'));
+    isTrue(re.test('abcbcd'));
+    isFalse(re.test('aed'));
+  });
+
+  test('exec returns match with NFA', (ctx: TestContext): void => {
+    let re = new Regex('a+');
+    let m = re.exec('baaac');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'aaa');
+      equal(m.index, 1);
+    }
+  });
+
+  test('replace with pattern', (ctx: TestContext): void => {
+    let re = new Regex('[0-9]+');
+    equal(re.replace('abc123def', 'NUM'), 'abcNUMdef');
+  });
+
+  test('replaceAll with pattern', (ctx: TestContext): void => {
+    let re = new Regex('[0-9]+');
+    equal(re.replaceAll('a1b22c333', 'X'), 'aXbXcX');
+  });
+
+  test('split with pattern', (ctx: TestContext): void => {
+    let re = new Regex('\\s+');
+    let parts = re.split('a  b   c');
+    equal(parts.length, 3);
+    equal(parts[0], 'a');
+    equal(parts[1], 'b');
+    equal(parts[2], 'c');
+  });
+});
+
+export let parserTests = suite('Regex Pattern Parser', (): void => {
+  test('parses single literal', (ctx: TestContext): void => {
+    let ast = parsePattern('a', Flags.None);
+    equal(ast.op, Op.Literal);
+    equal(ast.runes.length, 1);
+    equal(ast.runes[0], 97); // 'a'
+  });
+
+  test('parses literal string', (ctx: TestContext): void => {
+    let ast = parsePattern('abc', Flags.None);
+    equal(ast.op, Op.Literal);
+    equal(ast.runes.length, 3);
+    equal(ast.runes[0], 97); // 'a'
+    equal(ast.runes[1], 98); // 'b'
+    equal(ast.runes[2], 99); // 'c'
+  });
+
+  test('parses dot (any char except newline)', (ctx: TestContext): void => {
+    let ast = parsePattern('.', Flags.None);
+    equal(ast.op, Op.AnyCharNotNL);
+  });
+
+  test('parses dot with DotNL flag', (ctx: TestContext): void => {
+    let ast = parsePattern('.', Flags.DotNL);
+    equal(ast.op, Op.AnyChar);
+  });
+
+  test('parses caret (begin line)', (ctx: TestContext): void => {
+    let ast = parsePattern('^', Flags.None);
+    equal(ast.op, Op.BeginLine);
+  });
+
+  test('parses caret with OneLine flag', (ctx: TestContext): void => {
+    let ast = parsePattern('^', Flags.OneLine);
+    equal(ast.op, Op.BeginText);
+  });
+
+  test('parses dollar (end line)', (ctx: TestContext): void => {
+    let ast = parsePattern('$', Flags.None);
+    equal(ast.op, Op.EndLine);
+  });
+
+  test('parses star repetition', (ctx: TestContext): void => {
+    let ast = parsePattern('a*', Flags.None);
+    equal(ast.op, Op.Star);
+    equal(ast.sub.length, 1);
+    equal(ast.sub[0].op, Op.Literal);
+  });
+
+  test('parses plus repetition', (ctx: TestContext): void => {
+    let ast = parsePattern('a+', Flags.None);
+    equal(ast.op, Op.Plus);
+    equal(ast.sub.length, 1);
+    equal(ast.sub[0].op, Op.Literal);
+  });
+
+  test('parses quest repetition', (ctx: TestContext): void => {
+    let ast = parsePattern('a?', Flags.None);
+    equal(ast.op, Op.Quest);
+    equal(ast.sub.length, 1);
+    equal(ast.sub[0].op, Op.Literal);
+  });
+
+  test('parses non-greedy star', (ctx: TestContext): void => {
+    let ast = parsePattern('a*?', Flags.None);
+    equal(ast.op, Op.Star);
+    equal((ast.flags as i32) & (Flags.NonGreedy as i32), Flags.NonGreedy as i32);
+  });
+
+  test('parses counted repetition {n}', (ctx: TestContext): void => {
+    let ast = parsePattern('a{3}', Flags.None);
+    equal(ast.op, Op.Repeat);
+    equal(ast.min, 3);
+    equal(ast.max, 3);
+  });
+
+  test('parses counted repetition {n,}', (ctx: TestContext): void => {
+    let ast = parsePattern('a{2,}', Flags.None);
+    equal(ast.op, Op.Repeat);
+    equal(ast.min, 2);
+    equal(ast.max, 0 - 1);
+  });
+
+  test('parses counted repetition {n,m}', (ctx: TestContext): void => {
+    let ast = parsePattern('a{2,5}', Flags.None);
+    equal(ast.op, Op.Repeat);
+    equal(ast.min, 2);
+    equal(ast.max, 5);
+  });
+
+  test('parses alternation', (ctx: TestContext): void => {
+    let ast = parsePattern('a|b', Flags.None);
+    equal(ast.op, Op.Alternate);
+    equal(ast.sub.length, 2);
+  });
+
+  test('parses concatenation', (ctx: TestContext): void => {
+    let ast = parsePattern('a.b', Flags.None);
+    equal(ast.op, Op.Concat);
+    equal(ast.sub.length, 3);
+    equal(ast.sub[0].op, Op.Literal);
+    equal(ast.sub[1].op, Op.AnyCharNotNL);
+    equal(ast.sub[2].op, Op.Literal);
+  });
+
+  test('parses character class [abc]', (ctx: TestContext): void => {
+    let ast = parsePattern('[abc]', Flags.None);
+    equal(ast.op, Op.CharClass);
+    // Should have 3 ranges: [97,97], [98,98], [99,99]
+    equal(ast.runes.length, 6);
+  });
+
+  test('parses character class range [a-z]', (ctx: TestContext): void => {
+    let ast = parsePattern('[a-z]', Flags.None);
+    equal(ast.op, Op.CharClass);
+    equal(ast.runes.length, 2);
+    equal(ast.runes[0], 97);  // 'a'
+    equal(ast.runes[1], 122); // 'z'
+  });
+
+  test('parses negated character class [^a]', (ctx: TestContext): void => {
+    let ast = parsePattern('[^a]', Flags.None);
+    equal(ast.op, Op.CharClass);
+    // Should be negated: [0, 96], [98, 1114111]
+    equal(ast.runes.length, 4);
+    equal(ast.runes[0], 0);
+    equal(ast.runes[1], 96);
+    equal(ast.runes[2], 98);
+  });
+
+  test('parses \\d digit escape', (ctx: TestContext): void => {
+    let ast = parsePattern('\\d', Flags.None);
+    equal(ast.op, Op.CharClass);
+    equal(ast.runes.length, 2);
+    equal(ast.runes[0], 48);  // '0'
+    equal(ast.runes[1], 57);  // '9'
+  });
+
+  test('parses \\w word escape', (ctx: TestContext): void => {
+    let ast = parsePattern('\\w', Flags.None);
+    equal(ast.op, Op.CharClass);
+    // [0-9] [A-Z] [_] [a-z] after sorting
+    isTrue(ast.runes.length >= 6);
+  });
+
+  test('parses \\s whitespace escape', (ctx: TestContext): void => {
+    let ast = parsePattern('\\s', Flags.None);
+    equal(ast.op, Op.CharClass);
+  });
+
+  test('parses \\b word boundary', (ctx: TestContext): void => {
+    let ast = parsePattern('\\b', Flags.None);
+    equal(ast.op, Op.WordBoundary);
+  });
+
+  test('parses \\B non-word boundary', (ctx: TestContext): void => {
+    let ast = parsePattern('\\B', Flags.None);
+    equal(ast.op, Op.NoWordBoundary);
+  });
+
+  test('parses escaped metacharacters', (ctx: TestContext): void => {
+    let ast = parsePattern('\\*', Flags.None);
+    equal(ast.op, Op.Literal);
+    equal(ast.runes[0], 42); // '*'
+  });
+
+  test('parses \\n newline', (ctx: TestContext): void => {
+    let ast = parsePattern('\\n', Flags.None);
+    equal(ast.op, Op.Literal);
+    equal(ast.runes[0], 10);
+  });
+
+  test('parses \\t tab', (ctx: TestContext): void => {
+    let ast = parsePattern('\\t', Flags.None);
+    equal(ast.op, Op.Literal);
+    equal(ast.runes[0], 9);
+  });
+
+  test('parses groups (a)', (ctx: TestContext): void => {
+    let ast = parsePattern('(a)', Flags.None);
+    equal(ast.op, Op.Capture);
+    equal(ast.sub.length, 1);
+    equal(ast.sub[0].op, Op.Literal);
+  });
+
+  test('parses nested groups ((a))', (ctx: TestContext): void => {
+    let ast = parsePattern('((a))', Flags.None);
+    equal(ast.op, Op.Capture);
+    equal(ast.sub[0].op, Op.Capture);
+    equal(ast.sub[0].sub[0].op, Op.Literal);
+  });
+
+  test('parses complex pattern a(b|c)*d', (ctx: TestContext): void => {
+    let ast = parsePattern('a(b|c)*d', Flags.None);
+    equal(ast.op, Op.Concat);
+    equal(ast.sub.length, 3);
+    equal(ast.sub[0].op, Op.Literal);
+    equal(ast.sub[1].op, Op.Star);
+    equal(ast.sub[1].sub[0].op, Op.Capture);
+    equal(ast.sub[2].op, Op.Literal);
+  });
+
+  test('parses empty pattern', (ctx: TestContext): void => {
+    let ast = parsePattern('', Flags.None);
+    equal(ast.op, Op.EmptyMatch);
+  });
+
+  test('parses ^a$', (ctx: TestContext): void => {
+    let ast = parsePattern('^a$', Flags.None);
+    equal(ast.op, Op.Concat);
+    equal(ast.sub.length, 3);
+    equal(ast.sub[0].op, Op.BeginLine);
+    equal(ast.sub[1].op, Op.Literal);
+    equal(ast.sub[2].op, Op.EndLine);
+  });
+
+  test('parses [a-zA-Z0-9_]', (ctx: TestContext): void => {
+    let ast = parsePattern('[a-zA-Z0-9_]', Flags.None);
+    equal(ast.op, Op.CharClass);
+    // Multiple ranges merged/sorted
+    isTrue(ast.runes.length >= 6);
+  });
+
+  test('parses email-like pattern', (ctx: TestContext): void => {
+    let ast = parsePattern('[a-z]+@[a-z]+', Flags.None);
+    equal(ast.op, Op.Concat);
+    equal(ast.sub.length, 3);
+    equal(ast.sub[0].op, Op.Plus);
+    equal(ast.sub[1].op, Op.Literal); // @
+    equal(ast.sub[2].op, Op.Plus);
+  });
+});
+
+// Tests for inline flags (?i), (?m), (?s)
+export let flagTests = suite('Regex flags', (): void => {
+  test('(?i) enables case-insensitive matching', (ctx: TestContext): void => {
+    let re = new Regex('(?i)hello');
+    isTrue(re.test('hello'));
+    isTrue(re.test('HELLO'));
+    isTrue(re.test('HeLLo'));
+    isFalse(re.test('helo'));
+  });
+
+  test('(?i) works with character classes', (ctx: TestContext): void => {
+    let re = new Regex('(?i)[a-z]+');
+    isTrue(re.test('abc'));
+    isTrue(re.test('ABC'));
+    isTrue(re.test('AbC'));
+  });
+
+  test('(?-i) disables case-insensitive matching', (ctx: TestContext): void => {
+    let re = new Regex('(?i)AB(?-i)CD');
+    isTrue(re.test('ABCD'));
+    isTrue(re.test('abCD'));
+    isFalse(re.test('abcd')); // 'abcd' won't match because CD must be uppercase
+    isFalse(re.test('ABcd'));
+  });
+
+  test('(?i:...) scoped case-insensitivity', (ctx: TestContext): void => {
+    let re = new Regex('A(?i:bc)D');
+    isTrue(re.test('AbcD'));
+    isTrue(re.test('ABCD'));
+    isTrue(re.test('ABcD'));
+    isFalse(re.test('abcD')); // A must be uppercase
+    isFalse(re.test('AbcX')); // D must be uppercase
+  });
+
+  test('(?s) makes dot match newline', (ctx: TestContext): void => {
+    let re = new Regex('(?s)a.b');
+    isTrue(re.test("a\nb"));
+    isTrue(re.test('aXb'));
+  });
+
+  test('dot does not match newline by default', (ctx: TestContext): void => {
+    let re = new Regex('a.b');
+    isFalse(re.test("a\nb"));
+    isTrue(re.test('aXb'));
+  });
+
+  test('(?m) makes ^ match after newline', (ctx: TestContext): void => {
+    let re = new Regex('(?m)^hello');
+    isTrue(re.test('hello'));
+    isTrue(re.test("world\nhello"));
+  });
+
+  test('(?m) makes $ match before newline', (ctx: TestContext): void => {
+    let re = new Regex('(?m)world$');
+    isTrue(re.test('world'));
+    isTrue(re.test("world\nhello"));
+  });
+
+  test('^ only matches start without (?m)', (ctx: TestContext): void => {
+    let re = new Regex('^hello');
+    isTrue(re.test('hello'));
+    isFalse(re.test("world\nhello"));
+  });
+
+  test('$ only matches end without (?m)', (ctx: TestContext): void => {
+    let re = new Regex('world$');
+    isTrue(re.test('world'));
+    isFalse(re.test("world\nhello"));
+  });
+
+  test('non-capturing group (?:...) works', (ctx: TestContext): void => {
+    let re = new Regex('(?:ab)+');
+    isTrue(re.test('ab'));
+    isTrue(re.test('abab'));
+    let m = re.exec('xababx');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, 'abab');
+      equal(m.groups.length, 0); // No captures
+    }
+  });
+
+  test('combined flags (?im)', (ctx: TestContext): void => {
+    let re = new Regex('(?im)^hello$');
+    isTrue(re.test('HELLO'));
+    isTrue(re.test("world\nHELLO\nfoo"));
+  });
+});

@@ -134,10 +134,11 @@ some of my thoughts and motivations at the moment:
 - [x] Unions of tuples (`(true, T) | (false, never)`)
 - [x] Let-pattern conditions (`if (let pattern = expr)`, `while (let pattern = expr)`)
 - [x] For/in loops
+- [x] Regexes
+- [x] Iterators
 - [ ] Do/while loops
 - [ ] Mutable Maps and map literals (`#{...}`)
 - [ ] More primitive types
-- [ ] Iterators
 - [ ] More operators: exponentiation
 - [ ] Standard library
 - [ ] Numeric unit types
@@ -148,7 +149,6 @@ some of my thoughts and motivations at the moment:
 - [ ] Intersection types
 - [ ] Mixin constructors
 - [ ] Async functions
-- [ ] Regexes
 - [ ] Decorators
 - [ ] JSX-like builder syntax
 - [ ] Workers

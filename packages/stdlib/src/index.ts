@@ -57,6 +57,10 @@ export const assertModule = fs.readFileSync(
   path.join(stdlibDir, 'assert.zena'),
   'utf-8',
 );
+export const regexModule = fs.readFileSync(
+  path.join(stdlibDir, 'regex.zena'),
+  'utf-8',
+);
 
 export const testModule = fs.readFileSync(
   path.join(stdlibDir, 'test.zena'),

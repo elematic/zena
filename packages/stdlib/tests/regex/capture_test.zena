@@ -1,0 +1,170 @@
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {Regex, regex} from 'zena:regex';
+
+export let tests = suite('Regex capture features', (): void => {
+  suite('Tagged Template Literal', (): void => {
+    test('regex tag creates Regex object', (ctx: TestContext): void => {
+      let re = regex`\d+`;
+      let m = re.exec('abc123def');
+      isTrue(m != null);
+      if (m != null) {
+        equal(m.value, '123');
+      }
+    });
+
+    test('regex tag with character classes', (ctx: TestContext): void => {
+      let re = regex`\w+@\w+\.\w+`;
+      isTrue(re.test('test@example.com'));
+      isFalse(re.test('invalid'));
+    });
+
+    test('regex tag with anchors', (ctx: TestContext): void => {
+      let re = regex`^\d{3}-\d{4}$`;
+      isTrue(re.test('123-4567'));
+      isFalse(re.test('abc123-4567'));
+    });
+  });
+
+  suite('Named Capture Groups', (): void => {
+    test('(?P<name>...) basic named capture', (ctx: TestContext): void => {
+      let re = new Regex('(?P<word>\\w+)');
+      let m = re.exec('hello world');
+      isTrue(m != null);
+      if (m != null) {
+        equal(m.value, 'hello');
+        equal(m.groups.length, 1);
+        equal(m.groups[0], 'hello');
+        // Access by name
+        let word = m.group('word');
+        isTrue(word != null);
+        equal(word as string, 'hello');
+      }
+    });
+
+    test('named group returns null for non-existent name', (ctx: TestContext): void => {
+      let re = new Regex('(?P<word>\\w+)');
+      let m = re.exec('hello');
+      isTrue(m != null);
+      if (m != null) {
+        let missing = m.group('notfound');
+        isTrue(missing == null);
+      }
+    });
+
+    test('multiple named groups', (ctx: TestContext): void => {
+      let re = new Regex('(?P<first>\\w+) (?P<second>\\w+)');
+      let m = re.exec('hello world');
+      isTrue(m != null);
+      if (m != null) {
+        equal(m.value, 'hello world');
+        equal(m.groups.length, 2);
+        equal(m.group('first') as string, 'hello');
+        equal(m.group('second') as string, 'world');
+      }
+    });
+
+    test('mixed named and unnamed groups', (ctx: TestContext): void => {
+      let re = new Regex('(?P<name>\\w+):(\\d+)');
+      let m = re.exec('port:8080');
+      isTrue(m != null);
+      if (m != null) {
+        equal(m.value, 'port:8080');
+        equal(m.groups.length, 2);
+        equal(m.groups[0], 'port');   // First group (named)
+        equal(m.groups[1], '8080');   // Second group (unnamed)
+        equal(m.group('name') as string, 'port');
+      }
+    });
+
+    test('nested named groups', (ctx: TestContext): void => {
+      let re = new Regex('(?P<outer>(?P<inner>\\d+)\\w+)');
+      let m = re.exec('123abc');
+      isTrue(m != null);
+      if (m != null) {
+        equal(m.value, '123abc');
+        equal(m.groups.length, 2);
+        equal(m.group('outer') as string, '123abc');
+        equal(m.group('inner') as string, '123');
+      }
+    });
+  });
+
+  suite('matchAll with captures', (): void => {
+    test('matchAll extracts capture groups', (ctx: TestContext): void => {
+      // Go test: `{`a(b*)`, "abbaab", build(3, 0, 3, 1, 3, 3, 4, 4, 4, 4, 6, 5, 6)}`
+      // This means 3 matches with submatches
+      let re = new Regex('a(b*)');
+      let matches = re.matchAll('abbaab');
+      equal(matches.length, 3);
+      // First match: "abb" at 0, with group "bb"
+      equal(matches[0].value, 'abb');
+      equal(matches[0].index, 0);
+      equal(matches[0].groups.length, 1);
+      equal(matches[0].groups[0], 'bb');
+      // Second match: "a" at 3, with group ""
+      equal(matches[1].value, 'a');
+      equal(matches[1].index, 3);
+      equal(matches[1].groups.length, 1);
+      equal(matches[1].groups[0], '');
+      // Third match: "ab" at 4, with group "b"
+      equal(matches[2].value, 'ab');
+      equal(matches[2].index, 4);
+      equal(matches[2].groups.length, 1);
+      equal(matches[2].groups[0], 'b');
+    });
+
+    test('matchAll with multiple groups', (ctx: TestContext): void => {
+      // Go test: `{`(.)(.)`, "日a", build(1, 0, 4, 0, 3, 3, 4)}`
+      let re = new Regex('(.)(.)');
+      let matches = re.matchAll('abcd');
+      equal(matches.length, 2);
+      // First match: "ab" at 0
+      equal(matches[0].value, 'ab');
+      equal(matches[0].groups.length, 2);
+      equal(matches[0].groups[0], 'a');
+      equal(matches[0].groups[1], 'b');
+      // Second match: "cd" at 2
+      equal(matches[1].value, 'cd');
+      equal(matches[1].groups.length, 2);
+      equal(matches[1].groups[0], 'c');
+      equal(matches[1].groups[1], 'd');
+    });
+
+    test('matchAll with nested groups', (ctx: TestContext): void => {
+      // Go test: `{`(([^xyz]*)(d))`, "abcd", build(1, 0, 4, 0, 4, 0, 3, 3, 4)}`
+      let re = new Regex('(([^xyz]*)(d))');
+      let matches = re.matchAll('abcd');
+      equal(matches.length, 1);
+      equal(matches[0].value, 'abcd');
+      equal(matches[0].groups.length, 3);
+      equal(matches[0].groups[0], 'abcd');  // Outer group
+      equal(matches[0].groups[1], 'abc');   // [^xyz]*
+      equal(matches[0].groups[2], 'd');     // d
+    });
+
+    test('matchAll with named captures', (ctx: TestContext): void => {
+      let re = new Regex('(?P<word>\\w+)');
+      let matches = re.matchAll('hello world foo');
+      equal(matches.length, 3);
+      equal(matches[0].value, 'hello');
+      equal(matches[0].group('word') as string, 'hello');
+      equal(matches[1].value, 'world');
+      equal(matches[1].group('word') as string, 'world');
+      equal(matches[2].value, 'foo');
+      equal(matches[2].group('word') as string, 'foo');
+    });
+
+    test('matchAll with alternation and unmatched group', (ctx: TestContext): void => {
+      // Go test: `{`a*(|(b))c*`, "aacc", build(1, 0, 4, 2, 2, -1, -1)}`
+      // The (b) group doesn't match, so should be empty string
+      let re = new Regex('a*(|(b))c*');
+      let matches = re.matchAll('aacc');
+      equal(matches.length, 1);
+      equal(matches[0].value, 'aacc');
+      equal(matches[0].groups.length, 2);
+      equal(matches[0].groups[0], '');  // (|(b)) matched empty string
+      equal(matches[0].groups[1], '');  // (b) didn't participate
+    });
+  });
+});

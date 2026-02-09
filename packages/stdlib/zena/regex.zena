@@ -1,0 +1,2531 @@
+import { Array } from 'zena:growable-array';
+import { Error } from 'zena:error';
+import { FixedArray } from 'zena:fixed-array';
+import { TemplateStringsArray } from 'zena:template-strings-array';
+
+// ============================================================================
+// Zena Regular Expression Engine
+// ============================================================================
+//
+// This is a Thompson NFA-based regex engine, similar to RE2 and Go's regexp.
+// It guarantees O(n*m) time complexity where n is input length and m is pattern size.
+//
+// SUPPORTED FEATURES:
+// - Literals and concatenation
+// - Alternation: a|b
+// - Character classes: [a-z], [^a-z], \d, \D, \w, \W, \s, \S
+// - Quantifiers: *, +, ?, {n}, {n,}, {n,m}
+// - Non-greedy quantifiers: *?, +?, ??, {n,m}?
+// - Groups: (...) capturing, (?:...) non-capturing
+// - Anchors: ^, $, \b, \B
+// - Escape sequences: \n, \t, \r, \., etc.
+// - Flags: (?i) case-insensitive, (?m) multiline, (?s) dot-matches-newline
+//
+// NOT SUPPORTED (by design):
+// - Backreferences (\1, \2, etc.) - These require backtracking which breaks
+//   the linear time guarantee and enables ReDoS attacks. Use capturing groups
+//   and extract matches programmatically instead.
+// - Lookahead/lookbehind assertions - Also require backtracking.
+// - Possessive quantifiers (*+, ++, etc.)
+// - Atomic groups
+//
+// ============================================================================
+
+// ============================================================================
+// Op - Regular Expression Operators (AST node types)
+// ============================================================================
+
+// Operators are ordered by precedence: tightest binding to weakest.
+// Character class operators are ordered simplest to most complex.
+export enum Op {
+  NoMatch = 1,        // matches no strings
+  EmptyMatch = 2,     // matches empty string
+  Literal = 3,        // matches Runes sequence
+  CharClass = 4,      // matches Runes as range pair list [lo1, hi1, lo2, hi2, ...]
+  AnyCharNotNL = 5,   // matches any character except newline (.)
+  AnyChar = 6,        // matches any character (. with s flag)
+  BeginLine = 7,      // matches empty string at beginning of line (^)
+  EndLine = 8,        // matches empty string at end of line ($)
+  BeginText = 9,      // matches empty string at beginning of text (\A)
+  EndText = 10,       // matches empty string at end of text (\z)
+  WordBoundary = 11,  // matches word boundary (\b)
+  NoWordBoundary = 12,// matches word non-boundary (\B)
+  Capture = 13,       // capturing subexpression with index cap
+  Star = 14,          // matches sub[0] zero or more times (*)
+  Plus = 15,          // matches sub[0] one or more times (+)
+  Quest = 16,         // matches sub[0] zero or one times (?)
+  Repeat = 17,        // matches sub[0] at least min times, at most max (-1 = no limit)
+  Concat = 18,        // matches concatenation of subs
+  Alternate = 19      // matches alternation of subs (|)
+}
+
+// Pseudo-ops for parsing stack (never appear in final AST)
+let OP_LEFT_PAREN: i32 = 128;
+let OP_VERTICAL_BAR: i32 = 129;
+let OP_NON_CAPTURE: i32 = 130;  // Non-capturing group (?:...)
+
+// ============================================================================
+// Flags - Regular Expression Flags
+// ============================================================================
+
+export enum Flags {
+  None = 0,
+  FoldCase = 1,       // case-insensitive match (i flag)
+  DotNL = 2,          // . matches newline (s flag)
+  OneLine = 4,        // treat ^ and $ as only matching at beginning/end of text
+  NonGreedy = 8,      // make repetition operators non-greedy by default
+  WasDollar = 16      // OpEndText was $, not \z
+}
+
+// ============================================================================
+// Ast - Regular Expression Abstract Syntax Tree Node
+// ============================================================================
+
+export final class Ast {
+  op: Op;
+  flags: Flags;
+  sub: Array<Ast>;      // subexpressions (for Concat, Alternate, Star, etc.)
+  runes: Array<i32>;    // matched runes (for Literal, CharClass)
+  min: i32;             // min for Repeat
+  max: i32;             // max for Repeat (-1 = no limit)
+  cap: i32;             // capturing index (for Capture)
+  name: string;         // capturing name (for named groups)
+
+  #new(op: Op) {
+    this.op = op;
+    this.flags = Flags.None;
+    this.sub = new Array<Ast>();
+    this.runes = new Array<i32>();
+    this.min = 0;
+    this.max = 0;
+    this.cap = 0;
+    this.name = '';
+  }
+
+  // Create a new Ast with the given op and flags
+  static create(op: Op, flags: Flags): Ast {
+    let ast = new Ast(op);
+    ast.flags = flags;
+    return ast;
+  }
+}
+
+// ============================================================================
+// Parser - Regex Pattern Parser
+// ============================================================================
+
+final class Parser {
+  #stack: Array<Ast>;   // parse stack
+  #flags: Flags;        // current flags
+  #numCap: i32;         // number of capturing groups so far
+  #pattern: string;     // original pattern for error messages
+
+  #new(flags: Flags) {
+    this.#stack = new Array<Ast>();
+    this.#flags = flags;
+    this.#numCap = 0;
+    this.#pattern = '';
+  }
+
+  // Parse a regular expression pattern into an AST
+  static parse(pattern: string, flags: Flags): Ast {
+    let parser = new Parser(flags);
+    return parser.#parseInternal(pattern);
+  }
+
+  #parseInternal(pattern: string): Ast {
+    this.#pattern = pattern;
+    var pos = 0;
+    let len = pattern.length;
+
+    while (pos < len) {
+      let c = pattern.getByteAt(pos);
+
+      if (c == 40) {
+        // '(' - start group, check for special sequences
+        if (pos + 1 < len && pattern.getByteAt(pos + 1) == 63) {
+          // '(?' - special group
+          pos = this.#parseSpecialGroup(pattern, pos, len);
+        } else {
+          // Regular capturing group
+          let marker = new Ast(Op.NoMatch);
+          marker.op = Op.NoMatch;
+          this.#numCap = this.#numCap + 1;
+          marker.cap = OP_LEFT_PAREN;
+          marker.runes.push(this.#numCap);  // Store cap number in runes for retrieval
+          this.#stack.push(marker);
+          pos = pos + 1;
+        }
+      } else if (c == 124) {
+        // '|' - alternation
+        this.#parseVerticalBar();
+        pos = pos + 1;
+      } else if (c == 41) {
+        // ')' - end group
+        this.#parseRightParen();
+        pos = pos + 1;
+      } else if (c == 94) {
+        // '^' - beginning of line/text
+        if (((this.#flags as i32) & (Flags.OneLine as i32)) != 0) {
+          this.#op(Op.BeginText);
+        } else {
+          this.#op(Op.BeginLine);
+        }
+        pos = pos + 1;
+      } else if (c == 36) {
+        // '$' - end of line/text
+        if (((this.#flags as i32) & (Flags.OneLine as i32)) != 0) {
+          let ast = this.#op(Op.EndText);
+          ast.flags = Flags.WasDollar;
+        } else {
+          this.#op(Op.EndLine);
+        }
+        pos = pos + 1;
+      } else if (c == 46) {
+        // '.' - any character
+        if (((this.#flags as i32) & (Flags.DotNL as i32)) != 0) {
+          this.#op(Op.AnyChar);
+        } else {
+          this.#op(Op.AnyCharNotNL);
+        }
+        pos = pos + 1;
+      } else if (c == 91) {
+        // '[' - character class
+        pos = this.#parseClass(pattern, pos);
+      } else if (c == 42) {
+        // '*' - zero or more
+        this.#repeat(Op.Star, 0, 0 - 1);
+        pos = pos + 1;
+        pos = this.#maybeParseNonGreedy(pattern, pos);
+      } else if (c == 43) {
+        // '+' - one or more
+        this.#repeat(Op.Plus, 1, 0 - 1);
+        pos = pos + 1;
+        pos = this.#maybeParseNonGreedy(pattern, pos);
+      } else if (c == 63) {
+        // '?' - zero or one
+        this.#repeat(Op.Quest, 0, 1);
+        pos = pos + 1;
+        pos = this.#maybeParseNonGreedy(pattern, pos);
+      } else if (c == 123) {
+        // '{' - counted repetition {n}, {n,}, {n,m}
+        pos = this.#parseRepeat(pattern, pos);
+      } else if (c == 92) {
+        // '\' - escape sequence
+        pos = this.#parseEscape(pattern, pos);
+      } else {
+        // Default: literal character
+        this.#literal(c as i32);
+        pos = pos + 1;
+      }
+    }
+
+    // Finish parsing
+    this.#concat();
+    if (this.#swapVerticalBar()) {
+      // Pop the vertical bar marker
+      this.#stack.pop();
+    }
+    this.#alternate();
+
+    if (this.#stack.length != 1) {
+      throw new Error('Missing closing parenthesis in pattern: ' + pattern);
+    }
+
+    return this.#stack[0];
+  }
+
+  // Push a literal rune onto the stack
+  #literal(r: i32): void {
+    let ast = Ast.create(Op.Literal, this.#flags);
+    ast.runes.push(r);
+    this.#push(ast);
+  }
+
+  // Create and push an op onto the stack
+  #op(op: Op): Ast {
+    let ast = Ast.create(op, this.#flags);
+    return this.#push(ast);
+  }
+
+  // Push an AST onto the stack, possibly concatenating literals
+  #push(ast: Ast): Ast {
+    this.#maybeConcat();
+    this.#stack.push(ast);
+    return ast;
+  }
+
+  // Try to concatenate adjacent literals on the stack
+  #maybeConcat(): void {
+    let n = this.#stack.length;
+    if (n < 2) {
+      return;
+    }
+
+    let re1 = this.#stack[n - 1];
+    let re2 = this.#stack[n - 2];
+
+    if (re1.op != Op.Literal || re2.op != Op.Literal) {
+      return;
+    }
+    if (((re1.flags as i32) & (Flags.FoldCase as i32)) != ((re2.flags as i32) & (Flags.FoldCase as i32))) {
+      return;
+    }
+
+    // Merge re1 into re2
+    var i = 0;
+    while (i < re1.runes.length) {
+      re2.runes.push(re1.runes[i]);
+      i = i + 1;
+    }
+
+    // Pop re1
+    this.#stack.pop();
+  }
+
+  // Apply a repetition operator to the top of the stack
+  #repeat(op: Op, min: i32, max: i32): void {
+    let n = this.#stack.length;
+    if (n == 0) {
+      throw new Error('Missing argument to repetition operator');
+    }
+
+    let sub = this.#stack[n - 1];
+    // Check for pseudo-ops (can't repeat a group marker)
+    if (sub.cap == OP_LEFT_PAREN || sub.cap == OP_VERTICAL_BAR) {
+      throw new Error('Missing argument to repetition operator');
+    }
+
+    // Pop the sub-expression
+    this.#stack.pop();
+
+    // Create the repeat node
+    let ast = Ast.create(op, this.#flags);
+    ast.min = min;
+    ast.max = max;
+    ast.sub.push(sub);
+
+    this.#push(ast);
+  }
+
+  // Handle '|' - vertical bar (alternation)
+  #parseVerticalBar(): void {
+    this.#concat();
+
+    // Mark this position with a vertical bar pseudo-op
+    if (!this.#swapVerticalBar()) {
+      let marker = new Ast(Op.NoMatch);
+      marker.cap = OP_VERTICAL_BAR;
+      this.#stack.push(marker);
+    }
+  }
+
+  // If the top of the stack is an element followed by a vertical bar marker,
+  // swap them and return true. Otherwise return false.
+  #swapVerticalBar(): boolean {
+    let n = this.#stack.length;
+    if (n < 2) {
+      return false;
+    }
+
+    let re1 = this.#stack[n - 1];
+    let re2 = this.#stack[n - 2];
+
+    if (re2.cap != OP_VERTICAL_BAR) {
+      return false;
+    }
+
+    // Swap re1 and re2
+    this.#stack[n - 2] = re1;
+    this.#stack[n - 1] = re2;
+    return true;
+  }
+
+  // Handle ')' - right parenthesis
+  #parseRightParen(): void {
+    this.#concat();
+    if (this.#swapVerticalBar()) {
+      this.#stack.pop(); // Pop the vertical bar marker
+    }
+    this.#alternate();
+
+    let n = this.#stack.length;
+    if (n < 2) {
+      throw new Error('Unexpected ) in pattern');
+    }
+
+    // Pop the sub-expression result
+    let sub = this.#stack[n - 1];
+    this.#stack.pop();
+
+    // Pop the left paren marker
+    let marker = this.#stack[n - 2];
+    this.#stack.pop();
+
+    if (marker.cap == OP_NON_CAPTURE) {
+      // Non-capturing group: just push the sub-expression directly
+      this.#push(sub);
+    } else if (marker.cap == OP_LEFT_PAREN) {
+      // Capturing group: wrap in Capture node
+      let ast = Ast.create(Op.Capture, this.#flags);
+      ast.cap = marker.runes[0];
+      ast.name = marker.name;  // Copy name for named groups (empty string for unnamed)
+      ast.sub.push(sub);
+      this.#push(ast);
+    } else {
+      throw new Error('Unexpected ) in pattern');
+    }
+  }
+
+  // Collapse the stack above the topmost '|' or '(' into a concatenation
+  #concat(): void {
+    this.#maybeConcat();
+
+    // Find the topmost pseudo-op (left paren, non-capture, or vertical bar)
+    var i = this.#stack.length;
+    while (i > 0) {
+      let ast = this.#stack[i - 1];
+      if (ast.cap == OP_LEFT_PAREN || ast.cap == OP_NON_CAPTURE || ast.cap == OP_VERTICAL_BAR) {
+        break;
+      }
+      i = i - 1;
+    }
+
+    // Extract everything above the marker
+    let subs = new Array<Ast>();
+    var j = i;
+    while (j < this.#stack.length) {
+      subs.push(this.#stack[j]);
+      j = j + 1;
+    }
+
+    // Pop those items
+    while (this.#stack.length > i) {
+      this.#stack.pop();
+    }
+
+    // Create concatenation (or handle empty/single case)
+    if (subs.length == 0) {
+      this.#stack.push(Ast.create(Op.EmptyMatch, this.#flags));
+    } else if (subs.length == 1) {
+      this.#stack.push(subs[0]);
+    } else {
+      let ast = Ast.create(Op.Concat, this.#flags);
+      ast.sub = subs;
+      this.#stack.push(ast);
+    }
+  }
+
+  // Collapse the stack above the topmost '(' into an alternation
+  #alternate(): void {
+    // Find the topmost left paren marker (capturing or non-capturing)
+    var i = this.#stack.length;
+    while (i > 0) {
+      let ast = this.#stack[i - 1];
+      if (ast.cap == OP_LEFT_PAREN || ast.cap == OP_NON_CAPTURE) {
+        break;
+      }
+      i = i - 1;
+    }
+
+    // Extract everything above the marker
+    let subs = new Array<Ast>();
+    var j = i;
+    while (j < this.#stack.length) {
+      subs.push(this.#stack[j]);
+      j = j + 1;
+    }
+
+    // Pop those items
+    while (this.#stack.length > i) {
+      this.#stack.pop();
+    }
+
+    // Create alternation (or handle empty/single case)
+    if (subs.length == 0) {
+      this.#stack.push(Ast.create(Op.NoMatch, this.#flags));
+    } else if (subs.length == 1) {
+      this.#stack.push(subs[0]);
+    } else {
+      let ast = Ast.create(Op.Alternate, this.#flags);
+      ast.sub = subs;
+      this.#stack.push(ast);
+    }
+  }
+
+  // Parse a character class [...]
+  #parseClass(pattern: string, startPos: i32): i32 {
+    var pos = startPos + 1; // Skip the '['
+    let len = pattern.length;
+    let ast = Ast.create(Op.CharClass, this.#flags);
+
+    // Check for negation
+    var negate = false;
+    if (pos < len && pattern.getByteAt(pos) == 94) { // '^'
+      negate = true;
+      pos = pos + 1;
+    }
+
+    // Track if we're at the start (to handle literal ] and -)
+    var first = true;
+
+    while (pos < len) {
+      let c = pattern.getByteAt(pos);
+
+      if (c == 93 && !first) { // ']'
+        // End of class
+        if (negate) {
+          // Negate the class by inverting ranges
+          ast.runes = this.#negateClass(ast.runes);
+        }
+        this.#push(ast);
+        return pos + 1;
+      }
+
+      first = false;
+
+      if (c == 92 && pos + 1 < len) { // '\'
+        // Escape sequence in character class
+        let nextC = pattern.getByteAt(pos + 1);
+        if (nextC == 100) { // \d
+          this.#appendClassRange(ast.runes, 48, 57); // 0-9
+          pos = pos + 2;
+        } else if (nextC == 119) { // \w
+          this.#appendClassRange(ast.runes, 48, 57);  // 0-9
+          this.#appendClassRange(ast.runes, 65, 90);  // A-Z
+          this.#appendClassRange(ast.runes, 97, 122); // a-z
+          this.#appendClassRange(ast.runes, 95, 95);  // _
+          pos = pos + 2;
+        } else if (nextC == 115) { // \s
+          this.#appendClassRange(ast.runes, 9, 13);   // \t\n\v\f\r
+          this.#appendClassRange(ast.runes, 32, 32); // space
+          pos = pos + 2;
+        } else if (nextC == 68) { // \D (non-digit)
+          let negated = this.#negateClass(this.#makeDigitClass());
+          this.#appendClass(ast.runes, negated);
+          pos = pos + 2;
+        } else if (nextC == 87) { // \W (non-word)
+          let wordClass = new Array<i32>();
+          this.#appendClassRange(wordClass, 48, 57);  // 0-9
+          this.#appendClassRange(wordClass, 65, 90);  // A-Z
+          this.#appendClassRange(wordClass, 97, 122); // a-z
+          this.#appendClassRange(wordClass, 95, 95);  // _
+          let negated = this.#negateClass(wordClass);
+          this.#appendClass(ast.runes, negated);
+          pos = pos + 2;
+        } else if (nextC == 83) { // \S (non-whitespace)
+          let wsClass = new Array<i32>();
+          this.#appendClassRange(wsClass, 9, 13);
+          this.#appendClassRange(wsClass, 32, 32);
+          let negated = this.#negateClass(wsClass);
+          this.#appendClass(ast.runes, negated);
+          pos = pos + 2;
+        } else if (nextC == 97) { // \a - bell
+          this.#appendClassRange(ast.runes, 7, 7);
+          pos = pos + 2;
+        } else if (nextC == 102) { // \f - form feed
+          this.#appendClassRange(ast.runes, 12, 12);
+          pos = pos + 2;
+        } else if (nextC == 110) { // \n - newline
+          this.#appendClassRange(ast.runes, 10, 10);
+          pos = pos + 2;
+        } else if (nextC == 114) { // \r - carriage return
+          this.#appendClassRange(ast.runes, 13, 13);
+          pos = pos + 2;
+        } else if (nextC == 116) { // \t - tab
+          this.#appendClassRange(ast.runes, 9, 9);
+          pos = pos + 2;
+        } else if (nextC == 118) { // \v - vertical tab
+          this.#appendClassRange(ast.runes, 11, 11);
+          pos = pos + 2;
+        } else {
+          // Literal escaped character
+          this.#appendClassRange(ast.runes, nextC as i32, nextC as i32);
+          pos = pos + 2;
+        }
+      } else if (pos + 2 < len && pattern.getByteAt(pos + 1) == 45) { // '-' range
+        let lo = c as i32;
+        let hi = pattern.getByteAt(pos + 2) as i32;
+        if (lo > hi) {
+          throw new Error('Invalid character class range: ' + pattern);
+        }
+        this.#appendClassRange(ast.runes, lo, hi);
+        pos = pos + 3;
+      } else {
+        // Single character
+        this.#appendClassRange(ast.runes, c as i32, c as i32);
+        pos = pos + 1;
+      }
+    }
+
+    throw new Error('Unclosed character class in pattern: ' + pattern);
+  }
+
+  // Append a range [lo, hi] to the class
+  #appendClassRange(class_: Array<i32>, lo: i32, hi: i32): void {
+    class_.push(lo);
+    class_.push(hi);
+  }
+
+  // Append one class to another
+  #appendClass(dst: Array<i32>, src: Array<i32>): void {
+    var i = 0;
+    while (i < src.length) {
+      dst.push(src[i]);
+      i = i + 1;
+    }
+  }
+
+  // Create a digit class [0-9]
+  #makeDigitClass(): Array<i32> {
+    let class_ = new Array<i32>();
+    class_.push(48);
+    class_.push(57);
+    return class_;
+  }
+
+  // Negate a character class
+  // Input: pairs of [lo, hi] ranges
+  // Output: complementary ranges from 0 to MAX_RUNE
+  #negateClass(class_: Array<i32>): Array<i32> {
+    // First, sort and merge the ranges
+    let sorted = this.#cleanClass(class_);
+
+    // Then complement
+    let result = new Array<i32>();
+    var nextLo = 0;
+    var i = 0;
+
+    while (i < sorted.length) {
+      let lo = sorted[i];
+      let hi = sorted[i + 1];
+
+      if (nextLo < lo) {
+        result.push(nextLo);
+        result.push(lo - 1);
+      }
+      nextLo = hi + 1;
+      i = i + 2;
+    }
+
+    // Add remaining range up to max Unicode
+    let maxRune = 1114111; // 0x10FFFF
+    if (nextLo <= maxRune) {
+      result.push(nextLo);
+      result.push(maxRune);
+    }
+
+    return result;
+  }
+
+  // Sort and merge overlapping ranges in a character class
+  #cleanClass(class_: Array<i32>): Array<i32> {
+    if (class_.length == 0) {
+      return class_;
+    }
+
+    // Simple insertion sort by lo value (since classes are usually small)
+    var i = 0;
+    while (i < class_.length) {
+      var j = i + 2;
+      while (j < class_.length) {
+        if (class_[j] < class_[i]) {
+          // Swap pairs
+          let tmpLo = class_[i];
+          let tmpHi = class_[i + 1];
+          class_[i] = class_[j];
+          class_[i + 1] = class_[j + 1];
+          class_[j] = tmpLo;
+          class_[j + 1] = tmpHi;
+        }
+        j = j + 2;
+      }
+      i = i + 2;
+    }
+
+    // Merge overlapping ranges
+    let result = new Array<i32>();
+    var lo = class_[0];
+    var hi = class_[1];
+
+    i = 2;
+    while (i < class_.length) {
+      let nextLo = class_[i];
+      let nextHi = class_[i + 1];
+
+      if (nextLo <= hi + 1) {
+        // Ranges overlap or are adjacent - merge
+        if (nextHi > hi) {
+          hi = nextHi;
+        }
+      } else {
+        // No overlap - emit current and start new
+        result.push(lo);
+        result.push(hi);
+        lo = nextLo;
+        hi = nextHi;
+      }
+      i = i + 2;
+    }
+
+    // Emit final range
+    result.push(lo);
+    result.push(hi);
+
+    return result;
+  }
+
+  // Parse escape sequences
+  #parseEscape(pattern: string, pos: i32): i32 {
+    if (pos + 1 >= pattern.length) {
+      throw new Error('Trailing backslash in pattern');
+    }
+
+    let c = pattern.getByteAt(pos + 1);
+
+    // Word boundary
+    if (c == 98) { // 'b'
+      this.#op(Op.WordBoundary);
+      return pos + 2;
+    }
+    if (c == 66) { // 'B'
+      this.#op(Op.NoWordBoundary);
+      return pos + 2;
+    }
+
+    // Beginning/end of text
+    if (c == 65) { // 'A'
+      this.#op(Op.BeginText);
+      return pos + 2;
+    }
+    if (c == 122) { // 'z'
+      this.#op(Op.EndText);
+      return pos + 2;
+    }
+    if (c == 90) { // 'Z' - like $ but matches before final newline
+      let ast = this.#op(Op.EndText);
+      ast.flags = Flags.WasDollar;
+      return pos + 2;
+    }
+
+    // Character class escapes
+    if (c == 100) { // 'd' - digit
+      let ast = Ast.create(Op.CharClass, this.#flags);
+      this.#appendClassRange(ast.runes, 48, 57);
+      this.#push(ast);
+      return pos + 2;
+    }
+    if (c == 68) { // 'D' - non-digit
+      let ast = Ast.create(Op.CharClass, this.#flags);
+      ast.runes = this.#negateClass(this.#makeDigitClass());
+      this.#push(ast);
+      return pos + 2;
+    }
+    if (c == 119) { // 'w' - word character
+      let ast = Ast.create(Op.CharClass, this.#flags);
+      this.#appendClassRange(ast.runes, 48, 57);
+      this.#appendClassRange(ast.runes, 65, 90);
+      this.#appendClassRange(ast.runes, 97, 122);
+      this.#appendClassRange(ast.runes, 95, 95);
+      this.#push(ast);
+      return pos + 2;
+    }
+    if (c == 87) { // 'W' - non-word character
+      let wordClass = new Array<i32>();
+      this.#appendClassRange(wordClass, 48, 57);
+      this.#appendClassRange(wordClass, 65, 90);
+      this.#appendClassRange(wordClass, 97, 122);
+      this.#appendClassRange(wordClass, 95, 95);
+      let ast = Ast.create(Op.CharClass, this.#flags);
+      ast.runes = this.#negateClass(wordClass);
+      this.#push(ast);
+      return pos + 2;
+    }
+    if (c == 115) { // 's' - whitespace
+      let ast = Ast.create(Op.CharClass, this.#flags);
+      this.#appendClassRange(ast.runes, 9, 13);
+      this.#appendClassRange(ast.runes, 32, 32);
+      this.#push(ast);
+      return pos + 2;
+    }
+    if (c == 83) { // 'S' - non-whitespace
+      let wsClass = new Array<i32>();
+      this.#appendClassRange(wsClass, 9, 13);
+      this.#appendClassRange(wsClass, 32, 32);
+      let ast = Ast.create(Op.CharClass, this.#flags);
+      ast.runes = this.#negateClass(wsClass);
+      this.#push(ast);
+      return pos + 2;
+    }
+
+    // Common escape sequences
+    if (c == 97) { // 'a' - bell (BEL)
+      this.#literal(7);
+      return pos + 2;
+    }
+    if (c == 110) { // 'n' - newline
+      this.#literal(10);
+      return pos + 2;
+    }
+    if (c == 114) { // 'r' - carriage return
+      this.#literal(13);
+      return pos + 2;
+    }
+    if (c == 116) { // 't' - tab
+      this.#literal(9);
+      return pos + 2;
+    }
+    if (c == 102) { // 'f' - form feed
+      this.#literal(12);
+      return pos + 2;
+    }
+    if (c == 118) { // 'v' - vertical tab
+      this.#literal(11);
+      return pos + 2;
+    }
+
+    // Literal escape (any other character)
+    this.#literal(c as i32);
+    return pos + 2;
+  }
+
+  // Parse counted repetition {n}, {n,}, {n,m}
+  #parseRepeat(pattern: string, pos: i32): i32 {
+    var i = pos + 1;
+    let len = pattern.length;
+
+    // Parse min
+    var min = 0;
+    var hasMin = false;
+    while (i < len) {
+      let c = pattern.getByteAt(i);
+      if (c >= 48 && c <= 57) {
+        min = min * 10 + ((c as i32) - 48);
+        hasMin = true;
+        i = i + 1;
+      } else {
+        break;
+      }
+    }
+
+    if (!hasMin || i >= len) {
+      // Malformed - treat { as literal
+      this.#literal(123);
+      return pos + 1;
+    }
+
+    let c = pattern.getByteAt(i);
+    if (c == 125) { // '}'
+      // {n} - exact count
+      this.#repeat(Op.Repeat, min, min);
+      return i + 1;
+    }
+
+    if (c != 44) { // ','
+      // Malformed - treat { as literal
+      this.#literal(123);
+      return pos + 1;
+    }
+
+    i = i + 1; // Skip ','
+
+    if (i >= len) {
+      // Malformed - treat { as literal
+      this.#literal(123);
+      return pos + 1;
+    }
+
+    let c2 = pattern.getByteAt(i);
+    if (c2 == 125) { // '}'
+      // {n,} - at least n
+      this.#repeat(Op.Repeat, min, 0 - 1);
+      return i + 1;
+    }
+
+    // Parse max
+    var max = 0;
+    var hasMax = false;
+    while (i < len) {
+      let c3 = pattern.getByteAt(i);
+      if (c3 >= 48 && c3 <= 57) {
+        max = max * 10 + ((c3 as i32) - 48);
+        hasMax = true;
+        i = i + 1;
+      } else {
+        break;
+      }
+    }
+
+    if (!hasMax || i >= len || pattern.getByteAt(i) != 125) {
+      // Malformed - treat { as literal
+      this.#literal(123);
+      return pos + 1;
+    }
+
+    if (min > max) {
+      throw new Error('Invalid repeat range: min > max');
+    }
+
+    this.#repeat(Op.Repeat, min, max);
+    return i + 1;
+  }
+
+  // Check for and parse non-greedy modifier '?'
+  #maybeParseNonGreedy(pattern: string, pos: i32): i32 {
+    if (pos < pattern.length && pattern.getByteAt(pos) == 63) { // '?'
+      // Set non-greedy flag on the top of stack
+      let n = this.#stack.length;
+      if (n > 0) {
+        let ast = this.#stack[n - 1];
+        ast.flags = (((ast.flags as i32) | (Flags.NonGreedy as i32)) as Flags);
+      }
+      return pos + 1;
+    }
+    return pos;
+  }
+
+  // Parse special group sequences: (?:...), (?i), (?m), (?s), (?i:...), etc.
+  #parseSpecialGroup(pattern: string, pos: i32, len: i32): i32 {
+    // pos is at '(', pos+1 is '?'
+    var i = pos + 2;  // Start after '(?'
+    
+    // Parse flags: i, m, s, and their negations with -
+    var setFlags: i32 = 0;
+    var clearFlags: i32 = 0;
+    var negating = false;
+    
+    while (i < len) {
+      let c = pattern.getByteAt(i);
+      
+      if (c == 105) {  // 'i' - case insensitive
+        if (negating) {
+          clearFlags = clearFlags | (Flags.FoldCase as i32);
+        } else {
+          setFlags = setFlags | (Flags.FoldCase as i32);
+        }
+        i = i + 1;
+      } else if (c == 109) {  // 'm' - multiline (^ and $ match line boundaries)
+        // Note: in RE2/Go, multiline is the default. OneLine makes ^/$ match only text boundaries.
+        // We'll treat (?m) as enabling multiline (clear OneLine flag)
+        if (negating) {
+          setFlags = setFlags | (Flags.OneLine as i32);
+        } else {
+          clearFlags = clearFlags | (Flags.OneLine as i32);
+        }
+        i = i + 1;
+      } else if (c == 115) {  // 's' - dot matches newline
+        if (negating) {
+          clearFlags = clearFlags | (Flags.DotNL as i32);
+        } else {
+          setFlags = setFlags | (Flags.DotNL as i32);
+        }
+        i = i + 1;
+      } else if (c == 45) {  // '-' - negate following flags
+        negating = true;
+        i = i + 1;
+      } else if (c == 58) {  // ':' - non-capturing group with flags
+        // Apply flags and start non-capturing group
+        this.#flags = (((this.#flags as i32) | setFlags) as Flags);
+        this.#flags = (((this.#flags as i32) & (clearFlags ^ (0 - 1))) as Flags);
+        
+        let marker = new Ast(Op.NoMatch);
+        marker.op = Op.NoMatch;
+        marker.cap = OP_NON_CAPTURE;
+        marker.runes.push(0);
+        // Store the flags to restore later (in flags field of marker)
+        marker.flags = this.#flags;
+        this.#stack.push(marker);
+        return i + 1;  // Return position after ':'
+      } else if (c == 41) {  // ')' - just set flags, no group
+        // Apply flags globally
+        this.#flags = (((this.#flags as i32) | setFlags) as Flags);
+        this.#flags = (((this.#flags as i32) & (clearFlags ^ (0 - 1))) as Flags);
+        return i + 1;  // Return position after ')'
+      } else if (c == 80 && i + 1 < len && pattern.getByteAt(i + 1) == 60) {  // 'P<' - named capture group
+        // Parse (?P<name>...)
+        i = i + 2;  // Skip 'P<'
+        let nameStart = i;
+        // Find the closing '>'
+        while (i < len && pattern.getByteAt(i) != 62) {  // 62 = '>'
+          let nc = pattern.getByteAt(i);
+          // Validate name characters: [A-Za-z_][A-Za-z0-9_]*
+          if (i == nameStart) {
+            // First char must be letter or underscore
+            if (!((nc >= 65 && nc <= 90) || (nc >= 97 && nc <= 122) || nc == 95)) {
+              throw new Error('Invalid group name: must start with letter or underscore');
+            }
+          } else {
+            // Subsequent chars can also be digits
+            if (!((nc >= 65 && nc <= 90) || (nc >= 97 && nc <= 122) || (nc >= 48 && nc <= 57) || nc == 95)) {
+              throw new Error('Invalid group name: must contain only letters, digits, or underscores');
+            }
+          }
+          i = i + 1;
+        }
+        if (i >= len) {
+          throw new Error('Unterminated group name');
+        }
+        let groupName = pattern.sliceBytes(nameStart, i);
+        i = i + 1;  // Skip '>'
+        // Create a capturing group marker with the name
+        let marker = new Ast(Op.NoMatch);
+        marker.op = Op.NoMatch;
+        this.#numCap = this.#numCap + 1;
+        marker.cap = OP_LEFT_PAREN;
+        marker.runes.push(this.#numCap);
+        marker.name = groupName;
+        this.#stack.push(marker);
+        return i;
+      } else {
+        // Unknown character after '(?'
+        throw new Error('Invalid or unsupported group syntax');
+      }
+    }
+    
+    throw new Error('Unterminated group');
+  }
+}
+
+// Public parse function
+export let parsePattern = (pattern: string, flags: Flags): Ast => {
+  return Parser.parse(pattern, flags);
+};
+
+// ============================================================================
+// NFA - Thompson NFA Implementation
+// ============================================================================
+
+// NFA state types
+enum StateType {
+  Match = 0,           // Match state (accepting)
+  Split = 1,           // Split state (epsilon transitions to out1 and out2)
+  Char = 2,            // Single character match
+  CharClass = 3,       // Character class match
+  Any = 4,             // Any character (.)
+  AnyNotNL = 5,        // Any character except newline
+  Capture = 6,         // Capture marker (records position in cap array)
+  BeginText = 7,       // Anchor: match at beginning of text (^)
+  EndText = 8,         // Anchor: match at end of text ($)
+  BeginLine = 9,       // Anchor: match at beginning of line (^ in multiline)
+  EndLine = 10,        // Anchor: match at end of line ($ in multiline)
+  WordBoundary = 11,   // Word boundary (\b)
+  NotWordBoundary = 12 // Not word boundary (\B)
+}
+
+// NFA State
+final class State {
+  type: StateType;    // State type
+  c: i32;             // character to match (for Char)
+  ranges: Array<i32>; // character ranges [lo1, hi1, lo2, hi2, ...] (for CharClass)
+  cap: i32;           // capture index (for Capture): 2*n for start, 2*n+1 for end
+  out1: State | null; // first output state
+  out2: State | null; // second output state (for splits)
+  lastList: i32;      // last list id this state was on (for NFA simulation)
+
+  #new(type: StateType) {
+    this.type = type;
+    this.c = 0;
+    this.cap = 0;
+    this.ranges = new Array<i32>();
+    this.out1 = null;
+    this.out2 = null;
+    this.lastList = 0;
+  }
+}
+
+// Patch entry - tracks a state and which output field to patch
+final class PatchEntry {
+  state: State;
+  field: i32;  // 1 = out1, 2 = out2
+
+  #new(state: State, field: i32) {
+    this.state = state;
+    this.field = field;
+  }
+}
+
+// NFA fragment (used during construction)
+final class Frag {
+  start: State;              // start state of fragment
+  patches: Array<PatchEntry>;  // list of dangling outputs to patch
+
+  #new(start: State) {
+    this.start = start;
+    this.patches = new Array<PatchEntry>();
+  }
+
+  // Helper to add a patch entry
+  addPatch(state: State, field: i32): void {
+    this.patches.push(new PatchEntry(state, field));
+  }
+
+  // Helper to add all patches from another fragment
+  addPatchesFrom(other: Frag): void {
+    var i = 0;
+    while (i < other.patches.length) {
+      this.patches.push(other.patches[i]);
+      i = i + 1;
+    }
+  }
+}
+
+// NFA compiler - builds NFA from AST
+final class NfaCompiler {
+  #matchState: State;
+
+  #new() {
+    this.#matchState = new State(StateType.Match);
+  }
+
+  // Compile an AST to an NFA, return the start state
+  compile(ast: Ast): State {
+    let frag = this.#compileAst(ast);
+    // Patch all dangling outputs to the match state
+    this.#patchFrag(frag, this.#matchState);
+    return frag.start;
+  }
+
+  #compileAst(ast: Ast): Frag {
+    if (ast.op == Op.EmptyMatch) {
+      return this.#compileEmpty();
+    }
+    if (ast.op == Op.NoMatch) {
+      return this.#compileNoMatch();
+    }
+    if (ast.op == Op.Literal) {
+      return this.#compileLiteral(ast);
+    }
+    if (ast.op == Op.CharClass) {
+      return this.#compileCharClass(ast);
+    }
+    if (ast.op == Op.AnyChar) {
+      return this.#compileAnyChar();
+    }
+    if (ast.op == Op.AnyCharNotNL) {
+      return this.#compileAnyCharNotNL();
+    }
+    if (ast.op == Op.Concat) {
+      return this.#compileConcat(ast);
+    }
+    if (ast.op == Op.Alternate) {
+      return this.#compileAlternate(ast);
+    }
+    if (ast.op == Op.Star) {
+      return this.#compileStar(ast);
+    }
+    if (ast.op == Op.Plus) {
+      return this.#compilePlus(ast);
+    }
+    if (ast.op == Op.Quest) {
+      return this.#compileQuest(ast);
+    }
+    if (ast.op == Op.Repeat) {
+      return this.#compileRepeat(ast);
+    }
+    if (ast.op == Op.Capture) {
+      return this.#compileCapture(ast);
+    }
+    if (ast.op == Op.BeginText) {
+      return this.#compileAnchor(StateType.BeginText);
+    }
+    if (ast.op == Op.EndText) {
+      return this.#compileAnchor(StateType.EndText);
+    }
+    if (ast.op == Op.BeginLine) {
+      return this.#compileAnchor(StateType.BeginLine);
+    }
+    if (ast.op == Op.EndLine) {
+      return this.#compileAnchor(StateType.EndLine);
+    }
+    if (ast.op == Op.WordBoundary) {
+      return this.#compileAnchor(StateType.WordBoundary);
+    }
+    if (ast.op == Op.NoWordBoundary) {
+      return this.#compileAnchor(StateType.NotWordBoundary);
+    }
+    // Fallback - empty match
+    return this.#compileEmpty();
+  }
+
+  #compileCapture(ast: Ast): Frag {
+    // Create capture start state (records position at 2*cap)
+    let capStart = new State(StateType.Capture);
+    capStart.cap = ast.cap * 2;  // Start index
+
+    // Create capture end state (records position at 2*cap+1)
+    let capEnd = new State(StateType.Capture);
+    capEnd.cap = ast.cap * 2 + 1;  // End index
+
+    if (ast.sub.length == 0) {
+      // Empty capture: capStart -> capEnd
+      capStart.out1 = capEnd;
+      let frag = new Frag(capStart);
+      frag.addPatch(capEnd, 1);
+      return frag;
+    }
+
+    // Compile the sub-expression
+    let sub = this.#compileAst(ast.sub[0]);
+
+    // Connect: capStart -> sub.start
+    capStart.out1 = sub.start;
+
+    // Patch sub's outputs to capEnd
+    this.#patchFrag(sub, capEnd);
+
+    // Fragment: starts at capStart, ends at capEnd
+    let frag = new Frag(capStart);
+    frag.addPatch(capEnd, 1);
+    return frag;
+  }
+
+  #compileAnchor(anchorType: StateType): Frag {
+    // Create an anchor state - epsilon transition that only succeeds at certain positions
+    let s = new State(anchorType);
+    let frag = new Frag(s);
+    frag.addPatch(s, 1);  // out1 is the continuation
+    return frag;
+  }
+
+  #compileEmpty(): Frag {
+    let s = new State(StateType.Split);
+    let frag = new Frag(s);
+    frag.addPatch(s, 1);
+    return frag;
+  }
+
+  #compileNoMatch(): Frag {
+    // A state with no outputs - will never match
+    let s = new State(StateType.Split);
+    let frag = new Frag(s);
+    // No patches - this fragment can never proceed
+    return frag;
+  }
+
+  #compileLiteral(ast: Ast): Frag {
+    if (ast.runes.length == 0) {
+      return this.#compileEmpty();
+    }
+    
+    let foldCase = ((ast.flags as i32) & (Flags.FoldCase as i32)) != 0;
+    
+    // Chain of character states (or char class states for case-insensitive)
+    let firstState = this.#makeCharState(ast.runes[0], foldCase);
+    var prev = firstState;
+    var i = 1;
+    while (i < ast.runes.length) {
+      let s = this.#makeCharState(ast.runes[i], foldCase);
+      prev.out1 = s;
+      prev = s;
+      i = i + 1;
+    }
+    let frag = new Frag(firstState);
+    frag.addPatch(prev, 1);
+    return frag;
+  }
+
+  // Create a state for matching a single character, handling case folding
+  #makeCharState(c: i32, foldCase: boolean): State {
+    if (foldCase && this.#isLetter(c)) {
+      // Create a char class matching both cases
+      let s = new State(StateType.CharClass);
+      let lower = this.#toLower(c);
+      let upper = this.#toUpper(c);
+      if (lower == upper) {
+        // Not a letter with case, just match the char
+        s.type = StateType.Char;
+        s.c = c;
+      } else if (lower < upper) {
+        s.ranges.push(lower);
+        s.ranges.push(lower);
+        s.ranges.push(upper);
+        s.ranges.push(upper);
+      } else {
+        s.ranges.push(upper);
+        s.ranges.push(upper);
+        s.ranges.push(lower);
+        s.ranges.push(lower);
+      }
+      return s;
+    } else {
+      let s = new State(StateType.Char);
+      s.c = c;
+      return s;
+    }
+  }
+
+  // Check if a character is a letter (A-Z or a-z)
+  #isLetter(c: i32): boolean {
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+  }
+
+  // Convert to lowercase
+  #toLower(c: i32): i32 {
+    if (c >= 65 && c <= 90) {
+      return c + 32;
+    }
+    return c;
+  }
+
+  // Convert to uppercase
+  #toUpper(c: i32): i32 {
+    if (c >= 97 && c <= 122) {
+      return c - 32;
+    }
+    return c;
+  }
+
+  #compileCharClass(ast: Ast): Frag {
+    let s = new State(StateType.CharClass);
+    let foldCase = ((ast.flags as i32) & (Flags.FoldCase as i32)) != 0;
+    
+    // Copy ranges from AST, expanding for case-insensitivity
+    var i = 0;
+    while (i < ast.runes.length) {
+      let lo = ast.runes[i];
+      let hi = ast.runes[i + 1];
+      s.ranges.push(lo);
+      s.ranges.push(hi);
+      
+      // For case-insensitive, add the opposite case ranges
+      if (foldCase) {
+        // Check if this range contains letters
+        // Add lowercase versions of any uppercase in range
+        if (lo <= 90 && hi >= 65) {  // Range overlaps A-Z
+          var alphaLo = lo;
+          if (alphaLo < 65) { alphaLo = 65; }
+          var alphaHi = hi;
+          if (alphaHi > 90) { alphaHi = 90; }
+          // Add corresponding lowercase range
+          s.ranges.push(alphaLo + 32);
+          s.ranges.push(alphaHi + 32);
+        }
+        // Add uppercase versions of any lowercase in range
+        if (lo <= 122 && hi >= 97) {  // Range overlaps a-z
+          var alphaLoLower = lo;
+          if (alphaLoLower < 97) { alphaLoLower = 97; }
+          var alphaHiLower = hi;
+          if (alphaHiLower > 122) { alphaHiLower = 122; }
+          // Add corresponding uppercase range
+          s.ranges.push(alphaLoLower - 32);
+          s.ranges.push(alphaHiLower - 32);
+        }
+      }
+      i = i + 2;
+    }
+    let frag = new Frag(s);
+    frag.addPatch(s, 1);
+    return frag;
+  }
+
+  #compileAnyChar(): Frag {
+    let s = new State(StateType.Any);
+    let frag = new Frag(s);
+    frag.addPatch(s, 1);
+    return frag;
+  }
+
+  #compileAnyCharNotNL(): Frag {
+    let s = new State(StateType.AnyNotNL);
+    let frag = new Frag(s);
+    frag.addPatch(s, 1);
+    return frag;
+  }
+
+  #compileConcat(ast: Ast): Frag {
+    if (ast.sub.length == 0) {
+      return this.#compileEmpty();
+    }
+    var frag = this.#compileAst(ast.sub[0]);
+    var i = 1;
+    while (i < ast.sub.length) {
+      let frag2 = this.#compileAst(ast.sub[i]);
+      this.#patchFrag(frag, frag2.start);
+      frag.patches = frag2.patches;
+      i = i + 1;
+    }
+    return frag;
+  }
+
+  #compileAlternate(ast: Ast): Frag {
+    if (ast.sub.length == 0) {
+      return this.#compileEmpty();
+    }
+    if (ast.sub.length == 1) {
+      return this.#compileAst(ast.sub[0]);
+    }
+    // Create a split state for the first two alternatives
+    let split = new State(StateType.Split);
+    let frag1 = this.#compileAst(ast.sub[0]);
+    let frag2 = this.#compileAst(ast.sub[1]);
+    split.out1 = frag1.start;
+    split.out2 = frag2.start;
+    // Merge output lists
+    let frag = new Frag(split);
+    frag.addPatchesFrom(frag1);
+    frag.addPatchesFrom(frag2);
+    // Handle more than 2 alternatives by nesting
+    var i = 2;
+    while (i < ast.sub.length) {
+      let fragN = this.#compileAst(ast.sub[i]);
+      let newSplit = new State(StateType.Split);
+      newSplit.out1 = frag.start;
+      newSplit.out2 = fragN.start;
+      frag.start = newSplit;
+      frag.addPatchesFrom(fragN);
+      i = i + 1;
+    }
+    return frag;
+  }
+
+  #compileStar(ast: Ast): Frag {
+    if (ast.sub.length == 0) {
+      return this.#compileEmpty();
+    }
+    let sub = this.#compileAst(ast.sub[0]);
+    let split = new State(StateType.Split);
+    // Check if non-greedy (from flags)
+    let nonGreedy = ((ast.flags as i32) & (Flags.NonGreedy as i32)) != 0;
+    if (nonGreedy) {
+      // Non-greedy: prefer to skip
+      split.out2 = sub.start;
+      // out1 will be patched to continue
+    } else {
+      // Greedy: prefer to match
+      split.out1 = sub.start;
+      // out2 will be patched to continue
+    }
+    this.#patchFrag(sub, split);
+    let frag = new Frag(split);
+    if (nonGreedy) {
+      frag.addPatch(split, 1);
+    } else {
+      frag.addPatch(split, 2);
+    }
+    return frag;
+  }
+
+  #compilePlus(ast: Ast): Frag {
+    if (ast.sub.length == 0) {
+      return this.#compileEmpty();
+    }
+    let sub = this.#compileAst(ast.sub[0]);
+    let split = new State(StateType.Split);
+    let nonGreedy = ((ast.flags as i32) & (Flags.NonGreedy as i32)) != 0;
+    if (nonGreedy) {
+      split.out2 = sub.start;
+    } else {
+      split.out1 = sub.start;
+    }
+    this.#patchFrag(sub, split);
+    let frag = new Frag(sub.start);
+    if (nonGreedy) {
+      frag.addPatch(split, 1);
+    } else {
+      frag.addPatch(split, 2);
+    }
+    return frag;
+  }
+
+  #compileQuest(ast: Ast): Frag {
+    if (ast.sub.length == 0) {
+      return this.#compileEmpty();
+    }
+    let sub = this.#compileAst(ast.sub[0]);
+    let split = new State(StateType.Split);
+    let nonGreedy = ((ast.flags as i32) & (Flags.NonGreedy as i32)) != 0;
+    if (nonGreedy) {
+      // Non-greedy: prefer to skip
+      split.out2 = sub.start;
+    } else {
+      // Greedy: prefer to match
+      split.out1 = sub.start;
+    }
+    let frag = new Frag(split);
+    // Add the split state with the appropriate field to patch
+    if (nonGreedy) {
+      frag.addPatch(split, 1);
+    } else {
+      frag.addPatch(split, 2);
+    }
+    // Also add sub's outputs (which go to out1)
+    frag.addPatchesFrom(sub);
+    return frag;
+  }
+
+  #compileRepeat(ast: Ast): Frag {
+    if (ast.sub.length == 0) {
+      return this.#compileEmpty();
+    }
+    // {n,m} is compiled as: sub{n} sub?{m-n}
+    // {n,} is compiled as: sub{n} sub*
+    // {n} is compiled as: sub{n}
+    let minCount = ast.min;
+    let maxCount = ast.max;
+    // Handle exact count
+    if (maxCount >= 0 && minCount == maxCount) {
+      if (minCount == 0) {
+        return this.#compileEmpty();
+      }
+      var frag = this.#compileAst(ast.sub[0]);
+      var i = 1;
+      while (i < minCount) {
+        let sub = this.#compileAst(ast.sub[0]);
+        this.#patchFrag(frag, sub.start);
+        frag.patches = sub.patches;
+        i = i + 1;
+      }
+      return frag;
+    }
+    // Build minimum required matches
+    var frag: Frag | null = null;
+    if (minCount > 0) {
+      frag = this.#compileAst(ast.sub[0]);
+      var i = 1;
+      while (i < minCount) {
+        let sub = this.#compileAst(ast.sub[0]);
+        this.#patchFrag(frag as Frag, sub.start);
+        (frag as Frag).patches = sub.patches;
+        i = i + 1;
+      }
+    }
+    // Handle unbounded max
+    if (maxCount < 0) {
+      // {n,} - add a star after min matches
+      let starAst = new Ast(Op.Star);
+      starAst.flags = ast.flags;
+      starAst.sub.push(ast.sub[0]);
+      let starFrag = this.#compileStar(starAst);
+      if (frag == null) {
+        return starFrag;
+      }
+      this.#patchFrag(frag as Frag, starFrag.start);
+      (frag as Frag).patches = starFrag.patches;
+      return frag as Frag;
+    }
+    // {n,m} - add (m-n) optional matches
+    var optCount = maxCount - minCount;
+    var i = 0;
+    while (i < optCount) {
+      let questAst = new Ast(Op.Quest);
+      questAst.flags = ast.flags;
+      questAst.sub.push(ast.sub[0]);
+      let questFrag = this.#compileQuest(questAst);
+      if (frag == null) {
+        frag = questFrag;
+      } else {
+        this.#patchFrag(frag as Frag, questFrag.start);
+        (frag as Frag).patches = questFrag.patches;
+      }
+      i = i + 1;
+    }
+    if (frag == null) {
+      return this.#compileEmpty();
+    }
+    return frag as Frag;
+  }
+
+  // Patch all dangling outputs in a fragment to point to the given state
+  #patchFrag(frag: Frag, target: State): void {
+    var i = 0;
+    while (i < frag.patches.length) {
+      let patch = frag.patches[i];
+      if (patch.field == 1) {
+        if (patch.state.out1 == null) {
+          patch.state.out1 = target;
+        }
+      } else {
+        if (patch.state.out2 == null) {
+          patch.state.out2 = target;
+        }
+      }
+      i = i + 1;
+    }
+  }
+}
+
+// ============================================================================
+// NFA Simulation - Thompson's algorithm for NFA execution with captures
+// ============================================================================
+
+// Global epoch counter to ensure unique listIds across all NFA simulations
+var nfaEpoch: i32 = 0;
+
+// A Thread represents the state of a single path through the NFA.
+// Following Go's implementation, each thread carries its own capture array.
+final class Thread {
+  state: State;
+  cap: Array<i32>;  // Capture positions: cap[2*n] = start, cap[2*n+1] = end
+
+  #new(state: State, numCap: i32) {
+    this.state = state;
+    this.cap = new Array<i32>();
+    // Initialize all captures to -1 (unmatched)
+    var i = 0;
+    while (i < numCap) {
+      this.cap.push(-1);
+      i = i + 1;
+    }
+  }
+
+  // Copy capture state from another thread
+  copyCapFrom(other: Thread): void {
+    var i = 0;
+    while (i < other.cap.length && i < this.cap.length) {
+      this.cap[i] = other.cap[i];
+      i = i + 1;
+    }
+  }
+}
+
+// Entry in the thread queue - matches Go's entry struct
+final class QueueEntry {
+  thread: Thread | null;
+
+  #new(thread: Thread | null) {
+    this.thread = thread;
+  }
+}
+
+final class NfaRunner {
+  #start: State;
+  #matchState: State;
+  #listId: i32;
+  #numCap: i32;        // Number of capture slots (2 * numGroups)
+  #matched: boolean;
+  #matchCap: Array<i32>;  // Capture positions for best match found
+
+  #new(start: State, matchState: State, numCap: i32) {
+    this.#start = start;
+    this.#matchState = matchState;
+    this.#numCap = numCap;
+    this.#matched = false;
+    this.#matchCap = new Array<i32>();
+    // Initialize match captures to -1
+    var i = 0;
+    while (i < numCap) {
+      this.#matchCap.push(0 - 1);
+      i = i + 1;
+    }
+    // Start from global epoch to avoid conflicts with previous simulations
+    nfaEpoch = nfaEpoch + 1000;
+    this.#listId = nfaEpoch;
+  }
+
+  // Check if the NFA matches anywhere in the input, starting search from startSearchPos
+  // Returns the start position of the match (relative to input start), or -1 if no match
+  // offset indicates where 'input' starts in the original full text (for anchor handling)
+  match(input: string, startSearchPos: i32, offset: i32): i32 {
+    let inputLen = input.length;
+    var startPos = startSearchPos;
+    while (startPos <= inputLen) {
+      this.#matched = false;
+      // Reset match captures
+      var i = 0;
+      while (i < this.#matchCap.length) {
+        this.#matchCap[i] = 0 - 1;
+        i = i + 1;
+      }
+      if (this.#matchAt(input, startPos, offset)) {
+        return startPos;
+      }
+      startPos = startPos + 1;
+    }
+    return 0 - 1;
+  }
+
+  // Get the capture array from the last successful match
+  getCaptures(): Array<i32> {
+    return this.#matchCap;
+  }
+
+  // Check if the NFA matches starting at the given position
+  // offset is the position in the original text where 'input' begins
+  #matchAt(input: string, startPos: i32, offset: i32): boolean {
+    let inputLen = input.length;
+    // Two lists for current and next threads
+    var runq = new Array<Thread>();
+    var nextq = new Array<Thread>();
+
+    // Create initial thread and set capture 0 (whole match start) to startPos
+    this.#listId = this.#listId + 1;
+    let initCap = new Array<i32>();
+    var i = 0;
+    while (i < this.#numCap) {
+      initCap.push(0 - 1);
+      i = i + 1;
+    }
+    if (this.#numCap > 0) {
+      initCap[0] = startPos;  // Record start of whole match
+    }
+    this.#addThread(runq, this.#start, startPos, initCap, input, inputLen);
+
+    var pos = startPos;
+    while (pos <= inputLen) {
+      var c: i32 = 0 - 1;
+      if (pos < inputLen) {
+        c = input.getByteAt(pos);
+      }
+
+      // If no threads left and we already have a match, we're done
+      if (runq.length == 0) {
+        break;
+      }
+
+      this.#listId = this.#listId + 1;
+      nextq = new Array<Thread>();
+
+      // Process each thread in current queue
+      i = 0;
+      while (i < runq.length) {
+        let t = runq[i];
+        let s = t.state;
+
+        if (s.type == StateType.Match) {
+          // Found a match - record capture end and save
+          if (this.#numCap > 1) {
+            t.cap[1] = pos;  // Record end of whole match
+          }
+          // Save this match - update if longer (greedy matching)
+          // For greedy, we want the longest match at the same start position
+          var shouldUpdate = !this.#matched;
+          if (!shouldUpdate && this.#numCap > 1) {
+            // Update if this match is longer
+            shouldUpdate = pos > this.#matchCap[1];
+          }
+          if (shouldUpdate) {
+            this.#matched = true;
+            var j = 0;
+            while (j < t.cap.length && j < this.#matchCap.length) {
+              this.#matchCap[j] = t.cap[j];
+              j = j + 1;
+            }
+            // Also update the end position
+            if (this.#numCap > 1) {
+              this.#matchCap[1] = pos;
+            }
+          }
+          i = i + 1;
+          continue;
+        }
+
+        if (s.type == StateType.Char) {
+          if (c == s.c && s.out1 != null) {
+            this.#addThread(nextq, s.out1 as State, pos + 1, t.cap, input, inputLen);
+          }
+        } else if (s.type == StateType.CharClass) {
+          if (c >= 0 && this.#matchCharClass(c, s.ranges) && s.out1 != null) {
+            this.#addThread(nextq, s.out1 as State, pos + 1, t.cap, input, inputLen);
+          }
+        } else if (s.type == StateType.Any) {
+          if (c >= 0 && s.out1 != null) {
+            this.#addThread(nextq, s.out1 as State, pos + 1, t.cap, input, inputLen);
+          }
+        } else if (s.type == StateType.AnyNotNL) {
+          if (c >= 0 && c != 10 && s.out1 != null) {
+            this.#addThread(nextq, s.out1 as State, pos + 1, t.cap, input, inputLen);
+          }
+        }
+        i = i + 1;
+      }
+
+      // Swap queues
+      runq = nextq;
+      pos = pos + 1;
+    }
+
+    // Check remaining threads for match state
+    i = 0;
+    while (i < runq.length) {
+      let t = runq[i];
+      if (t.state.type == StateType.Match) {
+        if (this.#numCap > 1) {
+          t.cap[1] = pos;
+        }
+        if (!this.#matched) {
+          this.#matched = true;
+          var j = 0;
+          while (j < t.cap.length && j < this.#matchCap.length) {
+            this.#matchCap[j] = t.cap[j];
+            j = j + 1;
+          }
+        }
+      }
+      i = i + 1;
+    }
+
+    return this.#matched;
+  }
+
+  // Add a thread to the queue, following epsilon transitions (splits, captures, anchors)
+  // This follows Go's add() function which handles InstCapture specially
+  #addThread(q: Array<Thread>, s: State, pos: i32, cap: Array<i32>, input: string, inputLen: i32): void {
+    if (s.lastList == this.#listId) {
+      return; // Already processed this state in this step
+    }
+    s.lastList = this.#listId;
+
+    if (s.type == StateType.Split) {
+      // Follow both epsilon transitions
+      if (s.out1 != null) {
+        this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
+      }
+      if (s.out2 != null) {
+        this.#addThread(q, s.out2 as State, pos, cap, input, inputLen);
+      }
+      return;
+    }
+
+    if (s.type == StateType.Capture) {
+      // Record capture position and continue to next state
+      let capIdx = s.cap;
+      if (capIdx < cap.length) {
+        let oldPos = cap[capIdx];
+        cap[capIdx] = pos;
+        if (s.out1 != null) {
+          this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
+        }
+        cap[capIdx] = oldPos;  // Restore for other branches
+      } else {
+        // Capture index out of bounds, just follow transition
+        if (s.out1 != null) {
+          this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
+        }
+      }
+      return;
+    }
+
+    // Anchor handling - epsilon transitions that only succeed at certain positions
+    if (s.type == StateType.BeginText) {
+      // ^ - only match at position 0
+      if (pos == 0 && s.out1 != null) {
+        this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
+      }
+      return;
+    }
+
+    if (s.type == StateType.EndText) {
+      // $ - only match at end of input
+      if (pos == inputLen && s.out1 != null) {
+        this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
+      }
+      return;
+    }
+
+    if (s.type == StateType.BeginLine) {
+      // ^m - match at position 0 or after newline
+      var atLineStart = pos == 0;
+      if (!atLineStart && pos > 0) {
+        atLineStart = input.getByteAt(pos - 1) == 10;  // newline
+      }
+      if (atLineStart && s.out1 != null) {
+        this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
+      }
+      return;
+    }
+
+    if (s.type == StateType.EndLine) {
+      // $m - match at end of input or before newline
+      var atLineEnd = pos == inputLen;
+      if (!atLineEnd && pos < inputLen) {
+        atLineEnd = input.getByteAt(pos) == 10;  // newline
+      }
+      if (atLineEnd && s.out1 != null) {
+        this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
+      }
+      return;
+    }
+
+    if (s.type == StateType.WordBoundary) {
+      // \b - match at word boundary (between word and non-word chars)
+      let atBoundary = this.#isWordBoundary(input, pos, inputLen);
+      if (atBoundary && s.out1 != null) {
+        this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
+      }
+      return;
+    }
+
+    if (s.type == StateType.NotWordBoundary) {
+      // \B - match at non-word boundary
+      let atBoundary = this.#isWordBoundary(input, pos, inputLen);
+      if (!atBoundary && s.out1 != null) {
+        this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
+      }
+      return;
+    }
+
+    // Non-epsilon state - create a thread and add to queue
+    let t = new Thread(s, this.#numCap);
+    var i = 0;
+    while (i < cap.length && i < t.cap.length) {
+      t.cap[i] = cap[i];
+      i = i + 1;
+    }
+    q.push(t);
+  }
+
+  // Check if position is a word boundary
+  #isWordBoundary(input: string, pos: i32, inputLen: i32): boolean {
+    let before = pos > 0 && this.#isWordChar(input.getByteAt(pos - 1));
+    let after = pos < inputLen && this.#isWordChar(input.getByteAt(pos));
+    // Word boundary is where one side is a word char and the other isn't
+    return before != after;
+  }
+
+  // Check if a character is a word character [A-Za-z0-9_]
+  #isWordChar(c: i32): boolean {
+    if (c >= 97 && c <= 122) { return true; }  // a-z
+    if (c >= 65 && c <= 90) { return true; }   // A-Z
+    if (c >= 48 && c <= 57) { return true; }   // 0-9
+    if (c == 95) { return true; }              // _
+    return false;
+  }
+
+  // Check if a character matches a character class
+  #matchCharClass(c: i32, ranges: Array<i32>): boolean {
+    var i = 0;
+    while (i < ranges.length) {
+      let lo = ranges[i];
+      let hi = ranges[i + 1];
+      if (c >= lo && c <= hi) {
+        return true;
+      }
+      i = i + 2;
+    }
+    return false;
+  }
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+export final class Match {
+  value: string;
+  index: i32;
+  groups: Array<string>;
+  #groupNames: Array<string>;  // Parallel to groups: name at index i corresponds to groups[i], empty string if unnamed
+
+  #new(value: string, index: i32, groups: Array<string>, groupNames: Array<string>) {
+    this.value = value;
+    this.index = index;
+    this.groups = groups;
+    this.#groupNames = groupNames;
+  }
+
+  // Get a captured group by name. Returns null if name not found or group didn't match.
+  group(name: string): string | null {
+    var i = 0;
+    while (i < this.#groupNames.length) {
+      if (this.#groupNames[i] == name) {
+        return this.groups[i];
+      }
+      i = i + 1;
+    }
+    return null;
+  }
+}
+
+/**
+ * Regular expression engine for pattern matching in strings.
+ *
+ * This is a Thompson NFA-based engine (similar to RE2 and Go's regexp) that
+ * guarantees O(n*m) time complexity where n is input length and m is pattern
+ * size. It never backtracks exponentially, making it safe for untrusted input.
+ *
+ * ## Basic Usage
+ *
+ * ```
+ * let re = new Regex('\\d+');          // Match one or more digits
+ * re.test('abc123');                   // true
+ * let m = re.exec('abc123');           // Match object with value='123'
+ * ```
+ *
+ * ## Template Literal (Recommended)
+ *
+ * Use the `regex` tag to avoid double-escaping backslashes:
+ *
+ * ```
+ * import {regex} from 'zena:regex';
+ * let re = regex`\d+`;                 // No double backslash needed
+ * let email = regex`\w+@\w+\.\w+`;
+ * ```
+ *
+ * ## Supported Features
+ *
+ * - **Literals**: `abc` matches "abc"
+ * - **Alternation**: `cat|dog` matches "cat" or "dog"
+ * - **Character classes**: `[a-z]`, `[^0-9]`, `\d`, `\D`, `\w`, `\W`, `\s`, `\S`
+ * - **Quantifiers**: `*` (0+), `+` (1+), `?` (0-1), `{n}`, `{n,}`, `{n,m}`
+ * - **Non-greedy**: `*?`, `+?`, `??`, `{n,m}?`
+ * - **Groups**: `(...)` capturing, `(?:...)` non-capturing
+ * - **Named groups**: `(?P<name>...)` with `match.group('name')`
+ * - **Anchors**: `^` start, `$` end, `\b` word boundary, `\B` non-boundary
+ * - **Any char**: `.` (any except newline), with `(?s)` matches newline too
+ * - **Escapes**: `\n`, `\t`, `\r`, `\.`, `\\`, etc.
+ * - **Flags**: `(?i)` case-insensitive, `(?m)` multiline, `(?s)` dot-all
+ *
+ * ## Main API
+ *
+ * - `test(input)` - Returns true if pattern matches anywhere in input
+ * - `exec(input, startIndex?)` - Returns Match object or null
+ * - `matchAll(input)` - Returns array of all Match objects
+ * - `replace(input, replacement)` - Replace first match
+ * - `replaceAll(input, replacement)` - Replace all matches
+ * - `split(input)` - Split string around matches
+ *
+ * ## Stateless Design
+ *
+ * Unlike JavaScript's RegExp, this class is stateless - there is no `lastIndex`
+ * property. Each method call is independent. To match from a specific position,
+ * pass `startIndex` to `exec()`:
+ *
+ * ```
+ * let re = regex`\w+`;
+ * let m1 = re.exec('foo bar', 0);      // matches 'foo' at 0
+ * let m2 = re.exec('foo bar', 4);      // matches 'bar' at 4
+ * ```
+ *
+ * ## Escaping in String Literals
+ *
+ * When using `new Regex(pattern)`, backslashes must be doubled because string
+ * literals process escapes first:
+ *
+ * ```
+ * new Regex('\\d+');     // Correct: matches digits
+ * new Regex('\d+');      // Wrong: \d is not a valid string escape
+ * ```
+ *
+ * The `regex` template tag avoids this by using raw strings.
+ */
+export final class Regex {
+  #pattern: string;
+  #flags: string;
+  #start: State | null;
+  #matchState: State;
+  #isLiteral: boolean;
+  #numCap: i32;  // Number of capture slots (2 * (numGroups + 1) for whole match + groups)
+  #groupNames: Array<string>;  // Names of capture groups (index 0 = group 1, empty string if unnamed)
+
+  #new(pattern: string, flags: string = '') {
+    this.#pattern = pattern;
+    this.#flags = flags;
+    this.#matchState = new State(StateType.Match);
+    this.#numCap = 2;  // Default: at least 2 for whole match [start, end]
+    this.#groupNames = new Array<string>();
+    // Check if pattern is a simple literal (no metacharacters)
+    this.#isLiteral = this.#checkLiteral(pattern);
+    if (this.#isLiteral) {
+      this.#start = null;
+    } else {
+      // Parse and compile the pattern
+      let flagsEnum = this.#parseFlags(flags);
+      let ast = Parser.parse(pattern, flagsEnum);
+      // Count capturing groups, collect names, and calculate numCap
+      this.#collectGroupNames(ast);
+      this.#numCap = 2 + this.#groupNames.length * 2;  // +2 for whole match, *2 for start/end pairs
+      let compiler = new NfaCompiler();
+      this.#start = compiler.compile(ast);
+    }
+  }
+
+  // Collect capture group names from AST (in order) into #groupNames
+  #collectGroupNames(ast: Ast): void {
+    if (ast.op == Op.Capture) {
+      // ast.name is the group name (empty string if unnamed)
+      this.#groupNames.push(ast.name);
+    }
+    var i = 0;
+    while (i < ast.sub.length) {
+      this.#collectGroupNames(ast.sub[i]);
+      i = i + 1;
+    }
+  }
+
+  // Check if pattern contains only literal characters
+  #checkLiteral(pattern: string): boolean {
+    var i = 0;
+    while (i < pattern.length) {
+      let c = pattern.getByteAt(i);
+      // Metacharacters: . * + ? [ ] ( ) { } | ^ $ \
+      if (c == 46 || c == 42 || c == 43 || c == 63 ||
+          c == 91 || c == 93 || c == 40 || c == 41 ||
+          c == 123 || c == 125 || c == 124 || c == 94 ||
+          c == 36 || c == 92) {
+        return false;
+      }
+      i = i + 1;
+    }
+    return true;
+  }
+
+  // Parse flag string into Flags enum
+  #parseFlags(flagStr: string): Flags {
+    var flags: i32 = 0;
+    var i = 0;
+    while (i < flagStr.length) {
+      let c = flagStr.getByteAt(i);
+      if (c == 105) {  // 'i'
+        flags = flags | (Flags.FoldCase as i32);
+      } else if (c == 115) {  // 's'
+        flags = flags | (Flags.DotNL as i32);
+      } else if (c == 109) {  // 'm' - multi-line, opposite of OneLine
+        // OneLine is the default, 'm' disables it
+      }
+      i = i + 1;
+    }
+    return flags as Flags;
+  }
+
+  test(input: string): boolean {
+    if (this.#isLiteral) {
+      return this.#findLiteral(input, 0) >= 0;
+    }
+    let runner = new NfaRunner(this.#start as State, this.#matchState, this.#numCap);
+    return runner.match(input, 0, 0) >= 0;
+  }
+
+  exec(input: string, startIndex: i32 = 0): Match | null {
+    if (this.#isLiteral) {
+      let index = this.#findLiteral(input, startIndex);
+      if (index < 0) {
+        return null;
+      }
+      return new Match(
+        input.sliceBytes(index, index + this.#pattern.length),
+        index,
+        new Array<string>(),
+        new Array<string>()  // No named groups in literal mode
+      );
+    }
+    let runner = new NfaRunner(this.#start as State, this.#matchState, this.#numCap);
+    let index = runner.match(input, startIndex, 0);
+    if (index < 0) {
+      return null;
+    }
+
+    // Get captures from the runner
+    let caps = runner.getCaptures();
+
+    // Extract match value from captures[0], captures[1]
+    var matchStart = index;
+    var matchEnd = index;
+    if (caps.length >= 2 && caps[0] >= 0 && caps[1] >= 0) {
+      matchStart = caps[0];
+      matchEnd = caps[1];
+    } else {
+      // Fallback to old method
+      matchEnd = index + this.#findMatchLength(input, index);
+    }
+
+    // Extract group strings from captures[2], captures[3], etc.
+    let groups = new Array<string>();
+    var i = 2;
+    while (i < caps.length) {
+      let groupStart = caps[i];
+      let groupEnd = caps[i + 1];
+      if (groupStart >= 0 && groupEnd >= 0 && groupEnd >= groupStart) {
+        groups.push(input.sliceBytes(groupStart, groupEnd));
+      } else {
+        groups.push('');  // Unmatched group
+      }
+      i = i + 2;
+    }
+
+    return new Match(
+      input.sliceBytes(matchStart, matchEnd),
+      matchStart,
+      groups,
+      this.#groupNames
+    );
+  }
+
+  // Find the length of the match starting at the given position
+  #findMatchLength(input: string, startPos: i32): i32 {
+    // Run NFA to find the shortest/longest match
+    // For now, find the longest match (greedy)
+    let inputLen = input.length;
+    var clist = new Array<State>();
+    var nlist = new Array<State>();
+    // Use global epoch to avoid conflicts with NfaRunner's listId
+    nfaEpoch = nfaEpoch + 1000;
+    var listId = nfaEpoch;
+    listId = listId + 1;
+    this.#addStateForLength(clist, this.#start as State, listId);
+    var pos = startPos;
+    var lastMatchPos = 0 - 1;
+    // Check if empty match is possible
+    var i = 0;
+    while (i < clist.length) {
+      if (clist[i].type == StateType.Match) {
+        lastMatchPos = pos;
+        break;
+      }
+      i = i + 1;
+    }
+    while (pos < inputLen && clist.length > 0) {
+      let c = input.getByteAt(pos);
+      listId = listId + 1;
+      nlist = new Array<State>();
+      i = 0;
+      while (i < clist.length) {
+        let s = clist[i];
+        if (s.type == StateType.Char) {
+          if (c == s.c && s.out1 != null) {
+            this.#addStateForLength(nlist, s.out1 as State, listId);
+          }
+        } else if (s.type == StateType.CharClass) {
+          if (this.#matchCharClassLocal(c, s.ranges) && s.out1 != null) {
+            this.#addStateForLength(nlist, s.out1 as State, listId);
+          }
+        } else if (s.type == StateType.Any) {
+          if (s.out1 != null) {
+            this.#addStateForLength(nlist, s.out1 as State, listId);
+          }
+        } else if (s.type == StateType.AnyNotNL) {
+          if (c != 10 && s.out1 != null) {
+            this.#addStateForLength(nlist, s.out1 as State, listId);
+          }
+        }
+        i = i + 1;
+      }
+      // Swap lists
+      clist = nlist;
+      pos = pos + 1;
+      // Check if we have a match
+      i = 0;
+      while (i < clist.length) {
+        if (clist[i].type == StateType.Match) {
+          lastMatchPos = pos;
+          break;
+        }
+        i = i + 1;
+      }
+    }
+    if (lastMatchPos < 0) {
+      return 0;
+    }
+    return lastMatchPos - startPos;
+  }
+
+  #addStateForLength(list: Array<State>, s: State, listId: i32): void {
+    if (s.lastList == listId) {
+      return;
+    }
+    s.lastList = listId;
+    if (s.type == StateType.Split) {
+      if (s.out1 != null) {
+        this.#addStateForLength(list, s.out1 as State, listId);
+      }
+      if (s.out2 != null) {
+        this.#addStateForLength(list, s.out2 as State, listId);
+      }
+      return;
+    }
+    if (s.type == StateType.Capture) {
+      // Follow epsilon transition through capture states
+      if (s.out1 != null) {
+        this.#addStateForLength(list, s.out1 as State, listId);
+      }
+      return;
+    }
+    // Follow anchors and boundaries as epsilon transitions for length calculation
+    if (s.type == StateType.BeginText || s.type == StateType.EndText ||
+        s.type == StateType.BeginLine || s.type == StateType.EndLine ||
+        s.type == StateType.WordBoundary || s.type == StateType.NotWordBoundary) {
+      if (s.out1 != null) {
+        this.#addStateForLength(list, s.out1 as State, listId);
+      }
+      return;
+    }
+    list.push(s);
+  }
+
+  #matchCharClassLocal(c: i32, ranges: Array<i32>): boolean {
+    var i = 0;
+    while (i < ranges.length) {
+      let lo = ranges[i];
+      let hi = ranges[i + 1];
+      if (c >= lo && c <= hi) {
+        return true;
+      }
+      i = i + 2;
+    }
+    return false;
+  }
+
+  matchAll(input: string): Array<Match> {
+    let matches = new Array<Match>();
+    if (this.#isLiteral) {
+      let patternLen = this.#pattern.length;
+      if (patternLen == 0) {
+        // Empty pattern matches at every position (0, 1, 2, ..., input.length)
+        var i = 0;
+        while (i <= input.length) {
+          matches.push(new Match('', i, new Array<string>(), new Array<string>()));
+          i = i + 1;
+        }
+        return matches;
+      }
+      var pos = 0;
+      while (pos <= input.length - patternLen) {
+        let index = this.#findLiteral(input, pos);
+        if (index < 0) {
+          break;
+        }
+        matches.push(new Match(
+          input.sliceBytes(index, index + patternLen),
+          index,
+          new Array<string>(),
+          new Array<string>()  // No named groups in literal mode
+        ));
+        pos = index + patternLen;
+      }
+      return matches;
+    }
+    // NFA matching
+    let inputLen = input.length;
+    var pos = 0;
+    var lastMatchEnd = 0 - 1;  // Track where last match ended
+    while (pos <= inputLen) {
+      let runner = new NfaRunner(this.#start as State, this.#matchState, this.#numCap);
+      // Pass full input and start search position - this preserves anchor semantics
+      let relIndex = runner.match(input, pos, 0);
+      if (relIndex < 0) {
+        break;
+      }
+      let absIndex = relIndex;  // relIndex is now relative to full input
+      let matchLen = this.#findMatchLength(input, absIndex);
+      
+      // Skip zero-width match at position where previous non-empty match ended
+      // This prevents duplicate matches like "abc" followed by "" at same position
+      if (matchLen == 0 && absIndex == lastMatchEnd) {
+        pos = absIndex + 1;
+        continue;
+      }
+
+      // Extract captures from the runner
+      let caps = runner.getCaptures();
+      var matchStart = absIndex;
+      var matchEnd = absIndex + matchLen;
+      if (caps.length >= 2 && caps[0] >= 0 && caps[1] >= 0) {
+        matchStart = caps[0];
+        matchEnd = caps[1];
+      }
+
+      // Extract group strings from captures[2], captures[3], etc.
+      let groups = new Array<string>();
+      var capIdx = 2;
+      while (capIdx < caps.length) {
+        let groupStart = caps[capIdx];
+        let groupEnd = caps[capIdx + 1];
+        if (groupStart >= 0 && groupEnd >= 0 && groupEnd >= groupStart) {
+          groups.push(input.sliceBytes(groupStart, groupEnd));
+        } else {
+          groups.push('');  // Unmatched group
+        }
+        capIdx = capIdx + 2;
+      }
+      
+      matches.push(new Match(
+        input.sliceBytes(matchStart, matchEnd),
+        matchStart,
+        groups,
+        this.#groupNames
+      ));
+      lastMatchEnd = absIndex + matchLen;
+      
+      // For zero-width matches, advance by 1 to make progress
+      // but the recorded match is still empty
+      if (matchLen == 0) {
+        pos = absIndex + 1;
+      } else {
+        pos = absIndex + matchLen;
+      }
+    }
+    return matches;
+  }
+
+  replace(input: string, replacement: string): string {
+    let result = this.exec(input);
+    if (result == null) {
+      return input;
+    }
+    let m = result as Match;
+    let before = input.sliceBytes(0, m.index);
+    let after = input.sliceBytes(m.index + m.value.length, input.length);
+    return before + replacement + after;
+  }
+
+  // TODO: use a union type when https://github.com/justinfagnani/zena/issues/58
+  // is fixed.
+  replace(input: string, replacer: (m: Match) => string): string {
+    let result = this.exec(input);
+    if (result == null) {
+      return input;
+    }
+    let m = result as Match;
+    let before = input.sliceBytes(0, m.index);
+    let after = input.sliceBytes(m.index + m.value.length, input.length);
+    return before + replacer(m) + after;
+  }
+
+  replaceAll(input: string, replacement: string): string {
+    return this.#replaceAllImpl(input, (m: Match) => replacement);
+  }
+
+  replaceAll(input: string, replacer: (m: Match) => string): string {
+    return this.#replaceAllImpl(input, replacer);
+  }
+
+  #replaceAllImpl(input: string, replacer: (m: Match) => string): string {
+    let matches = this.matchAll(input);
+    // Special case: empty pattern on empty input returns no matches,
+    // but should produce one replacement
+    if (matches.length == 0) {
+      if (this.#pattern.length == 0 && input.length == 0) {
+        return replacer(new Match('', 0, new Array<string>(), new Array<string>()));
+      }
+      return input;
+    }
+    var result = '';
+    var pos = 0;
+    var i = 0;
+    while (i < matches.length) {
+      let m = matches[i];
+      result = result + input.sliceBytes(pos, m.index) + replacer(m);
+      // For zero-width matches, advance by 1 to include the character after
+      if (m.value.length == 0) {
+        if (m.index < input.length) {
+          result = result + input.sliceBytes(m.index, m.index + 1);
+        }
+        pos = m.index + 1;
+      } else {
+        pos = m.index + m.value.length;
+      }
+      i = i + 1;
+    }
+    // Add remaining input (only if we didn't already consume it)
+    if (pos <= input.length) {
+      result = result + input.sliceBytes(pos, input.length);
+    }
+    return result;
+  }
+
+  split(input: string): Array<string> {
+    let parts = new Array<string>();
+    if (this.#isLiteral) {
+      let patternLen = this.#pattern.length;
+      if (patternLen == 0) {
+        // Empty pattern splits between every character
+        var i = 0;
+        while (i < input.length) {
+          parts.push(input.sliceBytes(i, i + 1));
+          i = i + 1;
+        }
+        return parts;
+      }
+      var pos = 0;
+      while (pos <= input.length - patternLen) {
+        let index = this.#findLiteral(input, pos);
+        if (index < 0) {
+          break;
+        }
+        parts.push(input.sliceBytes(pos, index));
+        pos = index + patternLen;
+      }
+      parts.push(input.sliceBytes(pos, input.length));
+      return parts;
+    }
+    // NFA matching
+    let matches = this.matchAll(input);
+    if (matches.length == 0) {
+      parts.push(input);
+      return parts;
+    }
+    var pos = 0;
+    var lastMatchStart = 0;
+    var i = 0;
+    while (i < matches.length) {
+      let m = matches[i];
+      let matchEnd = m.index + m.value.length;
+      // Go regexp compatibility: skip adding part when match ends at position 0
+      // This prevents an empty string at the start when pattern matches empty at position 0
+      if (matchEnd != 0) {
+        parts.push(input.sliceBytes(pos, m.index));
+      }
+      pos = matchEnd;
+      lastMatchStart = m.index;
+      i = i + 1;
+    }
+    // Add final part if the last match didn't start at the end of input
+    // (Go's behavior: checks match[0] != len(s), not match[1])
+    if (lastMatchStart != input.length) {
+      parts.push(input.sliceBytes(pos, input.length));
+    }
+    return parts;
+  }
+
+  #findLiteral(input: string, startPos: i32): i32 {
+    let patternLen = this.#pattern.length;
+    let inputLen = input.length;
+    if (patternLen == 0) {
+      if (startPos <= inputLen) {
+        return startPos;
+      }
+      return 0 - 1;
+    }
+    var start = startPos;
+    if (start < 0) {
+      start = 0;
+    }
+    if (patternLen > inputLen) {
+      return 0 - 1;
+    }
+    let max = inputLen - patternLen;
+    var i = start;
+    while (i <= max) {
+      var j = 0;
+      while (j < patternLen) {
+        if (input.getByteAt(i + j) != this.#pattern.getByteAt(j)) {
+          break;
+        }
+        j = j + 1;
+      }
+      if (j == patternLen) {
+        return i;
+      }
+      i = i + 1;
+    }
+    return 0 - 1;
+  }
+}
+
+// ============================================================================
+// Tagged Template Literal
+// ============================================================================
+
+/**
+ * Tagged template literal for creating Regex objects with raw strings.
+ * Backslashes don't need escaping:
+ *   let re = regex`\d+`;       // instead of Regex.compile("\\d+")
+ *   let re = regex`\w+@\w+`;   // instead of Regex.compile("\\w+@\\w+")
+ */
+export let regex = (strings: TemplateStringsArray, values: FixedArray<string>) => {
+  // Simple case: no interpolation, just use the raw string
+  if (values.length == 0) {
+    return new Regex(strings.raw[0]);
+  }
+  let numParts = strings.length * 2 - 1;
+  let parts = new Array<string>(numParts);
+  // With interpolation: interleave strings and values
+  var pattern = strings.raw[0];
+  var i = 0;
+  while (i < values.length) {
+    parts[i] = strings.raw[i];
+    parts[i + 1] = values[i];
+    i = i + 1;
+  }
+  parts[numParts - 1] = strings.raw[strings.length - 1];
+  return new Regex(pattern);
+};

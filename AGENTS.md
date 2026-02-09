@@ -608,5 +608,4 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
       - Compile-time constant expressions (string literals, immutable arrays, records/tuples, TemplateStringsArray as WASM constant globals instead of lazy initialization).
     - **Standard Library & Runtime**:
       - More operators: exponentiation.
-      - Regexes.
       - Workers.

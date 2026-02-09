@@ -261,28 +261,55 @@ If patterns are constructed from user input:
 - **JIT Compilation**: If Zena ever supports code generation at runtime
 - **PCRE Compatibility**: Support more advanced features for JS migration
 
-## Implementation Plan
+## Implementation Status
 
-1.  **Phase 1**: Basic implementation
-    - Parser for regex patterns
-    - Thompson NFA construction
-    - Basic matching (`test`, `exec`)
-    - String operations (`replace`, `split`)
+### Phase 1: Basic Implementation ✅ COMPLETE
 
-2.  **Phase 2**: Optimization
-    - Compile-time pattern parsing
-    - Specialized code generation for static patterns
-    - Performance benchmarking
+- [x] Parser for regex patterns (Go regexp/syntax-style AST)
+- [x] Thompson NFA construction with O(n\*m) time guarantee
+- [x] Basic matching (`test`, `exec`)
+- [x] String operations (`replace`, `replaceAll`, `split`, `matchAll`)
+- [x] Literal pattern optimization (bypass NFA for simple strings)
+- [x] Capture groups in `Match.groups`
+- [x] Named capture groups (`(?P<name>...)` with `Match.group(name)`)
+- [x] Flags: `(?i)` case-insensitive, `(?m)` multiline, `(?s)` dot-matches-newline
+- [x] Non-greedy quantifiers (`*?`, `+?`, `??`)
 
-3.  **Phase 3**: Advanced features
-    - Unicode support
-    - Named capture groups
-    - Additional assertions
+**Supported Features**:
+
+- Literals, `.` (any char), `^`, `$`
+- Character classes: `[abc]`, `[a-z]`, `[^a]`
+- Escapes: `\d`, `\w`, `\s`, `\D`, `\W`, `\S`, `\b`, `\B`, `\n`, `\r`, `\t`
+- Quantifiers: `*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}`
+- Non-greedy: `*?`, `+?`, `??`
+- Groups: `(...)`, `(?:...)` non-capturing, `(?P<name>...)` named
+- Alternation: `|`
+- Escaped metacharacters: `\.`, `\*`, etc.
+- Inline flags: `(?i)`, `(?m)`, `(?s)`, `(?U)` and combinations
+
+**Test Coverage**: 423 tests ported from Go's regexp package (find, replace, split).
+
+### Phase 2: Optimization (Future)
+
+- [ ] Compile-time pattern parsing for static patterns
+- [ ] Specialized code generation for static patterns
+- [ ] Performance benchmarking vs other engines
+
+### Phase 3: Advanced Features (Future)
+
+- [ ] Unicode properties (`\p{Letter}`, `\p{Digit}`)
+- [ ] Full Unicode mode flag
+
+**Not Supported (by design)**:
+
+- Backreferences - require backtracking, violate O(n\*m) guarantee
+- Lookahead/lookbehind - same reason
+- These features enable ReDoS attacks and are intentionally omitted
 
 ## Open Questions
 
-1.  **Engine Choice**: Should we prioritize simplicity (pure Zena) or
-    performance (external library)?
+1.  ~~**Engine Choice**: Should we prioritize simplicity (pure Zena) or
+    performance (external library)?~~ **Resolved**: Pure Zena implementation chosen.
 
 2.  **Unicode**: What level of Unicode support is required initially?
 
