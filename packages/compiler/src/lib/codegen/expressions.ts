@@ -4835,7 +4835,9 @@ function generateIdentifier(
   // Use resolved binding from the checker
   const binding = ctx.semanticContext.getResolvedBinding(expr);
   if (binding) {
-    if (generateFromBinding(ctx, binding, body, expr.name)) {
+    // Resolve imports to their actual target (e.g., imported enum -> original enum declaration)
+    const resolved = resolveImport(binding);
+    if (generateFromBinding(ctx, resolved, body, expr.name)) {
       return;
     }
   }
@@ -5835,9 +5837,40 @@ function generateRecordFieldFromBinding(
 ): boolean {
   const {recordType, fieldName} = binding;
 
-  // Get the struct type index for this record type
-  const objectType = inferType(ctx, objectExpr);
-  const structTypeIndex = getHeapTypeIndex(ctx, objectType);
+  // For enum access, we need to use the enum's actual struct type, not a canonical record type.
+  // Check if the object expression is an identifier that resolves to a global enum.
+  let structTypeIndex = -1;
+  if (objectExpr.type === NodeType.Identifier) {
+    const objBinding = ctx.semanticContext.getResolvedBinding(
+      objectExpr as Identifier,
+    );
+    if (objBinding) {
+      const resolved = resolveImport(objBinding);
+      if (resolved.kind === 'global') {
+        const globalBinding =
+          resolved as import('../bindings.js').GlobalBinding;
+        // Check if this global is an enum (declaration is EnumDeclaration)
+        if (globalBinding.declaration.type === NodeType.EnumDeclaration) {
+          // Get the global's registered type directly (this is the enum's struct type)
+          const globalIndex = ctx.getGlobalIndexByDecl(
+            globalBinding.declaration,
+          );
+          if (globalIndex !== undefined) {
+            const globalInfo = ctx.getGlobalByIndex(globalIndex);
+            if (globalInfo) {
+              structTypeIndex = getHeapTypeIndex(ctx, globalInfo.type);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback to inferType if not an enum or couldn't resolve
+  if (structTypeIndex === -1) {
+    const objectType = inferType(ctx, objectExpr);
+    structTypeIndex = getHeapTypeIndex(ctx, objectType);
+  }
 
   if (structTypeIndex === -1) {
     return false;

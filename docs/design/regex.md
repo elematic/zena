@@ -42,9 +42,9 @@ const pattern = regex`ab+c`;
 
 **Benefits of template literals**:
 
--   Raw strings (no excess escaping, e.g., `\d` instead of `\\d`)
--   Composition with expressions (e.g., `` regex`user_${userId}` ``)
--   Potential for compile-time optimization of static patterns
+- Raw strings (no excess escaping, e.g., `\d` instead of `\\d`)
+- Composition with expressions (e.g., `` regex`user_${userId}` ``)
+- Potential for compile-time optimization of static patterns
 
 ## Implementation Strategy
 
@@ -59,15 +59,15 @@ Implement a regex engine entirely in Zena.
 
 **Pros**:
 
--   No external dependencies
--   Full control over behavior and optimizations
--   Self-contained in the Zena ecosystem
+- No external dependencies
+- Full control over behavior and optimizations
+- Self-contained in the Zena ecosystem
 
 **Cons**:
 
--   Significant implementation effort
--   Performance may lag behind mature engines
--   Requires implementing a full NFA/DFA engine
+- Significant implementation effort
+- Performance may lag behind mature engines
+- Requires implementing a full NFA/DFA engine
 
 #### Option 2: External WASM Library
 
@@ -75,23 +75,23 @@ Bundle or link to an existing regex library compiled to WASM.
 
 **Candidates**:
 
--   **RE2** (Google's regex library): Linear time guarantees, no backtracking
-    -   re2-wasm (npm package): Note - this is a Node.js
-      package, not directly usable
-    -   Would need a pure WASM build of RE2
--   **Rust regex crate**: Well-optimized, could be compiled to WASM
--   **Custom minimal engine**: Thompson NFA for basic patterns
+- **RE2** (Google's regex library): Linear time guarantees, no backtracking
+  - re2-wasm (npm package): Note - this is a Node.js
+    package, not directly usable
+  - Would need a pure WASM build of RE2
+- **Rust regex crate**: Well-optimized, could be compiled to WASM
+- **Custom minimal engine**: Thompson NFA for basic patterns
 
 **Pros**:
 
--   Mature, battle-tested implementations
--   Better performance for complex patterns
+- Mature, battle-tested implementations
+- Better performance for complex patterns
 
 **Cons**:
 
--   External dependency
--   Binary size impact
--   Integration complexity
+- External dependency
+- Binary size impact
+- Integration complexity
 
 ### Recommended Approach
 
@@ -116,9 +116,9 @@ interpolation):
 
 If needed, add support for:
 
--   Backreferences (requires backtracking engine)
--   Look-ahead/look-behind assertions
--   Named capture groups
+- Backreferences (requires backtracking engine)
+- Look-ahead/look-behind assertions
+- Named capture groups
 
 ## Proposed API
 
@@ -177,24 +177,24 @@ const caseInsensitive = new Regex('(?i)hello');
 
 **Supported Flags**:
 
--   `i`: Case-insensitive matching
--   `m`: Multi-line mode (^ and $ match line boundaries)
--   `s`: Dot matches newline
--   `g`: Global matching (affects `replace`, `matchAll`)
+- `i`: Case-insensitive matching
+- `m`: Multi-line mode (^ and $ match line boundaries)
+- `s`: Dot matches newline
+- `g`: Global matching (affects `replace`, `matchAll`)
 
 ## Unicode Support
 
 Given Zena's UTF-8 string representation:
 
--   Patterns match against UTF-8 byte sequences by default
--   Character classes (`\w`, `\d`, `\s`) operate on ASCII by default
--   A `u` flag or Unicode mode can enable full Unicode support (future)
+- Patterns match against UTF-8 byte sequences by default
+- Character classes (`\w`, `\d`, `\s`) operate on ASCII by default
+- A `u` flag or Unicode mode can enable full Unicode support (future)
 
 **Considerations**:
 
--   Matching grapheme clusters vs code points vs bytes
--   Unicode character properties (`\p{Letter}`)
--   Normalization requirements
+- Matching grapheme clusters vs code points vs bytes
+- Unicode character properties (`\p{Letter}`)
+- Normalization requirements
 
 ## Module System Integration
 
@@ -219,9 +219,9 @@ Regex engines can be large. To minimize impact:
 
 **Estimated Size Impact**:
 
--   Minimal engine (literals, basic character classes): ~2-5 KB
--   Full NFA engine (all basic features): ~10-20 KB
--   With Unicode tables: +50-100 KB
+- Minimal engine (literals, basic character classes): ~2-5 KB
+- Full NFA engine (all basic features): ~10-20 KB
+- With Unicode tables: +50-100 KB
 
 ## Security Considerations
 
@@ -232,52 +232,52 @@ exponential backtracking on certain inputs.
 
 **Mitigation**:
 
--   Use Thompson NFA (linear time guarantee)
--   If backtracking is needed, implement timeouts or step limits
--   Consider static analysis of patterns for risky constructs
+- Use Thompson NFA (linear time guarantee)
+- If backtracking is needed, implement timeouts or step limits
+- Consider static analysis of patterns for risky constructs
 
 ### Pattern Injection
 
 If patterns are constructed from user input:
 
--   Provide an `escape()` function to sanitize strings
--   Document risks of dynamic pattern construction
+- Provide an `escape()` function to sanitize strings
+- Document risks of dynamic pattern construction
 
 ## Comparison with Other Languages
 
-| Feature                | JavaScript       | Rust             | Zena (Proposed)  |
-| ---------------------- | ---------------- | ---------------- | ---------------- |
-| Literal Syntax         | `/pattern/flags` | None             | None             |
-| Constructor            | `new RegExp()`   | `Regex::new()`   | `new Regex()`    |
-| Backtracking           | Yes              | No (by default)  | No (Phase 1)     |
-| Unicode Support        | Yes (`u` flag)   | Yes              | Future           |
-| Compile-Time Patterns  | No               | Yes (`regex!`)   | Future (Phase 2) |
+| Feature               | JavaScript       | Rust            | Zena (Proposed)  |
+| --------------------- | ---------------- | --------------- | ---------------- |
+| Literal Syntax        | `/pattern/flags` | None            | None             |
+| Constructor           | `new RegExp()`   | `Regex::new()`  | `new Regex()`    |
+| Backtracking          | Yes              | No (by default) | No (Phase 1)     |
+| Unicode Support       | Yes (`u` flag)   | Yes             | Future           |
+| Compile-Time Patterns | No               | Yes (`regex!`)  | Future (Phase 2) |
 
 ## Future Considerations
 
--   **Compile-Time Validation**: Report pattern syntax errors at compile time
-    for static patterns
--   **Code Generation**: Generate specialized matchers for static patterns
--   **JIT Compilation**: If Zena ever supports code generation at runtime
--   **PCRE Compatibility**: Support more advanced features for JS migration
+- **Compile-Time Validation**: Report pattern syntax errors at compile time
+  for static patterns
+- **Code Generation**: Generate specialized matchers for static patterns
+- **JIT Compilation**: If Zena ever supports code generation at runtime
+- **PCRE Compatibility**: Support more advanced features for JS migration
 
 ## Implementation Plan
 
 1.  **Phase 1**: Basic implementation
-    -   Parser for regex patterns
-    -   Thompson NFA construction
-    -   Basic matching (`test`, `exec`)
-    -   String operations (`replace`, `split`)
+    - Parser for regex patterns
+    - Thompson NFA construction
+    - Basic matching (`test`, `exec`)
+    - String operations (`replace`, `split`)
 
 2.  **Phase 2**: Optimization
-    -   Compile-time pattern parsing
-    -   Specialized code generation for static patterns
-    -   Performance benchmarking
+    - Compile-time pattern parsing
+    - Specialized code generation for static patterns
+    - Performance benchmarking
 
 3.  **Phase 3**: Advanced features
-    -   Unicode support
-    -   Named capture groups
-    -   Additional assertions
+    - Unicode support
+    - Named capture groups
+    - Additional assertions
 
 ## Open Questions
 

@@ -1014,6 +1014,17 @@ export class CodegenContext {
     return this.globals.get(name);
   }
 
+  public getGlobalByIndex(
+    index: number,
+  ): {index: number; type: number[]} | undefined {
+    for (const info of this.globals.values()) {
+      if (info.index === index) {
+        return info;
+      }
+    }
+    return undefined;
+  }
+
   // ===== Qualified Name and Import Resolution =====
 
   /**

@@ -320,10 +320,10 @@ async function runExecutionTest(
   directives: TestDirectives,
   relPath: string,
 ) {
-  // Mock host
+  // Mock host that supports relative imports
   const host = {
     load: (path: string) => {
-      if (path === '/main.zena') return content;
+      if (path === filePath) return content;
       if (path.startsWith('zena:')) {
         // Load stdlib
         const name = path.substring(5);
@@ -336,14 +336,27 @@ async function runExecutionTest(
           throw new Error(`Stdlib module not found: ${name}`);
         }
       }
+      // Try to load the file directly (it's an absolute path from resolve)
+      if (existsSync(path)) {
+        return readFileSync(path, 'utf-8');
+      }
       throw new Error(`File not found: ${path}`);
     },
-    resolve: (specifier: string, referrer: string) => specifier,
+    resolve: (specifier: string, referrer: string) => {
+      // Handle zena: imports
+      if (specifier.startsWith('zena:')) return specifier;
+      // Handle relative imports
+      if (specifier.startsWith('./') || specifier.startsWith('../')) {
+        const referrerDir = dirname(referrer);
+        return resolve(referrerDir, specifier);
+      }
+      return specifier;
+    },
   };
 
   const compiler = new Compiler(host);
   // compile() does type checking and returns all modules with their diagnostics
-  const modules = compiler.compile('/main.zena');
+  const modules = compiler.compile(filePath);
 
   // Check for errors from individual modules
   const diagnostics = modules.flatMap((m) => m.diagnostics ?? []);
@@ -356,7 +369,7 @@ async function runExecutionTest(
   // Pass modules directly to codegen (no bundling needed)
   const codegen = new CodeGenerator(
     modules,
-    '/main.zena',
+    filePath,
     compiler.semanticContext,
     compiler.checkerContext,
   );

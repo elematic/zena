@@ -499,7 +499,7 @@ export class CodeGenerator {
     // Register the enum declaration for binding-based lookup
     this.#ctx.registerGlobalByDecl(decl, globalIndex);
 
-    if (decl.exported) {
+    if (this.#ctx.shouldExport(decl)) {
       this.#ctx.module.addExport(
         decl.name.name,
         ExportDesc.Global,
