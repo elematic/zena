@@ -1,6 +1,7 @@
 import { Array } from 'zena:growable-array';
 import { Error } from 'zena:error';
 import { FixedArray } from 'zena:fixed-array';
+import { StringBuilder } from 'zena:string-builder';
 import { TemplateStringsArray } from 'zena:template-strings-array';
 
 // ============================================================================
@@ -2388,16 +2389,17 @@ export final class Regex {
       }
       return input;
     }
-    var result = '';
+    let sb = new StringBuilder(input.length);
     var pos = 0;
     var i = 0;
     while (i < matches.length) {
       let m = matches[i];
-      result = result + input.sliceBytes(pos, m.index) + replacer(m);
+      sb.append(input.sliceBytes(pos, m.index));
+      sb.append(replacer(m));
       // For zero-width matches, advance by 1 to include the character after
       if (m.value.length == 0) {
         if (m.index < input.length) {
-          result = result + input.sliceBytes(m.index, m.index + 1);
+          sb.append(input.sliceBytes(m.index, m.index + 1));
         }
         pos = m.index + 1;
       } else {
@@ -2407,9 +2409,9 @@ export final class Regex {
     }
     // Add remaining input (only if we didn't already consume it)
     if (pos <= input.length) {
-      result = result + input.sliceBytes(pos, input.length);
+      sb.append(input.sliceBytes(pos, input.length));
     }
-    return result;
+    return sb.toString();
   }
 
   split(input: string): Array<string> {
