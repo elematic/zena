@@ -114,13 +114,13 @@ interface Array<T> extends Sequence<T> {
 
 Abstractions that make collection usage ergonomic and enable functional patterns.
 
-| Type            | Description                             | Priority |
-| --------------- | --------------------------------------- | -------- |
-| `Iterator<T>`   | Stateful iterator interface             | High     |
-| `Iterable<T>`   | Collection that can produce an Iterator | High     |
-| `Comparable<T>` | Interface for ordered comparisons       | Medium   |
-| `Hashable`      | Interface for custom hash codes         | Medium   |
-| `StringBuilder` | Efficient string construction           | Medium   |
+| Type            | Description                             | Priority  |
+| --------------- | --------------------------------------- | --------- |
+| `Iterator<T>`   | Stateful iterator interface             | ✅ Done   |
+| `Iterable<T>`   | Collection that can produce an Iterator | ✅ Done   |
+| `Comparable<T>` | Interface for ordered comparisons       | Medium    |
+| `Hashable`      | Interface for custom hash codes         | Medium    |
+| `StringBuilder` | Efficient string construction           | ✅ Done   |
 
 **Iterator Design**
 
@@ -464,22 +464,29 @@ interface Hashable {
 
 #### StringBuilder
 
-Efficient mutable string building:
+Efficient mutable string building using a rope/chunked approach:
 
 ```zena
-class StringBuilder {
-  #buffer: ByteArray;
-  #length: i32;
+import {StringBuilder} from 'zena:string-builder';
 
-  #new() {
-    /* ... */
-  }
+final class StringBuilder {
+  #new(capacity: i32 = 16);
 
-  append(s: string): StringBuilder;
-  appendChar(c: i32): StringBuilder; // Byte value
-  toString(): string;
+  length: i32 { get; }      // Current length in bytes
+  capacity: i32 { get; }    // Total allocated capacity
+
+  append(s: String): StringBuilder;
+  appendByte(b: i32): StringBuilder;
+  toString(): String;
   clear(): void;
 }
+```
+
+**Implementation**: Uses a list of `ByteArray` chunks that grow as needed
+(doubling strategy). The `append` method copies string bytes directly without
+slice allocation when the string fits in the current chunk.
+
+**Status**: ✅ Implemented in `zena:string-builder`
 ```
 
 **Alternatives Considered**:
@@ -739,10 +746,10 @@ import {HashMap} from 'zena:collections';
 
 ### Immediate (Blocks MVP Programs)
 
-1.  [ ] `Array<T>` / `GrowableArray<T>` - Growable array is essential for parsers
-2.  [ ] `HashMap<K, V>` - Key-value storage for symbol tables, caches
-3.  [ ] `Iterator<T>` / `Iterable<T>` - Iteration protocol
-4.  [ ] `StringBuilder` - Efficient string construction
+1.  [x] `Array<T>` / `GrowableArray<T>` - Growable array is essential for parsers
+2.  [x] `HashMap<K, V>` - Key-value storage for symbol tables, caches
+3.  [x] `Iterator<T>` / `Iterable<T>` - Iteration protocol
+4.  [x] `StringBuilder` - Efficient string construction
 
 ### Short-term (Quality of Life)
 

@@ -34,6 +34,14 @@ export final class String {
    *
    * Used internally by template literals.
    */
+  /**
+   * Creates a String from a ByteArray with given bounds and encoding.
+   * This is used by StringBuilder and other internal operations.
+   */
+  static fromByteArray(data: ByteArray, start: i32, end: i32, encoding: Encoding): String {
+    return new String(data, start, end, encoding);
+  }
+
   static fromParts(parts: array<String>): String {
     // First pass: calculate total length
     let partsLen = __array_len(parts);
@@ -115,6 +123,21 @@ export final class String {
     let newData = __byte_array_new(len);
     __byte_array_copy(newData, 0, this.#data, this.#start, len);
     return new String(newData, 0, len, this.#encoding);
+  }
+
+  /**
+   * Copies bytes from this string to a target ByteArray.
+   * @param target The target ByteArray to copy to.
+   * @param targetOffset The offset in target to start writing.
+   * @param start Start byte offset in this string (default: 0).
+   * @param length Number of bytes to copy (default: rest of string from start).
+   */
+  copyBytesTo(target: ByteArray, targetOffset: i32, start: i32 = 0, length: i32 = -1): void {
+    var len = length;
+    if (len < 0) {
+      len = this.#end - this.#start - start;
+    }
+    __byte_array_copy(target, targetOffset, this.#data, this.#start + start, len);
   }
 
   // Concatenation operator - always allocates a new backing array

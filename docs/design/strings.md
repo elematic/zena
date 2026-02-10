@@ -157,23 +157,28 @@ small cost for O(1) slicing. The extra `struct.get` for offset calculation is
 For efficient string construction without repeated allocations:
 
 ```zena
-class StringBuilder {
-  #buffer: ByteArray;
-  #length: i32;
-  #encoding: i32;
+import {StringBuilder} from 'zena:string-builder';
 
-  #new(capacity: i32 = 16, encoding: i32 = 0) {
-    this.#buffer = new ByteArray(capacity);
-    this.#length = 0;
-    this.#encoding = encoding;
-  }
+final class StringBuilder {
+  #new(capacity: i32 = 16);
 
-  append(s: String): StringBuilder { /* ... */ }
-  appendByte(b: i32): StringBuilder { /* ... */ }
-  toString(): String { /* ... */ }
-  clear(): void { /* ... */ }
+  length: i32 { get; }      // Current length in bytes
+  capacity: i32 { get; }    // Total allocated capacity
+
+  append(s: String): StringBuilder;
+  appendByte(b: i32): StringBuilder;
+  toString(): String;
+  clear(): void;
 }
 ```
+
+**Implementation**: Uses a rope/chunked approach with a list of `ByteArray`
+chunks that grow as needed (doubling strategy). When appending a string that
+fits in the current chunk, bytes are copied directly without intermediate
+allocation. For strings spanning chunks, `copyBytesTo` with offset parameters
+avoids creating slice objects.
+
+**Status**: ✅ Implemented in `zena:string-builder`
 
 Use `StringBuilder` when concatenating many strings in a loop. For simple
 `a + b + c` expressions, the compiler-generated concatenation is fine.

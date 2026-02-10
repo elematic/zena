@@ -1,0 +1,171 @@
+
+import { String, Encoding } from 'zena:string';
+import { Array } from 'zena:growable-array';
+
+/**
+ * A mutable sequence of characters for efficient string construction.
+ */
+export final class StringBuilder {
+  #chunks: Array<ByteArray>;
+  #currentChunk: ByteArray;
+  #currentPos: i32;
+  #totalLength: i32;
+  #encoding: Encoding;
+
+  /**
+   * Creates a new StringBuilder with the specified initial capacity.
+   * @param capacity Initial capacity for the first chunk.
+   */
+  #new(capacity: i32 = 16) {
+    var cap = capacity;
+    if (cap <= 0) {
+      cap = 16;
+    }
+    this.#chunks = new Array<ByteArray>();
+    this.#currentChunk = __byte_array_new(cap);
+    this.#currentPos = 0;
+    this.#totalLength = 0;
+    this.#encoding = Encoding.WTF8;
+  }
+
+  /**
+   * Current length of the built string in bytes.
+   */
+  length: i32 {
+    get {
+      return this.#totalLength + this.#currentPos;
+    }
+  }
+
+  /**
+   * Current capacity (total allocated size).
+   */
+  capacity: i32 {
+    get {
+      var cap = 0;
+      var i = 0;
+      while (i < this.#chunks.length) {
+        cap = cap + __byte_array_length(this.#chunks[i]);
+        i = i + 1;
+      }
+      cap = cap + __byte_array_length(this.#currentChunk);
+      return cap;
+    }
+  }
+
+  /**
+   * Preparation for writing `needed` bytes.
+   * Ensures current chunk has space, or rotates chunks.
+   * Returns the number of bytes that can be written to current chunk.
+   */
+  #prepareWrite(): i32 {
+    let chunkLen = __byte_array_length(this.#currentChunk);
+    if (this.#currentPos >= chunkLen) {
+      // Current chunk is full, push to list and allocate new one
+      this.#chunks.push(this.#currentChunk);
+      this.#totalLength = this.#totalLength + chunkLen;
+      
+      // Grow strategy: double the size of the previous chunk
+      let newCapacity = chunkLen * 2;
+      this.#currentChunk = __byte_array_new(newCapacity);
+      this.#currentPos = 0;
+      return newCapacity;
+    }
+    return chunkLen - this.#currentPos;
+  }
+
+  /**
+   * Appends a string to the builder.
+   */
+  append(s: String): StringBuilder {
+    let len = s.length;
+    if (len == 0) {
+      return this;
+    }
+
+    // Fast path: if entire string fits in current chunk, copy directly
+    let available = this.#prepareWrite();
+    if (len <= available) {
+      s.copyBytesTo(this.#currentChunk, this.#currentPos);
+      this.#currentPos = this.#currentPos + len;
+      return this;
+    }
+
+    // Slow path: string spans multiple chunks
+    var offset = 0;
+    while (offset < len) {
+      let avail = this.#prepareWrite();
+      let remaining = len - offset;
+      var toCopy = remaining;
+      if (toCopy > avail) {
+        toCopy = avail;
+      }
+
+      s.copyBytesTo(this.#currentChunk, this.#currentPos, offset, toCopy);
+
+      this.#currentPos = this.#currentPos + toCopy;
+      offset = offset + toCopy;
+    }
+
+    return this;
+  }
+
+  /**
+   * Appends a single byte.
+   */
+  appendByte(b: i32): StringBuilder {
+    this.#prepareWrite();
+    __byte_array_set(this.#currentChunk, this.#currentPos, b);
+    this.#currentPos = this.#currentPos + 1;
+    return this;
+  }
+
+  /**
+   * Returns the string content.
+   */
+  toString(): String {
+    let finalLen = this.length;
+    if (finalLen == 0) {
+      return "";
+    }
+    
+    let resultBuffer = __byte_array_new(finalLen);
+    var offset = 0;
+    
+    // Copy all full chunks
+    var i = 0;
+    while (i < this.#chunks.length) {
+      let chunk = this.#chunks[i];
+      let chunkLen = __byte_array_length(chunk);
+      __byte_array_copy(resultBuffer, offset, chunk, 0, chunkLen);
+      offset = offset + chunkLen;
+      i = i + 1;
+    }
+    
+    // Copy current chunk
+    if (this.#currentPos > 0) {
+      __byte_array_copy(resultBuffer, offset, this.#currentChunk, 0, this.#currentPos);
+    }
+    
+    return String.fromByteArray(resultBuffer, 0, finalLen, this.#encoding);
+  }
+
+  /**
+   * Clears the builder.
+   */
+  clear(): void {
+    // We can recycle the last chunk, but simpler to just reset
+    // To match original behavior, maybe start fresh with default capacity?
+    // Or keep current capacity?
+    // Let's clear chunks list and reset pos.
+    
+    // Reset to initial state (keep current buffer to avoid alloc?)
+    // Yes, keep current buffer is efficient.
+    
+    // Be careful: if we just clear chunks list, the total capacity drops to current chunk.
+    
+    this.#chunks = new Array<ByteArray>();
+    this.#currentPos = 0;
+    this.#totalLength = 0;
+  }
+}

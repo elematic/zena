@@ -468,7 +468,7 @@ final class LinearString extends String {
   // Convert to GC string (copies data)
   toGCString(): GCString {
     let data = new ByteArray(this.#len);
-    this.copyTo(data);
+    this.copyBytesTo(data);
     return new GCString(data, 0, this.#len, this.#encoding);
   }
 

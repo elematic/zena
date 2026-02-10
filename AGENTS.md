@@ -239,7 +239,7 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
     String architecture with internal implementations like GCString, LinearString).
   - **Multi-Encoding**: Track encoding per string (UTF-8 or UTF-16). Compiler flag
     `--default-encoding` controls literal encoding. UTF-16 enables efficient JS interop.
-  - **StringBuilder**: Implement for efficient string construction.
+  - **StringBuilder**: ✅ Done. See `zena:string-builder`.
   - **Interning**: Implement runtime string interning for fast literal equality.
   - **Iterators**: Implement Unicode-aware iteration over code points.
 - **Numeric Literals**:

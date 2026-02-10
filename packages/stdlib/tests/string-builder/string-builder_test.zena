@@ -1,0 +1,75 @@
+// @stdlib: true
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {StringBuilder} from 'zena:string-builder';
+
+export let tests = suite('StringBuilder', (): void => {
+  test('append strings', (ctx: TestContext): void => {
+    let sb = new StringBuilder();
+    sb.append("Hello");
+    sb.append(" ");
+    sb.append("World");
+    
+    equal(sb.toString(), "Hello World");
+    equal(sb.length, 11);
+  });
+
+  test('append characters (bytes)', (ctx: TestContext): void => {
+    let sb = new StringBuilder(4);
+    sb.appendByte(65); // 'A'
+    sb.appendByte(66); // 'B'
+    sb.appendByte(67); // 'C'
+    
+    equal(sb.toString(), "ABC");
+    equal(sb.length, 3);
+  });
+
+  test('resize buffer', (ctx: TestContext): void => {
+    let sb = new StringBuilder(2); // Start small
+    sb.append("12");
+    equal(sb.capacity, 2, "Capacity should be 2 after filling");
+    
+    sb.append("3"); // Should trigger resize (2 -> 4)
+    equal(sb.toString(), "123", "Content should be 123 after resize");
+    // Capacity might wait for implementation details, but at least > 3
+    
+    sb.append("45678"); // Should resize again
+    equal(sb.toString(), "12345678", "Content should be 12345678 after second resize");
+  });
+
+  test('clear', (ctx: TestContext): void => {
+    let sb = new StringBuilder();
+    sb.append("foo");
+    equal(sb.length, 3);
+    
+    sb.clear();
+    equal(sb.length, 0);
+    equal(sb.toString(), "");
+    
+    sb.append("bar");
+    equal(sb.toString(), "bar");
+  });
+  
+  test('mixed operations', (ctx: TestContext): void => {
+      let sb = new StringBuilder();
+      sb.append("A");
+      sb.appendByte(43); // '+'
+      sb.append("B");
+      equal(sb.toString(), "A+B");
+  });
+
+  test('append string larger than chunk', (ctx: TestContext): void => {
+    // Start with a tiny buffer of 2 bytes
+    let sb = new StringBuilder(2);
+    // Append "ABCDEFGH" (8 bytes) which is larger than initial chunk
+    sb.append("ABCDEFGH");
+    equal(sb.toString(), "ABCDEFGH");
+    equal(sb.length, 8);
+  });
+
+  test('chaining append calls', (ctx: TestContext): void => {
+    let sb = new StringBuilder();
+    sb.append("a").append("b").append("c");
+    equal(sb.toString(), "abc");
+  });
+});
