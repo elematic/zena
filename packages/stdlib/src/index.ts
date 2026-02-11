@@ -82,3 +82,11 @@ export const memoryModule = fs.readFileSync(
   path.join(stdlibDir, 'memory.zena'),
   'utf-8',
 );
+export const byteArrayModule = fs.readFileSync(
+  path.join(stdlibDir, 'byte-array.zena'),
+  'utf-8',
+);
+export const fsModule = fs.readFileSync(
+  path.join(stdlibDir, 'fs.zena'),
+  'utf-8',
+);

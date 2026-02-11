@@ -1,18 +1,44 @@
-// Filesystem Standard Library - WASI 0.2 Implementation
-// Provides file and directory operations using wasi:filesystem interfaces.
-//
-// See docs/design/filesystem.md for the full design.
+/**
+ * Filesystem Standard Library - WASI 0.2 Implementation
+ * 
+ * Provides file and directory operations using wasi:filesystem interfaces.
+ * See docs/design/filesystem.md for the full design.
+ * 
+ * ## WASI Capability-Based Security
+ * 
+ * WASI uses a capability-based security model for filesystem access. Unlike
+ * traditional operating systems where processes can access any file path they
+ * have permission to, WASI programs have NO filesystem access by default.
+ * 
+ * Access is granted through "preopened directories" - directories that the
+ * host environment explicitly passes to the WASM module at startup. The module
+ * can only access files within these preopened directories.
+ * 
+ * For example, when running with wasmtime:
+ * ```
+ * wasmtime run --dir /data::/data --dir /tmp::/tmp myprogram.wasm
+ * ```
+ * This grants access to `/data` and `/tmp` on the host, mapped to the same
+ * paths in the guest. Without these flags, the program cannot access the
+ * filesystem at all.
+ * 
+ * The high-level functions (`readFile`, `writeFile`, etc.) use the first
+ * preopened directory as the root. For more control, use `getPreopens()` to
+ * access all available directories, or work with `Descriptor` objects directly.
+ */
 
-import { ByteArray } from 'zena:byte-array';
+import { newByteArray, copyBytes } from 'zena:byte-array';
 import { String, Encoding } from 'zena:string';
 import { Memory, Allocator, defaultAllocator } from 'zena:memory';
+import { Error } from 'zena:error';
+import { Array } from 'zena:growable-array';
 
 // ============================================================================
 // Error Types
 // ============================================================================
 
 // WASI filesystem error codes (subset of wasi:filesystem/types.error-code)
-enum FsErrorCode {
+export enum FsErrorCode {
   Access,           // Permission denied
   BadDescriptor,    // Invalid file descriptor
   Exist,            // File already exists
@@ -44,7 +70,7 @@ export class FsError extends Error {
 // ============================================================================
 
 // Type of filesystem entry
-enum FileType {
+export enum FileType {
   Unknown,
   Directory,
   RegularFile,
@@ -68,7 +94,7 @@ export type DirEntry = {
 };
 
 // Open flags for openAt
-enum OpenFlags {
+export enum OpenFlags {
   None,       // No special flags
   Create,     // Create file if it doesn't exist
   Directory,  // Fail if not a directory
@@ -77,7 +103,7 @@ enum OpenFlags {
 }
 
 // Descriptor flags (permissions)
-enum DescriptorFlags {
+export enum DescriptorFlags {
   Read,           // Allow reads
   Write,          // Allow writes
   ReadWrite,      // Allow both
@@ -247,9 +273,9 @@ let __stringToLinear = (s: string): [i32, i32] => {
 // Read a string from linear memory
 let __linearToString = (ptr: i32, len: i32): string => {
   // Build a GC byte array from linear memory
-  let bytes = ByteArray.new(len);
+  let bytes = newByteArray(len);
   for (var i = 0; i < len; i = i + 1) {
-    bytes[i] = mem[ptr + i];
+    __byte_array_set(bytes, i, mem[ptr + i]);
   }
   // Create string from the byte array
   return new String(bytes, 0, len, Encoding.WTF8);
@@ -262,15 +288,15 @@ let __checkError = (code: i32, operation: string): void => {
   }
   
   let errCode = match (-code) {
-    case 1 => FsErrorCode.Access,
-    case 6 => FsErrorCode.BadDescriptor,
-    case 12 => FsErrorCode.Exist,
-    case 28 => FsErrorCode.NotFound,
-    case 21 => FsErrorCode.IsDirectory,
-    case 29 => FsErrorCode.NotDirectory,
-    case 30 => FsErrorCode.NotEmpty,
-    case 44 => FsErrorCode.ReadOnly,
-    case _ => FsErrorCode.Io,
+    case 1: FsErrorCode.Access
+    case 6: FsErrorCode.BadDescriptor
+    case 12: FsErrorCode.Exist
+    case 28: FsErrorCode.NotFound
+    case 21: FsErrorCode.IsDirectory
+    case 29: FsErrorCode.NotDirectory
+    case 30: FsErrorCode.NotEmpty
+    case 44: FsErrorCode.ReadOnly
+    case _: FsErrorCode.Io
   };
   
   throw new FsError(errCode, operation + " failed");
@@ -280,6 +306,26 @@ let __checkError = (code: i32, operation: string): void => {
 // Descriptor Class
 // ============================================================================
 
+/**
+ * A handle for an open file or directory.
+ * 
+ * Descriptors are obtained either from `getPreopens()` (for preopened
+ * directories) or by opening files/directories relative to an existing
+ * descriptor using `openAt()` or `createAt()`.
+ * 
+ * In WASI's capability model, a Descriptor acts as a capability token - you
+ * can only access files that are reachable from a Descriptor you already have.
+ * 
+ * Always call `close()` when done to release the underlying resource.
+ * 
+ * @example
+ * ```
+ * let root = getRootDir();
+ * let file = root.openAt('data.txt', DescriptorFlags.Read);
+ * let content = file.readString();
+ * file.close();
+ * ```
+ */
 export class Descriptor {
   #handle: i32;
   #closed: boolean;
@@ -298,8 +344,8 @@ export class Descriptor {
     // First pass: read into temporary Array to determine size
     let chunks = new Array<[i32, i32]>();  // [(bufPtr, len), ...]
     var totalLen = 0;
-    var offset: i64 = 0;
-    let chunkSize: i64 = 4096;
+    var offset: i64 = 0 as i64;
+    let chunkSize: i64 = 4096 as i64;
     
     while (true) {
       // Allocate buffer for this chunk
@@ -328,12 +374,12 @@ export class Descriptor {
     }
     
     // Second pass: copy to ByteArray
-    let result = ByteArray.new(totalLen);
+    let result = newByteArray(totalLen);
     var pos = 0;
     for (var c = 0; c < chunks.length; c = c + 1) {
       let [bufPtr, len] = chunks[c];
       for (var i = 0; i < len; i = i + 1) {
-        result[pos] = mem[bufPtr + i];
+        __byte_array_set(result, pos, mem[bufPtr + i]);
         pos = pos + 1;
       }
     }
@@ -344,7 +390,7 @@ export class Descriptor {
   // Read the entire file as a UTF-8 string
   readString(): string {
     let bytes = this.readAllBytes();
-    return new String(bytes, 0, bytes.length, Encoding.WTF8);
+    return new String(bytes, 0, __byte_array_length(bytes), Encoding.WTF8);
   }
 
   // Write bytes to the file
@@ -353,15 +399,15 @@ export class Descriptor {
       throw new FsError(FsErrorCode.BadDescriptor, "Descriptor is closed");
     }
 
-    let len = data.length;
+    let len = __byte_array_length(data);
     let ptr = allocOrPanic(len);
     
     // Copy data to linear memory
     for (var i = 0; i < len; i = i + 1) {
-      mem[ptr + i] = data[i];
+      mem[ptr + i] = __byte_array_get(data, i);
     }
     
-    let written = __wasi_descriptor_write(this.#handle, ptr, len, 0);
+    let written = __wasi_descriptor_write(this.#handle, ptr, len, 0 as i64);
     
     if (written < 0) {
       __checkError(written as i32, "write");
@@ -375,7 +421,7 @@ export class Descriptor {
     }
 
     let [ptr, len] = __stringToLinear(data);
-    let written = __wasi_descriptor_write(this.#handle, ptr, len, 0);
+    let written = __wasi_descriptor_write(this.#handle, ptr, len, 0 as i64);
     
     if (written < 0) {
       __checkError(written as i32, "write");
@@ -391,13 +437,8 @@ export class Descriptor {
     let [pathPtr, pathLen] = __stringToLinear(path);
     
     // Map DescriptorFlags to WASI flags
-    let descFlags = match flags {
-      case DescriptorFlags.Read => 1,
-      case DescriptorFlags.Write => 2,
-      case DescriptorFlags.ReadWrite => 3,
-      case DescriptorFlags.MutateDirectory => 4,
-      case _ => 1,
-    };
+    // Read=0->1, Write=1->2, ReadWrite=2->3, MutateDirectory=3->4
+    let descFlags = (flags as i32) + 1;
     
     let result = __wasi_descriptor_open_at(
       this.#handle,
@@ -451,11 +492,11 @@ export class Descriptor {
     let fileTypeRaw = mem.getI32(SCRATCH_PTR + 4);
     let size = mem.getI64(SCRATCH_PTR + 8);
     
-    let fileType = match fileTypeRaw {
-      case 3 => FileType.Directory,
-      case 4 => FileType.RegularFile,
-      case 5 => FileType.SymbolicLink,
-      case _ => FileType.Unknown,
+    let fileType = match (fileTypeRaw) {
+      case 3: FileType.Directory
+      case 4: FileType.RegularFile
+      case 5: FileType.SymbolicLink
+      case _: FileType.Unknown
     };
     
     return { fileType: fileType, size: size };
@@ -483,11 +524,11 @@ export class Descriptor {
     let fileTypeRaw = mem.getI32(SCRATCH_PTR + 4);
     let size = mem.getI64(SCRATCH_PTR + 8);
     
-    let fileType = match fileTypeRaw {
-      case 3 => FileType.Directory,
-      case 4 => FileType.RegularFile,
-      case 5 => FileType.SymbolicLink,
-      case _ => FileType.Unknown,
+    let fileType = match (fileTypeRaw) {
+      case 3: FileType.Directory
+      case 4: FileType.RegularFile
+      case 5: FileType.SymbolicLink
+      case _: FileType.Unknown
     };
     
     return { fileType: fileType, size: size };
@@ -521,11 +562,11 @@ export class Descriptor {
       let nameLen = mem.getI32(SCRATCH_PTR + 16);
       
       let name = __linearToString(namePtr, nameLen);
-      let fileType = match fileTypeRaw {
-        case 3 => FileType.Directory,
-        case 4 => FileType.RegularFile,
-        case 5 => FileType.SymbolicLink,
-        case _ => FileType.Unknown,
+      let fileType = match (fileTypeRaw) {
+        case 3: FileType.Directory
+        case 4: FileType.RegularFile
+        case 5: FileType.SymbolicLink
+        case _: FileType.Unknown
       };
       
       entries.push({ name: name, fileType: fileType });
@@ -585,10 +626,32 @@ export class Descriptor {
 // Cache of preopened directories
 var __preopensCache: Array<[Descriptor, string]> | null = null;
 
-// Get all preopened directories
+/**
+ * Returns all preopened directories granted to this WASM module.
+ * 
+ * Preopened directories are the ONLY filesystem locations this program can
+ * access. They are granted by the host environment at startup (e.g., via
+ * wasmtime's `--dir` flag).
+ * 
+ * Each entry is a tuple of `[Descriptor, path]` where:
+ * - `Descriptor` is a handle for filesystem operations within that directory
+ * - `path` is the guest path (e.g., "/tmp", "/data", or "." for current dir)
+ * 
+ * Returns an empty array if no directories were preopened (the program has
+ * no filesystem access).
+ * 
+ * @example
+ * ```
+ * let preopens = getPreopens();
+ * for (let [dir, path] in preopens) {
+ *   console.log('Access granted to: ' + path);
+ * }
+ * ```
+ */
 export let getPreopens = (): Array<[Descriptor, string]> => {
-  if (__preopensCache != null) {
-    return __preopensCache!;
+  let cached = __preopensCache;
+  if (cached != null) {
+    return cached;
   }
   
   // Call WASI to get preopens list
@@ -614,7 +677,15 @@ export let getPreopens = (): Array<[Descriptor, string]> => {
   return result;
 };
 
-// Get the root preopened directory (first one, typically ".")
+/**
+ * Returns the first preopened directory, used as the "root" for high-level
+ * file operations.
+ * 
+ * This is typically the current working directory (".") or the first `--dir`
+ * flag passed to the WASI runtime.
+ * 
+ * @throws FsError if no directories were preopened.
+ */
 export let getRootDir = (): Descriptor => {
   let preopens = getPreopens();
   if (preopens.length == 0) {
@@ -626,8 +697,18 @@ export let getRootDir = (): Descriptor => {
 // ============================================================================
 // High-Level Convenience Functions
 // ============================================================================
+//
+// These functions operate relative to the first preopened directory (see
+// `getRootDir()`). For access to other preopened directories, use
+// `getPreopens()` and work with `Descriptor` objects directly.
 
-// Read a file as a string
+/**
+ * Reads the entire contents of a file as a UTF-8 string.
+ * 
+ * The path is relative to the first preopened directory.
+ * 
+ * @throws FsError if the file doesn't exist or cannot be read.
+ */
 export let readFile = (path: string): string => {
   let root = getRootDir();
   let file = root.openAt(path, DescriptorFlags.Read);
@@ -636,7 +717,13 @@ export let readFile = (path: string): string => {
   return content;
 };
 
-// Read a file as bytes
+/**
+ * Reads the entire contents of a file as raw bytes.
+ * 
+ * The path is relative to the first preopened directory.
+ * 
+ * @throws FsError if the file doesn't exist or cannot be read.
+ */
 export let readFileBytes = (path: string): ByteArray => {
   let root = getRootDir();
   let file = root.openAt(path, DescriptorFlags.Read);
@@ -645,7 +732,14 @@ export let readFileBytes = (path: string): ByteArray => {
   return content;
 };
 
-// Write a string to a file (creates or truncates)
+/**
+ * Writes a string to a file as UTF-8, creating or truncating the file.
+ * 
+ * The path is relative to the first preopened directory.
+ * 
+ * @throws FsError if the file cannot be written (e.g., permission denied,
+ *         directory doesn't exist, or read-only filesystem).
+ */
 export let writeFile = (path: string, content: string): void => {
   let root = getRootDir();
   let file = root.createAt(path);
@@ -653,7 +747,13 @@ export let writeFile = (path: string, content: string): void => {
   file.close();
 };
 
-// Write bytes to a file (creates or truncates)
+/**
+ * Writes raw bytes to a file, creating or truncating the file.
+ * 
+ * The path is relative to the first preopened directory.
+ * 
+ * @throws FsError if the file cannot be written.
+ */
 export let writeFileBytes = (path: string, content: ByteArray): void => {
   let root = getRootDir();
   let file = root.createAt(path);
@@ -661,7 +761,15 @@ export let writeFileBytes = (path: string, content: ByteArray): void => {
   file.close();
 };
 
-// List directory contents
+/**
+ * Lists the contents of a directory.
+ * 
+ * The path is relative to the first preopened directory.
+ * Use "." to list the root preopened directory itself.
+ * 
+ * @returns Array of directory entries with name and file type.
+ * @throws FsError if the path doesn't exist or is not a directory.
+ */
 export let listDir = (path: string): Array<DirEntry> => {
   let root = getRootDir();
   let dir = root.openAt(path, DescriptorFlags.Read);
@@ -670,56 +778,88 @@ export let listDir = (path: string): Array<DirEntry> => {
   return entries;
 };
 
-// Check if a path exists
+/**
+ * Checks if a path exists (file or directory).
+ * 
+ * The path is relative to the first preopened directory.
+ * 
+ * @returns true if the path exists, false otherwise.
+ */
 export let exists = (path: string): boolean => {
   let root = getRootDir();
   return try {
     root.statAt(path);
     true
-  } catch (e: FsError) {
-    if (e.code == FsErrorCode.NotFound) {
-      false
-    } else {
-      throw e
-    }
+  } catch (e) {
+    // Assume any error means doesn't exist (simplification)
+    false
   };
 };
 
-// Check if a path is a file
+/**
+ * Checks if a path is a regular file.
+ * 
+ * @returns true if the path exists and is a file, false otherwise.
+ */
 export let isFile = (path: string): boolean => {
   let root = getRootDir();
   return try {
     let stat = root.statAt(path);
     stat.fileType == FileType.RegularFile
-  } catch (e: FsError) {
+  } catch (e) {
     false
   };
 };
 
-// Check if a path is a directory
+/**
+ * Checks if a path is a directory.
+ * 
+ * @returns true if the path exists and is a directory, false otherwise.
+ */
 export let isDirectory = (path: string): boolean => {
   let root = getRootDir();
   return try {
     let stat = root.statAt(path);
     stat.fileType == FileType.Directory
-  } catch (e: FsError) {
+  } catch (e) {
     false
   };
 };
 
-// Create a directory
+/**
+ * Creates a directory.
+ * 
+ * The path is relative to the first preopened directory.
+ * Parent directories must already exist.
+ * 
+ * @throws FsError if the directory cannot be created.
+ */
 export let mkdir = (path: string): void => {
   let root = getRootDir();
   root.mkdirAt(path);
 };
 
-// Delete a file
+/**
+ * Deletes a file.
+ * 
+ * The path is relative to the first preopened directory.
+ * 
+ * @throws FsError if the file doesn't exist or cannot be deleted.
+ */
 export let unlink = (path: string): void => {
   let root = getRootDir();
   root.unlinkAt(path);
 };
 
-// Delete a directory
+/**
+ * Deletes an empty directory.
+ * 
+ * The path is relative to the first preopened directory.
+ * The directory must be empty.
+ * 
+ * @throws FsError if the directory doesn't exist, is not empty, or cannot
+ *         be deleted.
+ */
 export let rmdir = (path: string): void => {
   let root = getRootDir();
   root.rmdirAt(path);

@@ -1,24 +1,62 @@
-// Filesystem tests - PLACEHOLDER
+// Filesystem tests - WASI 0.2
 //
 // @requires: wasmtime
 //
-// These tests are for zena:fs functionality. Currently fs.zena has some
-// compilation issues to resolve before these tests can be implemented.
-//
-// TODO: Implement once fs.zena compiles successfully:
-// - Test readFile/writeFile high-level API
-// - Test Descriptor class methods
-// - Test getPreopens()
-// - Test error handling (FsError)
+// Tests for zena:fs functionality using wasmtime with --dir flag.
+// Run with: wasmtime run -W gc=y -W exceptions=y --dir /tmp::/tmp fs_test.wasm
 
 import {suite, test, TestContext} from 'zena:test';
-import {equal} from 'zena:assert';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {
+  readFile, writeFile, exists, isFile, isDirectory,
+  mkdir, unlink, rmdir, getPreopens,
+  Descriptor, DescriptorFlags, FileType
+} from 'zena:fs';
 
-// Placeholder test until fs module is ready
-let tests = suite('Filesystem (placeholder)', (): void => {
-  test('placeholder test passes', (ctx: TestContext): void => {
-    // This will be replaced with actual fs tests once zena:fs compiles
-    equal(1, 1);
+let tests = suite('Filesystem', (): void => {
+  // Test getPreopens returns at least one directory
+  test('getPreopens returns preopened directories', (ctx: TestContext): void => {
+    let preopens = getPreopens();
+    isTrue(preopens.length > 0);
+  });
+
+  // Test writing and reading a file
+  test('writeFile and readFile roundtrip', (ctx: TestContext): void => {
+    let testPath = 'fs-test-roundtrip.txt';
+    let content = 'Hello from Zena fs test!';
+    
+    // Write file
+    writeFile(testPath, content);
+    
+    // Verify it exists
+    isTrue(exists(testPath));
+    isTrue(isFile(testPath));
+    isFalse(isDirectory(testPath));
+    
+    // Read back
+    let read = readFile(testPath);
+    equal(read, content);
+    
+    // Cleanup
+    unlink(testPath);
+    isFalse(exists(testPath));
+  });
+
+  // Test exists returns false for non-existent file
+  test('exists returns false for missing file', (ctx: TestContext): void => {
+    isFalse(exists('non-existent-file-12345.txt'));
+  });
+
+  // Test multi-line content
+  test('writeFile preserves newlines', (ctx: TestContext): void => {
+    let testPath = 'fs-test-newlines.txt';
+    let content = 'line1\nline2\nline3';
+    
+    writeFile(testPath, content);
+    let read = readFile(testPath);
+    equal(read, content);
+    
+    unlink(testPath);
   });
 });
 

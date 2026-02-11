@@ -3368,6 +3368,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
       ctx.module!.exports!.set(`value:${name}`, {
         type: enumValueType,
         kind: 'let',
+        declaration: decl,
       });
     }
     return;

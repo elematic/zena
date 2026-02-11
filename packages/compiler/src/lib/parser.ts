@@ -2041,7 +2041,10 @@ export class Parser {
         loc: this.#locFromToken(token),
       };
     }
-    throw new Error(`Expected identifier, got ${this.#peek().type}`);
+    const token = this.#peek();
+    throw new Error(
+      `Expected identifier, got ${token.type} at ${this.#path}:${token.line}:${token.column}`,
+    );
   }
 
   #parseReturnStatement(): ReturnStatement {
@@ -3071,6 +3074,8 @@ export class Parser {
     const properties: PropertySignature[] = [];
     if (!this.#check(TokenType.RBrace)) {
       do {
+        // Support trailing comma
+        if (this.#check(TokenType.RBrace)) break;
         const name = this.#parseIdentifier();
         this.#consume(TokenType.Colon, "Expected ':'");
         const typeAnnotation = this.#parseTypeAnnotation();
