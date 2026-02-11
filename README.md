@@ -196,6 +196,30 @@ export let main = (): i32 => {
 };
 ```
 
+## Running with WASI
+
+Zena programs can run standalone using WASI (WebAssembly System Interface) with
+wasmtime or other WASI-compatible runtimes:
+
+```bash
+# Build with WASI target
+zena build main.zena -o main.wasm --target wasi
+
+# Run with wasmtime (requires WASM-GC flags)
+wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main.wasm
+
+# If accessing the filesystem, grant directory access:
+wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke main main.wasm
+```
+
+**Required wasmtime flags**:
+
+- `-W gc=y` - Enable WASM GC proposal
+- `-W function-references=y` - Enable function references proposal
+- `-W exceptions=y` - Enable exceptions proposal (if using try/catch)
+- `--dir <path>` - Grant filesystem access to a directory
+- `--invoke <func>` - Call a specific exported function
+
 ## Documentation
 
 - [Language Reference](docs/language-reference.md): Detailed guide on syntax and

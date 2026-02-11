@@ -34,6 +34,8 @@ describe('Exports', () => {
         return '';
       },
       resolve: (specifier: string, referrer: string) => {
+        // zena:console is virtual - map to console-host
+        if (specifier === 'zena:console') return 'zena:console-host';
         if (specifier === 'zena:array') return 'zena:array';
         if (specifier === 'zena:string') return 'zena:string';
         if (specifier.startsWith('./')) {
@@ -95,6 +97,8 @@ describe('Exports', () => {
         return '';
       },
       resolve: (specifier: string) => {
+        // zena:console is virtual - map to console-host
+        if (specifier === 'zena:console') return 'zena:console-host';
         if (specifier === 'zena:array') return 'zena:array';
         if (specifier === 'zena:string') return 'zena:string';
         return specifier;

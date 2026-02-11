@@ -1,0 +1,37 @@
+/**
+ * Filesystem Demo - Read and print a file
+ * 
+ * Build:
+ *   node ./packages/cli/lib/index.js build examples/fs-demo.zena --target wasi -o fs-demo.wasm
+ * 
+ * Run:
+ *   echo "Hello from the filesystem!" > hello.txt
+ *   wasmtime run -W gc=y -W function-references=y --dir . fs-demo.wasm
+ * 
+ * The --dir flag grants filesystem access. Syntax: --dir HOST_PATH[::GUEST_PATH]
+ *   --dir .           Maps current dir to "." in guest
+ *   --dir /tmp::/data Maps host /tmp to guest /data
+ * 
+ * See: https://docs.wasmtime.dev/cli-options.html#--dir
+ */
+
+import { readFile, exists } from 'zena:fs';
+import { console } from 'zena:console-wasi';
+
+export let main = (): i32 => {
+  // Try to read hello.txt
+  let filename = "hello.txt";
+  
+  if (exists(filename)) {
+    let content = readFile(filename);
+    console.log("Contents of " + filename + ":");
+    console.log(content);
+  } else {
+    console.log("File not found: " + filename);
+    console.log("");
+    console.log("Create it with: echo 'Hello from the filesystem!' > hello.txt");
+    return 1;
+  }
+
+  return 0;
+};

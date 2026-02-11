@@ -275,7 +275,11 @@ async function runCheckTest(
         }
         throw new Error(`File not found: ${path}`);
       },
-      resolve: (specifier: string, _referrer: string) => specifier,
+      resolve: (specifier: string, _referrer: string) => {
+        // zena:console is virtual - map to console-host
+        if (specifier === 'zena:console') return 'zena:console-host';
+        return specifier;
+      },
     };
 
     const compiler = new Compiler(host);
@@ -343,7 +347,8 @@ async function runExecutionTest(
       throw new Error(`File not found: ${path}`);
     },
     resolve: (specifier: string, referrer: string) => {
-      // Handle zena: imports
+      // Handle zena: imports - zena:console is virtual, map to console-host
+      if (specifier === 'zena:console') return 'zena:console-host';
       if (specifier.startsWith('zena:')) return specifier;
       // Handle relative imports
       if (specifier.startsWith('./') || specifier.startsWith('../')) {

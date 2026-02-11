@@ -12,6 +12,10 @@ class MockHost implements CompilerHost {
   files = new Map<string, string>();
 
   resolve(specifier: string, referrer: string): string {
+    // zena:console is virtual - map to console-host
+    if (specifier === 'zena:console') {
+      return 'zena:console-host';
+    }
     if (specifier.startsWith('zena:')) {
       return specifier;
     }
@@ -55,8 +59,8 @@ describe('Compiler', () => {
     const compiler = new Compiler(host);
     const modules = compiler.compile('main.zena');
 
-    // 2 user modules + 12 stdlib modules (10 prelude + zena:iterator, zena:array-iterator)
-    assert.strictEqual(modules.length, 14);
+    // 2 user modules + 13 stdlib modules (11 prelude + zena:iterator, zena:array-iterator)
+    assert.strictEqual(modules.length, 15);
 
     const main = modules.find((m) => m.path === 'main.zena');
     const math = modules.find((m) => m.path === 'math.zena');
@@ -143,8 +147,8 @@ describe('Compiler', () => {
     const compiler = new Compiler(host);
     const modules = compiler.compile('a.zena');
 
-    // 2 user modules + 12 stdlib modules (10 prelude + zena:iterator, zena:array-iterator)
-    assert.strictEqual(modules.length, 14);
+    // 2 user modules + 13 stdlib modules (11 prelude + zena:iterator, zena:array-iterator)
+    assert.strictEqual(modules.length, 15);
   });
 
   it('handles export * re-exports', () => {

@@ -29,8 +29,16 @@ export const stringModule = fs.readFileSync(
   path.join(stdlibDir, 'string.zena'),
   'utf-8',
 );
-export const consoleModule = fs.readFileSync(
-  path.join(stdlibDir, 'console.zena'),
+export const consoleHostModule = fs.readFileSync(
+  path.join(stdlibDir, 'console-host.zena'),
+  'utf-8',
+);
+export const consoleWasiModule = fs.readFileSync(
+  path.join(stdlibDir, 'console-wasi.zena'),
+  'utf-8',
+);
+export const consoleInterfaceModule = fs.readFileSync(
+  path.join(stdlibDir, 'console-interface.zena'),
   'utf-8',
 );
 export const mapModule = fs.readFileSync(

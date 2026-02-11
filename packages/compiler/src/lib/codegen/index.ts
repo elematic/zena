@@ -323,7 +323,8 @@ export class CodeGenerator {
             else if (type[0] === ValType.f64)
               initBytes = [
                 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-              ]; // f64.const 0
+              ];
+            // f64.const 0
             else if (type[0] === ValType.ref_null || type[0] === ValType.ref) {
               initBytes = [Opcode.ref_null, HeapType.none];
             } else {
@@ -383,7 +384,8 @@ export class CodeGenerator {
             else if (type[0] === ValType.f64)
               initBytes = [
                 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-              ]; // f64.const 0
+              ];
+            // f64.const 0
             else if (type[0] === ValType.ref_null || type[0] === ValType.ref) {
               initBytes = [Opcode.ref_null, HeapType.none];
             } else {

@@ -22,18 +22,17 @@ class WasiTestHost implements CompilerHost {
   }
 
   resolve(specifier: string, _referrer: string): string {
+    // zena:console is virtual - map to appropriate implementation based on target
+    if (specifier === 'zena:console') {
+      return this.#target === 'wasi'
+        ? 'zena:console-wasi'
+        : 'zena:console-host';
+    }
     if (specifier.startsWith('zena:')) return specifier;
     return specifier;
   }
 
   load(filePath: string): string {
-    // For WASI target, swap console implementation
-    if (filePath === 'zena:console' && this.#target === 'wasi') {
-      const wasiConsole = this.#files.get('zena:console-wasi');
-      if (wasiConsole) return wasiConsole;
-      throw new Error('console-wasi not loaded');
-    }
-
     if (this.#files.has(filePath)) {
       return this.#files.get(filePath)!;
     }
@@ -59,8 +58,10 @@ function loadStdlib(target: 'host' | 'wasi' = 'host'): Map<string, string> {
     'box',
     'iterator',
     'array-iterator',
-    // Load appropriate console based on target
-    target === 'wasi' ? 'console-wasi' : 'console',
+    // Console interface is shared between host and wasi implementations
+    'console-interface',
+    // Load appropriate console implementation based on target
+    target === 'wasi' ? 'console-wasi' : 'console-host',
   ];
 
   for (const name of stdlibFiles) {

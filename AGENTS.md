@@ -129,6 +129,30 @@ The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, was
   (wasm-tools). Regular `npm test` and `npm run build` work without Nix if you
   have Node.js installed.
 
+### Running Zena Programs with WASI
+
+To run Zena programs standalone (outside of a browser or Node.js), compile with
+the `--target wasi` flag and run with wasmtime:
+
+```bash
+# Build with WASI target
+zena build main.zena -o main.wasm --target wasi
+
+# Run with wasmtime (requires WASM-GC flags)
+wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main.wasm
+
+# If accessing the filesystem, grant directory access:
+wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke main main.wasm
+```
+
+**Required wasmtime flags**:
+
+- `-W gc=y` - Enable WASM GC proposal
+- `-W function-references=y` - Enable function references proposal
+- `-W exceptions=y` - Enable exceptions proposal (if using try/catch)
+- `--dir <path>` - Grant filesystem access to a directory (for WASI file I/O)
+- `--invoke <func>` - Call a specific exported function (e.g., `main`)
+
 ### Wireit Behavior
 
 - Wireit caches script results and only re-runs scripts when inputs change.

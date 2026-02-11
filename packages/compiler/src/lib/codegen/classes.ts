@@ -96,6 +96,10 @@ export function preRegisterInterface(
     if (ctx.getInterfaceInfo(interfaceType)) {
       return; // Already registered
     }
+  } else {
+    // Interface without inferredType - skip registration
+    // This shouldn't happen in normal compilation
+    return;
   }
 
   let parentInfo: InterfaceInfo | undefined;
@@ -4827,7 +4831,11 @@ export function mapCheckerTypeToWasmType(
         }
       }
     }
-    // Fall through to annotation-based lookup if identity lookup fails
+    // Class not found - this happens during interface method definition before
+    // classes are instantiated. Since interfaces use type erasure (everything
+    // becomes anyref in the erased signature), we can safely return anyref here.
+    // The concrete class struct type will be used in the actual implementations.
+    return [ValType.anyref];
   }
 
   // Handle InterfaceType directly using identity-based lookups

@@ -72,7 +72,13 @@ export const createHost = (
     }
     throw new Error(`File not found: ${p}`);
   },
-  resolve: (specifier: string, _referrer: string) => specifier,
+  resolve: (specifier: string, _referrer: string) => {
+    // zena:console is virtual - map to console-host for host target
+    if (specifier === 'zena:console') {
+      return 'zena:console-host';
+    }
+    return specifier;
+  },
 });
 
 /**
@@ -473,6 +479,10 @@ const createFileHost = (
     throw new Error(`File not found: ${p}`);
   },
   resolve: (specifier: string, referrer: string) => {
+    // zena:console is virtual - map to console-host for host target
+    if (specifier === 'zena:console') {
+      return 'zena:console-host';
+    }
     if (specifier.startsWith('zena:')) {
       return specifier;
     }

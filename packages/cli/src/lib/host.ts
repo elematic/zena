@@ -28,6 +28,13 @@ export class NodeCompilerHost implements CompilerHost {
 
   resolve(specifier: string, referrer: string): string {
     if (specifier.startsWith('zena:')) {
+      // zena:console is a virtual module that maps to the appropriate implementation
+      // based on the target. The actual files are console-host.zena and console-wasi.zena.
+      if (specifier === 'zena:console') {
+        return this.#target === 'wasi'
+          ? 'zena:console-wasi'
+          : 'zena:console-host';
+      }
       return specifier;
     }
 
@@ -48,12 +55,7 @@ export class NodeCompilerHost implements CompilerHost {
     }
 
     if (path.startsWith('zena:')) {
-      let name = path.substring(5); // remove 'zena:'
-
-      // For WASI target, use console-wasi instead of console
-      if (this.#target === 'wasi' && name === 'console') {
-        name = 'console-wasi';
-      }
+      const name = path.substring(5); // remove 'zena:'
 
       const filePath = join(this.#stdlibPath, `${name}.zena`);
       if (!existsSync(filePath)) {
