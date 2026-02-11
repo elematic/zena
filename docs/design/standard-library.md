@@ -114,13 +114,13 @@ interface Array<T> extends Sequence<T> {
 
 Abstractions that make collection usage ergonomic and enable functional patterns.
 
-| Type            | Description                             | Priority  |
-| --------------- | --------------------------------------- | --------- |
-| `Iterator<T>`   | Stateful iterator interface             | ✅ Done   |
-| `Iterable<T>`   | Collection that can produce an Iterator | ✅ Done   |
-| `Comparable<T>` | Interface for ordered comparisons       | Medium    |
-| `Hashable`      | Interface for custom hash codes         | Medium    |
-| `StringBuilder` | Efficient string construction           | ✅ Done   |
+| Type            | Description                             | Priority |
+| --------------- | --------------------------------------- | -------- |
+| `Iterator<T>`   | Stateful iterator interface             | ✅ Done  |
+| `Iterable<T>`   | Collection that can produce an Iterator | ✅ Done  |
+| `Comparable<T>` | Interface for ordered comparisons       | Medium   |
+| `Hashable`      | Interface for custom hash codes         | Medium   |
+| `StringBuilder` | Efficient string construction           | ✅ Done  |
 
 **Iterator Design**
 
@@ -487,7 +487,8 @@ final class StringBuilder {
 slice allocation when the string fits in the current chunk.
 
 **Status**: ✅ Implemented in `zena:string-builder`
-```
+
+````
 
 **Alternatives Considered**:
 
@@ -533,7 +534,7 @@ export let maxF32 = (a: f32, b: f32): f32 => /* @intrinsic f32.max */;
 
 // Copysign (f32.copysign)
 export let copysign = (x: f32, y: f32): f32 => /* @intrinsic f32.copysign */;
-```
+````
 
 #### Library Functions (Implemented in Zena or via Host)
 

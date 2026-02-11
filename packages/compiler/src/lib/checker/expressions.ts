@@ -908,10 +908,39 @@ function createUnionType(types: Type[]): Type {
   const nonNeverTypes = flatTypes.filter((t) => t.kind !== TypeKind.Never);
   const typesToProcess = nonNeverTypes.length > 0 ? nonNeverTypes : flatTypes;
 
+  // Collapse literal types into their base types when both are present
+  // e.g., boolean | false => boolean, i32 | 5 => i32, String | "hello" => String
+  const collapsedTypes: Type[] = [];
+  let hasBoolean = false;
+  let hasNumber = false;
+  let hasString = false;
+
+  // First pass: detect base types
+  for (const t of typesToProcess) {
+    if (t.kind === TypeKind.Boolean) hasBoolean = true;
+    if (t.kind === TypeKind.Number) hasNumber = true;
+    if (t.kind === TypeKind.Class && (t as ClassType).name === 'String')
+      hasString = true;
+  }
+
+  // Second pass: filter out literals that are subsumed by base types
+  for (const t of typesToProcess) {
+    if (t.kind === TypeKind.Literal) {
+      const lit = t as LiteralType;
+      // Skip boolean literals if we have boolean base type
+      if (typeof lit.value === 'boolean' && hasBoolean) continue;
+      // Skip number literals if we have a number base type
+      if (typeof lit.value === 'number' && hasNumber) continue;
+      // Skip string literals if we have String class type
+      if (typeof lit.value === 'string' && hasString) continue;
+    }
+    collapsedTypes.push(t);
+  }
+
   // Deduplicate
   const uniqueTypes: Type[] = [];
   const seen = new Set<string>();
-  for (const t of typesToProcess) {
+  for (const t of collapsedTypes) {
     const s = typeToString(t);
     if (!seen.has(s)) {
       seen.add(s);
@@ -1010,12 +1039,106 @@ function checkCatchClause(ctx: CheckerContext, clause: CatchClause): Type {
   return bodyType;
 }
 
+/**
+ * Checks if a type is a value primitive (i32, i64, f32, f64, boolean).
+ * These types have stack-based WASM representation and cannot be cast to reference types.
+ */
+function isValuePrimitive(type: Type): boolean {
+  if (type.kind === TypeKind.Number || type.kind === TypeKind.Boolean) {
+    return true;
+  }
+  if (type.kind === TypeKind.Literal) {
+    const lit = type as LiteralType;
+    return typeof lit.value === 'number' || typeof lit.value === 'boolean';
+  }
+  return false;
+}
+
+/**
+ * Checks if a type is a reference type (class, interface, array, string, etc.).
+ * Reference types have heap-based WASM representation.
+ * Extension classes on primitives are NOT considered reference types for this check.
+ */
+function isReferenceType(type: Type): boolean {
+  switch (type.kind) {
+    case TypeKind.Class: {
+      // Extension classes on primitives (like `extension class Meters on i32`)
+      // are NOT reference types - they are nominal wrappers around primitives
+      const classType = type as ClassType;
+      if (classType.isExtension && classType.onType) {
+        return !isValuePrimitive(classType.onType);
+      }
+      return true;
+    }
+    case TypeKind.Interface:
+    case TypeKind.Array:
+    case TypeKind.Record:
+    case TypeKind.Tuple:
+    case TypeKind.Function:
+    case TypeKind.Null:
+    case TypeKind.AnyRef:
+    case TypeKind.ByteArray:
+      return true;
+    case TypeKind.Literal:
+      // String literals are reference types
+      return typeof (type as LiteralType).value === 'string';
+    default:
+      return false;
+  }
+}
+
+/**
+ * Checks if a cast from source to target is valid.
+ * Returns true if the cast should be allowed.
+ */
+function isValidCast(sourceType: Type, targetType: Type): boolean {
+  // Primitive → Extension on same primitive: VALID (distinct type wrapping)
+  if (
+    isValuePrimitive(sourceType) &&
+    targetType.kind === TypeKind.Class &&
+    (targetType as ClassType).isExtension &&
+    (targetType as ClassType).onType
+  ) {
+    const onType = (targetType as ClassType).onType!;
+    // Allow cast if the onType matches the source primitive type
+    // (or both are numeric types, allowing i32 -> Meters on i32)
+    if (
+      sourceType.kind === TypeKind.Number &&
+      onType.kind === TypeKind.Number
+    ) {
+      return true;
+    }
+    if (
+      sourceType.kind === TypeKind.Boolean &&
+      onType.kind === TypeKind.Boolean
+    ) {
+      return true;
+    }
+  }
+
+  // Primitive → Reference (not an extension on primitive): INVALID
+  if (isValuePrimitive(sourceType) && isReferenceType(targetType)) {
+    return false;
+  }
+
+  // All other casts are allowed (checked at runtime)
+  return true;
+}
+
 function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {
-  checkExpression(ctx, expr.expression);
-  // We trust the user knows what they are doing with 'as' for now,
-  // or we could add checks later (e.g. no casting string to int).
-  // For distinct types, this is the primary way to "wrap" a value.
-  return resolveTypeAnnotation(ctx, expr.typeAnnotation);
+  const sourceType = checkExpression(ctx, expr.expression);
+  const targetType = resolveTypeAnnotation(ctx, expr.typeAnnotation);
+
+  // Validate the cast is semantically valid
+  if (!isValidCast(sourceType, targetType)) {
+    ctx.diagnostics.reportError(
+      `Cannot cast primitive type '${typeToString(sourceType)}' to reference type '${typeToString(targetType)}'. ` +
+        `Use string concatenation or a conversion function instead.`,
+      DiagnosticCode.TypeMismatch,
+    );
+  }
+
+  return targetType;
 }
 
 function checkIsExpression(ctx: CheckerContext, expr: IsExpression): Type {
