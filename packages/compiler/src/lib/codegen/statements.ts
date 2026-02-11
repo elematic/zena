@@ -21,13 +21,14 @@ import {
   TypeKind,
   type ClassType,
   type InterfaceType,
+  type SymbolType,
   type Type,
   type TypeAliasType,
   type UnboxedTupleType,
   type UnionType,
 } from '../types.js';
 import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
-import {decodeTypeIndex, mapCheckerTypeToWasmType} from './classes.js';
+import {decodeTypeIndex, getSymbolMemberName, mapCheckerTypeToWasmType} from './classes.js';
 import type {CodegenContext} from './context.js';
 import type {ClassInfo} from './types.js';
 import {
@@ -376,7 +377,7 @@ function generateWhileLetStatement(
  * Generate code for `for (let pattern in iterable) body`
  *
  * Desugars to:
- *   let $$iter = iterable.iterator();
+ *   let $$iter = iterable.:Iterable.iterator();
  *   while (let (true, elem) = $$iter.next()) {
  *     let pattern = elem;
  *     body
@@ -393,8 +394,9 @@ function generateForInStatement(
   const iterableType = stmt.iterable.inferredType;
   const iteratorType = stmt.iteratorType as InterfaceType | undefined;
   const elementType = stmt.elementType;
+  const iteratorSymbol = stmt.iteratorSymbol;
 
-  if (!iterableType || !iteratorType || !elementType) {
+  if (!iterableType || !iteratorType || !elementType || !iteratorSymbol) {
     throw new Error('for-in statement missing type information from checker');
   }
 
@@ -407,9 +409,9 @@ function generateForInStatement(
 
   const varName = (stmt.pattern as Identifier).name;
 
-  // 1. Generate iterable expression and call .iterator()
+  // 1. Generate iterable expression and call .:Iterable.iterator()
   generateExpression(ctx, stmt.iterable, body);
-  generateIteratorMethodCall(ctx, iterableType, body);
+  generateIteratorMethodCall(ctx, iterableType, iteratorSymbol, body);
 
   // 2. Store iterator in temp local
   const iteratorWasmType = getInterfaceWasmType(ctx, iteratorType);
@@ -469,7 +471,7 @@ function generateForInStatement(
 }
 
 /**
- * Generate code to call .iterator() on an iterable.
+ * Generate code to call .:Iterable.iterator() on an iterable.
  * Expects the iterable object to already be on the stack.
  * Pushes the Iterator interface (fat pointer) onto the stack.
  *
@@ -480,6 +482,7 @@ function generateForInStatement(
 function generateIteratorMethodCall(
   ctx: CodegenContext,
   iterableType: Type,
+  iteratorSymbol: SymbolType,
   body: number[],
 ) {
   let classInfo: ClassInfo | undefined;
@@ -512,10 +515,11 @@ function generateIteratorMethodCall(
     );
   }
 
-  // Look up the 'iterator' method
-  const methodInfo = classInfo.methods.get('iterator');
+  // Look up the symbol-keyed 'iterator' method
+  const methodName = getSymbolMemberName(iteratorSymbol);
+  const methodInfo = classInfo.methods.get(methodName);
   if (!methodInfo) {
-    throw new Error(`Method 'iterator' not found in ${classInfo.name}`);
+    throw new Error(`Method '${methodName}' not found in ${classInfo.name}`);
   }
 
   // Determine static vs dynamic dispatch (same logic as regular method calls)
@@ -549,10 +553,10 @@ function generateIteratorMethodCall(
     body.push(...WasmModule.encodeSignedLEB128(classInfo.vtableTypeIndex));
 
     // Get function from vtable
-    const vtableIndex = classInfo.vtable.indexOf('iterator');
+    const vtableIndex = classInfo.vtable.indexOf(methodName);
     if (vtableIndex < 0) {
       throw new Error(
-        `Method 'iterator' not found in vtable for ${classInfo.name}`,
+        `Method '${methodName}' not found in vtable for ${classInfo.name}`,
       );
     }
     body.push(0xfb, GcOpcode.struct_get);

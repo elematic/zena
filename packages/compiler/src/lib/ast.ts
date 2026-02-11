@@ -554,8 +554,8 @@ export interface MixinDeclaration extends Node {
 
 export interface SymbolPropertyName extends Node {
   type: typeof NodeType.SymbolPropertyName;
-  /** The identifier referencing the symbol */
-  symbol: Identifier;
+  /** The expression referencing the symbol (identifier or member expression) */
+  symbol: Expression;
 }
 
 export interface AccessorDeclaration extends Node {
@@ -574,7 +574,7 @@ export interface InterfaceDeclaration extends Node {
   name: Identifier;
   typeParameters?: TypeParameter[];
   extends?: TypeAnnotation[];
-  body: (FieldDefinition | MethodSignature | AccessorSignature)[];
+  body: (FieldDefinition | MethodSignature | AccessorSignature | SymbolDeclaration)[];
   exported: boolean;
   exportName?: string;
 }
@@ -639,6 +639,8 @@ export interface MemberExpression extends Node {
   property: Identifier;
   /** True if this is symbol member access (obj.:symbol) */
   isSymbolAccess?: boolean;
+  /** For symbol access, the full symbol path expression (e.g., Iterable.iterator as MemberExpression) */
+  symbolPath?: Expression;
   /** Set by checker for symbol access - the resolved symbol type for identity-based lookup */
   resolvedSymbol?: SymbolType;
 }
@@ -744,8 +746,14 @@ export interface ForInStatement extends Node {
   body: Statement;
   /** Inferred element type, populated by the checker */
   elementType?: Type;
-  /** The Iterator<T> type returned by .iterator(), populated by the checker */
+  
+  /**
+   * The Iterator<T> type returned by .:Iterator.iterator(), populated by the
+   * checker
+   */
   iteratorType?: Type;
+  /** The symbol type for Iterable.iterator, populated by the checker */
+  iteratorSymbol?: SymbolType;
 }
 
 export interface Parameter extends Node {

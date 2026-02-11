@@ -19,6 +19,7 @@ import {
   type InterfaceDeclaration,
   type IsExpression,
   // type LetPatternCondition,
+  type MemberExpression,
   type MethodDefinition,
   type MixinDeclaration,
   type Parameter,
@@ -554,6 +555,7 @@ const predeclareInterface = (
     extends: [],
     fields: new Map(),
     methods: new Map(),
+    statics: new Map(),
     symbolFields: new Map(),
     symbolMethods: new Map(),
   };
@@ -1064,6 +1066,7 @@ function checkForInStatement(ctx: CheckerContext, stmt: ForInStatement) {
   } else {
     stmt.elementType = iterableInfo.elementType;
     stmt.iteratorType = iterableInfo.iteratorType;
+    stmt.iteratorSymbol = iterableInfo.iteratorSymbol;
   }
 
   // Enter scope for pattern bindings and loop body
@@ -1083,6 +1086,27 @@ function checkForInStatement(ctx: CheckerContext, stmt: ForInStatement) {
 interface IterableInfo {
   elementType: Type;
   iteratorType: InterfaceType;
+  iteratorSymbol: SymbolType;
+}
+
+/**
+ * Get the iterator symbol from an Iterable interface.
+ * The symbol is defined as `static symbol iterator` on Iterable.
+ */
+function getIteratorSymbol(iterableInterface: InterfaceType): SymbolType | undefined {
+  // The iterator symbol is a static member of the Iterable interface
+  const iteratorSymbol = iterableInterface.statics?.get('iterator');
+  if (iteratorSymbol && iteratorSymbol.kind === TypeKind.Symbol) {
+    return iteratorSymbol as SymbolType;
+  }
+  // Check genericSource if this is an instantiated interface
+  if (iterableInterface.genericSource) {
+    const sourceSymbol = iterableInterface.genericSource.statics?.get('iterator');
+    if (sourceSymbol && sourceSymbol.kind === TypeKind.Symbol) {
+      return sourceSymbol as SymbolType;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -1105,13 +1129,19 @@ function getIterableInfo(
     const iterableInterface = findIterableInterface(interfaceType);
     if (iterableInterface) {
       const elementType = iterableInterface.typeArguments?.[0] ?? Types.Unknown;
-      // Get the Iterator type from Iterable's iterator() method return type
-      const iteratorMethod = iterableInterface.methods.get('iterator');
-      if (iteratorMethod && iteratorMethod.returnType) {
-        return {
-          elementType,
-          iteratorType: iteratorMethod.returnType as InterfaceType,
-        };
+      // Get the iterator symbol from Iterable's statics
+      const iteratorSymbol = getIteratorSymbol(iterableInterface);
+      if (iteratorSymbol) {
+        // Get the Iterator type from Iterable's :Iterable.iterator() symbol
+        // method return type
+        const iteratorMethod = iterableInterface.symbolMethods?.get(iteratorSymbol);
+        if (iteratorMethod && iteratorMethod.returnType) {
+          return {
+            elementType,
+            iteratorType: iteratorMethod.returnType as InterfaceType,
+            iteratorSymbol,
+          };
+        }
       }
     }
   }
@@ -1176,13 +1206,19 @@ function findIterableInImplements(
       if (iterableInterface) {
         const elementType =
           iterableInterface.typeArguments?.[0] ?? Types.Unknown;
-        // Get the Iterator type from Iterable's iterator() method
-        const iteratorMethod = iterableInterface.methods.get('iterator');
-        if (iteratorMethod && iteratorMethod.returnType) {
-          return {
-            elementType,
-            iteratorType: iteratorMethod.returnType as InterfaceType,
-          };
+        // Get the iterator symbol from Iterable's statics
+        const iteratorSymbol = getIteratorSymbol(iterableInterface);
+        if (iteratorSymbol) {
+          // Get the Iterator type from Iterable's :Iterable.iterator() symbol
+          // method
+          const iteratorMethod = iterableInterface.symbolMethods?.get(iteratorSymbol);
+          if (iteratorMethod && iteratorMethod.returnType) {
+            return {
+              elementType,
+              iteratorType: iteratorMethod.returnType as InterfaceType,
+              iteratorSymbol,
+            };
+          }
         }
       }
     }
@@ -1658,21 +1694,135 @@ function resolveMemberName(
   if (name.type === NodeType.Identifier) {
     return {name: name.name, isSymbol: false};
   } else {
-    // SymbolPropertyName - look up the symbol identifier
-    const type = ctx.resolveValue(name.symbol.name);
-    if (type && type.kind === TypeKind.Symbol) {
-      const symbolType = type as SymbolType;
-      // Set inferredType on the symbol identifier so codegen can access it
-      name.symbol.inferredType = symbolType;
-      // Use the SymbolType object for identity; debugName is for diagnostics
-      return {
-        name: symbolType.debugName ?? '<symbol>',
-        isSymbol: true,
-        symbolType,
-      };
+    // SymbolPropertyName - resolve the symbol expression
+    // This could be a simple identifier (e.g., :mySymbol) or a member expression (e.g., :Iterable.iterator)
+    const symbolExpr = name.symbol;
+    let type: Type | undefined;
+    
+    if (symbolExpr.type === NodeType.Identifier) {
+      // Simple symbol: :mySymbol
+      // First check if it's a local symbol value
+      type = ctx.resolveValue(symbolExpr.name);
+      if (type && type.kind === TypeKind.Symbol) {
+        const symbolType = type as SymbolType;
+        symbolExpr.inferredType = symbolType;
+        return {
+          name: symbolType.debugName ?? '<symbol>',
+          isSymbol: true,
+          symbolType,
+        };
+      }
+      
+      // If inside an interface, check the interface's statics
+      if (ctx.currentInterface && ctx.currentInterface.statics) {
+        const staticType = ctx.currentInterface.statics.get(symbolExpr.name);
+        if (staticType && staticType.kind === TypeKind.Symbol) {
+          const symbolType = staticType as SymbolType;
+          symbolExpr.inferredType = symbolType;
+          return {
+            name: symbolType.debugName ?? '<symbol>',
+            isSymbol: true,
+            symbolType,
+          };
+        }
+      }
+      
+      // If inside a class, check the class's statics
+      if (ctx.currentClass && ctx.currentClass.statics) {
+        const staticType = ctx.currentClass.statics.get(symbolExpr.name);
+        if (staticType && staticType.kind === TypeKind.Symbol) {
+          const symbolType = staticType as SymbolType;
+          symbolExpr.inferredType = symbolType;
+          return {
+            name: symbolType.debugName ?? '<symbol>',
+            isSymbol: true,
+            symbolType,
+          };
+        }
+      }
+      
+      ctx.diagnostics.reportError(
+        `Symbol '${symbolExpr.name}' is not defined or is not a symbol.`,
+        DiagnosticCode.TypeMismatch,
+      );
+      return {name: '<error>', isSymbol: false};
+    } else if (symbolExpr.type === NodeType.MemberExpression) {
+      // Qualified symbol: :Iterable.iterator
+      // The object should be an interface/class name, and the property is a static symbol
+      const memberExpr = symbolExpr as MemberExpression;
+      if (memberExpr.object.type === NodeType.Identifier) {
+        const objectName = memberExpr.object.name;
+        const objectType = ctx.resolveType(objectName);
+        
+        if (objectType && objectType.kind === TypeKind.Interface) {
+          const interfaceType = objectType as InterfaceType;
+          const propertyName = memberExpr.property.name;
+          
+          // Look up static symbol from interface's statics
+          if (interfaceType.statics && interfaceType.statics.has(propertyName)) {
+            const symbolType = interfaceType.statics.get(propertyName)!;
+            if (symbolType.kind === TypeKind.Symbol) {
+              symbolExpr.inferredType = symbolType as SymbolType;
+              return {
+                name: (symbolType as SymbolType).debugName ?? '<symbol>',
+                isSymbol: true,
+                symbolType: symbolType as SymbolType,
+              };
+            }
+          }
+          ctx.diagnostics.reportError(
+            `Static symbol '${propertyName}' not found in interface '${objectName}'.`,
+            DiagnosticCode.TypeMismatch,
+          );
+          return {name: '<error>', isSymbol: false};
+        } else if (objectType && objectType.kind === TypeKind.Class) {
+          // Also support class statics
+          const classType = objectType as ClassType;
+          const propertyName = memberExpr.property.name;
+          
+          if (classType.statics && classType.statics.has(propertyName)) {
+            const fieldType = classType.statics.get(propertyName)!;
+            if (fieldType.kind === TypeKind.Symbol) {
+              symbolExpr.inferredType = fieldType as SymbolType;
+              return {
+                name: (fieldType as SymbolType).debugName ?? '<symbol>',
+                isSymbol: true,
+                symbolType: fieldType as SymbolType,
+              };
+            }
+          }
+          ctx.diagnostics.reportError(
+            `Static symbol '${propertyName}' not found in class '${objectName}'.`,
+            DiagnosticCode.TypeMismatch,
+          );
+          return {name: '<error>', isSymbol: false};
+        }
+        ctx.diagnostics.reportError(
+          `'${objectName}' is not an interface or class.`,
+          DiagnosticCode.TypeMismatch,
+        );
+        return {name: '<error>', isSymbol: false};
+      }
+      
+      // Fallback: try checkExpression for more complex paths
+      type = checkExpression(ctx, symbolExpr);
+      if (type && type.kind === TypeKind.Symbol) {
+        const symbolType = type as SymbolType;
+        return {
+          name: symbolType.debugName ?? '<symbol>',
+          isSymbol: true,
+          symbolType,
+        };
+      }
+      ctx.diagnostics.reportError(
+        `Expression is not a symbol.`,
+        DiagnosticCode.TypeMismatch,
+      );
+      return {name: '<error>', isSymbol: false};
     }
+    
     ctx.diagnostics.reportError(
-      `Symbol '${name.symbol.name}' is not defined or is not a symbol.`,
+      `Invalid symbol expression.`,
       DiagnosticCode.TypeMismatch,
     );
     return {name: '<error>', isSymbol: false};
@@ -2535,6 +2685,9 @@ function checkInterfaceDeclaration(
       extends: [],
       fields: new Map(),
       methods: new Map(),
+      statics: new Map(),
+      symbolFields: new Map(),
+      symbolMethods: new Map(),
     };
     ctx.declare(interfaceName, interfaceType, 'type');
     decl.inferredType = interfaceType;
@@ -2597,7 +2750,28 @@ function checkInterfaceDeclaration(
     }
   }
 
+  // First pass: process SymbolDeclarations so they're available for symbol method references
   for (const member of decl.body) {
+    if (member.type === NodeType.SymbolDeclaration) {
+      const symbolName = member.name.name;
+      const modulePath = ctx.module?.path ?? '<anonymous>';
+      const symbolType: SymbolType = {
+        kind: TypeKind.Symbol,
+        debugName: `${modulePath}:${interfaceName}.${symbolName}`,
+        id: ctx.nextSymbolId(),
+      };
+      member.name.inferredType = symbolType;
+      member.inferredType = symbolType;
+      interfaceType.statics!.set(symbolName, symbolType);
+    }
+  }
+
+  // Second pass: process other members (methods, fields, accessors)
+  for (const member of decl.body) {
+    if (member.type === NodeType.SymbolDeclaration) {
+      // Already processed in first pass
+      continue;
+    }
     if (member.type === NodeType.MethodSignature) {
       ctx.enterScope();
       const typeParameters = createTypeParameters(ctx, member.typeParameters);
@@ -2731,6 +2905,7 @@ function checkInterfaceDeclaration(
         });
       }
     }
+    // SymbolDeclaration already processed in first pass
   }
 
   ctx.exitInterface();

@@ -2465,32 +2465,118 @@ function checkSymbolMemberAccess(
   expr: MemberExpression,
   objectType: Type,
 ): Type {
-  const symbolName = expr.property.name;
-  const symbolTypeValue = ctx.resolveValue(symbolName);
+  // The symbolPath contains either:
+  // - A simple identifier (e.g., :mySymbol)
+  // - A MemberExpression (e.g., :Iterable.iterator)
+  const symbolPath = expr.symbolPath ?? expr.property;
+  let symbolType: SymbolType | undefined;
 
-  if (!symbolTypeValue || symbolTypeValue.kind !== TypeKind.Symbol) {
+  if (symbolPath.type === NodeType.Identifier) {
+    // Simple symbol: :mySymbol
+    const symbolName = symbolPath.name;
+    const symbolTypeValue = ctx.resolveValue(symbolName);
+
+    if (!symbolTypeValue || symbolTypeValue.kind !== TypeKind.Symbol) {
+      ctx.diagnostics.reportError(
+        `'${symbolName}' is not defined or is not a symbol.`,
+        DiagnosticCode.TypeMismatch,
+      );
+      return Types.Unknown;
+    }
+    symbolType = symbolTypeValue as SymbolType;
+  } else if (symbolPath.type === NodeType.MemberExpression) {
+    // Qualified symbol: :Iterable.iterator
+    const memberExpr = symbolPath as MemberExpression;
+    if (memberExpr.object.type === NodeType.Identifier) {
+      const objectName = (memberExpr.object as Identifier).name;
+      const interfaceOrClassType = ctx.resolveType(objectName);
+      
+      if (interfaceOrClassType && interfaceOrClassType.kind === TypeKind.Interface) {
+        const ifaceType = interfaceOrClassType as InterfaceType;
+        const propertyName = memberExpr.property.name;
+        
+        if (ifaceType.statics && ifaceType.statics.has(propertyName)) {
+          const staticType = ifaceType.statics.get(propertyName)!;
+          if (staticType.kind === TypeKind.Symbol) {
+            symbolType = staticType as SymbolType;
+          }
+        }
+        if (!symbolType) {
+          ctx.diagnostics.reportError(
+            `Static symbol '${propertyName}' not found in interface '${objectName}'.`,
+            DiagnosticCode.TypeMismatch,
+          );
+          return Types.Unknown;
+        }
+      } else if (interfaceOrClassType && interfaceOrClassType.kind === TypeKind.Class) {
+        const classType = interfaceOrClassType as ClassType;
+        const propertyName = memberExpr.property.name;
+        
+        if (classType.statics && classType.statics.has(propertyName)) {
+          const staticType = classType.statics.get(propertyName)!;
+          if (staticType.kind === TypeKind.Symbol) {
+            symbolType = staticType as SymbolType;
+          }
+        }
+        if (!symbolType) {
+          ctx.diagnostics.reportError(
+            `Static symbol '${propertyName}' not found in class '${objectName}'.`,
+            DiagnosticCode.TypeMismatch,
+          );
+          return Types.Unknown;
+        }
+      } else {
+        ctx.diagnostics.reportError(
+          `'${objectName}' is not an interface or class.`,
+          DiagnosticCode.TypeMismatch,
+        );
+        return Types.Unknown;
+      }
+    } else {
+      ctx.diagnostics.reportError(
+        `Invalid symbol path.`,
+        DiagnosticCode.TypeMismatch,
+      );
+      return Types.Unknown;
+    }
+  } else {
     ctx.diagnostics.reportError(
-      `'${symbolName}' is not defined or is not a symbol.`,
+      `Invalid symbol expression.`,
       DiagnosticCode.TypeMismatch,
     );
     return Types.Unknown;
   }
 
-  const symbolType = symbolTypeValue as SymbolType;
   expr.resolvedSymbol = symbolType;
 
-  if (
-    objectType.kind !== TypeKind.Class &&
-    objectType.kind !== TypeKind.Interface
-  ) {
+  // Determine the class/interface to check for symbol members
+  let classType: ClassType | InterfaceType | undefined;
+  
+  if (objectType.kind === TypeKind.Class || objectType.kind === TypeKind.Interface) {
+    classType = objectType as ClassType | InterfaceType;
+  } else if (objectType.kind === TypeKind.Array) {
+    // For arrays, look up extension methods from FixedArray
+    const genericArrayType = ctx.getWellKnownType(TypeNames.FixedArray);
+    if (genericArrayType && genericArrayType.kind === TypeKind.Class) {
+      const genericClassType = genericArrayType as ClassType;
+      const elementType = (objectType as ArrayType).elementType;
+      
+      // Instantiate FixedArray<T> with the actual element type
+      if (genericClassType.typeParameters && genericClassType.typeParameters.length > 0) {
+        classType = instantiateGenericClass(genericClassType, [elementType], ctx);
+      } else {
+        classType = genericClassType;
+      }
+    }
+  }
+  
+  if (!classType) {
     ctx.diagnostics.reportError(
-      `Symbol member access is only supported on classes and interfaces.`,
+      `Symbol member access is only supported on classes, interfaces, and arrays.`,
       DiagnosticCode.TypeMismatch,
     );
     return Types.Unknown;
   }
-
-  const classType = objectType as ClassType | InterfaceType;
 
   // Check symbolFields first
   if (classType.symbolFields?.has(symbolType)) {
@@ -2501,6 +2587,18 @@ function checkSymbolMemberAccess(
   // Check symbolMethods
   if (classType.symbolMethods?.has(symbolType)) {
     const methodType = classType.symbolMethods.get(symbolType)!;
+    // Store method binding for symbol method access
+    const isExtension = classType.kind === TypeKind.Class && !!(classType as ClassType).isExtension;
+    const binding: MethodBinding = {
+      kind: 'method',
+      classType: classType as ClassType,
+      methodName: symbolType.debugName ?? '<symbol>',
+      isStaticDispatch: isExtension,
+      type: methodType,
+      isSymbol: true,
+      symbolType,
+    };
+    ctx.semanticContext.setResolvedBinding(expr, binding);
     return resolveMemberType(classType, methodType, ctx);
   }
 

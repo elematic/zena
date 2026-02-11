@@ -34,6 +34,19 @@ export interface ClassInfo {
       intrinsic?: string;
     }
   >; // name -> {funcIndex, returnType, typeIndex, paramTypes, isFinal, intrinsic}
+  /**
+   * Symbol-keyed methods, using the symbol's mangled name (e.g., "[symbol#0]") as key.
+   */
+  symbolMethods?: Map<
+    string,
+    {
+      index: number;
+      returnType: number[];
+      typeIndex: number;
+      paramTypes: number[][];
+      isFinal?: boolean;
+    }
+  >;
   vtable?: string[];
   vtableTypeIndex?: number;
   vtableGlobalIndex?: number;

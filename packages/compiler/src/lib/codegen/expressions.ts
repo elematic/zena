@@ -1819,24 +1819,45 @@ function generateSymbolMethodCall(
     );
   }
 
-  if (objectCheckerType.kind !== TypeKind.Class) {
+  let classType: ClassType | undefined;
+  let classInfo: ClassInfo | undefined;
+  
+  if (objectCheckerType.kind === TypeKind.Class) {
+    classType = objectCheckerType as ClassType;
+    classInfo = ctx.getClassInfo(classType);
+    
+    // If not found and it's an extension class, try to instantiate it
+    if (!classInfo && classType.isExtension) {
+      classInfo = ensureClassInstantiated(ctx, classType);
+    }
+  } else if (objectCheckerType.kind === TypeKind.Array) {
+    // For arrays, look up the FixedArray extension class
+    classInfo = resolveFixedArrayClass(ctx, objectCheckerType);
+    if (!classInfo) {
+      throw new Error(`Extension class not found for array type`);
+    }
+    // classType stays undefined for arrays - we use classInfo.name for errors
+  } else {
     throw new Error(
-      `Symbol method call on non-class type: ${objectCheckerType.kind}`,
+      `Symbol method call on unsupported type: ${objectCheckerType.kind}`,
     );
   }
 
-  const classType = objectCheckerType as ClassType;
-  const classInfo = ctx.getClassInfo(classType);
-
   if (!classInfo) {
-    throw new Error(`Class ${classType.name} not found for symbol method call`);
+    const typeName = classType?.name ?? 'unknown';
+    throw new Error(`Class ${typeName} not found for symbol method call`);
   }
 
-  // Look up the method by symbol name
-  const methodInfo = classInfo.methods.get(memberName);
+  // Look up the method by symbol name - check symbolMethods first
+  let methodInfo = classInfo.symbolMethods?.get(memberName);
   if (!methodInfo) {
+    // Fall back to regular methods map
+    methodInfo = classInfo.methods.get(memberName);
+  }
+  if (!methodInfo) {
+    const typeName = classType?.name ?? classInfo.name;
     throw new Error(
-      `Symbol method '${memberName}' (symbol: ${symbolType.debugName ?? '<unnamed>'}) not found on class ${classType.name}`,
+      `Symbol method '${memberName}' (symbol: ${symbolType.debugName ?? '<unnamed>'}) not found on class ${typeName}`,
     );
   }
 

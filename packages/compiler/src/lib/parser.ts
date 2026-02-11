@@ -1417,14 +1417,31 @@ export class Parser {
 
       while (true) {
         if (this.#match(TokenType.Dot)) {
-          // Check for symbol member access: obj.:symbol
+          // Check for symbol member access: obj.:symbol or obj.:Iface.symbol
           if (this.#match(TokenType.Colon)) {
-            const property = this.#parseIdentifier();
+            // Parse the symbol path (could be simple like :mySymbol or qualified like :Iterable.iterator)
+            let symbolPath: Expression = this.#parseIdentifier();
+            while (this.#match(TokenType.Dot)) {
+              const prop = this.#parseIdentifier();
+              symbolPath = {
+                type: NodeType.MemberExpression,
+                object: symbolPath,
+                property: prop,
+              };
+            }
+            // Get the final property name for property field (last identifier in the path)
+            let property: Identifier;
+            if (symbolPath.type === NodeType.Identifier) {
+              property = symbolPath;
+            } else {
+              property = (symbolPath as MemberExpression).property;
+            }
             expr = {
               type: NodeType.MemberExpression,
               object: expr,
               property,
               isSymbolAccess: true,
+              symbolPath,
               loc: this.#loc(expr, property),
             };
           } else {
@@ -1476,14 +1493,31 @@ export class Parser {
       if (this.#match(TokenType.LParen)) {
         expr = this.#finishCall(expr);
       } else if (this.#match(TokenType.Dot)) {
-        // Check for symbol member access: obj.:symbol
+        // Check for symbol member access: obj.:symbol or obj.:Iface.symbol
         if (this.#match(TokenType.Colon)) {
-          const property = this.#parseIdentifier();
+          // Parse the symbol path (could be simple like :mySymbol or qualified like :Iterable.iterator)
+          let symbolPath: Expression = this.#parseIdentifier();
+          while (this.#match(TokenType.Dot)) {
+            const prop = this.#parseIdentifier();
+            symbolPath = {
+              type: NodeType.MemberExpression,
+              object: symbolPath,
+              property: prop,
+            };
+          }
+          // Get the final property name for property field (last identifier in the path)
+          let property: Identifier;
+          if (symbolPath.type === NodeType.Identifier) {
+            property = symbolPath;
+          } else {
+            property = (symbolPath as MemberExpression).property;
+          }
           expr = {
             type: NodeType.MemberExpression,
             object: expr,
             property,
             isSymbolAccess: true,
+            symbolPath,
             loc: this.#loc(expr, property),
           };
         } else {
@@ -2487,14 +2521,23 @@ export class Parser {
     }
 
     let name: Identifier | SymbolPropertyName;
-    // Symbol member: :symbolName or :symbolName() for methods
+    // Symbol member: :symbolName or :Iface.symbolName for methods
     if (this.#match(TokenType.Colon)) {
       const start = this.#previous();
-      const symbol = this.#parseIdentifier();
+      // Parse a primary expression (identifier) and possibly member access
+      let symbolExpr: Expression = this.#parseIdentifier();
+      while (this.#match(TokenType.Dot)) {
+        const prop = this.#parseIdentifier();
+        symbolExpr = {
+          type: NodeType.MemberExpression,
+          object: symbolExpr,
+          property: prop,
+        };
+      }
       name = {
         type: NodeType.SymbolPropertyName,
-        symbol,
-        loc: this.#loc(start, symbol),
+        symbol: symbolExpr,
+        loc: this.#loc(start, this.#previous()),
       };
     } else if (this.#match(TokenType.Operator)) {
       // Disambiguate `operator []` vs `operator: i32`
@@ -2739,7 +2782,7 @@ export class Parser {
 
     this.#consume(TokenType.LBrace, "Expected '{' before interface body.");
 
-    const body: (FieldDefinition | MethodSignature | AccessorSignature)[] = [];
+    const body: (FieldDefinition | MethodSignature | AccessorSignature | SymbolDeclaration)[] = [];
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       body.push(this.#parseInterfaceMember());
     }
@@ -2761,9 +2804,45 @@ export class Parser {
   #parseInterfaceMember():
     | FieldDefinition
     | MethodSignature
-    | AccessorSignature {
-    let name: Identifier;
-    if (this.#match(TokenType.Operator)) {
+    | AccessorSignature
+    | SymbolDeclaration {
+    const startToken = this.#peek();
+
+    // Handle static symbol declarations: static symbol iterator;
+    // Only consume 'static' if followed by 'symbol' - otherwise 'static' is a field name
+    if (this.#check(TokenType.Static) && this.#peek(1).type === TokenType.Symbol) {
+      this.#advance(); // consume 'static'
+      this.#advance(); // consume 'symbol'
+      const name = this.#parseIdentifier();
+      this.#consume(TokenType.Semi, "Expected ';' after symbol declaration.");
+      return {
+        type: NodeType.SymbolDeclaration,
+        name,
+        exported: false, // Interface symbols are always public
+        loc: this.#loc(startToken, this.#previous()),
+      };
+    }
+
+    let name: Identifier | SymbolPropertyName;
+    // Symbol member: :symbolName or :Iface.symbolName for methods
+    if (this.#match(TokenType.Colon)) {
+      const start = this.#previous();
+      // Parse a primary expression (identifier) and possibly member access
+      let symbolExpr: Expression = this.#parseIdentifier();
+      while (this.#match(TokenType.Dot)) {
+        const prop = this.#parseIdentifier();
+        symbolExpr = {
+          type: NodeType.MemberExpression,
+          object: symbolExpr,
+          property: prop,
+        };
+      }
+      name = {
+        type: NodeType.SymbolPropertyName,
+        symbol: symbolExpr,
+        loc: this.#loc(start, this.#previous()),
+      };
+    } else if (this.#match(TokenType.Operator)) {
       // Disambiguate `operator []` vs `operator: i32`
       if (
         this.#check(TokenType.Colon) ||

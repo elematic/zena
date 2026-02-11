@@ -136,6 +136,7 @@ export interface InterfaceType extends Type {
   extends?: InterfaceType[];
   fields: Map<string, Type>;
   methods: Map<string, FunctionType>;
+  statics?: Map<string, Type>;
   symbolFields?: Map<SymbolType, Type>;
   symbolMethods?: Map<SymbolType, FunctionType>;
   /** For instantiated generics, points to the original generic type definition. */

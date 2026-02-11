@@ -165,7 +165,7 @@ suite('for-in loops', () => {
           this.#max = max;
         }
         
-        iterator(): Iterator<i32> {
+        :Iterable.iterator(): Iterator<i32> {
           return new CounterIterator(this.#max);
         }
       }
@@ -212,13 +212,13 @@ suite('for-in loops', () => {
 
       // Non-final base class
       class BaseIterable implements Iterable<i32> {
-        iterator(): Iterator<i32> {
+        :Iterable.iterator(): Iterator<i32> {
           return new RangeIterator(0, 3);  // yields 0, 1, 2
         }
       }
 
       class DerivedIterable extends BaseIterable {
-        iterator(): Iterator<i32> {
+        :Iterable.iterator(): Iterator<i32> {
           return new RangeIterator(10, 13);  // yields 10, 11, 12
         }
       }

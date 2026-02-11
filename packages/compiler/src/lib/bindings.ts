@@ -31,6 +31,7 @@ import type {
   InterfaceType,
   MixinType,
   RecordType,
+  SymbolType,
   Type,
   TypeParameterType,
 } from './types.js';
@@ -231,6 +232,10 @@ export interface MethodBinding {
   readonly isStaticDispatch: boolean;
   /** The semantic function type of the method */
   readonly type: FunctionType;
+  /** Whether this is a symbol-keyed method (obj.:symbol) */
+  readonly isSymbol?: boolean;
+  /** The symbol type for symbol-keyed methods */
+  readonly symbolType?: SymbolType;
 }
 
 /**

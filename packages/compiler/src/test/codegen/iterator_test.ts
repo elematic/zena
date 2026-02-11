@@ -40,10 +40,12 @@ suite('iterator', () => {
   test('empty array iteration', async () => {
     const result = await compileAndRun(
       `
+      import {Iterable} from 'zena:iterator';
+      
       export let run = (): i32 => {
         let arr = #[1, 2, 3];
         let empty = arr.slice(0, 0);  // Empty slice
-        let iter = empty.iterator();
+        let iter = empty.:Iterable.iterator();
         var count = 0;
         while (let (true, _item) = iter.next()) {
           count = count + 1;
@@ -59,11 +61,11 @@ suite('iterator', () => {
   test('FixedArray implements Iterable', async () => {
     const result = await compileAndRun(
       `
-      import {Iterator} from 'zena:iterator';
+      import {Iterator, Iterable} from 'zena:iterator';
       
       export let run = (): i32 => {
         let arr = #[1, 2, 3, 4, 5];
-        let iter = arr.iterator();
+        let iter = arr.:Iterable.iterator();
         var sum = 0;
         while (let (true, item) = iter.next()) {
           sum = sum + item;

@@ -293,7 +293,17 @@ export function defineInterfaceMethods(
         continue;
       }
       const memberName = getMemberName(member.name);
-      const methodType = interfaceType.methods.get(memberName);
+      
+      // Look up method type - check symbolMethods for symbol-keyed methods
+      let methodType: FunctionType | undefined;
+      if (member.name.type === NodeType.SymbolPropertyName) {
+        const symbolType = member.name.symbol.inferredType as SymbolType;
+        if (symbolType && interfaceType.symbolMethods) {
+          methodType = interfaceType.symbolMethods.get(symbolType);
+        }
+      } else {
+        methodType = interfaceType.methods.get(memberName);
+      }
       if (!methodType) {
         throw new Error(
           `Method ${memberName} not found in interface ${decl.name.name}`,
@@ -517,6 +527,11 @@ export function generateTrampoline(
   // Look up class method - try exact name first, then look for mangled names
   let classMethod = classInfo.methods.get(methodName);
 
+  // Check symbolMethods if not found in regular methods
+  if (!classMethod && classInfo.symbolMethods) {
+    classMethod = classInfo.symbolMethods.get(methodName);
+  }
+
   if (!classMethod) {
     // The class might have method overloading with mangled names (e.g., []$i32).
     // Search for methods that start with the base name and match by count of parameters.
@@ -534,6 +549,22 @@ export function generateTrampoline(
         if (classParamCount === interfaceParamCount) {
           classMethod = methodInfo;
           break;
+        }
+      }
+    }
+    
+    // Also search in symbolMethods
+    if (!classMethod && classInfo.symbolMethods) {
+      for (const [mangledName, methodInfo] of classInfo.symbolMethods.entries()) {
+        if (
+          mangledName.startsWith(methodName) &&
+          (mangledName === methodName || mangledName[methodName.length] === '$')
+        ) {
+          const classParamCount = methodInfo.paramTypes.length - 1;
+          if (classParamCount === interfaceParamCount) {
+            classMethod = methodInfo;
+            break;
+          }
         }
       }
     }
