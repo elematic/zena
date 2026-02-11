@@ -4,6 +4,7 @@ import {
   type Declaration,
   type DeclareFunction,
   type EnumDeclaration,
+  type Expression,
   type FunctionExpression,
   type InterfaceDeclaration,
   type MixinDeclaration,
@@ -13,7 +14,14 @@ import {
 import {analyzeUsage, type UsageAnalysisResult} from '../analysis/usage.js';
 import type {CheckerContext} from '../checker/context.js';
 import {SemanticContext} from '../checker/semantic-context.js';
-import {TypeKind, type MixinType, type Target} from '../types.js';
+import {
+  TypeKind,
+  type ClassType,
+  type InterfaceType,
+  type MixinType,
+  type Target,
+  type Type,
+} from '../types.js';
 import {
   preRegisterClassStruct,
   defineClassStruct,
@@ -182,7 +190,12 @@ export class CodeGenerator {
       this.#ctx.ensureWasiInfra();
     }
 
-    const globalInitializers: {index: number; init: any}[] = [];
+    const globalInitializers: {
+      index: number;
+      init: Expression;
+      targetType?: Type;
+      sourceType?: Type;
+    }[] = [];
 
     // 1. Pre-register Interfaces and register Mixins/Type Aliases/Enums (First pass)
     // This reserves type indices for interfaces so they can be referenced by classes.
@@ -294,7 +307,12 @@ export class CodeGenerator {
               initBytes,
             );
             this.#ctx.defineGlobal(name, globalIndex, type);
-            globalInitializers.push({index: globalIndex, init: member.value});
+            globalInitializers.push({
+              index: globalIndex,
+              init: member.value,
+              targetType: member.typeAnnotation?.inferredType,
+              sourceType: member.value.inferredType,
+            });
           }
         }
       } else if (statement.type === NodeType.EnumDeclaration) {
@@ -346,7 +364,12 @@ export class CodeGenerator {
             this.#ctx.defineGlobal(name, globalIndex, type);
             // Register by declaration for identity-based lookup (new name resolution)
             this.#ctx.registerGlobalByDecl(varDecl, globalIndex);
-            globalInitializers.push({index: globalIndex, init: varDecl.init});
+            globalInitializers.push({
+              index: globalIndex,
+              init: varDecl.init,
+              targetType: varDecl.inferredType,
+              sourceType: varDecl.init.inferredType,
+            });
 
             if (this.#ctx.shouldExport(varDecl)) {
               const exportName = (varDecl as any).exportName || name;
@@ -409,8 +432,56 @@ export class CodeGenerator {
       const body: number[] = [];
       this.#ctx.pushFunctionScope();
 
-      for (const {index, init} of globalInitializers) {
+      for (const {index, init, targetType, sourceType} of globalInitializers) {
         generateExpression(this.#ctx, init, body);
+
+        // Check for interface boxing: target is interface, source is class
+        if (
+          targetType?.kind === TypeKind.Interface &&
+          sourceType?.kind === TypeKind.Class
+        ) {
+          const targetInterfaceType = targetType as InterfaceType;
+          const interfaceInfo = this.#ctx.getInterfaceInfo(targetInterfaceType);
+
+          if (interfaceInfo) {
+            const classInfo = this.#ctx.getClassInfo(sourceType as ClassType);
+            if (classInfo?.implements) {
+              // Identity-based lookup using the checker's InterfaceType
+              let implInfo = classInfo.implements.get(targetInterfaceType);
+
+              // If not found, try to find by interface subtype
+              if (!implInfo) {
+                for (const [implInterface, info] of classInfo.implements) {
+                  if (
+                    this.#ctx.checkerContext.isInterfaceAssignableTo(
+                      implInterface,
+                      targetInterfaceType,
+                    )
+                  ) {
+                    implInfo = info;
+                    break;
+                  }
+                }
+              }
+
+              if (implInfo) {
+                // Generate interface boxing: (vtable, object) -> interface struct
+                body.push(
+                  Opcode.global_get,
+                  ...WasmModule.encodeSignedLEB128(implInfo.vtableGlobalIndex),
+                );
+                body.push(
+                  0xfb,
+                  GcOpcode.struct_new,
+                  ...WasmModule.encodeSignedLEB128(
+                    interfaceInfo.structTypeIndex,
+                  ),
+                );
+              }
+            }
+          }
+        }
+
         body.push(Opcode.global_set);
         body.push(...WasmModule.encodeSignedLEB128(index));
       }
