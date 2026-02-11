@@ -190,6 +190,25 @@ export class CodeGenerator {
       this.#ctx.ensureWasiInfra();
     }
 
+    // 0. Register WASI Imports (Pass 0 - before any type reservation)
+    // WASI imports use preRec function types that must be added BEFORE any rec-group
+    // types are reserved. This ensures type indices are computed correctly.
+    for (const statement of statements) {
+      if (statement.type === NodeType.DeclareFunction) {
+        const decl = statement as DeclareFunction;
+        if (!this.#isUsed(decl)) continue;
+        // Only process WASI imports in this early pass
+        const moduleName = decl.externalModule || 'env';
+        if (moduleName === 'wasi_snapshot_preview1') {
+          registerDeclaredFunction(
+            this.#ctx,
+            decl,
+            this.#ctx.shouldExport(decl),
+          );
+        }
+      }
+    }
+
     const globalInitializers: {
       index: number;
       init: Expression;
@@ -246,10 +265,14 @@ export class CodeGenerator {
 
     // 5. Register Imports (DeclareFunction)
     // Imports must be registered before defined functions to ensure correct index space.
+    // Note: WASI imports (wasi_snapshot_preview1) are already registered in Pass 0.
     for (const statement of statements) {
       if (statement.type === NodeType.DeclareFunction) {
         const decl = statement as DeclareFunction;
         if (!this.#isUsed(decl)) continue;
+        // Skip WASI imports - already processed in Pass 0
+        const moduleName = decl.externalModule || 'env';
+        if (moduleName === 'wasi_snapshot_preview1') continue;
         registerDeclaredFunction(this.#ctx, decl, this.#ctx.shouldExport(decl));
       }
     }
@@ -293,8 +316,14 @@ export class CodeGenerator {
             // Default initialization
             if (type[0] === ValType.i32)
               initBytes = [0x41, 0x00]; // i32.const 0
+            else if (type[0] === ValType.i64)
+              initBytes = [0x42, 0x00]; // i64.const 0
             else if (type[0] === ValType.f32)
               initBytes = [0x43, 0x00, 0x00, 0x00, 0x00]; // f32.const 0
+            else if (type[0] === ValType.f64)
+              initBytes = [
+                0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+              ]; // f64.const 0
             else if (type[0] === ValType.ref_null || type[0] === ValType.ref) {
               initBytes = [Opcode.ref_null, HeapType.none];
             } else {
@@ -347,8 +376,14 @@ export class CodeGenerator {
             // Note: Do NOT include the 0x0b end opcode here - addGlobal adds it
             if (type[0] === ValType.i32)
               initBytes = [0x41, 0x00]; // i32.const 0
+            else if (type[0] === ValType.i64)
+              initBytes = [0x42, 0x00]; // i64.const 0
             else if (type[0] === ValType.f32)
               initBytes = [0x43, 0x00, 0x00, 0x00, 0x00]; // f32.const 0
+            else if (type[0] === ValType.f64)
+              initBytes = [
+                0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+              ]; // f64.const 0
             else if (type[0] === ValType.ref_null || type[0] === ValType.ref) {
               initBytes = [Opcode.ref_null, HeapType.none];
             } else {

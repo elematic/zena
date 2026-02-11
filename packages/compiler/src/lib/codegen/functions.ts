@@ -307,10 +307,17 @@ export function registerDeclaredFunction(
   if (!intrinsicName) {
     const results = mapReturnTypeToWasmResults(ctx, checkerFuncType.returnType);
 
-    const typeIndex = ctx.module.addType(params, results);
-
     const moduleName = decl.externalModule || 'env';
     const functionName = decl.externalName || decl.name.name;
+
+    // Use preRec: true for WASI imports so their types are outside the rec block.
+    // WASI expects standalone function types, not types inside a rec group.
+    const isWasi = moduleName === 'wasi_snapshot_preview1';
+    const typeIndex = ctx.module.addType(
+      params,
+      results,
+      isWasi ? {preRec: true} : undefined,
+    );
 
     funcIndex = ctx.module.addImport(
       moduleName,
