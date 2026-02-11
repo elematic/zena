@@ -672,7 +672,9 @@ greet('Alice'); // "Hello, Alice"
 greet('Bob', 'Hi'); // "Hi, Bob"
 ```
 
-Optional parameters can also have default values.
+### Default Parameter Values
+
+Parameters can have default values that are used when the caller omits the argument.
 
 ```zena
 let increment = (x: i32, amount: i32 = 1) => x + amount;
@@ -681,8 +683,73 @@ increment(10); // 11
 increment(10, 5); // 15
 ```
 
-When a default value is provided, the parameter type in the function body is the
-non-nullable type (unless the default value itself is null).
+**Key semantics:**
+
+1. **Compile-time, argument-count based**: Default values are triggered purely
+   based on whether the argument is provided at the call site. This is
+   determined at compile time by comparing the number of arguments to the number
+   of parameters. Unlike JavaScript, there is no runtime sentinel value (like
+   `undefined`) that triggers the default.
+
+2. **Fresh evaluation**: Default expressions are evaluated fresh at each call
+   site. Unlike Python, default values are not shared or cached between calls.
+
+   ```zena
+   import {Array} from 'zena:array';
+
+   class Processor {
+     // A new Array is created for each call that uses the default
+     process(items: Array<i32> = new Array<i32>()): i32 {
+       let len = items.length;
+       items.push(1);
+       return len;
+     }
+   }
+
+   let p = new Processor();
+   p.process(); // 0 (new empty array created)
+   p.process(); // 0 (another new empty array, not the same one)
+   ```
+
+3. **No boxing for primitives**: When a primitive default (like `i32 = 10`) is
+   used, the value is passed directly without boxing. No runtime overhead is
+   incurred.
+
+4. **`null` does not trigger defaults**: Explicitly passing `null` to a nullable
+   parameter does not trigger the default value—only omitting the argument
+   entirely does.
+
+   ```zena
+   let greet = (name: string | null = 'World') => `Hello, ${name}`;
+
+   greet();       // "Hello, World" - default used
+   greet('Alice'); // "Hello, Alice"
+   greet(null);   // "Hello, null" - null passed, default NOT used
+   ```
+
+5. **Access to `this` in methods**: Default expressions in methods can reference
+   `this` and class members, including private fields.
+
+   ```zena
+   class Reader {
+     #currentPos: i32;
+
+     #new(pos: i32) {
+       this.#currentPos = pos;
+     }
+
+     // Default uses this.#currentPos
+     read(start: i32 = this.#currentPos): i32 {
+       return start;
+     }
+   }
+
+   let reader = new Reader(42);
+   reader.read();    // 42 (uses this.#currentPos as default)
+   reader.read(10);  // 10 (explicit argument)
+   ```
+
+When a default value is provided, the parameter type in the function body is the non-nullable type (unless the default value itself is null).
 
 ### Calling Union Types
 

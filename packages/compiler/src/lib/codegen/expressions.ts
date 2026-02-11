@@ -2837,17 +2837,32 @@ function generateCallExpression(
     }
 
     if (foundClass.isExtension) {
-      generateExpression(ctx, memberExpr.object, body);
+      // Extension class method call - need to save object for potential default args
+      const hasDefaultsWithOwner =
+        expr.originalArgCount !== undefined && expr.defaultArgsOwner;
+
+      let tempObjForDefaults: number | undefined;
+      if (hasDefaultsWithOwner) {
+        // Save object to temp local for default argument context
+        generateExpression(ctx, memberExpr.object, body);
+        tempObjForDefaults = ctx.declareLocal('$$temp_ext_obj', objectType);
+        body.push(Opcode.local_tee);
+        body.push(...WasmModule.encodeSignedLEB128(tempObjForDefaults));
+      } else {
+        generateExpression(ctx, memberExpr.object, body);
+      }
 
       const funcTypeIndex = ctx.module.getFunctionTypeIndex(methodInfo.index);
       const params = ctx.module.getFunctionTypeParams(funcTypeIndex);
       // params[0] is 'this' (the extension object)
 
-      for (let i = 0; i < expr.arguments.length; i++) {
-        const arg = expr.arguments[i];
-        const expectedType = params[i + 1];
-        generateAdaptedArgument(ctx, arg, expectedType, body);
-      }
+      generateMethodCallArguments(
+        ctx,
+        expr,
+        params,
+        tempObjForDefaults ?? -1,
+        body,
+      );
 
       body.push(
         Opcode.call,
@@ -2905,15 +2920,11 @@ function generateCallExpression(
       body.push(Opcode.local_get);
       body.push(...WasmModule.encodeSignedLEB128(tempObj));
 
-      // Generate arguments
+      // Generate arguments (using helper for proper default context)
       const params = ctx.module.getFunctionTypeParams(methodInfo.typeIndex);
       // params[0] is 'this'
 
-      for (let i = 0; i < expr.arguments.length; i++) {
-        const arg = expr.arguments[i];
-        const expectedType = params[i + 1];
-        generateAdaptedArgument(ctx, arg, expectedType, body);
-      }
+      generateMethodCallArguments(ctx, expr, params, tempObj, body);
 
       // Get function
       body.push(Opcode.local_get);
@@ -2923,17 +2934,32 @@ function generateCallExpression(
       body.push(Opcode.call_ref);
       body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
     } else {
-      generateExpression(ctx, memberExpr.object, body);
+      // Static dispatch - need to save object for potential default args that reference `this`
+      const hasDefaultsWithOwner =
+        expr.originalArgCount !== undefined && expr.defaultArgsOwner;
+
+      let tempObjForDefaults: number | undefined;
+      if (hasDefaultsWithOwner) {
+        // Save object to temp local for default argument context
+        generateExpression(ctx, memberExpr.object, body);
+        tempObjForDefaults = ctx.declareLocal('$$temp_static_obj', objectType);
+        body.push(Opcode.local_tee);
+        body.push(...WasmModule.encodeSignedLEB128(tempObjForDefaults));
+      } else {
+        generateExpression(ctx, memberExpr.object, body);
+      }
 
       const funcTypeIndex = ctx.module.getFunctionTypeIndex(methodInfo.index);
       const params = ctx.module.getFunctionTypeParams(funcTypeIndex);
       // params[0] is 'this'
 
-      for (let i = 0; i < expr.arguments.length; i++) {
-        const arg = expr.arguments[i];
-        const expectedType = params[i + 1];
-        generateAdaptedArgument(ctx, arg, expectedType, body);
-      }
+      generateMethodCallArguments(
+        ctx,
+        expr,
+        params,
+        tempObjForDefaults ?? -1, // -1 won't be used if no defaults with owner
+        body,
+      );
 
       body.push(Opcode.call);
       if (methodInfo.index === -1) {
@@ -8527,6 +8553,101 @@ function findArrayIntrinsic(
     }
   }
   return undefined;
+}
+
+/**
+ * Generates method call arguments, handling default parameter expressions that may
+ * reference `this`, class members, or earlier parameters.
+ *
+ * For default arguments (index >= originalArgCount), this function:
+ * 1. Sets up the correct `this` context so that expressions like `this.#field` work
+ * 2. Makes earlier parameter values available so defaults can reference them
+ *    (e.g., `end: i32 = this.length - start` can access the `start` argument)
+ *
+ * @param ctx CodegenContext
+ * @param expr The CallExpression (must have MemberExpression callee for method calls)
+ * @param params WASM parameter types (index 0 is `this`, arguments start at index 1)
+ * @param thisLocalIndex Local index holding the object reference (the `this` for the method)
+ * @param body Output bytecode array
+ */
+function generateMethodCallArguments(
+  ctx: CodegenContext,
+  expr: CallExpression,
+  params: number[][],
+  thisLocalIndex: number,
+  body: number[],
+) {
+  const originalArgCount = expr.originalArgCount ?? expr.arguments.length;
+  const defaultArgsOwner = expr.defaultArgsOwner as ClassType | undefined;
+  const parameterNames = expr.defaultArgParamNames;
+
+  // Check if any defaults might reference earlier parameters.
+  // We need to pre-generate earlier arguments to temp locals if so.
+  const hasDefaultsThatMayRefParams =
+    originalArgCount < expr.arguments.length && parameterNames;
+
+  // Map from parameter name to temp local index (for defaults referencing earlier params)
+  const paramLocals = new Map<string, {index: number; type: number[]}>();
+
+  for (let i = 0; i < expr.arguments.length; i++) {
+    const arg = expr.arguments[i];
+    const expectedType = params[i + 1]; // params[0] is `this`
+    const isDefault = i >= originalArgCount;
+    const hasMoreArgs = i < expr.arguments.length - 1;
+    const paramName = parameterNames?.[i];
+
+    // Check if we need to save this argument to a temp local for later defaults to reference.
+    // We need to save if:
+    // 1. There are defaults that may reference earlier params
+    // 2. There are more arguments after this one
+    // 3. This parameter has a name
+    const shouldSaveToTempLocal =
+      hasDefaultsThatMayRefParams && hasMoreArgs && paramName;
+
+    // For default arguments, we need to set up context (this and earlier params)
+    if (isDefault && (defaultArgsOwner || paramLocals.size > 0)) {
+      // Save current context
+      const savedClass = ctx.currentClass;
+      const savedThisLocal = ctx.thisLocalIndex;
+
+      // Set up `this` context if we have an owner class
+      if (defaultArgsOwner) {
+        const ownerClassInfo = ctx.getClassInfo(defaultArgsOwner);
+        if (ownerClassInfo) {
+          ctx.currentClass = ownerClassInfo;
+          ctx.thisLocalIndex = thisLocalIndex;
+        }
+      }
+
+      // Push a new scope with parameter bindings for earlier params
+      ctx.pushScope();
+      for (const [name, localInfo] of paramLocals) {
+        ctx.scopes[ctx.scopes.length - 1].set(name, localInfo);
+      }
+
+      try {
+        generateAdaptedArgument(ctx, arg, expectedType, body);
+      } finally {
+        ctx.popScope();
+        ctx.currentClass = savedClass;
+        ctx.thisLocalIndex = savedThisLocal;
+      }
+    } else {
+      // Non-default argument, generate normally
+      generateAdaptedArgument(ctx, arg, expectedType, body);
+    }
+
+    // After generating the argument, save to temp local if later defaults might reference it
+    if (shouldSaveToTempLocal) {
+      const tempLocal = ctx.declareLocal(`$$param_${paramName}`, expectedType);
+      paramLocals.set(paramName, {index: tempLocal, type: expectedType});
+
+      // Store the value from the stack (we already pushed it via generateAdaptedArgument)
+      // Use local.tee to both store and keep the value on the stack
+      body.push(Opcode.local_tee);
+      body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+    }
+  }
 }
 
 export function generateAdaptedArgument(

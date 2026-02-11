@@ -119,6 +119,7 @@ export interface FunctionType extends Type {
   typeArguments?: Type[]; // Concrete types when this is an instantiated generic function
   genericSource?: FunctionType; // For instantiated generics, points to the template
   parameters: Type[];
+  parameterNames?: string[]; // Parameter names, parallel to parameters[]
   returnType: Type;
   isFinal?: boolean;
   isAbstract?: boolean;

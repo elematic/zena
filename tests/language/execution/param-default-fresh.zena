@@ -1,0 +1,32 @@
+// @mode: run
+// @result: 0
+
+// Test that default parameter values are evaluated fresh each call (JS semantics)
+// NOT shared/cached like Python defaults.
+// The test passes (returns 0) if arrays are NOT shared.
+
+import {Array} from 'zena:array';
+
+class Processor {
+  // Default creates a new Array each call
+  process(items: Array<i32> = new Array<i32>()): i32 {
+    let len = items.length;
+    items.push(1);  // Mutate the array
+    return len;     // Return length BEFORE mutation
+  }
+}
+
+export let main = (): i32 => {
+  let processor = new Processor();
+  
+  // First call: default array should be empty (length 0)
+  let first = processor.process();
+  
+  // Second call: if JS semantics, new empty array (length 0)
+  // If Python semantics (shared), would have length 1
+  let second = processor.process();
+  
+  // Both should be 0 for JS semantics
+  // Returns 0 if correct, non-zero if wrong
+  return first + second;
+};

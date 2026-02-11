@@ -661,6 +661,26 @@ export interface CallExpression extends Node {
   typeArguments?: TypeAnnotation[];
   arguments: Expression[];
   resolvedFunctionType?: Type;
+  /**
+   * Number of arguments explicitly provided by the caller.
+   * Arguments at indices >= originalArgCount are defaults pushed by the checker.
+   * Used by codegen to set up proper `this` context for default expressions.
+   */
+  originalArgCount?: number;
+  /**
+   * The class type that owns the method being called (for method calls).
+   * Used by codegen to resolve `this` references in default expressions.
+   */
+  defaultArgsOwner?: Type;
+  /**
+   * Parameter names for ALL arguments (including defaults).
+   * Used by codegen to create local bindings for earlier parameters when
+   * generating default expressions that reference them.
+   * Example: for `slice(start: i32 = 0, end: i32 = this.length - start)`,
+   * this array would be ['start', 'end'] so that when generating `end`'s
+   * default, we can bind `start` to its value.
+   */
+  defaultArgParamNames?: string[];
 }
 
 export interface ReturnStatement extends Node {

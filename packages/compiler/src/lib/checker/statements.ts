@@ -882,12 +882,14 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
   const typeParameters = createTypeParameters(ctx, decl.typeParameters);
 
   const paramTypes: Type[] = [];
+  const parameterNames: string[] = [];
   const optionalParameters: boolean[] = [];
   const parameterInitializers: any[] = [];
 
   for (const param of decl.params) {
     const type = resolveParameterType(ctx, param);
     paramTypes.push(type);
+    parameterNames.push(param.name.name);
     optionalParameters.push(param.optional);
     parameterInitializers.push(param.initializer);
   }
@@ -900,6 +902,7 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
     kind: TypeKind.Function,
     typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
     parameters: paramTypes,
+    parameterNames,
     returnType,
     optionalParameters,
     parameterInitializers,
@@ -2215,6 +2218,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       const typeParameters = createTypeParameters(ctx, member.typeParameters);
 
       const paramTypes = member.params.map((p) => resolveParameterType(ctx, p));
+      const parameterNames = member.params.map((p) => p.name.name);
       const optionalParameters = member.params.map((p) => p.optional);
       const parameterInitializers = member.params.map((p) => p.initializer);
 
@@ -2228,6 +2232,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         kind: TypeKind.Function,
         typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
         parameters: paramTypes,
+        parameterNames,
         returnType,
         isFinal: member.isFinal,
         isAbstract: member.isAbstract,
@@ -2598,12 +2603,14 @@ function checkInterfaceDeclaration(
       const typeParameters = createTypeParameters(ctx, member.typeParameters);
 
       const paramTypes: Type[] = [];
+      const parameterNames: string[] = [];
       const optionalParameters: boolean[] = [];
       const parameterInitializers: any[] = [];
 
       for (const param of member.params) {
         const type = resolveParameterType(ctx, param);
         paramTypes.push(type);
+        parameterNames.push(param.name.name);
         optionalParameters.push(param.optional);
         parameterInitializers.push(param.initializer);
       }
@@ -2619,6 +2626,7 @@ function checkInterfaceDeclaration(
         kind: TypeKind.Function,
         typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
         parameters: paramTypes,
+        parameterNames,
         returnType,
         optionalParameters,
         parameterInitializers,
@@ -3095,6 +3103,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
           mixinType.methods.set(setterName, {
             kind: TypeKind.Function,
             parameters: [fieldType],
+            parameterNames: ['value'],
             returnType: Types.Void,
             isFinal: false,
           });
@@ -3105,12 +3114,14 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       const typeParameters = createTypeParameters(ctx, member.typeParameters);
 
       const paramTypes: Type[] = [];
+      const parameterNames: string[] = [];
       const optionalParameters: boolean[] = [];
       const parameterInitializers: any[] = [];
 
       for (const param of member.params) {
         const type = resolveParameterType(ctx, param);
         paramTypes.push(type);
+        parameterNames.push(param.name.name);
         optionalParameters.push(param.optional);
         parameterInitializers.push(param.initializer);
       }
@@ -3126,6 +3137,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         kind: TypeKind.Function,
         typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
         parameters: paramTypes,
+        parameterNames,
         returnType,
         isFinal: member.isFinal,
         isAbstract: member.isAbstract,

@@ -1470,6 +1470,10 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     } else {
       // Fill in missing arguments with default values
       if (funcType.parameterInitializers) {
+        // Track original argument count so codegen knows which args are defaults
+        const originalArgCount = expr.arguments.length;
+        let hasDefaults = false;
+
         for (
           let i = expr.arguments.length;
           i < funcType.parameters.length;
@@ -1477,34 +1481,20 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         ) {
           const initializer = funcType.parameterInitializers[i];
           if (initializer) {
-            // We reuse the initializer AST node.
-            // This is safe for codegen as long as we don't mutate it.
-            // However, we should probably clone it if we were doing transformations that mutate.
-            // For now, just push it.
+            // Push the initializer AST node. The initializer was already type-checked
+            // when the function/method was defined (in the callee's scope where `this`
+            // and other parameters are available). We don't re-check it here because
+            // the call site doesn't have the same scope as the callee.
+            //
+            // Note: This "caller supplies default" strategy means the default expression
+            // is inlined at the call site. For defaults that reference `this` or other
+            // parameters, codegen must ensure the expression is evaluated in the correct
+            // context (see generateCallExpression).
             expr.arguments.push(initializer);
-            // Check the new argument to get its type and update argTypes
-            const argType = checkExpression(ctx, initializer);
-            argTypes.push(argType);
-            // We also need to check it? It was checked at definition.
-            // But we need to ensure it's valid in the call context?
-            // Default values are usually evaluated in the function's context (if they refer to other params)
-            // or constant.
-            // If they are constant, it's fine.
-            // If they refer to other params, we can't just push the AST node if it uses identifiers that are not in scope.
-            // But wait, if the default value is `x + 1` where `x` is a param,
-            // and we push it to the call site arguments, `x` is NOT in scope at the call site!
-            // This "Caller supplies default" strategy ONLY works for constant defaults or defaults that only use globals.
-            // If the default uses other parameters, we CANNOT just push the AST.
-            // We would need to evaluate it.
-            // But Zena is compiled.
-            // So if we have `function foo(x: i32, y: i32 = x + 1)`,
-            // and we call `foo(1)`, we want `foo(1, 1 + 1)`.
-            // But `x` is not defined at call site.
-            // We would need to replace `x` with the *value* of the first argument.
-            // This requires AST substitution.
-            // For now, let's assume defaults are constants or don't refer to other params.
-            // If they do, this implementation is buggy.
-            // But for `initialCapacity: i32 = 10`, it works.
+            // Use the parameter type as the argument type (the initializer was checked
+            // to be compatible during function definition)
+            argTypes.push(funcType.parameters[i]);
+            hasDefaults = true;
           } else {
             // Optional but no default? Inject null.
             const nullLiteral: Expression = {
@@ -1512,6 +1502,26 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
             };
             expr.arguments.push(nullLiteral);
             argTypes.push(Types.Null);
+          }
+        }
+
+        // Store metadata for codegen if we added any defaults
+        if (hasDefaults) {
+          expr.originalArgCount = originalArgCount;
+
+          // Store parameter names so codegen can create bindings for earlier params
+          // when generating defaults that reference them (e.g., `end = this.length - start`)
+          if (funcType.parameterNames) {
+            expr.defaultArgParamNames = funcType.parameterNames;
+          }
+
+          // For method calls, store the owner class for `this` context in defaults
+          if (expr.callee.type === NodeType.MemberExpression) {
+            const memberExpr = expr.callee as MemberExpression;
+            const objectType = checkExpression(ctx, memberExpr.object);
+            if (objectType.kind === TypeKind.Class) {
+              expr.defaultArgsOwner = objectType;
+            }
           }
         }
       }
@@ -2189,6 +2199,7 @@ function checkFunctionExpression(
   }
 
   const paramTypes: Type[] = [];
+  const parameterNames: string[] = [];
   const optionalParameters: boolean[] = [];
   const parameterInitializers: any[] = [];
 
@@ -2233,6 +2244,7 @@ function checkFunctionExpression(
 
     ctx.declare(param.name.name, type, 'let', param);
     paramTypes.push(type);
+    parameterNames.push(param.name.name);
     optionalParameters.push(param.optional);
     parameterInitializers.push(param.initializer);
 
@@ -2295,6 +2307,7 @@ function checkFunctionExpression(
     kind: TypeKind.Function,
     typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
     parameters: paramTypes,
+    parameterNames,
     returnType: bodyType,
     optionalParameters,
     parameterInitializers,
@@ -2382,6 +2395,9 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
     return classType;
   }
 
+  // Track original argument count before expanding defaults
+  const originalArgCount = expr.arguments.length;
+
   // Check arguments against constructor parameters
   if (expr.arguments.length !== constructor.parameters.length) {
     const minArity = constructor.optionalParameters
@@ -2419,9 +2435,11 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
     }
   }
 
+  // Only check originally-provided arguments, not expanded defaults.
+  // Default value expressions were already type-checked when the constructor was defined.
   for (
     let i = 0;
-    i < Math.min(expr.arguments.length, constructor.parameters.length);
+    i < Math.min(originalArgCount, constructor.parameters.length);
     i++
   ) {
     const argType = checkExpression(ctx, expr.arguments[i]);

@@ -1,0 +1,49 @@
+// @mode: run
+// @result: 0
+// Test: Default parameters can reference earlier parameters
+// This tests the "caller supplies default" strategy where defaults
+// like `end = this.length - start` can access both `this` and `start`.
+
+class List {
+  length: i32;
+  
+  #new(len: i32) {
+    this.length = len;
+  }
+  
+  // Default for `end` references earlier parameter `start`
+  slice(start: i32 = 0, end: i32 = this.length - start): i32 {
+    return end - start;
+  }
+  
+  // Multiple parameter references
+  range(a: i32 = 0, b: i32 = a + 1, c: i32 = a + b): i32 {
+    return a + b + c;
+  }
+}
+
+export let main = (): i32 => {
+  let list = new List(10);
+  
+  // Test 1: slice(2) -> start=2, end=10-2=8, return 8-2=6
+  let r1 = list.slice(2);
+  if (r1 != 6) return 1;
+  
+  // Test 2: slice() -> start=0, end=10-0=10, return 10-0=10
+  let r2 = list.slice();
+  if (r2 != 10) return 2;
+  
+  // Test 3: slice(3, 7) -> explicit args, return 7-3=4
+  let r3 = list.slice(3, 7);
+  if (r3 != 4) return 3;
+  
+  // Test 4: range(5) -> a=5, b=5+1=6, c=5+6=11, return 5+6+11=22
+  let r4 = list.range(5);
+  if (r4 != 22) return 4;
+  
+  // Test 5: range() -> a=0, b=0+1=1, c=0+1=1, return 0+1+1=2
+  let r5 = list.range();
+  if (r5 != 2) return 5;
+  
+  return 0;
+};
