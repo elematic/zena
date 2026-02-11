@@ -7990,9 +7990,25 @@ function generateIndirectCall(
 
   generateExpression(ctx, callee, body);
 
-  const closureType = inferType(ctx, callee);
-  const closureTypeIndex = decodeTypeIndex(closureType);
-  const closureInfo = ctx.closureStructs.get(closureTypeIndex);
+  let closureType = inferType(ctx, callee);
+  let closureTypeIndex = decodeTypeIndex(closureType);
+  let closureInfo = ctx.closureStructs.get(closureTypeIndex);
+
+  // Handle narrowed types: if the checker has narrowed the type to a function type
+  // but the storage type is anyref (or another non-closure type), we need to cast
+  // and use the narrowed type for the closure lookup.
+  if (!closureInfo && calleeCheckerType?.kind === TypeKind.Function) {
+    // Get the narrowed closure type from the checker
+    closureType = mapCheckerTypeToWasmType(ctx, calleeCheckerType);
+    closureTypeIndex = decodeTypeIndex(closureType);
+    closureInfo = ctx.closureStructs.get(closureTypeIndex);
+
+    if (closureInfo) {
+      // Cast from anyref to the closure struct type
+      body.push(0xfb, GcOpcode.ref_cast_null);
+      body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
+    }
+  }
 
   if (!closureInfo) {
     throw new Error('Indirect call on non-closure type');
