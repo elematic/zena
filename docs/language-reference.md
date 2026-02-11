@@ -1,10 +1,12 @@
 # Zena Language Reference
 
-This document describes the syntax and semantics of the Zena programming language.
+This document describes the syntax and semantics of the Zena programming
+language.
 
 ## 1. Introduction
 
-Zena is a statically typed language targeting WebAssembly (WASM-GC). It features a TypeScript-like syntax with strict static typing and no implicit coercion.
+Zena is a statically typed language targeting WebAssembly (WASM-GC). It features
+a TypeScript-like syntax with strict static typing and no implicit coercion.
 
 ## 1.1 Comments
 
@@ -20,7 +22,8 @@ let x = 1; // This is a single-line comment
 
 ### Multi-Line Comments
 
-Multi-line comments begin with `/*` and end with `*/`. They can span multiple lines.
+Multi-line comments begin with `/*` and end with `*/`. They can span multiple
+lines.
 
 ```zena
 /* This is a
@@ -30,12 +33,19 @@ let x = 1;
 let y /* inline comment */ = 2;
 ```
 
+Even though Zena doesn't have JSDoc-like tooling yet, JSDoc-style commentds
+(`/** */`, and tags like `@return` and `@param`) are reccomended for public
+APIs.
+
 ## 1.2 Identifiers
 
-Identifiers name variables, functions, classes, interfaces, mixins, and other entities.
+Identifiers name variables, functions, classes, interfaces, mixins, and other
+entities.
 
-- Must start with a letter (`a-z`, `A-Z`), underscore (`_`), or dollar sign (`$`).
-- Subsequent characters can be letters, digits (`0-9`), underscores, or dollar signs.
+- Must start with a letter (`a-z`, `A-Z`), underscore (`_`), or dollar sign
+  (`$`).
+- Subsequent characters can be letters, digits (`0-9`), underscores, or dollar
+  signs.
 - Identifiers are case-sensitive.
 
 ```zena
@@ -50,31 +60,53 @@ Zena is strongly typed. All expressions have a type determined at compile time.
 
 ### Soundness
 
-Zena features a **sound type system**. This means that the type checker guarantees that a program that compiles successfully will not exhibit type errors at runtime. For example, if a variable is typed as `String`, it is guaranteed to always hold a string value at runtime.
+Zena features a **sound type system**. This means that the type checker
+guarantees that a program that compiles successfully will not exhibit type
+errors at runtime. For example, if a variable is typed as `String`, it is
+guaranteed to always hold a string value at runtime.
 
-This soundness is enforced by the underlying WASM-GC architecture. Zena does not support "unsafe" blocks or unchecked type assertions that could violate memory safety.
+This soundness is enforced by the underlying WASM-GC architecture. Zena does not
+support "unsafe" blocks or unchecked type assertions that could violate memory
+safety.
 
 ### Primitive Types
 
-- **`i32`**: 32-bit signed integer. This is the default type for integer literals. Operations like division and comparison use signed semantics.
-- **`i64`**: 64-bit signed integer. Used for large numbers. Constructed via casting (e.g., `100 as i64`).
-- **`u32`**: 32-bit unsigned integer. Operations like division, modulo, and comparison use unsigned semantics. `i32` and `u32` cannot be mixed in operations without explicit casting using `as`.
-- **`f32`**: 32-bit floating-point number. This is the default type for floating-point literals.
-- **`f64`**: 64-bit floating-point number. Constructed via casting (e.g., `1.0 as f64`).
+- **`i32`**: 32-bit signed integer. This is the default type for integer
+  literals. Operations like division and comparison use signed semantics.
+- **`i64`**: 64-bit signed integer. Used for large numbers. Constructed via
+  casting (e.g., `100 as i64`).
+- **`u32`**: 32-bit unsigned integer. Operations like division, modulo, and
+  comparison use unsigned semantics. `i32` and `u32` cannot be mixed in
+  operations without explicit casting using `as`.
+- **`f32`**: 32-bit floating-point number. This is the default type for
+  floating-point literals.
+- **`f64`**: 64-bit floating-point number. Constructed via casting (e.g., `1.0
+  as f64`).
 - **`boolean`**: Boolean value (`true` or `false`).
 - **`string`**: UTF-8 string.
-- **`anyref`**: The top type for all reference types. It can hold any object, array, string, function, or `null`. It cannot hold unboxed primitives (`i32`, `f32`, `boolean`).
-- **`never`**: The bottom type. It represents a value that never occurs (e.g., the result of `throw` or a function that never returns). `never` is a subtype of every type.
-- **`ByteArray`**: A mutable array of 8-bit integers. This is a low-level type primarily used for implementing strings and binary data manipulation.
+- **`anyref`**: The top type for all reference types. It can hold any object,
+  array, string, function, or `null`. It cannot hold unboxed primitives (`i32`,
+  `f32`, `boolean`).
+- **`never`**: The bottom type. It represents a value that never occurs (e.g.,
+  the result of `throw` or a function that never returns). `never` is a subtype
+  of every type.
+- **`ByteArray`**: A mutable array of 8-bit integers. This is a low-level type
+  primarily used for implementing strings and binary data manipulation.
 
 ### The `any` Type
 
-The `any` type is a special type that can hold any value, including primitives. It is similar to `any` in TypeScript or `Object` in Java, but with stricter safety guarantees.
+The `any` type is a special type that can hold any value, including primitives.
+It is similar to `any` in TypeScript or `Object` in Java, but with stricter
+safety guarantees.
 
-- **Assignment**: Any value (primitive or reference) can be assigned to a variable of type `any`.
-- **Auto-boxing**: Primitive values (`i32`, `f32`, `boolean`) are automatically boxed into a `Box<T>` when assigned to `any`.
-- **Safety**: You cannot perform operations on an `any` value directly. You must explicitly cast it back to a specific type using the `as` operator.
-- **Unboxing**: Casting an `any` value back to a primitive type automatically unboxes it.
+- **Assignment**: Any value (primitive or reference) can be assigned to a
+  variable of type `any`.
+- **Auto-boxing**: Primitive values (`i32`, `f32`, `boolean`) are automatically
+  boxed into a `Box<T>` when assigned to `any`.
+- **Safety**: You cannot perform operations on an `any` value directly. You must
+  explicitly cast it back to a specific type using the `as` operator.
+- **Unboxing**: Casting an `any` value back to a primitive type automatically
+  unboxes it.
 
 ```zena
 let x: any = 42;       // Auto-boxed to Box<i32>
@@ -86,11 +118,14 @@ let s = y as string;   // Cast to string
 // let z = x + 1;      // Error: Operator '+' cannot be applied to type 'any'
 ```
 
-The `any` type is useful for generic data structures or interop scenarios where the type is not known at compile time. Under the hood, it maps to the WASM `anyref` type.
+The `any` type is useful for generic data structures or interop scenarios where
+the type is not known at compile time. Under the hood, it maps to the WASM
+`anyref` type.
 
 ## 2.1 Enums
 
-Enums allow you to define a set of named constants. Zena enums are nominal types that wrap a union of literal values.
+Enums allow you to define a set of named constants. Zena enums are nominal types
+that wrap a union of literal values.
 
 ### Syntax
 
@@ -112,7 +147,8 @@ enum Direction {
 An enum declaration is conceptually equivalent to defining:
 
 1.  A **Distinct Type** named `Color` (e.g. `distinct type Color = 0 | 1 | 2`).
-2.  A **Global Constant** named `Color` containing the members as properties (e.g. `const Color = { Red: 0 as Color, ... }`).
+2.  A **Global Constant** named `Color` containing the members as properties
+    (e.g. `const Color = { Red: 0 as Color, ... }`).
 
 ```zena
 let c: Color = Color.Red;
@@ -122,7 +158,8 @@ let c: Color = Color.Red;
 
 Enums can be backed by integers (`i32`) or strings.
 
-- **Integer Enums**: If no initializer is provided, values start at 0 and increment by 1.
+- **Integer Enums**: If no initializer is provided, values start at 0 and
+  increment by 1.
   ```zena
   enum Status {
     Ok = 200,
@@ -139,7 +176,8 @@ Enums can be backed by integers (`i32`) or strings.
 
 ### Type Safety
 
-Enums are **distinct types**, meaning they are not assignable to or from their underlying primitive types without an explicit cast.
+Enums are **distinct types**, meaning they are not assignable to or from their
+underlying primitive types without an explicit cast.
 
 ```zena
 let c: Color = Color.Red;
@@ -167,25 +205,34 @@ let s = 'hello'; // Inferred as string
 
 Zena enforces strict type safety and does not support implicit type coercion.
 
-Explicit type casts (e.g., using an `as` operator) are **checked casts**. This means the validity of the cast is verified at runtime. If the value is not of the target type, a runtime error (trap) is raised. This ensures that the type system remains sound even when downcasting.
+Explicit type casts (e.g., using an `as` operator) are **checked casts**. This
+means the validity of the cast is verified at runtime. If the value is not of
+the target type, a runtime error (trap) is raised. This ensures that the type
+system remains sound even when downcasting.
 
-**Numeric Conversions**:
-Conversions between numeric types (e.g., `i32` to `i64`, `f32` to `i32`) generally must be explicit. These casts compile to specific WASM conversion instructions (e.g., `i64.extend_i32_s`, `i32.trunc_f32_s`).
+**Numeric Conversions**: Conversions between numeric types (e.g., `i32` to
+`i64`, `f32` to `i32`) generally must be explicit. These casts compile to
+specific WASM conversion instructions (e.g., `i64.extend_i32_s`,
+`i32.trunc_f32_s`).
 
 - `i32` <-> `i64` (Sign-extend / Wrap)
 - `i32` <-> `f32` (Convert / Truncate)
 - `i64` <-> `f64` (Convert / Truncate)
 - `i32` <-> `u32` (Reinterpret bits - zero cost)
 
-**Implicit Conversions**:
-Zena supports implicit conversion **only** between `i32` and `f32` in binary arithmetic operations.
+**Implicit Conversions**: Zena supports implicit conversion **only** between
+`i32` and `f32` in binary arithmetic operations.
 
 - `i32` + `f32` -> `f32` (The `i32` is promoted to `f32`)
 - `f32` + `i32` -> `f32`
 
-All other mixed arithmetic (e.g., `i32` + `i64`, `f32` + `f64`) requires explicit casting.
+All other mixed arithmetic (e.g., `i32` + `i64`, `f32` + `f64`) requires
+explicit casting.
 
-However, if the source type and the target type are identical (e.g. casting a value to its own type, or casting between a distinct type and its underlying type), the cast is **elided** at runtime. In these cases, the cast serves purely as a compile-time assertion and incurs no runtime overhead.
+However, if the source type and the target type are identical (e.g. casting a
+value to its own type, or casting between a distinct type and its underlying
+type), the cast is **elided** at runtime. In these cases, the cast serves purely
+as a compile-time assertion and incurs no runtime overhead.
 
 ```zena
 distinct type ID = i32;
@@ -194,7 +241,8 @@ let id = 1 as ID; // Checked at compile time, elided at runtime
 
 ### Type Aliases
 
-Type aliases create a new name for a type. They are defined using the `type` keyword.
+Type aliases create a new name for a type. They are defined using the `type`
+keyword.
 
 ```zena
 type ID = string;
@@ -227,7 +275,9 @@ type Wrapper<T extends Box<V>, V> = {item: T; inner: V};
 
 ### Distinct Types
 
-Distinct types create a new type that is structurally identical to an existing type but treated as a unique type by the type checker. This is useful for creating type-safe identifiers or units of measure.
+Distinct types create a new type that is structurally identical to an existing
+type but treated as a unique type by the type checker. This is useful for
+creating type-safe identifiers or units of measure.
 
 ```zena
 distinct type Meters = i32;
@@ -239,11 +289,14 @@ let s: Seconds = 20 as Seconds;
 // let x = m + s; // Error: Type mismatch
 ```
 
-Distinct types are erased at runtime, so they have no performance overhead. Casting between a distinct type and its underlying type is a zero-cost operation.
+Distinct types are erased at runtime, so they have no performance overhead.
+Casting between a distinct type and its underlying type is a zero-cost
+operation.
 
 ### Function Types
 
-Function types describe the signature of a function. They are written using arrow syntax.
+Function types describe the signature of a function. They are written using
+arrow syntax.
 
 ```zena
 type BinaryOp = (a: i32, b: i32) => i32;
@@ -254,7 +307,8 @@ let add: BinaryOp = (a, b) => a + b;
 
 ### Union Types
 
-Union types describe a value that can be one of several types. They are written using the `|` operator.
+Union types describe a value that can be one of several types. They are written
+using the `|` operator.
 
 ```zena
 let x: string | null = null;
@@ -263,14 +317,19 @@ x = 'hello';
 
 #### Constraints
 
-Union types in Zena are restricted to **Reference Types**. You cannot create a union containing a value primitive (`i32`, `f32`, `boolean`).
+Union types in Zena are restricted to **Reference Types**. You cannot create a
+union containing a value primitive (`i32`, `f32`, `boolean`).
 
-- **Valid**: `string | null`, `MyClass | MyInterface`, `array<i32> | null`.
-- **Invalid**: `i32 | null`, `boolean | string`.
+- **Valid**: `string | null`, `MyClass | MyInterface`, `array<i32> | null`. -
+**Invalid**: `i32 | null`, `boolean | string`.
 
-This restriction exists because value primitives in WASM have a different memory representation (stack/value) than reference types (heap/pointer). Mixing them in a single variable would require implicit boxing or a tagged union representation, which Zena avoids for performance and simplicity.
+This restriction exists because value primitives in WASM have a different memory
+representation (stack/value) than reference types (heap/pointer). Mixing them in
+a single variable would require implicit boxing or a tagged union
+representation, which Zena avoids for performance and simplicity.
 
-To use a primitive in a union (e.g., for a nullable integer), you must wrap it in a `Box<T>`.
+To use a primitive in a union (e.g., for a nullable integer), you must wrap it
+in a `Box<T>`.
 
 ```zena
 import {Box} from 'zena';
@@ -278,11 +337,16 @@ import {Box} from 'zena';
 let maybeNumber: Box<i32> | null = new Box(42);
 ```
 
-**Note**: This is distinct from the "Indistinguishable Types" limitation (see [Distinguishable Types & Erasure](#distinguishable-types--erasure)). Primitives _are_ distinguishable from references, but they are incompatible in storage layout.
+**Note**: This is distinct from the "Indistinguishable Types" limitation (see
+[Distinguishable Types & Erasure](#distinguishable-types--erasure)). Primitives
+_are_ distinguishable from references, but they are incompatible in storage
+layout.
 
 #### Type Narrowing
 
-Zena supports **control-flow-based type narrowing** for union types. When you check whether a variable is or isn't `null`, or use the `is` operator, the type system automatically narrows the variable's type within the respective branches.
+Zena supports **control-flow-based type narrowing** for union types. When you
+check whether a variable is or isn't `null`, or use the `is` operator, the type
+system automatically narrows the variable's type within the respective branches.
 
 ##### Null Checks
 
@@ -312,14 +376,17 @@ let process = (node: Node | null): void => {
 
 **Supported null-check patterns:**
 
-- `x !== null` / `x != null`: Narrows `x` to non-null in the true branch, to `null` in the else branch.
+- `x !== null` / `x != null`: Narrows `x` to non-null in the true branch, to
+  `null` in the else branch.
 - `null !== x` / `null != x`: Same as above.
-- `x === null` / `x == null`: Narrows `x` to `null` in the true branch, to non-null in the else branch.
+- `x === null` / `x == null`: Narrows `x` to `null` in the true branch, to
+  non-null in the else branch.
 - `null === x` / `null == x`: Same as above.
 
 ##### Type Checks with `is`
 
-The `is` operator narrows the type to the checked type in the true branch, and removes that type in the else branch (for unions):
+The `is` operator narrows the type to the checked type in the true branch, and
+removes that type in the else branch (for unions):
 
 ```zena
 class Cat {
@@ -343,11 +410,15 @@ let speak = (pet: Cat | Dog): string => {
 };
 ```
 
-Type narrowing is scoped to the block where the narrowing applies. Once you exit the block, the original type is restored.
+Type narrowing is scoped to the block where the narrowing applies. Once you exit
+the block, the original type is restored.
 
 ### Literal Types
 
-Zena supports **literal types** for strings, numbers, and booleans. A literal type represents a single, specific value rather than a general type. Literal types are especially useful in union types to create enumerations of specific values.
+Zena supports **literal types** for strings, numbers, and booleans. A literal
+type represents a single, specific value rather than a general type. Literal
+types are especially useful in union types to create enumerations of specific
+values.
 
 ```zena
 // String literal types
@@ -390,7 +461,9 @@ x = false;      // Error: Cannot assign `false` to `true`
 y = false;      // OK: `boolean` allows both values
 ```
 
-This behavior is intentional: mutable variables need a wider type to allow reassignment. If you want a mutable variable with a literal type, use an explicit type annotation:
+This behavior is intentional: mutable variables need a wider type to allow
+reassignment. If you want a mutable variable with a literal type, use an
+explicit type annotation:
 
 ```zena
 var z: true = true;  // z has type `true`, but this limits assignments
@@ -399,7 +472,8 @@ z = false;           // Error: Cannot assign `false` to `true`
 
 #### Boolean Literal Types in Generic Functions
 
-When a generic function receives arguments with different boolean literal types, the type parameter is widened to `boolean`:
+When a generic function receives arguments with different boolean literal types,
+the type parameter is widened to `boolean`:
 
 ```zena
 @intrinsic('eq')
@@ -412,9 +486,12 @@ equals(true, false);  // T = boolean (widened from conflicting true and false)
 **Key points:**
 
 - Literal types are **singleton types** - they represent exactly one value.
-- Unlike regular primitive types, literal types **can be used in unions** because they are distinguishable at runtime.
-- A literal value is assignable to its literal type and to the corresponding base type (e.g., `'hello'` is assignable to both `'hello'` and `string`).
-- `let` preserves literal types; `var` widens them to base types (unless explicitly annotated).
+- Unlike regular primitive types, literal types **can be used in unions**
+  because they are distinguishable at runtime.
+- A literal value is assignable to its literal type and to the corresponding
+  base type (e.g., `'hello'` is assignable to both `'hello'` and `string`).
+- `let` preserves literal types; `var` widens them to base types (unless
+  explicitly annotated).
 - Literal types enable precise API contracts and exhaustive pattern matching.
 
 ## 3. Variables
@@ -424,7 +501,9 @@ Variables are declared using `let` or `var`.
 - **`let`**: Declares a block-scoped immutable binding.
 - **`var`**: Declares a block-scoped mutable binding.
 
-> **Note for TypeScript/JavaScript developers**: Zena does not have the `const` keyword. Use `let` for immutable bindings. Keywords in Zena are case-sensitive and must be lowercase.
+> **Note for TypeScript/JavaScript developers**: Zena does not have the `const`
+> keyword. Use `let` for immutable bindings. Keywords in Zena are case-sensitive
+> and must be lowercase.
 
 ### Syntax
 
@@ -435,7 +514,8 @@ var name = expression;
 
 ### Scoping
 
-Variables declared with `let` and `var` are block-scoped. Redeclaring a variable in the same scope is a compile-time error.
+Variables declared with `let` and `var` are block-scoped. Redeclaring a variable
+in the same scope is a compile-time error.
 
 ## 4. Functions
 
@@ -457,7 +537,8 @@ let add = (a: i32, b: i32) => a + b;
 
 ### Return Type
 
-The return type is inferred from the body expression. It can also be explicitly annotated.
+The return type is inferred from the body expression. It can also be explicitly
+annotated.
 
 ```zena
 let add = (a: i32, b: i32): i32 => a + b;
@@ -479,7 +560,9 @@ let add = (a: i32, b: i32) => {
 
 ### Closures
 
-Functions in Zena are closures. They can capture variables from their surrounding scope. Captured variables are stored in a heap-allocated context, ensuring they remain available even after the outer scope has returned.
+Functions in Zena are closures. They can capture variables from their
+surrounding scope. Captured variables are stored in a heap-allocated context,
+ensuring they remain available even after the outer scope has returned.
 
 ```zena
 let makeAdder = (x: i32) => {
@@ -492,7 +575,8 @@ let result = add5(10); // 15
 
 ### Generic Functions
 
-Functions can be generic by specifying type parameters before the parameter list:
+Functions can be generic by specifying type parameters before the parameter
+list:
 
 ```zena
 let identity = <T>(x: T): T => x;
@@ -524,7 +608,10 @@ let result = identity(42); // T inferred as i32
 
 ### Argument Adaptation
 
-Zena supports passing functions with fewer arguments than expected by the receiver. The compiler automatically generates an adapter to bridge the difference. This applies to function arguments, variable assignments, and union type matching.
+Zena supports passing functions with fewer arguments than expected by the
+receiver. The compiler automatically generates an adapter to bridge the
+difference. This applies to function arguments, variable assignments, and union
+type matching.
 
 ```zena
 // Function expecting a callback with 3 arguments
@@ -544,13 +631,19 @@ let h: Handler | string = (a: i32) => {};
 
 ```
 
-This adaptation incurs a small performance overhead (allocation of a wrapper closure) and is only applied when the arity mismatch is detected at compile time.
+This adaptation incurs a small performance overhead (allocation of a wrapper
+closure) and is only applied when the arity mismatch is detected at compile
+time.
 
 ### Optional Parameters
 
-Function parameters can be marked as optional using `?`. Optional parameters must come after required parameters.
+Function parameters can be marked as optional using `?`. Optional parameters
+must come after required parameters.
 
-When a parameter is optional and has no default value, its type becomes a union with `null` (e.g., `T | null`). Because unions cannot contain primitive types, **optional primitive parameters must have a default value** or be wrapped in `Box<T>`.
+When a parameter is optional and has no default value, its type becomes a union
+with `null` (e.g., `T | null`). Because unions cannot contain primitive types,
+**optional primitive parameters must have a default value** or be wrapped in
+`Box<T>`.
 
 ```zena
 // ✅ Valid: Reference type (string | null)
@@ -588,11 +681,16 @@ increment(10); // 11
 increment(10, 5); // 15
 ```
 
-When a default value is provided, the parameter type in the function body is the non-nullable type (unless the default value itself is null).
+When a default value is provided, the parameter type in the function body is the
+non-nullable type (unless the default value itself is null).
 
 ### Calling Union Types
 
-Zena supports calling a function that is typed as a Union of function types, even if those functions have different arities. The compiler generates a runtime dispatch that checks the actual type of the function and calls it with the appropriate number of arguments. Extra arguments are ignored if the runtime function expects fewer.
+Zena supports calling a function that is typed as a Union of function types,
+even if those functions have different arities. The compiler generates a runtime
+dispatch that checks the actual type of the function and calls it with the
+appropriate number of arguments. Extra arguments are ignored if the runtime
+function expects fewer.
 
 ```zena
 type Fn1 = (a: i32) => i32;
@@ -611,7 +709,9 @@ f2(10, 20); // Returns 30
 
 ### Function Overloading
 
-Zena supports function overloading for declared external functions. This allows you to define multiple signatures for the same function name, provided they have different parameter lists.
+Zena supports function overloading for declared external functions. This allows
+you to define multiple signatures for the same function name, provided they have
+different parameter lists.
 
 ```zena
 declare function print(val: i32): void;
@@ -629,7 +729,8 @@ Overload resolution is performed based on the argument types at the call site.
 
 - **Numbers**: `123`, `0`, `-5`, `0x1A`, `0xFF` (Parsed as `i32` by default).
 - **Strings**: `"text"` or `'text'`.
-- **Template Literals**: `` `text ${expression}` `` (Backtick-delimited with interpolation).
+- **Template Literals**: `` `text ${expression}` `` (Backtick-delimited with
+  interpolation).
 
 ### String Escape Sequences
 
@@ -651,7 +752,9 @@ let quote = 'She said "Hi"'; // Escaped double quotes
 let apostrophe = "it's"; // Escaped single quote
 ```
 
-**Note**: Unicode escape sequences (e.g., `\uXXXX`) are not currently supported. Since Zena source files are UTF-8, you can include Unicode characters directly in the string.
+**Note**: Unicode escape sequences (e.g., `\uXXXX`) are not currently supported.
+Since Zena source files are UTF-8, you can include Unicode characters directly
+in the string.
 
 ### Strings
 
@@ -665,7 +768,8 @@ Strings are immutable sequences of characters.
 
 ### Template Literals
 
-Template literals are backtick-delimited strings that support embedded expressions and preserve raw string content.
+Template literals are backtick-delimited strings that support embedded
+expressions and preserve raw string content.
 
 #### Basic Template Literals
 
@@ -704,7 +808,8 @@ let price = `Cost: \$100`; // Prevents ${} interpolation
 
 #### Tagged Template Literals
 
-Tagged templates allow custom processing of template literals by preceding them with a tag function:
+Tagged templates allow custom processing of template literals by preceding them
+with a tag function:
 
 ```zena
 let tag = (strings: Array<String>, values: Array<i32>): String => {
@@ -718,12 +823,15 @@ let result = tag`Hello ${42} World`;
 
 The tag function receives:
 
-1. **strings**: An array of the literal string parts. This array has a `raw` property containing the original source strings (before escape processing).
+1. **strings**: An array of the literal string parts. This array has a `raw`
+   property containing the original source strings (before escape processing).
 2. **values**: An array of the interpolated expression values.
 
 The strings array length is always `values.length + 1`.
 
-**Note**: The strings array maintains identity across evaluations of the same template expression, allowing it to be used as a cache key for expensive one-time processing.
+**Note**: The strings array maintains identity across evaluations of the same
+template expression, allowing it to be used as a cache key for expensive
+one-time processing.
 
 ```zena
 // Example: SQL query builder
@@ -752,7 +860,8 @@ Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`):
 - `/` (Division) - Always returns a floating-point value (`f32` or `f64`).
 - `%` (Modulo - integer types only) - Signed for `i32`, unsigned for `u32`.
 
-Classes can define custom behavior for `+` via `operator +`. See [Operator Overloading](#operator-overloading).
+Classes can define custom behavior for `+` via `operator +`. See [Operator
+Overloading](#operator-overloading).
 
 Supported bitwise operators for integer types (`i32`, `u32`, `i64`, `u64`):
 
@@ -760,7 +869,8 @@ Supported bitwise operators for integer types (`i32`, `u32`, `i64`, `u64`):
 - `|` (Bitwise OR)
 - `^` (Bitwise XOR)
 - `<<` (Left Shift)
-- `>>` (Right Shift) - Arithmetic shift (sign-extends for signed types, zero-fills for unsigned types)
+- `>>` (Right Shift) - Arithmetic shift (sign-extends for signed types,
+  zero-fills for unsigned types)
 - `>>>` (Unsigned Right Shift) - Always zero-fills (logical shift)
 
 **Examples:**
@@ -786,7 +896,9 @@ let value: u32 = 16 as u32;
 let shifted = value >> 2;    // 4 (always zero-fills for u32)
 ```
 
-Operands must be of the same type, with the exception of mixing `i32` and `f32`. **Mixing other numeric types (e.g., `i32` and `i64`) is not allowed**; you must explicitly cast using `as`.
+Operands must be of the same type, with the exception of mixing `i32` and `f32`.
+**Mixing other numeric types (e.g., `i32` and `i64`) is not allowed**; you must
+explicitly cast using `as`.
 
 ```zena
 let a = 10;
@@ -840,19 +952,25 @@ let result = (1 + 2) * 3;
 
 - `==` (Equal) - Supports value equality for strings.
 - `!=` (Not Equal) - Supports value equality for strings.
-- `===` (Strict Equal) - Checks for reference equality, bypassing custom `operator ==`.
-- `!==` (Strict Not Equal) - Checks for reference inequality, bypassing custom `operator ==`.
+- `===` (Strict Equal) - Checks for reference equality, bypassing custom
+  `operator ==`.
+- `!==` (Strict Not Equal) - Checks for reference inequality, bypassing custom
+  `operator ==`.
 - `<` (Less Than) - Signed comparison for `i32`, unsigned for `u32`.
 - `<=` (Less Than or Equal) - Signed comparison for `i32`, unsigned for `u32`.
 - `>` (Greater Than) - Signed comparison for `i32`, unsigned for `u32`.
-- `>=` (Greater Than or Equal) - Signed comparison for `i32`, unsigned for `u32`.
+- `>=` (Greater Than or Equal) - Signed comparison for `i32`, unsigned for
+  `u32`.
 
-These operators return a boolean value. **Comparing `i32` and `u32` directly is not allowed**; cast one to the other first.
+These operators return a boolean value. **Comparing `i32` and `u32` directly is
+not allowed**; cast one to the other first.
 
 ### Logical Operators
 
-- `&&` (Logical AND) - Short-circuiting AND. Returns `true` if both operands are `true`.
-- `||` (Logical OR) - Short-circuiting OR. Returns `true` if at least one operand is `true`.
+- `&&` (Logical AND) - Short-circuiting AND. Returns `true` if both operands are
+  `true`.
+- `||` (Logical OR) - Short-circuiting OR. Returns `true` if at least one
+  operand is `true`.
 
 Operands must be of type `boolean`.
 
@@ -872,7 +990,8 @@ Operators are listed from highest to lowest precedence:
 10. Logical AND (`&&`)
 11. Logical OR (`||`)
 
-Operators at the same precedence level are left-associative (evaluated left-to-right).
+Operators at the same precedence level are left-associative (evaluated
+left-to-right).
 
 ```zena
 let x = 2 + 3 * 4;      // 2 + (3 * 4) = 14
@@ -883,7 +1002,9 @@ let w = (5 & 3) == 1;   // OK: (5 & 3) == 1 -> 1 == 1 -> true
 
 ### Range Operators
 
-Range operators create range objects that represent sequences of indices. They are primarily used for array slicing and iteration. The range operator is `..` (two dots).
+Range operators create range objects that represent sequences of indices. They
+are primarily used for array slicing and iteration. The range operator is `..`
+(two dots).
 
 Range types must be imported from `zena:range`:
 
@@ -934,7 +1055,8 @@ The `Range` type is a union of all range types:
 type Range = BoundedRange | FromRange | ToRange | FullRange;
 ```
 
-**Note**: Range bounds must be valid array/loop indices (type `i32`). Ranges with arithmetic expressions are evaluated at creation time:
+**Note**: Range bounds must be valid array/loop indices (type `i32`). Ranges
+with arithmetic expressions are evaluated at creation time:
 
 ```zena
 let start = 5;
@@ -947,7 +1069,9 @@ let r2 = (x + 1)..(y * 2);    // Expressions evaluated before range creation
 
 ### Optional Semicolons
 
-Semicolons are generally required to terminate statements. However, for block-ended expressions (`if`, `match`, `try`) used as standalone statements, the trailing semicolon is optional.
+Semicolons are generally required to terminate statements. However, for
+block-ended expressions (`if`, `match`, `try`) used as standalone statements,
+the trailing semicolon is optional.
 
 ```zena
 // Optional semicolon
@@ -964,7 +1088,8 @@ try {
 }
 ```
 
-**Note**: When these expressions are used as part of another statement (e.g., variable declaration, return statement), the semicolon is still required.
+**Note**: When these expressions are used as part of another statement (e.g.,
+variable declaration, return statement), the semicolon is still required.
 
 ```zena
 // Required semicolon
@@ -974,7 +1099,9 @@ return match (x) { ... };
 
 ### Blocks
 
-A block statement groups zero or more statements within curly braces `{}`. Blocks introduce a new **lexical scope**. Variables declared within a block are only accessible within that block and any nested blocks.
+A block statement groups zero or more statements within curly braces `{}`.
+Blocks introduce a new **lexical scope**. Variables declared within a block are
+only accessible within that block and any nested blocks.
 
 ```zena
 let outer = 1;
@@ -999,7 +1126,9 @@ if (condition) {
 
 ### If Expression
 
-Like Rust, Zena's `if/else` can be used as an expression. Each block evaluates to the value of its last expression. When used as an expression, the `else` clause is required.
+Like Rust, Zena's `if/else` can be used as an expression. Each block evaluates
+to the value of its last expression. When used as an expression, the `else`
+clause is required.
 
 ```zena
 // Simple if expression
@@ -1044,7 +1173,9 @@ while (condition) {
 
 ### Let-Pattern Conditions
 
-Both `if` and `while` statements support let-pattern conditions, which combine pattern matching with control flow. The pattern variables are only in scope inside the statement body.
+Both `if` and `while` statements support let-pattern conditions, which combine
+pattern matching with control flow. The pattern variables are only in scope
+inside the statement body.
 
 ```zena
 // With if - execute body only if pattern matches
@@ -1087,7 +1218,8 @@ while (let (true, v) = counter.next()) {
 
 ### For Statement
 
-Zena supports C-style `for` loops. The loop variable must be declared with `var` since it is mutable.
+Zena supports C-style `for` loops. The loop variable must be declared with `var`
+since it is mutable.
 
 ```zena
 for (var i = 0; i < 10; i = i + 1) {
@@ -1097,8 +1229,10 @@ for (var i = 0; i < 10; i = i + 1) {
 
 The `for` statement consists of three optional parts:
 
-- **init**: A variable declaration or expression, executed once before the loop starts.
-- **test**: A boolean expression evaluated before each iteration. If false, the loop exits.
+- **init**: A variable declaration or expression, executed once before the loop
+  starts.
+- **test**: A boolean expression evaluated before each iteration. If false, the
+  loop exits.
 - **update**: An expression executed after each iteration.
 
 Any of these parts can be omitted:
@@ -1123,7 +1257,8 @@ for (var i = 0; i < 10; ) {
 
 ### For-In Statement
 
-The `for-in` loop iterates over collections that implement the `Iterable<T>` interface.
+The `for-in` loop iterates over collections that implement the `Iterable<T>`
+interface.
 
 ```zena
 let arr = #[10, 20, 30];
@@ -1160,7 +1295,8 @@ for (let n in counter) {
 }
 ```
 
-The loop variable is immutable (`let`) and scoped to the loop body. `break` and `continue` work as expected:
+The loop variable is immutable (`let`) and scoped to the loop body. `break` and
+`continue` work as expected:
 
 ```zena
 let arr = #[1, 2, 3, 4, 5];
@@ -1193,7 +1329,10 @@ while (true) {
 // i == 10
 ```
 
-The `continue` statement skips the rest of the current iteration and proceeds to the next iteration. In a `while` loop, this jumps to the condition check. In a `for` loop, this executes the update expression first, then checks the condition.
+The `continue` statement skips the rest of the current iteration and proceeds to
+the next iteration. In a `while` loop, this jumps to the condition check. In a
+`for` loop, this executes the update expression first, then checks the
+condition.
 
 ```zena
 var sum = 0;
@@ -1294,7 +1433,9 @@ case Point { x: 0, y: [1, z] }: ...
 
 #### Guard Patterns
 
-Match cases can include an optional guard expression using `if`. The guard is a boolean expression that must evaluate to `true` for the case to match. The guard can reference variables bound in the pattern.
+Match cases can include an optional guard expression using `if`. The guard is a
+boolean expression that must evaluate to `true` for the case to match. The guard
+can reference variables bound in the pattern.
 
 ```zena
 match (x) {
@@ -1306,7 +1447,8 @@ match (x) {
 
 #### Block Cases
 
-Match cases can contain a block of statements. The value of the block is the value of the last expression.
+Match cases can contain a block of statements. The value of the block is the
+value of the last expression.
 
 ```zena
 match (x) {
@@ -1336,7 +1478,8 @@ match (x) {
 }
 ```
 
-You can use a wildcard pattern `_` or a variable pattern to cover all remaining cases.
+You can use a wildcard pattern `_` or a variable pattern to cover all remaining
+cases.
 
 ```zena
 match (x) {
@@ -1345,7 +1488,9 @@ match (x) {
 }
 ```
 
-The compiler also checks for unreachable cases. If a case appears after a pattern that covers all remaining possibilities (like a wildcard), it is flagged as unreachable.
+The compiler also checks for unreachable cases. If a case appears after a
+pattern that covers all remaining possibilities (like a wildcard), it is flagged
+as unreachable.
 
 ## 7. Classes and Objects
 
@@ -1447,7 +1592,8 @@ let n = c.map((v) => v * 2); // Inferred
 
 ### Method Overloading
 
-Zena supports method overloading, allowing multiple methods with the same name but different parameter types or counts.
+Zena supports method overloading, allowing multiple methods with the same name
+but different parameter types or counts.
 
 ```zena
 class Printer {
@@ -1470,7 +1616,8 @@ p.print(3.14);    // Calls print(f32)
 p.print('hello'); // Calls print(string)
 ```
 
-The compiler resolves the correct overload based on argument types at compile time.
+The compiler resolves the correct overload based on argument types at compile
+time.
 
 #### Overloading with Different Parameter Counts
 
@@ -1494,7 +1641,8 @@ class Calculator {
 
 #### Operator Overloading
 
-Classes can define custom behavior for operators like `+`, `==`, `[]`, and `[]=`.
+Classes can define custom behavior for operators like `+`, `==`, `[]`, and
+`[]=`.
 
 ##### Binary Operators
 
@@ -1599,7 +1747,9 @@ extension class ArrayExtensions<T> on array<T> {
 
 - **`extension class`**: Keywords to define an extension.
 - **`on Type`**: Specifies the type being extended.
-- **`declare` fields**: Extension classes can declare fields that exist on the underlying type but are not implemented in the extension (e.g., for intrinsics).
+- **`declare` fields**: Extension classes can declare fields that exist on the
+  underlying type but are not implemented in the extension (e.g., for
+  intrinsics).
 
 ```zena
 export final extension class FixedArray<T> on array<T> {
@@ -1610,7 +1760,10 @@ export final extension class FixedArray<T> on array<T> {
 
 ### Static Symbols
 
-Static Symbols allow you to define unique identifiers for methods and fields that are distinct from string names. This is useful for defining "protocol" methods (like iterators) or internal APIs that should not collide with public members.
+Static Symbols allow you to define unique identifiers for methods and fields
+that are distinct from string names. This is useful for defining "protocol"
+methods (like iterators) or internal APIs that should not collide with public
+members.
 
 #### Declaration
 
@@ -1628,7 +1781,8 @@ interface Iterable<T> {
 
 #### Usage
 
-To define a member using a symbol, prefix the symbol name with `:`. To access a symbol-keyed member, use `.:` followed by the symbol name.
+To define a member using a symbol, prefix the symbol name with `:`. To access a
+symbol-keyed member, use `.:` followed by the symbol name.
 
 ```zena
 class MyList<T> implements Iterable<T> {
@@ -1645,20 +1799,30 @@ let it = list.:Iterable.iterator();
 
 #### Semantics
 
-- **Compile-Time Resolution**: Symbols are resolved at compile time. The symbol name after `:` must refer to a constant symbol.
-- **No Collisions**: Two interfaces can define methods with the same _name_ but different _symbols_, allowing a class to implement both without conflict.
-- **Access Control**: Visibility is controlled via standard `export` rules. If a symbol is not exported, it cannot be used outside the module.
-- **Distinct from Indexing**: The `:symbol` / `.:symbol` syntax is distinct from the `[expr]` indexing syntax (operator `[]`), avoiding ambiguity.
+- **Compile-Time Resolution**: Symbols are resolved at compile time. The symbol
+  name after `:` must refer to a constant symbol.
+- **No Collisions**: Two interfaces can define methods with the same _name_ but
+  different _symbols_, allowing a class to implement both without conflict.
+- **Access Control**: Visibility is controlled via standard `export` rules. If a
+  symbol is not exported, it cannot be used outside the module.
+- **Distinct from Indexing**: The `:symbol` / `.:symbol` syntax is distinct from
+  the `[expr]` indexing syntax (operator `[]`), avoiding ambiguity.
 
 ### Distinguishable Types & Erasure
 
-Zena uses **type erasure** for certain constructs to maintain zero-cost abstractions. This means that some types which are distinct at compile time are identical at runtime.
+Zena uses **type erasure** for certain constructs to maintain zero-cost
+abstractions. This means that some types which are distinct at compile time are
+identical at runtime.
 
-Types that are identical at runtime are considered **indistinguishable**. This has implications for:
+Types that are identical at runtime are considered **indistinguishable**. This
+has implications for:
 
-- **Union Types**: A union cannot contain multiple types that are indistinguishable from each other.
-- **Pattern Matching**: You cannot match against multiple indistinguishable types in the same `match` expression (as the first case would always match).
-- **`is` Checks**: Checking if a value `is T` where `T` is an erased type will check against the underlying runtime type.
+- **Union Types**: A union cannot contain multiple types that are
+  indistinguishable from each other.
+- **Pattern Matching**: You cannot match against multiple indistinguishable
+  types in the same `match` expression (as the first case would always match).
+- **`is` Checks**: Checking if a value `is T` where `T` is an erased type will
+  check against the underlying runtime type.
 
 #### Indistinguishable Pairs
 
@@ -1689,14 +1853,17 @@ The following pairs of types are indistinguishable at runtime:
 #### Valid Distinguishable Types
 
 - **Classes**: `class A {}` and `class B {}` are always distinguishable.
-- **Reified Generics**: `Box<i32>` and `Box<string>` are distinguishable because `i32` and `string` have different runtime representations.
+- **Reified Generics**: `Box<i32>` and `Box<string>` are distinguishable because
+  `i32` and `string` have different runtime representations.
 - **Primitives**: `i32` and `string` are distinguishable.
 
 ### Limitations
 
-Since extension classes and distinct types are erased at runtime, they have some limitations:
+Since extension classes and distinct types are erased at runtime, they have some
+limitations:
 
-1.  **Unions**: You cannot create a union type containing multiple extension classes or distinct types that extend the same underlying type.
+1.  **Unions**: You cannot create a union type containing multiple extension
+    classes or distinct types that extend the same underlying type.
 
     ```zena
     extension class A on array<i32> {}
@@ -1705,7 +1872,8 @@ Since extension classes and distinct types are erased at runtime, they have some
     let x: A | B; // Error: Ambiguous union
     ```
 
-2.  **Pattern Matching**: You cannot have multiple cases in a `match` expression that match against extension classes on the same underlying type.
+2.  **Pattern Matching**: You cannot have multiple cases in a `match` expression
+    that match against extension classes on the same underlying type.
     ```zena
     match (arr) {
       case A {}: ...
@@ -1734,14 +1902,17 @@ let p = { x, y }; // Equivalent to { x: x, y: y }
 
 #### Spread Syntax
 
-You can use the spread syntax (`...`) to copy properties from another record into a new record.
+You can use the spread syntax (`...`) to copy properties from another record
+into a new record.
 
 ```zena
 let p = { x: 1, y: 2 };
 let p3 = { ...p, z: 3 }; // { x: 1, y: 2, z: 3 }
 ```
 
-The spread syntax produces the same keys that are available for destructuring. If a property is defined multiple times (e.g., via spread and explicit assignment), the last definition wins.
+The spread syntax produces the same keys that are available for destructuring.
+If a property is defined multiple times (e.g., via spread and explicit
+assignment), the last definition wins.
 
 ```zena
 let p = { x: 1, y: 2 };
@@ -1750,7 +1921,8 @@ let p2 = { ...p, x: 10 }; // { x: 10, y: 2 }
 
 ### Tuples
 
-Tuples are immutable, structural types that hold a fixed sequence of typed elements.
+Tuples are immutable, structural types that hold a fixed sequence of typed
+elements.
 
 ```zena
 let t = [1, "hello"];
@@ -1759,7 +1931,9 @@ let n = t[0];
 
 ### Unboxed Tuples (Multi-Value Returns)
 
-Unboxed tuples enable functions to return multiple values without heap allocation. Unlike regular tuples which are boxed structs, unboxed tuples compile directly to WASM multi-value returns.
+Unboxed tuples enable functions to return multiple values without heap
+allocation. Unlike regular tuples which are boxed structs, unboxed tuples
+compile directly to WASM multi-value returns.
 
 ```zena
 // Function returning an unboxed tuple
@@ -1775,12 +1949,14 @@ let (quot, rem) = divide(17, 5);
 **Key differences from boxed tuples:**
 
 - Unboxed tuples use parentheses `(T1, T2)` instead of brackets `[T1, T2]`
-- They only exist in return position and destructuring - they cannot be stored in variables or passed as arguments
+- They only exist in return position and destructuring - they cannot be stored
+  in variables or passed as arguments
 - They compile to zero-allocation WASM multi-value returns
 
 #### Boolean Literal Types
 
-The types `true` and `false` are literal types that are subtypes of `boolean`. This enables discriminated unions with unboxed tuples.
+The types `true` and `false` are literal types that are subtypes of `boolean`.
+This enables discriminated unions with unboxed tuples.
 
 ```zena
 // A function that may or may not return a value
@@ -1794,7 +1970,9 @@ let tryParse = (s: string): (true, i32) | (false, never) => {
 
 #### Pattern-Based Narrowing for Union Tuples
 
-When destructuring a union of tuples with a pattern that contains literal values, the type system automatically narrows the union based on the literal pattern. This enables ergonomic iteration with discriminated unions.
+When destructuring a union of tuples with a pattern that contains literal
+values, the type system automatically narrows the union based on the literal
+pattern. This enables ergonomic iteration with discriminated unions.
 
 ```zena
 // Iterator.next() returns (true, T) | (false, never)
@@ -1822,13 +2000,15 @@ if (let (true, true, value) = data()) {
 }
 ```
 
-This feature enables zero-allocation iteration idioms like `for-in` loops, which internally use `while (let (true, elem) = iter.next())`.
+This feature enables zero-allocation iteration idioms like `for-in` loops, which
+internally use `while (let (true, elem) = iter.next())`.
 
 ## 8. Modules & Exports
 
 ### Exports
 
-Top-level declarations (variables, functions, classes) can be exported using the `export` keyword. This exposes them to the host environment.
+Top-level declarations (variables, functions, classes) can be exported using the
+`export` keyword. This exposes them to the host environment.
 
 ```zena
 // Export a function
@@ -1847,7 +2027,8 @@ export class Point {
 
 ### Imports (Host Interop)
 
-Zena allows importing functions from the host environment using the `declare` keyword and the `@external` decorator.
+Zena allows importing functions from the host environment using the `declare`
+keyword and the `@external` decorator.
 
 ```zena
 @external("env", "log")
@@ -1855,13 +2036,16 @@ declare function log(val: i32): void;
 ```
 
 - **`@external(module, name)`**: Specifies the WASM import module and name.
-- **`declare function`**: Defines the function signature. The function body is omitted.
+- **`declare function`**: Defines the function signature. The function body is
+  omitted.
 
-These declarations map to WebAssembly imports, allowing Zena to call JavaScript functions (or other WASM modules).
+These declarations map to WebAssembly imports, allowing Zena to call JavaScript
+functions (or other WASM modules).
 
 ### Exports
 
-Top-level declarations can be exported using the `export` keyword. This exposes them to other modules or the host environment.
+Top-level declarations can be exported using the `export` keyword. This exposes
+them to other modules or the host environment.
 
 ```zena
 export let add = (a: i32, b: i32) => a + b;
@@ -1871,13 +2055,17 @@ export class Point { ... }
 
 ## 9. Intrinsics
 
-Intrinsics are special functions that map directly to compiler-generated code or WebAssembly instructions. They are primarily used to implement the standard library and low-level primitives.
+Intrinsics are special functions that map directly to compiler-generated code or
+WebAssembly instructions. They are primarily used to implement the standard
+library and low-level primitives.
 
-Intrinsics are declared using the `@intrinsic` decorator on a `declare function` statement.
+Intrinsics are declared using the `@intrinsic` decorator on a `declare function`
+statement.
 
 ### Equality Intrinsic (`eq`)
 
-The `eq` intrinsic provides a generic equality check that works across all types.
+The `eq` intrinsic provides a generic equality check that works across all
+types.
 
 ```zena
 @intrinsic('eq')
@@ -1889,8 +2077,10 @@ The behavior depends on the type `T`:
 - **Primitives (`i32`, `f32`, `boolean`)**: Performs value equality.
 - **Strings**: Performs value equality (byte-wise comparison).
 - **Reference Types (Classes, Arrays, Records)**:
-  - By default, performs **reference equality** (checks if both operands refer to the same object).
-  - If the type implements `operator ==`, the intrinsic performs a **virtual method call** to that operator.
+  - By default, performs **reference equality** (checks if both operands refer
+    to the same object).
+  - If the type implements `operator ==`, the intrinsic performs a **virtual
+    method call** to that operator.
 
 #### Custom Equality with `operator ==`
 
@@ -1919,7 +2109,8 @@ let p2 = new Point(1, 2);
 
 ### Hash Intrinsic (`hash`)
 
-The `hash` intrinsic computes a hash code for a value, suitable for use in hash maps.
+The `hash` intrinsic computes a hash code for a value, suitable for use in hash
+maps.
 
 ```zena
 @intrinsic('hash')
@@ -1928,7 +2119,8 @@ declare function hash<T>(val: T): i32;
 
 The behavior depends on the type `T`:
 
-- **Primitives (`i32`, `boolean`)**: Returns the value itself (or 1/0 for boolean).
+- **Primitives (`i32`, `boolean`)**: Returns the value itself (or 1/0 for
+  boolean).
 - **Strings**: Computes the FNV-1a hash of the string bytes.
 - **Classes**:
   - If the class implements a `hashCode(): i32` method, it is called.
@@ -1936,9 +2128,14 @@ The behavior depends on the type `T`:
 
 ### Pure Accessor Decorator (`@pure`)
 
-The `@pure` decorator is used on **explicit accessor declarations** (properties with custom getters/setters) to indicate that the setter has no side effects beyond storing the value. This enables the compiler to perform dead code elimination on write-only accessors.
+The `@pure` decorator is used on **explicit accessor declarations** (properties
+with custom getters/setters) to indicate that the setter has no side effects
+beyond storing the value. This enables the compiler to perform dead code
+elimination on write-only accessors.
 
-**Plain fields are always pure** - they don't need the `@pure` decorator because they simply store values without side effects. Write-only plain fields are automatically eliminated.
+**Plain fields are always pure** - they don't need the `@pure` decorator because
+they simply store values without side effects. Write-only plain fields are
+automatically eliminated.
 
 ```zena
 class Message {
@@ -1977,14 +2174,18 @@ class Message {
 
 **Dead Code Elimination Rules**:
 
-- **Plain fields**: Write-only fields are automatically eliminated (they're always pure).
-- **Explicit accessors with `@pure`**: Write-only accessors marked `@pure` are eliminated.
-- **Explicit accessors without `@pure`**: Kept even if write-only (may have side effects).
+- **Plain fields**: Write-only fields are automatically eliminated (they're
+  always pure).
+- **Explicit accessors with `@pure`**: Write-only accessors marked `@pure` are
+  eliminated.
+- **Explicit accessors without `@pure`**: Kept even if write-only (may have side
+  effects).
 - **Read fields**: Always kept, regardless of `@pure` decorator.
 - **Polymorphic access**: Prevents elimination.
 
-**Use Cases**:
-This is particularly useful for generated code (like protocol buffers) where large schemas are defined but only a small subset of fields are actually used.
+**Use Cases**: This is particularly useful for generated code (like protocol
+buffers) where large schemas are defined but only a small subset of fields are
+actually used.
 
 **Example**:
 
@@ -1998,13 +2199,17 @@ This is particularly useful for generated code (like protocol buffers) where lar
 
 ## 10. Standard Library
 
-Zena includes a small standard library of utility classes. These are automatically imported into every module.
+Zena includes a small standard library of utility classes. These are
+automatically imported into every module.
 
 ### Map<K, V>
 
 A mutable hash map implementation.
 
-**Note**: Because `Map` accessors return `V | null` to indicate missing keys, the value type `V` must be a reference type. Primitive types (like `i32`) cannot be used directly because they cannot form a union with `null` (see [Union Types](#union-types)). To store primitives, wrap them in `Box<T>`.
+**Note**: Because `Map` accessors return `V | null` to indicate missing keys,
+the value type `V` must be a reference type. Primitive types (like `i32`) cannot
+be used directly because they cannot form a union with `null` (see [Union
+Types](#union-types)). To store primitives, wrap them in `Box<T>`.
 
 ```zena
 let map = new Map<string, Box<i32>>();
@@ -2016,7 +2221,8 @@ let val = map['one']; // Returns Box<i32> | null
 
 ### Box<T>
 
-A wrapper class for holding values. This is particularly useful for using primitive types in contexts that require reference types, such as Union Types.
+A wrapper class for holding values. This is particularly useful for using
+primitive types in contexts that require reference types, such as Union Types.
 
 ```zena
 let b = new Box(42);
@@ -2029,7 +2235,9 @@ Zena supports throwing exceptions using the `throw` keyword.
 
 ### Throw Expression
 
-The `throw` expression interrupts execution and unwinds the stack. It evaluates to the `never` type, meaning it can be used in any context where a value is expected.
+The `throw` expression interrupts execution and unwinds the stack. It evaluates
+to the `never` type, meaning it can be used in any context where a value is
+expected.
 
 ```zena
 throw new Error("Something went wrong");
@@ -2054,22 +2262,33 @@ class Error {
 
 ### Dead Code Elimination
 
-The Zena compiler performs aggressive dead code elimination (DCE) to produce minimal WASM binaries. This tree-shaking operates at multiple levels:
+The Zena compiler performs aggressive dead code elimination (DCE) to produce
+minimal WASM binaries. This tree-shaking operates at multiple levels:
 
-- **Declaration-level**: Functions, classes, and interfaces that are not reachable from exported entry points are excluded from the output.
-- **Type-level**: WASM types for intrinsic methods and fields are not generated if the intrinsic is not actually called.
-- **VTable-level**: Classes with no virtual methods skip vtable generation entirely.
+- **Declaration-level**: Functions, classes, and interfaces that are not
+  reachable from exported entry points are excluded from the output.
+- **Type-level**: WASM types for intrinsic methods and fields are not generated
+  if the intrinsic is not actually called.
+- **VTable-level**: Classes with no virtual methods skip vtable generation
+  entirely.
 
-DCE ensures that standard library components (like `Map` or `Console`) are only included in the output if they are actually used by the program. This is critical for network delivery of WASM modules.
+DCE ensures that standard library components (like `Map` or `Console`) are only
+included in the output if they are actually used by the program. This is
+critical for network delivery of WASM modules.
 
 ### Binary Size
 
-Zena is designed to produce the smallest possible WASM binaries. Key optimizations include:
+Zena is designed to produce the smallest possible WASM binaries. Key
+optimizations include:
 
-- **Monomorphization**: Generic types are specialized at compile time, avoiding runtime type metadata.
-- **Static dispatch**: Private and final methods use direct calls instead of vtable lookups.
-- **Intrinsics**: Built-in operations compile to inline WASM instructions, not function calls.
-- **No runtime**: Zena programs have no mandatory runtime overhead beyond WASM-GC's garbage collector.
+- **Monomorphization**: Generic types are specialized at compile time, avoiding
+  runtime type metadata.
+- **Static dispatch**: Private and final methods use direct calls instead of
+  vtable lookups.
+- **Intrinsics**: Built-in operations compile to inline WASM instructions, not
+  function calls.
+- **No runtime**: Zena programs have no mandatory runtime overhead beyond
+  WASM-GC's garbage collector.
 
 A minimal Zena program can compile to as few as 41 bytes.
 

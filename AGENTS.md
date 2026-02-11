@@ -1,635 +1,312 @@
-# Zena Project Instructions & Design
+# Zena Project Instructions
 
-This document serves as a guide for the development of the Zena programming language.
+This document guides AI assistants working on the Zena programming language. For
+the development plan and feature roadmap, see [PLAN.md](./PLAN.md).
 
 ## Project Overview
 
-Zena is a statically typed language targeting WASM-GC. It uses a TypeScript-like syntax but enforces static semantics for better optimization.
+Zena is a statically typed language targeting WASM-GC. It has features and
+syntax inspired by TypeScript, Dart, and Swift.
+
+**Important**: Zena is not released yet. Don't worry about breaking changes—we
+can freely improve APIs, syntax, and semantics.
 
 ## Design Principles
 
-1.  **Performance**: Generated WASM should be fast. Avoid runtime ovezenad where possible (e.g., prefer flat arguments over object allocation for named parameters).
-2.  **Binary Size**: The compiler should produce the smallest possible WASM binary. This is critical for network delivery.
-    - _Trade-off_: When Performance and Binary Size conflict (e.g., Monomorphization vs Erasure), we currently favor **Performance**, but this is a tunable design choice.
+1.  **Performance**: Generated WASM should be fast. Avoid runtime overhead where
+    possible (e.g., try to avoid dynamic dispatch, boxing, etc., where
+    possible).
+2.  **Binary Size**: The compiler should produce the smallest possible WASM
+    binary. This is critical for network delivery.
+    - _Trade-off_: When Performance and Binary Size conflict (e.g.,
+      Monomorphization vs Erasure), we currently favor **Performance**, but this
+      is a tunable design choice.
 3.  **Simplicity**: The language should be easy to parse and analyze.
-4.  **Safety**: Strong static typing with a sound type system. No implicit type coercion.
-5.  **Minimal Output**: Standard library components (like `Map`) should only be included in the output if they are actually used by the program (Dead Code Elimination).
+4.  **Safety**: Strong static typing with a sound type system. No implicit type
+    coercion.
+5.  **Minimal Output**: Standard library components (like `Map`) should only be
+    included in the output if they are actually used by the program (Dead Code
+    Elimination).
 
-## Language Specification
+## Zena Syntax Quick Reference
 
-The official language reference is maintained in `docs/language-reference.md`.
-**Instruction**: When adding or modifying language features, you MUST update `docs/language-reference.md` to reflect the changes.
+**CRITICAL**: Zena syntax differs from TypeScript in important ways. Pay close
+attention!
 
-### Type System
+### Variables (Different from TypeScript!)
 
-- **Strongly Typed**: All expressions have a static type determined at compile time.
-- **Soundness**: The type system is sound; if a program type-checks, it will not exhibit type errors at runtime.
-- **No Coercion**: No implicit type coercion.
-- **Inference**: Local variable types are inferred.
-- **Advanced Types**:
-  - **Type Aliases**: `type ID = string;`
-  - **Distinct Types**: `distinct type Meters = i32;` (Nominal typing wrapper).
-  - **Union Types**: `string | i32` (Supported in specific contexts like argument adaptation).
+```zena
+let x = 1;   // IMMUTABLE binding (like TypeScript's `const`)
+var y = 1;   // MUTABLE binding (like TypeScript's `let`)
+```
 
-### Variables
+- **`let`** = immutable (NOT like TypeScript's `let`!)
+- **`var`** = mutable
+- There is no `const` keyword in Zena.
 
-- `let x = 1;` // Immutable binding.
-- `var y = 1;` // Mutable binding.
-- Block scoping.
-- **Destructuring**: Supported for Records, Tuples, and Classes. `let {x, y} = point;`
+### Match/Case Syntax (Different from other languages!)
 
-### Control Flow
+```zena
+// CORRECT - use colon after case
+match (value) {
+  case 0: "zero"
+  case 1: "one"
+  case _: "other"
+}
 
-- **If**: `if (cond) { ... } else { ... }`
-- **While**: `while (cond) { ... }`
-- **For**: `for (var i = 0; i < 10; i = i + 1) { ... }` (C-style).
-- **Break**: `break;` (exits innermost loop).
-- **Continue**: `continue;` (skips to next iteration).
+// WRONG - do NOT use arrow syntax
+match (value) {
+  case 0 => "zero" // ❌ WRONG!
+}
+```
 
 ### Functions
 
-- Only arrow syntax: `const add = (a: i32, b: i32) => a + b;`
-- **Closures**: Functions capture variables from enclosing scopes.
-- **Argument Adaptation**: Can pass functions with fewer arguments than expected.
+```zena
+// Arrow syntax only (no function keyword)
+let add = (a: i32, b: i32) => a + b;
 
-### Classes & OOP
+// With block body
+let greet = (name: string) => { return "Hello, " + name; };
+```
 
-- **Classes**: `class Point { x: i32; #new(x: i32) { this.x = x; } }`
-- **Inheritance**: `class Child extends Parent`.
-- **Interfaces**: `interface Drawable { draw(): void; }`. Classes implement via `implements`.
-- **Mixins**: `mixin Timestamped { time: i32; }`. Used via `class Log extends Base with Timestamped`.
-- **Extension Classes**: `extension class ArrayExt on array<T> { ... }`. Adds methods to existing types.
-- **Accessors**: Getters/Setters supported.
-- **Visibility**: `#` prefix for private fields.
+### For Loops
 
-### Records & Tuples (Immutable)
+```zena
+// C-style for (note: use var for mutable loop variable)
+for (var i = 0; i < 10; i = i + 1) {
+  // ...
+}
 
-- **Records**: `{ x: 1 }`. Immutable struct.
-- **Tuples**: `[ 1, "a" ]`. Immutable struct.
+// For-in loops
+for (let item in collection) {
+  // ... 
+}
+```
 
-### Mutable Collections
 
-- **Maps**: `#{ key: value }`. Mutable Hash Map. (Class implemented, literal syntax `#{}` pending)
-- **Arrays**: `#[ 1, 2 ]`. Mutable WASM GC Array.
+### Multiple return values
 
-### Strings
+```zena
+/** Returns the first Foo and a count of how many Foos there are */
+let getFoo = () => {
+  return (theFoo, 3)
+};
 
-- **Literals**: `'text'` or `"text"`.
-- **Template Literals**: `` `Value: ${x}` ``.
-- **Tagged Templates**:
-  ```
-  tag`template`
-  ```
+// Multi-valued returns use unboxed tuples that must be destructured
+let (foo, fooCount) = getFoo();
+```
 
-### Modules
+Multi-valued returns put return values on the WASM stack, instead of on the
+heap, which is a strong hint to the runtime to put the value directly in a
+register. This is much better for performance-critical APIs like iterators.
 
-- ES Module syntax (`import`, `export`).
+### Full Reference
 
-## Implementation Plan
+The official language reference is maintained in `docs/language-reference.md`.
+**Instruction**: When adding or modifying language features, you MUST update
+`docs/language-reference.md` to reflect the changes.
 
-### Phase 1: Bootstrapping (Current)
+## Project Structure & Environment
 
-- **Language**: TypeScript (running on Node.js).
-- **Goal**: Build a parser and a basic code generator that outputs WASM text format (WAT) or binary.
-- **Components**:
-  - Lexer/Tokenizer (Done)
-  - Parser (AST generation) (Done)
-  - Type Checker (Basic) (Done)
-  - Code Generator (WASM-GC)
-    - **Strategy**: End-to-End Execution Testing.
-    - **Steps**:
-      1.  **Parser Update**: Support `export` keyword for top-level declarations to expose functions to the host.
-      2.  **WASM Emitter**: Implement a low-level `emitter.ts` to construct WASM binary sections (Type, Function, Export, Code).
-      3.  **Code Generator**: Implement `codegen.ts` to traverse AST and drive the emitter. Initial scope: `i32` arithmetic and function parameters.
-      4.  **Testing**: Compile Zena source to `Uint8Array`, instantiate with `WebAssembly.instantiate`, and assert results in Node.js.
+This project uses two package managers:
+- **npm**: For Node.js packages and as a script runner (via Wireit)
+- **Nix**: For non-Node dependencies (wasmtime, wasm-tools, etc.)
 
-### Phase 2: Self-Hosting
+We use **direnv** with **Nix flakes** for reproducible tooling. When you enter
+the project directory, direnv automatically activates the environment with:
+- Node.js v25 (required for WASM exnref support)
+- wasmtime (for WASI testing)
+- wasm-tools (for WASM debugging)
+- `WIREIT_LOGGER=simple` (for readable build output)
 
-- Rewrite the compiler in Zena.
-- Compile the Zena compiler using the Phase 1 TypeScript compiler.
+**You do NOT need to**:
+- Prefix commands with `nix develop -c`
+- Set `WIREIT_LOGGER=simple` manually
+- Run `direnv allow` after the first time
 
-### Phase 3: Ecosystem
+Just run commands directly: `npm test`, `wasmtime run ...`, etc.
 
-- Standard Library implementation.
-- Build tools / CLI.
+### Packages (npm monorepo)
 
-## Project Structure
+- **packages/compiler**: The core compiler (`@zena-lang/compiler`)
+- **packages/stdlib**: The standard library (`@zena-lang/stdlib`)
+- **packages/cli**: Command-line interface
+- **packages/runtime**: Runtime support for host environments
 
-This project is an **npm monorepo** managed with **Wireit**.
+### Scripts
 
-### Nix Development Environment
+All scripts run through npm (using Wireit for caching), even for non-Node tasks:
+- `npm test`: Run tests across the workspace
+- `npm run build`: Build packages
 
-The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, wasm-tools).
+### Running Tests
 
-- **With direnv** (recommended): Run `direnv allow` once. The environment
-  auto-activates when you enter the directory.
-- **Without direnv**: Prefix commands with `nix develop -c`, e.g.,
-  `nix develop -c wasmtime run program.wasm`.
-- **When is Nix needed?**: Only for WASI testing (wasmtime) and WASM debugging
-  (wasm-tools). Regular `npm test` and `npm run build` work without Nix if you
-  have Node.js installed.
+- Use `npm test` or `npm test -w @zena-lang/compiler` to run all tests.
+- **Running Specific Tests**:
+  - To run a specific test file, you MUST use the package workspace flag and
+    pass the file path after `--`.
+  - Example: `npm test -w @zena-lang/compiler -- test/checker/checker_test.js`
+  - Do NOT try to pass arguments to the root `npm test` command (e.g. 
+    `npm test packages/compiler/...`), as they are ignored.
+- **NEVER** use `npm test packages/compiler` or
+  `npm test --some/path/some_test.ts`.
+- Packages are always referred to by **package name** (e.g.,
+  `@zena-lang/compiler`), not package path.
+
+### Wireit Caching (IMPORTANT!)
+
+Wireit caches script results and only re-runs scripts when inputs change.
+
+**TRUST THE CACHE**:
+- If a test shows as cached/skipped but passed, **it is still passing**. The
+  cache is working correctly.
+- If a build shows as cached, **the outputs are still valid**. No action needed.
+- **NEVER** try to bust the cache by deleting `node_modules`, `.wireit`, or
+  build outputs. This is almost never the correct solution.
+- If you think caching is wrong, it's almost certainly a Wireit
+  **configuration** problem (missing dependency or input file in
+  `package.json`), not a cache corruption issue that needs manual
+  intervention.
+
+**Do NOT**:
+- Run `rm -rf .wireit` or delete cache directories
+- Delete `lib/` or other build output directories
+- Add `--no-cache` flags or similar
+- Run builds multiple times "just to be sure"
+
+**Do**:
+- Trust that cached results are correct
+- If tests should have run but didn't, check `package.json` wireit config for
+  missing inputs or dependencies
 
 ### Running Zena Programs with WASI
-
-To run Zena programs standalone (outside of a browser or Node.js), compile with
-the `--target wasi` flag and run with wasmtime:
 
 ```bash
 # Build with WASI target
 zena build main.zena -o main.wasm --target wasi
 
-# Run with wasmtime (requires WASM-GC flags)
-wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main.wasm
+# Run with wasmtime
+wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main
+main.wasm
 
-# If accessing the filesystem, grant directory access:
-wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke main main.wasm
+# With filesystem access
+wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke
+main main.wasm
 ```
-
-**Required wasmtime flags**:
-
-- `-W gc=y` - Enable WASM GC proposal
-- `-W function-references=y` - Enable function references proposal
-- `-W exceptions=y` - Enable exceptions proposal (if using try/catch)
-- `--dir <path>` - Grant filesystem access to a directory (for WASI file I/O)
-- `--invoke <func>` - Call a specific exported function (e.g., `main`)
-
-### Wireit Behavior
-
-- Wireit caches script results and only re-runs scripts when inputs change.
-  Remember this when debugging or running tasks repeatedly.
-- You do not need to build before testing; Wireit handles dependencies
-  automatically.
-- You NEVER need to delete build outputs manually; Wireit tracks
-  inputs/outputs. If a script doesn't run because it was cached, its outputs
-  remain unchanged. A passing test is still passing if it's skipped.
-- If you want to see more output for a script, set the WIREIT_LOGGER environment
-  variable to `simple` (e.g., `WIREIT_LOGGER=simple npm test`).
-
-- **Root**: Contains the workspace configuration and global scripts.
-- **packages/compiler**: The core compiler implementation (`@zena-lang/compiler`).
-- **packages/stdlib**: The Zena standard library implementation (`@zena-lang/stdlib`).
-- **Scripts**:
-  - `npm test`: Runs tests across the workspace using Wireit.
-  - `npm run build`: Builds packages using Wireit.
-  - **Running Tests**:
-    - Use `npm test` or `npm test -w @zena-lang/compiler` to run all tests.
-    - **Running Specific Tests**:
-      - To run a specific test file, you MUST use the package workspace flag and pass the file path after `--`.
-      - Example: `npm test -w @zena-lang/compiler -- test/checker/checker_test.js`
-      - Do NOT try to pass arguments to the root `npm test` command (e.g. `npm test packages/compiler/...`), as they are ignored.
-    - **NEVER** use `npm test packages/compiler` or `npm test -- some/path/some_test.ts`.
-    - Packages are always referred to by **package name** (e.g., `@zena-lang/compiler`), not package path.
-- ** Temporary Tests and Debug Scripts**: Create temporay test files in the
-  normal test directories (e.g., `packages/compiler/src/test/`). Files in
-  `/tmp/` will not be able to import project modules correctly.
-  - Use the `--test-only` flag to isolate tests when debugging.
-  - Use only `npm run`, `npm test`, or `node` to run scripts. Do NOT run scripts
-    with `npx`, `tsx`, or `ts-node`.
-- **Node verison**: The project uses Node.js v25 because it includes
-  built-in WASM exnref support. If you see errors about unsupported
-  WebAssembly features, ensure you are using Node v25+. Run `node -v` to check
-  and `nvm use default` to switch to the correct version.
 
 ## Coding Standards
 
-- **TypeScript**: Use strict TypeScript. Write very modern (ES2024) TypeScript.
+### TypeScript (for compiler code)
+
+- Use strict TypeScript. Write very modern (ES2024) TypeScript.
 - **Erasable Syntax**: Do not use non-erasable syntax.
   - No `enum` (use `const` objects with `as const`).
   - No `namespace` (use ES modules).
-  - No constructor parameter properties (e.g. `constructor(public x: number)`).
+  - No constructor parameter properties (e.g.
+    `constructor(public x: number)`).
   - No `private` keyword (use `#` private fields).
 - **Variables**: Prefer `const`, then `let`. Avoid `var`.
-- **Functions**: Always use arrow functions, unless a `this` binding is strictly required.
-- **Formatting**:
-  - Use single-quotes.
-  - Use 2 spaces for indents.
-  - No spaces around object literals and imports (e.g., `import {suite, test} from 'node:test';`).
-- **Naming**:
-  - File names should be `kebab-case`.
-  - Test files should end in `_test.ts`. The prefix should be `kebab-case` (e.g., `generics-parser_test.ts`, not `generics_parser_test.ts`).
-- **Testing**:
-  - Use `suite` and `test` syntax from `node:test`.
-  - Write tests for each compiler stage (Lexer, Parser, Codegen).
-  - New syntax features MUST have dedicated parser tests (and lexer tests, if new tokens are introduced).
-  - **New AST nodes**: When adding new AST node types, always add corresponding visit methods to `visitor.ts` to ensure DCE and other analyses cover them.
-  - Assertions should NOT be followed by conditionals that check the same thing. Assertions act as guards.
-  - **Isolating Tests**: To isolate tests, pass the `--test-only` flag to Node and use `test.only()` in the test file.
-  - **Codegen Tests**:
-    - Use `compileAndRun(source, entryPoint?)` from `test/codegen/utils.ts` to compile and execute Zena code. It returns the result of the entry point function.
-    - Use `compileAndInstantiate(source)` from `test/codegen/utils.ts` if you need access to all exports or need to test multiple functions from one source.
-    - These utilities automatically provide standard library imports (like `console`) and handle the instantiation boilerplate.
-- **Paradigm**: Prefer functional patterns where appropriate.
-- **Package Management**: Prefer installing npm packages with `npm i <package>` instead of manually editing `package.json` to ensure valid versions.
-- **Documentation**:
-  - Record any new coding preferences, design choices, or architecture decisions in this file (`.github/copilot-instructions.md`).
-  - Update `docs/language-reference.md` when language syntax or semantics change.
-  - **Compiler Architecture**: Refer to `docs/design/compiler-architecture.md` for a detailed guide on the compiler's internals, key classes, and navigation.
-  - Maintain design documents in `docs/design/` for complex features.
-    - **Architecture**: `docs/design/compiler-architecture.md`
-    - **Argument Adaptation**: `docs/design/argument-adaptation.md`
-    - **Arrays**: `docs/design/arrays.md`
-    - **Capabilities**: `docs/design/capabilities.md`
-    - **Classes**: `docs/design/classes.md`
-    - **Dead Code Elimination**: `docs/design/dead-code-elimination.md`
-    - **Decorators**: `docs/design/decorators.md`
-    - **Destructuring**: `docs/design/destructuring.md`
-    - **Diagnostics**: `docs/design/diagnostics.md`
-    - **Exceptions**: `docs/design/exceptions.md`
-    - **Function Overloading**: `docs/design/function-overloading.md`
-    - **Generics**: `docs/design/generics.md`
-    - **Host Interop**: `docs/design/host-interop.md`
-    - **Interfaces**: `docs/design/interfaces.md`
-    - **Linear Memory**: `docs/design/linear-memory.md`
-    - **Maps**: `docs/design/map.md`
-    - **Mixins**: `docs/design/mixins.md`
-    - **Modules**: `docs/design/modules.md`
-    - **Name Resolution**: `docs/design/name-resolution.md`
-    - **Optimizations**: `docs/design/optimizations.md`
-    - **Records & Tuples**: `docs/design/records-and-tuples.md`
-    - **Standard Library**: `docs/design/standard-library.md`
-    - **Strings**: `docs/design/strings.md`
-    - **Testing**: `docs/design/testing.md`
-    - **Types**: `docs/design/types.md`
-    - **Weak References**: `docs/design/weak-references.md`
-    - **Runtime Type Tags**: `docs/design/runtime-type-tags.md`
-    - **This Type**: `docs/design/this-type.md`
-    - **Multi-Return Values**: `docs/design/multi-return-values.md`
-    - **Filesystem**: `docs/design/filesystem.md`
+- **Functions**: Always use arrow functions, unless a `this` binding is
+  strictly required.
 
-## Future Considerations
+### Formatting
 
-- **Strings**:
-  - **Design**: See `docs/design/strings.md` for the full design (including unified
-    String architecture with internal implementations like GCString, LinearString).
-  - **Multi-Encoding**: Track encoding per string (UTF-8 or UTF-16). Compiler flag
-    `--default-encoding` controls literal encoding. UTF-16 enables efficient JS interop.
-  - **StringBuilder**: ✅ Done. See `zena:string-builder`.
-  - **Interning**: Implement runtime string interning for fast literal equality.
-  - **Iterators**: Implement Unicode-aware iteration over code points.
-- **Numeric Literals**:
-  - **Defaults**: Revisit default types for literals. Consider making `f64` the default for floating-point literals (matching JS).
-  - **Suffixes**: Implement syntax for numeric suffixes (e.g., `1L` for `i64`, `1f` for `f32`) to avoid verbose casting (`1 as i64`).
+- Use single-quotes.
+- Use 2 spaces for indents.
+- No spaces around object literals and imports (e.g., `import {suite, test}
+  from 'node:test';`).
 
-## Next Steps
+### Naming
 
-### Completed
+- File names should be `kebab-case`.
+- Test files should end in `_test.ts`. The prefix should be `kebab-case`
+  (e.g., `generics-parser_test.ts`, not `generics_parser_test.ts`).
 
-- [x] Initialize npm project with TypeScript.
-- [x] Set up project structure (`src`, `tests`).
-- [x] Implement the Lexer.
-- [x] Implement Parser (AST generation).
-- [x] Implement Type Checker (Basic).
-- [x] Implement Code Generator (WASM-GC) for:
-  - `i32` arithmetic.
-  - Function parameters.
-  - `while` loops.
-  - `if` statements.
-  - Variable assignment (`var`).
-  - Function calls and recursion.
-- [x] Implement Structs & Classes (WASM-GC structs).
-- [x] Implement Arrays (WASM-GC arrays).
-- [x] Implement Strings (UTF-8 bytes, concatenation, equality).
-- [x] Implement Generics:
-  - Generic Classes (`class Box<T>`).
-  - Multiple Type Parameters (`class Pair<K, V>`).
-  - Generic Functions (`<T>(x: T) => x`).
-  - Type Inference (`new Box(10)` -> `Box<i32>`).
-  - Default Type Parameters (`class Box<T = i32>`).
-  - Inheritance (Basic):
-    - `extends` keyword.
-    - Struct layout compatibility.
-    - Method/Field inheritance.
-    - Static dispatch for overridden methods.
-- [x] Implement Accessors (Parser, Checker, Codegen).
-- [x] Implement `final` modifier (Parser, Checker, Codegen).
-- [x] Implement Host Interop:
-  - Imports (`declare`, `@external`).
-  - Exports (Functions, Classes).
-  - Standard Library (`Console`).
-  - Runtime Helper.
-  - Function Overloading.
-- [x] Implement Closures:
-  - Parser (Generic Arrow Functions).
-  - Checker (Capture Analysis).
-  - Codegen (Context Structs, \`ref.func\`, Element Section).
-- [x] Implement Tagged Template Literals.
-- [x] Implement Type Aliases (`type` keyword).
-- [x] Implement Distinct Types (`distinct type` keyword).
-- [x] Implement Function Types (`(a: i32) => void`).
-- [x] Implement Records & Tuples:
-  - Parser: Literals (`{...}`, `[...]`) and Types.
-  - Checker: Structural typing and inference.
-  - Codegen (Boxed): Canonical WASM structs.
-  - Destructuring: Parser, Checker, Codegen.
-- [x] Implement Optional Parameters:
-  - Parser: `?` syntax.
-  - Checker: Union with `null`, assignability.
-  - Codegen: Default values.
-- [x] Implement `eq` intrinsic and `operator ==` overloading.
-- [x] Implement `Map` and `Box` in Standard Library.
-- [x] Implement `hash` intrinsic.
-- [x] Implement strict equality (`===`, `!==`).
-- [x] Implement bitwise XOR (`^`), AND (`&`), OR (`|`).
-- [x] Implement modulo operator (`%`).
-- [x] Implement `i64` and `f64` support (Codegen & Emitter).
-- [x] Allow identifiers to contain `$` and `_`.
-- [x] Implement `#[ ... ]` array literal syntax.
-- [x] Implement `map()` for `Array` and `FixedArray`.
-- [x] Implement Pattern Matching (Basic):
-  - `match` expression.
-  - Identifier patterns (binding & wildcards).
-  - Literal patterns (number, string, boolean).
-  - Record patterns (`{x: 1}`).
-  - Tuple patterns (`[1, 2]`) for Tuples.
-  - Class patterns (`Point {x}`).
-  - `as` patterns (`Point {x} as p`).
-  - Logical patterns (`|`, `&`).
-  - Match Guards (`case ... if ...`).
-  - Exhaustiveness Checking.
-- [x] Implement Record Spread (`{ ...p, z: 3 }`).
-- [x] Implement Exceptions (`throw`).
-- [x] Implement `never` type.
-- [x] Implement Super Calls (`super(...)`, `super.method()`, `super.field`).
-- [x] Implement Advanced Inheritance:
-  - Virtual Fields (Uniform Access Principle).
-  - Dynamic Dispatch (VTables).
-  - Casting (`as`, `is`).
-  - Mixins (Parser, Checker, Codegen).
-- [x] Implement Interfaces:
-  - Definition, Implementation, Inheritance.
-  - Fat Pointers & VTables.
-  - Interface Properties.
-- [x] Implement Abstract Classes (`abstract` keyword, abstract methods).
-- [x] Enforce Access Control (`#` private fields).
-- [x] Implement Generic Constraints (`T extends Animal`).
-- [x] Implement Blocks (Lexical Scoping).
-- [x] Implement Type Narrowing (control-flow-based null checks).
-- [x] Implement Method Overloading:
-  - Multiple methods with same name but different signatures.
-  - Signature-based name mangling for codegen.
-  - Overload resolution by parameter type and count.
-  - Inheritance: override specific overloads, inherit others.
-  - Operator overloading (`operator []` with multiple signatures).
-  - Virtual dispatch with overloaded methods.
-- [x] Implement Dead Code Elimination (DCE):
-  - AST Visitor infrastructure (`visitor.ts`) for reusable tree traversal.
-  - Usage analysis pass (`analysis/usage.ts`) to determine reachable declarations.
-  - Declaration-level DCE: skip codegen for unused functions, classes, and interfaces.
-  - Type-level DCE: skip WASM type/function creation for intrinsic methods and fields.
-  - VTable elimination: skip vtable creation for extension classes with empty vtables.
-  - Method-level DCE: fully eliminate unused methods (no function allocation, no vtable entry).
-    - Tracks method calls via `SemanticContext.getResolvedBinding()`.
-    - Handles polymorphic dispatch: if a method is called through a base class/interface, all overrides are kept.
-    - Subclass tracking: propagates polymorphic calls to known subclasses.
-    - Covers regular methods, accessors (getters/setters), and implicit field accessors.
-    - Constructors (`#new`) are always kept if the class is used.
-  - Binary size results: 21% reduction on string programs, minimal programs at 41 bytes.
-- [x] Implement untagged enums with nominal typing.
+### Documentation
 
-### Planned
+- **Use JSDoc comments** (`/** ... */`) on all public APIs (exported
+  functions, classes, methods, interfaces).
+- Include `@param`, `@returns`, and `@example` tags where helpful.
+- Comment non-obvious internal code with regular comments.
+- Update `docs/language-reference.md` when language syntax or semantics
+  change.
+- Maintain design documents in `docs/design/` for complex features.
 
-1.  **Visitor Infrastructure Improvements**:
-    - **Ensure new syntax is visited**: When adding new AST node types, always add corresponding visit methods to `visitor.ts` to ensure DCE and other analyses cover them.
-    - **Type Object Visitor**: Consider implementing a `TypeVisitor` for traversing checker `Type` objects (ClassType, FunctionType, etc.), which would be useful for type-level analyses.
-    - **Migrate existing passes to visitors**: Convert capture analysis (`captures.ts`) and other AST-traversing code to use the generic visitor infrastructure for consistency and maintainability.
+### Testing
 
-2.  **Type Checker Refactoring**:
-    - **`ctx.currentClass` consistency**: Inside a generic class `Foo<T>`, `ctx.currentClass` should have `typeArguments = typeParameters` (i.e., represent `Foo<T>`, not just `Foo`). Currently, `checkThisExpression` creates a type with `typeArguments`, but `ctx.currentClass` doesn't have them, requiring a workaround in `isAssignableTo` to handle self-referential generic class comparisons. Fixing this at the source would eliminate that special case.
-    - **Reject index assignment without `operator []=`**: Currently `x[0] = y` compiles even if the type only has `operator []` (getter). The checker should require `operator []=` for index assignment.
-    - **Reject assignment to getter-only properties**: Currently `x.length = 5` compiles even if `length` only has a getter. The checker should require a setter for property assignment.
+- Use `suite` and `test` syntax from `node:test`.
+- Write tests for each compiler stage (Lexer, Parser, Codegen).
+- New syntax features MUST have dedicated parser tests (and lexer tests, if new
+  tokens are introduced).
+- **New AST nodes**: When adding new AST node types, always add corresponding
+  visit methods to `visitor.ts` to ensure DCE and other analyses cover them.
+- **Isolating Tests**: To isolate tests, pass the `--test-only` flag to Node
+  and use `test.only()` in the test file.
+- **Codegen Tests**:
+  - Use `compileAndRun(source, entryPoint?)` from `test/codegen/utils.ts` to
+    compile and execute Zena code. It returns the result of the entry point
+    function.
+  - Use `compileAndInstantiate(source)` if you need access to all exports or
+    need to test multiple functions from one source.
+- **Portable Tests**: When possible, write new tests in `tests/language/` as
+  portable tests that can be run by both the TypeScript compiler and a future
+  Zena compiler. This helps us work toward self-hosting incrementally.
 
-3.  **Checker-Driven Type Instantiation** (COMPLETED):
-    Currently, codegen has two paths for type resolution:
-    - **Identity-based**: Uses checker's `ClassType` objects directly (correct, uses interning)
-    - **Annotation-based**: Rebuilds types from `TypeAnnotation` AST nodes (problematic, creates duplicate types)
+### Temporary Tests and Debug Scripts
 
-    The annotation-based path causes issues because:
-    - Extension classes (like `FixedArray<T>`) need interned `ArrayType` for their `onType`
-    - Field types in generic classes go through annotation-based substitution
-    - This creates duplicate WASM type indices, causing type mismatches
+- Create temporary test files in the normal test directories (e.g.,
+  `packages/compiler/src/test/`). Files in `/tmp/` will not be able to
+  import project modules correctly.
+- Keeping temp files in the source tree ensures:
+  - Imports like `import {Compiler} from '../compiler.ts'` work correctly
+  - Running `npm test` builds any dependencies first (via Wireit)
+  - You can use `test.only()` to isolate your temp test
+- Use the `--test-only` flag to isolate tests when debugging.
+- Use only `npm run`, `npm test`, or `node` to run scripts. Do NOT run
+  scripts with `npx`, `tsx`, or `ts-node`.
 
-    **Solution**: Make the checker the single source of truth for all instantiated types.
-    - [x] **Phase 1: General Type Resolution in CheckerContext**
-      - [x] Add `substituteTypeParams(type, typeMap)` - canonical substitution with explicit Map
-      - [x] Add `buildTypeMap(classType)` - builds Map from class context
-      - [x] Add `buildFunctionTypeMap(funcType)` - builds Map from function context
-      - [x] Works for any type containing type parameters (fields, params, returns, locals)
-      - [x] Memoize results per (type, typeMapKey) pair
-      - [x] Add convenience methods: `resolveFieldTypes()`, `resolveMethodTypes()`
-      - [x] Add `typeArguments` to `FunctionType` for instantiated generic functions
-      - [x] Deprecate `resolveTypeInContext(type, classType)` (convenience wrapper)
-    - [x] **Phase 2: Pass CheckerContext to Codegen**
-      - [x] Expose `checkerContext` getter on `Compiler`
-      - [x] Add `CheckerContext` to `CodegenContext` constructor
-      - [x] Pass through from `CodeGenerator` constructor
-    - [x] **Phase 3: Codegen Maintains Type Parameter Stack** (Partial)
-      - [x] Update `instantiateClass` to use `checkerContext.resolveFieldTypes()`
-      - [x] Fix `superType` substitution in `instantiateGenericClass` and `substituteType`
-      - [x] Add `currentTypeParamMap: Map<string, Type>` to `CodegenContext`
-      - [x] Add `pushTypeParamContext()` / `popTypeParamContext()` methods
-      - [x] When entering generic class, push class type params via `generateClassMethods`
-      - [x] Update variable declaration to use `substituteTypeParams` with `currentTypeParamMap`
-      - [x] **Fix `AsExpression` type substitution** (completed 2025-01-27):
-        - Both source and target types must be substituted via `substituteTypeParams`
-        - Previously only target was substituted, causing `Array<T>` to be instantiated instead of `Array<i32>`
-      - [x] **Identity-based interface implementation lookups** (completed 2025-01-27):
-        - Changed `ClassInfo.implements` from `Map<string, ...>` to `Map<InterfaceType, ...>`
-        - Added `InterfaceInfo.checkerType` field for reverse lookup
-        - Updated all interface boxing sites to use identity-based lookup
-        - Removed `substituteInterfaceName()` workaround
-      - [x] **Identity-based interface parent lookups** (completed 2025-01-27):
-        - Removed `InterfaceInfo.parent` string field entirely
-        - Added `InterfaceInfo.parentType` field as the sole parent reference
-        - Updated `defineInterfaceMethods()` to use identity-based lookup via `parentType` only
-        - Removed `isInterfaceSubtype()` name-based helper function
-        - Added `findInterfaceDeclarationByType()` helper
-      - [x] **Generic interface type arguments** (completed 2025-01-27):
-        - Removed name-based fallback in `isInterfaceSubtypeByType()` - identity comparison
-          is sufficient because the checker interns interface types
-        - `ClassInfo.implements` now correctly stores concrete interface types (e.g.,
-          `Sequence<i32>`) because `ensureTypeInstantiated` ensures the checker's substituted
-          types are used
-      - [x] **Update method signature resolution to use `resolveMethodTypes()`** (completed 2025-01-27):
-        - Updated `instantiateClass` to use `resolveMethodTypes()` for method parameters and return types
-        - Added fallback to annotation-based resolution when checker type is not available
-        - Fixed `mapCheckerTypeToWasmType` to handle interfaces with name-based fallback
-      - [x] **Remove `mapType()` entirely** (completed 2025-01-27):
-        - Replaced the bridge call in `mapCheckerTypeToWasmType` to use `annotation.inferredType` directly
-        - Removed `mapType()` function (~10 lines) and `mapTypeInternal()` function (~400 lines)
-        - Removed `getArrayTypeIndex()` helper that was only used by `mapType`
-        - Cleaned up unused imports (`FunctionTypeAnnotation`, `LiteralTypeAnnotation`, etc.)
-        - All type resolution now goes through `mapCheckerTypeToWasmType()` exclusively
-    - [x] **Phase 4: Require checkerType for Extension Classes** (completed 2025-01-27)
-      - [x] Add check in `instantiateClass` requiring `checkerType.onType` for extension classes (when checkerType provided)
-      - [x] All code paths provide checker types (enabled by Phase 3 completion)
-    - [x] **Phase 5: Remove Annotation-Based Instantiation** (completed 2025-01-27)
-      - [x] Removed `mapType()` function entirely
-      - [x] All generic instantiation goes through checker types via `mapCheckerTypeToWasmType()`
-      - [x] `context: Map<string, TypeAnnotation>` parameter threading is now vestigial (only used for `typeToTypeAnnotation`)
-    - [x] **Phase 6: Migrate `ctx.classes` to Identity-Based Lookups** (completed 2025-01-28)
-      - `ctx.classes` is a `Map<string, ClassInfo>` keyed by specialized name (e.g., `"Array<i32>"`)
-      - Identity-based alternative: `ctx.getClassInfoByCheckerType(classType)` uses a `WeakMap<ClassType, ClassInfo>`
-      - [x] `getBoxClassInfo()` - uses identity lookup, removed name-based guard
-      - [x] `instantiateExtensionClassFromCheckerType()` - uses identity lookup after instantiation
-      - [x] `resolveFixedArrayClass()` - uses identity lookup after instantiation
-      - [x] `ClassPattern` in match expressions - identity lookup first, name-based fallback
-      - [x] Static member/method access - uses `ResolvedBinding` from checker. Fixed: checker now passes `declaration` to `ctx.declare()` for classes, enabling `ClassBinding` creation.
-      - [x] `generateNewExpression` - simplified to use identity-based lookup via `expr.inferredType`, removed annotation-based fallback path
-      - [x] Super class lookups - identity-based via `superClassType`. Fixed (2025-01-28): `defineClassStruct` now correctly finds the base class before mixin intermediates when processing mixin chains, preventing double-application of mixins (e.g., `Base_M_M` instead of `Base_M`).
-      - [x] Mixin intermediate registration - `preRegisterMixin` and `applyMixin` now receive checker intermediate types via `collectMixinIntermediateTypes()` for identity-based lookup.
-    - [x] **Phase 7: Remove `currentTypeContext` and migrate to `currentTypeParamMap`** (completed 2025-01-29)
-      - [x] `instantiateGenericMethod` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
-      - [x] `instantiateGenericFunction` - now accepts `Type[]` directly, uses `getCheckerTypeKeyForSpecialization()`
-      - [x] `generateNewExpression` - no longer uses `typeToTypeAnnotation`
-      - [x] `resolveExtensionClassInfo` - removed dead `typeContext` code, uses `classType.onType` directly
-      - [x] `generateFunctionBody` - now takes `typeParamMap: Map<string, Type>` directly instead of `typeContext`
-      - [x] `generateMethodBody` - now takes `typeParamMap: Map<string, Type>` directly instead of `typeContext`
-      - [x] `generateClassMethods` - removed `typeContext` parameter entirely
-      - [x] `generateFunctionExpression` (closures) - captures `currentTypeParamMap` for deferred body generation
-      - [x] Removed `currentTypeContext` field from `CodegenContext`
-      - [x] Added `ClassInfo.typeParamMap: Map<string, Type>` for checker-based type resolution
-      - [x] `instantiateGenericMethod` - now uses `classInfo.typeParamMap` instead of extracting `.inferredType` from `classInfo.typeArguments`
-      - [ ] `instantiateClass` - still builds `context: Map<string, TypeAnnotation>` for `typeToTypeAnnotation` and `resolveAnnotation`
-      - [ ] Remove `ClassInfo.typeArguments` (deprecated) and `typeToTypeAnnotation()` helper
-      - Remaining work: `typeToTypeAnnotation()` and `resolveAnnotation()` still use annotation-based context for some vtable generation
-    - [ ] **Phase 8: Remove name-based lookups entirely**
-      - [x] Removed fallbacks in `expressions.ts` for super class lookups (super constructor, super method calls)
-      - [x] Removed fallbacks in `classes.ts` for super class lookups in `defineClassStruct` and `instantiateClass`
-      - [x] Removed fallbacks in `classes.ts` for mixin base class lookups
-      - [x] Removed fallbacks for `NewExpression`, static method calls, `TemplateStringsArray`, and `ClassPattern` matches
-      - [x] Fixed: Added `classPattern.inferredType = classType` in checker to enable identity-based lookup in codegen
-      - [x] All sites now throw errors instead of silently falling back to name-based lookup
-      - [x] Removed `ctx.genericClasses.get()` lookups - replaced with `ctx.getGenericDeclByType()` identity-based lookups
-      - [x] Removed `ctx.classes.has()` existence checks - no longer used
-      - [x] Fixed self-referential generic types (e.g., `ListNode<T>.next: ListNode<T> | null`) by adding interning lookups in `mapCheckerTypeToWasmType` for class types extracted from unions
-      - [x] Removed `ctx.interfaces` Map entirely (completed 2025-01-29):
-        - Removed name-based fallback from `getInterfaceInfoByCheckerType()` - now identity-only
-        - Replaced `getInterfaceFromTypeIndex()` with `ctx.getInterfaceInfoByStructIndex()` (O(1) lookup)
-        - Removed `ctx.interfaces.set()` call and the `interfaces` Map from `CodegenContext`
-        - Added test `interface-name-collision_test.ts` proving interfaces with same name from different modules work correctly
-      - [x] Added `function-name-collision_test.ts` - functions already work correctly due to qualified names
-      - [ ] Remove `ctx.functions` Map - requires identity-based generic function instantiation tracking (see GitHub issue)
-      - [ ] Remove `ctx.classes` Map entirely - migrate to identity-only registration via `ctx.registerClassInfoByType()`
-    - [x] **Phase 9: Backend-Independent Semantic Analysis** (completed 2025-01-28)
-      - Added `BoxingKind`, `MethodDispatchKind`, `ArgumentAdaptationKind` types to `types.ts`
-      - Added `CheckerContext.analyzeBoxing(sourceType, targetType)` - returns boxing transformation needed
-      - Added `CheckerContext.analyzeMethodDispatch(classType, methodName)` - returns dispatch mechanism
-      - Added `CheckerContext.analyzeArgumentAdaptation(argType, paramType)` - returns argument transformation
-      - Added `CheckerContext.findInterfaceImplementation(classType, interfaceType)` - finds interface impl
-      - Added `CheckerContext.isInterfaceAssignableTo(sub, sup)` - interface subtype check
-      - Added `CheckerContext.isPrimitive(type)` - primitive type check
-      - Added tests in `semantic-analysis_test.ts` (20 tests)
-      - **Purpose**: These utilities enable a future WAT backend or other backends to share semantic analysis logic
+## Bug Handling Workflow
 
-    **Benefits** (now realized):
-    - Enables intellisense (hover shows `i32`, not `T`)
-    - Supports compiler API (ask assignability of instantiated types)
-    - Multiple backends share semantic model
-    - Foundation for query-based incremental compilation
+When you encounter a bug in the compiler or a missing feature during
+development:
 
-4.  **Host Interop**:
-    - **WASM GC Interop Notes**:
-      - WASM GC structs and arrays are OPAQUE from JavaScript.
-      - JS cannot access struct fields or iterate GC arrays.
-      - Use byte streaming (start/byte/end pattern) for string I/O.
-      - See `docs/design/host-interop.md` for details.
-    - **`@expose` Decorator**: Allow marking class methods as callable from JS hosts.
-      - Syntax: `@expose` or `@expose("customName")` on methods.
-      - Generates a WASM export wrapper that takes `this` as first parameter.
-      - Example: `@expose` on `Suite.run()` exports `Suite.run(self: Suite): i32`.
-      - JS usage: `exports['Suite.run'](suiteInstance)`.
-      - The inverse of `@external` - exposes Zena methods to hosts instead of importing host functions.
+1.  **Don't immediately try to fix it** if it's tangential to your current task.
+    This can lead to long debugging sessions that pollute the context.
 
-5.  **Data Structures**:
-    - **Maps**: Implement map literal syntax (`#{ key: value }`).
-    - **Sets**: Implement mutable sets.
+2.  **Document the bug** in [BUGS.md](./BUGS.md) with:
+    - Short description
+    - Date found
+    - Severity (low/medium/high/blocking)
+    - Workaround if any
+    - How to reproduce
 
-6.  **Top-Level Statement Execution**:
-    - Currently, top-level expression statements (like `test('name', fn)`) are ignored in codegen.
-    - Only global variable initializers run via the WASM start function.
-    - This blocks DSL-style test registration. See `docs/design/testing.md` for workaround.
-    - **Solution**: Extend the start function to execute top-level statements, or add module initialization support.
+3.  **Decide how to proceed**:
+    - If severity is **blocking**: Fix it now (no choice).
+    - If severity is **high** and the fix is quick (<10 min): Consider fixing.
+    - Otherwise: Note it in BUGS.md and continue with the current task.
 
-7.  **Standard Library**:
-    - Math functions (`sqrt`, `abs`, etc.).
-    - String manipulation (`substring`, `indexOf`).
-    - Regexes.
+4.  **For substantial bugs**: Consider starting a **new agent session** to fix
+    the bug, then return to the original task with clean context.
 
-8.  **Self-Hosting**:
-    - Rewrite the compiler in Zena.
+**Don't** try to work around compiler bugs with hacky code when we should just
+fix the compiler. We control the compiler—fix it properly.
 
-9.  **Pattern Matching (Advanced)**:
-    - Array element matching (requires `FixedArray` support or `Sequence` interface).
-    - Rest patterns (`...tail`).
+## Long-Term Goals
 
-10. **Multi-Return Values & Zero-Allocation Iteration**:
-    - **Design**: See `docs/design/multi-return-values.md` for full design.
-    - **Goal**: Enable ergonomic, zero-allocation iteration via WASM multi-value returns.
-    - **Literal Boolean Types** (`true`, `false`): ✅ COMPLETED
-      - `true` and `false` are now literal types (subtype of `boolean`).
-      - Parser already handled `true`/`false` as type annotations.
-      - Checker: Updated `checkExpression` to return `LiteralType` for boolean literals.
-      - Checker: Added `isBooleanType()` helper for condition validation.
-      - Checker: `var` bindings widen literal types to base types.
-      - Checker: Generic function inference widens conflicting literals.
-      - Codegen: Boxing literal types uses widened base type (Box<boolean>).
-      - Enables discriminated unions like `(true, T) | (false, never)`.
-    - **Unboxed Tuple Types** (`(T1, T2)`): ✅ Parser & Checker COMPLETED
-      - Parser: Parse `(T1, T2)` as return type annotation. ✅
-      - Parser: Parse `((expr1, expr2))` as tuple return expression (double parens for expression body). ✅
-      - Parser: Parse `return (expr1, expr2)` in block body. ✅
-      - Parser: Parse `let (a, b) = expr` destructuring. ✅
-      - Checker: Add `UnboxedTupleType` to type system. ✅
-      - Checker: Validate unboxed tuples only in return position (not first-class). ✅
-        - Rejects: variable types, field types, parameter types, accessor types, type arguments
-        - Allows: function return types, return expressions, destructuring patterns
-      - Codegen: Emit WASM multi-value function signatures. ✅
-      - Codegen: Generate tuple returns (push values in order). ✅
-      - Codegen: Generate destructuring (pop in reverse order to locals). ✅
-    - **Hole Literal (`_`)**: ✅ COMPLETED
-      - `_` as expression has type `never`, generates zero/null for expected type.
-      - Used in discriminated union returns: `return (false, _);`
-      - Symmetric with `_` wildcard pattern (both mean "don't care").
-    - **Union of Tuples**: ✅ COMPLETED (basic support)
-      - Support `(true, T) | (false, never)` return types.
-      - Destructuring computes union of element types at each position.
-      - WASM signature uses first tuple variant (all variants have same representation).
-    - [x] **Union of Tuples with Narrowing**: ✅ COMPLETED
-      - Pattern-based narrowing: `(true, value)` against `(true, T) | (false, never)` narrows `value` to `T`.
-      - Works in if-let, while-let, and match patterns.
-      - Filters tuple union variants based on literal pattern values before computing element types.
-      - **NOT YET**: Control-flow narrowing based on separate boolean check (e.g., `if (hasMore) { value }` after separate destructuring).
-    - [x] **Iterator Redesign**: ✅ COMPLETED
-      - Change `Iterator<T>.next()` to return `(true, T) | (false, never)`.
-      - Update `ArrayIterator<T>` implementation to use `return (false, _);`.
-      - Update `FixedArray<T>.iterator()` return type.
-    - [x] **For-In Loops**: ✅ COMPLETED
-      - Parser: `for (let pattern in iterable)` syntax with disambiguation from C-style for.
-      - Checker: Validates iterable implements `Iterable<T>`, supports arrays via FixedArray extension.
-      - Codegen: Direct WASM generation for iterator calls with interface dispatch.
-      - Handles primitive unboxing and reference type casting for element values.
-    - [x] **`if (let pattern = expr)` and `while (let pattern = expr)`**: ✅ COMPLETED
-      - Parser: Support `let` pattern in condition position.
-      - Checker: Bind pattern variables only when pattern matches.
-      - Codegen: Generate conditional with pattern destructuring.
+### Self-Hosting
 
-11. **Future Features**:
-    - **Syntax**:
-      - Blocks.
-      - JSX-like builder syntax.
-    - **Type System**:
-      - Numeric unit types.
-      - Intersection types.
-      - Contextual typing for closures: Infer parameter types from context (e.g., `arr.map(x => x * 2)`). Requires parser support for `(a, b) =>` without type annotations, and checker support to propagate expected function type.
-    - **OOP & Functions**:
-      - Extension methods.
-      - Operator overloading.
-      - `operator is` overloading (zero-cost for non-overriders).
-      - `TypeId<T>` intrinsic (compile-time type identifier).
-      - Mixin constructors.
-      - Async functions.
-    - **Optimization**:
-      - Compile-time constant expressions (string literals, immutable arrays, records/tuples, TemplateStringsArray as WASM constant globals instead of lazy initialization).
-    - **Standard Library & Runtime**:
-      - More operators: exponentiation.
-      - Workers.
+A major goal is to rewrite the Zena compiler in Zena itself. To work toward this
+incrementally:
+
+- Write new tests as **portable tests** when possible (in `tests/language/`).
+- These tests use a format that can be run by any Zena compiler implementation.
+- When implementing features, consider how they would be expressed in Zena.
+
+## Key Documentation
+
+- **Language Reference**: `docs/language-reference.md`
+- **Compiler Architecture**: `docs/design/compiler-architecture.md`
+- **Design Documents**: `docs/design/*.md` (see directory for full list)
+- **Development Plan**: `PLAN.md`
+- **Known Bugs**: `BUGS.md`
