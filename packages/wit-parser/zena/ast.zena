@@ -1,0 +1,729 @@
+/**
+ * AST types for the WIT parser.
+ *
+ * These types represent the resolved WIT document structure that matches
+ * the JSON output format used by wasm-tools. The parser produces these
+ * types after name resolution.
+ *
+ * Since Zena doesn't have sum types with payloads, we use a class-based
+ * approach with discriminator patterns.
+ */
+
+import {Span} from './token.zena';
+
+// ============================================================================
+// Index Wrapper (for nullable Maps)
+// ============================================================================
+
+/**
+ * Wrapper for i32 indices to use in Maps.
+ * This is needed because Map.get() returns V | null, and i32 | null
+ * is not valid in Zena (can't mix primitives with reference types).
+ */
+export class Index {
+  value: i32;
+  
+  #new(value: i32) {
+    this.value = value;
+  }
+}
+
+// ============================================================================
+// Type References
+// ============================================================================
+
+/**
+ * Primitive type names (matches JSON output format).
+ */
+export enum PrimitiveType {
+  U8 = "u8",
+  U16 = "u16",
+  U32 = "u32",
+  U64 = "u64",
+  S8 = "s8",
+  S16 = "s16",
+  S32 = "s32",
+  S64 = "s64",
+  F32 = "f32",
+  F64 = "f64",
+  Char = "char",
+  Bool = "bool",
+  String = "string",
+  ErrorContext = "error-context",
+}
+
+/**
+ * A reference to a type - either a primitive type or an index into
+ * the types array. Uses a nullable i32 where:
+ * - null means "no type" (e.g., void result)
+ * - negative values are impossible (indices are always >= 0)
+ * - primitives are represented by their PrimitiveType enum
+ *
+ * We use two separate fields: one for primitive and one for index.
+ */
+export class TypeRef {
+  // If primitive is not null, this is a primitive type
+  primitive: PrimitiveType | null;
+  // If index >= 0 and primitive is null, this is a type index
+  index: i32;
+
+  #new() {
+    this.primitive = null;
+    this.index = -1;  // Invalid by default
+  }
+
+  /**
+   * Create a TypeRef for a primitive type.
+   */
+  static fromPrimitive(p: PrimitiveType): TypeRef {
+    let ref = new TypeRef();
+    ref.primitive = p;
+    return ref;
+  }
+
+  /**
+   * Create a TypeRef for a type index.
+   */
+  static fromIndex(i: i32): TypeRef {
+    let ref = new TypeRef();
+    ref.index = i;
+    return ref;
+  }
+
+  /**
+   * Check if this is a primitive type.
+   */
+  isPrimitive(): boolean {
+    return this.primitive != null;
+  }
+
+  /**
+   * Check if this is a type index reference.
+   */
+  isIndex(): boolean {
+    return this.primitive == null && this.index >= 0;
+  }
+}
+
+// ============================================================================
+// Type Definitions
+// ============================================================================
+
+/**
+ * A field in a record type.
+ */
+export class RecordField {
+  name: string;
+  type: TypeRef;
+  docs: string | null;
+
+  #new(name: string, type: TypeRef) {
+    this.name = name;
+    this.type = type;
+    this.docs = null;
+  }
+}
+
+/**
+ * A case in a variant type.
+ */
+export class VariantCase {
+  name: string;
+  type: TypeRef | null;  // null if no payload
+  docs: string | null;
+
+  #new(name: string, type: TypeRef | null) {
+    this.name = name;
+    this.type = type;
+    this.docs = null;
+  }
+}
+
+/**
+ * A flag in a flags type.
+ */
+export class Flag {
+  name: string;
+  docs: string | null;
+
+  #new(name: string) {
+    this.name = name;
+    this.docs = null;
+  }
+}
+
+/**
+ * A case in an enum type.
+ */
+export class EnumCase {
+  name: string;
+  docs: string | null;
+
+  #new(name: string) {
+    this.name = name;
+    this.docs = null;
+  }
+}
+
+/**
+ * Type kind discriminator.
+ */
+export enum TypeKindTag {
+  Type,      // Alias to another type
+  List,      // List of elements
+  Option,    // Optional value
+  Result,    // Result with ok/err
+  Record,    // Record with fields
+  Tuple,     // Tuple of types
+  Flags,     // Bitset flags
+  Variant,   // Variant with cases
+  Enum,      // Enum (variant without payloads)
+  Resource,  // Resource type
+  Own,       // Own handle
+  Borrow,    // Borrow handle
+  Future,    // Future (async)
+  Stream,    // Stream (async)
+}
+
+/**
+ * The kind of a type definition.
+ *
+ * Uses a tagged class approach since Zena doesn't have sum types.
+ */
+export class TypeKind {
+  tag: TypeKindTag;
+
+  // For Type, List, Option, Future, Stream
+  innerType: TypeRef | null;
+
+  // For Result
+  okType: TypeRef | null;
+  errType: TypeRef | null;
+
+  // For Record
+  fields: Array<RecordField> | null;
+
+  // For Tuple
+  types: Array<TypeRef> | null;
+
+  // For Flags
+  flags: Array<Flag> | null;
+
+  // For Variant
+  cases: Array<VariantCase> | null;
+
+  // For Enum
+  enumCases: Array<EnumCase> | null;
+
+  // For Own, Borrow
+  resourceIndex: i32;
+
+  #new(tag: TypeKindTag) {
+    this.tag = tag;
+    this.innerType = null;
+    this.okType = null;
+    this.errType = null;
+    this.fields = null;
+    this.types = null;
+    this.flags = null;
+    this.cases = null;
+    this.enumCases = null;
+    this.resourceIndex = -1;
+  }
+
+  /**
+   * Create a type alias kind.
+   */
+  static typeAlias(t: TypeRef): TypeKind {
+    let k = new TypeKind(TypeKindTag.Type);
+    k.innerType = t;
+    return k;
+  }
+
+  /**
+   * Create a list kind.
+   */
+  static list(element: TypeRef): TypeKind {
+    let k = new TypeKind(TypeKindTag.List);
+    k.innerType = element;
+    return k;
+  }
+
+  /**
+   * Create an option kind.
+   */
+  static option(inner: TypeRef): TypeKind {
+    let k = new TypeKind(TypeKindTag.Option);
+    k.innerType = inner;
+    return k;
+  }
+
+  /**
+   * Create a result kind.
+   */
+  static result(ok: TypeRef | null, err: TypeRef | null): TypeKind {
+    let k = new TypeKind(TypeKindTag.Result);
+    k.okType = ok;
+    k.errType = err;
+    return k;
+  }
+
+  /**
+   * Create a record kind.
+   */
+  static record(fields: Array<RecordField>): TypeKind {
+    let k = new TypeKind(TypeKindTag.Record);
+    k.fields = fields;
+    return k;
+  }
+
+  /**
+   * Create a tuple kind.
+   */
+  static tuple(types: Array<TypeRef>): TypeKind {
+    let k = new TypeKind(TypeKindTag.Tuple);
+    k.types = types;
+    return k;
+  }
+
+  /**
+   * Create a flags kind.
+   */
+  static makeFlags(flagsArr: Array<Flag>): TypeKind {
+    let k = new TypeKind(TypeKindTag.Flags);
+    k.flags = flagsArr;
+    return k;
+  }
+
+  /**
+   * Create a variant kind.
+   */
+  static variant(cases: Array<VariantCase>): TypeKind {
+    let k = new TypeKind(TypeKindTag.Variant);
+    k.cases = cases;
+    return k;
+  }
+
+  /**
+   * Create an enum kind.
+   */
+  static enumKind(cases: Array<EnumCase>): TypeKind {
+    let k = new TypeKind(TypeKindTag.Enum);
+    k.enumCases = cases;
+    return k;
+  }
+
+  /**
+   * Create a resource kind.
+   */
+  static resource(): TypeKind {
+    return new TypeKind(TypeKindTag.Resource);
+  }
+
+  /**
+   * Create an own handle kind.
+   */
+  static own(resourceIdx: i32): TypeKind {
+    let k = new TypeKind(TypeKindTag.Own);
+    k.resourceIndex = resourceIdx;
+    return k;
+  }
+
+  /**
+   * Create a borrow handle kind.
+   */
+  static borrow(resourceIdx: i32): TypeKind {
+    let k = new TypeKind(TypeKindTag.Borrow);
+    k.resourceIndex = resourceIdx;
+    return k;
+  }
+
+  /**
+   * Create a future kind.
+   */
+  static future(inner: TypeRef | null): TypeKind {
+    let k = new TypeKind(TypeKindTag.Future);
+    k.innerType = inner;
+    return k;
+  }
+
+  /**
+   * Create a stream kind.
+   */
+  static stream(inner: TypeRef | null): TypeKind {
+    let k = new TypeKind(TypeKindTag.Stream);
+    k.innerType = inner;
+    return k;
+  }
+}
+
+/**
+ * Type owner tag.
+ */
+export enum TypeOwnerTag {
+  Interface,
+  World,
+  None,
+}
+
+/**
+ * Owner of a type - either an interface or a world.
+ */
+export class TypeOwner {
+  tag: TypeOwnerTag;
+  index: i32;  // Valid when tag is Interface or World
+
+  #new(tag: TypeOwnerTag) {
+    this.tag = tag;
+    this.index = -1;
+  }
+
+  static iface(idx: i32): TypeOwner {
+    let o = new TypeOwner(TypeOwnerTag.Interface);
+    o.index = idx;
+    return o;
+  }
+
+  static world(idx: i32): TypeOwner {
+    let o = new TypeOwner(TypeOwnerTag.World);
+    o.index = idx;
+    return o;
+  }
+
+  static none(): TypeOwner {
+    return new TypeOwner(TypeOwnerTag.None);
+  }
+}
+
+/**
+ * Stability tag.
+ */
+export enum StabilityTag {
+  Stable,
+  Unstable,
+}
+
+/**
+ * Stability annotation for gated features.
+ */
+export class Stability {
+  tag: StabilityTag;
+  // For Stable: version string
+  version: string | null;
+  // For both: feature name (optional for stable)
+  feature: string | null;
+
+  #new(tag: StabilityTag) {
+    this.tag = tag;
+    this.version = null;
+    this.feature = null;
+  }
+
+  static stable(version: string, feature: string | null): Stability {
+    let s = new Stability(StabilityTag.Stable);
+    s.version = version;
+    s.feature = feature;
+    return s;
+  }
+
+  static unstable(feature: string): Stability {
+    let s = new Stability(StabilityTag.Unstable);
+    s.feature = feature;
+    return s;
+  }
+}
+
+/**
+ * A type definition in the resolved WIT document.
+ */
+export class TypeDef {
+  name: string | null;  // null for anonymous types
+  kind: TypeKind;
+  owner: TypeOwner;
+  docs: string | null;
+  stability: Stability | null;
+
+  #new(name: string | null, kind: TypeKind, owner: TypeOwner) {
+    this.name = name;
+    this.kind = kind;
+    this.owner = owner;
+    this.docs = null;
+    this.stability = null;
+  }
+}
+
+// ============================================================================
+// Functions
+// ============================================================================
+
+/**
+ * A function parameter.
+ */
+export class Param {
+  name: string;
+  type: TypeRef;
+
+  #new(name: string, type: TypeRef) {
+    this.name = name;
+    this.type = type;
+  }
+}
+
+/**
+ * Function kind tag.
+ */
+export enum FunctionKindTag {
+  Freestanding,
+  Method,
+  Static,
+  Constructor,
+}
+
+/**
+ * The kind of function.
+ */
+export class FunctionKind {
+  tag: FunctionKindTag;
+  resourceIndex: i32;  // Valid for Method, Static, Constructor
+
+  #new(tag: FunctionKindTag) {
+    this.tag = tag;
+    this.resourceIndex = -1;
+  }
+
+  static freestanding(): FunctionKind {
+    return new FunctionKind(FunctionKindTag.Freestanding);
+  }
+
+  static method(resourceIdx: i32): FunctionKind {
+    let k = new FunctionKind(FunctionKindTag.Method);
+    k.resourceIndex = resourceIdx;
+    return k;
+  }
+
+  static staticFn(resourceIdx: i32): FunctionKind {
+    let k = new FunctionKind(FunctionKindTag.Static);
+    k.resourceIndex = resourceIdx;
+    return k;
+  }
+
+  static ctor(resourceIdx: i32): FunctionKind {
+    let k = new FunctionKind(FunctionKindTag.Constructor);
+    k.resourceIndex = resourceIdx;
+    return k;
+  }
+}
+
+/**
+ * A function definition.
+ */
+export class Function {
+  name: string;
+  kind: FunctionKind;
+  params: Array<Param>;
+  result: TypeRef | null;  // null for no return value
+  docs: string | null;
+  stability: Stability | null;
+
+  #new(name: string, kind: FunctionKind, params: Array<Param>) {
+    this.name = name;
+    this.kind = kind;
+    this.params = params;
+    this.result = null;
+    this.docs = null;
+    this.stability = null;
+  }
+}
+
+// ============================================================================
+// Interfaces
+// ============================================================================
+
+/**
+ * An interface definition.
+ */
+export class Interface {
+  name: string | null;  // null for inline/anonymous interfaces
+  types: Map<string, Index>;  // name -> type index
+  functions: Map<string, Function>;
+  package: i32;  // package index, -1 if not in a package
+  docs: string | null;
+  stability: Stability | null;
+
+  #new(name: string | null) {
+    this.name = name;
+    this.types = new Map<string, Index>();
+    this.functions = new Map<string, Function>();
+    this.package = -1;
+    this.docs = null;
+    this.stability = null;
+  }
+}
+
+// ============================================================================
+// Worlds
+// ============================================================================
+
+/**
+ * World item tag.
+ */
+export enum WorldItemTag {
+  Interface,  // Import/export an interface
+  Function,   // Import/export a function
+  Type,       // Import/export a type
+}
+
+/**
+ * An item that can be imported or exported in a world.
+ */
+export class WorldItem {
+  tag: WorldItemTag;
+  interfaceId: i32;      // For Interface tag
+  func: Function | null;   // For Function tag
+  typeIndex: i32;        // For Type tag
+
+  #new(tag: WorldItemTag) {
+    this.tag = tag;
+    this.interfaceId = -1;
+    this.func = null;
+    this.typeIndex = -1;
+  }
+
+  static iface(id: i32): WorldItem {
+    let item = new WorldItem(WorldItemTag.Interface);
+    item.interfaceId = id;
+    return item;
+  }
+
+  static fn(f: Function): WorldItem {
+    let item = new WorldItem(WorldItemTag.Function);
+    item.func = f;
+    return item;
+  }
+
+  static typeItem(idx: i32): WorldItem {
+    let item = new WorldItem(WorldItemTag.Type);
+    item.typeIndex = idx;
+    return item;
+  }
+}
+
+/**
+ * A world definition.
+ */
+export class World {
+  name: string;
+  imports: Map<string, WorldItem>;
+  exports: Map<string, WorldItem>;
+  package: i32;  // package index, -1 if not in a package
+  docs: string | null;
+  stability: Stability | null;
+
+  #new(name: string) {
+    this.name = name;
+    this.imports = new Map<string, WorldItem>();
+    this.exports = new Map<string, WorldItem>();
+    this.package = -1;
+    this.docs = null;
+    this.stability = null;
+  }
+}
+
+// ============================================================================
+// Packages
+// ============================================================================
+
+/**
+ * A package identifier (namespace:name@version).
+ */
+export class PackageId {
+  namespace: string;
+  name: string;
+  version: string | null;
+
+  #new(namespace: string, name: string) {
+    this.namespace = namespace;
+    this.name = name;
+    this.version = null;
+  }
+}
+
+/**
+ * A package definition.
+ */
+export class Package {
+  id: PackageId;
+  interfaces: Map<string, Index>;  // name -> interface index
+  worlds: Map<string, Index>;      // name -> world index
+  docs: string | null;
+
+  #new(id: PackageId) {
+    this.id = id;
+    this.interfaces = new Map<string, Index>();
+    this.worlds = new Map<string, Index>();
+    this.docs = null;
+  }
+}
+
+// ============================================================================
+// Resolved Document
+// ============================================================================
+
+/**
+ * A fully resolved WIT document.
+ *
+ * This is the output of parsing and resolution. It contains all types,
+ * interfaces, worlds, and packages with all references resolved to indices.
+ */
+export class Resolve {
+  types: Array<TypeDef>;
+  interfaces: Array<Interface>;
+  worlds: Array<World>;
+  packages: Array<Package>;
+
+  #new() {
+    this.types = new Array<TypeDef>();
+    this.interfaces = new Array<Interface>();
+    this.worlds = new Array<World>();
+    this.packages = new Array<Package>();
+  }
+
+  /**
+   * Add a type and return its index.
+   */
+  addType(typeDef: TypeDef): i32 {
+    let index = this.types.length as i32;
+    this.types.push(typeDef);
+    return index;
+  }
+
+  /**
+   * Add an interface and return its index.
+   */
+  addInterface(iface: Interface): i32 {
+    let index = this.interfaces.length as i32;
+    this.interfaces.push(iface);
+    return index;
+  }
+
+  /**
+   * Add a world and return its index.
+   */
+  addWorld(world: World): i32 {
+    let index = this.worlds.length as i32;
+    this.worlds.push(world);
+    return index;
+  }
+
+  /**
+   * Add a package and return its index.
+   */
+  addPackage(pkg: Package): i32 {
+    let index = this.packages.length as i32;
+    this.packages.push(pkg);
+    return index;
+  }
+}
+
+// Note: All classes and enums above should have 'export' keyword added
+// to make them accessible from other modules.
