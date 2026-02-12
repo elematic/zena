@@ -470,14 +470,18 @@ The `.wit.json` files use a specific schema. Example for a simple world:
 
 ## TODO List
 
-### Phase 1a: Test Inventory
+### Phase 1a: Test Inventory ✅ COMPLETE
 
-- [ ] Generate complete list of test files from wasm-tools `tests/ui/`
-- [ ] Categorize tests by type (basic types, records, functions, resources,
+- [x] Generate complete list of test files from wasm-tools `tests/ui/`
+- [x] Categorize tests by type (basic types, records, functions, resources,
   etc.)
-- [ ] Identify which tests have `.wit.json` vs `.wit.stderr` expected outputs
-- [ ] Document test count and save inventory to
+- [x] Identify which tests have `.wit.json` vs `.wit.result` expected outputs
+- [x] Document test count and save inventory to
   `tests/wit-parser/TEST_INVENTORY.md`
+
+**Results**: 201 total tests identified (85 success tests, 116 error tests)
+across 10 categories. See [TEST_INVENTORY.md](../../tests/wit-parser/TEST_INVENTORY.md)
+for full details.
 
 ### Phase 1b: Single Test + Runner (validate format)
 
