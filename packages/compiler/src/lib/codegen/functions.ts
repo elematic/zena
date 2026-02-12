@@ -192,8 +192,19 @@ export function instantiateGenericFunction(
   const funcDecl = ctx.genericFunctions.get(name);
   if (!funcDecl) throw new Error(`Generic function ${name} not found`);
 
+  // Resolve type args through the enclosing context's type arguments. This
+  // handles the case where a generic function is called from within a generic
+  // class method, e.g., calling wrap<U>(x) from Container<U>.getWrapped() where
+  // U needs to be resolved to the concrete type argument of Container.
+  let resolvedTypeArgs = typeArgs;
+  if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+    resolvedTypeArgs = typeArgs.map((t) =>
+      ctx.checkerContext!.substituteTypeParams(t, ctx.currentTypeArguments),
+    );
+  }
+
   // Use checker-based type key for specialization
-  const key = `${name}<${typeArgs
+  const key = `${name}<${resolvedTypeArgs
     .map((t) => getTypeKeyForSpecialization(t, ctx))
     .join(',')}>`;
 
@@ -205,13 +216,13 @@ export function instantiateGenericFunction(
   // Build type map directly from Type[] (checker-based)
   const typeMap = new Map<string, Type>();
   if (funcDecl.typeParameters) {
-    if (funcDecl.typeParameters.length !== typeArgs.length) {
+    if (funcDecl.typeParameters.length !== resolvedTypeArgs.length) {
       throw new Error(
-        `Expected ${funcDecl.typeParameters.length} type arguments, got ${typeArgs.length}`,
+        `Expected ${funcDecl.typeParameters.length} type arguments, got ${resolvedTypeArgs.length}`,
       );
     }
     for (let i = 0; i < funcDecl.typeParameters.length; i++) {
-      typeMap.set(funcDecl.typeParameters[i].name, typeArgs[i]);
+      typeMap.set(funcDecl.typeParameters[i].name, resolvedTypeArgs[i]);
     }
   }
 

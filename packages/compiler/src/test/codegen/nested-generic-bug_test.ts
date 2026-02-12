@@ -3,15 +3,16 @@ import {compileAndRun} from './utils.js';
 import * as assert from 'node:assert';
 
 suite('Nested Generic Type Resolution Bug', () => {
-  // TODO: This test documents a codegen bug where calling a generic function
-  // from within a generic class method fails when the inner function's type
-  // parameter is resolved to the outer class's type parameter.
+  // This test verifies that calling a generic function from within a generic
+  // class method works correctly. The inner function's type parameter gets
+  // resolved through the outer class's type arguments.
   //
-  // Error: "Unresolved type parameter: T, currentTypeArguments keys: [U]"
+  // Previously this failed with:
+  // "Unresolved type parameter: U, currentTypeArguments keys: [T]"
   //
-  // The bug occurs because the inner function's type context doesn't have
-  // visibility into the outer class's type arguments.
-  test.todo('generic function called from generic class method', async () => {
+  // The fix resolves type arguments through the enclosing context before
+  // instantiating the generic function.
+  test('generic function called from generic class method', async () => {
     const source = `
 // A generic wrapper class (like Option's Some<T>)
 class Wrapper<T> {
@@ -33,7 +34,7 @@ class Container<U> {
   }
   
   // This method calls wrap<U>(this.item), which should resolve
-  // the inner T to the outer U, but codegen fails here.
+  // the inner T to the outer U.
   getWrapped(): Wrapper<U> {
     return wrap(this.item);
   }

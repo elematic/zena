@@ -16,16 +16,17 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+(none currently)
+
+## Fixed Bugs
+
 ### Nested generic type parameter resolution in codegen
 
 - **Found**: 2025-01-XX
+- **Fixed**: 2026-02-12
 - **Severity**: medium
-- **Workaround**: Avoid calling generic functions from within generic class methods where the inner generic uses the outer type parameter
-- **Details**: When a generic class method calls a generic function (like `some<T>(value)`) where `T` is resolved to the outer class's type parameter `V`, the codegen fails with "Unresolved type parameter: V, currentTypeArguments keys: [T]". This happens because the inner function's type context doesn't have visibility into the outer class's type arguments.
-- **Example**: `Map<K,V>.find()` calling `some<V>(entry.value)` fails at codegen.
-- **Impact**: The `Option<T>` pattern with `find()` methods cannot currently be implemented. Use multi-return `(T, boolean)` pattern as alternative.
-
-## Fixed Bugs
+- **Fix**: Resolve type arguments through the enclosing context's type arguments before instantiating a generic function. This handles the case where a generic function is called from within a generic class method.
+- **Details**: When a generic class method calls a generic function (like `some<T>(value)`) where `T` is resolved to the outer class's type parameter `V`, the codegen failed with "Unresolved type parameter: V, currentTypeArguments keys: [T]". This happened because the inner function's type context didn't have visibility into the outer class's type arguments.
 
 ### Nullable type in exported type alias causes WASM validation error
 
