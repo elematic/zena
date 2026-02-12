@@ -1,0 +1,350 @@
+/**
+ * WIT Lexer
+ *
+ * Tokenizes WIT (WebAssembly Interface Types) source text.
+ * Based on the canonical implementation in wasm-tools:
+ * https://github.com/bytecodealliance/wasm-tools/blob/main/crates/wit-parser/src/ast/lex.rs
+ */
+
+import {String} from 'zena:string';
+import {StringBuilder} from 'zena:string-builder';
+import {TokenType, Span, Token, keywordToToken} from './token.zena';
+
+// ============================================================================
+// Character Classification
+// ============================================================================
+
+/** Check if a byte is ASCII whitespace (space, tab, newline, carriage return). */
+let isWhitespace = (b: i32): boolean => {
+  return b == 32 || b == 9 || b == 10 || b == 13;
+};
+
+/** Check if a byte is an ASCII digit (0-9). */
+let isDigit = (b: i32): boolean => {
+  return b >= 48 && b <= 57;  // '0' to '9'
+};
+
+/** Check if a byte is an ASCII hex digit (0-9, a-f, A-F). */
+let isHexDigit = (b: i32): boolean => {
+  return isDigit(b) || (b >= 65 && b <= 70) || (b >= 97 && b <= 102);
+};
+
+/** Check if a byte is a valid start of an identifier (a-z, A-Z). */
+let isIdStart = (b: i32): boolean => {
+  return (b >= 65 && b <= 90) || (b >= 97 && b <= 122);  // A-Z or a-z
+};
+
+/** Check if a byte is valid within an identifier (a-z, A-Z, 0-9, -). */
+let isIdContinue = (b: i32): boolean => {
+  return isIdStart(b) || isDigit(b) || b == 45;  // also '-' (kebab-case)
+};
+
+// ============================================================================
+// Lexer Error
+// ============================================================================
+
+/**
+ * Error produced during lexing.
+ */
+export class LexError extends Error {
+  span: Span;
+
+  #new(message: String, span: Span) {
+    super(message);
+    this.span = span;
+  }
+}
+
+// ============================================================================
+// Lexer
+// ============================================================================
+
+/**
+ * A lexer (tokenizer) for WIT source text.
+ *
+ * Usage:
+ * ```zena
+ * let lexer = new Lexer(source);
+ * while (true) {
+ *   let token = lexer.next();
+ *   if (token.type == TokenType.Eof) { break; }
+ *   // process token
+ * }
+ * ```
+ */
+export class Lexer {
+  /** The source text being lexed. */
+  #source: String;
+  
+  /** Current byte position in the source. */
+  #pos: i32;
+
+  /**
+   * Create a new lexer for the given source text.
+   */
+  #new(source: String) {
+    this.#source = source;
+    this.#pos = 0;
+  }
+
+  // --------------------------------------------------------------------------
+  // Core Lexer Methods
+  // --------------------------------------------------------------------------
+
+  /**
+   * Get the next token from the source.
+   */
+  next(): Token {
+    // Skip whitespace and comments
+    this.#skipTrivia();
+
+    let start = this.#pos;
+
+    // Check for end of input
+    if (this.#isEof()) {
+      return new Token(TokenType.Eof, new Span(start, start));
+    }
+
+    let b = this.#peek();
+
+    // Single-character tokens
+    if (b == 61) { return this.#single(TokenType.Equals); }      // =
+    if (b == 44) { return this.#single(TokenType.Comma); }       // ,
+    if (b == 58) { return this.#single(TokenType.Colon); }       // :
+    if (b == 46) { return this.#single(TokenType.Period); }      // .
+    if (b == 59) { return this.#single(TokenType.Semicolon); }   // ;
+    if (b == 40) { return this.#single(TokenType.LeftParen); }   // (
+    if (b == 41) { return this.#single(TokenType.RightParen); }  // )
+    if (b == 123) { return this.#single(TokenType.LeftBrace); }  // {
+    if (b == 125) { return this.#single(TokenType.RightBrace); } // }
+    if (b == 60) { return this.#single(TokenType.LessThan); }    // <
+    if (b == 62) { return this.#single(TokenType.GreaterThan); } // >
+    if (b == 42) { return this.#single(TokenType.Star); }        // *
+    if (b == 64) { return this.#single(TokenType.At); }          // @
+    if (b == 43) { return this.#single(TokenType.Plus); }        // +
+    if (b == 95) { return this.#single(TokenType.Underscore); }  // _
+
+    // -> (right arrow)
+    if (b == 45) {
+      this.#advance();
+      if (!this.#isEof() && this.#peek() == 62) {  // >
+        this.#advance();
+        return new Token(TokenType.RArrow, new Span(start, this.#pos));
+      }
+      return new Token(TokenType.Minus, new Span(start, this.#pos));
+    }
+
+    // / or // comment (already handled in skipTrivia, but handle lone /)
+    if (b == 47) {
+      return this.#single(TokenType.Slash);
+    }
+
+    // %identifier (explicit identifier)
+    if (b == 37) {  // %
+      this.#advance();
+      return this.#lexExplicitId(start);
+    }
+
+    // Integer literals
+    if (isDigit(b)) {
+      return this.#lexInteger(start);
+    }
+
+    // Identifiers and keywords
+    if (isIdStart(b)) {
+      return this.#lexIdOrKeyword(start);
+    }
+
+    // Unknown character
+    this.#advance();
+    throw new LexError("unexpected character", new Span(start, this.#pos));
+  }
+
+  /**
+   * Peek at the current token without consuming it.
+   * Note: This re-lexes; for efficiency, callers should cache the result.
+   */
+  peek(): Token {
+    let savedPos = this.#pos;
+    let token = this.next();
+    this.#pos = savedPos;
+    return token;
+  }
+
+  /**
+   * Expect the next token to be of a specific type.
+   * Throws LexError if it doesn't match.
+   */
+  expect(expected: TokenType): Token {
+    let token = this.next();
+    if (token.type != expected) {
+      throw new LexError(
+        "unexpected token",
+        token.span
+      );
+    }
+    return token;
+  }
+
+  /**
+   * Get the source text for a span.
+   */
+  getSpanText(span: Span): String {
+    return this.#source.sliceBytes(span.start, span.end);
+  }
+
+  // --------------------------------------------------------------------------
+  // Private Helpers
+  // --------------------------------------------------------------------------
+
+  /** Check if we're at end of file. */
+  #isEof(): boolean {
+    return this.#pos >= this.#source.length;
+  }
+
+  /** Peek at current byte without advancing. */
+  #peek(): i32 {
+    return this.#source.getByteAt(this.#pos);
+  }
+
+  /** Peek at byte at given offset from current position. */
+  #peekAt(offset: i32): i32 {
+    let idx = this.#pos + offset;
+    if (idx >= this.#source.length) {
+      return 0;  // EOF
+    }
+    return this.#source.getByteAt(idx);
+  }
+
+  /** Advance position by one byte. */
+  #advance(): void {
+    this.#pos = this.#pos + 1;
+  }
+
+  /** Create a single-character token. */
+  #single(type: TokenType): Token {
+    let start = this.#pos;
+    this.#advance();
+    return new Token(type, new Span(start, this.#pos));
+  }
+
+  /** Skip whitespace and comments. */
+  #skipTrivia(): void {
+    while (!this.#isEof()) {
+      let b = this.#peek();
+
+      // Whitespace
+      if (isWhitespace(b)) {
+        this.#advance();
+        continue;
+      }
+
+      // Single-line comment: // ...
+      if (b == 47 && this.#peekAt(1) == 47) {
+        this.#skipLineComment();
+        continue;
+      }
+
+      // Block comment: /* ... */
+      if (b == 47 && this.#peekAt(1) == 42) {
+        this.#skipBlockComment();
+        continue;
+      }
+
+      // Not trivia
+      break;
+    }
+  }
+
+  /** Skip a single-line comment (// ...). */
+  #skipLineComment(): void {
+    // Skip the //
+    this.#advance();
+    this.#advance();
+
+    // Skip until newline or EOF
+    while (!this.#isEof()) {
+      let b = this.#peek();
+      this.#advance();
+      if (b == 10) {  // \n
+        break;
+      }
+    }
+  }
+
+  /** Skip a block comment. */
+  #skipBlockComment(): void {
+    let start = this.#pos;
+    
+    // Skip the opening
+    this.#advance();
+    this.#advance();
+
+    // Skip until closing or EOF
+    while (!this.#isEof()) {
+      if (this.#peek() == 42 && this.#peekAt(1) == 47) {  // star-slash
+        this.#advance();
+        this.#advance();
+        return;
+      }
+      this.#advance();
+    }
+
+    // Unterminated block comment
+    throw new LexError("unterminated block comment", new Span(start, this.#pos));
+  }
+
+  /** Lex an identifier or keyword. */
+  #lexIdOrKeyword(start: i32): Token {
+    // Consume identifier characters
+    while (!this.#isEof() && isIdContinue(this.#peek())) {
+      this.#advance();
+    }
+
+    let span = new Span(start, this.#pos);
+    let text = this.getSpanText(span);
+
+    // Check if it's a keyword
+    let tokenType = keywordToToken(text);
+    return new Token(tokenType, span);
+  }
+
+  /** Lex an explicit identifier (%foo). */
+  #lexExplicitId(start: i32): Token {
+    // We've already consumed the %
+    // Now consume the identifier
+    if (this.#isEof() || !isIdStart(this.#peek())) {
+      throw new LexError("expected identifier after '%'", new Span(start, this.#pos));
+    }
+
+    while (!this.#isEof() && isIdContinue(this.#peek())) {
+      this.#advance();
+    }
+
+    return new Token(TokenType.ExplicitId, new Span(start, this.#pos));
+  }
+
+  /** Lex an integer literal. */
+  #lexInteger(start: i32): Token {
+    // Check for hex literal (0x...)
+    if (this.#peek() == 48 && this.#peekAt(1) == 120) {  // 0x
+      this.#advance();  // 0
+      this.#advance();  // x
+      
+      if (this.#isEof() || !isHexDigit(this.#peek())) {
+        throw new LexError("expected hex digit after '0x'", new Span(start, this.#pos));
+      }
+      
+      while (!this.#isEof() && isHexDigit(this.#peek())) {
+        this.#advance();
+      }
+    } else {
+      // Decimal literal
+      while (!this.#isEof() && isDigit(this.#peek())) {
+        this.#advance();
+      }
+    }
+
+    return new Token(TokenType.Integer, new Span(start, this.#pos));
+  }
+}
