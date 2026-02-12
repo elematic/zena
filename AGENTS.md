@@ -80,10 +80,9 @@ for (var i = 0; i < 10; i = i + 1) {
 
 // For-in loops
 for (let item in collection) {
-  // ... 
+  // ...
 }
 ```
-
 
 ### Multiple return values
 
@@ -110,17 +109,20 @@ The official language reference is maintained in `docs/language-reference.md`.
 ## Project Structure & Environment
 
 This project uses two package managers:
+
 - **npm**: For Node.js packages and as a script runner (via Wireit)
 - **Nix**: For non-Node dependencies (wasmtime, wasm-tools, etc.)
 
 We use **direnv** with **Nix flakes** for reproducible tooling. When you enter
 the project directory, direnv automatically activates the environment with:
+
 - Node.js v25 (required for WASM exnref support)
 - wasmtime (for WASI testing)
 - wasm-tools (for WASM debugging)
 - `WIREIT_LOGGER=simple` (for readable build output)
 
 **You do NOT need to**:
+
 - Prefix commands with `nix develop -c`
 - Set `WIREIT_LOGGER=simple` manually
 - Run `direnv allow` after the first time
@@ -137,6 +139,7 @@ Just run commands directly: `npm test`, `wasmtime run ...`, etc.
 ### Scripts
 
 All scripts run through npm (using Wireit for caching), even for non-Node tasks:
+
 - `npm test`: Run tests across the workspace
 - `npm run build`: Build packages
 
@@ -147,7 +150,7 @@ All scripts run through npm (using Wireit for caching), even for non-Node tasks:
   - To run a specific test file, you MUST use the package workspace flag and
     pass the file path after `--`.
   - Example: `npm test -w @zena-lang/compiler -- test/checker/checker_test.js`
-  - Do NOT try to pass arguments to the root `npm test` command (e.g. 
+  - Do NOT try to pass arguments to the root `npm test` command (e.g.
     `npm test packages/compiler/...`), as they are ignored.
 - **NEVER** use `npm test packages/compiler` or
   `npm test --some/path/some_test.ts`.
@@ -157,6 +160,7 @@ All scripts run through npm (using Wireit for caching), even for non-Node tasks:
 ### Wireit Caching (IMPORTANT!)
 
 **Interpreting Wireit Output**:
+
 - `✅ [test] Executed successfully` = Tests ran and passed
 - `✅ [test] Already fresh` = Tests already passed, nothing changed since last
   run - **this is success, move on**
@@ -166,6 +170,7 @@ When you see `✅ Already fresh`, the task succeeded. Do not try to force a re-r
 Wireit caches script results and only re-runs scripts when inputs change.
 
 **TRUST THE CACHE**:
+
 - If a test shows as cached/skipped but passed, **it is still passing**. The
   cache is working correctly.
 - If a build shows as cached, **the outputs are still valid**. No action needed.
@@ -177,12 +182,14 @@ Wireit caches script results and only re-runs scripts when inputs change.
   intervention.
 
 **Do NOT**:
+
 - Run `rm -rf .wireit` or delete cache directories
 - Delete `lib/` or other build output directories
 - Add `--no-cache` flags or similar
 - Run builds multiple times "just to be sure"
 
 **Do**:
+
 - Trust that cached results are correct
 - If tests should have run but didn't, check `package.json` wireit config for
   missing inputs or dependencies
@@ -222,7 +229,7 @@ main main.wasm
 - Use single-quotes.
 - Use 2 spaces for indents.
 - No spaces around object literals and imports (e.g., `import {suite, test}
-  from 'node:test';`).
+from 'node:test';`).
 
 ### Naming
 

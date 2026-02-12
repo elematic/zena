@@ -28,7 +28,11 @@ import {
   type UnionType,
 } from '../types.js';
 import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
-import {decodeTypeIndex, getSymbolMemberName, mapCheckerTypeToWasmType} from './classes.js';
+import {
+  decodeTypeIndex,
+  getSymbolMemberName,
+  mapCheckerTypeToWasmType,
+} from './classes.js';
 import type {CodegenContext} from './context.js';
 import type {ClassInfo} from './types.js';
 import {

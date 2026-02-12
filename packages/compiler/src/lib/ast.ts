@@ -575,7 +575,12 @@ export interface InterfaceDeclaration extends Node {
   name: Identifier;
   typeParameters?: TypeParameter[];
   extends?: TypeAnnotation[];
-  body: (FieldDefinition | MethodSignature | AccessorSignature | SymbolDeclaration)[];
+  body: (
+    | FieldDefinition
+    | MethodSignature
+    | AccessorSignature
+    | SymbolDeclaration
+  )[];
   exported: boolean;
   exportName?: string;
 }
@@ -747,7 +752,7 @@ export interface ForInStatement extends Node {
   body: Statement;
   /** Inferred element type, populated by the checker */
   elementType?: Type;
-  
+
   /**
    * The Iterator<T> type returned by .:Iterator.iterator(), populated by the
    * checker

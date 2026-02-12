@@ -293,7 +293,7 @@ export function defineInterfaceMethods(
         continue;
       }
       const memberName = getMemberName(member.name);
-      
+
       // Look up method type - check symbolMethods for symbol-keyed methods
       let methodType: FunctionType | undefined;
       if (member.name.type === NodeType.SymbolPropertyName) {
@@ -552,10 +552,13 @@ export function generateTrampoline(
         }
       }
     }
-    
+
     // Also search in symbolMethods
     if (!classMethod && classInfo.symbolMethods) {
-      for (const [mangledName, methodInfo] of classInfo.symbolMethods.entries()) {
+      for (const [
+        mangledName,
+        methodInfo,
+      ] of classInfo.symbolMethods.entries()) {
         if (
           mangledName.startsWith(methodName) &&
           (mangledName === methodName || mangledName[methodName.length] === '$')

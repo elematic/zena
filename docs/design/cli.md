@@ -23,15 +23,15 @@ though the current implementation uses WASI Preview 1. This provides:
 
 ### Interface Mapping
 
-| Zena API              | WASI P2 Interface                        | WASI P1 Implementation          |
-| --------------------- | ---------------------------------------- | ------------------------------- |
-| `getArguments()`      | `wasi:cli/environment.get-arguments`     | `args_sizes_get`, `args_get`    |
-| `getEnvironment()`    | `wasi:cli/environment.get-environment`   | `environ_sizes_get`, `environ_get` |
-| `getEnv(name)`        | (convenience wrapper)                    | (uses `getEnvironment`)         |
-| `initialCwd()`        | `wasi:cli/environment.initial-cwd`       | `getEnv("PWD")` fallback        |
-| `exit(code)`          | `wasi:cli/exit.exit-with-code`           | `proc_exit`                     |
-| `exitSuccess()`       | `wasi:cli/exit.exit` (Ok)                | `proc_exit(0)`                  |
-| `exitFailure()`       | `wasi:cli/exit.exit` (Err)               | `proc_exit(1)`                  |
+| Zena API           | WASI P2 Interface                      | WASI P1 Implementation             |
+| ------------------ | -------------------------------------- | ---------------------------------- |
+| `getArguments()`   | `wasi:cli/environment.get-arguments`   | `args_sizes_get`, `args_get`       |
+| `getEnvironment()` | `wasi:cli/environment.get-environment` | `environ_sizes_get`, `environ_get` |
+| `getEnv(name)`     | (convenience wrapper)                  | (uses `getEnvironment`)            |
+| `initialCwd()`     | `wasi:cli/environment.initial-cwd`     | `getEnv("PWD")` fallback           |
+| `exit(code)`       | `wasi:cli/exit.exit-with-code`         | `proc_exit`                        |
+| `exitSuccess()`    | `wasi:cli/exit.exit` (Ok)              | `proc_exit(0)`                     |
+| `exitFailure()`    | `wasi:cli/exit.exit` (Err)             | `proc_exit(1)`                     |
 
 ## API Reference
 

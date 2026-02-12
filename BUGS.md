@@ -21,6 +21,7 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Fixed Bugs
 
 ### Nullable type in exported type alias causes WASM validation error
+
 - **Found**: 2026-02-11
 - **Fixed**: 2026-02-11
 - **Fix**: Widen record/tuple literals to match function return types, not just variable declarations

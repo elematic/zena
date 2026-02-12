@@ -2795,7 +2795,12 @@ export class Parser {
 
     this.#consume(TokenType.LBrace, "Expected '{' before interface body.");
 
-    const body: (FieldDefinition | MethodSignature | AccessorSignature | SymbolDeclaration)[] = [];
+    const body: (
+      | FieldDefinition
+      | MethodSignature
+      | AccessorSignature
+      | SymbolDeclaration
+    )[] = [];
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       body.push(this.#parseInterfaceMember());
     }
@@ -2823,7 +2828,10 @@ export class Parser {
 
     // Handle static symbol declarations: static symbol iterator;
     // Only consume 'static' if followed by 'symbol' - otherwise 'static' is a field name
-    if (this.#check(TokenType.Static) && this.#peek(1).type === TokenType.Symbol) {
+    if (
+      this.#check(TokenType.Static) &&
+      this.#peek(1).type === TokenType.Symbol
+    ) {
       this.#advance(); // consume 'static'
       this.#advance(); // consume 'symbol'
       const name = this.#parseIdentifier();

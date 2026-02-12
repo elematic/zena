@@ -81,7 +81,7 @@ safety.
 - **`f32`**: 32-bit floating-point number. This is the default type for
   floating-point literals.
 - **`f64`**: 64-bit floating-point number. Constructed via casting (e.g., `1.0
-  as f64`).
+as f64`).
 - **`boolean`**: Boolean value (`true` or `false`).
 - **`string`**: UTF-8 string.
 - **`anyref`**: The top type for all reference types. It can hold any object,
@@ -321,7 +321,7 @@ Union types in Zena are restricted to **Reference Types**. You cannot create a
 union containing a value primitive (`i32`, `f32`, `boolean`).
 
 - **Valid**: `string | null`, `MyClass | MyInterface`, `array<i32> | null`. -
-**Invalid**: `i32 | null`, `boolean | string`.
+  **Invalid**: `i32 | null`, `boolean | string`.
 
 This restriction exists because value primitives in WASM have a different memory
 representation (stack/value) than reference types (heap/pointer). Mixing them in

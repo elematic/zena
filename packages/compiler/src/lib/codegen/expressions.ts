@@ -1821,11 +1821,11 @@ function generateSymbolMethodCall(
 
   let classType: ClassType | undefined;
   let classInfo: ClassInfo | undefined;
-  
+
   if (objectCheckerType.kind === TypeKind.Class) {
     classType = objectCheckerType as ClassType;
     classInfo = ctx.getClassInfo(classType);
-    
+
     // If not found and it's an extension class, try to instantiate it
     if (!classInfo && classType.isExtension) {
       classInfo = ensureClassInstantiated(ctx, classType);
