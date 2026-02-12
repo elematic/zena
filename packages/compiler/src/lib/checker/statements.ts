@@ -1093,7 +1093,9 @@ interface IterableInfo {
  * Get the iterator symbol from an Iterable interface.
  * The symbol is defined as `static symbol iterator` on Iterable.
  */
-function getIteratorSymbol(iterableInterface: InterfaceType): SymbolType | undefined {
+function getIteratorSymbol(
+  iterableInterface: InterfaceType,
+): SymbolType | undefined {
   // The iterator symbol is a static member of the Iterable interface
   const iteratorSymbol = iterableInterface.statics?.get('iterator');
   if (iteratorSymbol && iteratorSymbol.kind === TypeKind.Symbol) {
@@ -1101,7 +1103,8 @@ function getIteratorSymbol(iterableInterface: InterfaceType): SymbolType | undef
   }
   // Check genericSource if this is an instantiated interface
   if (iterableInterface.genericSource) {
-    const sourceSymbol = iterableInterface.genericSource.statics?.get('iterator');
+    const sourceSymbol =
+      iterableInterface.genericSource.statics?.get('iterator');
     if (sourceSymbol && sourceSymbol.kind === TypeKind.Symbol) {
       return sourceSymbol as SymbolType;
     }
@@ -1134,7 +1137,8 @@ function getIterableInfo(
       if (iteratorSymbol) {
         // Get the Iterator type from Iterable's :Iterable.iterator() symbol
         // method return type
-        const iteratorMethod = iterableInterface.symbolMethods?.get(iteratorSymbol);
+        const iteratorMethod =
+          iterableInterface.symbolMethods?.get(iteratorSymbol);
         if (iteratorMethod && iteratorMethod.returnType) {
           return {
             elementType,
@@ -1211,7 +1215,8 @@ function findIterableInImplements(
         if (iteratorSymbol) {
           // Get the Iterator type from Iterable's :Iterable.iterator() symbol
           // method
-          const iteratorMethod = iterableInterface.symbolMethods?.get(iteratorSymbol);
+          const iteratorMethod =
+            iterableInterface.symbolMethods?.get(iteratorSymbol);
           if (iteratorMethod && iteratorMethod.returnType) {
             return {
               elementType,
@@ -1366,6 +1371,29 @@ function checkVariableDeclaration(
         ctx.getLocation(decl.init.loc),
       );
     }
+
+    // When a record/tuple literal is assigned to a wider explicit type,
+    // update the literal's inferredType to match the target type.
+    // This is necessary for codegen to use the correct WASM struct type.
+    // For example: let r: { x: i32 | null } = { x: null };
+    // The literal's inferred type is { x: null }, but we need to use
+    // { x: i32 | null } for the struct type so field types match.
+    if (compatible && explicitType.kind === TypeKind.Record) {
+      if (
+        decl.init.type === NodeType.RecordLiteral &&
+        type.kind === TypeKind.Record
+      ) {
+        decl.init.inferredType = explicitType;
+      }
+    } else if (compatible && explicitType.kind === TypeKind.Tuple) {
+      if (
+        decl.init.type === NodeType.TupleLiteral &&
+        type.kind === TypeKind.Tuple
+      ) {
+        decl.init.inferredType = explicitType;
+      }
+    }
+
     type = explicitType;
   }
 
@@ -1698,7 +1726,7 @@ function resolveMemberName(
     // This could be a simple identifier (e.g., :mySymbol) or a member expression (e.g., :Iterable.iterator)
     const symbolExpr = name.symbol;
     let type: Type | undefined;
-    
+
     if (symbolExpr.type === NodeType.Identifier) {
       // Simple symbol: :mySymbol
       // First check if it's a local symbol value
@@ -1712,7 +1740,7 @@ function resolveMemberName(
           symbolType,
         };
       }
-      
+
       // If inside an interface, check the interface's statics
       if (ctx.currentInterface && ctx.currentInterface.statics) {
         const staticType = ctx.currentInterface.statics.get(symbolExpr.name);
@@ -1726,7 +1754,7 @@ function resolveMemberName(
           };
         }
       }
-      
+
       // If inside a class, check the class's statics
       if (ctx.currentClass && ctx.currentClass.statics) {
         const staticType = ctx.currentClass.statics.get(symbolExpr.name);
@@ -1740,7 +1768,7 @@ function resolveMemberName(
           };
         }
       }
-      
+
       ctx.diagnostics.reportError(
         `Symbol '${symbolExpr.name}' is not defined or is not a symbol.`,
         DiagnosticCode.TypeMismatch,
@@ -1753,13 +1781,16 @@ function resolveMemberName(
       if (memberExpr.object.type === NodeType.Identifier) {
         const objectName = memberExpr.object.name;
         const objectType = ctx.resolveType(objectName);
-        
+
         if (objectType && objectType.kind === TypeKind.Interface) {
           const interfaceType = objectType as InterfaceType;
           const propertyName = memberExpr.property.name;
-          
+
           // Look up static symbol from interface's statics
-          if (interfaceType.statics && interfaceType.statics.has(propertyName)) {
+          if (
+            interfaceType.statics &&
+            interfaceType.statics.has(propertyName)
+          ) {
             const symbolType = interfaceType.statics.get(propertyName)!;
             if (symbolType.kind === TypeKind.Symbol) {
               symbolExpr.inferredType = symbolType as SymbolType;
@@ -1779,7 +1810,7 @@ function resolveMemberName(
           // Also support class statics
           const classType = objectType as ClassType;
           const propertyName = memberExpr.property.name;
-          
+
           if (classType.statics && classType.statics.has(propertyName)) {
             const fieldType = classType.statics.get(propertyName)!;
             if (fieldType.kind === TypeKind.Symbol) {
@@ -1803,7 +1834,7 @@ function resolveMemberName(
         );
         return {name: '<error>', isSymbol: false};
       }
-      
+
       // Fallback: try checkExpression for more complex paths
       type = checkExpression(ctx, symbolExpr);
       if (type && type.kind === TypeKind.Symbol) {
@@ -1820,7 +1851,7 @@ function resolveMemberName(
       );
       return {name: '<error>', isSymbol: false};
     }
-    
+
     ctx.diagnostics.reportError(
       `Invalid symbol expression.`,
       DiagnosticCode.TypeMismatch,
