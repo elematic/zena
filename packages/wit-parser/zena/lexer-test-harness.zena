@@ -1,0 +1,91 @@
+/**
+ * Lexer Test Harness
+ *
+ * Exports functions to test the WIT lexer from TypeScript.
+ * Uses the same input/output pattern as echo.zena.
+ */
+
+import {String} from 'zena:string';
+import {StringBuilder} from 'zena:string-builder';
+import {Lexer, LexError} from './lexer.zena';
+import {TokenType, describeToken} from './token.zena';
+
+// ============================================================================
+// Input: TypeScript provides these via imports
+// ============================================================================
+
+@external("input", "getLength")
+declare function getInputLength(): i32;
+
+@external("input", "getByte")
+declare function getInputByte(index: i32): i32;
+
+// ============================================================================
+// Output: TypeScript reads from here
+// ============================================================================
+
+var outputString: String = "";
+
+export let getOutputLength = (): i32 => outputString.length;
+export let getOutputByte = (index: i32): i32 => outputString.getByteAt(index);
+
+// ============================================================================
+// Helper to read input
+// ============================================================================
+
+let readInput = (): String => {
+  let len = getInputLength();
+  if (len == 0) { return ""; }
+  
+  let sb = new StringBuilder();
+  var i = 0;
+  while (i < len) {
+    sb.appendByte(getInputByte(i));
+    i = i + 1;
+  }
+  return sb.toString();
+};
+
+// ============================================================================
+// Test Functions
+// ============================================================================
+
+/**
+ * Count the number of tokens (excluding EOF).
+ */
+export let countTokens = (): i32 => {
+  let source = readInput();
+  let lexer = new Lexer(source);
+  var count = 0;
+
+  while (true) {
+    let token = lexer.next();
+    if (token.type == TokenType.Eof) {
+      break;
+    }
+    count = count + 1;
+  }
+  
+  return count;
+};
+
+/**
+ * Get the type of the first non-whitespace token.
+ * Returns the token type as an integer.
+ */
+export let firstTokenType = (): i32 => {
+  let source = readInput();
+  let lexer = new Lexer(source);
+  let token = lexer.next();
+  return token.type as i32;
+};
+
+/**
+ * Get the text of the first token.
+ */
+export let firstTokenText = (): void => {
+  let source = readInput();
+  let lexer = new Lexer(source);
+  let token = lexer.next();
+  outputString = lexer.getSpanText(token.span);
+};
