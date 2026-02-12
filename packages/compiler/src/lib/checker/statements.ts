@@ -1378,19 +1378,26 @@ function checkVariableDeclaration(
     // For example: let r: { x: i32 | null } = { x: null };
     // The literal's inferred type is { x: null }, but we need to use
     // { x: i32 | null } for the struct type so field types match.
-    if (compatible && explicitType.kind === TypeKind.Record) {
+    // Also handle type aliases that resolve to records/tuples.
+    if (compatible && decl.init.type === NodeType.RecordLiteral) {
+      // Resolve through type aliases to find the underlying record type
+      let targetType = explicitType;
+      while (targetType.kind === TypeKind.TypeAlias) {
+        targetType = (targetType as TypeAliasType).target;
+      }
       if (
-        decl.init.type === NodeType.RecordLiteral &&
+        targetType.kind === TypeKind.Record &&
         type.kind === TypeKind.Record
       ) {
-        decl.init.inferredType = explicitType;
+        decl.init.inferredType = targetType;
       }
-    } else if (compatible && explicitType.kind === TypeKind.Tuple) {
-      if (
-        decl.init.type === NodeType.TupleLiteral &&
-        type.kind === TypeKind.Tuple
-      ) {
-        decl.init.inferredType = explicitType;
+    } else if (compatible && decl.init.type === NodeType.TupleLiteral) {
+      let targetType = explicitType;
+      while (targetType.kind === TypeKind.TypeAlias) {
+        targetType = (targetType as TypeAliasType).target;
+      }
+      if (targetType.kind === TypeKind.Tuple && type.kind === TypeKind.Tuple) {
+        decl.init.inferredType = targetType;
       }
     }
 

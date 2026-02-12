@@ -40,4 +40,24 @@ suite('nullable type alias', () => {
     const result = await compileAndRun(source, 'test');
     assert.strictEqual(result, 1); // true = 1
   });
+
+  test('type alias with multiple fields including nullable', async () => {
+    const source = `
+      export type Foo = {
+        name: string,
+        value: string | null
+      };
+
+      export let main = (): i32 => {
+        let foo: Foo = { name: "test", value: null };
+        if (foo.value == null) {
+          return 0;
+        }
+        return 1;
+      };
+    `;
+
+    const result = await compileAndRun(source, 'main');
+    assert.strictEqual(result, 0);
+  });
 });
