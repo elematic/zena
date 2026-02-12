@@ -319,44 +319,46 @@ if (parserVersion !== compilerVersion) {
 
 ---
 
-## Phase 4: Parser Implementation [NOT STARTED]
+## Phase 4: Parser Implementation [IN PROGRESS]
 
 Once tests are in place, implement the parser itself.
 
 ### 4.1 Module Structure
 
 ```
-packages/stdlib/zena/
-├── wit/
-│   ├── lexer.zena       # Token types, Tokenizer class
-│   ├── ast.zena         # AST node types
-│   ├── parser.zena      # Recursive descent parser
-│   ├── resolver.zena    # Name resolution, type building
-│   └── json.zena        # JSON serialization for output
-└── wit-parser.zena      # Public API, re-exports
+packages/wit-parser/zena/
+├── token.zena       # Token types, Span
+├── lexer.zena       # Tokenizer class  ✅ COMPLETE
+├── ast.zena         # AST node types   ✅ COMPLETE
+├── parser.zena      # Recursive descent parser
+├── resolver.zena    # Name resolution, type building
+└── json.zena        # JSON serialization for output
 ```
 
 ### 4.2 Implementation Order
 
-1. **Lexer** (~500 lines)
-   - Token enum with all WIT tokens
+1. **Lexer** ✅ COMPLETE (~730 lines)
+   - Token enum with all WIT tokens (47 token types)
    - Span tracking for error messages
    - Unicode identifier support
+   - Full coverage of wasm-tools test files (272 .wit files)
 
-2. **AST Types** (~300 lines)
+2. **AST Types** ✅ COMPLETE (~730 lines)
    - Node types for all WIT constructs
-   - Docs, attributes, stability annotations
+   - Uses tagged class pattern (Zena lacks sum types with payloads)
+   - Index wrapper class for Map<string, i32> (avoids i32 | null issue)
+   - Docs, stability annotations
 
-3. **Parser** (~800 lines)
+3. **Parser** (~800 lines) [NOT STARTED]
    - Recursive descent, LL(1) with some lookahead
    - Error recovery for better diagnostics
 
-4. **Resolver** (~1000 lines)
+4. **Resolver** (~1000 lines) [NOT STARTED]
    - Package/interface/world resolution
    - Type interning
    - Foreign dependency handling
 
-5. **JSON Output** (~200 lines)
+5. **JSON Output** (~200 lines) [NOT STARTED]
    - Serialize resolved AST to match `.wit.json` format
 
 ### 4.3 Zena Features Exercised
