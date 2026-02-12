@@ -2,8 +2,8 @@
 
 ## Status
 
-- **Status**: Planning
-- **Last Updated**: 2026-02-11
+- **Status**: In Progress (Phase 4)
+- **Last Updated**: 2026-02-12
 
 ## Overview
 
@@ -147,10 +147,13 @@ zena test --runtime wasmtime --dir ./tests/wit-parser packages/stdlib/tests/wit-
 
 ---
 
-## Phase 2: String Interop [NOT STARTED]
+## Phase 2: String Interop ✅ COMPLETE
 
 The TypeScript compiler needs to pass strings into and receive strings from the
 WIT parser WASM module.
+
+**Verified 2026-02-12**: The `echo.zena` test module confirms bidirectional
+string passing works via the import/export pattern.
 
 ### 2.1 Current String Reading
 
@@ -505,6 +508,7 @@ tests use directories.
 - [x] Verify test count matches inventory
 
 **Results**: 194 tests ported total:
+
 - 72 success tests (single-file and directory tests)
 - 122 error tests (parse-fail/ directory)
 
