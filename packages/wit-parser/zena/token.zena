@@ -1,0 +1,287 @@
+/**
+ * WIT Lexer Token Types
+ *
+ * Token definitions for the WIT (WebAssembly Interface Types) lexer.
+ * Based on the canonical implementation in wasm-tools:
+ * https://github.com/bytecodealliance/wasm-tools/blob/main/crates/wit-parser/src/ast/lex.rs
+ */
+
+// ============================================================================
+// Token Type Enum
+// ============================================================================
+
+/**
+ * All possible token types in WIT syntax.
+ * 
+ * Note: Enum values are auto-assigned starting from 0.
+ */
+export enum TokenType {
+  // Whitespace and comments (usually skipped)
+  Whitespace,
+  Comment,
+
+  // Punctuation
+  Equals,        // =
+  Comma,         // ,
+  Colon,         // :
+  Period,        // .
+  Semicolon,     // ;
+  LeftParen,     // (
+  RightParen,    // )
+  LeftBrace,     // {
+  RightBrace,    // }
+  LessThan,      // <
+  GreaterThan,   // >
+  RArrow,        // ->
+  Star,          // *
+  At,            // @
+  Slash,         // /
+  Plus,          // +
+  Minus,         // -
+
+  // Keywords - Types
+  U8,
+  U16,
+  U32,
+  U64,
+  S8,
+  S16,
+  S32,
+  S64,
+  F32,
+  F64,
+  Char,
+  Bool,
+  String,
+
+  // Keywords - Composite Types
+  Record,
+  Flags,
+  Variant,
+  Enum,
+  Option,
+  Result,
+  List,
+  Tuple,
+  Future,
+  Stream,
+  Map,
+
+  // Keywords - Resources
+  Resource,
+  Own,
+  Borrow,
+  Constructor,
+  Static,
+
+  // Keywords - Declarations
+  Type,
+  Func,
+  Interface,
+  World,
+  Package,
+  Use,
+  As,
+  From,
+  Import,
+  Export,
+  Include,
+  With,
+  
+  // Keywords - Async
+  Async,
+  ErrorContext,
+
+  // Special
+  Underscore,    // _
+
+  // Identifiers and literals
+  Id,            // Regular identifier (e.g., my-func)
+  ExplicitId,    // %-prefixed identifier (e.g., %bool)
+  Integer,       // Numeric literal
+
+  // End of file
+  Eof,
+}
+
+// ============================================================================
+// Token Structure
+// ============================================================================
+
+/**
+ * A source span indicating where a token appears in the input.
+ */
+export class Span {
+  start: i32;
+  end: i32;
+
+  #new(start: i32, end: i32) {
+    this.start = start;
+    this.end = end;
+  }
+
+  /** Length of this span in bytes. */
+  length: i32 {
+    get {
+      return this.end - this.start;
+    }
+  }
+}
+
+/**
+ * A token with its type and source location.
+ */
+export class Token {
+  type: TokenType;
+  span: Span;
+
+  #new(type: TokenType, span: Span) {
+    this.type = type;
+    this.span = span;
+  }
+}
+
+// ============================================================================
+// Keyword Lookup
+// ============================================================================
+
+/**
+ * Map a keyword string to its token type, or return Id if not a keyword.
+ *
+ * WIT keywords are all lowercase with hyphens (kebab-case).
+ */
+export let keywordToToken = (s: String): TokenType => {
+  // Types
+  if (s == "u8") { return TokenType.U8; }
+  if (s == "u16") { return TokenType.U16; }
+  if (s == "u32") { return TokenType.U32; }
+  if (s == "u64") { return TokenType.U64; }
+  if (s == "s8") { return TokenType.S8; }
+  if (s == "s16") { return TokenType.S16; }
+  if (s == "s32") { return TokenType.S32; }
+  if (s == "s64") { return TokenType.S64; }
+  if (s == "f32") { return TokenType.F32; }
+  if (s == "f64") { return TokenType.F64; }
+  if (s == "char") { return TokenType.Char; }
+  if (s == "bool") { return TokenType.Bool; }
+  if (s == "string") { return TokenType.String; }
+
+  // Composite types
+  if (s == "record") { return TokenType.Record; }
+  if (s == "flags") { return TokenType.Flags; }
+  if (s == "variant") { return TokenType.Variant; }
+  if (s == "enum") { return TokenType.Enum; }
+  if (s == "option") { return TokenType.Option; }
+  if (s == "result") { return TokenType.Result; }
+  if (s == "list") { return TokenType.List; }
+  if (s == "tuple") { return TokenType.Tuple; }
+  if (s == "future") { return TokenType.Future; }
+  if (s == "stream") { return TokenType.Stream; }
+  if (s == "map") { return TokenType.Map; }
+
+  // Resources
+  if (s == "resource") { return TokenType.Resource; }
+  if (s == "own") { return TokenType.Own; }
+  if (s == "borrow") { return TokenType.Borrow; }
+  if (s == "constructor") { return TokenType.Constructor; }
+  if (s == "static") { return TokenType.Static; }
+
+  // Declarations
+  if (s == "type") { return TokenType.Type; }
+  if (s == "func") { return TokenType.Func; }
+  if (s == "interface") { return TokenType.Interface; }
+  if (s == "world") { return TokenType.World; }
+  if (s == "package") { return TokenType.Package; }
+  if (s == "use") { return TokenType.Use; }
+  if (s == "as") { return TokenType.As; }
+  if (s == "from") { return TokenType.From; }
+  if (s == "import") { return TokenType.Import; }
+  if (s == "export") { return TokenType.Export; }
+  if (s == "include") { return TokenType.Include; }
+  if (s == "with") { return TokenType.With; }
+
+  // Async
+  if (s == "async") { return TokenType.Async; }
+  if (s == "error-context") { return TokenType.ErrorContext; }
+
+  // Special
+  if (s == "_") { return TokenType.Underscore; }
+
+  // Not a keyword
+  return TokenType.Id;
+};
+
+/**
+ * Get a human-readable description of a token type.
+ */
+export let describeToken = (t: TokenType): String => {
+  return match (t) {
+    case TokenType.Whitespace: "whitespace"
+    case TokenType.Comment: "a comment"
+    case TokenType.Equals: "'='"
+    case TokenType.Comma: "','"
+    case TokenType.Colon: "':'"
+    case TokenType.Period: "'.'"
+    case TokenType.Semicolon: "';'"
+    case TokenType.LeftParen: "'('"
+    case TokenType.RightParen: "')'"
+    case TokenType.LeftBrace: "'{'"
+    case TokenType.RightBrace: "'}'"
+    case TokenType.LessThan: "'<'"
+    case TokenType.GreaterThan: "'>'"
+    case TokenType.RArrow: "'->'"
+    case TokenType.Star: "'*'"
+    case TokenType.At: "'@'"
+    case TokenType.Slash: "'/'"
+    case TokenType.Plus: "'+'"
+    case TokenType.Minus: "'-'"
+    case TokenType.U8: "keyword `u8`"
+    case TokenType.U16: "keyword `u16`"
+    case TokenType.U32: "keyword `u32`"
+    case TokenType.U64: "keyword `u64`"
+    case TokenType.S8: "keyword `s8`"
+    case TokenType.S16: "keyword `s16`"
+    case TokenType.S32: "keyword `s32`"
+    case TokenType.S64: "keyword `s64`"
+    case TokenType.F32: "keyword `f32`"
+    case TokenType.F64: "keyword `f64`"
+    case TokenType.Char: "keyword `char`"
+    case TokenType.Bool: "keyword `bool`"
+    case TokenType.String: "keyword `string`"
+    case TokenType.Record: "keyword `record`"
+    case TokenType.Flags: "keyword `flags`"
+    case TokenType.Variant: "keyword `variant`"
+    case TokenType.Enum: "keyword `enum`"
+    case TokenType.Option: "keyword `option`"
+    case TokenType.Result: "keyword `result`"
+    case TokenType.List: "keyword `list`"
+    case TokenType.Tuple: "keyword `tuple`"
+    case TokenType.Future: "keyword `future`"
+    case TokenType.Stream: "keyword `stream`"
+    case TokenType.Map: "keyword `map`"
+    case TokenType.Resource: "keyword `resource`"
+    case TokenType.Own: "keyword `own`"
+    case TokenType.Borrow: "keyword `borrow`"
+    case TokenType.Constructor: "keyword `constructor`"
+    case TokenType.Static: "keyword `static`"
+    case TokenType.Type: "keyword `type`"
+    case TokenType.Func: "keyword `func`"
+    case TokenType.Interface: "keyword `interface`"
+    case TokenType.World: "keyword `world`"
+    case TokenType.Package: "keyword `package`"
+    case TokenType.Use: "keyword `use`"
+    case TokenType.As: "keyword `as`"
+    case TokenType.From: "keyword `from`"
+    case TokenType.Import: "keyword `import`"
+    case TokenType.Export: "keyword `export`"
+    case TokenType.Include: "keyword `include`"
+    case TokenType.With: "keyword `with`"
+    case TokenType.Async: "keyword `async`"
+    case TokenType.ErrorContext: "keyword `error-context`"
+    case TokenType.Underscore: "keyword `_`"
+    case TokenType.Id: "an identifier"
+    case TokenType.ExplicitId: "an '%' identifier"
+    case TokenType.Integer: "an integer"
+    case TokenType.Eof: "end of file"
+  };
+};
