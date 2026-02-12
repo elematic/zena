@@ -1,0 +1,134 @@
+/**
+ * Echo Module - Minimal test of string interop between TypeScript and Zena.
+ *
+ * This module demonstrates the basic pattern for passing strings into WASM:
+ * 1. TypeScript sets up input and provides it via imports
+ * 2. Zena calls imports to read the input bytes
+ * 3. Zena processes the input and stores a result
+ * 4. TypeScript reads the result via exports
+ *
+ * This is a proof-of-concept before building the real WIT lexer.
+ */
+
+import {String, Encoding} from 'zena:string';
+import {StringBuilder} from 'zena:string-builder';
+import {div} from 'zena:math';
+
+// ============================================================================
+// Input: TypeScript provides these via imports
+// ============================================================================
+
+/** Get the length of the input. */
+@external("input", "getLength")
+declare function getInputLength(): i32;
+
+/** Get a byte from the input at the given index. */
+@external("input", "getByte")
+declare function getInputByte(index: i32): i32;
+
+// ============================================================================
+// Output: TypeScript reads from here
+// ============================================================================
+
+// The output string reference
+var outputString: String = "";
+
+/**
+ * Get the length of the output string (for iteration from TypeScript).
+ */
+export let getOutputLength = (): i32 => {
+  return outputString.length;
+};
+
+/**
+ * Get a byte from the output string (for iteration from TypeScript).
+ */
+export let getOutputByte = (index: i32): i32 => {
+  return outputString.getByteAt(index);
+};
+
+// ============================================================================
+// Helper: Build a String from input imports
+// ============================================================================
+
+/**
+ * Read the input from host imports and build a String.
+ */
+let readInput = (): String => {
+  let len = getInputLength();
+  if (len == 0) {
+    return "";
+  }
+  
+  // Build the string byte by byte using StringBuilder
+  let sb = new StringBuilder();
+  var i = 0;
+  while (i < len) {
+    let byte = getInputByte(i);
+    // Append single byte as a character
+    sb.appendByte(byte);
+    i = i + 1;
+  }
+  return sb.toString();
+};
+
+// ============================================================================
+// Processing
+// ============================================================================
+
+/**
+ * Process the input and produce output.
+ *
+ * For this echo test, we just return the input length as a simple string.
+ */
+export let process = (): void => {
+  let input = readInput();
+  
+  // For simplicity, just echo with a prefix
+  let sb = new StringBuilder();
+  sb.append("length=");
+  // Convert length to string manually (simple version for small numbers)
+  var len = input.length;
+  if (len == 0) {
+    sb.appendByte(48);  // '0'
+  } else {
+    // For small numbers, just handle up to 999
+    if (len >= 100) {
+      sb.appendByte(48 + div(len, 100));
+      len = len - div(len, 100) * 100;
+      sb.appendByte(48 + div(len, 10));
+      len = len - div(len, 10) * 10;
+      sb.appendByte(48 + len);
+    } else if (len >= 10) {
+      sb.appendByte(48 + div(len, 10));
+      len = len - div(len, 10) * 10;
+      sb.appendByte(48 + len);
+    } else {
+      sb.appendByte(48 + len);
+    }
+  }
+  outputString = sb.toString();
+};
+
+/**
+ * Simple echo - returns the input unchanged.
+ */
+export let echo = (): void => {
+  outputString = readInput();
+};
+
+/**
+ * Count lines in the input.
+ */
+export let countLines = (): i32 => {
+  let input = readInput();
+  var count = 1;
+  var i = 0;
+  while (i < input.length) {
+    if (input.getByteAt(i) == 10) {  // '\n'
+      count = count + 1;
+    }
+    i = i + 1;
+  }
+  return count;
+};
