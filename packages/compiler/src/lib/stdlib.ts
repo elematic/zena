@@ -17,6 +17,7 @@ export {
   memoryModule,
   mapModule,
   mathModule,
+  optionModule,
   rangeModule,
   regexModule,
   sequenceModule,

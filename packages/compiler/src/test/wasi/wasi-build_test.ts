@@ -49,6 +49,7 @@ function loadStdlib(target: 'host' | 'wasi' = 'host'): Map<string, string> {
   const stdlibFiles = [
     'string',
     'error',
+    'option',
     'sequence',
     'range',
     'immutable-array',
