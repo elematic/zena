@@ -194,6 +194,12 @@ const readOutput = (exports: WebAssembly.Exports): string => {
 };
 
 suite('WIT Lexer', () => {
+  test('ast.zena compiles', () => {
+    const wasm = compileModule('ast.zena');
+    assert.ok(wasm.length > 0, 'Should produce WASM output');
+    console.log(`    ast.zena: ${wasm.length} bytes`);
+  });
+
   test('lexer.zena compiles', () => {
     const wasm = compileModule('lexer.zena');
     assert.ok(wasm.length > 0, 'Should produce WASM output');
