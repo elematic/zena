@@ -210,6 +210,86 @@ To store a primitive in a union with references (e.g. a nullable integer), use t
 let x: Box<i32> | null = new Box(10);
 ```
 
+#### Unbounded Type Parameters in Unions
+
+**Status: Enforced at declaration**
+
+Unions containing unbounded type parameters mixed with reference types (including `null`) are **not allowed**. This prevents APIs from being defined that cannot work with primitive type arguments.
+
+```zena
+// ❌ Error: Unbounded type parameter 'T' cannot appear in union with reference types
+class Container<T> {
+  value: T | null;
+}
+
+// ❌ Error: Same issue - will fail if T is instantiated with a primitive
+type Nullable<T> = T | null;
+
+// ✅ OK: T is constrained to reference types via anyref
+class Container<T extends anyref> {
+  value: T | null;
+}
+
+// ✅ OK: Use multi-return instead (zero allocation, works with all types)
+class Container<T> {
+  get(): (T, boolean);
+}
+
+// ✅ OK: Use Option<T> (Some<T> is always a reference type)
+class Container<T> {
+  find(): Option<T>;
+}
+```
+
+##### Rationale
+
+The problem with `T | null` where `T` is unbounded:
+
+1.  **Instantiation trap**: `Container<string>` works fine, but `Container<i32>` creates `i32 | null`, which violates the primitive-in-union rule.
+2.  **Late error**: Without this rule, the error would only appear when the generic is instantiated with a primitive — possibly far from where the problematic API was defined.
+3.  **API design smell**: `T | null` conflates "missing" with "null-valued", which is problematic even for reference types.
+
+##### Recommended Patterns
+
+Instead of `T | null` for "maybe has a value" semantics, use:
+
+| Pattern                | Allocation | Use Case                              |
+| ---------------------- | ---------- | ------------------------------------- |
+| `get(): (T, boolean)`  | None       | Immediate check-and-use (most common) |
+| `getOr(default: T): T` | None       | When a sensible default exists        |
+| `find(): Option<T>`    | `Some<T>`  | When you need to store/pass the maybe |
+| `has()` + `[]`         | None       | Check then access (throws if missing) |
+
+Multi-return `(T, boolean)` is the **preferred pattern** for "maybe" results because:
+
+- Zero allocation — values stay on the WASM stack
+- Works with all types including primitives
+- Unambiguous — distinguishes "not found" from "found with null value"
+
+When not found, return `(_, false)` where `_` is the hole literal with type `never`.
+The caller must not access the first element when the second is `false`.
+
+Example from `Map<K, V>`:
+
+````zena
+class Map<K, V> {
+  // Throws KeyNotFoundError if missing
+  operator [](key: K): V
+
+  // Multi-return, zero allocation — the workhorse
+  // Returns (_, false) when not found; first element must not be accessed
+  get(key: K): (V, boolean)
+
+  // Returns default if not found
+  getOr(key: K, default: V): V
+
+  // Returns Option — when you need to store the result
+  find(key: K): Option<V>
+
+  // Check existence
+  has(key: K): boolean
+}
+
 - **Implementation**:
   - If `A` and `B` share a common ancestor class `Base`, `A | B` is treated as `Base`.
   - If they are unrelated, they are treated as `any` (WASM `anyref` or `eqref`).
@@ -260,7 +340,7 @@ type Handler = (event: String) => void;
 
 // ❌ Invalid: Object Literal Shape (Use Interface instead)
 // type Point = { x: i32, y: i32 };
-```
+````
 
 ### Rationale
 

@@ -52,6 +52,84 @@ function getPrimitiveBase(type: Type): string | null {
 }
 
 /**
+ * Checks if a type is guaranteed to be a reference type (not a primitive).
+ * Used for validating type parameter constraints in unions.
+ *
+ * Reference types in Zena include: classes, interfaces, arrays, tuples, records,
+ * functions, strings, ByteArray, Box<T>, and null. These all have heap-based
+ * WASM representations (ref types).
+ *
+ * Value types (primitives) include: i32, i64, f32, f64, boolean, and extension
+ * classes on these primitives.
+ */
+function isGuaranteedReferenceType(type: Type): boolean {
+  switch (type.kind) {
+    case TypeKind.Class: {
+      const classType = type as ClassType;
+      // Extension classes on primitives are NOT reference types
+      if (classType.isExtension && classType.onType) {
+        return isGuaranteedReferenceType(classType.onType);
+      }
+      return true;
+    }
+    case TypeKind.Interface:
+    case TypeKind.Array:
+    case TypeKind.ByteArray:
+    case TypeKind.Tuple:
+    case TypeKind.Record:
+    case TypeKind.Function:
+    case TypeKind.AnyRef:
+    case TypeKind.Any:
+      return true;
+    case TypeKind.Null:
+      // null is a reference type for WASM purposes
+      return true;
+    case TypeKind.TypeAlias:
+      return isGuaranteedReferenceType((type as TypeAliasType).target);
+    case TypeKind.Union:
+      // A union is a guaranteed reference type if ALL its members are
+      return (type as UnionType).types.every(isGuaranteedReferenceType);
+    case TypeKind.TypeParameter: {
+      // A type parameter is a guaranteed reference type if it's constrained to one
+      const param = type as TypeParameterType;
+      return param.constraint
+        ? isGuaranteedReferenceType(param.constraint)
+        : false;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Checks if a type parameter is constrained to reference types only.
+ * Returns true if the type parameter's constraint guarantees it cannot be a primitive.
+ */
+function isTypeParamConstrainedToRef(param: TypeParameterType): boolean {
+  if (!param.constraint) {
+    return false; // Unbounded - could be primitive
+  }
+  return isGuaranteedReferenceType(param.constraint);
+}
+
+/**
+ * Checks if a type is an unbounded type parameter (could be primitive or reference).
+ * Returns the type parameter if it's unbounded, null otherwise.
+ */
+function getUnboundedTypeParam(type: Type): TypeParameterType | null {
+  if (type.kind === TypeKind.TypeParameter) {
+    const param = type as TypeParameterType;
+    if (!isTypeParamConstrainedToRef(param)) {
+      return param;
+    }
+  }
+  if (type.kind === TypeKind.TypeAlias) {
+    return getUnboundedTypeParam((type as TypeAliasType).target);
+  }
+  return null;
+}
+
+/**
  * Checks if a type is a boolean type (either TypeKind.Boolean or a boolean literal type).
  * This is used to validate boolean conditions in if/while/for statements.
  */
@@ -401,9 +479,11 @@ function resolveTypeAnnotationInternal(
     // 1. Primitives can union with primitives of the SAME base type (true | false, 1 | 2)
     // 2. Primitives CANNOT union with references (true | null, i32 | String)
     // 3. Primitives CANNOT union with primitives of DIFFERENT base types (i32 | f32, 1 | 1.0)
+    // 4. Unbounded type parameters CANNOT union with references (T | null where T is unbounded)
     const primitiveBases = new Set<string>();
     let hasPrimitive = false;
     let hasReference = false;
+    const unboundedParams: TypeParameterType[] = [];
 
     for (const t of types) {
       const base = getPrimitiveBase(t);
@@ -411,7 +491,13 @@ function resolveTypeAnnotationInternal(
         hasPrimitive = true;
         primitiveBases.add(base);
       } else {
-        hasReference = true;
+        // Check if it's an unbounded type parameter
+        const unbounded = getUnboundedTypeParam(t);
+        if (unbounded) {
+          unboundedParams.push(unbounded);
+        } else {
+          hasReference = true;
+        }
       }
     }
 
@@ -423,6 +509,19 @@ function resolveTypeAnnotationInternal(
     } else if (primitiveBases.size > 1) {
       ctx.diagnostics.reportError(
         `Union types cannot mix primitives of different base types (e.g., i32 | f32). All primitives must share the same base type.`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+
+    // Check for unbounded type parameters mixed with reference types
+    // This catches cases like `T | null` where T could be i32
+    if (unboundedParams.length > 0 && hasReference) {
+      const paramNames = unboundedParams.map((p) => `'${p.name}'`).join(', ');
+      ctx.diagnostics.reportError(
+        `Union types cannot contain unbounded type parameters mixed with reference types. ` +
+          `Type parameter ${paramNames} could be instantiated with a primitive type. ` +
+          `Consider using multi-return '(${unboundedParams[0].name}, boolean)' or 'Option<${unboundedParams[0].name}>' instead, ` +
+          `or constrain the type parameter with 'extends anyref'.`,
         DiagnosticCode.TypeMismatch,
       );
     }
@@ -748,6 +847,7 @@ export function validateType(type: Type, ctx: CheckerContext) {
     const primitiveBases = new Set<string>();
     let hasPrimitive = false;
     let hasReference = false;
+    const unboundedParams: TypeParameterType[] = [];
 
     for (const t of ut.types) {
       const base = getPrimitiveBase(t);
@@ -755,7 +855,13 @@ export function validateType(type: Type, ctx: CheckerContext) {
         hasPrimitive = true;
         primitiveBases.add(base);
       } else {
-        hasReference = true;
+        // Check if it's an unbounded type parameter
+        const unbounded = getUnboundedTypeParam(t);
+        if (unbounded) {
+          unboundedParams.push(unbounded);
+        } else {
+          hasReference = true;
+        }
       }
     }
 
@@ -767,6 +873,18 @@ export function validateType(type: Type, ctx: CheckerContext) {
     } else if (primitiveBases.size > 1) {
       ctx.diagnostics.reportError(
         `Union types cannot mix primitives of different base types (e.g., i32 | f32). All primitives must share the same base type.`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+
+    // Check for unbounded type parameters mixed with reference types
+    if (unboundedParams.length > 0 && hasReference) {
+      const paramNames = unboundedParams.map((p) => `'${p.name}'`).join(', ');
+      ctx.diagnostics.reportError(
+        `Union types cannot contain unbounded type parameters mixed with reference types. ` +
+          `Type parameter ${paramNames} could be instantiated with a primitive type. ` +
+          `Consider using multi-return '(${unboundedParams[0].name}, boolean)' or 'Option<${unboundedParams[0].name}>' instead, ` +
+          `or constrain the type parameter with 'extends anyref'.`,
         DiagnosticCode.TypeMismatch,
       );
     }

@@ -23,13 +23,36 @@ suite('Union Validation Tests', () => {
 
   test('Generic instantiation with primitive creating invalid union fails', async () => {
     const source = `
+      class Container<T extends anyref> {
+        val: T | null;
+        #new() {}
+      }
+
+      export let main = (): void => {
+        // This should fail because i32 does not satisfy "extends anyref"
+        let c = new Container<i32>();
+      };
+    `;
+
+    try {
+      await compileAndRun(source, 'main');
+      assert.fail('Should have failed compilation');
+    } catch (e: any) {
+      assert.match(e.message, /does not satisfy constraint/i);
+    }
+  });
+
+  test('Unbounded type parameter in union with null fails at declaration', async () => {
+    const source = `
+      // This should fail at the class declaration because T is unbounded
+      // and T | null could be i32 | null which is invalid
       class Container<T> {
         val: T | null;
         #new() {}
       }
 
       export let main = (): void => {
-        let c = new Container<i32>();
+        let c = new Container<string>();
       };
     `;
 
@@ -39,9 +62,8 @@ suite('Union Validation Tests', () => {
     } catch (e: any) {
       assert.match(
         e.message,
-        /cannot mix primitive types with reference types/,
+        /unbounded type parameters mixed with reference types/i,
       );
-      // assert.match(e.message, /This occurred during generic instantiation/);
     }
   });
 
@@ -50,7 +72,8 @@ suite('Union Validation Tests', () => {
       import { Box } from 'zena:box';
       import { String } from 'zena:string';
 
-      class Container<T> {
+      // Valid: T is bounded by anyref, so T | null is OK
+      class Container<T extends anyref> {
         val: T | null;
         #new() {
           this.val = null;

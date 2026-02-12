@@ -1,4 +1,7 @@
 import { FixedArray } from 'zena:fixed-array';
+import { KeyNotFoundError } from 'zena:error';
+// TODO: Re-enable when codegen supports nested generic type resolution
+// import { Option, Some, None, some, none } from 'zena:option';
 
 export interface Hashable {
   hashCode(): i32;
@@ -63,7 +66,11 @@ export class Map<K, V> {
     this.#size = this.#size + 1;
   }
 
-  operator [](key: K): V | null {
+  /**
+   * Gets the value for a key. Throws KeyNotFoundError if the key doesn't exist.
+   * Use this when you expect the key to exist.
+   */
+  operator [](key: K): V {
     let h = hash(key);
     let len = this.#buckets.length;
     var index = h % len;
@@ -77,10 +84,36 @@ export class Map<K, V> {
       }
       current = entry.next;
     }
-    return null;
+    throw new KeyNotFoundError();
   }
 
-  get(key: K, defaultValue: V): V {
+  /**
+   * Gets the value for a key, returning (value, true) if found or (_, false) if not.
+   * This is the preferred method for checking if a key exists and getting its value,
+   * as it has zero allocation overhead. The first element is undefined when not found
+   * and must not be accessed.
+   */
+  get(key: K): (V, boolean) {
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    var current = this.#buckets[index];
+    while (current != null) {
+      let entry = current as Entry<K, V>;
+      if (equals(entry.key, key)) {
+        return (entry.value, true);
+      }
+      current = entry.next;
+    }
+    return (_, false);
+  }
+
+  /**
+   * Gets the value for a key, or returns the default value if not found.
+   */
+  getOr(key: K, defaultValue: V): V {
     let h = hash(key);
     let len = this.#buckets.length;
     var index = h % len;
@@ -96,6 +129,29 @@ export class Map<K, V> {
     }
     return defaultValue;
   }
+
+  /**
+   * TODO: Re-enable when codegen supports nested generic type resolution.
+   * 
+   * Finds the value for a key, returning Some(value) if found or None if not.
+   * Use this when you need to store or pass around the optional result.
+   */
+  // find(key: K): Option<V> {
+  //   let h = hash(key);
+  //   let len = this.#buckets.length;
+  //   var index = h % len;
+  //   if (index < 0) index = index + len;
+  //
+  //   var current = this.#buckets[index];
+  //   while (current != null) {
+  //     let entry = current as Entry<K, V>;
+  //     if (equals(entry.key, key)) {
+  //       return some(entry.value);
+  //     }
+  //     current = entry.next;
+  //   }
+  //   return none;
+  // }
 
   has(key: K): boolean {
     let h = hash(key);
