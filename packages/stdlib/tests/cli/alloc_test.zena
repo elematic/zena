@@ -1,0 +1,31 @@
+// Test memory allocation - the allocOrPanic pattern
+//
+// @requires: wasmtime
+
+import {console} from 'zena:console-wasi';
+import {Memory, defaultAllocator} from 'zena:memory';
+
+let alloc = defaultAllocator;
+
+@external("wasi_snapshot_preview1", "proc_exit")
+declare function __wasi_proc_exit(code: i32): void;
+
+// Helper to allocate memory or panic
+let allocOrPanic = (size: i32): i32 => {
+  if (let (true, ptr) = alloc.alloc(size)) {
+    return ptr;
+  }
+  __wasi_proc_exit(1);
+  return 0;
+};
+
+export let main = (): i32 => {
+  console.log("Testing allocOrPanic...");
+  
+  let ptr = allocOrPanic(8);
+  console.log("Allocated 8 bytes");
+  alloc.free(ptr);
+  console.log("Freed");
+  
+  return 0;
+};

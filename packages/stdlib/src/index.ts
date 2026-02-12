@@ -98,3 +98,7 @@ export const fsModule = fs.readFileSync(
   path.join(stdlibDir, 'fs.zena'),
   'utf-8',
 );
+export const cliModule = fs.readFileSync(
+  path.join(stdlibDir, 'cli.zena'),
+  'utf-8',
+);

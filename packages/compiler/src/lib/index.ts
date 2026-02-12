@@ -39,6 +39,7 @@ import {
   memoryModule,
   byteArrayModule,
   fsModule,
+  cliModule,
 } from './stdlib.js';
 
 class InMemoryHost implements CompilerHost {
@@ -86,6 +87,7 @@ export function compile(source: string): Uint8Array {
       ['zena:memory', memoryModule],
       ['zena:byte-array', byteArrayModule],
       ['zena:fs', fsModule],
+      ['zena:cli', cliModule],
     ]),
   );
 

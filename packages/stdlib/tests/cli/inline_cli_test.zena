@@ -1,0 +1,104 @@
+// Test CLI without the enum
+//
+// @requires: wasmtime
+
+import { String, Encoding } from 'zena:string';
+import { Array } from 'zena:growable-array';
+import { Memory, defaultAllocator } from 'zena:memory';
+import { newByteArray } from 'zena:byte-array';
+import { console } from 'zena:console-wasi';
+
+// Memory access
+let mem = Memory.default;
+let alloc = defaultAllocator;
+
+// WASI bindings
+@external("wasi_snapshot_preview1", "args_sizes_get")
+declare function __wasi_args_sizes_get(argcPtr: i32, argvBufSizePtr: i32): i32;
+
+@external("wasi_snapshot_preview1", "args_get")
+declare function __wasi_args_get(argvPtr: i32, argvBufPtr: i32): i32;
+
+@external("wasi_snapshot_preview1", "proc_exit")
+declare function __wasi_proc_exit(code: i32): void;
+
+// Helper to allocate memory or panic
+let allocOrPanic = (size: i32): i32 => {
+  if (let (true, ptr) = alloc.alloc(size)) {
+    return ptr;
+  }
+  __wasi_proc_exit(1);
+  return 0;
+};
+
+// Read a null-terminated string from linear memory
+let readCString = (ptr: i32): string => {
+  var len = 0;
+  while (mem.getU8(ptr + len) != 0) {
+    len = len + 1;
+  }
+  
+  let bytes = newByteArray(len);
+  for (var i = 0; i < len; i = i + 1) {
+    __byte_array_set(bytes, i, mem.getU8(ptr + i));
+  }
+  return String.fromByteArray(bytes, 0, len, Encoding.WTF8);
+};
+
+// Get command-line arguments
+let getArguments = (): Array<string> => {
+  let argcPtr = allocOrPanic(4);
+  let argvBufSizePtr = allocOrPanic(4);
+  
+  var errno = __wasi_args_sizes_get(argcPtr, argvBufSizePtr);
+  if (errno != 0) {
+    alloc.free(argcPtr);
+    alloc.free(argvBufSizePtr);
+    return new Array<string>();
+  }
+  
+  let argc = mem.getI32(argcPtr);
+  let argvBufSize = mem.getI32(argvBufSizePtr);
+  alloc.free(argcPtr);
+  alloc.free(argvBufSizePtr);
+  
+  if (argc == 0) {
+    return new Array<string>();
+  }
+  
+  let argvPtr = allocOrPanic(argc * 4);
+  let argvBufPtr = allocOrPanic(argvBufSize);
+  
+  errno = __wasi_args_get(argvPtr, argvBufPtr);
+  if (errno != 0) {
+    alloc.free(argvPtr);
+    alloc.free(argvBufPtr);
+    return new Array<string>();
+  }
+  
+  let result = new Array<string>();
+  
+  for (var i = 0; i < argc; i = i + 1) {
+    let strPtr = mem.getI32(argvPtr + i * 4);
+    let arg = readCString(strPtr);
+    result.push(arg);
+  }
+  
+  alloc.free(argvPtr);
+  alloc.free(argvBufPtr);
+  
+  return result;
+};
+
+export let main = (): i32 => {
+  console.log("Testing inline CLI...");
+  
+  let args = getArguments();
+  console.log("Got args");
+  
+  if (args.length > 0) {
+    console.log("First arg: " + args[0]);
+  }
+  
+  return 0;
+};

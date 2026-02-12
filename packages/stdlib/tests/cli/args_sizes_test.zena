@@ -1,0 +1,47 @@
+// Test WASI args functions
+//
+// @requires: wasmtime
+
+import {console} from 'zena:console-wasi';
+import {Memory, defaultAllocator} from 'zena:memory';
+
+let mem = Memory.default;
+let alloc = defaultAllocator;
+
+@external("wasi_snapshot_preview1", "proc_exit")
+declare function __wasi_proc_exit(code: i32): void;
+
+@external("wasi_snapshot_preview1", "args_sizes_get")
+declare function __wasi_args_sizes_get(argcPtr: i32, argvBufSizePtr: i32): i32;
+
+// Helper to allocate memory or panic
+let allocOrPanic = (size: i32): i32 => {
+  if (let (true, ptr) = alloc.alloc(size)) {
+    return ptr;
+  }
+  __wasi_proc_exit(1);
+  return 0;
+};
+
+export let main = (): i32 => {
+  console.log("Testing args_sizes_get...");
+  
+  let argcPtr = allocOrPanic(4);
+  let argvBufSizePtr = allocOrPanic(4);
+  
+  var errno = __wasi_args_sizes_get(argcPtr, argvBufSizePtr);
+  if (errno != 0) {
+    console.log("args_sizes_get failed");
+    return 1;
+  }
+  
+  let argc = mem.getI32(argcPtr);
+  let argvBufSize = mem.getI32(argvBufSizePtr);
+  
+  console.log("args_sizes_get succeeded");
+  
+  alloc.free(argcPtr);
+  alloc.free(argvBufSizePtr);
+  
+  return 0;
+};

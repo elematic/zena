@@ -1,0 +1,103 @@
+// CLI tests - WASI
+//
+// @requires: wasmtime
+//
+// Tests for zena:cli functionality using wasmtime.
+// Run with: wasmtime run -W gc=y -W exceptions=y cli_test.wasm arg1 arg2
+
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {
+  getArguments, getProgramName, getEnvironment, getEnv, initialCwd,
+  ExitCode, isOption, isShortOption, isLongOption, parseLongOption
+} from 'zena:cli';
+import {console} from 'zena:console-wasi';
+
+let tests = suite('CLI', (): void => {
+
+  // Test that getArguments returns at least the program name
+  test('getArguments returns at least one element', (ctx: TestContext): void => {
+    let args = getArguments();
+    isTrue(args.length >= 1);
+    console.log("Got arguments, verifying count >= 1");
+  });
+
+  // Test getProgramName
+  test('getProgramName returns a non-empty string', (ctx: TestContext): void => {
+    let name = getProgramName();
+    isTrue(name.length > 0);
+    console.log("Program name: " + name);
+  });
+
+  // Test getEnvironment returns an array
+  test('getEnvironment returns an array', (ctx: TestContext): void => {
+    let envs = getEnvironment();
+    // Environment may be empty in some test contexts, but should be an array
+    isTrue(envs.length >= 0);
+    console.log("Got environment variables");
+  });
+
+  // Test isOption
+  test('isOption detects options', (ctx: TestContext): void => {
+    isTrue(isOption("-v"));
+    isTrue(isOption("--verbose"));
+    isTrue(isOption("-"));  // edge case: single dash
+    isFalse(isOption(""));
+    isFalse(isOption("file.txt"));
+    isFalse(isOption("arg"));
+  });
+
+  // Test isShortOption
+  test('isShortOption detects short options', (ctx: TestContext): void => {
+    isTrue(isShortOption("-v"));
+    isTrue(isShortOption("-h"));
+    isFalse(isShortOption("--verbose"));
+    isFalse(isShortOption("-"));
+    isFalse(isShortOption("-vv"));  // multiple chars
+    isFalse(isShortOption("v"));
+  });
+
+  // Test isLongOption
+  test('isLongOption detects long options', (ctx: TestContext): void => {
+    isTrue(isLongOption("--verbose"));
+    isTrue(isLongOption("--help"));
+    isTrue(isLongOption("--output=file.txt"));
+    isTrue(isLongOption("--a"));  // Single char after -- is valid
+    isFalse(isLongOption("-v"));
+    isFalse(isLongOption("--"));  // just two dashes, need at least one more char
+  });
+
+  // Test parseLongOption without value
+  test('parseLongOption parses option without value', (ctx: TestContext): void => {
+    let opt = parseLongOption("--verbose");
+    equal(opt.name, "verbose");
+    isTrue(opt.value == null);  // null when no value
+  });
+
+  // Test parseLongOption with value
+  test('parseLongOption parses option with value', (ctx: TestContext): void => {
+    let opt = parseLongOption("--output=file.txt");
+    equal(opt.name, "output");
+    equal(opt.value, "file.txt");
+  });
+
+  // Test parseLongOption with empty value
+  test('parseLongOption parses option with empty value', (ctx: TestContext): void => {
+    let opt = parseLongOption("--prefix=");
+    equal(opt.name, "prefix");
+    equal(opt.value, "");
+  });
+
+  // Test getEnv returns null for non-existent variable
+  test('getEnv returns null for non-existent variable', (ctx: TestContext): void => {
+    let value = getEnv("__ZENA_TEST_NONEXISTENT_VAR__");
+    isTrue(value == null);
+  });
+
+});
+
+// Entry point - returns number of failed tests (0 = success)
+export let main = (): i32 => {
+  let result = tests.run();
+  return result.failed;
+};

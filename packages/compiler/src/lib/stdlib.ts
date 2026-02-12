@@ -4,6 +4,7 @@ export {
   assertModule,
   boxModule,
   byteArrayModule,
+  cliModule,
   consoleInterfaceModule,
   consoleHostModule,
   consoleWasiModule,
