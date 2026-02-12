@@ -734,6 +734,19 @@ export class Parser {
           properties: recordPattern.properties,
           loc: this.#loc(identifier, recordPattern),
         };
+      } else if (this.#check(TokenType.Dot)) {
+        // Handle member expression patterns like EnumType.Member
+        let expr: Identifier | MemberExpression = identifier;
+        while (this.#match(TokenType.Dot)) {
+          const property = this.#parseIdentifier();
+          expr = {
+            type: NodeType.MemberExpression,
+            object: expr,
+            property,
+            loc: this.#loc(identifier, property),
+          };
+        }
+        pattern = expr;
       } else {
         pattern = identifier;
       }

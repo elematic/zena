@@ -356,7 +356,8 @@ export type Pattern =
   | NullLiteral
   | ClassPattern
   | AsPattern
-  | LogicalPattern;
+  | LogicalPattern
+  | MemberExpression;
 
 export interface LogicalPattern extends Node {
   type: typeof NodeType.LogicalPattern;

@@ -10,6 +10,7 @@ import {
   type CallExpression,
   type CatchClause,
   type ClassPattern,
+  type EnumDeclaration,
   type Expression,
   type FunctionExpression,
   type Identifier,
@@ -61,6 +62,7 @@ import {
   type SymbolType,
   type TupleType,
   type Type,
+  type TypeAliasType,
   type TypeParameterType,
   type UnboxedTupleType,
   type UnionType,
@@ -772,6 +774,23 @@ export function checkMatchPattern(
             ctx.declare(name, mergedType, leftInfo.kind, leftInfo.declaration);
           }
         }
+      }
+      break;
+    }
+    case NodeType.MemberExpression: {
+      // Enum member pattern: e.g., `case TokenType.Whitespace:`
+      // Check that the member expression is valid and get its type
+      const memberType = checkExpression(ctx, pattern as MemberExpression);
+
+      // The pattern should be assignable to/from the discriminant
+      if (
+        !isAssignableTo(ctx, memberType, discriminantType) &&
+        !isAssignableTo(ctx, discriminantType, memberType)
+      ) {
+        ctx.diagnostics.reportError(
+          `Type mismatch: cannot match '${typeToString(memberType)}' against '${typeToString(discriminantType)}'.`,
+          DiagnosticCode.TypeMismatch,
+        );
       }
       break;
     }
@@ -3411,6 +3430,76 @@ function subtractType(
         }
       }
       if (covers) return Types.Never;
+    }
+    return type;
+  }
+
+  // Handle MemberExpression patterns (enum members like Color.Red)
+  if (pattern.type === NodeType.MemberExpression) {
+    const memberExpr = pattern as MemberExpression;
+
+    // Check if this is an enum member access (e.g., Color.Red)
+    if (memberExpr.object.type === NodeType.Identifier) {
+      const enumName = (memberExpr.object as Identifier).name;
+      const memberName = memberExpr.property.name;
+
+      // Try to resolve the enum type
+      const enumType = ctx.resolveType(enumName);
+      if (
+        enumType &&
+        enumType.kind === TypeKind.TypeAlias &&
+        (enumType as TypeAliasType).isDistinct
+      ) {
+        // Get the enum declaration to find the member value
+        const symbolInfo = ctx.resolveValueInfo(enumName);
+        if (
+          symbolInfo?.declaration &&
+          symbolInfo.declaration.type === NodeType.EnumDeclaration
+        ) {
+          const enumDecl = symbolInfo.declaration as EnumDeclaration;
+
+          // Find the resolved value for this member
+          let memberValue: number | string | undefined;
+          for (const member of enumDecl.members) {
+            if (member.name.name === memberName) {
+              memberValue = member.resolvedValue;
+              break;
+            }
+          }
+
+          if (memberValue !== undefined) {
+            // If the type is the same distinct enum type, check against its underlying union
+            if (type.kind === TypeKind.TypeAlias) {
+              const aliasType = type as TypeAliasType;
+              if (aliasType.isDistinct && aliasType.name === enumName) {
+                // Subtract the literal value from the underlying type
+                const literalPattern = {
+                  type: NodeType.NumberLiteral,
+                  value: memberValue,
+                } as NumberLiteral;
+
+                const remaining = subtractType(
+                  ctx,
+                  aliasType.target,
+                  literalPattern,
+                );
+
+                if (remaining.kind === TypeKind.Never) {
+                  return Types.Never;
+                }
+
+                // Re-wrap in the distinct type with the remaining union
+                return {
+                  kind: TypeKind.TypeAlias,
+                  name: aliasType.name,
+                  target: remaining,
+                  isDistinct: true,
+                } as TypeAliasType;
+              }
+            }
+          }
+        }
+      }
     }
     return type;
   }

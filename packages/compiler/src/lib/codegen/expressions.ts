@@ -9785,6 +9785,57 @@ function generateMatchPatternCheck(
       break;
     }
 
+    case NodeType.MemberExpression: {
+      // Enum member pattern: compare discriminant with the enum value
+      // Generate the enum member value
+      const tempEnumValue = ctx.declareLocal(
+        '$$match_enum_value',
+        discriminantType,
+      );
+      generateExpression(ctx, pattern as MemberExpression, body);
+      body.push(
+        Opcode.local_set,
+        ...WasmModule.encodeSignedLEB128(tempEnumValue),
+      );
+
+      // Load discriminant and compare
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(discriminantLocal),
+      );
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(tempEnumValue),
+      );
+
+      // Compare based on type
+      if (
+        discriminantType.length === 1 &&
+        discriminantType[0] === ValType.i32
+      ) {
+        body.push(Opcode.i32_eq);
+      } else if (
+        discriminantType.length === 1 &&
+        discriminantType[0] === ValType.i64
+      ) {
+        body.push(Opcode.i64_eq);
+      } else if (
+        discriminantType.length === 1 &&
+        discriminantType[0] === ValType.f32
+      ) {
+        body.push(Opcode.f32_eq);
+      } else if (
+        discriminantType.length === 1 &&
+        discriminantType[0] === ValType.f64
+      ) {
+        body.push(Opcode.f64_eq);
+      } else {
+        // Reference type - use ref.eq
+        body.push(Opcode.ref_eq);
+      }
+      break;
+    }
+
     default:
       body.push(Opcode.i32_const, 0);
       break;
