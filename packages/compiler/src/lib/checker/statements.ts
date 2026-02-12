@@ -1292,12 +1292,47 @@ function checkReturnStatement(ctx: CheckerContext, stmt: ReturnStatement) {
 
   if (ctx.currentFunctionReturnType.kind !== Types.Unknown.kind) {
     // If we know the expected return type, check against it
-    if (!isAssignableTo(ctx, argType, ctx.currentFunctionReturnType)) {
+    const isCompatible = isAssignableTo(
+      ctx,
+      argType,
+      ctx.currentFunctionReturnType,
+    );
+    if (!isCompatible) {
       ctx.diagnostics.reportError(
         `Type mismatch: expected return type ${typeToString(ctx.currentFunctionReturnType)}, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(stmt.argument?.loc ?? stmt.loc),
       );
+    }
+
+    // When a record/tuple literal is returned and the return type is wider,
+    // update the literal's inferredType to match the expected return type.
+    // This ensures codegen uses the correct WASM struct type.
+    // Also handle type aliases that resolve to records/tuples.
+    if (isCompatible && stmt.argument) {
+      if (stmt.argument.type === NodeType.RecordLiteral) {
+        let targetType = ctx.currentFunctionReturnType;
+        while (targetType.kind === TypeKind.TypeAlias) {
+          targetType = (targetType as TypeAliasType).target;
+        }
+        if (
+          targetType.kind === TypeKind.Record &&
+          argType.kind === TypeKind.Record
+        ) {
+          stmt.argument.inferredType = targetType;
+        }
+      } else if (stmt.argument.type === NodeType.TupleLiteral) {
+        let targetType = ctx.currentFunctionReturnType;
+        while (targetType.kind === TypeKind.TypeAlias) {
+          targetType = (targetType as TypeAliasType).target;
+        }
+        if (
+          targetType.kind === TypeKind.Tuple &&
+          argType.kind === TypeKind.Tuple
+        ) {
+          stmt.argument.inferredType = targetType;
+        }
+      }
     }
   } else {
     // Infer return type
