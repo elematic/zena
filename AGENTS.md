@@ -328,6 +328,8 @@ incrementally:
 
 - **Language Reference**: `docs/language-reference.md`
 - **Compiler Architecture**: `docs/design/compiler-architecture.md`
+- **WASI Support**: `docs/design/wasi.md`
+- **WIT Parser**: `docs/design/wit-parser.md`
 - **Design Documents**: `docs/design/*.md` (see directory for full list)
 - **Development Plan**: `PLAN.md`
 - **Known Bugs**: `BUGS.md`

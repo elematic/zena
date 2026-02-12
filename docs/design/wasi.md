@@ -2,25 +2,37 @@
 
 ## Overview
 
-This document outlines the plan for adding WASI (WebAssembly System Interface) support to Zena. The goal is to allow Zena programs to run in WASI-compliant runtimes (wasmtime, Node.js via jco, browsers) and consume WASI APIs (filesystem, HTTP, etc.).
+This document outlines the plan for adding WASI (WebAssembly System Interface)
+support to Zena. The goal is to allow Zena programs to run in WASI-compliant
+runtimes (wasmtime, Node.js via jco, browsers) and consume WASI APIs
+(filesystem, HTTP, etc.).
 
-We target **WASI Preview 2** initially, moving to **Preview 3** for async support.
+We target **WASI Preview 2** initially, moving to **Preview 3** for async
+support.
 
 ## 1. The Component Model & WIT
 
 WASI is now built on the **Component Model**. This requires:
 
-1.  **WIT (Wasm Interface Type) Files**: These define the "World" (imports and exports) of a component.
-2.  **Canonical ABI**: A standard for passing high-level types (strings, records, variants) between components using Linear Memory.
+1.  **WIT (Wasm Interface Type) Files**: These define the "World" (imports and
+    exports) of a component.
+2.  **Canonical ABI**: A standard for passing high-level types (strings,
+    records, variants) between components using Linear Memory.
 
 ### Strategy
 
-- **Consumption**: The compiler will eventually need to read `.wit` files to generate type definitions and bindings. For now, we can manually define the bindings in Zena.
-- **Production**: We will produce a standard WASM Core Module. We will use external tools (like `wasm-tools component new`) to package this into a WASM Component.
+- **Consumption**: The compiler will eventually need to read `.wit` files to
+  generate type definitions and bindings. We are building a [WIT parser in
+  Zena](./wit-parser.md) for this purpose. For now, we can manually define the
+  bindings in Zena.
+- **Production**: We will produce a standard WASM Core Module. We will use
+  external tools (like `wasm-tools component new`) to package this into a WASM
+  Component.
 
 ## 2. Type Mapping & Memory
 
-Zena is a **WASM-GC** language. The Component Model currently relies on **Linear Memory**. This creates a "boundary" we must manage.
+Zena is a **WASM-GC** language. The Component Model currently relies on **Linear
+Memory**. This creates a "boundary" we must manage.
 
 | WIT Type                | Zena Type    | ABI Representation                      |
 | :---------------------- | :----------- | :-------------------------------------- |
@@ -49,15 +61,20 @@ When receiving data from WASI:
 
 Zena strings are UTF-8 bytes.
 
-- **Exporting**: We pass `(pointer, length)`. Since Zena strings are GC objects, we might need to copy the bytes to Linear Memory to ensure they are pinned/stable, or use a mechanism to pin them if supported.
-- **Importing**: The host needs to write strings into our memory. We must export a `cabi_realloc` function that the host calls to allocate space in our Linear Memory.
+- **Exporting**: We pass `(pointer, length)`. Since Zena strings are GC objects,
+  we might need to copy the bytes to Linear Memory to ensure they are
+  pinned/stable, or use a mechanism to pin them if supported.
+- **Importing**: The host needs to write strings into our memory. We must export
+  a `cabi_realloc` function that the host calls to allocate space in our Linear
+  Memory.
 
 ## 4. Resources & GC Integration
 
 The Component Model uses **Resources** to represent opaque objects.
 
 - **Handles**: A resource is passed as an `i32` handle.
-- **Table**: We need a "Resource Table" in Zena to map these `i32` handles to actual Zena GC objects.
+- **Table**: We need a "Resource Table" in Zena to map these `i32` handles to
+  actual Zena GC objects.
   - `host_handle -> Zena Object`: When the host gives us a handle.
   - `Zena Object -> host_handle`: When we pass an object to the host.
 
@@ -68,7 +85,8 @@ Preview 3 introduces `future` and `stream` types.
 - **Model**: It is not a callback-based model like JS. It is a polling model.
 - **Integration**:
   - We will likely map WASI `future` to a Zena `Promise` (or `Future`).
-  - The runtime will need to integrate with the host's "task" system, yielding execution when waiting for a future.
+  - The runtime will need to integrate with the host's "task" system, yielding
+    execution when waiting for a future.
 
 ## 6. Implementation Plan
 
@@ -96,8 +114,9 @@ We will use **`jco` (JavaScript Component Toolchain)**.
 
 1.  Compile Zena -> WASM.
 2.  `jco transpile` -> JS.
-3.  Run in Node.js.
-    `jco` provides polyfills for WASI Preview 2, allowing us to run tests in our existing Node environment without needing a separate `wasmtime` binary for every test.
+3.  Run in Node.js. `jco` provides polyfills for WASI Preview 2, allowing us to
+    run tests in our existing Node environment without needing a separate
+    `wasmtime` binary for every test.
 
 ## Development Environment
 
@@ -110,7 +129,8 @@ nix develop  # Enter dev shell with Node.js 25+, wasmtime, wasm-tools
 Tools available:
 
 - **Node.js 25+**: Required for WASM GC exception handling support
-- **wasmtime 39+**: Native WASM runtime with GC support (`-W gc=y -W exceptions=y -W function-references=y`)
+- **wasmtime 39+**: Native WASM runtime with GC support (`-W gc=y -W
+  exceptions=y -W function-references=y`)
 - **wasm-tools**: Inspect and manipulate WASM binaries
 
 ### Building for wasmtime
@@ -120,7 +140,8 @@ Tools available:
 npm run wasmtime:build examples/wasmtime-test.zena
 ```
 
-**Current limitation**: Zena modules import `console` functions from the host. wasmtime doesn't provide these by default. To run in wasmtime, we need either:
+**Current limitation**: Zena modules import `console` functions from the host.
+wasmtime doesn't provide these by default. To run in wasmtime, we need either:
 
 1. A WASI-based `console` implementation (maps to `wasi:cli/stdout`)
 2. A `--no-stdlib` compiler flag to omit console imports
