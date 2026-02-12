@@ -156,6 +156,13 @@ All scripts run through npm (using Wireit for caching), even for non-Node tasks:
 
 ### Wireit Caching (IMPORTANT!)
 
+**Interpreting Wireit Output**:
+- `✅ [test] Executed successfully` = Tests ran and passed
+- `✅ [test] Already fresh` = Tests already passed, nothing changed since last
+  run - **this is success, move on**
+- `❌ [test] Failed` = Tests failed - Wireit does NOT cache failures
+
+When you see `✅ Already fresh`, the task succeeded. Do not try to force a re-run.
 Wireit caches script results and only re-runs scripts when inputs change.
 
 **TRUST THE CACHE**:
