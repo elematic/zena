@@ -474,22 +474,28 @@ The `.wit.json` files use a specific schema. Example for a simple world:
 
 - [x] Generate complete list of test files from wasm-tools `tests/ui/`
 - [x] Categorize tests by type (basic types, records, functions, resources,
-  etc.)
+      etc.)
 - [x] Identify which tests have `.wit.json` vs `.wit.result` expected outputs
 - [x] Document test count and save inventory to
-  `tests/wit-parser/TEST_INVENTORY.md`
+      `tests/wit-parser/TEST_INVENTORY.md`
 
 **Results**: 201 total tests identified (85 success tests, 116 error tests)
 across 10 categories. See [TEST_INVENTORY.md](../../tests/wit-parser/TEST_INVENTORY.md)
 for full details.
 
-### Phase 1b: Single Test + Runner (validate format)
+### Phase 1b: Single Test + Runner (validate format) ✅ COMPLETE
 
-- [ ] Create `packages/stdlib/tests/wit-parser/` directory structure
-- [ ] Port ONE simple test (e.g., `types.wit` + `types.wit.json`)
-- [ ] Build test runner that can run this single test
-- [ ] Validate the test format works end-to-end
-- [ ] Adjust test format if needed before mass porting
+- [x] Create `tests/wit-parser/ui/` directory structure
+- [x] Port initial tests: `empty.wit`, `types.wit` (success cases)
+- [x] Port initial error test: `parse-fail/bad-list.wit`
+- [x] Build test runner that can run these tests
+- [x] Validate the test format works end-to-end
+- [x] Adjust test format if needed before mass porting
+
+**Results**: TypeScript test runner in `packages/wit-parser/src/run-tests.ts`
+discovers tests recursively, validates file pairs, and reports results. Format
+kept as-is: single-file tests use sibling `.wit.json`/`.wit.result`, multi-file
+tests use directories.
 
 ### Phase 1c: Port Remaining Tests
 

@@ -130,7 +130,7 @@ Tools available:
 
 - **Node.js 25+**: Required for WASM GC exception handling support
 - **wasmtime 39+**: Native WASM runtime with GC support (`-W gc=y -W
-  exceptions=y -W function-references=y`)
+exceptions=y -W function-references=y`)
 - **wasm-tools**: Inspect and manipulate WASM binaries
 
 ### Building for wasmtime
