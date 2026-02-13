@@ -2404,12 +2404,14 @@ function generateThisExpression(
     }
   }
   if (local) {
-    // Found 'this' in scope
+    // Found 'this' in scope - use the captured/declared local
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(local.index));
   } else {
     // Not found in scope, assume it's the implicit 'this' local
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
   }
-  body.push(Opcode.local_get);
-  body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
 }
 
 function generateCallExpression(

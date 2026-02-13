@@ -44,6 +44,14 @@ function traverseWithScope(
       }
       break;
     }
+    case NodeType.ThisExpression: {
+      // 'this' is captured like a variable if it's used inside a closure
+      // that was defined in a method context
+      if (!locals.has('this')) {
+        captures.add('this');
+      }
+      break;
+    }
     case NodeType.AssignmentExpression: {
       const assign = node as AssignmentExpression;
       // Check if the assignment target is a captured variable
