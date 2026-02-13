@@ -136,7 +136,7 @@ suite('Type Identity', () => {
           #new(v: T) { this.value = v; }
         }
         
-        let getBox = (): Box<i32> => new Box<i32>(1);
+        let getBox = (): Box<i32> => new Box(1);
         let useBox = (b: Box<i32>) => b.value;
         
         export let main = () => {
