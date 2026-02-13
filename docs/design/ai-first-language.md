@@ -92,6 +92,8 @@ let withdraw = (account: Account, amount: i32): Account
 
 The practical sweet spot: runtime contracts as baseline, flow-sensitive null/exhaustiveness checking, optional refinement types where the compiler tries to verify and falls back to runtime. Even runtime-only contracts help AI agents—"precondition `b != 0` violated" is more actionable than a crash.
 
+For a deeper exploration of formal verification, proof assistants, and what it would mean to _prove_ Zena code correct, see [Formal Verification and Proof Assistants](./formal-verification.md).
+
 ### Mandatory Linting
 
 Checks that are historically optional lint rules should become compiler errors: unused variables and imports, unreachable code, unhandled promises/futures, implicit `any` types, non-exhaustive pattern matches, shadowed variables.
@@ -352,3 +354,9 @@ Zena was designed with many of these principles in mind:
 | Fast feedback   | Designed for quick incremental compilation                   |
 
 See [Language Reference](../language-reference.md) for details.
+
+---
+
+## See Also
+
+- [Formal Verification and Proof Assistants](./formal-verification.md) — Taking contracts further with static verification and proofs
