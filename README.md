@@ -137,6 +137,9 @@ some of my thoughts and motivations at the moment:
 - [x] Regexes
 - [x] Iterators
 - [ ] Do/while loops
+- [ ] Pipeline operator (`|>`)
+- [ ] Tuple indexing (`tuple[0]`)
+- [ ] Block expressions
 - [ ] Mutable Maps and map literals (`#{...}`)
 - [ ] More primitive types
 - [ ] More operators: exponentiation

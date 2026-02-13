@@ -177,7 +177,9 @@ and coding standards, see [AGENTS.md](./AGENTS.md).
 ### Future Features
 
 - **Syntax**:
-  - Blocks.
+  - Pipeline operator (`|>`) with `$` placeholder. See [`docs/design/pipelines.md`](./docs/design/pipelines.md).
+  - Tuple indexing (`expr[0]` for unboxed tuples).
+  - Block expressions (blocks that return their last expression).
   - JSX-like builder syntax.
 - **Type System**:
   - Numeric unit types.

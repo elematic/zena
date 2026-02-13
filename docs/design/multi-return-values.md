@@ -560,6 +560,27 @@ to WASM.
    **Verdict:** This is the ideal solution - full static safety with zero
    runtime cost. Requires literal boolean types and tuple union narrowing.
 
+## Future Work
+
+### Tuple Indexing
+
+Support the `[]` operator on unboxed tuples with compile-time integer literals:
+
+```zena
+let name = person.getFirstAndLastName()[0]  // first name
+let found = map.get(key)[1]                 // the boolean
+```
+
+Requirements:
+
+- Index must be a **compile-time integer literal**
+- Returns the static type at that position
+- Out-of-bounds literal → compile error
+- Variable index → compile error (type varies by position)
+
+This enables ergonomic single-value extraction from multi-returns in expressions
+without requiring destructuring.
+
 ## References
 
 - [WASM Multi-Value Proposal](https://github.com/WebAssembly/multi-value)
@@ -568,3 +589,8 @@ to WASM.
 - [Rust's tuple returns](https://doc.rust-lang.org/std/primitive.tuple.html)
 - [Go's multiple return
   values](https://go.dev/doc/effective_go#multiple-returns)
+
+## Related
+
+- [`pipelines.md`](./pipelines.md) - Pipeline operator with tuple indexing for
+  ergonomic multi-return handling in expressions (`map.get(key) |> process($[0])`)
