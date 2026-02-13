@@ -2,8 +2,8 @@
 
 ## Status
 
-- **Status**: In Progress (Phase 4)
-- **Last Updated**: 2026-02-12
+- **Status**: In Progress (Phase 4.4)
+- **Last Updated**: 2026-02-13
 
 ## Overview
 
@@ -327,31 +327,37 @@ Once tests are in place, implement the parser itself.
 
 ```
 packages/wit-parser/zena/
-├── token.zena       # Token types, Span
-├── lexer.zena       # Tokenizer class  ✅ COMPLETE
-├── ast.zena         # AST node types   ✅ COMPLETE
-├── parser.zena      # Recursive descent parser
-├── resolver.zena    # Name resolution, type building
-└── json.zena        # JSON serialization for output
+├── token.zena              # Token types, Span           ✅ COMPLETE
+├── lexer.zena              # Tokenizer class             ✅ COMPLETE
+├── parser.zena             # Recursive descent parser    [IN PROGRESS]
+├── parser-test-harness.zena # WASM test harness          ✅ COMPLETE
+├── resolver.zena           # Name resolution             [NOT STARTED]
+└── json.zena               # JSON serialization          [NOT STARTED]
 ```
 
 ### 4.2 Implementation Order
 
-1. **Lexer** ✅ COMPLETE (~730 lines)
+1. **Lexer** ✅ COMPLETE (~350 lines)
    - Token enum with all WIT tokens (47 token types)
    - Span tracking for error messages
    - Unicode identifier support
-   - Full coverage of wasm-tools test files (272 .wit files)
+   - Full coverage of wasm-tools test files
 
-2. **AST Types** ✅ COMPLETE (~730 lines)
+2. **AST Types** ✅ COMPLETE (in parser.zena, ~800 lines)
    - Node types for all WIT constructs
    - Uses tagged class pattern (Zena lacks sum types with payloads)
-   - Index wrapper class for Map<string, i32> (avoids i32 | null issue)
    - Docs, stability annotations
 
-3. **Parser** (~800 lines) [NOT STARTED]
+3. **Parser** [IN PROGRESS] (~1050 lines)
    - Recursive descent, LL(1) with some lookahead
-   - Error recovery for better diagnostics
+   - Package declarations with versions
+   - Interface and world definitions
+   - Type definitions (record, variant, enum, flags, resource, alias)
+   - Function signatures with async support
+   - Use/include statements
+   - Annotations (@since, @unstable, @deprecated)
+   - **Test status**: 82/211 wasm-tools tests passing (39%)
+   - **Missing**: nested block comments, nested packages, multi-file support
 
 4. **Resolver** (~1000 lines) [NOT STARTED]
    - Package/interface/world resolution
@@ -361,7 +367,25 @@ packages/wit-parser/zena/
 5. **JSON Output** (~200 lines) [NOT STARTED]
    - Serialize resolved AST to match `.wit.json` format
 
-### 4.3 Zena Features Exercised
+### 4.3 Parser Next Steps
+
+The parser handles core WIT syntax but needs additional work:
+
+| Feature                           | Status                    | Tests Affected |
+| --------------------------------- | ------------------------- | -------------- |
+| Block comments (`/* */`)          | ❌ Missing nested support | ~5             |
+| Nested packages (`package x { }`) | ❌ Not implemented        | ~15            |
+| Multi-file packages               | ❌ Single-file only       | ~30            |
+| Semantic validation               | N/A (syntax-only parser)  | ~70            |
+
+**Priority order**:
+
+1. **Block comments** - Quick win, fix nested comment parsing in lexer
+2. **Nested packages** - Add `package name { interface/world }` syntax
+3. **Multi-file support** - Concatenate `.wit` files from directories
+4. **Consider**: Mark semantic tests as "expected pass" since we're syntax-only
+
+### 4.4 Zena Features Exercised
 
 This project will stress-test:
 
@@ -540,10 +564,14 @@ the parser is implemented.
 
 ### Parser Implementation
 
-- [ ] Create `packages/stdlib/zena/wit/` module structure
-- [ ] Implement lexer (Token enum, Tokenizer class)
-- [ ] Implement AST types
-- [ ] Implement parser (recursive descent)
+- [x] Create `packages/wit-parser/zena/` module structure
+- [x] Implement lexer (Token enum, Tokenizer class)
+- [x] Implement AST types (in parser.zena)
+- [x] Implement core parser (recursive descent)
+- [x] Implement annotations (@since, @unstable, @deprecated)
+- [ ] Fix nested block comment parsing (lexer)
+- [ ] Implement nested package syntax (parser)
+- [ ] Implement multi-file package support (test harness)
 - [ ] Implement resolver
 - [ ] Implement JSON serialization
 
@@ -555,10 +583,14 @@ the parser is implemented.
 
 ### Testing Milestones
 
-- [ ] Basic types tests passing
-- [ ] Records & variants tests passing
-- [ ] Functions tests passing
-- [ ] Resources tests passing
-- [ ] Packages & worlds tests passing
-- [ ] All parse-fail tests passing
+- [x] Basic types tests passing
+- [x] Records & variants tests passing
+- [x] Functions tests passing
+- [x] Resources tests passing
+- [x] Packages & worlds tests passing (single-file)
+- [x] Annotation tests passing (@since, @unstable)
+- [ ] Nested block comments tests passing
+- [ ] Nested package syntax tests passing
+- [ ] Multi-file package tests passing
+- [ ] All parse-fail tests passing (semantic validation)
 - [ ] Full test suite parity with wasm-tools
