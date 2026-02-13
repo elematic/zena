@@ -6,7 +6,7 @@
 
 import {String} from 'zena:string';
 import {StringBuilder} from 'zena:string-builder';
-import {Parser, Ast, AstItem, AstItemTag, ParseError} from './parser.zena';
+import {Parser, Ast, AstItem, AstItemTag, ParseError, NestedPackage} from './parser.zena';
 import {InterfaceDef, WorldDef, InterfaceItem, InterfaceItemTag} from './parser.zena';
 import {TypeDef, TypeDefTag, Type, TypeTag, PackageName, Id, ToplevelUse} from './parser.zena';
 
@@ -125,6 +125,21 @@ let formatAst = (ast: Ast): string => {
   
   // Output package name if present
   appendPackageName(sb, ast.packageName);
+  
+  // Output nested packages
+  var pkgIdx = 0;
+  while (pkgIdx < ast.nestedPackages.length) {
+    let pkg = ast.nestedPackages[pkgIdx];
+    sb.append("nested package ");
+    sb.append(pkg.name.namespace.name);
+    sb.append(":");
+    sb.append(pkg.name.name.name);
+    appendVersionIfPresent(sb, pkg.name.version);
+    sb.append(" (");
+    sb.append(i32ToStr(pkg.items.length));
+    sb.append(" items)\n");
+    pkgIdx = pkgIdx + 1;
+  }
   
   // Output each top-level item using index-based access
   var idx = 0;
