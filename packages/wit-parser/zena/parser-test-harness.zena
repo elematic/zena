@@ -1,0 +1,196 @@
+/**
+ * Parser Test Harness
+ *
+ * Exports functions to test the WIT parser from TypeScript.
+ */
+
+import {String} from 'zena:string';
+import {StringBuilder} from 'zena:string-builder';
+import {Parser, Ast, AstItem, AstItemTag, ParseError} from './parser.zena';
+import {InterfaceDef, WorldDef, InterfaceItem, InterfaceItemTag} from './parser.zena';
+import {TypeDef, TypeDefTag, Type, TypeTag, PackageName, Id, ToplevelUse} from './parser.zena';
+
+// ============================================================================
+// Input: TypeScript provides these via imports
+// ============================================================================
+
+@external("input", "getLength")
+declare function getInputLength(): i32;
+
+@external("input", "getByte")
+declare function getInputByte(index: i32): i32;
+
+// ============================================================================
+// Output: TypeScript reads from here
+// ============================================================================
+
+var outputString: String = "";
+
+export let getOutputLength = (): i32 => outputString.length;
+export let getOutputByte = (index: i32): i32 => outputString.getByteAt(index);
+
+// ============================================================================
+// Helper to read input
+// ============================================================================
+
+let readInput = (): String => {
+  let len = getInputLength();
+  if (len == 0) { return ""; } else { }
+  
+  let sb = new StringBuilder();
+  var i = 0;
+  while (i < len) {
+    sb.appendByte(getInputByte(i));
+    i = i + 1;
+  }
+  return sb.toString();
+};
+
+// Helper to append version if present
+let appendVersionIfPresent = (sb: StringBuilder, version: String | null): void => {
+  if (version != null) {
+    sb.append("@");
+    sb.append(version as String);
+  } else {
+    return;
+  }
+};
+
+// Helper to append alias if present  
+let appendAliasIfPresent = (sb: StringBuilder, asName: Id | null): void => {
+  if (asName != null) {
+    sb.append(" as ");
+    sb.append((asName as Id).name);
+  } else {
+    return;
+  }
+};
+
+// Helper to append package name
+let appendPackageName = (sb: StringBuilder, pkg: PackageName | null): void => {
+  if (pkg != null) {
+    let p = pkg as PackageName;
+    sb.append("package: ");
+    sb.append(p.namespace.name);
+    sb.append(":");
+    sb.append(p.name.name);
+    appendVersionIfPresent(sb, p.version);
+    sb.append("\n");
+  } else {
+    return;
+  }
+};
+
+// ============================================================================
+// Test Functions
+// ============================================================================
+
+// Helper to convert i32 to string (simple implementation for small numbers)
+let i32ToStr = (n: i32): String => {
+  if (n == 0) { return "0"; } else { }
+  var num = n;
+  var negative = false;
+  if (num < 0) {
+    negative = true;
+    num = 0 - num;
+  } else { }
+  
+  // Build digits in reverse
+  let sb = new StringBuilder();
+  while (num > 0) {
+    let digit = num % 10;
+    sb.appendByte(48 + digit); // ASCII '0' = 48
+    num = (num / 10) as i32;  // Integer division via truncation
+  }
+  
+  if (negative) {
+    sb.appendByte(45); // ASCII '-'
+  } else { }
+  
+  // Reverse the string
+  let s = sb.toString();
+  let len = s.length;
+  let result = new StringBuilder(len);
+  var i = len - 1;
+  while (i >= 0) {
+    result.appendByte(s.getByteAt(i));
+    i = i - 1;
+  }
+  return result.toString();
+};
+
+/** Helper to format AST summary */
+let formatAst = (ast: Ast): string => {
+  let sb = new StringBuilder();
+  
+  // Output package name if present
+  appendPackageName(sb, ast.packageName);
+  
+  // Output each top-level item using index-based access
+  var idx = 0;
+  while (idx < ast.items.length) {
+    let item = ast.items[idx];
+    if (item.tag == AstItemTag.Interface) {
+      let iface = item.interfaceDef as InterfaceDef;
+      sb.append("interface ");
+      sb.append(iface.name.name);
+      sb.append(" (");
+      sb.append(i32ToStr(iface.items.length));
+      sb.append(" items)\n");
+    } else if (item.tag == AstItemTag.World) {
+      let world = item.worldDef as WorldDef;
+      sb.append("world ");
+      sb.append(world.name.name);
+      sb.append(" (");
+      sb.append(i32ToStr(world.items.length));
+      sb.append(" items)\n");
+    } else if (item.tag == AstItemTag.Use) {
+      let use = item.use as ToplevelUse;
+      sb.append("use ");
+      sb.append(use.item.getName().name);
+      appendAliasIfPresent(sb, use.asName);
+      sb.append("\n");
+    } else {
+      // Unknown item type - skip
+      sb.append("unknown\n");
+    }
+    idx = idx + 1;
+  }
+  
+  return sb.toString();
+};
+
+/**
+ * Parse WIT source and return a summary of the parsed AST.
+ * 
+ * TODO: Parser.parse() should return ParseResult with diagnostics instead of throwing.
+ * For now we use try/catch to handle parse errors gracefully.
+ */
+export let parse = (): void => {
+  let input = readInput();
+  
+  outputString = try {
+    let ast = Parser.parse(input);
+    formatAst(ast)
+  } catch (e) {
+    "ParseError: " + e.message + "\n"
+  };
+};
+
+/**
+ * Count the number of items in the parsed AST.
+ * Returns -1 on parse error.
+ * 
+ * TODO: Use ParseResult instead of exceptions.
+ */
+export let countItems = (): i32 => {
+  let input = readInput();
+  let count = try {
+    let ast = Parser.parse(input);
+    ast.items.length
+  } catch (e) {
+    -1  // Return -1 on parse error
+  };
+  return count;
+};
+
