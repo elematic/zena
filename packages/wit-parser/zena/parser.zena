@@ -808,6 +808,21 @@ export class ToplevelUse {
 }
 
 /**
+ * A nested package definition: `package foo:bar { ... }`
+ */
+export class NestedPackage {
+  docs: Docs;
+  name: PackageName;
+  items: Array<AstItem>;
+
+  #new(docs: Docs, name: PackageName) {
+    this.docs = docs;
+    this.name = name;
+    this.items = new Array<AstItem>();
+  }
+}
+
+/**
  * Tag for AstItem kinds.
  */
 export enum AstItemTag {
@@ -857,10 +872,13 @@ export class AstItem {
 export class Ast {
   packageName: PackageName | null;
   items: Array<AstItem>;
+  /** Nested packages defined inline: `package foo:bar { ... }` */
+  nestedPackages: Array<NestedPackage>;
 
   #new() {
     this.packageName = null;
     this.items = new Array<AstItem>();
+    this.nestedPackages = new Array<NestedPackage>();
   }
 }
 
@@ -1690,17 +1708,14 @@ export class Parser {
         }
         
         // name: func(...)
-        let func = this.#parseFunc();
-        this.#expectSemicolon();
-        return ExternKind.makeFunc(id, func);
-      }
-      
-      // Just an identifier - could be start of a use path
-      // Put the id back by creating a UsePath
-      var path = UsePath.fromId(id);
-      
-      // Check if there's more to the path
-      if (this.#eat(TokenType.Colon)) {
+        if (this.#check(TokenType.Func)) {
+          let func = this.#parseFunc();
+          this.#expectSemicolon();
+          return ExternKind.makeFunc(id, func);
+        }
+        
+        // Otherwise this is a package path: namespace:name/interface
+        // id is the namespace, now parse the rest
         let pkgName = this.#parseId();
         
         // Optional version
@@ -1734,9 +1749,13 @@ export class Parser {
         let pkgId = new PackageName(id, pkgName, new Span(id.span.start, pkgName.span.end));
         pkgId.version = version;
         
-        path = UsePath.fromPackage(pkgId, interfaceName);
+        let path = UsePath.fromPackage(pkgId, interfaceName);
+        this.#expectSemicolon();
+        return ExternKind.fromPath(path);
       }
       
+      // Just a simple identifier path (local interface reference)
+      let path = UsePath.fromId(id);
       this.#expectSemicolon();
       return ExternKind.fromPath(path);
     }
@@ -1787,11 +1806,36 @@ export class Parser {
     
     // Parse items until EOF
     while (!this.#check(TokenType.Eof)) {
+      // Check for nested package: package name { ... }
+      if (this.#check(TokenType.Package)) {
+        ast.nestedPackages.push(this.#parseNestedPackage(docs));
+        docs = this.#parseDocs();
+        continue;
+      }
+      
       ast.items.push(this.#parseAstItem(docs));
       docs = this.#parseDocs();
     }
     
     return ast;
+  }
+
+  /** Parse a nested package: package name { ... } */
+  #parseNestedPackage(docs: Docs): NestedPackage {
+    this.#expect(TokenType.Package);
+    let name = this.#parsePackageName();
+    let pkg = new NestedPackage(docs, name);
+    
+    this.#expect(TokenType.LeftBrace);
+    
+    // Parse items until closing brace
+    while (!this.#check(TokenType.RightBrace) && !this.#check(TokenType.Eof)) {
+      let itemDocs = this.#parseDocs();
+      pkg.items.push(this.#parseAstItem(itemDocs));
+    }
+    
+    this.#expect(TokenType.RightBrace);
+    return pkg;
   }
 
   /** Parse a top-level item. */
