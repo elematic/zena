@@ -1,0 +1,1852 @@
+/**
+ * WIT Parser
+ *
+ * A recursive descent parser for WIT (WebAssembly Interface Types) syntax.
+ * Produces an unresolved parse tree that is later transformed by the resolver
+ * into the resolved AST.
+ *
+ * Based on the canonical implementation in wasm-tools:
+ * https://github.com/bytecodealliance/wasm-tools/blob/main/crates/wit-parser/src/ast.rs
+ */
+
+import {String} from 'zena:string';
+import {Option} from 'zena:option';
+import {TokenType, Span, Token} from './token.zena';
+import {Lexer, LexError} from './lexer.zena';
+
+// ============================================================================
+// Parse Error
+// ============================================================================
+
+/**
+ * Error produced during parsing.
+ */
+export class ParseError extends Error {
+  span: Span;
+
+  #new(message: String, span: Span) {
+    super(message);
+    this.span = span;
+  }
+}
+
+// ============================================================================
+// Unresolved AST Types (Parse Tree)
+// ============================================================================
+
+/**
+ * Documentation comments collected from /// comments.
+ */
+export class Docs {
+  contents: String | null;
+  span: Span;
+  /** Annotations that appeared before this item. */
+  attributes: Array<Attribute> | null;
+
+  #new(span: Span) {
+    this.contents = null;
+    this.span = span;
+    this.attributes = null;
+  }
+}
+
+// ============================================================================
+// Annotations/Attributes
+// ============================================================================
+
+/**
+ * Tag for Attribute kinds.
+ * WIT supports: @since(version = x.y.z), @unstable(feature = name), @deprecated(version = x.y.z)
+ */
+export enum AttributeTag {
+  Since,
+  Unstable,
+  Deprecated,
+}
+
+/**
+ * An attribute/annotation on an item.
+ */
+export class Attribute {
+  tag: AttributeTag;
+  span: Span;
+  /** For @since and @deprecated: the version string */
+  version: String | null;
+  /** For @unstable: the feature name */
+  feature: Id | null;
+
+  #new(tag: AttributeTag, span: Span) {
+    this.tag = tag;
+    this.span = span;
+    this.version = null;
+    this.feature = null;
+  }
+
+  static since(version: String, span: Span): Attribute {
+    let a = new Attribute(AttributeTag.Since, span);
+    a.version = version;
+    return a;
+  }
+
+  static unstable(feature: Id, span: Span): Attribute {
+    let a = new Attribute(AttributeTag.Unstable, span);
+    a.feature = feature;
+    return a;
+  }
+
+  static deprecated(version: String, span: Span): Attribute {
+    let a = new Attribute(AttributeTag.Deprecated, span);
+    a.version = version;
+    return a;
+  }
+}
+
+/**
+ * An identifier in the source.
+ */
+export class Id {
+  name: String;
+  span: Span;
+
+  #new(name: String, span: Span) {
+    this.name = name;
+    this.span = span;
+  }
+}
+
+/**
+ * A package name: namespace:name@version
+ */
+export class PackageName {
+  namespace: Id;
+  name: Id;
+  version: String | null;
+  versionSpan: Span | null;
+  span: Span;
+
+  #new(namespace: Id, name: Id, span: Span) {
+    this.namespace = namespace;
+    this.name = name;
+    this.version = null;
+    this.versionSpan = null;
+    this.span = span;
+  }
+}
+
+// ============================================================================
+// Use Paths
+// ============================================================================
+
+/**
+ * Tag for UsePath variants.
+ */
+export enum UsePathTag {
+  Id,       // Just an identifier: `foo`
+  Package,  // Package path: `foo:bar/baz`
+}
+
+/**
+ * A path in a use statement.
+ */
+export class UsePath {
+  tag: UsePathTag;
+  id: Id | null;           // For Id tag
+  packageId: PackageName | null;  // For Package tag
+  name: Id | null;         // For Package tag (interface name)
+
+  #new(tag: UsePathTag) {
+    this.tag = tag;
+    this.id = null;
+    this.packageId = null;
+    this.name = null;
+  }
+
+  static fromId(id: Id): UsePath {
+    let p = new UsePath(UsePathTag.Id);
+    p.id = id;
+    return p;
+  }
+
+  static fromPackage(pkgId: PackageName, name: Id): UsePath {
+    let p = new UsePath(UsePathTag.Package);
+    p.packageId = pkgId;
+    p.name = name;
+    return p;
+  }
+
+  /** Get the final name component. */
+  getName(): Id {
+    if (this.tag == UsePathTag.Id) {
+      return this.id as Id;
+    }
+    return this.name as Id;
+  }
+}
+
+/**
+ * A name in a use statement with optional rename.
+ */
+export class UseName {
+  name: Id;
+  asName: Id | null;
+
+  #new(name: Id) {
+    this.name = name;
+    this.asName = null;
+  }
+}
+
+// ============================================================================
+// Types
+// ============================================================================
+
+/**
+ * Tag for Type variants.
+ */
+export enum TypeTag {
+  // Primitives
+  U8, U16, U32, U64,
+  S8, S16, S32, S64,
+  F32, F64,
+  Char, Bool, String,
+  ErrorContext,
+  
+  // Composite
+  List,
+  Option,
+  Result,
+  Tuple,
+  Future,
+  Stream,
+  Map,
+  
+  // Named type reference
+  Name,
+}
+
+/**
+ * A type in the unresolved AST.
+ */
+export class Type {
+  tag: TypeTag;
+  span: Span;
+  
+  // For List, Option, Future, Stream (inner type)
+  inner: Type | null;
+  
+  // For Result (ok and err types, both optional)
+  okType: Type | null;
+  errType: Type | null;
+  
+  // For Tuple (element types)
+  types: Array<Type> | null;
+  
+  // For Map (key and value)
+  keyType: Type | null;
+  valueType: Type | null;
+  
+  // For Name (type reference by name)
+  name: Id | null;
+
+  #new(tag: TypeTag, span: Span) {
+    this.tag = tag;
+    this.span = span;
+    this.inner = null;
+    this.okType = null;
+    this.errType = null;
+    this.types = null;
+    this.keyType = null;
+    this.valueType = null;
+    this.name = null;
+  }
+
+  static primitive(tag: TypeTag, span: Span): Type {
+    return new Type(tag, span);
+  }
+
+  static list(inner: Type, span: Span): Type {
+    let t = new Type(TypeTag.List, span);
+    t.inner = inner;
+    return t;
+  }
+
+  static option(inner: Type, span: Span): Type {
+    let t = new Type(TypeTag.Option, span);
+    t.inner = inner;
+    return t;
+  }
+
+  static result(ok: Type | null, err: Type | null, span: Span): Type {
+    let t = new Type(TypeTag.Result, span);
+    t.okType = ok;
+    t.errType = err;
+    return t;
+  }
+
+  static tuple(types: Array<Type>, span: Span): Type {
+    let t = new Type(TypeTag.Tuple, span);
+    t.types = types;
+    return t;
+  }
+
+  static future(inner: Type | null, span: Span): Type {
+    let t = new Type(TypeTag.Future, span);
+    t.inner = inner;
+    return t;
+  }
+
+  static stream(inner: Type | null, span: Span): Type {
+    let t = new Type(TypeTag.Stream, span);
+    t.inner = inner;
+    return t;
+  }
+
+  static map(key: Type, value: Type, span: Span): Type {
+    let t = new Type(TypeTag.Map, span);
+    t.keyType = key;
+    t.valueType = value;
+    return t;
+  }
+
+  static named(name: Id, span: Span): Type {
+    let t = new Type(TypeTag.Name, span);
+    t.name = name;
+    return t;
+  }
+}
+
+// ============================================================================
+// Function Types
+// ============================================================================
+
+/**
+ * A function parameter.
+ */
+export class Param {
+  name: Id;
+  type: Type;
+
+  #new(name: Id, type: Type) {
+    this.name = name;
+    this.type = type;
+  }
+}
+
+/**
+ * A function signature.
+ */
+export class Func {
+  span: Span;
+  isAsync: boolean;
+  params: Array<Param>;
+  result: Type | null;
+
+  #new(span: Span) {
+    this.span = span;
+    this.isAsync = false;
+    this.params = new Array<Param>();
+    this.result = null;
+  }
+}
+
+/**
+ * A named function (in interface or resource).
+ */
+export class NamedFunc {
+  docs: Docs;
+  name: Id;
+  func: Func;
+
+  #new(docs: Docs, name: Id, func: Func) {
+    this.docs = docs;
+    this.name = name;
+    this.func = func;
+  }
+}
+
+// ============================================================================
+// Type Definitions
+// ============================================================================
+
+/**
+ * A field in a record.
+ */
+export class Field {
+  docs: Docs;
+  name: Id;
+  type: Type;
+
+  #new(docs: Docs, name: Id, type: Type) {
+    this.docs = docs;
+    this.name = name;
+    this.type = type;
+  }
+}
+
+/**
+ * A flag in a flags type.
+ */
+export class FlagDef {
+  docs: Docs;
+  name: Id;
+
+  #new(docs: Docs, name: Id) {
+    this.docs = docs;
+    this.name = name;
+  }
+}
+
+/**
+ * A case in a variant.
+ */
+export class Case {
+  docs: Docs;
+  name: Id;
+  type: Type | null;
+
+  #new(docs: Docs, name: Id) {
+    this.docs = docs;
+    this.name = name;
+    this.type = null;
+  }
+}
+
+/**
+ * A case in an enum.
+ */
+export class EnumCaseDef {
+  docs: Docs;
+  name: Id;
+
+  #new(docs: Docs, name: Id) {
+    this.docs = docs;
+    this.name = name;
+  }
+}
+
+/**
+ * Tag for resource function kinds.
+ */
+export enum ResourceFuncTag {
+  Method,
+  Static,
+  Constructor,
+}
+
+/**
+ * A function in a resource.
+ */
+export class ResourceFunc {
+  tag: ResourceFuncTag;
+  func: NamedFunc;
+
+  #new(tag: ResourceFuncTag, func: NamedFunc) {
+    this.tag = tag;
+    this.func = func;
+  }
+}
+
+/**
+ * Tag for TypeDef kinds.
+ */
+export enum TypeDefTag {
+  Alias,     // type foo = bar
+  Record,    // record foo { ... }
+  Flags,     // flags foo { ... }
+  Variant,   // variant foo { ... }
+  Enum,      // enum foo { ... }
+  Resource,  // resource foo { ... }
+}
+
+/**
+ * A type definition.
+ */
+export class TypeDef {
+  docs: Docs;
+  tag: TypeDefTag;
+  name: Id;
+  
+  // For Alias
+  aliasType: Type | null;
+  
+  // For Record
+  fields: Array<Field> | null;
+  
+  // For Flags
+  flags: Array<FlagDef> | null;
+  
+  // For Variant
+  cases: Array<Case> | null;
+  
+  // For Enum
+  enumCases: Array<EnumCaseDef> | null;
+  
+  // For Resource
+  resourceFuncs: Array<ResourceFunc> | null;
+
+  #new(docs: Docs, tag: TypeDefTag, name: Id) {
+    this.docs = docs;
+    this.tag = tag;
+    this.name = name;
+    this.aliasType = null;
+    this.fields = null;
+    this.flags = null;
+    this.cases = null;
+    this.enumCases = null;
+    this.resourceFuncs = null;
+  }
+
+  static alias(docs: Docs, name: Id, type: Type): TypeDef {
+    let td = new TypeDef(docs, TypeDefTag.Alias, name);
+    td.aliasType = type;
+    return td;
+  }
+
+  static record(docs: Docs, name: Id, fields: Array<Field>): TypeDef {
+    let td = new TypeDef(docs, TypeDefTag.Record, name);
+    td.fields = fields;
+    return td;
+  }
+
+  static flagsDef(docs: Docs, name: Id, flags: Array<FlagDef>): TypeDef {
+    let td = new TypeDef(docs, TypeDefTag.Flags, name);
+    td.flags = flags;
+    return td;
+  }
+
+  static variant(docs: Docs, name: Id, cases: Array<Case>): TypeDef {
+    let td = new TypeDef(docs, TypeDefTag.Variant, name);
+    td.cases = cases;
+    return td;
+  }
+
+  static enumDef(docs: Docs, name: Id, cases: Array<EnumCaseDef>): TypeDef {
+    let td = new TypeDef(docs, TypeDefTag.Enum, name);
+    td.enumCases = cases;
+    return td;
+  }
+
+  static resource(docs: Docs, name: Id, funcs: Array<ResourceFunc>): TypeDef {
+    let td = new TypeDef(docs, TypeDefTag.Resource, name);
+    td.resourceFuncs = funcs;
+    return td;
+  }
+}
+
+// ============================================================================
+// Interface Items
+// ============================================================================
+
+/**
+ * Tag for InterfaceItem kinds.
+ */
+export enum InterfaceItemTag {
+  TypeDef,
+  Func,
+  Use,
+}
+
+/**
+ * An item in an interface.
+ */
+export class InterfaceItem {
+  tag: InterfaceItemTag;
+  typeDef: TypeDef | null;
+  func: NamedFunc | null;
+  use: Use | null;
+
+  #new(tag: InterfaceItemTag) {
+    this.tag = tag;
+    this.typeDef = null;
+    this.func = null;
+    this.use = null;
+  }
+
+  static fromTypeDef(td: TypeDef): InterfaceItem {
+    let item = new InterfaceItem(InterfaceItemTag.TypeDef);
+    item.typeDef = td;
+    return item;
+  }
+
+  static fromFunc(f: NamedFunc): InterfaceItem {
+    let item = new InterfaceItem(InterfaceItemTag.Func);
+    item.func = f;
+    return item;
+  }
+
+  static fromUse(u: Use): InterfaceItem {
+    let item = new InterfaceItem(InterfaceItemTag.Use);
+    item.use = u;
+    return item;
+  }
+}
+
+/**
+ * A use statement in an interface.
+ */
+export class Use {
+  from: UsePath;
+  names: Array<UseName>;
+
+  #new(from: UsePath, names: Array<UseName>) {
+    this.from = from;
+    this.names = names;
+  }
+}
+
+/**
+ * An interface definition.
+ */
+export class InterfaceDef {
+  docs: Docs;
+  name: Id;
+  items: Array<InterfaceItem>;
+
+  #new(docs: Docs, name: Id) {
+    this.docs = docs;
+    this.name = name;
+    this.items = new Array<InterfaceItem>();
+  }
+}
+
+// ============================================================================
+// World Items
+// ============================================================================
+
+/**
+ * Tag for ExternKind (import/export kind).
+ */
+export enum ExternKindTag {
+  Interface,  // import/export an inline interface
+  Path,       // import/export a path reference
+  Func,       // import/export a function
+}
+
+/**
+ * The kind of an import or export.
+ */
+export class ExternKind {
+  tag: ExternKindTag;
+  name: Id | null;           // For Interface and Func
+  items: Array<InterfaceItem> | null;  // For Interface
+  path: UsePath | null;      // For Path
+  funcDef: Func | null;      // For Func
+
+  #new(tag: ExternKindTag) {
+    this.tag = tag;
+    this.name = null;
+    this.items = null;
+    this.path = null;
+    this.funcDef = null;
+  }
+
+  static iface(name: Id, items: Array<InterfaceItem>): ExternKind {
+    let k = new ExternKind(ExternKindTag.Interface);
+    k.name = name;
+    k.items = items;
+    return k;
+  }
+
+  static fromPath(path: UsePath): ExternKind {
+    let k = new ExternKind(ExternKindTag.Path);
+    k.path = path;
+    return k;
+  }
+
+  static makeFunc(name: Id, f: Func): ExternKind {
+    let k = new ExternKind(ExternKindTag.Func);
+    k.name = name;
+    k.funcDef = f;
+    return k;
+  }
+}
+
+/**
+ * An import in a world.
+ */
+export class Import {
+  docs: Docs;
+  kind: ExternKind;
+
+  #new(docs: Docs, kind: ExternKind) {
+    this.docs = docs;
+    this.kind = kind;
+  }
+}
+
+/**
+ * An export in a world.
+ */
+export class Export {
+  docs: Docs;
+  kind: ExternKind;
+
+  #new(docs: Docs, kind: ExternKind) {
+    this.docs = docs;
+    this.kind = kind;
+  }
+}
+
+/**
+ * An include statement in a world.
+ */
+export class Include {
+  from: UsePath;
+  names: Array<IncludeName>;
+
+  #new(from: UsePath, names: Array<IncludeName>) {
+    this.from = from;
+    this.names = names;
+  }
+}
+
+/**
+ * A name in an include statement.
+ */
+export class IncludeName {
+  name: Id;
+  asName: Id;
+
+  #new(name: Id, asName: Id) {
+    this.name = name;
+    this.asName = asName;
+  }
+}
+
+/**
+ * Tag for WorldItem kinds.
+ */
+export enum WorldItemTag {
+  Import,
+  Export,
+  Use,
+  TypeDef,
+  Include,
+}
+
+/**
+ * An item in a world.
+ */
+export class WorldItem {
+  tag: WorldItemTag;
+  importItem: Import | null;
+  exportItem: Export | null;
+  use: Use | null;
+  typeDef: TypeDef | null;
+  include: Include | null;
+
+  #new(tag: WorldItemTag) {
+    this.tag = tag;
+    this.importItem = null;
+    this.exportItem = null;
+    this.use = null;
+    this.typeDef = null;
+    this.include = null;
+  }
+
+  static fromImport(i: Import): WorldItem {
+    let item = new WorldItem(WorldItemTag.Import);
+    item.importItem = i;
+    return item;
+  }
+
+  static fromExport(e: Export): WorldItem {
+    let item = new WorldItem(WorldItemTag.Export);
+    item.exportItem = e;
+    return item;
+  }
+
+  static fromUse(u: Use): WorldItem {
+    let item = new WorldItem(WorldItemTag.Use);
+    item.use = u;
+    return item;
+  }
+
+  static fromTypeDef(td: TypeDef): WorldItem {
+    let item = new WorldItem(WorldItemTag.TypeDef);
+    item.typeDef = td;
+    return item;
+  }
+
+  static fromInclude(i: Include): WorldItem {
+    let item = new WorldItem(WorldItemTag.Include);
+    item.include = i;
+    return item;
+  }
+}
+
+/**
+ * A world definition.
+ */
+export class WorldDef {
+  docs: Docs;
+  name: Id;
+  items: Array<WorldItem>;
+
+  #new(docs: Docs, name: Id) {
+    this.docs = docs;
+    this.name = name;
+    this.items = new Array<WorldItem>();
+  }
+}
+
+// ============================================================================
+// Top-level Items
+// ============================================================================
+
+/**
+ * A top-level use statement.
+ */
+export class ToplevelUse {
+  item: UsePath;
+  asName: Id | null;
+
+  #new(item: UsePath) {
+    this.item = item;
+    this.asName = null;
+  }
+}
+
+/**
+ * Tag for AstItem kinds.
+ */
+export enum AstItemTag {
+  Interface,
+  World,
+  Use,
+}
+
+/**
+ * A top-level item in a WIT file.
+ */
+export class AstItem {
+  tag: AstItemTag;
+  interfaceDef: InterfaceDef | null;
+  worldDef: WorldDef | null;
+  use: ToplevelUse | null;
+
+  #new(tag: AstItemTag) {
+    this.tag = tag;
+    this.interfaceDef = null;
+    this.worldDef = null;
+    this.use = null;
+  }
+
+  static fromInterface(i: InterfaceDef): AstItem {
+    let item = new AstItem(AstItemTag.Interface);
+    item.interfaceDef = i;
+    return item;
+  }
+
+  static fromWorld(w: WorldDef): AstItem {
+    let item = new AstItem(AstItemTag.World);
+    item.worldDef = w;
+    return item;
+  }
+
+  static fromUse(u: ToplevelUse): AstItem {
+    let item = new AstItem(AstItemTag.Use);
+    item.use = u;
+    return item;
+  }
+}
+
+/**
+ * A parsed WIT file (unresolved).
+ */
+export class Ast {
+  packageName: PackageName | null;
+  items: Array<AstItem>;
+
+  #new() {
+    this.packageName = null;
+    this.items = new Array<AstItem>();
+  }
+}
+
+// ============================================================================
+// Parser
+// ============================================================================
+
+/**
+ * A recursive descent parser for WIT syntax.
+ */
+export class Parser {
+  #lexer: Lexer;
+  #current: Token;
+
+  #new(source: String) {
+    this.#lexer = new Lexer(source);
+    this.#current = this.#lexer.next();
+  }
+
+  // --------------------------------------------------------------------------
+  // Public API
+  // --------------------------------------------------------------------------
+
+  /**
+   * Parse a complete WIT file.
+   */
+  static parse(source: String): Ast {
+    let parser = new Parser(source);
+    return parser.#parseAst();
+  }
+
+  // --------------------------------------------------------------------------
+  // Core Parsing Helpers
+  // --------------------------------------------------------------------------
+
+  /** Get current token without consuming it. */
+  #peek(): Token {
+    return this.#current;
+  }
+
+  /** Check if current token is of the given type. */
+  #check(type: TokenType): boolean {
+    return this.#current.type == type;
+  }
+
+  /** Consume current token and return it. */
+  #advance(): Token {
+    let token = this.#current;
+    this.#current = this.#lexer.next();
+    return token;
+  }
+
+  /** Consume current token if it matches, return true if consumed. */
+  #eat(type: TokenType): boolean {
+    if (this.#check(type)) {
+      this.#advance();
+      return true;
+    }
+    return false;
+  }
+
+  /** Expect current token to be of type, consume and return it. Throws on mismatch. */
+  #expect(type: TokenType): Token {
+    if (!this.#check(type)) {
+      throw new ParseError(
+        "unexpected token",
+        this.#current.span
+      );
+    }
+    return this.#advance();
+  }
+
+  /** Expect a semicolon (with helpful error message). */
+  #expectSemicolon(): void {
+    this.#expect(TokenType.Semicolon);
+  }
+
+  /** Get the text for a span. */
+  #text(span: Span): String {
+    return this.#lexer.getSpanText(span);
+  }
+
+  // --------------------------------------------------------------------------
+  // Identifier Parsing
+  // --------------------------------------------------------------------------
+
+  /** Parse an identifier. */
+  #parseId(): Id {
+    let token = this.#peek();
+    if (token.type == TokenType.Id || token.type == TokenType.ExplicitId) {
+      this.#advance();
+      return new Id(this.#text(token.span), token.span);
+    }
+    throw new ParseError("expected identifier", token.span);
+  }
+
+  // --------------------------------------------------------------------------
+  // Docs and Attribute Parsing
+  // --------------------------------------------------------------------------
+
+  /** Parse doc comments (/// comments) and attributes (@since, @unstable, @deprecated). */
+  #parseDocs(): Docs {
+    // TODO: Implement doc comment parsing
+    // For now, just parse attributes
+    let docs = new Docs(this.#current.span);
+    
+    // Parse any attributes
+    if (this.#check(TokenType.At)) {
+      let attrs = new Array<Attribute>();
+      while (this.#check(TokenType.At)) {
+        attrs.push(this.#parseAttribute());
+      }
+      docs.attributes = attrs;
+    }
+    
+    return docs;
+  }
+
+  /**
+   * Parse a single attribute: @name(key = value)
+   * Supported: @since(version = x.y.z), @unstable(feature = name), @deprecated(version = x.y.z)
+   */
+  #parseAttribute(): Attribute {
+    let startSpan = this.#expect(TokenType.At).span;
+    let name = this.#parseId();
+    let nameStr = name.name;
+    
+    this.#expect(TokenType.LeftParen);
+    
+    if (nameStr == "since") {
+      // @since(version = x.y.z)
+      this.#expectKeyword("version");
+      this.#expect(TokenType.Equals);
+      let version = this.#parseVersionString();
+      let endSpan = this.#expect(TokenType.RightParen).span;
+      return Attribute.since(version, new Span(startSpan.start, endSpan.end));
+    }
+    
+    if (nameStr == "unstable") {
+      // @unstable(feature = name)
+      this.#expectKeyword("feature");
+      this.#expect(TokenType.Equals);
+      let feature = this.#parseId();
+      let endSpan = this.#expect(TokenType.RightParen).span;
+      return Attribute.unstable(feature, new Span(startSpan.start, endSpan.end));
+    }
+    
+    if (nameStr == "deprecated") {
+      // @deprecated(version = x.y.z)
+      this.#expectKeyword("version");
+      this.#expect(TokenType.Equals);
+      let version = this.#parseVersionString();
+      let endSpan = this.#expect(TokenType.RightParen).span;
+      return Attribute.deprecated(version, new Span(startSpan.start, endSpan.end));
+    }
+    
+    throw new ParseError("unknown attribute: expected `since`, `unstable`, or `deprecated`", name.span);
+  }
+
+  /** Parse a version string like 1.0.0 or 1.0.0-alpha.1+build */
+  #parseVersionString(): String {
+    let start = this.#peek().span.start;
+    
+    // Parse: integer.integer.integer
+    this.#expect(TokenType.Integer);
+    this.#expect(TokenType.Period);
+    this.#expect(TokenType.Integer);
+    this.#expect(TokenType.Period);
+    var lastToken = this.#expect(TokenType.Integer);
+    var end = lastToken.span.end;
+    
+    // Handle pre-release (-alpha.1) and build metadata (+build.123)
+    while (this.#check(TokenType.Minus) || this.#check(TokenType.Plus)) {
+      this.#advance();
+      while (this.#check(TokenType.Id) || this.#check(TokenType.Integer)) {
+        lastToken = this.#advance();
+        end = lastToken.span.end;
+        if (!this.#eat(TokenType.Period)) {
+          break;
+        }
+      }
+    }
+    
+    return this.#text(new Span(start, end));
+  }
+
+  /** Expect current token to be an identifier with a specific name. */
+  #expectKeyword(keyword: String): void {
+    let token = this.#peek();
+    if (token.type != TokenType.Id) {
+      throw new ParseError("expected `" + keyword + "`", token.span);
+    }
+    let text = this.#text(token.span);
+    if (!(text == keyword)) {
+      throw new ParseError("expected `" + keyword + "`", token.span);
+    }
+    this.#advance();
+  }
+
+  // --------------------------------------------------------------------------
+  // Package Name Parsing
+  // --------------------------------------------------------------------------
+
+  /** Parse a package name: namespace:name@version */
+  #parsePackageName(): PackageName {
+    let namespace = this.#parseId();
+    this.#expect(TokenType.Colon);
+    let name = this.#parseId();
+    
+    let pkg = new PackageName(namespace, name, new Span(namespace.span.start, name.span.end));
+    
+    // Optional version: @1.2.3
+    if (this.#eat(TokenType.At)) {
+      let versionStart = this.#peek().span.start;
+      // Parse version: integer.integer.integer with optional pre-release/build
+      this.#expect(TokenType.Integer);
+      this.#expect(TokenType.Period);
+      this.#expect(TokenType.Integer);
+      this.#expect(TokenType.Period);
+      var lastToken = this.#expect(TokenType.Integer);
+      var versionEnd = lastToken.span.end;
+      
+      // Handle pre-release (-alpha.1) and build metadata (+build.123)
+      while (this.#check(TokenType.Minus) || this.#check(TokenType.Plus)) {
+        this.#advance();
+        // Consume identifier/integer parts
+        while (this.#check(TokenType.Id) || this.#check(TokenType.Integer)) {
+          lastToken = this.#advance();
+          versionEnd = lastToken.span.end;
+          if (!this.#eat(TokenType.Period)) {
+            break;
+          }
+        }
+      }
+      
+      let versionSpan = new Span(versionStart, versionEnd);
+      pkg.version = this.#text(versionSpan);
+      pkg.versionSpan = versionSpan;
+      pkg.span = new Span(namespace.span.start, versionEnd);
+    }
+    
+    return pkg;
+  }
+
+  // --------------------------------------------------------------------------
+  // Use Path Parsing
+  // --------------------------------------------------------------------------
+
+  /** Parse a use path: id, id:id/id, or id:id@version/id */
+  #parseUsePath(): UsePath {
+    let id = this.#parseId();
+    
+    // Check for package path: namespace:name/interface
+    if (this.#eat(TokenType.Colon)) {
+      // This is a package path
+      let pkgName = this.#parseId();
+      
+      // Optional version
+      var version: String | null = null;
+      var versionSpan: Span | null = null;
+      if (this.#eat(TokenType.At)) {
+        let versionStart = this.#peek().span.start;
+        this.#expect(TokenType.Integer);
+        this.#expect(TokenType.Period);
+        this.#expect(TokenType.Integer);
+        this.#expect(TokenType.Period);
+        var lastToken = this.#expect(TokenType.Integer);
+        var versionEnd = lastToken.span.end;
+        
+        // Handle pre-release and build metadata
+        while (this.#check(TokenType.Minus) || this.#check(TokenType.Plus)) {
+          this.#advance();
+          while (this.#check(TokenType.Id) || this.#check(TokenType.Integer)) {
+            lastToken = this.#advance();
+            versionEnd = lastToken.span.end;
+            if (!this.#eat(TokenType.Period)) {
+              break;
+            }
+          }
+        }
+        
+        versionSpan = new Span(versionStart, versionEnd);
+        version = this.#text(versionSpan);
+      }
+      
+      this.#expect(TokenType.Slash);
+      let interfaceName = this.#parseId();
+      
+      let pkgId = new PackageName(id, pkgName, new Span(id.span.start, pkgName.span.end));
+      pkgId.version = version;
+      pkgId.versionSpan = versionSpan;
+      
+      return UsePath.fromPackage(pkgId, interfaceName);
+    }
+    
+    // Just an identifier
+    return UsePath.fromId(id);
+  }
+
+  // --------------------------------------------------------------------------
+  // Type Parsing
+  // --------------------------------------------------------------------------
+
+  /** Parse a type. */
+  #parseType(): Type {
+    let token = this.#peek();
+    
+    // Primitive types
+    if (token.type == TokenType.U8) { this.#advance(); return Type.primitive(TypeTag.U8, token.span); }
+    if (token.type == TokenType.U16) { this.#advance(); return Type.primitive(TypeTag.U16, token.span); }
+    if (token.type == TokenType.U32) { this.#advance(); return Type.primitive(TypeTag.U32, token.span); }
+    if (token.type == TokenType.U64) { this.#advance(); return Type.primitive(TypeTag.U64, token.span); }
+    if (token.type == TokenType.S8) { this.#advance(); return Type.primitive(TypeTag.S8, token.span); }
+    if (token.type == TokenType.S16) { this.#advance(); return Type.primitive(TypeTag.S16, token.span); }
+    if (token.type == TokenType.S32) { this.#advance(); return Type.primitive(TypeTag.S32, token.span); }
+    if (token.type == TokenType.S64) { this.#advance(); return Type.primitive(TypeTag.S64, token.span); }
+    if (token.type == TokenType.F32) { this.#advance(); return Type.primitive(TypeTag.F32, token.span); }
+    if (token.type == TokenType.F64) { this.#advance(); return Type.primitive(TypeTag.F64, token.span); }
+    if (token.type == TokenType.Char) { this.#advance(); return Type.primitive(TypeTag.Char, token.span); }
+    if (token.type == TokenType.Bool) { this.#advance(); return Type.primitive(TypeTag.Bool, token.span); }
+    if (token.type == TokenType.String) { this.#advance(); return Type.primitive(TypeTag.String, token.span); }
+    if (token.type == TokenType.ErrorContext) { this.#advance(); return Type.primitive(TypeTag.ErrorContext, token.span); }
+    
+    // list<T>
+    if (token.type == TokenType.List) {
+      this.#advance();
+      this.#expect(TokenType.LessThan);
+      let inner = this.#parseType();
+      let endToken = this.#expect(TokenType.GreaterThan);
+      return Type.list(inner, new Span(token.span.start, endToken.span.end));
+    }
+    
+    // option<T>
+    if (token.type == TokenType.Option) {
+      this.#advance();
+      this.#expect(TokenType.LessThan);
+      let inner = this.#parseType();
+      let endToken = this.#expect(TokenType.GreaterThan);
+      return Type.option(inner, new Span(token.span.start, endToken.span.end));
+    }
+    
+    // result<O, E> or result<O> or result
+    if (token.type == TokenType.Result) {
+      this.#advance();
+      var okType: Type | null = null;
+      var errType: Type | null = null;
+      var endSpan = token.span;
+      
+      if (this.#eat(TokenType.LessThan)) {
+        // Check for underscore (no ok type)
+        if (this.#check(TokenType.Underscore)) {
+          this.#advance();
+        } else {
+          okType = this.#parseType();
+        }
+        
+        if (this.#eat(TokenType.Comma)) {
+          // Check for underscore (no err type)
+          if (this.#check(TokenType.Underscore)) {
+            this.#advance();
+          } else {
+            errType = this.#parseType();
+          }
+        }
+        let endToken = this.#expect(TokenType.GreaterThan);
+        endSpan = endToken.span;
+      }
+      
+      return Type.result(okType, errType, new Span(token.span.start, endSpan.end));
+    }
+    
+    // tuple<T1, T2, ...>
+    if (token.type == TokenType.Tuple) {
+      this.#advance();
+      this.#expect(TokenType.LessThan);
+      let types = new Array<Type>();
+      
+      if (!this.#check(TokenType.GreaterThan)) {
+        types.push(this.#parseType());
+        while (this.#eat(TokenType.Comma)) {
+          types.push(this.#parseType());
+        }
+      }
+      
+      let endToken = this.#expect(TokenType.GreaterThan);
+      return Type.tuple(types, new Span(token.span.start, endToken.span.end));
+    }
+    
+    // future<T> or future
+    if (token.type == TokenType.Future) {
+      this.#advance();
+      var inner: Type | null = null;
+      var endSpan = token.span;
+      
+      if (this.#eat(TokenType.LessThan)) {
+        inner = this.#parseType();
+        let endToken = this.#expect(TokenType.GreaterThan);
+        endSpan = endToken.span;
+      }
+      
+      return Type.future(inner, new Span(token.span.start, endSpan.end));
+    }
+    
+    // stream<T> or stream
+    if (token.type == TokenType.Stream) {
+      this.#advance();
+      var inner: Type | null = null;
+      var endSpan = token.span;
+      
+      if (this.#eat(TokenType.LessThan)) {
+        inner = this.#parseType();
+        let endToken = this.#expect(TokenType.GreaterThan);
+        endSpan = endToken.span;
+      }
+      
+      return Type.stream(inner, new Span(token.span.start, endSpan.end));
+    }
+    
+    // map<K, V>
+    if (token.type == TokenType.Map) {
+      this.#advance();
+      this.#expect(TokenType.LessThan);
+      let keyType = this.#parseType();
+      this.#expect(TokenType.Comma);
+      let valueType = this.#parseType();
+      let endToken = this.#expect(TokenType.GreaterThan);
+      return Type.map(keyType, valueType, new Span(token.span.start, endToken.span.end));
+    }
+    
+    // own<T>
+    if (token.type == TokenType.Own) {
+      this.#advance();
+      this.#expect(TokenType.LessThan);
+      let inner = this.#parseType();
+      let endToken = this.#expect(TokenType.GreaterThan);
+      // For now, treat own<T> as just T (will be resolved later)
+      return inner;
+    }
+    
+    // borrow<T>
+    if (token.type == TokenType.Borrow) {
+      this.#advance();
+      this.#expect(TokenType.LessThan);
+      let inner = this.#parseType();
+      let endToken = this.#expect(TokenType.GreaterThan);
+      // For now, treat borrow<T> as just T (will be resolved later)
+      return inner;
+    }
+    
+    // Named type reference (identifier)
+    if (token.type == TokenType.Id || token.type == TokenType.ExplicitId) {
+      let id = this.#parseId();
+      return Type.named(id, id.span);
+    }
+    
+    throw new ParseError("expected type", token.span);
+  }
+
+  // --------------------------------------------------------------------------
+  // Function Parsing
+  // --------------------------------------------------------------------------
+
+  /** Parse a function signature: func(params) -> result */
+  #parseFunc(): Func {
+    let isAsync = this.#eat(TokenType.Async);
+    let startToken = this.#expect(TokenType.Func);
+    
+    let func = new Func(startToken.span);
+    func.isAsync = isAsync;
+    
+    // Parameters
+    this.#expect(TokenType.LeftParen);
+    if (!this.#check(TokenType.RightParen)) {
+      func.params.push(this.#parseParam());
+      while (this.#eat(TokenType.Comma)) {
+        if (this.#check(TokenType.RightParen)) break;  // Allow trailing comma
+        func.params.push(this.#parseParam());
+      }
+    }
+    this.#expect(TokenType.RightParen);
+    
+    // Optional result
+    if (this.#eat(TokenType.RArrow)) {
+      func.result = this.#parseType();
+    }
+    
+    return func;
+  }
+
+  /** Parse a function parameter: name: type */
+  #parseParam(): Param {
+    let name = this.#parseId();
+    this.#expect(TokenType.Colon);
+    let type = this.#parseType();
+    return new Param(name, type);
+  }
+
+  // --------------------------------------------------------------------------
+  // Type Definition Parsing
+  // --------------------------------------------------------------------------
+
+  /** Parse a type definition. */
+  #parseTypeDef(docs: Docs): TypeDef {
+    let token = this.#peek();
+    
+    // type name = aliased-type;
+    if (token.type == TokenType.Type) {
+      this.#advance();
+      let name = this.#parseId();
+      this.#expect(TokenType.Equals);
+      let type = this.#parseType();
+      this.#expectSemicolon();
+      return TypeDef.alias(docs, name, type);
+    }
+    
+    // record name { fields }
+    if (token.type == TokenType.Record) {
+      this.#advance();
+      let name = this.#parseId();
+      let fields = this.#parseList<Field>(
+        TokenType.LeftBrace,
+        TokenType.RightBrace,
+        () => this.#parseField()
+      );
+      return TypeDef.record(docs, name, fields);
+    }
+    
+    // flags name { flags }
+    if (token.type == TokenType.Flags) {
+      this.#advance();
+      let name = this.#parseId();
+      let flags = this.#parseList<FlagDef>(
+        TokenType.LeftBrace,
+        TokenType.RightBrace,
+        () => this.#parseFlagDef()
+      );
+      return TypeDef.flagsDef(docs, name, flags);
+    }
+    
+    // variant name { cases }
+    if (token.type == TokenType.Variant) {
+      this.#advance();
+      let name = this.#parseId();
+      let cases = this.#parseList<Case>(
+        TokenType.LeftBrace,
+        TokenType.RightBrace,
+        () => this.#parseCase()
+      );
+      return TypeDef.variant(docs, name, cases);
+    }
+    
+    // enum name { cases }
+    if (token.type == TokenType.Enum) {
+      this.#advance();
+      let name = this.#parseId();
+      let cases = this.#parseList<EnumCaseDef>(
+        TokenType.LeftBrace,
+        TokenType.RightBrace,
+        () => this.#parseEnumCase()
+      );
+      return TypeDef.enumDef(docs, name, cases);
+    }
+    
+    // resource name { methods }
+    if (token.type == TokenType.Resource) {
+      this.#advance();
+      let name = this.#parseId();
+      
+      // Resources can be empty (just a declaration) or have a body
+      let funcs = new Array<ResourceFunc>();
+      if (this.#eat(TokenType.LeftBrace)) {
+        while (!this.#check(TokenType.RightBrace)) {
+          let funcDocs = this.#parseDocs();
+          funcs.push(this.#parseResourceFunc(funcDocs));
+        }
+        this.#expect(TokenType.RightBrace);
+      } else {
+        this.#expectSemicolon();
+      }
+      
+      return TypeDef.resource(docs, name, funcs);
+    }
+    
+    throw new ParseError("expected type definition", token.span);
+  }
+
+  /** Parse a record field: name: type */
+  #parseField(): Field {
+    let docs = this.#parseDocs();
+    let name = this.#parseId();
+    this.#expect(TokenType.Colon);
+    let type = this.#parseType();
+    return new Field(docs, name, type);
+  }
+
+  /** Parse a flag: name */
+  #parseFlagDef(): FlagDef {
+    let docs = this.#parseDocs();
+    let name = this.#parseId();
+    return new FlagDef(docs, name);
+  }
+
+  /** Parse a variant case: name or name(type) */
+  #parseCase(): Case {
+    let docs = this.#parseDocs();
+    let name = this.#parseId();
+    let c = new Case(docs, name);
+    
+    // Optional payload type in parentheses
+    if (this.#eat(TokenType.LeftParen)) {
+      c.type = this.#parseType();
+      this.#expect(TokenType.RightParen);
+    }
+    
+    return c;
+  }
+
+  /** Parse an enum case: name */
+  #parseEnumCase(): EnumCaseDef {
+    let docs = this.#parseDocs();
+    let name = this.#parseId();
+    return new EnumCaseDef(docs, name);
+  }
+
+  /** Parse a resource function: constructor, method, or static. */
+  #parseResourceFunc(docs: Docs): ResourceFunc {
+    let token = this.#peek();
+    
+    // constructor(params)
+    if (token.type == TokenType.Constructor) {
+      this.#advance();
+      this.#expect(TokenType.LeftParen);
+      
+      let params = new Array<Param>();
+      if (!this.#check(TokenType.RightParen)) {
+        params.push(this.#parseParam());
+        while (this.#eat(TokenType.Comma)) {
+          if (this.#check(TokenType.RightParen)) break;
+          params.push(this.#parseParam());
+        }
+      }
+      this.#expect(TokenType.RightParen);
+      this.#expectSemicolon();
+      
+      let func = new Func(token.span);
+      func.params = params;
+      let namedFunc = new NamedFunc(docs, new Id("constructor", token.span), func);
+      return new ResourceFunc(ResourceFuncTag.Constructor, namedFunc);
+    }
+    
+    // name: func(...) or name: static func(...)
+    let name = this.#parseId();
+    this.#expect(TokenType.Colon);
+    
+    // Check for static
+    let isStatic = this.#eat(TokenType.Static);
+    
+    let func = this.#parseFunc();
+    this.#expectSemicolon();
+    
+    let namedFunc = new NamedFunc(docs, name, func);
+    if (isStatic) {
+      return new ResourceFunc(ResourceFuncTag.Static, namedFunc);
+    }
+    return new ResourceFunc(ResourceFuncTag.Method, namedFunc);
+  }
+
+  // --------------------------------------------------------------------------
+  // Interface Parsing
+  // --------------------------------------------------------------------------
+
+  /** Parse an interface definition. */
+  #parseInterface(docs: Docs): InterfaceDef {
+    this.#expect(TokenType.Interface);
+    let name = this.#parseId();
+    let iface = new InterfaceDef(docs, name);
+    
+    this.#expect(TokenType.LeftBrace);
+    while (!this.#check(TokenType.RightBrace)) {
+      let itemDocs = this.#parseDocs();
+      iface.items.push(this.#parseInterfaceItem(itemDocs));
+    }
+    this.#expect(TokenType.RightBrace);
+    
+    return iface;
+  }
+
+  /** Parse an interface item. */
+  #parseInterfaceItem(docs: Docs): InterfaceItem {
+    let token = this.#peek();
+    
+    // use path.{names};
+    if (token.type == TokenType.Use) {
+      return InterfaceItem.fromUse(this.#parseUse());
+    }
+    
+    // Type definitions
+    if (token.type == TokenType.Type ||
+        token.type == TokenType.Record ||
+        token.type == TokenType.Flags ||
+        token.type == TokenType.Variant ||
+        token.type == TokenType.Enum ||
+        token.type == TokenType.Resource) {
+      return InterfaceItem.fromTypeDef(this.#parseTypeDef(docs));
+    }
+    
+    // Function: name: func(...);
+    if (token.type == TokenType.Id || token.type == TokenType.ExplicitId) {
+      let name = this.#parseId();
+      this.#expect(TokenType.Colon);
+      let func = this.#parseFunc();
+      this.#expectSemicolon();
+      return InterfaceItem.fromFunc(new NamedFunc(docs, name, func));
+    }
+    
+    throw new ParseError("expected interface item", token.span);
+  }
+
+  /** Parse a use statement: use path.{names}; */
+  #parseUse(): Use {
+    this.#expect(TokenType.Use);
+    let from = this.#parseUsePath();
+    this.#expect(TokenType.Period);
+    
+    let names = this.#parseList<UseName>(
+      TokenType.LeftBrace,
+      TokenType.RightBrace,
+      () => this.#parseUseName()
+    );
+    
+    this.#expectSemicolon();
+    return new Use(from, names);
+  }
+
+  /** Parse a use name: name or name as alias */
+  #parseUseName(): UseName {
+    let name = this.#parseId();
+    let useName = new UseName(name);
+    
+    if (this.#eat(TokenType.As)) {
+      useName.asName = this.#parseId();
+    }
+    
+    return useName;
+  }
+
+  // --------------------------------------------------------------------------
+  // World Parsing
+  // --------------------------------------------------------------------------
+
+  /** Parse a world definition. */
+  #parseWorld(docs: Docs): WorldDef {
+    this.#expect(TokenType.World);
+    let name = this.#parseId();
+    let world = new WorldDef(docs, name);
+    
+    this.#expect(TokenType.LeftBrace);
+    while (!this.#check(TokenType.RightBrace)) {
+      let itemDocs = this.#parseDocs();
+      world.items.push(this.#parseWorldItem(itemDocs));
+    }
+    this.#expect(TokenType.RightBrace);
+    
+    return world;
+  }
+
+  /** Parse a world item. */
+  #parseWorldItem(docs: Docs): WorldItem {
+    let token = this.#peek();
+    
+    // import ...
+    if (token.type == TokenType.Import) {
+      this.#advance();
+      let kind = this.#parseExternKind();
+      return WorldItem.fromImport(new Import(docs, kind));
+    }
+    
+    // export ...
+    if (token.type == TokenType.Export) {
+      this.#advance();
+      let kind = this.#parseExternKind();
+      return WorldItem.fromExport(new Export(docs, kind));
+    }
+    
+    // use path.{names};
+    if (token.type == TokenType.Use) {
+      return WorldItem.fromUse(this.#parseUse());
+    }
+    
+    // include path;
+    if (token.type == TokenType.Include) {
+      return WorldItem.fromInclude(this.#parseInclude());
+    }
+    
+    // Type definitions
+    if (token.type == TokenType.Type ||
+        token.type == TokenType.Record ||
+        token.type == TokenType.Flags ||
+        token.type == TokenType.Variant ||
+        token.type == TokenType.Enum ||
+        token.type == TokenType.Resource) {
+      return WorldItem.fromTypeDef(this.#parseTypeDef(docs));
+    }
+    
+    throw new ParseError("expected world item", token.span);
+  }
+
+  /** Parse an import/export kind. */
+  #parseExternKind(): ExternKind {
+    let token = this.#peek();
+    
+    // Check for: name: interface { ... } or name: func(...)
+    if (token.type == TokenType.Id || token.type == TokenType.ExplicitId) {
+      let id = this.#parseId();
+      
+      if (this.#eat(TokenType.Colon)) {
+        // name: interface { ... }
+        if (this.#eat(TokenType.Interface)) {
+          let items = new Array<InterfaceItem>();
+          this.#expect(TokenType.LeftBrace);
+          while (!this.#check(TokenType.RightBrace)) {
+            let itemDocs = this.#parseDocs();
+            items.push(this.#parseInterfaceItem(itemDocs));
+          }
+          this.#expect(TokenType.RightBrace);
+          return ExternKind.iface(id, items);
+        }
+        
+        // name: func(...)
+        let func = this.#parseFunc();
+        this.#expectSemicolon();
+        return ExternKind.makeFunc(id, func);
+      }
+      
+      // Just an identifier - could be start of a use path
+      // Put the id back by creating a UsePath
+      var path = UsePath.fromId(id);
+      
+      // Check if there's more to the path
+      if (this.#eat(TokenType.Colon)) {
+        let pkgName = this.#parseId();
+        
+        // Optional version
+        var version: String | null = null;
+        if (this.#eat(TokenType.At)) {
+          let versionStart = this.#peek().span.start;
+          this.#expect(TokenType.Integer);
+          this.#expect(TokenType.Period);
+          this.#expect(TokenType.Integer);
+          this.#expect(TokenType.Period);
+          var lastToken = this.#expect(TokenType.Integer);
+          var versionEnd = lastToken.span.end;
+          
+          while (this.#check(TokenType.Minus) || this.#check(TokenType.Plus)) {
+            this.#advance();
+            while (this.#check(TokenType.Id) || this.#check(TokenType.Integer)) {
+              lastToken = this.#advance();
+              versionEnd = lastToken.span.end;
+              if (!this.#eat(TokenType.Period)) {
+                break;
+              }
+            }
+          }
+          
+          version = this.#text(new Span(versionStart, versionEnd));
+        }
+        
+        this.#expect(TokenType.Slash);
+        let interfaceName = this.#parseId();
+        
+        let pkgId = new PackageName(id, pkgName, new Span(id.span.start, pkgName.span.end));
+        pkgId.version = version;
+        
+        path = UsePath.fromPackage(pkgId, interfaceName);
+      }
+      
+      this.#expectSemicolon();
+      return ExternKind.fromPath(path);
+    }
+    
+    throw new ParseError("expected import/export kind", token.span);
+  }
+
+  /** Parse an include statement: include path; or include path with { renames } */
+  #parseInclude(): Include {
+    this.#expect(TokenType.Include);
+    let from = this.#parseUsePath();
+    
+    var names = new Array<IncludeName>();
+    if (this.#eat(TokenType.With)) {
+      names = this.#parseList<IncludeName>(
+        TokenType.LeftBrace,
+        TokenType.RightBrace,
+        () => {
+          let name = this.#parseId();
+          this.#expect(TokenType.As);
+          let asName = this.#parseId();
+          return new IncludeName(name, asName);
+        }
+      );
+    } else {
+      this.#expectSemicolon();
+    }
+    
+    return new Include(from, names);
+  }
+
+  // --------------------------------------------------------------------------
+  // Top-level Parsing
+  // --------------------------------------------------------------------------
+
+  /** Parse a complete AST. */
+  #parseAst(): Ast {
+    let ast = new Ast();
+    
+    // Optional package declaration
+    var docs = this.#parseDocs();
+    if (this.#check(TokenType.Package)) {
+      this.#expect(TokenType.Package);
+      ast.packageName = this.#parsePackageName();
+      this.#expectSemicolon();
+      docs = this.#parseDocs();
+    }
+    
+    // Parse items until EOF
+    while (!this.#check(TokenType.Eof)) {
+      ast.items.push(this.#parseAstItem(docs));
+      docs = this.#parseDocs();
+    }
+    
+    return ast;
+  }
+
+  /** Parse a top-level item. */
+  #parseAstItem(docs: Docs): AstItem {
+    let token = this.#peek();
+    
+    // interface name { ... }
+    if (token.type == TokenType.Interface) {
+      return AstItem.fromInterface(this.#parseInterface(docs));
+    }
+    
+    // world name { ... }
+    if (token.type == TokenType.World) {
+      return AstItem.fromWorld(this.#parseWorld(docs));
+    }
+    
+    // use path;
+    if (token.type == TokenType.Use) {
+      this.#advance();
+      let item = this.#parseUsePath();
+      let use = new ToplevelUse(item);
+      
+      if (this.#eat(TokenType.As)) {
+        use.asName = this.#parseId();
+      }
+      
+      this.#expectSemicolon();
+      return AstItem.fromUse(use);
+    }
+    
+    throw new ParseError("expected `interface`, `world`, or `use`", token.span);
+  }
+
+  // --------------------------------------------------------------------------
+  // List Parsing Helper
+  // --------------------------------------------------------------------------
+
+  /** Parse a comma-separated list with delimiters. */
+  #parseList<T>(
+    open: TokenType,
+    close: TokenType,
+    parseItem: () => T
+  ): Array<T> {
+    let items = new Array<T>();
+    this.#expect(open);
+    
+    if (!this.#check(close)) {
+      items.push(parseItem());
+      while (this.#eat(TokenType.Comma)) {
+        if (this.#check(close)) break;  // Allow trailing comma
+        items.push(parseItem());
+      }
+    }
+    
+    this.#expect(close);
+    return items;
+  }
+}
