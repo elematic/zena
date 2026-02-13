@@ -30,6 +30,13 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Fixed Bugs
 
+### WASM validation error: eqref vs specific ref type in closure wrappers
+
+- **Found**: 2026-02-12
+- **Fixed**: 2026-02-13
+- **Severity**: high
+- **Details**: Closure wrappers taking `eqref` weren't casting to specific ref types before calling the wrapped function.
+
 ### Nested generic type parameter resolution in codegen
 
 - **Found**: 2025-01-XX
