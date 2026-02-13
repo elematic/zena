@@ -16,6 +16,9 @@ export const DiagnosticCode = {
   TypeMismatch: 2001,
   SymbolNotFound: 2002,
   DuplicateDeclaration: 2003,
+
+  // Checker Warnings (2500-2599)
+  ConstructorSyntax: 2500,
   InvalidAssignment: 2004,
   ReturnOutsideFunction: 2005,
   BreakOutsideLoop: 2024,
@@ -103,6 +106,19 @@ export class DiagnosticBag {
       code,
       message,
       severity: DiagnosticSeverity.Error,
+      location,
+    });
+  }
+
+  public reportWarning(
+    message: string,
+    code: DiagnosticCode,
+    location?: DiagnosticLocation,
+  ) {
+    this.report({
+      code,
+      message,
+      severity: DiagnosticSeverity.Warning,
       location,
     });
   }

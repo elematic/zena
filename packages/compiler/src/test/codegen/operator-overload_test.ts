@@ -16,7 +16,7 @@ suite('Codegen - Operator [] Overloading', () => {
       class Container {
         #data: FixedArray<i32>;
         
-        constructor() {
+        #new() {
           this.#data = #[10, 20, 30, 40, 50];
         }
         

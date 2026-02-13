@@ -2551,6 +2551,19 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           );
         }
         classType.constructorType = methodType;
+      } else if (memberName === 'constructor') {
+        // Warn about using TypeScript/Java-style constructor syntax
+        ctx.diagnostics.reportWarning(
+          `Use '#new()' instead of 'constructor()' for constructors in Zena.`,
+          DiagnosticCode.ConstructorSyntax,
+          ctx.getLocation(member.name.loc),
+        );
+        // Still register it as a regular method named 'constructor'
+        localMethods.add(memberName);
+        if (!classType.methods.has(memberName)) {
+          classType.vtable.push(memberName);
+        }
+        classType.methods.set(memberName, methodType);
       } else {
         if (classType.fields.has(memberName)) {
           if (localFields.has(memberName)) {

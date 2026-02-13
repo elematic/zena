@@ -1,12 +1,12 @@
-import {Compiler, type CompilerHost} from '../../lib/compiler.js';
-import {CodeGenerator} from '../../lib/codegen/index.js';
-import {type Diagnostic} from '../../lib/diagnostics.js';
-import type {Module} from '../../lib/ast.js';
-import {Parser} from '../../lib/parser.js';
-import {readFileSync, existsSync} from 'node:fs';
-import {join, dirname, basename, resolve} from 'node:path';
-import {fileURLToPath} from 'node:url';
 import {execSync} from 'node:child_process';
+import {existsSync, readFileSync} from 'node:fs';
+import {basename, dirname, join, resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import type {Module} from '../../lib/ast.js';
+import {CodeGenerator} from '../../lib/codegen/index.js';
+import {Compiler, type CompilerHost} from '../../lib/compiler.js';
+import {DiagnosticSeverity, type Diagnostic} from '../../lib/diagnostics.js';
+import {Parser} from '../../lib/parser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // When running compiled tests, we are in packages/compiler/test/codegen
@@ -179,9 +179,12 @@ export async function compileAndInstantiate(
   // Check for errors from the initial compilation pass
   const modules = compiler.compile(path);
   const allDiagnostics = modules.flatMap((m) => m.diagnostics ?? []);
-  if (allDiagnostics.length > 0) {
+  const errors = allDiagnostics.filter(
+    (d) => d.severity === DiagnosticSeverity.Error,
+  );
+  if (errors.length > 0) {
     throw new Error(
-      `Compilation failed: ${allDiagnostics.map((d) => d.message).join(', ')}`,
+      `Compilation failed: ${errors.map((d) => d.message).join(', ')}`,
     );
   }
 
@@ -270,9 +273,12 @@ export async function compileWithDetails(
   const compiler = new Compiler(host);
   const modules = compiler.compile(path);
   const allDiagnostics = modules.flatMap((m) => m.diagnostics ?? []);
-  if (allDiagnostics.length > 0) {
+  const errors = allDiagnostics.filter(
+    (d) => d.severity === DiagnosticSeverity.Error,
+  );
+  if (errors.length > 0) {
     throw new Error(
-      `Compilation failed: ${allDiagnostics.map((d) => d.message).join(', ')}`,
+      `Compilation failed: ${errors.map((d) => d.message).join(', ')}`,
     );
   }
 
@@ -576,9 +582,12 @@ export let getNestedTestError = (index: i32): string | null => nested().tests[in
   // compile() runs type checking on all modules
   const modules = compiler.compile(wrapperPath);
   const diagnostics = modules.flatMap((m) => m.diagnostics ?? []);
-  if (diagnostics.length > 0) {
-    const errors = diagnostics.map((d) => d.message).join(', ');
-    throw new Error(`Compilation errors: ${errors}`);
+  const errors = diagnostics.filter(
+    (d) => d.severity === DiagnosticSeverity.Error,
+  );
+  if (errors.length > 0) {
+    const errorMessages = errors.map((d) => d.message).join(', ');
+    throw new Error(`Compilation errors: ${errorMessages}`);
   }
 
   const codegen = new CodeGenerator(

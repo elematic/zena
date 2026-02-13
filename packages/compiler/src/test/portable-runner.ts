@@ -13,6 +13,7 @@ import {suite, test} from 'node:test';
 
 // Import compiler
 import {Parser, TypeChecker, CodeGenerator, Compiler} from '../lib/index.js';
+import {DiagnosticSeverity} from '../lib/diagnostics.js';
 
 import {createStringReader} from './string-reader.js';
 import {runZenaTestFile, flattenTests} from './codegen/utils.js';
@@ -250,7 +251,7 @@ async function runCheckTest(
   // Check if the test has imports - if so, use the full compiler
   const hasImports = content.includes('import ');
 
-  let diagnostics: Array<{message: string}>;
+  let diagnostics: Array<{message: string; severity?: number}>;
 
   if (hasImports) {
     // Use full compiler to resolve imports
@@ -312,9 +313,13 @@ async function runCheckTest(
   }
 
   if (expectedErrors.length === 0 && diagnostics.length > 0) {
-    throw new Error(
-      `Unexpected errors: ${diagnostics.map((d) => d.message).join(', ')}`,
-    );
+    // Only treat actual errors as failures, not warnings
+    const errors = diagnostics.filter((d) => d.severity === DiagnosticSeverity.Error);
+    if (errors.length > 0) {
+      throw new Error(
+        `Unexpected errors: ${errors.map((d) => d.message).join(', ')}`,
+      );
+    }
   }
 }
 
@@ -363,11 +368,12 @@ async function runExecutionTest(
   // compile() does type checking and returns all modules with their diagnostics
   const modules = compiler.compile(filePath);
 
-  // Check for errors from individual modules
+  // Check for errors from individual modules (ignore warnings)
   const diagnostics = modules.flatMap((m) => m.diagnostics ?? []);
-  if (diagnostics.length > 0) {
+  const errors = diagnostics.filter((d) => d.severity === DiagnosticSeverity.Error);
+  if (errors.length > 0) {
     throw new Error(
-      `Compilation failed: ${diagnostics.map((d) => d.message).join(', ')}`,
+      `Compilation failed: ${errors.map((d) => d.message).join(', ')}`,
     );
   }
 

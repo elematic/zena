@@ -35,7 +35,7 @@ suite('CodeGenerator - Optional Parameters and Defaults', () => {
       class Point {
         x: i32;
         y: i32;
-        constructor(x: i32, y: i32 = 0) {
+        #new(x: i32, y: i32 = 0) {
           this.x = x;
           this.y = y;
         }

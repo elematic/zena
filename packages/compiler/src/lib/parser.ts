@@ -2618,9 +2618,6 @@ export class Parser {
       };
     } else {
       name = this.#parseIdentifier();
-      if (name.name === 'constructor') {
-        name.name = '#new';
-      }
     }
 
     const typeParameters = this.#parseTypeParameters();

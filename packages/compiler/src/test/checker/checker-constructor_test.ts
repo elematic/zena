@@ -114,4 +114,47 @@ suite('Checker - Constructor Rules', () => {
 
     assert.equal(diagnostics.length, 0);
   });
+
+  test('should warn when using constructor() instead of #new()', () => {
+    const source = `
+      class A {
+        x: i32;
+        constructor() {
+          this.x = 1;
+        }
+      }
+    `;
+    const parser = new Parser(source);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
+    const diagnostics = checker.check();
+
+    // Should have a warning about constructor syntax
+    const warning = diagnostics.find(
+      (d) => d.code === DiagnosticCode.ConstructorSyntax,
+    );
+    assert.ok(warning, 'Expected a warning about constructor syntax');
+    assert.match(warning!.message, /#new/);
+  });
+
+  test('should not warn when using #new()', () => {
+    const source = `
+      class A {
+        x: i32;
+        #new() {
+          this.x = 1;
+        }
+      }
+    `;
+    const parser = new Parser(source);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
+    const diagnostics = checker.check();
+
+    // Should have no warnings about constructor syntax
+    const warning = diagnostics.find(
+      (d) => d.code === DiagnosticCode.ConstructorSyntax,
+    );
+    assert.ok(!warning, 'Should not warn when using #new()');
+  });
 });

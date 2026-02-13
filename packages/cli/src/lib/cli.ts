@@ -1,14 +1,11 @@
 #!/usr/bin/env node
 
 import {
-  compile,
-  compileWithStdlib,
-  Parser,
-  TypeChecker,
-  type Diagnostic,
-  Compiler,
   CodeGenerator,
+  Compiler,
+  DiagnosticSeverity,
   formatDiagnostics,
+  type Diagnostic,
 } from '@zena-lang/compiler';
 import {instantiate} from '@zena-lang/runtime';
 import {readFile, writeFile} from 'node:fs/promises';
@@ -108,12 +105,16 @@ const buildCommand = async (
   try {
     const modules = compiler.compile(entryPoint);
 
-    // Check for errors
+    // Print all diagnostics, but only fail on errors
     let hasErrors = false;
     for (const mod of modules) {
       if (mod.diagnostics.length > 0) {
-        hasErrors = true;
         printErrors(mod.diagnostics, mod.source);
+        if (
+          mod.diagnostics.some((d) => d.severity === DiagnosticSeverity.Error)
+        ) {
+          hasErrors = true;
+        }
       }
     }
 
@@ -158,8 +159,12 @@ const checkCommand = async (files: string[]): Promise<number> => {
     let hasErrors = false;
     for (const mod of modules) {
       if (mod.diagnostics.length > 0) {
-        hasErrors = true;
         printErrors(mod.diagnostics, mod.source);
+        if (
+          mod.diagnostics.some((d) => d.severity === DiagnosticSeverity.Error)
+        ) {
+          hasErrors = true;
+        }
       }
     }
 
@@ -196,8 +201,12 @@ const runCommand = async (
     let hasErrors = false;
     for (const mod of modules) {
       if (mod.diagnostics.length > 0) {
-        hasErrors = true;
         printErrors(mod.diagnostics, mod.source);
+        if (
+          mod.diagnostics.some((d) => d.severity === DiagnosticSeverity.Error)
+        ) {
+          hasErrors = true;
+        }
       }
     }
 
