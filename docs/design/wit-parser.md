@@ -356,8 +356,8 @@ packages/wit-parser/zena/
    - Function signatures with async support
    - Use/include statements
    - Annotations (@since, @unstable, @deprecated)
-   - **Test status**: 82/211 wasm-tools tests passing (39%)
-   - **Missing**: nested block comments, nested packages, multi-file support
+   - **Test status**: 83/211 wasm-tools tests passing (39%)
+   - **Missing**: nested packages, multi-file support
 
 4. **Resolver** (~1000 lines) [NOT STARTED]
    - Package/interface/world resolution
@@ -371,12 +371,12 @@ packages/wit-parser/zena/
 
 The parser handles core WIT syntax but needs additional work:
 
-| Feature                           | Status                    | Tests Affected |
-| --------------------------------- | ------------------------- | -------------- |
-| Block comments (`/* */`)          | ❌ Missing nested support | ~5             |
-| Nested packages (`package x { }`) | ❌ Not implemented        | ~15            |
-| Multi-file packages               | ❌ Single-file only       | ~30            |
-| Semantic validation               | N/A (syntax-only parser)  | ~70            |
+| Feature                           | Status                     | Tests Affected |
+| --------------------------------- | -------------------------- | -------------- |
+| Block comments (`/* */`)          | ✅ Complete (with nesting) | ~5             |
+| Nested packages (`package x { }`) | ❌ Not implemented         | ~15            |
+| Multi-file packages               | ❌ Single-file only        | ~30            |
+| Semantic validation               | N/A (syntax-only parser)   | ~70            |
 
 **Priority order**:
 
@@ -569,7 +569,7 @@ the parser is implemented.
 - [x] Implement AST types (in parser.zena)
 - [x] Implement core parser (recursive descent)
 - [x] Implement annotations (@since, @unstable, @deprecated)
-- [ ] Fix nested block comment parsing (lexer)
+- [x] Fix nested block comment parsing (lexer)
 - [ ] Implement nested package syntax (parser)
 - [ ] Implement multi-file package support (test harness)
 - [ ] Implement resolver
@@ -589,7 +589,7 @@ the parser is implemented.
 - [x] Resources tests passing
 - [x] Packages & worlds tests passing (single-file)
 - [x] Annotation tests passing (@since, @unstable)
-- [ ] Nested block comments tests passing
+- [x] Nested block comments tests passing
 - [ ] Nested package syntax tests passing
 - [ ] Multi-file package tests passing
 - [ ] All parse-fail tests passing (semantic validation)

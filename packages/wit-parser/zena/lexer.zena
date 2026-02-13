@@ -272,26 +272,45 @@ export class Lexer {
     }
   }
 
-  /** Skip a block comment. */
+  /** Skip a block comment (supports nesting). */
   #skipBlockComment(): void {
     let start = this.#pos;
     
-    // Skip the opening
+    // Skip the opening /*
     this.#advance();
     this.#advance();
 
-    // Skip until closing or EOF
-    while (!this.#isEof()) {
-      if (this.#peek() == 42 && this.#peekAt(1) == 47) {  // star-slash
+    // Track nesting depth (we're already inside one comment)
+    var depth = 1;
+
+    // Skip until all nested comments are closed or EOF
+    while (!this.#isEof() && depth > 0) {
+      let b = this.#peek();
+      let next = this.#peekAt(1);
+      
+      // Check for nested opening /*
+      if (b == 47 && next == 42) {
         this.#advance();
         this.#advance();
-        return;
+        depth = depth + 1;
+        continue;
       }
+      
+      // Check for closing */
+      if (b == 42 && next == 47) {
+        this.#advance();
+        this.#advance();
+        depth = depth - 1;
+        continue;
+      }
+      
       this.#advance();
     }
 
     // Unterminated block comment
-    throw new LexError("unterminated block comment", new Span(start, this.#pos));
+    if (depth > 0) {
+      throw new LexError("unterminated block comment", new Span(start, this.#pos));
+    }
   }
 
   /** Lex an identifier or keyword. */
