@@ -650,6 +650,7 @@ function resolveParameterType(ctx: CheckerContext, param: Parameter): Type {
     ctx.diagnostics.reportError(
       `Parameter '${param.name.name}' requires a type annotation in this context.`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(param.loc),
     );
     return Types.Unknown;
   }
@@ -761,6 +762,7 @@ function checkExportAllDeclaration(
     ctx.diagnostics.reportError(
       `Could not resolve module '${specifier}'`,
       DiagnosticCode.ModuleNotFound,
+      ctx.getLocation(decl.moduleSpecifier.loc),
     );
     return;
   }
@@ -770,6 +772,7 @@ function checkExportAllDeclaration(
     ctx.diagnostics.reportError(
       `Module '${specifier}' not found (resolved to '${resolvedPath}')`,
       DiagnosticCode.ModuleNotFound,
+      ctx.getLocation(decl.moduleSpecifier.loc),
     );
     return;
   }
@@ -810,6 +813,7 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
     ctx.diagnostics.reportError(
       `Could not resolve module '${specifier}'`,
       DiagnosticCode.ModuleNotFound,
+      ctx.getLocation(decl.moduleSpecifier.loc),
     );
     return;
   }
@@ -819,6 +823,7 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
     ctx.diagnostics.reportError(
       `Module '${specifier}' not found (resolved to '${resolvedPath}')`,
       DiagnosticCode.ModuleNotFound,
+      ctx.getLocation(decl.moduleSpecifier.loc),
     );
     return;
   }
@@ -844,6 +849,7 @@ function checkImportDeclaration(ctx: CheckerContext, decl: ImportDeclaration) {
       ctx.diagnostics.reportError(
         `Module '${specifier}' does not export '${importedName}'`,
         DiagnosticCode.ImportError,
+        ctx.getLocation(importSpecifier.imported.loc),
       );
       continue;
     }
@@ -951,6 +957,7 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
     ctx.diagnostics.reportError(
       `Expected boolean condition in if statement, got ${typeToString(testType)}`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(stmt.test.loc),
     );
   }
 
@@ -1001,6 +1008,7 @@ function checkWhileStatement(ctx: CheckerContext, stmt: WhileStatement) {
     ctx.diagnostics.reportError(
       `Expected boolean condition in while statement, got ${typeToString(testType)}`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(stmt.test.loc),
     );
   }
 
@@ -1028,6 +1036,7 @@ function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
       ctx.diagnostics.reportError(
         `Expected boolean condition in for statement, got ${typeToString(testType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(stmt.test.loc),
       );
     }
   }
@@ -1060,6 +1069,7 @@ function checkForInStatement(ctx: CheckerContext, stmt: ForInStatement) {
     ctx.diagnostics.reportError(
       `Type '${typeToString(iterableType)}' does not implement Iterable<T>`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(stmt.iterable.loc),
     );
     // Use unknown type to continue checking
     stmt.elementType = Types.Unknown;
@@ -1263,6 +1273,7 @@ function checkBreakStatement(ctx: CheckerContext, stmt: BreakStatement) {
     ctx.diagnostics.reportError(
       'Break statement outside of loop.',
       DiagnosticCode.BreakOutsideLoop,
+      ctx.getLocation(stmt.loc),
     );
   }
 }
@@ -1272,6 +1283,7 @@ function checkContinueStatement(ctx: CheckerContext, stmt: ContinueStatement) {
     ctx.diagnostics.reportError(
       'Continue statement outside of loop.',
       DiagnosticCode.ContinueOutsideLoop,
+      ctx.getLocation(stmt.loc),
     );
   }
 }
@@ -1521,6 +1533,7 @@ function checkRecordPattern(
       ctx.diagnostics.reportError(
         `Type '${typeToString(type)}' has no property '${propName}'`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(prop.name.loc),
       );
       continue;
     }
@@ -1545,6 +1558,7 @@ function checkTuplePattern(
       ctx.diagnostics.reportError(
         `Tuple pattern has ${pattern.elements.length} elements but type has ${tupleType.elementTypes.length}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(pattern.loc),
       );
     }
 
@@ -1572,6 +1586,7 @@ function checkTuplePattern(
     ctx.diagnostics.reportError(
       `Type '${typeToString(type)}' is not a tuple or array`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(pattern.loc),
     );
   }
 }
@@ -1596,6 +1611,7 @@ function checkUnboxedTuplePattern(
     ctx.diagnostics.reportError(
       `Unboxed tuple pattern requires an unboxed tuple type, got '${typeToString(type)}'`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(pattern.loc),
     );
     return;
   }
@@ -1604,6 +1620,7 @@ function checkUnboxedTuplePattern(
     ctx.diagnostics.reportError(
       `Unboxed tuple pattern has ${pattern.elements.length} elements but type has ${elementTypes.length}`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(pattern.loc),
     );
     return;
   }
@@ -1703,6 +1720,7 @@ function checkAssignmentPattern(
     ctx.diagnostics.reportError(
       `Type mismatch: default value ${typeToString(defaultType)} is not assignable to ${typeToString(type)}`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(pattern.right.loc),
     );
   }
 
@@ -1814,6 +1832,7 @@ function resolveMemberName(
       ctx.diagnostics.reportError(
         `Symbol '${symbolExpr.name}' is not defined or is not a symbol.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(symbolExpr.loc),
       );
       return {name: '<error>', isSymbol: false};
     } else if (symbolExpr.type === NodeType.MemberExpression) {
@@ -1846,6 +1865,7 @@ function resolveMemberName(
           ctx.diagnostics.reportError(
             `Static symbol '${propertyName}' not found in interface '${objectName}'.`,
             DiagnosticCode.TypeMismatch,
+            ctx.getLocation(memberExpr.property.loc),
           );
           return {name: '<error>', isSymbol: false};
         } else if (objectType && objectType.kind === TypeKind.Class) {
@@ -1867,12 +1887,14 @@ function resolveMemberName(
           ctx.diagnostics.reportError(
             `Static symbol '${propertyName}' not found in class '${objectName}'.`,
             DiagnosticCode.TypeMismatch,
+            ctx.getLocation(memberExpr.property.loc),
           );
           return {name: '<error>', isSymbol: false};
         }
         ctx.diagnostics.reportError(
           `'${objectName}' is not an interface or class.`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(memberExpr.object.loc),
         );
         return {name: '<error>', isSymbol: false};
       }
@@ -1890,6 +1912,7 @@ function resolveMemberName(
       ctx.diagnostics.reportError(
         `Expression is not a symbol.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(symbolExpr.loc),
       );
       return {name: '<error>', isSymbol: false};
     }
@@ -1897,6 +1920,7 @@ function resolveMemberName(
     ctx.diagnostics.reportError(
       `Invalid symbol expression.`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(name.loc),
     );
     return {name: '<error>', isSymbol: false};
   }
@@ -1910,6 +1934,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     ctx.diagnostics.reportError(
       `Local class declarations are not supported. Class '${className}' must be declared at the top level.`,
       DiagnosticCode.UnsupportedFeature,
+      ctx.getLocation(decl.name.loc),
     );
     return;
   }
@@ -1958,6 +1983,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       ctx.diagnostics.reportError(
         `Superclass '${typeToString(resolvedSuperType)}' must be a class.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(decl.superClass!.loc),
       );
     } else {
       superType = resolvedSuperType as ClassType;
@@ -1965,6 +1991,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         ctx.diagnostics.reportError(
           `Cannot extend final class '${superType.name}'.`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(decl.superClass!.loc),
         );
       }
     }
@@ -1982,6 +2009,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         ctx.diagnostics.reportError(
           `'${typeToString(mixinType)}' is not a mixin.`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(mixinAnnotation.loc),
         );
         continue;
       }
@@ -1998,11 +2026,13 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           ctx.diagnostics.reportError(
             `Mixin '${mixin.name}' requires superclass to extend '${mixin.onType.name}', but no superclass is defined.`,
             DiagnosticCode.TypeMismatch,
+            ctx.getLocation(mixinAnnotation.loc),
           );
         } else if (!isAssignableTo(ctx, superType, mixin.onType)) {
           ctx.diagnostics.reportError(
             `Mixin '${mixin.name}' requires superclass to extend '${mixin.onType.name}'.`,
             DiagnosticCode.TypeMismatch,
+            ctx.getLocation(mixinAnnotation.loc),
           );
         }
       }
@@ -2047,6 +2077,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             ctx.diagnostics.reportError(
               `Mixin '${mixin.name}' field '${name}' is incompatible with base class field.`,
               DiagnosticCode.TypeMismatch,
+              ctx.getLocation(mixinAnnotation.loc),
             );
           }
         }
@@ -2061,6 +2092,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             ctx.diagnostics.reportError(
               `Mixin '${mixin.name}' cannot override final method '${name}'.`,
               DiagnosticCode.TypeMismatch,
+              ctx.getLocation(mixinAnnotation.loc),
             );
           }
           // Check signature compatibility
@@ -2069,6 +2101,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             ctx.diagnostics.reportError(
               `Mixin '${mixin.name}' method '${name}' return type ${typeToString(type.returnType)} is not compatible with base method return type ${typeToString(baseMethod.returnType)}.`,
               DiagnosticCode.TypeMismatch,
+              ctx.getLocation(mixinAnnotation.loc),
             );
           }
           // 2. Parameter types must be assignable FROM base parameter types (contravariant)
@@ -2077,6 +2110,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             ctx.diagnostics.reportError(
               `Mixin '${mixin.name}' method '${name}' has different number of parameters than base method.`,
               DiagnosticCode.TypeMismatch,
+              ctx.getLocation(mixinAnnotation.loc),
             );
           } else {
             for (let i = 0; i < type.parameters.length; i++) {
@@ -2091,6 +2125,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
                 ctx.diagnostics.reportError(
                   `Mixin '${mixin.name}' method '${name}' parameter ${i} type is incompatible with base method.`,
                   DiagnosticCode.TypeMismatch,
+                  ctx.getLocation(mixinAnnotation.loc),
                 );
               }
             }
@@ -2236,6 +2271,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         ctx.diagnostics.reportError(
           `Extension classes cannot have instance fields.`,
           DiagnosticCode.ExtensionClassField,
+          ctx.getLocation(member.name.loc),
         );
         continue;
       }
@@ -2277,6 +2313,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         ctx.diagnostics.reportError(
           `Duplicate field '${memberName}' in class '${className}'.`,
           DiagnosticCode.DuplicateDeclaration,
+          ctx.getLocation(member.name.loc),
         );
         continue;
       }
@@ -2294,6 +2331,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             ctx.diagnostics.reportError(
               `Field '${memberName}' in subclass '${className}' must be compatible with inherited field.`,
               DiagnosticCode.TypeMismatch,
+              ctx.getLocation(member.name.loc),
             );
           }
         } else {
@@ -2314,12 +2352,14 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           ctx.diagnostics.reportError(
             `Field '${memberName}' conflicts with method '${memberName}'.`,
             DiagnosticCode.DuplicateDeclaration,
+            ctx.getLocation(member.name.loc),
           );
         } else {
           // Inherited method
           ctx.diagnostics.reportError(
             `Field '${memberName}' conflicts with inherited method '${memberName}'.`,
             DiagnosticCode.DuplicateDeclaration,
+            ctx.getLocation(member.name.loc),
           );
         }
       }
@@ -2377,6 +2417,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         ctx.diagnostics.reportError(
           `Duplicate field '${memberName}' in class '${className}'.`,
           DiagnosticCode.DuplicateDeclaration,
+          ctx.getLocation(member.name.loc),
         );
       }
       // Accessors are not fields, but they conflict with fields
@@ -2403,6 +2444,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
               ctx.diagnostics.reportError(
                 `Cannot override final method '${getterName}'.`,
                 DiagnosticCode.TypeMismatch,
+                ctx.getLocation(member.name.loc),
               );
             }
           }
@@ -2430,6 +2472,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
               ctx.diagnostics.reportError(
                 `Cannot override final method '${setterName}'.`,
                 DiagnosticCode.TypeMismatch,
+                ctx.getLocation(member.name.loc),
               );
             }
           }
@@ -2474,6 +2517,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         ctx.diagnostics.reportError(
           `Abstract method '${memberName}' can only appear within an abstract class.`,
           DiagnosticCode.AbstractMethodInConcreteClass,
+          ctx.getLocation(member.name.loc),
         );
       }
 
@@ -2485,6 +2529,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           ctx.diagnostics.reportError(
             `Declared method '${memberName}' must be decorated with @intrinsic.`,
             DiagnosticCode.MissingDecorator,
+            ctx.getLocation(member.name.loc),
           );
         }
 
@@ -2492,6 +2537,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           ctx.diagnostics.reportError(
             `Declared method '${memberName}' cannot have a body.`,
             DiagnosticCode.UnexpectedBody,
+            ctx.getLocation(member.body.loc),
           );
         }
       }
@@ -2501,6 +2547,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           ctx.diagnostics.reportError(
             `Duplicate constructor in class '${className}'.`,
             DiagnosticCode.DuplicateDeclaration,
+            ctx.getLocation(member.name.loc),
           );
         }
         classType.constructorType = methodType;
@@ -2510,12 +2557,14 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             ctx.diagnostics.reportError(
               `Method '${memberName}' conflicts with field '${memberName}'.`,
               DiagnosticCode.DuplicateDeclaration,
+              ctx.getLocation(member.name.loc),
             );
           } else {
             // Inherited field
             ctx.diagnostics.reportError(
               `Method '${memberName}' conflicts with inherited field '${memberName}'.`,
               DiagnosticCode.DuplicateDeclaration,
+              ctx.getLocation(member.name.loc),
             );
           }
         }
@@ -2528,6 +2577,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             ctx.diagnostics.reportError(
               `Duplicate method '${memberName}' in class '${className}'.`,
               DiagnosticCode.DuplicateDeclaration,
+              ctx.getLocation(member.name.loc),
             );
           } else {
             // Valid overload - add to the existing method's overloads array
@@ -2561,6 +2611,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
                   ctx.diagnostics.reportError(
                     `Cannot override final method '${memberName}'.`,
                     DiagnosticCode.TypeMismatch,
+                    ctx.getLocation(member.name.loc),
                   );
                 }
                 // TODO: Check signature compatibility (covariant return, contravariant params)
@@ -2616,6 +2667,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         ctx.diagnostics.reportError(
           `Type '${name}' is not an interface.`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(impl.loc),
         );
         continue;
       }
@@ -2640,6 +2692,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           ctx.diagnostics.reportError(
             `Class '${className}' incorrectly implements interface '${interfaceType.name}'. ${errorMsg}`,
             DiagnosticCode.PropertyNotFound,
+            ctx.getLocation(impl.loc),
           );
         } else {
           const methodType = classType.methods.get(name)!;
@@ -2656,6 +2709,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             ctx.diagnostics.reportError(
               `Class '${className}' incorrectly implements interface '${interfaceType.name}'. ${memberName} is type '${typeToString(methodType)}' but expected '${typeToString(substitutedType)}'.`,
               DiagnosticCode.TypeMismatch,
+              ctx.getLocation(impl.loc),
             );
           }
         }
@@ -2670,6 +2724,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         ctx.diagnostics.reportError(
           `Non-abstract class '${className}' does not implement abstract method '${name}'.`,
           DiagnosticCode.AbstractMethodNotImplemented,
+          ctx.getLocation(decl.name.loc),
         );
       }
     }

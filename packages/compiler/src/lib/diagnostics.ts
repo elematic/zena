@@ -117,3 +117,76 @@ export class DiagnosticBag {
     this.#diagnostics = [];
   }
 }
+
+/**
+ * Format a single diagnostic for display.
+ * Includes filename, line:column, severity, message, and source context with caret.
+ *
+ * @param diagnostic The diagnostic to format
+ * @param source The source code (required to show context)
+ * @returns Formatted multi-line string
+ */
+export const formatDiagnostic = (
+  diagnostic: Diagnostic,
+  source?: string,
+): string => {
+  const parts: string[] = [];
+
+  // Severity label and color codes
+  const severityLabel =
+    diagnostic.severity === DiagnosticSeverity.Error
+      ? '\x1b[31merror\x1b[0m'
+      : diagnostic.severity === DiagnosticSeverity.Warning
+        ? '\x1b[33mwarning\x1b[0m'
+        : '\x1b[34minfo\x1b[0m';
+
+  // Location string (file:line:column)
+  const loc = diagnostic.location;
+  const locationStr = loc
+    ? `\x1b[1m${loc.file}:${loc.line}:${loc.column}\x1b[0m`
+    : '\x1b[1m<unknown>\x1b[0m';
+
+  // First line: location: severity[code]: message
+  parts.push(
+    `${locationStr}: ${severityLabel}[Z${diagnostic.code}]: ${diagnostic.message}`,
+  );
+
+  // If we have source and location info, show the relevant line with a caret
+  if (source && loc) {
+    const lines = source.split('\n');
+    const lineIndex = loc.line - 1; // Convert to 0-based
+
+    if (lineIndex >= 0 && lineIndex < lines.length) {
+      const sourceLine = lines[lineIndex];
+      const lineNumWidth = String(loc.line).length;
+      const gutter = ' '.repeat(lineNumWidth);
+
+      // Line number and source
+      parts.push(`${gutter} |`);
+      parts.push(`\x1b[34m${loc.line}\x1b[0m | ${sourceLine}`);
+
+      // Caret line pointing to the error
+      const caretCol = Math.max(0, loc.column - 1);
+      const caretLength = Math.max(1, loc.length || 1);
+      const caret =
+        ' '.repeat(caretCol) + '\x1b[31m' + '^'.repeat(caretLength) + '\x1b[0m';
+      parts.push(`${gutter} | ${caret}`);
+    }
+  }
+
+  return parts.join('\n');
+};
+
+/**
+ * Format multiple diagnostics for a single file.
+ *
+ * @param diagnostics Array of diagnostics to format
+ * @param source The source code for the file
+ * @returns Formatted multi-line string
+ */
+export const formatDiagnostics = (
+  diagnostics: ReadonlyArray<Diagnostic>,
+  source?: string,
+): string => {
+  return diagnostics.map((d) => formatDiagnostic(d, source)).join('\n\n');
+};

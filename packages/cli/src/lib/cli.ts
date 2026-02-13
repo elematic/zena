@@ -8,6 +8,7 @@ import {
   type Diagnostic,
   Compiler,
   CodeGenerator,
+  formatDiagnostics,
 } from '@zena-lang/compiler';
 import {instantiate} from '@zena-lang/runtime';
 import {readFile, writeFile} from 'node:fs/promises';
@@ -81,16 +82,10 @@ const readSourceFile = async (filePath: string): Promise<string> => {
 };
 
 /**
- * Output errors to stderr in a formatted way.
+ * Output errors to stderr in a formatted way with source context.
  */
-const printErrors = (file: string, errors: Diagnostic[]): void => {
-  console.error(`${file}:`);
-  for (const error of errors) {
-    const loc = error.location
-      ? ` at line ${error.location.line}, column ${error.location.column}`
-      : '';
-    console.error(`  ${error.message}${loc}`);
-  }
+const printErrors = (errors: Diagnostic[], source?: string): void => {
+  console.error(formatDiagnostics(errors, source));
 };
 
 const buildCommand = async (
@@ -118,7 +113,7 @@ const buildCommand = async (
     for (const mod of modules) {
       if (mod.diagnostics.length > 0) {
         hasErrors = true;
-        printErrors(mod.path, mod.diagnostics);
+        printErrors(mod.diagnostics, mod.source);
       }
     }
 
@@ -164,7 +159,7 @@ const checkCommand = async (files: string[]): Promise<number> => {
     for (const mod of modules) {
       if (mod.diagnostics.length > 0) {
         hasErrors = true;
-        printErrors(mod.path, mod.diagnostics);
+        printErrors(mod.diagnostics, mod.source);
       }
     }
 
@@ -202,7 +197,7 @@ const runCommand = async (
     for (const mod of modules) {
       if (mod.diagnostics.length > 0) {
         hasErrors = true;
-        printErrors(mod.path, mod.diagnostics);
+        printErrors(mod.diagnostics, mod.source);
       }
     }
 

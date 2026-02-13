@@ -168,6 +168,7 @@ function checkExpressionInternal(
         ctx.diagnostics.reportError(
           `Variable '${expr.name}' not found.`,
           DiagnosticCode.SymbolNotFound,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -1207,6 +1208,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       ctx.diagnostics.reportError(
         `'super' call can only be used inside a class constructor.`,
         DiagnosticCode.UnknownError,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -1214,6 +1216,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       ctx.diagnostics.reportError(
         `'super' call can only be used inside a class constructor.`,
         DiagnosticCode.UnknownError,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -1226,6 +1229,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         ctx.diagnostics.reportError(
           `Extension class constructor must call 'super' with exactly one argument.`,
           DiagnosticCode.ArgumentCountMismatch,
+          ctx.getLocation(expr.loc),
         );
       } else {
         const argType = checkExpression(ctx, expr.arguments[0]);
@@ -1233,6 +1237,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
           ctx.diagnostics.reportError(
             `Type mismatch in super call: expected ${typeToString(ctx.currentClass.onType)}, got ${typeToString(argType)}`,
             DiagnosticCode.TypeMismatch,
+            ctx.getLocation(expr.arguments[0].loc),
           );
         }
       }
@@ -1245,6 +1250,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       ctx.diagnostics.reportError(
         `Class '${ctx.currentClass.name}' does not have a superclass.`,
         DiagnosticCode.UnknownError,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -1257,6 +1263,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         ctx.diagnostics.reportError(
           `Superclass '${superClass.name}' has no constructor but arguments were provided.`,
           DiagnosticCode.ArgumentCountMismatch,
+          ctx.getLocation(expr.loc),
         );
       }
       ctx.isThisInitialized = true;
@@ -1267,6 +1274,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       ctx.diagnostics.reportError(
         `Expected ${constructor.parameters.length} arguments, got ${expr.arguments.length}.`,
         DiagnosticCode.ArgumentCountMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
 
@@ -1282,6 +1290,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         ctx.diagnostics.reportError(
           `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.arguments[i].loc),
         );
       }
     }
@@ -1423,6 +1432,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         ctx.diagnostics.reportError(
           `Expected ${funcType.typeParameters.length} type arguments, got ${expr.typeArguments.length}`,
           DiagnosticCode.GenericTypeArgumentMismatch,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -1441,6 +1451,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         ctx.diagnostics.reportError(
           `Could not infer type arguments for generic function.`,
           DiagnosticCode.GenericTypeArgumentMismatch,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -1485,6 +1496,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       ctx.diagnostics.reportError(
         `Expected ${minArity}-${funcType.parameters.length} arguments, got ${expr.arguments.length}`,
         DiagnosticCode.ArgumentCountMismatch,
+        ctx.getLocation(expr.loc),
       );
     } else {
       // Fill in missing arguments with default values
@@ -1567,6 +1579,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       ctx.diagnostics.reportError(
         `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(argExpr.loc),
       );
     }
   }
@@ -2101,6 +2114,7 @@ function checkBinaryExpression(
     ctx.diagnostics.reportError(
       `Type mismatch: cannot apply operator '${expr.operator}' to ${typeToString(left)} and ${typeToString(right)}`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -2764,6 +2778,7 @@ function checkMemberExpression(
     ctx.diagnostics.reportError(
       `Property '${memberName}' does not exist on type '${typeToString(objectType)}'.`,
       DiagnosticCode.PropertyNotFound,
+      ctx.getLocation(expr.property.loc),
     );
     return Types.Unknown;
   }
@@ -2776,6 +2791,7 @@ function checkMemberExpression(
       ctx.diagnostics.reportError(
         `Property access on non-class type '${typeToString(objectType)}'.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
     return Types.Unknown;
@@ -2796,6 +2812,7 @@ function checkMemberExpression(
       ctx.diagnostics.reportError(
         `Private field '${memberName}' can only be accessed within a class.`,
         DiagnosticCode.UnknownError,
+        ctx.getLocation(expr.property.loc),
       );
       return Types.Unknown;
     }
@@ -2807,6 +2824,7 @@ function checkMemberExpression(
       ctx.diagnostics.reportError(
         `Private member '${memberName}' is not defined in class '${ctx.currentClass.name}'.`,
         DiagnosticCode.PropertyNotFound,
+        ctx.getLocation(expr.property.loc),
       );
       return Types.Unknown;
     }
@@ -2815,6 +2833,7 @@ function checkMemberExpression(
       ctx.diagnostics.reportError(
         `Type '${typeToString(objectType)}' does not have private member '${memberName}' from class '${ctx.currentClass.name}'.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.property.loc),
       );
       return Types.Unknown;
     }
@@ -2943,6 +2962,7 @@ function checkMemberExpression(
   ctx.diagnostics.reportError(
     `Property '${memberName}' does not exist on type '${classType.name}'.`,
     DiagnosticCode.PropertyNotFound,
+    ctx.getLocation(expr.property.loc),
   );
   return Types.Unknown;
 }
@@ -2952,6 +2972,7 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
     ctx.diagnostics.reportError(
       `'this' can only be used inside a class.`,
       DiagnosticCode.UnknownError,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -2959,6 +2980,7 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
     ctx.diagnostics.reportError(
       `'this' cannot be accessed before 'super()' call in a derived class constructor.`,
       DiagnosticCode.UnknownError,
+      ctx.getLocation(expr.loc),
     );
   }
   if (ctx.currentClass.isExtension && ctx.currentClass.onType) {
