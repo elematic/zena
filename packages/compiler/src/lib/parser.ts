@@ -2535,6 +2535,15 @@ export class Parser {
       }
     }
 
+    // Check for common mistake: using `var` or `let` for class fields
+    if (this.#check(TokenType.Var) || this.#check(TokenType.Let)) {
+      const keyword = this.#peek().value;
+      throw new Error(
+        `Class fields don't use '${keyword}'. ` +
+          `Remove '${keyword}' to declare a field directly: \`name: Type\``,
+      );
+    }
+
     if (isStatic && this.#match(TokenType.Symbol)) {
       const name = this.#parseIdentifier();
       this.#consume(TokenType.Semi, "Expected ';' after symbol declaration.");

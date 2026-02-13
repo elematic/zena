@@ -161,4 +161,50 @@ suite('Parser - Classes', () => {
     const parser = new Parser(input);
     assert.throws(() => parser.parse(), /Expected '\(' after set/);
   });
+
+  test('should fail when using var for class field', () => {
+    const input = `
+      class Foo {
+        var bar = 42;
+      }
+    `;
+    const parser = new Parser(input);
+    assert.throws(
+      () => parser.parse(),
+      /Class fields don't use 'var'\. Remove 'var' to declare a field directly/,
+    );
+  });
+
+  test('should fail when using let for class field', () => {
+    const input = `
+      class Foo {
+        let bar: i32;
+      }
+    `;
+    const parser = new Parser(input);
+    assert.throws(
+      () => parser.parse(),
+      /Class fields don't use 'let'\. Remove 'let' to declare a field directly/,
+    );
+  });
+
+  test('should not allow field named var', () => {
+    const input = `
+      class Foo {
+        var: i32;
+      }
+    `;
+    const parser = new Parser(input);
+    assert.throws(() => parser.parse(), /Class fields don't use 'var'/);
+  });
+
+  test('should not allow field named let', () => {
+    const input = `
+      class Foo {
+        let: i32;
+      }
+    `;
+    const parser = new Parser(input);
+    assert.throws(() => parser.parse(), /Class fields don't use 'let'/);
+  });
 });
