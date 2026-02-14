@@ -117,4 +117,57 @@ suite('Checker: Records and Tuples', () => {
       /Tuple index must be a number literal/,
     );
   });
+
+  // Optional field tests
+  test('allows omitting optional fields', () => {
+    // Optional fields can be omitted from the source record
+    const {diagnostics} = check(`
+      let r: { x: i32, y?: i32 } = { x: 1 };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('allows providing optional fields', () => {
+    // Optional fields can also be provided
+    const {diagnostics} = check(`
+      let r: { x: i32, y?: i32 } = { x: 1, y: 2 };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('requires required fields even when optional fields exist', () => {
+    // Required fields must still be present
+    const {diagnostics} = check(`
+      let r: { x: i32, y?: i32 } = { y: 2 };
+    `);
+    assert.strictEqual(diagnostics.length, 1);
+    assert.match(diagnostics[0].message, /Type mismatch/);
+  });
+
+  test('allows all-optional record with empty literal', () => {
+    const {diagnostics} = check(`
+      let opts: { timeout?: i32, retries?: i32 } = {};
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('function parameter with optional record fields', () => {
+    const {diagnostics} = check(`
+      let request = (opts: { url: string, timeout?: i32 }): string => opts.url;
+      export let main = (): string => {
+        return request({ url: "/api" });
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('function parameter with optional fields - providing optional', () => {
+    const {diagnostics} = check(`
+      let request = (opts: { url: string, timeout?: i32 }): string => opts.url;
+      export let main = (): string => {
+        return request({ url: "/api", timeout: 5000 });
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
 });

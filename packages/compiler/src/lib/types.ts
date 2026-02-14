@@ -82,6 +82,8 @@ export interface ArrayType extends Type {
 export interface RecordType extends Type {
   kind: typeof TypeKind.Record;
   properties: Map<string, Type>;
+  /** Names of optional properties. A property is required if not in this set. */
+  optionalProperties?: Set<string>;
 }
 
 export interface TupleType extends Type {

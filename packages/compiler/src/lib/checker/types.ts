@@ -591,16 +591,25 @@ function resolveTypeAnnotationInternal(
 
   if (annotation.type === NodeType.RecordTypeAnnotation) {
     const properties = new Map<string, Type>();
+    let optionalProperties: Set<string> | undefined;
     for (const prop of annotation.properties) {
       properties.set(
         prop.name.name,
         resolveTypeAnnotation(ctx, prop.typeAnnotation),
       );
+      if (prop.optional) {
+        optionalProperties ??= new Set();
+        optionalProperties.add(prop.name.name);
+      }
     }
-    return {
+    const result: RecordType = {
       kind: TypeKind.Record,
       properties,
-    } as RecordType;
+    };
+    if (optionalProperties) {
+      result.optionalProperties = optionalProperties;
+    }
+    return result;
   }
 
   if (annotation.type === NodeType.TupleTypeAnnotation) {
@@ -1665,10 +1674,21 @@ export function isAssignableTo(
     const sourceRecord = source as RecordType;
     const targetRecord = target as RecordType;
     // Records support width subtyping - source can have extra fields
-    // Source must have at least all the fields required by target
+    // Source must have at least all the required fields of target
     for (const [key, targetType] of targetRecord.properties) {
+      const isOptionalInTarget = targetRecord.optionalProperties?.has(key);
       const sourceType = sourceRecord.properties.get(key);
-      if (!sourceType) return false;
+
+      if (!sourceType) {
+        // Source doesn't have this field
+        if (isOptionalInTarget) {
+          // Optional field can be missing in source
+          continue;
+        }
+        // Required field is missing
+        return false;
+      }
+
       if (!isAssignableTo(ctx, sourceType, targetType)) return false;
     }
     return true;
