@@ -348,7 +348,7 @@ packages/wit-parser/zena/
    - Uses tagged class pattern (Zena lacks sum types with payloads)
    - Docs, stability annotations
 
-3. **Parser** [IN PROGRESS] (~1050 lines)
+3. **Parser** [IN PROGRESS] (~1100 lines)
    - Recursive descent, LL(1) with some lookahead
    - Package declarations with versions
    - Interface and world definitions
@@ -356,8 +356,8 @@ packages/wit-parser/zena/
    - Function signatures with async support
    - Use/include statements
    - Annotations (@since, @unstable, @deprecated)
-   - **Test status**: 83/211 wasm-tools tests passing (39%)
-   - **Missing**: nested packages, multi-file support
+   - **Test status**: 98/211 wasm-tools tests passing (46%)
+   - **Remaining**: 3 multi-file tests, ~110 semantic validation tests
 
 4. **Resolver** (~1000 lines) [NOT STARTED]
    - Package/interface/world resolution
@@ -374,9 +374,14 @@ The parser handles core WIT syntax but needs additional work:
 | Feature                           | Status                     | Tests Affected |
 | --------------------------------- | -------------------------- | -------------- |
 | Block comments (`/* */`)          | ✅ Complete (with nesting) | ~5             |
-| Nested packages (`package x { }`) | ❌ Not implemented         | ~15            |
-| Multi-file packages               | ❌ Single-file only        | ~30            |
-| Semantic validation               | N/A (syntax-only parser)   | ~70            |
+| Nested packages (`package x { }`) | ✅ Complete                | ~15            |
+| Fixed-size lists (`list<T, N>`)   | ✅ Complete                | ~2             |
+| Constructor return types          | ✅ Complete                | ~2             |
+| Versioned use paths               | ✅ Complete                | ~3             |
+| Trailing commas in types          | ✅ Complete                | ~3             |
+| Complex semver versions           | ✅ Complete                | ~1             |
+| Multi-file packages               | ❌ Single-file only        | 3              |
+| Semantic validation               | N/A (syntax-only parser)   | ~110           |
 
 **Priority order**:
 
@@ -570,7 +575,12 @@ the parser is implemented.
 - [x] Implement core parser (recursive descent)
 - [x] Implement annotations (@since, @unstable, @deprecated)
 - [x] Fix nested block comment parsing (lexer)
-- [ ] Implement nested package syntax (parser)
+- [x] Implement nested package syntax (parser)
+- [x] Fix fixed-size list parsing (`list<T, N>`)
+- [x] Fix constructor return types (`constructor() -> result<T>`)
+- [x] Fix versioned use paths (`use pkg:name/iface@version.{items}`)
+- [x] Fix trailing commas in tuples (`tuple<T,>`)
+- [x] Fix complex semver parsing (`1.0.1--`, `1.0.0-a+b`)
 - [ ] Implement multi-file package support (test harness)
 - [ ] Implement resolver
 - [ ] Implement JSON serialization
@@ -590,7 +600,7 @@ the parser is implemented.
 - [x] Packages & worlds tests passing (single-file)
 - [x] Annotation tests passing (@since, @unstable)
 - [x] Nested block comments tests passing
-- [ ] Nested package syntax tests passing
-- [ ] Multi-file package tests passing
+- [x] Nested package syntax tests passing
+- [ ] Multi-file package tests passing (3 remaining)
 - [ ] All parse-fail tests passing (semantic validation)
 - [ ] Full test suite parity with wasm-tools
