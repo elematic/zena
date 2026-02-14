@@ -1102,15 +1102,14 @@ export class Parser {
       var versionEnd = lastToken.span.end;
       
       // Handle pre-release (-alpha.1) and build metadata (+build.123)
+      // Semver allows: 1.0.0-alpha, 1.0.0--, 1.0.0-alpha.1, etc.
       while (this.#check(TokenType.Minus) || this.#check(TokenType.Plus)) {
-        this.#advance();
-        // Consume identifier/integer parts
-        while (this.#check(TokenType.Id) || this.#check(TokenType.Integer)) {
+        lastToken = this.#advance();
+        versionEnd = lastToken.span.end;
+        // Consume identifier/integer/period parts until we hit something else
+        while (this.#check(TokenType.Id) || this.#check(TokenType.Integer) || this.#check(TokenType.Period)) {
           lastToken = this.#advance();
           versionEnd = lastToken.span.end;
-          if (!this.#eat(TokenType.Period)) {
-            break;
-          }
         }
       }
       
@@ -1131,41 +1130,29 @@ export class Parser {
   #parseUsePath(): UsePath {
     let id = this.#parseId();
     
-    // Check for package path: namespace:name/interface
+    // Check for package path: namespace:name/interface or namespace:name@version/interface
     if (this.#eat(TokenType.Colon)) {
       // This is a package path
       let pkgName = this.#parseId();
       
-      // Optional version
+      // Optional version after package name (namespace:name@version/interface)
       var version: String | null = null;
       var versionSpan: Span | null = null;
       if (this.#eat(TokenType.At)) {
-        let versionStart = this.#peek().span.start;
-        this.#expect(TokenType.Integer);
-        this.#expect(TokenType.Period);
-        this.#expect(TokenType.Integer);
-        this.#expect(TokenType.Period);
-        var lastToken = this.#expect(TokenType.Integer);
-        var versionEnd = lastToken.span.end;
-        
-        // Handle pre-release and build metadata
-        while (this.#check(TokenType.Minus) || this.#check(TokenType.Plus)) {
-          this.#advance();
-          while (this.#check(TokenType.Id) || this.#check(TokenType.Integer)) {
-            lastToken = this.#advance();
-            versionEnd = lastToken.span.end;
-            if (!this.#eat(TokenType.Period)) {
-              break;
-            }
-          }
-        }
-        
-        versionSpan = new Span(versionStart, versionEnd);
-        version = this.#text(versionSpan);
+        let parsed = this.#parseVersion();
+        version = parsed.version;
+        versionSpan = parsed.span;
       }
       
       this.#expect(TokenType.Slash);
       let interfaceName = this.#parseId();
+      
+      // Optional version after interface name (namespace:name/interface@version)
+      if (version == null && this.#eat(TokenType.At)) {
+        let parsed = this.#parseVersion();
+        version = parsed.version;
+        versionSpan = parsed.span;
+      }
       
       let pkgId = new PackageName(id, pkgName, new Span(id.span.start, pkgName.span.end));
       pkgId.version = version;
@@ -1176,6 +1163,32 @@ export class Parser {
     
     // Just an identifier
     return UsePath.fromId(id);
+  }
+  
+  /** Parse a semver version string. Returns the version text and span. */
+  #parseVersion(): {version: String, span: Span} {
+    let versionStart = this.#peek().span.start;
+    this.#expect(TokenType.Integer);
+    this.#expect(TokenType.Period);
+    this.#expect(TokenType.Integer);
+    this.#expect(TokenType.Period);
+    var lastToken = this.#expect(TokenType.Integer);
+    var versionEnd = lastToken.span.end;
+    
+    // Handle pre-release and build metadata
+    while (this.#check(TokenType.Minus) || this.#check(TokenType.Plus)) {
+      this.#advance();
+      while (this.#check(TokenType.Id) || this.#check(TokenType.Integer)) {
+        lastToken = this.#advance();
+        versionEnd = lastToken.span.end;
+        if (!this.#eat(TokenType.Period)) {
+          break;
+        }
+      }
+    }
+    
+    let span = new Span(versionStart, versionEnd);
+    return {version: this.#text(span), span: span};
   }
 
   // --------------------------------------------------------------------------
@@ -1202,11 +1215,17 @@ export class Parser {
     if (token.type == TokenType.String) { this.#advance(); return Type.primitive(TypeTag.String, token.span); }
     if (token.type == TokenType.ErrorContext) { this.#advance(); return Type.primitive(TypeTag.ErrorContext, token.span); }
     
-    // list<T>
+    // list<T> or list<T, N> (fixed-size list)
     if (token.type == TokenType.List) {
       this.#advance();
       this.#expect(TokenType.LessThan);
       let inner = this.#parseType();
+      // Optional: fixed size (e.g., list<u32, 4>)
+      if (this.#eat(TokenType.Comma)) {
+        // Parse size - must be an integer literal
+        let sizeToken = this.#expect(TokenType.Integer);
+        // For now we ignore the size in the AST, but parse it for compatibility
+      }
       let endToken = this.#expect(TokenType.GreaterThan);
       return Type.list(inner, new Span(token.span.start, endToken.span.end));
     }
@@ -1259,6 +1278,8 @@ export class Parser {
       if (!this.#check(TokenType.GreaterThan)) {
         types.push(this.#parseType());
         while (this.#eat(TokenType.Comma)) {
+          // Allow trailing comma
+          if (this.#check(TokenType.GreaterThan)) break;
           types.push(this.#parseType());
         }
       }
@@ -1507,7 +1528,7 @@ export class Parser {
   #parseResourceFunc(docs: Docs): ResourceFunc {
     let token = this.#peek();
     
-    // constructor(params)
+    // constructor(params) or constructor(params) -> result
     if (token.type == TokenType.Constructor) {
       this.#advance();
       this.#expect(TokenType.LeftParen);
@@ -1521,10 +1542,17 @@ export class Parser {
         }
       }
       this.#expect(TokenType.RightParen);
-      this.#expectSemicolon();
       
       let func = new Func(token.span);
       func.params = params;
+      
+      // Optional return type for constructor (e.g., constructor() -> result<T>)
+      if (this.#eat(TokenType.RArrow)) {
+        func.result = this.#parseType();
+      }
+      
+      this.#expectSemicolon();
+      
       let namedFunc = new NamedFunc(docs, new Id("constructor", token.span), func);
       return new ResourceFunc(ResourceFuncTag.Constructor, namedFunc);
     }
@@ -1707,8 +1735,8 @@ export class Parser {
           return ExternKind.iface(id, items);
         }
         
-        // name: func(...)
-        if (this.#check(TokenType.Func)) {
+        // name: [async] func(...)
+        if (this.#check(TokenType.Func) || this.#check(TokenType.Async)) {
           let func = this.#parseFunc();
           this.#expectSemicolon();
           return ExternKind.makeFunc(id, func);
