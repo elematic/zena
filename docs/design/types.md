@@ -80,19 +80,23 @@ Zena uses a **Split Namespace** model, similar to TypeScript.
 
 **Status: Implemented**
 
-Interfaces are contracts that define a set of methods/fields. In Zena, they exist at runtime using a **Fat Pointer** representation.
+Interfaces are contracts that define a set of methods/fields. In Zena, they
+exist at runtime using a **Fat Pointer** representation.
 
 See [Interfaces Design](./interfaces.md) for implementation details.
 
 ### Decision
 
 - Interfaces define a set of methods/fields that a class must implement.
-- **Runtime Representation**: An interface value is a struct containing the instance reference and a VTable (Fat Pointer).
-- **Performance**: Dispatch is O(1) but requires an allocation when casting an object to an interface (boxing).
+- **Runtime Representation**: An interface value is a struct containing the
+  instance reference and a VTable (Fat Pointer).
+- **Performance**: Dispatch is O(1) but requires an allocation when casting an
+  object to an interface (boxing).
 
 ### Rationale
 
-- **WASM Limitations**: WASM-GC does not natively support traits. Fat pointers provide a robust way to support polymorphism across disjoint hierarchies.
+- **WASM Limitations**: WASM-GC does not natively support traits. Fat pointers
+  provide a robust way to support polymorphism across disjoint hierarchies.
 
 ### Pros
 
@@ -110,22 +114,26 @@ See [Interfaces Design](./interfaces.md) for implementation details.
 - `i32`, `f32`, `boolean`, `String`: **Implemented**
 - `i64`, `f64`: **Implemented**
 
-Zena maps its primitive types directly to WebAssembly value types to ensure maximum performance and zero ovezenad.
+Zena maps its primitive types directly to WebAssembly value types to ensure
+maximum performance and zero ovezenad.
 
 See [Strings Design](./strings.md) for details on string implementation.
 
 ### Numeric Types
 
 - **`i32`**: 32-bit signed integer. Default for integer literals.
-- **`i64`**: 64-bit signed integer. Essential for large numbers and memory addressing.
+- **`i64`**: 64-bit signed integer. Essential for large numbers and memory
+  addressing.
 - **`f32`**: 32-bit floating point.
-- **`f64`**: 64-bit floating point. Default for float literals (to match JS precision).
+- **`f64`**: 64-bit floating point. Default for float literals (to match JS
+  precision).
 
 ### Other Primitives
 
 - **`boolean`**: Maps to `i32` (0 or 1).
 - **`void`**: Represents the absence of a value (for function returns).
-- **`ByteArray`**: Maps to `(array (mut i8))`. Used for low-level binary data and string implementation.
+- **`ByteArray`**: Maps to `(array (mut i8))`. Used for low-level binary data
+  and string implementation.
 
 ### Future Consideration: SIMD
 
@@ -139,16 +147,19 @@ Zena is **Non-Nullable by Default**.
 
 ### Decision
 
-- All types `T` are non-nullable. A variable of type `String` cannot hold `null`.
+- All types `T` are non-nullable. A variable of type `String` cannot hold
+  `null`.
 - Nullability is opt-in via Union Types: `String | null`.
 
 ### Rationale
 
-- **Safety**: Eliminates "Null Reference Exceptions" for the vast majority of code.
+- **Safety**: Eliminates "Null Reference Exceptions" for the vast majority of
+  code.
 - **WASM Mapping**:
   - `T` maps to `(ref $T)` (Non-nullable reference).
   - `T | null` maps to `(ref null $T)` (Nullable reference).
-- **Optimization**: Non-nullable references allow the WASM engine to elide null checks.
+- **Optimization**: Non-nullable references allow the WASM engine to elide null
+  checks.
 
 ## 6. Algebraic Data Types
 
@@ -158,53 +169,65 @@ Zena is **Non-Nullable by Default**.
 
 **Status: Implemented with Constraints**
 
-Zena supports union types, but with specific constraints regarding primitive types to ensure soundness and performance.
+Zena supports union types, but with specific constraints regarding primitive
+types to ensure soundness and performance.
 
 #### Constraints
 
 - **Reference-Only Unions**: Unions of reference types are always allowed.
-  - ✅ `String | null`
-  - ✅ `Point | Shape`
-  - ✅ `Box<i32> | null`
-  - ✅ `array<i32> | null`
+  - ✅ `String | null` - ✅ `Point | Shape` - ✅ `Box<i32> | null` - ✅ `array<i32>
+  | null`
 
-- **Same-Base Primitive Unions**: Primitives may union with other primitives **of the same base type**.
-  - ✅ `true | false` (both are `boolean`)
-  - ✅ `1 | 2 | 3` (all are `i32`, when numeric literal types are implemented)
+- **Same-Base Primitive Unions**: Primitives may union with other primitives
+  **of the same base type**.
+  - ✅ `true | false` (both are `boolean`) - ✅ `1 | 2 | 3` (all are `i32`, when
+  numeric literal types are implemented)
 
-- **No Mixing Primitives with References**: Value primitives cannot union with reference types.
-  - ❌ `i32 | null`
-  - ❌ `boolean | String`
-  - ❌ `true | null`
+- **No Mixing Primitives with References**: Value primitives cannot union with
+  reference types.
+  - ❌ `i32 | null` - ❌ `boolean | String` - ❌ `true | null`
 
-- **No Mixing Different Primitive Base Types**: Primitives of different base types cannot be unioned.
-  - ❌ `i32 | f32`
-  - ❌ `1 | 1.0` (when numeric literal types are implemented)
+- **No Mixing Different Primitive Base Types**: Primitives of different base
+  types cannot be unioned.
+  - ❌ `i32 | f32` - ❌ `1 | 1.0` (when numeric literal types are implemented)
 
 #### Rationale
 
 1.  **WASM Representation**:
-    - **Value Types** (`i32`, `f32`) live on the stack or in locals. They are not GC-managed references.
+    - **Value Types** (`i32`, `f32`) live on the stack or in locals. They are
+      not GC-managed references.
     - **Reference Types** (`ref $T`, `ref null $T`) live on the heap.
-    - A union like `i32 | String` would require a storage location that can hold either 4 bytes of raw integer data OR a GC reference. WASM has no such type.
-    - To avoid implicit allocation and performance cliffs, Zena requires explicit boxing for primitives in unions with references.
+    - A union like `i32 | String` would require a storage location that can hold
+      either 4 bytes of raw integer data OR a GC reference. WASM has no such
+      type.
+    - To avoid implicit allocation and performance cliffs, Zena requires
+      explicit boxing for primitives in unions with references.
 
 2.  **Runtime Disambiguation**:
-    - To safely use a value from a union `A | B`, the runtime must be able to determine if the value is `A` or `B`.
-    - Reference types (Classes, Arrays) carry runtime type information (RTTI) or can be checked via `ref.test`.
-    - Value types (`i32`) are just raw bits and carry no type information. Distinguishing `i32` from `f32` in a union is impossible without a tag (boxing).
-    - Primitives of the same base type (like `true | false`) don't need runtime discrimination—they're all represented the same way.
+    - To safely use a value from a union `A | B`, the runtime must be able to
+      determine if the value is `A` or `B`.
+    - Reference types (Classes, Arrays) carry runtime type information (RTTI) or
+      can be checked via `ref.test`.
+    - Value types (`i32`) are just raw bits and carry no type information.
+      Distinguishing `i32` from `f32` in a union is impossible without a tag
+      (boxing).
+    - Primitives of the same base type (like `true | false`) don't need runtime
+      discrimination—they're all represented the same way.
 
 #### "Primitives" vs Reference Types
 
-It is important to distinguish between **Value Primitives** and **Reference Types**:
+It is important to distinguish between **Value Primitives** and **Reference
+Types**:
 
-- **Value Primitives** (Cannot mix with references in unions): `i32`, `i64`, `f32`, `f64`, `boolean`, `true`, `false`.
-- **Reference Types** (Can freely union with each other): `String`, `ByteArray`, `array<T>`, classes, interfaces.
+- **Value Primitives** (Cannot mix with references in unions): `i32`, `i64`,
+  `f32`, `f64`, `boolean`, `true`, `false`.
+- **Reference Types** (Can freely union with each other): `String`, `ByteArray`,
+  `array<T>`, classes, interfaces.
 
 #### Solution: `Box<T>`
 
-To store a primitive in a union with references (e.g. a nullable integer), use the standard library `Box<T>` class.
+To store a primitive in a union with references (e.g. a nullable integer), use
+the standard library `Box<T>` class.
 
 ```zena
 let x: Box<i32> | null = new Box(10);
@@ -214,7 +237,9 @@ let x: Box<i32> | null = new Box(10);
 
 **Status: Enforced at declaration**
 
-Unions containing unbounded type parameters mixed with reference types (including `null`) are **not allowed**. This prevents APIs from being defined that cannot work with primitive type arguments.
+Unions containing unbounded type parameters mixed with reference types
+(including `null`) are **not allowed**. This prevents APIs from being defined
+that cannot work with primitive type arguments.
 
 ```zena
 // ❌ Error: Unbounded type parameter 'T' cannot appear in union with reference types
@@ -245,9 +270,13 @@ class Container<T> {
 
 The problem with `T | null` where `T` is unbounded:
 
-1.  **Instantiation trap**: `Container<string>` works fine, but `Container<i32>` creates `i32 | null`, which violates the primitive-in-union rule.
-2.  **Late error**: Without this rule, the error would only appear when the generic is instantiated with a primitive — possibly far from where the problematic API was defined.
-3.  **API design smell**: `T | null` conflates "missing" with "null-valued", which is problematic even for reference types.
+1.  **Instantiation trap**: `Container<string>` works fine, but `Container<i32>`
+    creates `i32 | null`, which violates the primitive-in-union rule.
+2.  **Late error**: Without this rule, the error would only appear when the
+    generic is instantiated with a primitive — possibly far from where the
+    problematic API was defined.
+3.  **API design smell**: `T | null` conflates "missing" with "null-valued",
+    which is problematic even for reference types.
 
 ##### Recommended Patterns
 
@@ -260,18 +289,20 @@ Instead of `T | null` for "maybe has a value" semantics, use:
 | `find(): Option<T>`    | `Some<T>`  | When you need to store/pass the maybe |
 | `has()` + `[]`         | None       | Check then access (throws if missing) |
 
-Multi-return `(T, boolean)` is the **preferred pattern** for "maybe" results because:
+Multi-return `(T, boolean)` is the **preferred pattern** for "maybe" results
+because:
 
 - Zero allocation — values stay on the WASM stack
 - Works with all types including primitives
 - Unambiguous — distinguishes "not found" from "found with null value"
 
-When not found, return `(_, false)` where `_` is the hole literal with type `never`.
-The caller must not access the first element when the second is `false`.
+When not found, return `(_, false)` where `_` is the hole literal with type
+`never`. The caller must not access the first element when the second is
+`false`.
 
 Example from `Map<K, V>`:
 
-````zena
+```zena
 class Map<K, V> {
   // Throws KeyNotFoundError if missing
   operator [](key: K): V
@@ -289,15 +320,21 @@ class Map<K, V> {
   // Check existence
   has(key: K): boolean
 }
+```
 
 - **Implementation**:
-  - If `A` and `B` share a common ancestor class `Base`, `A | B` is treated as `Base`.
+  - If `A` and `B` share a common ancestor class `Base`, `A | B` is treated as
+    `Base`.
   - If they are unrelated, they are treated as `any` (WASM `anyref` or `eqref`).
 - **Function Calls**:
-  - Calling a union of function types (e.g., `((a: i32) => void) | ((a: i32, b: i32) => void)`) is supported.
-  - The compiler generates a runtime dispatch sequence that checks the actual type of the function and calls it with the appropriate arguments (adapting/dropping extra arguments if necessary).
+  - Calling a union of function types (e.g., `((a: i32) => void) | ((a: i32, b:
+    i32) => void)`) is supported.
+  - The compiler generates a runtime dispatch sequence that checks the actual
+    type of the function and calls it with the appropriate arguments
+    (adapting/dropping extra arguments if necessary).
 - **Discrimination**:
-  - Zena encourages **Type-Based Discrimination** (using classes) over **Tag-Based Discrimination** (string literals).
+  - Zena encourages **Type-Based Discrimination** (using classes) over
+    **Tag-Based Discrimination** (string literals).
   - **Pattern Matching**:
 
     ```zena
@@ -309,19 +346,22 @@ class Map<K, V> {
     }
     ```
 
-  - **WASM Optimization**: `is` checks compile directly to `br_on_cast` or `ref.test` instructions, which are extremely fast.
+  - **WASM Optimization**: `is` checks compile directly to `br_on_cast` or
+    `ref.test` instructions, which are extremely fast.
 
 ### Intersection Types (`A & B`)
 
 - **Usage**: Primarily for combining Interfaces.
   - `let process = (item: Runnable & Disposable) => { ... }`
-- **Implementation**: The value is treated as a reference that satisfies both contracts.
+- **Implementation**: The value is treated as a reference that satisfies both
+  contracts.
 
 ## 7. Type Aliases (`type`)
 
 **Status: Planned**
 
-The `type` keyword is used to create aliases for types, not to define new shapes.
+The `type` keyword is used to create aliases for types, not to define new
+shapes.
 
 ### Decision
 
@@ -340,14 +380,115 @@ type Handler = (event: String) => void;
 
 // ❌ Invalid: Object Literal Shape (Use Interface instead)
 // type Point = { x: i32, y: i32 };
-````
+```
 
 ### Rationale
 
-- **Clarity**: Separates "naming a thing" (type) from "defining the structure of a thing" (interface/class).
-- **Simplicity**: Avoids the TypeScript confusion of "Should I use type or interface?". In Zena: if it has fields/methods, it's an interface. If it's a combination of other types, it's a type alias.
+- **Clarity**: Separates "naming a thing" (type) from "defining the structure of
+  a thing" (interface/class).
+- **Simplicity**: Avoids the TypeScript confusion of "Should I use type or
+  interface?". In Zena: if it has fields/methods, it's an interface. If it's a
+  combination of other types, it's a type alias.
 
-## 8. Soundness & Casting
+## 8. Generic Type Inference
+
+**Status: Implemented**
+
+Zena infers type arguments for generic functions, methods, and constructors from
+their arguments, allowing users to omit explicit type parameters in most cases.
+
+### What Works
+
+```zena
+class Box<T> {
+  value: T;
+  #new(value: T) { this.value = value; }
+}
+
+let identity = <T>(x: T): T => x;
+
+// All of these infer the type argument automatically:
+let b = new Box(42);           // Infers Box<i32>
+let x = identity(42);          // Infers identity<i32>
+let p = new Pair(10, 20 as i64); // Infers Pair<i32, i64>
+```
+
+### Inference Algorithm
+
+The `inferTypeArguments` function matches parameter types against argument
+types:
+
+1. **Direct match**: If a parameter type is `T` and the argument is `i32`, infer
+   `T = i32`.
+2. **Recursive unwrapping**: For generic types like `array<T>` or `Box<T>`,
+   recursively match type arguments.
+3. **Function types**: Match parameter and return types of function arguments.
+4. **Conflict resolution**: If `T` is inferred multiple times with different
+   literal types of the same base, widen to the base type (e.g., `true` and
+   `false` → `boolean`).
+5. **Defaults**: If a type parameter cannot be inferred but has a default, use
+   the default.
+
+### Current Limitation: Unidirectional Inference
+
+The current implementation uses **unidirectional inference**: argument types are
+computed first, then matched against parameter types. This works well for most
+cases but has a limitation with contextual typing.
+
+#### The Problem
+
+```zena
+let first = <T>(arr: array<T>): T => arr[0];
+
+let arr = [1, 2, 3];  // Inferred as array<i32>
+first(arr);           // ✅ Works: T inferred from arr's element type
+
+first([1, 2, 3]);     // ❌ May fail: array literal checked before T is known
+```
+
+When an array literal is passed directly, the checker doesn't yet know that `T`
+should be `i32`. The contextual type is `array<T>` (with `T` still unresolved),
+which doesn't help the array literal infer its element type.
+
+#### Workaround
+
+Annotate the variable or use explicit type arguments:
+
+```zena
+let arr: array<i32> = [1, 2, 3];
+first(arr);           // ✅ Works
+
+first<i32>([1, 2, 3]); // ✅ Works with explicit type argument
+```
+
+### Future: Bidirectional Inference
+
+A more sophisticated approach would use **bidirectional inference**:
+
+1. First pass: Infer what we can from arguments that have known types.
+2. Substitute partial inferences into remaining parameter types.
+3. Second pass: Re-check arguments with refined contextual types.
+
+This would allow the array literal to receive `array<i32>` as its contextual
+type after `T = i32` is inferred from other sources (or from the expected return
+type).
+
+#### Example of Bidirectional Flow
+
+```zena
+let result: i32 = first([1, 2, 3]);
+```
+
+With bidirectional inference:
+
+1. Expected return type is `i32`, and return type is `T` → infer `T = i32`.
+2. Parameter type becomes `array<i32>`.
+3. Array literal `[1, 2, 3]` gets contextual type `array<i32>` → elements
+   checked as `i32`.
+
+This is a potential future enhancement tracked for improved ergonomics.
+
+## 9. Soundness & Casting
 
 **Status: Policy**
 
@@ -355,10 +496,16 @@ Zena is designed to be a **Sound** language.
 
 ### Decision
 
-- **Checked Casts**: All explicit type casts (e.g., `x as T`) are runtime-checked.
-- **No Unsafe Casts**: There is no mechanism to force a cast without a check (except potentially via FFI/Unsafe blocks in the future, which would be explicitly marked).
+- **Checked Casts**: All explicit type casts (e.g., `x as T`) are
+  runtime-checked.
+- **No Unsafe Casts**: There is no mechanism to force a cast without a check
+  (except potentially via FFI/Unsafe blocks in the future, which would be
+  explicitly marked).
 
 ### Rationale
 
-- **WASM Safety**: WASM-GC enforces type safety at the instruction level. An unchecked cast would require bypassing the WASM type system, which is generally not possible or desirable in safe code.
-- **Reliability**: Guarantees that if a variable has type `T`, it really is a `T`.
+- **WASM Safety**: WASM-GC enforces type safety at the instruction level. An
+  unchecked cast would require bypassing the WASM type system, which is
+  generally not possible or desirable in safe code.
+- **Reliability**: Guarantees that if a variable has type `T`, it really is a
+  `T`.
