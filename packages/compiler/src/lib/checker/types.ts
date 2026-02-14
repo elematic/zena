@@ -1664,7 +1664,10 @@ export function isAssignableTo(
   if (source.kind === TypeKind.Record && target.kind === TypeKind.Record) {
     const sourceRecord = source as RecordType;
     const targetRecord = target as RecordType;
-    // Width subtyping: source must have all properties of target
+    // Records are exact types - must have exactly the same fields
+    if (sourceRecord.properties.size !== targetRecord.properties.size) {
+      return false;
+    }
     for (const [key, targetType] of targetRecord.properties) {
       const sourceType = sourceRecord.properties.get(key);
       if (!sourceType) return false;
