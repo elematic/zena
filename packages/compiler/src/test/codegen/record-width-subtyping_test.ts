@@ -11,12 +11,122 @@ const check = (source: string) => {
   return checker.check();
 };
 
-// NOTE: This test file reflects the CURRENT implementation (exact types).
-// The design has been updated to allow width subtyping (records-as-interfaces).
-// See docs/design/records-and-tuples.md for the new design.
-// TODO: Update these tests when width subtyping is implemented.
+// Records support width subtyping in the type system (records-as-interfaces).
+// A record type {x: i32, y: i32} accepts any value with at least those fields.
+// See docs/design/records-and-tuples.md for the design.
+//
+// Implementation status:
+// - Phase 2 (Type Checker): ✅ DONE - width subtyping is allowed
+// - Phase 4 (Codegen): TODO - needs dispatch mechanism for field access
 
-suite('Records - current behavior (exact types)', () => {
+suite('Records - width subtyping (type checker)', () => {
+  test('record exact shape - basic access', () => {
+    const diagnostics = check(`
+      export let main = (): i32 => {
+        let point = {x: 1, y: 2};
+        return point.x + point.y;
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('record exact shape - with matching annotation', () => {
+    const diagnostics = check(`
+      export let main = (): i32 => {
+        let point: {x: i32, y: i32} = {x: 1, y: 2};
+        return point.x + point.y;
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('width subtyping - assign larger to smaller', () => {
+    // Assigning a record with extra fields to a narrower type should work
+    const diagnostics = check(`
+      export let main = (): i32 => {
+        let point: {x: i32, y: i32} = {x: 1, y: 2, z: 3};
+        return point.x + point.y;
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('width subtyping - function parameter', () => {
+    // Passing a record with extra fields to a function expecting fewer should work
+    const diagnostics = check(`
+      let sumXY = (p: {x: i32, y: i32}): i32 => p.x + p.y;
+      export let main = (): i32 => {
+        let point = {x: 5, y: 7, z: 100};
+        return sumXY(point);
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('width subtyping - reassignment', () => {
+    // Reassigning with extra fields should work
+    const diagnostics = check(`
+      export let main = (): i32 => {
+        var point: {x: i32, y: i32} = {x: 1, y: 2};
+        point = {x: 10, y: 20, z: 30};
+        return point.x + point.y;
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('width subtyping - nested records', () => {
+    // Width subtyping should work with nested records
+    const diagnostics = check(`
+      let getX = (r: {inner: {x: i32}}): i32 => r.inner.x;
+      export let main = (): i32 => {
+        let data = {inner: {x: 42, y: 99}, extra: true};
+        return getX(data);
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  // Type safety tests - these should still be rejected
+  test('rejects missing required field', () => {
+    const diagnostics = check(`
+      export let main = (): i32 => {
+        let point: {x: i32, y: i32} = {x: 1};
+        return point.x;
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 1);
+    assert.match(diagnostics[0].message, /Type mismatch/);
+  });
+
+  test('rejects field type mismatch', () => {
+    const diagnostics = check(`
+      export let main = (): i32 => {
+        let point: {x: i32, y: i32} = {x: 1, y: "hello"};
+        return point.x;
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 1);
+    assert.match(diagnostics[0].message, /Type mismatch/);
+  });
+
+  test('rejects assigning smaller to larger type', () => {
+    // Cannot assign {x, y} to {x, y, z} - missing z field
+    const diagnostics = check(`
+      export let main = (): i32 => {
+        let point: {x: i32, y: i32, z: i32} = {x: 1, y: 2};
+        return point.x;
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 1);
+    assert.match(diagnostics[0].message, /Type mismatch/);
+  });
+});
+
+suite('Records - codegen (exact shapes only)', () => {
+  // These tests verify codegen works for exact shapes (no width subtyping)
+  // Width subtyping codegen requires Phase 4 (dispatch mechanism) - not yet implemented
+
   test('record exact shape - basic access', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
@@ -37,44 +147,23 @@ suite('Records - current behavior (exact types)', () => {
     assert.strictEqual(result, 3);
   });
 
-  // CURRENT: Width subtyping is REJECTED (exact types)
-  // FUTURE: Width subtyping will be ALLOWED (records-as-interfaces)
-
-  test('currently rejects width subtyping - assign larger to smaller', () => {
-    const diagnostics = check(`
-      export let main = (): i32 => {
-        let point: {x: i32, y: i32} = {x: 1, y: 2, z: 3};
-        return point.x + point.y;
-      };
-    `);
-    // TODO: Change to assert.strictEqual(diagnostics.length, 0) when width subtyping is implemented
-    assert.strictEqual(diagnostics.length, 1);
-    assert.match(diagnostics[0].message, /Type mismatch/);
-  });
-
-  test('currently rejects width subtyping - function parameter', () => {
-    const diagnostics = check(`
+  test('function with record param - exact shape', async () => {
+    // When record shape matches exactly, codegen works
+    const result = await compileAndRun(`
       let sumXY = (p: {x: i32, y: i32}): i32 => p.x + p.y;
       export let main = (): i32 => {
-        let point = {x: 5, y: 7, z: 100};
+        let point = {x: 5, y: 7};
         return sumXY(point);
       };
     `);
-    // TODO: Change to assert.strictEqual(diagnostics.length, 0) when width subtyping is implemented
-    assert.strictEqual(diagnostics.length, 1);
-    assert.match(diagnostics[0].message, /Type mismatch|not assignable/i);
+    assert.strictEqual(result, 12);
   });
 
-  test('currently rejects width subtyping - reassignment', () => {
-    const diagnostics = check(`
-      export let main = (): i32 => {
-        var point: {x: i32, y: i32} = {x: 1, y: 2};
-        point = {x: 10, y: 20, z: 30};
-        return point.x + point.y;
-      };
+  test('record literal at call site - exact shape', async () => {
+    const result = await compileAndRun(`
+      let sumXY = (p: {x: i32, y: i32}): i32 => p.x + p.y;
+      export let main = (): i32 => sumXY({x: 3, y: 4});
     `);
-    // TODO: Change to assert.strictEqual(diagnostics.length, 0) when width subtyping is implemented
-    assert.strictEqual(diagnostics.length, 1);
-    assert.match(diagnostics[0].message, /Type mismatch/);
+    assert.strictEqual(result, 7);
   });
 });

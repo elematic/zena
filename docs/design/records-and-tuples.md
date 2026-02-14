@@ -430,7 +430,7 @@ Records behave like interfaces in terms of subtyping rules, but maintain their i
 
 - [x] **Type Representation**: Add `RecordType` and `TupleType` to the type system.
 - [x] **Inference**: Infer types from literals.
-- [ ] **Width Subtyping**: Update `isAssignable` to allow width subtyping (source has ≥ fields of target).
+- [x] **Width Subtyping**: Update `isAssignable` to allow width subtyping (source has ≥ fields of target).
 - [x] **Member Access**: Check valid field access on records and index access on tuples.
 
 ### Phase 3: Optional Fields

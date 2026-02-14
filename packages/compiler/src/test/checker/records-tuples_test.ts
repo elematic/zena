@@ -56,11 +56,10 @@ suite('Checker: Records and Tuples', () => {
     assert.strictEqual(diagnostics.length, 0);
   });
 
-  test('rejects record width subtyping (exact types)', () => {
-    // Records are exact types - { x: i32, y: i32 } is NOT assignable to { x: i32 }
+  test('allows record width subtyping', () => {
+    // Records support width subtyping - { x: i32, y: i32 } IS assignable to { x: i32 }
     const {diagnostics} = check('let r: { x: i32 } = { x: 1, y: 2 };');
-    assert.strictEqual(diagnostics.length, 1);
-    assert.match(diagnostics[0].message, /Type mismatch/);
+    assert.strictEqual(diagnostics.length, 0);
   });
 
   test('checks record assignability (missing property)', () => {
