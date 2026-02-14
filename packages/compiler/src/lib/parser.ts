@@ -3204,14 +3204,17 @@ export class Parser {
         // Support trailing comma
         if (this.#check(TokenType.RBrace)) break;
         const name = this.#parseIdentifier();
+        const optional = this.#match(TokenType.Question);
         this.#consume(TokenType.Colon, "Expected ':'");
         const typeAnnotation = this.#parseTypeAnnotation();
-        properties.push({
+        const prop: PropertySignature = {
           type: NodeType.PropertySignature,
           name,
           typeAnnotation,
           loc: this.#loc(name, typeAnnotation),
-        });
+        };
+        if (optional) prop.optional = true;
+        properties.push(prop);
       } while (this.#match(TokenType.Comma));
     }
     this.#consume(TokenType.RBrace, "Expected '}'");

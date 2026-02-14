@@ -435,7 +435,7 @@ Records behave like interfaces in terms of subtyping rules, but maintain their i
 
 ### Phase 3: Optional Fields
 
-- [ ] **Parser**: Parse `foo?: Type` syntax in record types.
+- [x] **Parser**: Parse `foo?: Type` syntax in record types.
 - [ ] **Type Checker**: Track optional vs required fields. Require narrowing for optional field access.
 - [ ] **Narrowing**: Implement `"field" in record` operator and narrowing logic.
 - [ ] **Destructuring Defaults**: Support `let {foo = defaultValue} = record` for optional fields.

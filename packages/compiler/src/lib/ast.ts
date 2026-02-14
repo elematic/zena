@@ -826,6 +826,7 @@ export interface NamedTypeAnnotation extends Node {
 export interface PropertySignature extends Node {
   type: typeof NodeType.PropertySignature;
   name: Identifier;
+  optional?: boolean;
   typeAnnotation: TypeAnnotation;
 }
 

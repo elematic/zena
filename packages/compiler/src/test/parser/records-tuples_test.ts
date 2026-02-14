@@ -103,4 +103,45 @@ suite('Parser: Records and Tuples', () => {
     assert.strictEqual(init.properties[2].name.name, 'z');
     assert.strictEqual(init.properties[2].value.name, 'z');
   });
+
+  test('parses record type with optional field', () => {
+    const parser = new Parser('let r: { x: i32, y?: i32 } = { x: 1 };');
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    const type = decl.typeAnnotation;
+    assert.strictEqual(type.type, NodeType.RecordTypeAnnotation);
+    assert.strictEqual(type.properties.length, 2);
+
+    // x is required
+    assert.strictEqual(type.properties[0].name.name, 'x');
+    assert.strictEqual(type.properties[0].optional, undefined);
+
+    // y is optional
+    assert.strictEqual(type.properties[1].name.name, 'y');
+    assert.strictEqual(type.properties[1].optional, true);
+  });
+
+  test('parses record type with all optional fields', () => {
+    const parser = new Parser('let opts: { timeout?: i32, retries?: i32 } = {};');
+    const module = parser.parse();
+    const type = (module.body[0] as any).typeAnnotation;
+    assert.strictEqual(type.properties.length, 2);
+    assert.strictEqual(type.properties[0].name.name, 'timeout');
+    assert.strictEqual(type.properties[0].optional, true);
+    assert.strictEqual(type.properties[1].name.name, 'retries');
+    assert.strictEqual(type.properties[1].optional, true);
+  });
+
+  test('parses type alias with optional record fields', () => {
+    const parser = new Parser('type Opts = { url: string, timeout?: i32 };');
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    assert.strictEqual(decl.type, NodeType.TypeAliasDeclaration);
+    const type = decl.typeAnnotation;
+    assert.strictEqual(type.type, NodeType.RecordTypeAnnotation);
+    assert.strictEqual(type.properties[0].name.name, 'url');
+    assert.strictEqual(type.properties[0].optional, undefined);
+    assert.strictEqual(type.properties[1].name.name, 'timeout');
+    assert.strictEqual(type.properties[1].optional, true);
+  });
 });
