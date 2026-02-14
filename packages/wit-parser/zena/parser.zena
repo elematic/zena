@@ -1823,7 +1823,7 @@ export class Parser {
   #parseAst(): Ast {
     let ast = new Ast();
     
-    // Optional package declaration
+    // Optional package declaration at start
     var docs = this.#parseDocs();
     if (this.#check(TokenType.Package)) {
       this.#expect(TokenType.Package);
@@ -1834,9 +1834,33 @@ export class Parser {
     
     // Parse items until EOF
     while (!this.#check(TokenType.Eof)) {
-      // Check for nested package: package name { ... }
+      // Check for package keyword - could be nested or top-level declaration
       if (this.#check(TokenType.Package)) {
-        ast.nestedPackages.push(this.#parseNestedPackage(docs));
+        // Peek ahead: nested package has `{`, top-level declaration has `;`
+        // Parse the package keyword and name first to check
+        this.#advance(); // consume 'package'
+        let name = this.#parsePackageName();
+        
+        if (this.#check(TokenType.LeftBrace)) {
+          // Nested package: package name { ... }
+          let pkg = new NestedPackage(docs, name);
+          this.#expect(TokenType.LeftBrace);
+          while (!this.#check(TokenType.RightBrace) && !this.#check(TokenType.Eof)) {
+            let itemDocs = this.#parseDocs();
+            pkg.items.push(this.#parseAstItem(itemDocs));
+          }
+          this.#expect(TokenType.RightBrace);
+          ast.nestedPackages.push(pkg);
+        } else {
+          // Top-level package declaration from another file (multi-file support)
+          // In multi-file mode, multiple files can have the same package declaration
+          // The resolver will verify they're all the same package
+          if (ast.packageName == null) {
+            ast.packageName = name;
+          }
+          // Otherwise, we already have a package name - the resolver will validate
+          this.#expectSemicolon();
+        }
         docs = this.#parseDocs();
         continue;
       }
@@ -1846,24 +1870,6 @@ export class Parser {
     }
     
     return ast;
-  }
-
-  /** Parse a nested package: package name { ... } */
-  #parseNestedPackage(docs: Docs): NestedPackage {
-    this.#expect(TokenType.Package);
-    let name = this.#parsePackageName();
-    let pkg = new NestedPackage(docs, name);
-    
-    this.#expect(TokenType.LeftBrace);
-    
-    // Parse items until closing brace
-    while (!this.#check(TokenType.RightBrace) && !this.#check(TokenType.Eof)) {
-      let itemDocs = this.#parseDocs();
-      pkg.items.push(this.#parseAstItem(itemDocs));
-    }
-    
-    this.#expect(TokenType.RightBrace);
-    return pkg;
   }
 
   /** Parse a top-level item. */
