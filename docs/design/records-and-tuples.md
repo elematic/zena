@@ -437,8 +437,8 @@ Records behave like interfaces in terms of subtyping rules, but maintain their i
 
 - [x] **Parser**: Parse `foo?: Type` syntax in record types.
 - [x] **Type Checker**: Track optional vs required fields in `RecordType.optionalProperties`. Updated `isAssignableTo` to allow missing optional fields.
-- [ ] **Narrowing**: Implement `"field" in record` operator and narrowing logic.
-- [ ] **Destructuring Defaults**: Support `let {foo = defaultValue} = record` for optional fields.
+- [x] **Narrowing**: Skipped - use `if let` for optional field access instead of `"field" in record` operator.
+- [x] **Destructuring Defaults**: Destructuring an optional field REQUIRES a default value (`let {foo = default} = record`). This avoids boxing primitives - the "absent" case is handled by the default, not by nullable types.
 
 ### Phase 4: Code Generator (Dispatch-based)
 

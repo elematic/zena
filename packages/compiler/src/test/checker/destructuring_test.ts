@@ -85,19 +85,148 @@ suite('Checker: Destructuring', () => {
   });
 
   test('checks defaults in record destructuring', () => {
-    check(`
+    // Defaults without optional fields - the property must still exist
+    const diagnostics = check(`
       let p = { x: 1 };
-      // Defaults not fully supported in runtime yet, but checker should allow if types match
-      // Actually, defaults are for optional properties or undefined values.
-      // Zena doesn't have optional properties yet.
-      // So defaults only apply if the property is missing?
-      // But our structural typing requires the property to be present if the type says so.
-      // If we destructure { x: 1 } with { y = 2 }, it fails because y is missing in type.
-      // Unless we treat the pattern as requiring a SUBSET.
-      // But 'y' is not in { x: 1 }.
-      // So defaults are only useful if the type is optional (Union with undefined/null).
-      // Or if we allow "loose" matching?
-      // For now, let's stick to strict matching.
+      let { x = 0 } = p;
     `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('allows destructuring optional field with default', () => {
+    const diagnostics = check(`
+      let process = (opts: {timeout?: i32}) => {
+        let {timeout = 30000} = opts;
+        return timeout;
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('destructuring optional field without default is an error', () => {
+    // Destructuring optional field without default should error -
+    // you must provide a default for optional fields to avoid boxing
+    const diagnostics = check(`
+      let process = (opts: {timeout?: i32}) => {
+        let {timeout} = opts;
+        return 0;
+      };
+    `);
+    // Should have an error - optional field requires default
+    assert.strictEqual(diagnostics.length, 1);
+  });
+
+  test('checks default value type matches field type', () => {
+    const diagnostics = check(`
+      let p = { x: 1 };
+      let { x = "wrong" } = p;
+    `);
+    assert.strictEqual(diagnostics.length, 1);
+    assert.strictEqual(diagnostics[0].code, DiagnosticCode.TypeMismatch);
+  });
+
+  test('allows multiple fields with some optional having defaults', () => {
+    const diagnostics = check(`
+      let request = (opts: {url: string, timeout?: i32, retries?: i32}) => {
+        let {url, timeout = 30000, retries = 3} = opts;
+        return timeout + retries;
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  suite('spread with optional fields', () => {
+    test('spread record preserves optional fields', () => {
+      // When spreading a record with optional fields, the optional fields
+      // should remain optional in the result
+      const diagnostics = check(`
+        let base: {url: string, timeout?: i32} = {url: "/api"};
+        let extended = {...base, extra: true};
+        // extended should have type {url: string, timeout?: i32, extra: bool}
+        // So destructuring timeout still requires a default
+        let {url, timeout = 30000, extra} = extended;
+      `);
+      assert.strictEqual(diagnostics.length, 0);
+    });
+
+    test('spread record with optional field overwritten becomes required', () => {
+      // If you spread and then provide a value for an optional field,
+      // it becomes required in the result
+      const diagnostics = check(`
+        let base: {url: string, timeout?: i32} = {url: "/api"};
+        let withTimeout = {...base, timeout: 5000};
+        // timeout is now required (has a concrete value)
+        let {url, timeout} = withTimeout;  // No default needed
+      `);
+      assert.strictEqual(diagnostics.length, 0);
+    });
+
+    test('spread record still requires default for unoverwritten optional', () => {
+      // Spread doesn't magically provide defaults
+      const diagnostics = check(`
+        let base: {url: string, timeout?: i32, retries?: i32} = {url: "/api"};
+        let partial = {...base, timeout: 5000};
+        // retries is still optional
+        let {retries} = partial;  // Error: needs default
+      `);
+      assert.strictEqual(diagnostics.length, 1);
+    });
+
+    test('multiple spreads combine optional fields', () => {
+      const diagnostics = check(`
+        let a: {x?: i32} = {};
+        let b: {y?: i32} = {};
+        let combined = {...a, ...b};
+        // Both x and y are optional
+        let {x = 0, y = 0} = combined;
+      `);
+      assert.strictEqual(diagnostics.length, 0);
+    });
+
+    test('later spread overwrites earlier optional with required', () => {
+      const diagnostics = check(`
+        let a: {x?: i32} = {};
+        let b: {x: i32} = {x: 10};
+        let combined = {...a, ...b};
+        // x is now required (from b)
+        let {x} = combined;  // No default needed
+      `);
+      assert.strictEqual(diagnostics.length, 0);
+    });
+
+    test('spread of two optionals still requires default', () => {
+      // Both sources have optional x, so result must have optional x
+      const diagnostics = check(`
+        let a: {x?: i32} = {};
+        let b: {x?: i32} = {};
+        let combined = {...a, ...b};
+        let {x} = combined;  // Error: x is still optional
+      `);
+      assert.strictEqual(diagnostics.length, 1);
+    });
+
+    test('spread preserves optional - error without default', () => {
+      // Verify that after spreading, optional fields still require defaults
+      const diagnostics = check(`
+        let base: {timeout?: i32} = {};
+        let extended = {...base};
+        let {timeout} = extended;  // Error: timeout is still optional
+      `);
+      assert.strictEqual(diagnostics.length, 1);
+    });
+
+    test('later spread with optional does not make required field optional', () => {
+      // This is interesting - if a required field is spread, then an optional
+      // field with the same name is spread, the result should be required
+      // because we know a value exists from the first spread
+      const diagnostics = check(`
+        let a: {x: i32} = {x: 10};
+        let b: {x?: i32} = {};
+        let combined = {...a, ...b};
+        // x should still be required - a provided a value
+        let {x} = combined;
+      `);
+      assert.strictEqual(diagnostics.length, 0);
+    });
   });
 });

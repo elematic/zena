@@ -3026,6 +3026,11 @@ function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
 
 function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
   const properties = new Map<string, Type>();
+  const optionalProperties = new Set<string>();
+  // Track which properties have been seen as required (either from explicit
+  // assignment or from spreading a record where the property is required)
+  const requiredProperties = new Set<string>();
+
   for (const prop of expr.properties) {
     if (prop.type === NodeType.SpreadElement) {
       const spreadType = checkExpression(ctx, prop.argument);
@@ -3042,26 +3047,48 @@ function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
         continue;
       }
       if (spreadType.kind === TypeKind.Record) {
-        for (const [key, type] of (spreadType as RecordType).properties) {
+        const recordType = spreadType as RecordType;
+        for (const [key, type] of recordType.properties) {
           properties.set(key, type);
+          // Determine if this property is optional in the spread source
+          const isOptionalInSource = recordType.optionalProperties?.has(key);
+          if (isOptionalInSource) {
+            // Only mark as optional if it hasn't been seen as required before
+            if (!requiredProperties.has(key)) {
+              optionalProperties.add(key);
+            }
+          } else {
+            // Required in source - mark as required and remove from optional
+            requiredProperties.add(key);
+            optionalProperties.delete(key);
+          }
         }
       } else {
-        // Class
+        // Class - fields are always required
         for (const [key, type] of (spreadType as ClassType).fields) {
           if (!key.startsWith('#')) {
             properties.set(key, type);
+            requiredProperties.add(key);
+            optionalProperties.delete(key);
           }
         }
       }
     } else {
       const type = checkExpression(ctx, prop.value);
       properties.set(prop.name.name, type);
+      // Explicitly setting a property makes it required (not optional)
+      requiredProperties.add(prop.name.name);
+      optionalProperties.delete(prop.name.name);
     }
   }
-  return {
+  const result: RecordType = {
     kind: TypeKind.Record,
     properties,
-  } as RecordType;
+  };
+  if (optionalProperties.size > 0) {
+    result.optionalProperties = optionalProperties;
+  }
+  return result;
 }
 
 function checkTupleLiteral(ctx: CheckerContext, expr: TupleLiteral): Type {

@@ -1538,6 +1538,23 @@ function checkRecordPattern(
       continue;
     }
 
+    // Check if the property is optional in the source type
+    const isOptional = isPropertyOptional(type, propName);
+
+    // If the property is optional, a default value is REQUIRED.
+    // This avoids boxing primitives (i32 | null would require boxing).
+    // The "absent" case is handled by the default, not by nullable types.
+    const hasDefault = prop.value.type === NodeType.AssignmentPattern;
+
+    if (isOptional && !hasDefault) {
+      ctx.diagnostics.reportError(
+        `Optional field '${propName}' requires a default value when destructuring`,
+        DiagnosticCode.TypeMismatch,
+        ctx.getLocation(prop.name.loc),
+      );
+      continue;
+    }
+
     checkPattern(ctx, prop.value, propType, kind, declaration);
   }
 }
@@ -1773,6 +1790,19 @@ function getPropertyType(
     default:
       return undefined;
   }
+}
+
+/**
+ * Check if a property is optional in the given type.
+ * Currently only RecordType supports optional properties.
+ */
+function isPropertyOptional(type: Type, name: string): boolean {
+  if (type.kind === TypeKind.Record) {
+    const recordType = type as RecordType;
+    return recordType.optionalProperties?.has(name) ?? false;
+  }
+  // TODO: Classes and interfaces could have optional fields in the future
+  return false;
 }
 
 function resolveMemberName(
