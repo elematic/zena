@@ -564,6 +564,18 @@ export class Resolver {
           funcName.span
         );
       }
+      // Check for conflicts with type definitions in the world
+      let typeSym = this.#findSymbol(funcName.name);
+      if (typeSym != null) {
+        let ts = typeSym as SymbolEntry;
+        if (ts.kind == SymbolKind.Type) {
+          let direction = if (isImport) "import" else "export";
+          throw new ResolveError(
+            direction + " `" + funcName.name + "` conflicts with prior type of same name",
+            funcName.span
+          );
+        }
+      }
       symbols.push(new SymbolEntry(funcName.name, SymbolKind.Func, funcName.span));
       // Resolve the function type
       this.#resolveFunc(kind.funcDef as Func);
@@ -917,6 +929,14 @@ export class Resolver {
       // Check feature gate (bad-gate1): can't reference gated type from non-gated context
       let s = sym as SymbolEntry;
       this.#checkGatedReference(s, t.span, "type");
+
+      // Check that the symbol is a type, not a function (invalid-type-reference2)
+      if (s.kind == SymbolKind.Func) {
+        throw new ResolveError(
+          "cannot use function `" + rawName + "` as a type",
+          t.span
+        );
+      }
 
       // Follow type aliases to detect transitive cycles
       let td = this.#findTypeDef(name);
