@@ -363,7 +363,7 @@ export class Resolver {
     this.#packageName = ast.packageName;
     this.#pushScope();
 
-    // First pass: collect all top-level names (interfaces, worlds) with gating info
+    // First pass: collect all top-level names (interfaces, worlds, use aliases) with gating info
     var i = 0;
     while (i < ast.items.length) {
       let item = ast.items[i];
@@ -379,6 +379,12 @@ export class Resolver {
         this.#defineWithGating(world.name.name, SymbolKind.World, world.name.span, gated);
         // Store the world definition for include cycle detection
         this.#currentScope().worlds.push(world);
+      } else if (item.tag == AstItemTag.Use) {
+        // Top-level use creates an alias that can conflict with interfaces/worlds
+        let use = item.use as ToplevelUse;
+        let name = if (use.asName != null) (use.asName as Id).name else use.item.getName().name;
+        let span = if (use.asName != null) (use.asName as Id).span else use.item.getName().span;
+        this.#define(name, SymbolKind.Interface, span);
       }
       i = i + 1;
     }
@@ -1346,17 +1352,8 @@ export class Resolver {
 
   #resolveToplevelUse(use: ToplevelUse): void {
     // Top-level use brings an interface into scope.
-    // Note: In WIT, conflicts between use aliases and definitions in the same file
-    // are errors, but since we concatenate files for testing, we allow duplicates
-    // (first definition wins). The path validation still happens.
+    // The name is already defined in the first pass, so we just validate the path here.
     this.#resolveUsePath(use.item);
-
-    // Add the imported name to current scope if not already defined
-    let name = if (use.asName != null) (use.asName as Id).name else use.item.getName().name;
-    let existing = this.#findSymbol(name);
-    if (existing == null) {
-      this.#define(name, SymbolKind.Interface, use.item.getName().span);
-    }
   }
 
   #resolveInclude(include: Include): void {
