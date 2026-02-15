@@ -47,6 +47,8 @@ interface LibraryState {
   initializedFields: Set<string>;
   inferredReturnTypes: Type[];
   usedPreludeSymbols: Map<string, {modulePath: string; exportName: string}>;
+  /** Stack of pipeline value types for nested pipelines */
+  pipelineValueTypes: Type[];
 }
 
 /**
@@ -68,6 +70,7 @@ const createLibraryState = (): LibraryState => ({
   initializedFields: new Set(),
   inferredReturnTypes: [],
   usedPreludeSymbols: new Map(),
+  pipelineValueTypes: [],
 });
 
 export class CheckerContext {
@@ -275,6 +278,31 @@ export class CheckerContext {
 
   exitLoop() {
     this.#lib.loopDepth--;
+  }
+
+  /**
+   * Push a pipeline value type onto the stack.
+   * Called when entering the right-hand side of a pipeline expression.
+   */
+  pushPipelineValue(type: Type) {
+    this.#lib.pipelineValueTypes.push(type);
+  }
+
+  /**
+   * Pop the pipeline value type from the stack.
+   * Called when exiting the right-hand side of a pipeline expression.
+   */
+  popPipelineValue(): Type | undefined {
+    return this.#lib.pipelineValueTypes.pop();
+  }
+
+  /**
+   * Get the current pipeline value type, if any.
+   * Returns undefined if not inside a pipeline expression.
+   */
+  getPipelineValueType(): Type | undefined {
+    const stack = this.#lib.pipelineValueTypes;
+    return stack.length > 0 ? stack[stack.length - 1] : undefined;
   }
 
   /**

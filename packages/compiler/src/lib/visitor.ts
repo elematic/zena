@@ -72,6 +72,8 @@ import {
   type MatchExpression,
   type IfExpression,
   type RangeExpression,
+  type PipelineExpression,
+  type PipePlaceholder,
   type RecordPattern,
   type TuplePattern,
   type AssignmentPattern,
@@ -172,6 +174,8 @@ export interface Visitor<T = void> {
   visitMatchExpression?(node: MatchExpression, context: T): void;
   visitIfExpression?(node: IfExpression, context: T): void;
   visitRangeExpression?(node: RangeExpression, context: T): void;
+  visitPipelineExpression?(node: PipelineExpression, context: T): void;
+  visitPipePlaceholder?(node: PipePlaceholder, context: T): void;
 
   // ===== Patterns =====
   visitRecordPattern?(node: RecordPattern, context: T): void;
@@ -498,6 +502,14 @@ export function visit<T>(
       visitor.visitRangeExpression?.(node as RangeExpression, context);
       visit((node as RangeExpression).start, visitor, context);
       visit((node as RangeExpression).end, visitor, context);
+      break;
+    case NodeType.PipelineExpression:
+      visitor.visitPipelineExpression?.(node as PipelineExpression, context);
+      visit((node as PipelineExpression).left, visitor, context);
+      visit((node as PipelineExpression).right, visitor, context);
+      break;
+    case NodeType.PipePlaceholder:
+      visitor.visitPipePlaceholder?.(node as PipePlaceholder, context);
       break;
 
     // Patterns

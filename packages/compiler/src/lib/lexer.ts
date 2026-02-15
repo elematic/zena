@@ -78,6 +78,7 @@ export const TokenType = {
   Percent: 'Percent',
   Pipe: 'Pipe',
   PipePipe: 'PipePipe',
+  PipeGreater: 'PipeGreater',
   Ampersand: 'Ampersand',
   AmpersandAmpersand: 'AmpersandAmpersand',
   Caret: 'Caret',
@@ -98,6 +99,7 @@ export const TokenType = {
   DotDotDot: 'DotDotDot',
   Hash: 'Hash',
   At: 'At',
+  Dollar: 'Dollar',
 
   EOF: 'EOF',
   Unknown: 'Unknown',
@@ -636,6 +638,16 @@ export function tokenize(source: string): Token[] {
           tokens.push({
             type: TokenType.PipePipe,
             value: '||',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else if (peek() === '>') {
+          advance();
+          tokens.push({
+            type: TokenType.PipeGreater,
+            value: '|>',
             line,
             column: startColumn,
             start: startIndex,

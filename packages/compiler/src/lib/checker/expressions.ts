@@ -24,6 +24,8 @@ import {
   type NullLiteral,
   type NumberLiteral,
   type Pattern,
+  type PipelineExpression,
+  type PipePlaceholder,
   type RangeExpression,
   type RecordLiteral,
   type RecordPattern,
@@ -239,6 +241,10 @@ function checkExpressionInternal(
       return checkIfExpression(ctx, expr as IfExpression);
     case NodeType.RangeExpression:
       return checkRangeExpression(ctx, expr as RangeExpression);
+    case NodeType.PipelineExpression:
+      return checkPipelineExpression(ctx, expr as PipelineExpression);
+    case NodeType.PipePlaceholder:
+      return checkPipePlaceholder(ctx, expr as PipePlaceholder);
     default:
       return Types.Unknown;
   }
@@ -3599,4 +3605,48 @@ function checkRangeExpression(
   }
 
   return rangeType;
+}
+
+/**
+ * Checks a pipeline expression (e.g., a |> f($) |> g($)).
+ * The left-hand side is evaluated and its type becomes available via $ on the right.
+ */
+function checkPipelineExpression(
+  ctx: CheckerContext,
+  expr: PipelineExpression,
+): Type {
+  // Check the left-hand side first
+  const leftType = checkExpression(ctx, expr.left);
+
+  // Push the piped value type onto the stack
+  ctx.pushPipelineValue(leftType);
+
+  // Check the right-hand side with the piped value available
+  const resultType = checkExpression(ctx, expr.right);
+
+  // Pop the piped value type
+  ctx.popPipelineValue();
+
+  return resultType;
+}
+
+/**
+ * Checks a pipeline placeholder ($).
+ * This is only valid inside a pipeline expression's right-hand side.
+ */
+function checkPipePlaceholder(
+  ctx: CheckerContext,
+  expr: PipePlaceholder,
+): Type {
+  const pipeType = ctx.getPipelineValueType();
+
+  if (!pipeType) {
+    ctx.diagnostics.reportError(
+      `'$' can only be used inside a pipeline expression (|>).`,
+      DiagnosticCode.SymbolNotFound,
+    );
+    return Types.Unknown;
+  }
+
+  return pipeType;
 }

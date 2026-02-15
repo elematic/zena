@@ -10,6 +10,7 @@ manual parameter threading.
 ## Motivation
 
 Many cross-cutting concerns require threading values through call chains:
+
 - Tracing/observability
 - Logging
 - Database connections
@@ -18,6 +19,7 @@ Many cross-cutting concerns require threading values through call chains:
 - Cancellation tokens
 
 Without language support, you either:
+
 1. Pass these explicitly through every call (tedious, noisy)
 2. Use global/thread-local state (unsafe with async, hidden dependencies)
 3. Use dependency injection frameworks (complex, runtime cost)
@@ -44,6 +46,7 @@ let processData = (data: Data, context tracer: Tracer?, context logger: Logger?)
 ```
 
 **Rules:**
+
 - Context parameters must have a default value (typically `null` or a sentinel)
 - Context parameters must come after regular parameters
 - Multiple context parameters are allowed
@@ -83,7 +86,7 @@ Context can always be passed explicitly, overriding any scope-provided value:
 with tracer: Tracer.console() {
   // Explicitly pass a different tracer
   processData(myData, tracer: Tracer.null());
-  
+
   // Explicitly pass null to disable
   processData(myData, tracer: null);
 }
@@ -183,8 +186,9 @@ outer(tracer: __ctx_tracer);
 ```
 
 The compiler transforms:
+
 1. Calls inside `with` blocks → add context arguments by matching names
-2. Calls to context-accepting functions inside other context-accepting functions → 
+2. Calls to context-accepting functions inside other context-accepting functions →
    forward context parameters with matching names
 
 ### Example: Function Values
@@ -210,7 +214,7 @@ with logger: Logger.console() {
 ```
 
 **Rationale**: Once a function is stored in a variable, the compiler can't know at
-the call site which context parameter names it expects. This keeps the semantics 
+the call site which context parameter names it expects. This keeps the semantics
 simple and predictable.
 
 ### Example: Higher-Order Functions
@@ -244,28 +248,29 @@ with tracer: Tracer.console() {
 
 ### Zero Additional Cost
 
-| Scenario | Cost |
-|----------|------|
-| Function with context param, no context in scope | Direct call, null passed |
-| Function with context param, context in scope | Direct call, value passed |
-| Function without context param | Unchanged |
-| Context value unused (`logger?.write` with null) | Null check only |
+| Scenario                                         | Cost                      |
+| ------------------------------------------------ | ------------------------- |
+| Function with context param, no context in scope | Direct call, null passed  |
+| Function with context param, context in scope    | Direct call, value passed |
+| Function without context param                   | Unchanged                 |
+| Context value unused (`logger?.write` with null) | Null check only           |
 
 **No indirect calls.** Context resolution is purely compile-time.
 
 ### Comparison to Alternatives
 
-| Approach | Call overhead | Memory | Async-safe |
-|----------|--------------|--------|------------|
-| Context parameters | None (direct call) | None | ✅ |
-| Global variable | None | Global slot | ❌ |
-| Thread-local | TLS lookup | TLS slot | ❌ |
-| Dictionary passing | Hash lookup | Dict allocation | ✅ |
-| Dependency injection | Virtual dispatch | Container | ✅ |
+| Approach             | Call overhead      | Memory          | Async-safe |
+| -------------------- | ------------------ | --------------- | ---------- |
+| Context parameters   | None (direct call) | None            | ✅         |
+| Global variable      | None               | Global slot     | ❌         |
+| Thread-local         | TLS lookup         | TLS slot        | ❌         |
+| Dictionary passing   | Hash lookup        | Dict allocation | ✅         |
+| Dependency injection | Virtual dispatch   | Container       | ✅         |
 
 ### When Context IS Used
 
 The cost is exactly what you'd pay for explicit parameter passing:
+
 - One additional parameter per context
 - One local variable per `with` block
 - Null checks for `context?.method()` calls
@@ -284,6 +289,7 @@ let process = (data: Data, context tracer: Tracer?) => {
 ```
 
 Could generate two versions:
+
 - `$process_traced(data, tracer)` - full tracing
 - `$process_untraced(data)` - tracer code eliminated
 
@@ -351,7 +357,7 @@ with tracer: Tracer.console() {
 }
 ```
 
-The tracer is passed when the async function is *called*, and captured into the
+The tracer is passed when the async function is _called_, and captured into the
 async state machine. No special async context propagation needed.
 
 ### Generics
@@ -405,6 +411,7 @@ with tracer: Tracer.console() {
 ```
 
 This is analogous to named function arguments:
+
 - The name must match
 - The type of the provided value must be assignable to the parameter type
 - Multiple contexts of the same type are allowed (different names)
@@ -423,20 +430,22 @@ with requestTracer: Tracer.console(), backgroundTracer: Tracer.file("bg.log") {
 
 Context parameters are essentially **compile-time dynamic scoping**:
 
-| Aspect | Dynamic Scoping | Context Parameters |
-|--------|-----------------|-------------------|
-| Resolution time | Runtime | Compile time |
-| Follows | Call stack | Lexical scope |
-| Lookup | By name | By name |
-| Cost | Runtime lookup | Zero (parameter passing) |
+| Aspect          | Dynamic Scoping | Context Parameters       |
+| --------------- | --------------- | ------------------------ |
+| Resolution time | Runtime         | Compile time             |
+| Follows         | Call stack      | Lexical scope            |
+| Lookup          | By name         | By name                  |
+| Cost            | Runtime lookup  | Zero (parameter passing) |
 
 Traditional dynamic scoping (as in early Lisps, Emacs Lisp, Perl `local`) resolves
 names at runtime by walking the call stack. This is powerful but:
+
 - Unpredictable (depends on who called you)
 - Hard to reason about
 - Runtime cost for lookup
 
 Context parameters give similar ergonomics but with:
+
 - Compile-time resolution (predictable)
 - Lexical scoping (follows code structure, not call structure)
 - Zero runtime cost (compiles to parameter passing)
@@ -516,7 +525,7 @@ Recommendation: Shadow (like variable bindings). Inner scope wins.
 ```zena
 module myapp {
   with tracer: Tracer.console();  // Module-level context?
-  
+
   // All functions in module get tracer unless overridden
 }
 ```
@@ -603,11 +612,11 @@ You need runtime context that flows implicitly through the call stack.
 module zena:context {
   // Create a context key (like a typed thread-local)
   let createContext: <T>(defaultValue: T) => Context<T>;
-  
+
   interface Context<T> {
     // Get current value (from stack or default)
     let current: () => T;
-    
+
     // Run a block with a new value pushed onto the stack
     let with: <R>(value: T, fn: () => R) => R;
   }
@@ -645,11 +654,11 @@ For synchronous code, this is simple—a global stack:
 class Context<T> {
   let defaultValue: T;
   var stack: List<T> = [];
-  
+
   let current = () => {
     if (stack.isEmpty()) defaultValue else stack.last()
   };
-  
+
   let with = <R>(value: T, fn: () => R) => {
     stack.push(value);
     try {
@@ -676,6 +685,7 @@ TracerContext.with(Tracer.console(), async () => {
 ```
 
 **Timeline:**
+
 1. `with()` pushes tracer onto stack
 2. `fetchData()` starts, hits `await`, suspends
 3. Stack unwinds (we're back in the event loop)
@@ -697,22 +707,26 @@ Task D: TracerContext → Tracer.file("x.log")
 ```
 
 **How it works:**
+
 - Each task has its own context map
 - When you spawn a task (via `async { }` or similar), it copies the parent's context
 - `Context.with()` modifies only the current task's context
 - `Context.current()` reads from the current task's context
 
 **Pros:**
+
 - Clean mental model (each task is isolated)
 - Works well with structured concurrency
 - No "restore" logic needed—context is per-task
 
 **Cons:**
+
 - Requires runtime support for "current task" tracking
 - Memory overhead (each task stores context copy)
 - Context changes after spawn don't propagate to children
 
 **Languages using this:**
+
 - Go: `context.Context` (explicit passing, but often stored in task-locals)
 - Java: `ThreadLocal` (per-thread, not per-task—problematic with async)
 - Rust/Tokio: `task_local!` macro
@@ -735,16 +749,19 @@ When closure invoked:
 ```
 
 **How it works:**
+
 - Every closure captures the async context at creation time
 - When the closure is called, the captured context is restored
 - This happens automatically for all closures (promises, callbacks, etc.)
 
 **Pros:**
+
 - Context "flows" through async boundaries automatically
 - No explicit propagation needed
 - Works with any async pattern (promises, callbacks, event handlers)
 
 **Cons:**
+
 - Every closure has overhead (capture + restore)
 - Runtime must intercept all closure creation and invocation
 - Invasive—affects the entire runtime
@@ -757,11 +774,11 @@ You identified a key issue with AsyncContext-style approaches:
 // A collection that stores callbacks
 class EventEmitter {
   var listeners: List<() => void> = [];
-  
+
   let on = (callback: () => void) => {
     listeners.push(callback);
   };
-  
+
   let emit = () => {
     for (let cb in listeners) {
       cb();  // Which context? Creator's or current?
@@ -780,6 +797,7 @@ TracerContext.with(Tracer.forRequestB(), () => {
 ```
 
 **The question:** When `handleEvent()` runs, should it see:
+
 - Request A's tracer (the context when the callback was created)?
 - Request B's tracer (the context when `emit()` was called)?
 
@@ -793,11 +811,11 @@ must explicitly decide:
 // EventEmitter must manually capture and restore
 class EventEmitter {
   var listeners: List<(callback: () => void, context: AsyncContext)> = [];
-  
+
   let on = (callback: () => void) => {
     listeners.push((callback, AsyncContext.current()));  // Manual capture
   };
-  
+
   let emit = () => {
     for (let (cb, ctx) in listeners) {
       ctx.run(() => cb());  // Manual restore
@@ -831,12 +849,12 @@ emitter.emit();  // Automatically restores creator's context for each callback
 
 **How this differs from JS AsyncContext:**
 
-| Aspect | JS AsyncContext | Auto Closure Capture |
-|--------|-----------------|---------------------|
-| Capture | Runtime must intercept | Part of closure creation |
-| Scope | All async operations | Just closures |
-| Mental model | "Current context flows" | "Closures capture context" |
-| Collection problem | Still exists (needs manual) | Solved (automatic) |
+| Aspect             | JS AsyncContext             | Auto Closure Capture       |
+| ------------------ | --------------------------- | -------------------------- |
+| Capture            | Runtime must intercept      | Part of closure creation   |
+| Scope              | All async operations        | Just closures              |
+| Mental model       | "Current context flows"     | "Closures capture context" |
+| Collection problem | Still exists (needs manual) | Solved (automatic)         |
 
 **The key insight:** If context capture is part of closure semantics (like lexical
 variable capture), then collections automatically get the right behavior—they store
@@ -870,7 +888,7 @@ ctx.with(myTracer, () => {
   let callback = () => {
     ctx.current();  // Returns myTracer (captured at closure creation)
   };
-  
+
   runLater(callback);  // Even if runLater() is in a different context
 });
 ```
@@ -887,10 +905,10 @@ Let callers decide when to capture:
 ctx.with(myTracer, () => {
   // Regular closure - uses current context at call time
   let callback1 = () => ctx.current();
-  
+
   // Capturing closure - captures context at creation
   let callback2 = ctx.capture(() => ctx.current());
-  
+
   emitter.on(callback2);  // Explicit capture
 });
 ```
@@ -919,6 +937,7 @@ Consider a **layered approach**:
    - Higher implementation complexity
 
 The third option is the most powerful but also the most invasive. It could be:
+
 - Always on (like lexical capture)
 - Opt-in per context (`let TracerContext = createContext({ captureInClosures: true })`)
 - Opt-in per closure (`ctx.capturing(() => { ... })`)
@@ -942,15 +961,15 @@ let currentTracer = () => TracerContext.current();
 withTracing(Tracer.console(), () => {
   // Direct call
   currentTracer()?.mark("start");
-  
+
   // Through unaware library
   thirdPartyLib.process(data);  // If it calls currentTracer(), it works
-  
+
   // Stored in collection
   eventEmitter.on(() => {
     currentTracer()?.mark("event");  // Still gets our tracer!
   });
-  
+
   // Async
   await fetchData();
   currentTracer()?.mark("fetched");  // Still works (task-local)
@@ -959,14 +978,14 @@ withTracing(Tracer.console(), () => {
 
 ### Comparison with Other Languages
 
-| Language | Mechanism | Async | Closures | Automatic |
-|----------|-----------|-------|----------|-----------|
-| Go | `context.Context` | Manual passing | N/A | No |
-| Java | `ThreadLocal` | ❌ Broken | ❌ No | N/A |
-| Kotlin | `CoroutineContext` | ✅ Yes | ❌ No | No |
-| JS (proposed) | `AsyncContext` | ✅ Yes | ⚠️ Manual | Partial |
-| Rust/Tokio | `task_local!` | ✅ Yes | ❌ No | No |
-| **Zena (proposed)** | Context + auto-capture | ✅ Yes | ✅ Yes | Yes |
+| Language            | Mechanism              | Async          | Closures  | Automatic |
+| ------------------- | ---------------------- | -------------- | --------- | --------- |
+| Go                  | `context.Context`      | Manual passing | N/A       | No        |
+| Java                | `ThreadLocal`          | ❌ Broken      | ❌ No     | N/A       |
+| Kotlin              | `CoroutineContext`     | ✅ Yes         | ❌ No     | No        |
+| JS (proposed)       | `AsyncContext`         | ✅ Yes         | ⚠️ Manual | Partial   |
+| Rust/Tokio          | `task_local!`          | ✅ Yes         | ❌ No     | No        |
+| **Zena (proposed)** | Context + auto-capture | ✅ Yes         | ✅ Yes    | Yes       |
 
 ### Open Questions for Runtime Context
 
@@ -980,10 +999,10 @@ withTracing(Tracer.console(), () => {
 
 3. **Interaction with context parameters**: Should `context tracer: Tracer?` also
    check the runtime context if not provided lexically?
-   
+
    ```zena
    let process = (context tracer: Tracer?) => { ... };
-   
+
    TracerContext.with(myTracer, () => {
      process();  // Should this find myTracer from runtime context?
    });
@@ -1016,14 +1035,14 @@ same `with` block share the same frame.
 ```zena
 TracerContext.with(tracer1, () => {
   // Current frame: { TracerContext: tracer1, parent: null }
-  
+
   let a = () => { ... };  // Captures reference to frame
   let b = () => { ... };  // Captures same reference (shared!)
   let c = () => { ... };  // Same frame, not copied
-  
+
   LoggerContext.with(logger1, () => {
     // New frame: { LoggerContext: logger1, parent: outer frame }
-    
+
     let d = () => { ... };  // Captures this inner frame
   });
 });
@@ -1034,6 +1053,7 @@ TracerContext.with(tracer1, () => {
 #### Does It Slow Down Closure Creation?
 
 **Minimal overhead:**
+
 - Read current context frame pointer (one global/task-local read)
 - Store it in the closure (one pointer write)
 
@@ -1060,13 +1080,13 @@ This is comparable to capturing a single lexical variable. If no context is acti
 (func $invoke_closure (param $closure (ref $closure))
   ;; Save current context
   (local.set $saved_ctx (global.get $current_context_frame))
-  
+
   ;; Restore closure's captured context
   (global.set $current_context_frame (struct.get $closure $context))
-  
+
   ;; Call the function
   (call_ref (struct.get $closure $func_ptr))
-  
+
   ;; Restore previous context
   (global.set $current_context_frame (local.get $saved_ctx))
 )
@@ -1128,11 +1148,11 @@ function pointers, dynamic dispatch), assume context might be used.
 
 #### Optimization Levels
 
-| Level | Behavior | Overhead |
-|-------|----------|----------|
-| None needed | Closure doesn't use context | Zero |
-| Capture only | Uses context but doesn't call other closures | 1 ptr per closure |
-| Full | Uses context + calls unknown closures | Save/restore per call |
+| Level        | Behavior                                     | Overhead              |
+| ------------ | -------------------------------------------- | --------------------- |
+| None needed  | Closure doesn't use context                  | Zero                  |
+| Capture only | Uses context but doesn't call other closures | 1 ptr per closure     |
+| Full         | Uses context + calls unknown closures        | Save/restore per call |
 
 #### Example: Tracing Pipeline
 
@@ -1145,17 +1165,18 @@ TracerContext.with(myTracer, () => {
     TracerContext.current()?.mark(name + ":end");    // ← context-using
     return result;
   };
-  
+
   // This closure doesn't use context directly
   let compute = () => {
     return heavyMath(data);  // No context calls in heavyMath
   };
-  
+
   traced("compute", compute);
 });
 ```
 
 **Compiler analysis:**
+
 - `traced`: captures context (calls `TracerContext.current()`)
 - `compute`: no context capture needed (nothing in call tree uses context)
 - `heavyMath`: no context overhead (pure computation)
@@ -1165,14 +1186,15 @@ full speed with no context overhead.
 
 #### Summary: Performance Characteristics
 
-| Operation | Cost | When |
-|-----------|------|------|
-| Closure creation | +1 pointer | Only if closure (or callees) uses context |
-| Closure invocation | +4 global ops | Only if closure uses context |
-| `Context.current()` | 1 global read + linked list walk | Only when called |
-| `Context.with()` | Allocate frame + 1 global write | Only when called |
+| Operation           | Cost                             | When                                      |
+| ------------------- | -------------------------------- | ----------------------------------------- |
+| Closure creation    | +1 pointer                       | Only if closure (or callees) uses context |
+| Closure invocation  | +4 global ops                    | Only if closure uses context              |
+| `Context.current()` | 1 global read + linked list walk | Only when called                          |
+| `Context.with()`    | Allocate frame + 1 global write  | Only when called                          |
 
 **Key points:**
+
 - Single reference per closure (not a copy)
 - Frames are shared and immutable
 - Static analysis elides overhead when context isn't used
@@ -1185,6 +1207,7 @@ full speed with no context overhead.
 Scala has the most mature implementation of this concept, with two distinct designs:
 
 **Scala 2: Implicits**
+
 - [Implicit Parameters](https://docs.scala-lang.org/tour/implicit-parameters.html) —
   Parameters marked `implicit` are resolved from scope
 - Very powerful but criticized for being confusing (implicits did too many things:
@@ -1192,6 +1215,7 @@ Scala has the most mature implementation of this concept, with two distinct desi
 - Could lead to surprising behavior due to implicit conversions
 
 **Scala 3: Contextual Abstractions (Redesign)**
+
 - [Given and Using Clauses](https://docs.scala-lang.org/scala3/book/ca-given-using-clauses.html) —
   Complete redesign separating concerns
 - `given` defines a context value, `using` declares a context parameter
@@ -1202,7 +1226,7 @@ Scala has the most mature implementation of this concept, with two distinct desi
 
 ```scala
 // Scala 3 syntax
-def process(data: Data)(using tracer: Tracer): Result = 
+def process(data: Data)(using tracer: Tracer): Result =
   tracer.mark("start")
   // ...
 
@@ -1211,6 +1235,7 @@ process(myData)  // tracer resolved from given
 ```
 
 The Scala 3 redesign is worth studying—they explicitly separated:
+
 - `given` — defining instances (like type class instances)
 - `using` — requesting parameters from context
 - Extension methods — adding methods to types (was implicit class)
@@ -1234,12 +1259,13 @@ with(ConsoleLogger()) {
 }
 ```
 
-Kotlin's approach is slightly different—context receivers make the context's *members*
+Kotlin's approach is slightly different—context receivers make the context's _members_
 available, not just the value. More like extension receivers but from scope.
 
 ### Haskell: Type Classes & Implicit Configurations
 
 Haskell's type classes are related but different:
+
 - [Type Classes](https://www.haskell.org/tutorial/classes.html) — Compile-time resolved
 - [reflection package](https://hackage.haskell.org/package/reflection) — Runtime implicit configuration
 - [Implicit Parameters](https://ghc.gitlab.haskell.org/ghc/doc/users_guide/exts/implicit_parameters.html) —
@@ -1285,19 +1311,20 @@ but more complex than simple context parameters.
 ### Algebraic Effects (Research)
 
 Several research languages explore algebraic effects, which generalize context:
+
 - [Eff](https://www.eff-lang.org/)
 - [Frank](https://arxiv.org/abs/1611.09259)
 - [Links](https://links-lang.org/)
 
 ### What We Take From Each
 
-| Language | Feature | What we adopt | What we avoid |
-|----------|---------|---------------|---------------|
-| Scala 2 | Implicits | Scope-based lookup | Implicit conversions, complexity |
-| Scala 3 | given/using | Clean separation | Type class focus |
-| Kotlin | Context receivers | `with` block syntax | Member import (too magic) |
-| Haskell | Type classes | Compile-time resolution | Complex type system |
-| Koka | Effects | Inspiration for tracing | Full effect system (too complex for now) |
+| Language | Feature           | What we adopt           | What we avoid                            |
+| -------- | ----------------- | ----------------------- | ---------------------------------------- |
+| Scala 2  | Implicits         | Scope-based lookup      | Implicit conversions, complexity         |
+| Scala 3  | given/using       | Clean separation        | Type class focus                         |
+| Kotlin   | Context receivers | `with` block syntax     | Member import (too magic)                |
+| Haskell  | Type classes      | Compile-time resolution | Complex type system                      |
+| Koka     | Effects           | Inspiration for tracing | Full effect system (too complex for now) |
 
 Our design aims for the **simplest useful subset**: scope-based parameter passing
 with explicit opt-in, no implicit conversions, no type class machinery.

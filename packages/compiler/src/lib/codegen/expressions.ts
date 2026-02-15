@@ -22,6 +22,8 @@ import {
   type NullLiteral,
   type NumberLiteral,
   type Pattern,
+  type PipelineExpression,
+  type PipePlaceholder,
   type RangeExpression,
   type RecordLiteral,
   type RecordPattern,
@@ -228,6 +230,12 @@ export function generateExpression(
       break;
     case NodeType.UnboxedTupleLiteral:
       generateUnboxedTupleLiteral(ctx, expression as UnboxedTupleLiteral, body);
+      break;
+    case NodeType.PipelineExpression:
+      generatePipelineExpression(ctx, expression as PipelineExpression, body);
+      break;
+    case NodeType.PipePlaceholder:
+      generatePipePlaceholder(ctx, expression as PipePlaceholder, body);
       break;
     default:
       // TODO: Handle other expressions
@@ -10271,4 +10279,61 @@ function generateRangeExpression(
   // Return the instance
   body.push(Opcode.local_get);
   body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+}
+
+/**
+ * Generates code for a pipeline expression (e.g., a |> f($) |> g($)).
+ *
+ * Pipeline is desugared into:
+ * 1. Evaluate left expression
+ * 2. Store result in a temporary local
+ * 3. Evaluate right expression (with $ resolved to the temp local)
+ *
+ * The temp local is pushed onto the pipeline stack so nested $ references resolve correctly.
+ */
+function generatePipelineExpression(
+  ctx: CodegenContext,
+  expr: PipelineExpression,
+  body: number[],
+) {
+  // Generate the left-hand side
+  generateExpression(ctx, expr.left, body);
+
+  // Get the type of the piped value to determine the WASM type for the local
+  const leftType = expr.left.inferredType;
+  const wasmType = leftType
+    ? mapCheckerTypeToWasmType(ctx, leftType)
+    : [ValType.anyref];
+
+  // Store in a temporary local
+  const tempLocal = ctx.declareLocal('$$pipe', wasmType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempLocal));
+
+  // Push the temp local index onto the pipeline stack
+  ctx.pushPipelineLocal(tempLocal);
+
+  // Generate the right-hand side (with $ available)
+  generateExpression(ctx, expr.right, body);
+
+  // Pop the pipeline stack
+  ctx.popPipelineLocal();
+}
+
+/**
+ * Generates code for a pipeline placeholder ($).
+ * This reads from the local stored when entering the pipeline's right-hand side.
+ */
+function generatePipePlaceholder(
+  ctx: CodegenContext,
+  expr: PipePlaceholder,
+  body: number[],
+) {
+  const localIndex = ctx.getPipelineLocal();
+  if (localIndex === undefined) {
+    throw new CompilerError(
+      'Pipeline placeholder ($) used outside of pipeline expression',
+    );
+  }
+
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(localIndex));
 }

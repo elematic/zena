@@ -428,6 +428,41 @@ iteration. All ranges are half-open (exclusive end).
 ..        // FullRange (all elements)
 ```
 
+### Pipeline Operator
+
+The pipeline operator `|>` enables fluent data transformation by passing the
+result of one expression as input to the next. The placeholder `$` refers to
+the piped value.
+
+```ts
+// Without pipeline (inside-out)
+let result = validate(transform(parse(data)));
+
+// With pipeline (left-to-right)
+let result = data |> parse($) |> transform($) |> validate($);
+```
+
+The `$` placeholder can be used multiple times and in any position:
+
+```ts
+10 |> $ + $               // 20 (use $ twice)
+5 |> add($, 10)           // 15 ($ as first arg)
+3 |> subtract(10, $)      // 7  ($ as second arg)
+```
+
+Pipelines can be chained and work with method calls:
+
+```ts
+text |> $.trim() |> $.toUpperCase()
+1 |> $ + 1 |> $ * 2 |> $ + 3  // ((1 + 1) * 2) + 3 = 7
+```
+
+`$` is only valid inside pipeline expressions:
+
+```ts
+let x = $;  // ❌ Error: '$' can only be used inside a pipeline expression
+```
+
 ### Operator Precedence (highest to lowest)
 
 1. Unary: `!`, `-`, `~`
@@ -443,6 +478,7 @@ iteration. All ranges are half-open (exclusive end).
 11. Bitwise OR: `|`
 12. Logical AND: `&&`
 13. Logical OR: `||`
+14. Pipeline: `|>`
 
 > **Note**: `as` currently binds looser than arithmetic, so `a + b as i64` means
 > `(a + b) as i64`. We may change this in the future to match other languages

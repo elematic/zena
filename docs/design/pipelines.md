@@ -29,14 +29,14 @@ placeholder references.
 
 ### Why `|>`?
 
-| Syntax | Languages                              | Trade-offs                            |
-| ------ | -------------------------------------- | ------------------------------------- |
-| `\|>`  | F#, Elixir, Elm, OCaml, JS proposal    | ✅ Widely recognized, no conflicts    |
-| `\|`   | Unix shell                             | ❌ Conflicts with bitwise OR, unions  |
-| `>>`   | Some FP languages                      | ❌ Conflicts with bit shift right     |
-| `->`   | Clojure thread-first                   | ❌ Conflicts with arrow functions     |
-| `%>%`  | R (magrittr)                           | ❌ Ugly, unfamiliar                   |
-| `then` | Some proposals                         | ❌ Verbose keyword                    |
+| Syntax | Languages                           | Trade-offs                           |
+| ------ | ----------------------------------- | ------------------------------------ |
+| `\|>`  | F#, Elixir, Elm, OCaml, JS proposal | ✅ Widely recognized, no conflicts   |
+| `\|`   | Unix shell                          | ❌ Conflicts with bitwise OR, unions |
+| `>>`   | Some FP languages                   | ❌ Conflicts with bit shift right    |
+| `->`   | Clojure thread-first                | ❌ Conflicts with arrow functions    |
+| `%>%`  | R (magrittr)                        | ❌ Ugly, unfamiliar                  |
+| `then` | Some proposals                      | ❌ Verbose keyword                   |
 
 **Decision**: `|>` is the right choice because:
 
@@ -211,6 +211,7 @@ let chunk = (doc: Document, size: i32, context tracer: Tracer?) => {
 ```
 
 **Lookup rules:**
+
 1. If explicitly provided at the call site, use that value
 2. Otherwise, look for a matching context in the enclosing scope
 3. If no context found, use the default value (typically `null`)
@@ -231,12 +232,15 @@ with Tracer.console() {
 ```
 
 **Key insight**: This is purely sugar for parameter passing. The compiler transforms:
+
 ```zena
 with Tracer.console() {
   chunk(doc, 512);
 }
 ```
+
 Into:
+
 ```zena
 let __ctx_tracer = Tracer.console();
 chunk(doc, 512, tracer: __ctx_tracer);
@@ -254,20 +258,20 @@ module zena:performance {
   interface Tracer {
     // Record a named instant
     let mark: (name: string, data: any?) => void;
-    
+
     // Measure duration of a block
     let measure: <T>(name: string, fn: () => T) => T;
-    
+
     // Start/end spans (for structured tracing)
     let spanStart: (name: string, data: any?) => SpanId;
     let spanEnd: (id: SpanId, data: any?) => void;
   }
-  
+
   // Built-in tracer implementations
   let consoleTracer: () => Tracer;           // Prints to console
   let nullTracer: Tracer;                     // No-op (for type satisfaction)
   let bufferTracer: () => BufferTracer;       // Collects events for later
-  
+
   // Convenience for wrapping functions
   let traced = <T>(name: string, fn: () => T, context tracer: Tracer?) => T;
 }
@@ -299,11 +303,13 @@ let embed = (chunks: List<Chunk>, context tracer: Tracer?) => {
 #### Zero-Cost Principle
 
 When no tracer context is in scope:
+
 - `tracer` is `null`
 - `tracer?.mark(...)` is a no-op (null-coalescing short-circuits)
 - No allocations, no function calls, no overhead
 
 When a tracer is provided:
+
 - Calls happen as written
 - Cost is exactly what you'd pay for manual instrumentation
 
@@ -317,7 +323,7 @@ import {Tracer} from "zena:performance";
 with Tracer.console() {
   // Regular function calls - only traced if the function opts in
   let doc = loadDocument("data.txt");
-  
+
   // Pipeline inside traced block - compiler auto-instruments stages
   let index = traced {
     doc |> chunk($, 512) |> embed($) |> store($, "kb")
@@ -359,9 +365,10 @@ class VectorStore implements Describable {
 ```
 
 Tracers can use this for human-readable output:
+
 ```
 [stage:1] chunk → List<5 Chunks>
-[stage:2] embed → List<5 Embeddings>  
+[stage:2] embed → List<5 Embeddings>
 [stage:3] store → <VectorStore:kb 5 vectors>
 ```
 
@@ -375,7 +382,7 @@ The host environment can provide tracers that integrate with external systems:
 let browserTracer: () => Tracer;
 
 // In Node.js - integrate with OpenTelemetry
-@external("host", "createOTelTracer") 
+@external("host", "createOTelTracer")
 let otelTracer: (serviceName: string) => Tracer;
 
 // Usage
@@ -387,13 +394,13 @@ with browserTracer() {
 
 #### Comparison: Context Parameters vs Alternatives
 
-| Approach | Propagation | Async-safe | Zero-cost | Explicit |
-|----------|-------------|------------|-----------|----------|
-| **Context parameters** | Lexical (compile-time) | ✅ Yes | ✅ Yes | ✅ Yes |
-| Global variable | Manual | ❌ No | ✅ Yes | ❌ No |
-| JS AsyncContext | Runtime | ⚠️ Complex | ❌ No | ❌ No |
-| Thread-local | Runtime | ❌ No | ⚠️ Mostly | ❌ No |
-| Explicit passing | Manual | ✅ Yes | ✅ Yes | ✅ Yes |
+| Approach               | Propagation            | Async-safe | Zero-cost | Explicit |
+| ---------------------- | ---------------------- | ---------- | --------- | -------- |
+| **Context parameters** | Lexical (compile-time) | ✅ Yes     | ✅ Yes    | ✅ Yes   |
+| Global variable        | Manual                 | ❌ No      | ✅ Yes    | ❌ No    |
+| JS AsyncContext        | Runtime                | ⚠️ Complex | ❌ No     | ❌ No    |
+| Thread-local           | Runtime                | ❌ No      | ⚠️ Mostly | ❌ No    |
+| Explicit passing       | Manual                 | ✅ Yes     | ✅ Yes    | ✅ Yes   |
 
 Context parameters are essentially **compiler-assisted explicit passing**. The compiler
 does the tedious work of threading the context through, but the mechanism is just

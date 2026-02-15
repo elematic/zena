@@ -1053,13 +1053,16 @@ Operators are listed from highest to lowest precedence:
 2. Multiplicative (`*`, `/`, `%`)
 3. Additive (`+`, `-`)
 4. Shift (`<<`, `>>`, `>>>`)
-5. Comparison (`<`, `<=`, `>`, `>=`)
-6. Equality (`==`, `!=`, `===`, `!==`)
-7. Bitwise AND (`&`)
-8. Bitwise XOR (`^`)
-9. Bitwise OR (`|`)
-10. Logical AND (`&&`)
-11. Logical OR (`||`)
+5. Range (`..`)
+6. Comparison (`<`, `<=`, `>`, `>=`)
+7. Equality (`==`, `!=`, `===`, `!==`)
+8. Bitwise AND (`&`)
+9. Bitwise XOR (`^`)
+10. Bitwise OR (`|`)
+11. Logical AND (`&&`)
+12. Logical OR (`||`)
+13. Pipeline (`|>`)
+14. Assignment (`=`)
 
 Operators at the same precedence level are left-associative (evaluated
 left-to-right).
@@ -1135,6 +1138,93 @@ let end = 10;
 let r = start..end;           // BoundedRange(5, 10)
 let r2 = (x + 1)..(y * 2);    // Expressions evaluated before range creation
 ```
+
+### Pipeline Operator
+
+The pipeline operator `|>` enables fluent data transformation chains by passing
+the result of one expression as input to the next. The piped value is accessed
+via the placeholder `$`.
+
+```zena
+// Without pipeline - hard to read (inside-out)
+let result = validate(transform(normalize(parse(data)), options), schema);
+
+// With pipeline - read left-to-right
+let result = data |> parse($) |> normalize($) |> transform($, options) |> validate($, schema);
+```
+
+#### Syntax
+
+The left-hand side is evaluated first, and its result becomes available to the
+right-hand side via `$`:
+
+```zena
+expression |> expression  // $ refers to the left expression's result
+```
+
+Pipelines can be chained:
+
+```zena
+a |> f($) |> g($) |> h($)  // ((a |> f($)) |> g($)) |> h($)
+```
+
+#### Placeholder (`$`)
+
+The placeholder `$` refers to the piped value. It can be used multiple times in
+the right-hand side:
+
+```zena
+// Use $ multiple times
+10 |> $ + $  // 20
+
+// With other arguments
+data |> process($, config) |> validate($)
+```
+
+`$` is only valid inside the right-hand side of a pipeline expression. Using it
+elsewhere is a compile-time error:
+
+```zena
+let x = $;  // Error: '$' can only be used inside a pipeline expression
+```
+
+#### With Tuple Indexing
+
+When the piped value is an unboxed tuple (e.g., from a multi-return function),
+use tuple indexing to access elements:
+
+```zena
+// getNames() returns (string, string)
+person.getNames() |> formatFullName($[0], $[1])
+
+// map.get() returns (V, bool)
+scores.get(name) |> if ($[1]) processScore($[0]) else 0
+```
+
+#### Precedence
+
+The pipeline operator has very low precedence, below assignment but above comma:
+
+```zena
+let result = data |> transform($) |> validate($);  // Works as expected
+```
+
+#### With Method Calls
+
+Pipeline works naturally with method calls on the piped value:
+
+```zena
+text |> $.trim() |> $.toUpperCase() |> $.split(' ')
+```
+
+Though for pure method chaining, regular `.` syntax may be clearer:
+
+```zena
+text.trim().toUpperCase().split(' ')
+```
+
+Pipelines are most useful when mixing functions and methods, or when passing the
+value as an argument to functions.
 
 ## 6. Control Flow
 

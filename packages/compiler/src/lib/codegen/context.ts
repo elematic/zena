@@ -208,6 +208,13 @@ export class CodegenContext {
    */
   readonly #typeArgumentsStack: Map<string, Type>[] = [];
 
+  /**
+   * Stack of pipeline value local indices.
+   * When entering a pipeline expression's right-hand side, we store the
+   * piped value in a local and push its index here. $ references read from it.
+   */
+  readonly #pipelineLocalStack: number[] = [];
+
   // Type management
   public arrayTypes = new Map<string, number>(); // elementTypeString -> typeIndex
   public stringTypeIndex = -1;
@@ -881,6 +888,35 @@ export class CodegenContext {
   public getContinueDepth(): number | undefined {
     if (this.#loopStack.length === 0) return undefined;
     return this.#loopStack[this.#loopStack.length - 1].continueDepth;
+  }
+
+  // ============================================================
+  // Pipeline Context Management (for $ placeholder)
+  // ============================================================
+
+  /**
+   * Push a pipeline value local index onto the stack.
+   * Called when entering the right-hand side of a pipeline expression.
+   */
+  public pushPipelineLocal(localIndex: number): void {
+    this.#pipelineLocalStack.push(localIndex);
+  }
+
+  /**
+   * Pop the pipeline value local index from the stack.
+   * Called when exiting the right-hand side of a pipeline expression.
+   */
+  public popPipelineLocal(): void {
+    this.#pipelineLocalStack.pop();
+  }
+
+  /**
+   * Get the current pipeline value local index, if any.
+   * Returns undefined if not inside a pipeline expression.
+   */
+  public getPipelineLocal(): number | undefined {
+    const stack = this.#pipelineLocalStack;
+    return stack.length > 0 ? stack[stack.length - 1] : undefined;
   }
 
   // ============================================================

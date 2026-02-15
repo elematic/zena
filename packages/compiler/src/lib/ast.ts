@@ -114,6 +114,8 @@ export const NodeType = {
   RangeExpression: 'RangeExpression',
   LetPatternCondition: 'LetPatternCondition',
   SymbolDeclaration: 'SymbolDeclaration',
+  PipelineExpression: 'PipelineExpression',
+  PipePlaceholder: 'PipePlaceholder',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -400,7 +402,9 @@ export type Expression =
   | TryExpression
   | MatchExpression
   | IfExpression
-  | RangeExpression;
+  | RangeExpression
+  | PipelineExpression
+  | PipePlaceholder;
 
 export interface MatchExpression extends Node {
   type: typeof NodeType.MatchExpression;
@@ -477,6 +481,24 @@ export interface RangeExpression extends Node {
   type: typeof NodeType.RangeExpression;
   start: Expression | null;
   end: Expression | null;
+}
+
+/**
+ * Pipeline expression: left |> right
+ * The left expression is evaluated and made available to the right side via $.
+ */
+export interface PipelineExpression extends Node {
+  type: typeof NodeType.PipelineExpression;
+  left: Expression;
+  right: Expression;
+}
+
+/**
+ * Pipeline placeholder ($) - refers to the piped value in a pipeline expression.
+ * Only valid within the right-hand side of a pipeline expression.
+ */
+export interface PipePlaceholder extends Node {
+  type: typeof NodeType.PipePlaceholder;
 }
 
 export interface ThrowExpression extends Node {

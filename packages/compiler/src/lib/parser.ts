@@ -1003,7 +1003,23 @@ export class Parser {
       }
     }
 
-    return this.#parseLogicalOr();
+    return this.#parsePipeline();
+  }
+
+  #parsePipeline(): Expression {
+    let left = this.#parseLogicalOr();
+
+    while (this.#match(TokenType.PipeGreater)) {
+      const right = this.#parseLogicalOr();
+      left = {
+        type: NodeType.PipelineExpression,
+        left,
+        right,
+        loc: this.#loc(left, right),
+      };
+    }
+
+    return left;
   }
 
   #parseArrowFunctionDefinition(): FunctionExpression {
@@ -1729,6 +1745,11 @@ export class Parser {
     if (this.#match(TokenType.Null)) {
       const token = this.#previous();
       return {type: NodeType.NullLiteral, loc: this.#locFromToken(token)};
+    }
+    // Check for pipeline placeholder ($)
+    if (this.#isIdentifier(this.#peek().type) && this.#peek().value === '$') {
+      const token = this.#advance();
+      return {type: NodeType.PipePlaceholder, loc: this.#locFromToken(token)};
     }
     if (this.#isIdentifier(this.#peek().type)) {
       return this.#parseIdentifier();
