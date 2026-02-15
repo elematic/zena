@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }} | Zena</title>
+  <meta name="description" content="{{ description or 'Zena is a programming language targeting WebAssembly with TypeScript-like syntax and high performance.' }}">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav-container">
+      <a href="/" class="logo">
+        <span class="logo-text">Zena</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="https://github.com/justinfagnani/zena" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="/docs/quick-reference/">Docs</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main class="docs-layout">
+    <article class="docs-content">
+      {{ content | safe }}
+    </article>
+    <aside class="docs-toc">
+      <nav class="toc-nav">
+        <h2>On this page</h2>
+        <ul class="toc-list"></ul>
+      </nav>
+    </aside>
+  </main>
+
+  <script>
+    // Generate table of contents from h2 and h3 headings
+    (function() {
+      const article = document.querySelector('.docs-content');
+      const tocList = document.querySelector('.toc-list');
+      if (!article || !tocList) return;
+      const headings = article.querySelectorAll('h2, h3');
+      
+      headings.forEach((heading, index) => {
+        // Ensure heading has an id
+        if (!heading.id) {
+          heading.id = heading.textContent
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/(^-|-$)/g, '');
+        }
+        
+        const li = document.createElement('li');
+        li.className = heading.tagName === 'H3' ? 'toc-h3' : 'toc-h2';
+        
+        const a = document.createElement('a');
+        a.href = '#' + heading.id;
+        a.textContent = heading.textContent;
+        
+        li.appendChild(a);
+        tocList.appendChild(li);
+      });
+
+      // Highlight current section on scroll and scroll TOC into view
+      const tocLinks = tocList.querySelectorAll('a');
+      const tocContainer = document.querySelector('.docs-toc');
+      let scrollTimeout = null;
+      let currentActiveId = null;
+      
+      // Track when user is interacting with TOC to avoid auto-scrolling it
+      let tocInteractionTimeout = null;
+      let isTocInteracting = false;
+      
+      const startTocInteraction = () => {
+        isTocInteracting = true;
+        clearTimeout(tocInteractionTimeout);
+      };
+      
+      const endTocInteraction = () => {
+        clearTimeout(tocInteractionTimeout);
+        tocInteractionTimeout = setTimeout(() => {
+          isTocInteracting = false;
+        }, 500);  // Wait 500ms after interaction ends
+      };
+      
+      // Detect user interaction with TOC
+      tocContainer.addEventListener('mouseenter', startTocInteraction);
+      tocContainer.addEventListener('mouseleave', endTocInteraction);
+      tocContainer.addEventListener('touchstart', startTocInteraction, { passive: true });
+      tocContainer.addEventListener('touchend', endTocInteraction);
+      tocContainer.addEventListener('wheel', startTocInteraction, { passive: true });
+      tocContainer.addEventListener('scroll', () => {
+        startTocInteraction();
+        endTocInteraction();  // Will reset the timeout
+      }, { passive: true });
+      
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting && entry.target.id !== currentActiveId) {
+            currentActiveId = entry.target.id;
+            tocLinks.forEach(link => link.classList.remove('active'));
+            const activeLink = tocList.querySelector(`a[href="#${entry.target.id}"]`);
+            if (activeLink) {
+              activeLink.classList.add('active');
+              
+              // Only auto-scroll TOC when user is not interacting with it
+              if (!isTocInteracting) {
+                // Debounce TOC scrolling to prevent jitter
+                clearTimeout(scrollTimeout);
+                scrollTimeout = setTimeout(() => {
+                  const containerRect = tocContainer.getBoundingClientRect();
+                  const linkRect = activeLink.getBoundingClientRect();
+                  const linkCenter = linkRect.top - containerRect.top + linkRect.height / 2;
+                  const containerCenter = tocContainer.clientHeight / 2;
+                  tocContainer.scrollTo({
+                    top: tocContainer.scrollTop + linkCenter - containerCenter,
+                    behavior: 'smooth'
+                  });
+                }, 100);
+              }
+            }
+          }
+        });
+      }, { rootMargin: '-80px 0px -80% 0px' });
+
+      headings.forEach(heading => observer.observe(heading));
+    })();
+  </script>
+
+  <footer class="site-footer">
+    <div class="footer-container">
+      <p>&copy; 2025 Zena. Licensed under MIT.</p>
+    </div>
+  </footer>
+</body>
+</html>

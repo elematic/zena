@@ -104,7 +104,8 @@ register. This is much better for performance-critical APIs like iterators.
 
 The official language reference is maintained in `docs/language-reference.md`.
 **Instruction**: When adding or modifying language features, you MUST update
-`docs/language-reference.md` to reflect the changes.
+`docs/language-reference.md` to reflect the changes. Also update the website
+quick reference at `packages/website/src/docs/quick-reference.md`.
 
 ## Project Structure & Environment
 
@@ -201,12 +202,10 @@ Wireit caches script results and only re-runs scripts when inputs change.
 zena build main.zena -o main.wasm --target wasi
 
 # Run with wasmtime
-wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main
-main.wasm
+wasmtime run -W gc,function-references,exceptions --invoke main main.wasm
 
 # With filesystem access
-wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke
-main main.wasm
+wasmtime run -W gc,function-references,exceptions --dir . --invoke main main.wasm
 ```
 
 ## Coding Standards

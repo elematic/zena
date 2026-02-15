@@ -3,6 +3,10 @@
 This document describes the syntax and semantics of the Zena programming
 language.
 
+> **Note**: The [website quick reference](../packages/website/src/docs/quick-reference.md)
+> may be more comprehensive and up-to-date. When updating this document, please
+> also update the quick reference.
+
 ## 1. Introduction
 
 Zena is a statically typed language targeting WebAssembly (WASM-GC). It features

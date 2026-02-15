@@ -1,4 +1,9 @@
+import syntaxHighlight from '@11ty/eleventy-plugin-syntaxhighlight';
+
 export default (eleventyConfig) => {
+  // Syntax highlighting for code blocks
+  eleventyConfig.addPlugin(syntaxHighlight);
+
   // Pass through static assets
   eleventyConfig.addPassthroughCopy('src/css');
   eleventyConfig.addPassthroughCopy('src/images');
