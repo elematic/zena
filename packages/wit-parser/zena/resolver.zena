@@ -336,6 +336,14 @@ export class Resolver {
   // --------------------------------------------------------------------------
 
   #resolveAst(ast: Ast): void {
+    // Check that a package declaration exists (unless there are nested packages)
+    if (ast.packageName == null && ast.nestedPackages.length == 0) {
+      throw new ResolveError(
+        "no `package` header was found in any WIT file for this package",
+        new Span(0, 0)
+      );
+    }
+
     this.#packageName = ast.packageName;
     this.#pushScope();
 
@@ -365,6 +373,9 @@ export class Resolver {
       i = i + 1;
     }
 
+    // Check for duplicate nested package names
+    this.#checkDuplicateNestedPackages(ast.nestedPackages);
+
     // Resolve nested packages - each gets its own scope
     i = 0;
     while (i < ast.nestedPackages.length) {
@@ -374,6 +385,37 @@ export class Resolver {
     }
 
     this.#popScope();
+  }
+
+  /** Check for duplicate nested package names. */
+  #checkDuplicateNestedPackages(packages: Array<NestedPackage>): void {
+    var i = 0;
+    while (i < packages.length) {
+      let pkg1 = packages[i];
+      let name1 = this.#packageNameToString(pkg1.name);
+      var j = i + 1;
+      while (j < packages.length) {
+        let pkg2 = packages[j];
+        let name2 = this.#packageNameToString(pkg2.name);
+        if (name1 == name2) {
+          throw new ResolveError(
+            "package " + name1 + " is defined in two different locations",
+            pkg2.name.span
+          );
+        }
+        j = j + 1;
+      }
+      i = i + 1;
+    }
+  }
+
+  /** Convert a PackageName to a string for comparison. */
+  #packageNameToString(pkg: PackageName): String {
+    let base = pkg.namespace.name + ":" + pkg.name.name;
+    if (pkg.version != null) {
+      return base + "@" + (pkg.version as String);
+    }
+    return base;
   }
 
   #resolveAstItem(item: AstItem): void {
