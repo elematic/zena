@@ -171,11 +171,14 @@ class Scope {
   types: Array<TypeDef>;
   /** Worlds defined in this scope (for include cycle detection). */
   worlds: Array<WorldDef>;
+  /** Interfaces defined in this scope (for use validation). */
+  interfaces: Array<InterfaceDef>;
 
   #new() {
     this.symbols = new Array<SymbolEntry>();
     this.types = new Array<TypeDef>();
     this.worlds = new Array<WorldDef>();
+    this.interfaces = new Array<InterfaceDef>();
   }
 
   /** Find a symbol by name (case-insensitive for kebab-case). */
@@ -231,6 +234,19 @@ class Scope {
       let wd = this.worlds[i];
       if (wd.name.name == name) {
         return wd;
+      }
+      i = i + 1;
+    }
+    return null;
+  }
+
+  /** Find an interface by name. */
+  findInterface(name: String): InterfaceDef | null {
+    var i = 0;
+    while (i < this.interfaces.length) {
+      let iface = this.interfaces[i];
+      if (iface.name.name == name) {
+        return iface;
       }
       i = i + 1;
     }
@@ -355,6 +371,8 @@ export class Resolver {
         let iface = item.interfaceDef as InterfaceDef;
         let gated = isGated(iface.docs);
         this.#defineWithGating(iface.name.name, SymbolKind.Interface, iface.name.span, gated);
+        // Store interface definition for use validation
+        this.#currentScope().interfaces.push(iface);
       } else if (item.tag == AstItemTag.World) {
         let world = item.worldDef as WorldDef;
         let gated = isGated(world.docs);
@@ -443,6 +461,8 @@ export class Resolver {
       if (item.tag == AstItemTag.Interface) {
         let iface = item.interfaceDef as InterfaceDef;
         this.#define(iface.name.name, SymbolKind.Interface, iface.name.span);
+        // Store interface definition for use validation
+        this.#currentScope().interfaces.push(iface);
       } else if (item.tag == AstItemTag.World) {
         let world = item.worldDef as WorldDef;
         this.#define(world.name.name, SymbolKind.World, world.name.span);
@@ -1195,6 +1215,24 @@ export class Resolver {
     // Validate the path references an existing interface
     this.#resolveUsePath(use.from);
 
+    // Check that we're not using a world (only interfaces can be used)
+    if (use.from.tag == UsePathTag.Id) {
+      let id = use.from.id as Id;
+      let sym = this.#findSymbol(id.name);
+      if (sym != null) {
+        let s = sym as SymbolEntry;
+        if (s.kind == SymbolKind.World) {
+          throw new ResolveError(
+            "name `" + id.name + "` is defined as a world, not an interface",
+            id.span
+          );
+        }
+      }
+    }
+
+    // Validate that imported names exist in the target interface
+    this.#validateUseNames(use);
+
     // Add imported names to current scope
     var i = 0;
     while (i < use.names.length) {
@@ -1203,6 +1241,92 @@ export class Resolver {
       this.#define(name, SymbolKind.Type, useName.name.span);
       i = i + 1;
     }
+  }
+
+  /** Validate that names in a use statement exist in the target interface. */
+  #validateUseNames(use: Use): void {
+    // Only validate for local interface references (not external packages)
+    if (use.from.tag != UsePathTag.Id) {
+      return;
+    }
+
+    let id = use.from.id as Id;
+    let iface = this.#findInterface(id.name);
+    if (iface == null) {
+      // Interface not found - already reported by #resolveUsePath
+      return;
+    }
+    let ifaceDef = iface as InterfaceDef;
+
+    // Check each imported name
+    var i = 0;
+    while (i < use.names.length) {
+      let useName = use.names[i];
+      let lookupName = useName.name.name;
+      let found = this.#findItemInInterface(ifaceDef, lookupName);
+      if (found == null) {
+        throw new ResolveError(
+          "name `" + lookupName + "` is not defined",
+          useName.name.span
+        );
+      }
+      // Check it's a type, not a function
+      let foundEntry = found as SymbolEntry;
+      if (foundEntry.kind == SymbolKind.Func) {
+        throw new ResolveError(
+          "cannot import function `" + lookupName + "`",
+          useName.name.span
+        );
+      }
+      i = i + 1;
+    }
+  }
+
+  /** Find an item in an interface by name, returning a SymbolEntry if found. */
+  #findItemInInterface(iface: InterfaceDef, name: String): SymbolEntry | null {
+    var i = 0;
+    while (i < iface.items.length) {
+      let item = iface.items[i];
+      if (item.tag == InterfaceItemTag.TypeDef) {
+        let td = item.typeDef as TypeDef;
+        if (td.name.name == name) {
+          let kind = if (td.tag == TypeDefTag.Resource) SymbolKind.Resource else SymbolKind.Type;
+          return new SymbolEntry(name, kind, td.name.span);
+        }
+      } else if (item.tag == InterfaceItemTag.Func) {
+        let f = item.func as NamedFunc;
+        if (f.name.name == name) {
+          return new SymbolEntry(name, SymbolKind.Func, f.name.span);
+        }
+      } else if (item.tag == InterfaceItemTag.Use) {
+        // Check names brought in by use statements
+        let u = item.use as Use;
+        var j = 0;
+        while (j < u.names.length) {
+          let useName = u.names[j];
+          let importedName = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
+          if (importedName == name) {
+            return new SymbolEntry(name, SymbolKind.Type, useName.name.span);  // Use imports are always types
+          }
+          j = j + 1;
+        }
+      }
+      i = i + 1;
+    }
+    return null;
+  }
+
+  /** Find an interface definition by name in any scope. */
+  #findInterface(name: String): InterfaceDef | null {
+    var i = this.#scopes.length - 1;
+    while (i >= 0) {
+      let iface = this.#scopes[i].findInterface(name);
+      if (iface != null) {
+        return iface;
+      }
+      i = i - 1;
+    }
+    return null;
   }
 
   #resolveUsePath(path: UsePath): void {
