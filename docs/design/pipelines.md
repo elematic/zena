@@ -189,6 +189,241 @@ let process = |> parse($) |> validate($) |> transform($)
 data |> process
 ```
 
+### Pipeline Observability via Context Parameters
+
+Zena can support pipeline (and general) observability through **context parameters**—a
+feature inspired by Scala's `using`/`given`. Context parameters are regular parameters
+that can be automatically provided from the enclosing scope, making them zero-cost
+sugar over explicit parameter passing.
+
+#### Context Parameters (Language Feature)
+
+A `context` parameter is an optional parameter with special lookup rules:
+
+```zena
+// Function declares it accepts a tracer context
+let chunk = (doc: Document, size: i32, context tracer: Tracer?) => {
+  tracer?.mark("chunk:start", doc);
+  let result = doChunking(doc, size);
+  tracer?.mark("chunk:end", result);
+  return result;
+};
+```
+
+**Lookup rules:**
+1. If explicitly provided at the call site, use that value
+2. Otherwise, look for a matching context in the enclosing scope
+3. If no context found, use the default value (typically `null`)
+
+```zena
+// No context in scope - tracer is null, marks are no-ops
+chunk(doc, 512);
+
+// Provide context explicitly
+chunk(doc, 512, tracer: myTracer);
+
+// Or provide context for a scope
+with Tracer.console() {
+  chunk(doc, 512);           // tracer automatically provided
+  embed(chunks);             // same - all context-aware functions receive it
+  doc |> chunk($, 512) |> embed($);  // works in pipelines too
+}
+```
+
+**Key insight**: This is purely sugar for parameter passing. The compiler transforms:
+```zena
+with Tracer.console() {
+  chunk(doc, 512);
+}
+```
+Into:
+```zena
+let __ctx_tracer = Tracer.console();
+chunk(doc, 512, tracer: __ctx_tracer);
+```
+
+No hidden global state. No async context propagation problems. Just parameters.
+
+#### The `zena:performance` Module
+
+A general-purpose observability module, not tied to pipelines:
+
+```zena
+module zena:performance {
+  // Core tracer interface
+  interface Tracer {
+    // Record a named instant
+    let mark: (name: string, data: any?) => void;
+    
+    // Measure duration of a block
+    let measure: <T>(name: string, fn: () => T) => T;
+    
+    // Start/end spans (for structured tracing)
+    let spanStart: (name: string, data: any?) => SpanId;
+    let spanEnd: (id: SpanId, data: any?) => void;
+  }
+  
+  // Built-in tracer implementations
+  let consoleTracer: () => Tracer;           // Prints to console
+  let nullTracer: Tracer;                     // No-op (for type satisfaction)
+  let bufferTracer: () => BufferTracer;       // Collects events for later
+  
+  // Convenience for wrapping functions
+  let traced = <T>(name: string, fn: () => T, context tracer: Tracer?) => T;
+}
+```
+
+#### Using Context for Tracing
+
+Functions opt-in by declaring a context parameter:
+
+```zena
+import {Tracer, traced} from "zena:performance";
+
+// Manual instrumentation
+let embed = (chunks: List<Chunk>, context tracer: Tracer?) => {
+  tracer?.mark("embed:start", ("chunks", chunks.length));
+  let embeddings = chunks.map((c) => computeEmbedding(c));
+  tracer?.mark("embed:end", ("count", embeddings.length));
+  return embeddings;
+};
+
+// Or use the helper
+let embed = (chunks: List<Chunk>, context tracer: Tracer?) => {
+  return traced("embed", () => {
+    return chunks.map((c) => computeEmbedding(c));
+  });  // tracer flows through via context
+};
+```
+
+#### Zero-Cost Principle
+
+When no tracer context is in scope:
+- `tracer` is `null`
+- `tracer?.mark(...)` is a no-op (null-coalescing short-circuits)
+- No allocations, no function calls, no overhead
+
+When a tracer is provided:
+- Calls happen as written
+- Cost is exactly what you'd pay for manual instrumentation
+
+#### Automatic Pipeline Instrumentation (Optional)
+
+For convenience, a `traced` block could auto-instrument pipeline stages:
+
+```zena
+import {Tracer} from "zena:performance";
+
+with Tracer.console() {
+  // Regular function calls - only traced if the function opts in
+  let doc = loadDocument("data.txt");
+  
+  // Pipeline inside traced block - compiler auto-instruments stages
+  let index = traced {
+    doc |> chunk($, 512) |> embed($) |> store($, "kb")
+  };
+}
+```
+
+The `traced { pipeline }` block is sugar that the compiler expands:
+
+```zena
+// Compiler transforms the traced block to:
+let __pipe_0 = doc;
+tracer?.mark("stage:0", __pipe_0);
+let __pipe_1 = chunk(__pipe_0, 512);
+tracer?.mark("stage:1", __pipe_1);
+let __pipe_2 = embed(__pipe_1);
+tracer?.mark("stage:2", __pipe_2);
+let __pipe_3 = store(__pipe_2, "kb");
+tracer?.mark("stage:3", __pipe_3);
+__pipe_3
+```
+
+This is **opt-in at the use site**—the compiler only instruments pipelines inside
+`traced {}` blocks. Outside, pipelines compile normally with no overhead.
+
+#### Describable Values
+
+Types can implement `Describable` to provide rich trace output:
+
+```zena
+interface Describable {
+  let describe: () => string;
+}
+
+class VectorStore implements Describable {
+  let describe = () => "<VectorStore:" + this.name + " " + this.count + " vectors>";
+  // ...
+}
+```
+
+Tracers can use this for human-readable output:
+```
+[stage:1] chunk → List<5 Chunks>
+[stage:2] embed → List<5 Embeddings>  
+[stage:3] store → <VectorStore:kb 5 vectors>
+```
+
+#### Host Integration
+
+The host environment can provide tracers that integrate with external systems:
+
+```zena
+// In browser - integrate with Performance API
+@external("host", "createPerformanceTracer")
+let browserTracer: () => Tracer;
+
+// In Node.js - integrate with OpenTelemetry
+@external("host", "createOTelTracer") 
+let otelTracer: (serviceName: string) => Tracer;
+
+// Usage
+with browserTracer() {
+  // All traced operations appear in browser DevTools Performance tab
+  runPipeline();
+}
+```
+
+#### Comparison: Context Parameters vs Alternatives
+
+| Approach | Propagation | Async-safe | Zero-cost | Explicit |
+|----------|-------------|------------|-----------|----------|
+| **Context parameters** | Lexical (compile-time) | ✅ Yes | ✅ Yes | ✅ Yes |
+| Global variable | Manual | ❌ No | ✅ Yes | ❌ No |
+| JS AsyncContext | Runtime | ⚠️ Complex | ❌ No | ❌ No |
+| Thread-local | Runtime | ❌ No | ⚠️ Mostly | ❌ No |
+| Explicit passing | Manual | ✅ Yes | ✅ Yes | ✅ Yes |
+
+Context parameters are essentially **compiler-assisted explicit passing**. The compiler
+does the tedious work of threading the context through, but the mechanism is just
+regular parameters—no runtime magic, no async hazards.
+
+#### Async Considerations
+
+Because context is lexical (resolved at compile time), async works naturally:
+
+```zena
+with Tracer.console() {
+  // The tracer is captured when the async block is created
+  let result = async {
+    let data = await fetchData();
+    data |> process($) |> validate($)  // tracer still available
+  };
+}
+```
+
+The compiler captures context values into the async closure, just like any other
+captured variable. No special async context propagation needed.
+
+#### Open Questions
+
+1. **Syntax for context parameters**: `context tracer: Tracer?` vs `using tracer: Tracer?` vs other?
+2. **Syntax for providing context**: `with X { }` vs `given X { }` vs `using X { }`?
+3. **Multiple contexts**: Can a scope provide multiple different context types?
+4. **Context lookup**: By type only, or by name + type?
+5. **Default context providers**: Can a module declare "if no Tracer in scope, use nullTracer"?
+
 ## Summary
 
 | Feature          | Syntax         | Purpose                      |
