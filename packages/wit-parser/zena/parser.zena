@@ -220,6 +220,9 @@ export enum TypeTag {
   Stream,
   Map,
   
+  // Handle types
+  Borrow,  // borrow<T>
+  
   // Named type reference
   Name,
 }
@@ -305,6 +308,12 @@ export class Type {
     let t = new Type(TypeTag.Map, span);
     t.keyType = key;
     t.valueType = value;
+    return t;
+  }
+
+  static borrow(inner: Type, span: Span): Type {
+    let t = new Type(TypeTag.Borrow, span);
+    t.inner = inner;
     return t;
   }
 
@@ -1341,12 +1350,12 @@ export class Parser {
     
     // borrow<T>
     if (token.type == TokenType.Borrow) {
+      let startSpan = token.span;
       this.#advance();
       this.#expect(TokenType.LessThan);
       let inner = this.#parseType();
       let endToken = this.#expect(TokenType.GreaterThan);
-      // For now, treat borrow<T> as just T (will be resolved later)
-      return inner;
+      return Type.borrow(inner, new Span(startSpan.start, endToken.span.end));
     }
     
     // Named type reference (identifier)
