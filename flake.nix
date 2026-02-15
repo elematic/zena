@@ -77,6 +77,7 @@
             nodejs
             pkgs.wasmtime
             pkgs.wasm-tools
+            pkgs.cloc
           ];
 
           shellHook = ''
