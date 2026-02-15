@@ -48,6 +48,7 @@ export class ResolveError extends Error {
 /** Tag for symbol kinds. */
 export enum SymbolKind {
   Type,
+  Resource,
   Interface,
   World,
   Func,
@@ -361,7 +362,9 @@ export class Resolver {
       let item = iface.items[i];
       if (item.tag == InterfaceItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
-        this.#define(td.name.name, SymbolKind.Type, td.name.span);
+        // Resources get their own symbol kind
+        let kind = if (td.tag == TypeDefTag.Resource) SymbolKind.Resource else SymbolKind.Type;
+        this.#define(td.name.name, kind, td.name.span);
         this.#currentScope().types.push(td);
       } else if (item.tag == InterfaceItemTag.Func) {
         let f = item.func as NamedFunc;
@@ -556,9 +559,15 @@ export class Resolver {
     // Resolve resource methods
     if (td.tag == TypeDefTag.Resource) {
       let funcs = td.resourceFuncs as Array<ResourceFunc>;
+      // Check for duplicate constructors and method names
+      this.#checkDuplicateResourceFuncs(funcs);
       var i = 0;
       while (i < funcs.length) {
         let rf = funcs[i];
+        // Validate constructor return type
+        if (rf.tag == ResourceFuncTag.Constructor) {
+          this.#validateConstructorReturn(rf.func, td.name.name);
+        }
         this.#resolveNamedFunc(rf.func);
         i = i + 1;
       }
@@ -568,6 +577,73 @@ export class Resolver {
     if (td.tag == TypeDefTag.Flags) {
       let flags = td.flags as Array<FlagDef>;
       this.#checkDuplicateFlagNames(flags);
+    }
+  }
+
+  #validateConstructorReturn(f: NamedFunc, resourceName: String): void {
+    let func = f.func;
+    if (func.result == null) {
+      // No return type - that's fine
+      return;
+    }
+    let result = func.result as Type;
+    // Constructor return must be a result type
+    if (result.tag != TypeTag.Result) {
+      throw new ResolveError(
+        "if a constructor return type is declared it must be a `result`",
+        result.span
+      );
+    }
+    // The ok type must be the resource being constructed (wildcard _ is not allowed)
+    if (result.okType == null) {
+      // Wildcard _ is not allowed
+      throw new ResolveError(
+        "the `ok` type must be the resource being constructed",
+        result.span
+      );
+    }
+    let okType = result.okType as Type;
+    // ok type must be a Name pointing to this resource
+    if (okType.tag != TypeTag.Name) {
+      throw new ResolveError(
+        "the `ok` type must be the resource being constructed",
+        result.span
+      );
+    }
+    let okName = (okType.name as Id).name;
+    if (okName != resourceName) {
+      throw new ResolveError(
+        "the `ok` type must be the resource being constructed",
+        okType.span
+      );
+    }
+  }
+
+  #checkDuplicateResourceFuncs(funcs: Array<ResourceFunc>): void {
+    var constructorCount = 0;
+    var constructorSpan: Span | null = null;
+    var methodNames = new Array<SymbolEntry>();
+
+    var i = 0;
+    while (i < funcs.length) {
+      let rf = funcs[i];
+      if (rf.tag == ResourceFuncTag.Constructor) {
+        constructorCount = constructorCount + 1;
+        if (constructorCount == 1) {
+          constructorSpan = rf.func.name.span;
+        } else {
+          throw new ResolveError("duplicate constructors", rf.func.name.span);
+        }
+      } else {
+        // Method or static - check for duplicate names
+        let name = rf.func.name.name;
+        let existing = findSymbolInList(methodNames, name);
+        if (existing != null) {
+          throw new ResolveError("duplicate function name `" + name + "`", rf.func.name.span);
+        }
+        methodNames.push(new SymbolEntry(name, SymbolKind.Func, rf.func.name.span));
+      }
+      i = i + 1;
     }
   }
 
@@ -652,9 +728,41 @@ export class Resolver {
       );
     }
 
-    // Recurse into borrow inner type
-    if (t.tag == TypeTag.Borrow) {
-      this.#resolveType(t.inner as Type, inReturnPosition);
+    // Handle types (borrow<T> and own<T>) must reference a resource
+    if (t.tag == TypeTag.Borrow || t.tag == TypeTag.Own) {
+      let inner = t.inner as Type;
+      // Inner type should always be a Name (enforced by parser)
+      if (inner.tag == TypeTag.Name) {
+        let rawName = (inner.name as Id).name;
+        let name = stripExplicitPrefix(rawName);
+        let sym = this.#findSymbol(name);
+        if (sym == null) {
+          throw new ResolveError("type `" + rawName + "` does not exist", inner.span);
+        }
+        // Check if the type is a resource
+        let s = sym as SymbolEntry;
+        if (s.kind == SymbolKind.Resource) {
+          // Good - it's a resource
+          return;
+        }
+        if (s.kind == SymbolKind.Type) {
+          // Check if there's a TypeDef that's a resource, or if it was imported
+          let td = this.#findTypeDef(name);
+          if (td != null) {
+            if (!this.#isResourceType(td as TypeDef)) {
+              throw new ResolveError("type `" + rawName + "` used in a handle must be a resource", inner.span);
+            }
+            // TypeDef is a resource (or alias to one)
+            return;
+          }
+          // No type definition found - the symbol was imported from another interface
+          // via `use`. In that case, we trust the import (cross-interface resource 
+          // validation would require tracking interface relationships)
+          return;
+        }
+        // Symbol is not a Type or Resource (e.g., it's an Interface, World, or Func)
+        throw new ResolveError("type `" + rawName + "` does not exist", inner.span);
+      }
       return;
     }
 
@@ -724,6 +832,59 @@ export class Resolver {
         return true;
       }
       i = i + 1;
+    }
+    return false;
+  }
+
+  /** Find a type definition by name in any scope. */
+  #findTypeDef(name: String): TypeDef | null {
+    var i = this.#scopes.length - 1;
+    while (i >= 0) {
+      let td = this.#scopes[i].findType(name);
+      if (td != null) {
+        return td;
+      }
+      i = i - 1;
+    }
+    return null;
+  }
+
+  /** Check if a type definition is or refers to a resource. */
+  #isResourceType(td: TypeDef): boolean {
+    // Direct resource
+    if (td.tag == TypeDefTag.Resource) {
+      return true;
+    }
+    // Not an alias - not a resource
+    if (td.tag != TypeDefTag.Alias) {
+      return false;
+    }
+    // Check what the alias points to
+    let aliasType = td.aliasType as Type;
+    // If it's own<T> or borrow<T>, the inner type must be a resource
+    if (aliasType.tag == TypeTag.Own || aliasType.tag == TypeTag.Borrow) {
+      // Already validated by handle type checking
+      return false;  // But the alias itself is not a resource
+    }
+    // If it aliases another name, check if that's a resource
+    if (aliasType.tag == TypeTag.Name) {
+      let name = (aliasType.name as Id).name;
+      let sym = this.#findSymbol(name);
+      if (sym != null) {
+        let s = sym as SymbolEntry;
+        if (s.kind == SymbolKind.Resource) {
+          return true;
+        }
+        // If it's a Type, check if there's a local TypeDef or if it was imported
+        if (s.kind == SymbolKind.Type) {
+          let innerTd = this.#findTypeDef(name);
+          if (innerTd != null) {
+            return this.#isResourceType(innerTd as TypeDef);
+          }
+          // No TypeDef found - imported from another interface, trust it
+          return true;
+        }
+      }
     }
     return false;
   }

@@ -221,6 +221,7 @@ export enum TypeTag {
   Map,
   
   // Handle types
+  Own,     // own<T>
   Borrow,  // borrow<T>
   
   // Named type reference
@@ -308,6 +309,12 @@ export class Type {
     let t = new Type(TypeTag.Map, span);
     t.keyType = key;
     t.valueType = value;
+    return t;
+  }
+
+  static own(inner: Type, span: Span): Type {
+    let t = new Type(TypeTag.Own, span);
+    t.inner = inner;
     return t;
   }
 
@@ -1338,22 +1345,32 @@ export class Parser {
       return Type.map(keyType, valueType, new Span(token.span.start, endToken.span.end));
     }
     
-    // own<T>
+    // own<T> - inner must be an identifier, not a primitive
     if (token.type == TokenType.Own) {
+      let startSpan = token.span;
       this.#advance();
       this.#expect(TokenType.LessThan);
-      let inner = this.#parseType();
+      let innerToken = this.#peek();
+      if (innerToken.type != TokenType.Id && innerToken.type != TokenType.ExplicitId) {
+        throw new ParseError("expected an identifier or string, found keyword `" + this.#text(innerToken.span) + "`", innerToken.span);
+      }
+      let id = this.#parseId();
+      let inner = Type.named(id, id.span);
       let endToken = this.#expect(TokenType.GreaterThan);
-      // For now, treat own<T> as just T (will be resolved later)
-      return inner;
+      return Type.own(inner, new Span(startSpan.start, endToken.span.end));
     }
     
-    // borrow<T>
+    // borrow<T> - inner must be an identifier, not a primitive
     if (token.type == TokenType.Borrow) {
       let startSpan = token.span;
       this.#advance();
       this.#expect(TokenType.LessThan);
-      let inner = this.#parseType();
+      let innerToken = this.#peek();
+      if (innerToken.type != TokenType.Id && innerToken.type != TokenType.ExplicitId) {
+        throw new ParseError("expected an identifier or string, found keyword `" + this.#text(innerToken.span) + "`", innerToken.span);
+      }
+      let id = this.#parseId();
+      let inner = Type.named(id, id.span);
       let endToken = this.#expect(TokenType.GreaterThan);
       return Type.borrow(inner, new Span(startSpan.start, endToken.span.end));
     }
