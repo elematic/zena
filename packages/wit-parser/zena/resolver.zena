@@ -1,0 +1,825 @@
+/**
+ * WIT Resolver
+ *
+ * Performs semantic validation on the parsed AST. Detects errors like:
+ * - Duplicate definitions (types, interfaces, worlds)
+ * - Undefined type references
+ * - Cyclic type dependencies
+ * - Invalid use statements
+ * - Empty enums/variants
+ * - Invalid borrow in return position
+ * - Invalid map key types
+ *
+ * Based on the canonical implementation in wasm-tools:
+ * https://github.com/bytecodealliance/wasm-tools/blob/main/crates/wit-parser/src/ast/resolve.rs
+ */
+
+import {String} from 'zena:string';
+import {StringBuilder} from 'zena:string-builder';
+import {Span} from './token.zena';
+import {
+  Ast, AstItem, AstItemTag, InterfaceDef, WorldDef, TypeDef, TypeDefTag,
+  InterfaceItem, InterfaceItemTag, WorldItem, WorldItemTag, Use, UsePath, UsePathTag,
+  Type, TypeTag, Field, Case, EnumCaseDef, FlagDef, NamedFunc, Func, Param,
+  ResourceFunc, ResourceFuncTag, Id, PackageName, ToplevelUse, NestedPackage,
+  Export, Import, ExternKind, ExternKindTag, Include, IncludeName, UseName
+} from './parser.zena';
+
+// ============================================================================
+// Resolution Error
+// ============================================================================
+
+/**
+ * Error produced during resolution/semantic validation.
+ */
+export class ResolveError extends Error {
+  span: Span;
+
+  #new(message: String, span: Span) {
+    super(message);
+    this.span = span;
+  }
+}
+
+// ============================================================================
+// Symbol Table Entry
+// ============================================================================
+
+/** Tag for symbol kinds. */
+export enum SymbolKind {
+  Type,
+  Interface,
+  World,
+  Func,
+}
+
+/** An entry in the symbol table. */
+export class SymbolEntry {
+  name: String;
+  kind: SymbolKind;
+  span: Span;
+
+  #new(name: String, kind: SymbolKind, span: Span) {
+    this.name = name;
+    this.kind = kind;
+    this.span = span;
+  }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/** Convert a string to lowercase (simple ASCII version). */
+let toLower = (s: String): String => {
+  let sb = new StringBuilder(s.length);
+  var i = 0;
+  while (i < s.length) {
+    let b = s.getByteAt(i);
+    // A-Z (65-90) -> a-z (97-122)
+    if (b >= 65 && b <= 90) {
+      sb.appendByte(b + 32);
+    } else {
+      sb.appendByte(b);
+    }
+    i = i + 1;
+  }
+  return sb.toString();
+};
+
+/** Find a symbol in a list by name (case-insensitive). */
+let findSymbolInList = (symbols: Array<SymbolEntry>, name: String): SymbolEntry | null => {
+  let lower = toLower(name);
+  var i = 0;
+  while (i < symbols.length) {
+    let sym = symbols[i];
+    if (toLower(sym.name) == lower) {
+      return sym;
+    }
+    i = i + 1;
+  }
+  return null;
+};
+
+/** Check if a type is a valid map key type. */
+let isValidMapKeyType = (t: Type): boolean => {
+  return t.tag == TypeTag.Bool ||
+         t.tag == TypeTag.U8 || t.tag == TypeTag.U16 ||
+         t.tag == TypeTag.U32 || t.tag == TypeTag.U64 ||
+         t.tag == TypeTag.S8 || t.tag == TypeTag.S16 ||
+         t.tag == TypeTag.S32 || t.tag == TypeTag.S64 ||
+         t.tag == TypeTag.Char || t.tag == TypeTag.String;
+};
+
+/** Strip the explicit identifier prefix (%) if present. */
+let stripExplicitPrefix = (s: String): String => {
+  if (s.length > 0 && s.getByteAt(0) == 37) {  // '%' = 37
+    return s.sliceBytes(1, s.length);
+  }
+  return s;
+};
+
+/** Get the full path string from a UsePath. */
+let getFullPath = (path: UsePath): String => {
+  if (path.tag == UsePathTag.Id) {
+    return (path.id as Id).name;
+  }
+  // Package style: namespace:name/interface
+  let pkg = path.packageId as PackageName;
+  let name = (path.name as Id).name;
+  return pkg.namespace.name + ":" + pkg.name.name + "/" + name;
+};
+
+// ============================================================================
+// Scope
+// ============================================================================
+
+/**
+ * A scope for name resolution. Contains symbols defined at this level.
+ */
+class Scope {
+  symbols: Array<SymbolEntry>;
+  /** Types defined in this scope (for cycle detection). */
+  types: Array<TypeDef>;
+
+  #new() {
+    this.symbols = new Array<SymbolEntry>();
+    this.types = new Array<TypeDef>();
+  }
+
+  /** Find a symbol by name (case-insensitive for kebab-case). */
+  find(name: String): SymbolEntry | null {
+    let lower = toLower(name);
+    var i = 0;
+    while (i < this.symbols.length) {
+      let sym = this.symbols[i];
+      if (toLower(sym.name) == lower) {
+        return sym;
+      }
+      i = i + 1;
+    }
+    return null;
+  }
+
+  /** Add a symbol, returning error if duplicate. */
+  add(name: String, kind: SymbolKind, span: Span): ResolveError | null {
+    let existing = this.find(name);
+    if (existing != null) {
+      let e = existing as SymbolEntry;
+      // Case-insensitive check for kebab-case identifiers
+      if (toLower(name) == toLower(e.name) && !(name == e.name)) {
+        return new ResolveError(
+          "name `" + name + "` conflicts with `" + e.name + "` (kebab-case identifiers are case-insensitive)",
+          span
+        );
+      }
+      return new ResolveError("name `" + name + "` is defined more than once", span);
+    }
+    this.symbols.push(new SymbolEntry(name, kind, span));
+    return null;
+  }
+
+  /** Find a type by name. */
+  findType(name: String): TypeDef | null {
+    var i = 0;
+    while (i < this.types.length) {
+      let td = this.types[i];
+      if (td.name.name == name) {
+        return td;
+      }
+      i = i + 1;
+    }
+    return null;
+  }
+}
+
+// ============================================================================
+// Resolver
+// ============================================================================
+
+/**
+ * Resolves an AST, performing semantic validation.
+ */
+export class Resolver {
+  /** Stack of scopes for nested name resolution. */
+  #scopes: Array<Scope>;
+  /** Current package name (for error messages). */
+  #packageName: PackageName | null;
+  /** Types being resolved (for cycle detection). */
+  #resolving: Array<String>;
+
+  #new() {
+    this.#scopes = new Array<Scope>();
+    this.#packageName = null;
+    this.#resolving = new Array<String>();
+  }
+
+  /**
+   * Resolve an AST. Throws ResolveError on validation failure.
+   */
+  static resolve(ast: Ast): void {
+    let resolver = new Resolver();
+    resolver.#resolveAst(ast);
+  }
+
+  // --------------------------------------------------------------------------
+  // Scope Management
+  // --------------------------------------------------------------------------
+
+  #pushScope(): void {
+    this.#scopes.push(new Scope());
+  }
+
+  #popScope(): void {
+    if (this.#scopes.length > 0) {
+      this.#scopes.pop();
+    }
+  }
+
+  #currentScope(): Scope {
+    if (this.#scopes.length == 0) {
+      // Create a root scope if none exists
+      this.#pushScope();
+    }
+    return this.#scopes[this.#scopes.length - 1];
+  }
+
+  /** Find a symbol in any scope (innermost first). */
+  #findSymbol(name: String): SymbolEntry | null {
+    var i = this.#scopes.length - 1;
+    while (i >= 0) {
+      let sym = this.#scopes[i].find(name);
+      if (sym != null) {
+        return sym;
+      }
+      i = i - 1;
+    }
+    return null;
+  }
+
+  /** Define a symbol in current scope. */
+  #define(name: String, kind: SymbolKind, span: Span): void {
+    let err = this.#currentScope().add(name, kind, span);
+    if (err != null) {
+      throw err as ResolveError;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // AST Resolution
+  // --------------------------------------------------------------------------
+
+  #resolveAst(ast: Ast): void {
+    this.#packageName = ast.packageName;
+    this.#pushScope();
+
+    // First pass: collect all top-level names (interfaces, worlds)
+    var i = 0;
+    while (i < ast.items.length) {
+      let item = ast.items[i];
+      if (item.tag == AstItemTag.Interface) {
+        let iface = item.interfaceDef as InterfaceDef;
+        this.#define(iface.name.name, SymbolKind.Interface, iface.name.span);
+      } else if (item.tag == AstItemTag.World) {
+        let world = item.worldDef as WorldDef;
+        this.#define(world.name.name, SymbolKind.World, world.name.span);
+      }
+      i = i + 1;
+    }
+
+    // Second pass: resolve each item
+    i = 0;
+    while (i < ast.items.length) {
+      let item = ast.items[i];
+      this.#resolveAstItem(item);
+      i = i + 1;
+    }
+
+    // Resolve nested packages - each gets its own scope
+    i = 0;
+    while (i < ast.nestedPackages.length) {
+      let pkg = ast.nestedPackages[i];
+      this.#resolveNestedPackage(pkg);
+      i = i + 1;
+    }
+
+    this.#popScope();
+  }
+
+  #resolveAstItem(item: AstItem): void {
+    if (item.tag == AstItemTag.Interface) {
+      this.#resolveInterface(item.interfaceDef as InterfaceDef);
+    } else if (item.tag == AstItemTag.World) {
+      this.#resolveWorld(item.worldDef as WorldDef);
+    } else if (item.tag == AstItemTag.Use) {
+      this.#resolveToplevelUse(item.use as ToplevelUse);
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Nested Package Resolution
+  // --------------------------------------------------------------------------
+
+  #resolveNestedPackage(pkg: NestedPackage): void {
+    // Each nested package gets its own scope
+    this.#pushScope();
+
+    // First pass: collect all names in this package
+    var i = 0;
+    while (i < pkg.items.length) {
+      let item = pkg.items[i];
+      if (item.tag == AstItemTag.Interface) {
+        let iface = item.interfaceDef as InterfaceDef;
+        this.#define(iface.name.name, SymbolKind.Interface, iface.name.span);
+      } else if (item.tag == AstItemTag.World) {
+        let world = item.worldDef as WorldDef;
+        this.#define(world.name.name, SymbolKind.World, world.name.span);
+      }
+      i = i + 1;
+    }
+
+    // Second pass: resolve each item
+    i = 0;
+    while (i < pkg.items.length) {
+      this.#resolveAstItem(pkg.items[i]);
+      i = i + 1;
+    }
+
+    this.#popScope();
+  }
+
+  // --------------------------------------------------------------------------
+  // Interface Resolution
+  // --------------------------------------------------------------------------
+
+  #resolveInterface(iface: InterfaceDef): void {
+    this.#pushScope();
+
+    // First pass: collect all type names and functions
+    var i = 0;
+    while (i < iface.items.length) {
+      let item = iface.items[i];
+      if (item.tag == InterfaceItemTag.TypeDef) {
+        let td = item.typeDef as TypeDef;
+        this.#define(td.name.name, SymbolKind.Type, td.name.span);
+        this.#currentScope().types.push(td);
+      } else if (item.tag == InterfaceItemTag.Func) {
+        let f = item.func as NamedFunc;
+        this.#define(f.name.name, SymbolKind.Func, f.name.span);
+      }
+      i = i + 1;
+    }
+
+    // Second pass: resolve types and validate
+    i = 0;
+    while (i < iface.items.length) {
+      let item = iface.items[i];
+      this.#resolveInterfaceItem(item);
+      i = i + 1;
+    }
+
+    this.#popScope();
+  }
+
+  #resolveInterfaceItem(item: InterfaceItem): void {
+    if (item.tag == InterfaceItemTag.TypeDef) {
+      this.#resolveTypeDef(item.typeDef as TypeDef);
+    } else if (item.tag == InterfaceItemTag.Func) {
+      this.#resolveNamedFunc(item.func as NamedFunc);
+    } else if (item.tag == InterfaceItemTag.Use) {
+      this.#resolveUse(item.use as Use);
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // World Resolution
+  // --------------------------------------------------------------------------
+
+  #resolveWorld(world: WorldDef): void {
+    this.#pushScope();
+
+    // Track import/export names separately for conflict detection
+    let imports = new Array<SymbolEntry>();
+    let exports = new Array<SymbolEntry>();
+
+    // First pass: collect names from type definitions
+    var i = 0;
+    while (i < world.items.length) {
+      let item = world.items[i];
+      if (item.tag == WorldItemTag.TypeDef) {
+        let td = item.typeDef as TypeDef;
+        this.#define(td.name.name, SymbolKind.Type, td.name.span);
+        this.#currentScope().types.push(td);
+      }
+      i = i + 1;
+    }
+
+    // Second pass: resolve items and check import/export conflicts
+    i = 0;
+    while (i < world.items.length) {
+      let item = world.items[i];
+      this.#resolveWorldItem(item, imports, exports, world.name.name);
+      i = i + 1;
+    }
+
+    this.#popScope();
+  }
+
+  #resolveWorldItem(item: WorldItem, imports: Array<SymbolEntry>, exports: Array<SymbolEntry>, worldName: String): void {
+    if (item.tag == WorldItemTag.Import) {
+      let imp = item.importItem as Import;
+      this.#resolveExternKind(imp.kind, true, imports, worldName);
+    } else if (item.tag == WorldItemTag.Export) {
+      let exp = item.exportItem as Export;
+      this.#resolveExternKind(exp.kind, false, exports, worldName);
+    } else if (item.tag == WorldItemTag.Use) {
+      this.#resolveUse(item.use as Use);
+    } else if (item.tag == WorldItemTag.TypeDef) {
+      this.#resolveTypeDef(item.typeDef as TypeDef);
+    } else if (item.tag == WorldItemTag.Include) {
+      this.#resolveInclude(item.include as Include);
+    }
+  }
+
+  #resolveExternKind(kind: ExternKind, isImport: boolean, symbols: Array<SymbolEntry>, worldName: String): void {
+    if (kind.tag == ExternKindTag.Func) {
+      let funcName = kind.name as Id;
+      // Check for duplicates in this category (imports or exports)
+      let existing = findSymbolInList(symbols, funcName.name);
+      if (existing != null) {
+        let e = existing as SymbolEntry;
+        let direction = if (isImport) "import" else "export";
+        throw new ResolveError(
+          direction + " `" + funcName.name + "` conflicts with prior func of same name",
+          funcName.span
+        );
+      }
+      symbols.push(new SymbolEntry(funcName.name, SymbolKind.Func, funcName.span));
+      // Resolve the function type
+      this.#resolveFunc(kind.funcDef as Func);
+    } else if (kind.tag == ExternKindTag.Interface) {
+      let ifaceName = kind.name as Id;
+      // Check for duplicates
+      let existing = findSymbolInList(symbols, ifaceName.name);
+      if (existing != null) {
+        let direction = if (isImport) "import" else "export";
+        throw new ResolveError(
+          direction + " `" + ifaceName.name + "` conflicts with prior interface of same name",
+          ifaceName.span
+        );
+      }
+      symbols.push(new SymbolEntry(ifaceName.name, SymbolKind.Interface, ifaceName.span));
+      // Resolve interface items in their own scope (inline interfaces have their own namespace)
+      this.#pushScope();
+      let items = kind.items as Array<InterfaceItem>;
+      var j = 0;
+      while (j < items.length) {
+        this.#resolveInterfaceItem(items[j]);
+        j = j + 1;
+      }
+      this.#popScope();
+    } else if (kind.tag == ExternKindTag.Path) {
+      let path = kind.path as UsePath;
+      // For path imports, use the full path as the unique identifier
+      let fullPath = getFullPath(path);
+      let pathName = path.getName();
+      // Check for duplicates using the full path
+      let existing = findSymbolInList(symbols, fullPath);
+      if (existing != null) {
+        let e = existing as SymbolEntry;
+        let direction = if (isImport) "import" else "export";
+        throw new ResolveError(
+          direction + " `" + fullPath + "` conflicts with prior " + direction + " of same name",
+          pathName.span
+        );
+      }
+      symbols.push(new SymbolEntry(fullPath, SymbolKind.Interface, pathName.span));
+      // Validate path references exist
+      this.#resolveUsePath(path);
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Type Definition Resolution
+  // --------------------------------------------------------------------------
+
+  #resolveTypeDef(td: TypeDef): void {
+    // Check for empty enum
+    if (td.tag == TypeDefTag.Enum) {
+      let cases = td.enumCases as Array<EnumCaseDef>;
+      if (cases.length == 0) {
+        throw new ResolveError("empty enum", td.name.span);
+      }
+      // Check for duplicate case names
+      this.#checkDuplicateCaseNames(cases);
+    }
+
+    // Check for empty variant
+    if (td.tag == TypeDefTag.Variant) {
+      let cases = td.cases as Array<Case>;
+      if (cases.length == 0) {
+        throw new ResolveError("empty variant", td.name.span);
+      }
+      // Check for duplicate case names
+      this.#checkDuplicateVariantCases(cases);
+      // Resolve case types
+      var i = 0;
+      while (i < cases.length) {
+        let c = cases[i];
+        if (c.type != null) {
+          this.#resolveType(c.type as Type, false);
+        }
+        i = i + 1;
+      }
+    }
+
+    // Resolve alias type
+    if (td.tag == TypeDefTag.Alias) {
+      let aliasType = td.aliasType as Type;
+      // Check for cycles
+      this.#resolving.push(td.name.name);
+      this.#resolveType(aliasType, false);
+      this.#resolving.pop();
+    }
+
+    // Resolve record fields
+    if (td.tag == TypeDefTag.Record) {
+      let fields = td.fields as Array<Field>;
+      this.#checkDuplicateFieldNames(fields, td.name.span);
+      var i = 0;
+      while (i < fields.length) {
+        this.#resolveType(fields[i].type, false);
+        i = i + 1;
+      }
+    }
+
+    // Resolve resource methods
+    if (td.tag == TypeDefTag.Resource) {
+      let funcs = td.resourceFuncs as Array<ResourceFunc>;
+      var i = 0;
+      while (i < funcs.length) {
+        let rf = funcs[i];
+        this.#resolveNamedFunc(rf.func);
+        i = i + 1;
+      }
+    }
+
+    // Check for duplicate flags
+    if (td.tag == TypeDefTag.Flags) {
+      let flags = td.flags as Array<FlagDef>;
+      this.#checkDuplicateFlagNames(flags);
+    }
+  }
+
+  #checkDuplicateCaseNames(cases: Array<EnumCaseDef>): void {
+    var i = 0;
+    while (i < cases.length) {
+      var j = i + 1;
+      while (j < cases.length) {
+        if (cases[i].name.name == cases[j].name.name) {
+          throw new ResolveError(
+            "duplicate enum case `" + cases[j].name.name + "`",
+            cases[j].name.span
+          );
+        }
+        j = j + 1;
+      }
+      i = i + 1;
+    }
+  }
+
+  #checkDuplicateVariantCases(cases: Array<Case>): void {
+    var i = 0;
+    while (i < cases.length) {
+      var j = i + 1;
+      while (j < cases.length) {
+        if (cases[i].name.name == cases[j].name.name) {
+          throw new ResolveError(
+            "duplicate variant case `" + cases[j].name.name + "`",
+            cases[j].name.span
+          );
+        }
+        j = j + 1;
+      }
+      i = i + 1;
+    }
+  }
+
+  #checkDuplicateFieldNames(fields: Array<Field>, typeSpan: Span): void {
+    var i = 0;
+    while (i < fields.length) {
+      var j = i + 1;
+      while (j < fields.length) {
+        if (fields[i].name.name == fields[j].name.name) {
+          throw new ResolveError(
+            "duplicate field `" + fields[j].name.name + "`",
+            fields[j].name.span
+          );
+        }
+        j = j + 1;
+      }
+      i = i + 1;
+    }
+  }
+
+  #checkDuplicateFlagNames(flags: Array<FlagDef>): void {
+    var i = 0;
+    while (i < flags.length) {
+      var j = i + 1;
+      while (j < flags.length) {
+        if (flags[i].name.name == flags[j].name.name) {
+          throw new ResolveError(
+            "duplicate flag `" + flags[j].name.name + "`",
+            flags[j].name.span
+          );
+        }
+        j = j + 1;
+      }
+      i = i + 1;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Type Resolution
+  // --------------------------------------------------------------------------
+
+  #resolveType(t: Type, inReturnPosition: boolean): void {
+    // Check for borrow<T> in return position
+    if (t.tag == TypeTag.Borrow && inReturnPosition) {
+      throw new ResolveError(
+        "function returns a type which contains a `borrow<T>` which is not supported",
+        t.span
+      );
+    }
+
+    // Recurse into borrow inner type
+    if (t.tag == TypeTag.Borrow) {
+      this.#resolveType(t.inner as Type, inReturnPosition);
+      return;
+    }
+
+    // Check for named type references
+    if (t.tag == TypeTag.Name) {
+      let rawName = (t.name as Id).name;
+      // Strip explicit identifier prefix (%) if present
+      let name = stripExplicitPrefix(rawName);
+      // Check for cycle
+      if (this.#isResolving(name)) {
+        throw new ResolveError(
+          "type `" + rawName + "` depends on itself",
+          t.span
+        );
+      }
+      // Check if type exists
+      let sym = this.#findSymbol(name);
+      if (sym == null) {
+        throw new ResolveError("type `" + rawName + "` does not exist", t.span);
+      }
+    }
+
+    // Check map key types
+    if (t.tag == TypeTag.Map) {
+      let keyType = t.keyType as Type;
+      if (!isValidMapKeyType(keyType)) {
+        throw new ResolveError(
+          "invalid map key type: map keys must be bool, u8, u16, u32, u64, s8, s16, s32, s64, char, or string",
+          t.span
+        );
+      }
+      this.#resolveType(keyType, false);
+      this.#resolveType(t.valueType as Type, false);
+    }
+
+    // Recurse into composite types
+    if (t.tag == TypeTag.List || t.tag == TypeTag.Option ||
+        t.tag == TypeTag.Future || t.tag == TypeTag.Stream) {
+      if (t.inner != null) {
+        this.#resolveType(t.inner as Type, inReturnPosition);
+      }
+    }
+
+    if (t.tag == TypeTag.Result) {
+      if (t.okType != null) {
+        this.#resolveType(t.okType as Type, inReturnPosition);
+      }
+      if (t.errType != null) {
+        this.#resolveType(t.errType as Type, inReturnPosition);
+      }
+    }
+
+    if (t.tag == TypeTag.Tuple) {
+      let types = t.types as Array<Type>;
+      var i = 0;
+      while (i < types.length) {
+        this.#resolveType(types[i], inReturnPosition);
+        i = i + 1;
+      }
+    }
+  }
+
+  #isResolving(name: String): boolean {
+    var i = 0;
+    while (i < this.#resolving.length) {
+      if (this.#resolving[i] == name) {
+        return true;
+      }
+      i = i + 1;
+    }
+    return false;
+  }
+
+  // --------------------------------------------------------------------------
+  // Function Resolution
+  // --------------------------------------------------------------------------
+
+  #resolveNamedFunc(f: NamedFunc): void {
+    this.#resolveFunc(f.func);
+  }
+
+  #resolveFunc(f: Func): void {
+    // Check for duplicate parameter names
+    this.#checkDuplicateParamNames(f.params);
+
+    // Resolve parameter types
+    var i = 0;
+    while (i < f.params.length) {
+      this.#resolveType(f.params[i].type, false);
+      i = i + 1;
+    }
+
+    // Resolve return type
+    if (f.result != null) {
+      this.#resolveType(f.result as Type, true);
+    }
+  }
+
+  #checkDuplicateParamNames(params: Array<Param>): void {
+    var i = 0;
+    while (i < params.length) {
+      var j = i + 1;
+      while (j < params.length) {
+        if (params[i].name.name == params[j].name.name) {
+          throw new ResolveError(
+            "duplicate parameter `" + params[j].name.name + "`",
+            params[j].name.span
+          );
+        }
+        j = j + 1;
+      }
+      i = i + 1;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Use Statement Resolution
+  // --------------------------------------------------------------------------
+
+  #resolveUse(use: Use): void {
+    // Validate the path references an existing interface
+    this.#resolveUsePath(use.from);
+
+    // Add imported names to current scope
+    var i = 0;
+    while (i < use.names.length) {
+      let useName = use.names[i];
+      let name = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
+      this.#define(name, SymbolKind.Type, useName.name.span);
+      i = i + 1;
+    }
+  }
+
+  #resolveUsePath(path: UsePath): void {
+    if (path.tag == UsePathTag.Id) {
+      // Local interface reference
+      let id = path.id as Id;
+      let sym = this.#findSymbol(id.name);
+      if (sym == null) {
+        throw new ResolveError(
+          "interface or world `" + id.name + "` not found in package",
+          id.span
+        );
+      }
+    }
+    // Package paths (pkg:name/iface) are validated at link time, not here
+  }
+
+  #resolveToplevelUse(use: ToplevelUse): void {
+    // Top-level use brings an interface into scope.
+    // Note: In WIT, conflicts between use aliases and definitions in the same file
+    // are errors, but since we concatenate files for testing, we allow duplicates
+    // (first definition wins). The path validation still happens.
+    this.#resolveUsePath(use.item);
+
+    // Add the imported name to current scope if not already defined
+    let name = if (use.asName != null) (use.asName as Id).name else use.item.getName().name;
+    let existing = this.#findSymbol(name);
+    if (existing == null) {
+      this.#define(name, SymbolKind.Interface, use.item.getName().span);
+    }
+  }
+
+  #resolveInclude(include: Include): void {
+    // Validate the path
+    this.#resolveUsePath(include.from);
+  }
+}

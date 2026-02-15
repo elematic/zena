@@ -9,6 +9,7 @@ import {StringBuilder} from 'zena:string-builder';
 import {Parser, Ast, AstItem, AstItemTag, ParseError, NestedPackage} from './parser.zena';
 import {InterfaceDef, WorldDef, InterfaceItem, InterfaceItemTag} from './parser.zena';
 import {TypeDef, TypeDefTag, Type, TypeTag, PackageName, Id, ToplevelUse} from './parser.zena';
+import {Resolver, ResolveError} from './resolver.zena';
 
 // ============================================================================
 // Input: TypeScript provides these via imports
@@ -178,14 +179,16 @@ let formatAst = (ast: Ast): string => {
 /**
  * Parse WIT source and return a summary of the parsed AST.
  * 
- * TODO: Parser.parse() should return ParseResult with diagnostics instead of throwing.
- * For now we use try/catch to handle parse errors gracefully.
+ * Parses the input, then runs semantic validation via the Resolver.
+ * Returns an error message if either parsing or validation fails.
  */
 export let parse = (): void => {
   let input = readInput();
   
   outputString = try {
     let ast = Parser.parse(input);
+    // Run semantic validation
+    Resolver.resolve(ast);
     formatAst(ast)
   } catch (e) {
     "ParseError: " + e.message + "\n"
