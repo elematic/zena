@@ -9,6 +9,7 @@
  * - Empty enums/variants
  * - Invalid borrow in return position
  * - Invalid map key types
+ * - Feature gate violations (@since/@unstable)
  *
  * Based on the canonical implementation in wasm-tools:
  * https://github.com/bytecodealliance/wasm-tools/blob/main/crates/wit-parser/src/ast/resolve.rs
@@ -22,7 +23,8 @@ import {
   InterfaceItem, InterfaceItemTag, WorldItem, WorldItemTag, Use, UsePath, UsePathTag,
   Type, TypeTag, Field, Case, EnumCaseDef, FlagDef, NamedFunc, Func, Param,
   ResourceFunc, ResourceFuncTag, Id, PackageName, ToplevelUse, NestedPackage,
-  Export, Import, ExternKind, ExternKindTag, Include, IncludeName, UseName
+  Export, Import, ExternKind, ExternKindTag, Include, IncludeName, UseName,
+  Docs, Attribute, AttributeTag
 } from './parser.zena';
 
 // ============================================================================
@@ -59,11 +61,20 @@ export class SymbolEntry {
   name: String;
   kind: SymbolKind;
   span: Span;
+  /** Whether this symbol is feature-gated (has @unstable annotation). */
+  isGated: boolean;
 
   #new(name: String, kind: SymbolKind, span: Span) {
     this.name = name;
     this.kind = kind;
     this.span = span;
+    this.isGated = false;
+  }
+
+  static gated(name: String, kind: SymbolKind, span: Span): SymbolEntry {
+    let s = new SymbolEntry(name, kind, span);
+    s.isGated = true;
+    return s;
   }
 }
 
@@ -120,6 +131,22 @@ let stripExplicitPrefix = (s: String): String => {
   return s;
 };
 
+/** Check if a Docs has an @unstable attribute (feature gated). */
+let isGated = (docs: Docs): boolean => {
+  if (docs.attributes == null) {
+    return false;
+  }
+  let attrs = docs.attributes as Array<Attribute>;
+  var i = 0;
+  while (i < attrs.length) {
+    if (attrs[i].tag == AttributeTag.Unstable) {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+};
+
 /** Get the full path string from a UsePath. */
 let getFullPath = (path: UsePath): String => {
   if (path.tag == UsePathTag.Id) {
@@ -163,7 +190,7 @@ class Scope {
   }
 
   /** Add a symbol, returning error if duplicate. */
-  add(name: String, kind: SymbolKind, span: Span): ResolveError | null {
+  add(name: String, kind: SymbolKind, span: Span, gated: boolean): ResolveError | null {
     let existing = this.find(name);
     if (existing != null) {
       let e = existing as SymbolEntry;
@@ -176,7 +203,8 @@ class Scope {
       }
       return new ResolveError("name `" + name + "` is defined more than once", span);
     }
-    this.symbols.push(new SymbolEntry(name, kind, span));
+    let sym = if (gated) SymbolEntry.gated(name, kind, span) else new SymbolEntry(name, kind, span);
+    this.symbols.push(sym);
     return null;
   }
 
@@ -208,11 +236,14 @@ export class Resolver {
   #packageName: PackageName | null;
   /** Types being resolved (for cycle detection). */
   #resolving: Array<String>;
+  /** Whether we're currently inside a gated context (@unstable). */
+  #inGatedContext: boolean;
 
   #new() {
     this.#scopes = new Array<Scope>();
     this.#packageName = null;
     this.#resolving = new Array<String>();
+    this.#inGatedContext = false;
   }
 
   /**
@@ -260,9 +291,24 @@ export class Resolver {
 
   /** Define a symbol in current scope. */
   #define(name: String, kind: SymbolKind, span: Span): void {
-    let err = this.#currentScope().add(name, kind, span);
+    this.#defineWithGating(name, kind, span, false);
+  }
+
+  /** Define a symbol in current scope with explicit gating. */
+  #defineWithGating(name: String, kind: SymbolKind, span: Span, gated: boolean): void {
+    let err = this.#currentScope().add(name, kind, span, gated);
     if (err != null) {
       throw err as ResolveError;
+    }
+  }
+
+  /** Check if referencing a gated symbol from non-gated context. */
+  #checkGatedReference(sym: SymbolEntry, refSpan: Span, itemKind: String): void {
+    if (sym.isGated && !this.#inGatedContext) {
+      throw new ResolveError(
+        "found a reference to a " + itemKind + " which is excluded due to its feature not being activated",
+        refSpan
+      );
     }
   }
 
@@ -274,16 +320,18 @@ export class Resolver {
     this.#packageName = ast.packageName;
     this.#pushScope();
 
-    // First pass: collect all top-level names (interfaces, worlds)
+    // First pass: collect all top-level names (interfaces, worlds) with gating info
     var i = 0;
     while (i < ast.items.length) {
       let item = ast.items[i];
       if (item.tag == AstItemTag.Interface) {
         let iface = item.interfaceDef as InterfaceDef;
-        this.#define(iface.name.name, SymbolKind.Interface, iface.name.span);
+        let gated = isGated(iface.docs);
+        this.#defineWithGating(iface.name.name, SymbolKind.Interface, iface.name.span, gated);
       } else if (item.tag == AstItemTag.World) {
         let world = item.worldDef as WorldDef;
-        this.#define(world.name.name, SymbolKind.World, world.name.span);
+        let gated = isGated(world.docs);
+        this.#defineWithGating(world.name.name, SymbolKind.World, world.name.span, gated);
       }
       i = i + 1;
     }
@@ -354,21 +402,40 @@ export class Resolver {
   // --------------------------------------------------------------------------
 
   #resolveInterface(iface: InterfaceDef): void {
+    let ifaceGated = isGated(iface.docs);
+    let prevGatedContext = this.#inGatedContext;
+
+    // If interface is gated, we're now in a gated context
+    if (ifaceGated) {
+      this.#inGatedContext = true;
+    }
+
     this.#pushScope();
 
-    // First pass: collect all type names and functions
+    // First pass: collect all type names and functions with gating info
     var i = 0;
     while (i < iface.items.length) {
       let item = iface.items[i];
       if (item.tag == InterfaceItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
+        let itemGated = isGated(td.docs);
         // Resources get their own symbol kind
         let kind = if (td.tag == TypeDefTag.Resource) SymbolKind.Resource else SymbolKind.Type;
-        this.#define(td.name.name, kind, td.name.span);
+
+        // If interface is gated, items must also be gated (bad-gate3)
+        if (ifaceGated && !itemGated) {
+          throw new ResolveError(
+            "this type is not gated by a feature but its interface is gated by a feature: found a reference to a interface which is excluded due to its feature not being activated",
+            td.name.span
+          );
+        }
+
+        this.#defineWithGating(td.name.name, kind, td.name.span, itemGated);
         this.#currentScope().types.push(td);
       } else if (item.tag == InterfaceItemTag.Func) {
         let f = item.func as NamedFunc;
-        this.#define(f.name.name, SymbolKind.Func, f.name.span);
+        let itemGated = isGated(f.docs);
+        this.#defineWithGating(f.name.name, SymbolKind.Func, f.name.span, itemGated);
       }
       i = i + 1;
     }
@@ -382,13 +449,28 @@ export class Resolver {
     }
 
     this.#popScope();
+    this.#inGatedContext = prevGatedContext;
   }
 
   #resolveInterfaceItem(item: InterfaceItem): void {
     if (item.tag == InterfaceItemTag.TypeDef) {
-      this.#resolveTypeDef(item.typeDef as TypeDef);
+      let td = item.typeDef as TypeDef;
+      // Set gated context for resolving this type
+      let prevGatedContext = this.#inGatedContext;
+      if (isGated(td.docs)) {
+        this.#inGatedContext = true;
+      }
+      this.#resolveTypeDef(td);
+      this.#inGatedContext = prevGatedContext;
     } else if (item.tag == InterfaceItemTag.Func) {
-      this.#resolveNamedFunc(item.func as NamedFunc);
+      let f = item.func as NamedFunc;
+      // Set gated context for resolving this function
+      let prevGatedContext = this.#inGatedContext;
+      if (isGated(f.docs)) {
+        this.#inGatedContext = true;
+      }
+      this.#resolveNamedFunc(f);
+      this.#inGatedContext = prevGatedContext;
     } else if (item.tag == InterfaceItemTag.Use) {
       this.#resolveUse(item.use as Use);
     }
@@ -431,16 +513,41 @@ export class Resolver {
   #resolveWorldItem(item: WorldItem, imports: Array<SymbolEntry>, exports: Array<SymbolEntry>, worldName: String): void {
     if (item.tag == WorldItemTag.Import) {
       let imp = item.importItem as Import;
+      // Set gated context based on the import's docs
+      let prevGatedContext = this.#inGatedContext;
+      if (isGated(imp.docs)) {
+        this.#inGatedContext = true;
+      }
       this.#resolveExternKind(imp.kind, true, imports, worldName);
+      this.#inGatedContext = prevGatedContext;
     } else if (item.tag == WorldItemTag.Export) {
       let exp = item.exportItem as Export;
+      // Set gated context based on the export's docs
+      let prevGatedContext = this.#inGatedContext;
+      if (isGated(exp.docs)) {
+        this.#inGatedContext = true;
+      }
       this.#resolveExternKind(exp.kind, false, exports, worldName);
+      this.#inGatedContext = prevGatedContext;
     } else if (item.tag == WorldItemTag.Use) {
       this.#resolveUse(item.use as Use);
     } else if (item.tag == WorldItemTag.TypeDef) {
-      this.#resolveTypeDef(item.typeDef as TypeDef);
+      let td = item.typeDef as TypeDef;
+      let prevGatedContext = this.#inGatedContext;
+      if (isGated(td.docs)) {
+        this.#inGatedContext = true;
+      }
+      this.#resolveTypeDef(td);
+      this.#inGatedContext = prevGatedContext;
     } else if (item.tag == WorldItemTag.Include) {
-      this.#resolveInclude(item.include as Include);
+      let inc = item.include as Include;
+      // Set gated context based on the include's docs
+      let prevGatedContext = this.#inGatedContext;
+      if (isGated(inc.docs)) {
+        this.#inGatedContext = true;
+      }
+      this.#resolveInclude(inc);
+      this.#inGatedContext = prevGatedContext;
     }
   }
 
@@ -561,14 +668,37 @@ export class Resolver {
       let funcs = td.resourceFuncs as Array<ResourceFunc>;
       // Check for duplicate constructors and method names
       this.#checkDuplicateResourceFuncs(funcs);
+
+      // If the resource is gated, check that non-gated members are invalid
+      // because they implicitly reference the gated resource type (bad-gate4, bad-gate5)
+      let resourceGated = isGated(td.docs);
+
       var i = 0;
       while (i < funcs.length) {
         let rf = funcs[i];
+        let funcGated = isGated(rf.func.docs);
+
+        // If resource is gated and method is not, it's an error
+        if (resourceGated && !funcGated) {
+          throw new ResolveError(
+            "found a reference to a type which is excluded due to its feature not being activated",
+            rf.func.name.span
+          );
+        }
+
         // Validate constructor return type
         if (rf.tag == ResourceFuncTag.Constructor) {
           this.#validateConstructorReturn(rf.func, td.name.name);
         }
+
+        // Resolve the function with proper gating context
+        let prevGatedContext = this.#inGatedContext;
+        if (funcGated) {
+          this.#inGatedContext = true;
+        }
         this.#resolveNamedFunc(rf.func);
+        this.#inGatedContext = prevGatedContext;
+
         i = i + 1;
       }
     }
@@ -783,6 +913,11 @@ export class Resolver {
       if (sym == null) {
         throw new ResolveError("type `" + rawName + "` does not exist", t.span);
       }
+
+      // Check feature gate (bad-gate1): can't reference gated type from non-gated context
+      let s = sym as SymbolEntry;
+      this.#checkGatedReference(s, t.span, "type");
+
       // Follow type aliases to detect transitive cycles
       let td = this.#findTypeDef(name);
       if (td != null) {
@@ -1003,5 +1138,15 @@ export class Resolver {
   #resolveInclude(include: Include): void {
     // Validate the path
     this.#resolveUsePath(include.from);
+
+    // Check feature gate (bad-gate2): can't include gated world from non-gated context
+    if (include.from.tag == UsePathTag.Id) {
+      let id = include.from.id as Id;
+      let sym = this.#findSymbol(id.name);
+      if (sym != null) {
+        let s = sym as SymbolEntry;
+        this.#checkGatedReference(s, id.span, "world");
+      }
+    }
   }
 }
