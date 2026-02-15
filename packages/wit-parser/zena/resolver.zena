@@ -783,6 +783,27 @@ export class Resolver {
       if (sym == null) {
         throw new ResolveError("type `" + rawName + "` does not exist", t.span);
       }
+      // Follow type aliases to detect transitive cycles
+      let td = this.#findTypeDef(name);
+      if (td != null) {
+        let typeDef = td as TypeDef;
+        if (typeDef.tag == TypeDefTag.Alias) {
+          // Add this type to the resolving stack and resolve its alias
+          this.#resolving.push(name);
+          this.#resolveType(typeDef.aliasType as Type, inReturnPosition);
+          this.#resolving.pop();
+        } else if (typeDef.tag == TypeDefTag.Record) {
+          // Check record fields for cycles
+          this.#resolving.push(name);
+          let fields = typeDef.fields as Array<Field>;
+          var i = 0;
+          while (i < fields.length) {
+            this.#resolveType(fields[i].type, false);
+            i = i + 1;
+          }
+          this.#resolving.pop();
+        }
+      }
     }
 
     // Check map key types
