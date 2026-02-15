@@ -363,7 +363,7 @@ export class Resolver {
     this.#packageName = ast.packageName;
     this.#pushScope();
 
-    // First pass: collect all top-level names (interfaces, worlds, use aliases) with gating info
+    // First pass: collect interfaces and worlds (they take priority over use aliases)
     var i = 0;
     while (i < ast.items.length) {
       let item = ast.items[i];
@@ -379,12 +379,44 @@ export class Resolver {
         this.#defineWithGating(world.name.name, SymbolKind.World, world.name.span, gated);
         // Store the world definition for include cycle detection
         this.#currentScope().worlds.push(world);
-      } else if (item.tag == AstItemTag.Use) {
-        // Top-level use creates an alias that can conflict with interfaces/worlds
+      }
+      i = i + 1;
+    }
+
+    // Second mini-pass: collect top-level use aliases
+    // Check for conflicts where a use alias appears BEFORE an interface/world in source order
+    // but only if they're in the same "file" (no package declaration between them)
+    let packageDeclPos = if (ast.packageName != null) (ast.packageName as PackageName).span.start else 0;
+    i = 0;
+    while (i < ast.items.length) {
+      let item = ast.items[i];
+      if (item.tag == AstItemTag.Use) {
         let use = item.use as ToplevelUse;
         let name = if (use.asName != null) (use.asName as Id).name else use.item.getName().name;
         let span = if (use.asName != null) (use.asName as Id).span else use.item.getName().span;
-        this.#define(name, SymbolKind.Interface, span);
+        let existing = this.#findSymbol(name);
+        if (existing != null) {
+          // Name already defined. Check if this use alias came BEFORE the definition.
+          let e = existing as SymbolEntry;
+          if (span.start < e.span.start) {
+            // Use alias defined first, interface/world defined after.
+            // But if the package declaration is BETWEEN them, they're in different files.
+            let useBeforePkg = span.start < packageDeclPos;
+            let defAfterPkg = e.span.start > packageDeclPos;
+            if (useBeforePkg && defAfterPkg) {
+              // Different files - silently shadow the use alias
+            } else {
+              // Same file - error
+              throw new ResolveError(
+                "duplicate name `" + name + "` in this file",
+                e.span
+              );
+            }
+          }
+          // Otherwise, use alias is after the definition - silently shadow
+        } else {
+          this.#define(name, SymbolKind.Interface, span);
+        }
       }
       i = i + 1;
     }
