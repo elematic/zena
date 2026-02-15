@@ -220,3 +220,54 @@ suite('Records - width subtyping codegen', () => {
     assert.strictEqual(result, 42);
   });
 });
+
+// Phase 5 optimization tests: Direct access on record literals bypasses vtable dispatch
+suite('Records - direct access optimization (Phase 5)', () => {
+  test('direct field access on literal - single field', async () => {
+    // Accessing a field directly on a literal uses struct.get, not vtable dispatch
+    // Note: Record literal at start of expression needs parens to disambiguate from block
+    const result = await compileAndRun(`
+      export let main = (): i32 => ({x: 42}).x;
+    `);
+    assert.strictEqual(result, 42);
+  });
+
+  test('direct field access on literal - multiple fields', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => ({a: 10, b: 20, c: 30}).b;
+    `);
+    assert.strictEqual(result, 20);
+  });
+
+  test('direct field access on literal - return expression', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        return {x: 1, y: 2, z: 3}.z;
+      };
+    `);
+    assert.strictEqual(result, 3);
+  });
+
+  test('direct field access on literal - in binary expression', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => ({x: 10}).x + ({y: 20}).y;
+    `);
+    assert.strictEqual(result, 30);
+  });
+
+  test('direct field access on nested literal', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => ({inner: {value: 99}}).inner.value;
+    `);
+    assert.strictEqual(result, 99);
+  });
+
+  test('direct field access - complex expression still works', async () => {
+    // This test verifies that non-literal access still works through dispatch
+    const result = await compileAndRun(`
+      let identity = (r: {x: i32}): {x: i32} => r;
+      export let main = (): i32 => identity({x: 50}).x;
+    `);
+    assert.strictEqual(result, 50);
+  });
+});

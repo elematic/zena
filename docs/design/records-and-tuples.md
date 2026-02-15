@@ -451,7 +451,7 @@ Records behave like interfaces in terms of subtyping rules, but maintain their i
 
 ### Phase 5: Dispatch Optimization
 
-- [ ] **Literal Optimization**: When literal shape matches target exactly, use direct access.
+- [x] **Literal Optimization**: When accessing fields on a record literal (e.g., `{x: 1}.x`), bypass vtable dispatch and use direct `struct.get` on the concrete type. Implemented in `generateDirectRecordFieldAccess`.
 - [ ] **Flow Analysis**: Track concrete types through the program.
 - [ ] **Inlining Integration**: After inlining, re-analyze for optimization opportunities.
 

@@ -5921,8 +5921,179 @@ function generateGetterFromBinding(
 }
 
 /**
+ * OPTIMIZATION: Generate direct field access for a record literal.
+ * When we access a field on a literal like `{x: 1, y: 2}.x`, we know the exact
+ * concrete type at compile time, so we can skip the fat pointer indirection
+ * and vtable dispatch entirely.
+ *
+ * This generates:
+ *   1. The concrete struct values
+ *   2. struct.new for the concrete type
+ *   3. struct.get for the field
+ *
+ * Instead of:
+ *   1. Fat pointer creation (instance + vtable)
+ *   2. Vtable lookup
+ *   3. call_ref for the getter
+ */
+function generateDirectRecordFieldAccess(
+  ctx: CodegenContext,
+  literal: RecordLiteral,
+  fieldName: string,
+  body: number[],
+): boolean {
+  if (!literal.inferredType || literal.inferredType.kind !== TypeKind.Record) {
+    return false;
+  }
+
+  const recordType = literal.inferredType as RecordType;
+
+  // Build concrete fields from the record type
+  const concreteFields: {name: string; type: number[]}[] = [];
+  for (const [name, type] of recordType.properties) {
+    concreteFields.push({name, type: mapCheckerTypeToWasmType(ctx, type)});
+  }
+
+  // Get the concrete struct type index
+  const concreteTypeIndex = ctx.getRecordTypeIndex(concreteFields);
+
+  // Sort fields alphabetically for canonical ordering (matches struct layout)
+  const sortedFields = [...concreteFields].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+
+  // Find the field index in the sorted struct
+  const fieldIndex = sortedFields.findIndex((f) => f.name === fieldName);
+  if (fieldIndex === -1) {
+    return false;
+  }
+
+  // Generate the concrete struct directly (not wrapped in fat pointer)
+  // This is similar to generateRecordLiteral but skips fat pointer wrapping
+
+  // 1. Evaluate spread expressions and store in locals (if any)
+  const spreadLocals = new Map<any, {index: number; typeIndex: number}>();
+
+  for (const prop of literal.properties) {
+    if (prop.type === NodeType.SpreadElement) {
+      generateExpression(ctx, prop.argument, body);
+      const spreadType = inferType(ctx, prop.argument);
+      const spreadTypeIndex = decodeTypeIndex(spreadType);
+
+      const localIndex = ctx.declareLocal(
+        `$$spread_${ctx.nextLocalIndex}`,
+        spreadType,
+      );
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeSignedLEB128(localIndex));
+
+      spreadLocals.set(prop, {index: localIndex, typeIndex: spreadTypeIndex});
+    }
+  }
+
+  // 2. Generate values for each field in sorted order
+  for (const field of sortedFields) {
+    const key = field.name;
+    let found = false;
+
+    // Find the source for this key (reverse order - later props override)
+    for (let i = literal.properties.length - 1; i >= 0; i--) {
+      const prop = literal.properties[i];
+      if (prop.type === NodeType.PropertyAssignment) {
+        if (prop.name.name === key) {
+          generateExpression(ctx, prop.value, body);
+          found = true;
+          break;
+        }
+      } else if (prop.type === NodeType.SpreadElement) {
+        const spreadType = prop.argument.inferredType;
+        if (spreadType && spreadType.kind === TypeKind.Record) {
+          const rt = spreadType as RecordType;
+          if (rt.properties.has(key)) {
+            // Access from spread - use dispatch for the spread source
+            const spreadInfo = spreadLocals.get(prop)!;
+            const spreadRecordInfo = ensureRecordDispatchType(ctx, rt);
+            const spreadFieldInfo = spreadRecordInfo.fields.get(key);
+            if (!spreadFieldInfo) {
+              throw new Error(`Field ${key} not found in spread record`);
+            }
+
+            // Get instance and vtable from spread fat pointer
+            body.push(Opcode.local_get);
+            body.push(...WasmModule.encodeSignedLEB128(spreadInfo.index));
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(...WasmModule.encodeSignedLEB128(spreadInfo.typeIndex));
+            body.push(0);
+
+            body.push(Opcode.local_get);
+            body.push(...WasmModule.encodeSignedLEB128(spreadInfo.index));
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(...WasmModule.encodeSignedLEB128(spreadInfo.typeIndex));
+            body.push(1);
+
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(
+                spreadRecordInfo.vtableTypeIndex,
+              ),
+            );
+            body.push(...WasmModule.encodeSignedLEB128(spreadFieldInfo.index));
+
+            body.push(Opcode.call_ref);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(spreadFieldInfo.typeIndex),
+            );
+
+            found = true;
+            break;
+          }
+        } else if (spreadType && spreadType.kind === TypeKind.Class) {
+          const classType = spreadType as ClassType;
+          if (classType.fields.has(key) && !key.startsWith('#')) {
+            const spreadInfo = spreadLocals.get(prop)!;
+            const classInfo = ctx.getClassInfo(classType);
+            if (!classInfo) {
+              throw new Error(`Class info not found for ${classType.name}`);
+            }
+            const classFieldInfo = classInfo.fields.get(key);
+            if (!classFieldInfo) {
+              throw new Error(`Field ${key} not found in ${classType.name}`);
+            }
+
+            body.push(Opcode.local_get);
+            body.push(...WasmModule.encodeSignedLEB128(spreadInfo.index));
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(...WasmModule.encodeSignedLEB128(spreadInfo.typeIndex));
+            body.push(...WasmModule.encodeSignedLEB128(classFieldInfo.index));
+
+            found = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!found) {
+      throw new Error(`Missing value for field '${key}' in record literal`);
+    }
+  }
+
+  // 3. Create the concrete struct
+  body.push(0xfb, GcOpcode.struct_new);
+  body.push(...WasmModule.encodeSignedLEB128(concreteTypeIndex));
+
+  // 4. Direct struct.get for the field (no vtable dispatch!)
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(concreteTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(fieldIndex));
+
+  return true;
+}
+
+/**
  * Generate code for a record field access using the resolved RecordFieldBinding.
- * Records use fat pointer representation with vtable dispatch.
+ * Records use fat pointer representation with vtable dispatch, but we optimize to
+ * direct struct.get when the concrete type is statically known (e.g., record literals).
  */
 function generateRecordFieldFromBinding(
   ctx: CodegenContext,
@@ -5931,6 +6102,18 @@ function generateRecordFieldFromBinding(
   body: number[],
 ): boolean {
   const {recordType, fieldName} = binding;
+
+  // OPTIMIZATION: Direct access for record literals
+  // When accessing a field on a literal like `{x: 1, y: 2}.x`, we know the concrete type
+  // and can use direct struct.get instead of vtable dispatch.
+  if (objectExpr.type === NodeType.RecordLiteral) {
+    return generateDirectRecordFieldAccess(
+      ctx,
+      objectExpr as RecordLiteral,
+      fieldName,
+      body,
+    );
+  }
 
   // For enum access, we need to use the enum's actual struct type, not a canonical record type.
   // Check if the object expression is an identifier that resolves to a global enum.
