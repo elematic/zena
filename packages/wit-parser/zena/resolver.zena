@@ -169,10 +169,13 @@ class Scope {
   symbols: Array<SymbolEntry>;
   /** Types defined in this scope (for cycle detection). */
   types: Array<TypeDef>;
+  /** Worlds defined in this scope (for include cycle detection). */
+  worlds: Array<WorldDef>;
 
   #new() {
     this.symbols = new Array<SymbolEntry>();
     this.types = new Array<TypeDef>();
+    this.worlds = new Array<WorldDef>();
   }
 
   /** Find a symbol by name (case-insensitive for kebab-case). */
@@ -220,6 +223,19 @@ class Scope {
     }
     return null;
   }
+
+  /** Find a world by name. */
+  findWorld(name: String): WorldDef | null {
+    var i = 0;
+    while (i < this.worlds.length) {
+      let wd = this.worlds[i];
+      if (wd.name.name == name) {
+        return wd;
+      }
+      i = i + 1;
+    }
+    return null;
+  }
 }
 
 // ============================================================================
@@ -236,6 +252,8 @@ export class Resolver {
   #packageName: PackageName | null;
   /** Types being resolved (for cycle detection). */
   #resolving: Array<String>;
+  /** Worlds being included (for include cycle detection). */
+  #includingWorlds: Array<String>;
   /** Whether we're currently inside a gated context (@unstable). */
   #inGatedContext: boolean;
 
@@ -243,6 +261,7 @@ export class Resolver {
     this.#scopes = new Array<Scope>();
     this.#packageName = null;
     this.#resolving = new Array<String>();
+    this.#includingWorlds = new Array<String>();
     this.#inGatedContext = false;
   }
 
@@ -332,6 +351,8 @@ export class Resolver {
         let world = item.worldDef as WorldDef;
         let gated = isGated(world.docs);
         this.#defineWithGating(world.name.name, SymbolKind.World, world.name.span, gated);
+        // Store the world definition for include cycle detection
+        this.#currentScope().worlds.push(world);
       }
       i = i + 1;
     }
@@ -481,6 +502,9 @@ export class Resolver {
   // --------------------------------------------------------------------------
 
   #resolveWorld(world: WorldDef): void {
+    // Track this world for include cycle detection
+    this.#includingWorlds.push(world.name.name);
+
     this.#pushScope();
 
     // Track import/export names separately for conflict detection
@@ -508,6 +532,7 @@ export class Resolver {
     }
 
     this.#popScope();
+    this.#includingWorlds.pop();
   }
 
   #resolveWorldItem(item: WorldItem, imports: Array<SymbolEntry>, exports: Array<SymbolEntry>, worldName: String): void {
@@ -1025,6 +1050,19 @@ export class Resolver {
     return null;
   }
 
+  /** Find a world definition by name in any scope. */
+  #findWorldDef(name: String): WorldDef | null {
+    var i = this.#scopes.length - 1;
+    while (i >= 0) {
+      let wd = this.#scopes[i].findWorld(name);
+      if (wd != null) {
+        return wd;
+      }
+      i = i - 1;
+    }
+    return null;
+  }
+
   /** Check if a type definition is or refers to a resource. */
   #isResourceType(td: TypeDef): boolean {
     // Direct resource
@@ -1159,14 +1197,66 @@ export class Resolver {
     // Validate the path
     this.#resolveUsePath(include.from);
 
-    // Check feature gate (bad-gate2): can't include gated world from non-gated context
+    // Check for include cycles and feature gates
     if (include.from.tag == UsePathTag.Id) {
       let id = include.from.id as Id;
       let sym = this.#findSymbol(id.name);
       if (sym != null) {
         let s = sym as SymbolEntry;
+        // Check feature gate (bad-gate2): can't include gated world from non-gated context
         this.#checkGatedReference(s, id.span, "world");
+
+        // Check for include cycle - if we're already resolving this world, it's a cycle
+        if (this.#isIncludingWorld(id.name)) {
+          throw new ResolveError(
+            "interface or world `" + id.name + "` depends on itself",
+            id.span
+          );
+        }
+
+        // Recursively resolve the included world to detect transitive cycles
+        let worldDef = this.#findWorldDef(id.name);
+        if (worldDef != null) {
+          this.#resolveWorldIncludes(worldDef as WorldDef);
+        }
       }
     }
+  }
+
+  /** Resolve only the includes within a world (for cycle detection). */
+  #resolveWorldIncludes(world: WorldDef): void {
+    // Track this world for include cycle detection
+    this.#includingWorlds.push(world.name.name);
+
+    // Only process includes - we don't need to fully resolve the world again
+    var i = 0;
+    while (i < world.items.length) {
+      let item = world.items[i];
+      if (item.tag == WorldItemTag.Include) {
+        let inc = item.include as Include;
+        // Set gated context based on the include's docs
+        let prevGatedContext = this.#inGatedContext;
+        if (isGated(inc.docs)) {
+          this.#inGatedContext = true;
+        }
+        this.#resolveInclude(inc);
+        this.#inGatedContext = prevGatedContext;
+      }
+      i = i + 1;
+    }
+
+    this.#includingWorlds.pop();
+  }
+
+  /** Check if a world is currently being included (for cycle detection). */
+  #isIncludingWorld(name: String): boolean {
+    var i = 0;
+    while (i < this.#includingWorlds.length) {
+      if (this.#includingWorlds[i] == name) {
+        return true;
+      }
+      i = i + 1;
+    }
+    return false;
   }
 }
