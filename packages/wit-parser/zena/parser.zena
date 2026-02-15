@@ -707,10 +707,12 @@ export class Export {
  * An include statement in a world.
  */
 export class Include {
+  docs: Docs;
   from: UsePath;
   names: Array<IncludeName>;
 
-  #new(from: UsePath, names: Array<IncludeName>) {
+  #new(docs: Docs, from: UsePath, names: Array<IncludeName>) {
+    this.docs = docs;
     this.from = from;
     this.names = names;
   }
@@ -1724,7 +1726,7 @@ export class Parser {
     
     // include path;
     if (token.type == TokenType.Include) {
-      return WorldItem.fromInclude(this.#parseInclude());
+      return WorldItem.fromInclude(this.#parseInclude(docs));
     }
     
     // Type definitions
@@ -1818,7 +1820,7 @@ export class Parser {
   }
 
   /** Parse an include statement: include path; or include path with { renames } */
-  #parseInclude(): Include {
+  #parseInclude(docs: Docs): Include {
     this.#expect(TokenType.Include);
     let from = this.#parseUsePath();
     
@@ -1838,7 +1840,7 @@ export class Parser {
       this.#expectSemicolon();
     }
     
-    return new Include(from, names);
+    return new Include(docs, from, names);
   }
 
   // --------------------------------------------------------------------------
