@@ -76,7 +76,274 @@ import {
   generateBlockStatement,
   generateFunctionStatement,
 } from './statements.js';
-import type {ClassInfo, InterfaceInfo} from './types.js';
+import type {ClassInfo, InterfaceInfo, RecordInfo} from './types.js';
+
+/**
+ * Ensures a RecordInfo exists for the given abstract record type.
+ * Creates the fat pointer struct and vtable types if they don't exist.
+ *
+ * The fat pointer struct has layout:
+ *   (struct (field $instance anyref) (field $vtable (ref $vtableType)))
+ *
+ * The vtable struct has getter functions for each field:
+ *   (struct (field $get_fieldName (ref $getterType)) ...)
+ *
+ * @param ctx The codegen context
+ * @param fieldsOrRecordType Either a fields array or a RecordType from the checker
+ * @returns The RecordInfo for the record type
+ */
+export function ensureRecordDispatchType(
+  ctx: CodegenContext,
+  fieldsOrRecordType: {name: string; type: number[]}[] | RecordType,
+): RecordInfo {
+  // Convert RecordType to fields array if needed
+  let fields: {name: string; type: number[]}[];
+  if (Array.isArray(fieldsOrRecordType)) {
+    fields = fieldsOrRecordType;
+  } else {
+    // It's a RecordType - convert to fields array
+    fields = [];
+    for (const [name, type] of fieldsOrRecordType.properties) {
+      fields.push({name, type: mapCheckerTypeToWasmType(ctx, type)});
+    }
+  }
+
+  const key = ctx.getRecordKey(fields);
+
+  // Check if already registered
+  const existing = ctx.getRecordInfo(key);
+  if (existing) return existing;
+
+  // Sort fields alphabetically for canonical ordering
+  const sortedFields = [...fields].sort((a, b) => a.name.localeCompare(b.name));
+
+  // Create vtable fields and function types for each getter
+  const vtableFields: {type: number[]; mutable: boolean}[] = [];
+  const fieldInfoMap = new Map<
+    string,
+    {index: number; typeIndex: number; type: number[]}
+  >();
+
+  for (let i = 0; i < sortedFields.length; i++) {
+    const field = sortedFields[i];
+
+    // Getter type: (param anyref) -> fieldType
+    const getterParams = [[ValType.ref_null, ValType.anyref]];
+    const getterResults = field.type.length > 0 ? [field.type] : [];
+    const getterTypeIndex = ctx.module.addType(getterParams, getterResults);
+
+    // Vtable field: (ref $getterType)
+    vtableFields.push({
+      type: [ValType.ref, ...WasmModule.encodeSignedLEB128(getterTypeIndex)],
+      mutable: false,
+    });
+
+    fieldInfoMap.set(field.name, {
+      index: i,
+      typeIndex: getterTypeIndex,
+      type: field.type,
+    });
+  }
+
+  // Create vtable struct type
+  const vtableTypeIndex = ctx.module.addStructType(vtableFields);
+
+  // Create fat pointer struct type: (struct (field anyref) (field (ref $vtable)))
+  const fatPtrFields = [
+    {type: [ValType.ref_null, ValType.anyref], mutable: false}, // instance
+    {
+      type: [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
+      mutable: false,
+    }, // vtable
+  ];
+  const fatPtrTypeIndex = ctx.module.addStructType(fatPtrFields);
+
+  const info: RecordInfo = {
+    key,
+    fatPtrTypeIndex,
+    vtableTypeIndex,
+    fields: fieldInfoMap,
+  };
+
+  ctx.registerRecordInfo(key, info);
+  return info;
+}
+
+/**
+ * Ensures a vtable global exists for a concrete record shape targeting an abstract type.
+ * Creates getter functions and the vtable global if they don't exist.
+ *
+ * @param ctx The codegen context
+ * @param concreteFields The fields of the concrete record literal
+ * @param targetInfo The RecordInfo for the abstract target type
+ * @returns The global index of the vtable
+ */
+export function ensureRecordVtableGlobal(
+  ctx: CodegenContext,
+  concreteFields: {name: string; type: number[]}[],
+  targetInfo: RecordInfo,
+): number {
+  const concreteKey = ctx.getRecordKey(concreteFields);
+  const targetKey = targetInfo.key;
+
+  // Check if already created
+  const existing = ctx.getRecordVtableGlobal(concreteKey, targetKey);
+  if (existing !== undefined) return existing;
+
+  // Sort concrete fields alphabetically for canonical ordering
+  const sortedConcreteFields = [...concreteFields].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+
+  // Get or create the concrete struct type
+  const concreteTypeIndex = ctx.getRecordTypeIndex(concreteFields);
+
+  // Create getter functions for each field in the target type
+  const getterFuncIndices: number[] = [];
+
+  for (const [fieldName, fieldInfo] of targetInfo.fields) {
+    // Find the field index in the concrete struct
+    const concreteFieldIndex = sortedConcreteFields.findIndex(
+      (f) => f.name === fieldName,
+    );
+    if (concreteFieldIndex === -1) {
+      throw new Error(
+        `Field ${fieldName} not found in concrete record ${concreteKey}`,
+      );
+    }
+
+    // Get concrete and target field types
+    const concreteFieldType = sortedConcreteFields[concreteFieldIndex].type;
+    const targetFieldType = fieldInfo.type;
+
+    // Check if we need to adapt a nested record field
+    // This happens when the concrete field is a wider record than the target field
+    const concreteFieldRecordInfo =
+      concreteFieldType.length >= 2
+        ? ctx.getRecordInfoForFatPtrType(decodeTypeIndex(concreteFieldType))
+        : undefined;
+    const targetFieldRecordInfo =
+      targetFieldType.length >= 2
+        ? ctx.getRecordInfoForFatPtrType(decodeTypeIndex(targetFieldType))
+        : undefined;
+
+    const needsNestedAdaptation =
+      concreteFieldRecordInfo !== undefined &&
+      targetFieldRecordInfo !== undefined &&
+      concreteFieldRecordInfo.fatPtrTypeIndex !==
+        targetFieldRecordInfo.fatPtrTypeIndex;
+
+    // Create getter function: (param anyref) -> fieldType
+    const getterFuncIndex = ctx.module.addFunction(fieldInfo.typeIndex);
+    ctx.module.declareFunction(getterFuncIndex);
+
+    // Capture values for closure
+    const fieldIdx = concreteFieldIndex;
+    const nestedConcreteInfo = concreteFieldRecordInfo;
+    const nestedTargetInfo = targetFieldRecordInfo;
+    const needsAdapt = needsNestedAdaptation;
+
+    // Generate getter body (deferred until code generation phase)
+    ctx.pendingHelperFunctions.push(() => {
+      const locals: number[][] = [];
+      const body: number[] = [];
+
+      // param 0 is anyref (instance)
+      // Cast to concrete struct and get field
+      body.push(Opcode.local_get, 0);
+      body.push(
+        0xfb,
+        GcOpcode.ref_cast,
+        ...WasmModule.encodeSignedLEB128(concreteTypeIndex),
+      );
+      body.push(
+        0xfb,
+        GcOpcode.struct_get,
+        ...WasmModule.encodeSignedLEB128(concreteTypeIndex),
+        ...WasmModule.encodeSignedLEB128(fieldIdx),
+      );
+
+      // If this is a nested record field that needs adaptation, rewrap it
+      if (needsAdapt && nestedConcreteInfo && nestedTargetInfo) {
+        // Stack now has the concrete fat pointer (wider type)
+        // We need to rewrap with the target vtable (narrower type)
+
+        // Build the concrete fields from the nested concrete info
+        const nestedConcreteFields: {name: string; type: number[]}[] = [];
+        for (const [name, info] of nestedConcreteInfo.fields) {
+          nestedConcreteFields.push({name, type: info.type});
+        }
+
+        // Get or create vtable for nested concrete -> nested target
+        const nestedVtableGlobalIndex = ensureRecordVtableGlobal(
+          ctx,
+          nestedConcreteFields,
+          nestedTargetInfo,
+        );
+
+        // Add a local to store the concrete fat pointer
+        // Local index = params count (1) + existing locals count
+        const tempLocal = 1 + locals.length;
+        locals.push([
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(nestedConcreteInfo.fatPtrTypeIndex),
+        ]);
+
+        // Store and reload the concrete fat pointer
+        body.push(Opcode.local_set);
+        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+        // Get instance from concrete fat pointer (field 0)
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+        body.push(0xfb, GcOpcode.struct_get);
+        body.push(
+          ...WasmModule.encodeSignedLEB128(nestedConcreteInfo.fatPtrTypeIndex),
+        );
+        body.push(0); // instance field
+
+        // Get the vtable for the adaptation
+        body.push(Opcode.global_get);
+        body.push(...WasmModule.encodeSignedLEB128(nestedVtableGlobalIndex));
+
+        // Create new fat pointer with target type
+        body.push(0xfb, GcOpcode.struct_new);
+        body.push(
+          ...WasmModule.encodeSignedLEB128(nestedTargetInfo.fatPtrTypeIndex),
+        );
+      }
+
+      body.push(Opcode.end);
+      ctx.module.addCode(getterFuncIndex, locals, body);
+    });
+
+    getterFuncIndices.push(getterFuncIndex);
+  }
+
+  // Build vtable initialization bytecode
+  const vtableInit: number[] = [];
+  for (const funcIndex of getterFuncIndices) {
+    vtableInit.push(
+      Opcode.ref_func,
+      ...WasmModule.encodeSignedLEB128(funcIndex),
+    );
+  }
+  vtableInit.push(
+    0xfb,
+    GcOpcode.struct_new,
+    ...WasmModule.encodeSignedLEB128(targetInfo.vtableTypeIndex),
+  );
+
+  // Create vtable global with initialization
+  const vtableGlobalIndex = ctx.module.addGlobal(
+    [ValType.ref, ...WasmModule.encodeSignedLEB128(targetInfo.vtableTypeIndex)],
+    false,
+    vtableInit,
+  );
+
+  ctx.registerRecordVtableGlobal(concreteKey, targetKey, vtableGlobalIndex);
+  return vtableGlobalIndex;
+}
 
 /**
  * Pre-registers an interface by reserving type indices for the fat pointer struct
@@ -4952,14 +5219,19 @@ export function mapCheckerTypeToWasmType(
   }
 
   // Handle RecordType directly
+  // Records use fat pointer representation for width subtyping support
   if (type.kind === TypeKind.Record) {
     const recordType = type as RecordType;
     const fields: {name: string; type: number[]}[] = [];
     for (const [name, propType] of recordType.properties) {
       fields.push({name, type: mapCheckerTypeToWasmType(ctx, propType)});
     }
-    const typeIndex = ctx.getRecordTypeIndex(fields);
-    return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
+    // Get or create the dispatch type (fat pointer + vtable)
+    const recordInfo = ensureRecordDispatchType(ctx, fields);
+    return [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(recordInfo.fatPtrTypeIndex),
+    ];
   }
 
   // Handle TupleType directly (boxed - allocates struct)

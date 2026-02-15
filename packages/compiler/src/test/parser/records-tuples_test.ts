@@ -122,7 +122,9 @@ suite('Parser: Records and Tuples', () => {
   });
 
   test('parses record type with all optional fields', () => {
-    const parser = new Parser('let opts: { timeout?: i32, retries?: i32 } = {};');
+    const parser = new Parser(
+      'let opts: { timeout?: i32, retries?: i32 } = {};',
+    );
     const module = parser.parse();
     const type = (module.body[0] as any).typeAnnotation;
     assert.strictEqual(type.properties.length, 2);

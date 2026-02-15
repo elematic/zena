@@ -101,6 +101,44 @@ export interface InterfaceInfo {
   checkerType?: InterfaceType;
 }
 
+/**
+ * Info for a record shape used with width subtyping (dispatch-based access).
+ *
+ * Records that support width subtyping are represented as fat pointers similar
+ * to interfaces: (struct (field instance: anyref) (field vtable: ref $vtable)).
+ *
+ * The vtable contains getter functions for each field, enabling field access
+ * to work across different concrete record shapes (e.g., {x, y} and {x, y, z}).
+ *
+ * Each unique "abstract" record type (the parameter/variable type) gets a
+ * RecordInfo with its own vtable type. Concrete record shapes that satisfy
+ * that type will create fat pointers with the appropriate vtable.
+ */
+export interface RecordInfo {
+  /**
+   * Canonicalized key for this record shape (e.g., "x:i32;y:i32").
+   * Sorted alphabetically by field name.
+   */
+  key: string;
+  /**
+   * WASM struct type index for the fat pointer struct:
+   * (struct (field anyref) (field (ref $vtable)))
+   */
+  fatPtrTypeIndex: number;
+  /**
+   * WASM struct type index for the vtable struct.
+   * Contains getter functions for each field.
+   */
+  vtableTypeIndex: number;
+  /**
+   * Maps field names to their vtable slot info.
+   * index: position in vtable struct
+   * typeIndex: WASM function type index for the getter
+   * type: WASM type bytes for the field value
+   */
+  fields: Map<string, {index: number; typeIndex: number; type: number[]}>;
+}
+
 export interface LocalInfo {
   index: number;
   type: number[];

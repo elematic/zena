@@ -167,3 +167,56 @@ suite('Records - codegen (exact shapes only)', () => {
     assert.strictEqual(result, 7);
   });
 });
+
+suite('Records - width subtyping codegen', () => {
+  // These tests verify width subtyping works at runtime via dispatch mechanism
+  // Phase 4 implementation: fat pointers with vtables for record field access
+
+  test('width subtyping - pass wider record to function', async () => {
+    const result = await compileAndRun(`
+      let getX = (p: {x: i32, y: i32}): i32 => p.x;
+      export let main = (): i32 => getX({x: 5, y: 7, z: 100});
+    `);
+    assert.strictEqual(result, 5);
+  });
+
+  test('width subtyping - sum fields from wider record', async () => {
+    const result = await compileAndRun(`
+      let sumXY = (p: {x: i32, y: i32}): i32 => p.x + p.y;
+      export let main = (): i32 => {
+        let point = {x: 5, y: 7, z: 100};
+        return sumXY(point);
+      };
+    `);
+    assert.strictEqual(result, 12);
+  });
+
+  test('width subtyping - assign larger to smaller type', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        let narrow: {x: i32, y: i32} = {x: 1, y: 2, z: 3};
+        return narrow.x + narrow.y;
+      };
+    `);
+    assert.strictEqual(result, 3);
+  });
+
+  test('width subtyping - multiple extra fields', async () => {
+    const result = await compileAndRun(`
+      let getX = (p: {x: i32}): i32 => p.x;
+      export let main = (): i32 => getX({x: 42, y: 1, z: 2, w: 3});
+    `);
+    assert.strictEqual(result, 42);
+  });
+
+  test('width subtyping - nested record widening', async () => {
+    const result = await compileAndRun(`
+      let getInnerX = (r: {inner: {x: i32}}): i32 => r.inner.x;
+      export let main = (): i32 => {
+        let data = {inner: {x: 42, y: 99}, extra: 1};
+        return getInnerX(data);
+      };
+    `);
+    assert.strictEqual(result, 42);
+  });
+});

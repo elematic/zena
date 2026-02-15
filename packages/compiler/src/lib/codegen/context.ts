@@ -30,7 +30,7 @@ import {
   type Type,
 } from '../types.js';
 import {ExportDesc, HeapType, Opcode, ValType} from '../wasm.js';
-import type {ClassInfo, InterfaceInfo, LocalInfo} from './types.js';
+import type {ClassInfo, InterfaceInfo, LocalInfo, RecordInfo} from './types.js';
 
 /**
  * Saved function context state for nested function generation.
@@ -251,11 +251,21 @@ export class CodegenContext {
   } = {};
 
   // Records and Tuples
-  public recordTypes = new Map<string, number>(); // canonicalKey -> typeIndex
+  public recordTypes = new Map<string, number>(); // canonicalKey -> typeIndex (concrete data structs)
   public tupleTypes = new Map<string, number>(); // canonicalKey -> typeIndex
   public closureTypes = new Map<string, number>(); // signature -> structTypeIndex
   public closureStructs = new Map<number, {funcTypeIndex: number}>(); // structTypeIndex -> info
   public enums = new Map<number, {members: Map<string, number>}>(); // structTypeIndex -> info
+
+  // Record dispatch infrastructure for width subtyping
+  // Maps canonical record shape key to RecordInfo (fat pointer + vtable types)
+  readonly #recordDispatchTypes = new Map<string, RecordInfo>();
+  // Maps concrete record struct index to a list of RecordInfo it can satisfy
+  // Used when creating fat pointers: we need to know which vtable to use
+  readonly #concreteRecordToDispatchTypes = new Map<number, RecordInfo[]>();
+  // Maps (concreteStructKey, targetRecordKey) → vtableGlobalIndex
+  // The vtable global contains references to getter functions for that concrete type
+  readonly #recordVtableGlobals = new Map<string, number>();
 
   // Type → WASM struct index mappings (emitter-specific, keyed by checker types)
   readonly #classStructIndices = new Map<ClassType, number>();
@@ -1650,5 +1660,101 @@ export class CodegenContext {
    */
   public getClassIndexByDecl(decl: ClassDeclaration): number | undefined {
     return this.#classTypeIndices.get(decl);
+  }
+
+  // ===== Record Dispatch Infrastructure =====
+  // These methods support width subtyping for records by using fat pointer
+  // representation similar to interfaces.
+
+  /**
+   * Get or create a canonical key for a record type's fields.
+   * Fields are sorted alphabetically and include their WASM types.
+   */
+  public getRecordKey(fields: {name: string; type: number[]}[]): string {
+    const sortedFields = [...fields].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    return sortedFields.map((f) => `${f.name}:${f.type.join(',')}`).join(';');
+  }
+
+  /**
+   * Get an existing RecordInfo by its canonical key.
+   */
+  public getRecordInfo(key: string): RecordInfo | undefined {
+    return this.#recordDispatchTypes.get(key);
+  }
+
+  /**
+   * Register a RecordInfo for dispatch-based field access.
+   */
+  public registerRecordInfo(key: string, info: RecordInfo): void {
+    this.#recordDispatchTypes.set(key, info);
+  }
+
+  /**
+   * Register that a concrete record struct can satisfy a dispatch record type.
+   * This is used when wrapping concrete records in fat pointers.
+   */
+  public registerConcreteRecordForDispatch(
+    concreteStructIndex: number,
+    info: RecordInfo,
+  ): void {
+    let list = this.#concreteRecordToDispatchTypes.get(concreteStructIndex);
+    if (!list) {
+      list = [];
+      this.#concreteRecordToDispatchTypes.set(concreteStructIndex, list);
+    }
+    // Avoid duplicates
+    if (!list.some((r) => r.key === info.key)) {
+      list.push(info);
+    }
+  }
+
+  /**
+   * Get the RecordInfo for a target record type that can accept a concrete struct.
+   */
+  public getRecordInfoForConcreteStruct(
+    concreteStructIndex: number,
+    targetKey: string,
+  ): RecordInfo | undefined {
+    const list = this.#concreteRecordToDispatchTypes.get(concreteStructIndex);
+    if (!list) return undefined;
+    return list.find((r) => r.key === targetKey);
+  }
+
+  /**
+   * Get RecordInfo by fat pointer type index.
+   * Used when we have a fat pointer and need to know its field layout for dispatch.
+   */
+  public getRecordInfoForFatPtrType(
+    fatPtrTypeIndex: number,
+  ): RecordInfo | undefined {
+    for (const info of this.#recordDispatchTypes.values()) {
+      if (info.fatPtrTypeIndex === fatPtrTypeIndex) {
+        return info;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Get the vtable global index for a concrete record struct targeting an abstract type.
+   */
+  public getRecordVtableGlobal(
+    concreteKey: string,
+    targetKey: string,
+  ): number | undefined {
+    return this.#recordVtableGlobals.get(`${concreteKey}:${targetKey}`);
+  }
+
+  /**
+   * Register a vtable global for a concrete record struct targeting an abstract type.
+   */
+  public registerRecordVtableGlobal(
+    concreteKey: string,
+    targetKey: string,
+    globalIndex: number,
+  ): void {
+    this.#recordVtableGlobals.set(`${concreteKey}:${targetKey}`, globalIndex);
   }
 }

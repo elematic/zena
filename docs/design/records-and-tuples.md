@@ -442,9 +442,12 @@ Records behave like interfaces in terms of subtyping rules, but maintain their i
 
 ### Phase 4: Code Generator (Dispatch-based)
 
-- [ ] **Struct Registry**: Generate WASM GC struct definitions for record shapes.
-- [ ] **Dispatch Mechanism**: Generate field access through dispatch (like interfaces).
-- [ ] **Allocation**: Emit `struct.new` for literals.
+- [x] **Fat Pointer Types**: Records use fat pointers `(struct (field anyref) (field (ref $vtable)))` with vtables containing getter functions for field access.
+- [x] **Vtable Generation**: Getter functions cast anyref to concrete struct type and extract fields. Supports nested record adaptation for width subtyping.
+- [x] **Record Literals**: Generate concrete struct + wrap in fat pointer with appropriate vtable.
+- [x] **Field Access**: Use vtable dispatch to access fields via getter call_ref.
+- [x] **Width Subtyping**: When passing wider record to narrower parameter, rewrap fat pointer with target vtable. Skip adaptation when types match exactly.
+- [x] **Destructuring**: Handle fat pointer records in pattern matching and destructuring.
 
 ### Phase 5: Dispatch Optimization
 

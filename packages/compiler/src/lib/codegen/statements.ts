@@ -1195,7 +1195,50 @@ function generateRecordPattern(
   body: number[],
 ) {
   const typeIndex = decodeTypeIndex(valueType);
-  // Find field indices
+
+  // Check if this is a fat pointer type (record dispatch type)
+  const recordInfo = ctx.getRecordInfoForFatPtrType(typeIndex);
+  if (recordInfo) {
+    // Fat pointer record - use vtable dispatch for field access
+    for (const prop of pattern.properties) {
+      const fieldName = prop.name.name;
+      const fieldInfo = recordInfo.fields.get(fieldName);
+      if (!fieldInfo) {
+        throw new Error(
+          `Field ${fieldName} not found in record type ${recordInfo.key}`,
+        );
+      }
+
+      // Get instance (field 0 of fat pointer)
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(tempIndex));
+      body.push(0xfb, GcOpcode.struct_get);
+      body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+      body.push(0); // instance field
+
+      // Get vtable (field 1 of fat pointer)
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(tempIndex));
+      body.push(0xfb, GcOpcode.struct_get);
+      body.push(...WasmModule.encodeSignedLEB128(typeIndex));
+      body.push(1); // vtable field
+
+      // Get getter function from vtable
+      body.push(0xfb, GcOpcode.struct_get);
+      body.push(...WasmModule.encodeSignedLEB128(recordInfo.vtableTypeIndex));
+      body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+      // Call the getter function
+      body.push(Opcode.call_ref);
+      body.push(...WasmModule.encodeSignedLEB128(fieldInfo.typeIndex));
+
+      // Recurse for nested patterns
+      generatePatternBinding(ctx, prop.value, fieldInfo.type, body);
+    }
+    return;
+  }
+
+  // Legacy: Find field indices from concrete struct types
   // We need to find the key in recordTypes that maps to typeIndex
   let recordKey: string | undefined;
   for (const [key, index] of ctx.recordTypes) {
