@@ -153,7 +153,7 @@ suite('WIT Parser', () => {
   });
 
   test('parses empty interface', async () => {
-    const harness = await instantiateParserHarness('interface empty {}');
+    const harness = await instantiateParserHarness('package foo:test; interface empty {}');
     const output = harness.parse();
     assert.match(output, /interface empty/);
     assert.strictEqual(harness.countItems(), 1);
@@ -161,6 +161,7 @@ suite('WIT Parser', () => {
 
   test('parses interface with function', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface greet {
         hello: func(name: string) -> string;
       }
@@ -185,6 +186,8 @@ suite('WIT Parser', () => {
 
   test('parses world with imports and exports', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
+      interface printer {}
       world example {
         import printer;
         export run: func();
@@ -196,6 +199,7 @@ suite('WIT Parser', () => {
 
   test('parses record type', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface types {
         record point {
           x: s32,
@@ -209,6 +213,7 @@ suite('WIT Parser', () => {
 
   test('parses variant type', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface result-types {
         variant my-result {
           ok(string),
@@ -222,6 +227,7 @@ suite('WIT Parser', () => {
 
   test('parses enum type', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface colors {
         enum color {
           red,
@@ -236,6 +242,7 @@ suite('WIT Parser', () => {
 
   test('parses flags type', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface perms {
         flags permission {
           read,
@@ -250,6 +257,7 @@ suite('WIT Parser', () => {
 
   test('parses type alias', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface aliases {
         type my-string = string;
         type my-list = list<u8>;
@@ -261,6 +269,7 @@ suite('WIT Parser', () => {
 
   test('parses resource type', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface files {
         resource file {
           constructor(path: string);
@@ -275,6 +284,11 @@ suite('WIT Parser', () => {
 
   test('parses use statement in interface', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
+      interface types {
+        record point { x: s32, y: s32 }
+        record size { w: u32, h: u32 }
+      }
       interface consumer {
         use types.{point, size};
       }
@@ -285,6 +299,7 @@ suite('WIT Parser', () => {
 
   test('parses tuple type', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface tuples {
         type pair = tuple<u32, u32>;
         get-pair: func() -> tuple<string, u64>;
@@ -296,6 +311,7 @@ suite('WIT Parser', () => {
 
   test('parses result type', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface results {
         get-value: func() -> result<string, u32>;
         try-get: func() -> result<string>;
@@ -308,6 +324,7 @@ suite('WIT Parser', () => {
 
   test('parses option type', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface options {
         find: func(key: string) -> option<string>;
       }
@@ -324,6 +341,7 @@ suite('WIT Parser', () => {
 
   test('parses multiple interfaces', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface one {}
       interface two {}
       interface three {}
@@ -333,6 +351,7 @@ suite('WIT Parser', () => {
 
   test('parses async function', async () => {
     const harness = await instantiateParserHarness(`
+      package foo:test;
       interface async-example {
         do-work: async func() -> string;
       }
