@@ -386,6 +386,7 @@ The parser handles core WIT syntax but needs additional work:
 
 **Syntax parsing is complete!** All remaining failures are semantic validation
 tests that require a resolver to detect errors like:
+
 - Duplicate type definitions
 - Invalid use statements
 - Cyclic dependencies

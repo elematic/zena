@@ -44,6 +44,14 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Fixed Bugs
 
+### Stack overflow in emitter for large WASM output
+
+- **Found**: 2026-02-15
+- **Fixed**: 2026-02-16
+- **Severity**: high
+- **Fix**: Changed `buffer.push(...content)` to a for loop in `#writeSection` to avoid spread operator stack overflow.
+- **Details**: The `#writeSection` method in emitter.ts used `buffer.push(...content)` which expands large arrays into individual function arguments. For ~140KB WASM files, this meant ~140,000 arguments on the call stack, causing stack overflow. The fix uses a for loop instead.
+
 ### WASM validation error: eqref vs specific ref type in closure wrappers
 
 - **Found**: 2026-02-12
