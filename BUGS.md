@@ -16,7 +16,17 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
-(none currently)
+### Record with optional properties causes WASM type mismatch when used as function parameter
+
+- **Found**: 2026-02-15
+- **Severity**: medium
+- **Workaround**: Don't use optional properties in record parameters with width subtyping
+- **Details**: When a function takes `{foo: i32, bar?: i32}` and is called with `{foo: 42}`, the WASM emitter produces invalid code. The error is "type mismatch: expected (ref null $type), found (ref $type)". This is a fat pointer / vtable type issue where the concrete type and declared type have incompatible WASM representations.
+- **Reproduce**:
+  ```zena
+  let go = (opts: {foo: i32, bar?: i32}): i32 => opts.foo;
+  export let main = (): i32 => go({foo: 42});
+  ```
 
 ## Fixed Bugs
 

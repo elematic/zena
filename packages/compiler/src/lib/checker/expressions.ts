@@ -3081,14 +3081,10 @@ function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
       optionalProperties.delete(prop.name.name);
     }
   }
-  const result: RecordType = {
-    kind: TypeKind.Record,
+  return ctx.getOrCreateRecordType(
     properties,
-  };
-  if (optionalProperties.size > 0) {
-    result.optionalProperties = optionalProperties;
-  }
-  return result;
+    optionalProperties.size > 0 ? optionalProperties : undefined,
+  );
 }
 
 function checkTupleLiteral(ctx: CheckerContext, expr: TupleLiteral): Type {

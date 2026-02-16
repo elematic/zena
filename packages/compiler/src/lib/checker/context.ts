@@ -10,6 +10,7 @@ import {
   type InterfaceType,
   type MixinType,
   type FunctionType,
+  type RecordType,
   Types,
   TypeNames,
   TypeKind,
@@ -870,6 +871,40 @@ export class CheckerContext {
       this.#internedTypes.set(key, cached);
     }
     return cached as ArrayType;
+  }
+
+  /**
+   * Get or create an interned record type.
+   * RecordType interning ensures that structurally identical record types share identity.
+   * This is critical for optimization: `{x: i32, y: i32}` and `{y: i32, x: i32}` become
+   * the same object, enabling reference equality checks in codegen.
+   *
+   * @param properties Map of field name to type
+   * @param optionalProperties Optional set of optional property names
+   */
+  getOrCreateRecordType(
+    properties: Map<string, Type>,
+    optionalProperties?: Set<string>,
+  ): RecordType {
+    // Build canonical key with sorted field names
+    const propKeys = Array.from(properties.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}:${this.computeTypeKey(v)}`)
+      .join(',');
+    const optKey = optionalProperties
+      ? `?${Array.from(optionalProperties).sort().join(',')}`
+      : '';
+    const key = `R:{${propKeys}}${optKey}`;
+
+    let cached = this.#internedTypes.get(key);
+    if (!cached) {
+      cached = {kind: TypeKind.Record, properties} as RecordType;
+      if (optionalProperties && optionalProperties.size > 0) {
+        (cached as RecordType).optionalProperties = optionalProperties;
+      }
+      this.#internedTypes.set(key, cached);
+    }
+    return cached as RecordType;
   }
 
   // ===== Generic Type Resolution =====

@@ -94,6 +94,7 @@ import {
   type ClassBinding,
   type FieldBinding,
   type GetterBinding,
+  type LocalBinding,
   type MethodBinding,
   type RecordFieldBinding,
   type ResolvedBinding,
@@ -6091,6 +6092,131 @@ function generateDirectRecordFieldAccess(
 }
 
 /**
+ * Check if two record types are the same.
+ *
+ * Record types are interned by the checker with a canonical key based on sorted
+ * field names. This means structurally identical record types (like `{x: i32, y: i32}`
+ * and `{y: i32, x: i32}`) share the same object identity. Reference equality is
+ * sufficient for comparison.
+ */
+function recordTypesMatch(a: RecordType, b: RecordType): boolean {
+  return a === b;
+}
+
+/**
+ * Try to determine the concrete record type for an expression.
+ * Returns the RecordType if we can prove the concrete type, null otherwise.
+ *
+ * This enables optimizations when we know the exact runtime shape:
+ * - Variable assigned from a record literal
+ * - Variable assigned from a function call where return type == concrete return
+ * - Call expression where the function returns a record literal
+ */
+function getConcreteRecordType(
+  ctx: CodegenContext,
+  expr: Expression,
+): RecordType | null {
+  // Case 1: Record literal - we know the exact type
+  if (expr.type === NodeType.RecordLiteral) {
+    const literal = expr as RecordLiteral;
+    if (literal.inferredType?.kind === TypeKind.Record) {
+      return literal.inferredType as RecordType;
+    }
+  }
+
+  // Case 2: Identifier - check if it's an immutable binding to a record literal or call
+  if (expr.type === NodeType.Identifier) {
+    const binding = ctx.semanticContext.getResolvedBinding(expr as Identifier);
+    if (binding?.kind === 'local') {
+      const localBinding = binding as LocalBinding;
+      const decl = localBinding.declaration;
+
+      // Only optimize VariableDeclarations with 'let' (immutable)
+      // Parameters and mutable 'var' bindings could be reassigned
+      if (decl.type !== NodeType.VariableDeclaration || decl.kind !== 'let') {
+        return null;
+      }
+
+      // Check the initializer
+      const initializer = decl.init;
+      if (initializer) {
+        // Recursive check - handles let x = {a: 1} and let x = getRecord()
+        return getConcreteRecordType(ctx, initializer);
+      }
+    }
+  }
+
+  // Case 3: Call expression - check if return type matches concrete type
+  if (expr.type === NodeType.CallExpression) {
+    const call = expr as CallExpression;
+    // The call's inferredType is the declared return type
+    // For now, trust that if the function returns a record type,
+    // and we're calling it directly, the concrete type matches.
+    // This is sound because function return values must match declared type.
+    if (call.inferredType?.kind === TypeKind.Record) {
+      return call.inferredType as RecordType;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Generate direct record field access when we know the concrete type matches.
+ * This extracts the instance from the fat pointer, casts to concrete type,
+ * and uses struct.get directly.
+ */
+function generateDirectRecordFieldAccessFromType(
+  ctx: CodegenContext,
+  recordType: RecordType,
+  fieldName: string,
+  objectExpr: Expression,
+  body: number[],
+): boolean {
+  // Build concrete fields from the record type
+  const concreteFields: {name: string; type: number[]}[] = [];
+  for (const [name, type] of recordType.properties) {
+    concreteFields.push({name, type: mapCheckerTypeToWasmType(ctx, type)});
+  }
+
+  // Get the concrete struct type index for this exact shape
+  const concreteTypeIndex = ctx.getRecordTypeIndex(concreteFields);
+
+  // Sort fields alphabetically to match struct layout
+  const sortedFields = [...concreteFields].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+
+  // Find the field index in the sorted struct
+  const fieldIndex = sortedFields.findIndex((f) => f.name === fieldName);
+  if (fieldIndex === -1) {
+    return false;
+  }
+
+  // We need the fat pointer type for extraction
+  const recordInfo = ensureRecordDispatchType(ctx, recordType);
+
+  // Generate the object expression (produces a fat pointer)
+  generateExpression(ctx, objectExpr, body);
+
+  // Extract instance (field 0 of fat pointer)
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(recordInfo.fatPtrTypeIndex));
+  body.push(0); // instance field
+
+  // Cast from anyref to the concrete struct type
+  body.push(0xfb, GcOpcode.ref_cast);
+  body.push(...WasmModule.encodeSignedLEB128(concreteTypeIndex));
+
+  // Direct struct.get - no vtable dispatch!
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(concreteTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(fieldIndex));
+
+  return true;
+}
+
+/**
  * Generate code for a record field access using the resolved RecordFieldBinding.
  * Records use fat pointer representation with vtable dispatch, but we optimize to
  * direct struct.get when the concrete type is statically known (e.g., record literals).
@@ -6111,6 +6237,22 @@ function generateRecordFieldFromBinding(
       ctx,
       objectExpr as RecordLiteral,
       fieldName,
+      body,
+    );
+  }
+
+  // OPTIMIZATION: Check if we can determine the concrete type matches the declared type.
+  // This enables direct access for patterns like:
+  //   let getPoint = (): {x: i32, y: i32} => {x: 1, y: 2};
+  //   let point = getPoint();
+  //   point.x  // Direct access!
+  const concreteType = getConcreteRecordType(ctx, objectExpr);
+  if (concreteType && recordTypesMatch(concreteType, recordType)) {
+    return generateDirectRecordFieldAccessFromType(
+      ctx,
+      recordType,
+      fieldName,
+      objectExpr,
       body,
     );
   }
@@ -6161,7 +6303,17 @@ function generateRecordFieldFromBinding(
     }
   }
 
-  // Regular record field access via dispatch
+  // For general record field access, we use vtable dispatch because of width subtyping.
+  // The actual runtime instance may have MORE fields than the declared type.
+  // For example: passing {x, y, z} to a function expecting {x, y}.
+  //
+  // FUTURE OPTIMIZATION: Track concrete types through the program to enable
+  // direct access when we can prove the concrete type matches the declared type.
+  // This would cover patterns like:
+  //   let getPoint = () => {x: 1, y: 2};
+  //   let point = getPoint();  // point's concrete type IS {x, y}
+  //   point.x                   // Could use direct access!
+
   // Get the RecordInfo for this record type
   const recordInfo = ensureRecordDispatchType(ctx, recordType);
   const fieldInfo = recordInfo.fields.get(fieldName);

@@ -451,8 +451,9 @@ Records behave like interfaces in terms of subtyping rules, but maintain their i
 
 ### Phase 5: Dispatch Optimization
 
+- [x] **Record Type Interning**: Record types are now interned by the checker using a canonical key based on sorted field names. This means `{x: i32, y: i32}` and `{y: i32, x: i32}` share the same type identity. Implemented in `CheckerContext.getOrCreateRecordType()`.
 - [x] **Literal Optimization**: When accessing fields on a record literal (e.g., `{x: 1}.x`), bypass vtable dispatch and use direct `struct.get` on the concrete type. Implemented in `generateDirectRecordFieldAccess`.
-- [ ] **Flow Analysis**: Track concrete types through the program.
+- [x] **Concrete Type Tracking**: Track concrete types through immutable bindings and function returns. When an immutable binding is initialized from a record literal or function call, field accesses can use direct `struct.get`. Reference equality check is sufficient due to interning.
 - [ ] **Inlining Integration**: After inlining, re-analyze for optimization opportunities.
 
 ### Phase 6: Exact Record Types

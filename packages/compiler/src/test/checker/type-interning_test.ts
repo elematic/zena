@@ -285,7 +285,7 @@ suite('Type Interning', () => {
   });
 
   suite('Records and tuples', () => {
-    test('identical record literals are NOT interned (structural)', () => {
+    test('identical record literals ARE interned', () => {
       const modules = compileModules(`
         export let main = () => {
           let a = { x: 1, y: 2 };
@@ -307,11 +307,41 @@ suite('Type Interning', () => {
       assert.strictEqual(typeA.kind, TypeKind.Record);
       assert.strictEqual(typeB.kind, TypeKind.Record);
 
-      // Document current behavior: record types are NOT interned
-      assert.notStrictEqual(
+      // Record types ARE interned - structurally identical records share identity
+      assert.strictEqual(
         typeA,
         typeB,
-        'Record types are currently NOT interned (structural)',
+        'Record types with same structure should be interned',
+      );
+    });
+
+    test('record types with different field order ARE interned to same type', () => {
+      const modules = compileModules(`
+        export let main = () => {
+          let a = { x: 1, y: 2 };
+          let b = { y: 4, x: 3 };
+          return 0;
+        };
+      `);
+
+      const mainModule = modules.find((m) => m.path === '/main.zena')!;
+      const mainDecl = findVarDecl(mainModule.body, 'main');
+      const mainFn = mainDecl.init;
+      const body = mainFn.body.body;
+
+      const typeA = findVarDecl(body, 'a').init.inferredType;
+      const typeB = findVarDecl(body, 'b').init.inferredType;
+
+      assert.ok(typeA, 'typeA should exist');
+      assert.ok(typeB, 'typeB should exist');
+      assert.strictEqual(typeA.kind, TypeKind.Record);
+      assert.strictEqual(typeB.kind, TypeKind.Record);
+
+      // Records are interned with canonical key - field order doesn't matter
+      assert.strictEqual(
+        typeA,
+        typeB,
+        'Record types with same fields in different order should be interned to same type',
       );
     });
 

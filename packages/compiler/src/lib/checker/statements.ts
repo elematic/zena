@@ -3747,10 +3747,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
     for (const member of decl.members) {
       fields.set(member.name.name, existingType);
     }
-    const enumValueType: RecordType = {
-      kind: TypeKind.Record,
-      properties: fields,
-    };
+    const enumValueType = ctx.getOrCreateRecordType(fields);
     // Pass the enum declaration for value binding resolution
     ctx.declare(name, enumValueType, 'let', decl);
 
@@ -3889,10 +3886,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
     fields.set(member.name.name, enumType);
   }
 
-  const enumValueType: RecordType = {
-    kind: TypeKind.Record,
-    properties: fields,
-  };
+  const enumValueType = ctx.getOrCreateRecordType(fields);
 
   // Pass the enum declaration as the value declaration so codegen can resolve enum references
   ctx.declare(name, enumValueType, 'let', decl);

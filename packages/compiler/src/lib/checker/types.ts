@@ -602,14 +602,7 @@ function resolveTypeAnnotationInternal(
         optionalProperties.add(prop.name.name);
       }
     }
-    const result: RecordType = {
-      kind: TypeKind.Record,
-      properties,
-    };
-    if (optionalProperties) {
-      result.optionalProperties = optionalProperties;
-    }
-    return result;
+    return ctx.getOrCreateRecordType(properties, optionalProperties);
   }
 
   if (annotation.type === NodeType.TupleTypeAnnotation) {

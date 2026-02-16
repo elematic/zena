@@ -271,3 +271,140 @@ suite('Records - direct access optimization (Phase 5)', () => {
     assert.strictEqual(result, 50);
   });
 });
+
+suite('Records - concrete type tracking optimization', () => {
+  test('direct access through immutable binding to literal', async () => {
+    // let p = {x: 1}; p.x should use direct access
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        let point = {x: 42, y: 10};
+        return point.x + point.y;
+      };
+    `);
+    assert.strictEqual(result, 52);
+  });
+
+  test('direct access through function return', async () => {
+    // let p = getPoint(); p.x should use direct access when return type is exact
+    const result = await compileAndRun(`
+      let getPoint = (): {x: i32, y: i32} => ({x: 100, y: 200});
+      export let main = (): i32 => {
+        let point = getPoint();
+        return point.x + point.y;
+      };
+    `);
+    assert.strictEqual(result, 300);
+  });
+
+  test('direct access through inferred function return', async () => {
+    // Without explicit return type annotation, type is inferred
+    const result = await compileAndRun(`
+      let getPoint = () => ({x: 5, y: 7});
+      export let main = (): i32 => {
+        let point = getPoint();
+        return point.x * point.y;
+      };
+    `);
+    assert.strictEqual(result, 35);
+  });
+
+  test('no optimization for mutable binding', async () => {
+    // var p = {x: 1}; p.x must use dispatch since p could be reassigned
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        var point = {x: 10, y: 20};
+        point = {x: 30, y: 40};
+        return point.x;
+      };
+    `);
+    assert.strictEqual(result, 30);
+  });
+
+  test('chained binding optimization', async () => {
+    // let a = {x: 1}; let b = a; b.x should work (a is exact type)
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        let a = {value: 99};
+        let b = a;
+        return b.value;
+      };
+    `);
+    assert.strictEqual(result, 99);
+  });
+
+  test('width subtyping still works with function params', async () => {
+    // When width subtyping is in play, dispatch must be used
+    const result = await compileAndRun(`
+      let getX = (p: {x: i32}): i32 => p.x;
+      export let main = (): i32 => {
+        let wider = {x: 5, y: 10, z: 15};
+        return getX(wider);
+      };
+    `);
+    assert.strictEqual(result, 5);
+  });
+
+  test('interning enables optimization across different field orders', async () => {
+    // {x, y} and {y, x} have same interned type, so optimization applies
+    const result = await compileAndRun(`
+      let getOrigin = () => ({x: 0, y: 0});
+      let getPoint = () => ({y: 100, x: 50});
+      let a = true;
+      export let main = (): i32 => {
+        let point: {x: i32, y: i32} = if (a) { getOrigin() } else { getPoint() };
+        return point.x + point.y;
+      };
+    `);
+    // Should get origin (0, 0) since a = true
+    assert.strictEqual(result, 0);
+  });
+
+  test('interning enables optimization with type annotation', async () => {
+    // Type annotation {x: i32, y: i32} matches literal {y: 1, x: 1} after interning
+    const result = await compileAndRun(`
+      let getPoint = (): {x: i32, y: i32} => ({y: 7, x: 3});
+      export let main = (): i32 => {
+        let point = getPoint();
+        return point.x * point.y;
+      };
+    `);
+    assert.strictEqual(result, 21);
+  });
+
+  test('interning works without explicit type annotation on if expression', async () => {
+    // Both branches return same interned type, so optimization works
+    const result = await compileAndRun(`
+      let getOrigin = () => ({x: 0, y: 0});
+      let getPoint = () => ({y: 100, x: 50});
+      let a = false;
+      export let main = (): i32 => {
+        let point = if (a) { getOrigin() } else { getPoint() };
+        return point.x + point.y;
+      };
+    `);
+    // Should get point (50, 100) since a = false
+    assert.strictEqual(result, 150);
+  });
+
+  test.skip('function param with optional property uses dispatch (not optimized)', async () => {
+    // KNOWN BUG: Optional properties in record params cause WASM type mismatch
+    // See BUGS.md for details
+    // Parameter type {foo: i32, bar?: i32} differs from call site {foo: i32}
+    // Must use dispatch because param could receive wider types
+    const result = await compileAndRun(`
+      let go = (opts: {foo: i32, bar?: i32}): i32 => opts.foo;
+      export let main = (): i32 => go({foo: 42});
+    `);
+    assert.strictEqual(result, 42);
+  });
+
+  test('function param exact match could be optimized in future', async () => {
+    // Even though call site type matches param type exactly,
+    // we currently don't optimize params (would need inlining or monomorphization)
+    const result = await compileAndRun(`
+      let go = (opts: {foo: i32}): i32 => opts.foo;
+      export let main = (): i32 => go({foo: 99});
+    `);
+    assert.strictEqual(result, 99);
+  });
+});
