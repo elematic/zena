@@ -386,9 +386,7 @@ suite('Records - concrete type tracking optimization', () => {
     assert.strictEqual(result, 150);
   });
 
-  test.skip('function param with optional property uses dispatch (not optimized)', async () => {
-    // KNOWN BUG: Optional properties in record params cause WASM type mismatch
-    // See BUGS.md for details
+  test('function param with optional property uses dispatch (not optimized)', async () => {
     // Parameter type {foo: i32, bar?: i32} differs from call site {foo: i32}
     // Must use dispatch because param could receive wider types
     const result = await compileAndRun(`

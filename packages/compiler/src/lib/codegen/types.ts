@@ -137,6 +137,11 @@ export interface RecordInfo {
    * type: WASM type bytes for the field value
    */
   fields: Map<string, {index: number; typeIndex: number; type: number[]}>;
+  /**
+   * Names of fields that are optional in this record type.
+   * Used for width subtyping: actual records may omit optional fields.
+   */
+  optionalFields?: Set<string>;
 }
 
 export interface LocalInfo {

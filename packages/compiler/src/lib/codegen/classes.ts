@@ -98,6 +98,7 @@ export function ensureRecordDispatchType(
 ): RecordInfo {
   // Convert RecordType to fields array if needed
   let fields: {name: string; type: number[]}[];
+  let optionalFields: Set<string> | undefined;
   if (Array.isArray(fieldsOrRecordType)) {
     fields = fieldsOrRecordType;
   } else {
@@ -106,6 +107,8 @@ export function ensureRecordDispatchType(
     for (const [name, type] of fieldsOrRecordType.properties) {
       fields.push({name, type: mapCheckerTypeToWasmType(ctx, type)});
     }
+    // Capture optional fields info
+    optionalFields = fieldsOrRecordType.optionalProperties;
   }
 
   const key = ctx.getRecordKey(fields);
@@ -163,6 +166,7 @@ export function ensureRecordDispatchType(
     fatPtrTypeIndex,
     vtableTypeIndex,
     fields: fieldInfoMap,
+    optionalFields,
   };
 
   ctx.registerRecordInfo(key, info);
@@ -206,10 +210,33 @@ export function ensureRecordVtableGlobal(
     const concreteFieldIndex = sortedConcreteFields.findIndex(
       (f) => f.name === fieldName,
     );
+
+    // If the field is missing and optional, generate a trapping getter.
+    // This should never be called - the type system prevents direct access to
+    // optional fields. If it IS called, it indicates a bug in the compiler.
     if (concreteFieldIndex === -1) {
-      throw new Error(
-        `Field ${fieldName} not found in concrete record ${concreteKey}`,
-      );
+      const isOptional = targetInfo.optionalFields?.has(fieldName);
+      if (!isOptional) {
+        throw new Error(
+          `Required field ${fieldName} not found in concrete record ${concreteKey}`,
+        );
+      }
+
+      // Create a trapping getter for the missing optional field
+      const getterFuncIndex = ctx.module.addFunction(fieldInfo.typeIndex);
+      ctx.module.declareFunction(getterFuncIndex);
+
+      ctx.pendingHelperFunctions.push(() => {
+        const locals: number[][] = [];
+        const body: number[] = [];
+        // Just trap - this should never be called
+        body.push(Opcode.unreachable);
+        body.push(Opcode.end);
+        ctx.module.addCode(getterFuncIndex, locals, body);
+      });
+
+      getterFuncIndices.push(getterFuncIndex);
+      continue;
     }
 
     // Get concrete and target field types
@@ -5222,12 +5249,8 @@ export function mapCheckerTypeToWasmType(
   // Records use fat pointer representation for width subtyping support
   if (type.kind === TypeKind.Record) {
     const recordType = type as RecordType;
-    const fields: {name: string; type: number[]}[] = [];
-    for (const [name, propType] of recordType.properties) {
-      fields.push({name, type: mapCheckerTypeToWasmType(ctx, propType)});
-    }
-    // Get or create the dispatch type (fat pointer + vtable)
-    const recordInfo = ensureRecordDispatchType(ctx, fields);
+    // Pass the full RecordType to preserve optional field info
+    const recordInfo = ensureRecordDispatchType(ctx, recordType);
     return [
       ValType.ref_null,
       ...WasmModule.encodeSignedLEB128(recordInfo.fatPtrTypeIndex),

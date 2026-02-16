@@ -9270,6 +9270,7 @@ export function generateAdaptedArgument(
 
   // Record Adaptation: Re-wrap fat pointer with different vtable for width subtyping
   // e.g., passing {x, y, z} fat pointer to function expecting {x, y} fat pointer
+  // Also handles passing {x} to function expecting {x, y?} (optional fields)
   const expectedRecordInfo = ctx.getRecordInfoForFatPtrType(expectedIndex);
   if (expectedRecordInfo && arg.inferredType?.kind === TypeKind.Record) {
     const actualRecordType = arg.inferredType as RecordType;
@@ -9281,10 +9282,13 @@ export function generateAdaptedArgument(
     if (
       actualRecordInfo.fatPtrTypeIndex !== expectedRecordInfo.fatPtrTypeIndex
     ) {
-      // Check if the actual type has all the expected fields
+      // Check if the actual type has all REQUIRED fields of the expected type
+      // Optional fields may be missing
       let needsAdaptation = true;
       for (const fieldName of expectedRecordInfo.fields.keys()) {
-        if (!actualRecordType.properties.has(fieldName)) {
+        const isOptional = expectedRecordInfo.optionalFields?.has(fieldName);
+        if (!isOptional && !actualRecordType.properties.has(fieldName)) {
+          // Missing a required field - can't adapt
           needsAdaptation = false;
           break;
         }
