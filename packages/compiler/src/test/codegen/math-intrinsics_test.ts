@@ -173,4 +173,58 @@ suite('Math Intrinsics', () => {
     assert.strictEqual(truncLarge(3e9), 2147483647);
     assert.strictEqual(truncLarge(-3e9), -2147483648);
   });
+
+  test('i32_reinterpret_f32', async () => {
+    const source = `
+      import {i32_reinterpret_f32} from 'zena:math';
+      export let reinterpretF32 = (x: f32) => i32_reinterpret_f32(x);
+    `;
+    const {reinterpretF32} = await compileAndInstantiate(source);
+
+    // 1.0f has bit pattern 0x3F800000
+    assert.strictEqual(reinterpretF32(1.0), 0x3f800000);
+    // 0.0f has bit pattern 0x00000000
+    assert.strictEqual(reinterpretF32(0.0), 0x00000000);
+    // -1.0f has bit pattern 0xBF800000
+    assert.strictEqual(reinterpretF32(-1.0), 0xbf800000 | 0); // Sign-extend to i32
+  });
+
+  test('i64_reinterpret_f64', async () => {
+    const source = `
+      import {i64_reinterpret_f64} from 'zena:math';
+      export let reinterpretF64 = (x: f64) => i64_reinterpret_f64(x);
+    `;
+    const {reinterpretF64} = await compileAndInstantiate(source);
+
+    // 1.0 has bit pattern 0x3FF0000000000000
+    assert.strictEqual(reinterpretF64(1.0), 0x3ff0000000000000n);
+    // 0.0 has bit pattern 0x0000000000000000
+    assert.strictEqual(reinterpretF64(0.0), 0x0000000000000000n);
+  });
+
+  test('f32_reinterpret_i32', async () => {
+    const source = `
+      import {f32_reinterpret_i32} from 'zena:math';
+      export let reinterpretI32 = (x: i32) => f32_reinterpret_i32(x);
+    `;
+    const {reinterpretI32} = await compileAndInstantiate(source);
+
+    // 0x3F800000 is 1.0f
+    assert.strictEqual(reinterpretI32(0x3f800000), 1.0);
+    // 0x00000000 is 0.0f
+    assert.strictEqual(reinterpretI32(0x00000000), 0.0);
+  });
+
+  test('f64_reinterpret_i64', async () => {
+    const source = `
+      import {f64_reinterpret_i64} from 'zena:math';
+      export let reinterpretI64 = (x: i64) => f64_reinterpret_i64(x);
+    `;
+    const {reinterpretI64} = await compileAndInstantiate(source);
+
+    // 0x3FF0000000000000 is 1.0
+    assert.strictEqual(reinterpretI64(0x3ff0000000000000n), 1.0);
+    // 0x0000000000000000 is 0.0
+    assert.strictEqual(reinterpretI64(0x0000000000000000n), 0.0);
+  });
 });
