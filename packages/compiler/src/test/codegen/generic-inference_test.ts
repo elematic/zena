@@ -109,7 +109,7 @@ suite('Generic Type Inference', () => {
     });
 
     test.skip('infer from array argument', async () => {
-      // TODO: Array type inference doesn't work yet because array<T> 
+      // TODO: Array type inference doesn't work yet because array<T>
       // produces an ArrayType with TypeParameterType elementType,
       // but inference needs to unwrap this
       const exports = await compileAndInstantiate(`

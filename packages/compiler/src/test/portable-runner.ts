@@ -314,7 +314,9 @@ async function runCheckTest(
 
   if (expectedErrors.length === 0 && diagnostics.length > 0) {
     // Only treat actual errors as failures, not warnings
-    const errors = diagnostics.filter((d) => d.severity === DiagnosticSeverity.Error);
+    const errors = diagnostics.filter(
+      (d) => d.severity === DiagnosticSeverity.Error,
+    );
     if (errors.length > 0) {
       throw new Error(
         `Unexpected errors: ${errors.map((d) => d.message).join(', ')}`,
@@ -370,7 +372,9 @@ async function runExecutionTest(
 
   // Check for errors from individual modules (ignore warnings)
   const diagnostics = modules.flatMap((m) => m.diagnostics ?? []);
-  const errors = diagnostics.filter((d) => d.severity === DiagnosticSeverity.Error);
+  const errors = diagnostics.filter(
+    (d) => d.severity === DiagnosticSeverity.Error,
+  );
   if (errors.length > 0) {
     throw new Error(
       `Compilation failed: ${errors.map((d) => d.message).join(', ')}`,

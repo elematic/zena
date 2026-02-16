@@ -34,22 +34,26 @@ The home page already covers the high-level overview. Minor additions:
 **Goal**: A single-page reference covering every language feature with concise explanations and examples. Detailed enough to be useful, brief enough to scan quickly. Think "cheat sheet meets tutorial."
 
 ### 2.1 Introduction
+
 - What is Zena? (2-3 sentences)
 - Quick start example (Hello World → compile → run)
 - WASM target: `--target host` vs `--target wasi`
 
 ### 2.2 Basic Syntax
+
 - Comments: `//` and `/* */`
 - Identifiers and naming conventions
 - Semicolons (optional in many contexts)
 
 ### 2.3 Variables
+
 - `let` = immutable binding ✅
 - `var` = mutable binding ✅
 - Type inference ✅
 - Explicit type annotations ✅
 
 ### 2.4 Primitive Types
+
 - Integers: `i32`, `i64`, `u32` ✅
 - Floats: `f32`, `f64` ✅
 - `boolean`, `string` ✅
@@ -58,6 +62,7 @@ The home page already covers the high-level overview. Minor additions:
 - `ByteArray` (low-level) ✅
 
 ### 2.5 Functions
+
 - Arrow syntax: `(params) => body` ✅
 - Type annotations on parameters and return ✅
 - Block bodies vs expression bodies ✅
@@ -69,6 +74,7 @@ The home page already covers the high-level overview. Minor additions:
 - Function overloading 🚧
 
 ### 2.6 Operators & Expressions
+
 - Arithmetic: `+`, `-`, `*`, `/`, `%` ✅
 - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=` ✅
 - Logical: `&&`, `||`, `!` ✅
@@ -80,6 +86,7 @@ The home page already covers the high-level overview. Minor additions:
 - Pipeline: `|>` 🔮
 
 ### 2.7 Control Flow
+
 - `if`/`else` statements and expressions ✅
 - `while` loops ✅
 - C-style `for` loops ✅
@@ -89,6 +96,7 @@ The home page already covers the high-level overview. Minor additions:
 - Pattern guards (`case x if condition:`) ✅
 
 ### 2.8 Pattern Matching
+
 - Literal patterns ✅
 - Identifier patterns ✅
 - Wildcard `_` ✅
@@ -99,6 +107,7 @@ The home page already covers the high-level overview. Minor additions:
 - Exhaustiveness checking ✅
 
 ### 2.9 Strings
+
 - String literals (double quotes) ✅
 - Template literals ✅
 - String interpolation `${expr}` ✅
@@ -110,6 +119,7 @@ The home page already covers the high-level overview. Minor additions:
 - `StringReader` for efficient parsing 🚧
 
 ### 2.10 Type System
+
 - Type inference ✅
 - Type annotations ✅
 - Type aliases (`type`) ✅
@@ -122,12 +132,14 @@ The home page already covers the high-level overview. Minor additions:
 - Nominal vs structural typing ✅
 
 ### 2.11 Enums
+
 - Declaration syntax ✅
 - Integer-backed enums ✅
 - String-backed enums ✅
 - Type safety (distinct from underlying type) ✅
 
 ### 2.12 Records & Tuples
+
 - Record literals: `{x: 1, y: 2}` ✅
 - Tuple literals: `[1, "a"]` ✅
 - Shorthand syntax: `{x, y}` ✅
@@ -137,6 +149,7 @@ The home page already covers the high-level overview. Minor additions:
 - Unboxed tuples (multi-value returns) ✅
 
 ### 2.13 Classes
+
 - Declaration and fields ✅
 - Constructor (`#new`) ✅
 - Methods ✅
@@ -151,6 +164,7 @@ The home page already covers the high-level overview. Minor additions:
 - Extension classes ✅
 
 ### 2.14 Interfaces
+
 - Declaration ✅
 - `implements` ✅
 - Multiple interfaces ✅
@@ -158,11 +172,13 @@ The home page already covers the high-level overview. Minor additions:
 - Interface inheritance ✅
 
 ### 2.15 Mixins
+
 - Declaration (`mixin`) ✅
 - `with` clause ✅
 - Mixin composition ✅
 
 ### 2.16 Arrays & Collections
+
 - `FixedArray<T>`: fixed-size array ✅
 - `Array<T>`: growable array ✅
 - Array literals: `#[1, 2, 3]` ✅
@@ -172,22 +188,26 @@ The home page already covers the high-level overview. Minor additions:
 - `for-in` loops ✅
 
 ### 2.17 Boxing
+
 - `Box<T>` for primitives ✅
 - Auto-boxing with `any` ✅
 - Manual boxing ✅
 
 ### 2.18 Exception Handling
+
 - `throw` expressions ✅
 - `Error` class ✅
 - `try`/`catch` 🚧
 - `try`/`finally` 🚧
 
 ### 2.19 Modules & Exports
+
 - `export` declarations ✅
 - Host imports (`import ... from "host"`) ✅
 - Module system 🚧
 
 ### 2.20 Intrinsics & Decorators
+
 - `@intrinsic` ✅
 - `@pure` ✅
 - `operator ==` ✅
@@ -200,21 +220,25 @@ The home page already covers the high-level overview. Minor additions:
 **Goal**: Show developers exactly how Zena constructs map to WASM, with code examples. Essential for understanding performance characteristics.
 
 ### 3.1 Introduction
+
 - Why understanding the translation matters
 - WASM-GC primer (brief)
 - Reading WASM text format basics
 
 ### 3.2 Primitives
+
 - `i32`, `i64`, `f32`, `f64` → WASM value types directly
 - No boxing, no indirection
 - Example: arithmetic operations
 
 ### 3.3 Functions
+
 - Zena functions → WASM functions
 - Direct calls (`call`) vs indirect calls (`call_indirect`)
 - Closures → WASM structs + `call_indirect`
 
 ### 3.4 Classes
+
 - Class → WASM-GC struct
 - Methods → functions with implicit `this` parameter
 - Virtual dispatch → vtables + `call_indirect`
@@ -222,21 +246,25 @@ The home page already covers the high-level overview. Minor additions:
 - Example: class hierarchy, method call
 
 ### 3.5 Generics
+
 - Monomorphization: `Box<i32>` and `Box<string>` are different WASM types
 - Performance implications (no boxing, no casts)
 - Binary size implications (code duplication)
 
 ### 3.6 Records & Tuples
+
 - Records → WASM-GC structs (with structural type)
 - Tuples → WASM-GC structs
 - Unboxed tuples → multiple WASM return values (stack, not heap)
 
 ### 3.7 Interfaces & Vtables
+
 - Interface values → fat pointers (object ref + vtable ref)
 - Interface method calls → vtable lookup + `call_indirect`
 - Memory layout diagram
 
 ### 3.8 Arrays
+
 - `FixedArray<T>` → WASM-GC array (fixed size, no reallocation)
 - `Array<T>` → growable array (wrapper around FixedArray with capacity management)
 - Slicing: `arr[a..b]` uses Range to create a view
@@ -245,6 +273,7 @@ The home page already covers the high-level overview. Minor additions:
 - When to use each type
 
 ### 3.9 Strings
+
 - One `String` type, multiple internal implementations
 - `GCString` (default), `LinearString` (WASI I/O), `HostString` (JS DOM), `LiteralString` (data segment)
 - Encoding: WTF-8 (compact) vs WTF-16 (JS interop)
@@ -256,16 +285,19 @@ The home page already covers the high-level overview. Minor additions:
 - `StringBuilder` and `StringReader`
 
 ### 3.10 Closures & Function References
+
 - Closure environment → struct
 - Function reference → `funcref` + environment
 - Calling overhead
 
 ### 3.11 Exception Handling
+
 - WASM exception handling proposal
 - `throw` → `throw`
 - `try`/`catch` → WASM try/catch
 
 ### 3.12 Performance Considerations
+
 - Cost of abstractions
 - When to prefer direct calls (final methods, non-virtual)
 - Boxing costs
@@ -279,6 +311,7 @@ The home page already covers the high-level overview. Minor additions:
 Individual pages with comprehensive coverage of each feature.
 
 ### 4.1 Philosophy & Goals
+
 - WASM-GC first design (not linear memory like Rust/C++)
 - Why GC: ergonomics, interop with host GC (JS), no borrow checker complexity
 - Performance and binary size priorities
@@ -289,7 +322,9 @@ Individual pages with comprehensive coverage of each feature.
 - Future: contracts, formal methods
 
 ### 4.2 AI-Optimized Language Design 📝
+
 (Based on docs/design/ai-first-language.md)
+
 - Static typing for agent feedback loops
 - Unusually helpful error messages
 - MCP/LSP integration
@@ -298,43 +333,51 @@ Individual pages with comprehensive coverage of each feature.
 - Rich standard library for consistent patterns
 
 ### 4.3 Optimized for the Web 📝
+
 - Small binary size is paramount
 - JS integration
 - DOM bindings (future)
 
 ### 4.4 Modules 🚧
+
 - Module system design
 - Import/export
 - Visibility
 
 ### 4.5 Variables (detailed)
+
 - Immutability philosophy
 - Shadowing rules
 - Block scoping details
 
 ### 4.6 Data Types (detailed)
+
 - Numeric type semantics
 - Precision and overflow
 - Signed vs unsigned
 - Float special values (NaN, Infinity)
 
 ### 4.7 Functions (detailed)
+
 - Argument adaptation internals
 - Contextual type inference
 - Overload resolution
 - Performance of different call patterns
 
 ### 4.8 Expressions & Operators (detailed)
+
 - Operator precedence table
 - Short-circuit evaluation
 - Pipeline operator (future)
 
 ### 4.9 Control Flow (detailed)
+
 - Expression-oriented design
 - Optional semicolons rules
 - Pattern matching exhaustiveness
 
 ### 4.10 Strings (detailed)
+
 - Unified String architecture (one type, multiple implementations)
   - `GCString`: Default for literals, concatenation
   - `LinearString`: Linear memory for WASI I/O, FFI
@@ -365,43 +408,51 @@ Individual pages with comprehensive coverage of each feature.
   - Devirtualization when concrete type known
 
 ### 4.11 Type System (detailed)
+
 - Nominal vs structural typing philosophy
 - Soundness guarantees
 - Type widening rules
 - Variance
 
 ### 4.12 Boxing (detailed)
+
 - When boxing occurs
 - Performance implications
 - Avoiding unnecessary boxing
 
 ### 4.13 Destructuring & Patterns (detailed)
+
 - All pattern forms
 - Pattern matching vs destructuring assignment
 - `if let` and `while let` patterns
 
 ### 4.14 Records & Tuples (detailed)
+
 - Structural typing details
 - Unboxed tuples vs boxed tuples
 - Performance characteristics
 
 ### 4.15 Classes (detailed)
+
 - Two-phase construction
 - Inheritance model
 - Method resolution order
 - Memory layout
 
 ### 4.16 Interfaces (detailed)
+
 - Fat pointer representation
 - Performance vs classes
 - Design patterns
 
 ### 4.17 Mixins (detailed)
+
 - Linearization
 - Diamond problem resolution
 - When to use mixins vs inheritance
 
 ### 4.18 Standard Library (detailed)
+
 - `Array<T>` API
 - `Map<K, V>` API
 - Iteration protocol
@@ -409,6 +460,7 @@ Individual pages with comprehensive coverage of each feature.
 - `Error` class
 
 ### 4.19 Performance Guide
+
 - Cost of abstractions
 - Vtables and indirect calls
 - Trampolines
@@ -424,6 +476,7 @@ Individual pages with comprehensive coverage of each feature.
 Migration guides for developers coming from other languages.
 
 ### 5.1 Zena for TypeScript Developers
+
 - Syntax similarities and differences
 - `let` means immutable (not mutable!)
 - Sound type system (no `any` escape hatch)
@@ -432,22 +485,26 @@ Migration guides for developers coming from other languages.
 - WASM compilation vs JS execution
 
 ### 5.2 Zena for Swift Developers
+
 - Value types vs reference types
 - Optional handling
 - Protocol/interface comparison
 - Extension comparison
 
 ### 5.3 Zena for Dart Developers
+
 - Class and mixin comparison
 - Sound null safety comparison
 - Generic variance differences
 
 ### 5.4 Zena for Go Developers
+
 - Interface comparison (structural vs nominal)
 - Error handling differences
 - No goroutines (WASM threading)
 
 ### 5.5 Zena for Rust Developers
+
 - No borrow checker (GC instead)
 - Match expression similarities
 - Generic implementation comparison
@@ -457,20 +514,24 @@ Migration guides for developers coming from other languages.
 ## 6. WASI Integration
 
 ### 6.1 Overview
+
 - What is WASI?
 - `--target wasi` vs `--target host`
 
 ### 6.2 Using WASI APIs
+
 - File system access
 - Console I/O
 - Environment variables
 
 ### 6.3 WIT Integration 🔮
+
 - Importing WIT definitions
 - Generating WIT from Zena
 - Component model
 
 ### 6.4 Running Zena with wasmtime
+
 - Command-line options
 - Capability flags
 - Examples
@@ -493,15 +554,18 @@ API documentation for stdlib. (Could be auto-generated.)
 ## Implementation Priority
 
 ### Phase 1: Early Contributor Documentation
+
 1. **One-Page Language Reference** — Essential for anyone trying the language
 2. **How Zena Translates to WASM** — For contributors understanding the compiler
 
 ### Phase 2: User Documentation
+
 3. Philosophy & Goals page
 4. Zena for TypeScript Developers (largest audience)
 5. Expand detailed guide pages as needed
 
 ### Phase 3: Complete Documentation
+
 6. Remaining "Zena for X" guides
 7. Full standard library reference
 8. WASI integration guide

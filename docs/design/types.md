@@ -176,12 +176,12 @@ types to ensure soundness and performance.
 
 - **Reference-Only Unions**: Unions of reference types are always allowed.
   - ✅ `String | null` - ✅ `Point | Shape` - ✅ `Box<i32> | null` - ✅ `array<i32>
-  | null`
+| null`
 
 - **Same-Base Primitive Unions**: Primitives may union with other primitives
   **of the same base type**.
   - ✅ `true | false` (both are `boolean`) - ✅ `1 | 2 | 3` (all are `i32`, when
-  numeric literal types are implemented)
+    numeric literal types are implemented)
 
 - **No Mixing Primitives with References**: Value primitives cannot union with
   reference types.
@@ -328,7 +328,7 @@ class Map<K, V> {
   - If they are unrelated, they are treated as `any` (WASM `anyref` or `eqref`).
 - **Function Calls**:
   - Calling a union of function types (e.g., `((a: i32) => void) | ((a: i32, b:
-    i32) => void)`) is supported.
+i32) => void)`) is supported.
   - The compiler generates a runtime dispatch sequence that checks the actual
     type of the function and calls it with the appropriate arguments
     (adapting/dropping extra arguments if necessary).

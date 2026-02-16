@@ -127,8 +127,8 @@ cannot be referenced before their declaration.
 ```ts
 let x = 1; // Immutable binding (like const in JS)
 var y = 1; // Mutable binding
-y = 2;     // OK
-x = 2;     // ❌ Error: cannot reassign immutable binding
+y = 2; // OK
+x = 2; // ❌ Error: cannot reassign immutable binding
 ```
 
 ### Type Annotations
@@ -139,8 +139,8 @@ literals become `f32`, and string literals become `String` (not literal types
 like `1` or `"hello"`).
 
 ```ts
-let x: i32 = 1;          // Explicit type
-let y = 1;               // Inferred as i32
+let x: i32 = 1; // Explicit type
+let y = 1; // Inferred as i32
 let s: String = 'hello'; // Explicit String type
 ```
 
@@ -260,7 +260,7 @@ let greet = (name: String, greeting?: String) => {
   return greeting + ', ' + name;
 };
 
-greet('Alice');     // "Hello, Alice"
+greet('Alice'); // "Hello, Alice"
 greet('Bob', 'Hi'); // "Hi, Bob"
 ```
 
@@ -274,7 +274,7 @@ or `undefined` that triggers defaults.
 ```ts
 let increment = (x: i32, amount: i32 = 1) => x + amount;
 
-increment(10);    // 11 (amount defaults to 1)
+increment(10); // 11 (amount defaults to 1)
 increment(10, 5); // 15 (amount is 5)
 ```
 
@@ -346,7 +346,7 @@ let map = new Map<String, i32>();
 map.set('a', 42);
 
 let(value, found) = map.get('a'); // (42, true)
-let(_, found2) = map.get('b');    // (_, false)
+let(_, found2) = map.get('b'); // (_, false)
 ```
 
 This is especially important for primitive value types like `i32` where `null`
@@ -362,9 +362,9 @@ typed—you cannot mix `i32` and `u32` without explicit casting.
 ### Arithmetic
 
 ```ts
-let a = 1 + 2;  // Addition
-let b = 5 - 3;  // Subtraction
-let c = 2 * 3;  // Multiplication
+let a = 1 + 2; // Addition
+let b = 5 - 3; // Subtraction
+let c = 2 * 3; // Multiplication
 let d = 10 / 3; // Division (integer: 3)
 let e = 10 % 3; // Modulo (1)
 ```
@@ -376,14 +376,14 @@ comparison for objects (unless `operator ==` is defined). Use `===` to always
 compare by reference.
 
 ```ts
-a == b;  // Equal (value equality for strings)
-a != b;  // Not equal
+a == b; // Equal (value equality for strings)
+a != b; // Not equal
 a === b; // Strict equal (reference equality)
 a !== b; // Strict not equal
-a < b;   // Less than
-a <= b;  // Less than or equal
-a > b;   // Greater than
-a >= b;  // Greater than or equal
+a < b; // Less than
+a <= b; // Less than or equal
+a > b; // Greater than
+a >= b; // Greater than or equal
 ```
 
 ### Logical
@@ -391,18 +391,18 @@ a >= b;  // Greater than or equal
 ```ts
 a && b; // Logical AND (short-circuit)
 a || b; // Logical OR (short-circuit)
-!a;     // Logical NOT
+!a; // Logical NOT
 ```
 
 ### Bitwise
 
 ```ts
-a & b;   // AND
-a | b;   // OR
-a ^ b;   // XOR
-~a;      // NOT
-a << b;  // Left shift
-a >> b;  // Right shift (signed)
+a & b; // AND
+a | b; // OR
+a ^ b; // XOR
+~a; // NOT
+a << b; // Left shift
+a >> b; // Right shift (signed)
 a >>> b; // Right shift (unsigned)
 ```
 
@@ -460,7 +460,7 @@ text |> $.trim() |> $.toUpperCase()
 `$` is only valid inside pipeline expressions:
 
 ```ts
-let x = $;  // ❌ Error: '$' can only be used inside a pipeline expression
+let x = $; // ❌ Error: '$' can only be used inside a pipeline expression
 ```
 
 ### Operator Precedence (highest to lowest)
@@ -691,10 +691,10 @@ memory.
 
 ```ts
 let s = 'hello';
-s.length;      // Length in code units
+s.length; // Length in code units
 s.slice(1, 3); // "el" (O(1), shares backing storage)
-s.copy();      // Force a copy (release parent memory)
-s + ' world';  // Concatenation
+s.copy(); // Force a copy (release parent memory)
+s + ' world'; // Concatenation
 ```
 
 ### StringBuilder
@@ -843,7 +843,7 @@ if (x is MyClass) {
 **Union restrictions:**
 
 - Primitives cannot mix with other types: `i32 | null` is not allowed - Literal
-unions of the same primitive are fine: `1 | 2 | 3` works
+  unions of the same primitive are fine: `1 | 2 | 3` works
 - Extension classes on the same base type cannot be unioned (indistinguishable)
 - Use `Box<T>` to put primitives in unions with references: `Box<i32> | null`
 
