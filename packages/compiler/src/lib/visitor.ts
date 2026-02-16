@@ -102,6 +102,7 @@ import {
   type LiteralTypeAnnotation,
   type SymbolPropertyName,
   type SymbolDeclaration,
+  type LetPatternCondition,
 } from './ast.js';
 
 /**
@@ -129,6 +130,7 @@ export interface Visitor<T = void> {
   visitBreakStatement?(node: BreakStatement, context: T): void;
   visitContinueStatement?(node: ContinueStatement, context: T): void;
   visitIfStatement?(node: IfStatement, context: T): void;
+  visitLetPatternCondition?(node: LetPatternCondition, context: T): void;
   visitWhileStatement?(node: WhileStatement, context: T): void;
   visitForStatement?(node: ForStatement, context: T): void;
   visitForInStatement?(node: ForInStatement, context: T): void;
@@ -290,6 +292,11 @@ export function visit<T>(
     case NodeType.IfStatement:
       visitor.visitIfStatement?.(node as IfStatement, context);
       visitIfStatementChildren(node as IfStatement, visitor, context);
+      break;
+    case NodeType.LetPatternCondition:
+      visitor.visitLetPatternCondition?.(node as LetPatternCondition, context);
+      visit((node as LetPatternCondition).pattern, visitor, context);
+      visit((node as LetPatternCondition).init, visitor, context);
       break;
     case NodeType.WhileStatement:
       visitor.visitWhileStatement?.(node as WhileStatement, context);

@@ -494,4 +494,58 @@ suite('AST Visitor', () => {
 
     assert.strictEqual(enumCount, 1);
   });
+
+  test('visits LetPatternCondition in if statement', () => {
+    const ast = parse(`
+      let iter = getIterator();
+      if (let value = iter.next()) {
+        doSomething(value);
+      }
+    `);
+
+    let letPatternCount = 0;
+    const identifiers: string[] = [];
+
+    visit<void>(
+      ast,
+      {
+        visitLetPatternCondition() {
+          letPatternCount++;
+        },
+        visitIdentifier(node: Identifier) {
+          identifiers.push(node.name);
+        },
+      },
+      undefined,
+    );
+
+    assert.strictEqual(letPatternCount, 1);
+    // Should visit: iter (binding), getIterator (ref), value (pattern binding),
+    // iter (ref), next (not visited - member property), doSomething (ref), value (ref)
+    assert.ok(identifiers.includes('value'), 'should visit pattern binding');
+    assert.ok(identifiers.includes('iter'), 'should visit init expression');
+  });
+
+  test('visits LetPatternCondition in while statement', () => {
+    const ast = parse(`
+      let iter = getIterator();
+      while (let value = iter.next()) {
+        process(value);
+      }
+    `);
+
+    let letPatternCount = 0;
+
+    visit<void>(
+      ast,
+      {
+        visitLetPatternCondition() {
+          letPatternCount++;
+        },
+      },
+      undefined,
+    );
+
+    assert.strictEqual(letPatternCount, 1);
+  });
 });
