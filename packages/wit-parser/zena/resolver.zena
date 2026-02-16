@@ -268,6 +268,8 @@ export class Resolver {
   #packageName: PackageName | null;
   /** Types being resolved (for cycle detection). */
   #resolving: Array<String>;
+  /** Interfaces being resolved (for use cycle detection). */
+  #resolvingInterfaces: Array<String>;
   /** Worlds being included (for include cycle detection). */
   #includingWorlds: Array<String>;
   /** Whether we're currently inside a gated context (@unstable). */
@@ -277,6 +279,7 @@ export class Resolver {
     this.#scopes = new Array<Scope>();
     this.#packageName = null;
     this.#resolving = new Array<String>();
+    this.#resolvingInterfaces = new Array<String>();
     this.#includingWorlds = new Array<String>();
     this.#inGatedContext = false;
   }
@@ -529,6 +532,9 @@ export class Resolver {
     let ifaceGated = isGated(iface.docs);
     let prevGatedContext = this.#inGatedContext;
 
+    // Track this interface for use cycle detection
+    this.#resolvingInterfaces.push(iface.name.name);
+
     // If interface is gated, we're now in a gated context
     if (ifaceGated) {
       this.#inGatedContext = true;
@@ -574,6 +580,7 @@ export class Resolver {
 
     this.#popScope();
     this.#inGatedContext = prevGatedContext;
+    this.#resolvingInterfaces.pop();
   }
 
   #resolveInterfaceItem(item: InterfaceItem): void {
@@ -674,9 +681,93 @@ export class Resolver {
       if (isGated(inc.docs)) {
         this.#inGatedContext = true;
       }
+      // Check include for shadowing before resolving
+      this.#checkIncludeShadowing(inc, imports, exports);
       this.#resolveInclude(inc);
       this.#inGatedContext = prevGatedContext;
     }
+  }
+
+  /** Check if an include statement would shadow existing imports/exports. */
+  #checkIncludeShadowing(include: Include, imports: Array<SymbolEntry>, exports: Array<SymbolEntry>): void {
+    // Only check for local world references
+    if (include.from.tag != UsePathTag.Id) {
+      return;
+    }
+    let id = include.from.id as Id;
+    let worldDef = this.#findWorldDef(id.name);
+    if (worldDef == null) {
+      return;
+    }
+    let w = worldDef as WorldDef;
+
+    // Check each item in the included world
+    var i = 0;
+    while (i < w.items.length) {
+      let item = w.items[i];
+      if (item.tag == WorldItemTag.Import) {
+        let imp = item.importItem as Import;
+        let impName = this.#getExternKindName(imp.kind);
+        if (impName != null) {
+          let name = impName as String;
+          // Apply rename if exists
+          let finalName = this.#applyIncludeRename(name, include.names);
+          // Check if this would shadow an existing import
+          let existing = findSymbolInList(imports, finalName);
+          if (existing != null) {
+            throw new ResolveError(
+              "import of `" + finalName + "` shadows previously imported items",
+              id.span
+            );
+          }
+          // Add to imports for future shadowing checks
+          imports.push(new SymbolEntry(finalName, SymbolKind.Func, id.span));
+        }
+      } else if (item.tag == WorldItemTag.Export) {
+        let exp = item.exportItem as Export;
+        let expName = this.#getExternKindName(exp.kind);
+        if (expName != null) {
+          let name = expName as String;
+          let finalName = this.#applyIncludeRename(name, include.names);
+          let existing = findSymbolInList(exports, finalName);
+          if (existing != null) {
+            throw new ResolveError(
+              "export of `" + finalName + "` shadows previously exported items",
+              id.span
+            );
+          }
+          exports.push(new SymbolEntry(finalName, SymbolKind.Func, id.span));
+        }
+      }
+      i = i + 1;
+    }
+  }
+
+  /** Get the name from an extern kind, if applicable. */
+  #getExternKindName(kind: ExternKind): String | null {
+    if (kind.tag == ExternKindTag.Func) {
+      return (kind.name as Id).name;
+    }
+    if (kind.tag == ExternKindTag.Interface) {
+      return (kind.name as Id).name;
+    }
+    if (kind.tag == ExternKindTag.Path) {
+      return (kind.path as UsePath).getName().name;
+    }
+    return null;
+  }
+
+  /** Apply a rename from include names if the name matches. */
+  #applyIncludeRename(name: String, names: Array<IncludeName>): String {
+    var i = 0;
+    while (i < names.length) {
+      let n = names[i];
+      if (n.name.name == name) {
+        return n.asName.name;
+      }
+      i = i + 1;
+    }
+    return name;
   }
 
   #resolveExternKind(kind: ExternKind, isImport: boolean, symbols: Array<SymbolEntry>, worldName: String): void {
@@ -746,7 +837,28 @@ export class Resolver {
       symbols.push(new SymbolEntry(fullPath, SymbolKind.Interface, pathName.span));
       // Validate path references exist
       this.#resolveUsePath(path);
+      // Validate path references an interface, not a world (invalid-world-import)
+      this.#validatePathIsInterface(path, isImport);
     }
+  }
+
+  /** Validate that a UsePath references an interface, not a world. */
+  #validatePathIsInterface(path: UsePath, isImport: boolean): void {
+    if (path.tag == UsePathTag.Id) {
+      let id = path.id as Id;
+      let sym = this.#findSymbol(id.name);
+      if (sym != null) {
+        let s = sym as SymbolEntry;
+        if (s.kind == SymbolKind.World) {
+          let direction = if (isImport) "import" else "export";
+          throw new ResolveError(
+            "cannot " + direction + " world `" + id.name + "` into a world",
+            id.span
+          );
+        }
+      }
+    }
+    // Package paths are validated at link time
   }
 
   // --------------------------------------------------------------------------
@@ -1076,12 +1188,13 @@ export class Resolver {
           this.#resolveType(typeDef.aliasType as Type, inReturnPosition);
           this.#resolving.pop();
         } else if (typeDef.tag == TypeDefTag.Record) {
-          // Check record fields for cycles
+          // Check record fields for cycles and borrow usage
           this.#resolving.push(name);
           let fields = typeDef.fields as Array<Field>;
           var i = 0;
           while (i < fields.length) {
-            this.#resolveType(fields[i].type, false);
+            // Propagate inReturnPosition to catch borrow<T> in record fields
+            this.#resolveType(fields[i].type, inReturnPosition);
             i = i + 1;
           }
           this.#resolving.pop();
@@ -1252,6 +1365,18 @@ export class Resolver {
   // Use Statement Resolution
   // --------------------------------------------------------------------------
 
+  /** Check if an interface is currently being resolved (for cycle detection). */
+  #isResolvingInterface(name: String): boolean {
+    var i = 0;
+    while (i < this.#resolvingInterfaces.length) {
+      if (this.#resolvingInterfaces[i] == name) {
+        return true;
+      }
+      i = i + 1;
+    }
+    return false;
+  }
+
   #resolveUse(use: Use): void {
     // Validate the path references an existing interface
     this.#resolveUsePath(use.from);
@@ -1267,6 +1392,25 @@ export class Resolver {
             "name `" + id.name + "` is defined as a world, not an interface",
             id.span
           );
+        }
+      }
+      
+      // Check for use cycle - if we're currently resolving this interface, it's a cycle
+      if (this.#isResolvingInterface(id.name)) {
+        throw new ResolveError(
+          "interface or world `" + id.name + "` depends on itself",
+          id.span
+        );
+      }
+      
+      // Recursively resolve the target interface to detect transitive cycles
+      let iface = this.#findInterface(id.name);
+      if (iface != null) {
+        let ifaceDef = iface as InterfaceDef;
+        // Only resolve if not already resolved (to avoid infinite recursion 
+        // in valid cases where an interface is used multiple times)
+        if (!this.#isResolvingInterface(ifaceDef.name.name)) {
+          this.#resolveInterface(ifaceDef);
         }
       }
     }
@@ -1391,9 +1535,31 @@ export class Resolver {
     this.#resolveUsePath(use.item);
   }
 
+  /** Check if a name is a kebab-case name (contains hyphens). */
+  #isKebabName(name: String): boolean {
+    var i = 0;
+    while (i < name.length) {
+      if (name.getByteAt(i) == 45) {  // 45 is '-'
+        return true;
+      }
+      i = i + 1;
+    }
+    return false;
+  }
+
   #resolveInclude(include: Include): void {
     // Validate the path
     this.#resolveUsePath(include.from);
+
+    // Validate include renames (only for local world references)
+    if (include.from.tag == UsePathTag.Id && include.names.length > 0) {
+      let worldId = include.from.id as Id;
+      let worldDef = this.#findWorldDef(worldId.name);
+      if (worldDef != null) {
+        let w = worldDef as WorldDef;
+        this.#validateIncludeNames(include, w);
+      }
+    }
 
     // Check for include cycles and feature gates
     if (include.from.tag == UsePathTag.Id) {
@@ -1413,12 +1579,61 @@ export class Resolver {
         }
 
         // Recursively resolve the included world to detect transitive cycles
-        let worldDef = this.#findWorldDef(id.name);
-        if (worldDef != null) {
-          this.#resolveWorldIncludes(worldDef as WorldDef);
+        let worldDef2 = this.#findWorldDef(id.name);
+        if (worldDef2 != null) {
+          this.#resolveWorldIncludes(worldDef2 as WorldDef);
         }
       }
     }
+  }
+
+  /** Validate include rename names - only kebab-names (functions) can be renamed, not IDs (interfaces). */
+  #validateIncludeNames(include: Include, world: WorldDef): void {
+    var i = 0;
+    while (i < include.names.length) {
+      let incName = include.names[i];
+      let name = incName.name.name;
+
+      // Check if this name exists as a function (kebab-name) in the world's imports/exports
+      let isKebabNameItem = this.#isKebabNameItemInWorld(world, name);
+
+      if (!isKebabNameItem) {
+        // Name either doesn't exist or is an interface (ID), not a function (kebab-name)
+        throw new ResolveError(
+          "no import or export kebab-name `" + name + "`. Note that an ID does not support renaming",
+          include.from.getName().span
+        );
+      }
+      i = i + 1;
+    }
+  }
+
+  /** Check if a name in the world's imports/exports is a "kebab-name" item (function). */
+  #isKebabNameItemInWorld(world: WorldDef, name: String): boolean {
+    var i = 0;
+    while (i < world.items.length) {
+      let item = world.items[i];
+      if (item.tag == WorldItemTag.Import) {
+        let imp = item.importItem as Import;
+        // Only functions are "kebab-names" - interfaces paths don't support renaming
+        if (imp.kind.tag == ExternKindTag.Func) {
+          let funcName = imp.kind.name as Id;
+          if (funcName.name == name) {
+            return true;
+          }
+        }
+      } else if (item.tag == WorldItemTag.Export) {
+        let exp = item.exportItem as Export;
+        if (exp.kind.tag == ExternKindTag.Func) {
+          let funcName = exp.kind.name as Id;
+          if (funcName.name == name) {
+            return true;
+          }
+        }
+      }
+      i = i + 1;
+    }
+    return false;
   }
 
   /** Resolve only the includes within a world (for cycle detection). */
