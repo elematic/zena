@@ -1,3 +1,4 @@
+import {ByteBuffer} from './byte-buffer.js';
 import {ExportDesc, SectionId} from './wasm.js';
 
 export class WasmModule {
@@ -295,7 +296,7 @@ export class WasmModule {
   }
 
   public toBytes(): Uint8Array {
-    const buffer: number[] = [];
+    const buffer = new ByteBuffer();
 
     // Magic & Version
     buffer.push(0x00, 0x61, 0x73, 0x6d);
@@ -332,7 +333,7 @@ export class WasmModule {
           sectionBuffer.push(...type);
         }
       }
-      this.#writeSection(buffer, SectionId.Type, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Type, sectionBuffer);
     }
 
     // Import Section
@@ -345,7 +346,7 @@ export class WasmModule {
         sectionBuffer.push(imp.kind);
         this.#writeUnsignedLEB128(sectionBuffer, imp.index);
       }
-      this.#writeSection(buffer, SectionId.Import, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Import, sectionBuffer);
     }
 
     // Function Section
@@ -355,7 +356,7 @@ export class WasmModule {
       for (const typeIndex of this.#functions) {
         this.#writeUnsignedLEB128(sectionBuffer, typeIndex);
       }
-      this.#writeSection(buffer, SectionId.Function, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Function, sectionBuffer);
     }
 
     // Table Section
@@ -365,7 +366,7 @@ export class WasmModule {
       for (const table of this.#tables) {
         sectionBuffer.push(...table);
       }
-      this.#writeSection(buffer, SectionId.Table, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Table, sectionBuffer);
     }
 
     // Memory Section
@@ -375,7 +376,7 @@ export class WasmModule {
       for (const memory of this.#memories) {
         sectionBuffer.push(...memory);
       }
-      this.#writeSection(buffer, SectionId.Memory, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Memory, sectionBuffer);
     }
 
     // Tag Section
@@ -385,7 +386,7 @@ export class WasmModule {
       for (const tag of this.#tags) {
         sectionBuffer.push(...tag);
       }
-      this.#writeSection(buffer, SectionId.Tag, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Tag, sectionBuffer);
     }
 
     // Global Section
@@ -395,7 +396,7 @@ export class WasmModule {
       for (const global of this.#globals) {
         sectionBuffer.push(...global);
       }
-      this.#writeSection(buffer, SectionId.Global, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Global, sectionBuffer);
     }
 
     // Export Section
@@ -407,14 +408,14 @@ export class WasmModule {
         sectionBuffer.push(exp.kind);
         this.#writeUnsignedLEB128(sectionBuffer, exp.index);
       }
-      this.#writeSection(buffer, SectionId.Export, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Export, sectionBuffer);
     }
 
     // Start Section
     if (this.#startFunctionIndex !== undefined) {
       const sectionBuffer: number[] = [];
       this.#writeUnsignedLEB128(sectionBuffer, this.#startFunctionIndex);
-      this.#writeSection(buffer, SectionId.Start, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Start, sectionBuffer);
     }
 
     // Element Section (Declarative)
@@ -433,14 +434,18 @@ export class WasmModule {
         this.#writeUnsignedLEB128(sectionBuffer, index);
       }
 
-      this.#writeSection(buffer, SectionId.Element, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Element, sectionBuffer);
     }
 
     // DataCount Section
     if (this.#datas.length > 0) {
       const sectionBuffer: number[] = [];
       this.#writeUnsignedLEB128(sectionBuffer, this.#datas.length);
-      this.#writeSection(buffer, SectionId.DataCount, sectionBuffer);
+      this.#writeSectionToByteBuffer(
+        buffer,
+        SectionId.DataCount,
+        sectionBuffer,
+      );
     }
 
     // Code Section
@@ -454,7 +459,7 @@ export class WasmModule {
         this.#writeUnsignedLEB128(sectionBuffer, entryBuffer.length);
         sectionBuffer.push(...entryBuffer);
       }
-      this.#writeSection(buffer, SectionId.Code, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Code, sectionBuffer);
     }
 
     // Data Section
@@ -464,7 +469,7 @@ export class WasmModule {
       for (const data of this.#datas) {
         sectionBuffer.push(...data);
       }
-      this.#writeSection(buffer, SectionId.Data, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Data, sectionBuffer);
     }
 
     // Name Section (custom section with name "name")
@@ -495,16 +500,32 @@ export class WasmModule {
       this.#writeUnsignedLEB128(sectionBuffer, funcNamesBuffer.length);
       sectionBuffer.push(...funcNamesBuffer);
 
-      this.#writeSection(buffer, SectionId.Custom, sectionBuffer);
+      this.#writeSectionToByteBuffer(buffer, SectionId.Custom, sectionBuffer);
     }
 
-    return new Uint8Array(buffer);
+    return buffer.toUint8Array();
   }
 
-  #writeSection(buffer: number[], id: number, content: number[]) {
-    buffer.push(id);
-    this.#writeUnsignedLEB128(buffer, content.length);
-    buffer.push(...content);
+  #writeSectionToByteBuffer(
+    buffer: ByteBuffer,
+    id: number,
+    content: readonly number[],
+  ): void {
+    buffer.pushByte(id);
+    this.#writeUnsignedLEB128ToByteBuffer(buffer, content.length);
+    buffer.pushArray(content);
+  }
+
+  #writeUnsignedLEB128ToByteBuffer(buffer: ByteBuffer, value: number): void {
+    value |= 0;
+    do {
+      let byte = value & 0x7f;
+      value >>>= 7;
+      if (value !== 0) {
+        byte |= 0x80;
+      }
+      buffer.pushByte(byte);
+    } while (value !== 0);
   }
 
   #writeString(buffer: number[], str: string) {
