@@ -352,8 +352,11 @@ export class Resolver {
   // --------------------------------------------------------------------------
 
   #resolveAst(ast: Ast): void {
-    // Check that a package declaration exists (unless there are nested packages)
-    if (ast.packageName == null && ast.nestedPackages.length == 0) {
+    // Check that a package declaration exists:
+    // - Empty files need a package declaration (no items, no nested packages)
+    // - Files with top-level items need a package declaration
+    // - Files with only nested packages don't need a top-level package declaration
+    if (ast.packageName == null && (ast.nestedPackages.length == 0 || ast.items.length > 0)) {
       throw new ResolveError(
         "no `package` header was found in any WIT file for this package",
         new Span(0, 0)
