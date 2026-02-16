@@ -18,7 +18,7 @@ BASENAME=$(basename "$ZENA_FILE" .zena)
 WASM_FILE="/tmp/${BASENAME}.wasm"
 
 echo "==> Building $ZENA_FILE..."
-node "$PROJECT_ROOT/packages/cli/lib/cli.js" build "$ZENA_FILE" -o "$WASM_FILE"
+node "$PROJECT_ROOT/packages/cli/lib/cli.js" build "$ZENA_FILE" -g -o "$WASM_FILE"
 
 echo "==> WASM imports:"
 wasm-tools print "$WASM_FILE" 2>/dev/null | grep 'import' || echo "(none)"

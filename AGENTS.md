@@ -262,9 +262,17 @@ from 'node:test';`).
     function.
   - Use `compileAndInstantiate(source)` if you need access to all exports or
     need to test multiple functions from one source.
+  - Tests compile with `debug: true` by default, which emits function names
+    in the WASM binary for better stack traces when debugging runtime errors.
 - **Portable Tests**: When possible, write new tests in `tests/language/` as
   portable tests that can be run by both the TypeScript compiler and a future
   Zena compiler. This helps us work toward self-hosting incrementally.
+- **Debug Mode** (for readable WASM stack traces):
+  - **Test utilities**: Enabled by default via `debug: true` in
+    `test/codegen/utils.ts`.
+  - **CLI**: Use `-g` or `--debug` flag: `zena build main.zena -o main.wasm -g`
+  - **Direct CodeGenerator**: Pass `{debug: true}` in options:
+    `new CodeGenerator(modules, path, semCtx, chkCtx, {debug: true})`
 
 ### Temporary Tests and Debug Scripts
 

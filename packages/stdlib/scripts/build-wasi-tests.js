@@ -52,10 +52,10 @@ for (const pattern of wasiPatterns) {
       mkdirSync(wasmDir, {recursive: true});
     }
 
-    // Compile with wasi target
+    // Compile with wasi target and debug info for better stack traces
     try {
       execSync(
-        `node "${cliPath}" build "${zenaFile}" --target wasi -o "${wasmFile}"`,
+        `node "${cliPath}" build "${zenaFile}" --target wasi -g -o "${wasmFile}"`,
         {
           stdio: 'pipe',
           cwd: pkgDir,

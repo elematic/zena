@@ -135,7 +135,7 @@ export const compileToWasm = (
     path,
     compiler.semanticContext,
     compiler.checkerContext,
-    {dce: options.dce},
+    {dce: options.dce, debug: true}, // Enable debug mode for better stack traces in tests
   );
   return generator.generate();
 };
@@ -193,6 +193,7 @@ export async function compileAndInstantiate(
     path,
     compiler.semanticContext,
     compiler.checkerContext,
+    {debug: true}, // Enable debug mode for better stack traces in tests
   );
   const bytes = codegen.generate();
 
@@ -287,6 +288,7 @@ export async function compileWithDetails(
     path,
     compiler.semanticContext,
     compiler.checkerContext,
+    {debug: true}, // Enable debug mode for better stack traces in tests
   );
   const bytes = codegen.generate();
 
@@ -595,6 +597,7 @@ export let getNestedTestError = (index: i32): string | null => nested().tests[in
     wrapperPath,
     compiler.semanticContext,
     compiler.checkerContext,
+    {debug: true}, // Enable debug mode for better stack traces in tests
   );
   const bytes = codegen.generate();
 
