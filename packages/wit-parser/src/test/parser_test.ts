@@ -153,7 +153,9 @@ suite('WIT Parser', () => {
   });
 
   test('parses empty interface', async () => {
-    const harness = await instantiateParserHarness('package foo:test; interface empty {}');
+    const harness = await instantiateParserHarness(
+      'package foo:test; interface empty {}',
+    );
     const output = harness.parse();
     assert.match(output, /interface empty/);
     assert.strictEqual(harness.countItems(), 1);
