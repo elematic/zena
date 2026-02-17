@@ -1,16 +1,18 @@
 import {type CompilerHost, type Target} from '@zena-lang/compiler';
 import {readFileSync, existsSync} from 'node:fs';
-import {resolve, dirname, join} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {resolve, dirname} from 'node:path';
+import {
+  resolveStdlibModule,
+  loadStdlibModule,
+  isInternalModule,
+} from '@zena-lang/stdlib';
 
 export class NodeCompilerHost implements CompilerHost {
-  #stdlibPath: string;
   #virtualFiles: Map<string, string> = new Map();
   #target: Target;
 
   constructor(target: Target = 'host') {
     this.#target = target;
-    this.#stdlibPath = this.#findStdlibPath();
   }
 
   /**
@@ -21,21 +23,21 @@ export class NodeCompilerHost implements CompilerHost {
     this.#virtualFiles.set(path, content);
   }
 
-  #findStdlibPath(): string {
-    const pkgPath = fileURLToPath(import.meta.resolve('@zena-lang/stdlib'));
-    return join(dirname(pkgPath), 'zena');
-  }
-
   resolve(specifier: string, referrer: string): string {
     if (specifier.startsWith('zena:')) {
-      // zena:console is a virtual module that maps to the appropriate implementation
-      // based on the target. The actual files are console-host.zena and console-wasi.zena.
-      if (specifier === 'zena:console') {
-        return this.#target === 'wasi'
-          ? 'zena:console-wasi'
-          : 'zena:console-host';
+      const name = specifier.substring(5);
+      // Internal modules can only be imported from other stdlib modules
+      if (isInternalModule(name)) {
+        if (!referrer.startsWith('zena:')) {
+          throw new Error(`Cannot import internal module: ${specifier}`);
+        }
+        return specifier; // Allow as-is for stdlib-to-stdlib imports
       }
-      return specifier;
+      const resolved = resolveStdlibModule(name, this.#target);
+      if (!resolved) {
+        throw new Error(`Unknown stdlib module: ${specifier}`);
+      }
+      return `zena:${resolved}`;
     }
 
     if (specifier.startsWith('./') || specifier.startsWith('../')) {
@@ -55,15 +57,16 @@ export class NodeCompilerHost implements CompilerHost {
     }
 
     if (path.startsWith('zena:')) {
-      const name = path.substring(5); // remove 'zena:'
-
-      const filePath = join(this.#stdlibPath, `${name}.zena`);
-      if (!existsSync(filePath)) {
-        throw new Error(
-          `Standard library module not found: ${path} at ${filePath}`,
-        );
+      const name = path.substring(5);
+      // Internal modules can be loaded (they're allowed after resolution from stdlib)
+      if (isInternalModule(name)) {
+        return loadStdlibModule(name);
       }
-      return readFileSync(filePath, 'utf-8');
+      const resolved = resolveStdlibModule(name, this.#target);
+      if (!resolved) {
+        throw new Error(`Stdlib module not found or not importable: ${name}`);
+      }
+      return loadStdlibModule(resolved);
     }
 
     if (!existsSync(path)) {

@@ -17,81 +17,60 @@ export * from './analysis/index.js';
 import {Compiler, type CompilerHost} from './compiler.js';
 import {CodeGenerator} from './codegen/index.js';
 import {
-  arrayModule,
-  sequenceModule,
-  immutableArrayModule,
-  fixedArrayModule,
-  growableArrayModule,
-  stringModule,
-  consoleHostModule,
-  consoleInterfaceModule,
-  mapModule,
-  boxModule,
-  errorModule,
-  optionModule,
-  templateStringsArrayModule,
-  assertModule,
-  testModule,
-  rangeModule,
-  regexModule,
-  mathModule,
-  iteratorModule,
-  arrayIteratorModule,
-  memoryModule,
-  byteArrayModule,
-  fsModule,
-  cliModule,
-} from './stdlib.js';
+  resolveStdlibModule,
+  loadStdlibModule,
+  isInternalModule,
+  type Target,
+} from '@zena-lang/stdlib';
 
 class InMemoryHost implements CompilerHost {
-  files: Map<string, string>;
+  #files: Map<string, string>;
+  #target: Target;
 
-  constructor(files: Map<string, string>) {
-    this.files = files;
+  constructor(files: Map<string, string>, target: Target = 'host') {
+    this.#files = files;
+    this.#target = target;
   }
 
   resolve(specifier: string, referrer: string): string {
-    if (specifier.startsWith('zena:')) return specifier;
+    if (specifier.startsWith('zena:')) {
+      const name = specifier.substring(5);
+      // Internal modules can only be imported from other stdlib modules
+      if (isInternalModule(name)) {
+        if (!referrer.startsWith('zena:')) {
+          throw new Error(`Cannot import internal module: ${specifier}`);
+        }
+        return specifier; // Allow as-is for stdlib-to-stdlib imports
+      }
+      const resolved = resolveStdlibModule(name, this.#target);
+      if (!resolved) {
+        throw new Error(`Unknown stdlib module: ${specifier}`);
+      }
+      return `zena:${resolved}`;
+    }
     return specifier;
   }
 
   load(path: string): string {
-    if (this.files.has(path)) return this.files.get(path)!;
+    if (this.#files.has(path)) return this.#files.get(path)!;
+    if (path.startsWith('zena:')) {
+      const name = path.substring(5);
+      // Internal modules can be loaded (they're allowed after resolution from stdlib)
+      if (isInternalModule(name)) {
+        return loadStdlibModule(name);
+      }
+      const resolved = resolveStdlibModule(name, this.#target);
+      if (!resolved) {
+        throw new Error(`Stdlib module not found or not importable: ${name}`);
+      }
+      return loadStdlibModule(resolved);
+    }
     throw new Error(`File not found: ${path}`);
   }
 }
 
-export function compile(source: string): Uint8Array {
-  // console.log('Compiling source:', fullSource);
-  const host = new InMemoryHost(
-    new Map([
-      ['main.zena', source],
-      ['zena:array', arrayModule],
-      ['zena:sequence', sequenceModule],
-      ['zena:immutable-array', immutableArrayModule],
-      ['zena:fixed-array', fixedArrayModule],
-      ['zena:growable-array', growableArrayModule],
-      ['zena:string', stringModule],
-      ['zena:console-interface', consoleInterfaceModule],
-      ['zena:console', consoleHostModule],
-      ['zena:map', mapModule],
-      ['zena:box', boxModule],
-      ['zena:error', errorModule],
-      ['zena:option', optionModule],
-      ['zena:template-strings-array', templateStringsArrayModule],
-      ['zena:assert', assertModule],
-      ['zena:test', testModule],
-      ['zena:range', rangeModule],
-      ['zena:regex', regexModule],
-      ['zena:math', mathModule],
-      ['zena:iterator', iteratorModule],
-      ['zena:array-iterator', arrayIteratorModule],
-      ['zena:memory', memoryModule],
-      ['zena:byte-array', byteArrayModule],
-      ['zena:fs', fsModule],
-      ['zena:cli', cliModule],
-    ]),
-  );
+export function compile(source: string, target: Target = 'host'): Uint8Array {
+  const host = new InMemoryHost(new Map([['main.zena', source]]), target);
 
   const compiler = new Compiler(host);
 

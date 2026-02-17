@@ -106,3 +106,15 @@ export const cliModule = fs.readFileSync(
   path.join(stdlibDir, 'cli.zena'),
   'utf-8',
 );
+
+// New manifest-based module loader
+export {
+  type Target,
+  isStdlibModule,
+  isInternalModule,
+  resolveStdlibModule,
+  loadStdlibModule,
+  getStdlibModule,
+  getPublicModules,
+  getInternalModules,
+} from './lib/module-loader.js';
