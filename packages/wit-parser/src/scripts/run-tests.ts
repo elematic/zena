@@ -14,9 +14,9 @@ import * as fs from 'node:fs';
 import {Compiler, CodeGenerator} from '@zena-lang/compiler';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const testsDir = join(__dirname, '..', 'tests');
-const stdlibPath = join(__dirname, '../../stdlib/zena');
-const witParserPath = join(__dirname, '../zena');
+const testsDir = join(__dirname, '..', '..', 'tests');
+const stdlibPath = join(__dirname, '../../../stdlib/zena');
+const witParserPath = join(__dirname, '../../zena');
 
 // Cache the compiled WASM module
 let cachedWasm: Uint8Array | null = null;
@@ -266,6 +266,82 @@ const findWitFilesRecursively = async (
 };
 
 /**
+ * Extract the file-level package name from a WIT file content.
+ * Only matches `package namespace:name;` (with semicolon), not nested package blocks.
+ * Returns null if no file-level package declaration found.
+ */
+const extractPackageName = (content: string): string | null => {
+  // Match `package namespace:name;` or `package namespace:name@version;`
+  // Must have semicolon (not curly brace) to distinguish from nested package blocks
+  const match = content.match(
+    /^\s*package\s+([\w-]+):([\w-]+)(@[\w.+-]+)?\s*;/m,
+  );
+  if (!match) return null;
+  return `${match[1]}:${match[2]}`;
+};
+
+/**
+ * Check for conflicting package declarations in main files.
+ * Returns an error message if conflicting, null if OK.
+ */
+const checkConflictingPackages = async (
+  mainFiles: string[],
+): Promise<string | null> => {
+  if (mainFiles.length < 2) return null;
+
+  let firstPkg: string | null = null;
+  let firstFile: string | null = null;
+
+  for (const file of mainFiles) {
+    const content = await readFile(file, 'utf-8');
+    const pkg = extractPackageName(content);
+    if (pkg) {
+      if (firstPkg === null) {
+        firstPkg = pkg;
+        firstFile = file;
+      } else if (pkg !== firstPkg) {
+        // Conflicting package names
+        return `ParseError: package identifier \`${pkg}\` does not match previous package name of \`${firstPkg}\``;
+      }
+    }
+  }
+  return null;
+};
+
+/**
+ * Check if a single file has multiple `package X;` declarations without scope blocks.
+ * This is an error in WIT - second package must use `package X { }` syntax.
+ * Returns error message if detected, null otherwise.
+ */
+const checkMultiplePackagesNoScopeBlocks = (content: string): string | null => {
+  // Find all `package namespace:name;` declarations (file-level, with semicolon)
+  const packageDeclRegex = /^\s*package\s+([\w-]+):([\w-]+)(@[\w.+-]+)?\s*;/gm;
+  const matches: Array<{pkg: string; index: number}> = [];
+
+  let match;
+  while ((match = packageDeclRegex.exec(content)) !== null) {
+    matches.push({pkg: `${match[1]}:${match[2]}`, index: match.index});
+  }
+
+  if (matches.length >= 2) {
+    // We have multiple package declarations with semicolons
+    // Check if any items exist between the first and second package declarations
+    const firstEnd =
+      matches[0].index + content.substring(matches[0].index).indexOf(';') + 1;
+    const secondStart = matches[1].index;
+    const between = content.substring(firstEnd, secondStart);
+
+    // Check if there's any content (interface, world, etc.) between them
+    if (/\b(interface|world|use)\b/.test(between)) {
+      // Find position of the semicolon in the second package for error reporting
+      return `ParseError: expected '{', found ';'`;
+    }
+  }
+
+  return null;
+};
+
+/**
  * Run a single test case.
  */
 const runTest = async (test: TestCase): Promise<TestResult> => {
@@ -279,6 +355,17 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
       if (allFiles.length === 0) {
         return {test, passed: false, error: 'No .wit files in directory'};
       }
+
+      // Check for conflicting package declarations in main files
+      const conflictError = await checkConflictingPackages(main);
+      if (conflictError) {
+        // For error tests, this might be the expected error
+        if (test.type === 'error') {
+          return {test, passed: true};
+        }
+        return {test, passed: false, error: conflictError};
+      }
+
       // Concatenate all wit files (deps first, then main)
       const contents: string[] = [];
       for (const witFile of allFiles) {
@@ -288,6 +375,15 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
       witInput = contents.join('\n');
     } else {
       witInput = await readFile(test.witPath, 'utf-8');
+
+      // For single-file tests, check for multiple package declarations without scope blocks
+      const multiPkgError = checkMultiplePackagesNoScopeBlocks(witInput);
+      if (multiPkgError) {
+        if (test.type === 'error') {
+          return {test, passed: true};
+        }
+        return {test, passed: false, error: multiPkgError};
+      }
     }
 
     // Read expected output

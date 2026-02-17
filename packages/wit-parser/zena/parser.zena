@@ -1880,7 +1880,7 @@ export class Parser {
           this.#expect(TokenType.RightBrace);
           ast.nestedPackages.push(pkg);
         } else {
-          // Top-level package declaration from another file (multi-file support)
+          // Top-level package declaration (with semicolon)
           this.#expectSemicolon();
           
           if (ast.packageName == null) {
@@ -1894,8 +1894,11 @@ export class Parser {
             
             if (existingKey == newKey) {
               // Same package - items will be added to ast.items below (continue normal parsing)
+              // This is valid for multi-file scenarios where each file starts with same package decl
             } else {
-              // Different package - check if we already have a nested package with this key
+              // Different package - treat as nested package for remaining items
+              // (In single-file context this might be an error, but we can't detect file boundaries)
+              // Check if we already have a nested package with this key
               let existingNested = this.#findNestedPackage(ast.nestedPackages, newKey);
               
               if (existingNested != null) {
