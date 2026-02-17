@@ -55,6 +55,7 @@ Options:
   -o, --output <file>   Output file path (for build command)
   -t, --target <target> Compilation target: 'host' (default) or 'wasi'
   -g, --debug           Include debug info (function names in WASM name section)
+  --dce                 Enable dead code elimination
   -v, --verbose         Verbose output (for test command)
   -h, --help            Show help
 
@@ -66,6 +67,7 @@ Examples:
   zena build main.zena -o main.wasm
   zena build main.zena -o main.wasm --target wasi
   zena build main.zena -o main.wasm -g         # Include debug info
+  zena build main.zena -o main.wasm --dce      # Enable dead code elimination
   zena check main.zena
   zena run main.zena
   zena test                           # Run all *_test.zena files
@@ -90,6 +92,7 @@ const buildCommand = async (
   output?: string,
   target: Target = 'host',
   debug: boolean = false,
+  dce: boolean = false,
 ): Promise<number> => {
   if (files.length === 0) {
     console.error('Error: No input files specified');
@@ -127,7 +130,7 @@ const buildCommand = async (
       entryPoint,
       compiler.semanticContext,
       compiler.checkerContext,
-      {target, debug},
+      {target, debug, dce},
     );
     const bytes = codegen.generate();
 
@@ -260,6 +263,7 @@ export const main = async (args: string[]): Promise<number> => {
       output: {type: 'string', short: 'o'},
       target: {type: 'string', short: 't', default: 'host'},
       debug: {type: 'boolean', short: 'g', default: false},
+      dce: {type: 'boolean', default: false},
       verbose: {type: 'boolean', short: 'v', default: false},
     },
     allowPositionals: true,
@@ -284,7 +288,7 @@ export const main = async (args: string[]): Promise<number> => {
 
   switch (command) {
     case 'build':
-      return buildCommand(files, values.output, target, values.debug);
+      return buildCommand(files, values.output, target, values.debug, values.dce);
     case 'check':
       return checkCommand(files);
     case 'run':
