@@ -1788,6 +1788,17 @@ function generateSymbolMemberAccess(
     return;
   }
 
+  // Check if it's an accessor (getter method)
+  const getterName = getGetterName(memberName);
+  const getterInfo = classInfo.methods.get(getterName);
+  if (getterInfo) {
+    // Generate getter call (static dispatch since symbol accessors are final)
+    generateExpression(ctx, expr.object, body);
+    body.push(Opcode.call);
+    body.push(...WasmModule.encodeSignedLEB128(getterInfo.index));
+    return;
+  }
+
   // Check if it's a method - methods are accessed at call site, not here
   // If the expression type is a FunctionType, this is a method reference
   const resultType = expr.inferredType;
@@ -1928,33 +1939,59 @@ function generateSymbolFieldAssignment(
 
   // Look up the field by symbol name
   const fieldInfo = classInfo.fields.get(memberName);
-  if (!fieldInfo) {
-    throw new Error(
-      `Symbol field '${memberName}' (symbol: ${symbolType.debugName ?? '<unnamed>'}) not found on class ${classType.name}`,
-    );
+  if (fieldInfo) {
+    // Generate field assignment: struct.set
+    // 1. Generate object
+    generateExpression(ctx, memberExpr.object, body);
+
+    // 2. Generate value
+    generateExpression(ctx, valueExpr, body);
+
+    // 3. Store to temp to return as expression result
+    const valueType = inferType(ctx, valueExpr);
+    const tempLocal = ctx.declareLocal('$$temp_symbol_field_set', valueType);
+    body.push(Opcode.local_tee);
+    body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+
+    // 4. struct.set
+    body.push(0xfb, GcOpcode.struct_set);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+    // 5. Return the value (assignment expression result)
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+    return;
   }
 
-  // Generate field assignment: struct.set
-  // 1. Generate object
-  generateExpression(ctx, memberExpr.object, body);
+  // Check if it's an accessor (setter method)
+  const setterName = getSetterName(memberName);
+  const setterInfo = classInfo.methods.get(setterName);
+  if (setterInfo) {
+    // Generate setter call (static dispatch since symbol accessors are final)
+    // 1. Generate object
+    generateExpression(ctx, memberExpr.object, body);
 
-  // 2. Generate value
-  generateExpression(ctx, valueExpr, body);
+    // 2. Generate value and store to temp for return
+    generateExpression(ctx, valueExpr, body);
+    const valueType = inferType(ctx, valueExpr);
+    const tempLocal = ctx.declareLocal('$$temp_symbol_set', valueType);
+    body.push(Opcode.local_tee);
+    body.push(...WasmModule.encodeSignedLEB128(tempLocal));
 
-  // 3. Store to temp to return as expression result
-  const valueType = inferType(ctx, valueExpr);
-  const tempLocal = ctx.declareLocal('$$temp_symbol_field_set', valueType);
-  body.push(Opcode.local_tee);
-  body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+    // 3. Call setter
+    body.push(Opcode.call);
+    body.push(...WasmModule.encodeSignedLEB128(setterInfo.index));
 
-  // 4. struct.set
-  body.push(0xfb, GcOpcode.struct_set);
-  body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
-  body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+    // 4. Return the value (assignment expression result)
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+    return;
+  }
 
-  // 5. Return the value (assignment expression result)
-  body.push(Opcode.local_get);
-  body.push(...WasmModule.encodeSignedLEB128(tempLocal));
+  throw new Error(
+    `Symbol field '${memberName}' (symbol: ${symbolType.debugName ?? '<unnamed>'}) not found on class ${classType.name}`,
+  );
 }
 
 function generateNewExpression(

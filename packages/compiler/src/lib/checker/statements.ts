@@ -2758,8 +2758,30 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       checkMethodDefinition(ctx, member);
     } else if (member.type === NodeType.FieldDefinition) {
       const memberNameInfo = resolveMemberName(ctx, member.name);
+
       if (memberNameInfo.isSymbol) {
-        // TODO: Check symbol field initializer
+        // Check symbol field initializer
+        if (member.value) {
+          ctx.isCheckingFieldInitializer = true;
+          const valueType = checkExpression(ctx, member.value);
+          ctx.isCheckingFieldInitializer = false;
+
+          const fieldType = classType.symbolFields?.get(
+            memberNameInfo.symbolType!,
+          );
+          if (
+            fieldType &&
+            valueType.kind !== fieldType.kind &&
+            valueType.kind !== Types.Unknown.kind
+          ) {
+            if (typeToString(valueType) !== typeToString(fieldType)) {
+              ctx.diagnostics.reportError(
+                `Type mismatch for symbol field '${memberNameInfo.symbolType?.debugName ?? '<symbol>'}': expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+                DiagnosticCode.TypeMismatch,
+              );
+            }
+          }
+        }
         continue;
       }
       const memberName = memberNameInfo.name;
@@ -3575,7 +3597,21 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       ctx.currentFunctionReturnType = previousReturnType;
     } else if (member.type === NodeType.FieldDefinition && member.value) {
       const memberNameInfo = resolveMemberName(ctx, member.name);
-      if (memberNameInfo.isSymbol) continue; // TODO: Check symbol field initializer
+
+      if (memberNameInfo.isSymbol) {
+        // Check symbol field initializer
+        const fieldType = mixinType.symbolFields?.get(
+          memberNameInfo.symbolType!,
+        );
+        const valueType = checkExpression(ctx, member.value);
+        if (fieldType && !isAssignableTo(ctx, valueType, fieldType)) {
+          ctx.diagnostics.reportError(
+            `Type mismatch in symbol field initializer: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+            DiagnosticCode.TypeMismatch,
+          );
+        }
+        continue;
+      }
 
       const fieldType = mixinType.fields.get(memberNameInfo.name)!;
       const valueType = checkExpression(ctx, member.value);
