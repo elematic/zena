@@ -10,6 +10,7 @@
  * - Invalid borrow in return position
  * - Invalid map key types
  * - Feature gate violations (@since/@unstable)
+ * - Cross-package reference validation
  *
  * Based on the canonical implementation in wasm-tools:
  * https://github.com/bytecodealliance/wasm-tools/blob/main/crates/wit-parser/src/ast/resolve.rs
@@ -17,6 +18,7 @@
 
 import {String} from 'zena:string';
 import {StringBuilder} from 'zena:string-builder';
+import {Map} from 'zena:map';
 import {Span} from './token.zena';
 import {
   Ast, AstItem, AstItemTag, InterfaceDef, WorldDef, TypeDef, TypeDefTag,
@@ -63,18 +65,168 @@ export class SymbolEntry {
   span: Span;
   /** Whether this symbol is feature-gated (has @unstable annotation). */
   isGated: boolean;
+  /** The source of this symbol (e.g., world name for include tracking). */
+  source: String | null;
 
   #new(name: String, kind: SymbolKind, span: Span) {
     this.name = name;
     this.kind = kind;
     this.span = span;
     this.isGated = false;
+    this.source = null;
   }
 
   static gated(name: String, kind: SymbolKind, span: Span): SymbolEntry {
     let s = new SymbolEntry(name, kind, span);
     s.isGated = true;
     return s;
+  }
+
+  static withSource(name: String, kind: SymbolKind, span: Span, source: String): SymbolEntry {
+    let s = new SymbolEntry(name, kind, span);
+    s.source = source;
+    return s;
+  }
+}
+
+// ============================================================================
+// Package Registry
+// ============================================================================
+
+/** Convert a PackageName to a lookup key (namespace:name, without version). */
+let packageNameToKey = (name: PackageName): String => {
+  return name.namespace.name + ":" + name.name.name;
+};
+
+/**
+ * Contents of a package - its interfaces and worlds.
+ */
+class PackageContent {
+  /** Interfaces defined in this package, keyed by name. */
+  interfaces: Map<String, InterfaceDef>;
+  /** Worlds defined in this package, keyed by name. */
+  worlds: Map<String, WorldDef>;
+  /** The package name for error messages. */
+  name: PackageName;
+
+  #new(name: PackageName) {
+    this.interfaces = new Map<String, InterfaceDef>();
+    this.worlds = new Map<String, WorldDef>();
+    this.name = name;
+  }
+}
+
+/**
+ * Registry of all packages in the AST, for cross-package reference resolution.
+ */
+class PackageRegistry {
+  /** Map from package key (namespace:name) to package content. */
+  #packages: Map<String, PackageContent>;
+  /** List of all package keys for error messages. */
+  #knownPackages: Array<String>;
+
+  #new() {
+    this.#packages = new Map<String, PackageContent>();
+    this.#knownPackages = new Array<String>();
+  }
+
+  /** Build a registry from an AST. */
+  static build(ast: Ast): PackageRegistry {
+    let registry = new PackageRegistry();
+
+    // Register main package
+    if (ast.packageName != null) {
+      let name = ast.packageName as PackageName;
+      registry.#registerPackage(name, ast.items);
+    }
+
+    // Register nested packages
+    var i = 0;
+    while (i < ast.nestedPackages.length) {
+      let pkg = ast.nestedPackages[i];
+      registry.#registerPackage(pkg.name, pkg.items);
+      i = i + 1;
+    }
+
+    return registry;
+  }
+
+  /** Register a package with its items. */
+  #registerPackage(name: PackageName, items: Array<AstItem>): void {
+    let key = packageNameToKey(name);
+
+    // Check for duplicate package
+    if (this.#packages.has(key)) {
+      // Later we can make this an error, for now just merge
+    }
+
+    let content = new PackageContent(name);
+
+    // Collect interfaces and worlds
+    var i = 0;
+    while (i < items.length) {
+      let item = items[i];
+      if (item.tag == AstItemTag.Interface) {
+        let iface = item.interfaceDef as InterfaceDef;
+        content.interfaces.set(iface.name.name, iface);
+      } else if (item.tag == AstItemTag.World) {
+        let world = item.worldDef as WorldDef;
+        content.worlds.set(world.name.name, world);
+      }
+      i = i + 1;
+    }
+
+    this.#packages.set(key, content);
+    this.#knownPackages.push(key);
+  }
+
+  /** Look up a package by namespace:name. Returns null if not found. */
+  getPackage(namespace: String, name: String): PackageContent | null {
+    let key = namespace + ":" + name;
+    let (content, found) = this.#packages.get(key);
+    if (found) {
+      return content;
+    }
+    return null;
+  }
+
+  /** Look up an interface by full path (namespace:name/interface). */
+  getInterface(namespace: String, pkgName: String, ifaceName: String): InterfaceDef | null {
+    let pkg = this.getPackage(namespace, pkgName);
+    if (pkg == null) {
+      return null;
+    }
+    let p = pkg as PackageContent;
+    let (iface, found) = p.interfaces.get(ifaceName);
+    if (found) {
+      return iface;
+    }
+    return null;
+  }
+
+  /** Look up a world by full path (namespace:name/world). */
+  getWorld(namespace: String, pkgName: String, worldName: String): WorldDef | null {
+    let pkg = this.getPackage(namespace, pkgName);
+    if (pkg == null) {
+      return null;
+    }
+    let p = pkg as PackageContent;
+    let (world, found) = p.worlds.get(worldName);
+    if (found) {
+      return world;
+    }
+    return null;
+  }
+
+  /** Check if a package exists. */
+  hasPackage(namespace: String, name: String): boolean {
+    let key = namespace + ":" + name;
+    return this.#packages.has(key);
+  }
+
+  /** Get list of known package names for error messages. */
+  getKnownPackages(): Array<String> {
+    return this.#knownPackages;
   }
 }
 
@@ -274,6 +426,8 @@ export class Resolver {
   #includingWorlds: Array<String>;
   /** Whether we're currently inside a gated context (@unstable). */
   #inGatedContext: boolean;
+  /** Registry of all packages for cross-package resolution. */
+  #registry: PackageRegistry | null;
 
   #new() {
     this.#scopes = new Array<Scope>();
@@ -282,6 +436,7 @@ export class Resolver {
     this.#resolvingInterfaces = new Array<String>();
     this.#includingWorlds = new Array<String>();
     this.#inGatedContext = false;
+    this.#registry = null;
   }
 
   /**
@@ -289,6 +444,8 @@ export class Resolver {
    */
   static resolve(ast: Ast): void {
     let resolver = new Resolver();
+    // Build registry of all packages first
+    resolver.#registry = PackageRegistry.build(ast);
     resolver.#resolveAst(ast);
   }
 
@@ -498,7 +655,7 @@ export class Resolver {
     // Each nested package gets its own scope
     this.#pushScope();
 
-    // First pass: collect all names in this package
+    // First pass: collect all names in this package (interfaces, worlds, and top-level use aliases)
     var i = 0;
     while (i < pkg.items.length) {
       let item = pkg.items[i];
@@ -510,6 +667,18 @@ export class Resolver {
       } else if (item.tag == AstItemTag.World) {
         let world = item.worldDef as WorldDef;
         this.#define(world.name.name, SymbolKind.World, world.name.span);
+        // Store world definition for include resolution (needed for #findWorldDef)
+        this.#currentScope().worlds.push(world);
+      } else if (item.tag == AstItemTag.Use) {
+        // Top-level use creates an alias - handle like in resolve()
+        let use = item.use as ToplevelUse;
+        let name = if (use.asName != null) (use.asName as Id).name else use.item.getName().name;
+        let span = if (use.asName != null) (use.asName as Id).span else use.item.getName().span;
+        let existing = this.#findSymbol(name);
+        if (existing == null) {
+          this.#define(name, SymbolKind.Interface, span);
+        }
+        // else: silently shadow - will resolve in second pass
       }
       i = i + 1;
     }
@@ -700,6 +869,7 @@ export class Resolver {
       return;
     }
     let w = worldDef as WorldDef;
+    let worldName = id.name;
 
     // Check each item in the included world
     var i = 0;
@@ -707,36 +877,64 @@ export class Resolver {
       let item = w.items[i];
       if (item.tag == WorldItemTag.Import) {
         let imp = item.importItem as Import;
+        // Skip gated imports - they don't really exist in the active feature set
+        if (isGated(imp.docs)) {
+          i = i + 1;
+          continue;
+        }
         let impName = this.#getExternKindName(imp.kind);
         if (impName != null) {
           let name = impName as String;
           // Apply rename if exists
           let finalName = this.#applyIncludeRename(name, include.names);
-          // Check if this would shadow an existing import
+          // Check if this would shadow an existing NON-GATED import
           let existing = findSymbolInList(imports, finalName);
           if (existing != null) {
-            throw new ResolveError(
-              "import of `" + finalName + "` shadows previously imported items",
-              id.span
-            );
+            let e = existing as SymbolEntry;
+            // Only error if the existing item is NOT gated AND from a different source
+            // Duplicate includes of the same world are allowed (deduped)
+            if (!e.isGated) {
+              if (e.source != null && (e.source as String) == worldName) {
+                // Same source - this is a duplicate include, skip without error
+                i = i + 1;
+                continue;
+              }
+              throw new ResolveError(
+                "import of `" + finalName + "` shadows previously imported items",
+                id.span
+              );
+            }
           }
-          // Add to imports for future shadowing checks
-          imports.push(new SymbolEntry(finalName, SymbolKind.Func, id.span));
+          // Add to imports for future shadowing checks, with source tracking
+          imports.push(SymbolEntry.withSource(finalName, SymbolKind.Func, id.span, worldName));
         }
       } else if (item.tag == WorldItemTag.Export) {
         let exp = item.exportItem as Export;
+        // Skip gated exports
+        if (isGated(exp.docs)) {
+          i = i + 1;
+          continue;
+        }
         let expName = this.#getExternKindName(exp.kind);
         if (expName != null) {
           let name = expName as String;
           let finalName = this.#applyIncludeRename(name, include.names);
           let existing = findSymbolInList(exports, finalName);
           if (existing != null) {
-            throw new ResolveError(
-              "export of `" + finalName + "` shadows previously exported items",
-              id.span
-            );
+            let e = existing as SymbolEntry;
+            if (!e.isGated) {
+              if (e.source != null && (e.source as String) == worldName) {
+                // Same source - duplicate include, skip without error
+                i = i + 1;
+                continue;
+              }
+              throw new ResolveError(
+                "export of `" + finalName + "` shadows previously exported items",
+                id.span
+              );
+            }
           }
-          exports.push(new SymbolEntry(finalName, SymbolKind.Func, id.span));
+          exports.push(SymbolEntry.withSource(finalName, SymbolKind.Func, id.span, worldName));
         }
       }
       i = i + 1;
@@ -777,11 +975,14 @@ export class Resolver {
       let existing = findSymbolInList(symbols, funcName.name);
       if (existing != null) {
         let e = existing as SymbolEntry;
-        let direction = if (isImport) "import" else "export";
-        throw new ResolveError(
-          direction + " `" + funcName.name + "` conflicts with prior func of same name",
-          funcName.span
-        );
+        // Skip conflict check if both are gated
+        if (!(e.isGated && this.#inGatedContext)) {
+          let direction = if (isImport) "import" else "export";
+          throw new ResolveError(
+            direction + " `" + funcName.name + "` conflicts with prior func of same name",
+            funcName.span
+          );
+        }
       }
       // Check for conflicts with type definitions in the world
       let typeSym = this.#findSymbol(funcName.name);
@@ -795,7 +996,12 @@ export class Resolver {
           );
         }
       }
-      symbols.push(new SymbolEntry(funcName.name, SymbolKind.Func, funcName.span));
+      // Mark as gated if in gated context
+      if (this.#inGatedContext) {
+        symbols.push(SymbolEntry.gated(funcName.name, SymbolKind.Func, funcName.span));
+      } else {
+        symbols.push(new SymbolEntry(funcName.name, SymbolKind.Func, funcName.span));
+      }
       // Resolve the function type
       this.#resolveFunc(kind.funcDef as Func);
     } else if (kind.tag == ExternKindTag.Interface) {
@@ -803,13 +1009,22 @@ export class Resolver {
       // Check for duplicates
       let existing = findSymbolInList(symbols, ifaceName.name);
       if (existing != null) {
-        let direction = if (isImport) "import" else "export";
-        throw new ResolveError(
-          direction + " `" + ifaceName.name + "` conflicts with prior interface of same name",
-          ifaceName.span
-        );
+        let e = existing as SymbolEntry;
+        // Skip conflict check if both are gated
+        if (!(e.isGated && this.#inGatedContext)) {
+          let direction = if (isImport) "import" else "export";
+          throw new ResolveError(
+            direction + " `" + ifaceName.name + "` conflicts with prior interface of same name",
+            ifaceName.span
+          );
+        }
       }
-      symbols.push(new SymbolEntry(ifaceName.name, SymbolKind.Interface, ifaceName.span));
+      // Mark as gated if in gated context
+      if (this.#inGatedContext) {
+        symbols.push(SymbolEntry.gated(ifaceName.name, SymbolKind.Interface, ifaceName.span));
+      } else {
+        symbols.push(new SymbolEntry(ifaceName.name, SymbolKind.Interface, ifaceName.span));
+      }
       // Resolve interface items in their own scope (inline interfaces have their own namespace)
       this.#pushScope();
       let items = kind.items as Array<InterfaceItem>;
@@ -828,17 +1043,26 @@ export class Resolver {
       let existing = findSymbolInList(symbols, fullPath);
       if (existing != null) {
         let e = existing as SymbolEntry;
-        let direction = if (isImport) "import" else "export";
-        throw new ResolveError(
-          direction + " `" + fullPath + "` conflicts with prior " + direction + " of same name",
-          pathName.span
-        );
+        // Skip conflict check if both are gated
+        if (!(e.isGated && this.#inGatedContext)) {
+          let direction = if (isImport) "import" else "export";
+          throw new ResolveError(
+            direction + " `" + fullPath + "` conflicts with prior " + direction + " of same name",
+            pathName.span
+          );
+        }
       }
-      symbols.push(new SymbolEntry(fullPath, SymbolKind.Interface, pathName.span));
-      // Validate path references exist
-      this.#resolveUsePath(path);
-      // Validate path references an interface, not a world (invalid-world-import)
-      this.#validatePathIsInterface(path, isImport);
+      // Mark as gated if in gated context
+      if (this.#inGatedContext) {
+        symbols.push(SymbolEntry.gated(fullPath, SymbolKind.Interface, pathName.span));
+        // Skip validation for gated items (the target may not exist or may be a world)
+      } else {
+        symbols.push(new SymbolEntry(fullPath, SymbolKind.Interface, pathName.span));
+        // Validate path references exist (use statements reference interfaces)
+        this.#resolveUsePath(path, false);
+        // Validate path references an interface, not a world (invalid-world-import)
+        this.#validatePathIsInterface(path, isImport);
+      }
     }
   }
 
@@ -1379,7 +1603,7 @@ export class Resolver {
 
   #resolveUse(use: Use): void {
     // Validate the path references an existing interface
-    this.#resolveUsePath(use.from);
+    this.#resolveUsePath(use.from, false);
 
     // Check that we're not using a world (only interfaces can be used)
     if (use.from.tag == UsePathTag.Id) {
@@ -1430,19 +1654,32 @@ export class Resolver {
 
   /** Validate that names in a use statement exist in the target interface. */
   #validateUseNames(use: Use): void {
-    // Only validate for local interface references (not external packages)
-    if (use.from.tag != UsePathTag.Id) {
-      return;
+    if (use.from.tag == UsePathTag.Id) {
+      // Local interface reference
+      let id = use.from.id as Id;
+      let iface = this.#findInterface(id.name);
+      if (iface == null) {
+        // Interface not found - already reported by #resolveUsePath
+        return;
+      }
+      let ifaceDef = iface as InterfaceDef;
+      this.#validateUseNamesInInterface(use, ifaceDef);
+    } else if (use.from.tag == UsePathTag.Package) {
+      // Cross-package reference
+      let pkgId = use.from.packageId as PackageName;
+      let itemName = use.from.name as Id;
+      let registry = this.#registry as PackageRegistry;
+      let iface = registry.getInterface(pkgId.namespace.name, pkgId.name.name, itemName.name);
+      if (iface == null) {
+        // Interface not found - already reported by #resolveUsePath
+        return;
+      }
+      this.#validateUseNamesInInterface(use, iface as InterfaceDef);
     }
+  }
 
-    let id = use.from.id as Id;
-    let iface = this.#findInterface(id.name);
-    if (iface == null) {
-      // Interface not found - already reported by #resolveUsePath
-      return;
-    }
-    let ifaceDef = iface as InterfaceDef;
-
+  /** Helper to validate use names against an interface definition. */
+  #validateUseNamesInInterface(use: Use, ifaceDef: InterfaceDef): void {
     // Check each imported name
     var i = 0;
     while (i < use.names.length) {
@@ -1514,25 +1751,111 @@ export class Resolver {
     return null;
   }
 
-  #resolveUsePath(path: UsePath): void {
+  #resolveUsePath(path: UsePath, expectWorld: boolean): void {
     if (path.tag == UsePathTag.Id) {
-      // Local interface reference
+      // Local reference
       let id = path.id as Id;
-      let sym = this.#findSymbol(id.name);
-      if (sym == null) {
+      
+      if (expectWorld) {
+        // For include statements, look for world definitions specifically
+        // (to avoid shadowing by local record/type definitions)
+        let worldDef = this.#findWorldDef(id.name);
+        if (worldDef == null) {
+          throw new ResolveError(
+            "world `" + id.name + "` not found in package",
+            id.span
+          );
+        }
+      } else {
+        // For use statements, check symbol table for interfaces
+        let sym = this.#findSymbol(id.name);
+        if (sym == null) {
+          throw new ResolveError(
+            "interface `" + id.name + "` not found in package",
+            id.span
+          );
+        }
+        // Verify it's an interface
+        let s = sym as SymbolEntry;
+        if (s.kind != SymbolKind.Interface) {
+          throw new ResolveError(
+            "`" + id.name + "` is not an interface",
+            id.span
+          );
+        }
+      }
+    } else if (path.tag == UsePathTag.Package) {
+      // Cross-package reference: namespace:name/interface
+      let pkgId = path.packageId as PackageName;
+      let itemName = path.name as Id;
+      let registry = this.#registry as PackageRegistry;
+
+      // Check if the package exists
+      if (!registry.hasPackage(pkgId.namespace.name, pkgId.name.name)) {
+        let knownPkgs = registry.getKnownPackages();
+        let knownStr = this.#formatKnownPackages(knownPkgs);
         throw new ResolveError(
-          "interface or world `" + id.name + "` not found in package",
-          id.span
+          "package '" + pkgId.namespace.name + ":" + pkgId.name.name + "' not found. known packages:\n" + knownStr,
+          pkgId.span
         );
       }
+
+      // Check if the interface or world exists in that package based on expectWorld
+      if (expectWorld) {
+        let world = registry.getWorld(pkgId.namespace.name, pkgId.name.name, itemName.name);
+        if (world == null) {
+          // Check if it's an interface (for better error message)
+          let iface = registry.getInterface(pkgId.namespace.name, pkgId.name.name, itemName.name);
+          if (iface != null) {
+            throw new ResolveError(
+              "`" + itemName.name + "` is an interface, not a world",
+              itemName.span
+            );
+          }
+          throw new ResolveError(
+            "world `" + itemName.name + "` not found in package `" + pkgId.namespace.name + ":" + pkgId.name.name + "`",
+            itemName.span
+          );
+        }
+      } else {
+        let iface = registry.getInterface(pkgId.namespace.name, pkgId.name.name, itemName.name);
+        if (iface == null) {
+          // Check if it's a world (for better error message)
+          let world = registry.getWorld(pkgId.namespace.name, pkgId.name.name, itemName.name);
+          if (world != null) {
+            throw new ResolveError(
+              "`" + itemName.name + "` is a world, not an interface",
+              itemName.span
+            );
+          }
+          throw new ResolveError(
+            "interface `" + itemName.name + "` not found in package `" + pkgId.namespace.name + ":" + pkgId.name.name + "`",
+            itemName.span
+          );
+        }
+      }
     }
-    // Package paths (pkg:name/iface) are validated at link time, not here
+  }
+
+  /** Format known packages for error messages. */
+  #formatKnownPackages(known: Array<String>): String {
+    let sb = new StringBuilder(64);
+    var i = 0;
+    while (i < known.length) {
+      sb.append("    ");
+      sb.append(known[i]);
+      if (i < known.length - 1) {
+        sb.appendByte(10);  // newline
+      }
+      i = i + 1;
+    }
+    return sb.toString();
   }
 
   #resolveToplevelUse(use: ToplevelUse): void {
     // Top-level use brings an interface into scope.
     // The name is already defined in the first pass, so we just validate the path here.
-    this.#resolveUsePath(use.item);
+    this.#resolveUsePath(use.item, false);
   }
 
   /** Check if a name is a kebab-case name (contains hyphens). */
@@ -1548,8 +1871,8 @@ export class Resolver {
   }
 
   #resolveInclude(include: Include): void {
-    // Validate the path
-    this.#resolveUsePath(include.from);
+    // Validate the path (includes reference worlds)
+    this.#resolveUsePath(include.from, true);
 
     // Validate include renames (only for local world references)
     if (include.from.tag == UsePathTag.Id && include.names.length > 0) {
@@ -1587,18 +1910,18 @@ export class Resolver {
     }
   }
 
-  /** Validate include rename names - only kebab-names (functions) can be renamed, not IDs (interfaces). */
+  /** Validate include rename names - kebab-names (functions) and resources can be renamed, not IDs (interfaces). */
   #validateIncludeNames(include: Include, world: WorldDef): void {
     var i = 0;
     while (i < include.names.length) {
       let incName = include.names[i];
       let name = incName.name.name;
 
-      // Check if this name exists as a function (kebab-name) in the world's imports/exports
-      let isKebabNameItem = this.#isKebabNameItemInWorld(world, name);
+      // Check if this name exists as a function (kebab-name) or resource in the world
+      let isRenameableItem = this.#isRenameableItemInWorld(world, name);
 
-      if (!isKebabNameItem) {
-        // Name either doesn't exist or is an interface (ID), not a function (kebab-name)
+      if (!isRenameableItem) {
+        // Name either doesn't exist or is an interface (ID), not a function/resource
         throw new ResolveError(
           "no import or export kebab-name `" + name + "`. Note that an ID does not support renaming",
           include.from.getName().span
@@ -1608,14 +1931,14 @@ export class Resolver {
     }
   }
 
-  /** Check if a name in the world's imports/exports is a "kebab-name" item (function). */
-  #isKebabNameItemInWorld(world: WorldDef, name: String): boolean {
+  /** Check if a name in the world is renameable (function or resource). */
+  #isRenameableItemInWorld(world: WorldDef, name: String): boolean {
     var i = 0;
     while (i < world.items.length) {
       let item = world.items[i];
       if (item.tag == WorldItemTag.Import) {
         let imp = item.importItem as Import;
-        // Only functions are "kebab-names" - interfaces paths don't support renaming
+        // Functions are "kebab-names" - interfaces paths don't support renaming
         if (imp.kind.tag == ExternKindTag.Func) {
           let funcName = imp.kind.name as Id;
           if (funcName.name == name) {
@@ -1629,6 +1952,12 @@ export class Resolver {
           if (funcName.name == name) {
             return true;
           }
+        }
+      } else if (item.tag == WorldItemTag.TypeDef) {
+        // Resources defined in the world can be renamed
+        let td = item.typeDef as TypeDef;
+        if (td.tag == TypeDefTag.Resource && td.name.name == name) {
+          return true;
         }
       }
       i = i + 1;

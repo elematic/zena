@@ -234,6 +234,38 @@ const discoverTests = async (
 };
 
 /**
+ * Recursively find all .wit files in a directory, returning deps files first.
+ * This ensures dependency packages are registered before main packages.
+ */
+const findWitFilesRecursively = async (
+  dir: string,
+): Promise<{deps: string[]; main: string[]}> => {
+  const deps: string[] = [];
+  const main: string[] = [];
+
+  const processDir = async (currentDir: string, isDep: boolean) => {
+    const entries = await readdir(currentDir, {withFileTypes: true});
+    for (const entry of entries) {
+      const fullPath = join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        // Recurse into subdirs, mark as dep if under 'deps' directory
+        const isDepSubdir = isDep || entry.name === 'deps';
+        await processDir(fullPath, isDepSubdir);
+      } else if (entry.name.endsWith('.wit')) {
+        if (isDep) {
+          deps.push(fullPath);
+        } else {
+          main.push(fullPath);
+        }
+      }
+    }
+  };
+
+  await processDir(dir, false);
+  return {deps: deps.sort(), main: main.sort()};
+};
+
+/**
  * Run a single test case.
  */
 const runTest = async (test: TestCase): Promise<TestResult> => {
@@ -241,15 +273,16 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
     // Read input WIT file(s)
     let witInput: string;
     if (test.isDirectory) {
-      const entries = await readdir(test.witPath);
-      const witFiles = entries.filter((f) => f.endsWith('.wit')).sort();
-      if (witFiles.length === 0) {
+      // Recursively find all .wit files, with deps first
+      const {deps, main} = await findWitFilesRecursively(test.witPath);
+      const allFiles = [...deps, ...main];
+      if (allFiles.length === 0) {
         return {test, passed: false, error: 'No .wit files in directory'};
       }
-      // Concatenate all wit files
+      // Concatenate all wit files (deps first, then main)
       const contents: string[] = [];
-      for (const witFile of witFiles) {
-        const content = await readFile(join(test.witPath, witFile), 'utf-8');
+      for (const witFile of allFiles) {
+        const content = await readFile(witFile, 'utf-8');
         contents.push(content);
       }
       witInput = contents.join('\n');
