@@ -174,6 +174,37 @@ and coding standards, see [AGENTS.md](./AGENTS.md).
     - Write new tests as portable tests (in `tests/language/`) when possible.
     - These tests can be run by both the TypeScript compiler and a future Zena compiler.
 
+9.  **Standard Library for Self-Hosting**:
+
+    **Data Structures** (no language changes required):
+    - [ ] `Set<T>` - Hash set using existing hash infrastructure
+    - [ ] `Deque<T>` - Double-ended queue for BFS/work queues
+    - [ ] Insertion-order `Map` - Or make current Map preserve insertion order
+    - [ ] `SortedMap<K, V>` - Sorted key iteration (tree-based)
+
+    **I/O & Binary Data** (partially complete):
+    - [x] `ByteBuffer` - Growable binary buffer for WASM emission
+    - [x] `ByteArray` intrinsics - Low-level byte operations
+    - [ ] `DataView` - Typed views over ByteBuffer (read/write at offset)
+    - [ ] File I/O - Read/write files (WASI target)
+
+    **String Utilities**:
+    - [ ] `StringReader` enhancements - `peek()`, `peekN()`, better position tracking
+    - [ ] `StringBuilder` enhancements - `writeChar()`, `repeat()`, padding
+    - [ ] `StringPool` / interning - Fast identifier comparison
+
+    **Language Features** (requires compiler work):
+    - [ ] Tagged enums (enums with associated data) - Clean AST representation
+      ```zena
+      enum Token {
+        Number(value: f64),
+        Identifier(name: string),
+        Operator(op: string),
+      }
+      ```
+    - [ ] Exhaustive match on enums - Compiler error if case missing
+    - [ ] `EnumSet<E>` - Efficient set of enum values (once tagged enums exist)
+
 ### Future Features
 
 - **Syntax**:
