@@ -93,9 +93,13 @@ export class SymbolEntry {
 // Package Registry
 // ============================================================================
 
-/** Convert a PackageName to a lookup key (namespace:name, without version). */
+/** Convert a PackageName to a lookup key (namespace:name@version if version present). */
 let packageNameToKey = (name: PackageName): String => {
-  return name.namespace.name + ":" + name.name.name;
+  var key = name.namespace.name + ":" + name.name.name;
+  if (name.version != null) {
+    key = key + "@" + (name.version as String);
+  }
+  return key;
 };
 
 /**
@@ -180,7 +184,17 @@ class PackageRegistry {
     this.#knownPackages.push(key);
   }
 
-  /** Look up a package by namespace:name. Returns null if not found. */
+  /** Look up a package by full key (including version if present). */
+  getPackageByName(pkgName: PackageName): PackageContent | null {
+    let key = packageNameToKey(pkgName);
+    let (content, found) = this.#packages.get(key);
+    if (found) {
+      return content;
+    }
+    return null;
+  }
+
+  /** Look up a package by namespace:name (legacy, without version). */
   getPackage(namespace: String, name: String): PackageContent | null {
     let key = namespace + ":" + name;
     let (content, found) = this.#packages.get(key);
@@ -190,7 +204,21 @@ class PackageRegistry {
     return null;
   }
 
-  /** Look up an interface by full path (namespace:name/interface). */
+  /** Look up an interface by PackageName and interface name. */
+  getInterfaceByPkg(pkgName: PackageName, ifaceName: String): InterfaceDef | null {
+    let pkg = this.getPackageByName(pkgName);
+    if (pkg == null) {
+      return null;
+    }
+    let p = pkg as PackageContent;
+    let (iface, found) = p.interfaces.get(ifaceName);
+    if (found) {
+      return iface;
+    }
+    return null;
+  }
+
+  /** Look up an interface by full path (namespace:name/interface). Legacy without version. */
   getInterface(namespace: String, pkgName: String, ifaceName: String): InterfaceDef | null {
     let pkg = this.getPackage(namespace, pkgName);
     if (pkg == null) {
@@ -204,7 +232,21 @@ class PackageRegistry {
     return null;
   }
 
-  /** Look up a world by full path (namespace:name/world). */
+  /** Look up a world by PackageName and world name. */
+  getWorldByPkg(pkgName: PackageName, worldName: String): WorldDef | null {
+    let pkg = this.getPackageByName(pkgName);
+    if (pkg == null) {
+      return null;
+    }
+    let p = pkg as PackageContent;
+    let (world, found) = p.worlds.get(worldName);
+    if (found) {
+      return world;
+    }
+    return null;
+  }
+
+  /** Look up a world by full path (namespace:name/world). Legacy without version. */
   getWorld(namespace: String, pkgName: String, worldName: String): WorldDef | null {
     let pkg = this.getPackage(namespace, pkgName);
     if (pkg == null) {
@@ -218,7 +260,13 @@ class PackageRegistry {
     return null;
   }
 
-  /** Check if a package exists. */
+  /** Check if a package exists by PackageName (with version). */
+  hasPackageByName(pkgName: PackageName): boolean {
+    let key = packageNameToKey(pkgName);
+    return this.#packages.has(key);
+  }
+
+  /** Check if a package exists (legacy, without version). */
   hasPackage(namespace: String, name: String): boolean {
     let key = namespace + ":" + name;
     return this.#packages.has(key);
@@ -1669,7 +1717,7 @@ export class Resolver {
       let pkgId = use.from.packageId as PackageName;
       let itemName = use.from.name as Id;
       let registry = this.#registry as PackageRegistry;
-      let iface = registry.getInterface(pkgId.namespace.name, pkgId.name.name, itemName.name);
+      let iface = registry.getInterfaceByPkg(pkgId, itemName.name);
       if (iface == null) {
         // Interface not found - already reported by #resolveUsePath
         return;
@@ -1790,46 +1838,58 @@ export class Resolver {
       let itemName = path.name as Id;
       let registry = this.#registry as PackageRegistry;
 
-      // Check if the package exists
-      if (!registry.hasPackage(pkgId.namespace.name, pkgId.name.name)) {
+      // Check if the package exists (using full PackageName with version)
+      if (!registry.hasPackageByName(pkgId)) {
         let knownPkgs = registry.getKnownPackages();
         let knownStr = this.#formatKnownPackages(knownPkgs);
+        var pkgStr = pkgId.namespace.name + ":" + pkgId.name.name;
+        if (pkgId.version != null) {
+          pkgStr = pkgStr + "@" + (pkgId.version as String);
+        }
         throw new ResolveError(
-          "package '" + pkgId.namespace.name + ":" + pkgId.name.name + "' not found. known packages:\n" + knownStr,
+          "package '" + pkgStr + "' not found. known packages:\n" + knownStr,
           pkgId.span
         );
       }
 
       // Check if the interface or world exists in that package based on expectWorld
       if (expectWorld) {
-        let world = registry.getWorld(pkgId.namespace.name, pkgId.name.name, itemName.name);
+        let world = registry.getWorldByPkg(pkgId, itemName.name);
         if (world == null) {
           // Check if it's an interface (for better error message)
-          let iface = registry.getInterface(pkgId.namespace.name, pkgId.name.name, itemName.name);
+          let iface = registry.getInterfaceByPkg(pkgId, itemName.name);
           if (iface != null) {
             throw new ResolveError(
               "`" + itemName.name + "` is an interface, not a world",
               itemName.span
             );
           }
+          var pkgStr2 = pkgId.namespace.name + ":" + pkgId.name.name;
+          if (pkgId.version != null) {
+            pkgStr2 = pkgStr2 + "@" + (pkgId.version as String);
+          }
           throw new ResolveError(
-            "world `" + itemName.name + "` not found in package `" + pkgId.namespace.name + ":" + pkgId.name.name + "`",
+            "world `" + itemName.name + "` not found in package `" + pkgStr2 + "`",
             itemName.span
           );
         }
       } else {
-        let iface = registry.getInterface(pkgId.namespace.name, pkgId.name.name, itemName.name);
+        let iface = registry.getInterfaceByPkg(pkgId, itemName.name);
         if (iface == null) {
           // Check if it's a world (for better error message)
-          let world = registry.getWorld(pkgId.namespace.name, pkgId.name.name, itemName.name);
+          let world = registry.getWorldByPkg(pkgId, itemName.name);
           if (world != null) {
             throw new ResolveError(
               "`" + itemName.name + "` is a world, not an interface",
               itemName.span
             );
           }
+          var pkgStr3 = pkgId.namespace.name + ":" + pkgId.name.name;
+          if (pkgId.version != null) {
+            pkgStr3 = pkgStr3 + "@" + (pkgId.version as String);
+          }
           throw new ResolveError(
-            "interface `" + itemName.name + "` not found in package `" + pkgId.namespace.name + ":" + pkgId.name.name + "`",
+            "interface `" + itemName.name + "` not found in package `" + pkgStr3 + "`",
             itemName.span
           );
         }
