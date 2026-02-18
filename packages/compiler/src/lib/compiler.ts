@@ -21,6 +21,12 @@ export interface CompilerOptions {
   stdlibPaths?: string[];
   /** Compilation target: 'host' (default) or 'wasi' */
   target?: Target;
+  /**
+   * Whether class fields are mutable by default.
+   * - false (default): fields are immutable unless marked with `var`
+   * - true: fields are mutable (legacy behavior for migration)
+   */
+  mutableFields?: boolean;
 }
 
 export class Compiler {

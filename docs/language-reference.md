@@ -1661,21 +1661,96 @@ Zena supports object-oriented programming with classes.
 
 Classes are declared using the `class` keyword.
 
-````zena
+```zena
 class Point {
-  x: i32;
-  y: i32;
+  x: i32;       // Immutable field (default)
+  var y: i32;   // Mutable field
 
   #new(x: i32, y: i32) {
     this.x = x;
     this.y = y;
   }
 
-  move(dx: i32, dy: i32) {
-    this.x = this.x + dx;
-    this.y = this.y + dy;
+  moveY(dy: i32) {
+    this.y = this.y + dy;  // OK - y is mutable
+    // this.x = 0;         // Error - x is immutable
   }
 }
+```
+
+### Field Mutability
+
+Fields are currently **mutable by default**. Use `let` for immutable fields.
+
+> **Future Direction**: The goal is to make fields **immutable by default**,
+> requiring `var` for mutable fields. See the [classes design doc](design/classes.md#migration-to-immutable-by-default)
+> for the migration plan.
+
+```zena
+class User {
+  id: i32;                    // Mutable (default)
+  let created: i64;           // Immutable (constructor only)
+  var email: string;          // Explicit mutable (same as bare)
+  var(#phone) phone: string;  // Mutable with private setter
+}
+```
+
+| Syntax                  | Getter | Setter                  | Mutability |
+| ----------------------- | ------ | ----------------------- | ---------- |
+| `name: Type`            | Public | Public                  | Mutable    |
+| `let name: Type`        | Public | None (constructor only) | Immutable  |
+| `var name: Type`        | Public | Public                  | Mutable    |
+| `var(#name) name: Type` | Public | Private (`#name`)       | Mutable    |
+
+#### Private Setters
+
+The `var(#name)` syntax creates a field that is publicly readable but only
+writable via the private name:
+
+```zena
+class Counter {
+  var(#count) count: i32 = 0;
+
+  increment() {
+    this.#count = this.count + 1;  // Write via #count
+  }
+}
+
+let c = new Counter();
+let n = c.count;  // OK - reading is public
+c.count = 5;      // Error - no public setter
+```
+
+### Initializer Lists
+
+For immutable fields that need constructor parameters, use Dart-style initializer
+lists. Expressions in the initializer list cannot reference `this`:
+
+```zena
+class Point {
+  let x: i32;
+  let y: i32;
+
+  // Initializer list before the body
+  #new(x: i32, y: i32) : x = x, y = y { }
+}
+
+class Rectangle {
+  let width: i32;
+  let height: i32;
+  let area: i32;
+
+  // Can compute values from parameters
+  #new(w: i32, h: i32) : width = w, height = h, area = w * h { }
+}
+```
+
+Initializer list expressions can reference:
+
+- Constructor parameters
+- Earlier fields in the initializer list (by bare name)
+
+They **cannot** reference `this` because the object doesn't exist yet.
 
 ### Generic Classes
 
@@ -1740,7 +1815,7 @@ class Container {
     return fn(this.value);
   }
 }
-````
+```
 
 Generic methods can be called with explicit type arguments or inferred.
 
@@ -1889,7 +1964,7 @@ Subclasses can also add new overloads not present in the base class.
 
 ````
 
-- **Fields**: Declared with a type annotation.
+- **Fields**: Currently mutable by default. Use `let` for immutable fields, `var` for explicit mutable. See [Field Mutability](#field-mutability).
 - **Constructor**: Named `#new`.
 - **Methods**: Functions defined within the class.
 

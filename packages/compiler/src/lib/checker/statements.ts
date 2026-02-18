@@ -2396,6 +2396,24 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
       classType.fields.set(memberName, fieldType);
 
+      // Track field mutability based on let/var modifiers
+      // Fields are mutable by default; only `let` makes them immutable
+      const isMutableField = member.mutability !== 'let';
+      if (isMutableField) {
+        if (!classType.mutableFields) {
+          classType.mutableFields = new Set();
+        }
+        classType.mutableFields.add(memberName);
+      }
+
+      // Track private setter names for var(#name) syntax
+      if (member.setterName && member.setterName.type === NodeType.Identifier) {
+        if (!classType.fieldSetterNames) {
+          classType.fieldSetterNames = new Map();
+        }
+        classType.fieldSetterNames.set(memberName, member.setterName.name);
+      }
+
       // Register implicit accessors for public fields
       if (!memberName.startsWith('#')) {
         const getterName = getGetterName(memberName);
@@ -2410,8 +2428,10 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           isFinal: false,
         });
 
-        // Setter (if mutable)
-        if (!member.isFinal) {
+        // Setter (if mutable and no private setter specified)
+        // Mutable fields (bare or var) have public setters unless var(#name) syntax is used
+        const hasPublicSetter = isMutableField && !member.setterName;
+        if (hasPublicSetter) {
           classType.vtable.push(setterName);
           classType.methods.set(setterName, {
             kind: TypeKind.Function,
@@ -2799,17 +2819,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           const fieldType = classType.symbolFields?.get(
             memberNameInfo.symbolType!,
           );
-          if (
-            fieldType &&
-            valueType.kind !== fieldType.kind &&
-            valueType.kind !== Types.Unknown.kind
-          ) {
-            if (typeToString(valueType) !== typeToString(fieldType)) {
-              ctx.diagnostics.reportError(
-                `Type mismatch for symbol field '${memberNameInfo.symbolType?.debugName ?? '<symbol>'}': expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
-                DiagnosticCode.TypeMismatch,
-              );
-            }
+          if (fieldType && !isAssignableTo(ctx, valueType, fieldType)) {
+            ctx.diagnostics.reportError(
+              `Type mismatch for symbol field '${memberNameInfo.symbolType?.debugName ?? '<symbol>'}': expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+              DiagnosticCode.TypeMismatch,
+            );
           }
         }
         continue;
@@ -2822,16 +2836,11 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         ctx.isCheckingFieldInitializer = false;
 
         const fieldType = classType.fields.get(memberName)!;
-        if (
-          valueType.kind !== fieldType.kind &&
-          valueType.kind !== Types.Unknown.kind
-        ) {
-          if (typeToString(valueType) !== typeToString(fieldType)) {
-            ctx.diagnostics.reportError(
-              `Type mismatch for field '${memberName}': expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
-              DiagnosticCode.TypeMismatch,
-            );
-          }
+        if (!isAssignableTo(ctx, valueType, fieldType)) {
+          ctx.diagnostics.reportError(
+            `Type mismatch for field '${memberName}': expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+            DiagnosticCode.TypeMismatch,
+          );
         }
       }
       ctx.initializedFields.add(memberName);
@@ -3223,6 +3232,39 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
         );
       }
     }
+  }
+
+  // Check initializer list (for constructors)
+  // Initializer list expressions can reference parameters but NOT `this`
+  if (method.initializerList && method.initializerList.length > 0) {
+    const previousThisInitialized = ctx.isThisInitialized;
+    ctx.isThisInitialized = false; // Prevent `this` access in initializer expressions
+
+    for (const init of method.initializerList) {
+      const fieldName = init.field.name;
+      const fieldType = ctx.currentClass?.fields.get(fieldName);
+
+      if (!fieldType) {
+        ctx.diagnostics.reportError(
+          `Field '${fieldName}' does not exist on class '${ctx.currentClass?.name ?? '<unknown>'}'.`,
+          DiagnosticCode.UnknownError,
+          ctx.getLocation(init.field.loc),
+        );
+        continue;
+      }
+
+      // Check that the initializer expression is assignable to the field type
+      const initType = checkExpression(ctx, init.value);
+      if (!isAssignableTo(ctx, initType, fieldType)) {
+        ctx.diagnostics.reportError(
+          `Type '${typeToString(initType)}' is not assignable to field '${fieldName}' of type '${typeToString(fieldType)}'.`,
+          DiagnosticCode.TypeMismatch,
+          ctx.getLocation(init.value.loc),
+        );
+      }
+    }
+
+    ctx.isThisInitialized = previousThisInitialized;
   }
 
   const returnType = method.returnType

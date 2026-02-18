@@ -1010,14 +1010,19 @@ p.move(1, 1);
 
 ### Fields
 
-Fields are public by default. Public fields are _virtual_—they're inherited by
-subclasses and can be overridden with accessors. This means field access may
-involve a virtual call.
+Fields are public and mutable by default. Public fields are _virtual_—they're
+inherited by subclasses and can be overridden with accessors. This means field
+access may involve a virtual call.
+
+> **Tip**: Prefer immutable fields (`let`) when possible—they work with type
+> narrowing and make code easier to reason about. Use private fields (`#`) or
+> `final` classes to avoid virtual dispatch overhead. See [Field
+> Mutability](#field-mutability) and [Private Fields](#private-fields).
 
 ```ts
 class Rectangle {
-  width: i32;   // Public, virtual
-  height: i32;  // Public, virtual
+  width: i32;   // Public, virtual, mutable
+  height: i32;  // Public, virtual, mutable
 }
 
 class Square extends Rectangle {
@@ -1051,6 +1056,72 @@ class Counter {
   }
 }
 ```
+
+### Field Mutability
+
+Fields are currently **mutable by default**. Use `let` for immutable fields that
+can only be set in the constructor.
+
+```ts
+class User {
+  id: i32;                    // Mutable (default)
+  let created: i64;           // Immutable (constructor only)
+  var email: String;          // Explicit mutable (same as bare)
+  var(#phone) phone: String;  // Mutable with private setter
+}
+```
+
+| Syntax                  | Getter | Setter                  | Mutability |
+| ----------------------- | ------ | ----------------------- | ---------- |
+| `name: Type`            | Public | Public                  | Mutable    |
+| `let name: Type`        | Public | None (constructor only) | Immutable  |
+| `var name: Type`        | Public | Public                  | Mutable    |
+| `var(#name) name: Type` | Public | Private (`#name`)       | Mutable    |
+
+The `var(#name)` syntax creates a publicly readable field with a private setter:
+
+```ts
+class Counter {
+  var(#count) count: i32 = 0;
+
+  increment(): void {
+    this.#count = this.count + 1;  // Write via #count
+  }
+}
+
+let c = new Counter();
+let n = c.count;  // OK - reading is public
+c.count = 5;      // Error - no public setter
+```
+
+### Initializer Lists
+
+For immutable fields that need constructor parameters, use Dart-style
+initializer lists. The initializer list appears after `:` and before the
+constructor body.
+
+```ts
+class Point {
+  let x: i32;
+  let y: i32;
+
+  // Initializer list before the body
+  #new(x: i32, y: i32) : x = x, y = y { }
+}
+
+class Rectangle {
+  let width: i32;
+  let height: i32;
+  let area: i32;
+
+  // Can compute values from parameters
+  #new(w: i32, h: i32) : width = w, height = h, area = w * h { }
+}
+```
+
+Initializer list expressions can reference constructor parameters and earlier
+fields in the list. They **cannot** reference `this` because the object doesn't
+exist yet.
 
 ### Getters and Setters
 

@@ -179,6 +179,16 @@ export interface ClassType extends Type {
   isSyntheticMixinThis?: boolean; // True for the synthetic `This` type inside mixin bodies
   onType?: Type;
   genericSource?: ClassType;
+  /**
+   * Set of mutable field names. Fields not in this set are immutable.
+   * Immutable fields can only be assigned in the constructor.
+   */
+  mutableFields?: Set<string>;
+  /**
+   * For fields with private setters (var(#name) syntax), maps the public
+   * field name to its setter name (private name or symbol).
+   */
+  fieldSetterNames?: Map<string, string>;
 }
 
 const I32 = {kind: TypeKind.Number, name: 'i32'} as NumberType;
