@@ -1,6 +1,7 @@
 import { FixedArray } from 'zena:fixed-array';
 import { KeyNotFoundError } from 'zena:error';
 import { Option, some, none } from 'zena:option';
+import { Iterable, Iterator } from 'zena:iterator';
 
 export interface Hashable {
   hashCode(): i32;
@@ -12,6 +13,10 @@ export declare function hash<T>(value: T): i32;
 
 @intrinsic('eq')
 export declare function equals<T>(a: T, b: T): boolean;
+
+// Symbols for MapEntry storage (exposed via getters)
+symbol mapEntryKey;
+symbol mapEntryValue;
 
 class Entry<K, V> {
   key: K;
@@ -25,7 +30,122 @@ class Entry<K, V> {
   }
 }
 
-export class Map<K, V> {
+/**
+ * A key-value pair from a Map.
+ */
+export class MapEntry<K, V> {
+  :mapEntryKey: K;
+  :mapEntryValue: V;
+
+  #new(key: K, value: V) {
+    this.:mapEntryKey = key;
+    this.:mapEntryValue = value;
+  }
+
+  key: K {
+    get {
+      return this.:mapEntryKey;
+    }
+  }
+
+  value: V {
+    get {
+      return this.:mapEntryValue;
+    }
+  }
+}
+
+/**
+ * Iterator over the keys of a Map.
+ */
+class MapKeyIterator<K, V> implements Iterator<K> {
+  #buckets: FixedArray<Entry<K, V> | null>;
+  #bucketIndex: i32;
+  #current: Entry<K, V> | null;
+
+  #new(buckets: FixedArray<Entry<K, V> | null>) {
+    this.#buckets = buckets;
+    this.#bucketIndex = 0;
+    this.#current = null;
+    this.#advanceToNext();
+  }
+
+  #advanceToNext(): void {
+    if (this.#current != null) {
+      let entry = this.#current as Entry<K, V>;
+      if (entry.next != null) {
+        this.#current = entry.next;
+        return;
+      }
+    }
+    this.#current = null;
+    while (this.#bucketIndex < this.#buckets.length) {
+      let bucket = this.#buckets[this.#bucketIndex];
+      this.#bucketIndex = this.#bucketIndex + 1;
+      if (bucket != null) {
+        this.#current = bucket;
+        return;
+      }
+    }
+  }
+
+  next(): (true, K) | (false, never) {
+    if (this.#current == null) {
+      return (false, _);
+    }
+    let entry = this.#current as Entry<K, V>;
+    let key = entry.key;
+    this.#advanceToNext();
+    return (true, key);
+  }
+}
+
+/**
+ * Iterator over the entries of a Map.
+ */
+class MapEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
+  #buckets: FixedArray<Entry<K, V> | null>;
+  #bucketIndex: i32;
+  #current: Entry<K, V> | null;
+
+  #new(buckets: FixedArray<Entry<K, V> | null>) {
+    this.#buckets = buckets;
+    this.#bucketIndex = 0;
+    this.#current = null;
+    this.#advanceToNext();
+  }
+
+  #advanceToNext(): void {
+    if (this.#current != null) {
+      let entry = this.#current as Entry<K, V>;
+      if (entry.next != null) {
+        this.#current = entry.next;
+        return;
+      }
+    }
+    this.#current = null;
+    while (this.#bucketIndex < this.#buckets.length) {
+      let bucket = this.#buckets[this.#bucketIndex];
+      this.#bucketIndex = this.#bucketIndex + 1;
+      if (bucket != null) {
+        this.#current = bucket;
+        return;
+      }
+    }
+  }
+
+  next(): (true, MapEntry<K, V>) | (false, never) {
+    if (this.#current == null) {
+      return (false, _);
+    }
+    let entry = this.#current as Entry<K, V>;
+    let result = new MapEntry<K, V>(entry.key, entry.value);
+    this.#advanceToNext();
+    return (true, result);
+  }
+}
+
+export class Map<K, V> implements Iterable<MapEntry<K, V>> {
   #buckets: FixedArray<Entry<K, V> | null>;
   #size: i32 = 0;
 
@@ -220,5 +340,19 @@ export class Map<K, V> {
   // Add set method for compatibility/convenience
   set(key: K, value: V): void {
     this[key] = value;
+  }
+
+  /**
+   * Returns an iterator over the keys in this map.
+   */
+  keys(): Iterator<K> {
+    return new MapKeyIterator<K, V>(this.#buckets);
+  }
+
+  /**
+   * Returns an iterator over the entries in this map.
+   */
+  :Iterable.iterator(): Iterator<MapEntry<K, V>> {
+    return new MapEntryIterator<K, V>(this.#buckets);
   }
 }

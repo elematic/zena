@@ -1302,6 +1302,26 @@ export class CodegenContext {
   public getClassInfo(classType: ClassType): ClassInfo | undefined {
     const result = this.#classInfo.get(classType);
     if (result) return result;
+
+    // Try to look up via interned type if this is a generic instantiation
+    // This handles cases where the classType passed in hasn't been interned
+    // but a ClassInfo was registered under the interned version
+    if (
+      classType.genericSource &&
+      classType.typeArguments &&
+      classType.typeArguments.length > 0 &&
+      this.checkerContext
+    ) {
+      const interned = this.checkerContext.getInternedClass(
+        classType.genericSource,
+        classType.typeArguments,
+      );
+      if (interned && interned !== classType) {
+        const internedResult = this.#classInfo.get(interned);
+        if (internedResult) return internedResult;
+      }
+    }
+
     // For specialized generic classes, look up via genericSource.
     // This handles cases where the same logical class (e.g., FixedArray<Entry<K,V>>)
     // is accessed via different expressions (field vs local variable), which may

@@ -16,17 +16,12 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
-### Record with optional properties causes WASM type mismatch when used as function parameter
+### Self-referential single-parameter generic class causes recursive type substitution
 
-- **Found**: 2026-02-15
+- **Found**: 2026-02-16
 - **Severity**: medium
-- **Workaround**: Don't use optional properties in record parameters with width subtyping
-- **Details**: When a function takes `{foo: i32, bar?: i32}` and is called with `{foo: 42}`, the WASM emitter produces invalid code. The error is "type mismatch: expected (ref null $type), found (ref $type)". This is a fat pointer / vtable type issue where the concrete type and declared type have incompatible WASM representations.
-- **Reproduce**:
-  ```zena
-  let go = (opts: {foo: i32, bar?: i32}): i32 => opts.foo;
-  export let main = (): i32 => go({foo: 42});
-  ```
+- **Workaround**: Use a wrapper class (e.g., `Set<T>` wrapping `Map<T, Unit>` instead of having its own `SetEntry<E>` class)
+- **Details**: When a generic class with a single type parameter has a field referencing itself (e.g., `SetEntry<E>` with `next: SetEntry<E> | null`), and this class is used from another generic class (e.g., `Set<T>` using `SetEntry<T>`), the type checker incorrectly performs recursive type substitution. The error message shows nested types like `SetEntry<SetEntry<SetEntry<T> | null> | null> | null` instead of the correct `SetEntry<T> | null`. This bug does not occur with multi-parameter generics (e.g., Map's `Entry<K, V>` works fine).
 
 ## Fixed Bugs
 

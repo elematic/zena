@@ -3408,8 +3408,15 @@ export function getTypeKeyForSpecialization(
       return 'anyref';
     case TypeKind.ByteArray:
       return 'ByteArray';
-    case TypeKind.TypeParameter:
-      return (type as TypeParameterType).name;
+    case TypeKind.TypeParameter: {
+      // Try to resolve the type parameter through the current context
+      const paramType = type as TypeParameterType;
+      const resolved = ctx.currentTypeArguments.get(paramType.name);
+      if (resolved && resolved !== type) {
+        return getTypeKeyForSpecialization(resolved, ctx);
+      }
+      return paramType.name;
+    }
     case TypeKind.Class: {
       const classType = type as ClassType;
       // Use type ID for unique identification (avoids name collisions)
@@ -3591,6 +3598,61 @@ export function instantiateClass(
    */
   checkerType: ClassType,
 ) {
+  // Try to intern the checkerType to ensure we use the canonical object
+  if (
+    checkerType.genericSource &&
+    checkerType.typeArguments &&
+    checkerType.typeArguments.length > 0 &&
+    ctx.checkerContext
+  ) {
+    // First, resolve type arguments through currentTypeArguments context
+    // This handles cases where the type arguments are unresolved type parameters
+    // (e.g., MapEntry<K,V> inside MapEntryIterator<K,V> needs K,V resolved)
+    let resolvedArgs = checkerType.typeArguments;
+    if (ctx.currentTypeArguments.size > 0) {
+      resolvedArgs = checkerType.typeArguments.map((arg) => {
+        if (arg.kind === TypeKind.TypeParameter) {
+          const resolved = ctx.currentTypeArguments.get(
+            (arg as TypeParameterType).name,
+          );
+          return resolved ?? arg;
+        }
+        // Recursively substitute type params in nested types
+        return ctx.checkerContext!.substituteTypeParams(
+          arg,
+          ctx.currentTypeArguments,
+        );
+      });
+    }
+
+    // Recursively intern nested class type arguments
+    const internedArgs: Type[] = [];
+    for (const arg of resolvedArgs) {
+      if (arg.kind === TypeKind.Class) {
+        const classArg = arg as ClassType;
+        if (classArg.genericSource && classArg.typeArguments?.length) {
+          const interned = ctx.checkerContext.getInternedClass(
+            classArg.genericSource,
+            classArg.typeArguments,
+          );
+          internedArgs.push(interned ?? arg);
+        } else {
+          internedArgs.push(arg);
+        }
+      } else {
+        internedArgs.push(arg);
+      }
+    }
+    // Now lookup with interned args
+    const interned = ctx.checkerContext.getInternedClass(
+      checkerType.genericSource,
+      internedArgs,
+    );
+    if (interned) {
+      checkerType = interned;
+    }
+  }
+
   // Guard against duplicate instantiation using identity-based lookup
   const existingInfo = ctx.getClassInfo(checkerType);
   if (existingInfo?.structDefined) {
@@ -5088,9 +5150,28 @@ export function mapCheckerTypeToWasmType(
       classType.typeArguments &&
       classType.typeArguments.length > 0
     ) {
+      // First, resolve type arguments through currentTypeArguments context
+      // This handles cases where the type arguments are unresolved type parameters
+      let resolvedArgs = classType.typeArguments;
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+        resolvedArgs = classType.typeArguments.map((arg) => {
+          if (arg.kind === TypeKind.TypeParameter) {
+            const resolved = ctx.currentTypeArguments.get(
+              (arg as TypeParameterType).name,
+            );
+            return resolved ?? arg;
+          }
+          // Recursively substitute type params in nested types
+          return ctx.checkerContext!.substituteTypeParams(
+            arg,
+            ctx.currentTypeArguments,
+          );
+        });
+      }
+
       const interned = ctx.checkerContext.getInternedClass(
         classType.genericSource,
-        classType.typeArguments,
+        resolvedArgs,
       );
       if (interned) {
         classType = interned;
