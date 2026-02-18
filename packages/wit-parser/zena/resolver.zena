@@ -67,6 +67,8 @@ export class SymbolEntry {
   isGated: boolean;
   /** The source of this symbol (e.g., world name for include tracking). */
   source: String | null;
+  /** Whether this is a path import (vs inline interface). Path imports can be deduplicated. */
+  isPathImport: boolean;
 
   #new(name: String, kind: SymbolKind, span: Span) {
     this.name = name;
@@ -74,6 +76,7 @@ export class SymbolEntry {
     this.span = span;
     this.isGated = false;
     this.source = null;
+    this.isPathImport = false;
   }
 
   static gated(name: String, kind: SymbolKind, span: Span): SymbolEntry {
@@ -85,6 +88,13 @@ export class SymbolEntry {
   static withSource(name: String, kind: SymbolKind, span: Span, source: String): SymbolEntry {
     let s = new SymbolEntry(name, kind, span);
     s.source = source;
+    return s;
+  }
+
+  static pathImport(name: String, kind: SymbolKind, span: Span, source: String): SymbolEntry {
+    let s = new SymbolEntry(name, kind, span);
+    s.source = source;
+    s.isPathImport = true;
     return s;
   }
 }
@@ -934,6 +944,7 @@ export class Resolver {
           continue;
         }
         let impName = this.#getExternKindName(imp.kind);
+        let isPath = imp.kind.tag == ExternKindTag.Path;
         if (impName != null) {
           let name = impName as String;
           // Apply rename if exists
@@ -950,6 +961,12 @@ export class Resolver {
                 i = i + 1;
                 continue;
               }
+              // Path imports of the same interface from different worlds can be deduplicated
+              if (isPath && e.isPathImport) {
+                // Both are path imports to the same interface - deduplicate
+                i = i + 1;
+                continue;
+              }
               throw new ResolveError(
                 "import of `" + finalName + "` shadows previously imported items",
                 id.span
@@ -957,7 +974,11 @@ export class Resolver {
             }
           }
           // Add to imports for future shadowing checks, with source tracking
-          imports.push(SymbolEntry.withSource(finalName, SymbolKind.Func, id.span, worldName));
+          if (isPath) {
+            imports.push(SymbolEntry.pathImport(finalName, SymbolKind.Func, id.span, worldName));
+          } else {
+            imports.push(SymbolEntry.withSource(finalName, SymbolKind.Func, id.span, worldName));
+          }
         }
       } else if (item.tag == WorldItemTag.Export) {
         let exp = item.exportItem as Export;
@@ -967,6 +988,7 @@ export class Resolver {
           continue;
         }
         let expName = this.#getExternKindName(exp.kind);
+        let isPath = exp.kind.tag == ExternKindTag.Path;
         if (expName != null) {
           let name = expName as String;
           let finalName = this.#applyIncludeRename(name, include.names);
@@ -979,13 +1001,23 @@ export class Resolver {
                 i = i + 1;
                 continue;
               }
+              // Path exports of the same interface from different worlds can be deduplicated
+              if (isPath && e.isPathImport) {
+                // Both are path exports to the same interface - deduplicate
+                i = i + 1;
+                continue;
+              }
               throw new ResolveError(
                 "export of `" + finalName + "` shadows previously exported items",
                 id.span
               );
             }
           }
-          exports.push(SymbolEntry.withSource(finalName, SymbolKind.Func, id.span, worldName));
+          if (isPath) {
+            exports.push(SymbolEntry.pathImport(finalName, SymbolKind.Func, id.span, worldName));
+          } else {
+            exports.push(SymbolEntry.withSource(finalName, SymbolKind.Func, id.span, worldName));
+          }
         }
       }
       i = i + 1;
@@ -2082,8 +2114,12 @@ export class Resolver {
    * interface may be different.
    */
   #checkTransitiveDependencyConflicts(world: WorldDef): void {
-    // Collect names of inline interface imports
+    // Collect names of inline interface imports (all, for path export conflict detection)
     let inlineImports = new Array<String>();
+    // Collect non-empty inline imports (for inline export conflict detection)
+    // Empty inline imports don't cause conflicts with inline exports because
+    // uses would resolve to the package-level interface instead
+    let nonEmptyInlineImports = new Array<String>();
     // Collect names of path imports
     let pathImports = new Array<String>();
     // Collect names of path exports (interfaces exported by path reference)
@@ -2100,6 +2136,11 @@ export class Resolver {
           // Inline interface import: import name: interface {...}
           let name = imp.kind.name as Id;
           inlineImports.push(name.name);
+          // Track non-empty ones separately for Check 3
+          let items = imp.kind.items as Array<InterfaceItem>;
+          if (items.length > 0) {
+            nonEmptyInlineImports.push(name.name);
+          }
         } else if (imp.kind.tag == ExternKindTag.Path) {
           // Path import: import foo (reference to package interface)
           let path = imp.kind.path as UsePath;
@@ -2207,10 +2248,12 @@ export class Resolver {
               let deps = this.#collectDependenciesFromItems(items);
               
               // Check if any dependency is also an inline import
+              // Use nonEmptyInlineImports because empty inline imports don't cause conflicts
+              // with inline exports (uses resolve to package-level interface)
               var k = 0;
               while (k < deps.length) {
                 let dep = deps[k];
-                if (this.#containsString(inlineImports, dep)) {
+                if (this.#containsString(nonEmptyInlineImports, dep)) {
                   throw new ResolveError(
                     "failed to elaborate world imports/exports of `" + world.name.name + "`\n" +
                     "interface `" + exportName + "` transitively depends on an interface in incompatible ways",
