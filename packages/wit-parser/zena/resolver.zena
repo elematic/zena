@@ -486,6 +486,8 @@ export class Resolver {
   #inGatedContext: boolean;
   /** Registry of all packages for cross-package resolution. */
   #registry: PackageRegistry | null;
+  /** Current interface being resolved (for imported type lookup). */
+  #currentInterface: InterfaceDef | null;
 
   #new() {
     this.#scopes = new Array<Scope>();
@@ -495,6 +497,7 @@ export class Resolver {
     this.#includingWorlds = new Array<String>();
     this.#inGatedContext = false;
     this.#registry = null;
+    this.#currentInterface = null;
   }
 
   /**
@@ -758,9 +761,13 @@ export class Resolver {
   #resolveInterface(iface: InterfaceDef): void {
     let ifaceGated = isGated(iface.docs);
     let prevGatedContext = this.#inGatedContext;
+    let prevInterface = this.#currentInterface;
 
     // Track this interface for use cycle detection
     this.#resolvingInterfaces.push(iface.name.name);
+    
+    // Track current interface for imported type lookup
+    this.#currentInterface = iface;
 
     // If interface is gated, we're now in a gated context
     if (ifaceGated) {
@@ -807,6 +814,7 @@ export class Resolver {
 
     this.#popScope();
     this.#inGatedContext = prevGatedContext;
+    this.#currentInterface = prevInterface;
     this.#resolvingInterfaces.pop();
   }
 
@@ -1435,7 +1443,7 @@ export class Resolver {
           return;
         }
         if (s.kind == SymbolKind.Type) {
-          // Check if there's a TypeDef that's a resource, or if it was imported
+          // Check if there's a TypeDef that's a resource
           let td = this.#findTypeDef(name);
           if (td != null) {
             if (!this.#isResourceType(td as TypeDef)) {
@@ -1444,10 +1452,9 @@ export class Resolver {
             // TypeDef is a resource (or alias to one)
             return;
           }
-          // No type definition found - the symbol was imported from another interface
-          // via `use`. In that case, we trust the import (cross-interface resource 
-          // validation would require tracking interface relationships)
-          return;
+          // No type definition found - imported from another interface via `use`
+          // Since it's registered as Type (not Resource), it's not a valid handle target
+          throw new ResolveError("type `" + rawName + "` used in a handle must be a resource", inner.span);
         }
         // Symbol is not a Type or Resource (e.g., it's an Interface, World, or Func)
         throw new ResolveError("type `" + rawName + "` does not exist", inner.span);
@@ -1505,6 +1512,14 @@ export class Resolver {
             i = i + 1;
           }
           this.#resolving.pop();
+        }
+      } else if (inReturnPosition) {
+        // Imported type (no local TypeDef) - check if it contains borrows
+        if (this.#importedTypeContainsBorrow(name, t.span)) {
+          throw new ResolveError(
+            "function returns a type which contains a `borrow<T>` which is not supported",
+            t.span
+          );
         }
       }
     }
@@ -1618,12 +1633,159 @@ export class Resolver {
           if (innerTd != null) {
             return this.#isResourceType(innerTd as TypeDef);
           }
-          // No TypeDef found - imported from another interface, trust it
-          return true;
+          // No TypeDef found - imported type, and it's not marked as Resource
+          // so it's not a resource
+          return false;
         }
       }
     }
     return false;
+  }
+
+  /** Check if an imported type (no local TypeDef) contains a borrow. */
+  #importedTypeContainsBorrow(typeName: String, span: Span): boolean {
+    // Find the Use statement that imported this type
+    let iface = this.#currentInterface;
+    if (iface == null) {
+      return false;
+    }
+    let ifaceDef = iface as InterfaceDef;
+    
+    // Search for a use statement that imports this type
+    var i = 0;
+    while (i < ifaceDef.items.length) {
+      let item = ifaceDef.items[i];
+      if (item.tag == InterfaceItemTag.Use) {
+        let u = item.use as Use;
+        // Check if this use imports our type
+        var j = 0;
+        while (j < u.names.length) {
+          let useName = u.names[j];
+          let importedAs = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
+          if (importedAs == typeName) {
+            // Found it - look up the type in the source interface
+            let originalName = useName.name.name;  // Use original name for lookup
+            return this.#typeDefContainsBorrowFromUse(u, originalName);
+          }
+          j = j + 1;
+        }
+      }
+      i = i + 1;
+    }
+    return false;
+  }
+
+  /** Check if a type from a use statement contains a borrow. */
+  #typeDefContainsBorrowFromUse(use: Use, typeName: String): boolean {
+    let sourceIface = this.#getInterfaceFromUsePath(use.from);
+    if (sourceIface == null) {
+      return false;
+    }
+    let ifaceDef = sourceIface as InterfaceDef;
+    
+    // Find the TypeDef in the source interface
+    var i = 0;
+    while (i < ifaceDef.items.length) {
+      let item = ifaceDef.items[i];
+      if (item.tag == InterfaceItemTag.TypeDef) {
+        let td = item.typeDef as TypeDef;
+        if (td.name.name == typeName) {
+          return this.#typeDefContainsBorrow(td, ifaceDef);
+        }
+      }
+      i = i + 1;
+    }
+    return false;
+  }
+
+  /** Check if a TypeDef contains a borrow type. */
+  #typeDefContainsBorrow(td: TypeDef, sourceIface: InterfaceDef): boolean {
+    if (td.tag == TypeDefTag.Record) {
+      let fields = td.fields as Array<Field>;
+      var i = 0;
+      while (i < fields.length) {
+        if (this.#typeContainsBorrow(fields[i].type, sourceIface)) {
+          return true;
+        }
+        i = i + 1;
+      }
+    } else if (td.tag == TypeDefTag.Variant) {
+      let cases = td.cases as Array<Case>;
+      var i = 0;
+      while (i < cases.length) {
+        if (cases[i].type != null) {
+          if (this.#typeContainsBorrow(cases[i].type as Type, sourceIface)) {
+            return true;
+          }
+        }
+        i = i + 1;
+      }
+    } else if (td.tag == TypeDefTag.Alias) {
+      return this.#typeContainsBorrow(td.aliasType as Type, sourceIface);
+    }
+    return false;
+  }
+
+  /** Check if a Type contains a borrow. */
+  #typeContainsBorrow(t: Type, sourceIface: InterfaceDef): boolean {
+    if (t.tag == TypeTag.Borrow) {
+      return true;
+    }
+    if (t.tag == TypeTag.Tuple) {
+      let types = t.types as Array<Type>;
+      var i = 0;
+      while (i < types.length) {
+        if (this.#typeContainsBorrow(types[i], sourceIface)) {
+          return true;
+        }
+        i = i + 1;
+      }
+    }
+    if (t.tag == TypeTag.List || t.tag == TypeTag.Option ||
+        t.tag == TypeTag.Future || t.tag == TypeTag.Stream) {
+      if (t.inner != null) {
+        return this.#typeContainsBorrow(t.inner as Type, sourceIface);
+      }
+    }
+    if (t.tag == TypeTag.Result) {
+      if (t.okType != null && this.#typeContainsBorrow(t.okType as Type, sourceIface)) {
+        return true;
+      }
+      if (t.errType != null && this.#typeContainsBorrow(t.errType as Type, sourceIface)) {
+        return true;
+      }
+    }
+    if (t.tag == TypeTag.Name) {
+      // Check if this named type is a record/variant that contains borrows
+      let name = (t.name as Id).name;
+      // Look up in the source interface
+      var i = 0;
+      while (i < sourceIface.items.length) {
+        let item = sourceIface.items[i];
+        if (item.tag == InterfaceItemTag.TypeDef) {
+          let innerTd = item.typeDef as TypeDef;
+          if (innerTd.name.name == name) {
+            return this.#typeDefContainsBorrow(innerTd, sourceIface);
+          }
+        }
+        i = i + 1;
+      }
+    }
+    return false;
+  }
+
+  /** Get interface definition from a use path. */
+  #getInterfaceFromUsePath(path: UsePath): InterfaceDef | null {
+    if (path.tag == UsePathTag.Id) {
+      let id = path.id as Id;
+      return this.#findInterface(id.name);
+    } else if (path.tag == UsePathTag.Package) {
+      let pkgId = path.packageId as PackageName;
+      let itemName = path.name as Id;
+      let registry = this.#registry as PackageRegistry;
+      return registry.getInterfaceByPkg(pkgId, itemName.name);
+    }
+    return null;
   }
 
   // --------------------------------------------------------------------------
@@ -1725,14 +1887,42 @@ export class Resolver {
     // Validate that imported names exist in the target interface
     this.#validateUseNames(use);
 
-    // Add imported names to current scope
+    // Add imported names to current scope with their correct kinds
+    // (Resource vs Type) to support proper handle validation
     var i = 0;
     while (i < use.names.length) {
       let useName = use.names[i];
       let name = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
-      this.#define(name, SymbolKind.Type, useName.name.span);
+      let kind = this.#getUseNameKind(use, useName.name.name);
+      this.#define(name, kind, useName.name.span);
       i = i + 1;
     }
+  }
+
+  /** Get the SymbolKind for a name being imported via use statement. */
+  #getUseNameKind(use: Use, lookupName: String): SymbolKind {
+    if (use.from.tag == UsePathTag.Id) {
+      let id = use.from.id as Id;
+      let iface = this.#findInterface(id.name);
+      if (iface != null) {
+        let entry = this.#findItemInInterface(iface as InterfaceDef, lookupName);
+        if (entry != null) {
+          return (entry as SymbolEntry).kind;
+        }
+      }
+    } else if (use.from.tag == UsePathTag.Package) {
+      let pkgId = use.from.packageId as PackageName;
+      let itemName = use.from.name as Id;
+      let registry = this.#registry as PackageRegistry;
+      let iface = registry.getInterfaceByPkg(pkgId, itemName.name);
+      if (iface != null) {
+        let entry = this.#findItemInInterface(iface as InterfaceDef, lookupName);
+        if (entry != null) {
+          return (entry as SymbolEntry).kind;
+        }
+      }
+    }
+    return SymbolKind.Type;  // Default to Type if lookup fails
   }
 
   /** Validate that names in a use statement exist in the target interface. */
@@ -1811,7 +2001,9 @@ export class Resolver {
           let useName = u.names[j];
           let importedName = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
           if (importedName == name) {
-            return new SymbolEntry(name, SymbolKind.Type, useName.name.span);  // Use imports are always types
+            // Recursively look up the original type to get its kind
+            let originalKind = this.#getUseNameKind(u, useName.name.name);
+            return new SymbolEntry(name, originalKind, useName.name.span);
           }
           j = j + 1;
         }
