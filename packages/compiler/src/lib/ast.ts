@@ -116,6 +116,7 @@ export const NodeType = {
   SymbolDeclaration: 'SymbolDeclaration',
   PipelineExpression: 'PipelineExpression',
   PipePlaceholder: 'PipePlaceholder',
+  FieldInitializer: 'FieldInitializer',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -179,6 +180,12 @@ export interface Module extends Node {
   readonly exports: Map<string, SymbolInfo>;
   /** Type-checking diagnostics (initialized to [], populated by checker) */
   diagnostics: Diagnostic[];
+  /**
+   * Whether class fields are mutable by default in this module.
+   * - false (default): fields are immutable unless marked with `var`
+   * - true: fields are mutable (legacy behavior for migration)
+   */
+  readonly mutableFields?: boolean;
 }
 
 export type Statement =
@@ -632,6 +639,18 @@ export interface FieldDefinition extends Node {
   isStatic: boolean;
   isDeclare?: boolean;
   decorators?: Decorator[];
+  /**
+   * Field mutability:
+   * - 'let' or undefined: Immutable field (only assignable in constructor)
+   * - 'var': Mutable field with public setter
+   */
+  mutability?: 'let' | 'var';
+  /**
+   * For `var(#name) field` syntax, specifies the private setter name.
+   * When present, the field has a public getter but the setter uses this name.
+   * Can be a private name (#name) or symbol (:Sym.name).
+   */
+  setterName?: Identifier | SymbolPropertyName;
 }
 
 export interface Decorator extends Node {
@@ -652,6 +671,24 @@ export interface MethodDefinition extends Node {
   isStatic: boolean;
   isDeclare: boolean;
   decorators?: Decorator[];
+  /**
+   * Dart-style initializer list for constructors.
+   * Syntax: `#new(x: i32) : fieldA = x, fieldB = x + 1 { }`
+   * Expressions cannot reference `this`, only params and earlier initializers.
+   */
+  initializerList?: FieldInitializer[];
+}
+
+/**
+ * A field initialization in a constructor's initializer list.
+ * Example: `fieldName = expression`
+ */
+export interface FieldInitializer extends Node {
+  type: typeof NodeType.FieldInitializer;
+  /** The field being initialized */
+  field: Identifier;
+  /** The value expression (can reference params and earlier fields) */
+  value: Expression;
 }
 
 export interface NewExpression extends Node {

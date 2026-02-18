@@ -80,4 +80,69 @@ suite('Checker - Field Initialization', () => {
       /cannot access field 'x' before initialization/i,
     );
   });
+
+  test('should type check initializer list expressions', () => {
+    const source = `
+      class Point {
+        let x: i32;
+        let y: i32;
+        #new(x: i32, y: i32) : x = x, y = y { }
+      }
+    `;
+    const parser = new Parser(source);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
+    const diagnostics = checker.check();
+
+    assert.equal(diagnostics.length, 0);
+  });
+
+  test('should reject type mismatch in initializer list', () => {
+    const source = `
+      class Point {
+        let x: i32;
+        #new(name: string) : x = name { }
+      }
+    `;
+    const parser = new Parser(source);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
+    const diagnostics = checker.check();
+
+    assert.ok(diagnostics.length > 0);
+    assert.match(diagnostics[0].message, /not assignable/i);
+  });
+
+  test('should reject unknown field in initializer list', () => {
+    const source = `
+      class Point {
+        let x: i32;
+        #new(y: i32) : z = y { }
+      }
+    `;
+    const parser = new Parser(source);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
+    const diagnostics = checker.check();
+
+    assert.ok(diagnostics.length > 0);
+    assert.match(diagnostics[0].message, /does not exist/i);
+  });
+
+  test('should reject this access in initializer list expression', () => {
+    const source = `
+      class Point {
+        let x: i32;
+        #new() : x = this.foo() { }
+        foo(): i32 { return 42; }
+      }
+    `;
+    const parser = new Parser(source);
+    const module = parser.parse();
+    const checker = TypeChecker.forModule(module);
+    const diagnostics = checker.check();
+
+    assert.ok(diagnostics.length > 0);
+    assert.match(diagnostics[0].message, /this/i);
+  });
 });

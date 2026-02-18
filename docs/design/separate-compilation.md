@@ -37,6 +37,7 @@ Today, Zena compiles everything in a single pass:
 ```
 
 **Problems**:
+
 - Re-parses and re-checks all dependencies every build
 - No parallelism across packages
 - Standard library checked repeatedly across projects
@@ -78,6 +79,7 @@ Phase 2: Link (whole-program optimization)
 ### Overview
 
 The `.zir` file is a binary format containing:
+
 1. **Checked AST**: Type-annotated syntax tree
 2. **Type Definitions**: All types defined in this module
 3. **Module Summary**: Exports, imports, class hierarchy (enables link-time WPO)
@@ -126,16 +128,16 @@ The summary enables whole-program optimization without re-parsing:
 interface ModuleSummary {
   // Exported declarations with their types
   exports: ExportEntry[];
-  
+
   // Imported modules and what's used from each
   imports: ImportEntry[];
-  
+
   // Class hierarchy info (for devirtualization)
   classes: ClassSummary[];
-  
+
   // Which classes implement which interfaces (for sealing)
   interfaceImpls: ImplSummary[];
-  
+
   // Generic definitions (for cross-module monomorphization)
   generics: GenericSummary[];
 }
@@ -162,7 +164,7 @@ Types are represented symbolically to enable cross-module references:
 
 ```typescript
 // Types are identified by path, not index
-type TypeRef = 
+type TypeRef =
   | { kind: 'primitive', name: 'i32' | 'f32' | 'bool' | 'string' | ... }
   | { kind: 'class', module: string, name: string, typeArgs?: TypeRef[] }
   | { kind: 'interface', module: string, name: string, typeArgs?: TypeRef[] }
@@ -207,25 +209,26 @@ Function bodies use a simplified IR that's lower-level than surface syntax:
 
 ```typescript
 type IRExpr =
-  | { kind: 'const', type: TypeRef, value: number | string | boolean }
-  | { kind: 'local.get', index: number }
-  | { kind: 'local.set', index: number, value: IRExpr }
-  | { kind: 'call', target: IRExpr, args: IRExpr[] }
-  | { kind: 'static_call', module: string, name: string, args: IRExpr[] }
-  | { kind: 'method_call', receiver: IRExpr, method: string, args: IRExpr[] }
-  | { kind: 'field_get', receiver: IRExpr, field: string }
-  | { kind: 'field_set', receiver: IRExpr, field: string, value: IRExpr }
-  | { kind: 'new', class: TypeRef, args: IRExpr[] }
-  | { kind: 'if', cond: IRExpr, then: IRExpr, else: IRExpr }
-  | { kind: 'block', stmts: IRExpr[], result: IRExpr }
-  | { kind: 'loop', body: IRExpr }
-  | { kind: 'break', label?: string }
-  | { kind: 'return', value?: IRExpr }
-  | { kind: 'cast', value: IRExpr, targetType: TypeRef }
-  | { kind: 'instanceof', value: IRExpr, testType: TypeRef };
+  | {kind: 'const'; type: TypeRef; value: number | string | boolean}
+  | {kind: 'local.get'; index: number}
+  | {kind: 'local.set'; index: number; value: IRExpr}
+  | {kind: 'call'; target: IRExpr; args: IRExpr[]}
+  | {kind: 'static_call'; module: string; name: string; args: IRExpr[]}
+  | {kind: 'method_call'; receiver: IRExpr; method: string; args: IRExpr[]}
+  | {kind: 'field_get'; receiver: IRExpr; field: string}
+  | {kind: 'field_set'; receiver: IRExpr; field: string; value: IRExpr}
+  | {kind: 'new'; class: TypeRef; args: IRExpr[]}
+  | {kind: 'if'; cond: IRExpr; then: IRExpr; else: IRExpr}
+  | {kind: 'block'; stmts: IRExpr[]; result: IRExpr}
+  | {kind: 'loop'; body: IRExpr}
+  | {kind: 'break'; label?: string}
+  | {kind: 'return'; value?: IRExpr}
+  | {kind: 'cast'; value: IRExpr; targetType: TypeRef}
+  | {kind: 'instanceof'; value: IRExpr; testType: TypeRef};
 ```
 
 Key simplifications from surface syntax:
+
 - No operator overloading (resolved to method calls)
 - No pattern matching (lowered to if/cast chains)
 - No for-in loops (lowered to iterator protocol calls)
@@ -251,12 +254,14 @@ MINOR: Backward-compatible additions (old linkers skip unknown sections)
 ### What Changes Break Compatibility
 
 **Breaking (MAJOR bump)**:
+
 - Changing existing IR node structure
 - Removing IR node types
 - Changing type representation
 - Changing serialization format
 
 **Non-breaking (MINOR bump)**:
+
 - Adding new IR node types
 - Adding optional fields to existing nodes
 - Adding new sections (old linkers skip them)
@@ -265,6 +270,7 @@ MINOR: Backward-compatible additions (old linkers skip unknown sections)
 ### Forward Compatibility Strategy
 
 New features that require IR changes:
+
 1. Add behind a flag initially (doesn't affect IR)
 2. When stabilized, add to IR as MINOR bump
 3. If fundamentally incompatible, schedule for next MAJOR
@@ -286,20 +292,20 @@ async function compilePackage(
 ): Promise<ZirFile> {
   // 1. Parse source
   const ast = parse(readFile(sourcePath));
-  
+
   // 2. Resolve imports using dependency summaries
   const resolved = resolveImports(ast, dependencies);
-  
+
   // 3. Type check
   const checked = typeCheck(resolved);
-  
+
   // 4. Lower to IR
   const ir = lowerToIR(checked);
-  
+
   // 5. Generate summary
   const summary = extractSummary(ir);
-  
-  return { ir, summary };
+
+  return {ir, summary};
 }
 ```
 
@@ -325,18 +331,18 @@ function link(
 ): Uint8Array {
   // 1. Build full program IR
   const program = merge(entryPoint, dependencies);
-  
+
   // 2. Whole-program analysis (using summaries)
   const analysis = analyzeProgram(program);
-  
+
   // 3. Optimizations
   if (options.dce) program = eliminateDeadCode(program, analysis);
   if (options.devirtualize) program = devirtualize(program, analysis);
   if (options.inline) program = inlineFunctions(program, analysis);
-  
+
   // 4. Monomorphize generics
   program = monomorphize(program);
-  
+
   // 5. Generate WASM
   return generateWasm(program);
 }
@@ -345,6 +351,7 @@ function link(
 ### Link-Time Optimizations Enabled by Summaries
 
 **Dead Code Elimination**:
+
 ```
 From summaries:
   main imports: [foo] from pkg-a
@@ -354,6 +361,7 @@ From summaries:
 ```
 
 **Devirtualization**:
+
 ```
 From summaries:
   Animal.speak() overridden by: [Dog, Cat]
@@ -364,6 +372,7 @@ From summaries:
 ```
 
 **Cross-Module Inlining**:
+
 ```
 From IR bodies:
   pkg-a defines: add(a, b) => a + b  (small, pure)
@@ -392,10 +401,10 @@ From IR bodies:
 ```typescript
 function cacheKey(pkg: Package): string {
   return hash([
-    pkg.sourceHash,      // Hash of all source files
-    IR_VERSION,          // IR format version
-    pkg.zenaVersion,     // Compiler version (for major changes)
-    pkg.dependencies,    // Hashes of direct dependencies
+    pkg.sourceHash, // Hash of all source files
+    IR_VERSION, // IR format version
+    pkg.zenaVersion, // Compiler version (for major changes)
+    pkg.dependencies, // Hashes of direct dependencies
   ]);
 }
 ```
@@ -403,6 +412,7 @@ function cacheKey(pkg: Package): string {
 ### Cache Invalidation
 
 A cached `.zir` is valid if:
+
 1. Source hash matches
 2. IR version is compatible
 3. All dependency cache keys match (transitive)
@@ -461,28 +471,33 @@ zena build src/main.zena -o out.wasm --parallel=1
 ## Implementation Plan
 
 ### Phase 1: IR Format Definition
+
 - [ ] Define IR data structures
 - [ ] Implement serialization/deserialization
 - [ ] Add `zena compile --emit-ir` flag
 - [ ] Add `zena link` command (single-threaded)
 
 ### Phase 2: Summary-Based Checking
+
 - [ ] Generate module summaries during compilation
 - [ ] Use summaries for dependency type checking
 - [ ] Validate summary-only builds match full builds
 
 ### Phase 3: Caching
+
 - [ ] Implement cache key computation
 - [ ] Add cache storage/retrieval
 - [ ] Cache invalidation logic
 - [ ] CLI cache commands
 
 ### Phase 4: Parallelization
+
 - [ ] Dependency graph analysis
 - [ ] Worker pool for compilation
 - [ ] Progress reporting
 
 ### Phase 5: Link-Time Optimizations
+
 - [ ] DCE using summaries
 - [ ] Devirtualization using class summaries
 - [ ] Cross-module inlining

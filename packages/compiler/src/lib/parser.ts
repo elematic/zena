@@ -16,6 +16,7 @@ import {
   type Expression,
   type ExportAllDeclaration,
   type FieldDefinition,
+  type FieldInitializer,
   type ForInStatement,
   type ForStatement,
   type FunctionExpression,
@@ -70,6 +71,12 @@ import {Decorators} from './types.js';
 export interface ParserOptions {
   path?: string;
   isStdlib?: boolean;
+  /**
+   * Whether class fields are mutable by default.
+   * - false (default): fields are immutable unless marked with `var`
+   * - true: fields are mutable (legacy behavior for migration)
+   */
+  mutableFields?: boolean;
 }
 
 export class Parser {
@@ -2535,13 +2542,91 @@ export class Parser {
       }
     }
 
-    // Check for common mistake: using `var` or `let` for class fields
-    if (this.#check(TokenType.Var) || this.#check(TokenType.Let)) {
-      const keyword = this.#peek().value;
-      throw new Error(
-        `Class fields don't use '${keyword}'. ` +
-          `Remove '${keyword}' to declare a field directly: \`name: Type\``,
-      );
+    // Parse field mutability: `let` (immutable, explicit) or `var` (mutable)
+    // Syntax: `let name: Type`, `var name: Type`, `var(#setter) name: Type`
+    let mutability: 'let' | 'var' | undefined;
+    let setterName: Identifier | SymbolPropertyName | undefined;
+
+    if (this.#check(TokenType.Let)) {
+      // Disambiguate: `let name: Type` vs field named `let`
+      // `let` followed by `:` or `(` or `<` means `let` is a name
+      if (
+        this.#peek(1).type !== TokenType.Colon &&
+        this.#peek(1).type !== TokenType.LParen &&
+        this.#peek(1).type !== TokenType.Less
+      ) {
+        this.#advance();
+        mutability = 'let';
+      }
+    } else if (this.#check(TokenType.Var)) {
+      // Disambiguate: `var name: Type` or `var(#setter) name: Type` vs field named `var`
+      // `var` followed by `:` or `<` means `var` is a name
+      // `var` followed by `(` could be setter syntax OR method named `var`
+      // We check: `var(` followed by `#` or `:` is setter syntax
+      const nextType = this.#peek(1).type;
+      const isSetterSyntax =
+        nextType === TokenType.LParen &&
+        (this.#peek(2).type === TokenType.Hash ||
+          this.#peek(2).type === TokenType.Colon ||
+          (this.#peek(2).type === TokenType.Identifier &&
+            this.#peek(2).value === 'set'));
+
+      if (
+        nextType !== TokenType.Colon &&
+        nextType !== TokenType.Less &&
+        (nextType !== TokenType.LParen || isSetterSyntax)
+      ) {
+        this.#advance();
+        mutability = 'var';
+
+        // Check for var(setterName) syntax: var(#name) or var(set: #name)
+        if (this.#match(TokenType.LParen)) {
+          // Check for explicit `set:` prefix (optional)
+          if (
+            this.#check(TokenType.Identifier) &&
+            this.#peek().value === 'set' &&
+            this.#peek(1).type === TokenType.Colon
+          ) {
+            this.#advance(); // consume 'set'
+            this.#advance(); // consume ':'
+          }
+
+          // Parse the setter name: #name or :Symbol.name
+          if (this.#match(TokenType.Hash)) {
+            const id = this.#parseIdentifier();
+            setterName = {
+              type: NodeType.Identifier,
+              name: '#' + id.name,
+              loc: id.loc,
+            };
+          } else if (this.#match(TokenType.Colon)) {
+            // Symbol setter: var(:Sym.name) field
+            const start = this.#previous();
+            let symbolExpr: Expression = this.#parseIdentifier();
+            while (this.#match(TokenType.Dot)) {
+              const prop = this.#parseIdentifier();
+              symbolExpr = {
+                type: NodeType.MemberExpression,
+                object: symbolExpr,
+                property: prop,
+              };
+            }
+            setterName = {
+              type: NodeType.SymbolPropertyName,
+              symbol: symbolExpr,
+              loc: this.#loc(start, this.#previous()),
+            };
+          } else {
+            // Public name as setter (e.g., var(name) name - unusual but valid)
+            setterName = this.#parseIdentifier();
+          }
+
+          this.#consume(
+            TokenType.RParen,
+            "Expected ')' after setter name in var(...)",
+          );
+        }
+      }
     }
 
     if (isStatic && this.#match(TokenType.Symbol)) {
@@ -2625,6 +2710,15 @@ export class Parser {
         name: 'new',
         loc: this.#locFromToken(token),
       };
+    } else if (this.#match(TokenType.Var) || this.#match(TokenType.Let)) {
+      // Handle `var` or `let` as field names (when they appear without being a
+      // mutability modifier - i.e., when followed by `:` like `var: i32`)
+      const token = this.#previous();
+      name = {
+        type: NodeType.Identifier,
+        name: token.value,
+        loc: this.#locFromToken(token),
+      };
     } else {
       name = this.#parseIdentifier();
     }
@@ -2672,6 +2766,42 @@ export class Parser {
       }
       this.#consume(TokenType.RParen, "Expected ')' after parameters.");
 
+      // Parse initializer list for constructors: #new(...) : field = expr, field2 = expr2 { }
+      let initializerList: FieldInitializer[] | undefined;
+      const isConstructor =
+        name.type === NodeType.Identifier && name.name === '#new';
+      if (
+        isConstructor &&
+        this.#check(TokenType.Colon) &&
+        this.#checkAhead(TokenType.Identifier, 1) &&
+        this.#checkAhead(TokenType.Equals, 2)
+      ) {
+        this.#advance(); // consume ':'
+        initializerList = [];
+        do {
+          const fieldName = this.#consume(
+            TokenType.Identifier,
+            'Expected field name in initializer list.',
+          );
+          const field: Identifier = {
+            type: NodeType.Identifier,
+            name: fieldName.value,
+            loc: this.#locFromToken(fieldName),
+          };
+          this.#consume(
+            TokenType.Equals,
+            "Expected '=' after field name in initializer list.",
+          );
+          const value = this.#parseExpression();
+          initializerList.push({
+            type: NodeType.FieldInitializer,
+            field,
+            value,
+            loc: this.#loc(fieldName, value),
+          });
+        } while (this.#match(TokenType.Comma));
+      }
+
       let returnType: TypeAnnotation | undefined;
       if (this.#match(TokenType.Colon)) {
         returnType = this.#parseTypeAnnotation();
@@ -2695,6 +2825,7 @@ export class Parser {
         params,
         returnType,
         body,
+        initializerList,
         isFinal,
         isAbstract,
         isStatic,
@@ -2718,11 +2849,23 @@ export class Parser {
       throw new Error('Fields cannot have type parameters.');
     }
 
+    // Validate mutability and setter combinations
+    if (setterName && mutability !== 'var') {
+      throw new Error(
+        'Setter name can only be specified with var fields: var(#name) field: Type',
+      );
+    }
+
     // Field: name: Type; or name: Type = value;
     this.#consume(TokenType.Colon, "Expected ':' after field name.");
     const typeAnnotation = this.#parseTypeAnnotation();
 
     if (this.#match(TokenType.LBrace)) {
+      if (mutability || setterName) {
+        throw new Error(
+          'Field mutability (let/var) cannot be combined with accessor blocks.',
+        );
+      }
       return this.#parseAccessorDeclaration(
         name,
         typeAnnotation,
@@ -2749,6 +2892,8 @@ export class Parser {
       isStatic,
       isDeclare,
       decorators,
+      mutability,
+      setterName,
       loc: this.#loc(startToken, this.#previous()),
     };
   }
@@ -3629,6 +3774,12 @@ export class Parser {
   #check(type: TokenType): boolean {
     if (this.#isAtEnd()) return false;
     return this.#peek().type === type;
+  }
+
+  #checkAhead(type: TokenType, distance: number): boolean {
+    const index = this.#current + distance;
+    if (index >= this.#tokens.length) return false;
+    return this.#tokens[index].type === type;
   }
 
   #advance(): Token {

@@ -1,6 +1,7 @@
 import {
   NodeType,
   type ClassDeclaration,
+  type Expression,
   type InterfaceDeclaration,
   type MethodDefinition,
   type MixinDeclaration,
@@ -64,6 +65,21 @@ export function getSymbolMemberName(symbolType: SymbolType): string {
   return `[symbol#${symbolType.id}]`;
 }
 
+/**
+ * Check if a class has any immutable instance fields.
+ * Immutable fields require struct_new instead of struct_new_default.
+ * Skips vtable and brand fields which are internal.
+ */
+export function hasImmutableFields(classInfo: ClassInfo): boolean {
+  for (const [name, info] of classInfo.fields) {
+    // Skip internal fields
+    if (name === '__vtable' || name.startsWith('__brand_')) continue;
+    // mutable === false means immutable (let field)
+    if (info.mutable === false) return true;
+  }
+  return false;
+}
+
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import type {CodegenContext} from './context.js';
 import {
@@ -77,6 +93,53 @@ import {
   generateFunctionStatement,
 } from './statements.js';
 import type {ClassInfo, InterfaceInfo, RecordInfo} from './types.js';
+
+/**
+ * Generate a default value for a WASM type.
+ * Used for uninitialized fields in struct_new.
+ */
+export function generateDefaultValue(
+  ctx: CodegenContext,
+  wasmType: number[],
+  body: number[],
+): void {
+  if (wasmType.length === 0) return;
+
+  const firstByte = wasmType[0];
+  switch (firstByte) {
+    case ValType.i32:
+      body.push(Opcode.i32_const, 0);
+      break;
+    case ValType.i64:
+      body.push(Opcode.i64_const, 0);
+      break;
+    case ValType.f32:
+      // f32.const 0.0 (encoded as 4 bytes of zeros)
+      body.push(Opcode.f32_const, 0, 0, 0, 0);
+      break;
+    case ValType.f64:
+      // f64.const 0.0 (encoded as 8 bytes of zeros)
+      body.push(Opcode.f64_const, 0, 0, 0, 0, 0, 0, 0, 0);
+      break;
+    case ValType.ref:
+    case ValType.ref_null:
+      // Reference types - ref.null with the heap type
+      body.push(Opcode.ref_null);
+      // The heap type follows the ref/ref_null byte
+      for (let i = 1; i < wasmType.length; i++) {
+        body.push(wasmType[i]);
+      }
+      break;
+    case ValType.eqref:
+      body.push(Opcode.ref_null);
+      body.push(HeapType.eq);
+      break;
+    default:
+      throw new Error(
+        `Cannot generate default value for WASM type starting with 0x${firstByte.toString(16)}`,
+      );
+  }
+}
 
 /**
  * Ensures a RecordInfo exists for the given abstract record type.
@@ -1871,7 +1934,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
 
   const fields = new Map<
     string,
-    {index: number; type: number[]; intrinsic?: string}
+    {index: number; type: number[]; mutable?: boolean; intrinsic?: string}
   >();
   const fieldTypes: {type: number[]; mutable: boolean}[] = [];
   let fieldIndex = 0;
@@ -2005,12 +2068,22 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
     ).sort((a, b) => a[1].index - b[1].index);
 
     for (const [name, info] of sortedSuperFields) {
-      fields.set(name, {index: fieldIndex++, type: info.type});
-      fieldTypes.push({type: info.type, mutable: true});
+      // Preserve mutability from parent field (default to true for backward compat)
+      const isMutable = info.mutable !== false;
+      fields.set(name, {
+        index: fieldIndex++,
+        type: info.type,
+        mutable: isMutable,
+      });
+      fieldTypes.push({type: info.type, mutable: isMutable});
     }
   } else {
     // Root class: Add vtable field
-    fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
+    fields.set('__vtable', {
+      index: fieldIndex++,
+      type: [ValType.eqref],
+      mutable: true,
+    });
     fieldTypes.push({type: [ValType.eqref], mutable: true});
   }
 
@@ -2020,6 +2093,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   fields.set(brandFieldName, {
     index: fieldIndex++,
     type: [ValType.ref_null, ...WasmModule.encodeSignedLEB128(brandTypeIndex)],
+    mutable: true,
   });
   fieldTypes.push({
     type: [ValType.ref_null, ...WasmModule.encodeSignedLEB128(brandTypeIndex)],
@@ -2068,8 +2142,15 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
           }
         }
 
-        fields.set(fieldName, {index: fieldIndex++, type: wasmType, intrinsic});
-        fieldTypes.push({type: wasmType, mutable: true});
+        // Check if field is immutable (let modifier)
+        const isMutable = member.mutability !== 'let';
+        fields.set(fieldName, {
+          index: fieldIndex++,
+          type: wasmType,
+          mutable: isMutable,
+          intrinsic,
+        });
+        fieldTypes.push({type: wasmType, mutable: isMutable});
       }
     }
   }
@@ -2255,10 +2336,18 @@ export function registerClassMethods(
         mappedParams.push(mapCheckerTypeToWasmType(ctx, paramType));
       }
 
+      // Check if this class has immutable fields (requires struct_new pattern)
+      const classHasImmutableFields = hasImmutableFields(classInfo);
+
       let results: number[][] = [];
       if (methodName === '#new') {
         if (classInfo.isExtension && classInfo.onType) {
           results = [classInfo.onType];
+        } else if (classHasImmutableFields) {
+          // For classes with immutable fields, constructor creates and returns the struct
+          results = [
+            [ValType.ref, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
+          ];
         } else if (member.isStatic && member.returnType) {
           if (!member.returnType.inferredType) {
             throw new Error(
@@ -2347,9 +2436,16 @@ export function registerClassMethods(
       }
 
       const params: number[][] = [];
+      // For constructors of classes with immutable fields, don't include 'this'
+      // param since the struct is created inside the constructor
+      const skipThisParam =
+        methodName === '#new' &&
+        classHasImmutableFields &&
+        !classInfo.isExtension;
       if (
         !member.isStatic &&
-        !(classInfo.isExtension && methodName === '#new')
+        !(classInfo.isExtension && methodName === '#new') &&
+        !skipThisParam
       ) {
         params.push(thisType);
       }
@@ -2680,8 +2776,9 @@ export function registerClassMethods(
           intrinsic,
         });
 
-        // Setter (if mutable)
-        if (!member.isFinal) {
+        // Setter (if mutable - skip for `let` fields which are immutable)
+        const isImmutableField = member.mutability === 'let';
+        if (!member.isFinal && !isImmutableField) {
           const setterName = getSetterName(propName);
           // Method-level DCE: only add to vtable if setter is used
           if (
@@ -3013,17 +3110,26 @@ export function generateClassMethods(
         !member.isStatic &&
         !(classInfo.isExtension && methodName === '#new')
       ) {
-        ctx.defineParam('this', methodInfo.paramTypes[0]);
+        // Check if constructor should skip 'this' param (immutable fields pattern)
+        const skipThisParam =
+          methodName === '#new' &&
+          hasImmutableFields(classInfo) &&
+          !classInfo.isExtension;
+        if (!skipThisParam) {
+          ctx.defineParam('this', methodInfo.paramTypes[0]);
+        }
       }
 
       for (let i = 0; i < member.params.length; i++) {
         const param = member.params[i];
         // Parameter type comes from methodInfo (already resolved during registration)
-        // For extension constructors, params start at 0 (since no implicit this param)
-        const paramTypeIndex =
-          member.isStatic || (classInfo.isExtension && methodName === '#new')
-            ? i
-            : i + 1;
+        // For extension constructors or immutable field constructors, params start at 0
+        // (since no implicit this param)
+        const hasThisParam =
+          !member.isStatic &&
+          !(classInfo.isExtension && methodName === '#new') &&
+          !(methodName === '#new' && hasImmutableFields(classInfo));
+        const paramTypeIndex = hasThisParam ? i + 1 : i;
         const paramType = methodInfo.paramTypes[paramTypeIndex];
         ctx.defineParam(param.name.name, paramType, param);
       }
@@ -3042,7 +3148,16 @@ export function generateClassMethods(
       ctx.currentCheckerReturnType = member.returnType?.inferredType;
 
       // Downcast 'this' if needed (e.g. overriding a method from a superclass)
-      if (!member.isStatic) {
+      // Skip for constructors with immutable fields (they don't have a 'this' param)
+      const skipThisDowncast =
+        methodName === '#new' &&
+        hasImmutableFields(classInfo) &&
+        !classInfo.isExtension;
+      if (
+        !member.isStatic &&
+        !skipThisDowncast &&
+        methodInfo.paramTypes.length > 0
+      ) {
         const thisTypeIndex = getHeapTypeIndex(ctx, methodInfo.paramTypes[0]);
         let targetTypeIndex = classInfo.structTypeIndex;
         if (classInfo.isExtension && classInfo.onType) {
@@ -3088,8 +3203,119 @@ export function generateClassMethods(
 
       if (methodName === '#new') {
         const hasSuperClass = !!classInfo.superClass;
+        // Re-check for immutable fields at body generation time
+        const classHasImmutableFields = hasImmutableFields(classInfo);
 
-        if (!hasSuperClass) {
+        if (classHasImmutableFields && !hasSuperClass) {
+          // For classes with immutable fields, use struct_new pattern:
+          // 1. Build a map of field values from initializer list and inline defaults
+          // 2. Generate values for all fields in index order
+          // 3. Call struct_new
+          // 4. Store in 'this' local and return
+
+          // Build field value expressions: fieldIndex -> Expression|null
+          const fieldValues = new Map<
+            number,
+            {expr: Expression | null; name: string}
+          >();
+
+          // First, collect inline initializers from field definitions
+          for (const m of decl.body) {
+            if (m.type === NodeType.FieldDefinition && !m.isStatic) {
+              const memberName = getMemberName(m.name);
+              const fieldName = manglePrivateName(decl.name.name, memberName);
+              const fieldInfo = classInfo.fields.get(fieldName);
+              if (fieldInfo) {
+                fieldValues.set(fieldInfo.index, {
+                  expr: m.value || null,
+                  name: fieldName,
+                });
+              }
+            }
+          }
+
+          // Override with initializer list values (they take precedence)
+          if (member.initializerList) {
+            for (const init of member.initializerList) {
+              const memberName = init.field.name;
+              const fieldName = manglePrivateName(decl.name.name, memberName);
+              const fieldInfo = classInfo.fields.get(fieldName);
+              if (fieldInfo) {
+                fieldValues.set(fieldInfo.index, {
+                  expr: init.value,
+                  name: fieldName,
+                });
+              }
+            }
+          }
+
+          // Generate values for all fields in index order
+          // Get sorted field entries by index
+          const sortedFields = Array.from(classInfo.fields.entries()).sort(
+            (a, b) => a[1].index - b[1].index,
+          );
+
+          for (const [name, info] of sortedFields) {
+            // Handle internal fields specially
+            if (name === '__vtable') {
+              // Push vtable global reference
+              if (classInfo.vtableGlobalIndex !== undefined) {
+                body.push(Opcode.global_get);
+                body.push(
+                  ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
+                );
+              } else {
+                // No vtable - push null eqref
+                body.push(Opcode.ref_null);
+                body.push(HeapType.eq);
+              }
+              continue;
+            }
+            if (name.startsWith('__brand_')) {
+              // Brand field - push null of brand type
+              body.push(Opcode.ref_null);
+              const brandTypeIndex = classInfo.brandTypeIndex!;
+              body.push(...WasmModule.encodeSignedLEB128(brandTypeIndex));
+              continue;
+            }
+
+            // Regular field - use initializer list, inline default, or zero/null
+            const valueInfo = fieldValues.get(info.index);
+            if (valueInfo?.expr) {
+              generateExpression(ctx, valueInfo.expr, body);
+            } else {
+              // Generate default value based on type
+              generateDefaultValue(ctx, info.type, body);
+            }
+          }
+
+          // Call struct_new with all field values
+          body.push(0xfb, GcOpcode.struct_new);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+
+          // Store in 'this' local (use ref_null type since locals must be defaultable)
+          const thisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          ];
+          const thisLocal = ctx.declareLocal('this', thisType);
+          ctx.thisLocalIndex = thisLocal;
+          body.push(Opcode.local_set);
+          body.push(...WasmModule.encodeSignedLEB128(thisLocal));
+
+          // Execute constructor body (if any)
+          if (member.body && member.body.type === NodeType.BlockStatement) {
+            generateBlockStatement(ctx, member.body, body);
+          }
+
+          // Return the created instance (cast to non-null since struct_new never returns null)
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(thisLocal));
+          body.push(Opcode.ref_as_non_null);
+        } else if (!hasSuperClass) {
+          // Standard mutable-only pattern: struct_new_default + struct_set
           for (const m of decl.body) {
             if (m.type === NodeType.FieldDefinition && m.value) {
               if (m.isStatic) continue;
@@ -3107,10 +3333,13 @@ export function generateClassMethods(
               body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
             }
           }
-        }
 
-        if (member.body && member.body.type === NodeType.BlockStatement) {
-          if (hasSuperClass) {
+          if (member.body && member.body.type === NodeType.BlockStatement) {
+            generateBlockStatement(ctx, member.body, body);
+          }
+        } else {
+          // Has superclass - existing pattern
+          if (member.body && member.body.type === NodeType.BlockStatement) {
             for (const stmt of member.body.body) {
               generateFunctionStatement(ctx, stmt, body);
 
@@ -3143,8 +3372,6 @@ export function generateClassMethods(
                 }
               }
             }
-          } else {
-            generateBlockStatement(ctx, member.body, body);
           }
         }
 
@@ -3346,13 +3573,16 @@ export function generateClassMethods(
           ctx.module.addCode(getterInfo.index, [], getterBody);
         }
 
-        // Setter
-        if (!member.isFinal) {
+        // Setter (skip for immutable `let` fields)
+        const isImmutableField = member.mutability === 'let';
+        if (!member.isFinal && !isImmutableField) {
           const setterName = getSetterName(propName);
-          const setterInfo = classInfo.methods.get(setterName)!;
+          const setterInfo = classInfo.methods.get(setterName);
 
           // Method-level DCE for implicit field setters (not registered if unused)
+          // Also check setterInfo exists since immutable fields don't have setters
           if (
+            setterInfo &&
             setterInfo.index !== -1 &&
             (!checkerType || ctx.isMethodUsed(checkerType, setterName))
           ) {
@@ -3763,7 +3993,10 @@ function instantiateClassImpl(
     }
   }
 
-  const fields = new Map<string, {index: number; type: number[]}>();
+  const fields = new Map<
+    string,
+    {index: number; type: number[]; mutable?: boolean}
+  >();
   const fieldTypes: {type: number[]; mutable: boolean}[] = [];
 
   let fieldIndex = 0;
@@ -3826,12 +4059,22 @@ function instantiateClassImpl(
       ).sort((a, b) => a[1].index - b[1].index);
 
       for (const [name, info] of sortedSuperFields) {
-        fields.set(name, {index: fieldIndex++, type: info.type});
-        fieldTypes.push({type: info.type, mutable: true});
+        // Preserve mutability from parent field (default to true for backward compat)
+        const isMutable = info.mutable !== false;
+        fields.set(name, {
+          index: fieldIndex++,
+          type: info.type,
+          mutable: isMutable,
+        });
+        fieldTypes.push({type: info.type, mutable: isMutable});
       }
     } else {
       // Root class: Add vtable field
-      fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
+      fields.set('__vtable', {
+        index: fieldIndex++,
+        type: [ValType.eqref],
+        mutable: true,
+      });
       fieldTypes.push({type: [ValType.eqref], mutable: true});
     }
 
@@ -3840,8 +4083,14 @@ function instantiateClassImpl(
         const memberName = getMemberName(member.name);
         const wasmType = resolveType(member.typeAnnotation);
         const fieldName = manglePrivateName(specializedName, memberName);
-        fields.set(fieldName, {index: fieldIndex++, type: wasmType});
-        fieldTypes.push({type: wasmType, mutable: true});
+        // Check if field is immutable (let modifier)
+        const isMutable = member.mutability !== 'let';
+        fields.set(fieldName, {
+          index: fieldIndex++,
+          type: wasmType,
+          mutable: isMutable,
+        });
+        fieldTypes.push({type: wasmType, mutable: isMutable});
       }
     }
 
@@ -4700,7 +4949,10 @@ function applyMixin(
 
   const structTypeIndex = classInfo.structTypeIndex;
 
-  const fields = new Map<string, {index: number; type: number[]}>();
+  const fields = new Map<
+    string,
+    {index: number; type: number[]; mutable?: boolean}
+  >();
   const fieldTypes: {type: number[]; mutable: boolean}[] = [];
   let fieldIndex = 0;
   let superTypeIndex: number | undefined;
@@ -4714,12 +4966,22 @@ function applyMixin(
       (a, b) => a[1].index - b[1].index,
     );
     for (const [name, info] of sortedSuperFields) {
-      fields.set(name, {index: fieldIndex++, type: info.type});
-      fieldTypes.push({type: info.type, mutable: true});
+      // Preserve mutability from parent field (default to true for backward compat)
+      const isMutable = info.mutable !== false;
+      fields.set(name, {
+        index: fieldIndex++,
+        type: info.type,
+        mutable: isMutable,
+      });
+      fieldTypes.push({type: info.type, mutable: isMutable});
     }
   } else {
     // Root mixin application
-    fields.set('__vtable', {index: fieldIndex++, type: [ValType.eqref]});
+    fields.set('__vtable', {
+      index: fieldIndex++,
+      type: [ValType.eqref],
+      mutable: true,
+    });
     fieldTypes.push({type: [ValType.eqref], mutable: true});
   }
 
@@ -4737,8 +4999,14 @@ function applyMixin(
       );
 
       if (!fields.has(fieldName)) {
-        fields.set(fieldName, {index: fieldIndex++, type: wasmType});
-        fieldTypes.push({type: wasmType, mutable: true});
+        // Check if field is immutable (let modifier)
+        const isMutable = member.mutability !== 'let';
+        fields.set(fieldName, {
+          index: fieldIndex++,
+          type: wasmType,
+          mutable: isMutable,
+        });
+        fieldTypes.push({type: wasmType, mutable: isMutable});
       }
     }
   }

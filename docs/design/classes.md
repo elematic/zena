@@ -12,8 +12,8 @@ A class definition maps to a WASM struct type. Fields are laid out sequentially.
 
 ```zena
 class Point {
-  x: i32;
-  y: i32;
+  x: i32;       // Mutable (default)
+  let y: i32;   // Immutable
 }
 ```
 
@@ -21,12 +21,229 @@ Compiles to:
 
 ```wat
 (type $Point (struct
-  (field (mut i32)) ; x
-  (field (mut i32)) ; y
+  (field (mut i32)) ; x - mutable
+  (field i32)       ; y - immutable
 ))
 ```
 
-### 1.2. Methods
+### 1.2. Field Mutability
+
+Fields in Zena are currently **mutable by default**. Use `let` to declare
+immutable fields that can only be assigned during construction.
+
+> **Future Direction**: The goal is to make fields **immutable by default**,
+> requiring `var` for mutable fields. This matches Zena's philosophy of
+> preferring immutability (like `let` bindings for variables). See
+> [Migration to Immutable-by-Default](#migration-to-immutable-by-default) for
+> the transition plan.
+
+#### Syntax
+
+```zena
+class User {
+  id: i32;                      // Mutable (default). Can be reassigned.
+  let created: i64 = now();     // Immutable. Only assignable in constructor.
+  var email: string;            // Explicit mutable (same as bare).
+  var(#phone) phone: string;    // Mutable with private setter (public getter).
+}
+```
+
+- **Bare or `var`**: Mutable field with public getter and setter.
+- **`let`**: Immutable field. Only assignable in the constructor or initializer list.
+- **`var(#name)`**: Mutable field with public getter but private setter. The
+  setter is accessed via the private name (`this.#name = value`) inside the
+  class.
+
+#### Private Setter Semantics
+
+The `var(#name)` syntax creates a field with:
+
+- A **public getter** using the declared name
+- A **private setter** using the specified private name
+
+```zena
+class Counter {
+  var(#count) count: i32 = 0;
+
+  increment() {
+    this.#count = this.count + 1;  // Write via private name, read via public name
+  }
+}
+
+let c = new Counter();
+let n = c.count;    // OK - public getter
+c.count = 5;        // Error: no public setter for 'count'
+c.#count = 5;       // Error: #count is private to Counter
+```
+
+The setter name can also be a symbol for capability-based access control:
+
+```zena
+class Widget {
+  var(:Framework.setState) state: State;  // Setter requires the symbol
+}
+```
+
+#### Immutability and Construction
+
+Immutable fields (`let`) can only be assigned in the constructor (directly or via
+initializer lists). Attempting to assign to an immutable field outside the
+constructor is a compile-time error:
+
+```zena
+class Point {
+  let x: i32;
+  let y: i32;
+
+  #new(x: i32, y: i32) {
+    this.x = x;  // OK - in constructor
+    this.y = y;
+  }
+
+  move(dx: i32, dy: i32) {
+    this.x = this.x + dx;  // Error: Cannot assign to immutable field 'x'
+  }
+}
+```
+
+#### WASM Representation
+
+- **Immutable fields** compile to non-mutable WASM struct fields: `(field i32)`
+- **Mutable fields** compile to mutable WASM struct fields: `(field (mut i32))`
+
+This distinction enables WASM engines to apply optimizations like caching
+immutable field values in registers across function calls.
+
+### 1.3. Initializer Lists (Dart-style)
+
+For truly immutable WASM fields, all values must be provided at allocation time
+(WASM `struct.new` requires all field values upfront). This means `this` cannot
+exist during initialization of immutable fields.
+
+Zena supports **Dart-style initializer lists** for constructors to enable this:
+
+```zena
+class Point {
+  let x: i32;
+  let y: i32;
+
+  // Initializer list: expressions before the body, no `this` access
+  #new(x: i32, y: i32) : x = x, y = y { }
+}
+```
+
+#### Syntax
+
+```
+#new(params) : field1 = expr1, field2 = expr2 { body }
+```
+
+- The colon (`:`) introduces the initializer list
+- Each `field = expr` initializes a field
+- Expressions can reference:
+  - Constructor parameters
+  - Earlier fields in the initializer list (by name, not `this.name`)
+- Expressions **cannot** reference `this` (it doesn't exist yet)
+- The body `{ }` runs after allocation with `this` available
+
+#### Example: Computed Initialization
+
+```zena
+class Rectangle {
+  let width: i32;
+  let height: i32;
+  let area: i32;
+
+  #new(w: i32, h: i32) : width = w, height = h, area = w * h { }
+}
+```
+
+#### Codegen Strategy
+
+The initializer list enables true WASM immutability:
+
+1. Evaluate each initializer expression into a local variable
+2. Call `struct.new` with all field values
+3. Store result in `this` local
+4. Execute constructor body (if any)
+
+```wat
+;; Generated for Point#new(x: i32, y: i32)
+(func $Point_new (param $x i32) (param $y i32) (result (ref $Point))
+  (local $this (ref $Point))
+  ;; No evaluation needed - params are already locals
+  (local.set $this
+    (struct.new $Point
+      (local.get $x)    ; field 0: x
+      (local.get $y)))  ; field 1: y
+  (local.get $this))
+```
+
+#### Migration to Immutable-by-Default
+
+The current default (mutable fields) will eventually change to immutable-by-default.
+This section describes the incremental migration path.
+
+##### Target State
+
+Once migration is complete:
+
+```zena
+class User {
+  id: i32;                      // Immutable (default). Only assignable in constructor.
+  var email: string;            // Explicit mutable. Can be reassigned.
+  var(#phone) phone: string;    // Mutable with private setter.
+}
+```
+
+##### Migration Tools
+
+The migration will be incremental, with multiple opt-in mechanisms:
+
+1. **Compiler flag** (`--default-field-mutability`):
+   ```bash
+   # Current behavior (explicit during transition)
+   zena build --default-field-mutability=mutable
+   
+   # Opt-in to new behavior
+   zena build --default-field-mutability=immutable
+   ```
+
+2. **File-level pragma** (allows per-file migration):
+   ```zena
+   #[defaultFieldMutability: immutable]
+   
+   class Point {
+     x: i32;  // Immutable due to pragma
+     y: i32;
+   }
+   ```
+
+3. **Warning mode** (lint before enforcing):
+   ```bash
+   # Warn on bare fields without explicit let/var
+   zena build --warn-implicit-field-mutability
+   ```
+   This helps identify fields that need explicit modifiers before switching defaults.
+
+4. **Test utilities** (for gradual test migration):
+   ```typescript
+   // In test utils
+   const result = await compileAndRun(source, 'main', {
+     defaultFieldMutability: 'immutable'
+   });
+   ```
+
+##### Migration Steps
+
+1. **Add explicit modifiers**: Run with `--warn-implicit-field-mutability` and
+   add `let` or `var` to all fields.
+2. **Test with new default**: Use `--default-field-mutability=immutable` to
+   verify code works with the new default.
+3. **Remove redundant modifiers**: Once immutable-by-default is active, `let`
+   becomes optional (but can be kept for clarity).
+
+### 1.4. Methods
 
 Methods are compiled as standalone WASM functions. The first parameter is always the instance (`this`).
 
@@ -44,7 +261,7 @@ Compiles to:
 )
 ```
 
-### 1.3. Member Access (`this`)
+### 1.5. Member Access (`this`)
 
 Accessing instance members (fields and methods) within a class requires the explicit `this` keyword (e.g., `this.x`).
 
@@ -268,13 +485,21 @@ class Base {
 
 ```zena
 class Base {
-  final x: i32;
+  final var x: i32;
 }
 ```
 
 - **Semantics**: The virtual property `x` cannot be overridden by an accessor in a subclass.
-- **Optimization**: Accessing `obj.x` is compiled to a direct struct field access (`struct.get`), bypassing the VTable getter/setter.
-- **Note**: This does **not** mean the field is immutable (read-only). It means the _implementation_ of the field access is final. (Use `const` or `readonly` for immutability, if added).
+- **Optimization**: Accessing `obj.x` is compiled to a direct struct field access (`struct.get`/`struct.set`), bypassing the VTable getter/setter.
+- **Note**: `final` controls **overridability**, not **mutability**. A `final var` field can still be mutated; a `final` (immutable) field cannot be mutated but could theoretically be overridden by an accessor. Use both `final` and immutability (`let` or bare) together for a field that is both non-overridable and read-only.
+
+```zena
+class Config {
+  final apiUrl: string;        // Immutable + non-overridable (optimal)
+  final var retryCount: i32;   // Mutable + non-overridable
+  var(#value) value: i32;      // Immutable public, mutable private, overridable
+}
+```
 
 ## 6. Construction
 

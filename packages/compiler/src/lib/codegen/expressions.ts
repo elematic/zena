@@ -76,6 +76,7 @@ import {
   ensureRecordVtableGlobal,
   getSpecializedName,
   getSymbolMemberName,
+  hasImmutableFields,
   instantiateClass,
   mapCheckerTypeToWasmType,
 } from './classes.js';
@@ -2061,6 +2062,38 @@ function generateNewExpression(
     return;
   }
 
+  // Check if class has immutable fields (requires struct_new pattern)
+  const classHasImmutableFields = hasImmutableFields(classInfo);
+
+  if (classHasImmutableFields) {
+    // For classes with immutable fields, the constructor creates the struct
+    // Just pass arguments and call constructor - it returns the new instance
+    const ctorInfo = classInfo.methods.get('#new');
+    if (!ctorInfo) {
+      throw new Error(
+        `Class ${className} with immutable fields requires a constructor`,
+      );
+    }
+
+    const ctorParams = ctx.module.getFunctionTypeParams(ctorInfo.typeIndex);
+
+    // Generate all constructor arguments with adaptation
+    for (let i = 0; i < expr.arguments.length; i++) {
+      const arg = expr.arguments[i];
+      if (ctorParams && i < ctorParams.length) {
+        generateAdaptedArgument(ctx, arg, ctorParams[i], body);
+      } else {
+        generateExpression(ctx, arg, body);
+      }
+    }
+
+    // Call constructor - returns the new instance
+    body.push(Opcode.call);
+    body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+    return;
+  }
+
+  // Standard pattern for classes with only mutable fields:
   // Allocate struct with default values
   body.push(0xfb, GcOpcode.struct_new_default);
   body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));

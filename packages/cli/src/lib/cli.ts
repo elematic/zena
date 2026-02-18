@@ -288,7 +288,13 @@ export const main = async (args: string[]): Promise<number> => {
 
   switch (command) {
     case 'build':
-      return buildCommand(files, values.output, target, values.debug, values.dce);
+      return buildCommand(
+        files,
+        values.output,
+        target,
+        values.debug,
+        values.dce,
+      );
     case 'check':
       return checkCommand(files);
     case 'run':
