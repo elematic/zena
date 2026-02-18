@@ -1768,8 +1768,40 @@ function generateSymbolMemberAccess(
     );
   }
 
-  const classType = objectCheckerType as ClassType;
-  const classInfo = ctx.getClassInfo(classType);
+  let classType = objectCheckerType as ClassType;
+
+  // Intern the classType to ensure we use the canonical object
+  if (
+    classType.genericSource &&
+    classType.typeArguments &&
+    classType.typeArguments.length > 0 &&
+    ctx.checkerContext
+  ) {
+    const interned = ctx.checkerContext.getInternedClass(
+      classType.genericSource,
+      classType.typeArguments,
+    );
+    if (interned) {
+      classType = interned;
+    }
+  }
+
+  let classInfo = ctx.getClassInfo(classType);
+
+  // If not found, trigger instantiation then trust the cache
+  if (!classInfo && classType.typeArguments?.length) {
+    mapCheckerTypeToWasmType(ctx, classType);
+    classInfo = ctx.getClassInfo(classType);
+  }
+
+  // Fallback to struct index lookup if identity-based lookup failed
+  if (!classInfo) {
+    const objectType = inferType(ctx, expr.object);
+    const structTypeIndex = getHeapTypeIndex(ctx, objectType);
+    if (structTypeIndex !== -1) {
+      classInfo = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
+    }
+  }
 
   if (!classInfo) {
     throw new Error(
@@ -1928,8 +1960,40 @@ function generateSymbolFieldAssignment(
     );
   }
 
-  const classType = objectCheckerType as ClassType;
-  const classInfo = ctx.getClassInfo(classType);
+  let classType = objectCheckerType as ClassType;
+
+  // Intern the classType to ensure we use the canonical object
+  if (
+    classType.genericSource &&
+    classType.typeArguments &&
+    classType.typeArguments.length > 0 &&
+    ctx.checkerContext
+  ) {
+    const interned = ctx.checkerContext.getInternedClass(
+      classType.genericSource,
+      classType.typeArguments,
+    );
+    if (interned) {
+      classType = interned;
+    }
+  }
+
+  let classInfo = ctx.getClassInfo(classType);
+
+  // If not found, trigger instantiation then trust the cache
+  if (!classInfo && classType.typeArguments?.length) {
+    mapCheckerTypeToWasmType(ctx, classType);
+    classInfo = ctx.getClassInfo(classType);
+  }
+
+  // Fallback to struct index lookup if identity-based lookup failed
+  if (!classInfo) {
+    const objectType = inferType(ctx, memberExpr.object);
+    const structTypeIndex = getHeapTypeIndex(ctx, objectType);
+    if (structTypeIndex !== -1) {
+      classInfo = ctx.getClassInfoByStructIndexDirect(structTypeIndex);
+    }
+  }
 
   if (!classInfo) {
     throw new Error(
@@ -2014,6 +2078,7 @@ function generateNewExpression(
         ctx.currentTypeArguments,
       ) as ClassType;
     }
+
     classInfo = ctx.getClassInfo(classType);
 
     // If identity lookup failed, instantiate via mapCheckerTypeToWasmType

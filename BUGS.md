@@ -16,7 +16,12 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
-(none currently)
+### Self-referential single-parameter generic class causes recursive type substitution
+
+- **Found**: 2026-02-16
+- **Severity**: medium
+- **Workaround**: Use a wrapper class (e.g., `Set<T>` wrapping `Map<T, Unit>` instead of having its own `SetEntry<E>` class)
+- **Details**: When a generic class with a single type parameter has a field referencing itself (e.g., `SetEntry<E>` with `next: SetEntry<E> | null`), and this class is used from another generic class (e.g., `Set<T>` using `SetEntry<T>`), the type checker incorrectly performs recursive type substitution. The error message shows nested types like `SetEntry<SetEntry<SetEntry<T> | null> | null> | null` instead of the correct `SetEntry<T> | null`. This bug does not occur with multi-parameter generics (e.g., Map's `Entry<K, V>` works fine).
 
 ## Fixed Bugs
 
