@@ -3,6 +3,47 @@
 This document tracks issues discovered during the implementation of tuple union
 narrowing.
 
+## Resolved Issues
+
+### ✅ Tuple Element Narrowing (Resolved)
+
+**Status:** Implemented
+
+Tuple elements now support type narrowing just like variables. Since tuples are
+immutable, narrowing is safe—the element cannot change between the null check
+and its use.
+
+```zena
+let process = (t: [Container | null, i32]): i32 => {
+  if (t[0] !== null) {
+    return t[0].value;  // t[0] narrowed to Container
+  }
+  return 0;
+};
+```
+
+**Location:** `extractNullComparisonTarget()` and `isExpressionPathImmutable()`
+in checker/statements.ts
+
+### ✅ Compile-Time Known Tuple Indices (Resolved)
+
+**Status:** Implemented
+
+Tuple indices can now be any compile-time known value, not just literal numbers.
+This includes `let` variables initialized with number literals.
+
+```zena
+let idx = 0;          // let with literal initializer
+let first = t[idx];   // ✅ Works - idx is compile-time known
+
+var i = 0;
+let x = t[i];         // ❌ Error - var is not compile-time known
+```
+
+**Location:** `getCompileTimeNumericValue()` in checker/expressions.ts
+
+---
+
 ## Match Expression Issues
 
 ### 1. Exhaustiveness Checking Doesn't Understand Tuple Literal Patterns
@@ -157,23 +198,29 @@ let makeIterator = (): (() => (true, i32) | (false, never)) => { ... };
 
 ## Summary Table
 
-| Issue                                       | Area    | Priority | Blocking?      |
-| ------------------------------------------- | ------- | -------- | -------------- |
-| #1 Exhaustiveness + tuple literals          | Checker | High     | Yes, for match |
-| #2 Variable binding in match tuple patterns | Codegen | High     | Yes, for match |
-| #3 Boxed tuples in if-let                   | Codegen | Medium   | Partial        |
-| #4 If-let with local variables              | Codegen | Medium   | Partial        |
-| #5 Record union narrowing                   | Checker | Medium   | No             |
-| #6 Class union narrowing                    | Checker | Low      | No             |
-| #7 Function type with tuple union return    | Parser  | Low      | No             |
+| Issue                                       | Area    | Priority | Status      |
+| ------------------------------------------- | ------- | -------- | ----------- |
+| Tuple element narrowing                     | Checker | High     | ✅ Resolved |
+| Compile-time known tuple indices            | Checker | Medium   | ✅ Resolved |
+| #1 Exhaustiveness + tuple literals          | Checker | High     | Open        |
+| #2 Variable binding in match tuple patterns | Codegen | High     | Open        |
+| #3 Boxed tuples in if-let                   | Codegen | Medium   | Open        |
+| #4 If-let with local variables              | Codegen | Medium   | Open        |
+| #5 Record union narrowing                   | Checker | Medium   | Open        |
+| #6 Class union narrowing                    | Checker | Low      | Open        |
+| #7 Function type with tuple union return    | Parser  | Low      | Open        |
 
 ## Related Work
 
-The tuple narrowing implementation (completed) added:
+The tuple narrowing implementation added:
 
 - `narrowTupleUnionByLiteralPatterns()` - filters tuple union members based on
   literal patterns
 - `getLiteralPatternType()` - extracts literal type from pattern
 - `isTypeCompatibleWithLiteral()` - checks type compatibility with literal
+- `getCompileTimeNumericValue()` - extracts compile-time known numeric values
+  from expressions (literals, `let` variables)
+- `isExpressionPathImmutable()` - checks if a path (field, tuple element) is
+  safe for narrowing
 
 This infrastructure could be extended for #5 and #6 (record/class narrowing).

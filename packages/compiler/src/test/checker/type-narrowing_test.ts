@@ -390,4 +390,425 @@ suite('TypeChecker: Type Narrowing', () => {
       assert.ok(errors.some((e) => e.message.includes('bark')));
     });
   });
+
+  suite('immutable field narrowing', () => {
+    test('should narrow immutable field after null check', () => {
+      const input = `
+        class Container {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        class Wrapper {
+          let inner: Container | null;
+          #new() : inner = null { }
+        }
+
+        let process = (w: Wrapper): i32 => {
+          if (w.inner !== null) {
+            return w.inner.value;
+          }
+          return 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.deepStrictEqual(
+        errors.map((e) => e.message),
+        [],
+      );
+    });
+
+    test('should NOT narrow mutable field after null check', () => {
+      const input = `
+        class Container {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        class Wrapper {
+          var inner: Container | null;
+          #new() {
+            this.inner = null;
+          }
+        }
+
+        let process = (w: Wrapper): i32 => {
+          if (w.inner !== null) {
+            // This should error - field is mutable, could change
+            return w.inner.value;
+          }
+          return 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      // Should have an error because mutable field can't be narrowed
+      assert.strictEqual(errors.length, 1);
+      assert.match(errors[0].message, /null/);
+    });
+
+    test('should narrow immutable field to null in else branch', () => {
+      const input = `
+        class Container {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        class Wrapper {
+          let inner: Container | null;
+          #new() : inner = null { }
+        }
+
+        let process = (w: Wrapper): i32 => {
+          if (w.inner !== null) {
+            return w.inner.value;
+          } else {
+            // w.inner is null here, accessing value should error
+            return w.inner.value;
+          }
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.strictEqual(errors.length, 1);
+      assert.match(errors[0].message, /null/);
+    });
+
+    test('should narrow immutable nested field', () => {
+      const input = `
+        class Inner {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        class Middle {
+          let inner: Inner | null;
+          #new() : inner = null { }
+        }
+
+        class Outer {
+          let middle: Middle;
+          #new(m: Middle) : middle = m { }
+        }
+
+        let process = (o: Outer): i32 => {
+          if (o.middle.inner !== null) {
+            return o.middle.inner.value;
+          }
+          return 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.deepStrictEqual(
+        errors.map((e) => e.message),
+        [],
+      );
+    });
+
+    test('should NOT narrow if any field in chain is mutable', () => {
+      const input = `
+        class Inner {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        class Middle {
+          let inner: Inner | null;
+          #new() : inner = null { }
+        }
+
+        class Outer {
+          var middle: Middle;
+          #new(m: Middle) {
+            this.middle = m;
+          }
+        }
+
+        let process = (o: Outer): i32 => {
+          if (o.middle.inner !== null) {
+            // This should error - o.middle is mutable
+            return o.middle.inner.value;
+          }
+          return 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      // Should error because mutable field in chain prevents narrowing
+      assert.strictEqual(errors.length, 1);
+      assert.match(errors[0].message, /null/);
+    });
+  });
+
+  suite('record field narrowing', () => {
+    test('should narrow record field after null check', () => {
+      const input = `
+        class Container {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        let process = (r: {inner: Container | null}): i32 => {
+          if (r.inner !== null) {
+            return r.inner.value;
+          }
+          return 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.deepStrictEqual(
+        errors.map((e) => e.message),
+        [],
+      );
+    });
+
+    test('should narrow nested record field after null check', () => {
+      const input = `
+        class Container {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        let process = (r: {outer: {inner: Container | null}}): i32 => {
+          if (r.outer.inner !== null) {
+            return r.outer.inner.value;
+          }
+          return 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.deepStrictEqual(
+        errors.map((e) => e.message),
+        [],
+      );
+    });
+
+    test('should narrow record field to null in else branch', () => {
+      const input = `
+        class Container {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        let process = (r: {inner: Container | null}): i32 => {
+          if (r.inner !== null) {
+            return r.inner.value;
+          } else {
+            // r.inner is null here, accessing value should error
+            return r.inner.value;
+          }
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.strictEqual(errors.length, 1);
+      assert.match(errors[0].message, /null/);
+    });
+  });
+
+  suite('tuple element narrowing', () => {
+    test('should narrow tuple element after null check', () => {
+      const input = `
+        class Container {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        let process = (t: [Container | null, i32]): i32 => {
+          if (t[0] !== null) {
+            return t[0].value;
+          }
+          return 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.deepStrictEqual(
+        errors.map((e) => e.message),
+        [],
+      );
+    });
+
+    test('should narrow tuple element to null in else branch', () => {
+      const input = `
+        class Container {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        let process = (t: [Container | null, i32]): i32 => {
+          if (t[0] !== null) {
+            return t[0].value;
+          } else {
+            // t[0] is null here, accessing value should error
+            return t[0].value;
+          }
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.strictEqual(errors.length, 1);
+      assert.match(errors[0].message, /null/);
+    });
+
+    test('should narrow nested tuple element', () => {
+      const input = `
+        class Container {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        let process = (t: [[Container | null, i32], string]): i32 => {
+          if (t[0][0] !== null) {
+            return t[0][0].value;
+          }
+          return 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.deepStrictEqual(
+        errors.map((e) => e.message),
+        [],
+      );
+    });
+  });
+
+  suite('compile-time known tuple indices', () => {
+    test('should support let variable with literal value as index', () => {
+      const input = `
+        class Container {
+          value: i32;
+          #new(value: i32) {
+            this.value = value;
+          }
+        }
+
+        let process = (t: [Container | null, i32]): i32 => {
+          let idx = 0;
+          if (t[idx] !== null) {
+            return t[idx].value;
+          }
+          return 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.deepStrictEqual(
+        errors.map((e) => e.message),
+        [],
+      );
+    });
+
+    test('should support tuple access with let index', () => {
+      const input = `
+        let getTupleElement = (t: [i32, string]): i32 => {
+          let idx = 0;
+          return t[idx];
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.deepStrictEqual(
+        errors.map((e) => e.message),
+        [],
+      );
+    });
+
+    test('should error on var index (not compile-time known)', () => {
+      const input = `
+        let getTupleElement = (t: [i32, string]): i32 => {
+          var idx = 0;
+          return t[idx];
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.strictEqual(errors.length, 1);
+      assert.match(errors[0].message, /compile-time known/);
+    });
+
+    test('should error on parameter index (not compile-time known)', () => {
+      const input = `
+        let getTupleElement = (t: [i32, string], idx: i32): i32 => {
+          return t[idx];
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.strictEqual(errors.length, 1);
+      assert.match(errors[0].message, /compile-time known/);
+    });
+  });
 });

@@ -152,6 +152,8 @@ export interface MixinType extends Type {
   typeArguments?: Type[];
   onType?: ClassType;
   fields: Map<string, Type>;
+  /** Tracks which fields are immutable (declared with `let`). If not present or key missing, field is mutable. */
+  fieldMutability?: Map<string, boolean>;
   methods: Map<string, FunctionType>;
   symbolFields?: Map<SymbolType, Type>;
   symbolMethods?: Map<SymbolType, FunctionType>;
@@ -166,6 +168,8 @@ export interface ClassType extends Type {
   superType?: ClassType;
   implements: InterfaceType[];
   fields: Map<string, Type>;
+  /** Tracks which fields are immutable (declared with `let`). If not present or key missing, field is mutable. */
+  fieldMutability?: Map<string, boolean>;
   methods: Map<string, FunctionType>;
   statics: Map<string, Type>;
   symbolFields?: Map<SymbolType, Type>;
@@ -202,6 +206,7 @@ export const StringClass: ClassType = {
   kind: TypeKind.Class,
   name: 'String',
   fields: new Map(),
+  fieldMutability: new Map(),
   methods: new Map(),
   statics: new Map(),
   implements: [],

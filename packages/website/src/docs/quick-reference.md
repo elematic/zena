@@ -881,6 +881,26 @@ let process = (x: String | null) => {
 };
 ```
 
+Narrowing also works for immutable paths (class `let` fields, record fields,
+tuple elements):
+
+```ts
+class Wrapper {
+  let inner: Container | null;  // Immutable field
+  #new() : inner = null { }
+}
+
+let process = (w: Wrapper): i32 => {
+  if (w.inner !== null) {
+    return w.inner.value;  // w.inner narrowed to Container
+  }
+  return 0;
+};
+```
+
+Mutable fields (`var`) cannot be narrowed—another reference could modify the
+field between the check and use.
+
 ### Nominal vs Structural
 
 - **Nominal**: Classes, interfaces, distinct types (identity matters)
@@ -960,6 +980,30 @@ Tuples are fixed-length sequences where each position can have a different type.
 let t = [1, 'hello'];
 let n = t[0]; // 1
 let s = t[1]; // "hello"
+```
+
+Tuple indices must be compile-time known values:
+
+```ts
+let t = [1, 'hello', true];
+
+let first = t[0]; // ✅ Literal index
+let idx = 1; // let variable with literal initializer
+let second = t[idx]; // ✅ Compile-time known
+
+var i = 0;
+let x = t[i]; // ❌ var is not compile-time known
+```
+
+Tuple elements support type narrowing since tuples are immutable:
+
+```ts
+let process = (t: [Container | null, i32]): i32 => {
+  if (t[0] !== null) {
+    return t[0].value; // t[0] narrowed to Container
+  }
+  return 0;
+};
 ```
 
 ### Destructuring

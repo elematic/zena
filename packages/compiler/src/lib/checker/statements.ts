@@ -16,6 +16,7 @@ import {
   type Identifier,
   type IfStatement,
   type ImportDeclaration,
+  type IndexExpression,
   type InterfaceDeclaration,
   type IsExpression,
   // type LetPatternCondition,
@@ -65,7 +66,11 @@ import {
   type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
-import {checkExpression, checkMatchPattern} from './expressions.js';
+import {
+  checkExpression,
+  checkMatchPattern,
+  getCompileTimeNumericValue,
+} from './expressions.js';
 import {
   instantiateGenericClass,
   isBooleanType,
@@ -85,11 +90,127 @@ import {
 /**
  * Represents a type narrowing discovered from a condition.
  * For example, `x !== null` narrows `x` by removing `null`.
+ * The variableName can be a simple name like "x" or a path like "obj.field".
  */
 interface TypeNarrowing {
   variableName: string;
   narrowedType: Type;
 }
+
+/**
+ * Convert an expression to a narrowing path string.
+ * Returns null if the expression cannot be narrowed.
+ *
+ * Supported expressions:
+ * - Identifier: "x"
+ * - MemberExpression (single level): "obj.field"
+ * - MemberExpression (multi-level): "obj.field.subfield"
+ * - IndexExpression (tuple): "tuple[0]" or "tuple[i]" where i is compile-time known
+ *
+ * @param expr - The expression to convert
+ * @param ctx - Optional checker context for resolving compile-time known indices
+ */
+const getExpressionPath = (
+  expr: Expression,
+  ctx?: CheckerContext,
+): string | null => {
+  if (expr.type === NodeType.Identifier) {
+    return (expr as Identifier).name;
+  }
+  if (expr.type === NodeType.MemberExpression) {
+    const member = expr as MemberExpression;
+    // Only support simple property access (not computed, not symbol)
+    if (member.isSymbolAccess) return null;
+    const objectPath = getExpressionPath(member.object, ctx);
+    if (!objectPath) return null;
+    return `${objectPath}.${member.property.name}`;
+  }
+  // Handle tuple index expressions like t[0] or t[i] where i is compile-time known
+  if (expr.type === NodeType.IndexExpression) {
+    const indexExpr = expr as IndexExpression;
+    const index = getCompileTimeNumericValue(ctx ?? null, indexExpr.index);
+    if (index === null) return null;
+    const objectPath = getExpressionPath(indexExpr.object, ctx);
+    if (!objectPath) return null;
+    return `${objectPath}[${index}]`;
+  }
+  return null;
+};
+
+/**
+ * Check if an expression path refers to an immutable location.
+ * For narrowing to be safe, ALL fields/indices in the path must be immutable.
+ *
+ * - For classes: field must be declared with `let` (not in mutableFields)
+ * - For records: all record fields are immutable by nature
+ * - For tuples: all tuple elements are immutable by nature
+ *
+ * @param ctx - The checker context
+ * @param expr - The expression to check (MemberExpression or IndexExpression)
+ * @returns true if the path is immutable
+ */
+const isExpressionPathImmutable = (
+  ctx: CheckerContext,
+  expr: Expression,
+): boolean => {
+  if (expr.type === NodeType.MemberExpression) {
+    const memberExpr = expr as MemberExpression;
+    const objectType = checkExpression(ctx, memberExpr.object);
+    const fieldName = memberExpr.property.name;
+
+    // Handle ClassType - check if the field is immutable (declared with `let`)
+    if (objectType.kind === TypeKind.Class) {
+      const classType = objectType as ClassType;
+      if (!classType.fields.has(fieldName)) return false;
+      const isImmutable = !classType.mutableFields?.has(fieldName);
+      if (!isImmutable) return false;
+    }
+    // Handle RecordType - all record fields are immutable by nature
+    else if (objectType.kind === TypeKind.Record) {
+      const recordType = objectType as RecordType;
+      if (!recordType.properties.has(fieldName)) return false;
+      // Records are always immutable, so no additional check needed
+    }
+    // Other types don't support narrowing
+    else {
+      return false;
+    }
+
+    // If the object is also a member/index expression, check its immutability recursively
+    if (
+      memberExpr.object.type === NodeType.MemberExpression ||
+      memberExpr.object.type === NodeType.IndexExpression
+    ) {
+      return isExpressionPathImmutable(ctx, memberExpr.object);
+    }
+
+    // The base is an identifier, which is fine
+    return true;
+  }
+
+  if (expr.type === NodeType.IndexExpression) {
+    const indexExpr = expr as IndexExpression;
+    const objectType = checkExpression(ctx, indexExpr.object);
+
+    // Only support tuples with compile-time known indices
+    if (objectType.kind !== TypeKind.Tuple) return false;
+    if (getCompileTimeNumericValue(ctx, indexExpr.index) === null) return false;
+
+    // Tuples are always immutable, so the index access itself is fine
+    // But check if there's a nested path that needs to be immutable
+    if (
+      indexExpr.object.type === NodeType.MemberExpression ||
+      indexExpr.object.type === NodeType.IndexExpression
+    ) {
+      return isExpressionPathImmutable(ctx, indexExpr.object);
+    }
+
+    // The base is an identifier, which is fine
+    return true;
+  }
+
+  return false;
+};
 
 /**
  * Subtract `typeToRemove` from `originalType`.
@@ -194,6 +315,7 @@ const findMatchingOverload = (
  * - `x === null` / `x == null` -> narrows x to null (true branch)
  * - `null === x` / `null == x` -> narrows x to null (true branch)
  * - `x is T` -> narrows x to T (true branch)
+ * - `obj.field !== null` -> narrows obj.field if field is immutable
  */
 const extractNarrowingFromCondition = (
   ctx: CheckerContext,
@@ -219,53 +341,99 @@ const extractNarrowingFromCondition = (
 
   // Handle !== and != (not equal to null)
   if (op === '!==' || op === '!=') {
-    const identifier = extractNullComparisonIdentifier(binary);
-    if (!identifier) return null;
+    const target = extractNullComparisonTarget(ctx, binary);
+    if (!target) return null;
 
-    const variableName = identifier.name;
-    const originalType = ctx.resolveValue(variableName);
-    if (!originalType) return null;
+    const {path, originalType} = target;
 
     // Narrow by removing null
     const narrowedType = subtractTypeFromUnion(originalType, Types.Null);
     if (narrowedType === originalType) return null;
 
-    return {variableName, narrowedType};
+    return {variableName: path, narrowedType};
   }
 
   // Handle === and == (equal to null)
   if (op === '===' || op === '==') {
-    const identifier = extractNullComparisonIdentifier(binary);
-    if (!identifier) return null;
+    const target = extractNullComparisonTarget(ctx, binary);
+    if (!target) return null;
 
     // In the true branch of `x == null`, x is null
-    return {variableName: identifier.name, narrowedType: Types.Null};
+    return {variableName: target.path, narrowedType: Types.Null};
   }
 
   return null;
 };
 
 /**
- * Helper to extract the identifier from a null comparison expression.
- * Works for both `x op null` and `null op x` patterns.
+ * Result of extracting a null comparison target.
  */
-const extractNullComparisonIdentifier = (
+interface NullComparisonTarget {
+  /** The path string for narrowing (e.g., "x" or "obj.field") */
+  path: string;
+  /** The original type of the expression */
+  originalType: Type;
+}
+
+/**
+ * Helper to extract the target expression from a null comparison.
+ * Works for both `x op null` and `null op x` patterns.
+ * Supports Identifier, MemberExpression (if field is immutable), and IndexExpression (for tuples).
+ */
+const extractNullComparisonTarget = (
+  ctx: CheckerContext,
   binary: BinaryExpression,
-): Identifier | null => {
-  // Check pattern: x op null
-  if (
-    binary.left.type === NodeType.Identifier &&
-    binary.right.type === NodeType.NullLiteral
-  ) {
-    return binary.left as Identifier;
+): NullComparisonTarget | null => {
+  // Determine which side is the target (non-null side)
+  let targetExpr: Expression | null = null;
+  if (binary.right.type === NodeType.NullLiteral) {
+    targetExpr = binary.left;
+  } else if (binary.left.type === NodeType.NullLiteral) {
+    targetExpr = binary.right;
+  } else {
+    return null;
   }
-  // Check pattern: null op x
-  if (
-    binary.left.type === NodeType.NullLiteral &&
-    binary.right.type === NodeType.Identifier
-  ) {
-    return binary.right as Identifier;
+
+  // Handle Identifier
+  if (targetExpr.type === NodeType.Identifier) {
+    const name = (targetExpr as Identifier).name;
+    const originalType = ctx.resolveValue(name);
+    if (!originalType) return null;
+    return {path: name, originalType};
   }
+
+  // Handle MemberExpression (only if the field is immutable)
+  if (targetExpr.type === NodeType.MemberExpression) {
+    const memberExpr = targetExpr as MemberExpression;
+
+    // Check that all fields in the chain are immutable
+    if (!isExpressionPathImmutable(ctx, memberExpr)) {
+      return null;
+    }
+
+    const path = getExpressionPath(targetExpr, ctx);
+    if (!path) return null;
+
+    const originalType = checkExpression(ctx, targetExpr);
+    return {path, originalType};
+  }
+
+  // Handle IndexExpression (for tuples)
+  if (targetExpr.type === NodeType.IndexExpression) {
+    const indexExpr = targetExpr as IndexExpression;
+
+    // Check that the path is immutable (tuples are always immutable)
+    if (!isExpressionPathImmutable(ctx, indexExpr)) {
+      return null;
+    }
+
+    const path = getExpressionPath(targetExpr, ctx);
+    if (!path) return null;
+
+    const originalType = checkExpression(ctx, targetExpr);
+    return {path, originalType};
+  }
+
   return null;
 };
 
@@ -276,6 +444,7 @@ const extractNullComparisonIdentifier = (
  * - `x !== null` else branch -> x is null
  * - `x === null` else branch -> x is non-null
  * - `x is T` else branch -> x with T subtracted (if union)
+ * - `obj.field !== null` else branch -> obj.field is null (if field is immutable)
  */
 const extractInverseNarrowingFromCondition = (
   ctx: CheckerContext,
@@ -306,24 +475,20 @@ const extractInverseNarrowingFromCondition = (
   const binary = condition as BinaryExpression;
   const op = binary.operator;
 
-  const identifier = extractNullComparisonIdentifier(binary);
-  if (!identifier) return null;
+  const target = extractNullComparisonTarget(ctx, binary);
+  if (!target) return null;
 
   // For !== and !=, the else branch means IS null
   if (op === '!==' || op === '!=') {
-    return {variableName: identifier.name, narrowedType: Types.Null};
+    return {variableName: target.path, narrowedType: Types.Null};
   }
 
   // For === and ==, the else branch means NOT null
   if (op === '===' || op === '==') {
-    const variableName = identifier.name;
-    const originalType = ctx.resolveValue(variableName);
-    if (!originalType) return null;
+    const narrowedType = subtractTypeFromUnion(target.originalType, Types.Null);
+    if (narrowedType === target.originalType) return null;
 
-    const narrowedType = subtractTypeFromUnion(originalType, Types.Null);
-    if (narrowedType === originalType) return null;
-
-    return {variableName, narrowedType};
+    return {variableName: target.path, narrowedType};
   }
 
   return null;
@@ -411,6 +576,7 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
     superType: undefined, // Will be resolved in full check
     implements: [],
     fields: new Map(),
+    fieldMutability: new Map(),
     methods: new Map(),
     statics: new Map(),
     symbolFields: new Map(),
@@ -2078,6 +2244,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         superType: superType,
         implements: [], // TODO: Mixins might implement interfaces
         fields: new Map(),
+        fieldMutability: new Map(),
         methods: new Map(),
         statics: new Map(),
         symbolFields: new Map(),
@@ -2091,6 +2258,12 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       if (superType) {
         for (const [name, type] of superType.fields) {
           intermediateType.fields.set(name, type);
+        }
+        // Copy field mutability from supertype
+        if (superType.fieldMutability) {
+          for (const [name, isFinal] of superType.fieldMutability) {
+            intermediateType.fieldMutability!.set(name, isFinal);
+          }
         }
         for (const [name, type] of superType.methods) {
           intermediateType.methods.set(name, type);
@@ -2112,6 +2285,13 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           }
         }
         intermediateType.fields.set(name, type);
+        // Copy field mutability from mixin
+        if (mixin.fieldMutability?.has(name)) {
+          intermediateType.fieldMutability!.set(
+            name,
+            mixin.fieldMutability.get(name)!,
+          );
+        }
       }
 
       for (const [name, type] of mixin.methods) {
@@ -2189,6 +2369,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       superType: undefined,
       implements: [],
       fields: new Map(),
+      fieldMutability: new Map(),
       methods: new Map(),
       statics: new Map(),
       symbolFields: new Map(),
@@ -2232,6 +2413,14 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     for (const [name, type] of superType.fields) {
       if (!name.startsWith('#')) {
         classType.fields.set(name, type);
+      }
+    }
+    // Inherit field mutability
+    if (superType.fieldMutability) {
+      for (const [name, isFinal] of superType.fieldMutability) {
+        if (!name.startsWith('#')) {
+          classType.fieldMutability!.set(name, isFinal);
+        }
       }
     }
     // Inherit methods
@@ -2395,6 +2584,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       }
 
       classType.fields.set(memberName, fieldType);
+      classType.fieldMutability!.set(memberName, member.isFinal);
 
       // Track field mutability based on let/var modifiers
       // Fields are mutable by default; only `let` makes them immutable
@@ -3615,6 +3805,9 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     superType: onType,
     implements: [],
     fields: new Map(mixinType.fields),
+    fieldMutability: mixinType.fieldMutability
+      ? new Map(mixinType.fieldMutability)
+      : new Map(),
     methods: new Map(mixinType.methods),
     statics: new Map(),
     symbolFields: new Map(mixinType.symbolFields),

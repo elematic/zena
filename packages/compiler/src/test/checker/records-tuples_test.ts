@@ -110,11 +110,12 @@ suite('Checker: Records and Tuples', () => {
   });
 
   test('checks tuple index access (non-literal)', () => {
-    const {diagnostics} = check('let t = [1]; let i = 0; let x = t[i];');
+    // var variables are not compile-time known, even with literal initializers
+    const {diagnostics} = check('let t = [1]; var i = 0; let x = t[i];');
     assert.strictEqual(diagnostics.length, 1);
     assert.match(
       diagnostics[0].message,
-      /Tuple index must be a number literal/,
+      /Tuple index must be a compile-time known value/,
     );
   });
 

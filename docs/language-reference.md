@@ -417,6 +417,65 @@ let speak = (pet: Cat | Dog): string => {
 Type narrowing is scoped to the block where the narrowing applies. Once you exit
 the block, the original type is restored.
 
+##### Field and Element Narrowing
+
+Type narrowing also works for member expressions when the path is **immutable**:
+
+- **Immutable class fields** (declared with `let`): Safe to narrow because the
+  field cannot be modified between the check and use.
+- **Record fields**: Always safe to narrow because records are immutable.
+- **Tuple elements**: Always safe to narrow because tuples are immutable.
+
+```zena
+// Class with immutable field
+class Wrapper {
+  let inner: Container | null;
+  #new() : inner = null { }
+}
+
+let process = (w: Wrapper): i32 => {
+  if (w.inner !== null) {
+    return w.inner.value;  // w.inner narrowed to Container
+  }
+  return 0;
+};
+
+// Record field
+let processRecord = (r: {inner: Container | null}): i32 => {
+  if (r.inner !== null) {
+    return r.inner.value;  // r.inner narrowed to Container
+  }
+  return 0;
+};
+
+// Tuple element
+let processTuple = (t: [Container | null, i32]): i32 => {
+  if (t[0] !== null) {
+    return t[0].value;  // t[0] narrowed to Container
+  }
+  return 0;
+};
+```
+
+**Mutable fields** (declared with `var`) cannot be narrowed because another
+reference could modify the field between the null check and use:
+
+```zena
+class MutableWrapper {
+  var inner: Container | null;  // Mutable field
+  #new() { this.inner = null; }
+}
+
+let process = (w: MutableWrapper): i32 => {
+  if (w.inner !== null) {
+    // ❌ Error: Cannot narrow mutable field
+    // Another reference could set w.inner = null here
+    return w.inner.value;
+  }
+  return 0;
+};
+```
+
 ### Literal Types
 
 Zena supports **literal types** for strings, numbers, and booleans. A literal
@@ -520,6 +579,25 @@ var name = expression;
 
 Variables declared with `let` and `var` are block-scoped. Redeclaring a variable
 in the same scope is a compile-time error.
+
+### Compile-Time Known Values
+
+Variables declared with `let` and initialized with a literal value are
+considered **compile-time known**. This enables features that require
+statically-known values, such as tuple indexing:
+
+```zena
+let t = [1, "hello", true];
+
+let idx = 0;          // let with literal initializer
+let first = t[idx];   // ✅ OK - idx is compile-time known
+
+var i = 0;
+let x = t[i];         // ❌ Error - var is not compile-time known
+```
+
+This distinction also applies to type narrowing: `let` indices allow narrowing
+to be tracked through tuple element access.
 
 ## 4. Functions
 
@@ -2163,6 +2241,65 @@ elements.
 ```zena
 let t = [1, "hello"];
 let n = t[0];
+```
+
+#### Compile-Time Known Indices
+
+Tuple indices must be compile-time known values. This includes:
+
+- **Literal numbers**: `t[0]`, `t[1]`
+- **`let` variables** initialized with number literals: `let idx = 0; t[idx]`
+
+```zena
+let t = [1, "hello", true];
+
+// ✅ Literal index
+let first = t[0];
+
+// ✅ let variable with literal initializer
+let idx = 1;
+let second = t[idx];
+
+// ❌ var variables are not compile-time known
+var i = 0;
+let x = t[i];  // Error: Tuple index must be a compile-time known value
+
+// ❌ Parameters are not compile-time known
+let getElement = (t: [i32, string], idx: i32) => t[idx];  // Error
+```
+
+This restriction exists because tuples have a fixed structure where each
+position may have a different type. The compiler must know the index at
+compile time to determine the result type.
+
+#### Tuple Element Narrowing
+
+Tuple elements support type narrowing just like variables. Since tuples are
+immutable, type narrowing is safe—the element cannot change between the null
+check and its use.
+
+```zena
+class Container {
+  value: i32;
+  #new(value: i32) { this.value = value; }
+}
+
+let process = (t: [Container | null, i32]): i32 => {
+  if (t[0] !== null) {
+    // t[0] is narrowed to Container (non-null)
+    return t[0].value;
+  }
+  return 0;
+};
+
+// Works with let indices too:
+let process2 = (t: [Container | null, i32]): i32 => {
+  let idx = 0;
+  if (t[idx] !== null) {
+    return t[idx].value;  // Narrowed to Container
+  }
+  return 0;
+};
 ```
 
 ### Unboxed Tuples (Multi-Value Returns)

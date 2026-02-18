@@ -40,6 +40,7 @@ import {
   type TuplePattern,
   type UnaryExpression,
   type UnboxedTupleLiteral,
+  type VariableDeclaration,
 } from '../ast.js';
 import {
   createBinding,
@@ -72,6 +73,101 @@ import {
 import type {CheckerContext} from './context.js';
 
 const LENGTH_PROPERTY = 'length';
+
+/**
+ * Extracts a compile-time known numeric value from an expression.
+ *
+ * This supports:
+ * - Number literals (e.g., `0`, `42`)
+ * - Identifiers with literal numeric types (e.g., booleans have literal types)
+ * - Identifiers declared with `let` initialized with a number literal
+ * - Identifiers narrowed to literal numeric types
+ *
+ * @param ctx - The checker context (optional for backward compatibility)
+ * @param expr - The expression to evaluate
+ * @returns The numeric value if compile-time known, null otherwise
+ */
+export const getCompileTimeNumericValue = (
+  ctx: CheckerContext | null,
+  expr: Expression,
+): number | null => {
+  // Direct number literal
+  if (expr.type === NodeType.NumberLiteral) {
+    return (expr as NumberLiteral).value;
+  }
+
+  // Identifier - check if it has a compile-time known numeric value
+  if (expr.type === NodeType.Identifier && ctx) {
+    const name = (expr as Identifier).name;
+
+    // Check narrowed type first (narrowing takes precedence)
+    const narrowedType = ctx.getNarrowedType(name);
+    if (narrowedType?.kind === TypeKind.Literal) {
+      const literalType = narrowedType as LiteralType;
+      if (typeof literalType.value === 'number') {
+        return literalType.value;
+      }
+    }
+
+    // Check declared type (for types that preserve literal types, like booleans)
+    const symbolInfo = ctx.resolveValueInfo(name);
+    if (symbolInfo?.type.kind === TypeKind.Literal) {
+      const literalType = symbolInfo.type as LiteralType;
+      if (typeof literalType.value === 'number') {
+        return literalType.value;
+      }
+    }
+
+    // Check if this is a `let` variable initialized with a number literal
+    // (Number literals don't have literal types, so we need to check the declaration)
+    if (symbolInfo?.kind === 'let' && symbolInfo.declaration) {
+      const decl = symbolInfo.declaration;
+      if (
+        decl.type === NodeType.VariableDeclaration &&
+        (decl as VariableDeclaration).init.type === NodeType.NumberLiteral
+      ) {
+        return ((decl as VariableDeclaration).init as NumberLiteral).value;
+      }
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Converts an expression to a path string for narrowing lookups.
+ * For example:
+ * - `obj.field.subfield` becomes "obj.field.subfield"
+ * - `tuple[0]` becomes "tuple[0]"
+ * Returns null if the expression cannot be represented as a path.
+ *
+ * @param expr - The expression to convert
+ * @param ctx - Optional checker context for resolving compile-time known indices
+ */
+const getExpressionPath = (
+  expr: Expression,
+  ctx?: CheckerContext,
+): string | null => {
+  if (expr.type === NodeType.Identifier) {
+    return (expr as Identifier).name;
+  }
+  if (expr.type === NodeType.MemberExpression) {
+    const member = expr as MemberExpression;
+    const objectPath = getExpressionPath(member.object, ctx);
+    if (objectPath === null) return null;
+    return `${objectPath}.${member.property.name}`;
+  }
+  // Handle tuple index expressions like t[0] or t[i] where i is compile-time known
+  if (expr.type === NodeType.IndexExpression) {
+    const indexExpr = expr as IndexExpression;
+    const index = getCompileTimeNumericValue(ctx ?? null, indexExpr.index);
+    if (index === null) return null;
+    const objectPath = getExpressionPath(indexExpr.object, ctx);
+    if (objectPath === null) return null;
+    return `${objectPath}[${index}]`;
+  }
+  return null;
+};
 
 import {
   instantiateGenericClass,
@@ -2770,16 +2866,21 @@ function checkMemberExpression(
     if (recordType.properties.has(memberName)) {
       const fieldType = recordType.properties.get(memberName)!;
 
+      // Check for narrowed type based on the full path (e.g., "r.field")
+      const path = getExpressionPath(expr, ctx);
+      const narrowedType = path ? ctx.getNarrowedType(path) : undefined;
+      const finalType = narrowedType ?? fieldType;
+
       // Store record field binding
       const binding: RecordFieldBinding = {
         kind: 'record-field',
         recordType,
         fieldName: memberName,
-        type: fieldType,
+        type: finalType,
       };
       ctx.semanticContext.setResolvedBinding(expr, binding);
 
-      return fieldType;
+      return finalType;
     }
     ctx.diagnostics.reportError(
       `Property '${memberName}' does not exist on type '${typeToString(objectType)}'.`,
@@ -2888,6 +2989,11 @@ function checkMemberExpression(
     const fieldType = classType.fields.get(memberName)!;
     const resolvedType = resolveMemberType(classType, fieldType, ctx);
 
+    // Check for narrowed type based on the full path (e.g., "obj.field")
+    const path = getExpressionPath(expr, ctx);
+    const narrowedType = path ? ctx.getNarrowedType(path) : undefined;
+    const finalType = narrowedType ?? resolvedType;
+
     // Determine if this is static field access:
     // - Object is an Identifier that resolves to a class binding (e.g., ClassName.field)
     // vs instance access:
@@ -2901,12 +3007,12 @@ function checkMemberExpression(
       kind: 'field',
       classType,
       fieldName: memberName,
-      type: resolvedType,
+      type: finalType,
       isStatic: isStaticAccess,
     };
     ctx.semanticContext.setResolvedBinding(expr, binding);
 
-    return resolvedType;
+    return finalType;
   }
 
   // Check methods
@@ -3182,14 +3288,14 @@ function checkIndexExpression(
 
   if (objectType.kind === TypeKind.Tuple) {
     const tupleType = objectType as TupleType;
-    if (expr.index.type !== NodeType.NumberLiteral) {
+    const index = getCompileTimeNumericValue(ctx, expr.index);
+    if (index === null) {
       ctx.diagnostics.reportError(
-        `Tuple index must be a number literal.`,
+        `Tuple index must be a compile-time known value.`,
         DiagnosticCode.TypeMismatch,
       );
       return Types.Unknown;
     }
-    const index = (expr.index as any).value;
     if (index < 0 || index >= tupleType.elementTypes.length) {
       ctx.diagnostics.reportError(
         `Tuple index out of bounds: ${index}`,
@@ -3197,7 +3303,12 @@ function checkIndexExpression(
       );
       return Types.Unknown;
     }
-    return tupleType.elementTypes[index];
+    const elementType = tupleType.elementTypes[index];
+
+    // Check for narrowed type based on the full path (e.g., "t[0]")
+    const path = getExpressionPath(expr, ctx);
+    const narrowedType = path ? ctx.getNarrowedType(path) : undefined;
+    return narrowedType ?? elementType;
   }
 
   // Check for extension class operator[] on Array types (e.g., FixedArray<T>.operator[](Range))

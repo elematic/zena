@@ -114,6 +114,35 @@ class Point {
 This distinction enables WASM engines to apply optimizations like caching
 immutable field values in registers across function calls.
 
+#### Benefits of Immutable Fields
+
+Beyond WASM-level optimizations, `let` fields enable additional compiler
+features:
+
+1. **Type Narrowing**: Immutable class fields can be narrowed after null checks.
+   Since the field cannot be mutated between the check and use, narrowing is
+   safe:
+
+   ```zena
+   class Wrapper {
+     let inner: Container | null;
+     #new() : inner = null { }
+   }
+
+   let process = (w: Wrapper): i32 => {
+     if (w.inner !== null) {
+       return w.inner.value;  // w.inner narrowed to Container
+     }
+     return 0;
+   };
+   ```
+
+   Mutable (`var`) fields cannot be narrowed because another reference could
+   modify the field between the check and use.
+
+2. **Future**: Immutable fields may enable additional optimizations like
+   compile-time constant propagation or more aggressive inlining.
+
 ### 1.3. Initializer Lists (Dart-style)
 
 For truly immutable WASM fields, all values must be provided at allocation time
@@ -201,18 +230,20 @@ class User {
 The migration will be incremental, with multiple opt-in mechanisms:
 
 1. **Compiler flag** (`--default-field-mutability`):
+
    ```bash
    # Current behavior (explicit during transition)
    zena build --default-field-mutability=mutable
-   
+
    # Opt-in to new behavior
    zena build --default-field-mutability=immutable
    ```
 
 2. **File-level pragma** (allows per-file migration):
+
    ```zena
    #[defaultFieldMutability: immutable]
-   
+
    class Point {
      x: i32;  // Immutable due to pragma
      y: i32;
@@ -220,17 +251,19 @@ The migration will be incremental, with multiple opt-in mechanisms:
    ```
 
 3. **Warning mode** (lint before enforcing):
+
    ```bash
    # Warn on bare fields without explicit let/var
    zena build --warn-implicit-field-mutability
    ```
+
    This helps identify fields that need explicit modifiers before switching defaults.
 
 4. **Test utilities** (for gradual test migration):
    ```typescript
    // In test utils
    const result = await compileAndRun(source, 'main', {
-     defaultFieldMutability: 'immutable'
+     defaultFieldMutability: 'immutable',
    });
    ```
 
