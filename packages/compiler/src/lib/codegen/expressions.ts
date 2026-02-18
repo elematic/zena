@@ -93,6 +93,7 @@ import {
   resolveImport,
   type ClassBinding,
   type FieldBinding,
+  type FunctionBinding,
   type GetterBinding,
   type LocalBinding,
   type MethodBinding,
@@ -5066,10 +5067,90 @@ function generateFromBinding(
     }
     case 'function': {
       // For function bindings that are being used as values (not called),
-      // we need to create a function reference. This is typically handled
-      // by generateFunctionExpression, so this case may not occur often.
-      // Fall back to name-based for now.
-      return false;
+      // we need to wrap them in a closure struct. The closure struct has:
+      // - Field 0: function reference (to a wrapper that matches closure signature)
+      // - Field 1: context (null for module-level functions with no captures)
+      const funcBinding = binding as FunctionBinding;
+      const funcIndex = ctx.getFunctionIndexByDecl(funcBinding.declaration);
+      if (funcIndex === undefined) {
+        return false;
+      }
+
+      // Get parameter and return types from the function's semantic type
+      const paramTypes = funcBinding.type.parameters.map((t) =>
+        mapCheckerTypeToWasmType(ctx, t),
+      );
+      const returnType = mapCheckerTypeToWasmType(
+        ctx,
+        funcBinding.type.returnType,
+      );
+
+      // Get or create the closure type for this signature
+      const closureTypeIndex = ctx.getClosureTypeIndex(paramTypes, returnType);
+      const closureInfo = ctx.closureStructs.get(closureTypeIndex);
+      if (!closureInfo) {
+        throw new Error('Failed to get closure struct info');
+      }
+
+      // Check cache for existing wrapper
+      const cacheKey = `${funcIndex}:${closureTypeIndex}`;
+      let wrapperFuncIndex = ctx.functionWrapperCache.get(cacheKey);
+
+      if (wrapperFuncIndex === undefined) {
+        // Create a wrapper function that matches the closure signature
+        // (context as first param, then regular params) and calls the original
+        wrapperFuncIndex = ctx.module.addFunction(closureInfo.funcTypeIndex);
+        ctx.module.declareFunction(wrapperFuncIndex);
+        ctx.setFunctionDebugName(wrapperFuncIndex, `$closure_wrapper_${name}`);
+        ctx.functionWrapperCache.set(cacheKey, wrapperFuncIndex);
+
+        // Capture funcIndex for the deferred body generator
+        const capturedFuncIndex = funcIndex;
+
+        // Generate wrapper body
+        ctx.bodyGenerators.push(() => {
+          const wrapperBody: number[] = [];
+          ctx.pushFunctionScope();
+
+          // Param 0: context (ignored)
+          ctx.defineParam('$$ctx', [ValType.eqref]);
+
+          // Params 1..N: the actual function parameters
+          const wrapperParams = ctx.module.getFunctionTypeParams(
+            closureInfo.funcTypeIndex,
+          );
+          for (let i = 1; i < wrapperParams.length; i++) {
+            ctx.defineParam(`arg${i}`, wrapperParams[i]);
+          }
+
+          // Push all arguments for the original function (skip context at index 0)
+          for (let i = 1; i < wrapperParams.length; i++) {
+            wrapperBody.push(Opcode.local_get);
+            wrapperBody.push(...WasmModule.encodeSignedLEB128(i));
+          }
+
+          // Call the original function
+          wrapperBody.push(Opcode.call);
+          wrapperBody.push(...WasmModule.encodeSignedLEB128(capturedFuncIndex));
+          wrapperBody.push(Opcode.end);
+
+          ctx.module.addCode(wrapperFuncIndex!, ctx.extraLocals, wrapperBody);
+        });
+      }
+
+      // Create the closure struct:
+      // 1. Push function reference to the wrapper
+      body.push(Opcode.ref_func);
+      body.push(...WasmModule.encodeSignedLEB128(wrapperFuncIndex));
+
+      // 2. Push null context (module-level functions have no captures)
+      body.push(Opcode.ref_null, HeapType.eq);
+
+      // 3. Create closure struct
+      body.push(0xfb, GcOpcode.struct_new);
+      body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
+
+      return true;
     }
     case 'class':
     case 'interface':

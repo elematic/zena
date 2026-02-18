@@ -256,6 +256,8 @@ export class CodegenContext {
   public closureTypes = new Map<string, number>(); // signature -> structTypeIndex
   public closureStructs = new Map<number, {funcTypeIndex: number}>(); // structTypeIndex -> info
   public enums = new Map<number, {members: Map<string, number>}>(); // structTypeIndex -> info
+  // Cache for function-to-closure wrappers: "funcIndex:closureTypeIndex" -> wrapperFuncIndex
+  public functionWrapperCache = new Map<string, number>();
 
   // Record dispatch infrastructure for width subtyping
   // Maps canonical record shape key to RecordInfo (fat pointer + vtable types)
