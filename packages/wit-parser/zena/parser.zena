@@ -1889,8 +1889,8 @@ export class Parser {
           } else {
             // Check if this is the same package or a different package
             let existing = ast.packageName as PackageName;
-            let existingKey = existing.namespace.name + ":" + existing.name.name;
-            let newKey = name.namespace.name + ":" + name.name.name;
+            let existingKey = this.#packageKey(existing);
+            let newKey = this.#packageKey(name);
             
             if (existingKey == newKey) {
               // Same package - items will be added to ast.items below (continue normal parsing)
@@ -1938,12 +1938,21 @@ export class Parser {
     return ast;
   }
 
+  /** Build a package lookup key including version if present. */
+  #packageKey(name: PackageName): String {
+    var key = name.namespace.name + ":" + name.name.name;
+    if (name.version != null) {
+      key = key + "@" + (name.version as String);
+    }
+    return key;
+  }
+
   /** Find an existing nested package by key. */
   #findNestedPackage(packages: Array<NestedPackage>, key: String): NestedPackage | null {
     var i = 0;
     while (i < packages.length) {
       let pkg = packages[i];
-      let pkgKey = pkg.name.namespace.name + ":" + pkg.name.name.name;
+      let pkgKey = this.#packageKey(pkg.name);
       if (pkgKey == key) {
         return pkg;
       }
