@@ -858,6 +858,9 @@ export class Resolver {
       i = i + 1;
     }
 
+    // Third pass: check for transitive dependency conflicts
+    this.#checkTransitiveDependencyConflicts(world);
+
     this.#popScope();
     this.#includingWorlds.pop();
   }
@@ -2060,5 +2063,271 @@ export class Resolver {
       i = i + 1;
     }
     return false;
+  }
+
+  // --------------------------------------------------------------------------
+  // Transitive Dependency Conflict Detection
+  // --------------------------------------------------------------------------
+
+  /**
+   * Check for transitive dependency conflicts in a world.
+   * 
+   * A conflict occurs when:
+   * 1. An interface is imported with an inline definition (import name: interface {...})
+   *    and an exported interface transitively depends on that same interface name.
+   * 2. An interface is imported by path and transitively depends on an interface that
+   *    is also exported (creating incompatible use of the same interface).
+   *
+   * This creates an incompatibility because the import and export views of the
+   * interface may be different.
+   */
+  #checkTransitiveDependencyConflicts(world: WorldDef): void {
+    // Collect names of inline interface imports
+    let inlineImports = new Array<String>();
+    // Collect names of path imports
+    let pathImports = new Array<String>();
+    // Collect names of path exports (interfaces exported by path reference)
+    let pathExports = new Array<String>();
+    // Collect inline interface exports (export name: interface {...})
+    let inlineExports = new Array<String>();
+
+    var i = 0;
+    while (i < world.items.length) {
+      let item = world.items[i];
+      if (item.tag == WorldItemTag.Import) {
+        let imp = item.importItem as Import;
+        if (imp.kind.tag == ExternKindTag.Interface) {
+          // Inline interface import: import name: interface {...}
+          let name = imp.kind.name as Id;
+          inlineImports.push(name.name);
+        } else if (imp.kind.tag == ExternKindTag.Path) {
+          // Path import: import foo (reference to package interface)
+          let path = imp.kind.path as UsePath;
+          if (path.tag == UsePathTag.Id) {
+            let id = path.id as Id;
+            pathImports.push(id.name);
+          }
+        }
+      } else if (item.tag == WorldItemTag.Export) {
+        let exp = item.exportItem as Export;
+        if (exp.kind.tag == ExternKindTag.Path) {
+          // Path export: export foo (where foo is a package interface)
+          let path = exp.kind.path as UsePath;
+          if (path.tag == UsePathTag.Id) {
+            let id = path.id as Id;
+            pathExports.push(id.name);
+          }
+        } else if (exp.kind.tag == ExternKindTag.Interface) {
+          // Inline interface export: export name: interface {...}
+          let name = exp.kind.name as Id;
+          inlineExports.push(name.name);
+        }
+      }
+      i = i + 1;
+    }
+
+    // Check 1: Path exports with dependencies on inline imports
+    i = 0;
+    while (i < pathExports.length) {
+      let exportName = pathExports[i];
+      let iface = this.#findInterface(exportName);
+      if (iface != null) {
+        let ifaceDef = iface as InterfaceDef;
+        let deps = this.#collectTransitiveDependencies(ifaceDef);
+        
+        // Check if any dependency is also an inline import
+        var j = 0;
+        while (j < deps.length) {
+          let dep = deps[j];
+          if (this.#containsString(inlineImports, dep)) {
+            // Found a conflict!
+            let pkgName = this.#getPackageNameStr();
+            throw new ResolveError(
+              "failed to elaborate world imports/exports of `" + world.name.name + "`\n" +
+              "interface `" + pkgName + "/" + exportName + "` transitively depends on an interface in incompatible ways",
+              world.name.span
+            );
+          }
+          j = j + 1;
+        }
+      }
+      i = i + 1;
+    }
+
+    // Check 2: Path imports with dependencies on path exports (or vice versa)
+    // This catches cases like: import i3 (depends on i1), export i1, export i3
+    i = 0;
+    while (i < pathImports.length) {
+      let importName = pathImports[i];
+      let iface = this.#findInterface(importName);
+      if (iface != null) {
+        let ifaceDef = iface as InterfaceDef;
+        let deps = this.#collectTransitiveDependencies(ifaceDef);
+        
+        // Check if any dependency is also a path export
+        var j = 0;
+        while (j < deps.length) {
+          let dep = deps[j];
+          if (this.#containsString(pathExports, dep)) {
+            // Found a conflict! An imported interface depends on an exported interface.
+            let pkgName = this.#getPackageNameStr();
+            // Find which exported interface causes the conflict
+            var conflictExport = importName;
+            if (this.#containsString(pathExports, importName)) {
+              conflictExport = importName;  // The import itself is also exported
+            }
+            throw new ResolveError(
+              "failed to elaborate world imports/exports of `" + world.name.name + "`\n" +
+              "interface `" + pkgName + "/" + conflictExport + "` transitively depends on an interface in incompatible ways",
+              world.name.span
+            );
+          }
+          j = j + 1;
+        }
+      }
+      i = i + 1;
+    }
+
+    // Check 3: Inline exports with dependencies on inline imports or dependencies that conflict with exports
+    i = 0;
+    while (i < inlineExports.length) {
+      let exportName = inlineExports[i];
+      
+      // Check the inline export's use statements for transitive dependencies
+      var j = 0;
+      while (j < world.items.length) {
+        let item = world.items[j];
+        if (item.tag == WorldItemTag.Export) {
+          let exp = item.exportItem as Export;
+          if (exp.kind.tag == ExternKindTag.Interface) {
+            let name = exp.kind.name as Id;
+            if (name.name == exportName) {
+              // Check the items in this inline interface for use statements
+              let items = exp.kind.items as Array<InterfaceItem>;
+              let deps = this.#collectDependenciesFromItems(items);
+              
+              // Check if any dependency is also an inline import
+              var k = 0;
+              while (k < deps.length) {
+                let dep = deps[k];
+                if (this.#containsString(inlineImports, dep)) {
+                  throw new ResolveError(
+                    "failed to elaborate world imports/exports of `" + world.name.name + "`\n" +
+                    "interface `" + exportName + "` transitively depends on an interface in incompatible ways",
+                    world.name.span
+                  );
+                }
+                // Check if this dependency (whether imported or not) has transitive deps on path exports
+                let depIface = this.#findInterface(dep);
+                if (depIface != null) {
+                  let depDeps = this.#collectTransitiveDependencies(depIface as InterfaceDef);
+                  var m = 0;
+                  while (m < depDeps.length) {
+                    if (this.#containsString(pathExports, depDeps[m])) {
+                      throw new ResolveError(
+                        "failed to elaborate world imports/exports of `" + world.name.name + "`\n" +
+                        "interface `" + exportName + "` transitively depends on an interface in incompatible ways",
+                        world.name.span
+                      );
+                    }
+                    m = m + 1;
+                  }
+                }
+                k = k + 1;
+              }
+            }
+          }
+        }
+        j = j + 1;
+      }
+      i = i + 1;
+    }
+  }
+
+  /** Collect transitive interface dependencies from an interface definition. */
+  #collectTransitiveDependencies(iface: InterfaceDef): Array<String> {
+    let visited = new Array<String>();
+    let result = new Array<String>();
+    this.#collectDepsRecursive(iface, visited, result);
+    return result;
+  }
+
+  /** Recursively collect interface dependencies. */
+  #collectDepsRecursive(iface: InterfaceDef, visited: Array<String>, result: Array<String>): void {
+    let name = iface.name.name;
+    if (this.#containsString(visited, name)) {
+      return;  // Already visited
+    }
+    visited.push(name);
+
+    // Check all items for use statements
+    var i = 0;
+    while (i < iface.items.length) {
+      let item = iface.items[i];
+      if (item.tag == InterfaceItemTag.Use) {
+        let use = item.use as Use;
+        if (use.from.tag == UsePathTag.Id) {
+          // Local interface reference
+          let refId = use.from.id as Id;
+          let refName = refId.name;
+          result.push(refName);
+          
+          // Recursively collect dependencies from the referenced interface
+          let refIface = this.#findInterface(refName);
+          if (refIface != null) {
+            this.#collectDepsRecursive(refIface as InterfaceDef, visited, result);
+          }
+        }
+      }
+      i = i + 1;
+    }
+  }
+
+  /** Collect direct dependencies from interface items (for inline interfaces). */
+  #collectDependenciesFromItems(items: Array<InterfaceItem>): Array<String> {
+    let result = new Array<String>();
+    let visited = new Array<String>();
+    
+    var i = 0;
+    while (i < items.length) {
+      let item = items[i];
+      if (item.tag == InterfaceItemTag.Use) {
+        let use = item.use as Use;
+        if (use.from.tag == UsePathTag.Id) {
+          let refId = use.from.id as Id;
+          let refName = refId.name;
+          result.push(refName);
+          
+          // Recursively collect from the referenced interface
+          let refIface = this.#findInterface(refName);
+          if (refIface != null) {
+            this.#collectDepsRecursive(refIface as InterfaceDef, visited, result);
+          }
+        }
+      }
+      i = i + 1;
+    }
+    return result;
+  }
+
+  /** Check if a string array contains a value. */
+  #containsString(arr: Array<String>, val: String): boolean {
+    var i = 0;
+    while (i < arr.length) {
+      if (arr[i] == val) {
+        return true;
+      }
+      i = i + 1;
+    }
+    return false;
+  }
+
+  /** Get the current package name as a string. */
+  #getPackageNameStr(): String {
+    if (this.#packageName == null) {
+      return "unknown";
+    }
+    let pkg = this.#packageName as PackageName;
+    return pkg.namespace.name + ":" + pkg.name.name;
   }
 }

@@ -14,9 +14,17 @@ import * as fs from 'node:fs';
 import {Compiler, CodeGenerator} from '@zena-lang/compiler';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const testsDir = join(__dirname, '..', '..', 'tests');
-const stdlibPath = join(__dirname, '../../../stdlib/zena');
-const witParserPath = join(__dirname, '../../zena');
+// When compiled, we're in scripts/; when running from source, we're in src/scripts/
+const isCompiled = !__dirname.includes('/src/');
+const testsDir = isCompiled
+  ? join(__dirname, '..', 'tests')
+  : join(__dirname, '..', '..', 'tests');
+const stdlibPath = isCompiled
+  ? join(__dirname, '../../stdlib/zena')
+  : join(__dirname, '../../../stdlib/zena');
+const witParserPath = isCompiled
+  ? join(__dirname, '../zena')
+  : join(__dirname, '../../zena');
 
 // Cache the compiled WASM module
 let cachedWasm: Uint8Array | null = null;
