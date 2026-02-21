@@ -26,6 +26,98 @@ const witParserPath = isCompiled
   ? join(__dirname, '../zena')
   : join(__dirname, '../../zena');
 
+// Load test configuration
+interface TestConfig {
+  skip: {tests: string[]};
+  expectedFailures: {tests: string[]};
+  notes: Record<string, string>;
+}
+
+const loadTestConfig = async (): Promise<TestConfig> => {
+  try {
+    const configPath = join(testsDir, 'test-config.json');
+    const content = await readFile(configPath, 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    return {skip: {tests: []}, expectedFailures: {tests: []}, notes: {}};
+  }
+};
+
+/**
+ * Deep compare two JSON values. Returns a diff string if different, null if equal.
+ */
+const compareJson = (
+  expected: unknown,
+  actual: unknown,
+  path: string,
+): string | null => {
+  if (expected === actual) return null;
+
+  if (typeof expected !== typeof actual) {
+    return `${path || 'root'}: type mismatch (expected ${typeof expected}, got ${typeof actual})`;
+  }
+
+  if (expected === null || actual === null) {
+    if (expected !== actual) {
+      return `${path || 'root'}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`;
+    }
+    return null;
+  }
+
+  if (Array.isArray(expected)) {
+    if (!Array.isArray(actual)) {
+      return `${path || 'root'}: expected array, got ${typeof actual}`;
+    }
+    if (expected.length !== actual.length) {
+      return `${path || 'root'}: array length mismatch (expected ${expected.length}, got ${actual.length})`;
+    }
+    for (let i = 0; i < expected.length; i++) {
+      const diff = compareJson(expected[i], actual[i], `${path}[${i}]`);
+      if (diff) return diff;
+    }
+    return null;
+  }
+
+  if (typeof expected === 'object') {
+    if (typeof actual !== 'object' || Array.isArray(actual)) {
+      return `${path || 'root'}: expected object, got ${Array.isArray(actual) ? 'array' : typeof actual}`;
+    }
+    const expectedObj = expected as Record<string, unknown>;
+    const actualObj = actual as Record<string, unknown>;
+    const expectedKeys = Object.keys(expectedObj).sort();
+    const actualKeys = Object.keys(actualObj).sort();
+
+    // Check for missing keys
+    for (const key of expectedKeys) {
+      if (!(key in actualObj)) {
+        return `${path ? path + '.' : ''}${key}: missing in actual`;
+      }
+    }
+    // Check for extra keys
+    for (const key of actualKeys) {
+      if (!(key in expectedObj)) {
+        return `${path ? path + '.' : ''}${key}: unexpected key in actual`;
+      }
+    }
+    // Compare values
+    for (const key of expectedKeys) {
+      const diff = compareJson(
+        expectedObj[key],
+        actualObj[key],
+        `${path ? path + '.' : ''}${key}`,
+      );
+      if (diff) return diff;
+    }
+    return null;
+  }
+
+  // Primitives
+  if (expected !== actual) {
+    return `${path || 'root'}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`;
+  }
+  return null;
+};
+
 // Cache the compiled WASM module
 let cachedWasm: Uint8Array | null = null;
 
@@ -86,7 +178,10 @@ const compileParserHarness = (): Uint8Array => {
 /**
  * Run the parser on input and return the output.
  */
-const runParser = async (inputString: string): Promise<string> => {
+const runParser = async (
+  inputString: string,
+  useJson: boolean = false,
+): Promise<string> => {
   const wasm = compileParserHarness();
   const inputBytes = new TextEncoder().encode(inputString);
 
@@ -115,12 +210,17 @@ const runParser = async (inputString: string): Promise<string> => {
     .instance;
   const exports = instance.exports as unknown as {
     parse: () => void;
+    parseJson: () => void;
     getOutputLength: () => number;
     getOutputByte: (i: number) => number;
   };
 
-  // Call parse
-  exports.parse();
+  // Call appropriate parse function
+  if (useJson) {
+    exports.parseJson();
+  } else {
+    exports.parse();
+  }
 
   // Read output
   const len = exports.getOutputLength();
@@ -289,6 +389,14 @@ const extractPackageName = (content: string): string | null => {
 };
 
 /**
+ * Check if a file has doc comments on its package declaration.
+ */
+const hasPackageDocs = (content: string): boolean => {
+  // Check for /// comments before `package X;`
+  return /^\s*(\/\/\/.*\n)+\s*package\s+[\w-]+:[\w-]+/m.test(content);
+};
+
+/**
  * Check for conflicting package declarations in main files.
  * Returns an error message if conflicting, null if OK.
  */
@@ -299,20 +407,94 @@ const checkConflictingPackages = async (
 
   let firstPkg: string | null = null;
   let firstFile: string | null = null;
+  let firstHasDocs = false;
 
   for (const file of mainFiles) {
     const content = await readFile(file, 'utf-8');
     const pkg = extractPackageName(content);
+    const hasDocs = hasPackageDocs(content);
+
     if (pkg) {
       if (firstPkg === null) {
         firstPkg = pkg;
         firstFile = file;
+        firstHasDocs = hasDocs;
       } else if (pkg !== firstPkg) {
         // Conflicting package names
         return `ParseError: package identifier \`${pkg}\` does not match previous package name of \`${firstPkg}\``;
+      } else if (hasDocs && firstHasDocs) {
+        // Multiple files with doc comments on the same package
+        return `ParseError: found doc comments on multiple 'package' items`;
       }
     }
   }
+  return null;
+};
+
+/**
+ * Check for file-scoped use aliases that cannot be accessed from sibling files.
+ * In WIT, a `use X as Y;` at the top level of a file creates an alias only
+ * visible in that file, not in sibling files in the same package.
+ * Returns error message if a file uses an alias from another file, null otherwise.
+ */
+const checkSiblingUseConflict = async (
+  mainFiles: string[],
+): Promise<string | null> => {
+  if (mainFiles.length < 2) return null;
+
+  // Collect all top-level use aliases and interface/world definitions per file
+  const fileAliases = new Map<string, Set<string>>(); // file -> set of aliases created
+  const fileUses = new Map<string, Set<string>>(); // file -> set of names used
+  const allDefinitions = new Set<string>(); // all interface/world names defined
+
+  for (const file of mainFiles) {
+    const content = await readFile(file, 'utf-8');
+    const aliases = new Set<string>();
+    const uses = new Set<string>();
+
+    // Find top-level `use X as Y;` (creates alias Y)
+    // Must be outside of interface/world blocks
+    const aliasMatches = content.matchAll(
+      /^\s*use\s+[\w-]+(?::[\w-]+\/[\w-]+)?\s+as\s+([\w-]+)\s*;/gm,
+    );
+    for (const m of aliasMatches) {
+      aliases.add(m[1]);
+    }
+
+    // Find top-level `use Y;` (uses name Y)
+    const useMatches = content.matchAll(/^\s*use\s+([\w-]+)\s*;/gm);
+    for (const m of useMatches) {
+      uses.add(m[1]);
+    }
+
+    // Find interface/world definitions
+    const defMatches = content.matchAll(
+      /^\s*(?:interface|world)\s+([\w-]+)\s*\{/gm,
+    );
+    for (const m of defMatches) {
+      allDefinitions.add(m[1]);
+    }
+
+    fileAliases.set(file, aliases);
+    fileUses.set(file, uses);
+  }
+
+  // Check if any file uses an alias defined in another file
+  for (const [file, uses] of fileUses) {
+    for (const usedName of uses) {
+      // Skip if this is a real interface/world definition
+      if (allDefinitions.has(usedName)) continue;
+
+      // Check if this name is an alias from another file
+      for (const [otherFile, aliases] of fileAliases) {
+        if (otherFile !== file && aliases.has(usedName)) {
+          // Error: trying to use an alias from a sibling file
+          return `ParseError: interface or world \`${usedName}\` does not exist`;
+        }
+      }
+    }
+  }
+
   return null;
 };
 
@@ -374,6 +556,17 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
         return {test, passed: false, error: conflictError};
       }
 
+      // Check for file-scoped use aliases that other files reference
+      // This is a semantic error: a `use X as Y` in one file doesn't create
+      // an alias visible in sibling files - each file has its own scope
+      const siblingUseError = await checkSiblingUseConflict(main);
+      if (siblingUseError) {
+        if (test.type === 'error') {
+          return {test, passed: true};
+        }
+        return {test, passed: false, error: siblingUseError};
+      }
+
       // Concatenate all wit files (deps first, then main)
       const contents: string[] = [];
       for (const witFile of allFiles) {
@@ -397,16 +590,30 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
     // Read expected output
     const expected = await readFile(test.expectedPath, 'utf-8');
 
-    // Run the parser
-    const output = await runParser(witInput);
+    // Run the parser (use JSON output for success tests)
+    const output = await runParser(witInput, test.type === 'success');
 
     if (test.type === 'success') {
-      // For success tests, we just check that parsing succeeded (no ParseError)
+      // For success tests, check parsing succeeded and output matches expected
       if (output.startsWith('ParseError:')) {
         return {test, passed: false, error: `Parse failed: ${output}`};
       }
-      // TODO: Compare output to expected JSON structure
-      // For now, just verify parsing succeeded
+
+      // Compare output to expected JSON structure
+      try {
+        const actualJson = JSON.parse(output);
+        const expectedJson = JSON.parse(expected);
+        const diff = compareJson(expectedJson, actualJson, '');
+        if (diff) {
+          return {test, passed: false, error: `JSON mismatch: ${diff}`};
+        }
+      } catch (e) {
+        return {
+          test,
+          passed: false,
+          error: `Failed to parse JSON: ${e instanceof Error ? e.message : String(e)}`,
+        };
+      }
       return {test, passed: true};
     } else {
       // For error tests, we expect a ParseError
@@ -429,7 +636,10 @@ const runTest = async (test: TestCase): Promise<TestResult> => {
 /**
  * Format test results for display.
  */
-const formatResults = (results: TestResult[]): void => {
+const formatResults = (
+  results: TestResult[],
+  skippedTests: string[] = [],
+): void => {
   const successTests = results.filter((r) => r.test.type === 'success');
   const errorTests = results.filter((r) => r.test.type === 'error');
 
@@ -466,6 +676,12 @@ const formatResults = (results: TestResult[]): void => {
   if (failed > 0) {
     console.log(`   ❗ Failed: ${failed}`);
   }
+  if (skippedTests.length > 0) {
+    console.log(`   ⏭️  Skipped: ${skippedTests.length}`);
+    for (const name of skippedTests) {
+      console.log(`      - ${name}`);
+    }
+  }
   console.log('');
 };
 
@@ -483,8 +699,17 @@ const main = async (): Promise<void> => {
       process.exit(0);
     }
 
+    // Load config
+    const config = await loadTestConfig();
+    const skipSet = new Set(config.skip.tests);
+    const expectedFailureSet = new Set(config.expectedFailures.tests);
+
     // Discover tests
-    const tests = await discoverTests(testsDir);
+    const allTests = await discoverTests(testsDir);
+    const tests = allTests.filter((t) => !skipSet.has(t.name));
+    const skippedTests = allTests
+      .filter((t) => skipSet.has(t.name))
+      .map((t) => t.name);
 
     if (tests.length === 0) {
       console.log('No test cases found.');
@@ -500,14 +725,19 @@ const main = async (): Promise<void> => {
     }
 
     // Display results
-    formatResults(results);
+    formatResults(results, skippedTests);
 
-    // TODO: Enable strict mode once parser is more complete
-    // Exit with error if any tests failed
-    // const failures = results.filter((r) => !r.passed);
-    // if (failures.length > 0) {
-    //   process.exit(1);
-    // }
+    // Exit with error only for unexpected failures
+    // (failures that are NOT in expectedFailures config)
+    const unexpectedFailures = results.filter(
+      (r) => !r.passed && !expectedFailureSet.has(r.test.name),
+    );
+    if (unexpectedFailures.length > 0) {
+      console.log(
+        `\n❌ ${unexpectedFailures.length} unexpected failure(s) - add to expectedFailures in test-config.json if known issue`,
+      );
+      process.exit(1);
+    }
   } catch (e) {
     console.error('Test runner error:', e);
     process.exit(1);

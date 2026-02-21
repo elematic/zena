@@ -476,9 +476,12 @@ export class Resolver {
   #scopes: Array<Scope>;
   /** Current package name (for error messages). */
   #packageName: PackageName | null;
+  
+  /** Current package being resolved (for cross-package cycle detection). */
+  #currentResolvePackage: PackageName | null;
   /** Types being resolved (for cycle detection). */
   #resolving: Array<String>;
-  /** Interfaces being resolved (for use cycle detection). */
+  /** Interfaces being resolved (for use cycle detection). Uses qualified names: "pkg:name/iface". */
   #resolvingInterfaces: Array<String>;
   /** Worlds being included (for include cycle detection). */
   #includingWorlds: Array<String>;
@@ -492,6 +495,7 @@ export class Resolver {
   #new() {
     this.#scopes = new Array<Scope>();
     this.#packageName = null;
+    this.#currentResolvePackage = null;
     this.#resolving = new Array<String>();
     this.#resolvingInterfaces = new Array<String>();
     this.#includingWorlds = new Array<String>();
@@ -585,6 +589,7 @@ export class Resolver {
     }
 
     this.#packageName = ast.packageName;
+    this.#currentResolvePackage = ast.packageName;
     this.#pushScope();
 
     // First pass: collect interfaces and worlds (they take priority over use aliases)
@@ -698,6 +703,20 @@ export class Resolver {
     return base;
   }
 
+  /** Build qualified interface name for cycle detection: "pkg:name/iface". */
+  #getQualifiedInterfaceName(ifaceName: String): String {
+    if (this.#currentResolvePackage != null) {
+      let pkg = this.#currentResolvePackage as PackageName;
+      return this.#packageNameToString(pkg) + "/" + ifaceName;
+    }
+    return ifaceName;
+  }
+
+  /** Build qualified interface name from package and interface name. */
+  #buildQualifiedName(pkg: PackageName, ifaceName: String): String {
+    return this.#packageNameToString(pkg) + "/" + ifaceName;
+  }
+
   #resolveAstItem(item: AstItem): void {
     if (item.tag == AstItemTag.Interface) {
       this.#resolveInterface(item.interfaceDef as InterfaceDef);
@@ -713,6 +732,10 @@ export class Resolver {
   // --------------------------------------------------------------------------
 
   #resolveNestedPackage(pkg: NestedPackage): void {
+    // Track which package we're resolving for cycle detection
+    let prevPackage = this.#currentResolvePackage;
+    this.#currentResolvePackage = pkg.name;
+    
     // Each nested package gets its own scope
     this.#pushScope();
 
@@ -752,8 +775,8 @@ export class Resolver {
     }
 
     this.#popScope();
+    this.#currentResolvePackage = prevPackage;
   }
-
   // --------------------------------------------------------------------------
   // Interface Resolution
   // --------------------------------------------------------------------------
@@ -763,8 +786,9 @@ export class Resolver {
     let prevGatedContext = this.#inGatedContext;
     let prevInterface = this.#currentInterface;
 
-    // Track this interface for use cycle detection
-    this.#resolvingInterfaces.push(iface.name.name);
+    // Track this interface for use cycle detection using qualified name
+    let qualifiedName = this.#getQualifiedInterfaceName(iface.name.name);
+    this.#resolvingInterfaces.push(qualifiedName);
     
     // Track current interface for imported type lookup
     this.#currentInterface = iface;
@@ -1864,8 +1888,9 @@ export class Resolver {
         }
       }
       
-      // Check for use cycle - if we're currently resolving this interface, it's a cycle
-      if (this.#isResolvingInterface(id.name)) {
+      // Check for use cycle using qualified name
+      let qualifiedName = this.#getQualifiedInterfaceName(id.name);
+      if (this.#isResolvingInterface(qualifiedName)) {
         throw new ResolveError(
           "interface or world `" + id.name + "` depends on itself",
           id.span
@@ -1878,9 +1903,40 @@ export class Resolver {
         let ifaceDef = iface as InterfaceDef;
         // Only resolve if not already resolved (to avoid infinite recursion 
         // in valid cases where an interface is used multiple times)
-        if (!this.#isResolvingInterface(ifaceDef.name.name)) {
+        let targetQualified = this.#getQualifiedInterfaceName(ifaceDef.name.name);
+        if (!this.#isResolvingInterface(targetQualified)) {
           this.#resolveInterface(ifaceDef);
         }
+      }
+    } else if (use.from.tag == UsePathTag.Package) {
+      // Cross-package reference: check for cycles
+      let pkgId = use.from.packageId as PackageName;
+      let itemName = use.from.name as Id;
+      let qualifiedName = this.#buildQualifiedName(pkgId, itemName.name);
+      
+      // Check if this interface is currently being resolved (cycle)
+      if (this.#isResolvingInterface(qualifiedName)) {
+        throw new ResolveError(
+          "interface `" + qualifiedName + "` depends on itself",
+          itemName.span
+        );
+      }
+      
+      // Recursively resolve the target interface to detect transitive cycles
+      let registry = this.#registry as PackageRegistry;
+      let iface = registry.getInterfaceByPkg(pkgId, itemName.name);
+      if (iface != null) {
+        let ifaceDef = iface as InterfaceDef;
+        // Temporarily switch to the target package context for resolution
+        let prevPackage = this.#currentResolvePackage;
+        this.#currentResolvePackage = pkgId;
+        
+        // Only resolve if not already resolved
+        if (!this.#isResolvingInterface(qualifiedName)) {
+          this.#resolveInterface(ifaceDef);
+        }
+        
+        this.#currentResolvePackage = prevPackage;
       }
     }
 
