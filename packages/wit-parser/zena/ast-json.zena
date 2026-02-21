@@ -1,0 +1,474 @@
+/**
+ * WIT AST to JSON Serializer
+ * 
+ * Test utility for serializing parsed WIT AST to the JSON format
+ * used by the wit-parser test suite (matching wasm-tools output).
+ */
+
+import {JsonBuilder} from 'zena:json';
+import {Array} from 'zena:growable-array';
+import {Map} from 'zena:map';
+import {Option, Some, some, none} from 'zena:option';
+import {Ast, AstItem, AstItemTag, PackageName, NestedPackage, Id} from './parser.zena';
+import {InterfaceDef, InterfaceItem, InterfaceItemTag} from './parser.zena';
+import {WorldDef, WorldItem, WorldItemTag, ExternKind, ExternKindTag} from './parser.zena';
+import {TypeDef, TypeDefTag, Type, TypeTag, NamedFunc, Func, Param, Field} from './parser.zena';
+import {Case, EnumCaseDef, FlagDef, ResourceFunc, ResourceFuncTag} from './parser.zena';
+
+// ============================================================================
+// Helper Classes
+// ============================================================================
+
+/** An entry in the types array. */
+class TypeEntry {
+  name: string | null;
+  kind: TypeKind;
+  owner: Option<i32>;
+
+  #new(name: string | null, kind: TypeKind, owner: Option<i32>) {
+    this.name = name;
+    this.kind = kind;
+    this.owner = owner;
+  }
+}
+
+/** The kind object for a type entry. */
+class TypeKind {
+  tag: string;
+  types: Array<string> | null;
+  inner: string | null;
+  okType: string | null;
+  errType: string | null;
+  fields: Array<[string, string]> | null;
+  cases: Array<[string, string | null]> | null;
+  enumCases: Array<string> | null;
+  flagValues: Array<string> | null;
+
+  #new(tag: string) {
+    this.tag = tag;
+    this.types = null;
+    this.inner = null;
+    this.okType = null;
+    this.errType = null;
+    this.fields = null;
+    this.cases = null;
+    this.enumCases = null;
+    this.flagValues = null;
+  }
+}
+
+/** Entry for a package in the output. */
+class PackageEntry {
+  name: string;
+  interfaces: Map<string, i32>;
+  worlds: Map<string, i32>;
+
+  #new(name: string) {
+    this.name = name;
+    this.interfaces = new Map<string, i32>();
+    this.worlds = new Map<string, i32>();
+  }
+}
+
+/** Tracks indices during serialization. */
+class SerializeContext {
+  interfaces: Array<InterfaceDef>;
+  worlds: Array<WorldDef>;
+  types: Array<TypeEntry>;
+  packages: Array<PackageEntry>;
+  interfaceIndices: Map<string, i32>;
+  worldIndices: Map<string, i32>;
+  typeIndices: Map<string, i32>;
+  currentPackageIndex: i32;
+
+  #new() {
+    this.interfaces = new Array<InterfaceDef>();
+    this.worlds = new Array<WorldDef>();
+    this.types = new Array<TypeEntry>();
+    this.packages = new Array<PackageEntry>();
+    this.interfaceIndices = new Map<string, i32>();
+    this.worldIndices = new Map<string, i32>();
+    this.typeIndices = new Map<string, i32>();
+    this.currentPackageIndex = 0;
+  }
+
+  registerInterface(iface: InterfaceDef): i32 {
+    let index = this.interfaces.length;
+    this.interfaces.push(iface);
+    this.interfaceIndices.set(iface.name.name, index);
+    return index;
+  }
+
+  registerWorld(world: WorldDef): i32 {
+    let index = this.worlds.length;
+    this.worlds.push(world);
+    this.worldIndices.set(world.name.name, index);
+    return index;
+  }
+
+  registerType(entry: TypeEntry): i32 {
+    let index = this.types.length;
+    this.types.push(entry);
+    return index;
+  }
+}
+
+// ============================================================================
+// Helper Functions (defined before use)
+// ============================================================================
+
+let formatPackageName = (name: PackageName | null): string => {
+  if (name == null) { return ""; }
+  let n = name as PackageName;
+  var result = n.namespace.name + ":" + n.name.name;
+  if (n.version != null) {
+    result = result + "@" + (n.version as string);
+  }
+  return result;
+};
+
+let typeDefTagToString = (tag: TypeDefTag): string => {
+  if (tag == TypeDefTag.Record) { return "record"; }
+  if (tag == TypeDefTag.Flags) { return "flags"; }
+  if (tag == TypeDefTag.Variant) { return "variant"; }
+  if (tag == TypeDefTag.Enum) { return "enum"; }
+  if (tag == TypeDefTag.Resource) { return "resource"; }
+  return "type";
+};
+
+let typeToString = (ctx: SerializeContext, t: Type): string => {
+  if (t.tag == TypeTag.U8) { return "u8"; }
+  if (t.tag == TypeTag.U16) { return "u16"; }
+  if (t.tag == TypeTag.U32) { return "u32"; }
+  if (t.tag == TypeTag.U64) { return "u64"; }
+  if (t.tag == TypeTag.S8) { return "s8"; }
+  if (t.tag == TypeTag.S16) { return "s16"; }
+  if (t.tag == TypeTag.S32) { return "s32"; }
+  if (t.tag == TypeTag.S64) { return "s64"; }
+  if (t.tag == TypeTag.F32) { return "f32"; }
+  if (t.tag == TypeTag.F64) { return "f64"; }
+  if (t.tag == TypeTag.Char) { return "char"; }
+  if (t.tag == TypeTag.Bool) { return "bool"; }
+  if (t.tag == TypeTag.String) { return "string"; }
+  if (t.tag == TypeTag.Name) {
+    let id = t.name as Id;
+    return id.name;
+  }
+  return "TODO";
+};
+
+let serializeType = (b: JsonBuilder, ctx: SerializeContext, t: Type): void => {
+  b.string(typeToString(ctx, t));
+};
+
+let registerTypeDef = (ctx: SerializeContext, td: TypeDef, ownerInterface: i32): i32 => {
+  let kind = new TypeKind(typeDefTagToString(td.tag));
+  
+  if (td.tag == TypeDefTag.Record) {
+    let fieldsArr = new Array<[string, string]>();
+    kind.fields = fieldsArr;
+    let fields = td.fields as Array<Field>;
+    var idx = 0;
+    while (idx < fields.length) {
+      let field = fields[idx];
+      let typeStr = typeToString(ctx, field.type);
+      fieldsArr.push([field.name.name, typeStr]);
+      idx = idx + 1;
+    }
+  } else if (td.tag == TypeDefTag.Alias) {
+    kind.tag = "type";
+    kind.inner = typeToString(ctx, td.aliasType as Type);
+  } else if (td.tag == TypeDefTag.Enum) {
+    let casesArr = new Array<string>();
+    kind.enumCases = casesArr;
+    let cases = td.enumCases as Array<EnumCaseDef>;
+    var idx = 0;
+    while (idx < cases.length) {
+      casesArr.push(cases[idx].name.name);
+      idx = idx + 1;
+    }
+  } else if (td.tag == TypeDefTag.Flags) {
+    let flagsArr = new Array<string>();
+    kind.flagValues = flagsArr;
+    let flags = td.flags as Array<FlagDef>;
+    var idx = 0;
+    while (idx < flags.length) {
+      flagsArr.push(flags[idx].name.name);
+      idx = idx + 1;
+    }
+  } else if (td.tag == TypeDefTag.Variant) {
+    let casesArr = new Array<[string, string | null]>();
+    kind.cases = casesArr;
+    let cases = td.cases as Array<Case>;
+    var idx = 0;
+    while (idx < cases.length) {
+      let c = cases[idx];
+      var typeStr: string | null = null;
+      if (c.type != null) {
+        typeStr = typeToString(ctx, c.type as Type);
+      }
+      casesArr.push([c.name.name, typeStr]);
+      idx = idx + 1;
+    }
+  }
+  
+  let entry = new TypeEntry(td.name.name, kind, some(ownerInterface));
+  return ctx.registerType(entry);
+};
+
+let serializeFunction = (b: JsonBuilder, ctx: SerializeContext, nf: NamedFunc): void => {
+  b.beginObject();
+  b.key("name").string(nf.name.name);
+  b.key("kind").string("freestanding");
+  
+  b.key("params").beginArray();
+  var idx = 0;
+  while (idx < nf.func.params.length) {
+    let param = nf.func.params[idx];
+    b.beginObject();
+    b.key("name").string(param.name.name);
+    b.key("type");
+    serializeType(b, ctx, param.type);
+    b.endObject();
+    idx = idx + 1;
+  }
+  b.endArray();
+  
+  if (nf.func.result != null) {
+    b.key("result");
+    serializeType(b, ctx, nf.func.result as Type);
+  }
+  
+  b.endObject();
+};
+
+let serializeTypeKind = (b: JsonBuilder, kind: TypeKind): void => {
+  b.beginObject();
+  
+  if (kind.tag == "record") {
+    b.key("record").beginObject();
+    b.key("fields").beginArray();
+    if (kind.fields != null) {
+      let fields = kind.fields as Array<[string, string]>;
+      var idx = 0;
+      while (idx < fields.length) {
+        let f = fields[idx];
+        b.beginObject();
+        b.key("name").string(f[0]);
+        b.key("type").string(f[1]);
+        b.endObject();
+        idx = idx + 1;
+      }
+    }
+    b.endArray();
+    b.endObject();
+  } else if (kind.tag == "type") {
+    b.key("type").string(kind.inner as string);
+  } else if (kind.tag == "enum") {
+    b.key("enum").beginObject();
+    b.key("cases").beginArray();
+    if (kind.enumCases != null) {
+      let cases = kind.enumCases as Array<string>;
+      var idx = 0;
+      while (idx < cases.length) {
+        b.string(cases[idx]);
+        idx = idx + 1;
+      }
+    }
+    b.endArray();
+    b.endObject();
+  } else if (kind.tag == "flags") {
+    b.key("flags").beginObject();
+    b.key("flags").beginArray();
+    if (kind.flagValues != null) {
+      let flags = kind.flagValues as Array<string>;
+      var idx = 0;
+      while (idx < flags.length) {
+        b.string(flags[idx]);
+        idx = idx + 1;
+      }
+    }
+    b.endArray();
+    b.endObject();
+  } else if (kind.tag == "variant") {
+    b.key("variant").beginObject();
+    b.key("cases").beginArray();
+    if (kind.cases != null) {
+      let cases = kind.cases as Array<[string, string | null]>;
+      var idx = 0;
+      while (idx < cases.length) {
+        let c = cases[idx];
+        b.beginObject();
+        b.key("name").string(c[0]);
+        if (c[1] != null) {
+          b.key("type").string(c[1] as string);
+        } else {
+          b.key("type").nullValue();
+        }
+        b.endObject();
+        idx = idx + 1;
+      }
+    }
+    b.endArray();
+    b.endObject();
+  } else {
+    b.key(kind.tag).beginObject().endObject();
+  }
+  
+  b.endObject();
+};
+
+let serializeTypeEntry = (b: JsonBuilder, entry: TypeEntry): void => {
+  b.beginObject();
+  
+  if (entry.name != null) {
+    b.key("name").string(entry.name as string);
+  } else {
+    b.key("name").nullValue();
+  }
+  
+  b.key("kind");
+  serializeTypeKind(b, entry.kind);
+  
+  if (entry.owner is Some<i32>) {
+    b.key("owner").i32((entry.owner as Some<i32>).value);
+  } else {
+    b.key("owner").nullValue();
+  }
+  
+  b.endObject();
+};
+
+let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, index: i32): void => {
+  b.beginObject();
+  b.key("name").string(world.name.name);
+  b.key("imports").beginObject().endObject();
+  b.key("exports").beginObject().endObject();
+  b.key("package").i32(ctx.currentPackageIndex);
+  b.endObject();
+};
+
+let serializePackage = (b: JsonBuilder, pkg: PackageEntry): void => {
+  b.beginObject();
+  b.key("name").string(pkg.name);
+  
+  b.key("interfaces").beginObject();
+  pkg.interfaces.forEach((name: string, idx: i32) => {
+    b.key(name).i32(idx);
+  });
+  b.endObject();
+  
+  b.key("worlds").beginObject();
+  pkg.worlds.forEach((name: string, idx: i32) => {
+    b.key(name).i32(idx);
+  });
+  b.endObject();
+  
+  b.endObject();
+};
+
+let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: InterfaceDef, index: i32): void => {
+  b.beginObject();
+  b.key("name").string(iface.name.name);
+  
+  b.key("types").beginObject();
+  var idx = 0;
+  while (idx < iface.items.length) {
+    let item = iface.items[idx];
+    if (item.tag == InterfaceItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      let typeIdx = registerTypeDef(ctx, td, index);
+      b.key(td.name.name).i32(typeIdx);
+    }
+    idx = idx + 1;
+  }
+  b.endObject();
+  
+  b.key("functions").beginObject();
+  idx = 0;
+  while (idx < iface.items.length) {
+    let item = iface.items[idx];
+    if (item.tag == InterfaceItemTag.Func) {
+      let func = item.func as NamedFunc;
+      b.key(func.name.name);
+      serializeFunction(b, ctx, func);
+    }
+    idx = idx + 1;
+  }
+  b.endObject();
+  
+  b.key("package").i32(ctx.currentPackageIndex);
+  b.endObject();
+};
+
+let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
+  let pkgName = formatPackageName(ast.packageName);
+  let pkg = new PackageEntry(pkgName);
+  ctx.packages.push(pkg);
+  ctx.currentPackageIndex = 0;
+  
+  var idx = 0;
+  while (idx < ast.items.length) {
+    let item = ast.items[idx];
+    if (item.tag == AstItemTag.Interface) {
+      let iface = item.interfaceDef as InterfaceDef;
+      let ifaceIdx = ctx.registerInterface(iface);
+      pkg.interfaces.set(iface.name.name, ifaceIdx);
+    } else if (item.tag == AstItemTag.World) {
+      let world = item.worldDef as WorldDef;
+      let worldIdx = ctx.registerWorld(world);
+      pkg.worlds.set(world.name.name, worldIdx);
+    }
+    idx = idx + 1;
+  }
+};
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/**
+ * Serialize a parsed AST to JSON format matching wasm-tools output.
+ */
+export let serializeAstToJson = (ast: Ast): string => {
+  let ctx = new SerializeContext();
+  collectFromAst(ctx, ast);
+  
+  let b = new JsonBuilder();
+  b.beginObject();
+  
+  b.key("worlds").beginArray();
+  var wIdx = 0;
+  while (wIdx < ctx.worlds.length) {
+    serializeWorld(b, ctx, ctx.worlds[wIdx], wIdx);
+    wIdx = wIdx + 1;
+  }
+  b.endArray();
+  
+  b.key("interfaces").beginArray();
+  var iIdx = 0;
+  while (iIdx < ctx.interfaces.length) {
+    serializeInterface(b, ctx, ctx.interfaces[iIdx], iIdx);
+    iIdx = iIdx + 1;
+  }
+  b.endArray();
+  
+  b.key("types").beginArray();
+  var tIdx = 0;
+  while (tIdx < ctx.types.length) {
+    serializeTypeEntry(b, ctx.types[tIdx]);
+    tIdx = tIdx + 1;
+  }
+  b.endArray();
+  
+  b.key("packages").beginArray();
+  var pIdx = 0;
+  while (pIdx < ctx.packages.length) {
+    serializePackage(b, ctx.packages[pIdx]);
+    pIdx = pIdx + 1;
+  }
+  b.endArray();
+  
+  b.endObject();
+  return b.toString();
+};

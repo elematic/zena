@@ -889,12 +889,15 @@ export class AstItem {
  */
 export class Ast {
   packageName: PackageName | null;
+  /** Doc comments on the package declaration. */
+  packageDocs: Docs | null;
   items: Array<AstItem>;
   /** Nested packages defined inline: `package foo:bar { ... }` */
   nestedPackages: Array<NestedPackage>;
 
   #new() {
     this.packageName = null;
+    this.packageDocs = null;
     this.items = new Array<AstItem>();
     this.nestedPackages = new Array<NestedPackage>();
   }
@@ -1856,6 +1859,10 @@ export class Parser {
     if (this.#check(TokenType.Package)) {
       this.#expect(TokenType.Package);
       ast.packageName = this.#parsePackageName();
+      // Track if this package has docs
+      if (docs.contents != null) {
+        ast.packageDocs = docs;
+      }
       this.#expectSemicolon();
       docs = this.#parseDocs();
     }
@@ -1886,6 +1893,10 @@ export class Parser {
           if (ast.packageName == null) {
             // First package - set as main package
             ast.packageName = name;
+            // Track if this package has docs
+            if (docs.contents != null) {
+              ast.packageDocs = docs;
+            }
           } else {
             // Check if this is the same package or a different package
             let existing = ast.packageName as PackageName;
@@ -1895,6 +1906,16 @@ export class Parser {
             if (existingKey == newKey) {
               // Same package - items will be added to ast.items below (continue normal parsing)
               // This is valid for multi-file scenarios where each file starts with same package decl
+              // But check for conflicting doc comments
+              if (docs.contents != null && ast.packageDocs != null) {
+                throw new ParseError(
+                  "found doc comments on multiple 'package' items",
+                  name.span
+                );
+              }
+              if (docs.contents != null) {
+                ast.packageDocs = docs;
+              }
             } else {
               // Different package - treat as nested package for remaining items
               // (In single-file context this might be an error, but we can't detect file boundaries)

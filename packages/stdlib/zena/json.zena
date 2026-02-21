@@ -3,6 +3,8 @@ import {Array} from 'zena:growable-array';
 import {Box} from 'zena:box';
 import {Error} from 'zena:error';
 import {StringReader} from 'zena:string-reader';
+import {StringBuilder} from 'zena:string-builder';
+import {div} from 'zena:math';
 
 // === Source Location ===
 
@@ -779,3 +781,339 @@ export let jsonGet = (value: any, path: string): any => {
   
   return current;
 };
+
+// ============================================================================
+// JsonBuilder - Streaming JSON construction
+// ============================================================================
+
+// Stack entry types
+let STACK_OBJECT: i32 = 0;
+let STACK_ARRAY: i32 = 1;
+
+// i64 constants (workaround for parser issues with 'as' in some contexts)
+let ZERO_I64: i64 = 0 as i64;
+let TEN_I64: i64 = 10 as i64;
+
+/**
+ * JsonBuilder - Streaming JSON construction
+ * 
+ * Provides a fluent API for building JSON strings incrementally.
+ * 
+ * Example:
+ *   let json = new JsonBuilder()
+ *     .beginObject()
+ *       .key("name").string("example")
+ *       .key("count").i32(42)
+ *       .key("items").beginArray()
+ *         .string("a")
+ *         .string("b")
+ *       .endArray()
+ *     .endObject()
+ *     .toString();
+ *   // {"name":"example","count":42,"items":["a","b"]}
+ */
+export class JsonBuilder {
+  #sb: StringBuilder;
+  #stack: Array<i32>;    // Track nesting: STACK_OBJECT or STACK_ARRAY
+  #counts: Array<i32>;   // Track item count at each level (for comma handling)
+  #needsValue: boolean;  // True after key(), expecting a value next
+
+  #new() {
+    this.#sb = new StringBuilder();
+    this.#stack = new Array<i32>();
+    this.#counts = new Array<i32>();
+    this.#needsValue = false;
+  }
+
+  // === Object methods ===
+
+  beginObject(): JsonBuilder {
+    this.#writeCommaIfNeeded();
+    this.#sb.append("{");
+    this.#stack.push(STACK_OBJECT);
+    this.#counts.push(0);
+    this.#needsValue = false;
+    return this;
+  }
+
+  endObject(): JsonBuilder {
+    this.#sb.append("}");
+    this.#stack.pop();
+    this.#counts.pop();
+    this.#incrementCount();
+    return this;
+  }
+
+  // === Array methods ===
+
+  beginArray(): JsonBuilder {
+    this.#writeCommaIfNeeded();
+    this.#sb.append("[");
+    this.#stack.push(STACK_ARRAY);
+    this.#counts.push(0);
+    this.#needsValue = false;
+    return this;
+  }
+
+  endArray(): JsonBuilder {
+    this.#sb.append("]");
+    this.#stack.pop();
+    this.#counts.pop();
+    this.#incrementCount();
+    return this;
+  }
+
+  // === Key (for objects) ===
+
+  key(k: string): JsonBuilder {
+    this.#writeCommaIfNeeded();
+    this.#writeEscapedString(k);
+    this.#sb.append(":");
+    this.#needsValue = true;
+    return this;
+  }
+
+  // === Value methods ===
+
+  string(v: string): JsonBuilder {
+    this.#writeCommaIfNeeded();
+    this.#writeEscapedString(v);
+    this.#incrementCount();
+    return this;
+  }
+
+  i32(v: i32): JsonBuilder {
+    this.#writeCommaIfNeeded();
+    this.#writeI32(v);
+    this.#incrementCount();
+    return this;
+  }
+
+  i64(v: i64): JsonBuilder {
+    this.#writeCommaIfNeeded();
+    this.#writeI64(v);
+    this.#incrementCount();
+    return this;
+  }
+
+  f64(v: f64): JsonBuilder {
+    this.#writeCommaIfNeeded();
+    this.#writeF64(v);
+    this.#incrementCount();
+    return this;
+  }
+
+  bool(v: boolean): JsonBuilder {
+    this.#writeCommaIfNeeded();
+    if (v) {
+      this.#sb.append("true");
+    } else {
+      this.#sb.append("false");
+    }
+    this.#incrementCount();
+    return this;
+  }
+
+  nullValue(): JsonBuilder {
+    this.#writeCommaIfNeeded();
+    this.#sb.append("null");
+    this.#incrementCount();
+    return this;
+  }
+
+  // === Raw JSON (for pre-serialized content) ===
+
+  raw(json: string): JsonBuilder {
+    this.#writeCommaIfNeeded();
+    this.#sb.append(json);
+    this.#incrementCount();
+    return this;
+  }
+
+  // === Get result ===
+
+  toString(): string {
+    return this.#sb.toString();
+  }
+
+  // === Private helpers ===
+
+  #writeCommaIfNeeded(): void {
+    // After key(), needsValue is true, so no comma needed before the value
+    if (this.#needsValue) {
+      this.#needsValue = false;
+      return;
+    }
+    // If we're inside a container and have written items, add comma
+    if (this.#counts.length > 0) {
+      let idx = this.#counts.length - 1;
+      if (this.#counts[idx] > 0) {
+        this.#sb.append(",");
+      }
+    }
+  }
+
+  #incrementCount(): void {
+    if (this.#counts.length > 0) {
+      let idx = this.#counts.length - 1;
+      this.#counts[idx] = this.#counts[idx] + 1;
+    }
+    this.#needsValue = false;
+  }
+
+  #writeEscapedString(s: string): void {
+    this.#sb.append("\"");
+    var i = 0;
+    let len = s.length;
+    while (i < len) {
+      let b = s.getByteAt(i);
+      if (b == 34) {
+        // " -> \"
+        this.#sb.append("\\\"");
+      } else if (b == 92) {
+        // \ -> \\
+        this.#sb.append("\\\\");
+      } else if (b == 10) {
+        // newline -> \n
+        this.#sb.append("\\n");
+      } else if (b == 13) {
+        // carriage return -> \r
+        this.#sb.append("\\r");
+      } else if (b == 9) {
+        // tab -> \t
+        this.#sb.append("\\t");
+      } else if (b < 32) {
+        // Other control characters -> \u00XX
+        this.#sb.append("\\u00");
+        this.#writeHexByte(b);
+      } else {
+        this.#sb.appendByte(b);
+      }
+      i = i + 1;
+    }
+    this.#sb.append("\"");
+  }
+
+  #writeHexByte(b: i32): void {
+    let high = (b / 16) as i32;
+    let low = b % 16;
+    this.#sb.appendByte(this.#hexDigit(high));
+    this.#sb.appendByte(this.#hexDigit(low));
+  }
+
+  #hexDigit(n: i32): i32 {
+    if (n < 10) {
+      return 48 + n;  // '0' = 48
+    } else {
+      return 97 + n - 10;  // 'a' = 97
+    }
+  }
+
+  #writeI32(n: i32): void {
+    if (n == 0) {
+      this.#sb.append("0");
+      return;
+    }
+    var num = n;
+    var negative = false;
+    if (num < 0) {
+      negative = true;
+      num = 0 - num;
+    }
+    
+    // Build digits in reverse using growable array
+    let digits = new Array<i32>();
+    while (num > 0) {
+      digits.push(48 + (num % 10));  // ASCII '0' = 48
+      num = div(num, 10);
+    }
+    
+    if (negative) {
+      this.#sb.appendByte(45);  // '-'
+    }
+    
+    // Write digits in reverse order
+    var i = digits.length - 1;
+    while (i >= 0) {
+      this.#sb.appendByte(digits[i]);
+      i = i - 1;
+    }
+  }
+
+  #writeI64(n: i64): void {
+    if (n == ZERO_I64) {
+      this.#sb.append("0");
+      return;
+    }
+    var num = n;
+    var negative = false;
+    if (num < ZERO_I64) {
+      negative = true;
+      num = ZERO_I64 - num;
+    }
+    
+    // Build digits in reverse using growable array
+    let digits = new Array<i32>();
+    while (num > ZERO_I64) {
+      digits.push(48 + ((num % TEN_I64) as i32));
+      num = div(num, TEN_I64);
+    }
+    
+    if (negative) {
+      this.#sb.appendByte(45);  // '-'
+    }
+    
+    // Write digits in reverse order
+    var i = digits.length - 1;
+    while (i >= 0) {
+      this.#sb.appendByte(digits[i]);
+      i = i - 1;
+    }
+  }
+
+  #writeF64(n: f64): void {
+    // For now, just handle integers and simple decimals
+    // A full IEEE 754 double-to-string is complex
+    // TODO: Implement proper floating point formatting
+    
+    // Handle NaN - JSON doesn't support NaN, write null
+    if (n != n) {
+      this.#sb.append("null");
+      return;
+    }
+    
+    // TODO: Handle infinity (would need intrinsic or large constant)
+    
+    var negative = false;
+    var num = n;
+    if (num < 0.0) {
+      negative = true;
+      num = 0.0 - num;
+    }
+    
+    // Get integer part
+    let intPart = num as i64;
+    let fracPart = num - (intPart as f64);
+    
+    if (negative) {
+      this.#sb.appendByte(45);  // '-'
+    }
+    
+    this.#writeI64(intPart);
+    
+    // Write fractional part if non-zero
+    if (fracPart > 0.0000001) {
+      this.#sb.append(".");
+      // Write up to 15 decimal places
+      var frac = fracPart;
+      var digits = 0;
+      while (frac > 0.0000001 && digits < 15) {
+        frac = frac * 10.0;
+        let digit = (frac as i32) % 10;
+        this.#sb.appendByte(48 + digit);
+        frac = frac - (digit as f64);
+        digits = digits + 1;
+      }
+    }
+  }
+}

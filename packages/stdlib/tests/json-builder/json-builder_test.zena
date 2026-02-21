@@ -1,0 +1,157 @@
+// @stdlib: true
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {JsonBuilder} from 'zena:json';
+
+export let tests = suite('JsonBuilder', (): void => {
+  test('empty object', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    let json = b.beginObject().endObject().toString();
+    equal(json, "{}");
+  });
+
+  test('empty array', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    let json = b.beginArray().endArray().toString();
+    equal(json, "[]");
+  });
+
+  test('object with string value', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("name").string("hello");
+    b.endObject();
+    equal(b.toString(), "{\"name\":\"hello\"}");
+  });
+
+  test('object with multiple values', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("a").string("x");
+    b.key("b").string("y");
+    b.endObject();
+    equal(b.toString(), "{\"a\":\"x\",\"b\":\"y\"}");
+  });
+
+  test('array with strings', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginArray();
+    b.string("a");
+    b.string("b");
+    b.string("c");
+    b.endArray();
+    equal(b.toString(), "[\"a\",\"b\",\"c\"]");
+  });
+
+  test('nested objects', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("outer").beginObject();
+    b.key("inner").string("value");
+    b.endObject();
+    b.endObject();
+    equal(b.toString(), "{\"outer\":{\"inner\":\"value\"}}");
+  });
+
+  test('nested arrays', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginArray();
+    b.beginArray().string("a").endArray();
+    b.beginArray().string("b").endArray();
+    b.endArray();
+    equal(b.toString(), "[[\"a\"],[\"b\"]]");
+  });
+
+  test('i32 values', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("zero").i32(0);
+    b.key("pos").i32(42);
+    b.key("neg").i32(-17);
+    b.key("big").i32(1234567890);
+    b.endObject();
+    equal(b.toString(), "{\"zero\":0,\"pos\":42,\"neg\":-17,\"big\":1234567890}");
+  });
+
+  test('bool values', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("t").bool(true);
+    b.key("f").bool(false);
+    b.endObject();
+    equal(b.toString(), "{\"t\":true,\"f\":false}");
+  });
+
+  test('null value', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("n").nullValue();
+    b.endObject();
+    equal(b.toString(), "{\"n\":null}");
+  });
+
+  test('string escaping quotes', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("q").string("say \"hello\"");
+    b.endObject();
+    equal(b.toString(), "{\"q\":\"say \\\"hello\\\"\"}");
+  });
+
+  test('string escaping backslash', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("path").string("a\\b");
+    b.endObject();
+    equal(b.toString(), "{\"path\":\"a\\\\b\"}");
+  });
+
+  test('string escaping newline', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("text").string("line1\nline2");
+    b.endObject();
+    equal(b.toString(), "{\"text\":\"line1\\nline2\"}");
+  });
+
+  test('complex nested structure', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("name").string("test");
+    b.key("count").i32(3);
+    b.key("active").bool(true);
+    b.key("items").beginArray();
+    b.beginObject().key("id").i32(1).endObject();
+    b.beginObject().key("id").i32(2).endObject();
+    b.endArray();
+    b.key("meta").nullValue();
+    b.endObject();
+    equal(b.toString(), "{\"name\":\"test\",\"count\":3,\"active\":true,\"items\":[{\"id\":1},{\"id\":2}],\"meta\":null}");
+  });
+
+  test('raw json', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("prebuilt").raw("{\"a\":1}");
+    b.endObject();
+    equal(b.toString(), "{\"prebuilt\":{\"a\":1}}");
+  });
+
+  test('wit-style package output', (ctx: TestContext): void => {
+    // Test the structure we need for WIT parser output
+    let b = new JsonBuilder();
+    b.beginObject();
+    b.key("worlds").beginArray().endArray();
+    b.key("interfaces").beginArray().endArray();
+    b.key("types").beginArray().endArray();
+    b.key("packages").beginArray();
+    b.beginObject();
+    b.key("name").string("foo:empty");
+    b.key("interfaces").beginObject().endObject();
+    b.key("worlds").beginObject().endObject();
+    b.endObject();
+    b.endArray();
+    b.endObject();
+    equal(b.toString(), "{\"worlds\":[],\"interfaces\":[],\"types\":[],\"packages\":[{\"name\":\"foo:empty\",\"interfaces\":{},\"worlds\":{}}]}");
+  });
+});

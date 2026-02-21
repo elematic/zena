@@ -10,6 +10,7 @@ import {Parser, Ast, AstItem, AstItemTag, ParseError, NestedPackage} from './par
 import {InterfaceDef, WorldDef, InterfaceItem, InterfaceItemTag} from './parser.zena';
 import {TypeDef, TypeDefTag, Type, TypeTag, PackageName, Id, ToplevelUse} from './parser.zena';
 import {Resolver, ResolveError} from './resolver.zena';
+import {serializeAstToJson} from './ast-json.zena';
 
 // ============================================================================
 // Input: TypeScript provides these via imports
@@ -212,3 +213,22 @@ export let countItems = (): i32 => {
   return count;
 };
 
+// TODO: Enable when ast-json.zena compiles
+/**
+ * Parse WIT source and return JSON representation of the AST.
+ * 
+ * Parses the input, then runs semantic validation via the Resolver.
+ * Returns an error message prefixed with "ParseError: " if parsing or validation fails.
+ */
+export let parseJson = (): void => {
+  let input = readInput();
+  
+  outputString = try {
+    let ast = Parser.parse(input);
+    // Run semantic validation
+    Resolver.resolve(ast);
+    serializeAstToJson(ast)
+  } catch (e) {
+    "ParseError: " + e.message + "\n"
+  };
+};
