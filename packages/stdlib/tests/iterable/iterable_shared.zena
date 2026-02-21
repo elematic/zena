@@ -1,0 +1,108 @@
+// Shared iterable tests that can be reused across different collection types
+import { suite, test, Suite, TestContext } from 'zena:test';
+import { equal } from 'zena:assert';
+import { Sequence } from 'zena:sequence';
+import { FixedArray } from 'zena:fixed-array';
+import { Iterable, Iterator } from 'zena:iterator';
+
+/**
+ * Creates a test suite for verifying Iterable behavior.
+ * 
+ * @param name - Name of the collection being tested (e.g., "FixedArray")
+ * @param factory - Function that creates a Sequence from the given items
+ * @returns A Suite with iterable tests
+ */
+export let iterableTests = (
+  name: string,
+  factory: (items: FixedArray<i32>) => Sequence<i32>
+): Suite => {
+  return suite(name + ' Iterable', (): void => {
+    test('for-in on empty collection', (ctx: TestContext): void => {
+      let seq = factory(new FixedArray<i32>(0, 0));
+      var count = 0;
+      for (let x in seq) {
+        count = count + 1;
+      }
+      equal(count, 0);
+    });
+
+    test('for-in on single element', (ctx: TestContext): void => {
+      let seq = factory(#[42]);
+      var sum = 0;
+      var count = 0;
+      for (let x in seq) {
+        sum = sum + x;
+        count = count + 1;
+      }
+      equal(count, 1);
+      equal(sum, 42);
+    });
+
+    test('for-in loop iterates all elements', (ctx: TestContext): void => {
+      let seq = factory(#[1, 2, 3]);
+      var sum = 0;
+      var count = 0;
+      for (let x in seq) {
+        sum = sum + x;
+        count = count + 1;
+      }
+      equal(count, 3);
+      equal(sum, 6); // 1 + 2 + 3
+    });
+
+    test('for-in visits elements in order', (ctx: TestContext): void => {
+      let seq = factory(#[1, 2, 3]);
+      var index = 0;
+      for (let x in seq) {
+        if (index == 0) { equal(x, 1); }
+        if (index == 1) { equal(x, 2); }
+        if (index == 2) { equal(x, 3); }
+        index = index + 1;
+      }
+      equal(index, 3);
+    });
+
+    test('multiple iterations are independent', (ctx: TestContext): void => {
+      let seq = factory(#[1, 2, 3]);
+      
+      // First iteration
+      var sum1 = 0;
+      for (let x in seq) {
+        sum1 = sum1 + x;
+      }
+      
+      // Second iteration should start fresh
+      var sum2 = 0;
+      for (let x in seq) {
+        sum2 = sum2 + x;
+      }
+      
+      equal(sum1, 6);
+      equal(sum2, 6);
+    });
+
+    test('for-in with early break', (ctx: TestContext): void => {
+      let seq = factory(#[1, 2, 3]);
+      var sum = 0;
+      for (let x in seq) {
+        if (x > 1) {
+          break;
+        }
+        sum = sum + x;
+      }
+      equal(sum, 1); // Only 1 is added
+    });
+
+    test('for-in with continue', (ctx: TestContext): void => {
+      let seq = factory(#[1, 2, 3]);
+      var sum = 0;
+      for (let x in seq) {
+        if (x == 2) {
+          continue;
+        }
+        sum = sum + x;
+      }
+      equal(sum, 4); // 1 + 3, skipping 2
+    });
+  });
+};

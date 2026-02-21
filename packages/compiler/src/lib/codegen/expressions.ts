@@ -52,6 +52,7 @@ import {
   type LiteralType,
   type NumberType,
   type RecordType,
+  type SymbolType,
   type Type,
   type UnboxedTupleType,
   type UnionType,
@@ -1892,6 +1893,18 @@ function generateSymbolMethodCall(
       throw new Error(`Extension class not found for array type`);
     }
     // classType stays undefined for arrays - we use classInfo.name for errors
+  } else if (objectCheckerType.kind === TypeKind.Interface) {
+    // Generate interface dispatch for symbol method call
+    generateInterfaceSymbolMethodCall(
+      ctx,
+      expr,
+      memberExpr,
+      objectCheckerType as InterfaceType,
+      symbolType,
+      memberName,
+      body,
+    );
+    return;
   } else {
     throw new Error(
       `Symbol method call on unsupported type: ${objectCheckerType.kind}`,
@@ -1934,6 +1947,94 @@ function generateSymbolMethodCall(
   // 3. Call the method
   body.push(Opcode.call);
   body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+}
+
+/**
+ * Generate code for symbol method call on an interface: obj.:symbol(args)
+ * Uses fat pointer dispatch through the interface vtable.
+ */
+function generateInterfaceSymbolMethodCall(
+  ctx: CodegenContext,
+  expr: CallExpression,
+  memberExpr: MemberExpression,
+  interfaceType: InterfaceType,
+  symbolType: SymbolType,
+  memberName: string,
+  body: number[],
+) {
+  // Get interface info
+  const interfaceInfo = ctx.getInterfaceInfo(interfaceType);
+  if (!interfaceInfo) {
+    throw new Error(`Interface info not found for ${interfaceType.name}`);
+  }
+
+  // Look up the method in the interface's methods
+  const methodInfo = interfaceInfo.methods.get(memberName);
+  if (!methodInfo) {
+    throw new Error(
+      `Symbol method '${memberName}' (symbol: ${symbolType.debugName ?? '<unnamed>'}) not found on interface ${interfaceType.name}`,
+    );
+  }
+
+  // Generate the object expression (interface fat pointer)
+  generateExpression(ctx, memberExpr.object, body);
+
+  // Store fat pointer in temp
+  const fatPtrType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+  ];
+  const tempLocal = ctx.declareLocal('$$interface_sym_temp', fatPtrType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempLocal));
+
+  // Get vtable from fat pointer (field 1)
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(1));
+
+  // Cast vtable
+  body.push(0xfb, GcOpcode.ref_cast_null);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex));
+
+  // Get function from vtable
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+
+  // Cast function to specific type
+  body.push(0xfb, GcOpcode.ref_cast_null);
+  body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+  // Store function ref
+  const funcRefType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  ];
+  const funcRefLocal = ctx.declareLocal('$$interface_sym_func', funcRefType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+
+  // Load instance (this) from fat pointer (field 0)
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(0));
+
+  // Generate arguments
+  const funcTypeIndex = methodInfo.typeIndex;
+  const params = ctx.module.getFunctionTypeParams(funcTypeIndex);
+  // params[0] is 'this' (anyref)
+  for (let i = 0; i < expr.arguments.length; i++) {
+    const arg = expr.arguments[i];
+    const expectedType = params[i + 1];
+    generateAdaptedArgument(ctx, arg, expectedType, body);
+  }
+
+  // Load function ref and call
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+  body.push(
+    Opcode.call_ref,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  );
 }
 
 /**

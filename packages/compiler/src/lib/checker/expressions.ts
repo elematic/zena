@@ -2633,22 +2633,23 @@ function checkSymbolMemberAccess(
     return Types.Unknown;
   }
 
-  // Check symbolFields first
+  // Check symbolFields first (direct only, symbol fields are not inherited)
   if (classType.symbolFields?.has(symbolType)) {
     const fieldType = classType.symbolFields.get(symbolType)!;
     return resolveMemberType(classType, fieldType, ctx);
   }
 
-  // Check symbolMethods
-  if (classType.symbolMethods?.has(symbolType)) {
-    const methodType = classType.symbolMethods.get(symbolType)!;
+  // Check symbolMethods - including inherited ones
+  const foundMethod = findSymbolMethod(classType, symbolType);
+  if (foundMethod) {
+    const {methodType, declaringType} = foundMethod;
     // Store method binding for symbol method access
     const isExtension =
-      classType.kind === TypeKind.Class &&
-      !!(classType as ClassType).isExtension;
+      declaringType.kind === TypeKind.Class &&
+      !!(declaringType as ClassType).isExtension;
     const binding: MethodBinding = {
       kind: 'method',
-      classType: classType as ClassType,
+      classType: declaringType as ClassType,
       methodName: symbolType.debugName ?? '<symbol>',
       isStaticDispatch: isExtension,
       type: methodType,
@@ -2664,6 +2665,45 @@ function checkSymbolMemberAccess(
     DiagnosticCode.PropertyNotFound,
   );
   return Types.Unknown;
+}
+
+/**
+ * Find a symbol method on a type, including inherited interfaces.
+ * Returns the method type and declaring type if found.
+ */
+function findSymbolMethod(
+  type: ClassType | InterfaceType,
+  symbolType: SymbolType,
+): {methodType: FunctionType; declaringType: ClassType | InterfaceType} | undefined {
+  // Check direct symbolMethods
+  if (type.symbolMethods?.has(symbolType)) {
+    return {
+      methodType: type.symbolMethods.get(symbolType)!,
+      declaringType: type,
+    };
+  }
+
+  // For interfaces, check extends chain
+  if (type.kind === TypeKind.Interface) {
+    const ifaceType = type as InterfaceType;
+    if (ifaceType.extends) {
+      for (const parentIface of ifaceType.extends) {
+        const found = findSymbolMethod(parentIface, symbolType);
+        if (found) return found;
+      }
+    }
+  }
+
+  // For classes, check implements interfaces
+  if (type.kind === TypeKind.Class) {
+    const classType = type as ClassType;
+    for (const iface of classType.implements) {
+      const found = findSymbolMethod(iface, symbolType);
+      if (found) return found;
+    }
+  }
+
+  return undefined;
 }
 
 function checkMemberExpression(

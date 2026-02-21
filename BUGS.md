@@ -16,6 +16,28 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### Function references passed as arguments fail with "Unknown identifier"
+
+- **Found**: 2026-02-17
+- **Severity**: medium
+- **Workaround**: Inline the tests instead of using shared test utilities
+- **Details**: When a module-level function is passed as an argument to another function (especially across module boundaries), codegen fails with "Unknown identifier: functionName". The issue is in `generateFromBinding()` in `expressions.ts` - the `'function'` case returns `false` without generating code. The fix requires:
+  1. Use `ref.func` opcode to create a function reference
+  2. Call `ctx.module.declareFunction(funcIndex)` to add it to the element section (required by WASM for `ref.func` to work)
+  
+  Reproduction:
+  ```zena
+  // module-a.zena
+  export let callFactory = (factory: () => i32): i32 => factory();
+  
+  // module-b.zena
+  import { callFactory } from './module-a.zena';
+  let myFactory = (): i32 => 42;
+  export let main = (): i32 => callFactory(myFactory);  // Error: Unknown identifier: myFactory
+  ```
+  
+  This blocks using `iterable_shared.zena` which takes a factory function to create test collections.
+
 ### Self-referential single-parameter generic class causes recursive type substitution
 
 - **Found**: 2026-02-16

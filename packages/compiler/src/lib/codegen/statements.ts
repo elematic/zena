@@ -512,10 +512,16 @@ function generateIteratorMethodCall(
       );
     }
   }
+  // Handle interface types (e.g., Sequence<T>, Iterable<T>)
+  else if (iterableType.kind === TypeKind.Interface) {
+    const interfaceType = iterableType as InterfaceType;
+    generateInterfaceIteratorCall(ctx, interfaceType, iteratorSymbol, body);
+    return;
+  }
   // Unsupported type
   else {
     throw new Error(
-      `for-in iterable must be a class or array type, got ${iterableType.kind}`,
+      `for-in iterable must be a class, interface, or array type, got ${iterableType.kind}`,
     );
   }
 
@@ -587,6 +593,109 @@ function generateIteratorMethodCall(
       ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
     );
   }
+}
+
+/**
+ * Generate code to call .:Iterable.iterator() on an interface type.
+ * Expects the interface fat pointer on the stack.
+ * Pushes the Iterator interface (fat pointer) onto the stack.
+ */
+function generateInterfaceIteratorCall(
+  ctx: CodegenContext,
+  interfaceType: InterfaceType,
+  iteratorSymbol: SymbolType,
+  body: number[],
+) {
+  // Find the Iterable interface in the type hierarchy
+  const iterableInterface = findIterableInInterfaceChain(interfaceType);
+  if (!iterableInterface) {
+    throw new Error(
+      `Interface ${interfaceType.name} does not extend Iterable`,
+    );
+  }
+
+  // Get interface info - may need to use the original interface type, not Iterable
+  const interfaceInfo = ctx.getInterfaceInfo(interfaceType);
+  if (!interfaceInfo) {
+    throw new Error(`Interface info not found for ${interfaceType.name}`);
+  }
+
+  // Look up the symbol method by name
+  const methodName = getSymbolMemberName(iteratorSymbol);
+  const methodInfo = interfaceInfo.methods.get(methodName);
+  if (!methodInfo) {
+    throw new Error(
+      `Method '${methodName}' not found in interface ${interfaceType.name}`,
+    );
+  }
+
+  // Store fat pointer in temp
+  const fatPtrType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+  ];
+  const tempLocal = ctx.declareLocal('$$iterable_temp', fatPtrType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempLocal));
+
+  // Get vtable from fat pointer (field 1)
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(1)); // vtable field
+
+  // Cast vtable
+  body.push(0xfb, GcOpcode.ref_cast_null);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex));
+
+  // Get function from vtable
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+
+  // Cast function to specific type
+  body.push(0xfb, GcOpcode.ref_cast_null);
+  body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+  // Store function ref
+  const funcRefType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  ];
+  const funcRefLocal = ctx.declareLocal('$$iterable_func', funcRefType);
+  body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+
+  // Load instance (this) from fat pointer (field 0)
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex));
+  body.push(...WasmModule.encodeSignedLEB128(0)); // instance field
+
+  // Load function ref and call
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+  body.push(
+    Opcode.call_ref,
+    ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+  );
+}
+
+/**
+ * Walk the interface extends chain to find Iterable.
+ */
+function findIterableInInterfaceChain(
+  interfaceType: InterfaceType,
+): InterfaceType | undefined {
+  const name = interfaceType.genericSource?.name ?? interfaceType.name;
+  if (name === 'Iterable') {
+    return interfaceType;
+  }
+
+  if (interfaceType.extends) {
+    for (const ext of interfaceType.extends) {
+      const found = findIterableInInterfaceChain(ext);
+      if (found) return found;
+    }
+  }
+
+  return undefined;
 }
 
 /**
