@@ -28,13 +28,9 @@ export class WasmModule {
     options?: {preRec?: boolean},
   ): number {
     // Function type - optionally placed before rec block for WASI compatibility
-    // sub final (func ...) = 0x4f 0x00 0x60 ...
-    // plain func = 0x60 ...
+    // Func types are emitted bare (0x60 ...); sub_final wrapping is added
+    // at emission time only for types inside a rec block (see toBytes()).
     const buffer: number[] = [];
-    if (!options?.preRec) {
-      buffer.push(0x4f); // sub final
-      buffer.push(0x00); // 0 supertypes
-    }
     buffer.push(0x60); // func
 
     this.#writeUnsignedLEB128(buffer, params.length);
@@ -413,6 +409,10 @@ export class WasmModule {
             throw new Error(
               `Type at index ${i} was reserved but never defined`,
             );
+          }
+          // Bare func types (0x60) need sub_final wrapping inside a rec block
+          if (type[0] === 0x60) {
+            sectionBuffer.push(0x4f, 0x00); // sub final, 0 supertypes
           }
           sectionBuffer.push(...type);
         }

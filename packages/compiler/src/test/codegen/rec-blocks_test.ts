@@ -194,20 +194,20 @@ suite('rec block optimization', () => {
     // With DCE and debug off, `export let main = () => 42;` should produce
     // the smallest possible valid WASM module:
     //   8  magic + version
-    //   9  type section (1 standalone func type with sub_final wrapper)
+    //   7  type section (1 standalone bare func type)
     //   4  function section
     //  10  export section ("main")
     //   8  code section (i32.const 42)
     //  --
-    //  39  total
+    //  37  total
     const wasm = compileToWasm('export let main = () => 42;', '/main.zena', {
       dce: true,
       debug: false,
     });
     assert.strictEqual(
       wasm.length,
-      39,
-      `Expected 39 bytes, got ${wasm.length}`,
+      37,
+      `Expected 37 bytes, got ${wasm.length}`,
     );
 
     // No rec block — only standalone function types
