@@ -1,246 +1,448 @@
-# Zena Programming Language
+# The Zena Programming Language
 
-Zena is a new programming language targeting WebAssembly (WASM) and WASM-GC. It
-is designed to be the **best way to write WASM**: offering a familiar, ergonomic
-syntax similar to TypeScript, but with the performance and predictability of a
-statically-typed, ahead-of-time (AOT) compiled language.
-
-## Vision & Goals
-
-Zena aims to be an extremely nice and familiar way to write high-performance
-WASM. It balances familiar functional and OOP syntax with a strict orientation
-around efficient WASM output.
-
-- **WASM-First & High Performance**: The primary backend is WASM-GC. We aim for
-  **no-cost to low-cost abstractions**.
-  - **Numeric types** align directly with with WASM numerics, with the addition
-    of unsigned types to statically select WASM's unsigned arithmetic
-    operations.
-  - **Generics** are fully monomorphized (like C++ templates or Rust), meaning
-    `List<i32>` stores raw integers with zero boxing overhead.
-  - **Arrays and Record** map directly to WASM GC arrays and structs.
-  - **Classes** map to WASM GC structs with vtables.
-  - **Polymorphism** uses vtables where necessary (inheritance, interfaces), but
-    we prefer static dispatch when possible. Private and final class members are
-    guareteed to use static dispatch.
-  - **Dead Code Elimination (DCE)**: Aggressive tree-shaking removes unused
-    functions, classes, and even WASM types at compile time, producing minimal
-    binaries optimized for network delivery.
-- **Familiar yet AOT**: While Zena looks like TypeScript, it is entirely
-  designed for **ahead-of-time (AOT) compilation**. It breaks away from
-  JavaScript's dynamic semantics to allow for efficient compilation and small
-  binary sizes.
-- **Modern Inspiration**: Zena aims to take inspiration and the best features
-  from **TypeScript, Dart, C#, Kotlin, and Swift**.
-- **Sound Type System**: Zena is strongly typed with a sound type system. It
-  does not perform implicit type coercion (e.g., `1 + "1"` is a type error).
-- **Correctness & Safety**: Zena is designed to make invalid states
-  unrepresentable.
-  - **Immutable by Default**: Data structures and bindings are immutable unless
-    explicitly opted-out, reducing classes of bugs related to shared mutable
-    state.
-  - **Nominal Typing**: Enforces strict semantic boundaries between types,
-    preventing accidental structural compatibility.
-  - **Advanced Safety Features**: Future plans include **Exhaustiveness
-    Checking** for pattern matching and **Units of Measure** to enforce unit
-    correctness at compile time (e.g., preventing `Meters + Seconds`).
-
-## Zena and Generative AI
-
-Zena so far is implemented almost entirely by generative AI (Gemini 3 for now).
-I must be honest about this, even if it might be controversial if anyone ever
-cares about this project. Zena started as, and still is, an experiment. A kind
-of "what would happen if we asked AI to build a new programming language?" kind
-of challenge.
-
-Why do this though? Will anyone use this language? What's the point? Here are
-some of my thoughts and motivations at the moment:
-
-- **Breaking the barrier to entry**: I've had ideas for a programming language
-  for a long time, but I never had the time or deep expertise to pull it off. I
-  worked on the Dart team (mostly on tools, not the VM) and have written parsers
-  before (like for Polymer expressions), but building a full compiler and
-  ecosystem is a massive investment. Without AI, my only hope of building this
-  would have been winning the lottery.
-- **Gemini 3 & greenfield development**: I was trying Gemini 3 and noticed how
-  far it could get with basic instructions, so I wondered how far it could go on
-  a greenfield project. It turns out, quite far! I'm already blown away by how
-  well it's working.
-- **The bootstraping paradox**: People worry that LLMs will discourage new
-  languages because models only know languages in their training sets. That's a
-  real concern, but there might be an opposite effect too: AI might make it
-  drastically cheaper to build the language and the _ecosystem_—IDEs, docs,
-  examples, and tools—needed to launch a language and get it into the next
-  generation of training cycles.
-- **Ethical use of AI in open source?**: There are definite ethical and moral
-  questions around generative AI, but using it to create public goods like open
-  source software feels like one of the least exploitive ways to use the
-  technology.
-- **Controlling quality and reducing slop**: I haven't been a huge AI
-  booster—I'm skeptical of a lot of the hype—but it's clearly useful for coding
-  if you hold it right. I wanted to see if I could nudge an AI to build
-  well-constructed, reliable software rather than unmaintainable cruft. I'm
-  performing a lot of oversight: reviewing code and tests, "discussing" design
-  ideas, and planning next steps. Is that enough?
-- **Why Zena itself?**: I wanted a nice language for building WASM modules that
-  uses modern features like WASM-GC out of the box. I didn't see another
-  language I loved for this—even including Rust, Go, or AssemblyScript—so I
-  decided to try building one.
-
-## Feature Status
-
-### Language Features
-
-- [x] `let` and `var` variables for immutable and mutable variable bindings
-- [x] Type annotations with non-nullable by default types
-- [x] Basic types: `i32`, `f32`, `boolean`, `null`, `void`
-- [x] String type and built-in class
-- [x] Function declarations and calling
-- [x] Operators: `+`, `-`, `*`, `/`, `==`, `!=`, `<`, `<=`, `>`, `>=`
-- [x] Exports
-- [x] Classes with inheritance, constructors, fields, and methods
-- [x] Virtual public class members, including fields
-- [x] Private fields
-- [x] `final` classes and class members
-- [x] Interfaces (with nominal typing)
-- [x] Mixins, with composition support and constraints
-- [x] Generics on function, classes, interfaces, and mixins, with constraints
-      and defaults
-- [x] Union types
-- [x] Accessors
-- [x] Mutable Arrays and array literals (`#[...]`)
-- [x] Abstract classes and members
-- [x] Index operator (`[]` and `[]=`) overloading
-- [x] For loops
-- [x] While loops
-- [x] Modules and imports
-- [x] Closures
-- [x] Type aliases
-- [x] Distinct types
-- [x] Function types
-- [x] String escapes
-- [x] Static Symbols (Protocol Methods)
-- [x] Tagged template literals
-- [x] Record and tuple literal syntax (`{...}` and `[ ... ]`)
-- [x] Console built-in
-- [x] Blocks
-- [x] Pattern matching (Basic, Logical, Guards)
-- [x] Record spread syntax (`{ ...p }`)
-- [x] Exceptions (`throw`)
-- [x] `never` type
-- [x] Enums
-- [x] Unboxed tuples and multi-value return (`(i32, i32)`)
-- [x] Boolean literal types (`true` and `false` as types)
-- [x] Unions of tuples (`(true, T) | (false, never)`)
-- [x] Let-pattern conditions (`if (let pattern = expr)`, `while (let pattern = expr)`)
-- [x] For/in loops
-- [x] Regexes
-- [x] Iterators
-- [ ] Do/while loops
-- [ ] Pipeline operator (`|>`)
-- [ ] Tuple indexing (`tuple[0]`)
-- [ ] Block expressions
-- [ ] Mutable Maps and map literals (`#{...}`)
-- [ ] More primitive types
-- [ ] More operators: exponentiation
-- [ ] Standard library
-- [ ] Numeric unit types
-- [ ] Extension methods
-- [ ] Operator overloading
-- [ ] `operator is` overloading
-- [ ] `TypeId<T>` intrinsic
-- [ ] Intersection types
-- [ ] Mixin constructors
-- [ ] Async functions
-- [ ] Decorators
-- [ ] JSX-like builder syntax
-- [ ] Workers
-
-### Tools
-
-- [x] Compiler implemented in TypeScript
-- [x] CLI
-- [x] Website
-- [x] Dead Code Elimination (tree-shaking)
-- [ ] Self-hosted compiler written in Zena
-- [ ] VS Code extension
-- [ ] Syntax highlighter plugins
-- [ ] Online playground
-- [ ] WIT generator
-- [ ] WASI support in CLI
-- [ ] Package manager
-
-## Syntax Example
-
-Here is a small example of what Zena looks like today:
+Zena is a statically typed programming language that compiles to
+[WebAssembly GC](https://github.com/nicolo-ribaudo/tc39-proposal-wasm-gc-js-interop).
+It combines a familiar, TypeScript-like syntax with a sound type system,
+zero- and low-cost abstractions, and modern language features, all designed for
+ahead-of-time compilation to compact, high-performance WASM binaries.
 
 ```typescript
-// A simple class representing a 2D point
-class Point {
-  x: i32;
-  y: i32;
+let x = 42; // Immutable variable, inferred type
+var y: String = "hello"; // mutable variable
 
-  // Constructor
-  #new(x: i32, y: i32) {
-    this.x = x;
-    this.y = y;
-  }
+interface Animal {
+  sayHi(): String;
+}
 
-  // Method to calculate distance squared
-  distanceSquared(): i32 {
-    return this.x * this.x + this.y * this.y;
+distinct type CatId = string; // Nominal type alias
+
+class Cat implements Animal {
+  #greeting = 'Hi'; // Private field
+  name = 'Bob'; // Mutable public field
+  let id: CatId; // Immutable field
+  var(#mood) mood: 'aloof' | 'grumpy'; // Public field, private setter
+
+  // Constructor with initializer list
+  #new(id: CatId) : id = id {}
+
+  sayHi() {
+    return `${this.greeting}, I'm ${this.name}`;
   }
 }
 
-// Exported function callable from the host
-export let main = (): i32 => {
-  let p = new Point(3, 4);
-  return p.distanceSquared(); // Returns 25
+// A function that uses pattern matching
+export let getChildren = (n: Node) => match (n) {
+  case {left, right}: #[left, right] // array literal
+  case {children}: children
+  case _: #[]
+}
+
+// Pipelines
+let formatTitle = (title: String) => title
+  |> trim($)
+  |> titleCase($)
+  |> truncate($, 80);
+
+```
+
+> [!WARNING]
+> Zena is so new that syntax might change a lot! In particular, we're unsure
+> about `#new()` for constructors, `#[...]` for mutable arrays vs `[...]` for
+> tuples, and `let` and `var` as class field modifiers...
+
+## Why Zena?
+
+There are lots of languages that can target WASM, but most treat it as a
+secondary backend. Zena is built **WASM-first**: every language feature maps
+directly and efficiently as possible to WASM GC features.
+
+- **Familiar syntax.** If you know TypeScript, you can read Zena. The type
+  annotations, arrow functions, classes, and generics all look the way you'd
+  expect.
+- **Modern features.** Pattern matching with exhaustiveness checking, pipelines,
+  multi-value returns, enums, distinct types, expression-oriented control
+  flow, and more.
+- **Sound type system.** Types are checked at compile time with no escape
+  hatches. If it compiles, it won't throw a type error at runtime (except for
+  possibly checked downcasts).
+- **Zero- and low-cost abstractions.** Primitives and operators map directly to
+  WASM. FixedArray is just a WASM Array, and indexing is exactly WASM's
+  `array.get`/`array.set`. Generics are monomorphized (no boxing), multi-value
+  returns go on the WASM stack (no allocation), and unused code is aggressively
+  tree-shaken out of the binary. Classes and interfaces use vtables only when
+  dynamic dispatch is needed.
+- **Immutability-friendly.** `let` bindings, records, and tuples are immutable.
+  Use `var` to opt in to mutability when you need it.
+- **Tiny binaries.** Dead code elimination removes unused functions, classes,
+  and even WASM types. Minimal programs compile to as little as 37 bytes.
+
+## Feature Highlights
+
+### Classes, Interfaces, and Mixins
+
+```typescript
+interface Printable {
+  toString(): String;
+}
+
+mixin Named {
+  name: String;
+}
+
+class User with Named implements Printable {
+  age: i32;
+
+  #new(name: String, age: i32) {
+    this.name = name;
+    this.age = age;
+  }
+
+  toString(): String {
+    return `${this.name} (${this.age})`;
+  }
+}
+```
+
+Classes support inheritance, abstract members, `final` sealing, private `#`
+fields, accessors, operator overloading, and generic type parameters. Interfaces
+use fat pointers with vtables for efficient dynamic dispatch.
+
+### Generics
+
+Generics are fully monomorphized. `Array<i32>` stores raw integers with zero
+boxing overhead:
+
+```typescript
+let identity = <T>(x: T): T => x;
+
+identity(42); // monomorphized for i32
+identity('hello'); // monomorphized for String
+```
+
+Type parameters support constraints (`T extends Comparable`) and defaults
+(`T = i32`). F-bounded polymorphism (`T extends Comparable<T>`) is coming soon.
+
+### Operator overloading
+
+Zena lets classes overload `==`, `[]`, `[]=`, `+`, with more comining soon.
+
+Operator overloading should help make Zena ergonomic for scientific computing
+and working with collections. Since final class members are resolved staticlly,
+operator overloading doesn't cause any performance impact for array indexing on
+built-in arrays.
+
+### Type definitions
+
+Zena has a growing set of type expressions including primitives, literals,
+records, tuples, functions, and unions.
+
+```typescript
+type Pet = Cat | Dog;
+```
+
+Distinct types create nominal or "branded" types over other types.
+
+```typescript
+distinct type UserId = i32;
+distinct type PostId = i32;
+
+let x: UserId = 1 as PostId;  // ❌ Error: type mismatch
+```
+
+Type type system has restrictions to help keep types sound and the WASM output
+small and fast.
+
+For instance, union members must be distinguisable and able to be stored in one
+WASM value type. You can't mix primitives and references because there's no
+WASM type that allows that. You must box primitives instead:
+
+```typescript
+type NullableId = i32 | null; // ❌ Error
+type Nullable<T> = T | null; // ❌ Error: T could be a primitive
+
+type NullableId = Box<i32> | null; // ✅ OK
+type Nullable<T extends anyref> = T | null; // ✅ OK
+
+type NullableId = Option<i32>; // ✅ Also OK
+```
+
+### Enums
+
+Untagged enums map to i32 or String as distinct types. Tagged enums are planned.
+
+```typescript
+enum Direction {
+  Up = 'UP',
+  Down = 'DOWN',
+  Left = 'LEFT',
+  Right = 'RIGHT',
+}
+```
+
+### Expression-Oriented Control Flow
+
+`if` and `match` are expressions that return values:
+
+```typescript
+let abs = if (x >= 0) x else -x;
+
+let label = match (level) {
+  case 1: "low"
+  case 2: "medium"
+  case _: "high"
 };
 ```
 
-## Running with WASI
+### Pattern Matching
 
-Zena programs can run standalone using WASI (WebAssembly System Interface) with
-wasmtime or other WASI-compatible runtimes:
+```typescript
+class Circle { radius: f32; #new(radius: f32) { this.radius = radius; } }
+class Rect { w: f32; h: f32; #new(w: f32, h: f32) { this.w = w; this.h = h; } }
 
-```bash
-# Build with WASI target
-zena build main.zena -o main.wasm --target wasi
-
-# Run with wasmtime (requires WASM-GC flags)
-wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main.wasm
-
-# If accessing the filesystem, grant directory access:
-wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke main main.wasm
+let area = (shape: Circle | Rect): f32 => {
+  match (shape) {
+    case Circle {radius}: 3.14159 * radius * radius
+    case Rect {w, h}: w * h
+  }
+};
 ```
 
-**Required wasmtime flags**:
+Patterns support literals, records, classes, guards, `as` bindings, and logical
+`|` / `&` combinators. Exhaustiveness is checked at compile time.
 
-- `-W gc=y` - Enable WASM GC proposal
-- `-W function-references=y` - Enable function references proposal
-- `-W exceptions=y` - Enable exceptions proposal (if using try/catch)
-- `--dir <path>` - Grant filesystem access to a directory
-- `--invoke <func>` - Call a specific exported function
+### Multi-Value Returns
+
+Functions can return multiple values as unboxed tuples that compile to WASM's
+multi-value return, with no heap allocation or wrapper objects:
+
+```typescript
+let divmod = (a: i32, b: i32): (i32, i32) => {
+  return (a / b, a % b);
+};
+
+let (quot, rem) = divmod(17, 5); // quot = 3, rem = 2
+```
+
+This powers zero-allocation iterators:
+
+```typescript
+interface Iterator<T> {
+  next(): (T, true) | (never, false);
+}
+```
+
+### Pipeline Operator
+
+The `|>` operator turns nested calls into a readable left-to-right flow. The `$`
+placeholder marks where the piped value goes:
+
+```typescript
+let result = data |> parse($) |> transform($) |> validate($);
+
+// Equivalent to: validate(transform(parse(data)))
+```
+
+## Feature Status
+
+### Language
+
+- [x] `let` / `var` bindings (immutable / mutable)
+- [x] Primitive types: `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `boolean`
+- [x] Strings (UTF-8, built-in class)
+- [x] Arrow functions, closures, first-class functions
+- [x] Classes, inheritance, abstract classes, `final` modifier
+- [x] Private `#` fields, accessors (getters/setters)
+- [x] Interfaces (nominal typing, fat-pointer vtables)
+- [x] Mixins with composition and constraints
+- [x] Generics with constraints, defaults, and monomorphization
+- [x] Union types with control-flow narrowing (`is`, null checks)
+- [x] Pattern matching (literals, records, classes, guards, exhaustiveness)
+- [x] Multi-value returns and unboxed tuples
+- [x] Pipeline operator (`|>` with `$` placeholder)
+- [x] Enums (integer-backed and string-backed, nominal)
+- [x] Distinct types (zero-cost newtypes)
+- [x] Type aliases and function types
+- [x] Records and tuples (structural types)
+- [x] For loops, for-in loops, while loops
+- [x] Iterators and `Sequence` protocol
+- [x] Exceptions (`throw` / `try` / `catch`)
+- [x] `never` type
+- [x] Mutable arrays and array literals (`#[...]`)
+- [x] Index operator overloading (`[]`, `[]=`)
+- [x] Operator overloading (`==`, custom operators)
+- [x] Tagged template literals
+- [x] Modules, imports, and exports
+- [x] Boolean literal types (`true` / `false` as types)
+- [x] Let-pattern conditions (`if let`, `while let`)
+- [x] Regexes
+- [x] `any` type with auto-boxing
+- [x] Contextual typing for closures
+- [ ] Block expressions
+- [ ] Map literals (`#{...}`)
+- [ ] Extension methods
+- [ ] SIMD
+- [ ] Async functions
+- [ ] Intersection types
+- [ ] Tagged enums (enums with associated data)
+- [ ] Decorators and macros
+- [ ] Numeric unit types
+- [ ] Context parameters
+- [ ] Pre and post conditions
+
+### Tooling
+
+- [x] Compiler (TypeScript)
+- [x] CLI (`zena build`)
+- [x] Dead code elimination (functions, classes, methods, WASM types)
+- [x] WASI target support
+- [x] VS Code extension (syntax highlighting)
+- [x] Website and documentation
+- [ ] WASI P2 support
+- [ ] Import .wit files
+- [ ] Self-hosted compiler (in Zena)
+- [ ] Online playground
+- [ ] Package manager
+- [ ] WIT/Component Model support
+
+### Standard Library
+
+- [x] `String`, `StringBuilder`
+- [x] `Array<T>`, `FixedArray<T>`, `ImmutableArray<T>`
+- [x] `Map<K, V>`, `Box<T>`
+- [x] `Option<T>` (`Some` / `None`)
+- [x] `Error`, `IndexOutOfBoundsError`
+- [x] `ByteBuffer`, `ByteArray`
+- [x] Ranges (`BoundedRange`, `FromRange`, `ToRange`, `FullRange`)
+- [x] `console.log`
+- [x] File I/O (WASI)
+- [x] Math functions
+- [ ] Extended math: trig, random, etc.
+- [ ] `Set<T>`
+- [ ] `DataView` for binary data
+- [ ] Built-in WASI P2 interfaces
+
+## WASM & WASI
+
+Zena targets WASM-GC natively, but also supports the broader WASM ecosystem:
+
+```bash
+# Compile for a JS host environment
+zena build main.zena -o main.wasm --target host
+
+# Compile for WASI
+zena build main.zena -o main.wasm --target wasi
+
+# Run with wasmtime
+wasmtime run -W gc,function-references,exceptions --invoke main main.wasm
+```
+
+**Linear memory.** The `zena:memory` standard library module provides tools for
+working with linear memory when you need direct byte-level access, such as for
+binary formats or interop with non-GC WASM modules.
+
+**Component Model.** We're working toward letting Zena modules import WIT files
+directly, with no code generation step, to emit WASI components and WIT
+interfaces with no additional tools required.
+
+**Looking ahead.** Today, WASI components require lowering GC types to linear
+memory. We're looking forward to future WASI proposals that support GC types
+natively, which would let Zena components avoid the lowering overhead entirely.
+
+## Correctness
+
+Zena is designed to reduce the chance of errors, whether the code is written by
+humans or generated by AI.
+
+**Sound type system.** There should be no ways for a variable or parameter to lie
+about its type. If a variable has type `String`, it really is a `String` at runtime. There are no known unsound escape hatches. Soundness is helped by a few additional features:
+
+- **Reified generics** `Array<i32>` and `Array<f64>` are distinct types, even at
+  runtime, so runtime type checks like `x is Array<i32>` work.
+- **Checked casts.** All `as` casts are either eliminted at compile time or
+  verified at runtime.
+- **Class initializer lists.** Constructors use initializer lists that guarantee
+  every immutable and non-nullable field is set before the object becomes visible. It's impossible to leak a partially initialized object.
+
+Some types, like `i32`, `u32`, and `boolean`, or type aliases on the same underlying type, have the same underlying representation and can be cast between each other, but this should not affect the overall soundness of the program's types.
+
+**Future correctness projects** Zena is going to continue to add more features that
+aid in ensuring correctness.
+
+- **Distinct types and units of measure.** Distinct types already let you create
+  type-safe wrappers at zero cost, so `UserId` and `PostId` can't be accidentally
+  swapped even though both are `i32` underneath. Planned numeric units of measure
+  will extend this further with smoother syntax and unit analysis, catching
+  mistakes like adding meters to feet at compile time.
+- **Purity.** The `@pure` annotation marks functions as side-effect-free. Today
+  this is trusted, not verified, but it documents intent and enables future
+  optimizations. In the future we will try to verify purity annotations or
+  automaticaly infer them.
+- **Contracts and verification.** We plan to add `requires` and `ensures`
+  contracts that specify what functions expect and guarantee. Runtime contracts
+  catch violations early. Static verification (via SMT solvers) can prove
+  contracts hold for all inputs. Combined with AI-generated code, this creates a
+  powerful workflow: AI writes the implementation, the verifier proves it matches
+  the spec.
+
+## Zena and Generative AI
+
+Zena is implemented primarily with the help of generative AI, and would not
+exist without it. Zena started as a casual experiment: when the latest AI
+modules showed huge improvements on working with complex codebases, we asked
+Gemini to create a new programming language from scratch, and it did! The code
+that we had the experience to review properly looked good, and so we kept going
+and asking for changes and new features, and Zena is now growing into something
+much more substantial.
+
+You might call Zena a vibe-coded language, but the process has been less "vive"
+and more "mentoring". There have been thousands of prompts over hundreds of
+changes. Not all of the code was closely reviewed, but a lot of it was. Design
+"discussions" with agents have helped shaped the language and compiler, weighed
+the tradeoffs Zena is trying to make, and sometimes invovled push-back from both
+human and agent.
+
+Zena is still an experiment, just a more serious one now. Some of the questions
+we are trying to answer with Zena include:
+
+- Can coding agents allow one person or a very small team to produce a full,
+  production-quality programming language with all the tooling and ecosystem
+  pieces that are expected of modern languages?
+- Can a new language break through the LLM training-set barrier? Many people
+  worry that kickstarting a new language is impossible now, as popular
+  languages that are in LLM training sets have an insurmountable advantage. On
+  the other hand, LLM's universal translator abilities might make it matter less
+  what language they're generating. Zena is attempting to be familiar enough to
+  easily teach an LLM via context how to generate it.
+- Can a project move from vibe-coding standards to proper engineering practices
+  and still maintain the massive accelleration that coding agents give?
+- Can a programming language help improve generative coding workflows and
+  outcomes?
 
 ## Documentation
 
-- [Language Reference](docs/language-reference.md): Detailed guide on syntax and
-  semantics.
+- [Language Reference](docs/language-reference.md): Detailed syntax and
+  semantics
+- [Quick Reference](packages/website/src/docs/quick-reference.md):
+  Comprehensive feature guide
+- [Design Documents](docs/design/): Architecture and feature design notes
 
 ## Getting Started
 
-This project is currently in the bootstrapping phase. The initial
-compiler/parser is being written in TypeScript.
+Zena is not yet released. To build from source:
+
+```bash
+git clone https://github.com/nicolo-ribaudo/zena.git
+cd zena
+npm install
+npm run build
+npm test
+```
 
 ### Prerequisites
 
-- Node.js
+- Node.js v25+
 - npm
-
-### Installation
-
-(Instructions to be added)
+- [wasmtime](https://wasmtime.dev/) (for running WASI programs)
 
 ## License
 
