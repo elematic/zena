@@ -295,6 +295,74 @@ export class WasmModule {
     return true;
   }
 
+  /**
+   * Classify a type definition as function type or nominal type (struct/array).
+   *
+   * In WASM GC, types outside a rec block (implicit singleton rec groups) are
+   * structurally typed. Structurally identical types in separate singleton rec
+   * groups are considered the SAME type. This means struct/array types that need
+   * distinct nominal identities (e.g., brand structs for `is` checks) MUST share
+   * a rec block. Function types are structurally typed and can safely be standalone.
+   *
+   * Handles both sub/sub_final-wrapped types and bare types.
+   */
+  #isNominalType(typeBytes: number[]): boolean {
+    let pos = 0;
+    // Skip sub (0x50) or sub final (0x4f) header
+    if (typeBytes[pos] === 0x4f || typeBytes[pos] === 0x50) {
+      pos++;
+      // Skip supertype count (LEB128)
+      while (typeBytes[pos++]! & 0x80) {}
+      // Skip supertype indices
+      // We already consumed the count above; re-read it properly
+      // Actually let's just re-read from after the sub byte
+      pos = 1;
+      let count = 0;
+      let shift = 0;
+      while (true) {
+        const b = typeBytes[pos++];
+        count |= (b & 0x7f) << shift;
+        if ((b & 0x80) === 0) break;
+        shift += 7;
+      }
+      for (let i = 0; i < count; i++) {
+        while (typeBytes[pos++]! & 0x80) {}
+      }
+    }
+
+    const compByte = typeBytes[pos];
+    // 0x5f = struct, 0x5e = array → nominal (need rec block for identity)
+    // 0x60 = func → structural (safe standalone)
+    return compByte === 0x5f || compByte === 0x5e;
+  }
+
+  /**
+   * Find the split point in #types where we can end the rec block and emit
+   * the remaining types standalone.
+   *
+   * Strategy: walk backward from the end of #types, collecting function types.
+   * Stop as soon as we hit a nominal type (struct/array). Everything from
+   * index 0..splitPoint goes in the rec block; splitPoint+1..end is standalone.
+   *
+   * This preserves all original type indices — no rewriting needed anywhere.
+   *
+   * @returns The index of the last type that must be in the rec block, or -1
+   *   if all types can be standalone.
+   */
+  #findRecBlockEnd(): number {
+    for (let i = this.#types.length - 1; i >= 0; i--) {
+      const typeBytes = this.#types[i];
+      if (typeBytes === null) {
+        // Reserved but undefined type — must be in rec block
+        return i;
+      }
+      if (this.#isNominalType(typeBytes)) {
+        return i;
+      }
+    }
+    return -1; // No nominal types → no rec block needed
+  }
+
   public toBytes(): Uint8Array {
     const buffer = new ByteBuffer();
 
@@ -302,14 +370,31 @@ export class WasmModule {
     buffer.push(0x00, 0x61, 0x73, 0x6d);
     buffer.push(0x01, 0x00, 0x00, 0x00);
 
-    // Type Section - pre-rec types first, then rec block for mutually recursive types
+    // Type Section — pre-rec types, then minimal rec block for nominal types,
+    // then standalone function types.
+    //
+    // Struct/array types need nominal identity (they're distinguished by rec
+    // group position), so they must share a rec block. Function types are
+    // structurally typed and can be emitted standalone.
+    //
+    // Because codegen registers struct types before function types, function
+    // types always appear at the end of #types. We find the last nominal
+    // type and split there — everything up to it goes in the rec block,
+    // everything after is standalone. No index rewriting needed.
     const totalTypes = this.#preRecTypes.length + this.#types.length;
     if (totalTypes > 0) {
       const sectionBuffer: number[] = [];
 
-      // Total count: preRecTypes.length individual types + 1 rec group (if #types > 0)
+      const recBlockEnd = this.#findRecBlockEnd();
+      const recBlockSize = recBlockEnd + 1; // Types 0..recBlockEnd
+      const standaloneStart = recBlockEnd + 1;
+      const standaloneCount = this.#types.length - standaloneStart;
+
+      // Count top-level entries in the type section:
+      // preRecTypes (each is one entry) + rec block (1 entry, if non-empty)
+      // + standalone types (each is one entry)
       const typeCount =
-        this.#preRecTypes.length + (this.#types.length > 0 ? 1 : 0);
+        this.#preRecTypes.length + (recBlockSize > 0 ? 1 : 0) + standaloneCount;
       this.#writeUnsignedLEB128(sectionBuffer, typeCount);
 
       // Emit pre-rec types first (plain function types for WASI imports)
@@ -317,13 +402,12 @@ export class WasmModule {
         sectionBuffer.push(...type);
       }
 
-      // Emit rec block containing all other types
-      if (this.#types.length > 0) {
-        // rec opcode
-        sectionBuffer.push(0x4e);
-        // Count of types in the rec group
-        this.#writeUnsignedLEB128(sectionBuffer, this.#types.length);
-        for (let i = 0; i < this.#types.length; i++) {
+      // Emit rec block containing all nominal types (and any func types
+      // interleaved among them)
+      if (recBlockSize > 0) {
+        sectionBuffer.push(0x4e); // rec opcode
+        this.#writeUnsignedLEB128(sectionBuffer, recBlockSize);
+        for (let i = 0; i < recBlockSize; i++) {
           const type = this.#types[i];
           if (type === null) {
             throw new Error(
@@ -333,6 +417,16 @@ export class WasmModule {
           sectionBuffer.push(...type);
         }
       }
+
+      // Emit standalone function types (after the rec block)
+      for (let i = standaloneStart; i < this.#types.length; i++) {
+        const type = this.#types[i];
+        if (type === null) {
+          throw new Error(`Type at index ${i} was reserved but never defined`);
+        }
+        sectionBuffer.push(...type);
+      }
+
       this.#writeSectionToByteBuffer(buffer, SectionId.Type, sectionBuffer);
     }
 

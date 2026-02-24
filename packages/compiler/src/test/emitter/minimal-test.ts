@@ -12,10 +12,15 @@ const funcType = module.addType([], [[ValType.i32]]);
 const funcIndex = module.addFunction(funcType);
 
 // Add code for the function: just return 42
-module.addCode(funcIndex, [], [
-  0x41, 0x2a, // i32.const 42
-  0x0b,       // end
-]);
+module.addCode(
+  funcIndex,
+  [],
+  [
+    0x41,
+    0x2a, // i32.const 42
+    0x0b, // end
+  ],
+);
 
 // Export the function
 module.addExport('main', 0, funcIndex);
@@ -24,4 +29,9 @@ module.addExport('main', 0, funcIndex);
 const bytes = module.toBytes();
 writeFileSync('/tmp/minimal.wasm', bytes);
 console.log('Generated minimal WASM with', bytes.length, 'bytes');
-console.log('First 50 bytes:', Array.from(bytes.slice(0, 50)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+console.log(
+  'First 50 bytes:',
+  Array.from(bytes.slice(0, 50))
+    .map((b) => '0x' + b.toString(16).padStart(2, '0'))
+    .join(' '),
+);
