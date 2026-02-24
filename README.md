@@ -131,6 +131,16 @@ and working with collections. Since final class members are resolved staticlly,
 operator overloading doesn't cause any performance impact for array indexing on
 built-in arrays.
 
+### Records and Tuples
+
+Zena supports immutable records and tuples. Records are collections of named
+values. Tuples are a fixed list of values.
+
+```typescript
+let point = {x: 1.0, y: 2.0};
+let items = [1, 'two', 3];
+```
+
 ### Type definitions
 
 Zena has a growing set of type expressions including primitives, literals,
@@ -195,6 +205,9 @@ let label = match (level) {
 
 ### Pattern Matching
 
+Pattern matching works with the `match()` expression, which checks for
+exhaustiveness:
+
 ```typescript
 class Circle { radius: f32; #new(radius: f32) { this.radius = radius; } }
 class Rect { w: f32; h: f32; #new(w: f32, h: f32) { this.w = w; this.h = h; } }
@@ -205,6 +218,18 @@ let area = (shape: Circle | Rect): f32 => {
     case Rect {w, h}: w * h
   }
 };
+```
+
+And while/let and if/let statements:
+
+```typescript
+if ((let(value, true) = map.get(key))) {
+  // key was found in the map, value is valid
+}
+
+while ((let(value, true) = iterator.next())) {
+  // The iterator had another value
+}
 ```
 
 Patterns support literals, records, classes, guards, `as` bindings, and logical
@@ -229,6 +254,22 @@ This powers zero-allocation iterators:
 interface Iterator<T> {
   next(): (T, true) | (never, false);
 }
+```
+
+### Destructuring
+
+Destructuring is a form of pattern matching that always matches. If the match
+isn't guarenteed, it's a compile error.
+
+You can destructure objects, records, tuples, and unboxed tuples (mult-value
+returns):
+
+```typescript
+let {x, y} = point; // Object desctructuring
+let [_, _, z] = vec; // Tuples
+let (value, found) = map.get(key); // Unboxed tuples - no heap allocation
+let {x, y, z = 0} = point; // Defaults: point can be 2D or 3D
+let {r as red, b as blue} = color; // Renaming
 ```
 
 ### Pipeline Operator
