@@ -76,6 +76,19 @@ directly and efficiently as possible to WASM GC features.
 - **Tiny binaries.** Dead code elimination removes unused functions, classes,
   and even WASM types. Minimal programs compile to as little as 37 bytes.
 
+## Status
+
+Zena is not ready for use!
+
+Zena is very early in it' development and may things are changing, including
+syntax, and defaults for immutability, etc. Many features are partially
+implemented, and there are likely lots of hidden bugs in the features that are
+implemented.
+
+Currently, features are being added rapidly, the standard library is being built
+out, and WASI P2 support is being added, with an immediate goal of porting the 
+compiler to Zena and self-hosting.
+
 ## Feature Highlights
 
 ### Classes, Interfaces, and Mixins
