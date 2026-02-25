@@ -554,10 +554,36 @@ function generateUnaryExpression(
   }
 
   if (expr.operator === '-') {
+    if (expr.argument.type === NodeType.NumberLiteral) {
+      const lit = expr.argument as NumberLiteral;
+      const type = inferType(ctx, expr.argument);
+      if (type.length === 1 && type[0] === ValType.f32) {
+        body.push(Opcode.f32_const);
+        body.push(...WasmModule.encodeF32(-lit.value));
+      } else if (type.length === 1 && type[0] === ValType.f64) {
+        body.push(Opcode.f64_const);
+        body.push(...WasmModule.encodeF64(-lit.value));
+      } else if (type.length === 1 && type[0] === ValType.i64) {
+        body.push(Opcode.i64_const);
+        body.push(...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, -BigInt(lit.raw ?? lit.value))));
+      } else {
+        body.push(Opcode.i32_const);
+        body.push(...WasmModule.encodeSignedLEB128((-Number(lit.raw ?? lit.value)) | 0));
+      }
+      return;
+    }
+
     const type = inferType(ctx, expr.argument);
     if (type.length === 1 && type[0] === ValType.f32) {
       generateExpression(ctx, expr.argument, body);
       body.push(Opcode.f32_neg);
+    } else if (type.length === 1 && type[0] === ValType.f64) {
+      generateExpression(ctx, expr.argument, body);
+      body.push(Opcode.f64_neg);
+    } else if (type.length === 1 && type[0] === ValType.i64) {
+      body.push(Opcode.i64_const, 0);
+      generateExpression(ctx, expr.argument, body);
+      body.push(Opcode.i64_sub);
     } else {
       // Assume i32
       body.push(Opcode.i32_const, 0);
@@ -584,8 +610,6 @@ function generateAsExpression(
   expr: AsExpression,
   body: number[],
 ) {
-  generateExpression(ctx, expr.expression, body);
-
   // Use checker types for semantic operations (lookups, type identity).
   // WASM types are computed lazily, only when needed for opcode emission.
   const sourceCheckerType = expr.expression.inferredType;
@@ -606,6 +630,36 @@ function generateAsExpression(
     throw new Error(`AsExpression missing checker type for target`);
   }
   const targetWasmType = mapCheckerTypeToWasmType(ctx, targetCheckerType);
+
+  // Special case: NumberLiteral cast to i64/u64.
+  // Literals default to i32 in the checker, but values like 9223372036854775807
+  // overflow i32. Instead of generating i32.const + i64.extend_i32_s (which
+  // truncates the value), emit i64.const directly with the full precision.
+  if (
+    targetWasmType.length === 1 &&
+    targetWasmType[0] === ValType.i64
+  ) {
+    // Direct NumberLiteral → i64
+    if (expr.expression.type === NodeType.NumberLiteral) {
+      const lit = expr.expression as NumberLiteral;
+      body.push(Opcode.i64_const);
+      body.push(...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, BigInt(lit.raw ?? lit.value))));
+      return;
+    }
+    // Negated NumberLiteral → i64 (e.g. -9223372036854775808 as i64)
+    if (
+      expr.expression.type === NodeType.UnaryExpression &&
+      (expr.expression as UnaryExpression).operator === '-' &&
+      (expr.expression as UnaryExpression).argument.type === NodeType.NumberLiteral
+    ) {
+      const lit = (expr.expression as UnaryExpression).argument as NumberLiteral;
+      body.push(Opcode.i64_const);
+      body.push(...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, -BigInt(lit.raw ?? lit.value))));
+      return;
+    }
+  }
+
+  generateExpression(ctx, expr.expression, body);
 
   // For the source type, use inferType() instead of expr.expression.inferredType
   // to get the actual WASM storage type. This is important because the checker's
@@ -5004,10 +5058,10 @@ function generateNumberLiteral(
   } else {
     if (isI64) {
       body.push(Opcode.i64_const);
-      body.push(...WasmModule.encodeSignedLEB128(BigInt(expr.value)));
+      body.push(...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, BigInt(expr.raw ?? expr.value))));
     } else {
       body.push(Opcode.i32_const);
-      body.push(...WasmModule.encodeSignedLEB128(expr.value));
+      body.push(...WasmModule.encodeSignedLEB128(Number(expr.raw ?? expr.value) | 0));
     }
   }
 }
