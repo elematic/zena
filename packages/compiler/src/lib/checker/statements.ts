@@ -13,6 +13,7 @@ import {
   type Expression,
   type ForInStatement,
   type ForStatement,
+  type FunctionExpression,
   type Identifier,
   type IfStatement,
   type ImportDeclaration,
@@ -499,7 +500,7 @@ const extractInverseNarrowingFromCondition = (
 // =============================================================================
 
 /**
- * Pre-declares a type (class, mixin, interface) so it can be referenced
+ * Pre-declares a type (class, mixin, interface, type alias) so it can be referenced
  * by other types before its full definition is processed.
  * This enables forward references (e.g., a mixin field referencing a class
  * that uses the mixin).
@@ -515,7 +516,158 @@ export function predeclareType(ctx: CheckerContext, stmt: Statement) {
     case NodeType.InterfaceDeclaration:
       predeclareInterface(ctx, stmt as InterfaceDeclaration);
       break;
+    case NodeType.TypeAliasDeclaration:
+      predeclareTypeAlias(ctx, stmt as TypeAliasDeclaration);
+      break;
+    case NodeType.EnumDeclaration:
+      // Enums are checked early so they're available for function predeclaration
+      checkEnumDeclaration(ctx, stmt as EnumDeclaration);
+      break;
   }
+}
+
+/**
+ * Processes an import declaration early, making imported names available
+ * for subsequent passes (like predeclareFunction).
+ *
+ * This is separate from checkStatement because imports need to be processed
+ * before predeclareFunction, which needs access to imported types for function
+ * signatures.
+ */
+export function processImport(ctx: CheckerContext, stmt: Statement) {
+  if (stmt.type === NodeType.ImportDeclaration) {
+    checkImportDeclaration(ctx, stmt as ImportDeclaration);
+  }
+}
+
+/**
+ * Resolves the target type for type aliases that were predeclared with placeholder targets.
+ * This must be called after imports are processed, so that all referenced types are available.
+ *
+ * @param ctx - The checker context
+ * @param stmt - The statement to check for type alias declarations
+ */
+export function resolveTypeAliases(ctx: CheckerContext, stmt: Statement) {
+  if (stmt.type !== NodeType.TypeAliasDeclaration) return;
+
+  const decl = stmt as TypeAliasDeclaration;
+
+  // Only resolve if this alias was predeclared and needs resolution
+  if (
+    decl.inferredType &&
+    decl.inferredType.kind === TypeKind.TypeAlias &&
+    (decl as any).needsTargetResolution
+  ) {
+    const typeAlias = decl.inferredType as TypeAliasType;
+
+    ctx.enterScope();
+    // Re-create type parameters in scope for target resolution
+    if (typeAlias.typeParameters) {
+      for (const tp of typeAlias.typeParameters) {
+        ctx.declare(tp.name, tp, 'type');
+      }
+    }
+    typeAlias.target = resolveTypeAnnotation(ctx, decl.typeAnnotation);
+    ctx.exitScope();
+    delete (decl as any).needsTargetResolution;
+  }
+}
+
+/**
+ * Pre-declares a function variable so it can be referenced by other functions
+ * before its declaration is fully processed. This enables mutually recursive
+ * functions.
+ *
+ * Only functions with explicit type annotations (all parameters and return type)
+ * can be pre-declared, since we need to know their types without checking the body.
+ *
+ * @param ctx - The checker context
+ * @param stmt - The statement to check for function declarations
+ * @returns true if a function was pre-declared, false otherwise
+ */
+export function predeclareFunction(
+  ctx: CheckerContext,
+  stmt: Statement,
+): boolean {
+  if (stmt.type !== NodeType.VariableDeclaration) {
+    return false;
+  }
+
+  const decl = stmt as VariableDeclaration;
+
+  // Only handle simple identifier patterns (not destructuring)
+  if (decl.pattern.type !== NodeType.Identifier) {
+    return false;
+  }
+
+  // Only handle function expressions as initializers
+  if (!decl.init || decl.init.type !== NodeType.FunctionExpression) {
+    return false;
+  }
+
+  const funcExpr = decl.init as FunctionExpression;
+  const funcName = (decl.pattern as Identifier).name;
+
+  // Check if we already have this name declared (don't overwrite)
+  if (ctx.resolveValueLocal(funcName)) {
+    return false;
+  }
+
+  // We need explicit type annotations on all parameters and return type
+  // to pre-declare the function type
+  if (!funcExpr.returnType) {
+    return false;
+  }
+
+  for (const param of funcExpr.params) {
+    if (!param.typeAnnotation) {
+      return false;
+    }
+  }
+
+  // Enter a temporary scope for type parameters
+  ctx.enterScope();
+
+  // Build the function type from annotations
+  // Use createTypeParameters to properly handle constraints
+  const typeParameters = createTypeParameters(ctx, funcExpr.typeParameters);
+
+  // Now imports have been processed, so all types should be resolvable
+  const paramTypes: Type[] = [];
+  const parameterNames: string[] = [];
+  const optionalParameters: boolean[] = [];
+  const parameterInitializers: (Expression | undefined)[] = [];
+
+  for (const param of funcExpr.params) {
+    const type = resolveTypeAnnotation(ctx, param.typeAnnotation!);
+    paramTypes.push(type);
+    parameterNames.push(param.name.name);
+    optionalParameters.push(param.optional);
+    parameterInitializers.push(param.initializer);
+  }
+
+  const returnType = resolveTypeAnnotation(ctx, funcExpr.returnType);
+
+  // Exit the temporary scope (removes type parameters)
+  ctx.exitScope();
+
+  const funcType: FunctionType = {
+    kind: TypeKind.Function,
+    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+    parameters: paramTypes,
+    parameterNames,
+    returnType,
+    optionalParameters,
+    parameterInitializers,
+  };
+
+  // Pre-declare the function
+  ctx.declare(funcName, funcType, decl.kind, decl);
+
+  // Mark as pre-declared so checkVariableDeclaration knows to update, not error
+  (decl as any).isPredeclared = true;
+
+  return true;
 }
 
 /**
@@ -746,7 +898,8 @@ const predeclareInterface = (
 export function checkStatement(ctx: CheckerContext, stmt: Statement) {
   switch (stmt.type) {
     case NodeType.ImportDeclaration:
-      checkImportDeclaration(ctx, stmt as ImportDeclaration);
+      // Imports are processed in a separate earlier pass (processImport)
+      // to make imported types available for predeclareFunction
       break;
     case NodeType.ExportAllDeclaration:
       checkExportAllDeclaration(ctx, stmt as ExportAllDeclaration);
@@ -759,6 +912,10 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
       break;
     case NodeType.BlockStatement:
       ctx.enterScope();
+      // Pre-declare functions for mutual recursion
+      for (const s of stmt.body) {
+        predeclareFunction(ctx, s);
+      }
       for (const s of stmt.body) {
         checkStatement(ctx, s);
       }
@@ -838,17 +995,22 @@ function resolveParameterType(ctx: CheckerContext, param: Parameter): Type {
   return type;
 }
 
-function checkTypeAliasDeclaration(
-  ctx: CheckerContext,
-  decl: TypeAliasDeclaration,
-) {
+/**
+ * Pre-declares a type alias so it can be referenced by function signatures
+ * during predeclareFunction. Unlike classes, we need to resolve the target
+ * type immediately because functions use the fully resolved type.
+ */
+function predeclareTypeAlias(ctx: CheckerContext, decl: TypeAliasDeclaration) {
   const name = decl.name.name;
 
-  // If the AST node already has an inferred type (from a previous type-check pass),
-  // reuse it to preserve type identity across bundling.
+  // Skip if already declared (e.g., imported or from previous pass)
+  if (ctx.resolveTypeLocal(name)) {
+    return;
+  }
+
+  // If the AST node already has an inferred type, reuse it
   if (decl.inferredType && decl.inferredType.kind === TypeKind.TypeAlias) {
     const existingType = decl.inferredType as TypeAliasType;
-    // Update the name to match the (possibly renamed) declaration
     existingType.name = name;
     ctx.declare(name, existingType, 'type');
     if (decl.exported && ctx.module) {
@@ -856,6 +1018,60 @@ function checkTypeAliasDeclaration(
         type: existingType,
         kind: 'type',
       });
+    }
+    return;
+  }
+
+  // Create type parameters with constraints (constraints reference basic types, not imported)
+  ctx.enterScope();
+  const typeParameters = createTypeParameters(ctx, decl.typeParameters);
+  ctx.exitScope();
+
+  // Create a placeholder type alias with Unknown target.
+  // The actual target will be resolved during the resolveTypeAliases pass
+  // AFTER imports have been processed.
+  const typeAlias: TypeAliasType = {
+    kind: TypeKind.TypeAlias,
+    name,
+    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+    target: Types.Unknown, // Will be resolved after imports
+    isDistinct: decl.isDistinct,
+  };
+
+  ctx.declare(name, typeAlias, 'type');
+  decl.inferredType = typeAlias;
+
+  // Mark as needing resolution so resolveTypeAliases knows to resolve the target
+  (decl as any).needsTargetResolution = true;
+
+  if (decl.exported && ctx.module) {
+    ctx.module!.exports!.set(`type:${name}`, {type: typeAlias, kind: 'type'});
+  }
+}
+
+function checkTypeAliasDeclaration(
+  ctx: CheckerContext,
+  decl: TypeAliasDeclaration,
+) {
+  const name = decl.name.name;
+
+  // If the AST node already has an inferred type (from predeclareTypeAlias
+  // or a previous type-check pass), check if we need to resolve the target
+  if (decl.inferredType && decl.inferredType.kind === TypeKind.TypeAlias) {
+    const typeAlias = decl.inferredType as TypeAliasType;
+
+    // If target resolution was deferred, do it now (after imports are processed)
+    if ((decl as any).needsTargetResolution) {
+      ctx.enterScope();
+      // Re-create type parameters in scope for target resolution
+      if (typeAlias.typeParameters) {
+        for (const tp of typeAlias.typeParameters) {
+          ctx.declare(tp.name, tp, 'type');
+        }
+      }
+      typeAlias.target = resolveTypeAnnotation(ctx, decl.typeAnnotation);
+      ctx.exitScope();
+      delete (decl as any).needsTargetResolution;
     }
     return;
   }
@@ -1621,7 +1837,10 @@ function checkVariableDeclaration(
   decl.inferredType = type;
 
   if (decl.pattern.type === NodeType.Identifier) {
-    ctx.declare(decl.pattern.name, type, decl.kind, decl);
+    // If this function was pre-declared (for mutual recursion), don't re-declare it
+    if (!(decl as any).isPredeclared) {
+      ctx.declare(decl.pattern.name, type, decl.kind, decl);
+    }
 
     if (decl.exported && ctx.module) {
       ctx.module!.exports!.set(`value:${decl.pattern.name}`, {
@@ -3968,6 +4187,11 @@ function createTypeParameters(
 
 function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
   const name = decl.name.name;
+
+  // If this enum is already declared locally, skip (idempotent)
+  if (ctx.resolveTypeLocal(name)) {
+    return;
+  }
 
   // If the AST node already has an inferred type (from a previous type-check pass),
   // reuse it to preserve type identity across bundling.

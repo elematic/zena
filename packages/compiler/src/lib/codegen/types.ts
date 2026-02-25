@@ -153,4 +153,6 @@ export interface LocalInfo {
   // For boxed mutable captures: stores the boxed type and original unboxed type
   isBoxed?: boolean;
   unboxedType?: number[];
+  // For closure cells (mutual recursion): the local holds a cell struct, not a Box<T>
+  isCelled?: boolean;
 }

@@ -43,10 +43,14 @@ function getPrimitiveBase(type: Type): string | null {
     // TODO: Handle numeric literal types when implemented
   }
   if (type.kind === TypeKind.TypeAlias) {
-    return getPrimitiveBase((type as TypeAliasType).target);
+    const target = (type as TypeAliasType).target;
+    if (!target) return null; // Target not yet resolved
+    return getPrimitiveBase(target);
   }
   if (type.kind === TypeKind.Class && (type as ClassType).isExtension) {
-    return getPrimitiveBase((type as ClassType).onType!);
+    const onType = (type as ClassType).onType;
+    if (!onType) return null; // onType not yet resolved
+    return getPrimitiveBase(onType);
   }
   return null;
 }
@@ -1011,6 +1015,53 @@ export function instantiateGenericClass(
   // This ensures identical generic instantiations share the same object
   const cached = ctx.getInternedClass(genericClass, typeArguments);
   if (cached) {
+    // Update cached class if the source class has been modified since caching.
+    // This can happen when type aliases are resolved before classes are fully checked.
+    const typeMap = new Map<string, Type>();
+    genericClass.typeParameters!.forEach((param, index) => {
+      typeMap.set(param.name, typeArguments[index]);
+    });
+    const substitute = (type: Type) => substituteType(type, typeMap, ctx);
+
+    // Update constructorType if source now has one
+    if (!cached.constructorType && genericClass.constructorType) {
+      cached.constructorType = substituteFunctionType(
+        genericClass.constructorType,
+        typeMap,
+        ctx,
+      );
+    }
+
+    // Update methods if source has more than cached
+    if (genericClass.methods.size > cached.methods.size) {
+      for (const [name, fn] of genericClass.methods) {
+        if (!cached.methods.has(name)) {
+          cached.methods.set(name, substituteFunctionType(fn, typeMap, ctx));
+        }
+      }
+    }
+
+    // Update fields if source has more than cached
+    if (genericClass.fields.size > cached.fields.size) {
+      for (const [name, type] of genericClass.fields) {
+        if (!cached.fields.has(name)) {
+          cached.fields.set(name, substitute(type));
+        }
+      }
+    }
+
+    // Update implements if source has more than cached
+    if (genericClass.implements.length > cached.implements.length) {
+      cached.implements = genericClass.implements.map(
+        (impl) => substitute(impl) as InterfaceType,
+      );
+    }
+
+    // Update onType for extension classes if source now has it
+    if (!cached.onType && genericClass.onType) {
+      cached.onType = substitute(genericClass.onType);
+    }
+
     return cached;
   }
 

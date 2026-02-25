@@ -71,6 +71,63 @@ Understanding these terms is crucial for working on the compiler:
   - `isInterfaceAssignableTo(sub, sup)`: Checks if one interface is assignable to another, handling generic interface bases.
   - `isPrimitive(type)`: Checks if a type is a primitive numeric or boolean type.
 
+#### Checker Pass Architecture
+
+The type checker uses a multi-pass architecture to support forward references. Each module is processed in five sequential passes:
+
+| Pass | Function             | Purpose                                                                                           |
+| ---- | -------------------- | ------------------------------------------------------------------------------------------------- |
+| 1    | `predeclareType`     | Declare type names (classes, mixins, interfaces, type aliases, enums) with placeholder structures |
+| 2    | `processImport`      | Process imports, making external types available                                                  |
+| 3    | `resolveTypeAliases` | Resolve type alias targets (deferred from pass 1 because they may reference imports)              |
+| 4    | `predeclareFunction` | Pre-declare functions that have explicit type annotations                                         |
+| 5    | `checkStatement`     | Full semantic analysis of all statements                                                          |
+
+**Why multiple passes?** Consider this code:
+
+```zena
+let getStatus = (s: Status): i32 => s as i32;  // References Status before it's declared
+enum Status { Ok = 200, NotFound = 404 }
+```
+
+Without pre-declaration, the checker would fail on `Status` in the function signature. Pass 1 declares the enum name first, making it available for pass 4's function signature resolution.
+
+#### Forward References
+
+The multi-pass architecture enables several types of forward references:
+
+1. **Type forward references**: Classes, interfaces, mixins, enums, and type aliases are all declared in pass 1, so any type can reference any other type regardless of declaration order.
+
+2. **Function forward references**: Functions with explicit type annotations are pre-declared in pass 4, enabling them to reference each other. This allows:
+
+   ```zena
+   let isEven = (n: i32): boolean => n == 0 || isOdd(n - 1);
+   let isOdd = (n: i32): boolean => n != 0 && isEven(n - 1);
+   ```
+
+3. **Import-dependent types**: Type alias targets are resolved in pass 3 (after imports in pass 2), so type aliases can reference imported types:
+   ```zena
+   import {TemplateStringsArray} from 'zena:template-strings-array';
+   type TemplateTag<T> = (strings: TemplateStringsArray) => T;
+   ```
+
+#### Mutual Recursion Support
+
+For mutually recursive functions at the **module level**, the checker's pass 4 pre-declares function types, making forward references work automatically.
+
+For mutually recursive functions in **block scope** (inside function bodies), the code generator detects mutual recursion via capture analysis and wraps functions in "cells" (mutable wrappers). This enables runtime forward references:
+
+```zena
+let process = () => {
+  // These functions are in a block scope and reference each other
+  let isEven = (n: i32): boolean => n == 0 || isOdd(n - 1);
+  let isOdd = (n: i32): boolean => n != 0 && isEven(n - 1);
+  return isEven(10);
+};
+```
+
+The codegen creates a cell struct `{field0: (ref null $closureType)}` for each mutually recursive function, initializes them to null, then fills them in after all closures are created. When a function captures another, it captures the cell (not the closure directly), so later updates are visible.
+
 ### 5. Code Generator (`packages/compiler/src/lib/codegen/index.ts`)
 
 - **Input**: AST (type-checked).

@@ -4,6 +4,7 @@ import {
   type BooleanLiteral,
   type ForInStatement,
   type ForStatement,
+  type FunctionExpression,
   type Identifier,
   type IfStatement,
   type LetPatternCondition,
@@ -45,6 +46,7 @@ import {
   resolveFixedArrayClass,
   ensureClassInstantiated,
 } from './expressions.js';
+import {analyzeCaptures} from './captures.js';
 
 export function generateStatement(
   ctx: CodegenContext,
@@ -75,6 +77,102 @@ export function generateBlockStatement(
   body: number[],
 ) {
   ctx.pushScope();
+
+  // First pass: detect which function declarations need cells for mutual recursion.
+  // A function needs a cell if it's referenced by another function declared in the same block
+  // BEFORE its own declaration. We use cells to allow forward references.
+  const functionDecls = new Map<
+    string,
+    {decl: VariableDeclaration; funcExpr: FunctionExpression}
+  >();
+  const needsCell = new Set<string>();
+
+  // Collect all function declarations in this block
+  for (const stmt of block.body) {
+    if (stmt.type === NodeType.VariableDeclaration) {
+      const decl = stmt as VariableDeclaration;
+      if (
+        decl.pattern.type === NodeType.Identifier &&
+        decl.init?.type === NodeType.FunctionExpression
+      ) {
+        functionDecls.set(decl.pattern.name, {
+          decl,
+          funcExpr: decl.init as FunctionExpression,
+        });
+      }
+    }
+  }
+
+  // Check which functions reference other functions declared later in the block
+  // (this indicates potential mutual recursion that needs cells)
+  if (functionDecls.size >= 2) {
+    const declOrder = Array.from(functionDecls.keys());
+    for (const [name, {funcExpr}] of functionDecls) {
+      const {captures} = analyzeCaptures(funcExpr);
+      const myIndex = declOrder.indexOf(name);
+      for (const capturedName of captures) {
+        if (functionDecls.has(capturedName)) {
+          const capturedIndex = declOrder.indexOf(capturedName);
+          // If we capture a function declared after us, both need cells
+          if (capturedIndex > myIndex) {
+            needsCell.add(name);
+            needsCell.add(capturedName);
+          }
+        }
+      }
+    }
+  }
+
+  // Second pass: pre-allocate cells only for functions that need them
+  for (const name of needsCell) {
+    const {decl, funcExpr} = functionDecls.get(name)!;
+    if (
+      funcExpr.inferredType &&
+      funcExpr.inferredType.kind === TypeKind.Function
+    ) {
+      const closureWasmType = mapCheckerTypeToWasmType(
+        ctx,
+        funcExpr.inferredType,
+      );
+
+      // Get the closure struct type index from the WASM type
+      // closureWasmType is [ValType.ref_null, ...encodedIndex]
+      const closureStructIndex = decodeTypeIndex(closureWasmType);
+
+      // Create a cell type for this closure type
+      const cellTypeIndex = ctx.getClosureCellTypeIndex(closureStructIndex);
+      const cellWasmType = [
+        ValType.ref,
+        ...WasmModule.encodeSignedLEB128(cellTypeIndex),
+      ];
+
+      // Create the cell (initialized with null)
+      body.push(
+        Opcode.ref_null,
+        ...WasmModule.encodeSignedLEB128(closureStructIndex),
+      );
+      body.push(
+        0xfb,
+        GcOpcode.struct_new,
+        ...WasmModule.encodeSignedLEB128(cellTypeIndex),
+      );
+
+      // Declare local for the cell, marked as celled with the closure type as unboxedType
+      const localIndex = ctx.declareLocal(
+        name, // Use the name from the Map key instead
+        cellWasmType,
+        decl,
+        true, // isBoxed (for capture analysis)
+        closureWasmType, // unboxedType - the actual closure type
+        true, // isCelled - distinguishes from Box<T> boxing
+      );
+
+      // Store the cell
+      body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(localIndex));
+    }
+  }
+
+  // Third pass: generate code for all statements
   for (const stmt of block.body) {
     generateFunctionStatement(ctx, stmt, body);
   }
@@ -1061,9 +1159,40 @@ export function generateLocalVariableDeclaration(
   }
 
   if (decl.pattern.type === NodeType.Identifier) {
-    const index = ctx.declareLocal(decl.pattern.name, type, decl);
-    body.push(Opcode.local_set);
-    body.push(...WasmModule.encodeSignedLEB128(index));
+    // Check if local was pre-declared (for mutual recursion support)
+    const existingLocal = ctx.getLocal(decl.pattern.name);
+    if (existingLocal?.isCelled) {
+      // Pre-declared function local is stored in a cell - store into the cell
+      // Stack has: [closureValue]
+      // Need struct.set which takes [cell, value]
+      // existingLocal.type is [ValType.ref, ...encodedCellTypeIndex]
+      const cellTypeIndex = decodeTypeIndex(existingLocal.type);
+      const closureType = existingLocal.unboxedType!;
+
+      // Store closure value in temp
+      const tempLocal = ctx.declareLocal('$$cell_temp', closureType);
+      body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempLocal));
+      // Stack: []
+
+      // Get cell, then value, then struct.set
+      body.push(
+        Opcode.local_get,
+        ...WasmModule.encodeSignedLEB128(existingLocal.index),
+      );
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
+      body.push(
+        0xfb,
+        GcOpcode.struct_set,
+        ...WasmModule.encodeSignedLEB128(cellTypeIndex),
+        0,
+      );
+    } else {
+      // Normal variable declaration - always create a new local
+      // (The existingLocal check was only for isCelled, which is handled above)
+      const index = ctx.declareLocal(decl.pattern.name, type, decl);
+      body.push(Opcode.local_set);
+      body.push(...WasmModule.encodeSignedLEB128(index));
+    }
   } else {
     generatePatternBinding(ctx, decl.pattern, type, body);
   }

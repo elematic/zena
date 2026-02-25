@@ -255,6 +255,7 @@ export class CodegenContext {
   public tupleTypes = new Map<string, number>(); // canonicalKey -> typeIndex
   public closureTypes = new Map<string, number>(); // signature -> structTypeIndex
   public closureStructs = new Map<number, {funcTypeIndex: number}>(); // structTypeIndex -> info
+  public closureCellTypes = new Map<number, number>(); // closureStructIndex -> cellStructIndex
   public enums = new Map<number, {members: Map<string, number>}>(); // structTypeIndex -> info
   // Cache for function-to-closure wrappers: "funcIndex:closureTypeIndex" -> wrapperFuncIndex
   public functionWrapperCache = new Map<string, number>();
@@ -1023,6 +1024,7 @@ export class CodegenContext {
     declaration?: Node,
     isBoxed?: boolean,
     unboxedType?: number[],
+    isCelled?: boolean,
   ): number {
     const index = this.#nextLocalIndex++;
     this.scopes[this.scopes.length - 1].set(name, {
@@ -1030,6 +1032,7 @@ export class CodegenContext {
       type,
       isBoxed,
       unboxedType,
+      isCelled,
     });
     this.#extraLocals.push(type);
     // Register by declaration for identity-based lookup (new name resolution)
@@ -1565,6 +1568,32 @@ export class CodegenContext {
     this.closureTypes.set(key, index);
     this.closureStructs.set(index, {funcTypeIndex: implTypeIndex});
     return index;
+  }
+
+  /**
+   * Get or create a "cell" struct type for a closure type.
+   * A cell is a mutable wrapper that allows forward references in mutual recursion.
+   * Structure: (struct (field $value (ref null $closureType) mutable))
+   */
+  public getClosureCellTypeIndex(closureStructIndex: number): number {
+    if (this.closureCellTypes.has(closureStructIndex)) {
+      return this.closureCellTypes.get(closureStructIndex)!;
+    }
+
+    // Create a struct with one mutable nullable ref field
+    const cellFields = [
+      {
+        type: [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(closureStructIndex),
+        ],
+        mutable: true,
+      },
+    ];
+
+    const cellIndex = this.module.addStructType(cellFields);
+    this.closureCellTypes.set(closureStructIndex, cellIndex);
+    return cellIndex;
   }
 
   public isFixedArrayType(type: TypeAnnotation): boolean {

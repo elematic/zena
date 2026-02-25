@@ -472,6 +472,20 @@ export class CheckerContext {
     return undefined;
   }
 
+  /**
+   * Resolve a value name, checking only the current scope (innermost).
+   * Use this to check if a value is already declared in the current scope
+   * without looking at parent scopes.
+   */
+  resolveValueLocal(name: string): Type | undefined {
+    const key = `value:${name}`;
+    const currentScope = this.scopes[this.scopes.length - 1];
+    if (currentScope.has(key)) {
+      return currentScope.get(key)!.type;
+    }
+    return undefined;
+  }
+
   resolveType(name: string): Type | undefined {
     const key = `type:${name}`;
     for (let i = this.scopes.length - 1; i >= 0; i--) {

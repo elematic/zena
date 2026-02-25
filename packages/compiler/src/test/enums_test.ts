@@ -71,4 +71,25 @@ suite('Enums', () => {
     `);
     assert.strictEqual(result, 1);
   });
+
+  test('Function referencing enum declared later', async () => {
+    // This tests that enums are pre-declared, allowing forward references
+    const result = await compileAndRun(`
+      // Function declared BEFORE the enum
+      let getStatusCode = (s: Status): i32 => {
+        return s as i32;
+      };
+
+      // Enum declared AFTER the function
+      enum Status {
+        Ok = 200,
+        NotFound = 404
+      }
+
+      export let main = () => {
+        return getStatusCode(Status.NotFound);
+      };
+    `);
+    assert.strictEqual(result, 404);
+  });
 });

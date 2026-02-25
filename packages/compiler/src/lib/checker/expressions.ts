@@ -180,7 +180,7 @@ import {
   validateType,
   validateNoUnboxedTuple,
 } from './types.js';
-import {checkStatement} from './statements.js';
+import {checkStatement, predeclareFunction} from './statements.js';
 
 /**
  * Resolves a member (field or method) type from a class, handling generic type substitution.
@@ -469,6 +469,11 @@ function checkBlockExpressionType(
   block: BlockStatement,
 ): Type {
   ctx.enterScope();
+
+  // Pre-declare functions for mutual recursion
+  for (const stmt of block.body) {
+    predeclareFunction(ctx, stmt);
+  }
 
   // Check all statements in the block
   for (let i = 0; i < block.body.length - 1; i++) {

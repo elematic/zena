@@ -1,7 +1,13 @@
 import {type Module} from '../ast.js';
 import {type Diagnostic} from '../diagnostics.js';
 import {CheckerContext} from './context.js';
-import {checkStatement, predeclareType} from './statements.js';
+import {
+  checkStatement,
+  predeclareType,
+  predeclareFunction,
+  processImport,
+  resolveTypeAliases,
+} from './statements.js';
 import {
   TypeKind,
   type TypeParameterType,
@@ -107,7 +113,23 @@ export class TypeChecker {
       predeclareType(ctx, stmt);
     }
 
-    // Second pass: fully check all statements
+    // Second pass: process imports so types are available for function signatures
+    for (const stmt of ctx.module!.body) {
+      processImport(ctx, stmt);
+    }
+
+    // Third pass: resolve type alias targets (requires imports to be available)
+    for (const stmt of ctx.module!.body) {
+      resolveTypeAliases(ctx, stmt);
+    }
+
+    // Fourth pass: pre-declare all functions with explicit type annotations
+    // This enables mutually recursive functions
+    for (const stmt of ctx.module!.body) {
+      predeclareFunction(ctx, stmt);
+    }
+
+    // Fifth pass: fully check all statements
     for (const stmt of ctx.module!.body) {
       checkStatement(ctx, stmt);
     }

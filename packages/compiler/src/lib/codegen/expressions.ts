@@ -1089,6 +1089,11 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
     const ident = expr as Identifier;
     const local = ctx.getLocal(ident.name);
     if (local) {
+      // For celled locals (mutual recursion), the actual value type is unboxedType
+      // because generateFromBinding reads from the cell
+      if (local.isCelled && local.unboxedType) {
+        return local.unboxedType;
+      }
       return local.type;
     }
     const global = ctx.getGlobal(ident.name);
@@ -5117,8 +5122,17 @@ function generateFromBinding(
         body.push(Opcode.local_get);
         body.push(...WasmModule.encodeSignedLEB128(local.index));
 
-        // If this is a boxed mutable capture, unbox it
-        if (local.isBoxed && local.unboxedType) {
+        // If this is a celled closure (for mutual recursion), read from the cell
+        if (local.isCelled && local.unboxedType) {
+          // Cell is a struct with one field (index 0) containing the closure
+          // local.type is [ValType.ref, ...encodedCellTypeIndex]
+          const cellTypeIndex = decodeTypeIndex(local.type);
+          body.push(0xfb, GcOpcode.struct_get);
+          body.push(...WasmModule.encodeSignedLEB128(cellTypeIndex));
+          body.push(0); // field index 0
+        }
+        // If this is a boxed mutable capture (Box<T>), unbox it
+        else if (local.isBoxed && local.unboxedType) {
           const boxClass = getBoxClassInfo(
             ctx,
             wasmTypeToCheckerType(local.unboxedType),
@@ -7520,6 +7534,7 @@ function generateFunctionExpression(
     mutable: boolean;
     boxedType?: number[];
     unboxedType?: number[];
+    isCelled?: boolean; // For celled captures (mutual recursion)
   }[] = [];
 
   for (const name of Array.from(captures).sort()) {
@@ -7539,6 +7554,15 @@ function generateFunctionExpression(
           mutable: true,
           boxedType: local.type,
           unboxedType: local.unboxedType, // Preserve the primitive type
+        });
+      } else if (local.isCelled) {
+        // Celled captures (for mutual recursion): capture the cell, read on use
+        captureList.push({
+          name,
+          type: local.type, // The cell type
+          mutable: false,
+          isCelled: true,
+          unboxedType: local.unboxedType, // The closure type inside the cell
         });
       } else {
         // Immutable captures are passed by value
@@ -7646,6 +7670,27 @@ function generateFunctionExpression(
             ...WasmModule.encodeSignedLEB128(i),
           );
           funcBody.push(Opcode.local_set, localIndex);
+        } else if (c.isCelled) {
+          // For celled captures (mutual recursion), store the cell and mark as celled
+          // The cell will be read from when the variable is used
+          ctx.declareLocal(
+            c.name,
+            c.type, // Cell type
+            undefined,
+            false, // not isBoxed (that's for mutable capture boxing)
+            c.unboxedType, // The closure type inside the cell
+            true, // isCelled
+          );
+
+          funcBody.push(Opcode.local_get, typedCtxLocal);
+          funcBody.push(
+            0xfb,
+            GcOpcode.struct_get,
+            ...WasmModule.encodeSignedLEB128(contextStructTypeIndex),
+            ...WasmModule.encodeSignedLEB128(i),
+          );
+          const local = ctx.getLocal(c.name)!;
+          funcBody.push(Opcode.local_set, local.index);
         } else {
           // For immutable captures, extract the value directly
           const localIndex = ctx.declareLocal(c.name, c.type);
