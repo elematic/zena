@@ -10,6 +10,7 @@ import {
   type CallExpression,
   type CatchClause,
   type ClassPattern,
+  type Declaration,
   type EnumDeclaration,
   type Expression,
   type FunctionExpression,
@@ -3435,16 +3436,67 @@ function checkTemplateLiteral(
   ctx: CheckerContext,
   expr: TemplateLiteral,
 ): Type {
-  // Check all embedded expressions
+  // Check all embedded expressions and resolve any needed conversion functions
+  const resolvedConversions: Declaration[] = [];
+
   for (const subExpr of expr.expressions) {
-    checkExpression(ctx, subExpr);
-    // Note: In the future we might want to verify expressions are convertible to string
-    // For now, we just type-check them.
+    const exprType = checkExpression(ctx, subExpr);
+
+    // Resolve conversion function for primitive types
+    const conversionName = getConversionFunctionName(exprType);
+    if (conversionName) {
+      const info = ctx.resolveValueInfo(conversionName);
+      if (
+        info?.declaration &&
+        !resolvedConversions.includes(info.declaration)
+      ) {
+        resolvedConversions.push(info.declaration);
+      }
+    }
+  }
+
+  // Store resolved conversions on the AST for DCE
+  if (resolvedConversions.length > 0) {
+    expr.resolvedConversions = resolvedConversions;
   }
 
   // The result of an untagged template literal is always a String
   const stringType = ctx.getWellKnownType(Types.String.name);
   return stringType || Types.String;
+}
+
+/**
+ * Get the name of the conversion function for a type, if it needs one.
+ */
+function getConversionFunctionName(type: Type): string | null {
+  if (type.kind === TypeKind.Number) {
+    const numType = type as NumberType;
+    switch (numType.name) {
+      case 'i32':
+        return 'i32ToString';
+      case 'u32':
+        return 'u32ToString';
+      case 'i64':
+        return 'i64ToString';
+      case 'u64':
+        return 'u64ToString';
+      case 'f32':
+        return 'f32ToString';
+      case 'f64':
+        return 'f64ToString';
+    }
+  } else if (type.kind === TypeKind.Boolean) {
+    return 'booleanToString';
+  } else if (type.kind === TypeKind.Literal) {
+    const literalType = type as LiteralType;
+    if (typeof literalType.value === 'boolean') {
+      return 'booleanToString';
+    } else if (typeof literalType.value === 'number') {
+      // Numeric literal defaults to i32
+      return 'i32ToString';
+    }
+  }
+  return null;
 }
 
 /**

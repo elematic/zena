@@ -61,6 +61,9 @@ function loadStdlib(target: 'host' | 'wasi' = 'host'): Map<string, string> {
     'array-iterator',
     // Console interface is shared between host and wasi implementations
     'console-interface',
+    // String conversion functions (needed by prelude)
+    'math',
+    'string-convert',
     // Load appropriate console implementation based on target
     target === 'wasi' ? 'console-wasi' : 'console-host',
   ];

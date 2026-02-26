@@ -10,4 +10,5 @@ import { Array } from 'zena:growable-array';
 import { console } from 'zena:console';
 import { Map } from 'zena:map';
 import { Box } from 'zena:box';
+import { i32ToString, u32ToString, i64ToString, u64ToString, boolToString, f32ToString, f64ToString } from 'zena:string-convert';
 `;

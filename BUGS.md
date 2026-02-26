@@ -16,6 +16,18 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### No syntax for constant byte arrays / data segments
+
+- **Found**: 2026-02-25
+- **Severity**: low
+- **Workaround**: Use `String.copyBytesTo()` to copy from a string literal, or call `__byte_array_set` for each byte
+- **Details**: When you need a constant byte array (e.g., for the string "-2147483648" in number conversion), there's no clean way to express it. Options to consider:
+  1. Byte array literals: `let bytes: ByteArray = [45, 57, 50, ...];`
+  2. Compile-time string-to-bytes: `@bytes("-9223372036854775808")`
+  3. Named data segments with `data` keyword
+
+  Currently we work around this by using `String.copyBytesTo()` which works but allocates a String object unnecessarily.
+
 ### Self-referential single-parameter generic class causes recursive type substitution
 
 - **Found**: 2026-02-16

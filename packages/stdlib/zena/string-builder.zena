@@ -1,7 +1,7 @@
 
 import { String, Encoding } from 'zena:string';
 import { Array } from 'zena:growable-array';
-import { div, I32_MIN, I64_MIN } from 'zena:math';
+import { writeI32, writeU32, writeI64, writeU64 } from 'zena:string-convert';
 
 /**
  * A mutable sequence of characters for efficient string construction.
@@ -112,6 +112,20 @@ export final class StringBuilder {
   }
 
   /**
+   * Appends bytes from a ByteArray range.
+   */
+  #appendBytesFrom(source: ByteArray, start: i32, end: i32): StringBuilder {
+    var i = start;
+    while (i < end) {
+      this.#prepareWrite();
+      __byte_array_set(this.#currentChunk, this.#currentPos, __byte_array_get(source, i));
+      this.#currentPos = this.#currentPos + 1;
+      i = i + 1;
+    }
+    return this;
+  }
+
+  /**
    * Appends a single byte.
    */
   appendByte(b: i32): StringBuilder {
@@ -123,125 +137,42 @@ export final class StringBuilder {
 
   /**
    * Appends a signed 32-bit integer as decimal.
+   * Uses shared conversion from zena:string-convert.
    */
   appendI32(n: i32): StringBuilder {
-    if (n == 0) {
-      return this.appendByte(48);
-    }
-    var value = n;
-    // Handle negative
-    if (value < 0) {
-      this.appendByte(45);
-      // Special case: MIN_VALUE can't be negated
-      if (value == I32_MIN) {
-        return this.append("2147483648");
-      }
-      value = 0 - value;
-    }
-    // Extract digits in reverse order
-    let digits = __byte_array_new(10);
-    var len = 0;
-    while (value > 0) {
-      __byte_array_set(digits, len, 48 + (value % 10));
-      value = div(value, 10);
-      len = len + 1;
-    }
-    // Write digits in correct order
-    while (len > 0) {
-      len = len - 1;
-      this.appendByte(__byte_array_get(digits, len));
-    }
-    return this;
+    let buffer = __byte_array_new(12);
+    let (start, end) = writeI32(n, buffer, 12);
+    return this.#appendBytesFrom(buffer, start, end);
   }
 
   /**
    * Appends an unsigned 32-bit integer as decimal.
+   * Uses shared conversion from zena:string-convert.
    */
   appendU32(n: u32): StringBuilder {
-    let zero: u32 = 0 as u32;
-    let ten: u32 = 10 as u32;
-    let fortyEight: u32 = 48 as u32;
-    
-    if (n == zero) {
-      return this.appendByte(48);
-    }
-    
-    var value = n;
-    let digits = __byte_array_new(10);
-    var len = 0;
-    while (value > zero) {
-      __byte_array_set(digits, len, (fortyEight + (value % ten)) as i32);
-      value = div(value, 10 as u32);
-      len = len + 1;
-    }
-    while (len > 0) {
-      len = len - 1;
-      this.appendByte(__byte_array_get(digits, len));
-    }
-    return this;
+    let buffer = __byte_array_new(11);
+    let (start, end) = writeU32(n, buffer, 11);
+    return this.#appendBytesFrom(buffer, start, end);
   }
 
   /**
    * Appends a signed 64-bit integer as decimal.
+   * Uses shared conversion from zena:string-convert.
    */
   appendI64(n: i64): StringBuilder {
-    let zero: i64 = 0 as i64;
-    let ten: i64 = 10 as i64;
-    let fortyEight: i64 = 48 as i64;
-    
-    if (n == zero) {
-      return this.appendByte(48);
-    }
-    
-    var value = n;
-    if (value < zero) {
-      this.appendByte(45);
-      // Special case: MIN_VALUE can't be negated
-      if (value == I64_MIN) {
-        return this.append("9223372036854775808");
-      }
-      value = zero - value;
-    }
-    
-    let digits = __byte_array_new(20);
-    var len = 0;
-    while (value > zero) {
-      __byte_array_set(digits, len, (fortyEight + (value % ten)) as i32);
-      value = div(value, 10 as i64);
-      len = len + 1;
-    }
-    while (len > 0) {
-      len = len - 1;
-      this.appendByte(__byte_array_get(digits, len));
-    }
-    return this;
+    let buffer = __byte_array_new(21);
+    let (start, end) = writeI64(n, buffer, 21);
+    return this.#appendBytesFrom(buffer, start, end);
   }
 
   /**
    * Appends an unsigned 64-bit integer as decimal.
+   * Uses shared conversion from zena:string-convert.
    */
   appendU64(n: u64): StringBuilder {
-    let zero: u64 = 0 as u64;
-    let ten: u64 = 10 as u64;
-    let fortyEight: u64 = 48 as u64;
-    
-    if (n == zero) {
-      return this.appendByte(48);
-    }
-    
-    var value = n;
-    let digits = __byte_array_new(20);
-    var len = 0;
-    while (value > zero) {
-      __byte_array_set(digits, len, (fortyEight + (value % ten)) as i32);
-      value = div(value, 10 as u64);
-      len = len + 1;
-    }
-    while (len > 0) {
-      len = len - 1;
-      this.appendByte(__byte_array_get(digits, len));
-    }
-    return this;
+    let buffer = __byte_array_new(21);
+    let (start, end) = writeU64(n, buffer, 21);
+    return this.#appendBytesFrom(buffer, start, end);
   }
 
   /**

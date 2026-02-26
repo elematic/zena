@@ -565,10 +565,16 @@ function generateUnaryExpression(
         body.push(...WasmModule.encodeF64(-lit.value));
       } else if (type.length === 1 && type[0] === ValType.i64) {
         body.push(Opcode.i64_const);
-        body.push(...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, -BigInt(lit.raw ?? lit.value))));
+        body.push(
+          ...WasmModule.encodeSignedLEB128(
+            BigInt.asIntN(64, -BigInt(lit.raw ?? lit.value)),
+          ),
+        );
       } else {
         body.push(Opcode.i32_const);
-        body.push(...WasmModule.encodeSignedLEB128((-Number(lit.raw ?? lit.value)) | 0));
+        body.push(
+          ...WasmModule.encodeSignedLEB128(-Number(lit.raw ?? lit.value) | 0),
+        );
       }
       return;
     }
@@ -635,26 +641,33 @@ function generateAsExpression(
   // Literals default to i32 in the checker, but values like 9223372036854775807
   // overflow i32. Instead of generating i32.const + i64.extend_i32_s (which
   // truncates the value), emit i64.const directly with the full precision.
-  if (
-    targetWasmType.length === 1 &&
-    targetWasmType[0] === ValType.i64
-  ) {
+  if (targetWasmType.length === 1 && targetWasmType[0] === ValType.i64) {
     // Direct NumberLiteral → i64
     if (expr.expression.type === NodeType.NumberLiteral) {
       const lit = expr.expression as NumberLiteral;
       body.push(Opcode.i64_const);
-      body.push(...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, BigInt(lit.raw ?? lit.value))));
+      body.push(
+        ...WasmModule.encodeSignedLEB128(
+          BigInt.asIntN(64, BigInt(lit.raw ?? lit.value)),
+        ),
+      );
       return;
     }
     // Negated NumberLiteral → i64 (e.g. -9223372036854775808 as i64)
     if (
       expr.expression.type === NodeType.UnaryExpression &&
       (expr.expression as UnaryExpression).operator === '-' &&
-      (expr.expression as UnaryExpression).argument.type === NodeType.NumberLiteral
+      (expr.expression as UnaryExpression).argument.type ===
+        NodeType.NumberLiteral
     ) {
-      const lit = (expr.expression as UnaryExpression).argument as NumberLiteral;
+      const lit = (expr.expression as UnaryExpression)
+        .argument as NumberLiteral;
       body.push(Opcode.i64_const);
-      body.push(...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, -BigInt(lit.raw ?? lit.value))));
+      body.push(
+        ...WasmModule.encodeSignedLEB128(
+          BigInt.asIntN(64, -BigInt(lit.raw ?? lit.value)),
+        ),
+      );
       return;
     }
   }
@@ -5063,10 +5076,16 @@ function generateNumberLiteral(
   } else {
     if (isI64) {
       body.push(Opcode.i64_const);
-      body.push(...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, BigInt(expr.raw ?? expr.value))));
+      body.push(
+        ...WasmModule.encodeSignedLEB128(
+          BigInt.asIntN(64, BigInt(expr.raw ?? expr.value)),
+        ),
+      );
     } else {
       body.push(Opcode.i32_const);
-      body.push(...WasmModule.encodeSignedLEB128(Number(expr.raw ?? expr.value) | 0));
+      body.push(
+        ...WasmModule.encodeSignedLEB128(Number(expr.raw ?? expr.value) | 0),
+      );
     }
   }
 }
@@ -6788,6 +6807,200 @@ function getStringEqIndex(ctx: CodegenContext): number {
   }
   ctx.stringEqFunctionIndex = eqMethod.index;
   return eqMethod.index;
+}
+
+/**
+ * Helper functions for getting primitive-to-string conversion function indices.
+ * These are used by template literals to convert primitives to strings.
+ */
+function getI32ToStringIndex(ctx: CodegenContext): number {
+  if (ctx.i32ToStringFunctionIndex !== -1) {
+    return ctx.i32ToStringFunctionIndex;
+  }
+  const decl = ctx.wellKnownFunctions.i32ToString;
+  if (!decl) {
+    throw new Error(
+      'i32ToString not available - zena:string-convert not loaded',
+    );
+  }
+  const funcIndex = ctx.getFunctionIndexByDecl(decl);
+  if (funcIndex === undefined) {
+    throw new Error('i32ToString function index not found');
+  }
+  ctx.i32ToStringFunctionIndex = funcIndex;
+  return funcIndex;
+}
+
+function getU32ToStringIndex(ctx: CodegenContext): number {
+  if (ctx.u32ToStringFunctionIndex !== -1) {
+    return ctx.u32ToStringFunctionIndex;
+  }
+  const decl = ctx.wellKnownFunctions.u32ToString;
+  if (!decl) {
+    throw new Error(
+      'u32ToString not available - zena:string-convert not loaded',
+    );
+  }
+  const funcIndex = ctx.getFunctionIndexByDecl(decl);
+  if (funcIndex === undefined) {
+    throw new Error('u32ToString function index not found');
+  }
+  ctx.u32ToStringFunctionIndex = funcIndex;
+  return funcIndex;
+}
+
+function getI64ToStringIndex(ctx: CodegenContext): number {
+  if (ctx.i64ToStringFunctionIndex !== -1) {
+    return ctx.i64ToStringFunctionIndex;
+  }
+  const decl = ctx.wellKnownFunctions.i64ToString;
+  if (!decl) {
+    throw new Error(
+      'i64ToString not available - zena:string-convert not loaded',
+    );
+  }
+  const funcIndex = ctx.getFunctionIndexByDecl(decl);
+  if (funcIndex === undefined) {
+    throw new Error('i64ToString function index not found');
+  }
+  ctx.i64ToStringFunctionIndex = funcIndex;
+  return funcIndex;
+}
+
+function getU64ToStringIndex(ctx: CodegenContext): number {
+  if (ctx.u64ToStringFunctionIndex !== -1) {
+    return ctx.u64ToStringFunctionIndex;
+  }
+  const decl = ctx.wellKnownFunctions.u64ToString;
+  if (!decl) {
+    throw new Error(
+      'u64ToString not available - zena:string-convert not loaded',
+    );
+  }
+  const funcIndex = ctx.getFunctionIndexByDecl(decl);
+  if (funcIndex === undefined) {
+    throw new Error('u64ToString function index not found');
+  }
+  ctx.u64ToStringFunctionIndex = funcIndex;
+  return funcIndex;
+}
+
+function getBoolToStringIndex(ctx: CodegenContext): number {
+  if (ctx.boolToStringFunctionIndex !== -1) {
+    return ctx.boolToStringFunctionIndex;
+  }
+  const decl = ctx.wellKnownFunctions.boolToString;
+  if (!decl) {
+    throw new Error(
+      'boolToString not available - zena:string-convert not loaded',
+    );
+  }
+  const funcIndex = ctx.getFunctionIndexByDecl(decl);
+  if (funcIndex === undefined) {
+    throw new Error('boolToString function index not found');
+  }
+  ctx.boolToStringFunctionIndex = funcIndex;
+  return funcIndex;
+}
+
+function getF32ToStringIndex(ctx: CodegenContext): number {
+  if (ctx.f32ToStringFunctionIndex !== -1) {
+    return ctx.f32ToStringFunctionIndex;
+  }
+  const decl = ctx.wellKnownFunctions.f32ToString;
+  if (!decl) {
+    throw new Error(
+      'f32ToString not available - zena:string-convert not loaded',
+    );
+  }
+  const funcIndex = ctx.getFunctionIndexByDecl(decl);
+  if (funcIndex === undefined) {
+    throw new Error('f32ToString function index not found');
+  }
+  ctx.f32ToStringFunctionIndex = funcIndex;
+  return funcIndex;
+}
+
+function getF64ToStringIndex(ctx: CodegenContext): number {
+  if (ctx.f64ToStringFunctionIndex !== -1) {
+    return ctx.f64ToStringFunctionIndex;
+  }
+  const decl = ctx.wellKnownFunctions.f64ToString;
+  if (!decl) {
+    throw new Error(
+      'f64ToString not available - zena:string-convert not loaded',
+    );
+  }
+  const funcIndex = ctx.getFunctionIndexByDecl(decl);
+  if (funcIndex === undefined) {
+    throw new Error('f64ToString function index not found');
+  }
+  ctx.f64ToStringFunctionIndex = funcIndex;
+  return funcIndex;
+}
+
+/**
+ * Generate code to convert a primitive value to a string.
+ * The value should already be on the stack.
+ * @returns true if conversion was generated, false if the type is already a string
+ */
+function generatePrimitiveToString(
+  ctx: CodegenContext,
+  type: Type,
+  body: number[],
+): boolean {
+  if (type.kind === TypeKind.Number) {
+    const numType = type as NumberType;
+    let funcIndex: number;
+    switch (numType.name) {
+      case 'i32':
+        funcIndex = getI32ToStringIndex(ctx);
+        break;
+      case 'u32':
+        funcIndex = getU32ToStringIndex(ctx);
+        break;
+      case 'i64':
+        funcIndex = getI64ToStringIndex(ctx);
+        break;
+      case 'u64':
+        funcIndex = getU64ToStringIndex(ctx);
+        break;
+      case 'f32':
+        funcIndex = getF32ToStringIndex(ctx);
+        break;
+      case 'f64':
+        funcIndex = getF64ToStringIndex(ctx);
+        break;
+      default:
+        throw new Error(
+          `Unsupported number type in template literal: ${numType.name}`,
+        );
+    }
+    body.push(Opcode.call);
+    body.push(...WasmModule.encodeSignedLEB128(funcIndex));
+    return true;
+  } else if (type.kind === TypeKind.Boolean) {
+    body.push(Opcode.call);
+    body.push(...WasmModule.encodeSignedLEB128(getBoolToStringIndex(ctx)));
+    return true;
+  } else if (type.kind === TypeKind.Literal) {
+    // Handle literal types (e.g., `true`, `false`, `42`)
+    const litType = type as LiteralType;
+    if (typeof litType.value === 'boolean') {
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(getBoolToStringIndex(ctx)));
+      return true;
+    } else if (typeof litType.value === 'number') {
+      // Numeric literals - default to i32 for now
+      body.push(Opcode.call);
+      body.push(...WasmModule.encodeSignedLEB128(getI32ToStringIndex(ctx)));
+      return true;
+    }
+    // String literals don't need conversion
+    return false;
+  }
+  // Not a primitive - assume it's already a string
+  return false;
 }
 
 /**
@@ -8924,8 +9137,14 @@ function generateTemplateLiteral(
       } as StringLiteral,
       body,
     );
-    // Push expression[i] (must be a string)
-    generateExpression(ctx, expr.expressions[i], body);
+    // Push expression[i] - convert to string if primitive
+    const subExpr = expr.expressions[i];
+    generateExpression(ctx, subExpr, body);
+    // Check if the expression type is a primitive and convert to string
+    const exprType = subExpr.inferredType;
+    if (exprType) {
+      generatePrimitiveToString(ctx, exprType, body);
+    }
   }
   // Push final quasi
   generateStringLiteral(

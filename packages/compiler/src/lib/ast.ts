@@ -927,6 +927,12 @@ export interface TemplateLiteral extends Node {
   type: typeof NodeType.TemplateLiteral;
   quasis: TemplateElement[];
   expressions: Expression[];
+  /**
+   * Resolved conversion function declarations for primitive interpolations.
+   * Populated by the checker when primitives are found in expressions.
+   * Used by DCE to mark these functions as used.
+   */
+  resolvedConversions?: Declaration[];
 }
 
 /**

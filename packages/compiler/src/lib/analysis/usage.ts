@@ -37,6 +37,7 @@ import {
   type BinaryExpression,
   type IndexExpression,
   type AssignmentExpression,
+  type TemplateLiteral,
 } from '../ast.js';
 import {visit, type Visitor} from '../visitor.js';
 import type {SemanticContext} from '../checker/semantic-context.js';
@@ -587,9 +588,16 @@ class UsageAnalyzer {
         this.#handleTypeReference('String');
       },
 
-      visitTemplateLiteral: () => {
+      visitTemplateLiteral: (node: TemplateLiteral) => {
         this.#handleTypeReference('String');
         this.#handleTypeReference('TemplateStringsArray');
+
+        // Mark resolved conversion functions as used (populated by checker)
+        if (node.resolvedConversions) {
+          for (const decl of node.resolvedConversions) {
+            this.#markUsed(decl, 'template literal primitive conversion');
+          }
+        }
       },
 
       visitTaggedTemplateExpression: () => {
@@ -888,6 +896,8 @@ class UsageAnalyzer {
 
   /**
    * Handle a type reference by name (e.g., in type annotations).
+   *
+   * TODO: This is horrible! Replace with real type references, not names.
    */
   #handleTypeReference(name: string): void {
     const decls = this.#declarationsByName.get(name);

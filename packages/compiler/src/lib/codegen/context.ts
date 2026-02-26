@@ -2,6 +2,7 @@ import {
   NodeType,
   type ClassDeclaration,
   type FunctionExpression,
+  type Identifier,
   type InterfaceDeclaration,
   type MethodDefinition,
   type MixinDeclaration,
@@ -10,6 +11,7 @@ import {
   type Statement,
   type TaggedTemplateExpression,
   type TypeAnnotation,
+  type VariableDeclaration,
 } from '../ast.js';
 import type {UsageAnalysisResult} from '../analysis/usage.js';
 import type {CheckerContext} from '../checker/context.js';
@@ -250,6 +252,27 @@ export class CodegenContext {
     Error?: ClassDeclaration;
   } = {};
 
+  // Well-known functions for template literal primitive conversion
+  // Stores the FunctionExpression nodes (used for identity-based index lookup)
+  public wellKnownFunctions: {
+    i32ToString?: FunctionExpression;
+    u32ToString?: FunctionExpression;
+    i64ToString?: FunctionExpression;
+    u64ToString?: FunctionExpression;
+    boolToString?: FunctionExpression;
+    f32ToString?: FunctionExpression;
+    f64ToString?: FunctionExpression;
+  } = {};
+
+  // Cached indices for string conversion functions
+  public i32ToStringFunctionIndex = -1;
+  public u32ToStringFunctionIndex = -1;
+  public i64ToStringFunctionIndex = -1;
+  public u64ToStringFunctionIndex = -1;
+  public boolToStringFunctionIndex = -1;
+  public f32ToStringFunctionIndex = -1;
+  public f64ToStringFunctionIndex = -1;
+
   // Records and Tuples
   public recordTypes = new Map<string, number>(); // canonicalKey -> typeIndex (concrete data structs)
   public tupleTypes = new Map<string, number>(); // canonicalKey -> typeIndex
@@ -436,6 +459,7 @@ export class CodegenContext {
     this.target = target;
     this.debug = debug;
     this.#extractWellKnownTypes();
+    this.#extractWellKnownFunctions();
     this.module = new WasmModule();
     // Note: byteArrayTypeIndex and stringTypeIndex are now created lazily
     // via ensureStringType() to avoid including them when not needed.
@@ -612,6 +636,42 @@ export class CodegenContext {
           this.wellKnownTypes.TemplateStringsArray = decl;
         } else if (mod.path === 'zena:error' && name === 'Error') {
           this.wellKnownTypes.Error = decl;
+        }
+      }
+    }
+  }
+
+  /**
+   * Extract well-known functions for string conversion from zena:string-convert.
+   * These are used by template literals to convert primitives to strings.
+   */
+  #extractWellKnownFunctions() {
+    for (const mod of this.modules) {
+      if (mod.path !== 'zena:string-convert') continue;
+      for (const stmt of mod.body) {
+        if (stmt.type !== NodeType.VariableDeclaration) continue;
+        const decl = stmt as VariableDeclaration;
+        // Get the variable name from the pattern (assuming simple Identifier pattern)
+        if (decl.pattern.type !== NodeType.Identifier) continue;
+        // Store the FunctionExpression, not the VariableDeclaration, since
+        // registerFunction registers by FunctionExpression
+        if (decl.init.type !== NodeType.FunctionExpression) continue;
+        const funcExpr = decl.init;
+        const name = (decl.pattern as Identifier).name;
+        if (name === 'i32ToString') {
+          this.wellKnownFunctions.i32ToString = funcExpr;
+        } else if (name === 'u32ToString') {
+          this.wellKnownFunctions.u32ToString = funcExpr;
+        } else if (name === 'i64ToString') {
+          this.wellKnownFunctions.i64ToString = funcExpr;
+        } else if (name === 'u64ToString') {
+          this.wellKnownFunctions.u64ToString = funcExpr;
+        } else if (name === 'boolToString') {
+          this.wellKnownFunctions.boolToString = funcExpr;
+        } else if (name === 'f32ToString') {
+          this.wellKnownFunctions.f32ToString = funcExpr;
+        } else if (name === 'f64ToString') {
+          this.wellKnownFunctions.f64ToString = funcExpr;
         }
       }
     }
