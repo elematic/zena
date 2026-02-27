@@ -10,6 +10,7 @@
  */
 
 import {String} from 'zena:string';
+import {StringBuilder} from 'zena:string-builder';
 import {Option} from 'zena:option';
 import {TokenType, Span, Token} from './token.zena';
 import {Lexer, LexError} from './lexer.zena';
@@ -913,8 +914,10 @@ export class Ast {
 export class Parser {
   #lexer: Lexer;
   #current: Token;
+  #source: String;
 
   #new(source: String) {
+    this.#source = source;
     this.#lexer = new Lexer(source);
     this.#current = this.#lexer.next();
   }
@@ -1002,9 +1005,52 @@ export class Parser {
 
   /** Parse doc comments (/// comments) and attributes (@since, @unstable, @deprecated). */
   #parseDocs(): Docs {
-    // TODO: Implement doc comment parsing
-    // For now, just parse attributes
     let docs = new Docs(this.#current.span);
+    
+    // First, check for comments accumulated by the lexer (// and /* */ comments)
+    let precedingComments = this.#lexer.takePrecedingComments();
+    if (precedingComments != null) {
+      docs.contents = precedingComments;
+    }
+    
+    // Collect consecutive doc comments (/// ...) - these take precedence
+    if (this.#check(TokenType.DocComment)) {
+      let sb = new StringBuilder();
+      var first = true;
+      while (this.#check(TokenType.DocComment)) {
+        let token = this.#advance();
+        // The span includes "/// " prefix and content
+        // Extract just the content part (after "/// ")
+        let text = this.#text(token.span);
+        // Strip the "/// " prefix (4 bytes if space follows, 3 bytes otherwise)
+        // text is at minimum "///" (3 chars) plus optional content
+        var content = text.sliceBytes(3, text.length);
+        if (text.length > 3 && text.getByteAt(3) == 32) {
+          content = text.sliceBytes(4, text.length);
+        }
+        // Strip trailing newline if present
+        if (content.length > 0 && content.getByteAt(content.length - 1) == 10) {
+          content = content.sliceBytes(0, content.length - 1);
+        }
+        if (!first) {
+          sb.append("\n");
+        }
+        sb.append(content);
+        first = false;
+      }
+      // If we had preceding comments, append doc comments; otherwise set
+      if (docs.contents != null) {
+        let existingContent = docs.contents as String;
+        let docCommentContent = sb.toString();
+        let combined = new StringBuilder();
+        combined.append(existingContent);
+        combined.append("\n");
+        combined.append(docCommentContent);
+        docs.contents = combined.toString();
+      } else {
+        docs.contents = sb.toString();
+      }
+    }
     
     // Parse any attributes
     if (this.#check(TokenType.At)) {
