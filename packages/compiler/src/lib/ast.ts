@@ -858,6 +858,12 @@ export interface NamedTypeAnnotation extends Node {
   type: typeof NodeType.TypeAnnotation;
   name: string;
   typeArguments?: TypeAnnotation[];
+  /**
+   * For type alias references, the resolved TypeAliasDeclaration.
+   * Populated by the checker so DCE can track type alias usage even for
+   * transparent aliases where inferredType resolves to the target type.
+   */
+  resolvedDeclaration?: Declaration;
 }
 
 export interface PropertySignature extends Node {
@@ -943,6 +949,11 @@ export interface TaggedTemplateExpression extends Node {
   type: typeof NodeType.TaggedTemplateExpression;
   tag: Expression;
   quasi: TemplateLiteral;
+  /**
+   * The resolved TemplateStringsArray class type, populated by the checker.
+   * Used by DCE to mark the TemplateStringsArray class as used.
+   */
+  resolvedStringsArrayType?: Type;
 }
 
 export interface EnumMember extends Node {

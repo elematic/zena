@@ -3509,6 +3509,12 @@ function checkTaggedTemplateExpression(
   ctx: CheckerContext,
   expr: TaggedTemplateExpression,
 ): Type {
+  // Resolve TemplateStringsArray type for DCE tracking
+  const stringsArrayType = ctx.resolveType('TemplateStringsArray');
+  if (stringsArrayType) {
+    expr.resolvedStringsArrayType = stringsArrayType;
+  }
+
   // Check all embedded expressions in the template
   const valueTypes: Type[] = [];
   for (const subExpr of expr.quasi.expressions) {

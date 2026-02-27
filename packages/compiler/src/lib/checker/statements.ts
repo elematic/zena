@@ -1038,7 +1038,7 @@ function predeclareTypeAlias(ctx: CheckerContext, decl: TypeAliasDeclaration) {
     isDistinct: decl.isDistinct,
   };
 
-  ctx.declare(name, typeAlias, 'type');
+  ctx.declare(name, typeAlias, 'type', decl);
   decl.inferredType = typeAlias;
 
   // Mark as needing resolution so resolveTypeAliases knows to resolve the target
@@ -1091,7 +1091,7 @@ function checkTypeAliasDeclaration(
     isDistinct: decl.isDistinct,
   };
 
-  ctx.declare(name, typeAlias, 'type');
+  ctx.declare(name, typeAlias, 'type', decl);
   decl.inferredType = typeAlias;
 
   if (decl.exported && ctx.module) {

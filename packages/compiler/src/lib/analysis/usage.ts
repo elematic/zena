@@ -38,6 +38,7 @@ import {
   type IndexExpression,
   type AssignmentExpression,
   type TemplateLiteral,
+  type TaggedTemplateExpression,
 } from '../ast.js';
 import {visit, type Visitor} from '../visitor.js';
 import type {SemanticContext} from '../checker/semantic-context.js';
@@ -48,6 +49,12 @@ import {
   type InterfaceType,
   type MixinType,
   type Type,
+  type ArrayType,
+  type TypeAliasType,
+  type UnionType,
+  type RecordType,
+  type TupleType,
+  type UnboxedTupleType,
 } from '../types.js';
 
 /**
@@ -262,7 +269,14 @@ class UsageAnalyzer {
    * Index all declarations in the program for later lookup.
    */
   #indexDeclarations(): void {
+    // Index all modules in the program
     for (const module of this.#program.modules.values()) {
+      for (const stmt of module.body) {
+        this.#indexDeclaration(stmt, module);
+      }
+    }
+    // Also index prelude modules (for stdlib types like String, FixedArray, etc.)
+    for (const module of this.#program.preludeModules) {
       for (const stmt of module.body) {
         this.#indexDeclaration(stmt, module);
       }
@@ -569,28 +583,41 @@ class UsageAnalyzer {
 
       // Handle new expressions (class instantiation)
       visitNewExpression: (node: NewExpression) => {
-        // The callee is a class reference
-        this.#handleTypeReference(node.callee.name);
-
-        // Also handle the inferred type if available
-        if (node.inferredType?.kind === TypeKind.Class) {
+        // Use the inferred type to find the class declaration (preferred approach)
+        if (node.inferredType) {
           this.#handleTypeUsage(node.inferredType);
         }
       },
 
       // Handle type annotations (type references)
       visitTypeAnnotation: (node) => {
-        this.#handleTypeReference(node.name);
+        // Use resolved type if available (primary approach)
+        if (node.inferredType) {
+          this.#handleTypeUsage(node.inferredType);
+        }
+        // For type aliases, the checker populates resolvedDeclaration
+        // This handles transparent type aliases where inferredType is the target type
+        if (node.resolvedDeclaration) {
+          this.#markUsed(
+            node.resolvedDeclaration,
+            `type annotation '${node.name}'`,
+          );
+        }
       },
 
       // Handle syntax-implied usages
-      visitStringLiteral: () => {
-        this.#handleTypeReference('String');
+      visitStringLiteral: (node) => {
+        // String literals have inferredType set to the String class type
+        if (node.inferredType) {
+          this.#handleTypeUsage(node.inferredType);
+        }
       },
 
       visitTemplateLiteral: (node: TemplateLiteral) => {
-        this.#handleTypeReference('String');
-        this.#handleTypeReference('TemplateStringsArray');
+        // Template literals have inferredType set to String
+        if (node.inferredType) {
+          this.#handleTypeUsage(node.inferredType);
+        }
 
         // Mark resolved conversion functions as used (populated by checker)
         if (node.resolvedConversions) {
@@ -600,33 +627,30 @@ class UsageAnalyzer {
         }
       },
 
-      visitTaggedTemplateExpression: () => {
-        this.#handleTypeReference('TemplateStringsArray');
+      visitTaggedTemplateExpression: (node: TaggedTemplateExpression) => {
+        // Use the resolved TemplateStringsArray type (populated by checker)
+        if (node.resolvedStringsArrayType) {
+          this.#handleTypeUsage(node.resolvedStringsArrayType);
+        }
       },
 
       visitArrayLiteral: (node: ArrayLiteral) => {
-        // #[1, 2, 3] creates a FixedArray
-        // We can check inferredType to be sure
-        if (node.inferredType?.kind === TypeKind.Array) {
-          this.#handleTypeReference('FixedArray');
+        // Array literals have inferredType set to FixedArray<T>
+        if (node.inferredType) {
+          this.#handleTypeUsage(node.inferredType);
         }
       },
 
       visitRangeExpression: (node: RangeExpression) => {
-        // Determine which range class to use based on bounds
-        if (node.start && node.end) {
-          this.#handleTypeReference('BoundedRange');
-        } else if (node.start) {
-          this.#handleTypeReference('FromRange');
-        } else if (node.end) {
-          this.#handleTypeReference('ToRange');
-        } else {
-          this.#handleTypeReference('FullRange');
+        // Range expressions have inferredType set to the appropriate Range class
+        if (node.inferredType) {
+          this.#handleTypeUsage(node.inferredType);
         }
       },
 
       visitThrowExpression: () => {
-        this.#handleTypeReference('Error');
+        // The thrown value's type is tracked via the visitor traversing the argument.
+        // If the argument is `new Error(...)`, the NewExpression handler will mark Error.
       },
 
       // Handle member expressions for method/getter access
@@ -895,21 +919,12 @@ class UsageAnalyzer {
   }
 
   /**
-   * Handle a type reference by name (e.g., in type annotations).
-   *
-   * TODO: This is horrible! Replace with real type references, not names.
-   */
-  #handleTypeReference(name: string): void {
-    const decls = this.#declarationsByName.get(name);
-    if (decls) {
-      for (const decl of decls) {
-        this.#markUsed(decl, `type reference '${name}'`);
-      }
-    }
-  }
-
-  /**
    * Handle usage of a type (from inferredType).
+   *
+   * This method marks type dependencies using Type object identity, which is
+   * accurate across modules and renames. All type usages should go through this
+   * method - the checker populates resolved type information on AST nodes that
+   * this analysis can use.
    */
   #handleTypeUsage(type: Type): void {
     // Find the declaration for this type
@@ -919,10 +934,11 @@ class UsageAnalyzer {
       return;
     }
 
-    // For generic instantiations, also mark the generic source
+    // Handle different type kinds
     switch (type.kind) {
       case TypeKind.Class: {
         const classType = type as ClassType;
+        // For generic instantiations, also mark the generic source
         if (classType.genericSource) {
           this.#handleTypeUsage(classType.genericSource);
         }
@@ -952,6 +968,51 @@ class UsageAnalyzer {
         }
         break;
       }
+      case TypeKind.Array: {
+        // Array types (FixedArray<T>) - mark element type
+        const arrayType = type as ArrayType;
+        this.#handleTypeUsage(arrayType.elementType);
+        break;
+      }
+      case TypeKind.TypeAlias: {
+        // Type aliases - handle the target type
+        const aliasType = type as TypeAliasType;
+        this.#handleTypeUsage(aliasType.target);
+        break;
+      }
+      case TypeKind.Union: {
+        // Union types - handle all member types
+        const unionType = type as UnionType;
+        for (const memberType of unionType.types) {
+          this.#handleTypeUsage(memberType);
+        }
+        break;
+      }
+      case TypeKind.Record: {
+        // Record types - handle all property types
+        const recordType = type as RecordType;
+        for (const propType of recordType.properties.values()) {
+          this.#handleTypeUsage(propType);
+        }
+        break;
+      }
+      case TypeKind.Tuple: {
+        // Tuple types - handle all element types
+        const tupleType = type as TupleType;
+        for (const elemType of tupleType.elementTypes) {
+          this.#handleTypeUsage(elemType);
+        }
+        break;
+      }
+      case TypeKind.UnboxedTuple: {
+        // Unboxed tuple types - handle all element types
+        const unboxedTupleType = type as UnboxedTupleType;
+        for (const elemType of unboxedTupleType.elementTypes) {
+          this.#handleTypeUsage(elemType);
+        }
+        break;
+      }
+      // Primitive types (Number, Boolean, Null, Void, etc.) don't need declaration tracking
     }
   }
 

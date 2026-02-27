@@ -443,6 +443,20 @@ export function resolveTypeAnnotation(
   // Attach the resolved type to the annotation for use in codegen.
   // This enables identity-based lookups without re-resolving names.
   annotation.inferredType = result;
+
+  // For named type annotations, also attach the declaration for DCE tracking.
+  // This is important for transparent type aliases where inferredType resolves
+  // to the target type (e.g., `type ID = i32` resolves to i32), but we still
+  // need to track that the type alias itself is used.
+  if (annotation.type === NodeType.TypeAnnotation) {
+    const namedAnnotation =
+      annotation as import('../ast.js').NamedTypeAnnotation;
+    const typeInfo = ctx.resolveTypeInfo(namedAnnotation.name);
+    if (typeInfo?.declaration) {
+      namedAnnotation.resolvedDeclaration = typeInfo.declaration;
+    }
+  }
+
   return result;
 }
 

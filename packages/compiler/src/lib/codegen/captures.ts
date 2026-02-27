@@ -114,7 +114,8 @@ function traverseWithScope(
   }
 
   for (const key in node) {
-    if (key === 'type') continue;
+    // Skip special fields that are not part of the AST tree structure
+    if (key === 'type' || key === 'resolvedDeclaration') continue;
     const value = (node as any)[key];
     if (Array.isArray(value)) {
       value.forEach((child) => {

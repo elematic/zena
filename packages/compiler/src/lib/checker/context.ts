@@ -486,6 +486,50 @@ export class CheckerContext {
     return undefined;
   }
 
+  /**
+   * Resolve a type name and return the full SymbolInfo.
+   * Unlike resolveType() which returns only the Type, this returns
+   * the full symbol info including the declaration (if tracked).
+   */
+  resolveTypeInfo(name: string): SymbolInfo | undefined {
+    const key = `type:${name}`;
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      if (this.scopes[i].has(key)) {
+        return this.scopes[i].get(key);
+      }
+    }
+
+    // Check prelude
+    if (this.preludeExports.has(key)) {
+      const exportInfo = this.preludeExports.get(key)!;
+      this.usedPreludeSymbols.set(key, {
+        modulePath: exportInfo.modulePath,
+        exportName: exportInfo.exportName,
+      });
+      return {
+        ...exportInfo.info,
+        modulePath: exportInfo.modulePath,
+      };
+    }
+
+    // Fallback for legacy/unmangled prelude exports
+    if (this.preludeExports.has(name)) {
+      const exportInfo = this.preludeExports.get(name)!;
+      if (exportInfo.info.kind === 'type') {
+        this.usedPreludeSymbols.set(name, {
+          modulePath: exportInfo.modulePath,
+          exportName: exportInfo.exportName,
+        });
+        return {
+          ...exportInfo.info,
+          modulePath: exportInfo.modulePath,
+        };
+      }
+    }
+
+    return undefined;
+  }
+
   resolveType(name: string): Type | undefined {
     const key = `type:${name}`;
     for (let i = this.scopes.length - 1; i >= 0; i--) {
