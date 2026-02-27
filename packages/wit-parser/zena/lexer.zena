@@ -78,6 +78,9 @@ export class Lexer {
   
   /** Current byte position in the source. */
   #pos: i32;
+  
+  /** Comment content accumulated before items (used for docs). */
+  #precedingComments: StringBuilder | null;
 
   /**
    * Create a new lexer for the given source text.
@@ -85,6 +88,21 @@ export class Lexer {
   #new(source: String) {
     this.#source = source;
     this.#pos = 0;
+    this.#precedingComments = null;
+  }
+  
+  /**
+   * Get and clear any comments accumulated before the current position.
+   * Returns null if no comments were accumulated.
+   */
+  takePrecedingComments(): String | null {
+    if (this.#precedingComments == null) {
+      return null;
+    }
+    let sb = this.#precedingComments as StringBuilder;
+    let result = sb.toString();
+    this.#precedingComments = null;
+    return result;
   }
 
   // --------------------------------------------------------------------------
@@ -134,8 +152,29 @@ export class Lexer {
       return new Token(TokenType.Minus, new Span(start, this.#pos));
     }
 
-    // / or // comment (already handled in skipTrivia, but handle lone /)
+    // / or /// doc comment
     if (b == 47) {
+      // Check for /// (doc comment)
+      if (this.#peekAt(1) == 47 && this.#peekAt(2) == 47) {
+        // Skip the ///
+        this.#advance();
+        this.#advance();
+        this.#advance();
+        // Skip optional space after ///
+        if (!this.#isEof() && this.#peek() == 32) {
+          this.#advance();
+        }
+        // Skip until newline or EOF
+        while (!this.#isEof()) {
+          let c = this.#peek();
+          if (c == 10) {  // \n
+            this.#advance();
+            break;
+          }
+          this.#advance();
+        }
+        return new Token(TokenType.DocComment, new Span(start, this.#pos));
+      }
       return this.#single(TokenType.Slash);
     }
 
@@ -239,15 +278,15 @@ export class Lexer {
         continue;
       }
 
-      // Single-line comment: // ...
-      if (b == 47 && this.#peekAt(1) == 47) {
-        this.#skipLineComment();
+      // Single-line comment: // ... (but NOT doc comments: ///)
+      if (b == 47 && this.#peekAt(1) == 47 && this.#peekAt(2) != 47) {
+        this.#captureLineComment();
         continue;
       }
 
       // Block comment: /* ... */
       if (b == 47 && this.#peekAt(1) == 42) {
-        this.#skipBlockComment();
+        this.#captureBlockComment();
         continue;
       }
 
@@ -256,28 +295,50 @@ export class Lexer {
     }
   }
 
-  /** Skip a single-line comment (// ...). */
-  #skipLineComment(): void {
+  /** Capture a single-line comment content (// ...). */
+  #captureLineComment(): void {
     // Skip the //
     this.#advance();
     this.#advance();
-
-    // Skip until newline or EOF
+    
+    let contentStart = this.#pos;
+    
+    // Capture everything until newline
     while (!this.#isEof()) {
       let b = this.#peek();
-      this.#advance();
       if (b == 10) {  // \n
         break;
       }
+      this.#advance();
     }
+    let contentEnd = this.#pos;
+    
+    // Skip the newline if present
+    if (!this.#isEof() && this.#peek() == 10) {
+      this.#advance();
+    }
+    
+    // Accumulate the comment content
+    if (this.#precedingComments == null) {
+      this.#precedingComments = new StringBuilder();
+    }
+    let sb = this.#precedingComments as StringBuilder;
+    if (sb.length > 0) {
+      sb.append("\n");
+    }
+    // Get comment content
+    let rawContent = this.#source.sliceBytes(contentStart, contentEnd);
+    sb.append(rawContent);
   }
 
-  /** Skip a block comment (supports nesting). */
-  #skipBlockComment(): void {
-    let start = this.#pos;
-    
-    // Skip the opening /*
+  /** Capture a block comment content (supports nesting). */
+  #captureBlockComment(): void {
+    // Skip just the opening '/' - we keep the '*' as part of the content
     this.#advance();
+    
+    let contentStart = this.#pos;
+
+    // Skip the '*'
     this.#advance();
 
     // Track nesting depth (we're already inside one comment)
@@ -306,11 +367,21 @@ export class Lexer {
       
       this.#advance();
     }
-
-    // Unterminated block comment
-    if (depth > 0) {
-      throw new LexError("unterminated block comment", new Span(start, this.#pos));
+    
+    // contentEnd is the current position (includes the final */)
+    let contentEnd = this.#pos;
+    
+    // Accumulate the comment content
+    if (this.#precedingComments == null) {
+      this.#precedingComments = new StringBuilder();
     }
+    let sb = this.#precedingComments as StringBuilder;
+    if (sb.length > 0) {
+      sb.append("\n");
+    }
+    // Get block comment content (including leading * and trailing */)
+    let content = this.#source.sliceBytes(contentStart, contentEnd);
+    sb.append(content);
   }
 
   /** Lex an identifier or keyword. */
