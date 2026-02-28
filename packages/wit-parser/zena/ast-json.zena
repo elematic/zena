@@ -162,6 +162,8 @@ class SerializeContext {
   ownTypeIndices: Map<i32, i32>;
   // Map to track complex anonymous types by canonical key
   anonTypeIndices: Map<string, i32>;
+  // Track which type indices are resources (for bare resource name -> own<resource> conversion)
+  resourceTypeIndices: Map<i32, i32>;
   currentPackageIndex: i32;
 
   #new() {
@@ -175,6 +177,7 @@ class SerializeContext {
     this.borrowTypeIndices = new Map<i32, i32>();
     this.ownTypeIndices = new Map<i32, i32>();
     this.anonTypeIndices = new Map<string, i32>();
+    this.resourceTypeIndices = new Map<i32, i32>();
     this.currentPackageIndex = 0;
   }
 
@@ -245,6 +248,29 @@ class SerializeContext {
     return idx;
   }
 
+  /** 
+   * Get type reference for a function param or return type.
+   * Handles bare resource names (converts them to own<resource>).
+   */
+  getParamTypeRef(t: Type): TypeRef {
+    // Special case: bare resource name becomes own<resource>
+    if (t.tag == TypeTag.Name) {
+      let id = t.name as Id;
+      let name = normalizeId(id.name);
+      if (this.typeIndices.has(name)) {
+        let (idx, _) = this.typeIndices.get(name);
+        // If it's a resource, return own<resource> instead
+        if (this.resourceTypeIndices.has(idx)) {
+          return TypeRef.idx(this.getOwnType(idx));
+        }
+        return TypeRef.idx(idx);
+      }
+      return TypeRef.str(name);
+    }
+    // For all other types, use the standard getTypeRef
+    return this.getTypeRef(t);
+  }
+
   /** Get a type reference: primitive as string, complex as index. */
   getTypeRef(t: Type): TypeRef {
     // Check if primitive type
@@ -264,7 +290,14 @@ class SerializeContext {
     if (t.tag == TypeTag.ErrorContext) { return TypeRef.str("error-context"); }
     if (t.tag == TypeTag.Name) {
       let id = t.name as Id;
-      return TypeRef.str(id.name);
+      let name = normalizeId(id.name);
+      // Check if it's a user-defined type
+      if (this.typeIndices.has(name)) {
+        let (idx, _) = this.typeIndices.get(name);
+        return TypeRef.idx(idx);
+      }
+      // Not a registered type - return as string (shouldn't happen for valid WIT)
+      return TypeRef.str(name);
     }
     // Complex type - register and return index
     let idx = this.registerAnonymousType(t);
@@ -496,8 +529,72 @@ let serializeType = (b: JsonBuilder, ctx: SerializeContext, t: Type): void => {
   b.string(typeToString(ctx, t));
 };
 
+/** Build a TypeKind from a Type for use in type definitions (embeds complex types directly). */
+let buildTypeKind = (ctx: SerializeContext, t: Type): TypeKind => {
+  if (t.tag == TypeTag.Stream) {
+    let kind = new TypeKind("stream");
+    if (t.inner != null) {
+      kind.inner = ctx.getTypeRef(t.inner as Type);
+    }
+    return kind;
+  } else if (t.tag == TypeTag.Future) {
+    let kind = new TypeKind("future");
+    if (t.inner != null) {
+      kind.inner = ctx.getTypeRef(t.inner as Type);
+    }
+    return kind;
+  } else if (t.tag == TypeTag.Option) {
+    let kind = new TypeKind("option");
+    kind.inner = ctx.getTypeRef(t.inner as Type);
+    return kind;
+  } else if (t.tag == TypeTag.List) {
+    let kind = new TypeKind("list");
+    kind.inner = ctx.getTypeRef(t.inner as Type);
+    return kind;
+  } else if (t.tag == TypeTag.Result) {
+    let kind = new TypeKind("result");
+    if (t.okType != null) {
+      kind.okType = ctx.getTypeRef(t.okType as Type);
+    }
+    if (t.errType != null) {
+      kind.errType = ctx.getTypeRef(t.errType as Type);
+    }
+    return kind;
+  } else if (t.tag == TypeTag.Tuple) {
+    let kind = new TypeKind("tuple");
+    let types = t.types as Array<Type>;
+    let refs = new Array<TypeRef>();
+    var idx = 0;
+    while (idx < types.length) {
+      refs.push(ctx.getTypeRef(types[idx]));
+      idx = idx + 1;
+    }
+    kind.tupleTypes = refs;
+    return kind;
+  } else if (t.tag == TypeTag.Own) {
+    let kind = new TypeKind("handle");
+    let innerRef = ctx.getTypeRef(t.inner as Type);
+    if (innerRef.isIndex) {
+      kind.ownIndex = innerRef.indexValue;
+    }
+    return kind;
+  } else if (t.tag == TypeTag.Borrow) {
+    let kind = new TypeKind("handle");
+    let innerRef = ctx.getTypeRef(t.inner as Type);
+    if (innerRef.isIndex) {
+      kind.borrowIndex = innerRef.indexValue;
+    }
+    return kind;
+  } else {
+    // Primitive or name reference - wrap it as "type"
+    let kind = new TypeKind("type");
+    kind.inner = ctx.getTypeRef(t);
+    return kind;
+  }
+};
+
 let registerTypeDef = (ctx: SerializeContext, td: TypeDef, ownerInterface: i32): i32 => {
-  let kind = new TypeKind(typeDefTagToString(td.tag));
+  var kind = new TypeKind(typeDefTagToString(td.tag));
   
   if (td.tag == TypeDefTag.Record) {
     let fieldsArr = new Array<RecordField>();
@@ -511,8 +608,9 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, ownerInterface: i32):
       idx = idx + 1;
     }
   } else if (td.tag == TypeDefTag.Alias) {
-    kind.tag = "type";
-    kind.inner = ctx.getTypeRef(td.aliasType as Type);
+    // For type aliases, embed the type kind directly (don't create separate anonymous type)
+    let aliasKind = buildTypeKind(ctx, td.aliasType as Type);
+    kind = aliasKind;
   } else if (td.tag == TypeDefTag.Enum) {
     let casesArr = new Array<EnumCase>();
     kind.enumCases = casesArr;
@@ -558,7 +656,14 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, ownerInterface: i32):
     docs = td.docs;
   }
   let entry = new TypeEntry(normalizeId(td.name.name), kind, some(ownerInterface), docs);
-  return ctx.registerType(entry);
+  let typeIdx = ctx.registerType(entry);
+  
+  // Track resources for bare name -> own<resource> conversion
+  if (td.tag == TypeDefTag.Resource) {
+    ctx.resourceTypeIndices.set(typeIdx, 1);
+  }
+  
+  return typeIdx;
 };
 
 let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: ResourceFunc, resourceName: string, ifaceIndex: i32): void => {
@@ -618,7 +723,7 @@ let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: Resource
     b.beginObject();
     b.key("name").string(normalizeId(param.name.name));
     b.key("type");
-    let typeRef = ctx.getTypeRef(param.type);
+    let typeRef = ctx.getParamTypeRef(param.type);
     serializeTypeRef(b, typeRef);
     b.endObject();
     idx = idx + 1;
@@ -631,7 +736,7 @@ let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: Resource
     // Check if there's an explicit result
     if (nf.func.result != null) {
       b.key("result");
-      let resultRef = ctx.getTypeRef(nf.func.result as Type);
+      let resultRef = ctx.getParamTypeRef(nf.func.result as Type);
       serializeTypeRef(b, resultRef);
     } else {
       // Use existing own type or create if needed
@@ -640,7 +745,7 @@ let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: Resource
     }
   } else if (nf.func.result != null) {
     b.key("result");
-    let resultRef = ctx.getTypeRef(nf.func.result as Type);
+    let resultRef = ctx.getParamTypeRef(nf.func.result as Type);
     serializeTypeRef(b, resultRef);
   }
   
@@ -663,7 +768,7 @@ let serializeFunction = (b: JsonBuilder, ctx: SerializeContext, nf: NamedFunc): 
     b.beginObject();
     b.key("name").string(normalizeId(param.name.name));
     b.key("type");
-    let typeRef = ctx.getTypeRef(param.type);
+    let typeRef = ctx.getParamTypeRef(param.type);
     serializeTypeRef(b, typeRef);
     b.endObject();
     idx = idx + 1;
@@ -672,7 +777,7 @@ let serializeFunction = (b: JsonBuilder, ctx: SerializeContext, nf: NamedFunc): 
   
   if (nf.func.result != null) {
     b.key("result");
-    let resultRef = ctx.getTypeRef(nf.func.result as Type);
+    let resultRef = ctx.getParamTypeRef(nf.func.result as Type);
     serializeTypeRef(b, resultRef);
   } else { }
   
@@ -894,7 +999,7 @@ let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: strin
     b.beginObject();
     b.key("name").string(normalizeId(param.name.name));
     b.key("type");
-    let typeRef = ctx.getTypeRef(param.type);
+    let typeRef = ctx.getParamTypeRef(param.type);
     serializeTypeRef(b, typeRef);
     b.endObject();
     pIdx = pIdx + 1;
@@ -905,7 +1010,7 @@ let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: strin
   if (func.result != null) {
     let resultType = func.result as Type;
     b.key("result");
-    let resultRef = ctx.getTypeRef(resultType);
+    let resultRef = ctx.getParamTypeRef(resultType);
     serializeTypeRef(b, resultRef);
   }
   
