@@ -1,21 +1,29 @@
 # WIT Parser Test Status
 
 **Last Updated**: 2026-02-26  
-**Summary**: 155/210 passing (74%)
+**Summary**: 158/210 passing (75%)
 
 ## Overview
 
 - ✅ **All 130 error tests pass** (parse-fail/\*)
-- ✅ **25 success tests pass** (produce correct JSON)
-- ❌ **55 success tests fail** (JSON mismatch - categorized below)
+- ✅ **28 success tests pass** (produce correct JSON)
+- ❌ **52 success tests fail** (JSON mismatch - categorized below)
 - ⏭️ **1 test skipped** (kinds-of-deps)
 
-## Passing Success Tests (25)
+## Recent Fixes
+
+- Fixed bare resource name handling in function params (e.g., `a: r1` → `own<r1>`)
+- Fixed user-defined type references (e.g., `t1` → type index instead of string)
+- Added `getParamTypeRef()` for proper function type resolution
+- Fixed type alias embedding (e.g., `type t = stream<u8>` embeds stream kind directly)
+
+## Passing Success Tests (28)
 
 | Test                               | Notes |
 | ---------------------------------- | ----- |
 | async.wit                          | ✅    |
 | empty.wit                          | ✅    |
+| error-context.wit                  | ✅ NEW |
 | functions.wit                      | ✅    |
 | import-export-overlap1.wit         | ✅    |
 | package-syntax1.wit                | ✅    |
@@ -23,14 +31,16 @@
 | package-syntax4.wit                | ✅    |
 | random.wit                         | ✅    |
 | resources-empty.wit                | ✅    |
-| resources-multiple-returns-own.wit | ✅    |
+| resources-multiple-returns-own.wit | ✅ NEW |
 | resources-multiple.wit             | ✅    |
 | resources-return-own.wit           | ✅    |
+| resources1.wit                     | ✅ NEW |
 | same-name-import-export.wit        | ✅    |
 | type-then-eof.wit                  | ✅    |
 | union-fuzz-1.wit                   | ✅    |
 | wasi.wit                           | ✅    |
 | world-top-level-funcs.wit          | ✅    |
+| comments.wit                       | ✅ NEW |
 
 ## Failing Success Tests by Category
 
