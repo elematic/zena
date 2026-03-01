@@ -250,7 +250,7 @@ Patterns support literals, records, classes, guards, `as` bindings, and logical
 
 ### Multi-Value Returns
 
-Functions can return multiple values as unboxed tuples that compile to WASM's
+Functions can return multiple values as inline tuples that compile to WASM's
 multi-value return, with no heap allocation or wrapper objects:
 
 ```typescript
@@ -274,13 +274,13 @@ interface Iterator<T> {
 Destructuring is a form of pattern matching that always matches. If the match
 isn't guarenteed, it's a compile error.
 
-You can destructure objects, records, tuples, and unboxed tuples (mult-value
+You can destructure objects, records, tuples, and inline tuples (mult-value
 returns):
 
 ```typescript
 let {x, y} = point; // Object desctructuring
 let [_, _, z] = vec; // Tuples
-let (value, found) = map.get(key); // Unboxed tuples - no heap allocation
+let (value, found) = map.get(key); // Inline tuples - no heap allocation
 let {x, y, z = 0} = point; // Defaults: point can be 2D or 3D
 let {r as red, b as blue} = color; // Renaming
 ```
@@ -311,7 +311,7 @@ let result = data |> parse($) |> transform($) |> validate($);
 - [x] Generics with constraints, defaults, and monomorphization
 - [x] Union types with control-flow narrowing (`is`, null checks)
 - [x] Pattern matching (literals, records, classes, guards, exhaustiveness)
-- [x] Multi-value returns and unboxed tuples
+- [x] Multi-value returns and inline tuples
 - [x] Pipeline operator (`|>` with `$` placeholder)
 - [x] Enums (integer-backed and string-backed, nominal)
 - [x] Distinct types (zero-cost newtypes)

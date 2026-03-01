@@ -88,19 +88,19 @@ interface types {
 
 ### Compound Types
 
-| WIT Type       | Zena Type           | Notes                          |
-| -------------- | ------------------- | ------------------------------ |
-| `string`       | `String`            | GC string (see strings.md)     |
-| `list<u8>`     | `i32` (ptr) + `i32` | Pointer + length in linear mem |
-| `list<T>`      | `i32` (ptr) + `i32` | Pointer + length in linear mem |
-| `result<T, E>` | `Result<T, E>`      | Value type, see below          |
-| `option<T>`    | `T \| null`         | Nullable union                 |
-| `tuple<A, B>`  | `(A, B)`            | Unboxed tuple (multi-return)   |
-| `resource`     | `distinct type` u32 | Newtype wrapper, see below     |
-| `enum`         | `enum`              | Untagged enum                  |
-| `flags`        | `u32` / `u64`       | Bitfield (unsigned)            |
-| `record`       | `type R = {...}`    | Zena record type               |
-| `variant`      | `enum` + union      | Tagged union (when needed)     |
+| WIT Type       | Zena Type           | Notes                           |
+| -------------- | ------------------- | ------------------------------- |
+| `string`       | `String`            | GC string (see strings.md)      |
+| `list<u8>`     | `i32` (ptr) + `i32` | Pointer + length in linear mem  |
+| `list<T>`      | `i32` (ptr) + `i32` | Pointer + length in linear mem  |
+| `result<T, E>` | `Result<T, E>`      | Value type, see below           |
+| `option<T>`    | `T \| null`         | Nullable union                  |
+| `tuple<A, B>`  | `(A, B)`            | Boxed tuple (first-class value) |
+| `resource`     | `distinct type` u32 | Newtype wrapper, see below      |
+| `enum`         | `enum`              | Untagged enum                   |
+| `flags`        | `u32` / `u64`       | Bitfield (unsigned)             |
+| `record`       | `type R = {...}`    | Zena record type                |
+| `variant`      | `enum` + union      | Tagged union (when needed)      |
 
 ### Detailed Type Mappings
 

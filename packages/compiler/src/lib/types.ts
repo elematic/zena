@@ -18,7 +18,7 @@ export const TypeKind = {
   Array: 'Array',
   Record: 'Record',
   Tuple: 'Tuple',
-  UnboxedTuple: 'UnboxedTuple',
+  InlineTuple: 'InlineTuple',
   Union: 'Union',
   TypeParameter: 'TypeParameter',
   TypeAlias: 'TypeAlias',
@@ -92,12 +92,12 @@ export interface TupleType extends Type {
 }
 
 /**
- * Unboxed tuple type for multi-value returns.
- * Unlike boxed tuples [T1, T2], unboxed tuples (T1, T2) exist only on the WASM stack
+ * Inline tuple type for multi-value returns.
+ * Unlike boxed tuples [T1, T2], inline tuples (T1, T2) exist only on the WASM stack
  * and compile to WASM multi-value returns. They are not first-class values.
  */
-export interface UnboxedTupleType extends Type {
-  kind: typeof TypeKind.UnboxedTuple;
+export interface InlineTupleType extends Type {
+  kind: typeof TypeKind.InlineTuple;
   elementTypes: Type[];
 }
 

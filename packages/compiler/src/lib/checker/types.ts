@@ -17,7 +17,7 @@ import {
   type Type,
   type TypeAliasType,
   type TypeParameterType,
-  type UnboxedTupleType,
+  type InlineTupleType,
   type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
@@ -415,12 +415,12 @@ export function substituteType(
       elementTypes: tt.elementTypes.map((t) => substituteType(t, typeMap, ctx)),
     } as TupleType;
   }
-  if (type.kind === TypeKind.UnboxedTuple) {
-    const ut = type as UnboxedTupleType;
+  if (type.kind === TypeKind.InlineTuple) {
+    const ut = type as InlineTupleType;
     return {
       ...ut,
       elementTypes: ut.elementTypes.map((t) => substituteType(t, typeMap, ctx)),
-    } as UnboxedTupleType;
+    } as InlineTupleType;
   }
   return type;
 }
@@ -633,14 +633,14 @@ function resolveTypeAnnotationInternal(
     } as TupleType;
   }
 
-  if (annotation.type === NodeType.UnboxedTupleTypeAnnotation) {
+  if (annotation.type === NodeType.InlineTupleTypeAnnotation) {
     const elementTypes = annotation.elementTypes.map((t) =>
       resolveTypeAnnotation(ctx, t),
     );
     return {
-      kind: TypeKind.UnboxedTuple,
+      kind: TypeKind.InlineTuple,
       elementTypes,
-    } as UnboxedTupleType;
+    } as InlineTupleType;
   }
 
   if (annotation.type === NodeType.FunctionTypeAnnotation) {
@@ -771,9 +771,9 @@ function resolveTypeAnnotationInternal(
         resolveTypeAnnotation(ctx, arg),
       );
 
-      // Unboxed tuples cannot appear as type arguments
+      // Inline tuples cannot appear as type arguments
       for (const arg of resolvedArgs) {
-        validateNoUnboxedTuple(arg, ctx, 'type arguments');
+        validateNoInlineTuple(arg, ctx, 'type arguments');
       }
 
       if (type.kind === TypeKind.Class) {
@@ -810,50 +810,50 @@ function resolveTypeAnnotationInternal(
 }
 
 /**
- * Checks if a type contains an unboxed tuple type anywhere in its structure.
- * Used to validate that unboxed tuples only appear in return positions.
+ * Checks if a type contains an inline tuple type anywhere in its structure.
+ * Used to validate that inline tuples only appear in return positions.
  */
-export function containsUnboxedTuple(type: Type): boolean {
+export function containsInlineTuple(type: Type): boolean {
   switch (type.kind) {
-    case TypeKind.UnboxedTuple:
+    case TypeKind.InlineTuple:
       return true;
     case TypeKind.Union:
-      return (type as UnionType).types.some(containsUnboxedTuple);
+      return (type as UnionType).types.some(containsInlineTuple);
     case TypeKind.Array:
-      return containsUnboxedTuple((type as ArrayType).elementType);
+      return containsInlineTuple((type as ArrayType).elementType);
     case TypeKind.Tuple:
-      return (type as TupleType).elementTypes.some(containsUnboxedTuple);
+      return (type as TupleType).elementTypes.some(containsInlineTuple);
     case TypeKind.Record:
       // RecordType.properties is a Map<string, Type>
       for (const propType of (type as RecordType).properties.values()) {
-        if (containsUnboxedTuple(propType)) return true;
+        if (containsInlineTuple(propType)) return true;
       }
       return false;
     case TypeKind.Function:
-      // Return type of nested function may contain unboxed tuple - that's valid
+      // Return type of nested function may contain inline tuple - that's valid
       // But parameters cannot
-      return (type as FunctionType).parameters.some(containsUnboxedTuple);
+      return (type as FunctionType).parameters.some(containsInlineTuple);
     default:
       return false;
   }
 }
 
 /**
- * Validates that a type does not contain unboxed tuples.
- * Unboxed tuples are only allowed in function return types, not in:
+ * Validates that a type does not contain inline tuples.
+ * Inline tuples are only allowed in function return types, not in:
  * - Variable types
  * - Field types
  * - Parameter types
  * - Generic type arguments
  */
-export function validateNoUnboxedTuple(
+export function validateNoInlineTuple(
   type: Type,
   ctx: CheckerContext,
   context: string,
 ) {
-  if (containsUnboxedTuple(type)) {
+  if (containsInlineTuple(type)) {
     ctx.diagnostics.reportError(
-      `Unboxed tuple types can only appear in function return types, not in ${context}.`,
+      `Inline tuple types can only appear in function return types, not in ${context}.`,
       DiagnosticCode.TypeMismatch,
     );
   }

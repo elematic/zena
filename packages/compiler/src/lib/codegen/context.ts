@@ -175,7 +175,7 @@ export class CodegenContext {
   public currentClass: ClassInfo | null = null;
   public currentCheckerType: ClassType | undefined; // For resolving type parameters in instantiated generics
   public currentReturnType: number[] | undefined;
-  public currentCheckerReturnType: Type | undefined; // For generating _ hole literals in unboxed tuples
+  public currentCheckerReturnType: Type | undefined; // For generating _ hole literals in inline tuples
 
   /**
    * Stack of loop targets for break/continue statements.

@@ -1268,7 +1268,7 @@ let x = $;  // Error: '$' can only be used inside a pipeline expression
 
 #### With Tuple Indexing
 
-When the piped value is an unboxed tuple (e.g., from a multi-return function),
+When the piped value is an inline tuple (e.g., from a multi-return function),
 use tuple indexing to access elements:
 
 ```zena
@@ -1438,7 +1438,7 @@ class Counter {
   value: i32;
   #new() { this.value = 0; }
 
-  next(): (true, i32) | (false, never) {
+  next(): inline (true, i32) | inline (false, never) {
     this.value = this.value + 1;
     if (this.value <= 3) {
       return (true, this.value);
@@ -2302,15 +2302,16 @@ let process2 = (t: [Container | null, i32]): i32 => {
 };
 ```
 
-### Unboxed Tuples (Multi-Value Returns)
+### Inline Tuples (Multi-Value Returns)
 
-Unboxed tuples enable functions to return multiple values without heap
-allocation. Unlike regular tuples which are boxed structs, unboxed tuples
-compile directly to WASM multi-value returns.
+Inline tuples enable functions to return multiple values without heap
+allocation. Unlike regular tuples which are boxed structs, inline tuples
+compile directly to WASM multi-value returns. The `inline` keyword is
+required in type position to distinguish them from boxed tuples.
 
 ```zena
-// Function returning an unboxed tuple
-let divide = (a: i32, b: i32): (i32, i32) => {
+// Function returning an inline tuple
+let divide = (a: i32, b: i32): inline (i32, i32) => {
   return (a / b, a % b);  // quotient and remainder
 };
 
@@ -2321,7 +2322,7 @@ let (quot, rem) = divide(17, 5);
 
 **Key differences from boxed tuples:**
 
-- Unboxed tuples use parentheses `(T1, T2)` instead of brackets `[T1, T2]`
+- Inline tuples use `inline (T1, T2)` in type position
 - They only exist in return position and destructuring - they cannot be stored
   in variables or passed as arguments
 - They compile to zero-allocation WASM multi-value returns
@@ -2329,11 +2330,11 @@ let (quot, rem) = divide(17, 5);
 #### Boolean Literal Types
 
 The types `true` and `false` are literal types that are subtypes of `boolean`.
-This enables discriminated unions with unboxed tuples.
+This enables discriminated unions with inline tuples.
 
 ```zena
 // A function that may or may not return a value
-let tryParse = (s: string): (true, i32) | (false, never) => {
+let tryParse = (s: string): inline (true, i32) | inline (false, never) => {
   if (s == "42") {
     return (true, 42);
   }
@@ -2348,7 +2349,7 @@ values, the type system automatically narrows the union based on the literal
 pattern. This enables ergonomic iteration with discriminated unions.
 
 ```zena
-// Iterator.next() returns (true, T) | (false, never)
+// Iterator.next() returns inline (true, T) | inline (false, never)
 // When pattern includes 'true', only (true, T) variants are considered
 while (let (true, elem) = iterator.next()) {
   // elem is narrowed to T (not T | never)
@@ -2365,7 +2366,7 @@ if (let (true, value) = maybeValue()) {
 The narrowing works by filtering tuple union variants based on literal patterns:
 
 ```zena
-let data = (): (true, true, i32) | (true, false, never) | (false, never, never) => { ... };
+let data = (): inline (true, true, i32) | inline (true, false, never) | inline (false, never, never) => { ... };
 
 // Pattern (true, true, value) filters to just the first variant
 if (let (true, true, value) = data()) {

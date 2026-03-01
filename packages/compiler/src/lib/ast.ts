@@ -64,7 +64,7 @@ export const NodeType = {
   RecordLiteral: 'RecordLiteral',
   PropertyAssignment: 'PropertyAssignment',
   TupleLiteral: 'TupleLiteral',
-  UnboxedTupleLiteral: 'UnboxedTupleLiteral',
+  InlineTupleLiteral: 'InlineTupleLiteral',
   IndexExpression: 'IndexExpression',
   TypeParameter: 'TypeParameter',
   InterfaceDeclaration: 'InterfaceDeclaration',
@@ -79,10 +79,10 @@ export const NodeType = {
   RecordTypeAnnotation: 'RecordTypeAnnotation',
   PropertySignature: 'PropertySignature',
   TupleTypeAnnotation: 'TupleTypeAnnotation',
-  UnboxedTupleTypeAnnotation: 'UnboxedTupleTypeAnnotation',
+  InlineTupleTypeAnnotation: 'InlineTupleTypeAnnotation',
   RecordPattern: 'RecordPattern',
   TuplePattern: 'TuplePattern',
-  UnboxedTuplePattern: 'UnboxedTuplePattern',
+  InlineTuplePattern: 'InlineTuplePattern',
   BindingProperty: 'BindingProperty',
   AssignmentPattern: 'AssignmentPattern',
   AsPattern: 'AsPattern',
@@ -308,11 +308,11 @@ export interface TupleLiteral extends Node {
 }
 
 /**
- * Unboxed tuple literal for multi-value returns: (expr1, expr2, ...)
+ * Inline tuple literal for multi-value returns: (expr1, expr2, ...)
  * Unlike boxed tuples [a, b], these exist only on the WASM stack.
  */
-export interface UnboxedTupleLiteral extends Node {
-  type: typeof NodeType.UnboxedTupleLiteral;
+export interface InlineTupleLiteral extends Node {
+  type: typeof NodeType.InlineTupleLiteral;
   elements: Expression[];
 }
 
@@ -342,8 +342,8 @@ export interface TuplePattern extends Node {
   elements: (Pattern | null)[];
 }
 
-export interface UnboxedTuplePattern extends Node {
-  type: typeof NodeType.UnboxedTuplePattern;
+export interface InlineTuplePattern extends Node {
+  type: typeof NodeType.InlineTuplePattern;
   elements: Pattern[];
 }
 
@@ -357,7 +357,7 @@ export type Pattern =
   | Identifier
   | RecordPattern
   | TuplePattern
-  | UnboxedTuplePattern
+  | InlineTuplePattern
   | AssignmentPattern
   | NumberLiteral
   | StringLiteral
@@ -397,7 +397,7 @@ export type Expression =
   | ArrayLiteral
   | RecordLiteral
   | TupleLiteral
-  | UnboxedTupleLiteral
+  | InlineTupleLiteral
   | IndexExpression
   | SuperExpression
   | TemplateLiteral
@@ -843,7 +843,7 @@ export type TypeAnnotation =
   | UnionTypeAnnotation
   | RecordTypeAnnotation
   | TupleTypeAnnotation
-  | UnboxedTupleTypeAnnotation
+  | InlineTupleTypeAnnotation
   | FunctionTypeAnnotation
   | LiteralTypeAnnotation
   | ThisTypeAnnotation;
@@ -884,11 +884,11 @@ export interface TupleTypeAnnotation extends Node {
 }
 
 /**
- * Unboxed tuple type annotation for multi-value returns: (T1, T2, ...)
+ * Inline tuple type annotation for multi-value returns: (T1, T2, ...)
  * Unlike boxed tuple types [T1, T2], these compile to WASM multi-value returns.
  */
-export interface UnboxedTupleTypeAnnotation extends Node {
-  type: typeof NodeType.UnboxedTupleTypeAnnotation;
+export interface InlineTupleTypeAnnotation extends Node {
+  type: typeof NodeType.InlineTupleTypeAnnotation;
   elementTypes: TypeAnnotation[];
 }
 

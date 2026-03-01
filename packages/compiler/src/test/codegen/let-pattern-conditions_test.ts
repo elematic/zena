@@ -6,7 +6,7 @@ suite('let-pattern conditions', () => {
   suite('if (let pattern = expr)', () => {
     test('basic tuple destructuring - true case', async () => {
       const result = await compileAndRun(`
-        let getResult = (): (boolean, i32) => (true, 42);
+        let getResult = (): inline (boolean, i32) => (true, 42);
         
         export let main = (): i32 => {
           if (let (true, value) = getResult()) {
@@ -20,7 +20,7 @@ suite('let-pattern conditions', () => {
 
     test('basic tuple destructuring - false case', async () => {
       const result = await compileAndRun(`
-        let getResult = (): (boolean, i32) => (false, 0);
+        let getResult = (): inline (boolean, i32) => (false, 0);
         
         export let main = (): i32 => {
           if (let (true, value) = getResult()) {
@@ -34,7 +34,7 @@ suite('let-pattern conditions', () => {
 
     test('with else branch', async () => {
       const result = await compileAndRun(`
-        let maybeGet = (flag: boolean): (boolean, i32) => {
+        let maybeGet = (flag: boolean): inline (boolean, i32) => {
           if (flag) {
             return (true, 100);
           }
@@ -55,7 +55,7 @@ suite('let-pattern conditions', () => {
     test('variable scoping - not visible outside if', async () => {
       // The bound variable should only be visible inside the if body
       const result = await compileAndRun(`
-        let getResult = (): (boolean, i32) => (true, 42);
+        let getResult = (): inline (boolean, i32) => (true, 42);
         
         export let main = (): i32 => {
           var result = 0;
@@ -79,7 +79,7 @@ suite('let-pattern conditions', () => {
             this.value = 0;
           }
           
-          next(): (boolean, i32) {
+          next(): inline (boolean, i32) {
             this.value = this.value + 1;
             if (this.value <= 3) {
               return (true, this.value);
@@ -108,7 +108,7 @@ suite('let-pattern conditions', () => {
             this.value = 0;
           }
           
-          next(): (boolean, i32) {
+          next(): inline (boolean, i32) {
             this.value = this.value + 1;
             if (this.value <= 2) {
               return (true, this.value * 10);
@@ -134,7 +134,7 @@ suite('let-pattern conditions', () => {
   suite('with union of tuples', () => {
     test('if let with discriminated union', async () => {
       const result = await compileAndRun(`
-        let maybeValue = (flag: boolean): (true, i32) | (false, never) => {
+        let maybeValue = (flag: boolean): inline (true, i32) | inline (false, never) => {
           if (flag) {
             return (true, 999);
           }
@@ -159,7 +159,7 @@ suite('let-pattern conditions', () => {
             this.index = 0;
           }
           
-          next(): (true, i32) | (false, never) {
+          next(): inline (true, i32) | inline (false, never) {
             this.index = this.index + 1;
             if (this.index <= 3) {
               return (true, this.index);

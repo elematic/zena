@@ -12,7 +12,7 @@ import {
   TypeKind,
   type FunctionType,
   type Type,
-  type UnboxedTupleType,
+  type InlineTupleType,
   type UnionType,
 } from '../types.js';
 import {ExportDesc, Opcode, ValType} from '../wasm.js';
@@ -28,10 +28,10 @@ import type {ClassInfo} from './types.js';
 /**
  * Maps a checker type to an array of WASM value types for use in function signatures.
  * For most types, returns a single-element array containing the mapped type.
- * For UnboxedTupleType, returns multiple elements (one per tuple element) to
+ * For InlineTupleType, returns multiple elements (one per tuple element) to
  * support WASM multi-value returns.
  *
- * For unions of unboxed tuples (e.g., (true, T) | (false, never)), extracts
+ * For unions of inline tuples (e.g., (true, T) | (false, never)), extracts
  * the first tuple variant to determine the WASM signature. At runtime, all
  * variants must have the same WASM representation.
  */
@@ -42,19 +42,19 @@ export function mapReturnTypeToWasmResults(
   if (type.kind === TypeKind.Void || type.kind === TypeKind.Never) {
     return [];
   }
-  if (type.kind === TypeKind.UnboxedTuple) {
-    const tupleType = type as UnboxedTupleType;
+  if (type.kind === TypeKind.InlineTuple) {
+    const tupleType = type as InlineTupleType;
     return tupleType.elementTypes.map((el) =>
       mapCheckerTypeToWasmType(ctx, el),
     );
   }
-  // Handle union of unboxed tuples: (true, T) | (false, never)
+  // Handle union of inline tuples: (true, T) | (false, never)
   if (type.kind === TypeKind.Union) {
     const unionType = type as UnionType;
-    // Find the first unboxed tuple in the union to get the WASM signature
+    // Find the first inline tuple in the union to get the WASM signature
     for (const t of unionType.types) {
-      if (t.kind === TypeKind.UnboxedTuple) {
-        const tupleType = t as UnboxedTupleType;
+      if (t.kind === TypeKind.InlineTuple) {
+        const tupleType = t as InlineTupleType;
         return tupleType.elementTypes.map((el) =>
           mapCheckerTypeToWasmType(ctx, el),
         );

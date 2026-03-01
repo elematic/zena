@@ -209,7 +209,7 @@ and coding standards, see [AGENTS.md](./AGENTS.md).
 
 - **Syntax**:
   - Pipeline operator (`|>`) with `$` placeholder. See [`docs/design/pipelines.md`](./docs/design/pipelines.md).
-  - Tuple indexing (`expr[0]` for unboxed tuples).
+  - Tuple indexing (`expr[0]` for inline tuples).
   - Block expressions (blocks that return their last expression).
   - JSX-like builder syntax.
 - **Type System**:

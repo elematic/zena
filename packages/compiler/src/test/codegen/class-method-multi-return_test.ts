@@ -7,7 +7,7 @@ suite('class method multi-value returns', () => {
     test('_ generates correct type for reference type element', async () => {
       // This test verifies that ctx.currentCheckerReturnType is properly set
       // for class methods, which is needed to generate the correct zero-value
-      // for `_` hole literals in unboxed tuple returns.
+      // for `_` hole literals in inline tuple returns.
       //
       // Previously, `_` would generate i32 0 instead of ref.null because
       // currentCheckerReturnType was only set for top-level functions.
@@ -28,7 +28,7 @@ suite('class method multi-value returns', () => {
           }
 
           // Returns union of tuples with reference type element
-          next(): (true, Wrapper) | (false, never) {
+          next(): inline (true, Wrapper) | inline (false, never) {
             if (this.#done) {
               // The _ here must generate ref.null, not i32 0
               return (false, _);
@@ -65,7 +65,7 @@ suite('class method multi-value returns', () => {
             this.#max = max;
           }
 
-          next(): (true, i32) | (false, never) {
+          next(): inline (true, i32) | inline (false, never) {
             if (this.#count >= this.#max) {
               return (false, _);
             }
@@ -108,7 +108,7 @@ suite('class method multi-value returns', () => {
             return opt;
           }
 
-          unwrap(): (true, Box<i32>) | (false, never) {
+          unwrap(): inline (true, Box<i32>) | inline (false, never) {
             if (this.#hasValue) {
               return (true, this.#box);
             }
@@ -142,7 +142,7 @@ suite('class method multi-value returns', () => {
   });
 
   suite('multi-value return type registration', () => {
-    test('class method with plain unboxed tuple return', async () => {
+    test('class method with plain inline tuple return', async () => {
       const source = `
         class Point {
           #x: i32;
@@ -153,7 +153,7 @@ suite('class method multi-value returns', () => {
             this.#y = y;
           }
 
-          getCoords(): (i32, i32) {
+          getCoords(): inline (i32, i32) {
             return (this.#x, this.#y);
           }
         }
@@ -174,7 +174,7 @@ suite('class method multi-value returns', () => {
       // Use multiplication instead of division to avoid f32 issues
       const source = `
         class Calculator {
-          safeMul(a: i32, b: i32, limit: i32): (true, i32) | (false, never) {
+          safeMul(a: i32, b: i32, limit: i32): inline (true, i32) | inline (false, never) {
             let result = a * b;
             if (result > limit) {
               return (false, _);

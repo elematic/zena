@@ -3,9 +3,9 @@ import assert from 'node:assert';
 import {compileAndRun} from './utils.js';
 
 suite('tuple narrowing', () => {
-  // Note: Checker supports narrowing for both boxed and unboxed tuples,
-  // but codegen currently only supports unboxed tuples in if-let/while-let.
-  // The narrowing logic works on TypeKind.Tuple and TypeKind.UnboxedTuple equally.
+  // Note: Checker supports narrowing for both boxed and inline tuples,
+  // but codegen currently only supports inline tuples in if-let/while-let.
+  // The narrowing logic works on TypeKind.Tuple and TypeKind.InlineTuple equally.
 
   test('while (let (true, elem) = ...) narrows elem from T | never to T', async () => {
     // Pattern (true, elem) against (true, i32) | (false, never) should narrow
@@ -20,7 +20,7 @@ suite('tuple narrowing', () => {
           this.count = 0;
         }
         
-        next(): (true, i32) | (false, never) {
+        next(): inline (true, i32) | inline (false, never) {
           if (this.count < 3) {
             let current = this.count;
             this.count = this.count + 1;
@@ -49,7 +49,7 @@ suite('tuple narrowing', () => {
   test('if-let tuple pattern narrows second element', async () => {
     const result = await compileAndRun(
       `
-      let getResult = (flag: boolean): (true, i32) | (false, never) => {
+      let getResult = (flag: boolean): inline (true, i32) | inline (false, never) => {
         if (flag) return (true, 42);
         return (false, _);
       };
@@ -71,7 +71,7 @@ suite('tuple narrowing', () => {
   test('if (let (true, value) = ...) narrows value', async () => {
     const result = await compileAndRun(
       `
-      let maybeValue = (flag: boolean): (true, i32) | (false, never) => {
+      let maybeValue = (flag: boolean): inline (true, i32) | inline (false, never) => {
         if (flag) return (true, 100);
         return (false, _);
       };
@@ -92,7 +92,7 @@ suite('tuple narrowing', () => {
     // Test narrowing with literals in multiple positions
     const result = await compileAndRun(
       `
-      let data = (): (true, true, i32) | (true, false, never) | (false, never, never) => {
+      let data = (): inline (true, true, i32) | inline (true, false, never) | inline (false, never, never) => {
         return (true, true, 42);
       };
 
@@ -114,7 +114,7 @@ suite('tuple narrowing', () => {
     // When narrowing doesn't completely eliminate, union of remaining types is used
     const result = await compileAndRun(
       `
-      let getNumber = (x: i32): (true, i32) | (true, i32) => {
+      let getNumber = (x: i32): inline (true, i32) | inline (true, i32) => {
         if (x > 0) return (true, x);
         return (true, 0);
       };
@@ -136,7 +136,7 @@ suite('tuple narrowing', () => {
   test('boolean literal narrowing with false', async () => {
     const result = await compileAndRun(
       `
-      let errorOrValue = (): (false, i32) | (true, never) => {
+      let errorOrValue = (): inline (false, i32) | inline (true, never) => {
         return (false, 99);
       };
 

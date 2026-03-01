@@ -19,27 +19,27 @@
 
 ## Passing Success Tests (28)
 
-| Test                               | Notes |
-| ---------------------------------- | ----- |
-| async.wit                          | ✅    |
-| empty.wit                          | ✅    |
+| Test                               | Notes  |
+| ---------------------------------- | ------ |
+| async.wit                          | ✅     |
+| empty.wit                          | ✅     |
 | error-context.wit                  | ✅ NEW |
-| functions.wit                      | ✅    |
-| import-export-overlap1.wit         | ✅    |
-| package-syntax1.wit                | ✅    |
-| package-syntax3.wit                | ✅    |
-| package-syntax4.wit                | ✅    |
-| random.wit                         | ✅    |
-| resources-empty.wit                | ✅    |
+| functions.wit                      | ✅     |
+| import-export-overlap1.wit         | ✅     |
+| package-syntax1.wit                | ✅     |
+| package-syntax3.wit                | ✅     |
+| package-syntax4.wit                | ✅     |
+| random.wit                         | ✅     |
+| resources-empty.wit                | ✅     |
 | resources-multiple-returns-own.wit | ✅ NEW |
-| resources-multiple.wit             | ✅    |
-| resources-return-own.wit           | ✅    |
+| resources-multiple.wit             | ✅     |
+| resources-return-own.wit           | ✅     |
 | resources1.wit                     | ✅ NEW |
-| same-name-import-export.wit        | ✅    |
-| type-then-eof.wit                  | ✅    |
-| union-fuzz-1.wit                   | ✅    |
-| wasi.wit                           | ✅    |
-| world-top-level-funcs.wit          | ✅    |
+| same-name-import-export.wit        | ✅     |
+| type-then-eof.wit                  | ✅     |
+| union-fuzz-1.wit                   | ✅     |
+| wasi.wit                           | ✅     |
+| world-top-level-funcs.wit          | ✅     |
 | comments.wit                       | ✅ NEW |
 
 ## Failing Success Tests by Category

@@ -34,7 +34,7 @@ import {
   type TuplePattern,
   type TypeAliasDeclaration,
   type TypeParameter,
-  type UnboxedTuplePattern,
+  type InlineTuplePattern,
   type VariableDeclaration,
   type WhileStatement,
 } from '../ast.js';
@@ -63,7 +63,7 @@ import {
   type Type,
   type TypeAliasType,
   type TypeParameterType,
-  type UnboxedTupleType,
+  type InlineTupleType,
   type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
@@ -80,7 +80,7 @@ import {
   substituteType,
   typeToString,
   validateType,
-  validateNoUnboxedTuple,
+  validateNoInlineTuple,
   widenLiteralType,
 } from './types.js';
 
@@ -1772,8 +1772,8 @@ function checkVariableDeclaration(
   if (decl.typeAnnotation) {
     const explicitType = resolveTypeAnnotation(ctx, decl.typeAnnotation);
 
-    // Unboxed tuples cannot appear in variable type annotations
-    validateNoUnboxedTuple(explicitType, ctx, 'variable types');
+    // Inline tuples cannot appear in variable type annotations
+    validateNoInlineTuple(explicitType, ctx, 'variable types');
 
     // Special handling for literal types
     let compatible = isAssignableTo(ctx, type, explicitType);
@@ -1883,10 +1883,10 @@ function checkPattern(
       checkTuplePattern(ctx, pattern, type, kind, declaration);
       break;
 
-    case NodeType.UnboxedTuplePattern:
-      checkUnboxedTuplePattern(
+    case NodeType.InlineTuplePattern:
+      checkInlineTuplePattern(
         ctx,
-        pattern as UnboxedTuplePattern,
+        pattern as InlineTuplePattern,
         type,
         kind,
         declaration,
@@ -1994,24 +1994,24 @@ function checkTuplePattern(
 }
 
 /**
- * Check an unboxed tuple pattern like `let (a, b) = expr`.
- * The initializer must be an UnboxedTupleType or a union of UnboxedTupleTypes
+ * Check an inline tuple pattern like `let (a, b) = expr`.
+ * The initializer must be an InlineTupleType or a union of InlineTupleTypes
  * with matching element count.
  */
-function checkUnboxedTuplePattern(
+function checkInlineTuplePattern(
   ctx: CheckerContext,
-  pattern: UnboxedTuplePattern,
+  pattern: InlineTuplePattern,
   type: Type,
   kind: 'let' | 'var',
   declaration?: VariableDeclaration,
 ) {
-  // Handle union of unboxed tuples: (true, T) | (false, never)
+  // Handle union of inline tuples: (true, T) | (false, never)
   // Compute element types as unions across all tuple variants
-  const elementTypes = getUnboxedTupleElementTypes(type);
+  const elementTypes = getInlineTupleElementTypes(type);
 
   if (elementTypes === null) {
     ctx.diagnostics.reportError(
-      `Unboxed tuple pattern requires an unboxed tuple type, got '${typeToString(type)}'`,
+      `Inline tuple pattern requires an inline tuple type, got '${typeToString(type)}'`,
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(pattern.loc),
     );
@@ -2020,7 +2020,7 @@ function checkUnboxedTuplePattern(
 
   if (pattern.elements.length !== elementTypes.length) {
     ctx.diagnostics.reportError(
-      `Unboxed tuple pattern has ${pattern.elements.length} elements but type has ${elementTypes.length}`,
+      `Inline tuple pattern has ${pattern.elements.length} elements but type has ${elementTypes.length}`,
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(pattern.loc),
     );
@@ -2033,28 +2033,28 @@ function checkUnboxedTuplePattern(
 }
 
 /**
- * Extract element types from an unboxed tuple type or union of unboxed tuples.
+ * Extract element types from an inline tuple type or union of inline tuples.
  * For unions, returns the union of element types at each position.
- * Returns null if the type is not an unboxed tuple or union of unboxed tuples.
+ * Returns null if the type is not an inline tuple or union of inline tuples.
  *
  * Examples:
  * - `(i32, boolean)` -> [i32, boolean]
  * - `(true, i32) | (false, never)` -> [true | false, i32 | never]
  */
-function getUnboxedTupleElementTypes(type: Type): Type[] | null {
-  if (type.kind === TypeKind.UnboxedTuple) {
-    return (type as UnboxedTupleType).elementTypes;
+function getInlineTupleElementTypes(type: Type): Type[] | null {
+  if (type.kind === TypeKind.InlineTuple) {
+    return (type as InlineTupleType).elementTypes;
   }
 
   if (type.kind === TypeKind.Union) {
     const unionType = type as UnionType;
-    const tuples: UnboxedTupleType[] = [];
+    const tuples: InlineTupleType[] = [];
 
     for (const t of unionType.types) {
-      if (t.kind !== TypeKind.UnboxedTuple) {
+      if (t.kind !== TypeKind.InlineTuple) {
         return null; // Union contains non-tuple type
       }
-      tuples.push(t as UnboxedTupleType);
+      tuples.push(t as InlineTupleType);
     }
 
     if (tuples.length === 0) {
@@ -2737,8 +2737,8 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       const memberNameInfo = resolveMemberName(ctx, member.name);
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
 
-      // Unboxed tuples cannot appear in field types
-      validateNoUnboxedTuple(fieldType, ctx, 'field types');
+      // Inline tuples cannot appear in field types
+      validateNoInlineTuple(fieldType, ctx, 'field types');
 
       if (memberNameInfo.isSymbol) {
         classType.symbolFields!.set(memberNameInfo.symbolType!, fieldType);
@@ -2854,8 +2854,8 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       const memberNameInfo = resolveMemberName(ctx, member.name);
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
 
-      // Unboxed tuples cannot appear in accessor types
-      validateNoUnboxedTuple(fieldType, ctx, 'accessor types');
+      // Inline tuples cannot appear in accessor types
+      validateNoInlineTuple(fieldType, ctx, 'accessor types');
 
       if (memberNameInfo.isSymbol) {
         classType.symbolFields!.set(memberNameInfo.symbolType!, fieldType);
@@ -3438,8 +3438,8 @@ function checkInterfaceDeclaration(
     } else if (member.type === NodeType.FieldDefinition) {
       const type = resolveTypeAnnotation(ctx, member.typeAnnotation);
 
-      // Unboxed tuples cannot appear in interface field types
-      validateNoUnboxedTuple(type, ctx, 'field types');
+      // Inline tuples cannot appear in interface field types
+      validateNoInlineTuple(type, ctx, 'field types');
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
@@ -3477,8 +3477,8 @@ function checkInterfaceDeclaration(
     } else if (member.type === NodeType.AccessorSignature) {
       const type = resolveTypeAnnotation(ctx, member.typeAnnotation);
 
-      // Unboxed tuples cannot appear in accessor types
-      validateNoUnboxedTuple(type, ctx, 'accessor types');
+      // Inline tuples cannot appear in accessor types
+      validateNoInlineTuple(type, ctx, 'accessor types');
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
@@ -3888,8 +3888,8 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     if (member.type === NodeType.FieldDefinition) {
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
 
-      // Unboxed tuples cannot appear in mixin field types
-      validateNoUnboxedTuple(fieldType, ctx, 'field types');
+      // Inline tuples cannot appear in mixin field types
+      validateNoInlineTuple(fieldType, ctx, 'field types');
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {
@@ -3973,8 +3973,8 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     } else if (member.type === NodeType.AccessorDeclaration) {
       const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
 
-      // Unboxed tuples cannot appear in accessor types
-      validateNoUnboxedTuple(fieldType, ctx, 'accessor types');
+      // Inline tuples cannot appear in accessor types
+      validateNoInlineTuple(fieldType, ctx, 'accessor types');
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
       if (memberNameInfo.isSymbol) {

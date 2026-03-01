@@ -36,7 +36,7 @@ import {
   type TupleLiteral,
   type TuplePattern,
   type UnaryExpression,
-  type UnboxedTupleLiteral,
+  type InlineTupleLiteral,
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
 import {getGetterName, getSetterName, getSignatureKey} from '../names.js';
@@ -53,7 +53,7 @@ import {
   type NumberType,
   type RecordType,
   type Type,
-  type UnboxedTupleType,
+  type InlineTupleType,
   type UnionType,
 } from '../types.js';
 import {
@@ -105,22 +105,22 @@ import {
 
 /**
  * Get the expected WASM return types for a checker type.
- * For unboxed tuples and unions of unboxed tuples, returns array of WASM types for each element.
+ * For inline tuples and unions of inline tuples, returns array of WASM types for each element.
  * For single values, returns array with one element.
  */
 function getExpectedReturnTypes(ctx: CodegenContext, type: Type): number[][] {
-  if (type.kind === TypeKind.UnboxedTuple) {
-    const tupleType = type as UnboxedTupleType;
+  if (type.kind === TypeKind.InlineTuple) {
+    const tupleType = type as InlineTupleType;
     return tupleType.elementTypes.map((el) =>
       mapCheckerTypeToWasmType(ctx, el),
     );
   }
   if (type.kind === TypeKind.Union) {
     const unionType = type as UnionType;
-    // For unions of unboxed tuples, find the first tuple and use its types
+    // For unions of inline tuples, find the first tuple and use its types
     for (const t of unionType.types) {
-      if (t.kind === TypeKind.UnboxedTuple) {
-        const tupleType = t as UnboxedTupleType;
+      if (t.kind === TypeKind.InlineTuple) {
+        const tupleType = t as InlineTupleType;
         return tupleType.elementTypes.map((el) =>
           mapCheckerTypeToWasmType(ctx, el),
         );
@@ -233,8 +233,8 @@ export function generateExpression(
     case NodeType.RangeExpression:
       generateRangeExpression(ctx, expression as RangeExpression, body);
       break;
-    case NodeType.UnboxedTupleLiteral:
-      generateUnboxedTupleLiteral(ctx, expression as UnboxedTupleLiteral, body);
+    case NodeType.InlineTupleLiteral:
+      generateInlineTupleLiteral(ctx, expression as InlineTupleLiteral, body);
       break;
     case NodeType.PipelineExpression:
       generatePipelineExpression(ctx, expression as PipelineExpression, body);
@@ -1128,8 +1128,8 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
     const ident = expr as Identifier;
     const local = ctx.getLocal(ident.name);
     if (local) {
-      // For celled locals (mutual recursion), the actual value type is unboxedType
-      // because generateFromBinding reads from the cell
+      // For celled locals (mutual recursion), the actual value type is
+      // unboxedType because generateFromBinding reads from the cell
       if (local.isCelled && local.unboxedType) {
         return local.unboxedType;
       }
@@ -7599,7 +7599,7 @@ function generateTupleLiteral(
 }
 
 /**
- * Generates an unboxed tuple literal for multi-value returns.
+ * Generates an inline tuple literal for multi-value returns.
  * Simply pushes each element's value onto the stack in order.
  * The values stay on the stack for the return instruction.
  *
@@ -7607,9 +7607,9 @@ function generateTupleLiteral(
  * discriminated unions like `(false, _)` where the return type is
  * `(true, T) | (false, never)`.
  */
-function generateUnboxedTupleLiteral(
+function generateInlineTupleLiteral(
   ctx: CodegenContext,
-  expr: UnboxedTupleLiteral,
+  expr: InlineTupleLiteral,
   body: number[],
 ) {
   // Get the expected element types from the function's return type.
@@ -7637,8 +7637,8 @@ function generateUnboxedTupleLiteral(
 }
 
 /**
- * Get the expected element types for an unboxed tuple from the current function's return type.
- * Handles both plain unboxed tuples and unions of unboxed tuples.
+ * Get the expected element types for an inline tuple from the current function's return type.
+ * Handles both plain inline tuples and unions of inline tuples.
  */
 function getExpectedTupleElementTypes(
   ctx: CodegenContext,
@@ -7647,8 +7647,8 @@ function getExpectedTupleElementTypes(
   const returnType = ctx.currentCheckerReturnType;
   if (!returnType) return undefined;
 
-  if (returnType.kind === TypeKind.UnboxedTuple) {
-    return (returnType as UnboxedTupleType).elementTypes;
+  if (returnType.kind === TypeKind.InlineTuple) {
+    return (returnType as InlineTupleType).elementTypes;
   }
 
   if (returnType.kind === TypeKind.Union) {
@@ -7656,8 +7656,8 @@ function getExpectedTupleElementTypes(
     // (all members must have compatible WASM representations)
     const unionType = returnType as UnionType;
     for (const member of unionType.types) {
-      if (member.kind === TypeKind.UnboxedTuple) {
-        return (member as UnboxedTupleType).elementTypes;
+      if (member.kind === TypeKind.InlineTuple) {
+        return (member as InlineTupleType).elementTypes;
       }
     }
   }
@@ -7667,7 +7667,7 @@ function getExpectedTupleElementTypes(
 
 /**
  * Generate a default/zero value for a given checker type.
- * Used for `_` hole literals in unboxed tuples.
+ * Used for `_` hole literals in inline tuples.
  */
 function generateDefaultValue(
   ctx: CodegenContext,

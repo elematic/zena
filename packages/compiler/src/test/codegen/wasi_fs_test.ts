@@ -65,7 +65,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
 
       // Read a file and return [dataPtr, dataLen] for inspection
       // Returns [-1, errorCode] on error
-      export let readFileToMemory = (path: string): (i32, i32) => {
+      export let readFileToMemory = (path: string): inline (i32, i32) => {
         // Get preopened directories
         let preopensPtr = alloc(16);
         wasiGetDirectories(preopensPtr);
@@ -106,7 +106,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
       };
 
       // Test function that reads hello.txt
-      export let main = (): (i32, i32) => {
+      export let main = (): inline (i32, i32) => {
         return readFileToMemory("hello.txt");
       };
     `;
@@ -309,7 +309,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
       };
 
       // Get name of first file - returns [ptr, len] for TS to decode
-      export let getFirstFileName = (): (i32, i32) => {
+      export let getFirstFileName = (): inline (i32, i32) => {
         let preopensPtr = alloc(16);
         wasiGetDirectories(preopensPtr);
         let listPtr = load32(preopensPtr);

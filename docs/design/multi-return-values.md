@@ -92,9 +92,9 @@ parameters rather than using locals.
 
 ## Design
 
-### Syntax: Unboxed Tuple Types
+### Syntax: Inline Tuple Types
 
-Introduce `(T1, T2, ...)` as an **unboxed tuple type**:
+Introduce `(T1, T2, ...)` as an **inline tuple type**:
 
 ```zena
 // Multi-return function
@@ -109,7 +109,7 @@ let pair = (): (i32, i32) => (1, 2);
 **Key distinction from boxed tuples:**
 
 - `[i32, i32]` - Boxed tuple, heap-allocated struct
-- `(i32, i32)` - Unboxed tuple, exists only on WASM stack
+- `(i32, i32)` - Inline tuple, exists only on WASM stack
 
 ### Destructuring at Call Sites
 
@@ -227,7 +227,7 @@ return (false, _);
 // Multiple holes
 return (_, _, 99);
 
-// NOT allowed outside of unboxed tuples (type is never)
+// NOT allowed outside of inline tuples (type is never)
 let x = _;  // Error: cannot infer type
 foo(_);     // Error: _ (never) not assignable to parameter type
 ```
@@ -378,9 +378,9 @@ call_ref (type $next_sig)
 
 ## Type System
 
-### Unboxed Tuples Are Not First-Class
+### Inline Tuples Are Not First-Class
 
-Unboxed tuples have restrictions:
+Inline tuples have restrictions:
 
 - Cannot be stored in variables (only destructured immediately)
 - Cannot be fields in structs/classes
@@ -391,8 +391,8 @@ Unboxed tuples have restrictions:
 // Allowed
 let (a, b) = getTuple();
 
-// NOT allowed - unboxed tuples can't be stored
-let t = getTuple();  // Error: unboxed tuple must be destructured
+// NOT allowed - inline tuples can't be stored
+let t = getTuple();  // Error: inline tuple must be destructured
 let t: (i32, i32) = getTuple();  // Error: same
 ```
 
@@ -400,7 +400,7 @@ This ensures they compile to stack values, not heap allocations.
 
 ### Boxed Tuple Coercion
 
-An unboxed tuple can be explicitly boxed:
+An inline tuple can be explicitly boxed:
 
 ```zena
 let boxed: [i32, i32] = [getTuple()...];  // Spread into boxed tuple
@@ -462,15 +462,15 @@ to WASM.
 
 ### Phase 1: Parser & AST
 
-- [ ] Add `UnboxedTupleType` AST node
+- [ ] Add `InlineTupleType` AST node
 - [ ] Parse `(T1, T2)` return type syntax
 - [ ] Parse `(expr1, expr2)` return expressions
 - [ ] Parse `let (a, b) = expr` destructuring
 
 ### Phase 2: Type Checker
 
-- [ ] Add `UnboxedTupleType` to type system
-- [ ] Validate unboxed tuples only in return position
+- [ ] Add `InlineTupleType` to type system
+- [ ] Validate inline tuples only in return position
 - [ ] Check destructuring patterns match tuple arity
 - [ ] Type inference for tuple elements
 
@@ -490,7 +490,7 @@ to WASM.
 
 ### Phase 5: Pattern Matching
 
-- [ ] Support unboxed tuple patterns in `match`
+- [ ] Support inline tuple patterns in `match`
 - [ ] Support `if (let pattern = expr)`
 - [ ] Support `while (let pattern = expr)`
 
@@ -536,7 +536,7 @@ to WASM.
 
    **Requirements:**
    - Literal types for `true` and `false` (not just `boolean`)
-   - Union types on unboxed tuples
+   - Union types on inline tuples
    - Control-flow narrowing based on tuple element values
 
    **WASM representation:** Unchanged - still `(i32, anyref)`. The union is
@@ -564,7 +564,7 @@ to WASM.
 
 ### Tuple Indexing
 
-Support the `[]` operator on unboxed tuples with compile-time integer literals:
+Support the `[]` operator on inline tuples with compile-time integer literals:
 
 ```zena
 let name = person.getFirstAndLastName()[0]  // first name

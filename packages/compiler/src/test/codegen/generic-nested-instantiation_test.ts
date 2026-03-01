@@ -102,7 +102,7 @@ export let main = (): i32 => {
     assert.strictEqual(result, 42);
   });
 
-  // Test with multi-value return (union of unboxed tuples) which was part of
+  // Test with multi-value return (union of inline tuples) which was part of
   // the original failure in MapEntryIterator.next()
   test('generic class with multi-value return creating another generic', async () => {
     const source = `
@@ -128,7 +128,7 @@ class EntryIterator<K, V> {
 
   // Multi-value return with a generic class - the return type involves
   // Entry<K, V> which must be correctly resolved
-  next(): (true, Entry<K, V>) | (false, never) {
+  next(): inline (true, Entry<K, V>) | inline (false, never) {
     if (this.hasMore) {
       this.hasMore = false;
       return (true, new Entry<K, V>(this.currentKey, this.currentValue));

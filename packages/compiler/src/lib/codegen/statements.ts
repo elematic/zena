@@ -13,7 +13,7 @@ import {
   type ReturnStatement,
   type Statement,
   type TuplePattern,
-  type UnboxedTuplePattern,
+  type InlineTuplePattern,
   type VariableDeclaration,
   type WhileStatement,
 } from '../ast.js';
@@ -25,7 +25,7 @@ import {
   type SymbolType,
   type Type,
   type TypeAliasType,
-  type UnboxedTupleType,
+  type InlineTupleType,
   type UnionType,
 } from '../types.js';
 import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
@@ -157,7 +157,8 @@ export function generateBlockStatement(
         ...WasmModule.encodeSignedLEB128(cellTypeIndex),
       );
 
-      // Declare local for the cell, marked as celled with the closure type as unboxedType
+      // Declare local for the cell, marked as celled with the closure type as
+      // unboxedType
       const localIndex = ctx.declareLocal(
         name, // Use the name from the Map key instead
         cellWasmType,
@@ -315,7 +316,7 @@ export function generateWhileStatement(
 /**
  * Generate code for `if (let pattern = expr) { consequent } else { alternate }`
  *
- * For unboxed tuple patterns like `if (let (true, value) = getResult())`:
+ * For inline tuple patterns like `if (let (true, value) = getResult())`:
  * 1. Evaluate the expression (pushes values onto stack)
  * 2. Store values in temp locals
  * 3. Check if pattern matches (e.g., first value == true)
@@ -332,19 +333,19 @@ function generateIfLetStatement(
   const initType = letPattern.init.inferredType;
   const pattern = letPattern.pattern;
 
-  // For now, only support unboxed tuple patterns
-  if (pattern.type !== NodeType.UnboxedTuplePattern) {
+  // For now, only support inline tuple patterns
+  if (pattern.type !== NodeType.InlineTuplePattern) {
     throw new Error(
-      `if (let ...) only supports unboxed tuple patterns, got ${pattern.type}`,
+      `if (let ...) only supports inline tuple patterns, got ${pattern.type}`,
     );
   }
 
-  const tuplePattern = pattern as UnboxedTuplePattern;
-  const elementTypes = getUnboxedTupleElementTypes(initType);
+  const tuplePattern = pattern as InlineTuplePattern;
+  const elementTypes = getInlineTupleElementTypes(initType);
 
   if (elementTypes === null) {
     throw new Error(
-      `if (let ...) expected unboxed tuple type, got ${initType?.kind}`,
+      `if (let ...) expected inline tuple type, got ${initType?.kind}`,
     );
   }
 
@@ -408,18 +409,18 @@ function generateWhileLetStatement(
   const initType = letPattern.init.inferredType;
   const pattern = letPattern.pattern;
 
-  if (pattern.type !== NodeType.UnboxedTuplePattern) {
+  if (pattern.type !== NodeType.InlineTuplePattern) {
     throw new Error(
-      `while (let ...) only supports unboxed tuple patterns, got ${pattern.type}`,
+      `while (let ...) only supports inline tuple patterns, got ${pattern.type}`,
     );
   }
 
-  const tuplePattern = pattern as UnboxedTuplePattern;
-  const elementTypes = getUnboxedTupleElementTypes(initType);
+  const tuplePattern = pattern as InlineTuplePattern;
+  const elementTypes = getInlineTupleElementTypes(initType);
 
   if (elementTypes === null) {
     throw new Error(
-      `while (let ...) expected unboxed tuple type, got ${initType?.kind}`,
+      `while (let ...) expected inline tuple type, got ${initType?.kind}`,
     );
   }
 
@@ -690,7 +691,7 @@ function generateIteratorMethodCall(
 /**
  * Generate code to call .next() on an Iterator interface.
  * Expects the iterator (fat pointer) to already be on the stack.
- * Pushes (i32, T) onto the stack (the unboxed tuple return).
+ * Pushes (i32, T) onto the stack (the inline tuple return).
  *
  * TODO: This duplicates interface dispatch logic from generateCallExpression.
  * Consider extracting a shared helper for interface method dispatch so that
@@ -814,7 +815,7 @@ function getInterfaceWasmType(
 }
 
 /**
- * Generate code to check if an unboxed tuple pattern matches.
+ * Generate code to check if an inline tuple pattern matches.
  * Pushes i32 (1 = match, 0 = no match) onto the stack.
  *
  * For pattern `(true, value)`:
@@ -823,7 +824,7 @@ function getInterfaceWasmType(
  */
 function generateLetPatternCheck(
   ctx: CodegenContext,
-  pattern: UnboxedTuplePattern,
+  pattern: InlineTuplePattern,
   tempLocals: number[],
   elementTypes: Type[],
   body: number[],
@@ -860,12 +861,12 @@ function generateLetPatternCheck(
 }
 
 /**
- * Generate code to bind variables from an unboxed tuple pattern.
+ * Generate code to bind variables from an inline tuple pattern.
  * Called after pattern check succeeds - copies temp locals to named locals.
  */
 function generateLetPatternBindings(
   ctx: CodegenContext,
-  pattern: UnboxedTuplePattern,
+  pattern: InlineTuplePattern,
   tempLocals: number[],
   elementTypes: Type[],
   body: number[],
@@ -998,10 +999,10 @@ export function generateLocalVariableDeclaration(
   decl: VariableDeclaration,
   body: number[],
 ) {
-  // Special handling for unboxed tuple patterns: let (a, b) = expr
+  // Special handling for inline tuple patterns: let (a, b) = expr
   // The expr returns multiple values on the stack, we pop them in reverse order
-  if (decl.pattern.type === NodeType.UnboxedTuplePattern) {
-    generateUnboxedTuplePatternBinding(ctx, decl, body);
+  if (decl.pattern.type === NodeType.InlineTuplePattern) {
+    generateInlineTuplePatternBinding(ctx, decl, body);
     return;
   }
 
@@ -1199,36 +1200,36 @@ export function generateLocalVariableDeclaration(
 }
 
 /**
- * Generate binding for unboxed tuple pattern: let (a, b) = expr
+ * Generate binding for inline tuple pattern: let (a, b) = expr
  *
- * Unlike boxed tuples where values are in a struct, unboxed tuples
+ * Unlike boxed tuples where values are in a struct, inline tuples
  * have their values directly on the WASM stack. We need to:
  * 1. Generate the expression (pushes N values onto stack)
  * 2. Pop values in REVERSE order to locals (WASM stack is LIFO)
  *
- * Supports unions of unboxed tuples (e.g., (true, T) | (false, never)):
+ * Supports unions of inline tuples (e.g., (true, T) | (false, never)):
  * At runtime, the union is erased - we just have the WASM values on the stack.
  */
-function generateUnboxedTuplePatternBinding(
+function generateInlineTuplePatternBinding(
   ctx: CodegenContext,
   decl: VariableDeclaration,
   body: number[],
 ) {
-  const pattern = decl.pattern as UnboxedTuplePattern;
+  const pattern = decl.pattern as InlineTuplePattern;
   const initType = decl.init.inferredType;
 
-  // Extract element types from unboxed tuple or union of unboxed tuples
-  const elementTypes = getUnboxedTupleElementTypes(initType);
+  // Extract element types from inline tuple or union of inline tuples
+  const elementTypes = getInlineTupleElementTypes(initType);
 
   if (elementTypes === null) {
     throw new Error(
-      `Expected UnboxedTupleType for unboxed tuple pattern, got ${initType?.kind}`,
+      `Expected InlineTupleType for inline tuple pattern, got ${initType?.kind}`,
     );
   }
 
   if (pattern.elements.length !== elementTypes.length) {
     throw new Error(
-      `Unboxed tuple pattern has ${pattern.elements.length} elements but type has ${elementTypes.length}`,
+      `Inline tuple pattern has ${pattern.elements.length} elements but type has ${elementTypes.length}`,
     );
   }
 
@@ -1250,34 +1251,34 @@ function generateUnboxedTuplePatternBinding(
       body.push(...WasmModule.encodeSignedLEB128(index));
     } else {
       // For nested patterns, store in temp and recurse
-      const tempIndex = ctx.declareLocal('$$temp_unboxed', wasmType);
+      const tempIndex = ctx.declareLocal('$$temp_inline', wasmType);
       body.push(Opcode.local_set);
       body.push(...WasmModule.encodeSignedLEB128(tempIndex));
       // TODO: Generate nested pattern binding from temp local
-      throw new Error('Nested patterns in unboxed tuple not yet supported');
+      throw new Error('Nested patterns in inline tuple not yet supported');
     }
   }
 }
 
 /**
- * Extract element types from an unboxed tuple type or union of unboxed tuples.
+ * Extract element types from an inline tuple type or union of inline tuples.
  * For unions, uses the first variant's element types (they must all have the same
  * WASM representation, just different static types).
- * Returns null if the type is not an unboxed tuple or union of unboxed tuples.
+ * Returns null if the type is not an inline tuple or union of inline tuples.
  */
-function getUnboxedTupleElementTypes(type: Type | undefined): Type[] | null {
+function getInlineTupleElementTypes(type: Type | undefined): Type[] | null {
   if (!type) return null;
 
-  if (type.kind === TypeKind.UnboxedTuple) {
-    return (type as UnboxedTupleType).elementTypes;
+  if (type.kind === TypeKind.InlineTuple) {
+    return (type as InlineTupleType).elementTypes;
   }
 
   if (type.kind === TypeKind.Union) {
     const unionType = type as UnionType;
-    // Find the first unboxed tuple in the union
+    // Find the first inline tuple in the union
     for (const t of unionType.types) {
-      if (t.kind === TypeKind.UnboxedTuple) {
-        return (t as UnboxedTupleType).elementTypes;
+      if (t.kind === TypeKind.InlineTuple) {
+        return (t as InlineTupleType).elementTypes;
       }
     }
   }
@@ -1499,9 +1500,9 @@ export function generateReturnStatement(
   body: number[],
 ) {
   if (stmt.argument) {
-    // For unboxed tuple returns, just generate the expression directly
+    // For inline tuple returns, just generate the expression directly
     // (it pushes multiple values onto the stack)
-    if (stmt.argument.type === NodeType.UnboxedTupleLiteral) {
+    if (stmt.argument.type === NodeType.InlineTupleLiteral) {
       generateExpression(ctx, stmt.argument, body);
     } else if (ctx.currentReturnType) {
       generateAdaptedArgument(ctx, stmt.argument, ctx.currentReturnType, body);

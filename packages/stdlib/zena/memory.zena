@@ -130,10 +130,10 @@ export final class Memory {
  */
 export interface Allocator {
   /** Allocate `bytes` bytes. Returns (true, ptr) on success, (false, _) on failure. */
-  alloc(bytes: i32): (true, i32) | (false, never);
+  alloc(bytes: i32): inline (true, i32) | inline (false, never);
   
   /** Allocate `bytes` bytes aligned to `align` (must be power of 2). */
-  allocAligned(bytes: i32, align: i32): (true, i32) | (false, never);
+  allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, never);
   
   /** Free a previously allocated pointer. May be a no-op for some allocators. */
   free(ptr: i32): void;
@@ -167,7 +167,7 @@ export final class FreeListAllocator implements Allocator {
   }
 
   /** Allocate `bytes` bytes of linear memory. */
-  alloc(bytes: i32): (true, i32) | (false, never) {
+  alloc(bytes: i32): inline (true, i32) | inline (false, never) {
     // Minimum allocation is 8 bytes (for free list pointers when freed)
     var size = bytes;
     if (size < 8) {
@@ -237,7 +237,7 @@ export final class FreeListAllocator implements Allocator {
   }
 
   /** Allocate with alignment. */
-  allocAligned(bytes: i32, align: i32): (true, i32) | (false, never) {
+  allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, never) {
     // For simplicity, allocate extra and align within
     // This wastes some space but keeps the implementation simple
     if (let (true, ptr) = this.alloc(bytes + align - 1)) {
@@ -319,7 +319,7 @@ export final class BumpAllocator implements Allocator {
   }
 
   /** Allocate `bytes` bytes. Returns (true, ptr) on success, (false, _) if exhausted. */
-  alloc(bytes: i32): (true, i32) | (false, never) {
+  alloc(bytes: i32): inline (true, i32) | inline (false, never) {
     let ptr = this.#nextPtr;
     let newNext = ptr + bytes;
     
@@ -333,7 +333,7 @@ export final class BumpAllocator implements Allocator {
   }
 
   /** Allocate with alignment. Returns (true, ptr) on success, (false, _) if exhausted. */
-  allocAligned(bytes: i32, align: i32): (true, i32) | (false, never) {
+  allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, never) {
     let mask = align - 1;
     let notMask = mask ^ -1;
     let aligned = (this.#nextPtr + mask) & notMask;

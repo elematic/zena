@@ -40,7 +40,7 @@ import {
   type TupleLiteral,
   type TuplePattern,
   type UnaryExpression,
-  type UnboxedTupleLiteral,
+  type InlineTupleLiteral,
   type VariableDeclaration,
 } from '../ast.js';
 import {
@@ -68,7 +68,7 @@ import {
   type Type,
   type TypeAliasType,
   type TypeParameterType,
-  type UnboxedTupleType,
+  type InlineTupleType,
   type UnionType,
 } from '../types.js';
 import type {CheckerContext} from './context.js';
@@ -179,7 +179,7 @@ import {
   isAssignableTo,
   substituteType,
   validateType,
-  validateNoUnboxedTuple,
+  validateNoInlineTuple,
 } from './types.js';
 import {checkStatement, predeclareFunction} from './statements.js';
 
@@ -311,8 +311,8 @@ function checkExpressionInternal(
       return checkRecordLiteral(ctx, expr as RecordLiteral);
     case NodeType.TupleLiteral:
       return checkTupleLiteral(ctx, expr as TupleLiteral);
-    case NodeType.UnboxedTupleLiteral:
-      return checkUnboxedTupleLiteral(ctx, expr as UnboxedTupleLiteral);
+    case NodeType.InlineTupleLiteral:
+      return checkInlineTupleLiteral(ctx, expr as InlineTupleLiteral);
     case NodeType.IndexExpression:
       return checkIndexExpression(ctx, expr as IndexExpression);
     case NodeType.TemplateLiteral:
@@ -737,14 +737,14 @@ export function checkMatchPattern(
       }
       break;
     }
-    case NodeType.UnboxedTuplePattern:
+    case NodeType.InlineTuplePattern:
     case NodeType.TuplePattern: {
       const tuplePattern = pattern as TuplePattern;
 
       // Handle direct tuple types
       if (
         discriminantType.kind === TypeKind.Tuple ||
-        discriminantType.kind === TypeKind.UnboxedTuple
+        discriminantType.kind === TypeKind.InlineTuple
       ) {
         const tupleType = discriminantType as TupleType;
         if (tuplePattern.elements.length > tupleType.elementTypes.length) {
@@ -764,7 +764,7 @@ export function checkMatchPattern(
         // Handle union of tuples - for each position, compute union of element types
         const unionType = discriminantType as UnionType;
         let tupleMembers = unionType.types.filter(
-          (t) => t.kind === TypeKind.Tuple || t.kind === TypeKind.UnboxedTuple,
+          (t) => t.kind === TypeKind.Tuple || t.kind === TypeKind.InlineTuple,
         ) as TupleType[];
 
         if (tupleMembers.length === 0) {
@@ -2351,8 +2351,8 @@ function checkFunctionExpression(
     let type: Type;
     if (param.typeAnnotation) {
       type = resolveTypeAnnotation(ctx, param.typeAnnotation);
-      // Unboxed tuples cannot appear in parameter types
-      validateNoUnboxedTuple(type, ctx, 'parameter types');
+      // Inline tuples cannot appear in parameter types
+      validateNoInlineTuple(type, ctx, 'parameter types');
     } else if (expectedFuncType && i < expectedFuncType.parameters.length) {
       // Contextual typing: infer parameter type from expected function type
       type = expectedFuncType.parameters[i];
@@ -3208,17 +3208,17 @@ function checkTupleLiteral(ctx: CheckerContext, expr: TupleLiteral): Type {
 }
 
 /**
- * Check an unboxed tuple literal expression like ((1, 2)).
+ * Check an inline tuple literal expression like ((1, 2)).
  * This is only valid in return position (expression body or return statement).
- * Returns an UnboxedTupleType.
+ * Returns an InlineTupleType.
  */
-function checkUnboxedTupleLiteral(
+function checkInlineTupleLiteral(
   ctx: CheckerContext,
-  expr: UnboxedTupleLiteral,
+  expr: InlineTupleLiteral,
 ): Type {
   const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
-  const resultType: UnboxedTupleType = {
-    kind: TypeKind.UnboxedTuple,
+  const resultType: InlineTupleType = {
+    kind: TypeKind.InlineTuple,
     elementTypes,
   };
   expr.inferredType = resultType;

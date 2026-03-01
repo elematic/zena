@@ -54,7 +54,7 @@ import {
   type UnionType,
   type RecordType,
   type TupleType,
-  type UnboxedTupleType,
+  type InlineTupleType,
 } from '../types.js';
 
 /**
@@ -1004,10 +1004,10 @@ class UsageAnalyzer {
         }
         break;
       }
-      case TypeKind.UnboxedTuple: {
-        // Unboxed tuple types - handle all element types
-        const unboxedTupleType = type as UnboxedTupleType;
-        for (const elemType of unboxedTupleType.elementTypes) {
+      case TypeKind.InlineTuple: {
+        // Inline tuple types - handle all element types
+        const inlineTupleType = type as InlineTupleType;
+        for (const elemType of inlineTupleType.elementTypes) {
           this.#handleTypeUsage(elemType);
         }
         break;

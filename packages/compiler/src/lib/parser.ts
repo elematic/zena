@@ -729,7 +729,7 @@ export class Parser {
     } else if (this.#match(TokenType.LBracket)) {
       pattern = this.#parseTuplePattern();
     } else if (this.#match(TokenType.LParen)) {
-      pattern = this.#parseUnboxedTuplePattern();
+      pattern = this.#parseInlineTuplePattern();
     } else if (this.#isIdentifier(this.#peek().type)) {
       const identifier = this.#parseIdentifier();
 
@@ -849,10 +849,10 @@ export class Parser {
   }
 
   /**
-   * Parse an unboxed tuple pattern: (a, b) or (a, b, c)
+   * Parse an inline tuple pattern: (a, b) or (a, b, c)
    * Single element (a) is treated as grouping, not a tuple.
    */
-  #parseUnboxedTuplePattern(): Pattern {
+  #parseInlineTuplePattern(): Pattern {
     const startToken = this.#previous(); // LParen was already consumed
     const elements: Pattern[] = [];
 
@@ -869,13 +869,13 @@ export class Parser {
       return elements[0];
     }
 
-    // Empty or 2+ elements is an unboxed tuple pattern
+    // Empty or 2+ elements is an inline tuple pattern
     if (elements.length === 0) {
-      throw new Error('Empty unboxed tuple pattern is not allowed');
+      throw new Error('Empty inline tuple pattern is not allowed');
     }
 
     return {
-      type: NodeType.UnboxedTuplePattern,
+      type: NodeType.InlineTuplePattern,
       elements,
       loc: this.#loc(startToken, this.#previous()),
     };
@@ -3222,12 +3222,12 @@ export class Parser {
 
   /**
    * Check if the token at offset can start a type annotation that is NOT ambiguous with an expression.
-   * Used for look-ahead when disambiguating function types from unboxed tuples.
+   * Used for look-ahead when disambiguating function types from inline tuples.
    *
    * Excludes literal tokens (Number, String, True, False) because they can also start expressions.
-   * Also excludes LParen because (a, b) could be an unboxed tuple expression, not a type.
-   * This means `(T1, T2) => 0` will be parsed as unboxed tuple + function body,
-   * and `(T1, T2) => (a, b)` will be parsed as unboxed tuple + unboxed tuple expression body.
+   * Also excludes LParen because (a, b) could be an inline tuple expression, not a type.
+   * This means `(T1, T2) => 0` will be parsed as inline tuple + function body,
+   * and `(T1, T2) => (a, b)` will be parsed as inline tuple + inline tuple expression body.
    *
    * @param offset Look-ahead offset (0 = current token, 1 = next token, etc.)
    */
@@ -3237,7 +3237,8 @@ export class Parser {
       t === TokenType.Identifier ||
       t === TokenType.LBracket ||
       t === TokenType.This ||
-      t === TokenType.Null
+      t === TokenType.Null ||
+      t === TokenType.Inline
     ) {
       return true;
     }
@@ -3253,9 +3254,35 @@ export class Parser {
   }
 
   /**
+   * Parse an inline type annotation: inline (T1, T2)
+   * The 'inline' keyword has already been consumed.
+   * Produces an InlineTupleTypeAnnotation.
+   */
+  #parseInlineTypeAnnotation(startToken: Token): TypeAnnotation {
+    this.#consume(TokenType.LParen, "Expected '(' after 'inline'");
+    const elementTypes: TypeAnnotation[] = [];
+    if (!this.#check(TokenType.RParen)) {
+      do {
+        elementTypes.push(this.#parseTypeAnnotation());
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RParen, "Expected ')' after inline tuple types");
+    const endToken = this.#previous();
+
+    if (elementTypes.length < 2) {
+      throw new Error('Inline tuple type must have at least 2 elements');
+    }
+
+    return {
+      type: NodeType.InlineTupleTypeAnnotation,
+      elementTypes,
+      loc: this.#loc(startToken, endToken),
+    };
+  }
+
+  /**
    * Parse a parenthesized type, which could be:
    * - Function type: (T1, T2) => R
-   * - Unboxed tuple: (T1, T2)
    * - Grouping: (T)
    */
   #parseParenthesizedType(startToken: Token): TypeAnnotation {
@@ -3274,10 +3301,9 @@ export class Parser {
       } while (this.#match(TokenType.Comma));
     }
     this.#consume(TokenType.RParen, "Expected ')'");
-    const endToken = this.#previous();
     // Check if this is a function type: (T1, T2) => R
     // We only consume '=>' if it's followed by something that looks like a type.
-    // This distinguishes `(): (i32, i32) => 0` (unboxed tuple return, body `0`)
+    // This distinguishes `(): inline (i32, i32) => 0` (inline tuple return, body `0`)
     // from `let f: (i32, i32) => i32` (function type).
     if (this.#check(TokenType.Arrow) && this.#canStartType(1)) {
       this.#advance(); // consume '=>'
@@ -3289,12 +3315,10 @@ export class Parser {
         loc: this.#loc(startToken, returnType),
       };
     } else if (params.length >= 2) {
-      // Unboxed tuple type: (T1, T2)
-      return {
-        type: NodeType.UnboxedTupleTypeAnnotation,
-        elementTypes: params,
-        loc: this.#loc(startToken, endToken),
-      };
+      // (T1, T2) without 'inline' prefix - error, use 'inline (T1, T2)' for multi-value returns
+      throw new Error(
+        "Tuple type '(T, T)' requires the 'inline' modifier: use 'inline (T, T)' for multi-value returns",
+      );
     } else if (params.length === 1) {
       // Grouping parens: (T) just returns T
       return params[0];
@@ -3307,7 +3331,9 @@ export class Parser {
   #parseTypeAnnotation(): TypeAnnotation {
     const startToken = this.#peek();
     let left: TypeAnnotation;
-    if (this.#match(TokenType.LParen)) {
+    if (this.#match(TokenType.Inline)) {
+      left = this.#parseInlineTypeAnnotation(startToken);
+    } else if (this.#match(TokenType.LParen)) {
       left = this.#parseParenthesizedType(startToken);
     } else if (this.#match(TokenType.LBrace)) {
       left = this.#parseRecordTypeAnnotation(this.#previous());
@@ -3320,7 +3346,9 @@ export class Parser {
     if (this.#match(TokenType.Pipe)) {
       const types: TypeAnnotation[] = [left];
       do {
-        if (this.#match(TokenType.LParen)) {
+        if (this.#match(TokenType.Inline)) {
+          types.push(this.#parseInlineTypeAnnotation(this.#previous()));
+        } else if (this.#match(TokenType.LParen)) {
           types.push(this.#parseParenthesizedType(this.#previous()));
         } else if (this.#match(TokenType.LBrace)) {
           types.push(this.#parseRecordTypeAnnotation(this.#previous()));
@@ -3439,7 +3467,7 @@ export class Parser {
   /**
    * Parse a parenthesized expression, which could be:
    * - Grouping: (expr) -> returns the inner expression
-   * - Unboxed tuple: (expr1, expr2) -> UnboxedTupleLiteral
+   * - Inline tuple: (expr1, expr2) -> InlineTupleLiteral
    */
   #parseParenthesizedExpression(): Expression {
     const startToken = this.#previous(); // LParen was already consumed
@@ -3458,13 +3486,13 @@ export class Parser {
       return elements[0];
     }
 
-    // Empty or 2+ elements is an unboxed tuple literal
+    // Empty or 2+ elements is an inline tuple literal
     if (elements.length === 0) {
-      throw new Error('Empty unboxed tuple expression is not allowed');
+      throw new Error('Empty inline tuple expression is not allowed');
     }
 
     return {
-      type: NodeType.UnboxedTupleLiteral,
+      type: NodeType.InlineTupleLiteral,
       elements,
       loc: this.#loc(startToken, this.#previous()),
     };

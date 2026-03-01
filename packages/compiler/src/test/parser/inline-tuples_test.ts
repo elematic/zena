@@ -62,7 +62,9 @@ suite('Parser: Inline Tuples', () => {
   });
 
   test('parses inline tuple in union', () => {
-    const parser = new Parser('let f = (): inline (true, i32) | inline (false, never) => 0;');
+    const parser = new Parser(
+      'let f = (): inline (true, i32) | inline (false, never) => 0;',
+    );
     const module = parser.parse();
     const decl = module.body[0] as any;
     const func = decl.init;
@@ -80,7 +82,9 @@ suite('Parser: Inline Tuples', () => {
   });
 
   test('parses nested types in inline tuple', () => {
-    const parser = new Parser('let f = (): inline (Box<i32>, array<i32>) => 0;');
+    const parser = new Parser(
+      'let f = (): inline (Box<i32>, array<i32>) => 0;',
+    );
     const module = parser.parse();
     const decl = module.body[0] as any;
     const func = decl.init;
@@ -209,7 +213,9 @@ suite('Parser: Inline Tuple Expressions', () => {
   });
 
   test('parses inline tuple with three elements (double parens)', () => {
-    const parser = new Parser('let f = (): inline (i32, i32, i32) => ((1, 2, 3));');
+    const parser = new Parser(
+      'let f = (): inline (i32, i32, i32) => ((1, 2, 3));',
+    );
     const module = parser.parse();
     const decl = module.body[0] as any;
     const tuple = decl.init.body;

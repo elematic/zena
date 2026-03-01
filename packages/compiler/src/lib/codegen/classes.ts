@@ -8,7 +8,7 @@ import {
   type TypeAnnotation,
   type Identifier,
   type SymbolPropertyName,
-  type UnboxedTupleTypeAnnotation,
+  type InlineTupleTypeAnnotation,
 } from '../ast.js';
 import {
   Decorators,
@@ -22,7 +22,7 @@ import {
   type ArrayType,
   type RecordType,
   type TupleType,
-  type UnboxedTupleType,
+  type InlineTupleType,
   type FunctionType,
   type UnionType,
   type TypeParameterType,
@@ -682,20 +682,20 @@ export function defineInterfaceMethods(
           methodType.returnType,
           typeMap,
         );
-        // Handle unboxed tuple types (multi-value returns)
-        if (erasedReturnType.kind === TypeKind.UnboxedTuple) {
-          const tupleType = erasedReturnType as UnboxedTupleType;
+        // Handle inline tuple types (multi-value returns)
+        if (erasedReturnType.kind === TypeKind.InlineTuple) {
+          const tupleType = erasedReturnType as InlineTupleType;
           for (const el of tupleType.elementTypes) {
             results.push(mapCheckerTypeToWasmType(ctx, el));
           }
           returnType = results.length > 0 ? results[0] : [];
         } else if (erasedReturnType.kind === TypeKind.Union) {
-          // Check if it's a union of unboxed tuples
+          // Check if it's a union of inline tuples
           const unionType = erasedReturnType as UnionType;
           let foundTuple = false;
           for (const t of unionType.types) {
-            if (t.kind === TypeKind.UnboxedTuple) {
-              const tupleType = t as UnboxedTupleType;
+            if (t.kind === TypeKind.InlineTuple) {
+              const tupleType = t as InlineTupleType;
               for (const el of tupleType.elementTypes) {
                 results.push(mapCheckerTypeToWasmType(ctx, el));
               }
@@ -2369,18 +2369,18 @@ export function registerClassMethods(
           );
         }
         const returnType = member.returnType.inferredType;
-        // Handle unboxed tuple types (multi-value returns)
-        if (returnType.kind === TypeKind.UnboxedTuple) {
-          const tupleType = returnType as UnboxedTupleType;
+        // Handle inline tuple types (multi-value returns)
+        if (returnType.kind === TypeKind.InlineTuple) {
+          const tupleType = returnType as InlineTupleType;
           results = tupleType.elementTypes.map((el) =>
             mapCheckerTypeToWasmType(ctx, el),
           );
         } else if (returnType.kind === TypeKind.Union) {
-          // Check if it's a union of unboxed tuples
+          // Check if it's a union of inline tuples
           const unionType = returnType as UnionType;
           for (const t of unionType.types) {
-            if (t.kind === TypeKind.UnboxedTuple) {
-              const tupleType = t as UnboxedTupleType;
+            if (t.kind === TypeKind.InlineTuple) {
+              const tupleType = t as InlineTupleType;
               results = tupleType.elementTypes.map((el) =>
                 mapCheckerTypeToWasmType(ctx, el),
               );
@@ -3143,7 +3143,7 @@ export function generateClassMethods(
       const oldReturnType = ctx.currentReturnType;
       ctx.currentReturnType = methodInfo.returnType;
 
-      // Also set the checker return type for unboxed tuple hole literal generation
+      // Also set the checker return type for inline tuple hole literal generation
       const oldCheckerReturnType = ctx.currentCheckerReturnType;
       ctx.currentCheckerReturnType = member.returnType?.inferredType;
 
@@ -4445,12 +4445,12 @@ function instantiateClassImpl(
               : member.returnType.inferredType
             : null;
 
-          // Handle unboxed tuple types (multi-value returns) and unions of unboxed tuples
+          // Handle inline tuple types (multi-value returns) and unions of inline tuples
           if (
             checkerReturnType &&
-            checkerReturnType.kind === TypeKind.UnboxedTuple
+            checkerReturnType.kind === TypeKind.InlineTuple
           ) {
-            const tupleType = checkerReturnType as UnboxedTupleType;
+            const tupleType = checkerReturnType as InlineTupleType;
             results = tupleType.elementTypes.map((el) =>
               mapCheckerTypeToWasmType(ctx, el),
             );
@@ -4458,11 +4458,11 @@ function instantiateClassImpl(
             checkerReturnType &&
             checkerReturnType.kind === TypeKind.Union
           ) {
-            // Check if it's a union of unboxed tuples
+            // Check if it's a union of inline tuples
             const unionType = checkerReturnType as UnionType;
             for (const t of unionType.types) {
-              if (t.kind === TypeKind.UnboxedTuple) {
-                const tupleType = t as UnboxedTupleType;
+              if (t.kind === TypeKind.InlineTuple) {
+                const tupleType = t as InlineTupleType;
                 results = tupleType.elementTypes.map((el) =>
                   mapCheckerTypeToWasmType(ctx, el),
                 );
@@ -4475,11 +4475,11 @@ function instantiateClassImpl(
               if (mapped.length > 0) results = [mapped];
             }
           } else if (
-            member.returnType.type === NodeType.UnboxedTupleTypeAnnotation
+            member.returnType.type === NodeType.InlineTupleTypeAnnotation
           ) {
             // Fallback: check annotation type directly if inferredType wasn't populated
             const tupleAnnotation =
-              member.returnType as UnboxedTupleTypeAnnotation;
+              member.returnType as InlineTupleTypeAnnotation;
             results = tupleAnnotation.elementTypes.map((el) => resolveType(el));
           } else {
             const mapped = resolveType(member.returnType);
@@ -5616,10 +5616,10 @@ export function mapCheckerTypeToWasmType(
     return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(typeIndex)];
   }
 
-  // Handle UnboxedTupleType directly (unboxed - multi-value)
+  // Handle InlineTupleType directly (inline - multi-value)
   // This flattens the element types for WASM multi-value returns
-  if (type.kind === TypeKind.UnboxedTuple) {
-    const tupleType = type as UnboxedTupleType;
+  if (type.kind === TypeKind.InlineTuple) {
+    const tupleType = type as InlineTupleType;
     const result: number[] = [];
     for (const el of tupleType.elementTypes) {
       result.push(...mapCheckerTypeToWasmType(ctx, el));
