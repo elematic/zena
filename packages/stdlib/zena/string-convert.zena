@@ -3,7 +3,7 @@
 // high-level String creation (for template literals).
 
 import { String, Encoding } from 'zena:string';
-import { div, I32_MIN, I64_MIN } from 'zena:math';
+import { div, I32_MIN, I64_MIN, abs, nearest, i64_trunc_s, i64_reinterpret_f64 } from 'zena:math';
 
 // ============================================================================
 // Low-level buffer writing functions
@@ -198,27 +198,332 @@ export let boolToString = (value: boolean): String => {
 };
 
 /**
- * Converts an f32 to string.
- * TODO: Proper float formatting
+ * Compute 10^n as f64 (for n >= 0) using exponentiation by squaring.
+ * O(log n) multiplications instead of O(n), limiting accumulated FP error
+ * to ~log2(n) ULPs.
  */
-export let f32ToString = (value: f32): String => {
-  // For now, just handle a few special cases
-  // Full float formatting is complex - would need Dragon4 or similar algorithm
-  if (value != value) {
-    return "NaN";
+let pow10f = (n: i32): f64 => {
+  var result = 1.0 as f64;
+  var base = 10.0 as f64;
+  var exp = n;
+  while (exp > 0) {
+    if ((exp & 1) != 0) {
+      result = result * base;
+    }
+    base = base * base;
+    exp = exp >> 1;
   }
-  // TODO: Implement proper float to string conversion
-  return "[f32]";
+  return result;
 };
 
 /**
- * Converts an f64 to string.
- * TODO: Proper float formatting
+ * Core float-to-string implementation.
+ * Converts an f64 value to its decimal string representation.
+ * Uses a fixed number of significant digits with trailing zero trimming.
+ *
+ * Format follows ECMAScript conventions:
+ * - Normal notation for values where -6 <= exponent < 21
+ * - Scientific notation otherwise
+ *
+ * The algorithm:
+ * 1. Extract the binary exponent from IEEE 754 bits (via i64_reinterpret_f64)
+ * 2. Compute an approximate decimal exponent using floor(binExp * log10(2))
+ * 3. Scale the value by a single multiply/divide of 10^k (using pow10f with
+ *    exponentiation by squaring for O(log k) error accumulation)
+ * 4. Extract significant digits and format
+ *
+ * This avoids the O(n) error accumulation of repeated ×10/÷10 scaling.
+ * For a fully correct shortest-representation algorithm, see Ryū:
+ * https://dl.acm.org/doi/10.1145/3192366.3192369
+ *
+ * @param value - the f64 value to convert
+ * @param maxSigDigits - max significant digits (15 for f64, 7 for f32)
  */
-export let f64ToString = (value: f64): String => {
+let floatToStringImpl = (value: f64, maxSigDigits: i32): String => {
+  let zero_f = 0.0 as f64;
+  let one_f = 1.0 as f64;
+  let ten_f = 10.0 as f64;
+  let zero_i = 0 as i64;
+  let ten_i = 10 as i64;
+
+  // Handle NaN
   if (value != value) {
     return "NaN";
   }
-  // TODO: Implement proper float to string conversion
-  return "[f64]";
+
+  // Handle Infinity: for finite values, value - value == 0.0
+  // For infinity, infinity - infinity = NaN, which != 0.0
+  let selfDiff = value - value;
+  if (selfDiff != zero_f) {
+    if (value > zero_f) {
+      return "Infinity";
+    }
+    return "-Infinity";
+  }
+
+  // Handle zero
+  if (value == zero_f) {
+    let bits = i64_reinterpret_f64(value);
+    if (bits != zero_i) {
+      return "-0";
+    }
+    return "0";
+  }
+
+  // Sign and absolute value
+  let isNegative = value < zero_f;
+  let v = abs(value);
+
+  // Extract binary exponent from IEEE 754 bits to compute decimal exponent
+  // in O(1) instead of a loop. f64 layout: [sign:1][exponent:11][mantissa:52]
+  let bits = i64_reinterpret_f64(v);
+  let biasedExp = ((bits >> (52 as i64)) & (0x7FF as i64)) as i32;
+  let binExp = biasedExp - 1023;
+
+  // For subnormals (biasedExp == 0), the effective binary exponent is -1022
+  // but the mantissa lacks an implicit leading 1, so the actual magnitude
+  // can be much smaller. We account for this by counting leading zeros in
+  // the mantissa to adjust the binary exponent.
+  var effectiveBinExp = binExp;
+  if (biasedExp == 0) {
+    // Subnormal: effective exponent = -1022 - (52 - position of highest set bit)
+    let mantissa = bits & (0xFFFFFFFFFFFFF as i64);
+    // Count leading zeros in the 52-bit mantissa
+    var lz = 0;
+    var probe = mantissa;
+    // Check in groups for speed
+    if (probe < (0x100000000 as i64)) { lz = lz + 32; probe = probe << (32 as i64); }
+    if (probe < (0x1000000000000 as i64)) { lz = lz + 12; probe = probe << (12 as i64); }
+    // Remaining bits one at a time (at most 8 iterations after the above)
+    while (probe < (0x8000000000000 as i64)) {
+      lz = lz + 1;
+      probe = probe << (1 as i64);
+    }
+    effectiveBinExp = -1022 - lz;
+  }
+
+  // Approximate decimal exponent: floor(binExp * log10(2))
+  // log10(2) ≈ 0.30103 ≈ 77/256 = 77 >> 8 (integer approximation)
+  var exp = ((effectiveBinExp * 77) >> 8) as i32;
+
+  // Scale v by 10^(-exp) to get scaled into [1.0, 10.0)
+  // This uses a single multiply or divide instead of a loop, limiting
+  // accumulated FP error to O(log10(exp)) ULPs from pow10f.
+  // For extreme exponents (subnormals, MAX_VALUE), 10^|exp| can overflow f64,
+  // so we split into two steps with a safe intermediate (10^200).
+  var scaled = v;
+  let safeLimit = 300;
+  if (exp > 0) {
+    if (exp > safeLimit) {
+      scaled = (v / pow10f(safeLimit)) / pow10f(exp - safeLimit);
+    } else {
+      scaled = v / pow10f(exp);
+    }
+  } else if (exp < 0) {
+    let absExp = 0 - exp;
+    if (absExp > safeLimit) {
+      scaled = (v * pow10f(safeLimit)) * pow10f(absExp - safeLimit);
+    } else {
+      scaled = v * pow10f(absExp);
+    }
+  }
+
+  // Correct if our estimate was off (can happen due to approximation
+  // or subnormals). Loop to handle multi-step corrections.
+  while (scaled >= ten_f) {
+    scaled = scaled / ten_f;
+    exp = exp + 1;
+  }
+  while (scaled < one_f) {
+    scaled = scaled * ten_f;
+    exp = exp - 1;
+  }
+
+  // Extract significant digits as i64
+  // scaled is in [1.0, 10.0), multiply by 10^(maxSigDigits-1)
+  let shift = maxSigDigits - 1;
+  var digits = i64_trunc_s(nearest(scaled * pow10f(shift)));
+
+  // Handle rounding overflow (e.g., 9.99999... rounds up to next power of 10)
+  let maxDigitVal = i64_trunc_s(pow10f(maxSigDigits));
+  if (digits >= maxDigitVal) {
+    digits = div(digits, ten_i);
+    exp = exp + 1;
+  }
+
+  // Trim trailing zeros (keep at least 1 digit)
+  var numDigits = maxSigDigits;
+  while (numDigits > 1) {
+    let rem = digits - div(digits, ten_i) * ten_i;
+    if (rem != zero_i) {
+      break;
+    }
+    digits = div(digits, ten_i);
+    numDigits = numDigits - 1;
+  }
+
+  // Extract individual digits to temp buffer (right to left)
+  let digitBuf = __byte_array_new(20);
+  var dLen = 0;
+  var dTemp = digits;
+  while (dTemp > zero_i) {
+    let d = dTemp - div(dTemp, ten_i) * ten_i;
+    __byte_array_set(digitBuf, 19 - dLen, 48 + (d as i32));
+    dLen = dLen + 1;
+    dTemp = div(dTemp, ten_i);
+  }
+  let dStart = 20 - dLen;
+  // digits are now in digitBuf[dStart..20), left to right
+
+  // Build output string
+  let buffer = __byte_array_new(50);
+  var pos = 0;
+
+  // Write sign
+  if (isNegative) {
+    __byte_array_set(buffer, 0, 45);
+    pos = 1;
+  }
+
+  // Choose format based on exponent range (ECMAScript-style)
+  if (exp >= 0 && exp < 21) {
+    // Normal notation with integer part
+    let intDigitCount = exp + 1;
+
+    if (numDigits <= intDigitCount) {
+      // All significant digits are in the integer part
+      var di = dStart;
+      while (di < 20) {
+        __byte_array_set(buffer, pos, __byte_array_get(digitBuf, di));
+        pos = pos + 1;
+        di = di + 1;
+      }
+      // Append trailing zeros
+      let trailingZeros = intDigitCount - numDigits;
+      var zi = 0;
+      while (zi < trailingZeros) {
+        __byte_array_set(buffer, pos, 48);
+        pos = pos + 1;
+        zi = zi + 1;
+      }
+    } else {
+      // Digits span the decimal point
+      var di = dStart;
+      var written = 0;
+      // Write integer part
+      while (written < intDigitCount) {
+        __byte_array_set(buffer, pos, __byte_array_get(digitBuf, di));
+        pos = pos + 1;
+        di = di + 1;
+        written = written + 1;
+      }
+      // Decimal point
+      __byte_array_set(buffer, pos, 46);
+      pos = pos + 1;
+      // Fractional digits
+      while (di < 20) {
+        __byte_array_set(buffer, pos, __byte_array_get(digitBuf, di));
+        pos = pos + 1;
+        di = di + 1;
+      }
+    }
+  } else if (exp >= -6 && exp < 0) {
+    // Small number in normal notation: 0.000...digits
+    __byte_array_set(buffer, pos, 48);
+    pos = pos + 1;
+    __byte_array_set(buffer, pos, 46);
+    pos = pos + 1;
+
+    // Leading zeros
+    let leadingZeros = 0 - exp - 1;
+    var zi = 0;
+    while (zi < leadingZeros) {
+      __byte_array_set(buffer, pos, 48);
+      pos = pos + 1;
+      zi = zi + 1;
+    }
+
+    // Significant digits
+    var di = dStart;
+    while (di < 20) {
+      __byte_array_set(buffer, pos, __byte_array_get(digitBuf, di));
+      pos = pos + 1;
+      di = di + 1;
+    }
+  } else {
+    // Scientific notation: d.dddde±eee
+    // First digit
+    __byte_array_set(buffer, pos, __byte_array_get(digitBuf, dStart));
+    pos = pos + 1;
+
+    // Decimal point and remaining digits (if any)
+    if (numDigits > 1) {
+      __byte_array_set(buffer, pos, 46);
+      pos = pos + 1;
+      var di = dStart + 1;
+      while (di < 20) {
+        __byte_array_set(buffer, pos, __byte_array_get(digitBuf, di));
+        pos = pos + 1;
+        di = di + 1;
+      }
+    }
+
+    // 'e'
+    __byte_array_set(buffer, pos, 101);
+    pos = pos + 1;
+
+    // Exponent sign and value
+    var absExp = exp;
+    if (exp >= 0) {
+      __byte_array_set(buffer, pos, 43);
+      pos = pos + 1;
+    } else {
+      __byte_array_set(buffer, pos, 45);
+      pos = pos + 1;
+      absExp = 0 - exp;
+    }
+
+    // Exponent digits (1-3 digits)
+    if (absExp >= 100) {
+      let h = div(absExp as i64, 100 as i64) as i32;
+      __byte_array_set(buffer, pos, 48 + h);
+      pos = pos + 1;
+      absExp = absExp - h * 100;
+      // Must always emit tens digit after hundreds
+      let t = div(absExp as i64, 10 as i64) as i32;
+      __byte_array_set(buffer, pos, 48 + t);
+      pos = pos + 1;
+      absExp = absExp - t * 10;
+      __byte_array_set(buffer, pos, 48 + absExp);
+      pos = pos + 1;
+    } else if (absExp >= 10) {
+      let t = div(absExp as i64, 10 as i64) as i32;
+      __byte_array_set(buffer, pos, 48 + t);
+      pos = pos + 1;
+      absExp = absExp - t * 10;
+      __byte_array_set(buffer, pos, 48 + absExp);
+      pos = pos + 1;
+    } else {
+      __byte_array_set(buffer, pos, 48 + absExp);
+      pos = pos + 1;
+    }
+  }
+
+  return String.fromByteArray(buffer, 0, pos, Encoding.WTF8);
+};
+
+/**
+ * Converts an f32 to its decimal string representation.
+ * Promotes to f64 and formats with 7 significant digits.
+ */
+export let f32ToString = (value: f32): String => {
+  return floatToStringImpl(value as f64, 7);
+};
+
+/**
+ * Converts an f64 to its decimal string representation.
+ * Formats with up to 15 significant digits.
+ */
+export let f64ToString = (value: f64): String => {
+  return floatToStringImpl(value, 15);
 };

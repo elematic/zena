@@ -672,6 +672,32 @@ function generateAsExpression(
     }
   }
 
+  // Special case: NumberLiteral cast to f64.
+  // Float literals default to f32, so `3.14 as f64` would normally emit
+  // f32.const (losing precision) then f64.promote_f32. Instead, emit
+  // f64.const directly to preserve the full f64 precision of the literal.
+  if (targetWasmType.length === 1 && targetWasmType[0] === ValType.f64) {
+    if (expr.expression.type === NodeType.NumberLiteral) {
+      const lit = expr.expression as NumberLiteral;
+      body.push(Opcode.f64_const);
+      body.push(...WasmModule.encodeF64(lit.value));
+      return;
+    }
+    // Negated NumberLiteral → f64 (e.g. -3.14 as f64)
+    if (
+      expr.expression.type === NodeType.UnaryExpression &&
+      (expr.expression as UnaryExpression).operator === '-' &&
+      (expr.expression as UnaryExpression).argument.type ===
+        NodeType.NumberLiteral
+    ) {
+      const lit = (expr.expression as UnaryExpression)
+        .argument as NumberLiteral;
+      body.push(Opcode.f64_const);
+      body.push(...WasmModule.encodeF64(-lit.value));
+      return;
+    }
+  }
+
   generateExpression(ctx, expr.expression, body);
 
   // For the source type, use inferType() instead of expr.expression.inferredType
