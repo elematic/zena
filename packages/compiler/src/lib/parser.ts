@@ -56,9 +56,6 @@ import {
   type TemplateElement,
   type TemplateLiteral,
   type TryExpression,
-  type TupleLiteral,
-  type TuplePattern,
-  type TupleTypeAnnotation,
   type TypeAnnotation,
   type TypeParameter,
   type TypeAliasDeclaration,
@@ -726,10 +723,8 @@ export class Parser {
       pattern = {type: NodeType.NullLiteral, loc: this.#locFromToken(token)};
     } else if (this.#match(TokenType.LBrace)) {
       pattern = this.#parseRecordPattern();
-    } else if (this.#match(TokenType.LBracket)) {
-      pattern = this.#parseTuplePattern();
     } else if (this.#match(TokenType.LParen)) {
-      pattern = this.#parseInlineTuplePattern();
+      pattern = this.#parseTupleOrInlineTuplePattern();
     } else if (this.#isIdentifier(this.#peek().type)) {
       const identifier = this.#parseIdentifier();
 
@@ -820,45 +815,24 @@ export class Parser {
     };
   }
 
-  #parseTuplePattern(): TuplePattern {
-    const elements: (Pattern | null)[] = [];
-    if (!this.#check(TokenType.RBracket)) {
-      do {
-        if (this.#check(TokenType.Comma) || this.#check(TokenType.RBracket)) {
-          // Empty element (skipping)
-          elements.push(null);
-        } else {
-          let pattern = this.#parsePattern();
-          if (this.#match(TokenType.Equals)) {
-            const defaultValue = this.#parseExpression();
-            pattern = {
-              type: NodeType.AssignmentPattern,
-              left: pattern,
-              right: defaultValue,
-            };
-          }
-          elements.push(pattern);
-        }
-      } while (this.#match(TokenType.Comma));
-    }
-    this.#consume(TokenType.RBracket, "Expected ']' after tuple pattern.");
-    return {
-      type: NodeType.TuplePattern,
-      elements,
-    };
-  }
-
   /**
-   * Parse an inline tuple pattern: (a, b) or (a, b, c)
+   * Parse a tuple pattern: (a, b) or (a, b, c)
    * Single element (a) is treated as grouping, not a tuple.
+   * Produces TuplePattern for boxed tuples; the checker will convert
+   * to InlineTuplePattern when the value type is an inline tuple.
    */
-  #parseInlineTuplePattern(): Pattern {
+  #parseTupleOrInlineTuplePattern(): Pattern {
     const startToken = this.#previous(); // LParen was already consumed
-    const elements: Pattern[] = [];
+    const elements: (Pattern | null)[] = [];
 
     if (!this.#check(TokenType.RParen)) {
       do {
-        elements.push(this.#parsePattern());
+        // Support skipping: (a, , c) => [a, null, c]
+        if (this.#check(TokenType.Comma) || this.#check(TokenType.RParen)) {
+          elements.push(null);
+        } else {
+          elements.push(this.#parsePattern());
+        }
       } while (this.#match(TokenType.Comma));
     }
 
@@ -866,16 +840,16 @@ export class Parser {
 
     // Single element is just grouping: (x) -> x
     if (elements.length === 1) {
-      return elements[0];
+      return elements[0]!;
     }
 
-    // Empty or 2+ elements is an inline tuple pattern
+    // Empty or 2+ elements is a tuple pattern
     if (elements.length === 0) {
-      throw new Error('Empty inline tuple pattern is not allowed');
+      throw new Error('Empty tuple pattern is not allowed');
     }
 
     return {
-      type: NodeType.InlineTuplePattern,
+      type: NodeType.TuplePattern,
       elements,
       loc: this.#loc(startToken, this.#previous()),
     };
@@ -1763,9 +1737,6 @@ export class Parser {
     }
     if (this.#match(TokenType.LBrace)) {
       return this.#parseRecordLiteral();
-    }
-    if (this.#match(TokenType.LBracket)) {
-      return this.#parseTupleLiteral();
     }
     if (this.#match(TokenType.LParen)) {
       return this.#parseParenthesizedExpression();
@@ -3221,38 +3192,6 @@ export class Parser {
   }
 
   /**
-   * Check if the token at offset can start a type annotation that is NOT ambiguous with an expression.
-   * Used for look-ahead when disambiguating function types from inline tuples.
-   *
-   * Excludes literal tokens (Number, String, True, False) because they can also start expressions.
-   * Also excludes LParen because (a, b) could be an inline tuple expression, not a type.
-   * This means `(T1, T2) => 0` will be parsed as inline tuple + function body,
-   * and `(T1, T2) => (a, b)` will be parsed as inline tuple + inline tuple expression body.
-   *
-   * @param offset Look-ahead offset (0 = current token, 1 = next token, etc.)
-   */
-  #canStartType(offset = 0): boolean {
-    const t = this.#peek(offset).type;
-    if (
-      t === TokenType.Identifier ||
-      t === TokenType.LBracket ||
-      t === TokenType.This ||
-      t === TokenType.Null ||
-      t === TokenType.Inline
-    ) {
-      return true;
-    }
-    // LBrace could be a record type {x: T} or a block statement.
-    // It's a type if the next token is an identifier (field name) or } (empty record).
-    if (t === TokenType.LBrace) {
-      const afterBrace = this.#peek(offset + 1).type;
-      return (
-        afterBrace === TokenType.Identifier || afterBrace === TokenType.RBrace
-      );
-    }
-    return false;
-  }
-
   /**
    * Parse an inline type annotation: inline (T1, T2)
    * The 'inline' keyword has already been consumed.
@@ -3287,6 +3226,8 @@ export class Parser {
    */
   #parseParenthesizedType(startToken: Token): TypeAnnotation {
     const params: TypeAnnotation[] = [];
+    const paramNames: string[] = [];
+    let hasNamedParams = false;
     if (!this.#check(TokenType.RParen)) {
       do {
         // Check for "Identifier :" (named parameter)
@@ -3294,31 +3235,42 @@ export class Parser {
           this.#check(TokenType.Identifier) &&
           this.#peek(1).type === TokenType.Colon
         ) {
-          this.#advance(); // consume identifier
+          paramNames.push(this.#advance().value); // consume identifier
           this.#advance(); // consume colon
+          hasNamedParams = true;
+        } else {
+          paramNames.push('');
         }
         params.push(this.#parseTypeAnnotation());
       } while (this.#match(TokenType.Comma));
     }
     this.#consume(TokenType.RParen, "Expected ')'");
-    // Check if this is a function type: (T1, T2) => R
-    // We only consume '=>' if it's followed by something that looks like a type.
-    // This distinguishes `(): inline (i32, i32) => 0` (inline tuple return, body `0`)
-    // from `let f: (i32, i32) => i32` (function type).
-    if (this.#check(TokenType.Arrow) && this.#canStartType(1)) {
+    // Function type: requires named parameters (a: i32, b: i32) => R
+    // or empty parameters () => R.
+    // Unnamed (T1, T2) is always a tuple type, never a function type.
+    // This eliminates the ambiguity between tuple return types and function types:
+    //   (): (i32, i32) => expr   -- return type is tuple (i32, i32), body is expr
+    //   (): (a: i32, b: i32) => i32 => expr  -- return type is function type
+    const isFunctionType =
+      this.#check(TokenType.Arrow) && (params.length === 0 || hasNamedParams);
+    if (isFunctionType) {
       this.#advance(); // consume '=>'
       const returnType = this.#parseTypeAnnotation();
       return {
         type: NodeType.FunctionTypeAnnotation,
+        paramNames: paramNames.length > 0 ? paramNames : [],
         params,
         returnType,
         loc: this.#loc(startToken, returnType),
       };
     } else if (params.length >= 2) {
-      // (T1, T2) without 'inline' prefix - error, use 'inline (T1, T2)' for multi-value returns
-      throw new Error(
-        "Tuple type '(T, T)' requires the 'inline' modifier: use 'inline (T, T)' for multi-value returns",
-      );
+      // (T1, T2) without named params — this is a boxed tuple type
+      const endToken = this.#previous();
+      return {
+        type: NodeType.TupleTypeAnnotation,
+        elementTypes: params,
+        loc: this.#loc(startToken, endToken),
+      };
     } else if (params.length === 1) {
       // Grouping parens: (T) just returns T
       return params[0];
@@ -3337,8 +3289,6 @@ export class Parser {
       left = this.#parseParenthesizedType(startToken);
     } else if (this.#match(TokenType.LBrace)) {
       left = this.#parseRecordTypeAnnotation(this.#previous());
-    } else if (this.#match(TokenType.LBracket)) {
-      left = this.#parseTupleTypeAnnotation(this.#previous());
     } else {
       left = this.#parsePrimaryTypeAnnotation();
     }
@@ -3352,8 +3302,6 @@ export class Parser {
           types.push(this.#parseParenthesizedType(this.#previous()));
         } else if (this.#match(TokenType.LBrace)) {
           types.push(this.#parseRecordTypeAnnotation(this.#previous()));
-        } else if (this.#match(TokenType.LBracket)) {
-          types.push(this.#parseTupleTypeAnnotation(this.#previous()));
         } else {
           types.push(this.#parsePrimaryTypeAnnotation());
         }
@@ -3399,22 +3347,6 @@ export class Parser {
     };
   }
 
-  #parseTupleTypeAnnotation(startToken: Token): TupleTypeAnnotation {
-    const elementTypes: TypeAnnotation[] = [];
-    if (!this.#check(TokenType.RBracket)) {
-      do {
-        elementTypes.push(this.#parseTypeAnnotation());
-      } while (this.#match(TokenType.Comma));
-    }
-    this.#consume(TokenType.RBracket, "Expected ']'");
-    const endToken = this.#previous();
-    return {
-      type: NodeType.TupleTypeAnnotation,
-      elementTypes,
-      loc: this.#loc(startToken, endToken),
-    };
-  }
-
   #parseRecordLiteral(): RecordLiteral {
     const properties: (PropertyAssignment | SpreadElement)[] = [];
     if (!this.#check(TokenType.RBrace)) {
@@ -3450,24 +3382,10 @@ export class Parser {
     };
   }
 
-  #parseTupleLiteral(): TupleLiteral {
-    const elements: Expression[] = [];
-    if (!this.#check(TokenType.RBracket)) {
-      do {
-        elements.push(this.#parseExpression());
-      } while (this.#match(TokenType.Comma));
-    }
-    this.#consume(TokenType.RBracket, "Expected ']'");
-    return {
-      type: NodeType.TupleLiteral,
-      elements,
-    };
-  }
-
   /**
    * Parse a parenthesized expression, which could be:
    * - Grouping: (expr) -> returns the inner expression
-   * - Inline tuple: (expr1, expr2) -> InlineTupleLiteral
+   * - Tuple literal: (expr1, expr2) -> TupleLiteral (boxed)
    */
   #parseParenthesizedExpression(): Expression {
     const startToken = this.#previous(); // LParen was already consumed
@@ -3486,13 +3404,14 @@ export class Parser {
       return elements[0];
     }
 
-    // Empty or 2+ elements is an inline tuple literal
+    // Empty parens is not allowed
     if (elements.length === 0) {
-      throw new Error('Empty inline tuple expression is not allowed');
+      throw new Error('Empty tuple expression is not allowed');
     }
 
+    // 2+ elements is a tuple literal
     return {
-      type: NodeType.InlineTupleLiteral,
+      type: NodeType.TupleLiteral,
       elements,
       loc: this.#loc(startToken, this.#previous()),
     };

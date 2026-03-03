@@ -458,7 +458,7 @@ suite('AST Visitor', () => {
   });
 
   test('visits tuple literals', () => {
-    const ast = parse('let t = [1, "hello"];');
+    const ast = parse('let t = (1, "hello");');
 
     let tupleCount = 0;
 

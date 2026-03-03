@@ -151,7 +151,7 @@ values. Tuples are a fixed list of values.
 
 ```typescript
 let point = {x: 1.0, y: 2.0};
-let items = [1, 'two', 3];
+let items = (1, 'two', 3);
 ```
 
 ### Type definitions
@@ -279,7 +279,7 @@ returns):
 
 ```typescript
 let {x, y} = point; // Object desctructuring
-let [_, _, z] = vec; // Tuples
+let (_, _, z) = vec; // Tuples
 let (value, found) = map.get(key); // Inline tuples - no heap allocation
 let {x, y, z = 0} = point; // Defaults: point can be 2D or 3D
 let {r as red, b as blue} = color; // Renaming

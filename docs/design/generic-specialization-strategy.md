@@ -80,7 +80,7 @@ let box: Box<Animal> = ...;
 | `f64`                   | `f64`                     | Specialize                              |
 | `SomeClass`             | `(ref null $SomeClass)`   | Share (all refs)                        |
 | `SomeInterface`         | `(ref null $Object)`      | Share                                   |
-| `[i32, string]` (tuple) | `(ref $Tuple_i32_string)` | Specialize                              |
+| `(i32, string)` (tuple) | `(ref $Tuple_i32_string)` | Specialize                              |
 | `{x: i32}` (record)     | `(ref $Record_x_i32)`     | Specialize                              |
 
 ### Implementation Considerations

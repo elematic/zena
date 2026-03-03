@@ -348,8 +348,8 @@ suite('Type Interning', () => {
     test('identical tuple literals are NOT interned (structural)', () => {
       const modules = compileModules(`
         export let main = () => {
-          let a = [1, 'a'];
-          let b = [2, 'b'];
+          let a = (1, 'a');
+          let b = (2, 'b');
           return 0;
         };
       `);

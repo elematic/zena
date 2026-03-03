@@ -17,23 +17,23 @@ This document outlines the design for destructuring assignment and variable decl
 
 ### 1. Tuple Destructuring
 
-Tuples are destructured by position using square brackets `[...]`.
+Tuples are destructured by position using parentheses `(...)`.
 
 ```zena
-let point = [10, 20];
-let [x, y] = point; // x: i32, y: i32
+let point = (10, 20);
+let (x, y) = point; // x: i32, y: i32
 ```
 
 **Skipping Elements**:
 
 ```zena
-let [x, , z] = [1, 2, 3]; // Skip the second element
+let (x, , z) = (1, 2, 3); // Skip the second element
 ```
 
 **Rest/Spread** (Future):
 
 ```zena
-let [head, ...tail] = [1, 2, 3, 4]; // tail is [2, 3, 4]
+let (head, ...tail) = (1, 2, 3, 4); // tail is (2, 3, 4)
 ```
 
 ### 2. Record Destructuring
@@ -144,7 +144,7 @@ let { origin: { x, y } } = graph;
 let { origin: { x as x0, y as y0 } } = graph;
 
 // Mixed Record/Tuple
-let { points: [p1, p2] } = polygon;
+let { points: (p1, p2) } = polygon;
 ```
 
 ## Implementation Strategy

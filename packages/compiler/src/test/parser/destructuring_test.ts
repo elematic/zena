@@ -80,7 +80,7 @@ suite('Parser - Destructuring', () => {
   });
 
   test('should parse tuple destructuring', () => {
-    const input = 'let [x, y] = p;';
+    const input = 'let (x, y) = p;';
     const parser = new Parser(input);
     const ast = parser.parse();
 
@@ -91,19 +91,5 @@ suite('Parser - Destructuring', () => {
     assert.strictEqual(pattern.elements.length, 2);
     assert.strictEqual(pattern.elements[0]!.type, NodeType.Identifier);
     assert.strictEqual((pattern.elements[0] as any).name, 'x');
-  });
-
-  test('should parse tuple destructuring with defaults', () => {
-    const input = 'let [x = 1] = p;';
-    const parser = new Parser(input);
-    const ast = parser.parse();
-
-    const decl = ast.body[0] as VariableDeclaration;
-    const pattern = decl.pattern as TuplePattern;
-
-    assert.strictEqual(pattern.elements[0]!.type, NodeType.AssignmentPattern);
-    const assign = pattern.elements[0] as AssignmentPattern;
-    assert.strictEqual(assign.left.type, NodeType.Identifier);
-    assert.strictEqual((assign.left as any).name, 'x');
   });
 });

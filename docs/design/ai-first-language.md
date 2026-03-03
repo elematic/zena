@@ -153,7 +153,7 @@ let point = {x: 1, y: 2};        // Immutable record
 // point.x = 3;                   // Error: records are immutable
 
 let mutableArray = #[1, 2, 3];   // Mutable (explicit #[] syntax)
-let immutableArray = [1, 2, 3];  // Immutable tuple
+let immutableTuple = (1, 2, 3);  // Immutable tuple
 ```
 
 When reviewers see immutable data, they skip entire categories of questions: "Modified elsewhere? Race condition? Current state?" The answer is always: "It's the value at creation."

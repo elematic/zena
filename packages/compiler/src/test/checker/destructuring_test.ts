@@ -38,16 +38,16 @@ suite('Checker: Destructuring', () => {
 
   test('checks tuple destructuring', () => {
     const diagnostics = check(`
-      let t = [1, 2];
-      let [x, y] = t;
+      let t = (1, 2);
+      let (x, y) = t;
     `);
     assert.strictEqual(diagnostics.length, 0);
   });
 
   test('checks tuple destructuring with skipping', () => {
     const diagnostics = check(`
-      let t = [1, 2, 3];
-      let [x, , z] = t;
+      let t = (1, 2, 3);
+      let (x, , z) = t;
     `);
     assert.strictEqual(diagnostics.length, 0);
   });
@@ -77,8 +77,8 @@ suite('Checker: Destructuring', () => {
 
   test('detects tuple index out of bounds', () => {
     const diagnostics = check(`
-      let t = [1];
-      let [x, y] = t;
+      let t = (1, 2);
+      let (x, y, z) = t;
     `);
     assert.strictEqual(diagnostics.length, 1);
     assert.strictEqual(diagnostics[0].code, DiagnosticCode.TypeMismatch);

@@ -19,7 +19,7 @@ suite('Parser: Records and Tuples', () => {
   });
 
   test('parses tuple literal', () => {
-    const parser = new Parser('let t = [1, "hello"];');
+    const parser = new Parser('let t = (1, "hello");');
     const module = parser.parse();
     const decl = module.body[0] as any;
     const init = decl.init;
@@ -41,7 +41,7 @@ suite('Parser: Records and Tuples', () => {
   });
 
   test('parses tuple type', () => {
-    const parser = new Parser('let t: [i32, string] = [1, "s"];');
+    const parser = new Parser('let t: (i32, string) = (1, "s");');
     const module = parser.parse();
     const decl = module.body[0] as any;
     const type = decl.typeAnnotation;
@@ -52,7 +52,7 @@ suite('Parser: Records and Tuples', () => {
   });
 
   test('parses nested records and tuples', () => {
-    const parser = new Parser('let n = { a: [1], b: { c: 2 } };');
+    const parser = new Parser('let n = { a: (1, 2), b: { c: 2 } };');
     const module = parser.parse();
     const init = (module.body[0] as any).init;
     assert.strictEqual(init.type, NodeType.RecordLiteral);
@@ -60,16 +60,12 @@ suite('Parser: Records and Tuples', () => {
     assert.strictEqual(init.properties[1].value.type, NodeType.RecordLiteral);
   });
 
-  test('parses empty record and tuple', () => {
-    const parser = new Parser('let e = { }; let t = [];');
+  test('parses empty record', () => {
+    const parser = new Parser('let e = { };');
     const module = parser.parse();
     const r = (module.body[0] as any).init;
     assert.strictEqual(r.type, NodeType.RecordLiteral);
     assert.strictEqual(r.properties.length, 0);
-
-    const t = (module.body[1] as any).init;
-    assert.strictEqual(t.type, NodeType.TupleLiteral);
-    assert.strictEqual(t.elements.length, 0);
   });
 
   test('parses record shorthand', () => {

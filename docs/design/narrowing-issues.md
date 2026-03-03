@@ -14,7 +14,7 @@ immutable, narrowing is safe—the element cannot change between the null check
 and its use.
 
 ```zena
-let process = (t: [Container | null, i32]): i32 => {
+let process = (t: (Container | null, i32)): i32 => {
   if (t[0] !== null) {
     return t[0].value;  // t[0] narrowed to Container
   }
@@ -97,12 +97,12 @@ handle `UnboxedTuplePattern` for variable binding.
 **Priority:** Medium
 
 Codegen only supports unboxed tuple patterns `(a, b)`, not boxed tuple patterns
-`[a, b]`.
+`(a, b)` from boxed tuple types.
 
 ```zena
-let getData = (): [true, i32] | [false, string] => { ... };
+let getData = (): (true, i32) | (false, string) => { ... };
 
-if (let [true, value] = getData()) {  // Error: only supports unboxed tuple patterns
+if (let (true, value) = getData()) {  // Error: only supports unboxed tuple patterns
   return value * 2;
 }
 ```

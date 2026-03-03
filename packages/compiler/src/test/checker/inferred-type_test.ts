@@ -264,7 +264,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
 
   test('tuple type annotation', () => {
     const ast = parseAndCheck(`
-      let t: [i32, string, boolean] = [1, 'hi', true];
+      let t: (i32, string, boolean) = (1, 'hi', true);
     `);
     const varDecl = ast.body[0] as VariableDeclaration;
     assertAnnotationHasInferredType(varDecl.typeAnnotation!, 'tuple type');

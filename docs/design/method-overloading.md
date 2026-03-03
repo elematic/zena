@@ -91,7 +91,7 @@ a tear-off without a specific target signature, we face ambiguity.
 
 ```zena
 let gl = new WebGL();
-let args: [i32, i32] | [i32, i32, i32] = ...;
+let args: (i32, i32) | (i32, i32, i32) = ...;
 // gl.draw(...args); // How to dispatch?
 
 let myDraw = gl.draw; // Which function?

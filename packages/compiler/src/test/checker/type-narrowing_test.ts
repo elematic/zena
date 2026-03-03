@@ -660,7 +660,7 @@ suite('TypeChecker: Type Narrowing', () => {
           }
         }
 
-        let process = (t: [Container | null, i32]): i32 => {
+        let process = (t: (Container | null, i32)): i32 => {
           if (t[0] !== null) {
             return t[0].value;
           }
@@ -687,7 +687,7 @@ suite('TypeChecker: Type Narrowing', () => {
           }
         }
 
-        let process = (t: [Container | null, i32]): i32 => {
+        let process = (t: (Container | null, i32)): i32 => {
           if (t[0] !== null) {
             return t[0].value;
           } else {
@@ -714,7 +714,7 @@ suite('TypeChecker: Type Narrowing', () => {
           }
         }
 
-        let process = (t: [[Container | null, i32], string]): i32 => {
+        let process = (t: ((Container | null, i32), string)): i32 => {
           if (t[0][0] !== null) {
             return t[0][0].value;
           }
@@ -743,7 +743,7 @@ suite('TypeChecker: Type Narrowing', () => {
           }
         }
 
-        let process = (t: [Container | null, i32]): i32 => {
+        let process = (t: (Container | null, i32)): i32 => {
           let idx = 0;
           if (t[idx] !== null) {
             return t[idx].value;
@@ -764,7 +764,7 @@ suite('TypeChecker: Type Narrowing', () => {
 
     test('should support tuple access with let index', () => {
       const input = `
-        let getTupleElement = (t: [i32, string]): i32 => {
+        let getTupleElement = (t: (i32, string)): i32 => {
           let idx = 0;
           return t[idx];
         };
@@ -782,7 +782,7 @@ suite('TypeChecker: Type Narrowing', () => {
 
     test('should error on var index (not compile-time known)', () => {
       const input = `
-        let getTupleElement = (t: [i32, string]): i32 => {
+        let getTupleElement = (t: (i32, string)): i32 => {
           var idx = 0;
           return t[idx];
         };
@@ -798,7 +798,7 @@ suite('TypeChecker: Type Narrowing', () => {
 
     test('should error on parameter index (not compile-time known)', () => {
       const input = `
-        let getTupleElement = (t: [i32, string], idx: i32): i32 => {
+        let getTupleElement = (t: (i32, string), idx: i32): i32 => {
           return t[idx];
         };
       `;

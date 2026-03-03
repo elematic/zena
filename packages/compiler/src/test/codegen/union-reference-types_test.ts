@@ -19,7 +19,7 @@ suite('CodeGenerator - Union Reference Types', () => {
       class Box { value: i32; #new(v: i32) { this.value = v; } }
 
       export let main = (): i32 => {
-        let x: [i32, string] | Box = [1, 'hello'];
+        let x: (i32, string) | Box = (1, 'hello');
         return 1;
       };
     `;

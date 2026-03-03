@@ -38,17 +38,29 @@ suite('Parser: Inline Tuples', () => {
     assert.strictEqual(returnType.name, 'i32');
   });
 
-  test('parses function type with arrow still works', () => {
-    // Function type annotation on a variable with initializer
+  test('parses function type with named params and arrow still works', () => {
+    // Function type annotation requires named parameters
     const parser = new Parser(
-      'let f: (i32, i32) => i32 = (a: i32, b: i32): i32 => a;',
+      'let f: (a: i32, b: i32) => i32 = (a: i32, b: i32): i32 => a;',
     );
     const module = parser.parse();
     const decl = module.body[0] as any;
     const type = decl.typeAnnotation;
     assert.strictEqual(type.type, NodeType.FunctionTypeAnnotation);
     assert.strictEqual(type.params.length, 2);
+    assert.deepStrictEqual(type.paramNames, ['a', 'b']);
     assert.strictEqual(type.returnType.name, 'i32');
+  });
+
+  test('unnamed params in parens are tuple type, not function type', () => {
+    // (i32, i32) without named params is ALWAYS a tuple type, even if => follows.
+    // This eliminates the ambiguity with boxed tuple return types.
+    const parser = new Parser('let f: (i32, i32) = (1, 2);');
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    const type = decl.typeAnnotation;
+    assert.strictEqual(type.type, NodeType.TupleTypeAnnotation);
+    assert.strictEqual(type.elementTypes.length, 2);
   });
 
   test('parses empty function type still works', () => {
@@ -98,10 +110,15 @@ suite('Parser: Inline Tuples', () => {
     assert.ok(returnType.elementTypes[1].typeArguments);
   });
 
-  test('rejects tuple type without inline modifier', () => {
-    // (i32, i32) in type position without 'inline' should now be an error
+  test('tuple type without inline modifier parses as boxed tuple', () => {
+    // (i32, i32) in type position without 'inline' is now a valid boxed tuple type
     const parser = new Parser('let f = (): (i32, i32) => 0;');
-    assert.throws(() => parser.parse(), /inline/);
+    const module = parser.parse();
+    const decl = module.body[0] as any;
+    const func = decl.init;
+    const returnType = func.returnType;
+    assert.strictEqual(returnType.type, NodeType.TupleTypeAnnotation);
+    assert.strictEqual(returnType.elementTypes.length, 2);
   });
 
   test('inline keyword is required for tuple types in all positions', () => {
@@ -122,7 +139,7 @@ suite('Parser: Inline Tuple Destructuring', () => {
     const module = parser.parse();
     const decl = module.body[0] as any;
     assert.strictEqual(decl.type, NodeType.VariableDeclaration);
-    assert.strictEqual(decl.pattern.type, NodeType.InlineTuplePattern);
+    assert.strictEqual(decl.pattern.type, NodeType.TuplePattern);
     assert.strictEqual(decl.pattern.elements.length, 2);
     assert.strictEqual(decl.pattern.elements[0].type, NodeType.Identifier);
     assert.strictEqual(decl.pattern.elements[0].name, 'a');
@@ -134,7 +151,7 @@ suite('Parser: Inline Tuple Destructuring', () => {
     const parser = new Parser('let (x, y, z) = getTriple();');
     const module = parser.parse();
     const decl = module.body[0] as any;
-    assert.strictEqual(decl.pattern.type, NodeType.InlineTuplePattern);
+    assert.strictEqual(decl.pattern.type, NodeType.TuplePattern);
     assert.strictEqual(decl.pattern.elements.length, 3);
   });
 
@@ -151,13 +168,10 @@ suite('Parser: Inline Tuple Destructuring', () => {
     const parser = new Parser('let (a, (b, c)) = nested();');
     const module = parser.parse();
     const decl = module.body[0] as any;
-    assert.strictEqual(decl.pattern.type, NodeType.InlineTuplePattern);
+    assert.strictEqual(decl.pattern.type, NodeType.TuplePattern);
     assert.strictEqual(decl.pattern.elements.length, 2);
     assert.strictEqual(decl.pattern.elements[0].name, 'a');
-    assert.strictEqual(
-      decl.pattern.elements[1].type,
-      NodeType.InlineTuplePattern,
-    );
+    assert.strictEqual(decl.pattern.elements[1].type, NodeType.TuplePattern);
     assert.strictEqual(decl.pattern.elements[1].elements.length, 2);
   });
 
@@ -173,11 +187,8 @@ suite('Parser: Inline Tuple Destructuring', () => {
     const decl = module.body[1] as any;
     const match = decl.init;
     assert.strictEqual(match.type, NodeType.MatchExpression);
-    // First case pattern should be inline tuple
-    assert.strictEqual(
-      match.cases[0].pattern.type,
-      NodeType.InlineTuplePattern,
-    );
+    // First case pattern should be tuple pattern (checker decides if inline)
+    assert.strictEqual(match.cases[0].pattern.type, NodeType.TuplePattern);
     assert.strictEqual(match.cases[0].pattern.elements.length, 2);
   });
 });
@@ -192,7 +203,7 @@ suite('Parser: Inline Tuple Expressions', () => {
     const decl = module.body[0] as any;
     const func = decl.init;
     assert.strictEqual(func.type, NodeType.FunctionExpression);
-    assert.strictEqual(func.body.type, NodeType.InlineTupleLiteral);
+    assert.strictEqual(func.body.type, NodeType.TupleLiteral);
     assert.strictEqual(func.body.elements.length, 2);
     assert.strictEqual(func.body.elements[0].name, 'a');
     assert.strictEqual(func.body.elements[1].name, 'b');
@@ -206,7 +217,7 @@ suite('Parser: Inline Tuple Expressions', () => {
     const decl = module.body[0] as any;
     const func = decl.init;
     const tuple = func.body;
-    assert.strictEqual(tuple.type, NodeType.InlineTupleLiteral);
+    assert.strictEqual(tuple.type, NodeType.TupleLiteral);
     assert.strictEqual(tuple.elements.length, 2);
     assert.strictEqual(tuple.elements[0].type, NodeType.BinaryExpression);
     assert.strictEqual(tuple.elements[1].type, NodeType.BinaryExpression);
@@ -219,7 +230,7 @@ suite('Parser: Inline Tuple Expressions', () => {
     const module = parser.parse();
     const decl = module.body[0] as any;
     const tuple = decl.init.body;
-    assert.strictEqual(tuple.type, NodeType.InlineTupleLiteral);
+    assert.strictEqual(tuple.type, NodeType.TupleLiteral);
     assert.strictEqual(tuple.elements.length, 3);
   });
 
@@ -238,9 +249,9 @@ suite('Parser: Inline Tuple Expressions', () => {
     const module = parser.parse();
     const decl = module.body[0] as any;
     const tuple = decl.init.body;
-    assert.strictEqual(tuple.type, NodeType.InlineTupleLiteral);
+    assert.strictEqual(tuple.type, NodeType.TupleLiteral);
     assert.strictEqual(tuple.elements.length, 2);
-    assert.strictEqual(tuple.elements[0].type, NodeType.InlineTupleLiteral);
+    assert.strictEqual(tuple.elements[0].type, NodeType.TupleLiteral);
     assert.strictEqual(tuple.elements[1].type, NodeType.NumberLiteral);
   });
 
@@ -255,7 +266,7 @@ suite('Parser: Inline Tuple Expressions', () => {
     const func = decl.init;
     const returnStmt = func.body.body[0];
     assert.strictEqual(returnStmt.type, NodeType.ReturnStatement);
-    assert.strictEqual(returnStmt.argument.type, NodeType.InlineTupleLiteral);
+    assert.strictEqual(returnStmt.argument.type, NodeType.TupleLiteral);
     assert.strictEqual(returnStmt.argument.elements.length, 2);
   });
 });

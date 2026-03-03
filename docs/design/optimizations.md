@@ -278,7 +278,7 @@ config.data.indexOf("x");  // Devirtualize!
 **When:** All call sites pass same concrete callback type.
 
 ```zena
-func map(arr: Array<String>, f: (String) => String): Array<String> {
+func map(arr: Array<String>, f: (s: String) => String): Array<String> {
   // f could be any function... or could it?
 }
 
@@ -633,7 +633,7 @@ arr1.map(double);
 arr2.map(double);  // double used twice - don't inline either
 
 // ❌ Closure comes from parameter or field
-func process(arr: Array<i32>, f: (i32) => i32): Array<i32> {
+func process(arr: Array<i32>, f: (x: i32) => i32): Array<i32> {
   return arr.map(f);  // f could be anything - don't inline
 }
 

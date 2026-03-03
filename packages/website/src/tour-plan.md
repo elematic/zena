@@ -35,10 +35,10 @@ This document outlines the content for the Zena Language Tour page. The tour is 
 ## 3. Data Structures (Immutable)
 
 - **Records**: Immutable structs `{ x: 1, y: 2 }`.
-- **Tuples**: Immutable sequences `[1, "a"]`.
+- **Tuples**: Immutable sequences `(1, "a")`.
 - **Destructuring**: Extracting values from Records and Tuples.
   - `let {x, y} = point;`
-  - `let [a, b] = tuple;`
+  - `let (a, b) = tuple;`
 
 ## 4. Types System
 

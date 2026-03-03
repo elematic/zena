@@ -83,7 +83,7 @@ suite('Parser - Range expressions', () => {
   });
 
   test('should parse range in tuple context', () => {
-    const input = 'let ranges = [1..5, 10..20];';
+    const input = 'let ranges = (1..5, 10..20);';
     const parser = new Parser(input);
     const module = parser.parse();
 

@@ -741,6 +741,19 @@ export function checkMatchPattern(
     case NodeType.TuplePattern: {
       const tuplePattern = pattern as TuplePattern;
 
+      // Mutate TuplePattern → InlineTuplePattern when the value type is inline
+      if (pattern.type === NodeType.TuplePattern) {
+        const isInline =
+          discriminantType.kind === TypeKind.InlineTuple ||
+          (discriminantType.kind === TypeKind.Union &&
+            (discriminantType as UnionType).types.some(
+              (t) => t.kind === TypeKind.InlineTuple,
+            ));
+        if (isInline) {
+          (pattern as any).type = NodeType.InlineTuplePattern;
+        }
+      }
+
       // Handle direct tuple types
       if (
         discriminantType.kind === TypeKind.Tuple ||
@@ -3201,6 +3214,34 @@ function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
 
 function checkTupleLiteral(ctx: CheckerContext, expr: TupleLiteral): Type {
   const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
+
+  // If we're in an inline return context, produce InlineTupleType so codegen
+  // generates flat multi-value instead of a heap-allocated struct.
+  const returnType = ctx.currentFunctionReturnType;
+  if (returnType && returnType.kind === TypeKind.InlineTuple) {
+    const resultType: InlineTupleType = {
+      kind: TypeKind.InlineTuple,
+      elementTypes,
+    };
+    expr.inferredType = resultType;
+    return resultType;
+  }
+  // Also handle union-of-inline-tuples return type (e.g. (true, T) | (false, never))
+  if (
+    returnType &&
+    returnType.kind === TypeKind.Union &&
+    (returnType as UnionType).types.every(
+      (t) => t.kind === TypeKind.InlineTuple,
+    )
+  ) {
+    const resultType: InlineTupleType = {
+      kind: TypeKind.InlineTuple,
+      elementTypes,
+    };
+    expr.inferredType = resultType;
+    return resultType;
+  }
+
   return {
     kind: TypeKind.Tuple,
     elementTypes,
@@ -3211,6 +3252,8 @@ function checkTupleLiteral(ctx: CheckerContext, expr: TupleLiteral): Type {
  * Check an inline tuple literal expression like ((1, 2)).
  * This is only valid in return position (expression body or return statement).
  * Returns an InlineTupleType.
+ * @deprecated - TupleLiteral now handles both boxed and inline tuples.
+ * Kept for backwards compatibility with any remaining InlineTupleLiteral AST nodes.
  */
 function checkInlineTupleLiteral(
   ctx: CheckerContext,

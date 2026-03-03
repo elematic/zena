@@ -108,8 +108,8 @@ let pair = (): (i32, i32) => (1, 2);
 
 **Key distinction from boxed tuples:**
 
-- `[i32, i32]` - Boxed tuple, heap-allocated struct
-- `(i32, i32)` - Inline tuple, exists only on WASM stack
+- `(i32, i32)` - Boxed tuple, heap-allocated struct
+- `inline (i32, i32)` - Inline tuple, exists only on WASM stack
 
 ### Destructuring at Call Sites
 
@@ -403,13 +403,13 @@ This ensures they compile to stack values, not heap allocations.
 An inline tuple can be explicitly boxed:
 
 ```zena
-let boxed: [i32, i32] = [getTuple()...];  // Spread into boxed tuple
+let boxed: (i32, i32) = (getTuple()...);  // Spread into boxed tuple
 ```
 
 Or with a helper:
 
 ```zena
-let boxed = box(getTuple());  // Returns [i32, i32]
+let boxed = box(getTuple());  // Returns (i32, i32)
 ```
 
 ## Comparison with Alternatives

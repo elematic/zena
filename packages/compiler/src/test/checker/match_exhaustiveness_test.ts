@@ -203,10 +203,10 @@ suite('TypeChecker - Match Exhaustiveness', () => {
     () => {
       const input = `
       enum Color { Red, Green }
-      let t: [Color, i32] = [Color.Red, 1];
+      let t: (Color, i32) = (Color.Red, 1);
       match (t) {
-        case [Color.Red, _]: "red"
-        case [Color.Green, _]: "green"
+        case (Color.Red, _): "red"
+        case (Color.Green, _): "green"
       };
     `;
       const errors = check(input);
@@ -220,10 +220,10 @@ suite('TypeChecker - Match Exhaustiveness', () => {
     () => {
       const input = `
       enum Color { Red, Green, Blue }
-      let t: [Color, i32] = [Color.Red, 1];
+      let t: (Color, i32) = (Color.Red, 1);
       match (t) {
-        case [Color.Red, _]: "red"
-        case [Color.Green, _]: "green"
+        case (Color.Red, _): "red"
+        case (Color.Green, _): "green"
       };
     `;
       const errors = check(input);

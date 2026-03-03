@@ -850,6 +850,7 @@ export type TypeAnnotation =
 
 export interface FunctionTypeAnnotation extends Node {
   type: typeof NodeType.FunctionTypeAnnotation;
+  paramNames: string[];
   params: TypeAnnotation[];
   returnType: TypeAnnotation;
 }

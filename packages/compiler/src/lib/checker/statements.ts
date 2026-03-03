@@ -1951,6 +1951,25 @@ function checkTuplePattern(
   kind: 'let' | 'var',
   declaration?: VariableDeclaration,
 ) {
+  // If the value type is an inline tuple, convert the pattern to InlineTuplePattern
+  // so codegen uses stack-based destructuring instead of struct.get
+  if (
+    type.kind === TypeKind.InlineTuple ||
+    (type.kind === TypeKind.Union &&
+      (type as UnionType).types.every((t) => t.kind === TypeKind.InlineTuple))
+  ) {
+    // Mutate the pattern type so codegen dispatches correctly
+    (pattern as any).type = NodeType.InlineTuplePattern;
+    checkInlineTuplePattern(
+      ctx,
+      pattern as unknown as InlineTuplePattern,
+      type,
+      kind,
+      declaration,
+    );
+    return;
+  }
+
   if (type.kind === TypeKind.Tuple) {
     const tupleType = type as TupleType;
     // Check length?

@@ -321,13 +321,13 @@ let SCRATCH_PTR: i32 = allocAlignedOrPanic(SCRATCH_SIZE, 8);
 // ============================================================================
 
 // Copy a Zena string to linear memory, return (ptr, len)
-let __stringToLinear = (s: string): [i32, i32] => {
+let __stringToLinear = (s: string): (i32, i32) => {
   let len = s.length;
   let ptr = allocOrPanic(len);
   for (var i = 0; i < len; i = i + 1) {
     mem[ptr + i] = s.getByteAt(i);
   }
-  return [ptr, len];
+  return (ptr, len);
 };
 
 // Read a string from linear memory
@@ -435,7 +435,7 @@ export class Descriptor {
     __checkErrno(seekErrno, "seek");
 
     // Read in chunks
-    let chunks = new Array<[i32, i32]>();  // [(bufPtr, len), ...]
+    let chunks = new Array<(i32, i32)>();  // [(bufPtr, len), ...]
     var totalLen = 0;
     let chunkSize = 4096;
     
@@ -454,7 +454,7 @@ export class Descriptor {
       let nread = mem.getI32(SCRATCH_PTR + 8);
       
       if (nread > 0) {
-        chunks.push([bufPtr, nread]);
+        chunks.push((bufPtr, nread));
         totalLen = totalLen + nread;
       }
       
@@ -467,7 +467,7 @@ export class Descriptor {
     let result = newByteArray(totalLen);
     var pos = 0;
     for (var c = 0; c < chunks.length; c = c + 1) {
-      let [bufPtr, len] = chunks[c];
+      let (bufPtr, len) = chunks[c];
       for (var i = 0; i < len; i = i + 1) {
         __byte_array_set(result, pos, mem[bufPtr + i]);
         pos = pos + 1;
@@ -511,7 +511,7 @@ export class Descriptor {
       throw new FsError(8, "Descriptor is closed");
     }
 
-    let [ptr, len] = __stringToLinear(data);
+    let (ptr, len) = __stringToLinear(data);
     
     // Set up iovec
     mem.setI32(SCRATCH_PTR, ptr);
@@ -527,7 +527,7 @@ export class Descriptor {
       throw new FsError(8, "Descriptor is closed");
     }
 
-    let [pathPtr, pathLen] = __stringToLinear(path);
+    let (pathPtr, pathLen) = __stringToLinear(path);
     
     // Compute rights based on flags
     // DescriptorFlags: Read=0, Write=1, ReadWrite=2, MutateDirectory=3
@@ -563,7 +563,7 @@ export class Descriptor {
       throw new FsError(8, "Descriptor is closed");
     }
 
-    let [pathPtr, pathLen] = __stringToLinear(path);
+    let (pathPtr, pathLen) = __stringToLinear(path);
     
     // oflags: create (1) | truncate (8) = 9
     let errno = __wasi_path_open(
@@ -617,7 +617,7 @@ export class Descriptor {
       throw new FsError(8, "Descriptor is closed");
     }
 
-    let [pathPtr, pathLen] = __stringToLinear(path);
+    let (pathPtr, pathLen) = __stringToLinear(path);
     
     let errno = __wasi_path_filestat_get(
       this.#fd,
@@ -700,7 +700,7 @@ export class Descriptor {
       throw new FsError(8, "Descriptor is closed");
     }
 
-    let [pathPtr, pathLen] = __stringToLinear(path);
+    let (pathPtr, pathLen) = __stringToLinear(path);
     let errno = __wasi_path_create_directory(this.#fd, pathPtr, pathLen);
     __checkErrno(errno, "mkdir '" + path + "'");
   }
@@ -711,7 +711,7 @@ export class Descriptor {
       throw new FsError(8, "Descriptor is closed");
     }
 
-    let [pathPtr, pathLen] = __stringToLinear(path);
+    let (pathPtr, pathLen) = __stringToLinear(path);
     let errno = __wasi_path_unlink_file(this.#fd, pathPtr, pathLen);
     __checkErrno(errno, "unlink '" + path + "'");
   }
@@ -722,7 +722,7 @@ export class Descriptor {
       throw new FsError(8, "Descriptor is closed");
     }
 
-    let [pathPtr, pathLen] = __stringToLinear(path);
+    let (pathPtr, pathLen) = __stringToLinear(path);
     let errno = __wasi_path_remove_directory(this.#fd, pathPtr, pathLen);
     __checkErrno(errno, "rmdir '" + path + "'");
   }
@@ -741,7 +741,7 @@ export class Descriptor {
 // ============================================================================
 
 // Cache of preopened directories
-var __preopensCache: Array<[Descriptor, string]> | null = null;
+var __preopensCache: Array<(Descriptor, string)> | null = null;
 
 /**
  * Returns all preopened directories granted to this WASM module.
@@ -760,18 +760,18 @@ var __preopensCache: Array<[Descriptor, string]> | null = null;
  * @example
  * ```
  * let preopens = getPreopens();
- * for (let [dir, path] in preopens) {
+ * for (let (dir, path) in preopens) {
  *   console.log('Access granted to: ' + path);
  * }
  * ```
  */
-export let getPreopens = (): Array<[Descriptor, string]> => {
+export let getPreopens = (): Array<(Descriptor, string)> => {
   let cached = __preopensCache;
   if (cached != null) {
     return cached;
   }
   
-  let result = new Array<[Descriptor, string]>();
+  let result = new Array<(Descriptor, string)>();
   
   // In WASI P1, preopened directories start at fd 3 (0=stdin, 1=stdout, 2=stderr)
   // We iterate upward until fd_prestat_get fails
@@ -800,7 +800,7 @@ export let getPreopens = (): Array<[Descriptor, string]> => {
     }
     
     let path = __linearToString(namePtr, nameLen);
-    result.push([new Descriptor(fd), path]);
+    result.push((new Descriptor(fd), path));
     
     fd = fd + 1;
   }
@@ -905,7 +905,7 @@ export let writeFileBytes = (path: string, content: ByteArray): void => {
 export let listDir = (path: string): Array<DirEntry> => {
   let root = getRootDir();
   // For directory listing, we need to open with directory rights
-  let [pathPtr, pathLen] = __stringToLinear(path);
+  let (pathPtr, pathLen) = __stringToLinear(path);
   
   let errno = __wasi_path_open(
     root.fd,

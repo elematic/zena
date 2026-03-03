@@ -1772,6 +1772,30 @@ export function isAssignableTo(
     return true;
   }
 
+  // Inline tuple assignability (InlineTuple == InlineTuple)
+  if (
+    source.kind === TypeKind.InlineTuple &&
+    target.kind === TypeKind.InlineTuple
+  ) {
+    const sourceInline = source as InlineTupleType;
+    const targetInline = target as InlineTupleType;
+    if (sourceInline.elementTypes.length !== targetInline.elementTypes.length) {
+      return false;
+    }
+    for (let i = 0; i < sourceInline.elementTypes.length; i++) {
+      if (
+        !isAssignableTo(
+          ctx,
+          sourceInline.elementTypes[i],
+          targetInline.elementTypes[i],
+        )
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   if (source.kind === TypeKind.Class && target.kind === TypeKind.Record) {
     const targetRecord = target as RecordType;
     // Check if class has all properties of record

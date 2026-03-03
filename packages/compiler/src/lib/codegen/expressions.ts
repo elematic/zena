@@ -7576,6 +7576,12 @@ function generateTupleLiteral(
   expr: TupleLiteral,
   body: number[],
 ) {
+  // If the inferred type is InlineTuple, generate flat multi-value (no allocation)
+  if (expr.inferredType?.kind === TypeKind.InlineTuple) {
+    generateInlineTupleValues(ctx, expr, body);
+    return;
+  }
+
   let typeIndex: number;
   if (expr.inferredType) {
     const wasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
@@ -7599,7 +7605,7 @@ function generateTupleLiteral(
 }
 
 /**
- * Generates an inline tuple literal for multi-value returns.
+ * Generate inline tuple values for multi-value returns from a TupleLiteral.
  * Simply pushes each element's value onto the stack in order.
  * The values stay on the stack for the return instruction.
  *
@@ -7607,13 +7613,11 @@ function generateTupleLiteral(
  * discriminated unions like `(false, _)` where the return type is
  * `(true, T) | (false, never)`.
  */
-function generateInlineTupleLiteral(
+function generateInlineTupleValues(
   ctx: CodegenContext,
-  expr: InlineTupleLiteral,
+  expr: TupleLiteral | InlineTupleLiteral,
   body: number[],
 ) {
-  // Get the expected element types from the function's return type.
-  // This is needed for `_` which needs to generate a zero-value of the appropriate type.
   const expectedElementTypes = getExpectedTupleElementTypes(
     ctx,
     expr.elements.length,
@@ -7634,6 +7638,19 @@ function generateInlineTupleLiteral(
       generateExpression(ctx, element, body);
     }
   }
+}
+
+/**
+ * Generates an inline tuple literal for multi-value returns.
+ * @deprecated - TupleLiteral now handles both boxed and inline tuples via inferredType.
+ * Kept for backwards compatibility with any remaining InlineTupleLiteral AST nodes.
+ */
+function generateInlineTupleLiteral(
+  ctx: CodegenContext,
+  expr: InlineTupleLiteral,
+  body: number[],
+) {
+  generateInlineTupleValues(ctx, expr, body);
 }
 
 /**

@@ -3,14 +3,14 @@ import assert from 'node:assert';
 import {compileAndRun, compileAndInstantiate} from './utils.js';
 
 suite('array of tuples bug', () => {
-  test('Array<[i32, i32]> - tuple of primitives basic', async () => {
+  test('Array<(i32, i32)> - tuple of primitives basic', async () => {
     const result = await compileAndRun(`
       import { Array } from 'zena:growable-array';
 
       export let main = (): i32 => {
-        let chunks = new Array<[i32, i32]>();
-        chunks.push([10, 20]);
-        let [a, b] = chunks[0];
+        let chunks = new Array<(i32, i32)>();
+        chunks.push((10, 20));
+        let (a, b) = chunks[0];
         return a + b;
       };
     `);
@@ -18,7 +18,7 @@ suite('array of tuples bug', () => {
   });
 
   // Test nullable array of tuples WITHOUT cache
-  test('Array<[Descriptor, string]> | null - nullable array', async () => {
+  test('Array<(Descriptor, string)> | null - nullable array', async () => {
     const result = await compileAndRun(`
       import { Array } from 'zena:growable-array';
 
@@ -28,17 +28,17 @@ suite('array of tuples bug', () => {
       }
 
       export let main = (): i32 => {
-        var arr: Array<[Descriptor, string]> | null = null;
+        var arr: Array<(Descriptor, string)> | null = null;
         
         // Initialize
-        let newArr = new Array<[Descriptor, string]>();
-        newArr.push([new Descriptor(42), "hello"]);
+        let newArr = new Array<(Descriptor, string)>();
+        newArr.push((new Descriptor(42), "hello"));
         arr = newArr;
         
         // Access
         let a = arr;
         if (a != null) {
-          let [desc, name] = a[0];
+          let (desc, name) = a[0];
           return desc.handle + name.length;
         }
         return -1;
@@ -48,7 +48,7 @@ suite('array of tuples bug', () => {
   });
 
   // Test global nullable array of tuples (the actual pattern from fs.zena)
-  test('global Array<[Descriptor, string]> | null', async () => {
+  test('global Array<(Descriptor, string)> | null', async () => {
     const result = await compileAndRun(`
       import { Array } from 'zena:growable-array';
 
@@ -58,18 +58,18 @@ suite('array of tuples bug', () => {
       }
 
       // Global cache like in fs.zena
-      var __cache: Array<[Descriptor, string]> | null = null;
+      var __cache: Array<(Descriptor, string)> | null = null;
 
       export let main = (): i32 => {
         // Initialize
-        let newArr = new Array<[Descriptor, string]>();
-        newArr.push([new Descriptor(42), "hello"]);
+        let newArr = new Array<(Descriptor, string)>();
+        newArr.push((new Descriptor(42), "hello"));
         __cache = newArr;
         
         // Access through cache
         let cached = __cache;
         if (cached != null) {
-          let [desc, name] = cached[0];
+          let (desc, name) = cached[0];
           return desc.handle + name.length;
         }
         return -1;
@@ -109,7 +109,7 @@ suite('array of tuples bug', () => {
   });
 
   // Control: same thing without cast (using string literals)
-  test('Array<[class, string]> in loop without cast', async () => {
+  test('Array<(class, string)> in loop without cast', async () => {
     const result = await compileAndRun(`
       import { Array } from 'zena:growable-array';
 
@@ -119,14 +119,14 @@ suite('array of tuples bug', () => {
       }
 
       export let main = (): i32 => {
-        let result = new Array<[Descriptor, string]>();
+        let result = new Array<(Descriptor, string)>();
         
         for (var i = 0; i < 2; i = i + 1) {
           let path = "path";
-          result.push([new Descriptor(10 + i), path]);
+          result.push((new Descriptor(10 + i), path));
         }
         
-        let [desc, path] = result[0];
+        let (desc, path) = result[0];
         return desc.handle + path.length;
       };
     `);
@@ -134,7 +134,7 @@ suite('array of tuples bug', () => {
   });
 
   // Simpler version without null union
-  test('Array<[Descriptor, string]> - simple push and access', async () => {
+  test('Array<(Descriptor, string)> - simple push and access', async () => {
     const result = await compileAndRun(`
       import { Array } from 'zena:growable-array';
 
@@ -144,9 +144,9 @@ suite('array of tuples bug', () => {
       }
 
       export let main = (): i32 => {
-        let arr = new Array<[Descriptor, string]>();
-        arr.push([new Descriptor(42), "hello"]);
-        let [desc, name] = arr[0];
+        let arr = new Array<(Descriptor, string)>();
+        arr.push((new Descriptor(42), "hello"));
+        let (desc, name) = arr[0];
         return desc.handle + name.length;
       };
     `);

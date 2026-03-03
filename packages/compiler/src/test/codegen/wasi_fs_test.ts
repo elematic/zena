@@ -54,13 +54,13 @@ suite('CodeGenerator - WASI Filesystem', () => {
       };
 
       // Copy string to linear memory
-      let stringToMem = (s: string): [i32, i32] => {
+      let stringToMem = (s: string): (i32, i32) => {
         let len = s.length;
         let ptr = alloc(len);
         for (var i = 0; i < len; i = i + 1) {
           store8(ptr + i, s.getByteAt(i));
         }
-        return [ptr, len];
+        return (ptr, len);
       };
 
       // Read a file and return [dataPtr, dataLen] for inspection
@@ -75,7 +75,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
         let rootHandle = load32(listPtr);  // First entry's handle
         
         // Open the file
-        let [pathPtr, pathLen] = stringToMem(path);
+        let (pathPtr, pathLen) = stringToMem(path);
         let fileHandle = wasiOpenAt(
           rootHandle,
           1,        // path flags: follow symlinks
@@ -181,13 +181,13 @@ suite('CodeGenerator - WASI Filesystem', () => {
       };
 
       // Copy string to linear memory
-      let stringToMem = (s: string): [i32, i32] => {
+      let stringToMem = (s: string): (i32, i32) => {
         let len = s.length;
         let ptr = alloc(len);
         for (var i = 0; i < len; i = i + 1) {
           store8(ptr + i, s.getByteAt(i));
         }
-        return [ptr, len];
+        return (ptr, len);
       };
 
       // Write content to a file
@@ -200,7 +200,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
         let rootHandle = load32(listPtr);
         
         // Open/create the file with CREATE | TRUNCATE flags
-        let [pathPtr, pathLen] = stringToMem(path);
+        let (pathPtr, pathLen) = stringToMem(path);
         let fileHandle = wasiOpenAt(
           rootHandle,
           1,        // path flags: follow symlinks
@@ -215,7 +215,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
         }
         
         // Write content
-        let [dataPtr, dataLen] = stringToMem(content);
+        let (dataPtr, dataLen) = stringToMem(content);
         let written = wasiWrite(fileHandle, dataPtr, dataLen, 0 as i64);
         
         return written as i32;
@@ -401,13 +401,13 @@ suite('CodeGenerator - WASI Filesystem', () => {
         return ptr;
       };
 
-      let stringToMem = (s: string): [i32, i32] => {
+      let stringToMem = (s: string): (i32, i32) => {
         let len = s.length;
         let ptr = alloc(len);
         for (var i = 0; i < len; i = i + 1) {
           store8(ptr + i, s.getByteAt(i));
         }
-        return [ptr, len];
+        return (ptr, len);
       };
 
       // Try to open a non-existent file, return error code
@@ -417,7 +417,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
         let listPtr = load32(preopensPtr);
         let rootHandle = load32(listPtr);
         
-        let [pathPtr, pathLen] = stringToMem("does-not-exist.txt");
+        let (pathPtr, pathLen) = stringToMem("does-not-exist.txt");
         let result = wasiOpenAt(rootHandle, 1, pathPtr, pathLen, 0, 1);
         
         return result;

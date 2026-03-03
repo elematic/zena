@@ -601,7 +601,7 @@ case x: x + 1
 case _: ...
 
 // Tuple destructuring
-case [a, b]: a + b
+case (a, b): a + b
 
 // Record destructuring
 case { x, y }: x + y
@@ -977,7 +977,7 @@ let p2 = {...p, z: 3}; // { x: 1, y: 2, z: 3 }
 Tuples are fixed-length sequences where each position can have a different type.
 
 ```ts
-let t = [1, 'hello'];
+let t = (1, 'hello');
 let n = t[0]; // 1
 let s = t[1]; // "hello"
 ```
@@ -985,7 +985,7 @@ let s = t[1]; // "hello"
 Tuple indices must be compile-time known values:
 
 ```ts
-let t = [1, 'hello', true];
+let t = (1, 'hello', true);
 
 let first = t[0]; // ✅ Literal index
 let idx = 1; // let variable with literal initializer
@@ -998,7 +998,7 @@ let x = t[i]; // ❌ var is not compile-time known
 Tuple elements support type narrowing since tuples are immutable:
 
 ```ts
-let process = (t: [Container | null, i32]): i32 => {
+let process = (t: (Container | null, i32)): i32 => {
   if (t[0] !== null) {
     return t[0].value; // t[0] narrowed to Container
   }
@@ -1017,8 +1017,8 @@ let { x, y } = point;
 let { x as a, y as b } = point;  // Rename
 
 // Tuple
-let [first, second] = tuple;
-let [a, , c] = [1, 2, 3];  // Skip elements
+let (first, second) = tuple;
+let (a, , c) = (1, 2, 3);  // Skip elements
 ```
 
 ## Classes
@@ -1553,7 +1553,7 @@ for (let item in arr) {
 }
 
 let map = new Map<String, i32>();
-for (let [key, value] in map) {
+for (let (key, value) in map) {
   // iterate over entries
 }
 ```

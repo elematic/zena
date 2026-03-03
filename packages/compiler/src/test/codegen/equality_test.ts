@@ -143,7 +143,7 @@ suite('CodeGenerator - Equality', () => {
   test('tuple reference equality', async () => {
     assert.strictEqual(
       await runEqualityTest(`
-      let t1 = [1, 2];
+      let t1 = (1, 2);
       let t2 = t1;
       ${check('t1 == t2')}
     `),
@@ -152,8 +152,8 @@ suite('CodeGenerator - Equality', () => {
 
     assert.strictEqual(
       await runEqualityTest(`
-      let t1 = [1, 2];
-      let t2 = [1, 2];
+      let t1 = (1, 2);
+      let t2 = (1, 2);
       ${check('t1 == t2')}
     `),
       0,

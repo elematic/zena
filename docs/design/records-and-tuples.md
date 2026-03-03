@@ -50,13 +50,13 @@ Tuples are fixed-length collections of ordered fields.
 **Type Syntax**:
 
 ```zena
-type Pair = [i32, string];
+type Pair = (i32, string);
 ```
 
 **Literal Syntax**:
 
 ```zena
-let p = [10, 'hello'];
+let p = (10, 'hello');
 ```
 
 **Access Syntax**:
@@ -71,9 +71,9 @@ let name = p[1];
 - **Immutability**: Fields of records and tuples are **shallowly immutable**. You cannot reassign a field (`r.x = 1` is error), but if a field holds a mutable object (like an Array), you can mutate that object (`r.list.push(1)` is ok).
 - **Structural Typing**: Records and Tuples are structurally typed. `{ x: i32 }` is the same type regardless of where it is defined.
 - **Value Semantics**: Equality (`==`) compares contents (structural equality), not reference identity.
-  - `[1, 2] == [1, 2]` is `true`.
-  - `[a] == [a]` is `true` (where `a` is an object reference).
-  - `[new Obj()] == [new Obj()]` is `false` (because the object references are different).
+  - `(1, 2) == (1, 2)` is `true`.
+  - `(a,) == (a,)` is `true` (where `a` is an object reference).
+  - `(new Obj(),) == (new Obj(),)` is `false` (because the object references are different).
 
 ## 4. Implementation Strategy
 
@@ -152,7 +152,7 @@ let {a, b} = record;
 **Tuple Destructuring**:
 
 ```zena
-let [x, y] = tuple;
+let (x, y) = tuple;
 ```
 
 If the source is an "exploded" return value, destructuring is a no-op (just binding locals).
@@ -420,9 +420,9 @@ Records behave like interfaces in terms of subtyping rules, but maintain their i
 - [x] **AST Nodes**: Add `RecordLiteral`, `TupleLiteral`, `RecordType`, `TupleType`, `PropertyAccess` (update), `ElementAccess` (update).
 - [x] **Parser**:
   - Parse `{ x: 1, y: 2 }` as `RecordLiteral`.
-  - Parse `[ 1, 2 ]` as `TupleLiteral`.
+  - Parse `( 1, 2 )` as `TupleLiteral`.
   - Parse `{ x: i32 }` as `RecordType`.
-  - Parse `[i32, i32]` as `TupleType`.
+  - Parse `(i32, i32)` as `TupleType`.
   - Update `.` access to handle records.
   - Update `[]` access to handle tuples (constant indices only for now?).
 

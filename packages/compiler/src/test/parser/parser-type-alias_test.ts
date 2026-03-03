@@ -42,7 +42,7 @@ suite('Parser - Type Aliases', () => {
   });
 
   test('should parse tuple type alias', () => {
-    const parser = new Parser('type Foo = [string, i32];');
+    const parser = new Parser('type Foo = (string, i32);');
     const module = parser.parse();
     assert.strictEqual(module.body[0].type, NodeType.TypeAliasDeclaration);
     const decl = module.body[0] as any;

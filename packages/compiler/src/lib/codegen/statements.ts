@@ -1500,9 +1500,14 @@ export function generateReturnStatement(
   body: number[],
 ) {
   if (stmt.argument) {
-    // For inline tuple returns, just generate the expression directly
+    // For inline tuple returns (TupleLiteral with InlineTupleType inferredType,
+    // or legacy InlineTupleLiteral nodes), just generate the expression directly
     // (it pushes multiple values onto the stack)
-    if (stmt.argument.type === NodeType.InlineTupleLiteral) {
+    if (
+      (stmt.argument.type === NodeType.TupleLiteral &&
+        stmt.argument.inferredType?.kind === TypeKind.InlineTuple) ||
+      stmt.argument.type === NodeType.InlineTupleLiteral
+    ) {
       generateExpression(ctx, stmt.argument, body);
     } else if (ctx.currentReturnType) {
       generateAdaptedArgument(ctx, stmt.argument, ctx.currentReturnType, body);

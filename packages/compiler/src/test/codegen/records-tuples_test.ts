@@ -19,7 +19,7 @@ suite('CodeGenerator - Records and Tuples', () => {
   test('should compile and run tuple literal and access', async () => {
     const source = `
       export let main = (): i32 => {
-        let t = [10, 20];
+        let t = (10, 20);
         return t[0] + t[1];
       };
     `;
@@ -43,7 +43,7 @@ suite('CodeGenerator - Records and Tuples', () => {
   test('should handle mixed records and tuples', async () => {
     const source = `
       export let main = (): i32 => {
-        let x = { a: [10, 20], b: { c: 30 } };
+        let x = { a: (10, 20), b: { c: 30 } };
         return x.a[0] + x.b.c;
       };
     `;

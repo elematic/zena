@@ -31,16 +31,16 @@ suite('Checker: Records and Tuples', () => {
 
   test('infers tuple literal type', () => {
     const {diagnostics} = check(`
-      let t = [1, true];
-      let check: [i32, boolean] = t;
+      let t = (1, true);
+      let check: (i32, boolean) = t;
     `);
     assert.strictEqual(diagnostics.length, 0);
   });
 
   test('infers tuple literal type (mismatch)', () => {
     const {diagnostics} = check(`
-      let t = [1, true];
-      let check: [string, boolean] = t;
+      let t = (1, true);
+      let check: (string, boolean) = t;
     `);
     assert.strictEqual(diagnostics.length, 1);
     assert.match(diagnostics[0].message, /Type mismatch/);
@@ -52,7 +52,7 @@ suite('Checker: Records and Tuples', () => {
   });
 
   test('resolves tuple type annotation', () => {
-    const {diagnostics} = check('let t: [i32, boolean] = [1, true];');
+    const {diagnostics} = check('let t: (i32, boolean) = (1, true);');
     assert.strictEqual(diagnostics.length, 0);
   });
 
@@ -69,13 +69,13 @@ suite('Checker: Records and Tuples', () => {
   });
 
   test('checks tuple assignability (exact length)', () => {
-    const {diagnostics} = check('let t: [i32] = [1, 2];');
+    const {diagnostics} = check('let t: (i32, i32) = (1, 2, 3);');
     assert.strictEqual(diagnostics.length, 1);
     assert.match(diagnostics[0].message, /Type mismatch/);
   });
 
   test('checks tuple assignability (element mismatch)', () => {
-    const {diagnostics} = check('let t: [i32] = [true];');
+    const {diagnostics} = check('let t: (i32, i32) = (true, 1);');
     assert.strictEqual(diagnostics.length, 1);
     assert.match(diagnostics[0].message, /Type mismatch/);
   });
@@ -96,7 +96,7 @@ suite('Checker: Records and Tuples', () => {
 
   test('checks tuple index access', () => {
     const {diagnostics} = check(`
-      let t = [1, true];
+      let t = (1, true);
       let x: i32 = t[0];
       let y: boolean = t[1];
     `);
@@ -104,14 +104,14 @@ suite('Checker: Records and Tuples', () => {
   });
 
   test('checks tuple index access (out of bounds)', () => {
-    const {diagnostics} = check('let t = [1]; let x = t[1];');
+    const {diagnostics} = check('let t = (1, 2); let x = t[2];');
     assert.strictEqual(diagnostics.length, 1);
     assert.match(diagnostics[0].message, /Tuple index out of bounds/);
   });
 
   test('checks tuple index access (non-literal)', () => {
     // var variables are not compile-time known, even with literal initializers
-    const {diagnostics} = check('let t = [1]; var i = 0; let x = t[i];');
+    const {diagnostics} = check('let t = (1, 2); var i = 0; let x = t[i];');
     assert.strictEqual(diagnostics.length, 1);
     assert.match(
       diagnostics[0].message,

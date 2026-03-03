@@ -42,8 +42,8 @@ suite('CodeGenerator - Destructuring', () => {
   test('should destructure tuple', async () => {
     const code = `
       export let main = () => {
-        let t = [10, 20];
-        let [a, b] = t;
+        let t = (10, 20);
+        let (a, b) = t;
         return a + b;
       };
     `;
@@ -54,8 +54,8 @@ suite('CodeGenerator - Destructuring', () => {
   test('should destructure tuple with skipping', async () => {
     const code = `
       export let main = () => {
-        let t = [10, 20, 30];
-        let [a, , c] = t;
+        let t = (10, 20, 30);
+        let (a, , c) = t;
         return a + c;
       };
     `;

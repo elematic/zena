@@ -131,9 +131,9 @@ suite('CodeGenerator - Pattern Matching', () => {
   test('should match tuple pattern', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let t = [10, 20];
+        let t = (10, 20);
         return match (t) {
-          case [10, y]: y
+          case (10, y): y
           case _: 0
         };
       };
@@ -144,9 +144,9 @@ suite('CodeGenerator - Pattern Matching', () => {
   test('should match tuple pattern (nested)', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let t = [10, [20, 30]];
+        let t = (10, (20, 30));
         return match (t) {
-          case [10, [x, y]]: x + y
+          case (10, (x, y)): x + y
           case _: 0
         };
       };

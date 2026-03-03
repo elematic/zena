@@ -300,7 +300,8 @@ operation.
 ### Function Types
 
 Function types describe the signature of a function. They are written using
-arrow syntax.
+arrow syntax with **named parameters**. Parameter names are required to
+disambiguate function types from tuple types (since both use parentheses).
 
 ```zena
 type BinaryOp = (a: i32, b: i32) => i32;
@@ -308,6 +309,9 @@ type Callback = () => void;
 
 let add: BinaryOp = (a, b) => a + b;
 ```
+
+Note: `(i32, i32)` is always a **tuple type**, never a function type.
+Use `(a: i32, b: i32) => i32` for function types.
 
 ### Union Types
 
@@ -449,7 +453,7 @@ let processRecord = (r: {inner: Container | null}): i32 => {
 };
 
 // Tuple element
-let processTuple = (t: [Container | null, i32]): i32 => {
+let processTuple = (t: (Container | null, i32)): i32 => {
   if (t[0] !== null) {
     return t[0].value;  // t[0] narrowed to Container
   }
@@ -587,7 +591,7 @@ considered **compile-time known**. This enables features that require
 statically-known values, such as tuple indexing:
 
 ```zena
-let t = [1, "hello", true];
+let t = (1, "hello", true);
 
 let idx = 0;          // let with literal initializer
 let first = t[idx];   // ✅ OK - idx is compile-time known
@@ -1654,7 +1658,7 @@ let result = match (x) {
 - **Tuple Patterns**: Match tuples and destructure elements.
 
   ```zena
-  case [1, x]: ...
+  case (1, x): ...
   ```
 
 - **Logical Patterns**: Combine patterns using `|` (OR) and `&` (AND).
@@ -1667,7 +1671,7 @@ let result = match (x) {
 Patterns can be nested.
 
 ```zena
-case Point { x: 0, y: [1, z] }: ...
+case Point { x: 0, y: (1, z) }: ...
 ```
 
 #### Guard Patterns
@@ -2239,7 +2243,7 @@ Tuples are immutable, structural types that hold a fixed sequence of typed
 elements.
 
 ```zena
-let t = [1, "hello"];
+let t = (1, "hello");
 let n = t[0];
 ```
 
@@ -2251,7 +2255,7 @@ Tuple indices must be compile-time known values. This includes:
 - **`let` variables** initialized with number literals: `let idx = 0; t[idx]`
 
 ```zena
-let t = [1, "hello", true];
+let t = (1, "hello", true);
 
 // ✅ Literal index
 let first = t[0];
@@ -2265,7 +2269,7 @@ var i = 0;
 let x = t[i];  // Error: Tuple index must be a compile-time known value
 
 // ❌ Parameters are not compile-time known
-let getElement = (t: [i32, string], idx: i32) => t[idx];  // Error
+let getElement = (t: (i32, string), idx: i32) => t[idx];  // Error
 ```
 
 This restriction exists because tuples have a fixed structure where each
@@ -2284,7 +2288,7 @@ class Container {
   #new(value: i32) { this.value = value; }
 }
 
-let process = (t: [Container | null, i32]): i32 => {
+let process = (t: (Container | null, i32)): i32 => {
   if (t[0] !== null) {
     // t[0] is narrowed to Container (non-null)
     return t[0].value;
@@ -2293,7 +2297,7 @@ let process = (t: [Container | null, i32]): i32 => {
 };
 
 // Works with let indices too:
-let process2 = (t: [Container | null, i32]): i32 => {
+let process2 = (t: (Container | null, i32)): i32 => {
   let idx = 0;
   if (t[idx] !== null) {
     return t[idx].value;  // Narrowed to Container
@@ -2749,9 +2753,9 @@ let { x as a, y as b } = p; // Renaming
 #### Tuple Destructuring
 
 ```zena
-let t = [10, 20];
-let [a, b] = t;
-let [first, , third] = [1, 2, 3]; // Skipping elements
+let t = (10, 20);
+let (a, b) = t;
+let (first, , third) = (1, 2, 3); // Skipping elements
 ```
 
 #### Class Destructuring

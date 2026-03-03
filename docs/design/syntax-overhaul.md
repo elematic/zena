@@ -117,10 +117,14 @@ let single: (i32,) = (42,);   // trailing comma required for 1-tuples
 
 - Function calls: `f(x, y)`
 - `if`/`while`/`for` conditions: `if (x > 0) { ... }`
-- Type parameters in function types: `(i32, i32) => i32`
+- Named parameters in function types: `(a: i32, b: i32) => i32`
 
 These are not expressions — the parser knows from context that `(` after `if`
 or a function name is not a tuple.
+
+**Function types require named parameters**: `(a: i32, b: i32) => i32`, not
+`(i32, i32) => i32`. This eliminates the ambiguity between tuple types and
+function type parameters — `(i32, i32)` is always a tuple type.
 
 ### 3.3 Inline Tuples (Stack-Only)
 

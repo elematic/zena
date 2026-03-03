@@ -3,18 +3,18 @@ import {compileAndRun} from './utils.js';
 import * as assert from 'node:assert';
 
 suite('Tuple Array Bug', () => {
-  test('Array<[i32, i32]> should not create duplicate WASM types', async () => {
+  test('Array<(i32, i32)> should not create duplicate WASM types', async () => {
     const source = `
 import { Array } from 'zena:growable-array';
 
 export let main = (): i32 => {
-  let chunks = new Array<[i32, i32]>();
-  chunks.push([100, 50]);
-  chunks.push([200, 75]);
+  let chunks = new Array<(i32, i32)>();
+  chunks.push((100, 50));
+  chunks.push((200, 75));
   
   var totalLen = 0;
   for (var c = 0; c < chunks.length; c = c + 1) {
-    let [ptr, len] = chunks[c];
+    let (ptr, len) = chunks[c];
     totalLen = totalLen + len;
   }
   
@@ -25,7 +25,7 @@ export let main = (): i32 => {
     assert.strictEqual(result, 125); // 50 + 75
   });
 
-  test('Array<[Class, string]> should not create duplicate WASM types', async () => {
+  test('Array<(Class, string)> should not create duplicate WASM types', async () => {
     const source = `
 import { Array } from 'zena:growable-array';
 
@@ -34,10 +34,10 @@ class Descriptor {
   #new(h: i32) { this.handle = h; }
 }
 
-let makePreopens = (): Array<[Descriptor, string]> => {
-  let result = new Array<[Descriptor, string]>();
-  result.push([new Descriptor(1), '/tmp']);
-  result.push([new Descriptor(2), '/data']);
+let makePreopens = (): Array<(Descriptor, string)> => {
+  let result = new Array<(Descriptor, string)>();
+  result.push((new Descriptor(1), '/tmp'));
+  result.push((new Descriptor(2), '/data'));
   return result;
 };
 
@@ -46,7 +46,7 @@ export let main = (): i32 => {
   
   var sum = 0;
   for (var i = 0; i < preopens.length; i = i + 1) {
-    let [desc, path] = preopens[i];
+    let (desc, path) = preopens[i];
     sum = sum + desc.handle + path.length;
   }
   

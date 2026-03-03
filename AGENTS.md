@@ -65,7 +65,7 @@ The official language reference is maintained in `docs/language-reference.md`.
 ### Records & Tuples (Immutable)
 
 - **Records**: `{ x: 1 }`. Immutable struct.
-- **Tuples**: `[ 1, "a" ]`. Immutable struct.
+- **Tuples**: `( 1, "a" )`. Immutable struct.
 
 ### Mutable Collections
 

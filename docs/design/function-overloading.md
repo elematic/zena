@@ -92,7 +92,7 @@ A "tear-off" occurs when a method is accessed as a value without calling it imme
 
 ### 6.1 The Ambiguity Problem
 
-If `obj.method` is overloaded (e.g., has signatures `(i32) => void` and `(f32) => void`), the expression `obj.method` is ambiguous. Which underlying function index should be referenced?
+If `obj.method` is overloaded (e.g., has signatures `(x: i32) => void` and `(x: f32) => void`), the expression `obj.method` is ambiguous. Which underlying function index should be referenced?
 
 ### 6.2 Proposed Solution: Context-Sensitive Resolution
 
@@ -108,11 +108,11 @@ class Printer {
 let p = new Printer();
 
 // Case A: Explicit Type Annotation
-// The compiler sees expected type (i32) => void, selects the i32 overload.
+// The compiler sees expected type (x: i32) => void, selects the i32 overload.
 let printInt: (x: i32) => void = p.print;
 
 // Case B: Function Argument
-// The compiler sees expected parameter type (f32) => void, selects the f32 overload.
+// The compiler sees expected parameter type (x: f32) => void, selects the f32 overload.
 let run = (callback: (x: f32) => void) => { ... }
 run(p.print);
 

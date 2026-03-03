@@ -26,14 +26,14 @@ suite('CodeGenerator - Type Aliases', () => {
 
   test('should compile and run tuple type alias', async () => {
     const source = `
-      type Foo = [string, i32];
+      type Foo = (string, i32);
 
       let f = (x: Foo): i32 => {
         return x[1];
       };
 
       export let main = (): i32 => {
-        let t: Foo = ["hello", 42];
+        let t: Foo = ("hello", 42);
         return f(t);
       };
     `;

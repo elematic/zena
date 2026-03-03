@@ -126,12 +126,12 @@ suite('Codegen - Range expressions', () => {
   test('should handle ranges in tuples', async () => {
     const source = `
       export let getFirstRangeStart = () => {
-        let ranges = [1..5, 10..20];
+        let ranges = (1..5, 10..20);
         return ranges[0].start;
       };
       
       export let getSecondRangeEnd = () => {
-        let ranges = [1..5, 10..20];
+        let ranges = (1..5, 10..20);
         return ranges[1].end;
       };
     `;
