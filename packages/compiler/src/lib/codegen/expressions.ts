@@ -84,6 +84,7 @@ import type {CodegenContext} from './context.js';
 import {
   instantiateGenericFunction,
   instantiateGenericMethod,
+  mapReturnTypeToWasmResults,
 } from './functions.js';
 import {
   generateBlockStatement,
@@ -10224,10 +10225,12 @@ function generateIfExpression(
   expr: IfExpression,
   body: number[],
 ) {
-  // Get result type from inferred type
-  let resultType: number[] = [];
+  // Get result types from inferred type.
+  // Use mapReturnTypeToWasmResults to correctly handle inline tuples
+  // (multi-value returns) by producing separate result slots per element.
+  let results: number[][] = [];
   if (expr.inferredType) {
-    resultType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+    results = mapReturnTypeToWasmResults(ctx, expr.inferredType);
   }
 
   // Generate condition
@@ -10238,10 +10241,10 @@ function generateIfExpression(
   // For typed results, we create a block type (function signature with no params
   // and the result type as output) which WASM uses for typed control structures.
   body.push(Opcode.if);
-  if (resultType.length === 0) {
+  if (results.length === 0) {
     body.push(ValType.void);
   } else {
-    const blockTypeIndex = ctx.module.addType([], [resultType]);
+    const blockTypeIndex = ctx.module.addType([], results);
     body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
   }
 

@@ -1769,6 +1769,13 @@ function checkVariableDeclaration(
     type = widenLiteralType(type, ctx);
   }
 
+  // Inline tuples cannot be stored in variables (they are stack-based multi-values).
+  // Only check for simple identifier patterns — destructuring patterns like
+  // `let (a, b) = inlineFn()` are fine because they extract element types.
+  if (!decl.typeAnnotation && decl.pattern.type === NodeType.Identifier) {
+    validateNoInlineTuple(type, ctx, 'variable types');
+  }
+
   if (decl.typeAnnotation) {
     const explicitType = resolveTypeAnnotation(ctx, decl.typeAnnotation);
 

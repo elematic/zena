@@ -15,14 +15,10 @@ import {compileAndRun} from './utils.js';
  */
 suite('codegen: tuple interactions (boxed vs inline)', () => {
   suite('scenario 1: storing tuples in variables', () => {
-    test('inline fn stores boxed tuple in var, returns var (uncaught by checker)', async () => {
-      // BUG: When a function declares `inline (i32, i32)` return, but the tuple
+    test('inline fn stores boxed tuple in var, returns var (caught by checker)', async () => {
+      // When a function declares `inline (i32, i32)` return, but the tuple
       // is first stored in a variable, the variable holds a boxed tuple.
-      // Returning a boxed tuple from an inline function should produce a type
-      // error, but the checker currently doesn't catch it. The boxed TupleType
-      // passes isAssignableTo for InlineTupleType because both have compatible
-      // element types. This results in invalid WASM at instantiation time.
-      // TODO: Fix isAssignableTo to reject Tuple -> InlineTuple assignment.
+      // The checker now catches this: inline tuples cannot be stored in variables.
       await assert.rejects(
         () =>
           compileAndRun(`
@@ -35,8 +31,14 @@ suite('codegen: tuple interactions (boxed vs inline)', () => {
             return a + b;
           };
         `),
-        // Currently fails at WASM level, not at checker level
-        (err: any) => err instanceof Error,
+        (err: any) => {
+          assert.ok(
+            err.message.includes(
+              'Inline tuple types can only appear in function return types',
+            ),
+          );
+          return true;
+        },
       );
     });
 
@@ -85,11 +87,9 @@ suite('codegen: tuple interactions (boxed vs inline)', () => {
       assert.strictEqual(result, 30);
     });
 
-    test('inline fn returns call to boxed fn (cross-assignment bug)', async () => {
-      // Parse now works, but returning a boxed tuple from an inline function
-      // is a type mismatch (boxed struct vs multi-value). The checker doesn't
-      // catch this yet (bug #1), so it fails at WASM level.
-      // TODO: Fix checker to reject Tuple -> InlineTuple assignment.
+    test('inline fn returns call to boxed fn (cross-assignment rejected)', async () => {
+      // Returning a boxed tuple from an inline function is a type mismatch
+      // (boxed struct vs multi-value). The checker now catches this.
       await assert.rejects(
         () =>
           compileAndRun(`
@@ -100,15 +100,16 @@ suite('codegen: tuple interactions (boxed vs inline)', () => {
             return a + b;
           };
         `),
-        (err: any) => err instanceof Error,
+        (err: any) => {
+          assert.ok(err.message.includes('Type mismatch'));
+          return true;
+        },
       );
     });
 
-    test('boxed fn returns call to inline fn (cross-assignment bug)', async () => {
-      // Parse now works, but returning an inline tuple (multi-value) from a
-      // boxed function (expects struct ref) is a type mismatch. The checker
-      // doesn't catch this yet (bug #1), so it fails at WASM level.
-      // TODO: Fix checker to reject InlineTuple -> Tuple assignment.
+    test('boxed fn returns call to inline fn (cross-assignment rejected)', async () => {
+      // Returning an inline tuple (multi-value) from a boxed function
+      // (expects struct ref) is a type mismatch. The checker now catches this.
       await assert.rejects(
         () =>
           compileAndRun(`
@@ -119,7 +120,10 @@ suite('codegen: tuple interactions (boxed vs inline)', () => {
             return p[0] + p[1];
           };
         `),
-        (err: any) => err instanceof Error,
+        (err: any) => {
+          assert.ok(err.message.includes('Type mismatch'));
+          return true;
+        },
       );
     });
   });
@@ -184,24 +188,18 @@ suite('codegen: tuple interactions (boxed vs inline)', () => {
       assert.strictEqual(result, 30);
     });
 
-    test('ternary returning inline tuples (expression body)', async () => {
-      // BUG: if-expression with inline tuple returns generates invalid WASM.
-      // The codegen doesn't properly handle TupleLiteral inside if-expression
-      // branches when the function returns inline tuple.
-      // TODO: Fix codegen for if-expressions returning inline tuples.
-      await assert.rejects(
-        () =>
-          compileAndRun(`
-          let pick = (flag: boolean): inline (i32, i32) =>
-            if (flag) { ((10, 20)) } else { ((30, 40)) };
-          export let main = (): i32 => {
-            let (a, b) = pick(false);
-            return a + b;
-          };
-        `),
-        // Fails at WASM instantiation — invalid type form
-        (err: any) => err instanceof Error,
-      );
+    test('if-expression returning inline tuples (expression body)', async () => {
+      // if-expression with inline tuple returns in each branch.
+      // The codegen correctly creates multi-value block types for the if-expression.
+      const result = await compileAndRun(`
+        let pick = (flag: boolean): inline (i32, i32) =>
+          if (flag) { ((10, 20)) } else { ((30, 40)) };
+        export let main = (): i32 => {
+          let (a, b) = pick(false);
+          return a + b;
+        };
+      `);
+      assert.strictEqual(result, 70);
     });
 
     test('conditional returning boxed tuple literal', async () => {

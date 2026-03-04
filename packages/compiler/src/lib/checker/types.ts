@@ -1508,7 +1508,12 @@ export function typeToString(type: Type): string {
     case TypeKind.Tuple: {
       const tt = type as TupleType;
       const elems = tt.elementTypes.map((t) => typeToString(t)).join(', ');
-      return `[${elems}]`;
+      return `(${elems})`;
+    }
+    case TypeKind.InlineTuple: {
+      const it = type as InlineTupleType;
+      const elems = it.elementTypes.map((t) => typeToString(t)).join(', ');
+      return `inline (${elems})`;
     }
     case TypeKind.This:
       return 'this';
@@ -1770,6 +1775,14 @@ export function isAssignableTo(
       }
     }
     return true;
+  }
+
+  // Reject Tuple <-> InlineTuple cross-assignment (incompatible representations)
+  if (
+    (source.kind === TypeKind.Tuple && target.kind === TypeKind.InlineTuple) ||
+    (source.kind === TypeKind.InlineTuple && target.kind === TypeKind.Tuple)
+  ) {
+    return false;
   }
 
   // Inline tuple assignability (InlineTuple == InlineTuple)
