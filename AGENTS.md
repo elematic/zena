@@ -229,6 +229,7 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke m
     - **Capabilities**: `docs/design/capabilities.md`
     - **Case Classes**: `docs/design/case-classes.md`
     - **Classes**: `docs/design/classes.md`
+    - **Concurrency**: `docs/design/concurrency.md`
     - **Dead Code Elimination**: `docs/design/dead-code-elimination.md`
     - **Decorators**: `docs/design/decorators.md`
     - **Destructuring**: `docs/design/destructuring.md`
