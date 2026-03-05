@@ -14,7 +14,7 @@ suite('Codegen: Contextual Typing', () => {
   test('infer closure parameter types in map call', async () => {
     // Use map's return value instead of mutable capture (which is a known limitation)
     const result = await compileAndRun(`
-      let nums = #[1, 2, 3];
+      let nums = [1, 2, 3];
       export let main = () => {
         let doubled = nums.map((n) => n * 2);
         return doubled[0] + doubled[1] + doubled[2];
@@ -42,7 +42,7 @@ suite('Codegen: Contextual Typing', () => {
   test('infer closure parameter types with generic callee', async () => {
     // Use map's return value instead of mutable capture
     const result = await compileAndRun(`
-      let arr = #[1, 2, 3, 4];
+      let arr = [1, 2, 3, 4];
       export let main = () => {
         let doubled = arr.map((x) => x * 2);
         return doubled[0] + doubled[1] + doubled[2] + doubled[3];

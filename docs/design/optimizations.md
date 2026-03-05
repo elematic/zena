@@ -310,7 +310,7 @@ map(arr2, (s) => s.toLowerCase());  // Closure type A (same signature/capture)
 **When:** All elements added to a container have same concrete type.
 
 ```zena
-let strings: Array<String> = #[];
+let strings: Array<String> = [];
 strings.push(new GCString("a"));
 strings.push(new GCString("b"));
 // All elements are GCString
@@ -585,13 +585,13 @@ HOFs are prime inlining candidates because inlining enables a cascade of optimiz
 let doubled = arr.map((x) => x * 2);
 
 // After inlining map():
-let doubled = #[];
+let doubled = [];
 for (let i = 0; i < arr.length; i = i + 1) {
   doubled.push(closure(arr[i]));  // closure = (x) => x * 2
 }
 
 // After closure inlining (closure is now known):
-let doubled = #[];
+let doubled = [];
 for (let i = 0; i < arr.length; i = i + 1) {
   doubled.push(arr[i] * 2);  // No closure call!
 }

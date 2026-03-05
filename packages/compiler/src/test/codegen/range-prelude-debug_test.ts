@@ -17,7 +17,7 @@ test('generic extension class with range in prelude', async () => {
     }
     
     export let main = (): i32 => {
-      let arr: ArrayExt<i32> = #[42, 2, 3];
+      let arr: ArrayExt<i32> = [42, 2, 3];
       return arr.firstOrDefault(0);
     };
   `;

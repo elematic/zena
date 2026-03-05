@@ -15,14 +15,14 @@ suite('TypeChecker - Arrays', () => {
 
   test('should check valid array literal', () => {
     const errors = check(`
-      let arr = #[1, 2, 3];
+      let arr = [1, 2, 3];
     `);
     assert.strictEqual(errors.length, 0);
   });
 
   test('should detect mixed types in array literal', () => {
     const errors = check(`
-      let arr = #[1, "hello"];
+      let arr = [1, "hello"];
     `);
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /Array element type mismatch/);
@@ -30,7 +30,7 @@ suite('TypeChecker - Arrays', () => {
 
   test('should check valid index access', () => {
     const errors = check(`
-      let arr = #[1, 2, 3];
+      let arr = [1, 2, 3];
       let x = arr[0];
     `);
     assert.strictEqual(errors.length, 0);
@@ -38,7 +38,7 @@ suite('TypeChecker - Arrays', () => {
 
   test('should detect invalid index type', () => {
     const errors = check(`
-      let arr = #[1, 2, 3];
+      let arr = [1, 2, 3];
       let x = arr["0"];
     `);
     assert.strictEqual(errors.length, 1);
@@ -59,7 +59,7 @@ suite('TypeChecker - Arrays', () => {
 
   test('should allow operation with array element of correct type', () => {
     const errors = check(`
-      let arr = #[1, 2, 3];
+      let arr = [1, 2, 3];
       let sum = 10 + arr[0];
     `);
     assert.strictEqual(errors.length, 0);
@@ -67,7 +67,7 @@ suite('TypeChecker - Arrays', () => {
 
   test('should detect type mismatch with array element', () => {
     const errors = check(`
-      let arr = #["a", "b"];
+      let arr = ["a", "b"];
       let sum = 10 + arr[0];
     `);
     assert.strictEqual(errors.length, 1);
@@ -76,7 +76,7 @@ suite('TypeChecker - Arrays', () => {
 
   test('should require type argument for array type', () => {
     const errors = check(`
-      let x: array = #[];
+      let x: array = [];
     `);
     assert.strictEqual(errors.length, 1);
     assert.match(
@@ -87,14 +87,14 @@ suite('TypeChecker - Arrays', () => {
 
   test('should allow valid generic array type', () => {
     const errors = check(`
-      let x: array<i32> = #[1, 2, 3];
+      let x: array<i32> = [1, 2, 3];
     `);
     assert.strictEqual(errors.length, 0);
   });
 
   test('should detect too many type arguments for array', () => {
     const errors = check(`
-      let x: array<i32, i32> = #[1, 2, 3];
+      let x: array<i32, i32> = [1, 2, 3];
     `);
     assert.strictEqual(errors.length, 2);
     assert.match(

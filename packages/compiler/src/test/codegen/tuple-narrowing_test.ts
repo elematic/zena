@@ -158,7 +158,7 @@ suite('tuple narrowing', () => {
     const result = await compileAndRun(
       `
       export let run = (): i32 => {
-        let arr = #[10, 20, 30];
+        let arr = [10, 20, 30];
         var sum = 0;
         for (let x in arr) {
           sum = sum + x;

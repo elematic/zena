@@ -112,7 +112,7 @@ suite('Generic Class Context Consistency', () => {
         }
         
         export let main = (): i32 => {
-          let items: array<string> = #["a", "b"];
+          let items: array<string> = ["a", "b"];
           let c = new Container<string>(items);
           return c.transform<i32>(42);
         };
@@ -290,7 +290,7 @@ suite('Generic Class Context Consistency', () => {
         }
         
         export let main = (): i32 => {
-          let arr: ArrayExt<i32> = #[42, 2, 3];
+          let arr: ArrayExt<i32> = [42, 2, 3];
           return arr.firstOrDefault(0);
         };
       `;

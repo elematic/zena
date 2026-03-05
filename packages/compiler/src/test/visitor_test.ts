@@ -412,7 +412,7 @@ suite('AST Visitor', () => {
   });
 
   test('visits array literals', () => {
-    const ast = parse('let arr = #[1, 2, 3];');
+    const ast = parse('let arr = [1, 2, 3];');
 
     let arrayCount = 0;
     let numberCount = 0;

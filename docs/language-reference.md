@@ -1504,7 +1504,7 @@ The `for-in` loop iterates over collections that implement the `Iterable<T>`
 interface.
 
 ```zena
-let arr = #[10, 20, 30];
+let arr = [10, 20, 30];
 var sum = 0;
 for (let x in arr) {
   sum = sum + x;
@@ -1516,7 +1516,7 @@ The iterable expression must implement `Iterable<T>`:
 
 ```zena
 // Works with FixedArray (implements Iterable)
-let numbers = #[1, 2, 3, 4, 5];
+let numbers = [1, 2, 3, 4, 5];
 for (let n in numbers) {
   console.log(n);
 }
@@ -1542,7 +1542,7 @@ The loop variable is immutable (`let`) and scoped to the loop body. `break` and
 `continue` work as expected:
 
 ```zena
-let arr = #[1, 2, 3, 4, 5];
+let arr = [1, 2, 3, 4, 5];
 var sum = 0;
 
 for (let x in arr) {
@@ -1868,7 +1868,7 @@ class Zoo<T extends Animal> {
   animals: array<T>;
 
   #new() {
-    this.animals = #[];
+    this.animals = [];
   }
 }
 ```
@@ -2580,6 +2580,41 @@ actually used.
 Zena includes a small standard library of utility classes. These are
 automatically imported into every module.
 
+### Arrays
+
+#### FixedArray\<T\>
+
+`FixedArray<T>` is a fixed-size array backed directly by a WASM-GC array. The
+`[...]` literal syntax creates a `FixedArray`:
+
+```zena
+let nums = [1, 2, 3];              // FixedArray<i32>
+let names = ["Alice", "Bob"];       // FixedArray<string>
+let empty: FixedArray<i32> = [];    // empty (type annotation required)
+```
+
+Elements are accessed and mutated by index. `.length` returns the array size:
+
+```zena
+let arr = [10, 20, 30];
+let first = arr[0];       // 10
+arr[1] = 99;              // mutate in place
+let len = arr.length;     // 3
+```
+
+#### Array\<T\>
+
+`Array<T>` is a growable array that automatically resizes its backing storage.
+Use `Array.from()` to create one from a fixed array, or `new Array<T>()` for
+an empty growable array. A literal syntax for growable arrays is planned.
+
+```zena
+let grow = Array.from([1, 2, 3]);   // Array<i32> from FixedArray
+grow.push(4);                       // [1, 2, 3, 4]
+
+let empty = new Array<i32>();       // empty growable array
+```
+
 ### Map<K, V>
 
 A mutable hash map implementation.
@@ -2711,7 +2746,7 @@ NewExpression ::= "new" Identifier "(" (Expression ("," Expression)*)? ")"
 
 MemberExpression ::= Expression "." Identifier
 
-ArrayLiteral ::= "#[" (Expression ("," Expression)*)? "]"
+ArrayLiteral ::= "[" (Expression ("," Expression)*)? "]"
 
 IndexExpression ::= Expression "[" Expression "]"
 

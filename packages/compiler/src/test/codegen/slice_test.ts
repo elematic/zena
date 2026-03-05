@@ -42,7 +42,7 @@ suite('Codegen - FixedArray slice', () => {
   test('should slice with start and end', async () => {
     const source = `
       export let testSlice = () => {
-        let arr = #[10, 20, 30, 40, 50];
+        let arr = [10, 20, 30, 40, 50];
         let sliced = arr.slice(1, 4);
         return sliced.length;
       };
@@ -55,7 +55,7 @@ suite('Codegen - FixedArray slice', () => {
   test('should slice with BoundedRange', async () => {
     const source = `
       export let testBoundedRange = () => {
-        let arr = #[10, 20, 30, 40, 50];
+        let arr = [10, 20, 30, 40, 50];
         let sliced = arr[1..4];
         return sliced.length;
       };
@@ -68,7 +68,7 @@ suite('Codegen - FixedArray slice', () => {
   test('should return correct element via BoundedRange slice', async () => {
     const source = `
       export let testBoundedRangeElement = () => {
-        let arr = #[10, 20, 30, 40, 50];
+        let arr = [10, 20, 30, 40, 50];
         let sliced = arr[1..4];
         return sliced[0];
       };
@@ -81,7 +81,7 @@ suite('Codegen - FixedArray slice', () => {
   test('should slice with FromRange', async () => {
     const source = `
       export let testFromRange = () => {
-        let arr = #[10, 20, 30, 40, 50];
+        let arr = [10, 20, 30, 40, 50];
         let sliced = arr[2..];
         return sliced.length;
       };
@@ -94,7 +94,7 @@ suite('Codegen - FixedArray slice', () => {
   test('should slice with ToRange', async () => {
     const source = `
       export let testToRange = () => {
-        let arr = #[10, 20, 30, 40, 50];
+        let arr = [10, 20, 30, 40, 50];
         let sliced = arr[..3];
         return sliced.length;
       };
@@ -107,7 +107,7 @@ suite('Codegen - FixedArray slice', () => {
   test('should clone with FullRange', async () => {
     const source = `
       export let testFullRange = () => {
-        let arr = #[10, 20, 30];
+        let arr = [10, 20, 30];
         let copy = arr[..];
         return copy.length;
       };

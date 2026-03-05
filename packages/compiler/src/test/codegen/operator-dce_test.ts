@@ -143,7 +143,7 @@ suite('Operator Method DCE', () => {
         #data: FixedArray<i32>;
         
         #new() {
-          this.#data = #[10, 20, 30, 40, 50];
+          this.#data = [10, 20, 30, 40, 50];
         }
         
         operator [](index: i32): i32 {

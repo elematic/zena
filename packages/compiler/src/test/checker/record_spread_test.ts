@@ -28,7 +28,7 @@ suite('Checker: Record Spread', () => {
 
   test('should reject spreading arrays', () => {
     const source = `
-      let x = #[1, 2];
+      let x = [1, 2];
       let p = { ...x };
     `;
     const diagnostics = check(source);

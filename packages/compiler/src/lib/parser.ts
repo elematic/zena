@@ -2,6 +2,7 @@ import {
   NodeType,
   type AccessorDeclaration,
   type AccessorSignature,
+  type ArrayLiteral,
   type BindingProperty,
   type BlockStatement,
   type BreakStatement,
@@ -1671,24 +1672,8 @@ export class Parser {
     if (this.#match(TokenType.Try)) {
       return this.#parseTryExpression();
     }
-    if (this.#match(TokenType.Hash)) {
-      const startToken = this.#previous();
-      if (this.#match(TokenType.LBracket)) {
-        const elements: Expression[] = [];
-        if (!this.#check(TokenType.RBracket)) {
-          do {
-            elements.push(this.#parseExpression());
-          } while (this.#match(TokenType.Comma));
-        }
-        this.#consume(TokenType.RBracket, "Expected ']' after array elements.");
-        const endToken = this.#previous();
-        return {
-          type: NodeType.ArrayLiteral,
-          elements,
-          loc: this.#locFromRange(startToken, endToken),
-        };
-      }
-      throw new Error("Expected '[' after '#'.");
+    if (this.#match(TokenType.LBracket)) {
+      return this.#parseArrayLiteral(this.#previous());
     }
     if (this.#match(TokenType.Number)) {
       const token = this.#previous();
@@ -1749,6 +1734,22 @@ export class Parser {
     throw new Error(
       `Unexpected token: ${this.#peek().type} at line ${this.#peek().line}`,
     );
+  }
+
+  #parseArrayLiteral(startToken: Token): ArrayLiteral {
+    const elements: Expression[] = [];
+    if (!this.#check(TokenType.RBracket)) {
+      do {
+        elements.push(this.#parseExpression());
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(TokenType.RBracket, "Expected ']' after array elements.");
+    const endToken = this.#previous();
+    return {
+      type: NodeType.ArrayLiteral,
+      elements,
+      loc: this.#locFromRange(startToken, endToken),
+    };
   }
 
   #parseMatchExpression(): MatchExpression {

@@ -6,7 +6,7 @@ suite('CodeGenerator - Union Reference Types', () => {
   test('array union with string should compile', async () => {
     const source = `
       export let main = (): i32 => {
-        let x: array<i32> | string = #[1, 2, 3];
+        let x: array<i32> | string = [1, 2, 3];
         return 1;
       };
     `;

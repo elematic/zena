@@ -144,15 +144,20 @@ error[E0308]: type mismatch
 
 The second line of defense: **reduce the number of possible states** a program can be in. Fewer states means fewer bugs, simpler reasoning, and easier review.
 
-### Immutability by Default
+### Immutability Friendly
 
-Mutable state causes race conditions, unexpected side effects, stale caches, order-dependent initialization.
+Mutable state causes race conditions, unexpected side effects, stale caches, and
+order-dependent initialization.
+
+Zena tries to balance familiarity with safety
+and with immutability chooses to not got all-in on immutable data structures by
+default, but adds immutable records and tuples, immutable collections, and
+encourages immutable class fields.
 
 ```zena
 let point = {x: 1, y: 2};        // Immutable record
 // point.x = 3;                   // Error: records are immutable
 
-let mutableArray = #[1, 2, 3];   // Mutable (explicit #[] syntax)
 let immutableTuple = (1, 2, 3);  // Immutable tuple
 ```
 
@@ -195,7 +200,7 @@ AI benefits from explicit code—every token carries information, less hidden be
 ```zena
 // Good: Type inferred, no redundancy
 let count = 0;
-let users = #[user1, user2];  // Inferred as array<User>
+let users = [user1, user2];  // Inferred as array<User>
 
 // Good: Explicit at API boundaries
 let processUser = (user: User): Result<void> => { ... };

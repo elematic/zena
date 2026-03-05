@@ -50,7 +50,7 @@ suite('CodeGenerator - Operators', () => {
   test('should compile and run array assignment', async () => {
     const input = `
       export let main = (): i32 => {
-        let arr = #[1, 2, 3];
+        let arr = [1, 2, 3];
         arr[1] = 42;
         return arr[1];
       };

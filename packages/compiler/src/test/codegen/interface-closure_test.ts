@@ -119,7 +119,7 @@ suite('interface closure contravariance', () => {
 
       class Arr<T> implements Seq<T> {
         #items: array<T>;
-        #new(v: T) { this.#items = #[v]; }
+        #new(v: T) { this.#items = [v]; }
         get(i: i32): T { return this.#items[i]; }
 
         process(f: (item: T, arr: Arr<T>) => T): T {
@@ -146,7 +146,7 @@ suite('interface closure contravariance', () => {
 
       class Arr<T> implements Seq<T> {
         #items: array<T>;
-        #new(v: T) { this.#items = #[v]; }
+        #new(v: T) { this.#items = [v]; }
         get(i: i32): T { return this.#items[i]; }
 
         process(f: (item: T, seq: Seq<T>) => T): T {

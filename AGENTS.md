@@ -70,7 +70,7 @@ The official language reference is maintained in `docs/language-reference.md`.
 ### Mutable Collections
 
 - **Maps**: `#{ key: value }`. Mutable Hash Map. (Class implemented, literal syntax `#{}` pending)
-- **Arrays**: `#[ 1, 2 ]`. Mutable WASM GC Array.
+- **Arrays**: `[ 1, 2 ]`. Mutable WASM GC Array.
 
 ### Strings
 
@@ -333,7 +333,7 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke m
 - [x] Implement modulo operator (`%`).
 - [x] Implement `i64` and `f64` support (Codegen & Emitter).
 - [x] Allow identifiers to contain `$` and `_`.
-- [x] Implement `#[ ... ]` array literal syntax.
+- [x] Implement `[ ... ]` array literal syntax.
 - [x] Implement `map()` for `Array` and `FixedArray`.
 - [x] Implement Pattern Matching (Basic):
   - `match` expression.

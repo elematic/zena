@@ -224,7 +224,7 @@ Some types are implicitly used when certain syntax appears:
 | ---------------------- | -------------------------------- |
 | `"hello"` or `'hello'` | `String` class                   |
 | `\`template ${x}\``    | `String`, `TemplateStringsArray` |
-| `#[1, 2, 3]`           | `FixedArray` class               |
+| `[1, 2, 3]`            | `FixedArray` class               |
 | `[1, 2]`               | Tuple type (no class)            |
 | `{x: 1}`               | Record type (no class)           |
 | `1..4`                 | `BoundedRange` class             |
@@ -303,7 +303,7 @@ be:
 
 1. Called directly: `foo()`
 2. Passed as callback: `arr.map(foo)`
-3. Stored in data structure: `let fns = #[foo, bar]`
+3. Stored in data structure: `let fns = [foo, bar]`
 4. Returned from function: `const makeFn = () => foo`
 
 For sound DCE without escape analysis, we must treat **any reference** to a

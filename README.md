@@ -32,9 +32,9 @@ class Cat implements Animal {
 
 // A function that uses pattern matching
 export let getChildren = (n: Node) => match (n) {
-  case {left, right}: #[left, right] // array literal
+  case {left, right}: [left, right] // array literal
   case {children}: children
-  case _: #[]
+  case _: []
 }
 
 // Pipelines
@@ -47,8 +47,7 @@ let formatTitle = (title: String) => title
 
 > [!WARNING]
 > Zena is so new that syntax might change a lot! In particular, we're unsure
-> about `#new()` for constructors, `#[...]` for mutable arrays vs `[...]` for
-> tuples, and `let` and `var` as class field modifiers...
+> about `#new()` for constructors, `let` and `var` as class field modifiers...
 
 ## Why Zena?
 
@@ -152,6 +151,17 @@ values. Tuples are a fixed list of values.
 ```typescript
 let point = {x: 1.0, y: 2.0};
 let items = (1, 'two', 3);
+```
+
+### Arrays
+
+The `[...]` literal creates a `FixedArray<T>` — a fixed-size WASM GC array with
+zero overhead. For growable arrays, use `Array.from()` or `new Array<T>()`.
+A literal syntax for growable arrays is planned.
+
+```typescript
+let nums = [1, 2, 3]; // FixedArray<i32>
+let grow = Array.from([1, 2, 3]); // Array<i32> (growable)
 ```
 
 ### Type definitions
@@ -321,7 +331,7 @@ let result = data |> parse($) |> transform($) |> validate($);
 - [x] Iterators and `Sequence` protocol
 - [x] Exceptions (`throw` / `try` / `catch`)
 - [x] `never` type
-- [x] Mutable arrays and array literals (`#[...]`)
+- [x] Arrays and array literals (`[...]`)
 - [x] Index operator overloading (`[]`, `[]=`)
 - [x] Operator overloading (`==`, custom operators)
 - [x] Tagged template literals

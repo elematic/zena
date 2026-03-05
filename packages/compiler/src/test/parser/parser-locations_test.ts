@@ -137,7 +137,7 @@ suite('Parser: AST Locations', () => {
   });
 
   test('should attach location to array literal', () => {
-    const input = '#[1, 2];';
+    const input = '[1, 2];';
     const parser = new Parser(input);
     const ast = parser.parse();
 
@@ -148,7 +148,7 @@ suite('Parser: AST Locations', () => {
       assert.strictEqual(expr.type, NodeType.ArrayLiteral);
       assert.ok(expr.loc, 'ArrayLiteral should have loc');
       assert.strictEqual(expr.loc!.start, 0);
-      assert.strictEqual(expr.loc!.end, 7);
+      assert.strictEqual(expr.loc!.end, 6);
     }
   });
 

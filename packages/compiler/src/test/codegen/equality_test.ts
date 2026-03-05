@@ -101,7 +101,7 @@ suite('CodeGenerator - Equality', () => {
   test('array reference equality', async () => {
     assert.strictEqual(
       await runEqualityTest(`
-      let a1 = #[1, 2, 3];
+      let a1 = [1, 2, 3];
       let a2 = a1;
       ${check('a1 == a2')}
     `),
@@ -110,8 +110,8 @@ suite('CodeGenerator - Equality', () => {
 
     assert.strictEqual(
       await runEqualityTest(`
-      let a1 = #[1, 2, 3];
-      let a2 = #[1, 2, 3];
+      let a1 = [1, 2, 3];
+      let a2 = [1, 2, 3];
       ${check('a1 == a2')}
     `),
       0,

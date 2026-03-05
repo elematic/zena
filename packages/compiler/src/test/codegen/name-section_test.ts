@@ -157,7 +157,7 @@ suite('name section', () => {
       export let outerFunction = (arr: array<i32>) => innerFunction(arr);
       
       export let main = () => {
-        let arr = #[1, 2, 3];
+        let arr = [1, 2, 3];
         outerFunction(arr);
       };
     `;
@@ -219,7 +219,7 @@ suite('name section', () => {
       export let outerFunction = (arr: array<i32>) => innerFunction(arr);
       
       export let main = () => {
-        let arr = #[1, 2, 3];
+        let arr = [1, 2, 3];
         outerFunction(arr);
       };
     `;

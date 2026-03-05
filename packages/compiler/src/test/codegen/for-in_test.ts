@@ -7,7 +7,7 @@ suite('for-in loops', () => {
     const result = await compileAndRun(
       `
       export let run = (): i32 => {
-        let arr = #[10, 20, 30];
+        let arr = [10, 20, 30];
         var sum = 0;
         for (let x in arr) {
           sum = sum + x;
@@ -24,7 +24,7 @@ suite('for-in loops', () => {
     const result = await compileAndRun(
       `
       export let run = (): i32 => {
-        let arr = #[1, 2, 3];
+        let arr = [1, 2, 3];
         let empty = arr.slice(0, 0);
         var count = 0;
         for (let x in empty) {
@@ -42,7 +42,7 @@ suite('for-in loops', () => {
     const result = await compileAndRun(
       `
       export let run = (): i32 => {
-        let arr = #[42];
+        let arr = [42];
         var result = 0;
         for (let x in arr) {
           result = x;
@@ -59,7 +59,7 @@ suite('for-in loops', () => {
     const result = await compileAndRun(
       `
       export let run = (): i32 => {
-        let arr = #[1, 2, 3, 4, 5];
+        let arr = [1, 2, 3, 4, 5];
         var sum = 0;
         for (let x in arr) {
           if (x > 3) {
@@ -79,7 +79,7 @@ suite('for-in loops', () => {
     const result = await compileAndRun(
       `
       export let run = (): i32 => {
-        let arr = #[1, 2, 3, 4, 5];
+        let arr = [1, 2, 3, 4, 5];
         var sum = 0;
         for (let x in arr) {
           if (x == 3) {
@@ -99,8 +99,8 @@ suite('for-in loops', () => {
     const result = await compileAndRun(
       `
       export let run = (): i32 => {
-        let outer = #[1, 2];
-        let inner = #[10, 20];
+        let outer = [1, 2];
+        let inner = [10, 20];
         var sum = 0;
         for (let x in outer) {
           for (let y in inner) {
@@ -120,7 +120,7 @@ suite('for-in loops', () => {
     const result = await compileAndRun(
       `
       export let run = (): i32 => {
-        let arr = #['hello', 'world'];
+        let arr = ['hello', 'world'];
         var totalLen = 0;
         for (let s in arr) {
           totalLen = totalLen + s.length;

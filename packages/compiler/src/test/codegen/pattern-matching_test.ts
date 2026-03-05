@@ -214,7 +214,7 @@ suite('CodeGenerator - Pattern Matching', () => {
   test.skip('should match array pattern (element check)', async () => {
     const result = await compileAndRun(`
       export let main = (): i32 => {
-        let a = #[10, 20];
+        let a = [10, 20];
         return match (a) {
           case [10, 30]: 0 // Should not match if elements are checked
           case [10, 20]: 1 // Should match

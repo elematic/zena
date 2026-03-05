@@ -187,8 +187,8 @@ needed. They come from the _prelude_, which is implicitly imported.
 | `Option<T>`             | Represents an optional value (`Some<T>` or `None`) |
 | `Some<T>`               | Variant of `Option` containing a value             |
 | `None`                  | Variant of `Option` representing no value          |
-| `Array<T>`              | Growable array (literal syntax: `#[1, 2, 3]`)      |
-| `FixedArray<T>`         | Fixed-size array                                   |
+| `Array<T>`              | Growable array (`Array.from([1, 2, 3])`)           |
+| `FixedArray<T>`         | Fixed-size array (literal syntax: `[1, 2, 3]`)     |
 | `ImmutableArray<T>`     | Read-only array view                               |
 | `Map<K, V>`             | Hash map                                           |
 | `Box<T>`                | Wraps primitives for use in unions or `any`        |
@@ -535,7 +535,7 @@ for (var i = 0; i < 10; i = i + 1) {
 Iterate over any collection that implements the iteration protocol.
 
 ```ts
-let arr = #[1, 2, 3];
+let arr = [1, 2, 3];
 for (let item in arr) {
   // item is 1, 2, 3
 }
@@ -1494,9 +1494,10 @@ collections are generic and type-safe.
 ### FixedArray
 
 `FixedArray<T>` has a fixed size set at creation and maps directly to a WASM-GC
-array. Use it when you know the size upfront and want minimal overhead.
+array. The `[...]` literal creates a `FixedArray`.
 
 ```ts
+let nums = [1, 2, 3]; // FixedArray<i32>
 let arr = new FixedArray<i32>(10); // Size 10, initialized to 0
 arr[0] = 42;
 let len = arr.length; // 10
@@ -1504,14 +1505,17 @@ let len = arr.length; // 10
 
 ### Array
 
-`Array<T>` is a growable array that automatically resizes. Use the `#[...]`
-literal syntax to create arrays.
+`Array<T>` is a growable array that automatically resizes. Use `Array.from()`
+to create one from a fixed array, or `new Array<T>()` for an empty growable
+array. A literal syntax for growable arrays is planned.
 
 ```ts
-let arr = #[1, 2, 3];     // Array literal
-arr.push(4);              // [1, 2, 3, 4]
-let len = arr.length;     // 4
-let first = arr[0];       // 1
+let arr = Array.from([1, 2, 3]); // Growable array from FixedArray
+arr.push(4); // [1, 2, 3, 4]
+let len = arr.length; // 4
+let first = arr[0]; // 1
+
+let empty = new Array<i32>(); // Empty growable array
 ```
 
 ### Slicing
@@ -1520,7 +1524,7 @@ Use range syntax to slice arrays. Slices share backing storage with the original
 array.
 
 ```ts
-let arr = #[1, 2, 3, 4, 5];
+let arr = [1, 2, 3, 4, 5];
 let slice = arr[1..4];    // [2, 3, 4] (view, shares storage)
 let copy = arr[1..4].copy();  // Independent copy
 ```
@@ -1547,7 +1551,7 @@ Use `for-in` to iterate over any collection that implements the iteration
 protocol.
 
 ```ts
-let arr = #[1, 2, 3];
+let arr = [1, 2, 3];
 for (let item in arr) {
   // item is 1, 2, 3
 }

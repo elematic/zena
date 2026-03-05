@@ -23,7 +23,7 @@ suite('iterator', () => {
       import {ArrayIterator} from 'zena:array-iterator';
       
       export let run = (): i32 => {
-        let arr = #[10, 20, 30];
+        let arr = [10, 20, 30];
         let iter: Iterator<i32> = new ArrayIterator<i32>(arr);
         var sum = 0;
         while (let (true, item) = iter.next()) {
@@ -43,7 +43,7 @@ suite('iterator', () => {
       import {Iterable} from 'zena:iterator';
       
       export let run = (): i32 => {
-        let arr = #[1, 2, 3];
+        let arr = [1, 2, 3];
         let empty = arr.slice(0, 0);  // Empty slice
         let iter = empty.:Iterable.iterator();
         var count = 0;
@@ -64,7 +64,7 @@ suite('iterator', () => {
       import {Iterator, Iterable} from 'zena:iterator';
       
       export let run = (): i32 => {
-        let arr = #[1, 2, 3, 4, 5];
+        let arr = [1, 2, 3, 4, 5];
         let iter = arr.:Iterable.iterator();
         var sum = 0;
         while (let (true, item) = iter.next()) {

@@ -170,9 +170,8 @@ See `docs/design/strings.md` for full details.
 #### 2. FixedArray<T>
 
 - **Backing**: WASM GC Array.
-- **Literal**: `#[1, 2, 3]`
+- **Literal**: `[1, 2, 3]`
 - **Intrinsics**: `get` (`[]`), `set` (`[]=`), `length`.
-- **Status**: 🔄 Implemented as `Array<T>`, rename to `FixedArray<T>` pending
 
 The low-level WASM GC array primitive. Fixed-length upon creation.
 Most user code should use `Array<T>` (growable) or `ReadonlyArray<T>` (immutable).

@@ -31,7 +31,7 @@ suite('AnyRef', () => {
         let a: anyref = "string";
         let b: anyref = new Point(1);
         let c: anyref = new Box(123);
-        let d: anyref = #[1, 2, 3];
+        let d: anyref = [1, 2, 3];
         let e: anyref = null;
       };
     `;

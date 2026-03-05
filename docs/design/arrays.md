@@ -25,7 +25,16 @@ The compiler treats `array<T>` (and its extension `FixedArray<T>`) specially:
 
 ### Literals
 
-Array literals `#[a, b, c]` create a new instance of the growable `Array<T>` class, initialized with the given elements.
+Array literals `[a, b, c]` create a `FixedArray<T>` — the native WASM GC array
+type. This is the most efficient array representation (no wrapper object, direct
+`array.new_fixed`).
+
+Growable `Array<T>` is constructed explicitly:
+
+```zena
+let grow = Array.from([1, 2, 3]);   // Array<i32> from fixed array
+let empty = new Array<i32>();       // Array<i32> with default capacity
+```
 
 ### Indexing
 

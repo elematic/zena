@@ -403,7 +403,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
 
   test('array type argument', () => {
     const ast = parseAndCheck(`
-      let arr: array<i32> = #[1, 2, 3];
+      let arr: array<i32> = [1, 2, 3];
     `);
     const varDecl = ast.body[0] as VariableDeclaration;
     assertAnnotationHasInferredType(varDecl.typeAnnotation!, 'array type');

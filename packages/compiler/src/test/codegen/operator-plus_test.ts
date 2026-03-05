@@ -122,7 +122,7 @@ suite('CodeGenerator - operator +', () => {
   test('should compile and run String.fromParts', async () => {
     const input = `
       export let main = (): i32 => {
-        let parts = #["Hello", " ", "World", "!"];
+        let parts = ["Hello", " ", "World", "!"];
         let result = String.fromParts(parts);
         return result.length;
       };
@@ -134,7 +134,7 @@ suite('CodeGenerator - operator +', () => {
   test('should compile and run String.fromParts with single element', async () => {
     const input = `
       export let main = (): i32 => {
-        let parts = #["test"];
+        let parts = ["test"];
         let result = String.fromParts(parts);
         return result.length;
       };

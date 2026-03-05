@@ -1940,7 +1940,7 @@ the closure signature may be wrong.
 ```zena
 class Container<T> {
   items: array<T>;
-  #new() { this.items = #[]; }
+  #new() { this.items = []; }
 
   forEach(callback: (item: T) => void): void {
     // iterate and call callback

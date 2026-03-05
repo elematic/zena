@@ -6,7 +6,7 @@ suite('CodeGenerator - Arrays', () => {
   test('should compile and run array literal and index access', async () => {
     const source = `
       export let main = (): i32 => {
-        let arr = #[10, 20, 30];
+        let arr = [10, 20, 30];
         return arr[1];
       };
     `;
@@ -18,7 +18,7 @@ suite('CodeGenerator - Arrays', () => {
   test('should compile and run array assignment', async () => {
     const source = `
       export let main = (): i32 => {
-        let arr = #[10, 20, 30];
+        let arr = [10, 20, 30];
         arr[1] = 50;
         return arr[1];
       };
@@ -31,7 +31,7 @@ suite('CodeGenerator - Arrays', () => {
   test('should trap on out-of-bounds access', async () => {
     const source = `
       export let main = (): i32 => {
-        let arr = #[10, 20, 30];
+        let arr = [10, 20, 30];
         return arr[5];
       };
     `;
@@ -44,7 +44,7 @@ suite('CodeGenerator - Arrays', () => {
   test('should support explicit Array type', async () => {
     const source = `
       export let main = (): i32 => {
-        let arr: FixedArray<i32> = #[10, 20, 30];
+        let arr: FixedArray<i32> = [10, 20, 30];
         return arr.length;
       };
     `;

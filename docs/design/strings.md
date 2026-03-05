@@ -90,7 +90,7 @@ slice of a 10MB string retains 10MB until the slice is garbage collected. Use
 ```zena
 // Parser example: copy extracted values to release input
 let parse = (input: String): array<String> => {
-  var results = #[];
+  var results = [];
   // ... parsing logic ...
   // Copy string values to release input buffer
   results.push(extractedValue.copy());

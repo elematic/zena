@@ -17,7 +17,7 @@ suite('Codegen - Operator [] Overloading', () => {
         #data: FixedArray<i32>;
         
         #new() {
-          this.#data = #[10, 20, 30, 40, 50];
+          this.#data = [10, 20, 30, 40, 50];
         }
         
         operator [](index: i32): i32 {
@@ -52,7 +52,7 @@ suite('Codegen - Operator [] Overloading', () => {
     const result = await compileAndRun(
       `
       export let test = () => {
-        let arr = #[10, 20, 30, 40, 50];
+        let arr = [10, 20, 30, 40, 50];
         let slice = arr[1..4];
         return slice.length;
       };

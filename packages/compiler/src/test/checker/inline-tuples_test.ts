@@ -120,7 +120,7 @@ suite('Checker: Inline Tuple Validation', () => {
     test('rejects inline tuple nested in array type', async () => {
       const source = `
         export let main = (): i32 => {
-          let arr: array<inline (i32, i32)> = #[];
+          let arr: array<inline (i32, i32)> = [];
           return 0;
         };
       `;
