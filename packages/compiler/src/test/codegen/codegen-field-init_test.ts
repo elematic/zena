@@ -72,7 +72,7 @@ suite('Codegen - Field Initialization', () => {
     // Derived.x has NOT been initialized yet (it defaults to 0 for i32).
     const source = `
       class Base {
-        #new() {
+        new() {
           this.setup();
         }
         setup(): void {}

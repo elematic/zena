@@ -165,7 +165,7 @@ suite('Checker: Symbol Declarations', () => {
       symbol key;
       class Container {
         :key: i32;
-        #new() {
+        new() {
           this.:key = 42;
         }
       }

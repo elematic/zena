@@ -8,7 +8,7 @@ suite('CodeGenerator - Error Messages', () => {
     // The checker should reject them with a clear error message.
     const source = `
       export let main = (): i32 => {
-        class Local { x: i32; #new() { this.x = 1; } }
+        class Local { x: i32; new() { this.x = 1; } }
         let obj: Local = new Local();
         return obj.x;
       };
@@ -31,8 +31,8 @@ suite('CodeGenerator - Error Messages', () => {
     // Multiple local classes should all be rejected individually.
     const source = `
       export let main = (): i32 => {
-        class Local1 { x: i32; #new() { this.x = 1; } }
-        class Local2 { y: i32; #new() { this.y = 2; } }
+        class Local1 { x: i32; new() { this.x = 1; } }
+        class Local2 { y: i32; new() { this.y = 2; } }
         let obj: Local1 | Local2 = new Local1();
         return 1;
       };

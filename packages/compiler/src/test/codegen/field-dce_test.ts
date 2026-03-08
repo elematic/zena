@@ -9,7 +9,7 @@ suite('Field-level DCE', () => {
         name: i32;
         unusedId: i32;  // Plain field - no decorator needed
         
-        #new(n: i32, id: i32) {
+        new(n: i32, id: i32) {
           this.name = n;
           this.unusedId = id;  // Written but never read
         }
@@ -31,7 +31,7 @@ suite('Field-level DCE', () => {
       class User {
         id: i32;
         
-        #new(id: i32) {
+        new(id: i32) {
           this.id = id;
         }
       }
@@ -53,7 +53,7 @@ suite('Field-level DCE', () => {
         value: i32;
         writeOnly: i32;  // Plain field - automatically pure
         
-        #new() {
+        new() {
           this.value = 0;
           this.writeOnly = 100;  // Written but never read
         }
@@ -87,7 +87,7 @@ suite('Field-level DCE', () => {
         sessionId: i32;
         actualData: i32;
         
-        #new(data: i32) {
+        new(data: i32) {
           this.timestamp = 1000;
           this.userId = 42;
           this.sessionId = 999;
@@ -115,7 +115,7 @@ suite('Field-level DCE', () => {
       class Box {
         value: i32;
         
-        #new(v: i32) {
+        new(v: i32) {
           this.value = v;
         }
         
@@ -147,7 +147,7 @@ suite('Field-level DCE', () => {
         setting2: i32;
         usedSetting: i32;
         
-        #new() {
+        new() {
           this.setting1 = 100;
           this.setting2 = 200;
           this.usedSetting = 300;
@@ -175,7 +175,7 @@ suite('Field-level DCE', () => {
         counter: i32;
         unused: i32;  // Never read - should be eliminated
         
-        #new() {
+        new() {
           this.counter = 0;
           this.unused = 0;
         }
@@ -209,7 +209,7 @@ suite('Field-level DCE', () => {
         #privateValue: i32;
         publicValue: i32;
         
-        #new() {
+        new() {
           this.#privateValue = 42;
           this.publicValue = 100;  // Plain field, write-only, should be eliminated
         }
@@ -246,7 +246,7 @@ suite('Field-level DCE', () => {
           }
         }
         
-        #new() {
+        new() {
           this.metadata = 999;  // Written but never read
         }
         
@@ -282,7 +282,7 @@ suite('Field-level DCE', () => {
           }
         }
         
-        #new() {
+        new() {
           this.#logCount = 0;
           this.logLevel = 1;  // Written but never read
         }
@@ -308,13 +308,13 @@ suite('Field-level DCE', () => {
       class Base {
         value: i32;
         
-        #new(v: i32) {
+        new(v: i32) {
           this.value = v;
         }
       }
       
       class Derived extends Base {
-        #new(v: i32) {
+        new(v: i32) {
           super(v);
         }
       }
@@ -337,7 +337,7 @@ suite('Field-level DCE', () => {
         used: i32;
         unused: i32;  // Never read
         
-        #new(u: i32) {
+        new(u: i32) {
           this.used = u;
           this.unused = 999;
         }
@@ -354,7 +354,7 @@ suite('Field-level DCE', () => {
       class Data {
         used: i32;
         
-        #new(u: i32) {
+        new(u: i32) {
           this.used = u;
         }
       }

@@ -10,7 +10,7 @@ suite('closure field call', () => {
       class Handler {
         fn: (x: i32) => i32;
         
-        #new(fn: (x: i32) => i32) {
+        new(fn: (x: i32) => i32) {
           this.fn = fn;
         }
         
@@ -33,7 +33,7 @@ suite('closure field call', () => {
       class Calculator {
         operation: (a: i32, b: i32) => i32;
         
-        #new(op: (a: i32, b: i32) => i32) {
+        new(op: (a: i32, b: i32) => i32) {
           this.operation = op;
         }
         
@@ -56,7 +56,7 @@ suite('closure field call', () => {
       class Incrementer {
         fn: () => i32;
         
-        #new(fn: () => i32) {
+        new(fn: () => i32) {
           this.fn = fn;
         }
         
@@ -81,7 +81,7 @@ suite('closure field call', () => {
         action: (x: i32) => void;
         result: i32;
         
-        #new(action: (x: i32) => void) {
+        new(action: (x: i32) => void) {
           this.action = action;
           this.result = 0;
         }

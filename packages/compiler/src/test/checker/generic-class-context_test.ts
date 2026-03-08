@@ -20,7 +20,7 @@ suite('Generic Class Context Consistency', () => {
         class Container<T> {
           #value: T;
           
-          #new(value: T) {
+          new(value: T) {
             this.#value = value;
           }
           
@@ -43,7 +43,7 @@ suite('Generic Class Context Consistency', () => {
         class Calculator<T> {
           #multiplier: i32;
           
-          #new(mult: i32) {
+          new(mult: i32) {
             this.#multiplier = mult;
           }
           
@@ -73,7 +73,7 @@ suite('Generic Class Context Consistency', () => {
           #key: K;
           #value: V;
           
-          #new(key: K, value: V) {
+          new(key: K, value: V) {
             this.#key = key;
             this.#value = value;
           }
@@ -98,7 +98,7 @@ suite('Generic Class Context Consistency', () => {
         class Container<T> {
           #items: array<T>;
           
-          #new(items: array<T>) {
+          new(items: array<T>) {
             this.#items = items;
           }
           
@@ -128,7 +128,7 @@ suite('Generic Class Context Consistency', () => {
         class Outer<T> {
           #value: T;
           
-          #new(v: T) {
+          new(v: T) {
             this.#value = v;
           }
           
@@ -156,7 +156,7 @@ suite('Generic Class Context Consistency', () => {
         class Container<T> {
           #value: T;
           
-          #new(v: T) {
+          new(v: T) {
             this.#value = v;
           }
           
@@ -193,7 +193,7 @@ suite('Generic Class Context Consistency', () => {
           value: i32;
           #child: Node;
           
-          #new(value: i32, child: Node) {
+          new(value: i32, child: Node) {
             this.value = value;
             this.#child = child;
           }
@@ -218,14 +218,14 @@ suite('Generic Class Context Consistency', () => {
       const source = `
         class Wrapper {
           val: i32;
-          #new(v: i32) { this.val = v; }
+          new(v: i32) { this.val = v; }
         }
         
         class Node<T> {
           value: T;
           #child: Node<T>;
           
-          #new(value: T, child: Node<T>) {
+          new(value: T, child: Node<T>) {
             this.value = value;
             this.#child = child;
           }
@@ -254,7 +254,7 @@ suite('Generic Class Context Consistency', () => {
         class Box<T> {
           #value: T;
           
-          #new(v: T) {
+          new(v: T) {
             this.#value = v;
           }
           

@@ -113,7 +113,7 @@ and coding standards, see [AGENTS.md](./AGENTS.md).
     - Handles polymorphic dispatch: if a method is called through a base class/interface, all overrides are kept.
     - Subclass tracking: propagates polymorphic calls to known subclasses.
     - Covers regular methods, accessors (getters/setters), and implicit field accessors.
-    - Constructors (`#new`) are always kept if the class is used.
+    - Constructors (`new()`) are always kept if the class is used.
   - Binary size results: 21% reduction on string programs, minimal programs at 41 bytes.
 - [x] Implement untagged enums with nominal typing.
 - [x] Checker-Driven Type Instantiation (Phases 1-9 completed)

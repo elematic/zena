@@ -402,7 +402,7 @@ their arguments, allowing users to omit explicit type parameters in most cases.
 ```zena
 class Box<T> {
   value: T;
-  #new(value: T) { this.value = value; }
+  new(value: T) { this.value = value; }
 }
 
 let identity = <T>(x: T): T => x;

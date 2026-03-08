@@ -1858,16 +1858,16 @@ may resolve to the wrong class.
 
 ```zena
 // Module A (zena:test/module-a)
-export class Item { value: i32; #new(v: i32) { this.value = v; } }
+export class Item { value: i32; new(v: i32) { this.value = v; } }
 
 // Module B (zena:test/module-b)
-export class Item { name: string; #new(n: string) { this.name = n; } }
+export class Item { name: string; new(n: string) { this.name = n; } }
 
 // Main module
 import { Item as ItemA } from 'zena:test/module-a';
 import { Item as ItemB } from 'zena:test/module-b';
 
-class Box<T> { contents: T; #new(c: T) { this.contents = c; } }
+class Box<T> { contents: T; new(c: T) { this.contents = c; } }
 
 const boxA = new Box<ItemA>(new ItemA(42));
 const boxB = new Box<ItemB>(new ItemB('hello'));
@@ -1892,7 +1892,7 @@ lookup fails and we fall back to suffix matching.
 // Stdlib provides String (renamed to m0_String after bundling)
 class Box<T> {
   value: T;
-  #new(v: T) { this.value = v; }
+  new(v: T) { this.value = v; }
 }
 
 const strBox = new Box<string>('test');
@@ -1916,7 +1916,7 @@ mismatch or wrong struct index.
 renamed, two records with the "same" structure may get different canonical keys.
 
 ```zena
-class Point { x: i32; y: i32; #new(x: i32, y: i32) { this.x = x; this.y = y; } }
+class Point { x: i32; y: i32; new(x: i32, y: i32) { this.x = x; this.y = y; } }
 
 const makeRecord = () => { point: new Point(1, 2) };
 const useRecord = (r: { point: Point }) => r.point.x + r.point.y;
@@ -1940,7 +1940,7 @@ the closure signature may be wrong.
 ```zena
 class Container<T> {
   items: array<T>;
-  #new() { this.items = []; }
+  new() { this.items = []; }
 
   forEach(callback: (item: T) => void): void {
     // iterate and call callback
@@ -1977,7 +1977,7 @@ import { Printable } from 'zena:test/module-a';
 
 export class Item implements Printable {
   name: string;
-  #new(n: string) { this.name = n; }
+  new(n: string) { this.name = n; }
   print(): string { return this.name; }
 }
 

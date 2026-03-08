@@ -20,7 +20,7 @@ mixin TreeLike {
 class TreeNode with TreeLike {
   value: i32;
   
-  #new(value: i32) {
+  new(value: i32) {
     this.value = value;
   }
   
@@ -55,7 +55,7 @@ mixin Chainable {
 class ChainNode with Chainable {
   id: i32;
   
-  #new(id: i32) {
+  new(id: i32) {
     this.id = id;
   }
   

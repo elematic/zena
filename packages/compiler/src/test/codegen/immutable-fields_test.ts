@@ -9,7 +9,7 @@ suite('Codegen: Immutable Fields', () => {
         let x: i32;
         let y: i32;
 
-        #new(x: i32, y: i32) : x = x, y = y { }
+        new(x: i32, y: i32) : x = x, y = y { }
 
         sum(): i32 {
           return this.x + this.y;
@@ -32,7 +32,7 @@ suite('Codegen: Immutable Fields', () => {
         let height: i32;
         let area: i32;
 
-        #new(w: i32, h: i32) : width = w, height = h, area = w * h { }
+        new(w: i32, h: i32) : width = w, height = h, area = w * h { }
 
         getArea(): i32 {
           return this.area;
@@ -54,7 +54,7 @@ suite('Codegen: Immutable Fields', () => {
         let id: i32;
         var count: i32 = 0;
 
-        #new(id: i32) : id = id { }
+        new(id: i32) : id = id { }
 
         increment(): void {
           this.count = this.count + 1;
@@ -82,7 +82,7 @@ suite('Codegen: Immutable Fields', () => {
         let version: i32 = 1;
         let enabled: boolean = true;
 
-        #new() { }
+        new() { }
 
         check(): i32 {
           if (this.enabled) {

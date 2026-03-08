@@ -44,14 +44,14 @@ suite('Bundler Type Identity', () => {
       module_a: `
         export class MyArray {
           value: i32;
-          #new(v: i32) { this.value = v; }
+          new(v: i32) { this.value = v; }
           get(): i32 { return this.value; }
         }
       `,
       module_b: `
         export class Array {
           items: i32;
-          #new(n: i32) { this.items = n; }
+          new(n: i32) { this.items = n; }
           length(): i32 { return this.items; }
         }
       `,
@@ -99,14 +99,14 @@ suite('Bundler Type Identity', () => {
       data_a: `
         export class Data {
           value: i32;
-          #new(v: i32) { this.value = v; }
+          new(v: i32) { this.value = v; }
           fromA(): i32 { return 1; }
         }
       `,
       data_b: `
         export class Data {
           value: i32;
-          #new(v: i32) { this.value = v; }
+          new(v: i32) { this.value = v; }
           fromB(): i32 { return 2; }
         }
       `,
@@ -157,21 +157,21 @@ suite('Bundler Type Identity', () => {
       data_a: `
         export class Data {
           n: i32;
-          #new(n: i32) { this.n = n; }
+          new(n: i32) { this.n = n; }
           fromA(): i32 { return this.n + 100; }
         }
       `,
       data_b: `
         export class Data {
           n: i32;
-          #new(n: i32) { this.n = n; }
+          new(n: i32) { this.n = n; }
           fromB(): i32 { return this.n + 200; }
         }
       `,
       container: `
         export class Container<T> {
           item: T;
-          #new(item: T) { this.item = item; }
+          new(item: T) { this.item = item; }
           getItem(): T { return this.item; }
         }
       `,
@@ -227,14 +227,14 @@ suite('Bundler Type Identity', () => {
       data: `
         export class Data {
           value: i32;
-          #new(v: i32) { this.value = v; }
+          new(v: i32) { this.value = v; }
           get(): i32 { return this.value; }
         }
       `,
       container: `
         export class Container<T> {
           item: T;
-          #new(item: T) { this.item = item; }
+          new(item: T) { this.item = item; }
           getItem(): T { return this.item; }
         }
       `,
@@ -267,7 +267,7 @@ suite('Bundler Type Identity', () => {
         export class Point {
           x: i32;
           y: i32;
-          #new(x: i32, y: i32) {
+          new(x: i32, y: i32) {
             this.x = x;
             this.y = y;
           }
@@ -280,7 +280,7 @@ suite('Bundler Type Identity', () => {
           topLeft: Point;
           bottomRight: Point;
 
-          #new(tl: Point, br: Point) {
+          new(tl: Point, br: Point) {
             this.topLeft = tl;
             this.bottomRight = br;
           }
@@ -325,7 +325,7 @@ suite('Bundler Type Identity', () => {
 
         export class Entity implements Identifiable {
           _id: i32;
-          #new(id: i32) { this._id = id; }
+          new(id: i32) { this._id = id; }
           id(): i32 { return this._id; }
         }
       `,
@@ -386,14 +386,14 @@ suite('Bundler Type Identity', () => {
       box_a: `
         export class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
           unwrapA(): T { return this.value; }
         }
       `,
       box_b: `
         export class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
           unwrapB(): T { return this.value; }
         }
       `,
@@ -443,7 +443,7 @@ suite('Bundler Type Identity', () => {
         // A class with same name as stdlib FixedArray (but not generic)
         export class FixedArray {
           len: i32;
-          #new(len: i32) { this.len = len; }
+          new(len: i32) { this.len = len; }
           getLength(): i32 { return this.len; }
         }
       `,
@@ -496,14 +496,14 @@ suite('Bundler Type Identity', () => {
       item: `
         export class Item {
           price: i32;
-          #new(p: i32) { this.price = p; }
+          new(p: i32) { this.price = p; }
           getPrice(): i32 { return this.price; }
         }
       `,
       menu: `
         export class MenuItem {
           name: i32;
-          #new(n: i32) { this.name = n; }
+          new(n: i32) { this.name = n; }
           getName(): i32 { return this.name; }
         }
       `,
@@ -547,21 +547,21 @@ suite('Bundler Type Identity', () => {
       data: `
         export class Data {
           n: i32;
-          #new(n: i32) { this.n = n; }
+          new(n: i32) { this.n = n; }
           get(): i32 { return this.n; }
         }
       `,
       box: `
         export class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
           unwrap(): T { return this.value; }
         }
       `,
       container: `
         export class Container<T> {
           item: T;
-          #new(item: T) { this.item = item; }
+          new(item: T) { this.item = item; }
           getItem(): T { return this.item; }
         }
       `,

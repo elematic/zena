@@ -117,7 +117,7 @@ suite('Usage Analysis', () => {
     const program = createProgram(`
       class Point {
         x: i32;
-        #new() { this.x = 0; }
+        new() { this.x = 0; }
       }
       export let main = () => new Point();
     `);
@@ -137,7 +137,7 @@ suite('Usage Analysis', () => {
     const program = createProgram(`
       class Unused {
         x: i32;
-        #new() { this.x = 0; }
+        new() { this.x = 0; }
       }
       export let main = () => 42;
     `);
@@ -157,10 +157,10 @@ suite('Usage Analysis', () => {
     const program = createProgram(`
       class Base {
         x: i32;
-        #new() { this.x = 0; }
+        new() { this.x = 0; }
       }
       class Derived extends Base {
-        #new() { super(); }
+        new() { super(); }
       }
       export let main = () => new Derived();
     `);
@@ -233,7 +233,7 @@ suite('Usage Analysis', () => {
       }
       class Circle implements Drawable {
         draw(): void { }
-        #new() { }
+        new() { }
       }
       export let main = () => new Circle();
     `);
@@ -304,7 +304,7 @@ suite('Usage Analysis', () => {
     const {program, checker, module} = createProgramWithContext(`
       class Vector {
         x: i32;
-        #new(x: i32) { this.x = x; }
+        new(x: i32) { this.x = x; }
         operator +(other: Vector): Vector {
           return new Vector(this.x + other.x);
         }
@@ -340,7 +340,7 @@ suite('Usage Analysis', () => {
     const {program, checker, module} = createProgramWithContext(`
       class Box {
         value: i32;
-        #new(value: i32) { this.value = value; }
+        new(value: i32) { this.value = value; }
         operator [](index: i32): i32 {
           return this.value + index;
         }
@@ -373,7 +373,7 @@ suite('Usage Analysis', () => {
     const {program, checker, module} = createProgramWithContext(`
       class Box {
         value: i32;
-        #new() { this.value = 0; }
+        new() { this.value = 0; }
         operator []=(index: i32, val: i32): void {
           this.value = index + val;
         }
@@ -407,7 +407,7 @@ suite('Usage Analysis', () => {
     const {program, checker, module} = createProgramWithContext(`
       class Point {
         x: i32;
-        #new(x: i32) { this.x = x; }
+        new(x: i32) { this.x = x; }
         operator ==(other: Point): boolean {
           return this.x == other.x;
         }
@@ -440,7 +440,7 @@ suite('Usage Analysis', () => {
       class Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -489,7 +489,7 @@ suite('Usage Analysis', () => {
     const source = `
       class Counter {
         value: i32;
-        #new() {
+        new() {
           this.value = 0;
         }
         increment(): void {
@@ -532,7 +532,7 @@ suite('Usage Analysis', () => {
       class Logger {
         timestamp: i32;
         message: i32;
-        #new() {
+        new() {
           this.timestamp = 0;
           this.message = 1;
         }

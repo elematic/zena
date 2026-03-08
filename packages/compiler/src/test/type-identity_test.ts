@@ -43,7 +43,7 @@ suite('Type Identity', () => {
         'container.zena': `
           export class Container<T> {
             value: T;
-            #new(v: T) {
+            new(v: T) {
               this.value = v;
             }
           }
@@ -67,7 +67,7 @@ suite('Type Identity', () => {
         'container.zena': `
           export class Container<T> {
             value: T;
-            #new(v: T) {
+            new(v: T) {
               this.value = v;
             }
           }
@@ -95,7 +95,7 @@ suite('Type Identity', () => {
         'container.zena': `
           export class Container<T> {
             value: T;
-            #new(v: T) {
+            new(v: T) {
               this.value = v;
             }
           }
@@ -109,7 +109,7 @@ suite('Type Identity', () => {
       // A method that returns FixedArray<T> where T comes from class type param
       const result = await compileAndRun(`
         class Wrapper<T> {
-          #new() {}
+          new() {}
           
           makeArray(v: T): FixedArray<T> {
             let arr = new FixedArray<T>(1, v);
@@ -133,7 +133,7 @@ suite('Type Identity', () => {
       const diagnostics = checkSource(`
         class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
         }
         
         let getBox = (): Box<i32> => new Box(1);
@@ -156,7 +156,7 @@ suite('Type Identity', () => {
       const diagnostics = checkSource(`
         class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
         }
         
         export let main = () => {

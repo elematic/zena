@@ -55,8 +55,8 @@ suite('CodeGenerator - Pattern Matching', () => {
 
   test('should match class pattern', async () => {
     const result = await compileAndRun(`
-      class A { x: i32; #new(x: i32) { this.x = x; } }
-      class B { y: i32; #new(y: i32) { this.y = y; } }
+      class A { x: i32; new(x: i32) { this.x = x; } }
+      class B { y: i32; new(y: i32) { this.y = y; } }
 
       export let main = (): i32 => {
         let obj: A | B = new A(10);
@@ -72,8 +72,8 @@ suite('CodeGenerator - Pattern Matching', () => {
 
   test('should match class pattern (second case)', async () => {
     const result = await compileAndRun(`
-      class A { x: i32; #new(x: i32) { this.x = x; } }
-      class B { y: i32; #new(y: i32) { this.y = y; } }
+      class A { x: i32; new(x: i32) { this.x = x; } }
+      class B { y: i32; new(y: i32) { this.y = y; } }
 
       export let main = (): i32 => {
         let obj: A | B = new B(20);
@@ -89,7 +89,7 @@ suite('CodeGenerator - Pattern Matching', () => {
 
   test('should match class pattern with wildcard', async () => {
     const result = await compileAndRun(`
-      class A { x: i32; #new(x: i32) { this.x = x; } }
+      class A { x: i32; new(x: i32) { this.x = x; } }
 
       export let main = (): i32 => {
         let obj = new A(10);
@@ -182,7 +182,7 @@ suite('CodeGenerator - Pattern Matching', () => {
 
   test('should match class pattern with as renaming', async () => {
     const result = await compileAndRun(`
-      class A { x: i32; #new(x: i32) { this.x = x; } }
+      class A { x: i32; new(x: i32) { this.x = x; } }
 
       export let main = (): i32 => {
         let obj = new A(10);
@@ -197,8 +197,8 @@ suite('CodeGenerator - Pattern Matching', () => {
 
   test('should match class pattern with as renaming (nested)', async () => {
     const result = await compileAndRun(`
-      class A { x: i32; #new(x: i32) { this.x = x; } }
-      class B { a: A; #new(a: A) { this.a = a; } }
+      class A { x: i32; new(x: i32) { this.x = x; } }
+      class B { a: A; new(a: A) { this.a = a; } }
 
       export let main = (): i32 => {
         let obj = new B(new A(10));

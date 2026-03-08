@@ -15,7 +15,7 @@ This extension provides syntax highlighting for the Zena programming language.
   - Decorators (`@external`, `@intrinsic`, etc.)
   - Operators and punctuation
   - Private fields (`#fieldName`)
-  - Constructor (`#new`)
+  - Constructor (`new`)
   - Type parameters (`<T>`, `<K, V>`)
 
 ## File Extensions
@@ -56,7 +56,7 @@ declare function log(val: string): void;
 class Box<T> {
   value: T;
 
-  #new(value: T) {
+  new(value: T) {
     this.value = value;
   }
 

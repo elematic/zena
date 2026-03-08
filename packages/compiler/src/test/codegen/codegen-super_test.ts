@@ -7,13 +7,13 @@ suite('CodeGenerator - Super', () => {
     const source = `
       class A {
         x: i32;
-        #new(x: i32) {
+        new(x: i32) {
           this.x = x;
         }
       }
       class B extends A {
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           super(x);
           this.y = y;
         }
@@ -51,7 +51,7 @@ suite('CodeGenerator - Super', () => {
     const source = `
       class A {
         x: i32;
-        #new() { this.x = 100; }
+        new() { this.x = 100; }
       }
       class B extends A {
         getX(): i32 {

@@ -24,7 +24,7 @@ suite('array of tuples bug', () => {
 
       class Descriptor {
         handle: i32;
-        #new(h: i32) { this.handle = h; }
+        new(h: i32) { this.handle = h; }
       }
 
       export let main = (): i32 => {
@@ -54,7 +54,7 @@ suite('array of tuples bug', () => {
 
       class Descriptor {
         handle: i32;
-        #new(h: i32) { this.handle = h; }
+        new(h: i32) { this.handle = h; }
       }
 
       // Global cache like in fs.zena
@@ -115,7 +115,7 @@ suite('array of tuples bug', () => {
 
       class Descriptor {
         handle: i32;
-        #new(h: i32) { this.handle = h; }
+        new(h: i32) { this.handle = h; }
       }
 
       export let main = (): i32 => {
@@ -140,7 +140,7 @@ suite('array of tuples bug', () => {
 
       class Descriptor {
         handle: i32;
-        #new(h: i32) { this.handle = h; }
+        new(h: i32) { this.handle = h; }
       }
 
       export let main = (): i32 => {
@@ -184,7 +184,7 @@ suite('array of tuples bug', () => {
       
       class Stat {
         fileType: FileType;
-        #new(t: FileType) { this.fileType = t; }
+        new(t: FileType) { this.fileType = t; }
       }
       
       let getStat = (): Stat => new Stat(FileType.File);

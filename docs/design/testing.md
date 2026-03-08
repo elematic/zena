@@ -194,7 +194,7 @@ assertion because Zena has no implicit type coercion. Use `isTrue()` instead.
 export class AssertionError extends Error {
   operator: string;
 
-  #new(message: string, operator: string) {
+  new(message: string, operator: string) {
     super(message);
     this.operator = operator;
   }
@@ -265,7 +265,7 @@ The test module provides the test runner and organization functions.
 
 export class TestContext {
   name: string;
-  #new(name: string) {
+  new(name: string) {
     this.name = name;
   }
 
@@ -280,7 +280,7 @@ export class TestResult {
   error: Error | null;
   duration: i32;  // milliseconds (when we have timing)
 
-  #new(name: string, passed: boolean, error: Error | null) {
+  new(name: string, passed: boolean, error: Error | null) {
     this.name = name;
     this.passed = passed;
     this.error = error;
@@ -293,7 +293,7 @@ export class SuiteResult {
   passed: i32;
   failed: i32;
 
-  #new(name: string) {
+  new(name: string) {
     this.name = name;
     this.tests = new Array<TestResult>();
     this.passed = 0;
@@ -423,7 +423,7 @@ export class AssertionError extends Error {
   expected: any;
   operator: string;
 
-  #new(message: string, actual: any, expected: any, operator: string) {
+  new(message: string, actual: any, expected: any, operator: string) {
     super(message);
     this.actual = actual;
     this.expected = expected;
@@ -518,7 +518,7 @@ import { console } from 'zena:console';
 export class TestContext {
   name: string;
 
-  #new(name: string) {
+  new(name: string) {
     this.name = name;
   }
 
@@ -532,7 +532,7 @@ export class TestResult {
   passed: boolean;
   error: Error | null;
 
-  #new(name: string, passed: boolean, error: Error | null) {
+  new(name: string, passed: boolean, error: Error | null) {
     this.name = name;
     this.passed = passed;
     this.error = error;
@@ -543,7 +543,7 @@ class TestCase {
   name: string;
   fn: (ctx: TestContext) => void;
 
-  #new(name: string, fn: (ctx: TestContext) => void) {
+  new(name: string, fn: (ctx: TestContext) => void) {
     this.name = name;
     this.fn = fn;
   }

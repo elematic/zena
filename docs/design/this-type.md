@@ -107,7 +107,7 @@ interface Comparable {
 class MyInt implements Comparable {
   value: i32;
 
-  #new(value: i32) {
+  new(value: i32) {
     this.value = value;
   }
 
@@ -416,7 +416,7 @@ Reserve F-bounded polymorphism for advanced library code.
 
 ### `this` in Constructors
 
-Should `#new` be allowed to have return type `this`? Probably not needed since
+Should `new` be allowed to have return type `this`? Probably not needed since
 constructors implicitly return the constructed type.
 
 ### Conditional `this`

@@ -8,7 +8,7 @@ suite('CodeGenerator - Final Modifier', () => {
       final class Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -62,7 +62,7 @@ suite('CodeGenerator - Final Modifier', () => {
     const input = `
       class Container {
         value: i32;
-        #new(v: i32) {
+        new(v: i32) {
           this.value = v;
         }
         

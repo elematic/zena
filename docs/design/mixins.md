@@ -81,7 +81,7 @@ The expression `class C extends S with M1, M2 { ... }` creates a linearization:
 
 ### 3.2. Constructors
 
-Mixins cannot have constructors (`#new`). They are initialized as part of the object creation process.
+Mixins cannot have constructors (`new`). They are initialized as part of the object creation process.
 (Open Question: Should mixins have initialization logic? Maybe a special method called by the generated constructor?)
 
 ### 3.3. Types
@@ -169,7 +169,7 @@ Generates:
 
 ## 6. Future Work: Constructors & Initialization
 
-Currently, mixins cannot define constructors (`#new`). Initialization logic must be handled by the class applying the mixin.
+Currently, mixins cannot define constructors (`new`). Initialization logic must be handled by the class applying the mixin.
 
 ### 6.1. Challenges
 
@@ -184,7 +184,7 @@ Allow mixins to define a constructor that simply passes arguments through to `su
 
 ```zena
 mixin M {
-  #new(...args: any[]) {
+  new(...args: any[]) {
     super(...args);
     // ... mixin init ...
   }
@@ -200,12 +200,12 @@ Use the `on` clause to enforce that the base class has a compatible constructor.
 
 ```zena
 class Base {
-  #new(id: i32) { ... }
+  new(id: i32) { ... }
 }
 
 mixin M on Base {
   // We know super accepts (i32)
-  #new(id: i32, name: string) {
+  new(id: i32, name: string) {
     super(id);
     this.name = name;
   }

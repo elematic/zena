@@ -66,7 +66,7 @@ suite('CodeGenerator - Interfaces', () => {
       class Point2D implements Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }

@@ -10,7 +10,7 @@ suite('Codegen: Generics', () => {
       
       class Box<T> {
         value: T;
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
         }
         getValue(): T {
@@ -31,18 +31,18 @@ suite('Codegen: Generics', () => {
       import { log } from 'zena:console';
       
       class Base {
-        #new() {}
+        new() {}
       }
       
       class Derived extends Base {
-        #new() {
+        new() {
           super();
         }
       }
       
       class Container<T extends Base> {
         item: T;
-        #new(item: T) {
+        new(item: T) {
           this.item = item;
         }
         getItem(): T {
@@ -63,11 +63,11 @@ suite('Codegen: Generics', () => {
       import { log } from 'zena:console';
       
       class Base {
-        #new() {}
+        new() {}
       }
       
       class Derived extends Base {
-        #new() {
+        new() {
           super();
         }
       }
@@ -89,7 +89,7 @@ suite('Codegen: Generics', () => {
       
       class Base<T> {
         value: T;
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
         }
         getValue(): T {
@@ -99,7 +99,7 @@ suite('Codegen: Generics', () => {
       
       class Derived<T> extends Base<T> {
         extra: i32;
-        #new(value: T, extra: i32) {
+        new(value: T, extra: i32) {
           super(value);
           this.extra = extra;
         }
@@ -123,7 +123,7 @@ suite('Codegen: Generics', () => {
       
       class Box<T> {
         value: T;
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
         }
         getValue(): T {
@@ -135,7 +135,7 @@ suite('Codegen: Generics', () => {
         // Field type is Box<T> - when Container<i32> is instantiated,
         // Box<i32> should also be instantiated
         box: Box<T>;
-        #new(value: T) {
+        new(value: T) {
           this.box = new Box(value);
         }
         getBoxValue(): T {
@@ -157,7 +157,7 @@ suite('Codegen: Generics', () => {
       
       class Wrapper<T> {
         value: T;
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
         }
         getValue(): T {
@@ -167,7 +167,7 @@ suite('Codegen: Generics', () => {
       
       class Factory<T> {
         default: T;
-        #new(default: T) {
+        new(default: T) {
           this.default = default;
         }
         // Return type is Wrapper<T> - when Factory<i32> is instantiated,
@@ -197,7 +197,7 @@ suite('Codegen: Generics', () => {
       
       class Box<T> {
         value: T;
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
         }
         getValue(): T {
@@ -207,7 +207,7 @@ suite('Codegen: Generics', () => {
       
       // IntBox extends Box<i32> - Box<i32> should be instantiated
       class IntBox extends Box<i32> {
-        #new(value: i32) {
+        new(value: i32) {
           super(value);
         }
         doubleValue(): i32 {
@@ -230,7 +230,7 @@ suite('Codegen: Generics', () => {
       
       class Inner<T> {
         value: T;
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
         }
         getValue(): T {
@@ -240,7 +240,7 @@ suite('Codegen: Generics', () => {
       
       class Middle<T> {
         inner: Inner<T>;
-        #new(value: T) {
+        new(value: T) {
           this.inner = new Inner(value);
         }
         getInnerValue(): T {
@@ -250,7 +250,7 @@ suite('Codegen: Generics', () => {
       
       class Outer<T> {
         middle: Middle<T>;
-        #new(value: T) {
+        new(value: T) {
           this.middle = new Middle(value);
         }
         getDeepValue(): T {
@@ -277,7 +277,7 @@ suite('Codegen: Generics', () => {
       
       class Box<T> implements Container<T> {
         value: T;
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
         }
         getValue(): T {

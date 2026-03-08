@@ -49,7 +49,7 @@ suite('Nested closure in generic method', () => {
       class Container<T> {
         value: T;
         
-        #new(v: T) {
+        new(v: T) {
           this.value = v;
         }
         

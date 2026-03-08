@@ -17,7 +17,7 @@ suite('Nested Generic Type Resolution Bug', () => {
 // A generic wrapper class (like Option's Some<T>)
 class Wrapper<T> {
   value: T;
-  #new(value: T) {
+  new(value: T) {
     this.value = value;
   }
 }
@@ -29,7 +29,7 @@ let wrap = <T>(value: T): Wrapper<T> => new Wrapper(value);
 class Container<U> {
   item: U;
   
-  #new(item: U) {
+  new(item: U) {
     this.item = item;
   }
   
@@ -56,7 +56,7 @@ export let main = (): i32 => {
     const source = `
 class Wrapper<T> {
   value: T;
-  #new(value: T) {
+  new(value: T) {
     this.value = value;
   }
 }
@@ -64,7 +64,7 @@ class Wrapper<T> {
 class Container<U> {
   item: U;
   
-  #new(item: U) {
+  new(item: U) {
     this.item = item;
   }
   

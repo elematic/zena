@@ -10,7 +10,7 @@ suite('TypeChecker: Type Narrowing', () => {
         class Node {
           value: i32;
           next: Node | null;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
             this.next = null;
           }
@@ -37,7 +37,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -64,7 +64,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -90,7 +90,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -121,7 +121,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -150,7 +150,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -175,7 +175,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -204,7 +204,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -236,7 +236,7 @@ suite('TypeChecker: Type Narrowing', () => {
         class Node {
           value: i32;
           next: Node | null;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
             this.next = null;
           }
@@ -269,14 +269,14 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Animal {
           name: string;
-          #new(name: string) {
+          new(name: string) {
             this.name = name;
           }
         }
 
         class Dog extends Animal {
           breed: string;
-          #new(name: string, breed: string) {
+          new(name: string, breed: string) {
             super(name);
             this.breed = breed;
           }
@@ -303,12 +303,12 @@ suite('TypeChecker: Type Narrowing', () => {
     test('should narrow union type with is check', () => {
       const input = `
         class Cat {
-          #new() {}
+          new() {}
           meow(): string { return "meow"; }
         }
 
         class Dog {
-          #new() {}
+          new() {}
           bark(): string { return "woof"; }
         }
 
@@ -333,12 +333,12 @@ suite('TypeChecker: Type Narrowing', () => {
     test('should narrow in else branch of is check', () => {
       const input = `
         class Cat {
-          #new() {}
+          new() {}
           meow(): string { return "meow"; }
         }
 
         class Dog {
-          #new() {}
+          new() {}
           bark(): string { return "woof"; }
         }
 
@@ -364,12 +364,12 @@ suite('TypeChecker: Type Narrowing', () => {
     test('should error when accessing wrong property after is check', () => {
       const input = `
         class Cat {
-          #new() {}
+          new() {}
           meow(): string { return "meow"; }
         }
 
         class Dog {
-          #new() {}
+          new() {}
           bark(): string { return "woof"; }
         }
 
@@ -396,14 +396,14 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
 
         class Wrapper {
           let inner: Container | null;
-          #new() : inner = null { }
+          new() : inner = null { }
         }
 
         let process = (w: Wrapper): i32 => {
@@ -428,14 +428,14 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
 
         class Wrapper {
           var inner: Container | null;
-          #new() {
+          new() {
             this.inner = null;
           }
         }
@@ -462,14 +462,14 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
 
         class Wrapper {
           let inner: Container | null;
-          #new() : inner = null { }
+          new() : inner = null { }
         }
 
         let process = (w: Wrapper): i32 => {
@@ -494,19 +494,19 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Inner {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
 
         class Middle {
           let inner: Inner | null;
-          #new() : inner = null { }
+          new() : inner = null { }
         }
 
         class Outer {
           let middle: Middle;
-          #new(m: Middle) : middle = m { }
+          new(m: Middle) : middle = m { }
         }
 
         let process = (o: Outer): i32 => {
@@ -531,19 +531,19 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Inner {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
 
         class Middle {
           let inner: Inner | null;
-          #new() : inner = null { }
+          new() : inner = null { }
         }
 
         class Outer {
           var middle: Middle;
-          #new(m: Middle) {
+          new(m: Middle) {
             this.middle = m;
           }
         }
@@ -572,7 +572,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -599,7 +599,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -626,7 +626,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -655,7 +655,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -682,7 +682,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -709,7 +709,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -738,7 +738,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }

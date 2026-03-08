@@ -13,7 +13,7 @@ suite('CodeGenerator - Interface Properties', () => {
       class PointImpl implements Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }

@@ -8,7 +8,7 @@ suite('CodeGenerator - operator +', () => {
       class Vector {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -31,7 +31,7 @@ suite('CodeGenerator - operator +', () => {
     const input = `
       class Counter {
         value: i32;
-        #new(value: i32) {
+        new(value: i32) {
           this.value = value;
         }
         operator +(other: Counter): i32 {
@@ -52,7 +52,7 @@ suite('CodeGenerator - operator +', () => {
     const input = `
       class Number {
         value: i32;
-        #new(value: i32) {
+        new(value: i32) {
           this.value = value;
         }
         operator +(other: Number): Number {
@@ -75,7 +75,7 @@ suite('CodeGenerator - operator +', () => {
     const input = `
       final class Box {
         value: i32;
-        #new(value: i32) {
+        new(value: i32) {
           this.value = value;
         }
         operator +(other: Box): Box {

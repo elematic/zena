@@ -377,7 +377,7 @@ class Unused {}
 export let main = () => 42;
 
 // Test 6: Class used via new expression should be kept
-class Used { x: i32; #new() { this.x = 1; } }
+class Used { x: i32; new() { this.x = 1; } }
 export let main = () => new Used().x;
 ```
 

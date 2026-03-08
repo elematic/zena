@@ -557,15 +557,19 @@ boxed tuple syntax.
 4. Migrate all test files
 5. Remove `#[...]` support from parser
 
-### Phase 3: Constructor Syntax
+### Phase 3: Constructor Syntax ✅
 
 **Impact**: Parser, AST, all class definitions.
 
 Small, self-contained change — no dependencies on other phases.
 
-1. Add `new(...)` as constructor syntax (keep `#new(...)` temporarily)
-2. Migrate all `#new(...)` in stdlib and tests
-3. Remove `#new(...)` support
+1. ~~Add `new(...)` as constructor syntax (keep `#new(...)` temporarily)~~
+2. ~~Migrate all `#new(...)` in stdlib and tests~~
+3. ~~Remove `#new(...)` support~~
+
+**Done**: Internal constructor sentinel renamed from `'#new'` to
+`'<constructor>'` (`CONSTRUCTOR_NAME` constant in `ast.ts`), freeing `#new`
+for use as a regular private member.
 
 ### Phase 4: Symbol Member Syntax
 

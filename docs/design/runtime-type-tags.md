@@ -377,7 +377,7 @@ But this defeats the purpose of distinct types, which are meant to be zero-cost 
    ```zena
    @tagged distinct type Meters = i32;
    // Desugars to:
-   final class Meters { value: i32; #new(v: i32) { this.value = v; } }
+   final class Meters { value: i32; new(v: i32) { this.value = v; } }
    ```
 
    This changes the semantics significantly—`Meters` is now a reference type, requires allocation, and can be `null`.
@@ -396,7 +396,7 @@ But this defeats the purpose of distinct types, which are meant to be zero-cost 
 // Explicit: user understands they're getting a reference type
 final class Meters {
   value: i32;
-  #new(v: i32) { this.value = v; }
+  new(v: i32) { this.value = v; }
 }
 ```
 
@@ -530,7 +530,7 @@ class TaggedBox<T> {
   #typeTag: i32 = TypeId<T>;  // Compile-time constant per instantiation
   value: T;
 
-  #new(v: T) {
+  new(v: T) {
     this.value = v;
   }
 
@@ -560,7 +560,7 @@ mixin Tagged<T> {
 
 class Box<T> with Tagged<T> {
   value: T;
-  #new(v: T) { this.value = v; }
+  new(v: T) { this.value = v; }
 }
 
 // Usage

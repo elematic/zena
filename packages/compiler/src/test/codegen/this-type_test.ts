@@ -9,7 +9,7 @@ suite('CodeGenerator - This Type', () => {
         x: i32;
         y: i32;
         
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -71,7 +71,7 @@ suite('CodeGenerator - This Type', () => {
       class MyProcessor implements Processor {
         value: i32;
         
-        #new(value: i32) {
+        new(value: i32) {
           this.value = value;
         }
         
@@ -94,7 +94,7 @@ suite('CodeGenerator - This Type', () => {
       class Container<T> {
         value: T;
         
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
         }
         
@@ -127,7 +127,7 @@ suite('CodeGenerator - This Type', () => {
       class Number implements Comparable {
         value: i32;
         
-        #new(value: i32) {
+        new(value: i32) {
           this.value = value;
         }
         

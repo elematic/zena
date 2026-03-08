@@ -6,7 +6,7 @@ test('strict equality operator', async () => {
   const source = `
     class Point {
       x: i32;
-      #new(x: i32) { this.x = x; }
+      new(x: i32) { this.x = x; }
       
       operator ==(other: Point): boolean {
         return this.x == other.x;

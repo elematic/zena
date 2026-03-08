@@ -43,30 +43,10 @@ suite('CodeGenerator - Extension Class Instantiation', () => {
     assert.strictEqual(result, 10);
   });
 
-  test('should support "new" operator with static #new', async () => {
-    const input = `
-      extension class Meters on i32 {
-        static #new(val: i32): Meters {
-          return val as Meters;
-        }
-        
-        getValue(): i32 {
-            return this;
-        }
-      }
-      export let main = (): i32 => {
-        let m = new Meters(10);
-        return m.getValue();
-      };
-    `;
-    const result = await compileAndRun(input, 'main');
-    assert.strictEqual(result, 10);
-  });
-
   test('should support "new" operator with instance constructor and super call', async () => {
     const input = `
       extension class Meters on i32 {
-        #new(val: i32) {
+        new(val: i32) {
           super(val);
         }
         
@@ -87,7 +67,7 @@ suite('CodeGenerator - Extension Class Instantiation', () => {
     const input = `
       // Generic extension class
       extension class Wrapper<T> on i32 {
-        #new(val: i32) {
+        new(val: i32) {
           super(val);
         }
         getValue(): i32 {
@@ -99,7 +79,7 @@ suite('CodeGenerator - Extension Class Instantiation', () => {
       class Container<T> {
         wrapper: Wrapper<T>;
         
-        #new(val: i32) {
+        new(val: i32) {
           this.wrapper = new Wrapper<T>(val);
         }
 

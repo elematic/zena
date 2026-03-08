@@ -7,7 +7,7 @@ suite('Codegen: Throw', () => {
     const source = `
       class Error {
         message: string;
-        #new(message: string) { this.message = message; }
+        new(message: string) { this.message = message; }
       }
       
       export function main() {
@@ -24,7 +24,7 @@ suite('Codegen: Throw', () => {
     const source = `
       class Error {
         message: string;
-        #new(message: string) { this.message = message; }
+        new(message: string) { this.message = message; }
       }
       
       export function main() {

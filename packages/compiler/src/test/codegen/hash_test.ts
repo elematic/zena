@@ -47,7 +47,7 @@ suite('Hash Intrinsic', () => {
       class Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) { this.x = x; this.y = y; }
+        new(x: i32, y: i32) { this.x = x; this.y = y; }
         
         hashCode(): i32 {
           return this.x + this.y;

@@ -54,7 +54,7 @@ The official language reference is maintained in `docs/language-reference.md`.
 
 ### Classes & OOP
 
-- **Classes**: `class Point { x: i32; #new(x: i32) { this.x = x; } }`
+- **Classes**: `class Point { x: i32; new(x: i32) { this.x = x; } }`
 - **Inheritance**: `class Child extends Parent`.
 - **Interfaces**: `interface Drawable { draw(): void; }`. Classes implement via `implements`.
 - **Mixins**: `mixin Timestamped { time: i32; }`. Used via `class Log extends Base with Timestamped`.
@@ -382,7 +382,7 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke m
     - Handles polymorphic dispatch: if a method is called through a base class/interface, all overrides are kept.
     - Subclass tracking: propagates polymorphic calls to known subclasses.
     - Covers regular methods, accessors (getters/setters), and implicit field accessors.
-    - Constructors (`#new`) are always kept if the class is used.
+    - Constructors (`new()`) are always kept if the class is used.
   - Binary size results: 21% reduction on string programs, minimal programs at 41 bytes.
 - [x] Implement untagged enums with nominal typing.
 

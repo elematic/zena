@@ -2,6 +2,7 @@ import assert from 'node:assert';
 import {suite, test} from 'node:test';
 import {Parser} from '../../lib/parser.js';
 import {
+  CONSTRUCTOR_NAME,
   type ClassDeclaration,
   type FieldDefinition,
   type Identifier,
@@ -288,14 +289,14 @@ suite('Parser - Classes', () => {
       class Point {
         let x: i32;
         let y: i32;
-        #new(x: i32, y: i32) : x = x, y = y { }
+        new(x: i32, y: i32) : x = x, y = y { }
       }
     `;
     const parser = new Parser(input);
     const ast = parser.parse();
     const classDecl = ast.body[0] as ClassDeclaration;
     const ctor = classDecl.body[2] as MethodDefinition;
-    assert.strictEqual((ctor.name as Identifier).name, '#new');
+    assert.strictEqual((ctor.name as Identifier).name, CONSTRUCTOR_NAME);
     assert.ok(ctor.initializerList);
     assert.strictEqual(ctor.initializerList.length, 2);
     assert.strictEqual(ctor.initializerList[0].field.name, 'x');
@@ -309,7 +310,7 @@ suite('Parser - Classes', () => {
     const input = `
       class Rectangle {
         let area: i32;
-        #new(width: i32, height: i32) : area = width * height { }
+        new(width: i32, height: i32) : area = width * height { }
       }
     `;
     const parser = new Parser(input);

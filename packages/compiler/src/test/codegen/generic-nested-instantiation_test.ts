@@ -26,7 +26,7 @@ class Pair<K, V> {
   first: K;
   second: V;
 
-  #new(first: K, second: V) {
+  new(first: K, second: V) {
     this.first = first;
     this.second = second;
   }
@@ -38,7 +38,7 @@ class PairFactory<K, V> {
   keyValue: K;
   valueValue: V;
 
-  #new(k: K, v: V) {
+  new(k: K, v: V) {
     this.keyValue = k;
     this.valueValue = v;
   }
@@ -65,13 +65,13 @@ export let main = (): i32 => {
     const source = `
 class Box<T> {
   value: T;
-  #new(v: T) { this.value = v; }
+  new(v: T) { this.value = v; }
 }
 
 class Pair<K, V> {
   first: K;
   second: V;
-  #new(first: K, second: V) {
+  new(first: K, second: V) {
     this.first = first;
     this.second = second;
   }
@@ -81,7 +81,7 @@ class Pair<K, V> {
 class BoxPairFactory<T> {
   boxedValue: Box<T>;
 
-  #new(v: T) {
+  new(v: T) {
     this.boxedValue = new Box<T>(v);
   }
 
@@ -109,7 +109,7 @@ export let main = (): i32 => {
 class Entry<K, V> {
   key: K;
   value: V;
-  #new(k: K, v: V) {
+  new(k: K, v: V) {
     this.key = k;
     this.value = v;
   }
@@ -120,7 +120,7 @@ class EntryIterator<K, V> {
   currentValue: V;
   hasMore: boolean;
 
-  #new(k: K, v: V) {
+  new(k: K, v: V) {
     this.currentKey = k;
     this.currentValue = v;
     this.hasMore = true;
@@ -157,12 +157,12 @@ export let main = (): i32 => {
     const source = `
 class Result<T> {
   value: T;
-  #new(v: T) { this.value = v; }
+  new(v: T) { this.value = v; }
 }
 
 class Producer<T> {
   val: T;
-  #new(v: T) { this.val = v; }
+  new(v: T) { this.val = v; }
 
   // Multiple methods that all create Result<T>
   produce1(): Result<T> { return new Result<T>(this.val); }

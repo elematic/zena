@@ -34,7 +34,7 @@ suite('CodeGenerator - WASI Bindings', () => {
       class OutputStream {
         #handle: i32;
 
-        #new(handle: i32) {
+        new(handle: i32) {
           this.#handle = handle;
         }
 

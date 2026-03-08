@@ -79,7 +79,7 @@ declare function host_weakMapDelete(map: externref, key: externref): boolean;
 export class WeakMap<K, V> {
   #handle: externref;
 
-  #new() {
+  new() {
     this.#handle = host_weakMapNew();
   }
 
@@ -125,7 +125,7 @@ declare function host_weakRefDeref(ref: externref): externref;
 export class WeakRef<T> {
   #handle: externref;
 
-  #new(target: T) {
+  new(target: T) {
     this.#handle = host_weakRefNew(target as externref);
   }
 

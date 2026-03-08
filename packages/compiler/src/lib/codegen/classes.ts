@@ -1,4 +1,5 @@
 import {
+  CONSTRUCTOR_NAME,
   NodeType,
   type ClassDeclaration,
   type Expression,
@@ -2234,7 +2235,8 @@ export function registerClassMethods(
 
   const hasConstructor = members.some(
     (m) =>
-      m.type === NodeType.MethodDefinition && getMemberName(m.name) === '#new',
+      m.type === NodeType.MethodDefinition &&
+      getMemberName(m.name) === CONSTRUCTOR_NAME,
   );
   if (!hasConstructor && !classInfo.isExtension) {
     const bodyStmts: any[] = [];
@@ -2250,7 +2252,7 @@ export function registerClassMethods(
     }
     members.push({
       type: NodeType.MethodDefinition,
-      name: {type: NodeType.Identifier, name: '#new'},
+      name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
       params: [],
       body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
@@ -2340,7 +2342,7 @@ export function registerClassMethods(
       const classHasImmutableFields = hasImmutableFields(classInfo);
 
       let results: number[][] = [];
-      if (methodName === '#new') {
+      if (methodName === CONSTRUCTOR_NAME) {
         if (classInfo.isExtension && classInfo.onType) {
           results = [classInfo.onType];
         } else if (classHasImmutableFields) {
@@ -2425,7 +2427,7 @@ export function registerClassMethods(
       // Fix for overridden methods: verify which method we are actually overriding
       // (base name or mangled name) and use its 'this' parameter type to ensure
       // the function signature matches the superclass for vtable compatibility.
-      if (currentSuperClassInfo && methodName !== '#new') {
+      if (currentSuperClassInfo && methodName !== CONSTRUCTOR_NAME) {
         if (currentSuperClassInfo.methods.has(mangledMethodName)) {
           thisType =
             currentSuperClassInfo.methods.get(mangledMethodName)!.paramTypes[0];
@@ -2439,12 +2441,12 @@ export function registerClassMethods(
       // For constructors of classes with immutable fields, don't include 'this'
       // param since the struct is created inside the constructor
       const skipThisParam =
-        methodName === '#new' &&
+        methodName === CONSTRUCTOR_NAME &&
         classHasImmutableFields &&
         !classInfo.isExtension;
       if (
         !member.isStatic &&
-        !(classInfo.isExtension && methodName === '#new') &&
+        !(classInfo.isExtension && methodName === CONSTRUCTOR_NAME) &&
         !skipThisParam
       ) {
         params.push(thisType);
@@ -2454,7 +2456,7 @@ export function registerClassMethods(
       // Method-level DCE: determine if this method should be registered
       // Constructors are always needed if the class is used
       const shouldRegister =
-        methodName === '#new' ||
+        methodName === CONSTRUCTOR_NAME ||
         intrinsic !== undefined ||
         member.isDeclare ||
         ctx.isMethodUsed(classType, mangledMethodName);
@@ -2462,7 +2464,7 @@ export function registerClassMethods(
       // Add to vtable with the actual key (mangled for overloads, base name otherwise)
       // Skip vtable entry for unused methods (DCE)
       if (
-        methodName !== '#new' &&
+        methodName !== CONSTRUCTOR_NAME &&
         !methodName.startsWith('#') &&
         !intrinsic &&
         !vtable.includes(mangledMethodName) &&
@@ -2481,7 +2483,7 @@ export function registerClassMethods(
         if (currentSuperClassInfo) {
           // Check for overrides - look up both base name and mangled name in super
           if (
-            methodName !== '#new' &&
+            methodName !== CONSTRUCTOR_NAME &&
             (currentSuperClassInfo.methods.has(methodName) ||
               currentSuperClassInfo.methods.has(mangledMethodName))
           ) {
@@ -2888,7 +2890,7 @@ export function registerClassMethods(
   generateInterfaceVTable(ctx, classInfo, decl);
 
   if (ctx.shouldExport(decl) && !decl.isExtension) {
-    const ctorInfo = methods.get('#new')!;
+    const ctorInfo = methods.get(CONSTRUCTOR_NAME)!;
 
     // Wrapper signature: params -> (ref null struct)
     const params = ctorInfo.paramTypes.slice(1); // Skip 'this'
@@ -3021,7 +3023,8 @@ export function generateClassMethods(
   const members = [...decl.body];
   const hasConstructor = members.some(
     (m) =>
-      m.type === NodeType.MethodDefinition && getMemberName(m.name) === '#new',
+      m.type === NodeType.MethodDefinition &&
+      getMemberName(m.name) === CONSTRUCTOR_NAME,
   );
   if (!hasConstructor && !classInfo.isExtension) {
     const bodyStmts: any[] = [];
@@ -3037,7 +3040,7 @@ export function generateClassMethods(
     }
     members.push({
       type: NodeType.MethodDefinition,
-      name: {type: NodeType.Identifier, name: '#new'},
+      name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
       params: [],
       body: {type: NodeType.BlockStatement, body: bodyStmts},
       isFinal: false,
@@ -3054,7 +3057,7 @@ export function generateClassMethods(
       }
       const baseName =
         getMemberName(member.name) === 'constructor'
-          ? '#new'
+          ? CONSTRUCTOR_NAME
           : getMemberName(member.name);
 
       // Compute mangled name (same logic as in defineClassMethods)
@@ -3092,7 +3095,7 @@ export function generateClassMethods(
       if (
         methodInfo.index === -1 ||
         (checkerType &&
-          methodName !== '#new' &&
+          methodName !== CONSTRUCTOR_NAME &&
           !methodInfo.intrinsic &&
           !member.isDeclare &&
           !ctx.isMethodUsed(checkerType, methodName))
@@ -3108,11 +3111,11 @@ export function generateClassMethods(
       // 0: this
       if (
         !member.isStatic &&
-        !(classInfo.isExtension && methodName === '#new')
+        !(classInfo.isExtension && methodName === CONSTRUCTOR_NAME)
       ) {
         // Check if constructor should skip 'this' param (immutable fields pattern)
         const skipThisParam =
-          methodName === '#new' &&
+          methodName === CONSTRUCTOR_NAME &&
           hasImmutableFields(classInfo) &&
           !classInfo.isExtension;
         if (!skipThisParam) {
@@ -3127,13 +3130,13 @@ export function generateClassMethods(
         // (since no implicit this param)
         const hasThisParam =
           !member.isStatic &&
-          !(classInfo.isExtension && methodName === '#new') &&
-          !(methodName === '#new' && hasImmutableFields(classInfo));
+          !(classInfo.isExtension && methodName === CONSTRUCTOR_NAME) &&
+          !(methodName === CONSTRUCTOR_NAME && hasImmutableFields(classInfo));
         const paramTypeIndex = hasThisParam ? i + 1 : i;
         const paramType = methodInfo.paramTypes[paramTypeIndex];
         ctx.defineParam(param.name.name, paramType, param);
       }
-      if (classInfo.isExtension && methodName === '#new') {
+      if (classInfo.isExtension && methodName === CONSTRUCTOR_NAME) {
         // Extension constructor: 'this' is a local variable, not a param
         const thisLocalIndex = ctx.declareLocal('this', classInfo.onType!);
         ctx.thisLocalIndex = thisLocalIndex;
@@ -3150,7 +3153,7 @@ export function generateClassMethods(
       // Downcast 'this' if needed (e.g. overriding a method from a superclass)
       // Skip for constructors with immutable fields (they don't have a 'this' param)
       const skipThisDowncast =
-        methodName === '#new' &&
+        methodName === CONSTRUCTOR_NAME &&
         hasImmutableFields(classInfo) &&
         !classInfo.isExtension;
       if (
@@ -3201,7 +3204,7 @@ export function generateClassMethods(
         continue;
       }
 
-      if (methodName === '#new') {
+      if (methodName === CONSTRUCTOR_NAME) {
         const hasSuperClass = !!classInfo.superClass;
         // Re-check for immutable fields at body generation time
         const classHasImmutableFields = hasImmutableFields(classInfo);
@@ -4276,7 +4279,7 @@ function instantiateClassImpl(
     const hasConstructor = members.some(
       (m) =>
         m.type === NodeType.MethodDefinition &&
-        getMemberName(m.name) === '#new',
+        getMemberName(m.name) === CONSTRUCTOR_NAME,
     );
     if (!hasConstructor && !decl.isExtension) {
       const bodyStmts: any[] = [];
@@ -4292,7 +4295,7 @@ function instantiateClassImpl(
       }
       members.push({
         type: NodeType.MethodDefinition,
-        name: {type: NodeType.Identifier, name: '#new'},
+        name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
         params: [],
         body: {type: NodeType.BlockStatement, body: bodyStmts},
         isFinal: false,
@@ -4326,7 +4329,7 @@ function instantiateClassImpl(
         if (member.typeParameters && member.typeParameters.length > 0) continue;
         const baseName =
           getMemberName(member.name) === 'constructor'
-            ? '#new'
+            ? CONSTRUCTOR_NAME
             : getMemberName(member.name);
         methodOverloadCounts.set(
           baseName,
@@ -4345,7 +4348,7 @@ function instantiateClassImpl(
 
         const methodName =
           getMemberName(member.name) === 'constructor'
-            ? '#new'
+            ? CONSTRUCTOR_NAME
             : getMemberName(member.name);
 
         const isOverloaded = (methodOverloadCounts.get(methodName) ?? 0) > 1;
@@ -4374,7 +4377,10 @@ function instantiateClassImpl(
         // Build checker types for signature mangling
         const paramCheckerTypes: Type[] = [];
 
-        if (!member.isStatic && !(decl.isExtension && methodName === '#new')) {
+        if (
+          !member.isStatic &&
+          !(decl.isExtension && methodName === CONSTRUCTOR_NAME)
+        ) {
           params.push(thisType);
         }
         for (const param of member.params) {
@@ -4417,7 +4423,7 @@ function instantiateClassImpl(
 
         // Add to vtable with the actual key (mangled for overloads, base name otherwise)
         if (
-          methodName !== '#new' &&
+          methodName !== CONSTRUCTOR_NAME &&
           !intrinsic &&
           !vtable.includes(mangledMethodName)
         ) {
@@ -4425,7 +4431,7 @@ function instantiateClassImpl(
         }
 
         let results: number[][] = [];
-        if (methodName === '#new') {
+        if (methodName === CONSTRUCTOR_NAME) {
           if (decl.isExtension && onType) {
             results = [onType];
           } else if (member.isStatic && member.returnType) {
@@ -4785,7 +4791,7 @@ function instantiateClassImpl(
     generateInterfaceVTable(ctx, classInfo, decl);
 
     if (ctx.shouldExport(decl) && structTypeIndex !== -1) {
-      const ctorInfo = methods.get('#new')!;
+      const ctorInfo = methods.get(CONSTRUCTOR_NAME)!;
 
       // Wrapper signature: params -> (ref null struct)
       const params = ctorInfo.paramTypes.slice(1); // Skip 'this'

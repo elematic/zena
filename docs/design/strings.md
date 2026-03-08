@@ -160,7 +160,7 @@ For efficient string construction without repeated allocations:
 import {StringBuilder} from 'zena:string-builder';
 
 final class StringBuilder {
-  #new(capacity: i32 = 16);
+  new(capacity: i32 = 16);
 
   length: i32 { get; }      // Current length in bytes
   capacity: i32 { get; }    // Total allocated capacity

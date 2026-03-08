@@ -63,7 +63,7 @@ suite('Checker - Optional Parameters', () => {
     const diagnostics = check(`
       class C {
         x: string | null;
-        #new(x?: string) {
+        new(x?: string) {
           this.x = x;
         }
       }

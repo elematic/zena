@@ -77,7 +77,7 @@ This document outlines the content for the Zena Language Tour page. The tour is 
 
 - **Classes**:
   - Fields and Methods.
-  - Constructors (`#new`).
+  - Constructors (`new`).
   - Private Fields (`#field`).
   - Accessors (Getters/Setters).
 - **Inheritance**: `class Child extends Parent`.

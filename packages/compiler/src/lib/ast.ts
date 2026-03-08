@@ -31,6 +31,12 @@ export interface SymbolInfo {
   modulePath?: string;
 }
 
+/**
+ * Internal name for the constructor method.
+ * Uses angle brackets to avoid collision with any user-defined identifier.
+ */
+export const CONSTRUCTOR_NAME = '<constructor>';
+
 export const NodeType = {
   Module: 'Module',
   VariableDeclaration: 'VariableDeclaration',
@@ -673,7 +679,7 @@ export interface MethodDefinition extends Node {
   decorators?: Decorator[];
   /**
    * Dart-style initializer list for constructors.
-   * Syntax: `#new(x: i32) : fieldA = x, fieldB = x + 1 { }`
+   * Syntax: `new(x: i32) : fieldA = x, fieldB = x + 1 { }`
    * Expressions cannot reference `this`, only params and earlier initializers.
    */
   initializerList?: FieldInitializer[];

@@ -61,7 +61,7 @@ The `finally` block does not contribute to the expression's value.
 ```zena
 class Error {
   message: string;
-  #new(message: string) {
+  new(message: string) {
     this.message = message;
   }
 }

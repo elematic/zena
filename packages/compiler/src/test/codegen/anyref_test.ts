@@ -24,7 +24,7 @@ suite('AnyRef', () => {
     const source = `
       class Point {
         x: i32;
-        #new(x: i32) { this.x = x; }
+        new(x: i32) { this.x = x; }
       }
 
       export let testAssignments = (): void => {

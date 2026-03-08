@@ -95,7 +95,7 @@ class JsonParseError extends Error {
   line: i32;
   column: i32;
 
-  #new(message: string, line: i32, column: i32) {
+  new(message: string, line: i32, column: i32) {
     super(message);
     this.line = line;
     this.column = column;

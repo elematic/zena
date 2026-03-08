@@ -18,7 +18,7 @@ suite('CodeGenerator - Any Type', () => {
     const result = await compileAndRun(`
       class Foo {
         val: i32;
-        #new(val: i32) { this.val = val; }
+        new(val: i32) { this.val = val; }
       }
       export let main = (): i32 => {
         let f = new Foo(123);

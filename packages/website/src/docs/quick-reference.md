@@ -107,7 +107,7 @@ export let add = (a: i32, b: i32) => a + b;
 export class Point {
   x: i32;
   y: i32;
-  #new(x: i32, y: i32) {
+  new(x: i32, y: i32) {
     this.x = x;
     this.y = y;
   }
@@ -887,7 +887,7 @@ tuple elements):
 ```ts
 class Wrapper {
   let inner: Container | null;  // Immutable field
-  #new() : inner = null { }
+  new() : inner = null { }
 }
 
 let process = (w: Wrapper): i32 => {
@@ -1033,7 +1033,7 @@ class Point {
   x: i32;
   y: i32;
 
-  #new(x: i32, y: i32) {
+  new(x: i32, y: i32) {
     this.x = x;
     this.y = y;
   }
@@ -1087,7 +1087,7 @@ not inherited, and have no virtual dispatch overhead.
 class Counter {
   #count: i32; // Private, direct access
 
-  #new() {
+  new() {
     this.#count = 0;
   }
 
@@ -1150,7 +1150,7 @@ class Point {
   let y: i32;
 
   // Initializer list before the body
-  #new(x: i32, y: i32) : x = x, y = y { }
+  new(x: i32, y: i32) : x = x, y = y { }
 }
 
 class Rectangle {
@@ -1159,7 +1159,7 @@ class Rectangle {
   let area: i32;
 
   // Can compute values from parameters
-  #new(w: i32, h: i32) : width = w, height = h, area = w * h { }
+  new(w: i32, h: i32) : width = w, height = h, area = w * h { }
 }
 ```
 
@@ -1194,7 +1194,7 @@ fields and methods, and can override methods.
 class Animal {
   name: String;
 
-  #new(name: String) {
+  new(name: String) {
     this.name = name;
   }
 
@@ -1204,7 +1204,7 @@ class Animal {
 }
 
 class Dog extends Animal {
-  #new(name: String) {
+  new(name: String) {
     super(name);
   }
 
@@ -1223,7 +1223,7 @@ Classes can have type parameters. Zena uses monomorphization—`Box<i32>` and
 class Box<T> {
   value: T;
 
-  #new(value: T) {
+  new(value: T) {
     this.value = value;
   }
 
@@ -1266,7 +1266,7 @@ abstract class Shape {
 final class Circle extends Shape {
   radius: f32;
 
-  #new(radius: f32) {
+  new(radius: f32) {
     this.radius = radius;
   }
 
@@ -1421,7 +1421,7 @@ interface Resizable {
 class Circle implements Drawable, Resizable {
   radius: f32;
 
-  #new(radius: f32) {
+  new(radius: f32) {
     this.radius = radius;
   }
 
@@ -1478,7 +1478,7 @@ mixin Named {
 class Document with Timestamped, Named {
   content: String;
 
-  #new(name: String, content: String) {
+  new(name: String, content: String) {
     this.name = name;
     this.content = content;
     this.createdAt = getCurrentTime();
@@ -1611,7 +1611,7 @@ extending `Error`.
 ```ts
 class Error {
   message: String;
-  #new(message: String) {
+  new(message: String) {
     this.message = message;
   }
 }
@@ -1619,7 +1619,7 @@ class Error {
 // Custom errors
 class ValidationError extends Error {
   field: String;
-  #new(field: String, message: String) {
+  new(field: String, message: String) {
     super(message);
     this.field = field;
   }

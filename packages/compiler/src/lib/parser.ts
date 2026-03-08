@@ -1,4 +1,5 @@
 import {
+  CONSTRUCTOR_NAME,
   NodeType,
   type AccessorDeclaration,
   type AccessorSignature,
@@ -2669,17 +2670,24 @@ export class Parser {
         }
       }
     } else if (this.#match(TokenType.Hash)) {
-      if (this.#match(TokenType.New)) {
-        name = {type: NodeType.Identifier, name: '#new'};
+      if (this.#isIdentifier(this.#peek().type) || this.#check(TokenType.New)) {
+        const token = this.#advance();
+        name = {
+          type: NodeType.Identifier,
+          name: '#' + token.value,
+          loc: this.#locFromToken(token),
+        };
       } else {
-        const id = this.#parseIdentifier();
-        name = {type: NodeType.Identifier, name: '#' + id.name};
+        const token = this.#peek();
+        throw new Error(
+          `Expected identifier after '#' at ${this.#path}:${token.line}:${token.column}`,
+        );
       }
     } else if (this.#match(TokenType.New)) {
       const token = this.#previous();
       name = {
         type: NodeType.Identifier,
-        name: 'new',
+        name: isStatic ? 'new' : CONSTRUCTOR_NAME,
         loc: this.#locFromToken(token),
       };
     } else if (this.#match(TokenType.Var) || this.#match(TokenType.Let)) {
@@ -2738,10 +2746,10 @@ export class Parser {
       }
       this.#consume(TokenType.RParen, "Expected ')' after parameters.");
 
-      // Parse initializer list for constructors: #new(...) : field = expr, field2 = expr2 { }
+      // Parse initializer list for constructors: new(...) : field = expr, field2 = expr2 { }
       let initializerList: FieldInitializer[] | undefined;
       const isConstructor =
-        name.type === NodeType.Identifier && name.name === '#new';
+        name.type === NodeType.Identifier && name.name === CONSTRUCTOR_NAME;
       if (
         isConstructor &&
         this.#check(TokenType.Colon) &&

@@ -290,7 +290,7 @@ enum FsErrorCode {
 class FsError extends Error {
   code: FsErrorCode;
 
-  #new(code: FsErrorCode, path: string) {
+  new(code: FsErrorCode, path: string) {
     super(`Filesystem error: ${code} for ${path}`);
     this.code = code;
   }
@@ -328,7 +328,7 @@ type DirEntry = {
 class Descriptor implements Disposable {
   #handle: DescriptorHandle;
 
-  #new(handle: DescriptorHandle) {
+  new(handle: DescriptorHandle) {
     this.#handle = handle;
   }
 

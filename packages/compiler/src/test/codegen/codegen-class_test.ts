@@ -8,7 +8,7 @@ suite('CodeGenerator - Classes', () => {
       class Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -29,7 +29,7 @@ suite('CodeGenerator - Classes', () => {
     const input = `
       class Point {
         x: i32;
-        #new() {
+        new() {
           this.x = 0;
         }
       }

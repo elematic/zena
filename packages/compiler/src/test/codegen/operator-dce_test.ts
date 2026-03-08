@@ -37,7 +37,7 @@ suite('Operator Method DCE', () => {
       class Box {
         #value: i32;
         
-        #new() {
+        new() {
           this.#value = 0;
         }
         
@@ -71,7 +71,7 @@ suite('Operator Method DCE', () => {
       class Point {
         x: i32;
         
-        #new(x: i32) {
+        new(x: i32) {
           this.x = x;
         }
         
@@ -110,7 +110,7 @@ suite('Operator Method DCE', () => {
       class Point {
         x: i32;
         
-        #new(x: i32) {
+        new(x: i32) {
           this.x = x;
         }
         
@@ -142,7 +142,7 @@ suite('Operator Method DCE', () => {
       class Container {
         #data: FixedArray<i32>;
         
-        #new() {
+        new() {
           this.#data = [10, 20, 30, 40, 50];
         }
         
@@ -216,7 +216,7 @@ suite('Operator Method DCE', () => {
       class Derived extends Base {
         value: i32;
         
-        #new(v: i32) {
+        new(v: i32) {
           super();
           this.value = v;
         }

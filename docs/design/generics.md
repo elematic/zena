@@ -94,7 +94,7 @@ binary size becomes a concern.
 ```zena
 class Box<T> {
   value: T;
-  #new(v: T) {
+  new(v: T) {
     this.value = v;
   }
 }

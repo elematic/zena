@@ -29,7 +29,7 @@ suite('Codegen: Private Methods', () => {
       class Secret {
         #value: i32;
         
-        #new(v: i32) {
+        new(v: i32) {
           this.#value = v;
         }
         

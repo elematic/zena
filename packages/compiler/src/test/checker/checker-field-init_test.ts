@@ -86,7 +86,7 @@ suite('Checker - Field Initialization', () => {
       class Point {
         let x: i32;
         let y: i32;
-        #new(x: i32, y: i32) : x = x, y = y { }
+        new(x: i32, y: i32) : x = x, y = y { }
       }
     `;
     const parser = new Parser(source);
@@ -101,7 +101,7 @@ suite('Checker - Field Initialization', () => {
     const source = `
       class Point {
         let x: i32;
-        #new(name: string) : x = name { }
+        new(name: string) : x = name { }
       }
     `;
     const parser = new Parser(source);
@@ -117,7 +117,7 @@ suite('Checker - Field Initialization', () => {
     const source = `
       class Point {
         let x: i32;
-        #new(y: i32) : z = y { }
+        new(y: i32) : z = y { }
       }
     `;
     const parser = new Parser(source);
@@ -133,7 +133,7 @@ suite('Checker - Field Initialization', () => {
     const source = `
       class Point {
         let x: i32;
-        #new() : x = this.foo() { }
+        new() : x = this.foo() { }
         foo(): i32 { return 42; }
       }
     `;

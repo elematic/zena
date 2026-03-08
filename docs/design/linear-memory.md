@@ -252,7 +252,7 @@ export final class BumpAllocator implements Allocator {
   #nextPtr: i32;
 
   /** Create over a pre-allocated region. */
-  #new(startPtr: i32, size: i32) {
+  new(startPtr: i32, size: i32) {
     this.#startPtr = startPtr;
     this.#endPtr = startPtr + size;
     this.#nextPtr = startPtr;
@@ -594,7 +594,7 @@ declare func re2_free(handle: i32): void;
 class Regex {
   #handle: i32;
 
-  #new(pattern: String) {
+  new(pattern: String) {
     let mem = Memory.default;
     let alloc = defaultAllocator;
 
@@ -667,7 +667,7 @@ import {Memory, defaultAllocator} from 'zena:memory';
 class LinearPoint {
   #ptr: i32;
 
-  #new(ptr: i32) {
+  new(ptr: i32) {
     this.#ptr = ptr;
   }
 
@@ -835,7 +835,7 @@ enable automatic cleanup of linear memory:
 class LinearBuffer {
   #ptr: i32;
 
-  #new(ptr: i32) {
+  new(ptr: i32) {
     this.#ptr = ptr;
     // Register cleanup when this GC object dies
     __weak_ref_register(this, () => {

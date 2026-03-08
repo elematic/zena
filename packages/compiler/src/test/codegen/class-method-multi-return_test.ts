@@ -14,7 +14,7 @@ suite('class method multi-value returns', () => {
       const source = `
         class Wrapper {
           #value: i32;
-          #new(v: i32) { this.#value = v; }
+          new(v: i32) { this.#value = v; }
           getValue(): i32 { return this.#value; }
         }
 
@@ -22,7 +22,7 @@ suite('class method multi-value returns', () => {
           #wrapper: Wrapper;
           #done: boolean;
 
-          #new(v: i32) {
+          new(v: i32) {
             this.#wrapper = new Wrapper(v);
             this.#done = false;
           }
@@ -60,7 +60,7 @@ suite('class method multi-value returns', () => {
           #count: i32;
           #max: i32;
 
-          #new(max: i32) {
+          new(max: i32) {
             this.#count = 0;
             this.#max = max;
           }
@@ -97,7 +97,7 @@ suite('class method multi-value returns', () => {
           #hasValue: boolean;
           #box: Box<i32>;
 
-          #new(value: i32) {
+          new(value: i32) {
             this.#hasValue = true;
             this.#box = new Box(value);
           }
@@ -148,7 +148,7 @@ suite('class method multi-value returns', () => {
           #x: i32;
           #y: i32;
 
-          #new(x: i32, y: i32) {
+          new(x: i32, y: i32) {
             this.#x = x;
             this.#y = y;
           }

@@ -9,7 +9,7 @@ suite('self-referential generic types', () => {
         value: T;
         child: Node<T> | null;
         
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
           this.child = null;
         }
@@ -31,7 +31,7 @@ suite('self-referential generic types', () => {
         data: T;
         next: ListNode<T> | null;
         
-        #new(data: T) {
+        new(data: T) {
           this.data = data;
           this.next = null;
         }
@@ -66,7 +66,7 @@ suite('self-referential generic types', () => {
         left: TreeNode<T> | null;
         right: TreeNode<T> | null;
         
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
           this.left = null;
           this.right = null;

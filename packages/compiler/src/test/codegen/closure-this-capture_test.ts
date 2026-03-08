@@ -103,7 +103,7 @@ suite('Codegen: Closure this capture', () => {
       class Box<T> {
         item: T;
 
-        #new(item: T) {
+        new(item: T) {
           this.item = item;
         }
 

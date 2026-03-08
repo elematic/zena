@@ -363,7 +363,7 @@ class Node {
   value: i32;
   next: Node | null;
 
-  #new(value: i32) {
+  new(value: i32) {
     this.value = value;
     this.next = null;
   }
@@ -398,12 +398,12 @@ removes that type in the else branch (for unions):
 
 ```zena
 class Cat {
-  #new() {}
+  new() {}
   meow(): string { return "meow"; }
 }
 
 class Dog {
-  #new() {}
+  new() {}
   bark(): string { return "woof"; }
 }
 
@@ -434,7 +434,7 @@ Type narrowing also works for member expressions when the path is **immutable**:
 // Class with immutable field
 class Wrapper {
   let inner: Container | null;
-  #new() : inner = null { }
+  new() : inner = null { }
 }
 
 let process = (w: Wrapper): i32 => {
@@ -467,7 +467,7 @@ reference could modify the field between the null check and use:
 ```zena
 class MutableWrapper {
   var inner: Container | null;  // Mutable field
-  #new() { this.inner = null; }
+  new() { this.inner = null; }
 }
 
 let process = (w: MutableWrapper): i32 => {
@@ -820,7 +820,7 @@ increment(10, 5); // 15
    class Reader {
      #currentPos: i32;
 
-     #new(pos: i32) {
+     new(pos: i32) {
        this.#currentPos = pos;
      }
 
@@ -1440,7 +1440,7 @@ This is particularly useful for iterating over discriminated union iterators:
 ```zena
 class Counter {
   value: i32;
-  #new() { this.value = 0; }
+  new() { this.value = 0; }
 
   next(): inline (true, i32) | inline (false, never) {
     this.value = this.value + 1;
@@ -1525,7 +1525,7 @@ for (let n in numbers) {
 class Counter implements Iterable<i32> {
   #max: i32;
 
-  #new(max: i32) { this.#max = max; }
+  new(max: i32) { this.#max = max; }
 
   iterator(): Iterator<i32> {
     return new CounterIterator(this.#max);
@@ -1748,7 +1748,7 @@ class Point {
   x: i32;       // Immutable field (default)
   var y: i32;   // Mutable field
 
-  #new(x: i32, y: i32) {
+  new(x: i32, y: i32) {
     this.x = x;
     this.y = y;
   }
@@ -1814,7 +1814,7 @@ class Point {
   let y: i32;
 
   // Initializer list before the body
-  #new(x: i32, y: i32) : x = x, y = y { }
+  new(x: i32, y: i32) : x = x, y = y { }
 }
 
 class Rectangle {
@@ -1823,7 +1823,7 @@ class Rectangle {
   let area: i32;
 
   // Can compute values from parameters
-  #new(w: i32, h: i32) : width = w, height = h, area = w * h { }
+  new(w: i32, h: i32) : width = w, height = h, area = w * h { }
 }
 ```
 
@@ -1842,7 +1842,7 @@ Classes can be generic by specifying type parameters:
 class Box<T> {
   value: T;
 
-  #new(value: T) {
+  new(value: T) {
     this.value = value;
   }
 
@@ -1859,7 +1859,7 @@ Generic type parameters can be constrained using the `extends` keyword:
 ```zena
 class Animal {
   name: string;
-  #new(name: string) {
+  new(name: string) {
     this.name = name;
   }
 }
@@ -1867,7 +1867,7 @@ class Animal {
 class Zoo<T extends Animal> {
   animals: array<T>;
 
-  #new() {
+  new() {
     this.animals = [];
   }
 }
@@ -1879,7 +1879,7 @@ Multiple type parameters can have constraints that reference other type paramete
 class Container<T extends Box<V>, V> {
   item: T;
 
-  #new(item: T) {
+  new(item: T) {
     this.item = item;
   }
 }
@@ -1971,7 +1971,7 @@ class Vector {
   x: i32;
   y: i32;
 
-  #new(x: i32, y: i32) {
+  new(x: i32, y: i32) {
     this.x = x;
     this.y = y;
   }
@@ -2047,7 +2047,7 @@ Subclasses can also add new overloads not present in the base class.
 ````
 
 - **Fields**: Currently mutable by default. Use `let` for immutable fields, `var` for explicit mutable. See [Field Mutability](#field-mutability).
-- **Constructor**: Named `#new`.
+- **Constructor**: Named `new`.
 - **Methods**: Functions defined within the class.
 
 ### Extension Classes
@@ -2285,7 +2285,7 @@ check and its use.
 ```zena
 class Container {
   value: i32;
-  #new(value: i32) { this.value = value; }
+  new(value: i32) { this.value = value; }
 }
 
 let process = (t: (Container | null, i32)): i32 => {
@@ -2396,7 +2396,7 @@ export let add = (a: i32, b: i32) => a + b;
 export class Point {
   x: i32;
   y: i32;
-  #new(x: i32, y: i32) {
+  new(x: i32, y: i32) {
     this.x = x;
     this.y = y;
   }
@@ -2469,7 +2469,7 @@ class Point {
   x: i32;
   y: i32;
 
-  #new(x: i32, y: i32) {
+  new(x: i32, y: i32) {
     this.x = x;
     this.y = y;
   }
@@ -2537,7 +2537,7 @@ class Message {
 
   #backingStore: i32;
 
-  #new(content: i32) {
+  new(content: i32) {
     this.timestamp = 1000;  // Written but never read → eliminated
     this.sessionId = 999;   // Written but never read → eliminated
     this.content = content;
@@ -2667,7 +2667,7 @@ The `Error` class is part of the standard library and is available globally.
 ```zena
 class Error {
   message: string;
-  #new(message: string) { this.message = message; }
+  new(message: string) { this.message = message; }
 }
 ```
 

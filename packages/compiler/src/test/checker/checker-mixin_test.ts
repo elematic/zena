@@ -108,7 +108,7 @@ suite('Checker - Mixins', () => {
   test('should fail if mixin defines a constructor', () => {
     const source = `
       mixin M {
-        #new() {}
+        new() {}
       }
     `;
     const diagnostics = checkSource(source);

@@ -9,7 +9,7 @@ suite('TypeChecker - Classes', () => {
       class Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -49,7 +49,7 @@ suite('TypeChecker - Classes', () => {
     const input = `
       class Point {
         x: i32;
-        #new() {
+        new() {
           this.x = "hello";
         }
       }
@@ -66,7 +66,7 @@ suite('TypeChecker - Classes', () => {
   test('should detect invalid constructor arguments', () => {
     const input = `
       class Point {
-        #new(x: i32) {}
+        new(x: i32) {}
       }
       let p = new Point(1, 2);
     `;

@@ -1,4 +1,5 @@
 import {
+  CONSTRUCTOR_NAME,
   NodeType,
   type AccessorDeclaration,
   type AsPattern,
@@ -3027,7 +3028,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
       }
 
-      if (memberName === '#new') {
+      if (memberName === CONSTRUCTOR_NAME) {
         if (classType.constructorType) {
           ctx.diagnostics.reportError(
             `Duplicate constructor in class '${className}'.`,
@@ -3039,7 +3040,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       } else if (memberName === 'constructor') {
         // Warn about using TypeScript/Java-style constructor syntax
         ctx.diagnostics.reportWarning(
-          `Use '#new()' instead of 'constructor()' for constructors in Zena.`,
+          `Use 'new()' instead of 'constructor()' for constructors in Zena.`,
           DiagnosticCode.ConstructorSyntax,
           ctx.getLocation(member.name.loc),
         );
@@ -3635,7 +3636,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   };
 
   const previousIsThisInitialized = ctx.isThisInitialized;
-  if (methodName === '#new' && requiresSuperCall()) {
+  if (methodName === CONSTRUCTOR_NAME && requiresSuperCall()) {
     ctx.isThisInitialized = false;
   } else {
     ctx.isThisInitialized = true;
@@ -3714,7 +3715,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   }
 
   if (
-    methodName === '#new' &&
+    methodName === CONSTRUCTOR_NAME &&
     (requiresSuperCall() || ctx.currentClass?.isExtension) &&
     !ctx.isThisInitialized
   ) {
@@ -3902,7 +3903,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     if (
       member.type === NodeType.MethodDefinition &&
       member.name.type === NodeType.Identifier &&
-      member.name.name === '#new'
+      member.name.name === CONSTRUCTOR_NAME
     ) {
       ctx.diagnostics.reportError(
         `Mixins cannot define constructors.`,
@@ -4082,7 +4083,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       const memberNameInfo = resolveMemberName(ctx, member.name);
       const methodName = memberNameInfo.name; // For error messages
 
-      if (methodName === '#new') continue; // Skip constructor check as it's already reported
+      if (methodName === CONSTRUCTOR_NAME) continue; // Skip constructor check as it's already reported
 
       let methodType: FunctionType | undefined;
       if (memberNameInfo.isSymbol) {

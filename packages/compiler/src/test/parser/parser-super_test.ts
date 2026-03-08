@@ -45,7 +45,7 @@ suite('Parser - Super', () => {
   test('should parse super call inside class constructor', () => {
     const source = `
       class B extends A {
-        #new() {
+        new() {
           super();
         }
       }

@@ -8,7 +8,7 @@ suite('Method-level DCE', () => {
       class Counter {
         #value: i32;
         
-        #new() {
+        new() {
           this.#value = 0;
         }
         
@@ -68,7 +68,7 @@ suite('Method-level DCE', () => {
         #x: i32;
         #y: i32;
         
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.#x = x;
           this.#y = y;
         }
@@ -103,7 +103,7 @@ suite('Method-level DCE', () => {
         #value: i32;
         #label: i32;
         
-        #new() {
+        new() {
           this.#value = 0;
           this.#label = 0;
         }
@@ -144,7 +144,7 @@ suite('Method-level DCE', () => {
       class Config {
         #setting: i32;
         
-        #new() {
+        new() {
           this.#setting = 100;
         }
         
@@ -170,7 +170,7 @@ suite('Method-level DCE', () => {
         name: i32;
         age: i32;
         
-        #new(n: i32, a: i32) {
+        new(n: i32, a: i32) {
           this.name = n;
           this.age = a;
         }

@@ -29,7 +29,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/box.zena': `
         export class Box<T> {
           value: T;
-          #new(value: T) {
+          new(value: T) {
             this.value = value;
           }
           get(): T {
@@ -43,7 +43,7 @@ suite('Codegen: Generic Specialization Collision', () => {
         // Y in module A has a single i32 field 'a'
         class Y {
           a: i32;
-          #new(a: i32) {
+          new(a: i32) {
             this.a = a;
           }
         }
@@ -57,7 +57,7 @@ suite('Codegen: Generic Specialization Collision', () => {
         // Y in module B has a single i32 field 'b'
         class Y {
           b: i32;
-          #new(b: i32) {
+          new(b: i32) {
             this.b = b;
           }
         }
@@ -96,7 +96,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/box.zena': `
         export class Box<T> {
           value: T;
-          #new(value: T) {
+          new(value: T) {
             this.value = value;
           }
           get(): T {
@@ -107,7 +107,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/x.zena': `
         export class X {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -137,7 +137,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/box.zena': `
         export class Box<T> {
           value: T;
-          #new(value: T) {
+          new(value: T) {
             this.value = value;
           }
           get(): T {
@@ -148,7 +148,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/x.zena': `
         export class X {
           value: i32;
-          #new(value: i32) {
+          new(value: i32) {
             this.value = value;
           }
         }
@@ -176,7 +176,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/box.zena': `
         export class Box<T> {
           value: T;
-          #new(value: T) {
+          new(value: T) {
             this.value = value;
           }
           get(): T {
@@ -217,7 +217,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/box.zena': `
         export class Box<T> {
           value: T;
-          #new(value: T) {
+          new(value: T) {
             this.value = value;
           }
           get(): T {

@@ -57,7 +57,7 @@ suite('CodeGenerator - Equality', () => {
   // Classes (Reference Equality)
   test('class reference equality', async () => {
     const setup = `
-      class Point { x: i32; y: i32; #new(x: i32, y: i32) { this.x = x; this.y = y; } }
+      class Point { x: i32; y: i32; new(x: i32, y: i32) { this.x = x; this.y = y; } }
     `;
 
     assert.strictEqual(
@@ -162,7 +162,7 @@ suite('CodeGenerator - Equality', () => {
 
   // Null
   test('null equality', async () => {
-    const setup = `class A { #new() {} }`;
+    const setup = `class A { new() {} }`;
 
     assert.strictEqual(
       await runEqualityTest(
@@ -293,7 +293,7 @@ suite('CodeGenerator - Equality', () => {
       declare function equals<T>(a: T, b: T): boolean;
       class Box {
         value: i32;
-        #new(value: i32) { this.value = value; }
+        new(value: i32) { this.value = value; }
         operator ==(other: Box): boolean {
           return this.value == other.value;
         }
@@ -331,7 +331,7 @@ suite('CodeGenerator - Equality', () => {
       
       class Box {
         value: i32;
-        #new(value: i32) { this.value = value; }
+        new(value: i32) { this.value = value; }
         operator ==(other: Box): boolean {
           return this.value == other.value;
         }

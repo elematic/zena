@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import {suite, test} from 'node:test';
 import {Parser} from '../../lib/parser.js';
-import {NodeType} from '../../lib/ast.js';
+import {CONSTRUCTOR_NAME, NodeType} from '../../lib/ast.js';
 
 suite('Parser', () => {
   test('should parse variable declaration', () => {
@@ -201,7 +201,7 @@ suite('Parser', () => {
   });
 
   test('should parse class with constructor', () => {
-    const input = `class Point { #new() { this.x = 1; } }`;
+    const input = `class Point { new() { this.x = 1; } }`;
     const parser = new Parser(input);
     const ast = parser.parse();
     assert.strictEqual(ast.body.length, 1);
@@ -212,7 +212,7 @@ suite('Parser', () => {
       class Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -246,7 +246,7 @@ suite('Parser', () => {
       if (ctor.type === NodeType.MethodDefinition) {
         assert.strictEqual(ctor.name.type, NodeType.Identifier);
         if (ctor.name.type === NodeType.Identifier) {
-          assert.strictEqual(ctor.name.name, '#new');
+          assert.strictEqual(ctor.name.name, CONSTRUCTOR_NAME);
         }
       }
     }

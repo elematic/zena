@@ -11,7 +11,7 @@ suite('CodeGenerator - Inheritance', () => {
       }
       class Point3D extends Point {
         z: i32;
-        #new(x: i32, y: i32, z: i32) {
+        new(x: i32, y: i32, z: i32) {
           super();
           this.x = x;
           this.y = y;

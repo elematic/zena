@@ -33,7 +33,7 @@ suite('Codegen: Private Fields', () => {
       class Point {
         #x: i32;
         
-        #new(x: i32) {
+        new(x: i32) {
           this.#x = x;
         }
         

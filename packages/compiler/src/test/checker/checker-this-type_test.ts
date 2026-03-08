@@ -10,7 +10,7 @@ suite('TypeChecker - This Type', () => {
         x: i32;
         y: i32;
         
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -82,7 +82,7 @@ suite('TypeChecker - This Type', () => {
       class MyInt implements Comparable {
         value: i32;
         
-        #new(value: i32) {
+        new(value: i32) {
           this.value = value;
         }
         
@@ -140,7 +140,7 @@ suite('TypeChecker - This Type', () => {
       class Container<T> {
         value: T;
         
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
         }
         

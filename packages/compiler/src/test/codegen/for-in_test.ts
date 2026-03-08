@@ -143,7 +143,7 @@ suite('for-in loops', () => {
         #current: i32;
         #max: i32;
         
-        #new(max: i32) {
+        new(max: i32) {
           this.#current = 0;
           this.#max = max;
         }
@@ -161,7 +161,7 @@ suite('for-in loops', () => {
       final class Counter implements Iterable<i32> {
         #max: i32;
         
-        #new(max: i32) {
+        new(max: i32) {
           this.#max = max;
         }
         
@@ -195,7 +195,7 @@ suite('for-in loops', () => {
         #current: i32;
         #end: i32;
         
-        #new(start: i32, end: i32) {
+        new(start: i32, end: i32) {
           this.#current = start;
           this.#end = end;
         }

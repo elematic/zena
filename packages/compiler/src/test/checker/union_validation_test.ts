@@ -25,7 +25,7 @@ suite('Union Validation Tests', () => {
     const source = `
       class Container<T extends anyref> {
         val: T | null;
-        #new() {}
+        new() {}
       }
 
       export let main = (): void => {
@@ -48,7 +48,7 @@ suite('Union Validation Tests', () => {
       // and T | null could be i32 | null which is invalid
       class Container<T> {
         val: T | null;
-        #new() {}
+        new() {}
       }
 
       export let main = (): void => {
@@ -75,7 +75,7 @@ suite('Union Validation Tests', () => {
       // Valid: T is bounded by anyref, so T | null is OK
       class Container<T extends anyref> {
         val: T | null;
-        #new() {
+        new() {
           this.val = null;
         }
       }

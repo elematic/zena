@@ -8,7 +8,7 @@ suite('Generic Type Inference', () => {
       const exports = await compileAndInstantiate(`
         class Box<T> {
           value: T;
-          #new(value: T) {
+          new(value: T) {
             this.value = value;
           }
           getValue(): T {
@@ -31,7 +31,7 @@ suite('Generic Type Inference', () => {
         class Pair<T, U> {
           first: T;
           second: U;
-          #new(first: T, second: U) {
+          new(first: T, second: U) {
             this.first = first;
             this.second = second;
           }
@@ -51,7 +51,7 @@ suite('Generic Type Inference', () => {
       const exports = await compileAndInstantiate(`
         class Box<T> {
           value: T;
-          #new(value: T) {
+          new(value: T) {
             this.value = value;
           }
           getValue(): T {
@@ -61,7 +61,7 @@ suite('Generic Type Inference', () => {
         
         class Container<T> {
           box: Box<T>;
-          #new(value: T) {
+          new(value: T) {
             // Inner Box should infer T from context
             this.box = new Box(value);
           }
@@ -163,7 +163,7 @@ suite('Generic Type Inference', () => {
       const exports = await compileAndInstantiate(`
         class Box<T> {
           value: T;
-          #new(value: T) {
+          new(value: T) {
             this.value = value;
           }
           
@@ -203,7 +203,7 @@ suite('Generic Type Inference', () => {
       const exports = await compileAndInstantiate(`
         class Box<T> {
           value: T;
-          #new(value: T) {
+          new(value: T) {
             this.value = value;
           }
         }

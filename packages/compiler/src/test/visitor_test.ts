@@ -2,7 +2,13 @@ import {suite, test} from 'node:test';
 import assert from 'node:assert';
 import {Parser} from '../lib/parser.js';
 import {visit} from '../lib/visitor.js';
-import {NodeType, type Module, type Identifier, type Node} from '../lib/ast.js';
+import {
+  CONSTRUCTOR_NAME,
+  NodeType,
+  type Module,
+  type Identifier,
+  type Node,
+} from '../lib/ast.js';
 
 suite('AST Visitor', () => {
   const parse = (source: string): Module => {
@@ -51,7 +57,7 @@ suite('AST Visitor', () => {
       class Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -79,7 +85,7 @@ suite('AST Visitor', () => {
     );
 
     assert.deepStrictEqual(fieldNames, ['x', 'y']);
-    assert.deepStrictEqual(methodNames, ['#new']);
+    assert.deepStrictEqual(methodNames, [CONSTRUCTOR_NAME]);
   });
 
   test('visits type annotations', () => {

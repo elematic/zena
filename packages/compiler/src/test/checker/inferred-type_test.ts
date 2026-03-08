@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import {Parser} from '../../lib/parser.js';
 import {TypeChecker} from '../../lib/checker/index.js';
 import {
+  CONSTRUCTOR_NAME,
   NodeType,
   type ClassDeclaration,
   type VariableDeclaration,
@@ -199,7 +200,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
     const ast = parseAndCheck(`
       class Box<T> {
         value: T;
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
         }
       }
@@ -470,12 +471,12 @@ suite('Checker - inferredType on TypeAnnotations', () => {
     const ast = parseAndCheck(`
       class Box<T> {
         value: T;
-        #new(value: T) { this.value = value; }
+        new(value: T) { this.value = value; }
       }
       class Pair<A, B> {
         first: A;
         second: B;
-        #new(first: A, second: B) { this.first = first; this.second = second; }
+        new(first: A, second: B) { this.first = first; this.second = second; }
       }
       let nested: Box<Pair<i32, string>> = new Box<Pair<i32, string>>(new Pair<i32, string>(1, 'hi'));
     `);
@@ -549,7 +550,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
       class Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -560,7 +561,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
       (m) =>
         m.type === NodeType.MethodDefinition &&
         (m as MethodDefinition).name.type === NodeType.Identifier &&
-        ((m as MethodDefinition).name as any).name === '#new',
+        ((m as MethodDefinition).name as any).name === CONSTRUCTOR_NAME,
     ) as MethodDefinition;
     assertAnnotationHasInferredType(
       ctor.params[0].typeAnnotation!,

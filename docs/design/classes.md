@@ -95,7 +95,7 @@ class Point {
   let x: i32;
   let y: i32;
 
-  #new(x: i32, y: i32) {
+  new(x: i32, y: i32) {
     this.x = x;  // OK - in constructor
     this.y = y;
   }
@@ -126,7 +126,7 @@ features:
    ```zena
    class Wrapper {
      let inner: Container | null;
-     #new() : inner = null { }
+     new() : inner = null { }
    }
 
    let process = (w: Wrapper): i32 => {
@@ -157,14 +157,14 @@ class Point {
   let y: i32;
 
   // Initializer list: expressions before the body, no `this` access
-  #new(x: i32, y: i32) : x = x, y = y { }
+  new(x: i32, y: i32) : x = x, y = y { }
 }
 ```
 
 #### Syntax
 
 ```
-#new(params) : field1 = expr1, field2 = expr2 { body }
+new(params) : field1 = expr1, field2 = expr2 { body }
 ```
 
 - The colon (`:`) introduces the initializer list
@@ -183,7 +183,7 @@ class Rectangle {
   let height: i32;
   let area: i32;
 
-  #new(w: i32, h: i32) : width = w, height = h, area = w * h { }
+  new(w: i32, h: i32) : width = w, height = h, area = w * h { }
 }
 ```
 
@@ -197,7 +197,7 @@ The initializer list enables true WASM immutability:
 4. Execute constructor body (if any)
 
 ```wat
-;; Generated for Point#new(x: i32, y: i32)
+;; Generated for Pointnew(x: i32, y: i32)
 (func $Point_new (param $x i32) (param $y i32) (result (ref $Point))
   (local $this (ref $Point))
   ;; No evaluation needed - params are already locals
@@ -681,7 +681,7 @@ If a superclass constructor calls a virtual method overridden by the subclass, t
 
 ```zena
 class Base {
-  #new() {
+  new() {
     this.setup(); // Virtual call
   }
   setup() {}
@@ -689,7 +689,7 @@ class Base {
 
 class Sub extends Base {
   data: String = 'hello'; // Non-nullable String
-  #new() {
+  new() {
     super(); // Calls Base constructor -> calls setup() -> accesses uninitialized data!
   }
   override setup() {

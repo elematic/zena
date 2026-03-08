@@ -59,7 +59,7 @@ suite('Enums', () => {
 
       class Pixel {
         color: Color;
-        #new(c: Color) {
+        new(c: Color) {
           this.color = c;
         }
       }

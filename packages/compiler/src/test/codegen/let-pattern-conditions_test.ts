@@ -75,7 +75,7 @@ suite('let-pattern conditions', () => {
       const result = await compileAndRun(`
         class Counter {
           value: i32;
-          #new() {
+          new() {
             this.value = 0;
           }
           
@@ -104,7 +104,7 @@ suite('let-pattern conditions', () => {
       const result = await compileAndRun(`
         class Counter {
           value: i32;
-          #new() {
+          new() {
             this.value = 0;
           }
           
@@ -155,7 +155,7 @@ suite('let-pattern conditions', () => {
       const result = await compileAndRun(`
         class Iterator {
           index: i32;
-          #new() {
+          new() {
             this.index = 0;
           }
           

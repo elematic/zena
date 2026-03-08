@@ -20,7 +20,7 @@ suite('Cross-module class inheritance', () => {
       '/base.zena': `
         export class Base {
           x: i32;
-          #new(x: i32) {
+          new(x: i32) {
             this.x = x;
           }
         }
@@ -30,7 +30,7 @@ suite('Cross-module class inheritance', () => {
         
         class Derived extends Base {
           y: i32;
-          #new(x: i32, y: i32) {
+          new(x: i32, y: i32) {
             super(x);
             this.y = y;
           }
@@ -52,7 +52,7 @@ suite('Cross-module class inheritance', () => {
       '/base.zena': `
         export class Base {
           value: i32;
-          #new(v: i32) {
+          new(v: i32) {
             this.value = v;
           }
         }
@@ -62,7 +62,7 @@ suite('Cross-module class inheritance', () => {
         
         class Child extends Base {
           extra: i32;
-          #new(v: i32, e: i32) {
+          new(v: i32, e: i32) {
             super(v);
             this.extra = e;
           }
@@ -86,14 +86,14 @@ suite('Cross-module class inheritance', () => {
       '/a.zena': `
         export class A {
           a: i32;
-          #new(a: i32) { this.a = a; }
+          new(a: i32) { this.a = a; }
         }
       `,
       '/b.zena': `
         import {A} from '/a.zena';
         export class B extends A {
           b: i32;
-          #new(a: i32, b: i32) {
+          new(a: i32, b: i32) {
             super(a);
             this.b = b;
           }
@@ -104,7 +104,7 @@ suite('Cross-module class inheritance', () => {
         
         class C extends B {
           c: i32;
-          #new(a: i32, b: i32, c: i32) {
+          new(a: i32, b: i32, c: i32) {
             super(a, b);
             this.c = c;
           }
@@ -124,7 +124,7 @@ suite('Cross-module class inheritance', () => {
       '/base.zena': `
         export class Base {
           #value: i32;
-          #new(v: i32) {
+          new(v: i32) {
             this.#value = v;
           }
           value: i32 {
@@ -137,7 +137,7 @@ suite('Cross-module class inheritance', () => {
         
         class Derived extends Base {
           #extra: i32;
-          #new(v: i32, e: i32) {
+          new(v: i32, e: i32) {
             super(v);
             this.#extra = e;
           }
@@ -160,7 +160,7 @@ suite('Cross-module class inheritance', () => {
       '/base.zena': `
         export class Animal {
           name: string;
-          #new(name: string) {
+          new(name: string) {
             this.name = name;
           }
           speak(): string {
@@ -172,7 +172,7 @@ suite('Cross-module class inheritance', () => {
         import {Animal} from '/base.zena';
         
         class Dog extends Animal {
-          #new(name: string) {
+          new(name: string) {
             super(name);
           }
           speak(): string {
@@ -202,7 +202,7 @@ suite('Cross-module class inheritance', () => {
       
       class CustomError extends Error {
         code: i32;
-        #new(message: string, code: i32) {
+        new(message: string, code: i32) {
           super(message);
           this.code = code;
         }
@@ -222,7 +222,7 @@ suite('Cross-module class inheritance', () => {
       
       class CustomError extends Error {
         #code: i32;
-        #new(message: string, code: i32) {
+        new(message: string, code: i32) {
           super(message);
           this.#code = code;
         }

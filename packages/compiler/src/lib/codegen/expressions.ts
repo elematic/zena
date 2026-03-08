@@ -1,4 +1,5 @@
 import {
+  CONSTRUCTOR_NAME,
   NodeType,
   type ArrayLiteral,
   type AsExpression,
@@ -2201,7 +2202,7 @@ function generateNewExpression(
 
   if (classInfo.isExtension && classInfo.onType) {
     // Extension class instantiation
-    const ctor = classInfo.methods.get('#new');
+    const ctor = classInfo.methods.get(CONSTRUCTOR_NAME);
     if (ctor) {
       for (const arg of expr.arguments) {
         generateExpression(ctx, arg, body);
@@ -2233,7 +2234,7 @@ function generateNewExpression(
   if (classHasImmutableFields) {
     // For classes with immutable fields, the constructor creates the struct
     // Just pass arguments and call constructor - it returns the new instance
-    const ctorInfo = classInfo.methods.get('#new');
+    const ctorInfo = classInfo.methods.get(CONSTRUCTOR_NAME);
     if (!ctorInfo) {
       throw new Error(
         `Class ${className} with immutable fields requires a constructor`,
@@ -2286,7 +2287,7 @@ function generateNewExpression(
   }
 
   // Get constructor parameter types for adaptation
-  const ctorInfo = classInfo.methods.get('#new');
+  const ctorInfo = classInfo.methods.get(CONSTRUCTOR_NAME);
   let ctorParams: number[][] | undefined;
   if (ctorInfo !== undefined) {
     ctorParams = ctx.module.getFunctionTypeParams(ctorInfo.typeIndex);
@@ -2475,7 +2476,7 @@ function generateCallExpression(
           `Super class not found for ${ctx.currentClass.name} via identity lookup (superClass: ${ctx.currentClass.superClass})`,
         );
       }
-      const ctorInfo = superClassInfo.methods.get('#new');
+      const ctorInfo = superClassInfo.methods.get(CONSTRUCTOR_NAME);
       if (!ctorInfo) {
         // Implicit super call to no-arg constructor?
         // If explicit super() is called but no constructor exists, it's an error unless implicit one exists.
@@ -3268,7 +3269,7 @@ function generateCallExpression(
         `Super class not found for ${ctx.currentClass.name} via identity lookup`,
       );
     }
-    const methodInfo = superClassInfo.methods.get('#new');
+    const methodInfo = superClassInfo.methods.get(CONSTRUCTOR_NAME);
     if (!methodInfo) {
       throw new Error(`Constructor not found in superclass`);
     }
@@ -11348,7 +11349,7 @@ function generateRangeExpression(
   }
 
   // Call constructor with this and appropriate args
-  const ctorInfo = classInfo.methods.get('#new');
+  const ctorInfo = classInfo.methods.get(CONSTRUCTOR_NAME);
   if (!ctorInfo) {
     throw new CompilerError(
       `No constructor found for range type: ${className}`,

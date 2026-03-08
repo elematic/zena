@@ -129,7 +129,7 @@ suite('Binary Size', () => {
       const withUnused = `
         class Unused {
           x: i32;
-          #new() { this.x = 0; }
+          new() { this.x = 0; }
         }
         export let main = () => 42;
       `;
@@ -236,7 +236,7 @@ suite('Binary Size', () => {
       const withUnusedMethod = `
         class Counter {
           #value: i32;
-          #new() { this.#value = 0; }
+          new() { this.#value = 0; }
           increment(): i32 { return this.#value = this.#value + 1; }
           decrement(): i32 { return this.#value = this.#value - 1; }
           getValue(): i32 { return this.#value; }
@@ -250,7 +250,7 @@ suite('Binary Size', () => {
       const withoutUnusedMethod = `
         class Counter {
           #value: i32;
-          #new() { this.#value = 0; }
+          new() { this.#value = 0; }
           increment(): i32 { return this.#value = this.#value + 1; }
           getValue(): i32 { return this.#value; }
         }
@@ -284,7 +284,7 @@ suite('Binary Size', () => {
         class Point {
           #x: i32;
           #y: i32;
-          #new(x: i32, y: i32) { this.#x = x; this.#y = y; }
+          new(x: i32, y: i32) { this.#x = x; this.#y = y; }
           x: i32 { get { return this.#x; } }
           y: i32 { get { return this.#y; } }
         }
@@ -297,7 +297,7 @@ suite('Binary Size', () => {
         class Point {
           #x: i32;
           #y: i32;
-          #new(x: i32, y: i32) { this.#x = x; this.#y = y; }
+          new(x: i32, y: i32) { this.#x = x; this.#y = y; }
           x: i32 { get { return this.#x; } }
         }
         export let main = () => {
@@ -331,7 +331,7 @@ suite('Binary Size', () => {
         class Person {
           name: i32;
           age: i32;
-          #new(n: i32, a: i32) { this.name = n; this.age = a; }
+          new(n: i32, a: i32) { this.name = n; this.age = a; }
         }
         export let main = () => {
           let p = new Person(1, 25);
@@ -342,7 +342,7 @@ suite('Binary Size', () => {
         class Person {
           name: i32;
           age: i32;
-          #new(n: i32, a: i32) { this.name = n; this.age = a; }
+          new(n: i32, a: i32) { this.name = n; this.age = a; }
         }
         export let main = () => {
           let p = new Person(1, 25);
@@ -396,7 +396,7 @@ suite('Binary Size', () => {
       const manyUnusedMethods = `
         class BigClass {
           #value: i32;
-          #new() { this.#value = 0; }
+          new() { this.#value = 0; }
           method1(): i32 { return 1; }
           method2(): i32 { return 2; }
           method3(): i32 { return 3; }
@@ -412,7 +412,7 @@ suite('Binary Size', () => {
       const minimalMethods = `
         class BigClass {
           #value: i32;
-          #new() { this.#value = 0; }
+          new() { this.#value = 0; }
           getValue(): i32 { return this.#value; }
         }
         export let main = () => {

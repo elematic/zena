@@ -9,7 +9,7 @@ suite('interface closure contravariance', () => {
 
       class Buffer implements Readable {
         value: i32;
-        #new(v: i32) { this.value = v; }
+        new(v: i32) { this.value = v; }
         read(): i32 { return this.value; }
 
         apply(f: (r: Readable) => i32): i32 { return f(this); }
@@ -31,7 +31,7 @@ suite('interface closure contravariance', () => {
       
       class Buffer implements Readable<i32> {
         value: i32;
-        #new(v: i32) { this.value = v; }
+        new(v: i32) { this.value = v; }
         read(): i32 { return this.value; }
 
         apply(f: (r: Readable<i32>) => i32): i32 { return f(this); }
@@ -53,7 +53,7 @@ suite('interface closure contravariance', () => {
       
       class Buffer<T> implements Readable<T> {
         value: T;
-        #new(v: T) { this.value = v; }
+        new(v: T) { this.value = v; }
         read(): T { return this.value; }
 
         apply(f: (r: Readable<T>) => T): T { return f(this); }
@@ -75,7 +75,7 @@ suite('interface closure contravariance', () => {
 
       class MyArray implements HasLength {
         length: i32;
-        #new(len: i32) { this.length = len; }
+        new(len: i32) { this.length = len; }
         process(f: (item: i32, arr: HasLength) => i32): i32 { return f(10, this); }
       }
 
@@ -95,7 +95,7 @@ suite('interface closure contravariance', () => {
 
       class SimpleCounter implements Counter {
         value: i32;
-        #new(v: i32) { this.value = v; }
+        new(v: i32) { this.value = v; }
         count(): i32 { return this.value; }
 
         withCounter(f: (c: Counter) => i32): i32 { return f(this); }
@@ -119,7 +119,7 @@ suite('interface closure contravariance', () => {
 
       class Arr<T> implements Seq<T> {
         #items: array<T>;
-        #new(v: T) { this.#items = [v]; }
+        new(v: T) { this.#items = [v]; }
         get(i: i32): T { return this.#items[i]; }
 
         process(f: (item: T, arr: Arr<T>) => T): T {
@@ -146,7 +146,7 @@ suite('interface closure contravariance', () => {
 
       class Arr<T> implements Seq<T> {
         #items: array<T>;
-        #new(v: T) { this.#items = [v]; }
+        new(v: T) { this.#items = [v]; }
         get(i: i32): T { return this.#items[i]; }
 
         process(f: (item: T, seq: Seq<T>) => T): T {

@@ -243,7 +243,7 @@ if (s is GCString) {
 class Config {
   data: String;
 
-  #new(path: String) {
+  new(path: String) {
     this.data = File.read(path);  // LinearString
   }
 

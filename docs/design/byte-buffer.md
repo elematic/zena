@@ -85,7 +85,7 @@ export final class ByteBuffer {
   #totalLength: i32;
 
   /** Create a new ByteBuffer with initial chunk capacity. */
-  #new(capacity: i32 = 256) {
+  new(capacity: i32 = 256) {
     this.#chunks = new Array<ByteArray>();
     this.#currentChunk = newByteArray(capacity > 0 ? capacity : 256);
     this.#currentPos = 0;
@@ -387,7 +387,7 @@ need a `DataView`-like class. Unlike `ByteBuffer` which is write-focused,
 export final class DataView {
   #buffer: ByteArray;
 
-  #new(buffer: ByteArray) {
+  new(buffer: ByteArray) {
     this.#buffer = buffer;
   }
 

@@ -9,7 +9,7 @@ test('checker allows referencing earlier parameter in default', () => {
     class List {
       length: i32;
       
-      #new() {
+      new() {
         this.length = 10;
       }
       
@@ -35,7 +35,7 @@ test('codegen handles earlier parameter reference in default', async () => {
     class List {
       length: i32;
       
-      #new(len: i32) {
+      new(len: i32) {
         this.length = len;
       }
       

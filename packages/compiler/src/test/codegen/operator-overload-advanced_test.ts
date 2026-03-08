@@ -7,7 +7,7 @@ suite('CodeGenerator - Advanced Operators', () => {
     const input = `
       class Container<T> {
         item: T;
-        #new(item: T) {
+        new(item: T) {
           this.item = item;
         }
         operator [](index: i32): T {
@@ -27,7 +27,7 @@ suite('CodeGenerator - Advanced Operators', () => {
     const input = `
       class Container<T> {
         item: T;
-        #new(item: T) {
+        new(item: T) {
           this.item = item;
         }
         operator []=(index: i32, value: T): void {

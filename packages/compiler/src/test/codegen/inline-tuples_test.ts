@@ -210,7 +210,7 @@ suite('codegen: inline tuples', () => {
 
     test('(false, _) with reference type never slot', async () => {
       const source = `
-        class Box { value: i32; #new(v: i32) { this.value = v; } }
+        class Box { value: i32; new(v: i32) { this.value = v; } }
         
         let maybeBox = (hasValue: boolean): inline (boolean, Box | null) => {
           if (hasValue) {

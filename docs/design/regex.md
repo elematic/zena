@@ -127,7 +127,7 @@ If needed, add support for:
 ```typescript
 export class Regex {
   // Constructor - compiles the pattern
-  #new(pattern: string);
+  new(pattern: string);
 
   // Test if the pattern matches anywhere in the input
   test(input: string): boolean;

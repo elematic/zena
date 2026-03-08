@@ -16,7 +16,7 @@ suite('tuple narrowing', () => {
       class Counter {
         count: i32;
         
-        #new() {
+        new() {
           this.count = 0;
         }
         

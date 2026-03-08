@@ -9,7 +9,7 @@ class Node {
   value: i32;
   child: Node;
   
-  #new(value: i32, child: Node) {
+  new(value: i32, child: Node) {
     this.value = value;
     this.child = child;
   }
@@ -31,7 +31,7 @@ class ListNode {
   value: i32;
   next: ListNode;
   
-  #new(value: i32, next: ListNode) {
+  new(value: i32, next: ListNode) {
     this.value = value;
     this.next = next;
   }

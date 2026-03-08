@@ -25,7 +25,7 @@ suite('Type Interning', () => {
       const modules = compileModules(`
         class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
         }
 
         export let main = () => {
@@ -63,7 +63,7 @@ suite('Type Interning', () => {
       const modules = compileModules(`
         class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
         }
 
         export let main = () => {
@@ -96,13 +96,13 @@ suite('Type Interning', () => {
       const modules = compileModules(`
         class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
         }
 
         class Pair<A, B> {
           first: A;
           second: B;
-          #new(a: A, b: B) { this.first = a; this.second = b; }
+          new(a: A, b: B) { this.first = a; this.second = b; }
         }
 
         export let main = () => {
@@ -152,7 +152,7 @@ suite('Type Interning', () => {
 
         class Box<T> implements Container<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
           get(): T { return this.value; }
         }
 
@@ -188,12 +188,12 @@ suite('Type Interning', () => {
       const modules = compileModules(`
         class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
         }
 
         class Wrapper<U> {
           inner: Box<U>;
-          #new(v: U) { this.inner = new Box<U>(v); }
+          new(v: U) { this.inner = new Box<U>(v); }
         }
 
         export let main = () => {
@@ -439,7 +439,7 @@ suite('Type Interning', () => {
         '/box.zena': `
           export class Box<T> {
             value: T;
-            #new(v: T) { this.value = v; }
+            new(v: T) { this.value = v; }
           }
         `,
         '/main.zena': `
@@ -476,7 +476,7 @@ suite('Type Interning', () => {
       const modules = compileModules(`
         class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
         }
 
         export let main = () => {

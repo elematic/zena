@@ -10,7 +10,7 @@ symbol myField;
 class Data {
   :myField: i32;
   
-  #new(val: i32) {
+  new(val: i32) {
     this.:myField = val;
   }
 }
@@ -30,7 +30,7 @@ symbol compute;
 class Calculator {
   value: i32;
   
-  #new(v: i32) {
+  new(v: i32) {
     this.value = v;
   }
   
@@ -56,7 +56,7 @@ class Pair {
   :first: i32;
   :second: i32;
   
-  #new(a: i32, b: i32) {
+  new(a: i32, b: i32) {
     this.:first = a;
     this.:second = b;
   }
@@ -83,7 +83,7 @@ class Data {
   :sym: i32;
   :otherSym: i32;
   
-  #new() {
+  new() {
     this.:sym = 10;
     this.:otherSym = 20;
   }
@@ -114,7 +114,7 @@ symbol getValue;
 class Box {
   value: i32;
   
-  #new(v: i32) {
+  new(v: i32) {
     this.value = v;
   }
   
@@ -139,7 +139,7 @@ class Mixed {
   publicValue: i32;
   :secretValue: i32;
   
-  #new(pub: i32, secret: i32) {
+  new(pub: i32, secret: i32) {
     this.publicValue = pub;
     this.:secretValue = secret;
   }

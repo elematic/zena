@@ -9,7 +9,7 @@ suite('Checker - Constructor Rules', () => {
     const source = `
       class A {}
       class B extends A {
-        #new() {
+        new() {
           // Missing super()
         }
       }
@@ -41,7 +41,7 @@ suite('Checker - Constructor Rules', () => {
     const source = `
       class A {}
       class B extends A {
-        #new() {
+        new() {
           super();
         }
       }
@@ -59,7 +59,7 @@ suite('Checker - Constructor Rules', () => {
       class A {}
       class B extends A {
         x: i32;
-        #new() {
+        new() {
           this.x = 1; // Error
           super();
         }
@@ -83,7 +83,7 @@ suite('Checker - Constructor Rules', () => {
       class A {}
       class B extends A {
         x: i32;
-        #new() {
+        new() {
           super();
           this.x = 1; // OK
         }
@@ -101,7 +101,7 @@ suite('Checker - Constructor Rules', () => {
     const source = `
       class A {}
       class B extends A {
-        #new() {
+        new() {
           let x = 1;
           super();
         }
@@ -115,7 +115,7 @@ suite('Checker - Constructor Rules', () => {
     assert.equal(diagnostics.length, 0);
   });
 
-  test('should warn when using constructor() instead of #new()', () => {
+  test('should warn when using constructor() instead of new()', () => {
     const source = `
       class A {
         x: i32;
@@ -134,14 +134,14 @@ suite('Checker - Constructor Rules', () => {
       (d) => d.code === DiagnosticCode.ConstructorSyntax,
     );
     assert.ok(warning, 'Expected a warning about constructor syntax');
-    assert.match(warning!.message, /#new/);
+    assert.match(warning!.message, /new\(\)/);
   });
 
-  test('should not warn when using #new()', () => {
+  test('should not warn when using new()', () => {
     const source = `
       class A {
         x: i32;
-        #new() {
+        new() {
           this.x = 1;
         }
       }
@@ -155,6 +155,6 @@ suite('Checker - Constructor Rules', () => {
     const warning = diagnostics.find(
       (d) => d.code === DiagnosticCode.ConstructorSyntax,
     );
-    assert.ok(!warning, 'Should not warn when using #new()');
+    assert.ok(!warning, 'Should not warn when using new()');
   });
 });

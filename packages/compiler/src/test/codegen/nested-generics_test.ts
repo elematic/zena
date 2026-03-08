@@ -19,7 +19,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
 
           // Method type parameter U, class type parameter T
           map<U>(f: (v: T) => U): U {
@@ -43,7 +43,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
 
           transform<U>(f: (v: T) => U): U {
             // Local variable with method type parameter U
@@ -65,7 +65,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Container<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
 
           // Generic method that returns class type parameter
           getOrElse<U>(fallback: U): T {
@@ -88,7 +88,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Wrapper<T> {
           inner: T;
-          #new(v: T) { this.inner = v; }
+          new(v: T) { this.inner = v; }
 
           process<U>(transformer: (v: T) => U): U {
             // Local variable with class type parameter T
@@ -111,12 +111,12 @@ suite('Codegen: Nested Generics', () => {
         class Pair<A, B> {
           first: A;
           second: B;
-          #new(a: A, b: B) { this.first = a; this.second = b; }
+          new(a: A, b: B) { this.first = a; this.second = b; }
         }
 
         class Container<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
 
           // Returns Pair<T, U> - uses both class and method type params
           pairWith<U>(other: U): Pair<T, U> {
@@ -140,13 +140,13 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Base<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
           get(): T { return this.value; }
         }
 
         class Derived<T> extends Base<T> {
           extra: i32;
-          #new(v: T, e: i32) {
+          new(v: T, e: i32) {
             super(v);
             this.extra = e;
           }
@@ -166,14 +166,14 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Base<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
           get(): T { return this.value; }
         }
 
         // Derived is generic over U but instantiates Base with i32
         class Derived<U> extends Base<i32> {
           tag: U;
-          #new(v: i32, t: U) {
+          new(v: i32, t: U) {
             super(v);
             this.tag = t;
           }
@@ -192,12 +192,12 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class A<T> {
           a: T;
-          #new(v: T) { this.a = v; }
+          new(v: T) { this.a = v; }
         }
 
         class B<T> extends A<T> {
           b: i32;
-          #new(v: T, x: i32) {
+          new(v: T, x: i32) {
             super(v);
             this.b = x;
           }
@@ -205,7 +205,7 @@ suite('Codegen: Nested Generics', () => {
 
         class C<T> extends B<T> {
           c: i32;
-          #new(v: T, x: i32, y: i32) {
+          new(v: T, x: i32, y: i32) {
             super(v, x);
             this.c = y;
           }
@@ -226,7 +226,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
           get(): T { return this.value; }
         }
 
@@ -249,7 +249,7 @@ suite('Codegen: Nested Generics', () => {
     test('generic method called with different type args', async () => {
       const source = `
         class Util {
-          #new() {}
+          new() {}
           
           identity<T>(x: T): T {
             return x;
@@ -279,12 +279,12 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Inner<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
         }
 
         class Outer<T> {
           inner: Inner<T>;
-          #new(v: T) {
+          new(v: T) {
             this.inner = new Inner<T>(v);
           }
         }

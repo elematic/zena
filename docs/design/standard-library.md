@@ -233,12 +233,12 @@ class GrowableArray<T> implements Array<T> {
   #data: FixedArray<T>;
   #size: i32;
 
-  #new() {
+  new() {
     this.#data = /* fixed array with capacity 16 */;
     this.#size = 0;
   }
 
-  #new(capacity: i32) {
+  new(capacity: i32) {
     this.#data = /* fixed array with specified capacity */;
     this.#size = 0;
   }
@@ -266,7 +266,7 @@ An immutable, fixed-length array wrapper.
 class ReadonlyArray<T> implements Sequence<T> {
   #data: FixedArray<T>;
 
-  #new(data: FixedArray<T>) {
+  new(data: FixedArray<T>) {
     this.#data = data;
   }
 
@@ -282,7 +282,7 @@ A key-value store. Can be an abstract class with a factory constructor.
 ```zena
 abstract class Map<K, V> implements Iterable<Entry<K, V>> {
   // Factory constructor returns HashMap by default
-  static #new<K, V>(): Map<K, V> {
+  static new<K, V>(): Map<K, V> {
     return new HashMap<K, V>();
   }
 
@@ -318,7 +318,7 @@ class HashMap<K, V> extends Map<K, V> {
   #buckets: Array<Entry<K, V> | null>;
   #size: i32;
 
-  #new() {
+  new() {
     this.#buckets = /* array of 16 null entries */;
     this.#size = 0;
   }
@@ -342,7 +342,7 @@ A collection of unique elements.
 ```zena
 abstract class Set<T> implements Iterable<T> {
   // Factory constructor returns HashSet by default
-  static #new<T>(): Set<T> {
+  static new<T>(): Set<T> {
     return new HashSet<T>();
   }
 
@@ -370,7 +370,7 @@ dedicated structure.
 class HashSet<T> extends Set<T> {
   #map: HashMap<T, boolean>;
 
-  #new() {
+  new() {
     this.#map = new HashMap<T, boolean>();
   }
 
@@ -393,7 +393,7 @@ abstract class Option<T> {
 
 class Some<T> extends Option<T> {
   #value: T;
-  #new(value: T) {
+  new(value: T) {
     this.#value = value;
   }
   // ...
@@ -469,7 +469,7 @@ Efficient mutable string building using a rope/chunked approach:
 import {StringBuilder} from 'zena:string-builder';
 
 final class StringBuilder {
-  #new(capacity: i32 = 16);
+  new(capacity: i32 = 16);
 
   length: i32 { get; }      // Current length in bytes
   capacity: i32 { get; }    // Total allocated capacity

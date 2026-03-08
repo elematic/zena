@@ -15,7 +15,7 @@ suite('caught error handling', () => {
         value: i32;
         error: Error | null;
         
-        #new(value: i32, error: Error | null) {
+        new(value: i32, error: Error | null) {
           this.value = value;
           this.error = error;
         }
@@ -49,7 +49,7 @@ suite('caught error handling', () => {
       class ErrorHandler {
         lastError: Error | null;
         
-        #new() {
+        new() {
           this.lastError = null;
         }
         
@@ -106,7 +106,7 @@ suite('caught error handling', () => {
       
       class Container {
         error: Error | null;
-        #new() {
+        new() {
           this.error = null;
         }
       }

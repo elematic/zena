@@ -8,10 +8,10 @@ suite('Checker - Super', () => {
   test('should allow super call in constructor', () => {
     const source = `
       class A {
-        #new(x: i32) {}
+        new(x: i32) {}
       }
       class B extends A {
-        #new(x: i32) {
+        new(x: i32) {
           super(x);
         }
       }
@@ -45,10 +45,10 @@ suite('Checker - Super', () => {
   test('should detect super call with wrong arguments', () => {
     const source = `
       class A {
-        #new(x: i32) {}
+        new(x: i32) {}
       }
       class B extends A {
-        #new() {
+        new() {
           super();
         }
       }

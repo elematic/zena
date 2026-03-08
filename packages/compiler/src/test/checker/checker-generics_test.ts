@@ -8,7 +8,7 @@ suite('TypeChecker - Generics', () => {
     const input = `
       class Box<T> {
         value: T;
-        #new(v: T) {
+        new(v: T) {
           this.value = v;
         }
         get(): T {
@@ -27,7 +27,7 @@ suite('TypeChecker - Generics', () => {
     const input = `
       class Box<T> {
         value: T;
-        #new(v: T) {
+        new(v: T) {
           this.value = v;
         }
       }
@@ -45,7 +45,7 @@ suite('TypeChecker - Generics', () => {
     const input = `
       class Box<T> {
         value: T;
-        #new(v: T) {
+        new(v: T) {
           this.value = v;
         }
       }
@@ -63,7 +63,7 @@ suite('TypeChecker - Generics', () => {
     const input = `
       class Box<T> {
         value: T;
-        #new(v: T) {
+        new(v: T) {
           this.value = v;
         }
       }
@@ -82,7 +82,7 @@ suite('TypeChecker - Generics', () => {
     const input = `
       class Box<T> {
         value: T;
-        #new(v: T) {
+        new(v: T) {
           this.value = v;
         }
       }
@@ -112,11 +112,11 @@ suite('TypeChecker - Generics', () => {
     const input = `
       class List<T> {
         item: T;
-        #new(i: T) { this.item = i; }
+        new(i: T) { this.item = i; }
       }
       class Container<T> {
         list: List<T>;
-        #new(l: List<T>) { this.list = l; }
+        new(l: List<T>) { this.list = l; }
       }
       let l = new List<i32>(1);
       let c = new Container<i32>(l);
@@ -134,7 +134,7 @@ suite('TypeChecker - Generics', () => {
       class Derived extends Base {}
       class Container<T extends Base> {
         value: T;
-        #new(v: T) {
+        new(v: T) {
           this.value = v;
         }
       }
@@ -154,7 +154,7 @@ suite('TypeChecker - Generics', () => {
       class Unrelated {}
       class Container<T extends Base> {
         value: T;
-        #new(v: T) {
+        new(v: T) {
           this.value = v;
         }
       }
@@ -175,13 +175,13 @@ suite('TypeChecker - Generics', () => {
     const input = `
       class Base<V> {
         v: V;
-        #new(v: V) {
+        new(v: V) {
           this.v = v;
         }
       }
       class Container<T extends Base<V>, V> {
         value: T;
-        #new(v: T) {
+        new(v: T) {
           this.value = v;
         }
       }
@@ -230,7 +230,7 @@ suite('TypeChecker - Generics', () => {
     const input = `
       class Box<T> {
         value: T;
-        #new(v: T) { this.value = v; }
+        new(v: T) { this.value = v; }
       }
       let b: Box = new Box<i32>(1);
     `;
@@ -269,7 +269,7 @@ suite('TypeChecker - Generics', () => {
     const input = `
       class Base<T> {
         value: T;
-        #new(value: T) {
+        new(value: T) {
           this.value = value;
         }
         getValue(): T {
@@ -278,7 +278,7 @@ suite('TypeChecker - Generics', () => {
       }
       class Derived<T> extends Base<T> {
         extra: i32;
-        #new(value: T, extra: i32) {
+        new(value: T, extra: i32) {
           super(value);
           this.extra = extra;
         }
@@ -298,12 +298,12 @@ suite('TypeChecker - Generics', () => {
       
       class Container<T extends Animal> {
         value: T;
-        #new(v: T) { this.value = v; }
+        new(v: T) { this.value = v; }
       }
       
       // Dog extends Animal, so T extends Dog satisfies T extends Animal
       class DogContainer<T extends Dog> extends Container<T> {
-        #new(v: T) { super(v); }
+        new(v: T) { super(v); }
       }
     `;
     const parser = new Parser(input);
@@ -319,11 +319,11 @@ suite('TypeChecker - Generics', () => {
       
       class Container<T extends Animal> {
         value: T;
-        #new(v: T) { this.value = v; }
+        new(v: T) { this.value = v; }
       }
       
       class SpecialContainer<T extends Animal> extends Container<T> {
-        #new(v: T) { super(v); }
+        new(v: T) { super(v); }
       }
     `;
     const parser = new Parser(input);
@@ -339,12 +339,12 @@ suite('TypeChecker - Generics', () => {
       
       class Container<T extends Animal> {
         value: T;
-        #new(v: T) { this.value = v; }
+        new(v: T) { this.value = v; }
       }
       
       // T has no constraint, but Container requires T extends Animal
       class BadContainer<T> extends Container<T> {
-        #new(v: T) { super(v); }
+        new(v: T) { super(v); }
       }
     `;
     const parser = new Parser(input);
@@ -365,12 +365,12 @@ suite('TypeChecker - Generics', () => {
       
       class Container<T extends Animal> {
         value: T;
-        #new(v: T) { this.value = v; }
+        new(v: T) { this.value = v; }
       }
       
       // Plant is not related to Animal
       class PlantContainer<T extends Plant> extends Container<T> {
-        #new(v: T) { super(v); }
+        new(v: T) { super(v); }
       }
     `;
     const parser = new Parser(input);

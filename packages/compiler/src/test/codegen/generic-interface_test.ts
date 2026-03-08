@@ -11,7 +11,7 @@ suite('CodeGenerator - Generic Interfaces', () => {
 
       class Container<T> implements Box<T> {
         value: T;
-        #new(value: T) { this.value = value; }
+        new(value: T) { this.value = value; }
         getValue(): T { return this.value; }
       }
 
@@ -88,7 +88,7 @@ suite('CodeGenerator - Generic Interfaces', () => {
           }
         }
 
-        #new() {
+        new() {
           this.#items = new Array<T>();
         }
 

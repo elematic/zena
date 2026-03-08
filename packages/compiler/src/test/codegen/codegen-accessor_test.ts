@@ -8,7 +8,7 @@ suite('CodeGenerator - Accessors', () => {
       class Box {
         #value: i32;
         
-        #new(v: i32) {
+        new(v: i32) {
           this.#value = v;
         }
 
@@ -36,7 +36,7 @@ suite('CodeGenerator - Accessors', () => {
       class Box {
         #value: i32;
         
-        #new(v: i32) {
+        new(v: i32) {
           this.#value = v;
         }
 

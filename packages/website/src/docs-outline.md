@@ -151,7 +151,7 @@ The home page already covers the high-level overview. Minor additions:
 ### 2.13 Classes
 
 - Declaration and fields ✅
-- Constructor (`#new`) ✅
+- Constructor (`new`) ✅
 - Methods ✅
 - Private fields (`#field`) ✅
 - Getters and setters ✅

@@ -68,7 +68,7 @@ suite('CodeGenerator - Destructuring', () => {
       class Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -88,7 +88,7 @@ suite('CodeGenerator - Destructuring', () => {
       class Point {
         x: i32;
         y: i32;
-        #new(x: i32, y: i32) {
+        new(x: i32, y: i32) {
           this.x = x;
           this.y = y;
         }
@@ -96,7 +96,7 @@ suite('CodeGenerator - Destructuring', () => {
       class Rect {
         p1: Point;
         p2: Point;
-        #new(p1: Point, p2: Point) {
+        new(p1: Point, p2: Point) {
           this.p1 = p1;
           this.p2 = p2;
         }

@@ -18,7 +18,7 @@ suite('TypeChecker - Extension Types', () => {
   test('should allow extension class on array', () => {
     const input = `
       extension class Array on array<i32> {
-        static #new() {}
+        static new() {}
         length: i32 { get { return 0; } }
       }
     `;

@@ -7,11 +7,11 @@ suite('CodeGenerator - Casts', () => {
     const source = `
       class Animal {
         name: string;
-        #new(name: string) { this.name = name; }
+        new(name: string) { this.name = name; }
       }
       class Dog extends Animal {
         breed: string;
-        #new(name: string, breed: string) {
+        new(name: string, breed: string) {
           super(name);
           this.breed = breed;
         }
@@ -33,18 +33,18 @@ suite('CodeGenerator - Casts', () => {
     const source = `
       class Animal {
         name: string;
-        #new(name: string) { this.name = name; }
+        new(name: string) { this.name = name; }
       }
       class Dog extends Animal {
         breed: string;
-        #new(name: string, breed: string) {
+        new(name: string, breed: string) {
           super(name);
           this.breed = breed;
         }
       }
       class Cat extends Animal {
         lives: i32;
-        #new(name: string) {
+        new(name: string) {
           super(name);
           this.lives = 9;
         }
@@ -65,7 +65,7 @@ suite('CodeGenerator - Casts', () => {
     const source = `
       class Box {
         value: i32;
-        #new(v: i32) { this.value = v; }
+        new(v: i32) { this.value = v; }
       }
 
       export let main = (): i32 => {

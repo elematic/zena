@@ -1,4 +1,5 @@
 import {
+  CONSTRUCTOR_NAME,
   NodeType,
   type ArrayLiteral,
   type AsExpression,
@@ -1333,7 +1334,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       );
       return Types.Unknown;
     }
-    if (ctx.currentMethod !== '#new') {
+    if (ctx.currentMethod !== CONSTRUCTOR_NAME) {
       ctx.diagnostics.reportError(
         `'super' call can only be used inside a class constructor.`,
         DiagnosticCode.UnknownError,

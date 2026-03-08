@@ -63,7 +63,7 @@ suite('Checker: Inline Tuple Validation', () => {
       const source = `
         class Point {
           coords: inline (i32, i32);
-          #new() {
+          new() {
             this.coords = (0, 0);
           }
         }
@@ -102,7 +102,7 @@ suite('Checker: Inline Tuple Validation', () => {
               return (this.#x, this.#y);
             }
           }
-          #new() {
+          new() {
             this.#x = 0;
             this.#y = 0;
           }
@@ -136,7 +136,7 @@ suite('Checker: Inline Tuple Validation', () => {
       const source = `
         class Box<T> {
           value: T;
-          #new(v: T) { this.value = v; }
+          new(v: T) { this.value = v; }
         }
         export let main = (): i32 => {
           let b: Box<inline (i32, i32)> = new Box((1, 2));

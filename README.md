@@ -23,7 +23,7 @@ class Cat implements Animal {
   var(#mood) mood: 'aloof' | 'grumpy'; // Public field, private setter
 
   // Constructor with initializer list
-  #new(id: CatId) : id = id {}
+  new(id: CatId) : id = id {}
 
   sayHi() {
     return `${this.greeting}, I'm ${this.name}`;
@@ -47,7 +47,7 @@ let formatTitle = (title: String) => title
 
 > [!WARNING]
 > Zena is so new that syntax might change a lot! In particular, we're unsure
-> about `#new()` for constructors, `let` and `var` as class field modifiers...
+> about `new()` for constructors, `let` and `var` as class field modifiers...
 
 ## Why Zena?
 
@@ -104,7 +104,7 @@ mixin Named {
 class User with Named implements Printable {
   age: i32;
 
-  #new(name: String, age: i32) {
+  new(name: String, age: i32) {
     this.name = name;
     this.age = age;
   }
@@ -232,8 +232,8 @@ Pattern matching works with the `match()` expression, which checks for
 exhaustiveness:
 
 ```typescript
-class Circle { radius: f32; #new(radius: f32) { this.radius = radius; } }
-class Rect { w: f32; h: f32; #new(w: f32, h: f32) { this.w = w; this.h = h; } }
+class Circle { radius: f32; new(radius: f32) { this.radius = radius; } }
+class Rect { w: f32; h: f32; new(w: f32, h: f32) { this.w = w; this.h = h; } }
 
 let area = (shape: Circle | Rect): f32 => {
   match (shape) {
