@@ -34,6 +34,9 @@ records, maps, constructors, and symbol-keyed members.
 | Symbol member (def)  | `:Sym.method()`       | `impl Sym.method()`         | Avoid double-colon visual collision    |
 | Symbol member (call) | `obj.:Sym.m()`        | `obj.:Sym.m()` (unchanged)  | Compact enough                         |
 | Collection macro     | N/A                   | `@Array[1, 2, 3]`           | `@` for macro invocations              |
+| Specialized map      | N/A                   | `@MultiMap{"a" => 1}`       | Macros for non-default collections     |
+| Record macro         | N/A                   | `@Point{x: 1, y: 2}`        | Macros on record literals              |
+| Block macro          | N/A                   | `@transaction{ ... }`       | Macros wrapping statement blocks       |
 
 ## 2. Arrays: `[...]`
 
@@ -428,6 +431,10 @@ let grow = @Array[1, 2, 3];
 let v = @Vec3[1.0, 2.0, 3.0];
 let s = @Set[1, 2, 3];
 
+// Specialized maps (default map uses {k => v} syntax)
+let multi = @MultiMap{"a" => 1, "a" => 2};
+let defaults = @DefaultMap{"a" => 0};
+
 // Matrix with nested syntax
 let m = @Mat[
   [1, 0, 0],
@@ -441,23 +448,106 @@ and generates optimal construction code — e.g., `array.new` with the right
 capacity, then `array.set` for each element, wrapped in the `Array<T>` class.
 No intermediate FixedArray is created.
 
-### 9.3 Parsing
+### 9.3 Relationship to Built-in Literals
 
-`@Identifier` followed by `[`, `(`, or `{` is a macro literal invocation:
+Built-in literals produce "default" types without macros:
 
-- `@Array[1, 2, 3]` — macro applied to array literal
-- `@Set{1, 2, 3}` — macro applied to... (TBD: braces for sets?)
-- `@Mat[(1, 2), (3, 4)]` — macro applied to array of tuples
+| Syntax       | Type               | Notes                |
+| ------------ | ------------------ | -------------------- |
+| `[1, 2, 3]`  | `FixedArray<i32>`  | Native WASM GC array |
+| `{x: 1}`     | Record             | Structural type      |
+| `(1, "a")`   | Boxed tuple        | WASM GC struct       |
+| `{"a" => 1}` | `Map<string, i32>` | Standard hash map    |
 
-The identifier resolves to a macro definition that handles the literal.
+Macros produce specialized or optimized variants:
 
-### 9.4 Why Not `Array![1, 2, 3]`?
+| Syntax                 | Type                    | Notes                   |
+| ---------------------- | ----------------------- | ----------------------- |
+| `@Array[1, 2, 3]`      | `Array<i32>`            | Growable, no copy       |
+| `@Set[1, 2, 3]`        | `Set<i32>`              | Hash set                |
+| `@MultiMap{"a" => 1}`  | `MultiMap<string, i32>` | Multiple values per key |
+| `@Vec3[1.0, 2.0, 3.0]` | `Vec3`                  | Fixed-size math vector  |
+
+### 9.4 Parsing
+
+`@Identifier` can be followed by `(`, `[`, or `{`:
+
+| Syntax        | Meaning                    | Example                  |
+| ------------- | -------------------------- | ------------------------ |
+| `@Name`       | Macro with no arguments    | `@deprecated`            |
+| `@Name(a, b)` | Macro invocation with args | `@external("mod", "fn")` |
+| `@Name[...]`  | Macro on array literal     | `@Array[1, 2, 3]`        |
+| `@Name{...}`  | Macro on record/map/block  | `@Point{x: 1}`           |
+
+**`()` is for arguments, not tuples**: Just like `foo(1, 2)` is a function call
+with two arguments (not one tuple), `@Name(1, 2)` is a macro invocation with
+two arguments. To pass an actual tuple, double-wrap: `@Name((1, 2))`.
+
+**Combining arguments with literals**: Macros can take arguments AND a literal:
+
+```zena
+@retry(3) { ... }              // args + block
+@Range(1, 10)[step: 2]         // hypothetical: args + config record? (TBD)
+```
+
+**Disambiguation for `{...}`**: The parser uses the same lookahead as regular
+`{...}` parsing (see Section 5.3):
+
+| After `{` | Interpretation   |
+| --------- | ---------------- |
+| `}`       | Empty block      |
+| `ident :` | Record literal   |
+| `expr =>` | Map literal      |
+| Otherwise | Block expression |
+
+So `@Name{...}` can support records, maps, and blocks uniformly.
+
+### 9.5 Block Macros
+
+Block macros transform statement sequences. Use cases include:
+
+```zena
+// Transaction wrapper — expands to begin/commit/rollback
+@transaction {
+  db.insert(record);
+  db.update(other);
+}
+
+// Retry logic — expands to loop with catch
+@retry(3) {
+  fetchFromNetwork();
+}
+
+// Mutex wrapper — expands to lock/unlock
+@synchronized(mutex) {
+  sharedState.modify();
+}
+
+// Benchmarking — expands to timing code
+@benchmark("critical section") {
+  expensiveComputation();
+}
+
+// Builder DSL — could expand to method chains
+@html {
+  div { class: "container";
+    h1 { "Hello" }
+    p { "World" }
+  }
+}
+```
+
+Block macros receive the block's AST and can wrap, transform, or generate
+code around it. The macro has access to any arguments (e.g., `@retry(3)`)
+and the block body.
+
+### 9.6 Why Not `Array![1, 2, 3]`?
 
 The `!` suffix (Rust-style) reads aggressively and is already used for
 logical NOT. Using `@` is consistent with Zena's approach of `@` for
 compile-time transformation (decorators are also compile-time transforms).
 
-### 9.5 Relationship to Decorators
+### 9.7 Relationship to Decorators
 
 Both decorators and collection macros are compile-time AST transformations
 invoked with `@`. The distinction is positional:
@@ -466,6 +556,16 @@ invoked with `@`. The distinction is positional:
 - `@Name literal` → collection macro (transforms a literal into construction code)
 
 This unification means one macro system, one sigil, one mental model.
+
+### 9.8 Future: Modifiers as Sugar
+
+Common macros may eventually get keyword sugar:
+
+```zena
+growable [1, 2, 3]   // sugar for @Array[1, 2, 3]
+```
+
+This is lower priority since the explicit macro syntax works and is clear.
 
 ## 10. Modifier Summary
 
@@ -524,38 +624,40 @@ Since Zena has no external users, migration is about updating our own
 codebase (tests, stdlib, examples, docs). No backwards compatibility is
 needed, but we should stage changes to keep the compiler working throughout.
 
-### Phase 1: Tuple Syntax (Must Come First)
+### Phase 1: Tuple Syntax ✅
 
 **Impact**: Parser, AST, type system, codegen, all tuple tests.
 
-**Why first**: `[]` is currently used for boxed tuples. We must move tuples to
+~~**Why first**: `[]` is currently used for boxed tuples. We must move tuples to
 `()` before `[]` can be repurposed for arrays. Additionally, `(expr, expr)` is
 already used for unboxed (inline) tuple returns. We must introduce the `inline`
 modifier first so existing unboxed returns can be distinguished from the new
-boxed tuple syntax.
+boxed tuple syntax.~~
 
-**Sub-phases** (order matters):
+**Done**:
 
-1. **`inline` modifier**: Add `inline` keyword in type position. Migrate all
-   existing unboxed tuple return types to `inline (T, T)`.
-2. **Boxed tuple literals**: Add `(expr, expr)` as boxed tuple literal. Now
-   unambiguous because unboxed returns are marked `inline`.
-3. **Boxed tuple types**: Add `(T, T)` as boxed tuple type syntax.
-4. **Migrate boxed tuples from `[]`**: Update destructuring from
-   `let [a, b] =` to `let (a, b) =`, access from `t[0]` to `t.0`.
-5. **Remove old `[...]` tuple syntax** from parser (frees `[]` for arrays).
+1. ~~**`inline` modifier**: Add `inline` keyword in type position. Migrate all
+   existing unboxed tuple return types to `inline (T, T)`.~~
+2. ~~**Boxed tuple literals**: Add `(expr, expr)` as boxed tuple literal. Now
+   unambiguous because unboxed returns are marked `inline`.~~
+3. ~~**Boxed tuple types**: Add `(T, T)` as boxed tuple type syntax.~~
+4. ~~**Migrate boxed tuples from `[]`**: Update destructuring from
+   `let [a, b] =` to `let (a, b) =`, access from `t[0]` to `t.0`.~~
+5. ~~**Remove old `[...]` tuple syntax** from parser (frees `[]` for arrays).~~
 
-### Phase 2: Array Literal Syntax
+### Phase 2: Array Literal Syntax ✅
 
 **Impact**: Parser, codegen, all tests using `#[...]`.
 
-**Prerequisite**: Phase 1 complete (`[]` is now free).
+~~**Prerequisite**: Phase 1 complete (`[]` is now free).~~
 
-1. Update parser to accept `[...]` as array literal (keep `#[...]` temporarily)
-2. Update codegen for new AST
-3. Migrate all `#[...]` in stdlib `.zena` files to `[...]`
-4. Migrate all test files
-5. Remove `#[...]` support from parser
+1. ~~Update parser to accept `[...]` as array literal (keep `#[...]` temporarily)~~
+2. ~~Update codegen for new AST~~
+3. ~~Migrate all `#[...]` in stdlib `.zena` files to `[...]`~~
+4. ~~Migrate all test files~~
+5. ~~Remove `#[...]` support from parser~~
+
+**Done**: `[1, 2, 3]` now creates `FixedArray<T>`.
 
 ### Phase 3: Constructor Syntax ✅
 
@@ -571,15 +673,7 @@ Small, self-contained change — no dependencies on other phases.
 `'<constructor>'` (`CONSTRUCTOR_NAME` constant in `ast.ts`), freeing `#new`
 for use as a regular private member.
 
-### Phase 4: Symbol Member Syntax
-
-**Impact**: Parser, AST, stdlib.
-
-1. Add `impl Symbol.method()` syntax for definitions
-2. Migrate all `:Symbol.method()` in stdlib
-3. Remove old `:Symbol.method()` syntax
-
-### Phase 5: Map Literals
+### Phase 4: Map Literals
 
 **Impact**: Parser, type system, codegen.
 
@@ -588,11 +682,48 @@ for use as a regular private member.
 3. Generate `Map` construction code
 4. Add tests
 
-### Phase 6: Exact and Inline Records
+### Phase 5: Collection Macros
+
+**Impact**: Parser, macro system.
+
+Collection macros allow custom types to have literal-like syntax. The `@` sigil
+indicates a compile-time transformation.
+
+1. Implement `@Name[...]` and `@Name{...}` parsing
+2. Implement macro expansion for collection literals
+3. Implement built-in collection macros:
+   - `@Array[1, 2, 3]` — growable Array without intermediate FixedArray copy
+   - `@Set[1, 2, 3]` — Set construction
+   - `@MultiMap{"a" => 1, "a" => 2}` — multi-value map
+   - `@DefaultMap{"a" => 0}` — map with default value
+
+**Design note**: Map literals `{k => v}` produce `Map` by default. Macros like
+`@MultiMap{...}` or `@OrderedMap{...}` handle specialized map types.
+
+### Phase 6: Compile-Time Constants (Future)
+
+**Impact**: Type system, codegen, optimization.
+
+`const` declarations create truly immutable compile-time constants.
+
+```zena
+const primes = [2, 3, 5, 7, 11];    // FixedArray, elements are const
+const name = "Zena";                 // string const
+const config = {host: "localhost"}; // record const
+```
+
+**Macro composition**: Macros can declare whether they're `const`-capable.
+The type checker validates `const` usage at the macro call site (before
+expansion) and provides clear errors:
+
+```zena
+const grow = @Array[1, 2, 3];  // ❌ Error: @Array produces mutable heap object
+                                //    Use [1, 2, 3] for compile-time constant
+```
+
+### Phase 7: Exact and Inline Records (Future)
 
 **Impact**: Parser, type system, codegen.
-
-Entirely new features — no migration needed, just new functionality.
 
 1. Implement `exact` keyword in type position
 2. Implement `inline` keyword in type position for records
@@ -600,13 +731,26 @@ Entirely new features — no migration needed, just new functionality.
 4. Add widening coercion (exact → wide)
 5. Add tests for each variant
 
-### Phase 7: Collection Macros (Future)
+### Phase 8: Collection Modifiers (Future)
 
-**Impact**: Macro system (not yet implemented).
+**Impact**: Parser (sugar), macro system.
 
-1. Implement `@Name[...]` parsing
-2. Implement macro expansion for collection literals
-3. Implement `@Array` as built-in collection macro
+Modifiers like `growable` can serve as sugar for well-known collection macros:
+
+```zena
+growable [1, 2, 3]   // sugar for @Array[1, 2, 3]
+```
+
+This is lower priority since `@Array[...]` works and is explicit. Modifiers
+add ergonomics but also complexity (another way to write the same thing).
+
+### Phase 9: Symbol Member Syntax (Future)
+
+**Impact**: Parser, AST, stdlib.
+
+1. Add `impl Symbol.method()` syntax for definitions
+2. Migrate all `:Symbol.method()` in stdlib
+3. Remove old `:Symbol.method()` syntax
 
 ## 12. Full Example
 
@@ -653,7 +797,7 @@ let points = [
 
 let path = new Path(points);
 
-// Map literal with =>
+// Map literal with => (produces Map by default)
 let labels = {0 => "start", 1 => "peak", 2 => "end"};
 
 // Boxed tuple
@@ -666,6 +810,11 @@ let divmod = (a: i32, b: i32): inline (i32, i32) => {
 };
 let (q, r) = divmod(10, 3);
 
-// Future: collection macro
-// let growable = @Array[1, 2, 3];
+// Collection macros for specialized types
+let growable = @Array[1, 2, 3];           // Array<i32>, no copy
+let unique = @Set[1, 2, 2, 3];            // Set<i32> = {1, 2, 3}
+let multi = @MultiMap{"a" => 1, "a" => 2}; // MultiMap with duplicate keys
+
+// Future: compile-time constants
+// const primes = [2, 3, 5, 7, 11];  // immutable FixedArray
 ```
