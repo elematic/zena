@@ -436,4 +436,83 @@ suite('Binary Size', () => {
       );
     });
   });
+
+  suite('Map Usage', () => {
+    test('map literal includes Map class', async () => {
+      const withMap = `
+        import {Map} from 'zena:map';
+        export let main = () => {
+          let m = {"a" => 1, "b" => 2};
+          let (v, _) = m.get("a");
+          return v;
+        };
+      `;
+      const withoutMap = `
+        export let main = () => 42;
+      `;
+
+      const sizeWithMap = await compileAndValidate(withMap, true);
+      const sizeWithoutMap = await compileAndValidate(withoutMap, true);
+
+      console.log(`  With map literal (DCE): ${sizeWithMap} bytes`);
+      console.log(`  Without map literal (DCE): ${sizeWithoutMap} bytes`);
+
+      // Map literal should significantly increase size (Map class is not trivial)
+      assert.ok(
+        sizeWithMap > sizeWithoutMap + 500,
+        `Map literal should add significant size (${sizeWithMap} vs ${sizeWithoutMap})`,
+      );
+    });
+
+    test('unused map literal is eliminated with DCE', async () => {
+      const withUnusedMap = `
+        import {Map} from 'zena:map';
+        let unused = () => ({"a" => 1});
+        export let main = () => 42;
+      `;
+      const withoutMap = `
+        export let main = () => 42;
+      `;
+
+      const sizeWithUnused = await compileAndValidate(withUnusedMap, true);
+      const sizeWithoutMap = await compileAndValidate(withoutMap, true);
+
+      console.log(`  With unused map literal (DCE): ${sizeWithUnused} bytes`);
+      console.log(`  Without map literal (DCE): ${sizeWithoutMap} bytes`);
+
+      // With DCE, unused map literal should be eliminated - sizes should be equal
+      assert.strictEqual(
+        sizeWithUnused,
+        sizeWithoutMap,
+        `With DCE, unused map should be eliminated (${sizeWithUnused} != ${sizeWithoutMap})`,
+      );
+    });
+
+    test('map literal without DCE includes Map class', async () => {
+      const withMap = `
+        import {Map} from 'zena:map';
+        export let main = () => {
+          let m = {"a" => 1};
+          let (v, _) = m.get("a");
+          return v;
+        };
+      `;
+
+      const sizeNoDce = await compileAndValidate(withMap, false);
+      const sizeWithDce = await compileAndValidate(withMap, true);
+
+      console.log(`  Without DCE: ${sizeNoDce} bytes`);
+      console.log(`  With DCE: ${sizeWithDce} bytes`);
+
+      // Both should compile successfully
+      assert.ok(sizeNoDce > 0, 'Should produce non-empty WASM');
+      assert.ok(sizeWithDce > 0, 'Should produce non-empty WASM with DCE');
+
+      // With DCE should be smaller or equal (unused Map methods eliminated)
+      assert.ok(
+        sizeWithDce <= sizeNoDce,
+        `DCE should not increase size (${sizeWithDce} > ${sizeNoDce})`,
+      );
+    });
+  });
 });

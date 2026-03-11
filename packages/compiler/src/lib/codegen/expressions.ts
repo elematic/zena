@@ -17,6 +17,7 @@ import {
   type IndexExpression,
   type IsExpression,
   type LogicalPattern,
+  type MapLiteral,
   type MatchExpression,
   type MemberExpression,
   type NewExpression,
@@ -194,6 +195,9 @@ export function generateExpression(
       break;
     case NodeType.RecordLiteral:
       generateRecordLiteral(ctx, expression as RecordLiteral, body);
+      break;
+    case NodeType.MapLiteral:
+      generateMapLiteral(ctx, expression as MapLiteral, body);
       break;
     case NodeType.TupleLiteral:
       generateTupleLiteral(ctx, expression as TupleLiteral, body);
@@ -7571,6 +7575,101 @@ function generateRecordLiteral(
   body.push(...WasmModule.encodeSignedLEB128(vtableGlobalIndex));
   body.push(0xfb, GcOpcode.struct_new);
   body.push(...WasmModule.encodeSignedLEB128(targetInfo.fatPtrTypeIndex));
+}
+
+/**
+ * Generates code for a map literal: {key1 => value1, key2 => value2, ...}
+ *
+ * This compiles to:
+ * 1. Create a new Map with constructor (capacity = entry count)
+ * 2. For each entry, call map.set(key, value)
+ * 3. Leave the map reference on the stack
+ */
+function generateMapLiteral(
+  ctx: CodegenContext,
+  expr: MapLiteral,
+  body: number[],
+) {
+  if (!expr.inferredType || expr.inferredType.kind !== TypeKind.Class) {
+    throw new Error('Map literal must have inferred Map<K, V> type');
+  }
+
+  const mapType = expr.inferredType as ClassType;
+
+  // Get or instantiate the Map class
+  mapCheckerTypeToWasmType(ctx, mapType);
+  const mapClassInfo = ctx.getClassInfo(mapType);
+
+  if (!mapClassInfo) {
+    throw new Error(`Map class info not found for ${mapType.name}`);
+  }
+
+  const ctorInfo = mapClassInfo.methods.get(CONSTRUCTOR_NAME);
+  if (!ctorInfo) {
+    throw new Error('Map class must have a constructor');
+  }
+
+  // Map has mutable fields, so follow the standard new expression pattern:
+  // 1. Allocate struct with default values
+  body.push(0xfb, GcOpcode.struct_new_default);
+  body.push(...WasmModule.encodeSignedLEB128(mapClassInfo.structTypeIndex));
+
+  // 2. Store in temp local
+  const mapLocalType = [
+    ValType.ref_null,
+    ...WasmModule.encodeSignedLEB128(mapClassInfo.structTypeIndex),
+  ];
+  const mapLocal = ctx.declareLocal('$$map', mapLocalType);
+  body.push(Opcode.local_tee);
+  body.push(...WasmModule.encodeSignedLEB128(mapLocal));
+
+  // 3. Initialize vtable if present
+  if (mapClassInfo.vtableGlobalIndex !== undefined) {
+    body.push(Opcode.global_get);
+    body.push(...WasmModule.encodeSignedLEB128(mapClassInfo.vtableGlobalIndex));
+    body.push(0xfb, GcOpcode.struct_set);
+    body.push(...WasmModule.encodeSignedLEB128(mapClassInfo.structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(0)); // vtable is always at index 0
+
+    // Restore object for constructor
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(mapLocal));
+  }
+
+  // 4. Generate capacity argument (number of entries, minimum 16)
+  const capacity = Math.max(expr.entries.length, 16);
+  body.push(Opcode.i32_const);
+  body.push(...WasmModule.encodeSignedLEB128(capacity));
+
+  // 5. Call constructor (takes this + capacity)
+  body.push(Opcode.call);
+  body.push(...WasmModule.encodeSignedLEB128(ctorInfo.index));
+
+  // 6. For each entry, call set(key, value)
+  const setMethod = mapClassInfo.methods.get('set');
+  if (!setMethod) {
+    throw new Error('Map class must have a set method');
+  }
+
+  for (const entry of expr.entries) {
+    // Load map reference
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(mapLocal));
+
+    // Generate key
+    generateExpression(ctx, entry.key, body);
+
+    // Generate value
+    generateExpression(ctx, entry.value, body);
+
+    // Call set method (this, key, value)
+    body.push(Opcode.call);
+    body.push(...WasmModule.encodeSignedLEB128(setMethod.index));
+  }
+
+  // 7. Return map reference
+  body.push(Opcode.local_get);
+  body.push(...WasmModule.encodeSignedLEB128(mapLocal));
 }
 
 function generateTupleLiteral(

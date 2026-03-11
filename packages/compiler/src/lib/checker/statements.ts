@@ -1300,7 +1300,7 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
   };
 
   decl.inferredType = functionType;
-  ctx.declare(decl.name.name, functionType, 'let');
+  ctx.declare(decl.name.name, functionType, 'let', decl);
 
   if (decl.exported && ctx.module) {
     // Retrieve the type from the scope to ensure we export the aggregated overloads

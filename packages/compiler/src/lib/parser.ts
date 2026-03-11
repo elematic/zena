@@ -32,6 +32,8 @@ import {
   type IsExpression,
   type LetPatternCondition,
   type LiteralTypeAnnotation,
+  type MapEntry,
+  type MapLiteral,
   type MatchCase,
   type MatchExpression,
   type MemberExpression,
@@ -1722,7 +1724,7 @@ export class Parser {
       return this.#parseIdentifier();
     }
     if (this.#match(TokenType.LBrace)) {
-      return this.#parseRecordLiteral();
+      return this.#parseRecordOrMapLiteral();
     }
     if (this.#match(TokenType.LParen)) {
       return this.#parseParenthesizedExpression();
@@ -3356,38 +3358,175 @@ export class Parser {
     };
   }
 
-  #parseRecordLiteral(): RecordLiteral {
-    const properties: (PropertyAssignment | SpreadElement)[] = [];
-    if (!this.#check(TokenType.RBrace)) {
-      do {
-        if (this.#match(TokenType.DotDotDot)) {
-          const startToken = this.#previous();
-          const argument = this.#parseExpression();
-          properties.push({
-            type: NodeType.SpreadElement,
-            argument,
-            loc: this.#loc(startToken, argument),
-          });
-        } else {
-          const name = this.#parseIdentifier();
-          let value: Expression;
-          if (this.#match(TokenType.Colon)) {
-            value = this.#parseExpression();
-          } else {
-            value = name;
-          }
-          properties.push({
-            type: NodeType.PropertyAssignment,
-            name,
-            value,
-          });
-        }
-      } while (this.#match(TokenType.Comma));
+  /**
+   * Parse a brace-delimited literal, which could be:
+   * - Record literal: {x: 1, y: 2} or {x, y} (shorthand)
+   * - Map literal: {key => value, ...}
+   *
+   * Disambiguation:
+   * - Empty `{}` → empty record
+   * - `...` → record with spread
+   * - `expr =>` → map literal
+   * - `ident :` → record property
+   * - `ident ,` or `ident }` → shorthand record property
+   */
+  #parseRecordOrMapLiteral(): RecordLiteral | MapLiteral {
+    const startToken = this.#previous(); // LBrace was already consumed
+
+    // Empty: {}
+    if (this.#check(TokenType.RBrace)) {
+      this.#advance();
+      return {
+        type: NodeType.RecordLiteral,
+        properties: [],
+        loc: this.#loc(startToken, this.#previous()),
+      };
     }
+
+    // Spread element: definitely a record
+    if (this.#check(TokenType.DotDotDot)) {
+      return this.#parseRecordLiteralContinue(startToken, []);
+    }
+
+    // Parse the first expression to determine the type
+    const firstExpr = this.#parseExpression();
+
+    // Check for map literal: expr =>
+    if (this.#match(TokenType.Arrow)) {
+      const firstValue = this.#parseExpression();
+      const firstEntry: MapEntry = {
+        type: NodeType.MapEntry,
+        key: firstExpr,
+        value: firstValue,
+        loc: this.#loc(firstExpr, firstValue),
+      };
+      return this.#parseMapLiteralContinue(startToken, firstEntry);
+    }
+
+    // It's a record literal - convert first expression to property
+    // First expression must be an identifier (for records)
+    if (firstExpr.type !== NodeType.Identifier) {
+      throw new Error(
+        `Expected identifier for record property, got ${firstExpr.type} at line ${this.#peek().line}`,
+      );
+    }
+
+    const name = firstExpr;
+    let value: Expression;
+
+    if (this.#match(TokenType.Colon)) {
+      // Full property: {x: expr}
+      value = this.#parseExpression();
+    } else {
+      // Shorthand: {x}
+      value = name;
+    }
+
+    const firstProperty: PropertyAssignment = {
+      type: NodeType.PropertyAssignment,
+      name,
+      value,
+    };
+
+    return this.#parseRecordLiteralContinue(startToken, [firstProperty]);
+  }
+
+  /**
+   * Continue parsing a map literal after the first entry.
+   */
+  #parseMapLiteralContinue(
+    startToken: Token,
+    firstEntry: MapEntry,
+  ): MapLiteral {
+    const entries: MapEntry[] = [firstEntry];
+
+    while (this.#match(TokenType.Comma)) {
+      // Allow trailing comma
+      if (this.#check(TokenType.RBrace)) break;
+
+      const key = this.#parseExpression();
+      this.#consume(TokenType.Arrow, "Expected '=>' in map literal");
+      const value = this.#parseExpression();
+      entries.push({
+        type: NodeType.MapEntry,
+        key,
+        value,
+        loc: this.#loc(key, value),
+      });
+    }
+
+    this.#consume(TokenType.RBrace, "Expected '}' after map literal");
+    const endToken = this.#previous();
+
+    return {
+      type: NodeType.MapLiteral,
+      entries,
+      loc: this.#loc(startToken, endToken),
+    };
+  }
+
+  /**
+   * Continue parsing a record literal after initial properties.
+   */
+  #parseRecordLiteralContinue(
+    startToken: Token,
+    initialProperties: (PropertyAssignment | SpreadElement)[],
+  ): RecordLiteral {
+    const properties = [...initialProperties];
+
+    // If we have initial properties, check for comma before continuing
+    if (properties.length > 0) {
+      if (!this.#match(TokenType.Comma)) {
+        // No more properties
+        this.#consume(TokenType.RBrace, "Expected '}'");
+        return {
+          type: NodeType.RecordLiteral,
+          properties,
+          loc: this.#loc(startToken, this.#previous()),
+        };
+      }
+      // Allow trailing comma
+      if (this.#check(TokenType.RBrace)) {
+        this.#advance();
+        return {
+          type: NodeType.RecordLiteral,
+          properties,
+          loc: this.#loc(startToken, this.#previous()),
+        };
+      }
+    }
+
+    // Parse remaining properties
+    do {
+      if (this.#match(TokenType.DotDotDot)) {
+        const spreadStart = this.#previous();
+        const argument = this.#parseExpression();
+        properties.push({
+          type: NodeType.SpreadElement,
+          argument,
+          loc: this.#loc(spreadStart, argument),
+        });
+      } else {
+        const name = this.#parseIdentifier();
+        let value: Expression;
+        if (this.#match(TokenType.Colon)) {
+          value = this.#parseExpression();
+        } else {
+          value = name;
+        }
+        properties.push({
+          type: NodeType.PropertyAssignment,
+          name,
+          value,
+        });
+      }
+    } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RBrace));
+
     this.#consume(TokenType.RBrace, "Expected '}'");
     return {
       type: NodeType.RecordLiteral,
       properties,
+      loc: this.#loc(startToken, this.#previous()),
     };
   }
 

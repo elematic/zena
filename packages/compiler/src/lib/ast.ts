@@ -123,6 +123,8 @@ export const NodeType = {
   PipelineExpression: 'PipelineExpression',
   PipePlaceholder: 'PipePlaceholder',
   FieldInitializer: 'FieldInitializer',
+  MapLiteral: 'MapLiteral',
+  MapEntry: 'MapEntry',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -308,6 +310,24 @@ export interface RecordLiteral extends Node {
   properties: (PropertyAssignment | SpreadElement)[];
 }
 
+/**
+ * Map entry for map literals: key => value
+ */
+export interface MapEntry extends Node {
+  type: typeof NodeType.MapEntry;
+  key: Expression;
+  value: Expression;
+}
+
+/**
+ * Map literal: {key1 => value1, key2 => value2}
+ * Creates a Map<K, V> instance.
+ */
+export interface MapLiteral extends Node {
+  type: typeof NodeType.MapLiteral;
+  entries: MapEntry[];
+}
+
 export interface TupleLiteral extends Node {
   type: typeof NodeType.TupleLiteral;
   elements: Expression[];
@@ -402,6 +422,7 @@ export type Expression =
   | ThisExpression
   | ArrayLiteral
   | RecordLiteral
+  | MapLiteral
   | TupleLiteral
   | InlineTupleLiteral
   | IndexExpression

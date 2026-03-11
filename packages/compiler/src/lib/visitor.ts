@@ -59,6 +59,8 @@ import {
   type ThisExpression,
   type ArrayLiteral,
   type RecordLiteral,
+  type MapLiteral,
+  type MapEntry,
   type TupleLiteral,
   type IndexExpression,
   type SuperExpression,
@@ -160,6 +162,8 @@ export interface Visitor<T = void> {
   visitThisExpression?(node: ThisExpression, context: T): void;
   visitArrayLiteral?(node: ArrayLiteral, context: T): void;
   visitRecordLiteral?(node: RecordLiteral, context: T): void;
+  visitMapLiteral?(node: MapLiteral, context: T): void;
+  visitMapEntry?(node: MapEntry, context: T): void;
   visitTupleLiteral?(node: TupleLiteral, context: T): void;
   visitIndexExpression?(node: IndexExpression, context: T): void;
   visitSuperExpression?(node: SuperExpression, context: T): void;
@@ -438,6 +442,17 @@ export function visit<T>(
       for (const prop of (node as RecordLiteral).properties) {
         visit(prop, visitor, context);
       }
+      break;
+    case NodeType.MapLiteral:
+      visitor.visitMapLiteral?.(node as MapLiteral, context);
+      for (const entry of (node as MapLiteral).entries) {
+        visit(entry, visitor, context);
+      }
+      break;
+    case NodeType.MapEntry:
+      visitor.visitMapEntry?.(node as MapEntry, context);
+      visit((node as MapEntry).key, visitor, context);
+      visit((node as MapEntry).value, visitor, context);
       break;
     case NodeType.TupleLiteral:
       visitor.visitTupleLiteral?.(node as TupleLiteral, context);

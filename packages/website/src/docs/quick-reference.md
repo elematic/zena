@@ -190,7 +190,7 @@ needed. They come from the _prelude_, which is implicitly imported.
 | `Array<T>`              | Growable array (`Array.from([1, 2, 3])`)           |
 | `FixedArray<T>`         | Fixed-size array (literal syntax: `[1, 2, 3]`)     |
 | `ImmutableArray<T>`     | Read-only array view                               |
-| `Map<K, V>`             | Hash map                                           |
+| `Map<K, V>`             | Hash map (literal syntax: `{"a" => 1}`)            |
 | `Box<T>`                | Wraps primitives for use in unions or `any`        |
 | `BoundedRange`          | Range with start and end (`1..10`)                 |
 | `FromRange`             | Range with start only (`5..`)                      |
@@ -342,11 +342,10 @@ call returns both the status and the value with zero allocation overhead.
 relying on `null`:
 
 ```ts
-let map = new Map<String, i32>();
-map.set('a', 42);
+let map = {"a" => 42, "b" => 100};
 
-let(value, found) = map.get('a'); // (42, true)
-let(_, found2) = map.get('b'); // (_, false)
+let (value, found) = map.get('a');  // (42, true)
+let (_, found2) = map.get('c');     // (_, false)
 ```
 
 This is especially important for primitive value types like `i32` where `null`
@@ -1531,19 +1530,33 @@ let copy = arr[1..4].copy();  // Independent copy
 
 ### Map
 
-`Map<K, V>` is a hash map. Keys must implement equality and hashing. Values are
-nullable—`get` returns `V | null`.
+`Map<K, V>` is a hash map. Keys must implement equality and hashing.
+
+Maps can be created using literal syntax with `=>`:
+
+```ts
+let scores = {"Alice" => 95, "Bob" => 87};  // Map<String, i32>
+let lookup = {1 => "one", 2 => "two"};       // Map<i32, String>
+```
+
+Or constructed explicitly:
 
 ```ts
 let map = new Map<String, i32>();
 map.set('one', 1);
 map['two'] = 2;
+```
 
-let val = map['one']; // i32 | null
-if (val != null) {
+Use `get()` for safe lookups—it returns `(value, found)`:
+
+```ts
+let(val, found) = map.get('one');
+if (found) {
   // use val
 }
 ```
+
+The index operator `map[key]` throws `KeyNotFoundError` if the key doesn't exist.
 
 ### Iteration
 

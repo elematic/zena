@@ -2619,18 +2619,47 @@ let empty = new Array<i32>();       // empty growable array
 
 A mutable hash map implementation.
 
-**Note**: Because `Map` accessors return `V | null` to indicate missing keys,
-the value type `V` must be a reference type. Primitive types (like `i32`) cannot
-be used directly because they cannot form a union with `null` (see [Union
-Types](#union-types)). To store primitives, wrap them in `Box<T>`.
+#### Map Literal Syntax
+
+Maps can be created using the literal syntax `{key => value, ...}`:
 
 ```zena
-let map = new Map<string, Box<i32>>();
-map.set('one', new Box(1));
-map['two'] = new Box(2);
+let scores = {"Alice" => 95, "Bob" => 87};     // Map<string, i32>
+let lookup = {1 => "one", 2 => "two"};          // Map<i32, string>
 
-let val = map['one']; // Returns Box<i32> | null
+// Multi-line with trailing comma
+let config = {
+  "host" => "localhost",
+  "port" => 8080,
+};
 ```
+
+The `=>` separator distinguishes map literals from record literals (which use `:`).
+Key and value types are inferred from the entries.
+
+#### Explicit Construction
+
+Maps can also be created explicitly:
+
+```zena
+let map = new Map<string, i32>();
+map.set("one", 1);
+map["two"] = 2;  // operator []= syntax
+```
+
+#### Accessing Values
+
+`Map.get(key)` returns an inline tuple `(V, boolean)` indicating the value and
+whether the key was found:
+
+```zena
+let (value, found) = map.get("one");
+if (found) {
+  console.log(value);
+}
+```
+
+The index operator `map[key]` throws `KeyNotFoundError` if the key doesn't exist.
 
 ### Box<T>
 

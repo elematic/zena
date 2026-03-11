@@ -74,6 +74,42 @@ Equality checks in `Map` will follow the same pattern:
   - If `Hashable`: Calls `value == other` (via `operator ==`).
   - Default: Reference equality (`ref.eq`).
 
+## Map Literal Syntax
+
+Maps can be created using literal syntax with `=>` to separate keys and values:
+
+```zena
+let scores = {"Alice" => 95, "Bob" => 87};  // Map<String, i32>
+let lookup = {1 => "one", 2 => "two"};       // Map<i32, String>
+let empty = {:};                              // Empty map (type inferred from context)
+```
+
+The literal syntax desugars to a series of `operator []=` calls:
+
+```zena
+// {"Alice" => 95, "Bob" => 87} desugars to:
+let $temp = new Map<String, i32>();
+$temp["Alice"] = 95;
+$temp["Bob"] = 87;
+$temp
+```
+
+### Key Type Requirements
+
+Keys must support:
+1. **Hashing**: Via the `hash<T>` intrinsic (primitives, strings, records, tuples) or `Hashable` interface (classes)
+2. **Equality**: Via `==` operator
+
+### Empty Map Literal
+
+The `{:}` syntax creates an empty map. The key and value types are inferred from context:
+
+```zena
+let m: Map<String, i32> = {:};  // Type from annotation
+let fn = (m: Map<i32, String>) => { ... };
+fn({:});                         // Type from parameter
+```
+
 ## API
 
 ```zena

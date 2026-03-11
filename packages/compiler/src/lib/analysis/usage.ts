@@ -13,6 +13,7 @@
  */
 
 import {
+  CONSTRUCTOR_NAME,
   NodeType,
   type Declaration,
   type Module,
@@ -31,6 +32,7 @@ import {
   type Identifier,
   type NewExpression,
   type ArrayLiteral,
+  type MapLiteral,
   type RangeExpression,
   type CallExpression,
   type MemberExpression,
@@ -39,6 +41,9 @@ import {
   type AssignmentExpression,
   type TemplateLiteral,
   type TaggedTemplateExpression,
+  type MethodDefinition,
+  type AccessorDeclaration,
+  type SymbolPropertyName,
 } from '../ast.js';
 import {visit, type Visitor} from '../visitor.js';
 import type {SemanticContext} from '../checker/semantic-context.js';
@@ -243,6 +248,13 @@ class UsageAnalyzer {
     Map<string, FieldUsageInfo>
   >();
 
+  // Track visited method bodies to avoid re-visiting (for transitive dependency tracking)
+  // Key format: "classTypeName:methodName" - we use the type's identity via WeakMap + Set
+  readonly #visitedMethods = new WeakMap<
+    ClassType | InterfaceType,
+    Set<string>
+  >();
+
   constructor(program: Program, options: UsageAnalysisOptions) {
     this.#program = program;
     this.#options = options;
@@ -376,6 +388,15 @@ class UsageAnalyzer {
     if (!this.#usageMap.has(decl)) {
       this.#usageMap.set(decl, {isUsed: false});
     }
+  }
+
+  /**
+   * Find a declaration by name.
+   * Returns the first matching declaration, or undefined if not found.
+   */
+  #findDeclarationByName(name: string): Declaration | undefined {
+    const decls = this.#declarationsByName.get(name);
+    return decls?.[0];
   }
 
   /**
@@ -586,6 +607,12 @@ class UsageAnalyzer {
         // Use the inferred type to find the class declaration (preferred approach)
         if (node.inferredType) {
           this.#handleTypeUsage(node.inferredType);
+
+          // Also mark the constructor as used, which visits its body
+          if (node.inferredType.kind === TypeKind.Class) {
+            const classType = node.inferredType as ClassType;
+            this.#markMethodUsed(classType, CONSTRUCTOR_NAME, false);
+          }
         }
       },
 
@@ -638,6 +665,25 @@ class UsageAnalyzer {
         // Array literals have inferredType set to FixedArray<T>
         if (node.inferredType) {
           this.#handleTypeUsage(node.inferredType);
+        }
+      },
+
+      visitMapLiteral: (node: MapLiteral) => {
+        // Map literals have inferredType set to Map<K, V>
+        if (node.inferredType) {
+          this.#handleTypeUsage(node.inferredType);
+
+          // Map literals desugar to: new Map() + m[key] = value for each entry
+          // Mark the constructor and []= operator as used
+          if (node.inferredType.kind === TypeKind.Class) {
+            const mapType = node.inferredType as ClassType;
+            // Constructor: new Map()
+            this.#markMethodUsed(mapType, CONSTRUCTOR_NAME, false);
+            // Index setter: m[key] = value
+            if (node.entries.length > 0) {
+              this.#markMethodUsed(mapType, '[]=', false);
+            }
+          }
         }
       },
 
@@ -711,6 +757,59 @@ class UsageAnalyzer {
               binding.methodName,
               !binding.isStaticDispatch,
             );
+          }
+        }
+
+        // Handle intrinsic function calls that generate method calls at codegen time
+        // For example, `equals(a, b)` with @intrinsic('eq') generates `String.==` for strings
+        // or calls `operator ==` for classes with that method.
+        //
+        // We detect intrinsics by their decorator, not by name, to handle renamed imports
+        // and avoid false positives from user functions named "equals".
+        if (node.callee.type === NodeType.Identifier && this.#semanticContext) {
+          const binding = this.#semanticContext.getResolvedBinding(node.callee as Identifier);
+
+          // Check if this is the @intrinsic('eq') function
+          // Only DeclareFunction nodes have decorators (not FunctionExpression)
+          if (
+            binding?.kind === 'function' &&
+            binding.declaration.type === NodeType.DeclareFunction
+          ) {
+            const decl = binding.declaration as DeclareFunction;
+            const hasEqIntrinsic = decl.decorators?.some(
+              (d) => d.name === 'intrinsic' && d.args[0]?.value === 'eq',
+            );
+
+            if (hasEqIntrinsic && node.arguments.length >= 1) {
+              const argType = node.arguments[0].inferredType;
+
+              // Mark operator == for concrete class types
+              if (argType && argType.kind === TypeKind.Class) {
+                const classType = argType as ClassType;
+                if (classType.methods.has('==')) {
+                  const isFinal = classType.isFinal === true;
+                  this.#markMethodUsed(classType, '==', !isFinal);
+                }
+              }
+
+              // For type parameters, unknown, any, or missing types, conservatively mark String.==
+              // because the concrete type at runtime might be String
+              if (
+                !argType ||
+                argType.kind === TypeKind.TypeParameter ||
+                argType.kind === TypeKind.Any ||
+                argType.kind === TypeKind.Unknown
+              ) {
+                // Find String class and mark its == method
+                const stringDecl = this.#findDeclarationByName('String');
+                if (stringDecl && stringDecl.type === NodeType.ClassDeclaration) {
+                  const stringType = stringDecl.inferredType as ClassType;
+                  if (stringType && stringType.methods.has('==')) {
+                    this.#markMethodUsed(stringType, '==', false);
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -800,6 +899,15 @@ class UsageAnalyzer {
               const isFinal =
                 objectType.kind === TypeKind.Class &&
                 (classType as ClassType).isFinal === true;
+              this.#markMethodUsed(classType, '[]=', !isFinal);
+            }
+          }
+
+          // Also check for extension class operator []= (e.g., FixedArray on array types)
+          if (indexExpr.extensionClassType) {
+            const classType = indexExpr.extensionClassType;
+            if (classType.methods.has('[]=')) {
+              const isFinal = classType.isFinal === true;
               this.#markMethodUsed(classType, '[]=', !isFinal);
             }
           }
@@ -1051,6 +1159,32 @@ class UsageAnalyzer {
     }
     usedSet.add(methodName);
 
+    // For generic instantiations, also mark the method on the generic source
+    // This is needed because codegen queries methods on the original generic class
+    // (e.g., Map<K, V>) but usage analysis marks methods on instantiated types
+    // (e.g., Map<string, i32>)
+    if (classType.kind === TypeKind.Class) {
+      const ct = classType as ClassType;
+      if (ct.genericSource) {
+        let sourceSet = this.#usedMethods.get(ct.genericSource);
+        if (!sourceSet) {
+          sourceSet = new Set();
+          this.#usedMethods.set(ct.genericSource, sourceSet);
+        }
+        sourceSet.add(methodName);
+      }
+    } else if (classType.kind === TypeKind.Interface) {
+      const it = classType as InterfaceType;
+      if (it.genericSource) {
+        let sourceSet = this.#usedMethods.get(it.genericSource);
+        if (!sourceSet) {
+          sourceSet = new Set();
+          this.#usedMethods.set(it.genericSource, sourceSet);
+        }
+        sourceSet.add(methodName);
+      }
+    }
+
     // If polymorphic, we need to mark all overrides in subclasses as used too
     if (isPolymorphic) {
       let polySet = this.#polymorphicMethods.get(classType);
@@ -1068,6 +1202,123 @@ class UsageAnalyzer {
       // For interface types, we'll handle this conservatively in isMethodUsed
       // by checking if any base interface has the method marked as polymorphic
     }
+
+    // Visit the method body to trace its dependencies (if not already visited)
+    this.#visitMethodBody(classType, methodName);
+  }
+
+  /**
+   * Visit a method's body to trace its dependencies.
+   * Short-circuits if already visited to avoid infinite recursion.
+   */
+  #visitMethodBody(
+    classType: ClassType | InterfaceType,
+    methodName: string,
+  ): void {
+    // Check if already visited (use generic source for consistency)
+    const visitKey =
+      classType.kind === TypeKind.Class
+        ? ((classType as ClassType).genericSource ?? classType)
+        : ((classType as InterfaceType).genericSource ?? classType);
+
+    let visitedSet = this.#visitedMethods.get(visitKey);
+    if (!visitedSet) {
+      visitedSet = new Set();
+      this.#visitedMethods.set(visitKey, visitedSet);
+    }
+
+    if (visitedSet.has(methodName)) {
+      return; // Already visited
+    }
+    visitedSet.add(methodName);
+
+    // Find the class declaration
+    const sourceType =
+      classType.kind === TypeKind.Class
+        ? ((classType as ClassType).genericSource ?? classType)
+        : ((classType as InterfaceType).genericSource ?? classType);
+    const decl = this.#declarationsByType.get(sourceType);
+    if (!decl || decl.type !== NodeType.ClassDeclaration) {
+      return; // Not a class or not found (interface methods have no body)
+    }
+
+    const classDecl = decl as ClassDeclaration;
+    const visitor = this.#createReferenceVisitor();
+
+    // Find and visit the method body
+    for (const member of classDecl.body) {
+      if (member.type === NodeType.MethodDefinition) {
+        const method = member as MethodDefinition;
+        const memberName = this.#getMemberName(method.name);
+        if (memberName === methodName && method.body) {
+          visit(method.body, visitor, null);
+          // Also visit parameter types
+          for (const param of method.params) {
+            visit(param.typeAnnotation, visitor, null);
+          }
+          visit(method.returnType, visitor, null);
+          return;
+        }
+      } else if (member.type === NodeType.AccessorDeclaration) {
+        const accessor = member as AccessorDeclaration;
+        const baseName = this.#getMemberName(accessor.name);
+
+        // Check for getter - handles both:
+        // - `get#fieldName` (public fields)
+        // - `get#ClassName::#fieldName` (private fields with qualified name)
+        // Note: baseName may be `size` but methodName may have `#size` for private fields
+        const expectedGetterSimple = `get#${baseName}`;
+        const endsWithPublic = methodName.endsWith(`::${baseName}`);
+        const endsWithPrivate = methodName.endsWith(`::#${baseName}`);
+        const isGetter =
+          methodName.startsWith('get#') &&
+          (methodName === expectedGetterSimple ||
+            endsWithPublic ||
+            endsWithPrivate);
+        if (isGetter && accessor.getter) {
+          visit(accessor.getter, visitor, null);
+          return;
+        }
+
+        // Check for setter - handles both:
+        // - `set#fieldName` (public fields)
+        // - `set##fieldName` (private fields where field is #fieldName)
+        const expectedSetterPublic = `set#${baseName}`;
+        const expectedSetterPrivate = `set##${baseName}`;
+        const isSetter =
+          methodName === expectedSetterPublic ||
+          methodName === expectedSetterPrivate;
+        if (isSetter && accessor.setter) {
+          visit(accessor.setter.body, visitor, null);
+          return;
+        }
+
+        // Check for explicit getter/setter method name matching the base name
+        if (methodName === baseName) {
+          if (accessor.getter) {
+            visit(accessor.getter, visitor, null);
+          }
+          if (accessor.setter) {
+            visit(accessor.setter.body, visitor, null);
+          }
+          return;
+        }
+      }
+    }
+    // Note: If method not found, it might be an implicit accessor for a field.
+    // Implicit accessors don't have bodies to visit, so we silently return.
+  }
+
+  /**
+   * Get the name of a class member (method, field, accessor).
+   */
+  #getMemberName(name: Identifier | SymbolPropertyName): string {
+    if (name.type === NodeType.Identifier) {
+      return (name as Identifier).name;
+    }
+    // SymbolPropertyName - for now, return a placeholder
+    // This would need proper symbol resolution for full support
+    return '<symbol>';
   }
 
   /**
@@ -1145,6 +1396,27 @@ class UsageAnalyzer {
     const usedSet = this.#usedMethods.get(classType);
     if (usedSet?.has(methodName)) {
       return true;
+    }
+
+    // For generic instantiations, check if method is used on the generic source
+    // Usage analysis marks methods on the generic Entry<K, V>, but codegen
+    // queries for the instantiated Entry<string, i32>
+    if (classType.kind === TypeKind.Class) {
+      const ct = classType as ClassType;
+      if (ct.genericSource) {
+        const sourceUsedSet = this.#usedMethods.get(ct.genericSource);
+        if (sourceUsedSet?.has(methodName)) {
+          return true;
+        }
+      }
+    } else if (classType.kind === TypeKind.Interface) {
+      const it = classType as InterfaceType;
+      if (it.genericSource) {
+        const sourceUsedSet = this.#usedMethods.get(it.genericSource);
+        if (sourceUsedSet?.has(methodName)) {
+          return true;
+        }
+      }
     }
 
     // For classes, check if any base class has polymorphic call to this method

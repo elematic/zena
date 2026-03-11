@@ -673,14 +673,21 @@ Small, self-contained change — no dependencies on other phases.
 `'<constructor>'` (`CONSTRUCTOR_NAME` constant in `ast.ts`), freeing `#new`
 for use as a regular private member.
 
-### Phase 4: Map Literals
+### Phase 4: Map Literals ✅
 
 **Impact**: Parser, type system, codegen.
 
-1. Add `{expr => expr, ...}` to parser
-2. Type-check as `Map<K, V>`
-3. Generate `Map` construction code
-4. Add tests
+1. ~~Add `{expr => expr, ...}` to parser~~
+2. ~~Type-check as `Map<K, V>`~~
+3. ~~Generate `Map` construction code~~
+4. ~~Add tests~~
+
+**Done**: Map literals `{"key" => value, ...}` are now fully supported:
+
+- Parser distinguishes maps from records by lookahead for `=>` after first expression
+- Type checker infers `Map<K, V>` and validates key/value type consistency
+- Codegen creates Map instance, initializes it, and calls `set()` for each entry
+- 7 codegen tests + 10 parser tests added
 
 ### Phase 5: Collection Macros
 

@@ -20,6 +20,7 @@ import {
   type IndexExpression,
   type IsExpression,
   type LogicalPattern,
+  type MapLiteral,
   type MatchExpression,
   type MemberExpression,
   type NewExpression,
@@ -310,6 +311,8 @@ function checkExpressionInternal(
       return checkArrayLiteral(ctx, expr as ArrayLiteral);
     case NodeType.RecordLiteral:
       return checkRecordLiteral(ctx, expr as RecordLiteral);
+    case NodeType.MapLiteral:
+      return checkMapLiteral(ctx, expr as MapLiteral);
     case NodeType.TupleLiteral:
       return checkTupleLiteral(ctx, expr as TupleLiteral);
     case NodeType.InlineTupleLiteral:
@@ -3211,6 +3214,78 @@ function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
     properties,
     optionalProperties.size > 0 ? optionalProperties : undefined,
   );
+}
+
+/**
+ * Type-checks a map literal: {key1 => value1, key2 => value2, ...}
+ * Returns Map<K, V> where K and V are inferred from the entries.
+ */
+function checkMapLiteral(ctx: CheckerContext, expr: MapLiteral): Type {
+  // Get the generic Map class from the stdlib
+  const genericMapType = ctx.getWellKnownType(TypeNames.Map);
+  if (!genericMapType || genericMapType.kind !== TypeKind.Class) {
+    ctx.diagnostics.reportError(
+      "Map type not found. Import from 'zena:map'.",
+      DiagnosticCode.TypeNotFound,
+    );
+    return Types.Unknown;
+  }
+
+  const mapClassType = genericMapType as ClassType;
+
+  // Empty map literal - error, require explicit type annotation
+  if (expr.entries.length === 0) {
+    ctx.diagnostics.reportError(
+      'Empty map literal requires type annotation. Use `new Map<K, V>()` instead.',
+      DiagnosticCode.TypeMismatch,
+    );
+    return Types.Unknown;
+  }
+
+  // Type-check all entries and collect key/value types
+  const keyTypes: Type[] = [];
+  const valueTypes: Type[] = [];
+
+  for (const entry of expr.entries) {
+    const keyType = checkExpression(ctx, entry.key);
+    const valueType = checkExpression(ctx, entry.value);
+    keyTypes.push(keyType);
+    valueTypes.push(valueType);
+  }
+
+  // Unify key types - all keys must have the same type
+  const firstKeyType = keyTypes[0];
+  for (let i = 1; i < keyTypes.length; i++) {
+    if (!isAssignableTo(ctx, keyTypes[i], firstKeyType)) {
+      ctx.diagnostics.reportError(
+        `Map key type mismatch: expected '${typeToString(firstKeyType)}', got '${typeToString(keyTypes[i])}'.`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+  }
+
+  // Unify value types - all values must have the same type
+  const firstValueType = valueTypes[0];
+  for (let i = 1; i < valueTypes.length; i++) {
+    if (!isAssignableTo(ctx, valueTypes[i], firstValueType)) {
+      ctx.diagnostics.reportError(
+        `Map value type mismatch: expected '${typeToString(firstValueType)}', got '${typeToString(valueTypes[i])}'.`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+  }
+
+  // Instantiate Map<K, V> with the inferred types
+  const instantiatedType = instantiateGenericClass(
+    mapClassType,
+    [firstKeyType, firstValueType],
+    ctx,
+  );
+
+  // Store the inferred type on the expression for codegen
+  expr.inferredType = instantiatedType;
+
+  return instantiatedType;
 }
 
 function checkTupleLiteral(ctx: CheckerContext, expr: TupleLiteral): Type {

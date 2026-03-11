@@ -3089,17 +3089,16 @@ export function generateClassMethods(
       }
 
       // Method-level DCE: Skip body generation for unused methods.
-      // Since unused methods are no longer registered (funcIndex === -1),
-      // we simply skip them entirely - no stub needed.
-      // Constructors are always needed if the class is used.
-      if (
-        methodInfo.index === -1 ||
-        (checkerType &&
-          methodName !== CONSTRUCTOR_NAME &&
-          !methodInfo.intrinsic &&
-          !member.isDeclare &&
-          !ctx.isMethodUsed(checkerType, methodName))
-      ) {
+      // If methodInfo.index === -1, the function was not allocated during defineClassMethods
+      // (DCE determined it wasn't needed), so we skip body generation.
+      //
+      // IMPORTANT: If methodInfo.index !== -1, the function WAS allocated and we MUST
+      // generate a body. We do NOT re-check DCE here because:
+      // 1. For generic classes, allocation was checked against the generic type (e.g., FixedArray<T>)
+      // 2. Body generation may be called with an instantiated type (e.g., FixedArray<Entry<K,V>|null>)
+      // 3. These can have different usage patterns, causing mismatch
+      // 4. A function without a body causes "reached end while decoding" WASM errors
+      if (methodInfo.index === -1) {
         continue;
       }
 
@@ -3425,13 +3424,8 @@ export function generateClassMethods(
         const methodName = getGetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
 
-        // Method-level DCE: Skip body generation for unused getters (not registered)
-        // or for @pure write-only getters
-        if (
-          methodInfo.index === -1 ||
-          (checkerType && !ctx.isMethodUsed(checkerType, methodName)) ||
-          isWriteOnly
-        ) {
+        // Method-level DCE: Skip body generation if not allocated or @pure write-only
+        if (methodInfo.index === -1 || isWriteOnly) {
           // Not registered or write-only, skip entirely
         } else {
           const body: number[] = [];
@@ -3476,13 +3470,8 @@ export function generateClassMethods(
         const methodName = getSetterName(propName);
         const methodInfo = classInfo.methods.get(methodName)!;
 
-        // Method-level DCE: Skip body generation for unused setters (not registered)
-        // or for @pure write-only setters
-        if (
-          methodInfo.index === -1 ||
-          (checkerType && !ctx.isMethodUsed(checkerType, methodName)) ||
-          isWriteOnly
-        ) {
+        // Method-level DCE: Skip body generation if not allocated or @pure write-only
+        if (methodInfo.index === -1 || isWriteOnly) {
           // Not registered or write-only, skip entirely
         } else {
           const body: number[] = [];
@@ -3558,10 +3547,8 @@ export function generateClassMethods(
         const getterInfo = classInfo.methods.get(getterName)!;
 
         // Method-level DCE for implicit field getters (not registered if unused)
-        if (
-          getterInfo.index !== -1 &&
-          (!checkerType || ctx.isMethodUsed(checkerType, getterName))
-        ) {
+        // Only check if function was allocated - don't re-check DCE (see comment in method body generation)
+        if (getterInfo.index !== -1) {
           const getterBody: number[] = [];
 
           // this.field
@@ -3583,12 +3570,8 @@ export function generateClassMethods(
           const setterInfo = classInfo.methods.get(setterName);
 
           // Method-level DCE for implicit field setters (not registered if unused)
-          // Also check setterInfo exists since immutable fields don't have setters
-          if (
-            setterInfo &&
-            setterInfo.index !== -1 &&
-            (!checkerType || ctx.isMethodUsed(checkerType, setterName))
-          ) {
+          // Only check if function was allocated - don't re-check DCE (see comment in method body generation)
+          if (setterInfo && setterInfo.index !== -1) {
             const setterBody: number[] = [];
 
             // this.field = val
