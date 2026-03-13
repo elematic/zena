@@ -2749,26 +2749,43 @@ export class Parser {
       this.#consume(TokenType.RParen, "Expected ')' after parameters.");
 
       // Parse initializer list for constructors: new(...) : field = expr, field2 = expr2 { }
+      // Also supports private fields: new(...) : #field = expr { }
       let initializerList: FieldInitializer[] | undefined;
       const isConstructor =
         name.type === NodeType.Identifier && name.name === CONSTRUCTOR_NAME;
       if (
         isConstructor &&
         this.#check(TokenType.Colon) &&
-        this.#checkAhead(TokenType.Identifier, 1) &&
-        this.#checkAhead(TokenType.Equals, 2)
+        // Public field: `: field = expr`
+        ((this.#checkAhead(TokenType.Identifier, 1) &&
+          this.#checkAhead(TokenType.Equals, 2)) ||
+          // Private field: `: #field = expr`
+          (this.#checkAhead(TokenType.Hash, 1) &&
+            this.#checkAhead(TokenType.Identifier, 2) &&
+            this.#checkAhead(TokenType.Equals, 3)))
       ) {
         this.#advance(); // consume ':'
         initializerList = [];
         do {
-          const fieldName = this.#consume(
+          // Handle private fields (#fieldName)
+          let isPrivate = false;
+          let hashToken: Token | undefined;
+          if (this.#check(TokenType.Hash)) {
+            isPrivate = true;
+            hashToken = this.#advance();
+          }
+          const fieldNameToken = this.#consume(
             TokenType.Identifier,
             'Expected field name in initializer list.',
           );
+          const fieldName = isPrivate
+            ? `#${fieldNameToken.value}`
+            : fieldNameToken.value;
+          const startToken = hashToken ?? fieldNameToken;
           const field: Identifier = {
             type: NodeType.Identifier,
-            name: fieldName.value,
-            loc: this.#locFromToken(fieldName),
+            name: fieldName,
+            loc: this.#loc(startToken, fieldNameToken),
           };
           this.#consume(
             TokenType.Equals,
@@ -2779,7 +2796,7 @@ export class Parser {
             type: NodeType.FieldInitializer,
             field,
             value,
-            loc: this.#loc(fieldName, value),
+            loc: this.#loc(startToken, value),
           });
         } while (this.#match(TokenType.Comma));
       }
