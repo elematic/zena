@@ -1,0 +1,844 @@
+// Parser for the Zena programming language
+// Ported from packages/compiler/src/lib/parser.ts
+// Self-hosted compiler implementation
+
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+import { StringReader } from 'zena:string-reader';
+import { Token, TokenType, tokenize } from './tokenizer.zena';
+import { 
+  NodeType,
+  SourceLocation,
+  Node,
+  Module,
+  Statement,
+  Expression,
+  Pattern,
+  TypeAnnotation,
+  Identifier,
+  IdentifierPattern,
+  NumberLiteral,
+  StringLiteral,
+  BooleanLiteral,
+  NullLiteral,
+  BinaryExpression,
+  UnaryExpression,
+  AssignmentExpression,
+  VariableDeclaration,
+  ExpressionStatement,
+  BlockStatement,
+  ReturnStatement,
+  BreakStatement,
+  ContinueStatement,
+  IfStatement,
+  WhileStatement,
+  NamedTypeAnnotation,
+  UnionTypeAnnotation,
+  Parameter,
+  FunctionExpression,
+  CallExpression,
+  MemberExpression,
+  IndexExpression,
+  ThisExpression,
+  ArrayLiteral,
+  PropertyAssignment,
+  RecordLiteral,
+  TupleLiteral,
+  RecordPattern,
+  BindingProperty,
+  TuplePattern
+} from './ast.zena';
+
+// ============================================================================
+// Parser
+// ============================================================================
+
+export class Parser {
+  #tokens: Array<Token>;
+  #current: i32;
+  #source: string;
+  #path: string;
+  
+  new(source: string, path: string)
+    : #source = source, #path = path, #tokens = tokenize(source), #current = 0
+  { }
+  
+  // ==========================================================================
+  // Main Entry Point
+  // ==========================================================================
+  
+  parse(): Module {
+    let body = new Array<Statement>(16);
+    
+    while (!this.#isAtEnd()) {
+      let stmt = this.#parseStatement();
+      body.push(stmt);
+    }
+    
+    return new Module(body, this.#path, this.#source, null);
+  }
+  
+  // ==========================================================================
+  // Token Navigation
+  // ==========================================================================
+  
+  #peek(): Token {
+    return this.#tokens[this.#current];
+  }
+  
+  #previous(): Token {
+    return this.#tokens[this.#current - 1];
+  }
+  
+  #isAtEnd(): boolean {
+    return this.#peek().kind == TokenType.EOF;
+  }
+  
+  #check(type: TokenType): boolean {
+    if (this.#isAtEnd()) {
+      return false;
+    }
+    return this.#peek().kind == type;
+  }
+  
+  #advance(): Token {
+    if (!this.#isAtEnd()) {
+      this.#current = this.#current + 1;
+    }
+    return this.#previous();
+  }
+  
+  #match(type: TokenType): boolean {
+    if (this.#check(type)) {
+      this.#advance();
+      return true;
+    }
+    return false;
+  }
+  
+  #consume(type: TokenType, message: string): Token {
+    if (this.#check(type)) {
+      return this.#advance();
+    }
+    // TODO: Better error handling
+    throw new Error(message);
+  }
+  
+  #makeLocation(startToken: Token): SourceLocation {
+    let endToken = this.#previous();
+    return new SourceLocation(
+      startToken.line,
+      startToken.column,
+      startToken.start,
+      endToken.end
+    );
+  }
+  
+  // ==========================================================================
+  // Statement Parsing
+  // ==========================================================================
+  
+  #parseStatement(): Statement {
+    let startToken = this.#peek();
+    
+    // Export prefix
+    var exported = false;
+    if (this.#match(TokenType.Export)) {
+      exported = true;
+    }
+    
+    // Variable declarations
+    if (this.#match(TokenType.Let)) {
+      return this.#parseVariableDeclaration('let', exported, startToken);
+    }
+    if (this.#match(TokenType.Var)) {
+      return this.#parseVariableDeclaration('var', exported, startToken);
+    }
+    
+    // Control flow
+    if (this.#match(TokenType.Return)) {
+      return this.#parseReturnStatement(startToken);
+    }
+    if (this.#match(TokenType.Break)) {
+      this.#consume(TokenType.Semi, "Expected ';' after break");
+      return new BreakStatement(this.#makeLocation(startToken));
+    }
+    if (this.#match(TokenType.Continue)) {
+      this.#consume(TokenType.Semi, "Expected ';' after continue");
+      return new ContinueStatement(this.#makeLocation(startToken));
+    }
+    if (this.#match(TokenType.If)) {
+      return this.#parseIfStatement(startToken);
+    }
+    if (this.#match(TokenType.While)) {
+      return this.#parseWhileStatement(startToken);
+    }
+    
+    // Block statement
+    if (this.#match(TokenType.LBrace)) {
+      return this.#parseBlockStatement(startToken);
+    }
+    
+    // Expression statement
+    return this.#parseExpressionStatement();
+  }
+  
+  #parseVariableDeclaration(kind: string, exported: boolean, startToken: Token): VariableDeclaration {
+    // Parse pattern (for now just identifier)
+    let pattern = this.#parsePattern();
+    
+    // Optional type annotation
+    var typeAnnotation: TypeAnnotation | null = null;
+    if (this.#match(TokenType.Colon)) {
+      typeAnnotation = this.#parseTypeAnnotation();
+    }
+    
+    // Initializer
+    this.#consume(TokenType.Equals, "Expected '=' after variable name");
+    let init = this.#parseExpression();
+    
+    this.#consume(TokenType.Semi, "Expected ';' after variable declaration");
+    
+    return new VariableDeclaration(kind, pattern, typeAnnotation, init, exported, this.#makeLocation(startToken));
+  }
+  
+  #parseReturnStatement(startToken: Token): ReturnStatement {
+    var argument: Expression | null = null;
+    
+    if (!this.#check(TokenType.Semi)) {
+      argument = this.#parseExpression();
+    }
+    
+    this.#consume(TokenType.Semi, "Expected ';' after return statement");
+    
+    return new ReturnStatement(argument, this.#makeLocation(startToken));
+  }
+  
+  #parseIfStatement(startToken: Token): IfStatement {
+    this.#consume(TokenType.LParen, "Expected '(' after 'if'");
+    let test = this.#parseExpression();
+    this.#consume(TokenType.RParen, "Expected ')' after condition");
+    
+    let consequent = this.#parseStatement();
+    
+    var alternate: Statement | null = null;
+    if (this.#match(TokenType.Else)) {
+      alternate = this.#parseStatement();
+    }
+    
+    return new IfStatement(test, consequent, alternate, this.#makeLocation(startToken));
+  }
+  
+  #parseWhileStatement(startToken: Token): WhileStatement {
+    this.#consume(TokenType.LParen, "Expected '(' after 'while'");
+    let test = this.#parseExpression();
+    this.#consume(TokenType.RParen, "Expected ')' after condition");
+    
+    let body = this.#parseStatement();
+    
+    return new WhileStatement(test, body, this.#makeLocation(startToken));
+  }
+  
+  #parseBlockStatement(startToken: Token): BlockStatement {
+    let body = new Array<Statement>(8);
+    
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      body.push(this.#parseStatement());
+    }
+    
+    this.#consume(TokenType.RBrace, "Expected '}' after block");
+    
+    return new BlockStatement(body, this.#makeLocation(startToken));
+  }
+  
+  #parseExpressionStatement(): ExpressionStatement {
+    let startToken = this.#peek();
+    let expr = this.#parseExpression();
+    this.#consume(TokenType.Semi, "Expected ';' after expression");
+    return new ExpressionStatement(expr, this.#makeLocation(startToken));
+  }
+  
+  // ==========================================================================
+  // Pattern Parsing
+  // ==========================================================================
+  
+  #parsePattern(): Pattern {
+    let startToken = this.#peek();
+    
+    // Record pattern: { a, b }
+    if (this.#match(TokenType.LBrace)) {
+      return this.#parseRecordPattern(startToken);
+    }
+    
+    // Tuple pattern: [a, b] or (a, b)
+    if (this.#match(TokenType.LBracket)) {
+      return this.#parseTuplePattern(startToken);
+    }
+    
+    // Identifier pattern (most common case)
+    return this.#parseIdentifierPattern();
+  }
+  
+  #parseIdentifierPattern(): IdentifierPattern {
+    let startToken = this.#peek();
+    let token = this.#consume(TokenType.Identifier, "Expected identifier");
+    return new IdentifierPattern(token.value, this.#makeLocation(startToken));
+  }
+  
+  #parseRecordPattern(startToken: Token): RecordPattern {
+    let properties = new Array<BindingProperty>(4);
+    
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      let propStart = this.#peek();
+      let name = this.#parseIdentifier();
+      
+      // Shorthand: { x } means { x: x }
+      var value: Pattern = new IdentifierPattern(name.name, name.loc);
+      if (this.#match(TokenType.Colon)) {
+        value = this.#parsePattern();
+      }
+      
+      properties.push(new BindingProperty(name, value, this.#makeLocation(propStart)));
+      
+      if (!this.#check(TokenType.RBrace)) {
+        this.#consume(TokenType.Comma, "Expected ',' after property");
+      }
+    }
+    
+    this.#consume(TokenType.RBrace, "Expected '}' after record pattern");
+    return new RecordPattern(properties, this.#makeLocation(startToken));
+  }
+  
+  #parseTuplePattern(startToken: Token): TuplePattern {
+    let elements = new Array<Pattern | null>(4);
+    
+    while (!this.#check(TokenType.RBracket) && !this.#isAtEnd()) {
+      // TODO: Support holes in tuple patterns (null elements)
+      elements.push(this.#parsePattern());
+      
+      if (!this.#check(TokenType.RBracket)) {
+        this.#consume(TokenType.Comma, "Expected ',' in tuple pattern");
+      }
+    }
+    
+    this.#consume(TokenType.RBracket, "Expected ']' after tuple pattern");
+    return new TuplePattern(elements, this.#makeLocation(startToken));
+  }
+  
+  // ==========================================================================
+  // Expression Parsing (Precedence Climbing)
+  // ==========================================================================
+  
+  #parseExpression(): Expression {
+    return this.#parseAssignment();
+  }
+  
+  #parseAssignment(): Expression {
+    let expr = this.#parseLogicalOr();
+    
+    if (this.#match(TokenType.Equals)) {
+      let startToken = this.#previous();
+      let value = this.#parseAssignment();
+      return new AssignmentExpression(expr, value, this.#makeLocation(startToken));
+    }
+    
+    return expr;
+  }
+  
+  #parseLogicalOr(): Expression {
+    var expr = this.#parseLogicalAnd();
+    
+    while (this.#match(TokenType.PipePipe)) {
+      let startToken = this.#previous();
+      let right = this.#parseLogicalAnd();
+      expr = new BinaryExpression('||', expr, right, this.#makeLocation(startToken));
+    }
+    
+    return expr;
+  }
+  
+  #parseLogicalAnd(): Expression {
+    var expr = this.#parseEquality();
+    
+    while (this.#match(TokenType.AmpersandAmpersand)) {
+      let startToken = this.#previous();
+      let right = this.#parseEquality();
+      expr = new BinaryExpression('&&', expr, right, this.#makeLocation(startToken));
+    }
+    
+    return expr;
+  }
+  
+  #parseEquality(): Expression {
+    var expr = this.#parseComparison();
+    
+    while (this.#check(TokenType.EqualsEquals) || this.#check(TokenType.BangEquals) ||
+           this.#check(TokenType.EqualsEqualsEquals) || this.#check(TokenType.BangEqualsEquals)) {
+      let op = this.#advance();
+      let right = this.#parseComparison();
+      let opStr = op.value;
+      expr = new BinaryExpression(opStr, expr, right, this.#makeLocation(op));
+    }
+    
+    return expr;
+  }
+  
+  #parseComparison(): Expression {
+    var expr = this.#parseTerm();
+    
+    while (this.#check(TokenType.Less) || this.#check(TokenType.LessEquals) ||
+           this.#check(TokenType.Greater) || this.#check(TokenType.GreaterEquals)) {
+      let op = this.#advance();
+      let right = this.#parseTerm();
+      let opStr = op.value;
+      expr = new BinaryExpression(opStr, expr, right, this.#makeLocation(op));
+    }
+    
+    return expr;
+  }
+  
+  #parseTerm(): Expression {
+    var expr = this.#parseFactor();
+    
+    while (this.#check(TokenType.Plus) || this.#check(TokenType.Minus)) {
+      let op = this.#advance();
+      let right = this.#parseFactor();
+      let opStr = op.value;
+      expr = new BinaryExpression(opStr, expr, right, this.#makeLocation(op));
+    }
+    
+    return expr;
+  }
+  
+  #parseFactor(): Expression {
+    var expr = this.#parseUnary();
+    
+    while (this.#check(TokenType.Star) || this.#check(TokenType.Slash) || this.#check(TokenType.Percent)) {
+      let op = this.#advance();
+      let right = this.#parseUnary();
+      let opStr = op.value;
+      expr = new BinaryExpression(opStr, expr, right, this.#makeLocation(op));
+    }
+    
+    return expr;
+  }
+  
+  #parseUnary(): Expression {
+    if (this.#check(TokenType.Bang) || this.#check(TokenType.Minus)) {
+      let op = this.#advance();
+      let argument = this.#parseUnary();
+      let opStr = op.value;
+      return new UnaryExpression(opStr, argument, true, this.#makeLocation(op));
+    }
+    
+    return this.#parseCall();
+  }
+  
+  #parseCall(): Expression {
+    var expr = this.#parsePrimary();
+    
+    while (true) {
+      if (this.#match(TokenType.LParen)) {
+        expr = this.#finishCall(expr);
+      } else if (this.#match(TokenType.Dot)) {
+        let name = this.#parseIdentifier();
+        expr = new MemberExpression(expr, name, null);
+      } else if (this.#match(TokenType.LBracket)) {
+        let index = this.#parseExpression();
+        this.#consume(TokenType.RBracket, "Expected ']' after index");
+        expr = new IndexExpression(expr, index, null);
+      } else {
+        break;
+      }
+    }
+    
+    return expr;
+  }
+  
+  #finishCall(callee: Expression): CallExpression {
+    let startToken = this.#previous();
+    let args = new Array<Expression>(4);
+    
+    if (!this.#check(TokenType.RParen)) {
+      args.push(this.#parseExpression());
+      while (this.#match(TokenType.Comma)) {
+        args.push(this.#parseExpression());
+      }
+    }
+    
+    this.#consume(TokenType.RParen, "Expected ')' after arguments");
+    
+    return new CallExpression(callee, args, null, this.#makeLocation(startToken));
+  }
+  
+  #parsePrimary(): Expression {
+    let startToken = this.#peek();
+    
+    // Boolean literals
+    if (this.#match(TokenType.True)) {
+      return new BooleanLiteral(true, this.#makeLocation(startToken));
+    }
+    if (this.#match(TokenType.False)) {
+      return new BooleanLiteral(false, this.#makeLocation(startToken));
+    }
+    
+    // Null literal
+    if (this.#match(TokenType.Null)) {
+      return new NullLiteral(this.#makeLocation(startToken));
+    }
+    
+    // Number literal
+    if (this.#match(TokenType.Number)) {
+      let token = this.#previous();
+      // TODO: Parse hex literals properly
+      let value = this.#parseNumber(token.value);
+      return new NumberLiteral(value, token.value, this.#makeLocation(startToken));
+    }
+    
+    // String literal
+    if (this.#match(TokenType.String)) {
+      let token = this.#previous();
+      return new StringLiteral(token.value, this.#makeLocation(startToken));
+    }
+    
+    // This expression
+    if (this.#match(TokenType.This)) {
+      return new ThisExpression(this.#makeLocation(startToken));
+    }
+    
+    // Parenthesized expression or arrow function
+    if (this.#match(TokenType.LParen)) {
+      // Check for arrow function: (params) =>
+      if (this.#isArrowFunction()) {
+        return this.#parseArrowFunction(startToken);
+      }
+      
+      // Regular parenthesized expression
+      let expr = this.#parseExpression();
+      this.#consume(TokenType.RParen, "Expected ')' after expression");
+      return expr;
+    }
+    
+    // Array literal
+    if (this.#match(TokenType.LBracket)) {
+      return this.#parseArrayLiteral(startToken);
+    }
+    
+    // Record literal
+    if (this.#match(TokenType.LBrace)) {
+      return this.#parseRecordLiteral(startToken);
+    }
+    
+    // Identifier
+    if (this.#check(TokenType.Identifier)) {
+      return this.#parseIdentifier();
+    }
+    
+    throw new Error("Unexpected token in expression");
+  }
+  
+  #parseNumber(raw: string): f64 {
+    // Simple number parsing for integers and floats
+    let reader = new StringReader(raw);
+    var result: f64 = 0.0 as f64;
+    var negative = false;
+    
+    // Handle negative sign
+    if (!reader.isAtEnd && reader.peekByte() == 45) { // '-'
+      negative = true;
+      reader.advanceByte();
+    }
+    
+    // Handle hex literals
+    if (!reader.isAtEnd && reader.peekByte() == 48) { // '0'
+      let next = reader.peekByteAt(1);
+      if (next == 120 || next == 88) { // 'x' or 'X'
+        reader.advanceByte(); // skip '0'
+        reader.advanceByte(); // skip 'x'
+        while (!reader.isAtEnd) {
+          let hb = reader.peekByte();
+          if (hb >= 48 && hb <= 57) { // '0'-'9'
+            result = result * (16.0 as f64) + ((hb - 48) as f64);
+            reader.advanceByte();
+          } else if (hb >= 97 && hb <= 102) { // 'a'-'f'
+            result = result * (16.0 as f64) + ((hb - 87) as f64);
+            reader.advanceByte();
+          } else if (hb >= 65 && hb <= 70) { // 'A'-'F'
+            result = result * (16.0 as f64) + ((hb - 55) as f64);
+            reader.advanceByte();
+          } else {
+            break;
+          }
+        }
+        if (negative) { result = (0.0 as f64) - result; }
+        return result;
+      }
+    }
+    
+    // Integer part
+    while (!reader.isAtEnd) {
+      let ib = reader.peekByte();
+      if (ib >= 48 && ib <= 57) { // '0'-'9'
+        result = result * (10.0 as f64) + ((ib - 48) as f64);
+        reader.advanceByte();
+      } else {
+        break;
+      }
+    }
+    
+    // Fractional part
+    if (!reader.isAtEnd && reader.peekByte() == 46) { // '.'
+      reader.advanceByte();
+      var fracDiv: f64 = 10.0 as f64;
+      while (!reader.isAtEnd) {
+        let fb = reader.peekByte();
+        if (fb >= 48 && fb <= 57) {
+          result = result + ((fb - 48) as f64) / fracDiv;
+          fracDiv = fracDiv * (10.0 as f64);
+          reader.advanceByte();
+        } else {
+          break;
+        }
+      }
+    }
+    
+    // Exponent part (e or E)
+    if (!reader.isAtEnd) {
+      let ec = reader.peekByte();
+      if (ec == 101 || ec == 69) { // 'e' or 'E'
+        reader.advanceByte();
+        var expNeg = false;
+        var expVal = 0;
+        
+        if (!reader.isAtEnd) {
+          let sign = reader.peekByte();
+          if (sign == 45) { // '-'
+            expNeg = true;
+            reader.advanceByte();
+          } else if (sign == 43) { // '+'
+            reader.advanceByte();
+          }
+        }
+        
+        while (!reader.isAtEnd) {
+          let eb = reader.peekByte();
+          if (eb >= 48 && eb <= 57) {
+            expVal = expVal * 10 + (eb - 48);
+            reader.advanceByte();
+          } else {
+            break;
+          }
+        }
+        
+        // Apply exponent
+        var exp: f64 = 1.0 as f64;
+        var j = 0;
+        while (j < expVal) {
+          exp = exp * (10.0 as f64);
+          j = j + 1;
+        }
+        if (expNeg) {
+          result = result / exp;
+        } else {
+          result = result * exp;
+        }
+      }
+    }
+    
+    if (negative) { result = (0.0 as f64) - result; }
+    return result;
+  }
+  
+  #isArrowFunction(): boolean {
+    // Look ahead to determine if this is an arrow function
+    // Simple heuristic: check for () => or (identifier) => or (identifier: type) =>
+    
+    var depth = 1;
+    var i = 1;
+    
+    // Find matching )
+    while (depth > 0) {
+      let token = this.#tokens[this.#current + i];
+      if (token.kind == TokenType.EOF) {
+        return false;
+      }
+      if (token.kind == TokenType.LParen) {
+        depth = depth + 1;
+      } else if (token.kind == TokenType.RParen) {
+        depth = depth - 1;
+      }
+      i = i + 1;
+    }
+    
+    // Check if next token after ) is =>
+    let nextToken = this.#tokens[this.#current + i];
+    return nextToken.kind == TokenType.Arrow;
+  }
+  
+  #parseArrowFunction(startToken: Token): FunctionExpression {
+    // We're after the '('
+    let params = this.#parseParameters();
+    
+    this.#consume(TokenType.RParen, "Expected ')' after parameters");
+    
+    // Optional return type
+    var returnType: TypeAnnotation | null = null;
+    if (this.#match(TokenType.Colon)) {
+      returnType = this.#parseTypeAnnotation();
+    }
+    
+    this.#consume(TokenType.Arrow, "Expected '=>' after parameters");
+    
+    // Body: expression or block
+    if (this.#check(TokenType.LBrace)) {
+      let blockStart = this.#advance();
+      let body = this.#parseBlockStatement(blockStart);
+      return new FunctionExpression(params, returnType, body, this.#makeLocation(startToken));
+    } else {
+      let body = this.#parseExpression();
+      return new FunctionExpression(params, returnType, body, this.#makeLocation(startToken));
+    }
+  }
+  
+  #parseParameters(): Array<Parameter> {
+    let params = new Array<Parameter>(4);
+    
+    if (!this.#check(TokenType.RParen)) {
+      params.push(this.#parseParameter());
+      while (this.#match(TokenType.Comma)) {
+        params.push(this.#parseParameter());
+      }
+    }
+    
+    return params;
+  }
+  
+  #parseParameter(): Parameter {
+    let startToken = this.#peek();
+    let name = this.#parseIdentifier();
+    
+    // Check for optional parameter
+    let optional = this.#match(TokenType.Question);
+    
+    // Type annotation
+    var typeAnnotation: TypeAnnotation | null = null;
+    if (this.#match(TokenType.Colon)) {
+      typeAnnotation = this.#parseTypeAnnotation();
+    }
+    
+    // Default value
+    var defaultValue: Expression | null = null;
+    if (this.#match(TokenType.Equals)) {
+      defaultValue = this.#parseExpression();
+    }
+    
+    return new Parameter(name, typeAnnotation, optional, defaultValue, this.#makeLocation(startToken));
+  }
+  
+  #parseArrayLiteral(startToken: Token): ArrayLiteral {
+    let elements = new Array<Expression>(8);
+    
+    while (!this.#check(TokenType.RBracket) && !this.#isAtEnd()) {
+      elements.push(this.#parseExpression());
+      if (!this.#check(TokenType.RBracket)) {
+        this.#consume(TokenType.Comma, "Expected ',' after array element");
+      }
+    }
+    
+    this.#consume(TokenType.RBracket, "Expected ']' after array");
+    
+    return new ArrayLiteral(elements, this.#makeLocation(startToken));
+  }
+  
+  #parseRecordLiteral(startToken: Token): RecordLiteral {
+    let properties = new Array<PropertyAssignment>(4);
+    
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      let propStart = this.#peek();
+      let name = this.#parseIdentifier();
+      
+      // Shorthand: { x } means { x: x }
+      var value: Expression = name;
+      if (this.#match(TokenType.Colon)) {
+        value = this.#parseExpression();
+      }
+      
+      properties.push(new PropertyAssignment(name, value, this.#makeLocation(propStart)));
+      
+      if (!this.#check(TokenType.RBrace)) {
+        this.#consume(TokenType.Comma, "Expected ',' after property");
+      }
+    }
+    
+    this.#consume(TokenType.RBrace, "Expected '}' after record");
+    
+    return new RecordLiteral(properties, this.#makeLocation(startToken));
+  }
+  
+  // ==========================================================================
+  // Type Annotation Parsing
+  // ==========================================================================
+  
+  #parseTypeAnnotation(): TypeAnnotation {
+    let startToken = this.#peek();
+    var type = this.#parsePrimaryType();
+    
+    // Check for union type: T | U
+    if (this.#check(TokenType.Pipe)) {
+      let types = new Array<TypeAnnotation>(4);
+      types.push(type);
+      
+      while (this.#match(TokenType.Pipe)) {
+        types.push(this.#parsePrimaryType());
+      }
+      
+      return new UnionTypeAnnotation(types, this.#makeLocation(startToken));
+    }
+    
+    return type;
+  }
+  
+  #parsePrimaryType(): TypeAnnotation {
+    let startToken = this.#peek();
+    
+    // Named type or primitive
+    if (this.#check(TokenType.Identifier)) {
+      let name = this.#advance().value;
+      
+      // Check for type arguments: Type<T>
+      var typeArgs: Array<TypeAnnotation> | null = null;
+      if (this.#match(TokenType.Less)) {
+        let args = new Array<TypeAnnotation>(4);
+        args.push(this.#parseTypeAnnotation());
+        while (this.#match(TokenType.Comma)) {
+          args.push(this.#parseTypeAnnotation());
+        }
+        this.#consume(TokenType.Greater, "Expected '>' after type arguments");
+        typeArgs = args;
+      }
+      
+      return new NamedTypeAnnotation(name, typeArgs, this.#makeLocation(startToken));
+    }
+    
+    throw new Error("Expected type annotation");
+  }
+  
+  // ==========================================================================
+  // Helper Methods
+  // ==========================================================================
+  
+  #parseIdentifier(): Identifier {
+    let startToken = this.#peek();
+    let token = this.#consume(TokenType.Identifier, "Expected identifier");
+    return new Identifier(token.value, this.#makeLocation(startToken));
+  }
+}
+
+// ============================================================================
+// Convenience function
+// ============================================================================
+
+export let parse = (source: string, path: string): Module => {
+  let parser = new Parser(source, path);
+  return parser.parse();
+};

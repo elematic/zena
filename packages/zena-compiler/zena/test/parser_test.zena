@@ -1,0 +1,204 @@
+// Parser tests
+// Ported from packages/compiler/src/test/parser/
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { Array } from 'zena:array';
+import { parse, Parser } from '../lib/parser.zena';
+import { 
+  NodeType, 
+  Module, 
+  Statement, 
+  Expression,
+  VariableDeclaration,
+  Identifier,
+  IdentifierPattern,
+  NumberLiteral,
+  StringLiteral,
+  BooleanLiteral,
+  BinaryExpression,
+  ExpressionStatement
+} from '../lib/ast.zena';
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
+
+let nodeTypeToI32 = (t: NodeType): i32 => {
+  return t as i32;
+};
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+export let tests = suite('Parser', (): void => {
+
+  // ==========================================================================
+  // Variable Declarations
+  // ==========================================================================
+
+  suite('Variable Declarations', (): void => {
+    test('should parse let declaration', (ctx: TestContext): void => {
+      let source = 'let x = 1;';
+      let mod = parse(source, 'test.zena');
+      
+      equal(mod.body.length, 1);
+      
+      let stmt = mod.body[0];
+      equal(nodeTypeToI32(stmt.nodeType), nodeTypeToI32(NodeType.VariableDeclaration));
+      
+      let decl = stmt as VariableDeclaration;
+      equal(decl.kind, 'let');
+      isFalse(decl.exported);
+      
+      let pattern = decl.pattern as IdentifierPattern;
+      equal(nodeTypeToI32(pattern.nodeType), nodeTypeToI32(NodeType.Identifier));
+      equal(pattern.name, 'x');
+      
+      let init = decl.init as NumberLiteral;
+      equal(nodeTypeToI32(init.nodeType), nodeTypeToI32(NodeType.NumberLiteral));
+      equal(init.raw, '1');
+    });
+
+    test('should parse var declaration', (ctx: TestContext): void => {
+      let source = 'var y = 42;';
+      let mod = parse(source, 'test.zena');
+      
+      equal(mod.body.length, 1);
+      
+      let decl = mod.body[0] as VariableDeclaration;
+      equal(decl.kind, 'var');
+      
+      let pattern = decl.pattern as IdentifierPattern;
+      equal(pattern.name, 'y');
+      
+      let init = decl.init as NumberLiteral;
+      equal(init.raw, '42');
+    });
+
+    test('should parse exported let declaration', (ctx: TestContext): void => {
+      let source = 'export let z = 0;';
+      let mod = parse(source, 'test.zena');
+      
+      let decl = mod.body[0] as VariableDeclaration;
+      isTrue(decl.exported);
+      equal(decl.kind, 'let');
+      
+      let pattern = decl.pattern as IdentifierPattern;
+      equal(pattern.name, 'z');
+    });
+  });
+
+  // ==========================================================================
+  // Expressions
+  // ==========================================================================
+
+  suite('Expressions', (): void => {
+    test('should parse binary expression', (ctx: TestContext): void => {
+      let source = 'x + 1;';
+      let mod = parse(source, 'test.zena');
+      
+      equal(mod.body.length, 1);
+      
+      let stmt = mod.body[0] as ExpressionStatement;
+      let expr = stmt.expression as BinaryExpression;
+      
+      equal(nodeTypeToI32(expr.nodeType), nodeTypeToI32(NodeType.BinaryExpression));
+      equal(expr.operator, '+');
+      
+      let left = expr.left as Identifier;
+      equal(left.name, 'x');
+      
+      let right = expr.right as NumberLiteral;
+      equal(right.raw, '1');
+    });
+
+    test('should parse subtraction', (ctx: TestContext): void => {
+      let source = 'a - b;';
+      let mod = parse(source, 'test.zena');
+      
+      let stmt = mod.body[0] as ExpressionStatement;
+      let expr = stmt.expression as BinaryExpression;
+      
+      equal(expr.operator, '-');
+    });
+
+    test('should parse multiplication', (ctx: TestContext): void => {
+      let source = 'a * b;';
+      let mod = parse(source, 'test.zena');
+      
+      let stmt = mod.body[0] as ExpressionStatement;
+      let expr = stmt.expression as BinaryExpression;
+      
+      equal(expr.operator, '*');
+    });
+
+    test('should parse division', (ctx: TestContext): void => {
+      let source = 'a / b;';
+      let mod = parse(source, 'test.zena');
+      
+      let stmt = mod.body[0] as ExpressionStatement;
+      let expr = stmt.expression as BinaryExpression;
+      
+      equal(expr.operator, '/');
+    });
+
+    test('should respect operator precedence', (ctx: TestContext): void => {
+      let source = 'a + b * c;';
+      let mod = parse(source, 'test.zena');
+      
+      let stmt = mod.body[0] as ExpressionStatement;
+      let expr = stmt.expression as BinaryExpression;
+      
+      // Should be a + (b * c), so outer is +
+      equal(expr.operator, '+');
+      
+      // Left should be identifier a
+      let left = expr.left as Identifier;
+      equal(left.name, 'a');
+      
+      // Right should be b * c
+      let right = expr.right as BinaryExpression;
+      equal(right.operator, '*');
+    });
+  });
+
+  // ==========================================================================
+  // Literals
+  // ==========================================================================
+
+  suite('Literals', (): void => {
+    test('should parse boolean true', (ctx: TestContext): void => {
+      let source = 'true;';
+      let mod = parse(source, 'test.zena');
+      
+      let stmt = mod.body[0] as ExpressionStatement;
+      let expr = stmt.expression as BooleanLiteral;
+      
+      equal(nodeTypeToI32(expr.nodeType), nodeTypeToI32(NodeType.BooleanLiteral));
+      isTrue(expr.value);
+    });
+
+    test('should parse boolean false', (ctx: TestContext): void => {
+      let source = 'false;';
+      let mod = parse(source, 'test.zena');
+      
+      let stmt = mod.body[0] as ExpressionStatement;
+      let expr = stmt.expression as BooleanLiteral;
+      
+      isFalse(expr.value);
+    });
+
+    test('should parse string literal', (ctx: TestContext): void => {
+      let source = "'hello';";
+      let mod = parse(source, 'test.zena');
+      
+      let stmt = mod.body[0] as ExpressionStatement;
+      let expr = stmt.expression as StringLiteral;
+      
+      equal(nodeTypeToI32(expr.nodeType), nodeTypeToI32(NodeType.StringLiteral));
+      equal(expr.value, 'hello');
+    });
+  });
+});
