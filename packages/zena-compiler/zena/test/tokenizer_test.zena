@@ -1,0 +1,473 @@
+// Tokenizer tests
+// Ported from packages/compiler/src/test/lexer/
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { Array } from 'zena:array';
+import { tokenize, Token, TokenType } from '../lib/tokenizer.zena';
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
+
+// Helper to check token type and value
+let assertToken = (token: Token, expectedType: TokenType, expectedValue: string): void => {
+  equal(token.kind as i32, expectedType as i32);
+  equal(token.value, expectedValue);
+};
+
+// Helper to check just token type
+let assertTokenType = (token: Token, expectedType: TokenType): void => {
+  equal(token.kind as i32, expectedType as i32);
+};
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+export let tests = suite('Tokenizer', (): void => {
+
+  // ==========================================================================
+  // Hex Literals
+  // ==========================================================================
+
+  suite('Hex Literals', (): void => {
+    test('should tokenize hex integer literals', (ctx: TestContext): void => {
+      let input = '0x123 0XABC 0x0 0xFF';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.Number, '0x123');
+      assertToken(tokens[1], TokenType.Number, '0XABC');
+      assertToken(tokens[2], TokenType.Number, '0x0');
+      assertToken(tokens[3], TokenType.Number, '0xFF');
+      assertTokenType(tokens[4], TokenType.EOF);
+
+      equal(tokens.length, 5);
+    });
+
+    test('should tokenize hex integer literals mixed with other tokens', (ctx: TestContext): void => {
+      let input = 'let x = 0x1A;';
+      let tokens = tokenize(input);
+
+      assertTokenType(tokens[0], TokenType.Let);
+      assertToken(tokens[1], TokenType.Identifier, 'x');
+      assertTokenType(tokens[2], TokenType.Equals);
+      assertToken(tokens[3], TokenType.Number, '0x1A');
+      assertTokenType(tokens[4], TokenType.Semi);
+      assertTokenType(tokens[5], TokenType.EOF);
+
+      equal(tokens.length, 6);
+    });
+  });
+
+  // ==========================================================================
+  // Basic Tokens
+  // ==========================================================================
+
+  suite('Basic Tokens', (): void => {
+    test('should tokenize keywords', (ctx: TestContext): void => {
+      let input = 'let var class if else while for return';
+      let tokens = tokenize(input);
+
+      assertTokenType(tokens[0], TokenType.Let);
+      assertTokenType(tokens[1], TokenType.Var);
+      assertTokenType(tokens[2], TokenType.Class);
+      assertTokenType(tokens[3], TokenType.If);
+      assertTokenType(tokens[4], TokenType.Else);
+      assertTokenType(tokens[5], TokenType.While);
+      assertTokenType(tokens[6], TokenType.For);
+      assertTokenType(tokens[7], TokenType.Return);
+      assertTokenType(tokens[8], TokenType.EOF);
+
+      equal(tokens.length, 9);
+    });
+
+    test('should tokenize identifiers', (ctx: TestContext): void => {
+      let input = 'foo bar_baz $test _private';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.Identifier, 'foo');
+      assertToken(tokens[1], TokenType.Identifier, 'bar_baz');
+      assertToken(tokens[2], TokenType.Identifier, '$test');
+      assertToken(tokens[3], TokenType.Identifier, '_private');
+      assertTokenType(tokens[4], TokenType.EOF);
+
+      equal(tokens.length, 5);
+    });
+
+    test('should tokenize decimal numbers', (ctx: TestContext): void => {
+      let input = '123 456 0 42';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.Number, '123');
+      assertToken(tokens[1], TokenType.Number, '456');
+      assertToken(tokens[2], TokenType.Number, '0');
+      assertToken(tokens[3], TokenType.Number, '42');
+      assertTokenType(tokens[4], TokenType.EOF);
+
+      equal(tokens.length, 5);
+    });
+
+    test('should tokenize floating point numbers', (ctx: TestContext): void => {
+      let input = '3.14 0.5 123.456';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.Number, '3.14');
+      assertToken(tokens[1], TokenType.Number, '0.5');
+      assertToken(tokens[2], TokenType.Number, '123.456');
+      assertTokenType(tokens[3], TokenType.EOF);
+
+      equal(tokens.length, 4);
+    });
+  });
+
+  // ==========================================================================
+  // Strings
+  // ==========================================================================
+
+  suite('Strings', (): void => {
+    test('should tokenize single-quoted strings', (ctx: TestContext): void => {
+      let input = "'hello' 'world'";
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.String, 'hello');
+      assertToken(tokens[1], TokenType.String, 'world');
+      assertTokenType(tokens[2], TokenType.EOF);
+
+      equal(tokens.length, 3);
+    });
+
+    test('should tokenize double-quoted strings', (ctx: TestContext): void => {
+      let input = '"hello" "world"';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.String, 'hello');
+      assertToken(tokens[1], TokenType.String, 'world');
+      assertTokenType(tokens[2], TokenType.EOF);
+
+      equal(tokens.length, 3);
+    });
+
+    test('should handle escape sequences', (ctx: TestContext): void => {
+      // Test newline escape
+      let input = '"hello\\nworld"';
+      let tokens = tokenize(input);
+      // The value should contain an actual newline character
+      equal(tokens[0].value.length, 11); // "hello" + newline + "world"
+      assertTokenType(tokens[0], TokenType.String);
+    });
+  });
+
+  // ==========================================================================
+  // Operators
+  // ==========================================================================
+
+  suite('Operators', (): void => {
+    test('should tokenize comparison operators', (ctx: TestContext): void => {
+      let input = '== != === !== < > <= >=';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.EqualsEquals, '==');
+      assertToken(tokens[1], TokenType.BangEquals, '!=');
+      assertToken(tokens[2], TokenType.EqualsEqualsEquals, '===');
+      assertToken(tokens[3], TokenType.BangEqualsEquals, '!==');
+      assertToken(tokens[4], TokenType.Less, '<');
+      assertToken(tokens[5], TokenType.Greater, '>');
+      assertToken(tokens[6], TokenType.LessEquals, '<=');
+      assertToken(tokens[7], TokenType.GreaterEquals, '>=');
+      assertTokenType(tokens[8], TokenType.EOF);
+
+      equal(tokens.length, 9);
+    });
+
+    test('should tokenize arithmetic operators', (ctx: TestContext): void => {
+      let input = '+ - * / %';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.Plus, '+');
+      assertToken(tokens[1], TokenType.Minus, '-');
+      assertToken(tokens[2], TokenType.Star, '*');
+      assertToken(tokens[3], TokenType.Slash, '/');
+      assertToken(tokens[4], TokenType.Percent, '%');
+      assertTokenType(tokens[5], TokenType.EOF);
+
+      equal(tokens.length, 6);
+    });
+
+    test('should tokenize logical operators', (ctx: TestContext): void => {
+      let input = '&& || !';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.AmpersandAmpersand, '&&');
+      assertToken(tokens[1], TokenType.PipePipe, '||');
+      assertToken(tokens[2], TokenType.Bang, '!');
+      assertTokenType(tokens[3], TokenType.EOF);
+
+      equal(tokens.length, 4);
+    });
+
+    test('should tokenize bitwise operators', (ctx: TestContext): void => {
+      let input = '& | ^ << >> >>>';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.Ampersand, '&');
+      assertToken(tokens[1], TokenType.Pipe, '|');
+      assertToken(tokens[2], TokenType.Caret, '^');
+      assertToken(tokens[3], TokenType.LessLess, '<<');
+      assertToken(tokens[4], TokenType.GreaterGreater, '>>');
+      assertToken(tokens[5], TokenType.GreaterGreaterGreater, '>>>');
+      assertTokenType(tokens[6], TokenType.EOF);
+
+      equal(tokens.length, 7);
+    });
+
+    test('should tokenize arrow', (ctx: TestContext): void => {
+      let input = '=>';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.Arrow, '=>');
+      assertTokenType(tokens[1], TokenType.EOF);
+
+      equal(tokens.length, 2);
+    });
+
+    test('should tokenize pipe greater', (ctx: TestContext): void => {
+      let input = '|>';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.PipeGreater, '|>');
+      assertTokenType(tokens[1], TokenType.EOF);
+
+      equal(tokens.length, 2);
+    });
+  });
+
+  // ==========================================================================
+  // Punctuation
+  // ==========================================================================
+
+  suite('Punctuation', (): void => {
+    test('should tokenize brackets and braces', (ctx: TestContext): void => {
+      let input = '( ) { } [ ]';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.LParen, '(');
+      assertToken(tokens[1], TokenType.RParen, ')');
+      assertToken(tokens[2], TokenType.LBrace, '{');
+      assertToken(tokens[3], TokenType.RBrace, '}');
+      assertToken(tokens[4], TokenType.LBracket, '[');
+      assertToken(tokens[5], TokenType.RBracket, ']');
+      assertTokenType(tokens[6], TokenType.EOF);
+
+      equal(tokens.length, 7);
+    });
+
+    test('should tokenize delimiters', (ctx: TestContext): void => {
+      let input = ': ; , .';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.Colon, ':');
+      assertToken(tokens[1], TokenType.Semi, ';');
+      assertToken(tokens[2], TokenType.Comma, ',');
+      assertToken(tokens[3], TokenType.Dot, '.');
+      assertTokenType(tokens[4], TokenType.EOF);
+
+      equal(tokens.length, 5);
+    });
+
+    test('should tokenize dot variations', (ctx: TestContext): void => {
+      let input = '. .. ...';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.Dot, '.');
+      assertToken(tokens[1], TokenType.DotDot, '..');
+      assertToken(tokens[2], TokenType.DotDotDot, '...');
+      assertTokenType(tokens[3], TokenType.EOF);
+
+      equal(tokens.length, 4);
+    });
+
+    test('should tokenize hash and at', (ctx: TestContext): void => {
+      let input = '# @';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.Hash, '#');
+      assertToken(tokens[1], TokenType.At, '@');
+      assertTokenType(tokens[2], TokenType.EOF);
+
+      equal(tokens.length, 3);
+    });
+  });
+
+  // ==========================================================================
+  // Comments
+  // ==========================================================================
+
+  suite('Comments', (): void => {
+    test('should skip single-line comments', (ctx: TestContext): void => {
+      let input = 'let x // this is a comment
+= 5';
+      let tokens = tokenize(input);
+
+      assertTokenType(tokens[0], TokenType.Let);
+      assertToken(tokens[1], TokenType.Identifier, 'x');
+      assertToken(tokens[2], TokenType.Equals, '=');
+      assertToken(tokens[3], TokenType.Number, '5');
+      assertTokenType(tokens[4], TokenType.EOF);
+
+      equal(tokens.length, 5);
+    });
+
+    test('should skip multi-line comments', (ctx: TestContext): void => {
+      let input = 'let /* comment */ x = 5';
+      let tokens = tokenize(input);
+
+      assertTokenType(tokens[0], TokenType.Let);
+      assertToken(tokens[1], TokenType.Identifier, 'x');
+      assertToken(tokens[2], TokenType.Equals, '=');
+      assertToken(tokens[3], TokenType.Number, '5');
+      assertTokenType(tokens[4], TokenType.EOF);
+
+      equal(tokens.length, 5);
+    });
+  });
+
+  // ==========================================================================
+  // Template Literals
+  // ==========================================================================
+
+  suite('Template Literals', (): void => {
+    test('should tokenize simple template literal', (ctx: TestContext): void => {
+      let input = '`hello world`';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.NoSubstitutionTemplate, 'hello world');
+      assertTokenType(tokens[1], TokenType.EOF);
+
+      equal(tokens.length, 2);
+    });
+
+    test('should tokenize template literal with expression', (ctx: TestContext): void => {
+      // Note: Using escaped backtick for the test string
+      let input = '`hello ${name}!`';
+      let tokens = tokenize(input);
+
+      // TemplateHead: "hello "
+      assertToken(tokens[0], TokenType.TemplateHead, 'hello ');
+      // Identifier: name
+      assertToken(tokens[1], TokenType.Identifier, 'name');
+      // TemplateTail: "!"
+      assertToken(tokens[2], TokenType.TemplateTail, '!');
+      assertTokenType(tokens[3], TokenType.EOF);
+
+      equal(tokens.length, 4);
+    });
+
+    test('should tokenize template literal with multiple expressions', (ctx: TestContext): void => {
+      let input = '`${a}+${b}=${c}`';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.TemplateHead, '');
+      assertToken(tokens[1], TokenType.Identifier, 'a');
+      assertToken(tokens[2], TokenType.TemplateMiddle, '+');
+      assertToken(tokens[3], TokenType.Identifier, 'b');
+      assertToken(tokens[4], TokenType.TemplateMiddle, '=');
+      assertToken(tokens[5], TokenType.Identifier, 'c');
+      assertToken(tokens[6], TokenType.TemplateTail, '');
+      assertTokenType(tokens[7], TokenType.EOF);
+
+      equal(tokens.length, 8);
+    });
+  });
+
+  // ==========================================================================
+  // Complex Expressions
+  // ==========================================================================
+
+  suite('Complex Expressions', (): void => {
+    test('should tokenize function declaration', (ctx: TestContext): void => {
+      let input = 'const add = (a: i32, b: i32) => a + b;';
+      let tokens = tokenize(input);
+
+      // const -> Identifier (not a keyword in Zena lexer)
+      assertToken(tokens[0], TokenType.Identifier, 'const');
+      assertToken(tokens[1], TokenType.Identifier, 'add');
+      assertToken(tokens[2], TokenType.Equals, '=');
+      assertToken(tokens[3], TokenType.LParen, '(');
+      assertToken(tokens[4], TokenType.Identifier, 'a');
+      assertToken(tokens[5], TokenType.Colon, ':');
+      assertToken(tokens[6], TokenType.Identifier, 'i32');
+      assertToken(tokens[7], TokenType.Comma, ',');
+      assertToken(tokens[8], TokenType.Identifier, 'b');
+      assertToken(tokens[9], TokenType.Colon, ':');
+      assertToken(tokens[10], TokenType.Identifier, 'i32');
+      assertToken(tokens[11], TokenType.RParen, ')');
+      assertToken(tokens[12], TokenType.Arrow, '=>');
+      assertToken(tokens[13], TokenType.Identifier, 'a');
+      assertToken(tokens[14], TokenType.Plus, '+');
+      assertToken(tokens[15], TokenType.Identifier, 'b');
+      assertToken(tokens[16], TokenType.Semi, ';');
+      assertTokenType(tokens[17], TokenType.EOF);
+
+      equal(tokens.length, 18);
+    });
+
+    test('should tokenize class declaration', (ctx: TestContext): void => {
+      let input = 'class Point { x: i32; y: i32; }';
+      let tokens = tokenize(input);
+
+      assertTokenType(tokens[0], TokenType.Class);
+      assertToken(tokens[1], TokenType.Identifier, 'Point');
+      assertToken(tokens[2], TokenType.LBrace, '{');
+      assertToken(tokens[3], TokenType.Identifier, 'x');
+      assertToken(tokens[4], TokenType.Colon, ':');
+      assertToken(tokens[5], TokenType.Identifier, 'i32');
+      assertToken(tokens[6], TokenType.Semi, ';');
+      assertToken(tokens[7], TokenType.Identifier, 'y');
+      assertToken(tokens[8], TokenType.Colon, ':');
+      assertToken(tokens[9], TokenType.Identifier, 'i32');
+      assertToken(tokens[10], TokenType.Semi, ';');
+      assertToken(tokens[11], TokenType.RBrace, '}');
+      assertTokenType(tokens[12], TokenType.EOF);
+
+      equal(tokens.length, 13);
+    });
+  });
+
+  // ==========================================================================
+  // Token Positions
+  // ==========================================================================
+
+  suite('Token Positions', (): void => {
+    test('should track line and column correctly', (ctx: TestContext): void => {
+      let input = 'let x
+let y';
+      let tokens = tokenize(input);
+
+      // First line: let x
+      equal(tokens[0].line, 1);
+      equal(tokens[0].column, 1);
+      equal(tokens[1].line, 1);
+      equal(tokens[1].column, 5);
+
+      // Second line: let y
+      equal(tokens[2].line, 2);
+      equal(tokens[2].column, 1);
+      equal(tokens[3].line, 2);
+      equal(tokens[3].column, 5);
+    });
+
+    test('should track start and end positions', (ctx: TestContext): void => {
+      let input = 'let foo = 123;';
+      let tokens = tokenize(input);
+
+      // 'let' spans positions 0-3
+      equal(tokens[0].start, 0);
+      equal(tokens[0].end, 3);
+
+      // 'foo' spans positions 4-7
+      equal(tokens[1].start, 4);
+      equal(tokens[1].end, 7);
+    });
+  });
+});
