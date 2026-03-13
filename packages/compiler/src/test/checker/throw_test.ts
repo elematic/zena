@@ -57,9 +57,7 @@ suite('Checker: Throw Expression', () => {
     const input = `
       class Error {}
       class AssertionError extends Error {
-        new(msg: string, name: string) {
-          super();
-        }
+        new(msg: string, name: string) : super() { }
       }
       
       let fn = () => {};

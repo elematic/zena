@@ -143,6 +143,69 @@ export function generateDefaultValue(
 }
 
 /**
+ * Generate a super() call (for derived class constructors).
+ * Used by both inline super() in body and super() in initializer list.
+ *
+ * For extension classes: super(value) stores the value in `this`.
+ * For regular classes: calls the superclass constructor.
+ */
+export function generateSuperCall(
+  ctx: CodegenContext,
+  args: Expression[],
+  body: number[],
+): void {
+  if (!ctx.currentClass) {
+    throw new Error('generateSuperCall called outside of class context');
+  }
+
+  // Handle extension classes
+  if (ctx.currentClass.isExtension) {
+    if (args.length !== 1) {
+      throw new Error('Extension super call expects 1 argument');
+    }
+    generateExpression(ctx, args[0], body);
+    body.push(Opcode.local_set);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
+    return;
+  }
+
+  // Handle regular derived classes
+  if (!ctx.currentClass.superClass || !ctx.currentClass.superClassType) {
+    throw new Error(
+      `Super call in class ${ctx.currentClass.name} but no superclass defined`,
+    );
+  }
+
+  const superClassInfo = ctx.getClassInfo(ctx.currentClass.superClassType);
+  if (!superClassInfo) {
+    throw new Error(
+      `Super class not found for ${ctx.currentClass.name} via identity lookup`,
+    );
+  }
+
+  const methodInfo = superClassInfo.methods.get(CONSTRUCTOR_NAME);
+  if (!methodInfo) {
+    // No constructor in superclass - just return (nothing to call)
+    return;
+  }
+
+  // Load 'this'
+  body.push(Opcode.local_get, 0);
+
+  // Generate arguments
+  for (const arg of args) {
+    generateExpression(ctx, arg, body);
+  }
+
+  // Static call to superclass constructor
+  body.push(Opcode.call);
+  if (methodInfo.index === -1) {
+    throw new Error('Calling invalid super constructor index -1');
+  }
+  body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+}
+
+/**
  * Ensures a RecordInfo exists for the given abstract record type.
  * Creates the fat pointer struct and vtable types if they don't exist.
  *
@@ -3318,6 +3381,13 @@ export function generateClassMethods(
           body.push(Opcode.ref_as_non_null);
         } else if (!hasSuperClass) {
           // Standard mutable-only pattern: struct_new_default + struct_set
+
+          // Handle superInitializer for extension classes first
+          if (classInfo.isExtension && member.superInitializer) {
+            // Extension class super(value) in init list: store value in 'this' local
+            generateSuperCall(ctx, member.superInitializer.arguments, body);
+          }
+
           for (const m of decl.body) {
             if (m.type === NodeType.FieldDefinition && m.value) {
               if (m.isStatic) continue;
@@ -3340,8 +3410,62 @@ export function generateClassMethods(
             generateBlockStatement(ctx, member.body, body);
           }
         } else {
-          // Has superclass - existing pattern
-          if (member.body && member.body.type === NodeType.BlockStatement) {
+          // Has superclass - handle both superInitializer in init list and super() in body
+
+          if (member.superInitializer) {
+            // New pattern: super() in initializer list (Dart-style)
+            // 1. Generate field initializers from initializerList
+            if (member.initializerList) {
+              for (const init of member.initializerList) {
+                const memberName = init.field.name;
+                const fieldName = manglePrivateName(decl.name.name, memberName);
+                const fieldInfo = classInfo.fields.get(fieldName);
+                if (fieldInfo) {
+                  body.push(Opcode.local_get, 0); // this
+                  generateExpression(ctx, init.value, body);
+                  body.push(0xfb, GcOpcode.struct_set);
+                  body.push(
+                    ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+                  );
+                  body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+                }
+              }
+            }
+
+            // 2. Generate super() call from superInitializer
+            generateSuperCall(ctx, member.superInitializer.arguments, body);
+
+            // 3. Generate inline field defaults (for fields not in initializerList)
+            const initializedFields = new Set(
+              member.initializerList?.map((init) => init.field.name) ?? [],
+            );
+            for (const m of decl.body) {
+              if (m.type === NodeType.FieldDefinition && m.value) {
+                if (m.isStatic) continue;
+                const memberName = getMemberName(m.name);
+                // Skip if already initialized in initializerList
+                if (initializedFields.has(memberName)) continue;
+                const fieldName = manglePrivateName(decl.name.name, memberName);
+                const fieldInfo = classInfo.fields.get(fieldName)!;
+                body.push(Opcode.local_get, 0);
+                generateExpression(ctx, m.value, body);
+                body.push(0xfb, GcOpcode.struct_set);
+                body.push(
+                  ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+                );
+                body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+              }
+            }
+
+            // 4. Generate body
+            if (member.body && member.body.type === NodeType.BlockStatement) {
+              generateBlockStatement(ctx, member.body, body);
+            }
+          } else if (
+            member.body &&
+            member.body.type === NodeType.BlockStatement
+          ) {
+            // Existing pattern: super() in body
             for (const stmt of member.body.body) {
               generateFunctionStatement(ctx, stmt, body);
 

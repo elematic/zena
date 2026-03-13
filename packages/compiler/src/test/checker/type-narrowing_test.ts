@@ -276,10 +276,7 @@ suite('TypeChecker: Type Narrowing', () => {
 
         class Dog extends Animal {
           breed: string;
-          new(name: string, breed: string) {
-            super(name);
-            this.breed = breed;
-          }
+          new(name: string, breed: string) : breed = breed, super(name) { }
         }
 
         let process = (animal: Animal): string => {

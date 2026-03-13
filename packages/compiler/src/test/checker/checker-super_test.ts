@@ -11,9 +11,7 @@ suite('Checker - Super', () => {
         new(x: i32) {}
       }
       class B extends A {
-        new(x: i32) {
-          super(x);
-        }
+        new(x: i32) : super(x) { }
       }
     `;
     const parser = new Parser(source);
@@ -39,7 +37,8 @@ suite('Checker - Super', () => {
     const diagnostics = checker.check();
 
     assert.ok(diagnostics.length > 0);
-    assert.equal(diagnostics[0].code, DiagnosticCode.UnknownError); // 'super' call can only be used inside a class constructor
+    // super() in body is rejected with message to use initializer list
+    assert.match(diagnostics[0].message, /initializer list/);
   });
 
   test('should detect super call with wrong arguments', () => {
@@ -48,9 +47,7 @@ suite('Checker - Super', () => {
         new(x: i32) {}
       }
       class B extends A {
-        new() {
-          super();
-        }
+        new() : super() { }
       }
     `;
     const parser = new Parser(source);

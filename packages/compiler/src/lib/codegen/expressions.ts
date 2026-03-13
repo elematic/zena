@@ -3244,54 +3244,11 @@ function generateCallExpression(
       body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
     }
   } else if (expr.callee.type === NodeType.SuperExpression) {
-    // Super constructor call
-    if (ctx.currentClass && ctx.currentClass.isExtension) {
-      // Extension class super call: super(value) -> this = value
-      if (expr.arguments.length !== 1) {
-        throw new Error('Extension super call expects 1 argument');
-      }
-      generateExpression(ctx, expr.arguments[0], body);
-      body.push(Opcode.local_set);
-      body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
-      return;
-    }
-
-    if (!ctx.currentClass || !ctx.currentClass.superClass) {
-      throw new Error(
-        'Super constructor call outside of class with superclass',
-      );
-    }
-    // Identity-based lookup (no fallback)
-    if (!ctx.currentClass.superClassType) {
-      throw new Error(
-        `superClassType not set for ${ctx.currentClass.name} (superClass: ${ctx.currentClass.superClass})`,
-      );
-    }
-    const superClassInfo = ctx.getClassInfo(ctx.currentClass.superClassType);
-    if (!superClassInfo) {
-      throw new Error(
-        `Super class not found for ${ctx.currentClass.name} via identity lookup`,
-      );
-    }
-    const methodInfo = superClassInfo.methods.get(CONSTRUCTOR_NAME);
-    if (!methodInfo) {
-      throw new Error(`Constructor not found in superclass`);
-    }
-
-    // Load 'this'
-    body.push(Opcode.local_get, 0);
-
-    // Args
-    for (const arg of expr.arguments) {
-      generateExpression(ctx, arg, body);
-    }
-
-    // Static Call
-    body.push(Opcode.call);
-    if (methodInfo.index === -1)
-      throw new Error(`Calling invalid super constructor index -1`);
-    body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
-    return;
+    // super() calls in constructor body are no longer supported.
+    // Use initializer list syntax: new(...) : super(...) { }
+    throw new Error(
+      'super() in constructor body is not supported. Use initializer list: new(...) : super(...) { }',
+    );
   } else {
     // Check if it's a direct call to a global function
     let isDirectCall = false;

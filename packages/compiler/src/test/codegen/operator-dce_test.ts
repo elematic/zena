@@ -216,10 +216,7 @@ suite('Operator Method DCE', () => {
       class Derived extends Base {
         value: i32;
         
-        new(v: i32) {
-          super();
-          this.value = v;
-        }
+        new(v: i32) : value = v, super() { }
         
         operator ==(other: Base): boolean {
           // Override to check value

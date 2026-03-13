@@ -278,10 +278,7 @@ suite('TypeChecker - Generics', () => {
       }
       class Derived<T> extends Base<T> {
         extra: i32;
-        new(value: T, extra: i32) {
-          super(value);
-          this.extra = extra;
-        }
+        new(value: T, extra: i32) : extra = extra, super(value) { }
       }
     `;
     const parser = new Parser(input);
@@ -303,7 +300,7 @@ suite('TypeChecker - Generics', () => {
       
       // Dog extends Animal, so T extends Dog satisfies T extends Animal
       class DogContainer<T extends Dog> extends Container<T> {
-        new(v: T) { super(v); }
+        new(v: T) : super(v) { }
       }
     `;
     const parser = new Parser(input);
@@ -323,7 +320,7 @@ suite('TypeChecker - Generics', () => {
       }
       
       class SpecialContainer<T extends Animal> extends Container<T> {
-        new(v: T) { super(v); }
+        new(v: T) : super(v) { }
       }
     `;
     const parser = new Parser(input);
@@ -344,7 +341,7 @@ suite('TypeChecker - Generics', () => {
       
       // T has no constraint, but Container requires T extends Animal
       class BadContainer<T> extends Container<T> {
-        new(v: T) { super(v); }
+        new(v: T) : super(v) { }
       }
     `;
     const parser = new Parser(input);
@@ -370,7 +367,7 @@ suite('TypeChecker - Generics', () => {
       
       // Plant is not related to Animal
       class PlantContainer<T extends Plant> extends Container<T> {
-        new(v: T) { super(v); }
+        new(v: T) : super(v) { }
       }
     `;
     const parser = new Parser(input);

@@ -35,9 +35,7 @@ suite('Codegen: Generics', () => {
       }
       
       class Derived extends Base {
-        new() {
-          super();
-        }
+        new() : super() { }
       }
       
       class Container<T extends Base> {
@@ -67,9 +65,7 @@ suite('Codegen: Generics', () => {
       }
       
       class Derived extends Base {
-        new() {
-          super();
-        }
+        new() : super() { }
       }
       
       let process = <T extends Base>(x: T): T => x;
@@ -99,10 +95,7 @@ suite('Codegen: Generics', () => {
       
       class Derived<T> extends Base<T> {
         extra: i32;
-        new(value: T, extra: i32) {
-          super(value);
-          this.extra = extra;
-        }
+        new(value: T, extra: i32) : extra = extra, super(value) { }
         getExtra(): i32 {
           return this.extra;
         }
@@ -207,9 +200,7 @@ suite('Codegen: Generics', () => {
       
       // IntBox extends Box<i32> - Box<i32> should be instantiated
       class IntBox extends Box<i32> {
-        new(value: i32) {
-          super(value);
-        }
+        new(value: i32) : super(value) { }
         doubleValue(): i32 {
           return this.value * 2;
         }

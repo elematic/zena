@@ -314,9 +314,7 @@ suite('Field-level DCE', () => {
       }
       
       class Derived extends Base {
-        new(v: i32) {
-          super(v);
-        }
+        new(v: i32) : super(v) { }
       }
       
       export let main = (): i32 => {

@@ -160,7 +160,7 @@ suite('Usage Analysis', () => {
         new() { this.x = 0; }
       }
       class Derived extends Base {
-        new() { super(); }
+        new() : super() { }
       }
       export let main = () => new Derived();
     `);

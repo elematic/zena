@@ -30,6 +30,7 @@ import {
   type RecordPattern,
   type ReturnStatement,
   type Statement,
+  type SuperInitializer,
   type SymbolDeclaration,
   type SymbolPropertyName,
   type TuplePattern,
@@ -3703,6 +3704,11 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
     ctx.isThisInitialized = previousThisInitialized;
   }
 
+  // Check super() in initializer list
+  if (method.superInitializer) {
+    checkSuperInitializer(ctx, method.superInitializer);
+  }
+
   const returnType = method.returnType
     ? resolveTypeAnnotation(ctx, method.returnType)
     : Types.Void;
@@ -3729,6 +3735,99 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   ctx.exitScope();
   ctx.currentMethod = previousMethod;
   ctx.isThisInitialized = previousIsThisInitialized;
+}
+
+/**
+ * Check a super() call in an initializer list.
+ * Validates that:
+ * 1. The class is a derived class (has superType) or extension class
+ * 2. Arguments match the superclass constructor signature
+ * 3. Sets isThisInitialized = true after validation
+ */
+function checkSuperInitializer(
+  ctx: CheckerContext,
+  superInit: SuperInitializer,
+): void {
+  if (!ctx.currentClass) {
+    ctx.diagnostics.reportError(
+      `'super' call can only be used inside a class constructor.`,
+      DiagnosticCode.UnknownError,
+    );
+    return;
+  }
+
+  // Handle extension classes
+  if (ctx.currentClass.isExtension) {
+    if (!ctx.currentClass.onType) {
+      return;
+    }
+
+    if (superInit.arguments.length !== 1) {
+      ctx.diagnostics.reportError(
+        `Extension class constructor must call 'super' with exactly one argument.`,
+        DiagnosticCode.ArgumentCountMismatch,
+      );
+    } else {
+      const argType = checkExpression(ctx, superInit.arguments[0]);
+      if (!isAssignableTo(ctx, argType, ctx.currentClass.onType)) {
+        ctx.diagnostics.reportError(
+          `Type mismatch in super call: expected ${typeToString(ctx.currentClass.onType)}, got ${typeToString(argType)}`,
+          DiagnosticCode.TypeMismatch,
+        );
+      }
+    }
+
+    ctx.isThisInitialized = true;
+    return;
+  }
+
+  // Handle regular derived classes
+  if (!ctx.currentClass.superType) {
+    ctx.diagnostics.reportError(
+      `Class '${ctx.currentClass.name}' does not have a superclass.`,
+      DiagnosticCode.UnknownError,
+    );
+    return;
+  }
+
+  const superClass = ctx.currentClass.superType;
+  const constructor = superClass.constructorType;
+
+  if (!constructor) {
+    if (superInit.arguments.length > 0) {
+      ctx.diagnostics.reportError(
+        `Superclass '${superClass.name}' has no constructor but arguments were provided.`,
+        DiagnosticCode.ArgumentCountMismatch,
+      );
+    }
+    ctx.isThisInitialized = true;
+    return;
+  }
+
+  if (superInit.arguments.length !== constructor.parameters.length) {
+    ctx.diagnostics.reportError(
+      `Expected ${constructor.parameters.length} arguments, got ${superInit.arguments.length}.`,
+      DiagnosticCode.ArgumentCountMismatch,
+    );
+  }
+
+  for (
+    let i = 0;
+    i < Math.min(superInit.arguments.length, constructor.parameters.length);
+    i++
+  ) {
+    const argType = checkExpression(ctx, superInit.arguments[i]);
+    const paramType = constructor.parameters[i];
+
+    if (!isAssignableTo(ctx, argType, paramType)) {
+      ctx.diagnostics.reportError(
+        `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
+        DiagnosticCode.TypeMismatch,
+      );
+    }
+  }
+
+  ctx.isThisInitialized = true;
 }
 
 function checkAccessorDeclaration(

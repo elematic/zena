@@ -1,5 +1,4 @@
 import {
-  CONSTRUCTOR_NAME,
   NodeType,
   type ArrayLiteral,
   type AsExpression,
@@ -1329,99 +1328,12 @@ function checkExpressionAgainstLiteralType(
 
 function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
   if (expr.callee.type === NodeType.SuperExpression) {
-    if (!ctx.currentClass) {
-      ctx.diagnostics.reportError(
-        `'super' call can only be used inside a class constructor.`,
-        DiagnosticCode.UnknownError,
-        ctx.getLocation(expr.loc),
-      );
-      return Types.Unknown;
-    }
-    if (ctx.currentMethod !== CONSTRUCTOR_NAME) {
-      ctx.diagnostics.reportError(
-        `'super' call can only be used inside a class constructor.`,
-        DiagnosticCode.UnknownError,
-        ctx.getLocation(expr.loc),
-      );
-      return Types.Unknown;
-    }
-    if (ctx.currentClass.isExtension) {
-      if (!ctx.currentClass.onType) {
-        return Types.Unknown;
-      }
-
-      if (expr.arguments.length !== 1) {
-        ctx.diagnostics.reportError(
-          `Extension class constructor must call 'super' with exactly one argument.`,
-          DiagnosticCode.ArgumentCountMismatch,
-          ctx.getLocation(expr.loc),
-        );
-      } else {
-        const argType = checkExpression(ctx, expr.arguments[0]);
-        if (!isAssignableTo(ctx, argType, ctx.currentClass.onType)) {
-          ctx.diagnostics.reportError(
-            `Type mismatch in super call: expected ${typeToString(ctx.currentClass.onType)}, got ${typeToString(argType)}`,
-            DiagnosticCode.TypeMismatch,
-            ctx.getLocation(expr.arguments[0].loc),
-          );
-        }
-      }
-
-      ctx.isThisInitialized = true;
-      return Types.Void;
-    }
-
-    if (!ctx.currentClass.superType) {
-      ctx.diagnostics.reportError(
-        `Class '${ctx.currentClass.name}' does not have a superclass.`,
-        DiagnosticCode.UnknownError,
-        ctx.getLocation(expr.loc),
-      );
-      return Types.Unknown;
-    }
-
-    const superClass = ctx.currentClass.superType;
-    const constructor = superClass.constructorType;
-
-    if (!constructor) {
-      if (expr.arguments.length > 0) {
-        ctx.diagnostics.reportError(
-          `Superclass '${superClass.name}' has no constructor but arguments were provided.`,
-          DiagnosticCode.ArgumentCountMismatch,
-          ctx.getLocation(expr.loc),
-        );
-      }
-      ctx.isThisInitialized = true;
-      return Types.Void;
-    }
-
-    if (expr.arguments.length !== constructor.parameters.length) {
-      ctx.diagnostics.reportError(
-        `Expected ${constructor.parameters.length} arguments, got ${expr.arguments.length}.`,
-        DiagnosticCode.ArgumentCountMismatch,
-        ctx.getLocation(expr.loc),
-      );
-    }
-
-    for (
-      let i = 0;
-      i < Math.min(expr.arguments.length, constructor.parameters.length);
-      i++
-    ) {
-      const argType = checkExpression(ctx, expr.arguments[i]);
-      const paramType = constructor.parameters[i];
-
-      if (!isAssignableTo(ctx, argType, paramType)) {
-        ctx.diagnostics.reportError(
-          `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
-          DiagnosticCode.TypeMismatch,
-          ctx.getLocation(expr.arguments[i].loc),
-        );
-      }
-    }
-
-    ctx.isThisInitialized = true;
-
+    // super() must be called in the initializer list, not the constructor body
+    ctx.diagnostics.reportError(
+      `'super()' must be called in the constructor initializer list, not the body. Use: new(...) : super(...) { }`,
+      DiagnosticCode.UnknownError,
+      ctx.getLocation(expr.loc),
+    );
     return Types.Void;
   }
 
