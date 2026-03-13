@@ -32,29 +32,35 @@ Goals for a bootstrap parser (what we want the parser to be able to do ASAP)
 Minimal language features to prioritize (implement these first)
 
 1. Lexical support
-  - [x] Single-line `//` comments (already supported by the language spec)
-  - [x] Multi-line `/* ... */` comments (already supported by the language spec)
-  - [ ] String literal escapes: `\\`, `\n`, `\r`, `\t`, `\"`, `\'`
-  - [ ] Hex/unicode escapes in strings: `\xHH`, `\uHHHH` (at least implement `\xHH`)
-  - [x] Numeric literals (decimal integers)
-  - [ ] Hex numeric literals: `0x...` (recommended for lexer support)
+
+- [x] Single-line `//` comments (already supported by the language spec)
+- [x] Multi-line `/* ... */` comments (already supported by the language spec)
+- [ ] String literal escapes: `\\`, `\n`, `\r`, `\t`, `\"`, `\'`
+- [ ] Hex/unicode escapes in strings: `\xHH`, `\uHHHH` (at least implement `\xHH`)
+- [x] Numeric literals (decimal integers)
+- [ ] Hex numeric literals: `0x...` (recommended for lexer support)
 
 2. Primitive & core types
-  - [x] `string` and `ByteArray` or equivalent
-  - [x] `i32` for counters and token kinds
+
+- [x] `string` and `ByteArray` or equivalent
+- [x] `i32` for counters and token kinds
 
 3. Mutable growable lists and maps
-  - [x] Growable list / mutable array with `push`, indexing, `length` (required for token lists and AST child lists)
-  - [x] Mutable map/dictionary with `get`/`set`/`has`/`delete` (string-keyed maps)
+
+- [x] Growable list / mutable array with `push`, indexing, `length` (required for token lists and AST child lists)
+- [x] Mutable map/dictionary with `get`/`set`/`has`/`delete` (string-keyed maps)
 
 4. Records / tuples (immutable) and simple constructors
-  - [x] Record `{ x: 1 }` and tuple `[1, 2]` syntax (useful for concise AST nodes)
+
+- [x] Record `{ x: 1 }` and tuple `[1, 2]` syntax (useful for concise AST nodes)
 
 5. Functions, modules and simple exports
-  - [x] Arrow functions, `export`, modular code organization
+
+- [x] Arrow functions, `export`, modular code organization
 
 6. Control flow and pattern utilities
-  - [x] `if`, `while`, `for`, `return`
+
+- [x] `if`, `while`, `for`, `return`
 
 Reasoning about the minimal set
 
@@ -114,4 +120,5 @@ If you want, I can now:
 - [ ] Start a Zena runtime/stdlib sketch (small `list`, `map`, `string` helpers) and a lexer implementation in Zena source.
 
 ---
+
 Generated on: 2025-11-28

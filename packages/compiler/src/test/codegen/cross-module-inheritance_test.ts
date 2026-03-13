@@ -30,10 +30,7 @@ suite('Cross-module class inheritance', () => {
         
         class Derived extends Base {
           y: i32;
-          new(x: i32, y: i32) {
-            super(x);
-            this.y = y;
-          }
+          new(x: i32, y: i32) : y = y, super(x) { }
         }
         
         export let main = (): i32 => {
@@ -62,10 +59,7 @@ suite('Cross-module class inheritance', () => {
         
         class Child extends Base {
           extra: i32;
-          new(v: i32, e: i32) {
-            super(v);
-            this.extra = e;
-          }
+          new(v: i32, e: i32) : extra = e, super(v) { }
         }
         
         export let main = (): i32 => {
@@ -93,10 +87,7 @@ suite('Cross-module class inheritance', () => {
         import {A} from '/a.zena';
         export class B extends A {
           b: i32;
-          new(a: i32, b: i32) {
-            super(a);
-            this.b = b;
-          }
+          new(a: i32, b: i32) : b = b, super(a) { }
         }
       `,
       '/main.zena': `
@@ -104,10 +95,7 @@ suite('Cross-module class inheritance', () => {
         
         class C extends B {
           c: i32;
-          new(a: i32, b: i32, c: i32) {
-            super(a, b);
-            this.c = c;
-          }
+          new(a: i32, b: i32, c: i32) : c = c, super(a, b) { }
         }
         
         export let main = (): i32 => {
@@ -137,10 +125,7 @@ suite('Cross-module class inheritance', () => {
         
         class Derived extends Base {
           #extra: i32;
-          new(v: i32, e: i32) {
-            super(v);
-            this.#extra = e;
-          }
+          new(v: i32, e: i32) : #extra = e, super(v) { }
           extra: i32 {
             get { return this.#extra; }
           }
@@ -172,9 +157,7 @@ suite('Cross-module class inheritance', () => {
         import {Animal} from '/base.zena';
         
         class Dog extends Animal {
-          new(name: string) {
-            super(name);
-          }
+          new(name: string) : super(name) { }
           speak(): string {
             return "woof";
           }
@@ -202,10 +185,7 @@ suite('Cross-module class inheritance', () => {
       
       class CustomError extends Error {
         code: i32;
-        new(message: string, code: i32) {
-          super(message);
-          this.code = code;
-        }
+        new(message: string, code: i32) : code = code, super(message) { }
       }
       
       export let main = (): i32 => {
@@ -222,10 +202,7 @@ suite('Cross-module class inheritance', () => {
       
       class CustomError extends Error {
         #code: i32;
-        new(message: string, code: i32) {
-          super(message);
-          this.#code = code;
-        }
+        new(message: string, code: i32) : #code = code, super(message) { }
         code: i32 {
           get { return this.#code; }
         }

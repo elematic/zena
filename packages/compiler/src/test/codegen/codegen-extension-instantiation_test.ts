@@ -46,9 +46,7 @@ suite('CodeGenerator - Extension Class Instantiation', () => {
   test('should support "new" operator with instance constructor and super call', async () => {
     const input = `
       extension class Meters on i32 {
-        new(val: i32) {
-          super(val);
-        }
+        new(val: i32) : super(val) { }
         
         getValue(): i32 {
             return this;
@@ -67,9 +65,7 @@ suite('CodeGenerator - Extension Class Instantiation', () => {
     const input = `
       // Generic extension class
       extension class Wrapper<T> on i32 {
-        new(val: i32) {
-          super(val);
-        }
+        new(val: i32) : super(val) { }
         getValue(): i32 {
           return this;
         }

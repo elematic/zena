@@ -97,6 +97,7 @@ $temp
 ### Key Type Requirements
 
 Keys must support:
+
 1. **Hashing**: Via the `hash<T>` intrinsic (primitives, strings, records, tuples) or `Hashable` interface (classes)
 2. **Equality**: Via `==` operator
 

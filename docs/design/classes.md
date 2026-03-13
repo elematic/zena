@@ -165,15 +165,29 @@ class Point {
 
 ```
 new(params) : field1 = expr1, field2 = expr2 { body }
+new(params) : field1 = expr1, super(args) { body }  // derived classes
 ```
 
 - The colon (`:`) introduces the initializer list
-- Each `field = expr` initializes a field
+- Each `field = expr` initializes a field directly (bypasses setters)
+- For derived classes, `super(args)` must appear as the **last** entry
 - Expressions can reference:
   - Constructor parameters
   - Earlier fields in the initializer list (by name, not `this.name`)
 - Expressions **cannot** reference `this` (it doesn't exist yet)
-- The body `{ }` runs after allocation with `this` available
+- Only actual fields are allowed (not setters/accessors)
+- The body `{ }` runs after `super()` completes with full `this` access
+
+#### Derived Class Example
+
+```zena
+class Point3D extends Point {
+  let z: i32;
+
+  // Initialize own field, then call super
+  new(x: i32, y: i32, z: i32) : z = z, super(x, y) { }
+}
+```
 
 #### Example: Computed Initialization
 
@@ -656,28 +670,43 @@ A common issue in object-oriented languages is the "Initialization Hazard". This
 
 ### 10.2. Construction Rules
 
-To mitigate these hazards, Zena enforces strict rules on constructor implementation:
+To mitigate these hazards, Zena uses **Dart-style pre-super initialization**:
 
-1.  **Mandatory Super Call**: Constructors in derived classes MUST call `super()`.
-2.  **No `this` Before Super**: Accessing `this` (implicitly or explicitly) before the `super()` call is a compile-time error.
-3.  **Field Initialization Order**:
-    - Fields with initializers (e.g., `x: i32 = 10`) are initialized **immediately after** the `super()` call returns.
-    - This ensures that when the constructor body continues after `super()`, the instance is fully initialized (both superclass and subclass fields).
-4.  **Field Initializer Safety**:
-    - Initializers are executed in source order.
-    - Accessing a field declared later in the same class is a **compile-time error**.
-    - `this` is accessible, and accessing inherited fields is allowed.
+1.  **Mandatory Super Call**: Constructors in derived classes MUST call `super()` in the initializer list.
+2.  **Initializer List Runs Before Super**: Own fields are initialized before `super()` is called.
+3.  **`super()` Must Be Last**: In the initializer list, `super(args)` must be the final entry.
+4.  **No `this` in Initializer List**: Expressions in the initializer list cannot reference `this` (it doesn't exist yet).
+5.  **Only Direct Fields**: Only actual fields can appear in the initializer list (not setters/accessors).
+6.  **Body Has Full Access**: The constructor body runs after `super()` completes, with full `this` access.
 
-### 10.3. Remaining Hazards (Soundness Hole)
+#### Execution Order
 
-While these rules prevent accessing uninitialized fields _within the subclass constructor_, they do **not** prevent the "Virtual Call from Super Constructor" hazard.
+For a derived class constructor:
 
-If a superclass constructor calls a virtual method overridden by the subclass, that method will execute _before_ the subclass fields are initialized (because `super()` is still running).
+1. Evaluate inline field initializers (e.g., `x: i32 = 10`) - cannot access `this`
+2. Evaluate initializer list expressions in order - cannot access `this`
+3. Allocate struct with all field values
+4. Call `super()` (which may call virtual methods)
+5. Execute constructor body - full `this` access
 
-**This is a known hole in the type system's soundness.**
+#### Example
 
-- **Violation**: A field declared as non-nullable (e.g., `x: String`) is technically `null` during this window.
-- **Consequence**: If the overridden method accesses `this.x`, it will observe `null`. Attempting to use it (e.g., `this.x.length`) will cause a runtime trap (Null Pointer Exception), violating the static type guarantee.
+```zena
+class Derived extends Base {
+  let x: i32;
+  var y: i32 = 0;  // inline initializer
+
+  new(a: i32, b: i32) : x = a, y = b, super(a + b) {
+    // Body runs after super(), full this access
+    this.validate();
+  }
+}
+```
+
+### 10.3. How Pre-Super Initialization Prevents the Hazard
+
+With Dart-style pre-super initialization, the "Virtual Call from Super Constructor"
+hazard is **prevented**. Subclass fields are fully initialized before `super()` runs:
 
 ```zena
 class Base {
@@ -688,48 +717,36 @@ class Base {
 }
 
 class Sub extends Base {
-  data: String = 'hello'; // Non-nullable String
-  new() {
-    super(); // Calls Base constructor -> calls setup() -> accesses uninitialized data!
-  }
+  let data: String;
+
+  // data is initialized BEFORE super() calls setup()
+  new() : data = 'hello', super() { }
+
   override setup() {
-    // Runtime Error: Null Pointer Exception (trap)
-    // despite 'data' being typed as non-nullable String.
+    // Safe! data is already 'hello'
     console.log(this.data.length);
   }
 }
 ```
 
-### 10.4. Potential Solutions
+Because field initializations happen before `super()` is called (step 2-3 in execution
+order), any virtual methods called by the superclass constructor will see fully
+initialized subclass fields.
 
-To close this soundness hole, we are considering several approaches:
+### 10.4. Limitations
 
-1.  **Pre-Super Initialization (Dart, Swift)**
-    - **Mechanism**: Initialize subclass fields _before_ calling `super()`.
-    - **Pros**: The subclass fields are fully initialized when the super constructor runs. Virtual calls see valid data.
-    - **Cons**: Field initializers cannot access `this` or inherited fields (because the superclass isn't initialized yet). This restricts patterns like `x = this.y + 1`.
+While pre-super initialization closes the main soundness hole, it introduces restrictions:
 
-2.  **Ban Virtual Calls in Constructors**
-    - **Mechanism**: Statically prevent calling virtual methods on `this` during construction.
-    - **Pros**: Prevents the hazard entirely.
-    - **Cons**: Difficult to enforce across module boundaries (requires analyzing the call graph of the super constructor).
+1.  **No `this` in Initializer Expressions**
+    - Field initializers cannot access `this` or inherited fields (superclass not yet constructed)
+    - Example: `new() : x = this.inheritedField + 1` is NOT allowed
+    - Workaround: Pass the value as a constructor parameter
 
-3.  **Masking / Flow Typing**
-    - **Mechanism**: Treat all fields as potentially `null` within the constructor until they are proven initialized.
-    - **Pros**: Type-safe.
-    - **Cons**: Increases complexity for the user (must handle nulls) and the compiler (flow analysis).
+2.  **No Setters in Initializer List**
+    - Only actual fields can appear in the initializer list
+    - Setters might access `this` in ways that violate initialization safety
+    - Direct field assignment bypasses any validation in setters (class author's responsibility)
 
-4.  **Object Slicing (C++)**
-    - **Mechanism**: During `Base` construction, the object's VTable points to `Base`, not `Derived`. Virtual calls execute `Base`'s implementation.
-    - **Pros**: Safe (no uninitialized derived fields accessed).
-    - **Cons**: Confusing behavior (polymorphism is temporarily disabled).
-
-5.  **Enhanced Pre-Super Initialization (Hybrid)**
-    - **Mechanism**: Allow initializing fields before `super()`, with restricted access to `this`.
-      - Can read fields that are provably initialized earlier in the same class.
-      - Cannot read inherited fields (super not initialized).
-      - Cannot call virtual methods or pass `this` externally (escape analysis).
-    - **Pros**: Solves the hazard while allowing more expressive initialization than strict pre-super checks.
-    - **Cons**: Complex to implement (requires tracking initialization state and restricted `this` usage).
-
-Zena currently allows this pattern but warns users to avoid calling virtual methods in constructors. Future versions may introduce stricter checks or "Two-Phase Initialization" to prevent this.
+3.  **All Fields Must Be Initializable**
+    - Every non-nullable field must have a value from inline initializer or initializer list
+    - Cannot rely on constructor body to initialize fields (runs after super)

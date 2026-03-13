@@ -39,10 +39,7 @@ import {
 export class ResolveError extends Error {
   span: Span;
 
-  new(message: String, span: Span) {
-    super(message);
-    this.span = span;
-  }
+  new(message: String, span: Span) : span = span, super(message) { }
 }
 
 // ============================================================================
@@ -64,20 +61,13 @@ export class SymbolEntry {
   kind: SymbolKind;
   span: Span;
   /** Whether this symbol is feature-gated (has @unstable annotation). */
-  isGated: boolean;
+  isGated: boolean = false;
   /** The source of this symbol (e.g., world name for include tracking). */
-  source: String | null;
+  source: String | null = null;
   /** Whether this is a path import (vs inline interface). Path imports can be deduplicated. */
-  isPathImport: boolean;
+  isPathImport: boolean = false;
 
-  new(name: String, kind: SymbolKind, span: Span) {
-    this.name = name;
-    this.kind = kind;
-    this.span = span;
-    this.isGated = false;
-    this.source = null;
-    this.isPathImport = false;
-  }
+  new(name: String, kind: SymbolKind, span: Span) : name = name, kind = kind, span = span { }
 
   static gated(name: String, kind: SymbolKind, span: Span): SymbolEntry {
     let s = new SymbolEntry(name, kind, span);
@@ -117,17 +107,13 @@ let packageNameToKey = (name: PackageName): String => {
  */
 class PackageContent {
   /** Interfaces defined in this package, keyed by name. */
-  interfaces: Map<String, InterfaceDef>;
+  interfaces: Map<String, InterfaceDef> = new Map<String, InterfaceDef>();
   /** Worlds defined in this package, keyed by name. */
-  worlds: Map<String, WorldDef>;
+  worlds: Map<String, WorldDef> = new Map<String, WorldDef>();
   /** The package name for error messages. */
   name: PackageName;
 
-  new(name: PackageName) {
-    this.interfaces = new Map<String, InterfaceDef>();
-    this.worlds = new Map<String, WorldDef>();
-    this.name = name;
-  }
+  new(name: PackageName) : name = name { }
 }
 
 /**
@@ -135,14 +121,11 @@ class PackageContent {
  */
 class PackageRegistry {
   /** Map from package key (namespace:name) to package content. */
-  #packages: Map<String, PackageContent>;
+  #packages: Map<String, PackageContent> = new Map<String, PackageContent>();
   /** List of all package keys for error messages. */
-  #knownPackages: Array<String>;
+  #knownPackages: Array<String> = new Array<String>();
 
-  new() {
-    this.#packages = new Map<String, PackageContent>();
-    this.#knownPackages = new Array<String>();
-  }
+  new() { }
 
   /** Build a registry from an AST. */
   static build(ast: Ast): PackageRegistry {
@@ -376,20 +359,15 @@ let getFullPath = (path: UsePath): String => {
  * A scope for name resolution. Contains symbols defined at this level.
  */
 class Scope {
-  symbols: Array<SymbolEntry>;
+  symbols: Array<SymbolEntry> = new Array<SymbolEntry>();
   /** Types defined in this scope (for cycle detection). */
-  types: Array<TypeDef>;
+  types: Array<TypeDef> = new Array<TypeDef>();
   /** Worlds defined in this scope (for include cycle detection). */
-  worlds: Array<WorldDef>;
+  worlds: Array<WorldDef> = new Array<WorldDef>();
   /** Interfaces defined in this scope (for use validation). */
-  interfaces: Array<InterfaceDef>;
+  interfaces: Array<InterfaceDef> = new Array<InterfaceDef>();
 
-  new() {
-    this.symbols = new Array<SymbolEntry>();
-    this.types = new Array<TypeDef>();
-    this.worlds = new Array<WorldDef>();
-    this.interfaces = new Array<InterfaceDef>();
-  }
+  new() { }
 
   /** Find a symbol by name (case-insensitive for kebab-case). */
   find(name: String): SymbolEntry | null {
@@ -473,36 +451,26 @@ class Scope {
  */
 export class Resolver {
   /** Stack of scopes for nested name resolution. */
-  #scopes: Array<Scope>;
+  #scopes: Array<Scope> = new Array<Scope>();
   /** Current package name (for error messages). */
-  #packageName: PackageName | null;
+  #packageName: PackageName | null = null;
   
   /** Current package being resolved (for cross-package cycle detection). */
-  #currentResolvePackage: PackageName | null;
+  #currentResolvePackage: PackageName | null = null;
   /** Types being resolved (for cycle detection). */
-  #resolving: Array<String>;
+  #resolving: Array<String> = new Array<String>();
   /** Interfaces being resolved (for use cycle detection). Uses qualified names: "pkg:name/iface". */
-  #resolvingInterfaces: Array<String>;
+  #resolvingInterfaces: Array<String> = new Array<String>();
   /** Worlds being included (for include cycle detection). */
-  #includingWorlds: Array<String>;
+  #includingWorlds: Array<String> = new Array<String>();
   /** Whether we're currently inside a gated context (@unstable). */
-  #inGatedContext: boolean;
+  #inGatedContext: boolean = false;
   /** Registry of all packages for cross-package resolution. */
-  #registry: PackageRegistry | null;
+  #registry: PackageRegistry | null = null;
   /** Current interface being resolved (for imported type lookup). */
-  #currentInterface: InterfaceDef | null;
+  #currentInterface: InterfaceDef | null = null;
 
-  new() {
-    this.#scopes = new Array<Scope>();
-    this.#packageName = null;
-    this.#currentResolvePackage = null;
-    this.#resolving = new Array<String>();
-    this.#resolvingInterfaces = new Array<String>();
-    this.#includingWorlds = new Array<String>();
-    this.#inGatedContext = false;
-    this.#registry = null;
-    this.#currentInterface = null;
-  }
+  new() { }
 
   /**
    * Resolve an AST. Throws ResolveError on validation failure.

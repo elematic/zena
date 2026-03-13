@@ -54,6 +54,7 @@ import {
   type SpreadElement,
   type Statement,
   type StringLiteral,
+  type SuperInitializer,
   type SymbolDeclaration,
   type SymbolPropertyName,
   type TaggedTemplateExpression,
@@ -2748,12 +2749,17 @@ export class Parser {
       }
       this.#consume(TokenType.RParen, "Expected ')' after parameters.");
 
-      // Parse initializer list for constructors: new(...) : field = expr, field2 = expr2 { }
+      // Parse initializer list for constructors: new(...) : field = expr, super(args) { }
       // Also supports private fields: new(...) : #field = expr { }
+      // super(args) must be the last entry if present
       let initializerList: FieldInitializer[] | undefined;
+      let superInitializer: SuperInitializer | undefined;
       const isConstructor =
         name.type === NodeType.Identifier && name.name === CONSTRUCTOR_NAME;
-      if (
+
+      // Check if we have an initializer list
+      // Valid starts: `: field =`, `: #field =`, or `: super(`
+      const hasInitializerList =
         isConstructor &&
         this.#check(TokenType.Colon) &&
         // Public field: `: field = expr`
@@ -2762,11 +2768,20 @@ export class Parser {
           // Private field: `: #field = expr`
           (this.#checkAhead(TokenType.Hash, 1) &&
             this.#checkAhead(TokenType.Identifier, 2) &&
-            this.#checkAhead(TokenType.Equals, 3)))
-      ) {
+            this.#checkAhead(TokenType.Equals, 3)) ||
+          // Super call: `: super(`
+          (this.#checkAhead(TokenType.Super, 1) &&
+            this.#checkAhead(TokenType.LParen, 2)));
+
+      if (hasInitializerList) {
         this.#advance(); // consume ':'
         initializerList = [];
-        do {
+
+        // Parse field initializers until we hit super() or end
+        while (
+          !this.#check(TokenType.LBrace) &&
+          !this.#check(TokenType.Super)
+        ) {
           // Handle private fields (#fieldName)
           let isPrivate = false;
           let hashToken: Token | undefined;
@@ -2798,7 +2813,33 @@ export class Parser {
             value,
             loc: this.#loc(startToken, value),
           });
-        } while (this.#match(TokenType.Comma));
+
+          // If no comma, we're done with field initializers
+          if (!this.#match(TokenType.Comma)) {
+            break;
+          }
+        }
+
+        // Parse super call if present (must be last)
+        if (this.#check(TokenType.Super)) {
+          const superToken = this.#advance();
+          this.#consume(TokenType.LParen, "Expected '(' after 'super'.");
+          const args: Expression[] = [];
+          if (!this.#check(TokenType.RParen)) {
+            do {
+              args.push(this.#parseExpression());
+            } while (this.#match(TokenType.Comma));
+          }
+          const rparen = this.#consume(
+            TokenType.RParen,
+            "Expected ')' after super arguments.",
+          );
+          superInitializer = {
+            type: NodeType.SuperInitializer,
+            arguments: args,
+            loc: this.#loc(superToken, rparen),
+          };
+        }
       }
 
       let returnType: TypeAnnotation | undefined;
@@ -2825,6 +2866,7 @@ export class Parser {
         returnType,
         body,
         initializerList,
+        superInitializer,
         isFinal,
         isAbstract,
         isStatic,

@@ -148,10 +148,7 @@ suite('Interface Type Registration', () => {
 
       class SpecialEvent extends Event {
         bonus: i32;
-        new(code: i32, bonus: i32) {
-          super(code);
-          this.bonus = bonus;
-        }
+        new(code: i32, bonus: i32) : bonus = bonus, super(code) { }
       }
 
       class MyHandler implements SpecialHandler {

@@ -123,6 +123,7 @@ export const NodeType = {
   PipelineExpression: 'PipelineExpression',
   PipePlaceholder: 'PipePlaceholder',
   FieldInitializer: 'FieldInitializer',
+  SuperInitializer: 'SuperInitializer',
   MapLiteral: 'MapLiteral',
   MapEntry: 'MapEntry',
 } as const;
@@ -704,6 +705,12 @@ export interface MethodDefinition extends Node {
    * Expressions cannot reference `this`, only params and earlier initializers.
    */
   initializerList?: FieldInitializer[];
+  /**
+   * Super call in initializer list (for derived classes).
+   * Syntax: `new(x: i32) : field = x, super(x) { }`
+   * Must be the last entry in the initializer list.
+   */
+  superInitializer?: SuperInitializer;
 }
 
 /**
@@ -716,6 +723,16 @@ export interface FieldInitializer extends Node {
   field: Identifier;
   /** The value expression (can reference params and earlier fields) */
   value: Expression;
+}
+
+/**
+ * A super call in a constructor's initializer list.
+ * Syntax: `super(args)` - must be the last entry in the initializer list.
+ */
+export interface SuperInitializer extends Node {
+  type: typeof NodeType.SuperInitializer;
+  /** Arguments passed to the superclass constructor */
+  arguments: Expression[];
 }
 
 export interface NewExpression extends Node {

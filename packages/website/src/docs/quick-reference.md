@@ -1166,6 +1166,19 @@ Initializer list expressions can reference constructor parameters and earlier
 fields in the list. They **cannot** reference `this` because the object doesn't
 exist yet.
 
+For derived classes, `super()` goes at the **end** of the initializer list:
+
+```ts
+class Point3D extends Point {
+  let z: i32;
+
+  // Initialize z, then call super
+  new(x: i32, y: i32, z: i32) : z = z, super(x, y) { }
+}
+```
+
+Only actual fields (not setters) can appear in initializer lists.
+
 ### Getters and Setters
 
 Accessors define computed properties. They can override inherited fields or

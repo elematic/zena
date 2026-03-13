@@ -767,7 +767,9 @@ class UsageAnalyzer {
         // We detect intrinsics by their decorator, not by name, to handle renamed imports
         // and avoid false positives from user functions named "equals".
         if (node.callee.type === NodeType.Identifier && this.#semanticContext) {
-          const binding = this.#semanticContext.getResolvedBinding(node.callee as Identifier);
+          const binding = this.#semanticContext.getResolvedBinding(
+            node.callee as Identifier,
+          );
 
           // Check if this is the @intrinsic('eq') function
           // Only DeclareFunction nodes have decorators (not FunctionExpression)
@@ -802,7 +804,10 @@ class UsageAnalyzer {
               ) {
                 // Find String class and mark its == method
                 const stringDecl = this.#findDeclarationByName('String');
-                if (stringDecl && stringDecl.type === NodeType.ClassDeclaration) {
+                if (
+                  stringDecl &&
+                  stringDecl.type === NodeType.ClassDeclaration
+                ) {
                   const stringType = stringDecl.inferredType as ClassType;
                   if (stringType && stringType.methods.has('==')) {
                     this.#markMethodUsed(stringType, '==', false);

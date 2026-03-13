@@ -13,10 +13,7 @@ suite('CodeGenerator - Super', () => {
       }
       class B extends A {
         y: i32;
-        new(x: i32, y: i32) {
-          super(x);
-          this.y = y;
-        }
+        new(x: i32, y: i32) : y = y, super(x) { }
       }
       export let main = (): i32 => {
         let b = new B(10, 20);

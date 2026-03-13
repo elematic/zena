@@ -1834,6 +1834,30 @@ Initializer list expressions can reference:
 
 They **cannot** reference `this` because the object doesn't exist yet.
 
+#### Derived Classes
+
+For derived classes, `super()` must appear as the **last** entry in the initializer list:
+
+```zena
+class Point3D extends Point {
+  let z: i32;
+
+  // Initialize z, then call super
+  new(x: i32, y: i32, z: i32) : z = z, super(x, y) {
+    // Body runs after super(), full this access
+  }
+}
+```
+
+This ensures subclass fields are initialized before the superclass constructor runs,
+preventing uninitialized field access if the superclass calls virtual methods.
+
+#### Restrictions
+
+- Only actual fields can be initialized (not setters/accessors)
+- `super()` is required for derived classes and must be last
+- Private fields use `#` prefix: `new(x: i32) : #field = x { }`
+
 ### Generic Classes
 
 Classes can be generic by specifying type parameters:

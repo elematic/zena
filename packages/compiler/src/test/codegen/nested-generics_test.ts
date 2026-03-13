@@ -146,10 +146,7 @@ suite('Codegen: Nested Generics', () => {
 
         class Derived<T> extends Base<T> {
           extra: i32;
-          new(v: T, e: i32) {
-            super(v);
-            this.extra = e;
-          }
+          new(v: T, e: i32) : extra = e, super(v) { }
           getExtra(): i32 { return this.extra; }
         }
 
@@ -173,10 +170,7 @@ suite('Codegen: Nested Generics', () => {
         // Derived is generic over U but instantiates Base with i32
         class Derived<U> extends Base<i32> {
           tag: U;
-          new(v: i32, t: U) {
-            super(v);
-            this.tag = t;
-          }
+          new(v: i32, t: U) : tag = t, super(v) { }
         }
 
         export let main = (): i32 => {
@@ -197,18 +191,12 @@ suite('Codegen: Nested Generics', () => {
 
         class B<T> extends A<T> {
           b: i32;
-          new(v: T, x: i32) {
-            super(v);
-            this.b = x;
-          }
+          new(v: T, x: i32) : b = x, super(v) { }
         }
 
         class C<T> extends B<T> {
           c: i32;
-          new(v: T, x: i32, y: i32) {
-            super(v, x);
-            this.c = y;
-          }
+          new(v: T, x: i32, y: i32) : c = y, super(v, x) { }
         }
 
         export let main = (): i32 => {

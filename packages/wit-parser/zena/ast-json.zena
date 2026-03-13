@@ -42,11 +42,7 @@ class TypeRef {
   strValue: string;
   indexValue: i32;
 
-  new(isIndex: boolean, strValue: string, indexValue: i32) {
-    this.isIndex = isIndex;
-    this.strValue = strValue;
-    this.indexValue = indexValue;
-  }
+  new(isIndex: boolean, strValue: string, indexValue: i32) : isIndex = isIndex, strValue = strValue, indexValue = indexValue { }
 
   static str(s: string): TypeRef {
     return new TypeRef(false, s, 0);
@@ -62,10 +58,7 @@ class RecordField {
   name: string;
   typeRef: TypeRef;
 
-  new(name: string, typeRef: TypeRef) {
-    this.name = name;
-    this.typeRef = typeRef;
-  }
+  new(name: string, typeRef: TypeRef) : name = name, typeRef = typeRef { }
 }
 
 /** Case in a variant type. */
@@ -73,10 +66,7 @@ class VariantCase {
   name: string;
   typeRef: TypeRef | null;
 
-  new(name: string, typeRef: TypeRef | null) {
-    this.name = name;
-    this.typeRef = typeRef;
-  }
+  new(name: string, typeRef: TypeRef | null) : name = name, typeRef = typeRef { }
 }
 
 /** Case in an enum type (with optional docs). */
@@ -84,10 +74,7 @@ class EnumCase {
   name: string;
   docs: Docs | null;
 
-  new(name: string, docs: Docs | null) {
-    this.name = name;
-    this.docs = docs;
-  }
+  new(name: string, docs: Docs | null) : name = name, docs = docs { }
 }
 
 /** An entry in the types array. */
@@ -97,89 +84,53 @@ class TypeEntry {
   owner: Option<i32>;
   docs: Docs | null;
 
-  new(name: string | null, kind: TypeKind, owner: Option<i32>, docs: Docs | null) {
-    this.name = name;
-    this.kind = kind;
-    this.owner = owner;
-    this.docs = docs;
-  }
+  new(name: string | null, kind: TypeKind, owner: Option<i32>, docs: Docs | null) : name = name, kind = kind, owner = owner, docs = docs { }
 }
 
 /** The kind object for a type entry. */
 class TypeKind {
   tag: string;
-  tupleTypes: Array<TypeRef> | null;
-  inner: TypeRef | null;
-  okType: TypeRef | null;
-  errType: TypeRef | null;
-  fields: Array<RecordField> | null;
-  cases: Array<VariantCase> | null;
-  enumCases: Array<EnumCase> | null;
-  flagValues: Array<string> | null;
+  tupleTypes: Array<TypeRef> | null = null;
+  inner: TypeRef | null = null;
+  okType: TypeRef | null = null;
+  errType: TypeRef | null = null;
+  fields: Array<RecordField> | null = null;
+  cases: Array<VariantCase> | null = null;
+  enumCases: Array<EnumCase> | null = null;
+  flagValues: Array<string> | null = null;
   // For handle types (borrow/own)
-  borrowIndex: i32;
-  ownIndex: i32;
+  borrowIndex: i32 = -1;
+  ownIndex: i32 = -1;
 
-  new(tag: string) {
-    this.tag = tag;
-    this.tupleTypes = null;
-    this.inner = null;
-    this.okType = null;
-    this.errType = null;
-    this.fields = null;
-    this.cases = null;
-    this.enumCases = null;
-    this.flagValues = null;
-    this.borrowIndex = -1;
-    this.ownIndex = -1;
-  }
+  new(tag: string) : tag = tag { }
 }
 
 /** Entry for a package in the output. */
 class PackageEntry {
   name: string;
-  interfaces: Map<string, i32>;
-  worlds: Map<string, i32>;
+  interfaces: Map<string, i32> = new Map<string, i32>();
+  worlds: Map<string, i32> = new Map<string, i32>();
 
-  new(name: string) {
-    this.name = name;
-    this.interfaces = new Map<string, i32>();
-    this.worlds = new Map<string, i32>();
-  }
+  new(name: string) : name = name { }
 }
 
 /** Tracks indices during serialization. */
 class SerializeContext {
-  interfaces: Array<InterfaceDef>;
-  worlds: Array<WorldDef>;
-  types: Array<TypeEntry>;
-  packages: Array<PackageEntry>;
-  interfaceIndices: Map<string, i32>;
-  worldIndices: Map<string, i32>;
-  typeIndices: Map<string, i32>;
+  interfaces: Array<InterfaceDef> = new Array<InterfaceDef>();
+  worlds: Array<WorldDef> = new Array<WorldDef>();
+  types: Array<TypeEntry> = new Array<TypeEntry>();
+  packages: Array<PackageEntry> = new Array<PackageEntry>();
+  interfaceIndices: Map<string, i32> = new Map<string, i32>();
+  worldIndices: Map<string, i32> = new Map<string, i32>();
+  typeIndices: Map<string, i32> = new Map<string, i32>();
   // Maps to track borrow/own types by resource index
-  borrowTypeIndices: Map<i32, i32>;
-  ownTypeIndices: Map<i32, i32>;
+  borrowTypeIndices: Map<i32, i32> = new Map<i32, i32>();
+  ownTypeIndices: Map<i32, i32> = new Map<i32, i32>();
   // Map to track complex anonymous types by canonical key
-  anonTypeIndices: Map<string, i32>;
+  anonTypeIndices: Map<string, i32> = new Map<string, i32>();
   // Track which type indices are resources (for bare resource name -> own<resource> conversion)
-  resourceTypeIndices: Map<i32, i32>;
-  currentPackageIndex: i32;
-
-  new() {
-    this.interfaces = new Array<InterfaceDef>();
-    this.worlds = new Array<WorldDef>();
-    this.types = new Array<TypeEntry>();
-    this.packages = new Array<PackageEntry>();
-    this.interfaceIndices = new Map<string, i32>();
-    this.worldIndices = new Map<string, i32>();
-    this.typeIndices = new Map<string, i32>();
-    this.borrowTypeIndices = new Map<i32, i32>();
-    this.ownTypeIndices = new Map<i32, i32>();
-    this.anonTypeIndices = new Map<string, i32>();
-    this.resourceTypeIndices = new Map<i32, i32>();
-    this.currentPackageIndex = 0;
-  }
+  resourceTypeIndices: Map<i32, i32> = new Map<i32, i32>();
+  currentPackageIndex: i32 = 0;
 
   registerInterface(iface: InterfaceDef): i32 {
     let index = this.interfaces.length;
