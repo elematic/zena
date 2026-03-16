@@ -7,9 +7,7 @@ suite('CodeGenerator - Operators', () => {
     const input = `
       class Box {
         value: i32;
-        new(value: i32) {
-          this.value = value;
-        }
+        new(value: i32) : value = value {}
         operator [](index: i32): i32 {
           return this.value + index;
         }
@@ -27,9 +25,7 @@ suite('CodeGenerator - Operators', () => {
     const input = `
       class Box {
         value: i32;
-        new() {
-          this.value = 0;
-        }
+        new() : value = 0 {}
         operator []=(index: i32, val: i32): void {
           this.value = index + val;
         }

@@ -10,9 +10,7 @@ suite('Codegen: Generics', () => {
       
       class Box<T> {
         value: T;
-        new(value: T) {
-          this.value = value;
-        }
+        new(value: T) : value = value {}
         getValue(): T {
           return this.value;
         }
@@ -40,9 +38,7 @@ suite('Codegen: Generics', () => {
       
       class Container<T extends Base> {
         item: T;
-        new(item: T) {
-          this.item = item;
-        }
+        new(item: T) : item = item {}
         getItem(): T {
           return this.item;
         }
@@ -85,9 +81,7 @@ suite('Codegen: Generics', () => {
       
       class Base<T> {
         value: T;
-        new(value: T) {
-          this.value = value;
-        }
+        new(value: T) : value = value {}
         getValue(): T {
           return this.value;
         }
@@ -116,9 +110,7 @@ suite('Codegen: Generics', () => {
       
       class Box<T> {
         value: T;
-        new(value: T) {
-          this.value = value;
-        }
+        new(value: T) : value = value {}
         getValue(): T {
           return this.value;
         }
@@ -128,9 +120,7 @@ suite('Codegen: Generics', () => {
         // Field type is Box<T> - when Container<i32> is instantiated,
         // Box<i32> should also be instantiated
         box: Box<T>;
-        new(value: T) {
-          this.box = new Box(value);
-        }
+        new(value: T) : box = new Box(value) {}
         getBoxValue(): T {
           return this.box.getValue();
         }
@@ -150,9 +140,7 @@ suite('Codegen: Generics', () => {
       
       class Wrapper<T> {
         value: T;
-        new(value: T) {
-          this.value = value;
-        }
+        new(value: T) : value = value {}
         getValue(): T {
           return this.value;
         }
@@ -160,9 +148,7 @@ suite('Codegen: Generics', () => {
       
       class Factory<T> {
         default: T;
-        new(default: T) {
-          this.default = default;
-        }
+        new(default: T) : default = default {}
         // Return type is Wrapper<T> - when Factory<i32> is instantiated,
         // Wrapper<i32> should be instantiated for the return type
         create(value: T): Wrapper<T> {
@@ -190,9 +176,7 @@ suite('Codegen: Generics', () => {
       
       class Box<T> {
         value: T;
-        new(value: T) {
-          this.value = value;
-        }
+        new(value: T) : value = value {}
         getValue(): T {
           return this.value;
         }
@@ -221,9 +205,7 @@ suite('Codegen: Generics', () => {
       
       class Inner<T> {
         value: T;
-        new(value: T) {
-          this.value = value;
-        }
+        new(value: T) : value = value {}
         getValue(): T {
           return this.value;
         }
@@ -231,9 +213,7 @@ suite('Codegen: Generics', () => {
       
       class Middle<T> {
         inner: Inner<T>;
-        new(value: T) {
-          this.inner = new Inner(value);
-        }
+        new(value: T) : inner = new Inner(value) {}
         getInnerValue(): T {
           return this.inner.getValue();
         }
@@ -241,9 +221,7 @@ suite('Codegen: Generics', () => {
       
       class Outer<T> {
         middle: Middle<T>;
-        new(value: T) {
-          this.middle = new Middle(value);
-        }
+        new(value: T) : middle = new Middle(value) {}
         getDeepValue(): T {
           return this.middle.getInnerValue();
         }
@@ -268,9 +246,7 @@ suite('Codegen: Generics', () => {
       
       class Box<T> implements Container<T> {
         value: T;
-        new(value: T) {
-          this.value = value;
-        }
+        new(value: T) : value = value {}
         getValue(): T {
           return this.value;
         }

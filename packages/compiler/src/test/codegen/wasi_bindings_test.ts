@@ -34,9 +34,7 @@ suite('CodeGenerator - WASI Bindings', () => {
       class OutputStream {
         #handle: i32;
 
-        new(handle: i32) {
-          this.#handle = handle;
-        }
+        new(handle: i32) : #handle = handle {}
 
         static getStdout(): OutputStream {
           return new OutputStream(__get_stdout());

@@ -75,9 +75,7 @@ suite('CodeGenerator - Extension Class Instantiation', () => {
       class Container<T> {
         wrapper: Wrapper<T>;
         
-        new(val: i32) {
-          this.wrapper = new Wrapper<T>(val);
-        }
+        new(val: i32) : wrapper = new Wrapper<T>(val) {}
 
         get(): i32 {
           return this.wrapper.getValue();

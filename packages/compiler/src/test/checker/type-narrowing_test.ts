@@ -10,10 +10,7 @@ suite('TypeChecker: Type Narrowing', () => {
         class Node {
           value: i32;
           next: Node | null;
-          new(value: i32) {
-            this.value = value;
-            this.next = null;
-          }
+          new(value: i32) : value = value, next = null {}
         }
 
         let process = (node: Node | null): void => {
@@ -37,9 +34,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (node: Node | null): void => {
@@ -64,9 +59,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (node: Node | null): void => {
@@ -90,9 +83,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (node: Node | null): void => {
@@ -121,9 +112,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (node: Node | null): void => {
@@ -150,9 +139,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (node: Node | null): void => {
@@ -175,9 +162,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (node: Node | null): void => {
@@ -204,9 +189,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Node {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (node: Node | null): void => {
@@ -236,10 +219,7 @@ suite('TypeChecker: Type Narrowing', () => {
         class Node {
           value: i32;
           next: Node | null;
-          new(value: i32) {
-            this.value = value;
-            this.next = null;
-          }
+          new(value: i32) : value = value, next = null {}
         }
 
         let process = (node: Node | null): void => {
@@ -269,9 +249,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Animal {
           name: string;
-          new(name: string) {
-            this.name = name;
-          }
+          new(name: string) : name = name {}
         }
 
         class Dog extends Animal {
@@ -393,9 +371,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         class Wrapper {
@@ -425,16 +401,12 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         class Wrapper {
           var inner: Container | null;
-          new() {
-            this.inner = null;
-          }
+          new() : inner = null {}
         }
 
         let process = (w: Wrapper): i32 => {
@@ -459,9 +431,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         class Wrapper {
@@ -491,9 +461,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Inner {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         class Middle {
@@ -528,9 +496,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Inner {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         class Middle {
@@ -540,9 +506,7 @@ suite('TypeChecker: Type Narrowing', () => {
 
         class Outer {
           var middle: Middle;
-          new(m: Middle) {
-            this.middle = m;
-          }
+          new(m: Middle) : middle = m {}
         }
 
         let process = (o: Outer): i32 => {
@@ -569,9 +533,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (r: {inner: Container | null}): i32 => {
@@ -596,9 +558,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (r: {outer: {inner: Container | null}}): i32 => {
@@ -623,9 +583,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (r: {inner: Container | null}): i32 => {
@@ -652,9 +610,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (t: (Container | null, i32)): i32 => {
@@ -679,9 +635,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (t: (Container | null, i32)): i32 => {
@@ -706,9 +660,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (t: ((Container | null, i32), string)): i32 => {
@@ -735,9 +687,7 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Container {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
 
         let process = (t: (Container | null, i32)): i32 => {

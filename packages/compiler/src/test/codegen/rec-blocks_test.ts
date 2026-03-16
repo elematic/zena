@@ -229,10 +229,7 @@ suite('rec block optimization', () => {
       class Point {
         x: i32;
         y: i32;
-        new(x: i32, y: i32) {
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32) : x = x, y = y {}
       }
       export let main = () => {
         let p = new Point(1, 2);
@@ -245,10 +242,7 @@ suite('rec block optimization', () => {
       class Point {
         x: i32;
         y: i32;
-        new(x: i32, y: i32) {
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32) : x = x, y = y {}
       }
       export let main = () => {
         let p = new Point(1, 2);
@@ -279,10 +273,7 @@ suite('rec block optimization', () => {
       class Node {
         value: i32;
         next: Node | null;
-        new(value: i32) {
-          this.value = value;
-          this.next = null;
-        }
+        new(value: i32) : value = value, next = null {}
       }
       export let main = () => {
         let n = new Node(42);
@@ -295,10 +286,7 @@ suite('rec block optimization', () => {
       class Node {
         value: i32;
         next: Node | null;
-        new(value: i32) {
-          this.value = value;
-          this.next = null;
-        }
+        new(value: i32) : value = value, next = null {}
       }
       export let main = () => {
         let n = new Node(42);
@@ -322,11 +310,11 @@ suite('rec block optimization', () => {
     const result = await compileAndRun(`
       class A {
         b: B | null;
-        new() { this.b = null; }
+        new() : b = null {}
       }
       class B {
         a: A | null;
-        new() { this.a = null; }
+        new() : a = null {}
       }
       export let main = () => {
         let a = new A();
@@ -338,11 +326,11 @@ suite('rec block optimization', () => {
     const wasm = compileToWasm(`
       class A {
         b: B | null;
-        new() { this.b = null; }
+        new() : b = null {}
       }
       class B {
         a: A | null;
-        new() { this.a = null; }
+        new() : a = null {}
       }
       export let main = () => {
         let a = new A();
@@ -366,7 +354,7 @@ suite('rec block optimization', () => {
     const wasm = compileToWasm(`
       class Foo {
         value: i32;
-        new(v: i32) { this.value = v; }
+        new(v: i32) : value = v {}
         getV(): i32 { return this.value; }
         setV(v: i32) { this.value = v; }
       }

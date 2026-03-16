@@ -11,7 +11,7 @@ suite('CodeGenerator - Generic Interfaces', () => {
 
       class Container<T> implements Box<T> {
         value: T;
-        new(value: T) { this.value = value; }
+        new(value: T) : value = value {}
         getValue(): T { return this.value; }
       }
 
@@ -88,9 +88,7 @@ suite('CodeGenerator - Generic Interfaces', () => {
           }
         }
 
-        new() {
-          this.#items = new Array<T>();
-        }
+        new() : #items = new Array<T>() {}
 
         map<U>(f: (item: T, index: i32, array: Sequence<T>) => U): Sequence<U> {
           let len = this.#items.length;

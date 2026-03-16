@@ -16,9 +16,7 @@ suite('Codegen - Operator [] Overloading', () => {
       class Container {
         #data: FixedArray<i32>;
         
-        new() {
-          this.#data = [10, 20, 30, 40, 50];
-        }
+        new() : #data = [10, 20, 30, 40, 50] {}
         
         operator [](index: i32): i32 {
           return this.#data[index];

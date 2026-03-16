@@ -7,11 +7,11 @@ suite('CodeGenerator - Casts', () => {
     const source = `
       class Animal {
         name: string;
-        new(name: string) { this.name = name; }
+        new(name: string) : name = name {}
       }
       class Dog extends Animal {
         breed: string;
-        new(name: string, breed: string) : breed = breed, super(name) { }
+        new(name: string, breed: string) : breed = breed, super(name) {}
       }
 
       export let main = (): boolean => {
@@ -30,15 +30,15 @@ suite('CodeGenerator - Casts', () => {
     const source = `
       class Animal {
         name: string;
-        new(name: string) { this.name = name; }
+        new(name: string) : name = name {}
       }
       class Dog extends Animal {
         breed: string;
-        new(name: string, breed: string) : breed = breed, super(name) { }
+        new(name: string, breed: string) : breed = breed, super(name) {}
       }
       class Cat extends Animal {
         lives: i32;
-        new(name: string) : lives = 9, super(name) { }
+        new(name: string) : lives = 9, super(name) {}
       }
 
       export let main = (): void => {
@@ -56,7 +56,7 @@ suite('CodeGenerator - Casts', () => {
     const source = `
       class Box {
         value: i32;
-        new(v: i32) { this.value = v; }
+        new(v: i32) : value = v {}
       }
 
       export let main = (): i32 => {

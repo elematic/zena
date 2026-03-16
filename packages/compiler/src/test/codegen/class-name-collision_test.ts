@@ -24,9 +24,7 @@ suite('class name collision', () => {
       '/moduleA.zena': `
         class Data {
           #value: i32;
-          new(v: i32) {
-            this.#value = v;
-          }
+          new(v: i32) : #value = v {}
           getValue(): i32 {
             return this.#value * 2;
           }
@@ -40,9 +38,7 @@ suite('class name collision', () => {
       '/moduleB.zena': `
         class Data {
           #value: i32;
-          new(v: i32) {
-            this.#value = v;
-          }
+          new(v: i32) : #value = v {}
           getValue(): i32 {
             return this.#value + 100;
           }

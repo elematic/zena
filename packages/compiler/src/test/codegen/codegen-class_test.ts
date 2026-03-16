@@ -8,10 +8,7 @@ suite('CodeGenerator - Classes', () => {
       class Point {
         x: i32;
         y: i32;
-        new(x: i32, y: i32) {
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32) : x = x, y = y {}
         getX(): i32 {
           return this.x;
         }
@@ -28,10 +25,8 @@ suite('CodeGenerator - Classes', () => {
   test('should compile and run field assignment', async () => {
     const input = `
       class Point {
-        x: i32;
-        new() {
-          this.x = 0;
-        }
+        x: i32 = 0;
+        new() {}
       }
       export let main = (): i32 => {
         let p = new Point();

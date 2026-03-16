@@ -20,9 +20,7 @@ suite('Cross-module class inheritance', () => {
       '/base.zena': `
         export class Base {
           x: i32;
-          new(x: i32) {
-            this.x = x;
-          }
+          new(x: i32) : x = x {}
         }
       `,
       '/main.zena': `
@@ -49,9 +47,7 @@ suite('Cross-module class inheritance', () => {
       '/base.zena': `
         export class Base {
           value: i32;
-          new(v: i32) {
-            this.value = v;
-          }
+          new(v: i32) : value = v {}
         }
       `,
       '/main.zena': `
@@ -80,7 +76,7 @@ suite('Cross-module class inheritance', () => {
       '/a.zena': `
         export class A {
           a: i32;
-          new(a: i32) { this.a = a; }
+          new(a: i32) : a = a {}
         }
       `,
       '/b.zena': `
@@ -112,9 +108,7 @@ suite('Cross-module class inheritance', () => {
       '/base.zena': `
         export class Base {
           #value: i32;
-          new(v: i32) {
-            this.#value = v;
-          }
+          new(v: i32) : #value = v {}
           value: i32 {
             get { return this.#value; }
           }
@@ -145,9 +139,7 @@ suite('Cross-module class inheritance', () => {
       '/base.zena': `
         export class Animal {
           name: string;
-          new(name: string) {
-            this.name = name;
-          }
+          new(name: string) : name = name {}
           speak(): string {
             return "...";
           }

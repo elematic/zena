@@ -30,9 +30,7 @@ symbol compute;
 class Calculator {
   value: i32;
   
-  new(v: i32) {
-    this.value = v;
-  }
+  new(v: i32) : value = v {}
   
   :compute(x: i32): i32 {
     return this.value + x;
@@ -114,9 +112,7 @@ symbol getValue;
 class Box {
   value: i32;
   
-  new(v: i32) {
-    this.value = v;
-  }
+  new(v: i32) : value = v {}
   
   :getValue(): i32 {
     return this.value;
@@ -139,8 +135,7 @@ class Mixed {
   publicValue: i32;
   :secretValue: i32;
   
-  new(pub: i32, secret: i32) {
-    this.publicValue = pub;
+  new(pub: i32, secret: i32) : publicValue = pub {
     this.:secretValue = secret;
   }
   

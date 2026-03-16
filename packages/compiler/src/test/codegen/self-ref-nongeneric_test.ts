@@ -9,10 +9,7 @@ class Node {
   value: i32;
   child: Node;
   
-  new(value: i32, child: Node) {
-    this.value = value;
-    this.child = child;
-  }
+  new(value: i32, child: Node) : value = value, child = child {}
 }
 
 export let main = () => {
@@ -31,10 +28,7 @@ class ListNode {
   value: i32;
   next: ListNode;
   
-  new(value: i32, next: ListNode) {
-    this.value = value;
-    this.next = next;
-  }
+  new(value: i32, next: ListNode) : value = value, next = next {}
 }
 
 export let main = () => {

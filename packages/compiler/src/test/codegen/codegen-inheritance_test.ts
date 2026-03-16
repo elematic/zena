@@ -8,14 +8,11 @@ suite('CodeGenerator - Inheritance', () => {
       class Point {
         x: i32;
         y: i32;
+        new(x: i32, y: i32) : x = x, y = y {}
       }
       class Point3D extends Point {
         z: i32;
-        new(x: i32, y: i32, z: i32) : z = z, super() {
-          // inherited fields are set in body after super()
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32, z: i32) : z = z, super(x, y) {}
         getZ(): i32 {
           return this.z;
         }

@@ -9,10 +9,7 @@ suite('TypeChecker - Classes', () => {
       class Point {
         x: i32;
         y: i32;
-        new(x: i32, y: i32) {
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32) : x = x, y = y {}
         distance(): i32 {
           return 0;
         }
@@ -32,8 +29,8 @@ suite('TypeChecker - Classes', () => {
   test('should detect duplicate fields', () => {
     const input = `
       class Point {
-        x: i32;
-        x: i32;
+        x: i32 = 0;
+        x: i32 = 0;
       }
     `;
     const parser = new Parser(input);
@@ -48,7 +45,7 @@ suite('TypeChecker - Classes', () => {
   test('should detect type mismatch in field assignment', () => {
     const input = `
       class Point {
-        x: i32;
+        x: i32 = 0;
         new() {
           this.x = "hello";
         }
@@ -82,7 +79,7 @@ suite('TypeChecker - Classes', () => {
   test('should detect invalid member access', () => {
     const input = `
       class Point {
-        x: i32;
+        x: i32 = 0;
       }
       let p = new Point();
       let y = p.y;

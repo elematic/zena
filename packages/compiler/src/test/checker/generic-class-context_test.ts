@@ -20,9 +20,7 @@ suite('Generic Class Context Consistency', () => {
         class Container<T> {
           #value: T;
           
-          new(value: T) {
-            this.#value = value;
-          }
+          new(value: T) : #value = value {}
           
           getValue(): T {
             return this.#value;
@@ -43,9 +41,7 @@ suite('Generic Class Context Consistency', () => {
         class Calculator<T> {
           #multiplier: i32;
           
-          new(mult: i32) {
-            this.#multiplier = mult;
-          }
+          new(mult: i32) : #multiplier = mult {}
           
           #compute(x: i32): i32 {
             return x * this.#multiplier;
@@ -73,10 +69,7 @@ suite('Generic Class Context Consistency', () => {
           #key: K;
           #value: V;
           
-          new(key: K, value: V) {
-            this.#key = key;
-            this.#value = value;
-          }
+          new(key: K, value: V) : #key = key, #value = value {}
           
           getKey(): K { return this.#key; }
           getValue(): V { return this.#value; }
@@ -98,9 +91,7 @@ suite('Generic Class Context Consistency', () => {
         class Container<T> {
           #items: array<T>;
           
-          new(items: array<T>) {
-            this.#items = items;
-          }
+          new(items: array<T>) : #items = items {}
           
           // Generic method in generic class
           transform<U>(defaultVal: U): U {
@@ -128,9 +119,7 @@ suite('Generic Class Context Consistency', () => {
         class Outer<T> {
           #value: T;
           
-          new(v: T) {
-            this.#value = v;
-          }
+          new(v: T) : #value = v {}
           
           // U is a different type parameter, no shadowing
           process<U>(x: U): T {
@@ -156,9 +145,7 @@ suite('Generic Class Context Consistency', () => {
         class Container<T> {
           #value: T;
           
-          new(v: T) {
-            this.#value = v;
-          }
+          new(v: T) : #value = v {}
           
           #internalGet(): T {
             return this.#value;
@@ -193,10 +180,7 @@ suite('Generic Class Context Consistency', () => {
           value: i32;
           #child: Node;
           
-          new(value: i32, child: Node) {
-            this.value = value;
-            this.#child = child;
-          }
+          new(value: i32, child: Node) : value = value, #child = child {}
           
           getChildValue(): i32 {
             return this.#child.value;
@@ -218,17 +202,14 @@ suite('Generic Class Context Consistency', () => {
       const source = `
         class Wrapper {
           val: i32;
-          new(v: i32) { this.val = v; }
+          new(v: i32) : val = v {}
         }
         
         class Node<T> {
           value: T;
           #child: Node<T>;
           
-          new(value: T, child: Node<T>) {
-            this.value = value;
-            this.#child = child;
-          }
+          new(value: T, child: Node<T>) : value = value, #child = child {}
           
           getChildValue(): T {
             return this.#child.value;
@@ -254,9 +235,7 @@ suite('Generic Class Context Consistency', () => {
         class Box<T> {
           #value: T;
           
-          new(v: T) {
-            this.#value = v;
-          }
+          new(v: T) : #value = v {}
           
           getValue(): T {
             return this.#value;

@@ -59,9 +59,7 @@ suite('Enums', () => {
 
       class Pixel {
         color: Color;
-        new(c: Color) {
-          this.color = c;
-        }
+        new(c: Color) : color = c {}
       }
 
       export let main = () => {

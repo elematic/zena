@@ -22,6 +22,7 @@ suite('Checker: ByteArray', () => {
     const errors = check(`
       class Container {
         data: ByteArray;
+        new(d: ByteArray) : data = d {}
       }
     `);
     assert.deepStrictEqual(errors, []);

@@ -81,7 +81,7 @@ suite('Checker - Super', () => {
   test('should allow super field access', () => {
     const source = `
       class A {
-        x: i32;
+        x: i32 = 0;
       }
       class B extends A {
         getX(): i32 {

@@ -14,7 +14,7 @@ suite('class method multi-value returns', () => {
       const source = `
         class Wrapper {
           #value: i32;
-          new(v: i32) { this.#value = v; }
+          new(v: i32) : #value = v {}
           getValue(): i32 { return this.#value; }
         }
 
@@ -22,10 +22,7 @@ suite('class method multi-value returns', () => {
           #wrapper: Wrapper;
           #done: boolean;
 
-          new(v: i32) {
-            this.#wrapper = new Wrapper(v);
-            this.#done = false;
-          }
+          new(v: i32) : #wrapper = new Wrapper(v), #done = false {}
 
           // Returns union of tuples with reference type element
           next(): inline (true, Wrapper) | inline (false, never) {
@@ -60,10 +57,7 @@ suite('class method multi-value returns', () => {
           #count: i32;
           #max: i32;
 
-          new(max: i32) {
-            this.#count = 0;
-            this.#max = max;
-          }
+          new(max: i32) : #count = 0, #max = max {}
 
           next(): inline (true, i32) | inline (false, never) {
             if (this.#count >= this.#max) {
@@ -97,10 +91,7 @@ suite('class method multi-value returns', () => {
           #hasValue: boolean;
           #box: Box<i32>;
 
-          new(value: i32) {
-            this.#hasValue = true;
-            this.#box = new Box(value);
-          }
+          new(value: i32) : #hasValue = true, #box = new Box(value) {}
 
           static empty(): OptionalBox {
             let opt = new OptionalBox(0);
@@ -148,10 +139,7 @@ suite('class method multi-value returns', () => {
           #x: i32;
           #y: i32;
 
-          new(x: i32, y: i32) {
-            this.#x = x;
-            this.#y = y;
-          }
+          new(x: i32, y: i32) : #x = x, #y = y {}
 
           getCoords(): inline (i32, i32) {
             return (this.#x, this.#y);

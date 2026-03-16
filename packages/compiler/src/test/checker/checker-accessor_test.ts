@@ -9,9 +9,7 @@ suite('TypeChecker - Accessors', () => {
       class Box {
         #value: i32;
         
-        new(v: i32) {
-          this.#value = v;
-        }
+        new(v: i32) : #value = v {}
 
         value: i32 {
           get {
@@ -56,7 +54,7 @@ suite('TypeChecker - Accessors', () => {
   test('should detect setter parameter usage mismatch', () => {
     const input = `
       class Box {
-        #value: i32;
+        #value: i32 = 0;
         value: i32 {
           set(v) {
              let s: string = v; // Error: v is i32

@@ -84,24 +84,15 @@ export enum Flags {
 
 export final class Ast {
   op: Op;
-  flags: Flags;
-  sub: Array<Ast>;      // subexpressions (for Concat, Alternate, Star, etc.)
-  runes: Array<i32>;    // matched runes (for Literal, CharClass)
-  min: i32;             // min for Repeat
-  max: i32;             // max for Repeat (-1 = no limit)
-  cap: i32;             // capturing index (for Capture)
-  name: string;         // capturing name (for named groups)
+  flags: Flags = Flags.None;
+  sub: Array<Ast> = new Array<Ast>();
+  runes: Array<i32> = new Array<i32>();
+  min: i32 = 0;
+  max: i32 = 0;
+  cap: i32 = 0;
+  name: string = '';
 
-  new(op: Op) {
-    this.op = op;
-    this.flags = Flags.None;
-    this.sub = new Array<Ast>();
-    this.runes = new Array<i32>();
-    this.min = 0;
-    this.max = 0;
-    this.cap = 0;
-    this.name = '';
-  }
+  new(op: Op) : op = op {}
 
   // Create a new Ast with the given op and flags
   static create(op: Op, flags: Flags): Ast {
@@ -116,17 +107,12 @@ export final class Ast {
 // ============================================================================
 
 final class Parser {
-  #stack: Array<Ast>;   // parse stack
-  #flags: Flags;        // current flags
-  #numCap: i32;         // number of capturing groups so far
-  #pattern: string;     // original pattern for error messages
+  #stack: Array<Ast> = new Array<Ast>();
+  #flags: Flags;
+  #numCap: i32 = 0;
+  #pattern: string = '';
 
-  new(flags: Flags) {
-    this.#stack = new Array<Ast>();
-    this.#flags = flags;
-    this.#numCap = 0;
-    this.#pattern = '';
-  }
+  new(flags: Flags) : #flags = flags {}
 
   // Parse a regular expression pattern into an AST
   static parse(pattern: string, flags: Flags): Ast {
@@ -1015,45 +1001,31 @@ enum StateType {
 
 // NFA State
 final class State {
-  type: StateType;    // State type
-  c: i32;             // character to match (for Char)
-  ranges: Array<i32>; // character ranges [lo1, hi1, lo2, hi2, ...] (for CharClass)
-  cap: i32;           // capture index (for Capture): 2*n for start, 2*n+1 for end
-  out1: State | null; // first output state
-  out2: State | null; // second output state (for splits)
-  lastList: i32;      // last list id this state was on (for NFA simulation)
+  kind: StateType;
+  c: i32 = 0;
+  ranges: Array<i32> = new Array<i32>();
+  cap: i32 = 0;
+  out1: State | null = null;
+  out2: State | null = null;
+  lastList: i32 = 0;
 
-  new(type: StateType) {
-    this.type = type;
-    this.c = 0;
-    this.cap = 0;
-    this.ranges = new Array<i32>();
-    this.out1 = null;
-    this.out2 = null;
-    this.lastList = 0;
-  }
+  new(kind: StateType) : kind = kind {}
 }
 
 // Patch entry - tracks a state and which output field to patch
 final class PatchEntry {
   state: State;
-  field: i32;  // 1 = out1, 2 = out2
+  field: i32;
 
-  new(state: State, field: i32) {
-    this.state = state;
-    this.field = field;
-  }
+  new(state: State, field: i32) : state = state, field = field {}
 }
 
 // NFA fragment (used during construction)
 final class Frag {
-  start: State;              // start state of fragment
-  patches: Array<PatchEntry>;  // list of dangling outputs to patch
+  start: State;
+  patches: Array<PatchEntry> = new Array<PatchEntry>();
 
-  new(start: State) {
-    this.start = start;
-    this.patches = new Array<PatchEntry>();
-  }
+  new(start: State) : start = start {}
 
   // Helper to add a patch entry
   addPatch(state: State, field: i32): void {
@@ -1072,11 +1044,9 @@ final class Frag {
 
 // NFA compiler - builds NFA from AST
 final class NfaCompiler {
-  #matchState: State;
+  #matchState: State = new State(StateType.Match);
 
-  new() {
-    this.#matchState = new State(StateType.Match);
-  }
+  new() {}
 
   // Compile an AST to an NFA, return the start state
   compile(ast: Ast): State {
@@ -1234,7 +1204,7 @@ final class NfaCompiler {
       let upper = this.#toUpper(c);
       if (lower == upper) {
         // Not a letter with case, just match the char
-        s.type = StateType.Char;
+        s.kind = StateType.Char;
         s.c = c;
       } else if (lower < upper) {
         s.ranges.push(lower);
@@ -1556,11 +1526,9 @@ var nfaEpoch: i32 = 0;
 // Following Go's implementation, each thread carries its own capture array.
 final class Thread {
   state: State;
-  cap: Array<i32>;  // Capture positions: cap[2*n] = start, cap[2*n+1] = end
+  cap: Array<i32> = new Array<i32>();
 
-  new(state: State, numCap: i32) {
-    this.state = state;
-    this.cap = new Array<i32>();
+  new(state: State, numCap: i32) : state = state {
     // Initialize all captures to -1 (unmatched)
     var i = 0;
     while (i < numCap) {
@@ -1583,25 +1551,19 @@ final class Thread {
 final class QueueEntry {
   thread: Thread | null;
 
-  new(thread: Thread | null) {
-    this.thread = thread;
-  }
+  new(thread: Thread | null) : thread = thread {}
 }
 
 final class NfaRunner {
   #start: State;
   #matchState: State;
-  #listId: i32;
-  #numCap: i32;        // Number of capture slots (2 * numGroups)
-  #matched: boolean;
-  #matchCap: Array<i32>;  // Capture positions for best match found
+  #listId: i32 = 0;
+  #numCap: i32;
+  #matched: boolean = false;
+  #matchCap: Array<i32> = new Array<i32>();
 
-  new(start: State, matchState: State, numCap: i32) {
-    this.#start = start;
-    this.#matchState = matchState;
-    this.#numCap = numCap;
-    this.#matched = false;
-    this.#matchCap = new Array<i32>();
+  new(start: State, matchState: State, numCap: i32)
+      : #start = start, #matchState = matchState, #numCap = numCap {
     // Initialize match captures to -1
     var i = 0;
     while (i < numCap) {
@@ -1682,7 +1644,7 @@ final class NfaRunner {
         let t = runq[i];
         let s = t.state;
 
-        if (s.type == StateType.Match) {
+        if (s.kind == StateType.Match) {
           // Found a match - record capture end and save
           if (this.#numCap > 1) {
             t.cap[1] = pos;  // Record end of whole match
@@ -1710,19 +1672,19 @@ final class NfaRunner {
           continue;
         }
 
-        if (s.type == StateType.Char) {
+        if (s.kind == StateType.Char) {
           if (c == s.c && s.out1 != null) {
             this.#addThread(nextq, s.out1 as State, pos + 1, t.cap, input, inputLen);
           }
-        } else if (s.type == StateType.CharClass) {
+        } else if (s.kind == StateType.CharClass) {
           if (c >= 0 && this.#matchCharClass(c, s.ranges) && s.out1 != null) {
             this.#addThread(nextq, s.out1 as State, pos + 1, t.cap, input, inputLen);
           }
-        } else if (s.type == StateType.Any) {
+        } else if (s.kind == StateType.Any) {
           if (c >= 0 && s.out1 != null) {
             this.#addThread(nextq, s.out1 as State, pos + 1, t.cap, input, inputLen);
           }
-        } else if (s.type == StateType.AnyNotNL) {
+        } else if (s.kind == StateType.AnyNotNL) {
           if (c >= 0 && c != 10 && s.out1 != null) {
             this.#addThread(nextq, s.out1 as State, pos + 1, t.cap, input, inputLen);
           }
@@ -1739,7 +1701,7 @@ final class NfaRunner {
     i = 0;
     while (i < runq.length) {
       let t = runq[i];
-      if (t.state.type == StateType.Match) {
+      if (t.state.kind == StateType.Match) {
         if (this.#numCap > 1) {
           t.cap[1] = pos;
         }
@@ -1766,7 +1728,7 @@ final class NfaRunner {
     }
     s.lastList = this.#listId;
 
-    if (s.type == StateType.Split) {
+    if (s.kind == StateType.Split) {
       // Follow both epsilon transitions
       if (s.out1 != null) {
         this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
@@ -1777,7 +1739,7 @@ final class NfaRunner {
       return;
     }
 
-    if (s.type == StateType.Capture) {
+    if (s.kind == StateType.Capture) {
       // Record capture position and continue to next state
       let capIdx = s.cap;
       if (capIdx < cap.length) {
@@ -1797,7 +1759,7 @@ final class NfaRunner {
     }
 
     // Anchor handling - epsilon transitions that only succeed at certain positions
-    if (s.type == StateType.BeginText) {
+    if (s.kind == StateType.BeginText) {
       // ^ - only match at position 0
       if (pos == 0 && s.out1 != null) {
         this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
@@ -1805,7 +1767,7 @@ final class NfaRunner {
       return;
     }
 
-    if (s.type == StateType.EndText) {
+    if (s.kind == StateType.EndText) {
       // $ - only match at end of input
       if (pos == inputLen && s.out1 != null) {
         this.#addThread(q, s.out1 as State, pos, cap, input, inputLen);
@@ -1813,7 +1775,7 @@ final class NfaRunner {
       return;
     }
 
-    if (s.type == StateType.BeginLine) {
+    if (s.kind == StateType.BeginLine) {
       // ^m - match at position 0 or after newline
       var atLineStart = pos == 0;
       if (!atLineStart && pos > 0) {
@@ -1825,7 +1787,7 @@ final class NfaRunner {
       return;
     }
 
-    if (s.type == StateType.EndLine) {
+    if (s.kind == StateType.EndLine) {
       // $m - match at end of input or before newline
       var atLineEnd = pos == inputLen;
       if (!atLineEnd && pos < inputLen) {
@@ -1837,7 +1799,7 @@ final class NfaRunner {
       return;
     }
 
-    if (s.type == StateType.WordBoundary) {
+    if (s.kind == StateType.WordBoundary) {
       // \b - match at word boundary (between word and non-word chars)
       let atBoundary = this.#isWordBoundary(input, pos, inputLen);
       if (atBoundary && s.out1 != null) {
@@ -1846,7 +1808,7 @@ final class NfaRunner {
       return;
     }
 
-    if (s.type == StateType.NotWordBoundary) {
+    if (s.kind == StateType.NotWordBoundary) {
       // \B - match at non-word boundary
       let atBoundary = this.#isWordBoundary(input, pos, inputLen);
       if (!atBoundary && s.out1 != null) {
@@ -1905,14 +1867,10 @@ export final class Match {
   value: string;
   index: i32;
   groups: Array<string>;
-  #groupNames: Array<string>;  // Parallel to groups: name at index i corresponds to groups[i], empty string if unnamed
+  #groupNames: Array<string>;
 
-  new(value: string, index: i32, groups: Array<string>, groupNames: Array<string>) {
-    this.value = value;
-    this.index = index;
-    this.groups = groups;
-    this.#groupNames = groupNames;
-  }
+  new(value: string, index: i32, groups: Array<string>, groupNames: Array<string>)
+      : value = value, index = index, groups = groups, #groupNames = groupNames {}
 
   // Get a captured group by name. Returns null if name not found or group didn't match.
   group(name: string): string | null {
@@ -2002,23 +1960,17 @@ export final class Match {
 export final class Regex {
   #pattern: string;
   #flags: string;
-  #start: State | null;
-  #matchState: State;
-  #isLiteral: boolean;
-  #numCap: i32;  // Number of capture slots (2 * (numGroups + 1) for whole match + groups)
-  #groupNames: Array<string>;  // Names of capture groups (index 0 = group 1, empty string if unnamed)
+  #start: State | null = null;
+  #matchState: State = new State(StateType.Match);
+  #isLiteral: boolean = false;
+  #numCap: i32 = 2;
+  #groupNames: Array<string> = new Array<string>();
 
-  new(pattern: string, flags: string = '') {
-    this.#pattern = pattern;
-    this.#flags = flags;
-    this.#matchState = new State(StateType.Match);
-    this.#numCap = 2;  // Default: at least 2 for whole match [start, end]
-    this.#groupNames = new Array<string>();
+  new(pattern: string, flags: string = '')
+      : #pattern = pattern, #flags = flags {
     // Check if pattern is a simple literal (no metacharacters)
     this.#isLiteral = this.#checkLiteral(pattern);
-    if (this.#isLiteral) {
-      this.#start = null;
-    } else {
+    if (!this.#isLiteral) {
       // Parse and compile the pattern
       let flagsEnum = this.#parseFlags(flags);
       let ast = Parser.parse(pattern, flagsEnum);
@@ -2158,7 +2110,7 @@ export final class Regex {
     // Check if empty match is possible
     var i = 0;
     while (i < clist.length) {
-      if (clist[i].type == StateType.Match) {
+      if (clist[i].kind == StateType.Match) {
         lastMatchPos = pos;
         break;
       }
@@ -2171,19 +2123,19 @@ export final class Regex {
       i = 0;
       while (i < clist.length) {
         let s = clist[i];
-        if (s.type == StateType.Char) {
+        if (s.kind == StateType.Char) {
           if (c == s.c && s.out1 != null) {
             this.#addStateForLength(nlist, s.out1 as State, listId);
           }
-        } else if (s.type == StateType.CharClass) {
+        } else if (s.kind == StateType.CharClass) {
           if (this.#matchCharClassLocal(c, s.ranges) && s.out1 != null) {
             this.#addStateForLength(nlist, s.out1 as State, listId);
           }
-        } else if (s.type == StateType.Any) {
+        } else if (s.kind == StateType.Any) {
           if (s.out1 != null) {
             this.#addStateForLength(nlist, s.out1 as State, listId);
           }
-        } else if (s.type == StateType.AnyNotNL) {
+        } else if (s.kind == StateType.AnyNotNL) {
           if (c != 10 && s.out1 != null) {
             this.#addStateForLength(nlist, s.out1 as State, listId);
           }
@@ -2196,7 +2148,7 @@ export final class Regex {
       // Check if we have a match
       i = 0;
       while (i < clist.length) {
-        if (clist[i].type == StateType.Match) {
+        if (clist[i].kind == StateType.Match) {
           lastMatchPos = pos;
           break;
         }
@@ -2214,7 +2166,7 @@ export final class Regex {
       return;
     }
     s.lastList = listId;
-    if (s.type == StateType.Split) {
+    if (s.kind == StateType.Split) {
       if (s.out1 != null) {
         this.#addStateForLength(list, s.out1 as State, listId);
       }
@@ -2223,7 +2175,7 @@ export final class Regex {
       }
       return;
     }
-    if (s.type == StateType.Capture) {
+    if (s.kind == StateType.Capture) {
       // Follow epsilon transition through capture states
       if (s.out1 != null) {
         this.#addStateForLength(list, s.out1 as State, listId);
@@ -2231,9 +2183,9 @@ export final class Regex {
       return;
     }
     // Follow anchors and boundaries as epsilon transitions for length calculation
-    if (s.type == StateType.BeginText || s.type == StateType.EndText ||
-        s.type == StateType.BeginLine || s.type == StateType.EndLine ||
-        s.type == StateType.WordBoundary || s.type == StateType.NotWordBoundary) {
+    if (s.kind == StateType.BeginText || s.kind == StateType.EndText ||
+        s.kind == StateType.BeginLine || s.kind == StateType.EndLine ||
+        s.kind == StateType.WordBoundary || s.kind == StateType.NotWordBoundary) {
       if (s.out1 != null) {
         this.#addStateForLength(list, s.out1 as State, listId);
       }

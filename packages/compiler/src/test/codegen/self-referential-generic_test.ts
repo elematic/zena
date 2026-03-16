@@ -9,10 +9,7 @@ suite('self-referential generic types', () => {
         value: T;
         child: Node<T> | null;
         
-        new(value: T) {
-          this.value = value;
-          this.child = null;
-        }
+        new(value: T) : value = value, child = null {}
       }
       
       export let main = (): i32 => {
@@ -31,10 +28,7 @@ suite('self-referential generic types', () => {
         data: T;
         next: ListNode<T> | null;
         
-        new(data: T) {
-          this.data = data;
-          this.next = null;
-        }
+        new(data: T) : data = data, next = null {}
       }
       
       export let main = (): i32 => {
@@ -66,11 +60,7 @@ suite('self-referential generic types', () => {
         left: TreeNode<T> | null;
         right: TreeNode<T> | null;
         
-        new(value: T) {
-          this.value = value;
-          this.left = null;
-          this.right = null;
-        }
+        new(value: T) : value = value, left = null, right = null {}
       }
       
       export let main = (): i32 => {

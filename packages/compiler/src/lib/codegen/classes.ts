@@ -3299,6 +3299,49 @@ export function generateClassMethods(
             }
           }
 
+          // Also collect mixin field initializers
+          if (decl.mixins && decl.mixins.length > 0) {
+            let baseName = 'Object';
+            if (decl.superClass) {
+              // Handle both TypeAnnotation and Identifier (synthetic classes)
+              if ((decl.superClass as any).type === NodeType.TypeAnnotation) {
+                baseName = getTypeAnnotationName(decl.superClass);
+              } else if (
+                (decl.superClass as any).type === NodeType.Identifier
+              ) {
+                baseName = (decl.superClass as any).name;
+              }
+            }
+            for (const mixinAnnotation of decl.mixins) {
+              const mixinType = mixinAnnotation.inferredType;
+              if (!mixinType || mixinType.kind !== TypeKind.Mixin) continue;
+              const mixinDecl = ctx.getMixinDeclaration(mixinType as MixinType);
+              if (!mixinDecl) continue;
+              const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+              for (const m of mixinDecl.body) {
+                if (
+                  m.type === NodeType.FieldDefinition &&
+                  !m.isStatic &&
+                  m.value
+                ) {
+                  const memberName = getMemberName(m.name);
+                  const fieldName = manglePrivateName(
+                    intermediateName,
+                    memberName,
+                  );
+                  const fieldInfo = classInfo.fields.get(fieldName);
+                  if (fieldInfo) {
+                    fieldValues.set(fieldInfo.index, {
+                      expr: m.value,
+                      name: fieldName,
+                    });
+                  }
+                }
+              }
+              baseName = intermediateName;
+            }
+          }
+
           // Override with initializer list values (they take precedence)
           if (member.initializerList) {
             for (const init of member.initializerList) {
@@ -3406,7 +3449,7 @@ export function generateClassMethods(
             }
           }
 
-          // 2. Generate inline field defaults (skip fields already set in initializerList)
+          // 2. Generate inline field defaults (for fields not in initializerList)
           const initializedFields = new Set(
             member.initializerList?.map((init) => init.field.name) ?? [],
           );
@@ -3414,6 +3457,7 @@ export function generateClassMethods(
             if (m.type === NodeType.FieldDefinition && m.value) {
               if (m.isStatic) continue;
               const memberName = getMemberName(m.name);
+              // Skip if already initialized in initializerList
               if (initializedFields.has(memberName)) continue;
               const fieldName = manglePrivateName(decl.name.name, memberName);
               const fieldInfo = classInfo.fields.get(fieldName)!;
@@ -3427,7 +3471,16 @@ export function generateClassMethods(
             }
           }
 
-          // 3. Generate constructor body
+          // 2b. Generate mixin field defaults
+          generateMixinFieldInitializers(
+            ctx,
+            decl,
+            classInfo,
+            initializedFields,
+            body,
+          );
+
+          // 3. Generate body
           if (member.body && member.body.type === NodeType.BlockStatement) {
             generateBlockStatement(ctx, member.body, body);
           }
@@ -3479,6 +3532,15 @@ export function generateClassMethods(
               }
             }
 
+            // 3b. Generate mixin field defaults
+            generateMixinFieldInitializers(
+              ctx,
+              decl,
+              classInfo,
+              initializedFields,
+              body,
+            );
+
             // 4. Generate body
             if (member.body && member.body.type === NodeType.BlockStatement) {
               generateBlockStatement(ctx, member.body, body);
@@ -3488,6 +3550,7 @@ export function generateClassMethods(
             member.body.type === NodeType.BlockStatement
           ) {
             // Existing pattern: super() in body
+            let superCalled = false;
             for (const stmt of member.body.body) {
               generateFunctionStatement(ctx, stmt, body);
 
@@ -3497,6 +3560,8 @@ export function generateClassMethods(
                 (stmt.expression as any).callee.type ===
                   NodeType.SuperExpression
               ) {
+                superCalled = true;
+                const initializedFields = new Set<string>();
                 for (const m of decl.body) {
                   if (m.type === NodeType.FieldDefinition && m.value) {
                     if (m.isStatic) continue;
@@ -3518,7 +3583,111 @@ export function generateClassMethods(
                     );
                   }
                 }
+                // Also generate mixin field initializers
+                generateMixinFieldInitializers(
+                  ctx,
+                  decl,
+                  classInfo,
+                  initializedFields,
+                  body,
+                );
               }
+            }
+
+            // If no super() was called but class has mixin intermediate as superclass,
+            // still generate field initializers (mixin intermediates have no ctor)
+            if (!superCalled && decl.mixins && decl.mixins.length > 0) {
+              const initializedFields = new Set(
+                member.initializerList?.map((init) => init.field.name) ?? [],
+              );
+
+              // Generate field initializers from initializerList FIRST
+              if (member.initializerList) {
+                for (const init of member.initializerList) {
+                  const memberName = init.field.name;
+                  const fieldName = manglePrivateName(
+                    decl.name.name,
+                    memberName,
+                  );
+                  const fieldInfo = classInfo.fields.get(fieldName);
+                  if (fieldInfo) {
+                    body.push(Opcode.local_get, 0); // this
+                    generateExpression(ctx, init.value, body);
+                    body.push(0xfb, GcOpcode.struct_set);
+                    body.push(
+                      ...WasmModule.encodeSignedLEB128(
+                        classInfo.structTypeIndex,
+                      ),
+                    );
+                    body.push(
+                      ...WasmModule.encodeSignedLEB128(fieldInfo.index),
+                    );
+                  }
+                }
+              }
+
+              // Generate class field initializers (for fields not in initializerList)
+              for (const m of decl.body) {
+                if (m.type === NodeType.FieldDefinition && m.value) {
+                  if (m.isStatic) continue;
+                  const memberName = getMemberName(m.name);
+                  if (initializedFields.has(memberName)) continue;
+                  const fieldName = manglePrivateName(
+                    decl.name.name,
+                    memberName,
+                  );
+                  const fieldInfo = classInfo.fields.get(fieldName)!;
+                  body.push(Opcode.local_get, 0);
+                  generateExpression(ctx, m.value, body);
+                  body.push(0xfb, GcOpcode.struct_set);
+                  body.push(
+                    ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+                  );
+                  body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+                }
+              }
+              // Generate mixin field initializers
+              generateMixinFieldInitializers(
+                ctx,
+                decl,
+                classInfo,
+                initializedFields,
+                body,
+              );
+            }
+          } else if (decl.mixins && decl.mixins.length > 0) {
+            // No body but has mixins - still generate field initializers
+            const initializedFields = new Set(
+              member.initializerList?.map((init) => init.field.name) ?? [],
+            );
+            // Generate class field initializers
+            for (const m of decl.body) {
+              if (m.type === NodeType.FieldDefinition && m.value) {
+                if (m.isStatic) continue;
+                const memberName = getMemberName(m.name);
+                if (initializedFields.has(memberName)) continue;
+                const fieldName = manglePrivateName(decl.name.name, memberName);
+                const fieldInfo = classInfo.fields.get(fieldName)!;
+                body.push(Opcode.local_get, 0);
+                generateExpression(ctx, m.value, body);
+                body.push(0xfb, GcOpcode.struct_set);
+                body.push(
+                  ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+                );
+                body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+              }
+            }
+            // Generate mixin field initializers
+            generateMixinFieldInitializers(
+              ctx,
+              decl,
+              classInfo,
+              initializedFields,
+              body,
+            );
+            // Generate body if exists
+            if (member.body && member.body.type === NodeType.BlockStatement) {
+              generateBlockStatement(ctx, member.body, body);
             }
           }
         }
@@ -5011,6 +5180,73 @@ function instantiateClassImpl(
     registerMethods();
   } else {
     ctx.pendingMethodGenerations.push(registerMethods);
+  }
+}
+
+/**
+ * Generate mixin field initializers for a class.
+ * This handles mixin fields with default values that need to be initialized
+ * in the target class's constructor.
+ */
+function generateMixinFieldInitializers(
+  ctx: CodegenContext,
+  decl: ClassDeclaration,
+  classInfo: ClassInfo,
+  initializedFields: Set<string>,
+  body: number[],
+): void {
+  if (!decl.mixins || decl.mixins.length === 0) return;
+
+  // Walk through mixins and generate initializers for fields with default values
+  // We need to compute the intermediate class name for each mixin to look up fields correctly
+
+  // Find the actual base class (before mixins)
+  // The mixin intermediate chain is: Base -> Base_M1 -> Base_M1_M2 -> ... -> TargetClass
+  // We need to walk backwards to determine the intermediate name for each mixin
+  // For simplicity, walk forward and build intermediate names
+  let baseName = 'Object';
+  if (decl.superClass) {
+    // Has explicit superclass - use its name as base
+    // Handle both TypeAnnotation (user code) and Identifier (synthetic mixin intermediates)
+    if ((decl.superClass as any).type === NodeType.TypeAnnotation) {
+      baseName = getTypeAnnotationName(decl.superClass);
+    } else if ((decl.superClass as any).type === NodeType.Identifier) {
+      baseName = (decl.superClass as any).name;
+    }
+  }
+
+  for (const mixinAnnotation of decl.mixins) {
+    const mixinType = mixinAnnotation.inferredType;
+    if (!mixinType || mixinType.kind !== TypeKind.Mixin) continue;
+
+    const mixinDecl = ctx.getMixinDeclaration(mixinType as MixinType);
+    if (!mixinDecl) continue;
+
+    const intermediateName = `${baseName}_${mixinDecl.name.name}`;
+
+    // Generate initializers for this mixin's fields
+    for (const m of mixinDecl.body) {
+      if (m.type !== NodeType.FieldDefinition || !m.value || m.isStatic)
+        continue;
+
+      const memberName = getMemberName(m.name);
+      // Skip if already initialized via initializerList
+      if (initializedFields.has(memberName)) continue;
+
+      // Mixin fields use the intermediate class name for mangling
+      const fieldName = manglePrivateName(intermediateName, memberName);
+      const fieldInfo = classInfo.fields.get(fieldName);
+      if (!fieldInfo) continue;
+
+      body.push(Opcode.local_get, 0); // this
+      generateExpression(ctx, m.value, body);
+      body.push(0xfb, GcOpcode.struct_set);
+      body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+      body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+    }
+
+    // Update base name for next mixin in chain
+    baseName = intermediateName;
   }
 }
 

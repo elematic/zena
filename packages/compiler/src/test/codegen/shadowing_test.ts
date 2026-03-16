@@ -11,7 +11,7 @@ describe('Shadowing Tests', () => {
         [entryPoint]: `
       export class String {
         val: i32;
-        new(v: i32) { this.val = v; }
+        new(v: i32) : val = v {}
       }
 
       let s = new String(123);

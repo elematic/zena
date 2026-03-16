@@ -37,9 +37,7 @@ suite('Operator Method DCE', () => {
       class Box {
         #value: i32;
         
-        new() {
-          this.#value = 0;
-        }
+        new() : #value = 0 {}
         
         operator []=(index: i32, value: i32): void {
           this.#value = value + index;
@@ -71,9 +69,7 @@ suite('Operator Method DCE', () => {
       class Point {
         x: i32;
         
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
         
         operator ==(other: Point): boolean {
           return this.x == other.x;
@@ -110,9 +106,7 @@ suite('Operator Method DCE', () => {
       class Point {
         x: i32;
         
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
         
         operator ==(other: Point): boolean {
           return this.x == other.x;
@@ -142,9 +136,7 @@ suite('Operator Method DCE', () => {
       class Container {
         #data: FixedArray<i32>;
         
-        new() {
-          this.#data = [10, 20, 30, 40, 50];
-        }
+        new() : #data = [10, 20, 30, 40, 50] {}
         
         operator [](index: i32): i32 {
           return this.#data[index];

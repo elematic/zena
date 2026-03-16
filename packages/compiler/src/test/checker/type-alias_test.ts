@@ -21,7 +21,7 @@ suite('TypeChecker - Type Aliases', () => {
     const input = `
       class Box<T> {
         value: T;
-        new(v: T) { this.value = v; }
+        new(v: T) : value = v {}
       }
       type StringBox = Box<string>;
       let b: StringBox = new Box('hello');
@@ -38,7 +38,7 @@ suite('TypeChecker - Type Aliases', () => {
     const input = `
       class Box<T> {
         value: T;
-        new(v: T) { this.value = v; }
+        new(v: T) : value = v {}
       }
       type MyBox<T> = Box<T>;
       let b: MyBox<i32> = new Box(123);

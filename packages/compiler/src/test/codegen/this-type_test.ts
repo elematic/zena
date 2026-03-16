@@ -9,10 +9,7 @@ suite('CodeGenerator - This Type', () => {
         x: i32;
         y: i32;
         
-        new(x: i32, y: i32) {
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32) : x = x, y = y {}
         
         equals(other: this): boolean {
           return this.x == other.x && this.y == other.y;
@@ -71,9 +68,7 @@ suite('CodeGenerator - This Type', () => {
       class MyProcessor implements Processor {
         value: i32;
         
-        new(value: i32) {
-          this.value = value;
-        }
+        new(value: i32) : value = value {}
         
         process(f: (self: MyProcessor) => i32): i32 {
           return f(this);
@@ -94,9 +89,7 @@ suite('CodeGenerator - This Type', () => {
       class Container<T> {
         value: T;
         
-        new(value: T) {
-          this.value = value;
-        }
+        new(value: T) : value = value {}
         
         withValue(newValue: T): this {
           this.value = newValue;
@@ -127,9 +120,7 @@ suite('CodeGenerator - This Type', () => {
       class Number implements Comparable {
         value: i32;
         
-        new(value: i32) {
-          this.value = value;
-        }
+        new(value: i32) : value = value {}
         
         compareTo(other: Number): i32 {
           if (this.value < other.value) {

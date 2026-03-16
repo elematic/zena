@@ -17,9 +17,7 @@ suite('Nested Generic Type Resolution Bug', () => {
 // A generic wrapper class (like Option's Some<T>)
 class Wrapper<T> {
   value: T;
-  new(value: T) {
-    this.value = value;
-  }
+  new(value: T) : value = value {}
 }
 
 // A generic helper function (like some<T>())
@@ -29,9 +27,7 @@ let wrap = <T>(value: T): Wrapper<T> => new Wrapper(value);
 class Container<U> {
   item: U;
   
-  new(item: U) {
-    this.item = item;
-  }
+  new(item: U) : item = item {}
   
   // This method calls wrap<U>(this.item), which should resolve
   // the inner T to the outer U.
@@ -56,17 +52,13 @@ export let main = (): i32 => {
     const source = `
 class Wrapper<T> {
   value: T;
-  new(value: T) {
-    this.value = value;
-  }
+  new(value: T) : value = value {}
 }
 
 class Container<U> {
   item: U;
   
-  new(item: U) {
-    this.item = item;
-  }
+  new(item: U) : item = item {}
   
   // Direct instantiation works - no intermediate generic function
   getWrapped(): Wrapper<U> {

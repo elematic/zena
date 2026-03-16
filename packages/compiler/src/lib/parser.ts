@@ -2762,12 +2762,12 @@ export class Parser {
       const hasInitializerList =
         isConstructor &&
         this.#check(TokenType.Colon) &&
-        // Public field: `: field = expr`
-        ((this.#checkAhead(TokenType.Identifier, 1) &&
+        // Public field: `: field = expr` (field can be a contextual keyword like `type`)
+        ((this.#isIdentifierAhead(1) &&
           this.#checkAhead(TokenType.Equals, 2)) ||
           // Private field: `: #field = expr`
           (this.#checkAhead(TokenType.Hash, 1) &&
-            this.#checkAhead(TokenType.Identifier, 2) &&
+            this.#isIdentifierAhead(2) &&
             this.#checkAhead(TokenType.Equals, 3)) ||
           // Super call: `: super(`
           (this.#checkAhead(TokenType.Super, 1) &&
@@ -2789,18 +2789,16 @@ export class Parser {
             isPrivate = true;
             hashToken = this.#advance();
           }
-          const fieldNameToken = this.#consume(
-            TokenType.Identifier,
-            'Expected field name in initializer list.',
-          );
+          const fieldNameId = this.#parseIdentifier();
           const fieldName = isPrivate
-            ? `#${fieldNameToken.value}`
-            : fieldNameToken.value;
-          const startToken = hashToken ?? fieldNameToken;
+            ? `#${fieldNameId.name}`
+            : fieldNameId.name;
           const field: Identifier = {
             type: NodeType.Identifier,
             name: fieldName,
-            loc: this.#loc(startToken, fieldNameToken),
+            loc: hashToken
+              ? this.#loc(hashToken, fieldNameId)
+              : fieldNameId.loc,
           };
           this.#consume(
             TokenType.Equals,
@@ -2811,7 +2809,9 @@ export class Parser {
             type: NodeType.FieldInitializer,
             field,
             value,
-            loc: this.#loc(startToken, value),
+            loc: hashToken
+              ? this.#loc(hashToken, value)
+              : this.#loc(fieldNameId, value),
           });
 
           // If no comma, we're done with field initializers
@@ -3934,6 +3934,12 @@ export class Parser {
     const index = this.#current + distance;
     if (index >= this.#tokens.length) return false;
     return this.#tokens[index].type === type;
+  }
+
+  #isIdentifierAhead(distance: number): boolean {
+    const index = this.#current + distance;
+    if (index >= this.#tokens.length) return false;
+    return this.#isIdentifier(this.#tokens[index].type);
   }
 
   #advance(): Token {

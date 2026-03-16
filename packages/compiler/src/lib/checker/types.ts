@@ -152,6 +152,22 @@ export function isBooleanType(type: Type): boolean {
 }
 
 /**
+ * Checks if a type is nullable (i.e., null or a union containing null).
+ * Used to determine which fields can implicitly default to null.
+ */
+export function isNullableType(type: Type): boolean {
+  if (type.kind === TypeKind.Null) return true;
+  if (type.kind === TypeKind.Union) {
+    const union = type as UnionType;
+    return union.types.some((t) => t.kind === TypeKind.Null);
+  }
+  if (type.kind === TypeKind.TypeAlias) {
+    return isNullableType((type as TypeAliasType).target);
+  }
+  return false;
+}
+
+/**
  * Widens a literal type to its base type.
  * For example, LiteralType{value: true} -> Types.Boolean
  * This is used for mutable variables (var) to allow reassignment.
