@@ -8,9 +8,7 @@ suite('Method-level DCE', () => {
       class Counter {
         #value: i32;
         
-        new() {
-          this.#value = 0;
-        }
+        new() : #value = 0 {}
         
         increment(): void {
           this.#value = this.#value + 1;
@@ -68,10 +66,7 @@ suite('Method-level DCE', () => {
         #x: i32;
         #y: i32;
         
-        new(x: i32, y: i32) {
-          this.#x = x;
-          this.#y = y;
-        }
+        new(x: i32, y: i32) : #x = x, #y = y {}
         
         x: i32 {
           get {
@@ -103,10 +98,7 @@ suite('Method-level DCE', () => {
         #value: i32;
         #label: i32;
         
-        new() {
-          this.#value = 0;
-          this.#label = 0;
-        }
+        new() : #value = 0, #label = 0 {}
         
         value: i32 {
           get {
@@ -144,9 +136,7 @@ suite('Method-level DCE', () => {
       class Config {
         #setting: i32;
         
-        new() {
-          this.#setting = 100;
-        }
+        new() : #setting = 100 {}
         
         getSetting(): i32 {
           return this.#setting;
@@ -170,10 +160,7 @@ suite('Method-level DCE', () => {
         name: i32;
         age: i32;
         
-        new(n: i32, a: i32) {
-          this.name = n;
-          this.age = a;
-        }
+        new(n: i32, a: i32) : name = n, age = a {}
       }
       
       export let main = (): i32 => {

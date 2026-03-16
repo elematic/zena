@@ -59,9 +59,7 @@ symbol hidden;
 class Container {
   #value: i32;
   
-  new(v: i32) {
-    this.#value = v;
-  }
+  new(v: i32) : #value = v {}
   
   :hidden: i32 {
     get {
@@ -85,9 +83,7 @@ symbol value;
 class Wrapper {
   #data: i32;
   
-  new() {
-    this.#data = 0;
-  }
+  new() : #data = 0 {}
   
   :value: i32 {
     get {

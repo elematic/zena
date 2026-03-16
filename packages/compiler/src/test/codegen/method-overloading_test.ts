@@ -57,10 +57,7 @@ suite('CodeGenerator - Method Overloading', () => {
         x: i32;
         y: i32;
         
-        new(x: i32, y: i32) {
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32) : x = x, y = y {}
       }
       
       class Formatter {
@@ -153,10 +150,7 @@ suite('CodeGenerator - Method Overloading', () => {
         x: i32;
         y: i32;
         
-        new(x: i32, y: i32) {
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32) : x = x, y = y {}
         
         operator [](index: i32): i32 {
           if (index == 0) return this.x;

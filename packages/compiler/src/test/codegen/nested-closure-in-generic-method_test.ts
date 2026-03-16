@@ -49,9 +49,7 @@ suite('Nested closure in generic method', () => {
       class Container<T> {
         value: T;
         
-        new(v: T) {
-          this.value = v;
-        }
+        new(v: T) : value = v {}
         
         transform<U>(f: (v: T) => U): Container<U> {
           return new Container<U>(f(this.value));

@@ -42,6 +42,7 @@ export const DiagnosticCode = {
   UnexpectedBody: 2021,
   UnreachableCode: 2022,
   TypeNotFound: 2023,
+  UninitializedField: 2026,
 
   // Codegen Errors (3000-3999)
   UnknownType: 3001,

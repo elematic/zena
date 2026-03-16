@@ -193,6 +193,17 @@ export interface ClassType extends Type {
    * field name to its setter name (private name or symbol).
    */
   fieldSetterNames?: Map<string, string>;
+  /**
+   * Set of field names that have inline initializers (e.g., `x: i32 = 0`).
+   * Fields without inline initializers must be initialized in the constructor's
+   * initializer list.
+   */
+  fieldsWithInitializers?: Set<string>;
+  /**
+   * Set of field names that are declared (e.g., `declare length: i32`).
+   * Declared fields are provided by intrinsics and don't need initialization.
+   */
+  declaredFields?: Set<string>;
 }
 
 const I32 = {kind: TypeKind.Number, name: 'i32'} as NumberType;

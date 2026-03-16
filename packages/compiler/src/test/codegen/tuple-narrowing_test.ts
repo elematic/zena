@@ -16,9 +16,7 @@ suite('tuple narrowing', () => {
       class Counter {
         count: i32;
         
-        new() {
-          this.count = 0;
-        }
+        new() : count = 0 {}
         
         next(): inline (true, i32) | inline (false, never) {
           if (this.count < 3) {

@@ -19,7 +19,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Box<T> {
           value: T;
-          new(v: T) { this.value = v; }
+          new(v: T) : value = v {}
 
           // Method type parameter U, class type parameter T
           map<U>(f: (v: T) => U): U {
@@ -43,7 +43,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Box<T> {
           value: T;
-          new(v: T) { this.value = v; }
+          new(v: T) : value = v {}
 
           transform<U>(f: (v: T) => U): U {
             // Local variable with method type parameter U
@@ -65,7 +65,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Container<T> {
           value: T;
-          new(v: T) { this.value = v; }
+          new(v: T) : value = v {}
 
           // Generic method that returns class type parameter
           getOrElse<U>(fallback: U): T {
@@ -88,7 +88,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Wrapper<T> {
           inner: T;
-          new(v: T) { this.inner = v; }
+          new(v: T) : inner = v {}
 
           process<U>(transformer: (v: T) => U): U {
             // Local variable with class type parameter T
@@ -111,12 +111,12 @@ suite('Codegen: Nested Generics', () => {
         class Pair<A, B> {
           first: A;
           second: B;
-          new(a: A, b: B) { this.first = a; this.second = b; }
+          new(a: A, b: B) : first = a, second = b {}
         }
 
         class Container<T> {
           value: T;
-          new(v: T) { this.value = v; }
+          new(v: T) : value = v {}
 
           // Returns Pair<T, U> - uses both class and method type params
           pairWith<U>(other: U): Pair<T, U> {
@@ -140,7 +140,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Base<T> {
           value: T;
-          new(v: T) { this.value = v; }
+          new(v: T) : value = v {}
           get(): T { return this.value; }
         }
 
@@ -163,7 +163,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Base<T> {
           value: T;
-          new(v: T) { this.value = v; }
+          new(v: T) : value = v {}
           get(): T { return this.value; }
         }
 
@@ -186,7 +186,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class A<T> {
           a: T;
-          new(v: T) { this.a = v; }
+          new(v: T) : a = v {}
         }
 
         class B<T> extends A<T> {
@@ -214,7 +214,7 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Box<T> {
           value: T;
-          new(v: T) { this.value = v; }
+          new(v: T) : value = v {}
           get(): T { return this.value; }
         }
 
@@ -267,14 +267,12 @@ suite('Codegen: Nested Generics', () => {
       const source = `
         class Inner<T> {
           value: T;
-          new(v: T) { this.value = v; }
+          new(v: T) : value = v {}
         }
 
         class Outer<T> {
           inner: Inner<T>;
-          new(v: T) {
-            this.inner = new Inner<T>(v);
-          }
+          new(v: T) : inner = new Inner<T>(v) {}
         }
 
         export let main = (): i32 => {

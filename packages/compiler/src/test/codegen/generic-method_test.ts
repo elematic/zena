@@ -6,7 +6,7 @@ suite('Codegen: Generic Methods', () => {
     const source = `
       class Box {
         value: i32;
-        new(v: i32) { this.value = v; }
+        new(v: i32) : value = v {}
         
         identity<T>(x: T): T {
           return x;
@@ -115,7 +115,7 @@ suite('Codegen: Generic Methods', () => {
 
         class Box<T> {
             value: T;
-            new(v: T) { this.value = v; }
+            new(v: T) : value = v {}
             map<U>(f: (v: T) => U): U {
                 return f(this.value);
             }

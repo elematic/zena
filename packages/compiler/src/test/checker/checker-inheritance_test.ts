@@ -7,11 +7,11 @@ suite('TypeChecker - Inheritance', () => {
   test('should check valid inheritance', () => {
     const input = `
       class Animal {
-        name: string;
+        name: string = "";
         speak(): void {}
       }
       class Dog extends Animal {
-        breed: string;
+        breed: string = "";
         bark(): void {}
       }
       let d = new Dog();
@@ -55,10 +55,10 @@ suite('TypeChecker - Inheritance', () => {
   test('should detect field redeclaration with incompatible type', () => {
     const input = `
       class Animal {
-        name: string;
+        name: string = "";
       }
       class Dog extends Animal {
-        name: i32;
+        name: i32 = 0;
       }
     `;
     const parser = new Parser(input);
@@ -75,10 +75,10 @@ suite('TypeChecker - Inheritance', () => {
   test('should allow field redeclaration with compatible type', () => {
     const input = `
       class Animal {
-        name: string;
+        name: string = "";
       }
       class Dog extends Animal {
-        name: string;
+        name: string = "";
       }
     `;
     const parser = new Parser(input);

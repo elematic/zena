@@ -12,7 +12,7 @@ suite('Debug generic interface', () => {
       
       class MyBox<T> implements Box<T> {
         value: T;
-        new(value: T) { this.value = value; }
+        new(value: T) : value = value {}
         get(): T { return this.value; }
       }
       
@@ -43,7 +43,7 @@ suite('Debug generic interface', () => {
       
       class MyBox<T> implements Box<T> {
         value: T;
-        new(value: T) { this.value = value; }
+        new(value: T) : value = value {}
         get(): T { return this.value; }
         
         // Method that returns Box<T> instead of MyBox<T>
@@ -77,9 +77,7 @@ suite('Debug generic interface', () => {
           }
         }
 
-        new() {
-          this.#items = new Array<T>();
-        }
+        new() : #items = new Array<T>() {}
 
         map<U>(f: (item: T, index: i32, array: Sequence<T>) => U): Sequence<U> {
           let len = this.#items.length;

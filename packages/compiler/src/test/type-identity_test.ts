@@ -43,9 +43,7 @@ suite('Type Identity', () => {
         'container.zena': `
           export class Container<T> {
             value: T;
-            new(v: T) {
-              this.value = v;
-            }
+            new(v: T) : value = v {}
           }
         `,
       };
@@ -67,9 +65,7 @@ suite('Type Identity', () => {
         'container.zena': `
           export class Container<T> {
             value: T;
-            new(v: T) {
-              this.value = v;
-            }
+            new(v: T) : value = v {}
           }
           
           export let wrap = (x: i32): Container<i32> => new Container<i32>(x);
@@ -95,9 +91,7 @@ suite('Type Identity', () => {
         'container.zena': `
           export class Container<T> {
             value: T;
-            new(v: T) {
-              this.value = v;
-            }
+            new(v: T) : value = v {}
           }
         `,
       };
@@ -133,7 +127,7 @@ suite('Type Identity', () => {
       const diagnostics = checkSource(`
         class Box<T> {
           value: T;
-          new(v: T) { this.value = v; }
+          new(v: T) : value = v {}
         }
         
         let getBox = (): Box<i32> => new Box(1);
@@ -156,7 +150,7 @@ suite('Type Identity', () => {
       const diagnostics = checkSource(`
         class Box<T> {
           value: T;
-          new(v: T) { this.value = v; }
+          new(v: T) : value = v {}
         }
         
         export let main = () => {

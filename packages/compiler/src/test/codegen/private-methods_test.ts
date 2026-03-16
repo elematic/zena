@@ -29,9 +29,7 @@ suite('Codegen: Private Methods', () => {
       class Secret {
         #value: i32;
         
-        new(v: i32) {
-          this.#value = v;
-        }
+        new(v: i32) : #value = v {}
         
         #getValue(): i32 {
           return this.#value;

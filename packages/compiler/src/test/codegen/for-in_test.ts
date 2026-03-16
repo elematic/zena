@@ -143,10 +143,7 @@ suite('for-in loops', () => {
         #current: i32;
         #max: i32;
         
-        new(max: i32) {
-          this.#current = 0;
-          this.#max = max;
-        }
+        new(max: i32) : #current = 0, #max = max {}
         
         next(): inline (true, i32) | inline (false, never) {
           if (this.#current < this.#max) {
@@ -161,9 +158,7 @@ suite('for-in loops', () => {
       final class Counter implements Iterable<i32> {
         #max: i32;
         
-        new(max: i32) {
-          this.#max = max;
-        }
+        new(max: i32) : #max = max {}
         
         :Iterable.iterator(): Iterator<i32> {
           return new CounterIterator(this.#max);
@@ -195,10 +190,7 @@ suite('for-in loops', () => {
         #current: i32;
         #end: i32;
         
-        new(start: i32, end: i32) {
-          this.#current = start;
-          this.#end = end;
-        }
+        new(start: i32, end: i32) : #current = start, #end = end {}
         
         next(): inline (true, i32) | inline (false, never) {
           if (this.#current < this.#end) {

@@ -156,6 +156,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
       class Point {
         x: i32;
         y: f64;
+        new(x: i32, y: f64) : x = x, y = y {}
       }
     `);
     const classDecl = ast.body[0] as ClassDeclaration;
@@ -200,9 +201,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
     const ast = parseAndCheck(`
       class Box<T> {
         value: T;
-        new(value: T) {
-          this.value = value;
-        }
+        new(value: T) : value = value {}
       }
       let b: Box<i32> = new Box<i32>(1);
     `);
@@ -369,6 +368,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
       }
       class Printer<T extends Printable> {
         item: T;
+        new(item: T) : item = item {}
       }
     `);
     const classDecl = ast.body[1] as ClassDeclaration;
@@ -383,6 +383,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
     const ast = parseAndCheck(`
       class Container<T = i32> {
         value: T;
+        new(value: T) : value = value {}
       }
     `);
     const classDecl = ast.body[0] as ClassDeclaration;
@@ -435,8 +436,10 @@ suite('Checker - inferredType on TypeAnnotations', () => {
     const ast = parseAndCheck(`
       class Base<T> {
         value: T;
+        new(value: T) : value = value {}
       }
       class Derived extends Base<i32> {
+        new(value: i32) : super(value) {}
       }
     `);
     const derived = ast.body[1] as ClassDeclaration;
@@ -471,12 +474,12 @@ suite('Checker - inferredType on TypeAnnotations', () => {
     const ast = parseAndCheck(`
       class Box<T> {
         value: T;
-        new(value: T) { this.value = value; }
+        new(value: T) : value = value {}
       }
       class Pair<A, B> {
         first: A;
         second: B;
-        new(first: A, second: B) { this.first = first; this.second = second; }
+        new(first: A, second: B) : first = first, second = second {}
       }
       let nested: Box<Pair<i32, string>> = new Box<Pair<i32, string>>(new Pair<i32, string>(1, 'hi'));
     `);
@@ -550,10 +553,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
       class Point {
         x: i32;
         y: i32;
-        new(x: i32, y: i32) {
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32) : x = x, y = y {}
       }
     `);
     const classDecl = ast.body[0] as ClassDeclaration;

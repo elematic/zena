@@ -50,7 +50,7 @@ suite('Checker: Record Spread', () => {
       class Point {
         x: i32;
         y: i32;
-        new(x: i32, y: i32) { this.x = x; this.y = y; }
+        new(x: i32, y: i32) : x = x, y = y {}
       }
       let pt = new Point(10, 20);
       let p = { ...pt };

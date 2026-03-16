@@ -26,10 +26,7 @@ class Pair<K, V> {
   first: K;
   second: V;
 
-  new(first: K, second: V) {
-    this.first = first;
-    this.second = second;
-  }
+  new(first: K, second: V) : first = first, second = second {}
 }
 
 // A generic iterator-like class that creates Pair instances
@@ -38,10 +35,7 @@ class PairFactory<K, V> {
   keyValue: K;
   valueValue: V;
 
-  new(k: K, v: V) {
-    this.keyValue = k;
-    this.valueValue = v;
-  }
+  new(k: K, v: V) : keyValue = k, valueValue = v {}
 
   // This method creates a new Pair<K, V> - the type parameters must be
   // resolved through the current context to avoid duplicate struct types
@@ -65,25 +59,20 @@ export let main = (): i32 => {
     const source = `
 class Box<T> {
   value: T;
-  new(v: T) { this.value = v; }
+  new(v: T) : value = v {}
 }
 
 class Pair<K, V> {
   first: K;
   second: V;
-  new(first: K, second: V) {
-    this.first = first;
-    this.second = second;
-  }
+  new(first: K, second: V) : first = first, second = second {}
 }
 
 // Factory that uses Box<T> as type arguments
 class BoxPairFactory<T> {
   boxedValue: Box<T>;
 
-  new(v: T) {
-    this.boxedValue = new Box<T>(v);
-  }
+  new(v: T) : boxedValue = new Box<T>(v) {}
 
   // Creates Pair<string, Box<T>> - both the outer Pair and inner Box
   // must be correctly resolved
@@ -109,22 +98,15 @@ export let main = (): i32 => {
 class Entry<K, V> {
   key: K;
   value: V;
-  new(k: K, v: V) {
-    this.key = k;
-    this.value = v;
-  }
+  new(k: K, v: V) : key = k, value = v {}
 }
 
 class EntryIterator<K, V> {
   currentKey: K;
   currentValue: V;
-  hasMore: boolean;
+  hasMore: boolean = true;
 
-  new(k: K, v: V) {
-    this.currentKey = k;
-    this.currentValue = v;
-    this.hasMore = true;
-  }
+  new(k: K, v: V) : currentKey = k, currentValue = v {}
 
   // Multi-value return with a generic class - the return type involves
   // Entry<K, V> which must be correctly resolved
@@ -157,12 +139,12 @@ export let main = (): i32 => {
     const source = `
 class Result<T> {
   value: T;
-  new(v: T) { this.value = v; }
+  new(v: T) : value = v {}
 }
 
 class Producer<T> {
   val: T;
-  new(v: T) { this.val = v; }
+  new(v: T) : val = v {}
 
   // Multiple methods that all create Result<T>
   produce1(): Result<T> { return new Result<T>(this.val); }

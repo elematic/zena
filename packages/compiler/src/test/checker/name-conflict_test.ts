@@ -24,7 +24,7 @@ suite('TypeChecker - Name Conflicts', () => {
   test('should NOT detect conflict between field and manual getter (field first)', () => {
     const input = `
       class Foo {
-        x: i32;
+        x: i32 = 0;
         get_x(): i32 { return 0; }
       }
     `;
@@ -44,7 +44,7 @@ suite('TypeChecker - Name Conflicts', () => {
     const input = `
       class Foo {
         get_x(): i32 { return 0; }
-        x: i32;
+        x: i32 = 0;
       }
     `;
     const parser = new Parser(input);

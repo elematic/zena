@@ -131,7 +131,7 @@ suite('Checker - Mixins', () => {
 
   test('should fail if mixin accesses member not in on clause', () => {
     const source = `
-      class Base { x: i32; }
+      class Base { x: i32 = 0; }
       mixin M { // No 'on Base'
         method(): i32 {
           return this.x; // Error
@@ -145,7 +145,7 @@ suite('Checker - Mixins', () => {
 
   test('should allow mixin to access member in on clause', () => {
     const source = `
-      class Base { x: i32; }
+      class Base { x: i32 = 0; }
       mixin M on Base {
         method(): i32 {
           return this.x; // OK

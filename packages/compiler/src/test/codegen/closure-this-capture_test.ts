@@ -103,9 +103,7 @@ suite('Codegen: Closure this capture', () => {
       class Box<T> {
         item: T;
 
-        new(item: T) {
-          this.item = item;
-        }
+        new(item: T) : item = item {}
 
         makeGetter(): () => T {
           return () => this.item;

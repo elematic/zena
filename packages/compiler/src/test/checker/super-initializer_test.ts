@@ -8,14 +8,11 @@ suite('Super Initializer in Constructor', () => {
     const errors = checkSource(`
       class Base {
         x: i32;
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
       }
       class Derived extends Base {
         y: i32;
-        new(a: i32, b: i32) : y = b, super(a) {
-        }
+        new(a: i32, b: i32) : y = b, super(a) {}
       }
       export let main = (): i32 => {
         let d = new Derived(1, 2);
@@ -52,13 +49,10 @@ suite('Super Initializer in Constructor', () => {
     const errors = checkSource(`
       class Base {
         x: i32;
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
       }
       class Derived extends Base {
-        new(x: i32) : super(x) {
-        }
+        new(x: i32) : super(x) {}
       }
       export let main = (): i32 => 0;
     `).filter((d) => d.severity === DiagnosticSeverity.Error);
@@ -88,13 +82,10 @@ suite('Super Initializer in Constructor', () => {
     const errors = checkSource(`
       class Base {
         x: i32;
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
       }
       class Derived extends Base {
-        new() : super() {
-        }
+        new() : super() {}
       }
       export let main = (): i32 => 0;
     `).filter((d) => d.severity === DiagnosticSeverity.Error);
@@ -108,13 +99,10 @@ suite('Super Initializer in Constructor', () => {
     const errors = checkSource(`
       class Base {
         x: i32;
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
       }
       class Derived extends Base {
-        new() : super('hello') {
-        }
+        new() : super('hello') {}
       }
       export let main = (): i32 => 0;
     `).filter((d) => d.severity === DiagnosticSeverity.Error);
@@ -134,9 +122,7 @@ suite('Super Initializer in Constructor', () => {
     const errors = checkSource(`
       class Base {
         x: i32;
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
       }
       class Derived extends Base {
         y: i32;

@@ -7,9 +7,7 @@ suite('Super Initializer Codegen', () => {
     const result = await compileAndRun(`
       class Base {
         x: i32;
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
       }
       class Derived extends Base {
         y: i32;
@@ -28,9 +26,7 @@ suite('Super Initializer Codegen', () => {
     const result = await compileAndRun(`
       class Base {
         x: i32;
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
       }
       class Derived extends Base {
         new(x: i32) : super(x) {
@@ -69,9 +65,7 @@ suite('Super Initializer Codegen', () => {
     const result = await compileAndRun(`
       class Base {
         x: i32;
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
       }
       class Derived extends Base {
         y: i32;
@@ -92,9 +86,7 @@ suite('Super Initializer Codegen', () => {
     const result = await compileAndRun(`
       class Base {
         x: i32;
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
       }
       class Derived extends Base {
         #secret: i32;
@@ -151,9 +143,7 @@ suite('Super Initializer Codegen', () => {
     const result = await compileAndRun(`
       class A {
         x: i32;
-        new(x: i32) {
-          this.x = x;
-        }
+        new(x: i32) : x = x {}
       }
       class B extends A {
         y: i32;

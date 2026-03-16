@@ -27,9 +27,7 @@ suite('Interface Type Registration', () => {
 
       class Message {
         text: String;
-        new(text: String) {
-          this.text = text;
-        }
+        new(text: String) : text = text {}
       }
 
       class ConsoleLogger implements Logger {
@@ -62,9 +60,7 @@ suite('Interface Type Registration', () => {
 
       class Product {
         value: i32;
-        new(value: i32) {
-          this.value = value;
-        }
+        new(value: i32) : value = value {}
       }
 
       class ProductFactory implements Factory {
@@ -94,16 +90,12 @@ suite('Interface Type Registration', () => {
 
       class Request {
         id: i32;
-        new(id: i32) {
-          this.id = id;
-        }
+        new(id: i32) : id = id {}
       }
 
       class Response {
         code: i32;
-        new(code: i32) {
-          this.code = code;
-        }
+        new(code: i32) : code = code {}
       }
 
       class MyService implements Service {
@@ -141,9 +133,7 @@ suite('Interface Type Registration', () => {
 
       class Event {
         code: i32;
-        new(code: i32) {
-          this.code = code;
-        }
+        new(code: i32) : code = code {}
       }
 
       class SpecialEvent extends Event {
@@ -181,16 +171,12 @@ suite('Interface Type Registration', () => {
 
       class Item {
         value: i32;
-        new(value: i32) {
-          this.value = value;
-        }
+        new(value: i32) : value = value {}
       }
 
       class Box implements Container {
         item: Item;
-        new(item: Item) {
-          this.item = item;
-        }
+        new(item: Item) : item = item {}
       }
 
       export let main = (): i32 => {
@@ -213,17 +199,13 @@ suite('Interface Type Registration', () => {
 
       class Data {
         num: i32;
-        new(num: i32) {
-          this.num = num;
-        }
+        new(num: i32) : num = num {}
       }
 
       class DataWrapper implements Wrapper<Data> {
         data: Data;
 
-        new() {
-          this.data = new Data(0);
-        }
+        new() : data = new Data(0) {}
 
         get(): Data {
           return this.data;
@@ -255,17 +237,13 @@ suite('Interface Type Registration', () => {
 
       class Content {
         data: i32;
-        new(data: i32) {
-          this.data = data;
-        }
+        new(data: i32) : data = data {}
       }
 
       class ContentHolder implements Holder {
         #content: Content;
 
-        new() {
-          this.#content = new Content(0);
-        }
+        new() : #content = new Content(0) {}
 
         content: Content {
           get { return this.#content; }

@@ -10,10 +10,7 @@ suite('TypeChecker - This Type', () => {
         x: i32;
         y: i32;
         
-        new(x: i32, y: i32) {
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32) : x = x, y = y {}
         
         equals(other: this): boolean {
           return this.x == other.x && this.y == other.y;
@@ -82,9 +79,7 @@ suite('TypeChecker - This Type', () => {
       class MyInt implements Comparable {
         value: i32;
         
-        new(value: i32) {
-          this.value = value;
-        }
+        new(value: i32) : value = value {}
         
         compareTo(other: MyInt): i32 {
           return this.value - other.value;
@@ -140,9 +135,7 @@ suite('TypeChecker - This Type', () => {
       class Container<T> {
         value: T;
         
-        new(value: T) {
-          this.value = value;
-        }
+        new(value: T) : value = value {}
         
         // Self-referential method using this type
         combine(other: this): this {

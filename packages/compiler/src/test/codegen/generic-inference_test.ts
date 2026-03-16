@@ -8,9 +8,7 @@ suite('Generic Type Inference', () => {
       const exports = await compileAndInstantiate(`
         class Box<T> {
           value: T;
-          new(value: T) {
-            this.value = value;
-          }
+          new(value: T) : value = value {}
           getValue(): T {
             return this.value;
           }
@@ -31,10 +29,7 @@ suite('Generic Type Inference', () => {
         class Pair<T, U> {
           first: T;
           second: U;
-          new(first: T, second: U) {
-            this.first = first;
-            this.second = second;
-          }
+          new(first: T, second: U) : first = first, second = second {}
         }
         
         export let test = (): i32 => {
@@ -51,9 +46,7 @@ suite('Generic Type Inference', () => {
       const exports = await compileAndInstantiate(`
         class Box<T> {
           value: T;
-          new(value: T) {
-            this.value = value;
-          }
+          new(value: T) : value = value {}
           getValue(): T {
             return this.value;
           }
@@ -61,10 +54,7 @@ suite('Generic Type Inference', () => {
         
         class Container<T> {
           box: Box<T>;
-          new(value: T) {
-            // Inner Box should infer T from context
-            this.box = new Box(value);
-          }
+          new(value: T) : box = new Box(value) {}
           get(): T {
             return this.box.getValue();
           }
@@ -163,9 +153,7 @@ suite('Generic Type Inference', () => {
       const exports = await compileAndInstantiate(`
         class Box<T> {
           value: T;
-          new(value: T) {
-            this.value = value;
-          }
+          new(value: T) : value = value {}
           
           // Method with its own type parameter
           map<U>(f: (a: T) => U): U {
@@ -203,9 +191,7 @@ suite('Generic Type Inference', () => {
       const exports = await compileAndInstantiate(`
         class Box<T> {
           value: T;
-          new(value: T) {
-            this.value = value;
-          }
+          new(value: T) : value = value {}
         }
         
         let identity = <T>(x: T): T => x;

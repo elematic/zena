@@ -44,8 +44,8 @@ suite('CodeGenerator - Union Types', () => {
 
   test('should compile class union types', async () => {
     const source = `
-      class A { x: i32; new(x: i32) { this.x = x; } }
-      class B { y: i32; new(y: i32) { this.y = y; } }
+      class A { x: i32; new(x: i32) : x = x {} }
+      class B { y: i32; new(y: i32) : y = y {} }
 
       export let main = (): i32 => {
         let obj: A | B = new A(10);
@@ -77,7 +77,7 @@ suite('CodeGenerator - Union Types', () => {
 
   test('should compile string union with class', async () => {
     const source = `
-      class Box { value: i32; new(v: i32) { this.value = v; } }
+      class Box { value: i32; new(v: i32) : value = v {} }
 
       export let main = (): i32 => {
         let x: string | Box = 'hello';

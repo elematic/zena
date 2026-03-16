@@ -29,9 +29,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/box.zena': `
         export class Box<T> {
           value: T;
-          new(value: T) {
-            this.value = value;
-          }
+          new(value: T) : value = value {}
           get(): T {
             return this.value;
           }
@@ -43,9 +41,7 @@ suite('Codegen: Generic Specialization Collision', () => {
         // Y in module A has a single i32 field 'a'
         class Y {
           a: i32;
-          new(a: i32) {
-            this.a = a;
-          }
+          new(a: i32) : a = a {}
         }
 
         export let createA = (v: i32): Box<Y> => new Box<Y>(new Y(v));
@@ -57,9 +53,7 @@ suite('Codegen: Generic Specialization Collision', () => {
         // Y in module B has a single i32 field 'b'
         class Y {
           b: i32;
-          new(b: i32) {
-            this.b = b;
-          }
+          new(b: i32) : b = b {}
         }
 
         export let createB = (v: i32): Box<Y> => new Box<Y>(new Y(v));
@@ -96,9 +90,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/box.zena': `
         export class Box<T> {
           value: T;
-          new(value: T) {
-            this.value = value;
-          }
+          new(value: T) : value = value {}
           get(): T {
             return this.value;
           }
@@ -107,9 +99,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/x.zena': `
         export class X {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
       `,
     };
@@ -137,9 +127,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/box.zena': `
         export class Box<T> {
           value: T;
-          new(value: T) {
-            this.value = value;
-          }
+          new(value: T) : value = value {}
           get(): T {
             return this.value;
           }
@@ -148,9 +136,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/x.zena': `
         export class X {
           value: i32;
-          new(value: i32) {
-            this.value = value;
-          }
+          new(value: i32) : value = value {}
         }
       `,
     };
@@ -176,9 +162,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/box.zena': `
         export class Box<T> {
           value: T;
-          new(value: T) {
-            this.value = value;
-          }
+          new(value: T) : value = value {}
           get(): T {
             return this.value;
           }
@@ -217,9 +201,7 @@ suite('Codegen: Generic Specialization Collision', () => {
       '/box.zena': `
         export class Box<T> {
           value: T;
-          new(value: T) {
-            this.value = value;
-          }
+          new(value: T) : value = value {}
           get(): T {
             return this.value;
           }

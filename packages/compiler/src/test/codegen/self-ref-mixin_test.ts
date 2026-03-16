@@ -13,16 +13,14 @@ suite('self-referential mixins', () => {
     // The mixin has a field of type TreeNode, but TreeNode uses the mixin
     const source = `
 mixin TreeLike {
-  left: TreeNode;
-  right: TreeNode;
+  left: TreeNode | null;
+  right: TreeNode | null;
 }
 
 class TreeNode with TreeLike {
   value: i32;
   
-  new(value: i32) {
-    this.value = value;
-  }
+  new(value: i32) : value = value {}
   
   setChildren(l: TreeNode, r: TreeNode): void {
     this.left = l;
@@ -30,7 +28,14 @@ class TreeNode with TreeLike {
   }
   
   sumChildren(): i32 {
-    return this.left.value + this.right.value;
+    let l = this.left;
+    let r = this.right;
+    if (l != null) {
+      if (r != null) {
+        return l.value + r.value;
+      }
+    }
+    return 0;
   }
 }
 
@@ -49,22 +54,24 @@ export let main = (): i32 => {
   test('simple mixin with next pointer', async () => {
     const source = `
 mixin Chainable {
-  next: ChainNode;
+  next: ChainNode | null;
 }
 
 class ChainNode with Chainable {
   id: i32;
   
-  new(id: i32) {
-    this.id = id;
-  }
+  new(id: i32) : id = id {}
   
   setNext(n: ChainNode): void {
     this.next = n;
   }
   
   getNextId(): i32 {
-    return this.next.id;
+    let n = this.next;
+    if (n != null) {
+      return n.id;
+    }
+    return 0;
   }
 }
 

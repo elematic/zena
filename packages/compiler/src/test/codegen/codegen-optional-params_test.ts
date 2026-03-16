@@ -35,10 +35,7 @@ suite('CodeGenerator - Optional Parameters and Defaults', () => {
       class Point {
         x: i32;
         y: i32;
-        new(x: i32, y: i32 = 0) {
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32 = 0) : x = x, y = y {}
       }
       export let main = (): i32 => {
         let p = new Point(10);

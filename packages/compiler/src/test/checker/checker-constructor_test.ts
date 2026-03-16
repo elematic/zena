@@ -60,9 +60,7 @@ suite('Checker - Constructor Rules', () => {
       class A {}
       class B extends A {
         x: i32;
-        new() : super() {
-          this.x = 1; // OK - super() already called in init list
-        }
+        new() : x = 1, super() {}
       }
     `;
     const parser = new Parser(source);
@@ -78,9 +76,7 @@ suite('Checker - Constructor Rules', () => {
       class A {}
       class B extends A {
         x: i32;
-        new() : super() {
-          this.x = 1; // OK
-        }
+        new() : x = 1, super() {}
       }
     `;
     const parser = new Parser(source);

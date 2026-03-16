@@ -107,9 +107,7 @@ suite('tuple unions', () => {
       const result = await compileAndRun(`
         class Box {
           value: i32;
-          new(v: i32) {
-            this.value = v;
-          }
+          new(v: i32) : value = v {}
         }
         
         let maybeBox = (flag: boolean): inline (true, Box) | inline (false, never) => {

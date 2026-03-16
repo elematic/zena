@@ -8,10 +8,7 @@ suite('CodeGenerator - Final Modifier', () => {
       final class Point {
         x: i32;
         y: i32;
-        new(x: i32, y: i32) {
-          this.x = x;
-          this.y = y;
-        }
+        new(x: i32, y: i32) : x = x, y = y {}
         
         final distanceSquared(): i32 {
           return this.x * this.x + this.y * this.y;
@@ -62,9 +59,7 @@ suite('CodeGenerator - Final Modifier', () => {
     const input = `
       class Container {
         value: i32;
-        new(v: i32) {
-          this.value = v;
-        }
+        new(v: i32) : value = v {}
         
         final val: i32 {
           get {

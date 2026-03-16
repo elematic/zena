@@ -78,6 +78,7 @@ import {
   instantiateGenericClass,
   isBooleanType,
   isAssignableTo,
+  isNullableType,
   resolveTypeAnnotation,
   substituteType,
   typeToString,
@@ -731,6 +732,7 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
     implements: [],
     fields: new Map(),
     fieldMutability: new Map(),
+    fieldsWithInitializers: new Set(),
     methods: new Map(),
     statics: new Map(),
     symbolFields: new Map(),
@@ -2492,6 +2494,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         implements: [], // TODO: Mixins might implement interfaces
         fields: new Map(),
         fieldMutability: new Map(),
+        fieldsWithInitializers: new Set(),
         methods: new Map(),
         statics: new Map(),
         symbolFields: new Map(),
@@ -2617,6 +2620,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       implements: [],
       fields: new Map(),
       fieldMutability: new Map(),
+      fieldsWithInitializers: new Set(),
       methods: new Map(),
       statics: new Map(),
       symbolFields: new Map(),
@@ -2832,6 +2836,22 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
       classType.fields.set(memberName, fieldType);
       classType.fieldMutability!.set(memberName, member.isFinal);
+
+      // Track declared fields (e.g., `declare length: i32`)
+      if (member.isDeclare) {
+        if (!classType.declaredFields) {
+          classType.declaredFields = new Set();
+        }
+        classType.declaredFields.add(memberName);
+      }
+
+      // Track fields with inline initializers
+      if (member.value) {
+        if (!classType.fieldsWithInitializers) {
+          classType.fieldsWithInitializers = new Set();
+        }
+        classType.fieldsWithInitializers.add(memberName);
+      }
 
       // Track field mutability based on let/var modifiers
       // Fields are mutable by default; only `let` makes them immutable
@@ -3293,6 +3313,39 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   // Restore previous state
   ctx.initializedFields = previousInitializedFields;
 
+  // Check for uninitialized non-nullable fields in classes without constructors
+  if (!classType.constructorType && !decl.isAbstract) {
+    const superType = classType.superType;
+    for (const [fieldName, fieldType] of classType.fields) {
+      // Skip inherited fields
+      const isInherited =
+        superType &&
+        superType.fields.has(fieldName) &&
+        !fieldName.startsWith('#');
+      if (isInherited) continue;
+
+      // Skip declared fields (e.g., @intrinsic fields)
+      // Check both current type and genericSource
+      if (classType.declaredFields?.has(fieldName)) continue;
+      if (classType.genericSource?.declaredFields?.has(fieldName)) continue;
+
+      // Skip fields with inline initializers
+      if (classType.fieldsWithInitializers?.has(fieldName)) continue;
+      if (classType.genericSource?.fieldsWithInitializers?.has(fieldName))
+        continue;
+
+      // Skip nullable fields
+      if (isNullableType(fieldType)) continue;
+
+      // Error: class has no constructor but has uninitialized non-nullable field
+      ctx.diagnostics.reportError(
+        `Field '${fieldName}' must be initialized. Add an initializer or a constructor.`,
+        DiagnosticCode.UninitializedField,
+        ctx.getLocation(decl.name.loc),
+      );
+    }
+  }
+
   ctx.exitClass();
   ctx.exitScope();
 }
@@ -3707,6 +3760,54 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   // Check super() in initializer list
   if (method.superInitializer) {
     checkSuperInitializer(ctx, method.superInitializer);
+  }
+
+  // Validate that all non-nullable fields are initialized (constructors only)
+  if (methodName === CONSTRUCTOR_NAME && ctx.currentClass) {
+    const classType = ctx.currentClass;
+    const superType = classType.superType;
+
+    // Collect fields initialized in the initializer list
+    const fieldsInInitializerList = new Set<string>();
+    if (method.initializerList) {
+      for (const init of method.initializerList) {
+        fieldsInInitializerList.add(init.field.name);
+      }
+    }
+
+    // Check each field
+    for (const [fieldName, fieldType] of classType.fields) {
+      // Skip inherited fields (they're already initialized by superclass)
+      const isInherited =
+        superType &&
+        superType.fields.has(fieldName) &&
+        !fieldName.startsWith('#');
+      if (isInherited) continue;
+
+      // Skip declared fields (e.g., @intrinsic fields)
+      // Check both the current type and genericSource (for generic classes where
+      // declaredFields was populated after enterClass created a shallow copy)
+      if (classType.declaredFields?.has(fieldName)) continue;
+      if (classType.genericSource?.declaredFields?.has(fieldName)) continue;
+
+      // Skip fields with inline initializers
+      if (classType.fieldsWithInitializers?.has(fieldName)) continue;
+      if (classType.genericSource?.fieldsWithInitializers?.has(fieldName))
+        continue;
+
+      // Skip fields initialized in the initializer list
+      if (fieldsInInitializerList.has(fieldName)) continue;
+
+      // Skip nullable fields (they default to null)
+      if (isNullableType(fieldType)) continue;
+
+      // Error: non-nullable field without initializer
+      ctx.diagnostics.reportError(
+        `Field '${fieldName}' must be initialized. Add an initializer or make it nullable.`,
+        DiagnosticCode.UninitializedField,
+        ctx.getLocation(method.name.loc),
+      );
+    }
   }
 
   const returnType = method.returnType

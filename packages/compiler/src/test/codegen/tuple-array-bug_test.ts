@@ -31,7 +31,7 @@ import { Array } from 'zena:growable-array';
 
 class Descriptor {
   handle: i32;
-  new(h: i32) { this.handle = h; }
+  new(h: i32) : handle = h {}
 }
 
 let makePreopens = (): Array<(Descriptor, string)> => {
@@ -104,7 +104,7 @@ interface Allocator {
 
 class BumpAllocator implements Allocator {
   offset: i32;
-  new() { this.offset = 0; }
+  new() : offset = 0 {}
   allocate(size: i32): i32 {
     let result = this.offset;
     this.offset = this.offset + size;
