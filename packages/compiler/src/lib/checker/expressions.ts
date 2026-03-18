@@ -236,8 +236,24 @@ function checkExpressionInternal(
 ): Type {
   switch (expr.type) {
     case NodeType.NumberLiteral: {
-      const lit = expr as any; // Cast to access raw if needed, or update AST type definition
-      if (lit.raw && lit.raw.includes('.')) {
+      const lit = expr as NumberLiteral;
+      const hasDecimal = lit.raw && lit.raw.includes('.');
+      // If we have a contextual numeric type, use it (enables `x < 0` when x is i64)
+      if (expectedType && expectedType.kind === TypeKind.Number) {
+        // For decimal literals, only allow float types as context
+        if (hasDecimal) {
+          const name = (expectedType as NumberType).name;
+          if (name === 'f32' || name === 'f64') {
+            return expectedType;
+          }
+          // Decimal literal with integer context - use default f32
+          return Types.F32;
+        }
+        // Integer literal can use any numeric context type
+        return expectedType;
+      }
+      // No contextual type - use defaults
+      if (hasDecimal) {
         return Types.F32;
       }
       return Types.I32;
@@ -1998,7 +2014,10 @@ function checkBinaryExpression(
   expr: BinaryExpression,
 ): Type {
   const left = checkExpression(ctx, expr.left);
-  const right = checkExpression(ctx, expr.right);
+  // Use left operand's type as contextual type for the right operand
+  // This enables ergonomic comparisons like `x < 0` when x is i64
+  const contextualType = left.kind === TypeKind.Number ? left : undefined;
+  const right = checkExpression(ctx, expr.right, contextualType);
 
   if (left.kind === TypeKind.Never || right.kind === TypeKind.Never) {
     return Types.Never;
