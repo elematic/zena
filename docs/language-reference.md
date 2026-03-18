@@ -205,6 +205,43 @@ let x = 10; // Inferred as i32
 let s = 'hello'; // Inferred as string
 ```
 
+#### Contextual Typing for Numeric Literals
+
+Numeric literals infer their type from context in **comparison** and
+**arithmetic** expressions. This is not implicit coercion—the literal is
+statically allocated with the correct type from the start.
+
+```zena
+let x = 100 as i64;
+if (x > 0) { ... }      // 0 is inferred as i64, not coerced
+let y = x + 50;         // 50 is inferred as i64
+let z = 3.14 as f64;
+if (z < 1.0) { ... }    // 1.0 is inferred as f64
+```
+
+This works because the compiler knows the expected type before creating the
+literal value. The left operand's type provides context for the right operand.
+
+**Variable Declarations**: Contextual typing does **not** apply to variable
+declarations with explicit type annotations:
+
+```zena
+let a: i64 = 1;         // Error: expected i64, got i32
+let b: i64 = 1 as i64;  // OK: explicit cast
+```
+
+This is intentional. Type annotations on declarations serve as explicit
+programmer intent and should be validated against the literal's default type.
+If contextual typing applied here, a typo in the annotation (e.g., `i64` instead
+of `i32`) would silently create a value of the wrong type. For stored values,
+explicit casts make the intent clear and catch annotation errors at compile
+time.
+
+In contrast, comparisons and arithmetic are transient operations where the
+context unambiguously determines the expected type. A future version may add
+explicit numeric literal suffixes (e.g., `1i64`, `3.14f64`) for clearer intent
+in declarations.
+
 ### Type Casting
 
 Zena enforces strict type safety and does not support implicit type coercion.
