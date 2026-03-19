@@ -51,6 +51,12 @@ export function mapReturnTypeToWasmResults(
   // Handle union of inline tuples: (true, T) | (false, never)
   if (type.kind === TypeKind.Union) {
     const unionType = type as UnionType;
+    // If union contains void, treat entire expression as void.
+    // This handles: if (x) { a = 1 } else { } where assignment returns i32
+    // but empty block returns void, resulting in i32 | void.
+    if (unionType.types.some((t) => t.kind === TypeKind.Void)) {
+      return [];
+    }
     // Find the first inline tuple in the union to get the WASM signature
     for (const t of unionType.types) {
       if (t.kind === TypeKind.InlineTuple) {

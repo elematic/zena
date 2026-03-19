@@ -6008,6 +6008,12 @@ export function mapCheckerTypeToWasmType(
   // Handle Union types - use anyref for nullable reference types
   if (type.kind === TypeKind.Union) {
     const unionType = type as UnionType;
+    // If union contains void (e.g., i32 | void from if-else with empty branch),
+    // treat the entire type as void. This ensures expressions with this type
+    // are correctly treated as producing no value.
+    if (unionType.types.some((t) => t.kind === TypeKind.Void)) {
+      return [];
+    }
     // Check if it's a nullable reference type (T | null)
     const nonNullTypes = unionType.types.filter(
       (t) => t.kind !== TypeKind.Null,

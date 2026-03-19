@@ -508,6 +508,20 @@ function resolveTypeAnnotationInternal(
   if (annotation.type === NodeType.UnionTypeAnnotation) {
     const types = annotation.types.map((t) => resolveTypeAnnotation(ctx, t));
 
+    // Reject void in explicit union types - void means "no value" and cannot
+    // be stored in a variable or returned as a union member.
+    // Note: Internal void unions from if-expression inference are handled
+    // separately by codegen treating them as void.
+    for (const t of types) {
+      if (t.kind === TypeKind.Void) {
+        ctx.diagnostics.reportError(
+          `Union types cannot contain 'void'. The void type represents the absence of a value and cannot be stored.`,
+          DiagnosticCode.TypeMismatch,
+        );
+        break; // Only report once
+      }
+    }
+
     // Validate primitive/reference mixing in unions.
     // Rules:
     // 1. Primitives can union with primitives of the SAME base type (true | false, 1 | 2)
@@ -529,7 +543,8 @@ function resolveTypeAnnotationInternal(
         const unbounded = getUnboundedTypeParam(t);
         if (unbounded) {
           unboundedParams.push(unbounded);
-        } else {
+        } else if (t.kind !== TypeKind.Void) {
+          // Don't count void as a reference type
           hasReference = true;
         }
       }

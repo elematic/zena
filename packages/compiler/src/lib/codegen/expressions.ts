@@ -10201,11 +10201,22 @@ function generateMatchExpression(
         ctx.currentTypeArguments,
       );
     }
-    resultType = mapCheckerTypeToWasmType(ctx, resolvedType);
+    // If union contains void (e.g., i32 | void from if-else with empty branch),
+    // treat the entire match as void to avoid stack type mismatches
+    if (
+      resolvedType.kind === TypeKind.Union &&
+      (resolvedType as UnionType).types.some((t) => t.kind === TypeKind.Void)
+    ) {
+      resultType = [];
+    } else {
+      resultType = mapCheckerTypeToWasmType(ctx, resolvedType);
+    }
   }
 
   // Block for the entire match expression (exit when a case succeeds)
-  const matchDoneBlockTypeIndex = ctx.module.addType([], [resultType]);
+  // Note: addType takes array-of-arrays for results, so empty resultType means []
+  const matchResults = resultType.length > 0 ? [resultType] : [];
+  const matchDoneBlockTypeIndex = ctx.module.addType([], matchResults);
   body.push(Opcode.block);
   body.push(...WasmModule.encodeSignedLEB128(matchDoneBlockTypeIndex));
 
@@ -10246,7 +10257,9 @@ function generateMatchExpression(
     }
 
     // 4. Execute Body
-    generateMatchCaseBody(ctx, c.body, body);
+    // When match result is void (resultType.length === 0), generate body as statement
+    const matchExpectsVoid = resultType.length === 0;
+    generateMatchCaseBody(ctx, c.body, body, matchExpectsVoid);
 
     // 5. Break to match done
     // We are inside:
@@ -10268,11 +10281,24 @@ function generateMatchCaseBody(
   ctx: CodegenContext,
   body_node: Expression | BlockStatement,
   body: number[],
+  dropResult: boolean = false,
 ) {
   if (body_node.type === NodeType.BlockStatement) {
-    generateBlockExpressionCode(ctx, body_node as BlockStatement, body);
+    if (dropResult) {
+      // Generate block as statements, don't expect result value
+      generateBlockAsStatements(ctx, body_node as BlockStatement, body);
+    } else {
+      generateBlockExpressionCode(ctx, body_node as BlockStatement, body);
+    }
   } else {
     generateExpression(ctx, body_node, body);
+    // If we need to drop the result and the expression produces a value, drop it
+    if (dropResult) {
+      const exprType = inferType(ctx, body_node);
+      if (!isVoidType(exprType)) {
+        body.push(Opcode.drop);
+      }
+    }
   }
 }
 
@@ -10305,11 +10331,13 @@ function generateIfExpression(
   }
 
   // Generate consequent
-  generateIfBranch(ctx, expr.consequent, body);
+  // When result is void (e.g., due to i32|void union), we need to ensure branches
+  // don't leave values on the stack
+  generateIfBranch(ctx, expr.consequent, body, results.length === 0);
 
   // Generate else branch
   body.push(Opcode.else);
-  generateIfBranch(ctx, expr.alternate, body);
+  generateIfBranch(ctx, expr.alternate, body, results.length === 0);
 
   body.push(Opcode.end);
 }
@@ -10318,12 +10346,43 @@ function generateIfBranch(
   ctx: CodegenContext,
   branch: Expression | BlockStatement,
   body: number[],
+  dropResult: boolean = false,
 ) {
   if (branch.type === NodeType.BlockStatement) {
-    generateBlockExpressionCode(ctx, branch as BlockStatement, body);
+    if (dropResult) {
+      // Generate block as statements, don't expect result value
+      generateBlockAsStatements(ctx, branch as BlockStatement, body);
+    } else {
+      generateBlockExpressionCode(ctx, branch as BlockStatement, body);
+    }
   } else {
     generateExpression(ctx, branch, body);
+    // If we need to drop the result and the expression produces a value, drop it
+    if (dropResult) {
+      const exprType = inferType(ctx, branch);
+      if (!isVoidType(exprType)) {
+        body.push(Opcode.drop);
+      }
+    }
   }
+}
+
+// Generate block statements without expecting a result value
+function generateBlockAsStatements(
+  ctx: CodegenContext,
+  block: BlockStatement,
+  body: number[],
+) {
+  ctx.pushScope();
+  for (const stmt of block.body) {
+    generateFunctionStatement(ctx, stmt, body);
+  }
+  ctx.popScope();
+}
+
+// Helper to check if a type is void-like
+function isVoidType(wasmType: number[]): boolean {
+  return wasmType.length === 0;
 }
 
 function generateBlockExpressionCode(
