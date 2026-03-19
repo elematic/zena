@@ -612,6 +612,10 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke m
       - Parser: Support `let` pattern in condition position.
       - Checker: Bind pattern variables only when pattern matches.
       - Codegen: Generate conditional with pattern destructuring.
+    - [x] **Contextual typing for closures**: ✅ COMPLETED
+      - Parser: Supports `(a, b) =>` without type annotations.
+      - Checker: Propagates expected function type to infer parameter types.
+      - Example: `arr.map((x) => x * 2)` where `x` is inferred from `FixedArray<i32>.map`.
 
 11. **Future Features**:
     - **Syntax**:
@@ -620,7 +624,6 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke m
     - **Type System**:
       - Numeric unit types.
       - Intersection types.
-      - Contextual typing for closures: Infer parameter types from context (e.g., `arr.map(x => x * 2)`). Requires parser support for `(a, b) =>` without type annotations, and checker support to propagate expected function type.
     - **OOP & Functions**:
       - Extension methods.
       - Operator overloading.

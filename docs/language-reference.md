@@ -213,14 +213,15 @@ statically allocated with the correct type from the start.
 
 ```zena
 let x = 100 as i64;
-if (x > 0) { ... }      // 0 is inferred as i64, not coerced
+if (x > 0) { ... }      // 0 is inferred as i64
+if (0 < x) { ... }      // Also works: 0 is inferred from x
 let y = x + 50;         // 50 is inferred as i64
-let z = 3.14 as f64;
-if (z < 1.0) { ... }    // 1.0 is inferred as f64
+let z = 50 + x;         // Also works: 50 is inferred from x
 ```
 
-This works because the compiler knows the expected type before creating the
-literal value. The left operand's type provides context for the right operand.
+The inference is **bidirectional**: whichever operand is a literal gets its type
+from the non-literal operand. When both operands are literals, they default to
+`i32` (or `f32` for decimals).
 
 **Variable Declarations**: Contextual typing does **not** apply to variable
 declarations with explicit type annotations:
@@ -652,11 +653,47 @@ Zena currently supports functions using arrow syntax.
 
 ### Parameters
 
-Function parameters must have explicit type annotations.
+Function parameters require type annotations when the type cannot be inferred.
 
 ```zena
 let add = (a: i32, b: i32) => a + b;
 ```
+
+#### Contextual Typing for Closure Parameters
+
+When a closure is passed as an argument to a function, parameter types can be
+omitted if they can be inferred from the expected function type:
+
+```zena
+let numbers = [1, 2, 3, 4];
+
+// Parameter type inferred from FixedArray<i32>.map signature
+let doubled = numbers.map((x) => x * 2);
+
+// Multiple parameters can be inferred
+let fold = (f: (acc: i32, x: i32) => i32, init: i32, arr: FixedArray<i32>) => {
+  var result = init;
+  for (let x in arr) { result = f(result, x); }
+  return result;
+};
+let sum = fold((acc, x) => acc + x, 0, numbers);
+```
+
+This works because the compiler knows the expected function type before checking
+the closure. The expected parameter types flow "down" into the closure,
+eliminating the need for explicit annotations.
+
+**When contextual typing is not available**, parameter types must be explicit:
+
+```zena
+// Error: no contextual type available
+let mystery = (x) => x * 2;
+
+// OK: explicit type annotation
+let double = (x: i32) => x * 2;
+```
+
+Explicit type annotations always take precedence over contextual types.
 
 ### Return Type
 

@@ -234,4 +234,67 @@ export let main = (): i32 => {
       /Type mismatch: expected i64, got i32/,
     );
   });
+
+  test('contextual typing - literal on LHS (bidirectional)', async () => {
+    // 0 < x should work just like x > 0
+    const source = `
+export let main = (): i32 => {
+  let x = 5 as i64;
+  if (0 < x) { return 1; }
+  return 0;
+};
+`;
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 1);
+  });
+
+  test('contextual typing - arithmetic with literal on LHS', async () => {
+    const source = `
+export let main = (): i32 => {
+  let x = 100 as i64;
+  let y = 50 + x;  // 50 inferred as i64 from x
+  if (y > 100) { return 1; }
+  return 0;
+};
+`;
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 1);
+  });
+
+  test('contextual typing - f64 literal on LHS', async () => {
+    const source = `
+export let main = (): i32 => {
+  let x = 3.14 as f64;
+  if (3.0 < x) { return 1; }
+  return 0;
+};
+`;
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 1);
+  });
+
+  test('contextual typing - both operands are literals defaults to i32', async () => {
+    // When both are literals, no context is available, defaults to i32
+    const source = `
+export let main = (): i32 => {
+  if (1 < 2) { return 1; }
+  return 0;
+};
+`;
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 1);
+  });
+
+  test('mixed int/float - i32 compared to float literal', async () => {
+    // i32 > 1.5 - does the float literal stay as f32?
+    const source = `
+export let main = (): i32 => {
+  let x: i32 = 5;
+  if (x > 1.5) { return 1; }
+  return 0;
+};
+`;
+    const result = await compileAndRun(source);
+    assert.strictEqual(result, 1);
+  });
 });

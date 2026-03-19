@@ -2008,16 +2008,32 @@ function checkAssignmentExpression(
 /**
  * Checks a binary expression (e.g., a + b, a == b).
  * Handles arithmetic type promotion (i32 -> f32 -> f64) and operator overloading.
+ *
+ * Implements bidirectional contextual typing for numeric literals:
+ * - If left is a literal and right is numeric: left gets right's type as context
+ * - If right is a literal and left is numeric: right gets left's type as context
  */
 function checkBinaryExpression(
   ctx: CheckerContext,
   expr: BinaryExpression,
 ): Type {
-  const left = checkExpression(ctx, expr.left);
-  // Use left operand's type as contextual type for the right operand
-  // This enables ergonomic comparisons like `x < 0` when x is i64
-  const contextualType = left.kind === TypeKind.Number ? left : undefined;
-  const right = checkExpression(ctx, expr.right, contextualType);
+  let left: Type;
+  let right: Type;
+
+  const leftIsLiteral = expr.left.type === NodeType.NumberLiteral;
+  const rightIsLiteral = expr.right.type === NodeType.NumberLiteral;
+
+  if (leftIsLiteral && !rightIsLiteral) {
+    // Check right first to get context for left (e.g., `0 < x` where x is i64)
+    right = checkExpression(ctx, expr.right);
+    const contextualType = right.kind === TypeKind.Number ? right : undefined;
+    left = checkExpression(ctx, expr.left, contextualType);
+  } else {
+    // Normal order: check left first, use as context for right
+    left = checkExpression(ctx, expr.left);
+    const contextualType = left.kind === TypeKind.Number ? left : undefined;
+    right = checkExpression(ctx, expr.right, contextualType);
+  }
 
   if (left.kind === TypeKind.Never || right.kind === TypeKind.Never) {
     return Types.Never;
