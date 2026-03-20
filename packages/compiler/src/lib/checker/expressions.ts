@@ -3169,10 +3169,10 @@ function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
  */
 function checkMapLiteral(ctx: CheckerContext, expr: MapLiteral): Type {
   // Get the generic Map class from the stdlib
-  const genericMapType = ctx.getWellKnownType(TypeNames.Map);
+  const genericMapType = ctx.getWellKnownType(TypeNames.HashMap);
   if (!genericMapType || genericMapType.kind !== TypeKind.Class) {
     ctx.diagnostics.reportError(
-      "Map type not found. Import from 'zena:map'.",
+      "HashMap type not found. Import from 'zena:map'.",
       DiagnosticCode.TypeNotFound,
     );
     return Types.Unknown;
@@ -3183,7 +3183,7 @@ function checkMapLiteral(ctx: CheckerContext, expr: MapLiteral): Type {
   // Empty map literal - error, require explicit type annotation
   if (expr.entries.length === 0) {
     ctx.diagnostics.reportError(
-      'Empty map literal requires type annotation. Use `new Map<K, V>()` instead.',
+      'Empty map literal requires type annotation. Use `new HashMap<K, V>()` instead.',
       DiagnosticCode.TypeMismatch,
     );
     return Types.Unknown;

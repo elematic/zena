@@ -440,7 +440,7 @@ suite('Binary Size', () => {
   suite('Map Usage', () => {
     test('map literal includes Map class', async () => {
       const withMap = `
-        import {Map} from 'zena:map';
+        import {HashMap} from 'zena:map';
         export let main = () => {
           let m = {"a" => 1, "b" => 2};
           let (v, _) = m.get("a");
@@ -466,7 +466,7 @@ suite('Binary Size', () => {
 
     test('unused map literal is eliminated with DCE', async () => {
       const withUnusedMap = `
-        import {Map} from 'zena:map';
+        import {HashMap} from 'zena:map';
         let unused = () => ({"a" => 1});
         export let main = () => 42;
       `;
@@ -490,7 +490,7 @@ suite('Binary Size', () => {
 
     test('map literal without DCE includes Map class', async () => {
       const withMap = `
-        import {Map} from 'zena:map';
+        import {HashMap} from 'zena:map';
         export let main = () => {
           let m = {"a" => 1};
           let (v, _) = m.get("a");

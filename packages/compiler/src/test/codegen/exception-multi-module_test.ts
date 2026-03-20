@@ -51,10 +51,10 @@ suite('Codegen: Exception handling with multi-module imports', () => {
   // Map.get returns (value, found) tuple - destructure properly
   test('module importing Map compiles and instantiates', async () => {
     const exports = await compileAndInstantiate(`
-      import {Map} from 'zena:map';
+      import {HashMap} from 'zena:map';
       
       export let main = (): i32 => {
-        let m = new Map<i32, i32>();
+        let m = new HashMap<i32, i32>();
         m.set(1, 100);
         let (value, found) = m.get(1);
         return if (found) { value } else { 0 };
@@ -116,9 +116,9 @@ suite('Codegen: Exception handling with multi-module imports', () => {
   // Map.get returns (value, found) - handle properly
   test('module with Map import and local try/catch', async () => {
     const exports = await compileAndInstantiate(`
-      import {Map} from 'zena:map';
+      import {HashMap} from 'zena:map';
       
-      let safeLookup = (m: Map<i32, i32>, key: i32): i32 => {
+      let safeLookup = (m: HashMap<i32, i32>, key: i32): i32 => {
         return try {
           let (value, found) = m.get(key);
           if (found) { value } else { -1 }
@@ -128,7 +128,7 @@ suite('Codegen: Exception handling with multi-module imports', () => {
       };
       
       export let main = (): i32 => {
-        let m = new Map<i32, i32>();
+        let m = new HashMap<i32, i32>();
         m.set(5, 500);
         return safeLookup(m, 5);
       };

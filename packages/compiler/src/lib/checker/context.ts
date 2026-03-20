@@ -665,7 +665,7 @@ export class CheckerContext {
     new Map([
       [Types.String.name, 'zena:string'],
       [TypeNames.FixedArray, 'zena:fixed-array'],
-      [TypeNames.Map, 'zena:map'],
+      [TypeNames.HashMap, 'zena:map'],
     ]);
 
   getWellKnownType(name: string): Type | undefined {

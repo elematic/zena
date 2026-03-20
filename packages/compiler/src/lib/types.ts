@@ -266,7 +266,7 @@ export const TypeNames = {
   Struct: 'struct',
   Array: 'array',
   FixedArray: 'FixedArray',
-  Map: 'Map',
+  HashMap: 'HashMap',
   TemplateStringsArray: 'TemplateStringsArray',
   I32: 'i32',
   I64: 'i64',

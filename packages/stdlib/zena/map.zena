@@ -52,9 +52,26 @@ export class MapEntry<K, V> {
 }
 
 /**
- * Iterator over the keys of a Map.
+ * The Map interface defines a mutable key-value collection.
  */
-class MapKeyIterator<K, V> implements Iterator<K> {
+export interface Map<K, V> extends Iterable<MapEntry<K, V>> {
+  size: i32 { get; }
+  operator [](key: K): V;
+  operator []=(key: K, value: V): void;
+  get(key: K): inline (V, boolean);
+  getOr(key: K, defaultValue: V): V;
+  has(key: K): boolean;
+  delete(key: K): boolean;
+  clear(): void;
+  set(key: K, value: V): void;
+  keys(): Iterator<K>;
+  forEach(callback: (key: K, value: V) => void): void;
+}
+
+/**
+ * Iterator over the keys of a HashMap.
+ */
+class HashMapKeyIterator<K, V> implements Iterator<K> {
   #buckets: FixedArray<Entry<K, V> | null>;
   #bucketIndex: i32;
   #current: Entry<K, V> | null;
@@ -95,9 +112,9 @@ class MapKeyIterator<K, V> implements Iterator<K> {
 }
 
 /**
- * Iterator over the entries of a Map.
+ * Iterator over the entries of a HashMap.
  */
-class MapEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
+class HashMapEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
   #buckets: FixedArray<Entry<K, V> | null>;
   #bucketIndex: i32;
   #current: Entry<K, V> | null;
@@ -137,7 +154,7 @@ class MapEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
   }
 }
 
-export class Map<K, V> implements Iterable<MapEntry<K, V>> {
+export class HashMap<K, V> implements Map<K, V> {
   #buckets: FixedArray<Entry<K, V> | null>;
   #size: i32 = 0;
 
@@ -337,14 +354,14 @@ export class Map<K, V> implements Iterable<MapEntry<K, V>> {
    * Returns an iterator over the keys in this map.
    */
   keys(): Iterator<K> {
-    return new MapKeyIterator<K, V>(this.#buckets);
+    return new HashMapKeyIterator<K, V>(this.#buckets);
   }
 
   /**
    * Returns an iterator over the entries in this map.
    */
   :Iterable.iterator(): Iterator<MapEntry<K, V>> {
-    return new MapEntryIterator<K, V>(this.#buckets);
+    return new HashMapEntryIterator<K, V>(this.#buckets);
   }
   
   /*

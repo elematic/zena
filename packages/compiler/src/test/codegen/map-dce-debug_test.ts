@@ -58,9 +58,9 @@ suite('Map DCE Debug', () => {
 
   test.only('empty Map with DCE', async () => {
     const source = `
-      import {Map} from 'zena:map';
+      import {HashMap} from 'zena:map';
       export let main = () => {
-        let m = new Map<string, i32>();
+        let m = new HashMap<string, i32>();
         return 42;
       };
     `;
@@ -80,7 +80,7 @@ suite('Map DCE Debug', () => {
 
   test('map literal with DCE', async () => {
     const source = `
-      import {Map} from 'zena:map';
+      import {HashMap} from 'zena:map';
       export let main = () => {
         let m = {"a" => 1};
         return 42;

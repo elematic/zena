@@ -1,0 +1,237 @@
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {OrderedMap} from 'zena:ordered-map';
+
+// Helper: verify keys in order using forEach
+let verifyStringKeys = (m: OrderedMap<string, i32>, expected: FixedArray<string>): void => {
+  var i = 0;
+  m.forEach((key: string, value: i32): void => {
+    equal(key, expected[i]);
+    i = i + 1;
+  });
+  equal(i, expected.length);
+};
+
+export let tests = suite('OrderedMap', (): void => {
+  test('starts empty', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    equal(m.size, 0);
+  });
+
+  test('set and get', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["a"] = 1;
+    m["b"] = 2;
+    equal(m["a"], 1);
+    equal(m["b"], 2);
+    equal(m.size, 2);
+  });
+
+  test('has', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["x"] = 10;
+    isTrue(m.has("x"));
+    isFalse(m.has("y"));
+  });
+
+  test('update existing key preserves order', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["a"] = 1;
+    m["b"] = 2;
+    m["c"] = 3;
+    m["a"] = 99;
+    equal(m["a"], 99);
+    equal(m.size, 3);
+
+    verifyStringKeys(m, ["a", "b", "c"]);
+  });
+
+  test('keys iterate in insertion order', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["banana"] = 1;
+    m["apple"] = 2;
+    m["cherry"] = 3;
+
+    verifyStringKeys(m, ["banana", "apple", "cherry"]);
+  });
+
+  test('delete removes entry and maintains order', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["a"] = 1;
+    m["b"] = 2;
+    m["c"] = 3;
+
+    isTrue(m.delete("b"));
+    equal(m.size, 2);
+    isFalse(m.has("b"));
+
+    verifyStringKeys(m, ["a", "c"]);
+  });
+
+  test('delete head', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["a"] = 1;
+    m["b"] = 2;
+    m["c"] = 3;
+
+    isTrue(m.delete("a"));
+
+    verifyStringKeys(m, ["b", "c"]);
+  });
+
+  test('delete tail', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["a"] = 1;
+    m["b"] = 2;
+    m["c"] = 3;
+
+    isTrue(m.delete("c"));
+
+    verifyStringKeys(m, ["a", "b"]);
+  });
+
+  test('delete non-existing returns false', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["a"] = 1;
+    isFalse(m.delete("z"));
+    equal(m.size, 1);
+  });
+
+  test('delete and re-insert moves to end', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["a"] = 1;
+    m["b"] = 2;
+    m["c"] = 3;
+
+    m.delete("a");
+    m["a"] = 99;
+
+    verifyStringKeys(m, ["b", "c", "a"]);
+    equal(m["a"], 99);
+  });
+
+  test('clear empties the map', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["a"] = 1;
+    m["b"] = 2;
+    m.clear();
+    equal(m.size, 0);
+    isFalse(m.has("a"));
+
+    var count = 0;
+    m.forEach((key: string, value: i32): void => {
+      count = count + 1;
+    });
+    equal(count, 0);
+  });
+
+  test('getOr returns default for missing key', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["a"] = 1;
+    equal(m.getOr("a", 0), 1);
+    equal(m.getOr("z", 42), 42);
+  });
+
+  test('get returns tuple with found flag', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["a"] = 10;
+    let (v1, found1) = m.get("a");
+    isTrue(found1);
+    equal(v1, 10);
+    let (v2, found2) = m.get("z");
+    isFalse(found2);
+  });
+
+  test('forEach visits in insertion order', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["x"] = 1;
+    m["y"] = 2;
+    m["z"] = 3;
+
+    var sum = 0;
+    var count = 0;
+    m.forEach((key: string, value: i32): void => {
+      sum = sum + value;
+      count = count + 1;
+    });
+    equal(count, 3);
+    equal(sum, 6);
+  });
+
+  test('handles i32 keys', (ctx: TestContext): void => {
+    let m = new OrderedMap<i32, string>();
+    m[3] = "three";
+    m[1] = "one";
+    m[2] = "two";
+
+    var idx = 0;
+    let expected = [3, 1, 2];
+    m.forEach((key: i32, value: string): void => {
+      equal(key, expected[idx]);
+      idx = idx + 1;
+    });
+    equal(idx, 3);
+  });
+
+  test('handles many entries (triggers resize)', (ctx: TestContext): void => {
+    let m = new OrderedMap<i32, i32>();
+    var i = 0;
+    while (i < 100) {
+      m[i] = i * 10;
+      i = i + 1;
+    }
+    equal(m.size, 100);
+
+    // Verify all values
+    i = 0;
+    while (i < 100) {
+      equal(m[i], i * 10);
+      i = i + 1;
+    }
+
+    // Verify insertion order preserved after resizes
+    var idx = 0;
+    m.forEach((key: i32, value: i32): void => {
+      equal(key, idx);
+      idx = idx + 1;
+    });
+    equal(idx, 100);
+  });
+
+  test('set method works like operator []=', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m.set("a", 1);
+    m.set("b", 2);
+    equal(m["a"], 1);
+    equal(m["b"], 2);
+  });
+
+  test('entries iterate in insertion order', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["x"] = 10;
+    m["y"] = 20;
+    m["z"] = 30;
+
+    var sum = 0;
+    for (let entry in m) {
+      sum = sum + entry.value;
+    }
+    equal(sum, 60);
+  });
+
+  test('single element map', (ctx: TestContext): void => {
+    let m = new OrderedMap<string, i32>();
+    m["only"] = 42;
+    equal(m.size, 1);
+    equal(m["only"], 42);
+
+    isTrue(m.delete("only"));
+    equal(m.size, 0);
+
+    var count = 0;
+    m.forEach((key: string, value: i32): void => {
+      count = count + 1;
+    });
+    equal(count, 0);
+  });
+});

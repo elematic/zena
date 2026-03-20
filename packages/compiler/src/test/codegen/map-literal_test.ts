@@ -5,7 +5,7 @@ import {compileAndRun} from './utils.js';
 suite('Codegen - Map Literals', () => {
   test('should create map literal with string keys', async () => {
     const result = await compileAndRun(`
-      import {Map} from 'zena:map';
+      import {HashMap} from 'zena:map';
 
       export let main = (): i32 => {
         let m = {"a" => 1, "b" => 2, "c" => 3};
@@ -18,7 +18,7 @@ suite('Codegen - Map Literals', () => {
 
   test('should create map literal with number keys', async () => {
     const result = await compileAndRun(`
-      import {Map} from 'zena:map';
+      import {HashMap} from 'zena:map';
 
       export let main = (): i32 => {
         let m = {100 => 10, 200 => 20};
@@ -31,7 +31,7 @@ suite('Codegen - Map Literals', () => {
 
   test('should create map literal with single entry', async () => {
     const result = await compileAndRun(`
-      import {Map} from 'zena:map';
+      import {HashMap} from 'zena:map';
 
       export let main = (): i32 => {
         let m = {"key" => 42};
@@ -44,7 +44,7 @@ suite('Codegen - Map Literals', () => {
 
   test('should support map literal size', async () => {
     const result = await compileAndRun(`
-      import {Map} from 'zena:map';
+      import {HashMap} from 'zena:map';
 
       export let main = (): i32 => {
         let m = {"a" => 1, "b" => 2, "c" => 3, "d" => 4};
@@ -56,7 +56,7 @@ suite('Codegen - Map Literals', () => {
 
   test('should support map literal with trailing comma', async () => {
     const result = await compileAndRun(`
-      import {Map} from 'zena:map';
+      import {HashMap} from 'zena:map';
 
       export let main = (): i32 => {
         let m = {
@@ -73,7 +73,7 @@ suite('Codegen - Map Literals', () => {
 
   test('should allow updating map created from literal', async () => {
     const result = await compileAndRun(`
-      import {Map} from 'zena:map';
+      import {HashMap} from 'zena:map';
 
       export let main = (): i32 => {
         let m = {"a" => 1};
@@ -86,9 +86,9 @@ suite('Codegen - Map Literals', () => {
 
   test('should support map literal in function return', async () => {
     const result = await compileAndRun(`
-      import {Map} from 'zena:map';
+      import {HashMap} from 'zena:map';
 
-      let makeMap = (): Map<string, i32> => {
+      let makeMap = (): HashMap<string, i32> => {
         return {"one" => 1, "two" => 2};
       };
 

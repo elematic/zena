@@ -1,0 +1,343 @@
+import { FixedArray } from 'zena:fixed-array';
+import { KeyNotFoundError } from 'zena:error';
+import { Option, some, none } from 'zena:option';
+import { Iterable, Iterator } from 'zena:iterator';
+import { Map, MapEntry } from 'zena:map';
+
+@intrinsic('hash')
+declare function hash<T>(value: T): i32;
+
+@intrinsic('eq')
+declare function equals<T>(a: T, b: T): boolean;
+
+/**
+ * Internal entry for OrderedMap. Combines hash bucket chaining (bucketNext)
+ * with a doubly-linked list for insertion order (orderNext/orderPrev).
+ */
+class OrderedEntry<K, V> {
+  key: K;
+  value: V;
+  bucketNext: OrderedEntry<K, V> | null;
+  orderNext: OrderedEntry<K, V> | null;
+  orderPrev: OrderedEntry<K, V> | null;
+
+  new(key: K, value: V, bucketNext: OrderedEntry<K, V> | null)
+    : key = key,
+      value = value,
+      bucketNext = bucketNext,
+      orderNext = null,
+      orderPrev = null {}
+}
+
+/**
+ * Iterator over OrderedMap keys in insertion order.
+ */
+class OrderedMapKeyIterator<K, V> implements Iterator<K> {
+  #current: OrderedEntry<K, V> | null;
+
+  new(head: OrderedEntry<K, V> | null) : #current = head {}
+
+  next(): inline (true, K) | inline (false, never) {
+    if (this.#current == null) {
+      return (false, _);
+    }
+    let entry = this.#current as OrderedEntry<K, V>;
+    this.#current = entry.orderNext;
+    return (true, entry.key);
+  }
+}
+
+/**
+ * Iterator over OrderedMap entries in insertion order.
+ */
+class OrderedMapEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
+  #current: OrderedEntry<K, V> | null;
+
+  new(head: OrderedEntry<K, V> | null) : #current = head {}
+
+  next(): inline (true, MapEntry<K, V>) | inline (false, never) {
+    if (this.#current == null) {
+      return (false, _);
+    }
+    let entry = this.#current as OrderedEntry<K, V>;
+    let result = new MapEntry<K, V>(entry.key, entry.value);
+    this.#current = entry.orderNext;
+    return (true, result);
+  }
+}
+
+/**
+ * A hash map that preserves insertion order.
+ *
+ * Keys are iterated in the order they were first inserted. Updating an
+ * existing key's value does not change its position. Deleting a key and
+ * re-inserting it places it at the end.
+ *
+ * Performance characteristics are the same as Map: O(1) amortized get/set/delete.
+ *
+ * Example:
+ *   let m = new OrderedMap<string, i32>();
+ *   m["b"] = 2;
+ *   m["a"] = 1;
+ *   m["c"] = 3;
+ *   // Iteration order: "b", "a", "c"
+ */
+export class OrderedMap<K, V> implements Map<K, V> {
+  #buckets: FixedArray<OrderedEntry<K, V> | null>;
+  #size: i32 = 0;
+  #head: OrderedEntry<K, V> | null = null;
+  #tail: OrderedEntry<K, V> | null = null;
+
+  new(capacity: i32 = 16)
+    : #buckets = __array_new_empty<OrderedEntry<K, V> | null>(capacity) {}
+
+  size: i32 {
+    get {
+      return this.#size;
+    }
+  }
+
+  operator []=(key: K, value: V): void {
+    if (this.#size * 4 >= this.#buckets.length * 3) {
+      this.#resize();
+    }
+
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    let head = this.#buckets[index];
+    var current = head;
+    while (current != null) {
+      let entry = current as OrderedEntry<K, V>;
+      if (equals(entry.key, key)) {
+        entry.value = value;
+        return;
+      }
+      current = entry.bucketNext;
+    }
+
+    let newEntry = new OrderedEntry(key, value, head);
+    this.#buckets[index] = newEntry;
+    this.#appendToOrder(newEntry);
+    this.#size = this.#size + 1;
+  }
+
+  /**
+   * Gets the value for a key. Throws KeyNotFoundError if the key doesn't exist.
+   */
+  operator [](key: K): V {
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    var current = this.#buckets[index];
+    while (current != null) {
+      let entry = current as OrderedEntry<K, V>;
+      if (equals(entry.key, key)) {
+        return entry.value;
+      }
+      current = entry.bucketNext;
+    }
+    throw new KeyNotFoundError();
+  }
+
+  /**
+   * Gets the value for a key, returning (value, true) if found or (_, false) if not.
+   * Zero allocation overhead.
+   */
+  get(key: K): inline (V, boolean) {
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    var current = this.#buckets[index];
+    while (current != null) {
+      let entry = current as OrderedEntry<K, V>;
+      if (equals(entry.key, key)) {
+        return (entry.value, true);
+      }
+      current = entry.bucketNext;
+    }
+    return (_, false);
+  }
+
+  /**
+   * Gets the value for a key, or returns the default value if not found.
+   */
+  getOr(key: K, defaultValue: V): V {
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    var current = this.#buckets[index];
+    while (current != null) {
+      let entry = current as OrderedEntry<K, V>;
+      if (equals(entry.key, key)) {
+        return entry.value;
+      }
+      current = entry.bucketNext;
+    }
+    return defaultValue;
+  }
+
+  /**
+   * Finds the value for a key, returning Some(value) if found or None if not.
+   */
+  find(key: K): Option<V> {
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    var current = this.#buckets[index];
+    while (current != null) {
+      let entry = current as OrderedEntry<K, V>;
+      if (equals(entry.key, key)) {
+        return some(entry.value);
+      }
+      current = entry.bucketNext;
+    }
+    return none;
+  }
+
+  has(key: K): boolean {
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    var current = this.#buckets[index];
+    while (current != null) {
+      let entry = current as OrderedEntry<K, V>;
+      if (equals(entry.key, key)) {
+        return true;
+      }
+      current = entry.bucketNext;
+    }
+    return false;
+  }
+
+  delete(key: K): boolean {
+    let h = hash(key);
+    let len = this.#buckets.length;
+    var index = h % len;
+    if (index < 0) index = index + len;
+
+    let head = this.#buckets[index];
+    var current = head;
+    var prev: OrderedEntry<K, V> | null = null;
+
+    while (current != null) {
+      let entry = current as OrderedEntry<K, V>;
+      if (equals(entry.key, key)) {
+        // Remove from bucket chain
+        if (prev == null) {
+          this.#buckets[index] = entry.bucketNext;
+        } else {
+          (prev as OrderedEntry<K, V>).bucketNext = entry.bucketNext;
+        }
+        // Remove from insertion-order linked list
+        this.#removeFromOrder(entry);
+        this.#size = this.#size - 1;
+        return true;
+      }
+      prev = current;
+      current = entry.bucketNext;
+    }
+    return false;
+  }
+
+  clear(): void {
+    this.#buckets = __array_new_empty<OrderedEntry<K, V> | null>(16);
+    this.#size = 0;
+    this.#head = null;
+    this.#tail = null;
+  }
+
+  set(key: K, value: V): void {
+    this[key] = value;
+  }
+
+  /**
+   * Returns an iterator over the keys in insertion order.
+   */
+  keys(): Iterator<K> {
+    return new OrderedMapKeyIterator<K, V>(this.#head);
+  }
+
+  /**
+   * Returns an iterator over the entries in insertion order.
+   */
+  :Iterable.iterator(): Iterator<MapEntry<K, V>> {
+    return new OrderedMapEntryIterator<K, V>(this.#head);
+  }
+
+  /**
+   * Calls the callback for each key-value pair in insertion order.
+   */
+  forEach(callback: (key: K, value: V) => void): void {
+    var current = this.#head;
+    while (current != null) {
+      let entry = current as OrderedEntry<K, V>;
+      callback(entry.key, entry.value);
+      current = entry.orderNext;
+    }
+  }
+
+  // === Private helpers ===
+
+  #appendToOrder(entry: OrderedEntry<K, V>): void {
+    if (this.#tail == null) {
+      this.#head = entry;
+      this.#tail = entry;
+    } else {
+      let tail = this.#tail as OrderedEntry<K, V>;
+      tail.orderNext = entry;
+      entry.orderPrev = tail;
+      this.#tail = entry;
+    }
+  }
+
+  #removeFromOrder(entry: OrderedEntry<K, V>): void {
+    let prev = entry.orderPrev;
+    let next = entry.orderNext;
+
+    if (prev != null) {
+      (prev as OrderedEntry<K, V>).orderNext = next;
+    } else {
+      this.#head = next;
+    }
+
+    if (next != null) {
+      (next as OrderedEntry<K, V>).orderPrev = prev;
+    } else {
+      this.#tail = prev;
+    }
+
+    entry.orderPrev = null;
+    entry.orderNext = null;
+  }
+
+  #resize(): void {
+    let newCapacity = this.#buckets.length * 2;
+    this.#buckets = __array_new_empty<OrderedEntry<K, V> | null>(newCapacity);
+
+    // Re-hash all entries by walking the insertion-order linked list
+    var current = this.#head;
+    while (current != null) {
+      let entry = current as OrderedEntry<K, V>;
+      let h = hash(entry.key);
+      var index = h % newCapacity;
+      if (index < 0) index = index + newCapacity;
+
+      entry.bucketNext = this.#buckets[index];
+      this.#buckets[index] = entry;
+      current = entry.orderNext;
+    }
+  }
+}
