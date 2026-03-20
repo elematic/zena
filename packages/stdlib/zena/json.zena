@@ -21,14 +21,12 @@ export final class SourceLocation {
 // === JSON Value Types ===
 
 // Forward declaration for recursive type
-// type JsonValue = JsonObject | JsonArray | string | Box<f64> | Box<boolean> | null;
+export type JsonValue = JsonObject | JsonArray | string | Box<f64> | Box<boolean> | null;
 
 export class JsonObject {
   // TODO Phase 2: Use OrderedMap for key insertion order preservation
-  #fields: Map<string, any>;  // any = JsonValue
-  #locations: Map<string, SourceLocation> | null;
-
-  new() : #fields = new Map<string, any>(), #locations = null {}
+  #fields: Map<string, JsonValue> = new Map<string, JsonValue>();
+  #locations: Map<string, SourceLocation> | null = null;
 
   static withLocations(): JsonObject {
     let obj = new JsonObject();
@@ -36,14 +34,14 @@ export class JsonObject {
     return obj;
   }
 
-  operator [](key: string): any {
+  operator [](key: string): JsonValue {
     if (!this.#fields.has(key)) {
       return null;
     }
     return this.#fields.getOr(key, null);
   }
 
-  operator []=(key: string, value: any): void {
+  operator []=(key: string, value: JsonValue): void {
     this.#fields.set(key, value);
   }
 
@@ -86,10 +84,8 @@ export class JsonObject {
 }
 
 export class JsonArray {
-  #elements: Array<any>;  // any = JsonValue
-  #locations: Array<SourceLocation> | null;
-
-  new() : #elements = new Array<any>(), #locations = null {}
+  #elements: Array<JsonValue> = new Array<JsonValue>();
+  #locations: Array<SourceLocation> | null = null;
 
   static withLocations(): JsonArray {
     let arr = new JsonArray();
@@ -97,11 +93,11 @@ export class JsonArray {
     return arr;
   }
 
-  operator [](index: i32): any {
+  operator [](index: i32): JsonValue {
     return this.#elements[index];
   }
 
-  operator []=(index: i32, value: any): void {
+  operator []=(index: i32, value: JsonValue): void {
     this.#elements[index] = value;
   }
 
@@ -111,11 +107,11 @@ export class JsonArray {
     }
   }
 
-  push(value: any): void {
+  push(value: JsonValue): void {
     this.#elements.push(value);
   }
 
-  pushWithLocation(value: any, loc: SourceLocation): void {
+  pushWithLocation(value: JsonValue, loc: SourceLocation): void {
     this.#elements.push(value);
     let locs = this.#locations;
     if (locs != null) {
@@ -181,7 +177,7 @@ class JsonParser {
     }
   }
 
-  parse(): any {
+  parse(): JsonValue {
     this.#skipWhitespaceAndComments();
     let value = this.#parseValue();
     this.#skipWhitespaceAndComments();
@@ -191,7 +187,7 @@ class JsonParser {
     return value;
   }
 
-  #parseValue(): any {
+  #parseValue(): JsonValue {
     let b = this.#reader.peekByte();
     
     if (b == 123) {  // '{'
@@ -603,7 +599,7 @@ class JsonParser {
     return new Box(false as boolean);
   }
 
-  #parseNull(): any {
+  #parseNull(): JsonValue {
     this.#expectWord("null");
     return null;
   }
@@ -690,7 +686,7 @@ class JsonParser {
 
 // === Public API ===
 
-export let parseJson = (input: string, options: JsonOptions | null = null): any => {
+export let parseJson = (input: string, options: JsonOptions | null = null): JsonValue => {
   let parser = new JsonParser(input, options);
   return parser.parse();
 };
@@ -698,9 +694,9 @@ export let parseJson = (input: string, options: JsonOptions | null = null): any 
 // === jq-Style Query Functions ===
 
 // Get a value by path (e.g., ".foo.bar[0].baz")
-export let jsonGet = (value: any, path: string): any => {
+export let jsonGet = (value: JsonValue, path: string): JsonValue => {
   let reader = new StringReader(path);
-  var current: any = value;
+  var current: JsonValue = value;
   
   while (!reader.isAtEnd && current != null) {
     let b = reader.peekByte();
@@ -794,17 +790,10 @@ let TEN_I64: i64 = 10 as i64;
  *   // {"name":"example","count":42,"items":["a","b"]}
  */
 export class JsonBuilder {
-  #sb: StringBuilder;
-  #stack: Array<i32>;    // Track nesting: STACK_OBJECT or STACK_ARRAY
-  #counts: Array<i32>;   // Track item count at each level (for comma handling)
-  #needsValue: boolean;  // True after key(), expecting a value next
-
-  new()
-    : #sb = new StringBuilder(),
-      #stack = new Array<i32>(),
-      #counts = new Array<i32>(),
-      #needsValue = false
-  {}
+  #sb: StringBuilder = new StringBuilder();
+  #stack: Array<i32> = new Array<i32>();    // Track nesting: STACK_OBJECT or STACK_ARRAY
+  #counts: Array<i32> = new Array<i32>();   // Track item count at each level (for comma handling)
+  #needsValue: boolean = false;  // True after key(), expecting a value next
 
   // === Object methods ===
 
