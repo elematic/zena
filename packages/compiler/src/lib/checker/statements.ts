@@ -2057,6 +2057,24 @@ function checkInlineTuplePattern(
     return;
   }
 
+  // Check for refutable (literal) patterns — these cannot appear in let/var
+  // declarations because the value might not match at runtime.
+  // Use `if (let ...)` or `while (let ...)` for refutable patterns.
+  for (const elem of pattern.elements) {
+    if (
+      elem.type === NodeType.BooleanLiteral ||
+      elem.type === NodeType.NumberLiteral ||
+      elem.type === NodeType.StringLiteral
+    ) {
+      ctx.diagnostics.reportError(
+        'Refutable pattern in variable declaration; use `if (let ...)` or `while (let ...)` for patterns that may not match',
+        DiagnosticCode.TypeMismatch,
+        ctx.getLocation(elem.loc),
+      );
+      return;
+    }
+  }
+
   for (let i = 0; i < pattern.elements.length; i++) {
     checkPattern(ctx, pattern.elements[i], elementTypes[i], kind, declaration);
   }
@@ -2103,8 +2121,6 @@ function getInlineTupleElementTypes(type: Type): Type[] | null {
     const elementTypes: Type[] = [];
     for (let i = 0; i < arity; i++) {
       const typesAtPosition = tuples.map((t) => t.elementTypes[i]);
-      // Create a union of all types at this position
-      // Simplify if all types are the same
       const uniqueTypes = deduplicateTypes(typesAtPosition);
       if (uniqueTypes.length === 1) {
         elementTypes.push(uniqueTypes[0]);
