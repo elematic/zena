@@ -21,7 +21,7 @@ import {
   mapCheckerTypeToWasmType,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
-import {generateExpression} from './expressions.js';
+import {generateAdaptedArgument, generateExpression} from './expressions.js';
 import {generateBlockStatement} from './statements.js';
 import type {ClassInfo} from './types.js';
 
@@ -83,7 +83,13 @@ export function registerFunction(
     return mapCheckerTypeToWasmType(ctx, checkerParamType);
   });
 
-  const results = mapReturnTypeToWasmResults(ctx, checkerFuncType.returnType);
+  // Use the declared return type annotation if available, because the checker
+  // may narrow the FunctionType's returnType to a more specific type (e.g.,
+  // ClassType instead of InterfaceType), which causes WASM type mismatches at
+  // call sites that see the declared interface type.
+  const effectiveReturnType =
+    func.returnType?.inferredType ?? checkerFuncType.returnType;
+  const results = mapReturnTypeToWasmResults(ctx, effectiveReturnType);
   // Flatten for legacy storage - used by generateFunctionBody
   const flattenedReturn = results.flat();
 
@@ -120,7 +126,7 @@ export function registerFunction(
       func,
       undefined,
       flattenedReturn,
-      checkerFuncType.returnType,
+      effectiveReturnType,
     );
     ctx.module.addCode(funcIndex, ctx.extraLocals, body);
     ctx.currentModule = savedModule;
@@ -169,7 +175,13 @@ export function generateFunctionBody(
       body.push(Opcode.unreachable);
     }
   } else {
-    generateExpression(ctx, func.body as Expression, body);
+    // Expression body: adapt the result to the declared return type
+    // (e.g., box class instance into interface fat pointer)
+    if (returnType && returnType.length > 0) {
+      generateAdaptedArgument(ctx, func.body as Expression, returnType, body);
+    } else {
+      generateExpression(ctx, func.body as Expression, body);
+    }
   }
 
   body.push(Opcode.end);

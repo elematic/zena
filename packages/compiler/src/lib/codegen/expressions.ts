@@ -2704,14 +2704,14 @@ function generateCallExpression(
         // Get the expected types from the caller's perspective
         const expectedTypes = getExpectedReturnTypes(ctx, expr.inferredType);
 
-        // Check if we need adaptation (any anyref -> primitive unboxing needed)
+        // Check if we need adaptation (anyref -> concrete type casting/unboxing)
         const needsAdaptation =
           actualResults.length > 1 &&
           actualResults.some((actualType, i) => {
             const expectedType = expectedTypes[i];
             if (!expectedType) return false;
 
-            // Interface returns anyref but caller expects primitive
+            // Interface returns anyref but caller expects a more specific type
             const isAnyRef =
               (actualType.length === 1 && actualType[0] === ValType.anyref) ||
               (actualType.length === 2 &&
@@ -2720,11 +2720,7 @@ function generateCallExpression(
 
             return (
               isAnyRef &&
-              expectedType.length === 1 &&
-              (expectedType[0] === ValType.i32 ||
-                expectedType[0] === ValType.i64 ||
-                expectedType[0] === ValType.f32 ||
-                expectedType[0] === ValType.f64)
+              !(expectedType.length === 1 && expectedType[0] === ValType.anyref)
             );
           });
 

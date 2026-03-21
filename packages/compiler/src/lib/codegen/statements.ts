@@ -1155,8 +1155,6 @@ export function generateLocalVariableDeclaration(
     }
   } else {
     type = inferType(ctx, decl.init);
-    if (decl.pattern.type === NodeType.Identifier) {
-    }
   }
 
   if (decl.pattern.type === NodeType.Identifier) {
