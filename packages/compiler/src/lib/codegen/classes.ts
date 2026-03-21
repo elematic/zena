@@ -88,6 +88,7 @@ import {
   getHeapTypeIndex,
   boxPrimitive,
   unboxPrimitive,
+  getBoxClassInfo,
 } from './expressions.js';
 import {
   generateBlockStatement,
@@ -1113,6 +1114,18 @@ export function generateTrampoline(
 
           ctx.pendingHelperFunctions.push(() => {
             const wrapperBody: number[] = [];
+            const wrapperLocals: number[][] = [];
+
+            // Helper to allocate a local in the wrapper function
+            const classFuncParamsForLocals = ctx.module.getFunctionTypeParams(
+              classClosure.funcTypeIndex,
+            );
+            let nextLocalIndex = classFuncParamsForLocals.length; // params come first
+            const allocLocal = (type: number[]): number => {
+              const idx = nextLocalIndex++;
+              wrapperLocals.push(type);
+              return idx;
+            };
 
             // Param 0: context (eqref) - will hold the interface closure
             // Param 1+: arguments with specific types
@@ -1134,14 +1147,74 @@ export function generateTrampoline(
             ); // context field
 
             // Get params from wrapper and pass to interface closure
-            // Interface closure expects anyref params (or other erased types)
-            const classFuncParams = ctx.module.getFunctionTypeParams(
-              classClosure.funcTypeIndex,
+            // Interface closure may expect anyref params (erased types) while
+            // the class closure has concrete types (e.g., i32). We need to
+            // box primitives and cast refs as needed.
+            const classFuncParams = classFuncParamsForLocals;
+            const interfaceFuncParams = ctx.module.getFunctionTypeParams(
+              interfaceClosure.funcTypeIndex,
             );
 
             for (let j = 1; j < classFuncParams.length; j++) {
               wrapperBody.push(Opcode.local_get, j);
-              // No cast needed - subtyping allows specific type where anyref is expected
+
+              if (j < interfaceFuncParams.length) {
+                const classParam = classFuncParams[j];
+                const ifaceParam = interfaceFuncParams[j];
+
+                const ifaceIsAnyRef =
+                  (ifaceParam.length === 1 &&
+                    ifaceParam[0] === ValType.anyref) ||
+                  (ifaceParam.length === 2 &&
+                    ifaceParam[0] === ValType.ref_null &&
+                    ifaceParam[1] === ValType.anyref);
+
+                if (
+                  ifaceIsAnyRef &&
+                  classParam.length === 1 &&
+                  (classParam[0] === ValType.i32 ||
+                    classParam[0] === ValType.i64 ||
+                    classParam[0] === ValType.f32 ||
+                    classParam[0] === ValType.f64)
+                ) {
+                  // Box primitive: save value to temp local, push vtable, push value, struct.new
+                  const checkerType =
+                    classParam[0] === ValType.i32
+                      ? Types.I32
+                      : classParam[0] === ValType.i64
+                        ? Types.I64
+                        : classParam[0] === ValType.f32
+                          ? Types.F32
+                          : Types.F64;
+                  const boxClass = getBoxClassInfo(ctx, checkerType);
+
+                  const tempLocal = allocLocal(classParam);
+                  wrapperBody.push(
+                    Opcode.local_set,
+                    ...WasmModule.encodeSignedLEB128(tempLocal),
+                  );
+
+                  if (boxClass.vtableGlobalIndex !== undefined) {
+                    wrapperBody.push(Opcode.global_get);
+                    wrapperBody.push(
+                      ...WasmModule.encodeSignedLEB128(
+                        boxClass.vtableGlobalIndex,
+                      ),
+                    );
+                  } else {
+                    wrapperBody.push(Opcode.ref_null, HeapType.none);
+                  }
+
+                  wrapperBody.push(
+                    Opcode.local_get,
+                    ...WasmModule.encodeSignedLEB128(tempLocal),
+                  );
+                  wrapperBody.push(0xfb, GcOpcode.struct_new);
+                  wrapperBody.push(
+                    ...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex),
+                  );
+                }
+              }
             }
 
             // Get interface closure's func ref
@@ -1164,8 +1237,42 @@ export function generateTrampoline(
               ...WasmModule.encodeSignedLEB128(interfaceClosure.funcTypeIndex),
             );
 
+            // Handle return type adaptation: if interface returns anyref but
+            // class expects primitive, unbox the return value
+            const classFuncResults = ctx.module.getFunctionTypeResults(
+              classClosure.funcTypeIndex,
+            );
+            const interfaceFuncResults = ctx.module.getFunctionTypeResults(
+              interfaceClosure.funcTypeIndex,
+            );
+
+            for (let j = 0; j < classFuncResults.length; j++) {
+              if (j < interfaceFuncResults.length) {
+                const classResult = classFuncResults[j];
+                const ifaceResult = interfaceFuncResults[j];
+
+                const ifaceIsAnyRef =
+                  (ifaceResult.length === 1 &&
+                    ifaceResult[0] === ValType.anyref) ||
+                  (ifaceResult.length === 2 &&
+                    ifaceResult[0] === ValType.ref_null &&
+                    ifaceResult[1] === ValType.anyref);
+
+                if (
+                  ifaceIsAnyRef &&
+                  classResult.length === 1 &&
+                  (classResult[0] === ValType.i32 ||
+                    classResult[0] === ValType.i64 ||
+                    classResult[0] === ValType.f32 ||
+                    classResult[0] === ValType.f64)
+                ) {
+                  unboxPrimitive(ctx, classResult, wrapperBody);
+                }
+              }
+            }
+
             wrapperBody.push(Opcode.end);
-            ctx.module.addCode(wrapperFuncIndex, [], wrapperBody);
+            ctx.module.addCode(wrapperFuncIndex, wrapperLocals, wrapperBody);
           });
 
           // Create the wrapper closure struct

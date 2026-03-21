@@ -977,7 +977,10 @@ function generateIsExpression(
  * Get or create Box<T> ClassInfo for the given primitive type.
  * Uses the checker's type interning for proper identity-based lookups.
  */
-function getBoxClassInfo(ctx: CodegenContext, primitiveType: Type): ClassInfo {
+export function getBoxClassInfo(
+  ctx: CodegenContext,
+  primitiveType: Type,
+): ClassInfo {
   const boxDecl = ctx.wellKnownTypes.Box;
   if (!boxDecl) throw new Error('Box class not found');
 
