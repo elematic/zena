@@ -79,7 +79,7 @@ directly and efficiently as possible to WASM GC features.
 
 Zena is not ready for use!
 
-Zena is very early in it' development and may things are changing, including
+Zena is very early in it's development and may things are changing, including
 syntax, and defaults for immutability, etc. Many features are partially
 implemented, and there are likely lots of hidden bugs in the features that are
 implemented.
@@ -495,7 +495,7 @@ we are trying to answer with Zena include:
 Zena is not yet released. To build from source:
 
 ```bash
-git clone https://github.com/nicolo-ribaudo/zena.git
+git clone https://github.com/elematic/zena.git
 cd zena
 npm install
 npm run build
@@ -504,9 +504,8 @@ npm test
 
 ### Prerequisites
 
-- Node.js v25+
-- npm
-- [wasmtime](https://wasmtime.dev/) (for running WASI programs)
+- Node.js, Deno, or Bun
+- A WebAssembly runtime (that supports for running WASI programs)
 
 ## License
 

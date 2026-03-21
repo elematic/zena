@@ -1,0 +1,808 @@
+// Tokenizer for the Zena programming language
+// Self-hosted compiler implementation
+
+import { Array } from 'zena:array';
+import { Map } from 'zena:map';
+import { StringReader } from 'zena:string-reader';
+import { StringBuilder } from 'zena:string-builder';
+
+// ============================================================================
+// Token Types
+// ============================================================================
+
+export enum TokenType {
+  // Keywords
+  Let,
+  Var,
+  Class,
+  Import,
+  Export,
+  Return,
+  If,
+  Else,
+  While,
+  For,
+  Break,
+  Continue,
+  True,
+  False,
+  Null,
+  New,
+  This,
+  Extends,
+  Interface,
+  Implements,
+  Final,
+  Super,
+  Mixin,
+  With,
+  On,
+  Abstract,
+  Operator,
+  Declare,
+  Function,
+  From,
+  Type,
+  Distinct,
+  As,
+  Is,
+  Extension,
+  Static,
+  Throw,
+  Try,
+  Catch,
+  Finally,
+  Match,
+  Case,
+  Symbol,
+  Enum,
+  In,
+  Inline,
+
+  // Identifiers & Literals
+  Identifier,
+  Number,
+  String,
+
+  // Template literals
+  NoSubstitutionTemplate,
+  TemplateHead,
+  TemplateMiddle,
+  TemplateTail,
+
+  // Operators
+  Equals,
+  EqualsEquals,
+  EqualsEqualsEquals,
+  Bang,
+  BangEquals,
+  BangEqualsEquals,
+  Less,
+  LessEquals,
+  LessLess,
+  Greater,
+  GreaterEquals,
+  GreaterGreater,
+  GreaterGreaterGreater,
+  Arrow,
+  Plus,
+  Minus,
+  Star,
+  Slash,
+  Percent,
+  Pipe,
+  PipePipe,
+  PipeGreater,
+  Ampersand,
+  AmpersandAmpersand,
+  Caret,
+  Question,
+
+  // Punctuation
+  LParen,
+  RParen,
+  LBrace,
+  RBrace,
+  LBracket,
+  RBracket,
+  Colon,
+  Semi,
+  Comma,
+  Dot,
+  DotDot,
+  DotDotDot,
+  Hash,
+  At,
+  Dollar,
+
+  EOF,
+  Unknown
+}
+
+// ============================================================================
+// Token
+// ============================================================================
+
+export class Token {
+  let kind: TokenType;
+  let value: string;
+  let rawValue: string | null;
+  let line: i32;
+  let column: i32;
+  let start: i32;
+  let end: i32;
+
+  new(t: TokenType, v: string, l: i32, c: i32, s: i32, e: i32, r: string | null) : kind = t, value = v, rawValue = r, line = l, column = c, start = s, end = e { }
+}
+
+// ============================================================================
+// Keywords
+// ============================================================================
+
+let KEYWORDS: Map<string, TokenType> = {
+  'let' => TokenType.Let,
+  'var' => TokenType.Var,
+  'class' => TokenType.Class,
+  'final' => TokenType.Final,
+  'import' => TokenType.Import,
+  'export' => TokenType.Export,
+  'return' => TokenType.Return,
+  'if' => TokenType.If,
+  'else' => TokenType.Else,
+  'while' => TokenType.While,
+  'for' => TokenType.For,
+  'break' => TokenType.Break,
+  'continue' => TokenType.Continue,
+  'true' => TokenType.True,
+  'false' => TokenType.False,
+  'null' => TokenType.Null,
+  'new' => TokenType.New,
+  'this' => TokenType.This,
+  'extends' => TokenType.Extends,
+  'interface' => TokenType.Interface,
+  'implements' => TokenType.Implements,
+  'super' => TokenType.Super,
+  'mixin' => TokenType.Mixin,
+  'with' => TokenType.With,
+  'on' => TokenType.On,
+  'abstract' => TokenType.Abstract,
+  'operator' => TokenType.Operator,
+  'declare' => TokenType.Declare,
+  'function' => TokenType.Function,
+  'from' => TokenType.From,
+  'type' => TokenType.Type,
+  'distinct' => TokenType.Distinct,
+  'as' => TokenType.As,
+  'is' => TokenType.Is,
+  'extension' => TokenType.Extension,
+  'static' => TokenType.Static,
+  'throw' => TokenType.Throw,
+  'try' => TokenType.Try,
+  'catch' => TokenType.Catch,
+  'finally' => TokenType.Finally,
+  'match' => TokenType.Match,
+  'case' => TokenType.Case,
+  'symbol' => TokenType.Symbol,
+  'enum' => TokenType.Enum,
+  'in' => TokenType.In,
+  'inline' => TokenType.Inline
+};
+
+// ============================================================================
+// Character helpers
+// ============================================================================
+
+let isWhitespace = (c: i32): boolean => {
+  // space=32, tab=9, newline=10, carriage return=13
+  return c == 32 || c == 9 || c == 10 || c == 13;
+};
+
+let isDigit = (c: i32): boolean => {
+  // '0'=48, '9'=57
+  return c >= 48 && c <= 57;
+};
+
+let isHexDigit = (c: i32): boolean => {
+  // '0'-'9'=48-57, 'a'-'f'=97-102, 'A'-'F'=65-70
+  return (c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70);
+};
+
+let isAlpha = (c: i32): boolean => {
+  // 'a'-'z'=97-122, 'A'-'Z'=65-90
+  return (c >= 97 && c <= 122) || (c >= 65 && c <= 90);
+};
+
+let isIdentifierStart = (c: i32): boolean => {
+  // letters, underscore=95, $=36
+  return isAlpha(c) || c == 95 || c == 36;
+};
+
+let isIdentifierPart = (c: i32): boolean => {
+  return isAlpha(c) || isDigit(c) || c == 95 || c == 36;
+};
+
+// ============================================================================
+// Tokenizer
+// ============================================================================
+
+export class Tokenizer {
+  let #reader: StringReader;
+  let #tokens: Array<Token>;
+  let #templateStack: Array<i32>;
+  #line: i32;
+  #column: i32;
+  #lineStart: i32;
+
+  new(source: string)
+    : #reader = new StringReader(source),
+      #tokens = new Array<Token>(64),
+      #templateStack = new Array<i32>(8)
+  {
+    this.#line = 1;
+    this.#column = 1;
+    this.#lineStart = 0;
+  }
+
+  // ============================================================================
+  // Cursor helpers
+  // ============================================================================
+
+  #peek(): i32 {
+    return this.#reader.peekByte();
+  }
+
+  #peekNext(): i32 {
+    return this.#reader.peekByteAt(1);
+  }
+
+  #advance(): i32 {
+    let c = this.#reader.advanceByte();
+    if (c == 10) {
+      // newline
+      this.#line = this.#line + 1;
+      this.#lineStart = this.#reader.position;
+      this.#column = 1;
+    } else {
+      this.#column = this.#column + 1;
+    }
+    return c;
+  }
+
+  #currentColumn(): i32 {
+    return this.#reader.position - this.#lineStart + 1;
+  }
+
+  #addToken(type: TokenType, value: string, startPos: i32, startCol: i32): void {
+    let token = new Token(type, value, this.#line, startCol, startPos, this.#reader.position, null);
+    this.#tokens.push(token);
+  }
+
+  #addTemplateToken(type: TokenType, cooked: string, raw: string, startPos: i32, startCol: i32): void {
+    let token = new Token(type, cooked, this.#line, startCol, startPos, this.#reader.position, raw);
+    this.#tokens.push(token);
+  }
+
+  // ============================================================================
+  // Main tokenize entry point
+  // ============================================================================
+
+  tokenize(): Array<Token> {
+    while (!this.#reader.isAtEnd) {
+      this.#scanToken();
+    }
+
+    // Add EOF token
+    let pos = this.#reader.position;
+    this.#addToken(TokenType.EOF, '', pos, this.#currentColumn());
+    return this.#tokens;
+  }
+
+  #scanToken(): void {
+    let startPos = this.#reader.position;
+    let startCol = this.#currentColumn();
+    let c = this.#peek();
+
+    // Whitespace
+    if (isWhitespace(c)) {
+      this.#advance();
+      return;
+    }
+
+    // Numbers
+    if (isDigit(c)) {
+      this.#scanNumber(startPos, startCol);
+      return;
+    }
+
+    // Identifiers & Keywords
+    if (isIdentifierStart(c)) {
+      this.#scanIdentifier(startPos, startCol);
+      return;
+    }
+
+    // Strings
+    if (c == 39 || c == 34) {
+      // single quote=39, double quote=34
+      this.#scanString(startPos, startCol);
+      return;
+    }
+
+    // Template literals
+    if (c == 96) {
+      // backtick=96
+      this.#advance();
+      this.#scanTemplatePart(false, startPos, startCol);
+      return;
+    }
+
+    // Operators and punctuation
+    this.#scanOperator(startPos, startCol);
+  }
+
+  // ============================================================================
+  // Number scanning
+  // ============================================================================
+
+  #scanNumber(startPos: i32, startCol: i32): void {
+    let c = this.#peek();
+    let builder = new StringBuilder();
+
+    // Check for hex literal (0x or 0X)
+    if (c == 48 && (this.#peekNext() == 120 || this.#peekNext() == 88)) {
+      // '0'=48, 'x'=120, 'X'=88
+      builder.appendByte(this.#advance()); // '0'
+      builder.appendByte(this.#advance()); // 'x' or 'X'
+
+      while (!this.#reader.isAtEnd && isHexDigit(this.#peek())) {
+        builder.appendByte(this.#advance());
+      }
+    } else {
+      // Decimal number
+      while (!this.#reader.isAtEnd && isDigit(this.#peek())) {
+        builder.appendByte(this.#advance());
+      }
+
+      // Fractional part
+      if (this.#peek() == 46 && isDigit(this.#peekNext())) {
+        // '.'=46
+        builder.appendByte(this.#advance()); // '.'
+        while (!this.#reader.isAtEnd && isDigit(this.#peek())) {
+          builder.appendByte(this.#advance());
+        }
+      }
+    }
+
+    this.#addToken(TokenType.Number, builder.toString(), startPos, startCol);
+  }
+
+  // ============================================================================
+  // Identifier scanning
+  // ============================================================================
+
+  #scanIdentifier(startPos: i32, startCol: i32): void {
+    let start = this.#reader.mark();
+
+    while (!this.#reader.isAtEnd && isIdentifierPart(this.#peek())) {
+      this.#advance();
+    }
+
+    let value = this.#reader.sliceFrom(start);
+    let (tokenType, found) = KEYWORDS.get(value);
+    if (found) {
+      this.#addToken(tokenType, value, startPos, startCol);
+    } else {
+      this.#addToken(TokenType.Identifier, value, startPos, startCol);
+    }
+  }
+
+  // ============================================================================
+  // String scanning
+  // ============================================================================
+
+  #scanString(startPos: i32, startCol: i32): void {
+    let quote = this.#advance();
+    let builder = new StringBuilder();
+
+    while (!this.#reader.isAtEnd && this.#peek() != quote) {
+      if (this.#peek() == 92) {
+        // backslash=92
+        this.#advance();
+        if (this.#reader.isAtEnd) {
+          break;
+        }
+        let escaped = this.#advance();
+        // 'n'=110, 'r'=114, 't'=116, '\\'=92, '\''=39, '"'=34
+        if (escaped == 110) {
+          builder.appendByte(10); // newline
+        } else if (escaped == 114) {
+          builder.appendByte(13); // carriage return
+        } else if (escaped == 116) {
+          builder.appendByte(9); // tab
+        } else if (escaped == 92) {
+          builder.appendByte(92); // backslash
+        } else if (escaped == 39) {
+          builder.appendByte(39); // single quote
+        } else if (escaped == 34) {
+          builder.appendByte(34); // double quote
+        } else {
+          // Unknown escape - keep as-is
+          builder.appendByte(92);
+          builder.appendByte(escaped);
+        }
+      } else {
+        builder.appendByte(this.#advance());
+      }
+    }
+
+    if (!this.#reader.isAtEnd) {
+      this.#advance(); // closing quote
+    }
+
+    this.#addToken(TokenType.String, builder.toString(), startPos, startCol);
+  }
+
+  // ============================================================================
+  // Template literal scanning
+  // ============================================================================
+
+  #scanTemplatePart(isMiddleOrTail: boolean, startPos: i32, startCol: i32): void {
+    let cooked = new StringBuilder();
+    let raw = new StringBuilder();
+
+    while (!this.#reader.isAtEnd) {
+      let c = this.#peek();
+
+      // End of template
+      if (c == 96) {
+        // backtick=96
+        this.#advance();
+        var tokenType = TokenType.NoSubstitutionTemplate;
+        if (isMiddleOrTail) {
+          tokenType = TokenType.TemplateTail;
+        }
+        this.#addTemplateToken(tokenType, cooked.toString(), raw.toString(), startPos, startCol);
+        return;
+      }
+
+      // Template expression start
+      if (c == 36 && this.#peekNext() == 123) {
+        // '$'=36, '{'=123
+        this.#advance(); // $
+        this.#advance(); // {
+        this.#templateStack.push(1); // start tracking braces
+        var tokenType = TokenType.TemplateHead;
+        if (isMiddleOrTail) {
+          tokenType = TokenType.TemplateMiddle;
+        }
+        this.#addTemplateToken(tokenType, cooked.toString(), raw.toString(), startPos, startCol);
+        return;
+      }
+
+      // Escape sequence
+      if (c == 92) {
+        // backslash=92
+        raw.appendByte(this.#advance());
+        if (!this.#reader.isAtEnd) {
+          let next = this.#peek();
+          raw.appendByte(next);
+          this.#processEscape(cooked);
+        }
+      } else {
+        let ch = this.#advance();
+        cooked.appendByte(ch);
+        raw.appendByte(ch);
+      }
+    }
+
+    // Reached end without closing
+    var tokenType = TokenType.NoSubstitutionTemplate;
+    if (isMiddleOrTail) {
+      tokenType = TokenType.TemplateTail;
+    }
+    this.#addTemplateToken(tokenType, cooked.toString(), raw.toString(), startPos, startCol);
+  }
+
+  #processEscape(builder: StringBuilder): void {
+    if (this.#reader.isAtEnd) {
+      return;
+    }
+    let escaped = this.#advance();
+    // 'n'=110, 'r'=114, 't'=116, '\\'=92, '`'=96, '$'=36, '0'=48
+    if (escaped == 110) {
+      builder.appendByte(10); // newline
+    } else if (escaped == 114) {
+      builder.appendByte(13); // carriage return
+    } else if (escaped == 116) {
+      builder.appendByte(9); // tab
+    } else if (escaped == 92) {
+      builder.appendByte(92); // backslash
+    } else if (escaped == 96) {
+      builder.appendByte(96); // backtick
+    } else if (escaped == 36) {
+      builder.appendByte(36); // dollar
+    } else if (escaped == 48) {
+      builder.appendByte(0); // null
+    } else {
+      // Unknown escape - keep as-is
+      builder.appendByte(92);
+      builder.appendByte(escaped);
+    }
+  }
+
+  // ============================================================================
+  // Operator scanning
+  // ============================================================================
+
+  #scanOperator(startPos: i32, startCol: i32): void {
+    let c = this.#advance();
+
+    // '='=61, '>'=62
+    if (c == 61) {
+      if (this.#peek() == 62) {
+        this.#advance();
+        this.#addToken(TokenType.Arrow, '=>', startPos, startCol);
+      } else if (this.#peek() == 61) {
+        this.#advance();
+        if (this.#peek() == 61) {
+          this.#advance();
+          this.#addToken(TokenType.EqualsEqualsEquals, '===', startPos, startCol);
+        } else {
+          this.#addToken(TokenType.EqualsEquals, '==', startPos, startCol);
+        }
+      } else {
+        this.#addToken(TokenType.Equals, '=', startPos, startCol);
+      }
+      return;
+    }
+
+    // '!'=33
+    if (c == 33) {
+      if (this.#peek() == 61) {
+        this.#advance();
+        if (this.#peek() == 61) {
+          this.#advance();
+          this.#addToken(TokenType.BangEqualsEquals, '!==', startPos, startCol);
+        } else {
+          this.#addToken(TokenType.BangEquals, '!=', startPos, startCol);
+        }
+      } else {
+        this.#addToken(TokenType.Bang, '!', startPos, startCol);
+      }
+      return;
+    }
+
+    // '<'=60
+    if (c == 60) {
+      if (this.#peek() == 61) {
+        this.#advance();
+        this.#addToken(TokenType.LessEquals, '<=', startPos, startCol);
+      } else if (this.#peek() == 60) {
+        this.#advance();
+        this.#addToken(TokenType.LessLess, '<<', startPos, startCol);
+      } else {
+        this.#addToken(TokenType.Less, '<', startPos, startCol);
+      }
+      return;
+    }
+
+    // '>'=62
+    if (c == 62) {
+      if (this.#peek() == 61) {
+        this.#advance();
+        this.#addToken(TokenType.GreaterEquals, '>=', startPos, startCol);
+      } else if (this.#peek() == 62) {
+        this.#advance();
+        if (this.#peek() == 62) {
+          this.#advance();
+          this.#addToken(TokenType.GreaterGreaterGreater, '>>>', startPos, startCol);
+        } else {
+          this.#addToken(TokenType.GreaterGreater, '>>', startPos, startCol);
+        }
+      } else {
+        this.#addToken(TokenType.Greater, '>', startPos, startCol);
+      }
+      return;
+    }
+
+    // '+'=43
+    if (c == 43) {
+      this.#addToken(TokenType.Plus, '+', startPos, startCol);
+      return;
+    }
+
+    // '-'=45
+    if (c == 45) {
+      this.#addToken(TokenType.Minus, '-', startPos, startCol);
+      return;
+    }
+
+    // '*'=42
+    if (c == 42) {
+      this.#addToken(TokenType.Star, '*', startPos, startCol);
+      return;
+    }
+
+    // '/'=47
+    if (c == 47) {
+      if (this.#peek() == 47) {
+        // Single-line comment
+        while (!this.#reader.isAtEnd && this.#peek() != 10) {
+          this.#advance();
+        }
+        return;
+      } else if (this.#peek() == 42) {
+        // Multi-line comment
+        this.#advance(); // consume '*'
+        while (!this.#reader.isAtEnd) {
+          if (this.#peek() == 42 && this.#peekNext() == 47) {
+            this.#advance(); // consume '*'
+            this.#advance(); // consume '/'
+            break;
+          }
+          this.#advance();
+        }
+        return;
+      } else {
+        this.#addToken(TokenType.Slash, '/', startPos, startCol);
+      }
+      return;
+    }
+
+    // '%'=37
+    if (c == 37) {
+      this.#addToken(TokenType.Percent, '%', startPos, startCol);
+      return;
+    }
+
+    // '|'=124
+    if (c == 124) {
+      if (this.#peek() == 124) {
+        this.#advance();
+        this.#addToken(TokenType.PipePipe, '||', startPos, startCol);
+      } else if (this.#peek() == 62) {
+        this.#advance();
+        this.#addToken(TokenType.PipeGreater, '|>', startPos, startCol);
+      } else {
+        this.#addToken(TokenType.Pipe, '|', startPos, startCol);
+      }
+      return;
+    }
+
+    // '&'=38
+    if (c == 38) {
+      if (this.#peek() == 38) {
+        this.#advance();
+        this.#addToken(TokenType.AmpersandAmpersand, '&&', startPos, startCol);
+      } else {
+        this.#addToken(TokenType.Ampersand, '&', startPos, startCol);
+      }
+      return;
+    }
+
+    // '^'=94
+    if (c == 94) {
+      this.#addToken(TokenType.Caret, '^', startPos, startCol);
+      return;
+    }
+
+    // '?'=63
+    if (c == 63) {
+      this.#addToken(TokenType.Question, '?', startPos, startCol);
+      return;
+    }
+
+    // '('=40
+    if (c == 40) {
+      this.#addToken(TokenType.LParen, '(', startPos, startCol);
+      return;
+    }
+
+    // ')'=41
+    if (c == 41) {
+      this.#addToken(TokenType.RParen, ')', startPos, startCol);
+      return;
+    }
+
+    // '{'=123
+    if (c == 123) {
+      // Track brace depth for template expressions
+      if (this.#templateStack.length > 0) {
+        let lastIdx = this.#templateStack.length - 1;
+        let depth = this.#templateStack[lastIdx];
+        this.#templateStack[lastIdx] = depth + 1;
+      }
+      this.#addToken(TokenType.LBrace, '{', startPos, startCol);
+      return;
+    }
+
+    // '}'=125
+    if (c == 125) {
+      // Check if this closes a template expression
+      if (this.#templateStack.length > 0) {
+        let lastIdx = this.#templateStack.length - 1;
+        let depth = this.#templateStack[lastIdx];
+        if (depth == 1) {
+          this.#templateStack.pop();
+          // Continue scanning template
+          this.#scanTemplatePart(true, startPos, startCol);
+          return;
+        } else {
+          this.#templateStack[lastIdx] = depth - 1;
+        }
+      }
+      this.#addToken(TokenType.RBrace, '}', startPos, startCol);
+      return;
+    }
+
+    // '['=91
+    if (c == 91) {
+      this.#addToken(TokenType.LBracket, '[', startPos, startCol);
+      return;
+    }
+
+    // ']'=93
+    if (c == 93) {
+      this.#addToken(TokenType.RBracket, ']', startPos, startCol);
+      return;
+    }
+
+    // ':'=58
+    if (c == 58) {
+      this.#addToken(TokenType.Colon, ':', startPos, startCol);
+      return;
+    }
+
+    // ';'=59
+    if (c == 59) {
+      this.#addToken(TokenType.Semi, ';', startPos, startCol);
+      return;
+    }
+
+    // ','=44
+    if (c == 44) {
+      this.#addToken(TokenType.Comma, ',', startPos, startCol);
+      return;
+    }
+
+    // '.'=46
+    if (c == 46) {
+      if (this.#peek() == 46 && this.#peekNext() == 46) {
+        this.#advance();
+        this.#advance();
+        this.#addToken(TokenType.DotDotDot, '...', startPos, startCol);
+      } else if (this.#peek() == 46) {
+        this.#advance();
+        this.#addToken(TokenType.DotDot, '..', startPos, startCol);
+      } else {
+        this.#addToken(TokenType.Dot, '.', startPos, startCol);
+      }
+      return;
+    }
+
+    // '#'=35
+    if (c == 35) {
+      this.#addToken(TokenType.Hash, '#', startPos, startCol);
+      return;
+    }
+
+    // '@'=64
+    if (c == 64) {
+      this.#addToken(TokenType.At, '@', startPos, startCol);
+      return;
+    }
+
+    // Unknown character
+    let unknown = new StringBuilder();
+    unknown.appendByte(c);
+    this.#addToken(TokenType.Unknown, unknown.toString(), startPos, startCol);
+  }
+}
+
+// ============================================================================
+// Convenience function
+// ============================================================================
+
+export let tokenize = (source: string): Array<Token> => {
+  let tokenizer = new Tokenizer(source);
+  return tokenizer.tokenize();
+};
