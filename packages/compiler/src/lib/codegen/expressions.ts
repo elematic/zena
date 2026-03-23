@@ -11189,32 +11189,7 @@ function generateMatchPatternBindings(
           `$$match_bind_field_${fieldName}`,
           fieldType,
         );
-        body.push(
-          Opcode.local_tee,
-          ...WasmModule.encodeSignedLEB128(tempField),
-        );
-
-        // If it's just an identifier, we could optimize, but recursive call handles it.
-        // But wait, generateMatchPatternBindings expects the value to be in a local?
-        // Yes, `discriminantLocal`.
-
-        // So we set it to tempField, then call recursive.
-        // Note: local_tee leaves value on stack, but we need to consume it or drop it?
-        // generateMatchPatternBindings does NOT consume stack. It expects value in local.
-        // So we should use local_set.
-        // Wait, I used local_tee above.
-        // Correct: local_set.
-
-        // Actually, I used local_tee then... wait.
-        // body.push(Opcode.local_tee... tempField)
-        // Then what?
-        // I need to call generateMatchPatternBindings.
-        // It doesn't consume stack.
-        // So I should use local_set.
-
-        // Correction:
-        body.pop(); // remove local_tee opcode
-        body.pop(); // remove local index
+        // Store field value in temp local (generateMatchPatternBindings expects value in local)
         body.push(
           Opcode.local_set,
           ...WasmModule.encodeSignedLEB128(tempField),

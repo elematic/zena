@@ -5,6 +5,7 @@ import {
   type Expression,
   type FunctionExpression,
   type MethodDefinition,
+  type VariableDeclaration,
 } from '../ast.js';
 import {WasmModule} from '../emitter.js';
 import {
@@ -15,14 +16,19 @@ import {
   type InlineTupleType,
   type UnionType,
 } from '../types.js';
-import {ExportDesc, Opcode, ValType} from '../wasm.js';
+import {ExportDesc, GcOpcode, Opcode, ValType} from '../wasm.js';
 import {
+  decodeTypeIndex,
   getTypeKeyForSpecialization,
   mapCheckerTypeToWasmType,
 } from './classes.js';
+import {analyzeCaptures} from './captures.js';
 import type {CodegenContext} from './context.js';
 import {generateAdaptedArgument, generateExpression} from './expressions.js';
-import {generateBlockStatement} from './statements.js';
+import {
+  generateBlockStatement,
+  generateFunctionStatement,
+} from './statements.js';
 import type {ClassInfo} from './types.js';
 
 /**
@@ -176,9 +182,123 @@ export function generateFunctionBody(
 
   const body: number[] = [];
   if (func.body.type === NodeType.BlockStatement) {
-    generateBlockStatement(ctx, func.body as BlockStatement, body);
-    if (returnType && returnType.length > 0) {
-      body.push(Opcode.unreachable);
+    const blockBody = func.body as BlockStatement;
+    const hasReturnType = returnType && returnType.length > 0;
+
+    // For functions with return types, handle the last statement specially:
+    // - The last ExpressionStatement should NOT drop its result (implicit return)
+    // - Other statements proceed normally
+    if (hasReturnType && blockBody.body.length > 0) {
+      ctx.pushScope();
+
+      // First pass: detect which function declarations need cells for mutual recursion
+      // (Same logic as generateBlockStatement)
+      const functionDecls = new Map<
+        string,
+        {decl: VariableDeclaration; funcExpr: FunctionExpression}
+      >();
+      const needsCell = new Set<string>();
+
+      for (const stmt of blockBody.body) {
+        if (stmt.type === NodeType.VariableDeclaration) {
+          const decl = stmt as VariableDeclaration;
+          if (
+            decl.pattern.type === NodeType.Identifier &&
+            decl.init?.type === NodeType.FunctionExpression
+          ) {
+            functionDecls.set(decl.pattern.name, {
+              decl,
+              funcExpr: decl.init as FunctionExpression,
+            });
+          }
+        }
+      }
+
+      if (functionDecls.size >= 2) {
+        const declOrder = Array.from(functionDecls.keys());
+        for (const [name, {funcExpr}] of functionDecls) {
+          const {captures} = analyzeCaptures(funcExpr);
+          const myIndex = declOrder.indexOf(name);
+          for (const capturedName of captures) {
+            if (functionDecls.has(capturedName)) {
+              const capturedIndex = declOrder.indexOf(capturedName);
+              if (capturedIndex > myIndex) {
+                needsCell.add(name);
+                needsCell.add(capturedName);
+              }
+            }
+          }
+        }
+      }
+
+      // Pre-allocate cells for functions that need them
+      for (const name of needsCell) {
+        const {decl, funcExpr} = functionDecls.get(name)!;
+        if (
+          funcExpr.inferredType &&
+          funcExpr.inferredType.kind === TypeKind.Function
+        ) {
+          const closureWasmType = mapCheckerTypeToWasmType(
+            ctx,
+            funcExpr.inferredType,
+          );
+          const closureStructIndex = decodeTypeIndex(closureWasmType);
+          const cellTypeIndex = ctx.getClosureCellTypeIndex(closureStructIndex);
+          const cellWasmType = [
+            ValType.ref,
+            ...WasmModule.encodeSignedLEB128(cellTypeIndex),
+          ];
+
+          body.push(
+            Opcode.ref_null,
+            ...WasmModule.encodeSignedLEB128(closureStructIndex),
+          );
+          body.push(
+            0xfb,
+            GcOpcode.struct_new,
+            ...WasmModule.encodeSignedLEB128(cellTypeIndex),
+          );
+
+          const localIndex = ctx.declareLocal(
+            name,
+            cellWasmType,
+            decl,
+            true,
+            closureWasmType,
+            true,
+          );
+          body.push(
+            Opcode.local_set,
+            ...WasmModule.encodeSignedLEB128(localIndex),
+          );
+        }
+      }
+
+      // Generate all statements except the last
+      for (let i = 0; i < blockBody.body.length - 1; i++) {
+        generateFunctionStatement(ctx, blockBody.body[i], body);
+      }
+
+      // Handle the last statement specially
+      const lastStmt = blockBody.body[blockBody.body.length - 1];
+      if (lastStmt.type === NodeType.ExpressionStatement) {
+        // Generate just the expression, don't drop - this is the implicit return value
+        generateExpression(ctx, (lastStmt as any).expression, body);
+      } else {
+        // For other statements (return, if, etc.), generate normally
+        generateFunctionStatement(ctx, lastStmt, body);
+        // If control reaches here after a non-expression statement (like if without else),
+        // we need unreachable since we don't have a value
+        body.push(Opcode.unreachable);
+      }
+
+      ctx.popScope();
+    } else {
+      // No return type, or empty body - use standard block generation
+      generateBlockStatement(ctx, blockBody, body);
+      if (hasReturnType) {
+        body.push(Opcode.unreachable);
+      }
     }
   } else {
     // Expression body: adapt the result to the declared return type
