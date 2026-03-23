@@ -1,7 +1,7 @@
 // JSON parser stdlib tests using zena:test
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse, throws} from 'zena:assert';
-import {parseJson, jsonGet, JsonObject, JsonArray, JsonOptions, JsonParseError} from 'zena:json';
+import {parseJson, jsonGet, JsonObject, JsonArray, JsonOptions, JsonParseError, stringify} from 'zena:json';
 import {Box} from 'zena:box';
 
 // Helper to test that parsing throws JsonParseError
@@ -635,6 +635,320 @@ export let tests = suite('JSON Parser', (): void => {
         }
       };
       equal(result, 1);
+    });
+  });
+
+  // ==========================================================================
+  // STRINGIFY
+  // ==========================================================================
+
+  suite('stringify - primitives', (): void => {
+    test('null', (ctx: TestContext): void => {
+      let s = stringify(null);
+      equal(s, 'null');
+    });
+
+    test('boolean true', (ctx: TestContext): void => {
+      let s = stringify(new Box<boolean>(true));
+      equal(s, 'true');
+    });
+
+    test('boolean false', (ctx: TestContext): void => {
+      let s = stringify(new Box<boolean>(false));
+      equal(s, 'false');
+    });
+
+    test('integer zero', (ctx: TestContext): void => {
+      let s = stringify(new Box<f64>(0.0 as f64));
+      equal(s, '0');
+    });
+
+    test('positive integer', (ctx: TestContext): void => {
+      let s = stringify(new Box<f64>(42.0 as f64));
+      equal(s, '42');
+    });
+
+    test('negative integer', (ctx: TestContext): void => {
+      let s = stringify(new Box<f64>(-123.0 as f64));
+      equal(s, '-123');
+    });
+
+    test('float', (ctx: TestContext): void => {
+      let PI: f64 = 3.14 as f64;
+      let s = stringify(new Box<f64>(PI));
+      // Should start with 3.14
+      isTrue(s.length >= 4);
+      equal(s.getByteAt(0), 51); // '3'
+      equal(s.getByteAt(1), 46); // '.'
+      equal(s.getByteAt(2), 49); // '1'
+      equal(s.getByteAt(3), 52); // '4'
+    });
+
+    test('simple string', (ctx: TestContext): void => {
+      let s = stringify('hello');
+      equal(s, '"hello"');
+    });
+
+    test('empty string', (ctx: TestContext): void => {
+      let s = stringify('');
+      equal(s, '""');
+    });
+
+    test('string with quotes', (ctx: TestContext): void => {
+      let s = stringify('say "hi"');
+      equal(s, '"say \\"hi\\""');
+    });
+
+    test('string with backslash', (ctx: TestContext): void => {
+      let s = stringify('a\\b');
+      equal(s, '"a\\\\b"');
+    });
+
+    test('string with newline', (ctx: TestContext): void => {
+      let s = stringify('line1\nline2');
+      equal(s, '"line1\\nline2"');
+    });
+
+    test('string with tab', (ctx: TestContext): void => {
+      let s = stringify('a\tb');
+      equal(s, '"a\\tb"');
+    });
+  });
+
+  suite('stringify - objects', (): void => {
+    test('empty object', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      let s = stringify(obj);
+      equal(s, '{}');
+    });
+
+    test('object with one string', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      obj['name'] = 'Alice';
+      let s = stringify(obj);
+      equal(s, '{"name":"Alice"}');
+    });
+
+    test('object with number', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      obj['count'] = new Box<f64>(42.0 as f64);
+      let s = stringify(obj);
+      equal(s, '{"count":42}');
+    });
+
+    test('object with boolean', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      obj['active'] = new Box<boolean>(true);
+      let s = stringify(obj);
+      equal(s, '{"active":true}');
+    });
+
+    test('object with null', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      obj['value'] = null;
+      let s = stringify(obj);
+      equal(s, '{"value":null}');
+    });
+
+    test('nested object', (ctx: TestContext): void => {
+      let inner = new JsonObject();
+      inner['x'] = new Box<f64>(1.0 as f64);
+      let outer = new JsonObject();
+      outer['point'] = inner;
+      let s = stringify(outer);
+      equal(s, '{"point":{"x":1}}');
+    });
+  });
+
+  suite('stringify - arrays', (): void => {
+    test('empty array', (ctx: TestContext): void => {
+      let arr = new JsonArray();
+      let s = stringify(arr);
+      equal(s, '[]');
+    });
+
+    test('array with one element', (ctx: TestContext): void => {
+      let arr = new JsonArray();
+      arr.push(new Box<f64>(42.0 as f64));
+      let s = stringify(arr);
+      equal(s, '[42]');
+    });
+
+    test('array with multiple elements', (ctx: TestContext): void => {
+      let arr = new JsonArray();
+      arr.push(new Box<f64>(1.0 as f64));
+      arr.push(new Box<f64>(2.0 as f64));
+      arr.push(new Box<f64>(3.0 as f64));
+      let s = stringify(arr);
+      equal(s, '[1,2,3]');
+    });
+
+    test('array with mixed types', (ctx: TestContext): void => {
+      let arr = new JsonArray();
+      arr.push('hello');
+      arr.push(new Box<f64>(42.0 as f64));
+      arr.push(new Box<boolean>(true));
+      arr.push(null);
+      let s = stringify(arr);
+      equal(s, '["hello",42,true,null]');
+    });
+
+    test('nested array', (ctx: TestContext): void => {
+      let inner = new JsonArray();
+      inner.push(new Box<f64>(1.0 as f64));
+      inner.push(new Box<f64>(2.0 as f64));
+      let outer = new JsonArray();
+      outer.push(inner);
+      outer.push(new Box<f64>(3.0 as f64));
+      let s = stringify(outer);
+      equal(s, '[[1,2],3]');
+    });
+
+    test('array in object', (ctx: TestContext): void => {
+      let arr = new JsonArray();
+      arr.push('a');
+      arr.push('b');
+      let obj = new JsonObject();
+      obj['items'] = arr;
+      let s = stringify(obj);
+      equal(s, '{"items":["a","b"]}');
+    });
+  });
+
+  suite('stringify - round-trip', (): void => {
+    test('parse then stringify preserves structure', (ctx: TestContext): void => {
+      let original = '{"name":"test","value":42}';
+      let parsed = parseJson(original);
+      let output = stringify(parsed);
+      // Parse the output to verify structure is preserved
+      let reparsed = parseJson(output) as JsonObject;
+      let name: string = reparsed['name'] as string;
+      let valueBox = reparsed['value'] as Box<f64>;
+      equal(name, 'test');
+      equal(valueBox.value as i32, 42);
+    });
+
+    test('complex nested structure', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      obj['string'] = 'hello';
+      obj['number'] = new Box<f64>(123.0 as f64);
+      obj['bool'] = new Box<boolean>(false);
+      obj['null'] = null;
+      
+      let arr = new JsonArray();
+      arr.push(new Box<f64>(1.0 as f64));
+      arr.push(new Box<f64>(2.0 as f64));
+      obj['array'] = arr;
+      
+      let nested = new JsonObject();
+      nested['inner'] = 'value';
+      obj['nested'] = nested;
+      
+      let s = stringify(obj);
+      // Verify it can be parsed back
+      let parsed = parseJson(s) as JsonObject;
+      let str: string = parsed['string'] as string;
+      equal(str, 'hello');
+    });
+  });
+
+  suite('stringify - method form', (): void => {
+    test('JsonObject.stringify()', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      obj['a'] = new Box<f64>(1.0 as f64);
+      let s = obj.stringify();
+      equal(s, '{"a":1}');
+    });
+
+    test('JsonArray.stringify()', (ctx: TestContext): void => {
+      let arr = new JsonArray();
+      arr.push(new Box<f64>(1.0 as f64));
+      arr.push(new Box<f64>(2.0 as f64));
+      let s = arr.stringify();
+      equal(s, '[1,2]');
+    });
+  });
+
+  suite('stringify - pretty print', (): void => {
+    test('empty object', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      let s = stringify(obj, "  ");
+      equal(s, "{}\n");
+    });
+
+    test('empty array', (ctx: TestContext): void => {
+      let arr = new JsonArray();
+      let s = stringify(arr, "  ");
+      equal(s, "[]\n");
+    });
+
+    test('simple object', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      obj['name'] = 'test';
+      let s = stringify(obj, "  ");
+      equal(s, "{\n  \"name\": \"test\"\n}\n");
+    });
+
+    test('simple array', (ctx: TestContext): void => {
+      let arr = new JsonArray();
+      arr.push(new Box<f64>(1.0 as f64));
+      arr.push(new Box<f64>(2.0 as f64));
+      let s = stringify(arr, "  ");
+      equal(s, "[\n  1,\n  2\n]\n");
+    });
+
+    test('nested object', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      let inner = new JsonObject();
+      inner['x'] = new Box<f64>(1.0 as f64);
+      obj['inner'] = inner;
+      let s = stringify(obj, "  ");
+      equal(s, "{\n  \"inner\": {\n    \"x\": 1\n  }\n}\n");
+    });
+
+    test('array of objects', (ctx: TestContext): void => {
+      let arr = new JsonArray();
+      let obj1 = new JsonObject();
+      obj1['id'] = new Box<f64>(1.0 as f64);
+      let obj2 = new JsonObject();
+      obj2['id'] = new Box<f64>(2.0 as f64);
+      arr.push(obj1);
+      arr.push(obj2);
+      let s = stringify(arr, "  ");
+      equal(s, "[\n  {\n    \"id\": 1\n  },\n  {\n    \"id\": 2\n  }\n]\n");
+    });
+
+    test('custom indent - 4 spaces', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      obj['a'] = new Box<f64>(1.0 as f64);
+      let s = stringify(obj, "    ");
+      equal(s, "{\n    \"a\": 1\n}\n");
+    });
+
+    test('custom indent - tab', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      obj['a'] = new Box<f64>(1.0 as f64);
+      let s = stringify(obj, "\t");
+      equal(s, "{\n\t\"a\": 1\n}\n");
+    });
+
+    test('round-trip with parse', (ctx: TestContext): void => {
+      let obj = new JsonObject();
+      obj['name'] = 'test';
+      obj['count'] = new Box<f64>(42.0 as f64);
+      let inner = new JsonArray();
+      inner.push(new Box<f64>(1.0 as f64));
+      inner.push(new Box<f64>(2.0 as f64));
+      obj['items'] = inner;
+      
+      let pretty = stringify(obj, "  ");
+      let parsed = parseJson(pretty) as JsonObject;
+      let name: string = parsed['name'] as string;
+      equal(name, 'test');
+      let countBox = parsed['count'] as Box<f64>;
+      let countVal: f64 = countBox.value;
+      let EXPECTED: f64 = 42.0 as f64;
+      isTrue(countVal == EXPECTED);
     });
   });
 });

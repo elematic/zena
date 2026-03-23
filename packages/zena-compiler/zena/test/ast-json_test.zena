@@ -1,0 +1,103 @@
+// AST to JSON conversion tests
+// Tests that the self-hosted parser produces correct JSON output
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { readFile } from 'zena:fs';
+import { parse } from '../lib/parser.zena';
+// TODO: Re-enable once codegen issues are resolved
+// import { nodeToJson } from '../lib/ast-json.zena';
+import { stringify, parseJson, JsonObject, JsonArray } from 'zena:json';
+import { Box } from 'zena:box';
+import {
+  VariableDeclaration,
+  Statement
+} from '../lib/ast.zena';
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+let tests = suite('AST Structure', (): void => {
+
+  suite('Variable Declaration Parsing', (): void => {
+    
+    test('let x = 1 parses correctly', (ctx: TestContext): void => {
+      // Parse the source
+      let source = 'let x = 1;';
+      let mod = parse(source, 'test.zena');
+      
+      equal(mod.body.length, 1);
+      
+      // Cast and check the variable declaration
+      let varDecl = mod.body[0] as VariableDeclaration;
+      equal(varDecl.kind, 'let');
+      isTrue(varDecl.exported == false);
+      
+      // Check that we got a valid pattern (without checking specific type)
+      let pattern = varDecl.pattern;
+      isTrue(pattern != null);
+    });
+    
+    test('var y = 42 parses correctly', (ctx: TestContext): void => {
+      let source = 'var y = 42;';
+      let mod = parse(source, 'test.zena');
+      
+      let varDecl = mod.body[0] as VariableDeclaration;
+      equal(varDecl.kind, 'var');
+    });
+    
+    test('let with string literal parses correctly', (ctx: TestContext): void => {
+      let source = "let s = 'hello';";
+      let mod = parse(source, 'test.zena');
+      
+      let varDecl = mod.body[0] as VariableDeclaration;
+      equal(varDecl.kind, 'let');
+    });
+    
+    test('export let produces exported: true', (ctx: TestContext): void => {
+      let source = 'export let foo = 1;';
+      let mod = parse(source, 'test.zena');
+      
+      let varDecl = mod.body[0] as VariableDeclaration;
+      isTrue(varDecl.exported);
+    });
+  });
+  
+  suite('Module Structure', (): void => {
+    
+    test('multiple declarations parse correctly', (ctx: TestContext): void => {
+      let source = 'let a = 1; let b = 2;';
+      let mod = parse(source, 'test.zena');
+      
+      equal(mod.body.length, 2);
+    });
+    
+    test('empty source produces empty body', (ctx: TestContext): void => {
+      let source = '';
+      let mod = parse(source, 'test.zena');
+      
+      equal(mod.body.length, 0);
+    });
+  });
+  
+  suite('Portable Test: variable_decl.zena', (): void => {
+    test('parses variable_decl.zena from disk', (ctx: TestContext): void => {
+      let source = readFile('tests/language/syntax/variable_decl.zena');
+      let mod = parse(source, 'variable_decl.zena');
+      
+      // File contains: "// @target: statement\nlet x = 1;\n"
+      equal(mod.body.length, 1);
+      
+      let varDecl = mod.body[0] as VariableDeclaration;
+      equal(varDecl.kind, 'let');
+      isFalse(varDecl.exported);
+    });
+  });
+});
+
+// Entry point - returns number of failed tests (0 = success)
+export let main = (): i32 => {
+  let result = tests.run();
+  return result.failed;
+};

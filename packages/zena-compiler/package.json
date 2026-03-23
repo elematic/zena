@@ -15,10 +15,17 @@
   ],
   "scripts": {
     "build": "wireit",
+    "build:tests": "wireit",
     "test": "wireit"
   },
   "wireit": {
     "build": {
+      "dependencies": [
+        "build:ts",
+        "build:tests"
+      ]
+    },
+    "build:ts": {
       "command": "tsc",
       "files": [
         "src/**/*.ts",
@@ -30,14 +37,29 @@
       ],
       "clean": "if-file-deleted"
     },
-    "test": {
-      "command": "node --experimental-wasm-exnref ../cli/lib/cli.js test 'zena/test/*_test.zena'",
+    "build:tests": {
+      "command": "node scripts/build-wasi-tests.js",
       "files": [
+        "scripts/build-wasi-tests.js",
         "zena/**/*.zena"
+      ],
+      "output": [
+        "zena/out/**/*.wasm"
+      ],
+      "dependencies": [
+        "../cli:build"
+      ]
+    },
+    "test": {
+      "command": "node scripts/run-wasmtime.js",
+      "files": [
+        "scripts/run-wasmtime.js",
+        "../../tests/**/*.zena",
+        "../../tests/**/*.json"
       ],
       "output": [],
       "dependencies": [
-        "../cli:build"
+        "build:tests"
       ]
     }
   },

@@ -81,6 +81,18 @@ export class JsonObject {
       locsMap.set(key, loc);
     }
   }
+
+  // Iterate over all key-value pairs
+  forEach(callback: (key: string, value: any) => void): void {
+    this.#fields.forEach(callback);
+  }
+
+  // Serialize to JSON string
+  stringify(): string {
+    let sb = new StringBuilder();
+    stringifyObject(sb, this, null, 0);
+    return sb.toString();
+  }
 }
 
 export class JsonArray {
@@ -132,7 +144,216 @@ export class JsonArray {
     }
     return locsArr[index];
   }
+
+  // Serialize to JSON string
+  stringify(): string {
+    let sb = new StringBuilder();
+    stringifyArray(sb, this, null, 0);
+    return sb.toString();
+  }
 }
+
+// === JSON Stringify Helpers ===
+
+let escapeJsonString = (sb: StringBuilder, s: string): void => {
+  sb.append("\"");
+  var i = 0;
+  let len = s.length;
+  while (i < len) {
+    let b = s.getByteAt(i);
+    if (b == 34) {
+      // " -> \"
+      sb.append("\\\"");
+    } else if (b == 92) {
+      // \ -> \\
+      sb.append("\\\\");
+    } else if (b == 10) {
+      // newline -> \n
+      sb.append("\\n");
+    } else if (b == 13) {
+      // carriage return -> \r
+      sb.append("\\r");
+    } else if (b == 9) {
+      // tab -> \t
+      sb.append("\\t");
+    } else if (b < 32) {
+      // Other control characters -> \u00XX
+      sb.append("\\u00");
+      let high = div(b, 16);
+      let low = b % 16;
+      sb.appendByte(hexDigit(high));
+      sb.appendByte(hexDigit(low));
+    } else {
+      sb.appendByte(b);
+    }
+    i = i + 1;
+  }
+  sb.append("\"");
+};
+
+let hexDigit = (n: i32): i32 => {
+  if (n < 10) {
+    return 48 + n;  // '0' = 48
+  } else {
+    return 97 + n - 10;  // 'a' = 97
+  }
+};
+
+let stringifyI32 = (sb: StringBuilder, n: i32): void => {
+  sb.appendI32(n);
+};
+
+let stringifyF64 = (sb: StringBuilder, n: f64): void => {
+  // Handle NaN - JSON doesn't support NaN, write null
+  if (n != n) {
+    sb.append("null");
+    return;
+  }
+  
+  // Handle Infinity - JSON doesn't support it, write null
+  // For finite values, value - value == 0.0
+  // For infinity, infinity - infinity = NaN, which != 0.0
+  let selfDiff = n - n;
+  let ZERO: f64 = 0.0 as f64;
+  if (selfDiff != ZERO) {
+    sb.append("null");
+    return;
+  }
+  
+  // Use standard f64 formatting
+  sb.appendF64(n);
+};
+
+let stringifyValue = (sb: StringBuilder, value: any, indent: string | null, depth: i32): void => {
+  if (value == null) {
+    sb.append("null");
+  } else if (value is JsonObject) {
+    stringifyObject(sb, value as JsonObject, indent, depth);
+  } else if (value is JsonArray) {
+    stringifyArray(sb, value as JsonArray, indent, depth);
+  } else if (value is string) {
+    escapeJsonString(sb, value as string);
+  } else if (value is Box<f64>) {
+    let boxed = value as Box<f64>;
+    stringifyF64(sb, boxed.value);
+  } else if (value is Box<i32>) {
+    let boxed = value as Box<i32>;
+    stringifyI32(sb, boxed.value);
+  } else if (value is Box<boolean>) {
+    let boxed = value as Box<boolean>;
+    if (boxed.value) {
+      sb.append("true");
+    } else {
+      sb.append("false");
+    }
+  } else {
+    // Fallback for unknown types
+    sb.append("null");
+  }
+};
+
+let writeIndent = (sb: StringBuilder, indent: string, depth: i32): void => {
+  var i = 0;
+  while (i < depth) {
+    sb.append(indent);
+    i = i + 1;
+  }
+};
+
+let stringifyObject = (sb: StringBuilder, obj: JsonObject, indent: string | null, depth: i32): void => {
+  if (indent != null) {
+    // Pretty-print mode
+    let ind = indent as string;
+    if (obj.size == 0) {
+      sb.append("{}");
+      return;
+    }
+    sb.append("{");
+    sb.append("\n");
+    var first = true;
+    obj.forEach((key: string, value: any) => {
+      if (!first) {
+        sb.append(",");
+        sb.append("\n");
+      }
+      first = false;
+      writeIndent(sb, ind, depth + 1);
+      escapeJsonString(sb, key);
+      sb.append(": ");
+      stringifyValue(sb, value, indent, depth + 1);
+    });
+    sb.append("\n");
+    writeIndent(sb, ind, depth);
+    sb.append("}");
+  } else {
+    // Compact mode
+    sb.append("{");
+    var first = true;
+    obj.forEach((key: string, value: any) => {
+      if (!first) {
+        sb.append(",");
+      }
+      first = false;
+      escapeJsonString(sb, key);
+      sb.append(":");
+      stringifyValue(sb, value, null, 0);
+    });
+    sb.append("}");
+  }
+};
+
+let stringifyArray = (sb: StringBuilder, arr: JsonArray, indent: string | null, depth: i32): void => {
+  let len = arr.length;
+  if (indent != null) {
+    // Pretty-print mode
+    let ind = indent as string;
+    if (len == 0) {
+      sb.append("[]");
+      return;
+    }
+    sb.append("[");
+    sb.append("\n");
+    var i = 0;
+    while (i < len) {
+      if (i > 0) {
+        sb.append(",");
+        sb.append("\n");
+      }
+      writeIndent(sb, ind, depth + 1);
+      stringifyValue(sb, arr[i], indent, depth + 1);
+      i = i + 1;
+    }
+    sb.append("\n");
+    writeIndent(sb, ind, depth);
+    sb.append("]");
+  } else {
+    // Compact mode
+    sb.append("[");
+    var i = 0;
+    while (i < len) {
+      if (i > 0) {
+        sb.append(",");
+      }
+      stringifyValue(sb, arr[i], null, 0);
+      i = i + 1;
+    }
+    sb.append("]");
+  }
+};
+
+/**
+ * Serialize any JSON value to a string.
+ * @param value The JSON value to serialize
+ * @param indent Optional indentation string for pretty-printing (e.g., "  " or "\t")
+ */
+export let stringify = (value: any, indent: string | null = null): string => {
+  let sb = new StringBuilder();
+  stringifyValue(sb, value, indent, 0);
+  if (indent != null) {
+    sb.append("\n");
+  }
+  return sb.toString();
+};
 
 // === Parse Options ===
 

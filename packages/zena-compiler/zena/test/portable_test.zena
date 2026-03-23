@@ -1,0 +1,35 @@
+// Portable syntax tests
+// These tests read actual test files from tests/language/ and parse them
+// Requires WASI (run with wasmtime via npm run test:wasmtime)
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal } from 'zena:assert';
+import { readFile } from 'zena:fs';
+import { stringify } from 'zena:json';
+import { parse } from '../lib/parser.zena';
+import { nodeToJson } from '../lib/ast-json.zena';
+
+let tests = suite('Portable Syntax Tests', (): void => {
+
+  suite('tests/language/syntax', (): void => {
+    
+    test('variable_decl.zena', (ctx: TestContext): void => {
+      let source = readFile('tests/language/syntax/variable_decl.zena');
+      let expectedJson = readFile('tests/language/syntax/variable_decl.ast.json');
+      let mod = parse(source, 'variable_decl.zena');
+      
+      // Convert AST to JSON and compare (stringify with indent already adds trailing newline)
+      let actualJson = stringify(nodeToJson(mod.body[0]), '  ');
+      
+      equal(actualJson, expectedJson);
+    });
+    
+  });
+  
+});
+
+// Entry point - returns number of failed tests (0 = success)
+export let main = (): i32 => {
+  let result = tests.run();
+  return result.failed;
+};

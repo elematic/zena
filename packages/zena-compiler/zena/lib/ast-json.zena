@@ -1,0 +1,382 @@
+// AST to JSON conversion utilities
+// Converts Zena AST nodes to JsonObject/JsonArray for serialization
+
+import { JsonObject, JsonArray, stringify } from 'zena:json';
+import { Box } from 'zena:box';
+import { Array } from 'zena:array';
+import {
+  Node, NodeType, Module, Statement, Expression, Pattern, TypeAnnotation,
+  VariableDeclaration, ExpressionStatement, BlockStatement,
+  IfStatement, WhileStatement, ReturnStatement, BreakStatement, ContinueStatement,
+  Identifier, IdentifierPattern,
+  NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral,
+  BinaryExpression, UnaryExpression, AssignmentExpression,
+  FunctionExpression, Parameter, CallExpression,
+  MemberExpression, IndexExpression, ThisExpression,
+  ArrayLiteral, RecordLiteral, TupleLiteral, PropertyAssignment,
+  RecordPattern, TuplePattern, BindingProperty,
+  NamedTypeAnnotation, UnionTypeAnnotation
+} from './ast.zena';
+
+// ============================================================================
+// Node Type to String Conversion
+// ============================================================================
+
+let nodeTypeToString = (t: NodeType): string => {
+  match (t) {
+    case NodeType.Module: 'Module'
+    case NodeType.VariableDeclaration: 'VariableDeclaration'
+    case NodeType.ExpressionStatement: 'ExpressionStatement'
+    case NodeType.BinaryExpression: 'BinaryExpression'
+    case NodeType.AssignmentExpression: 'AssignmentExpression'
+    case NodeType.NumberLiteral: 'NumberLiteral'
+    case NodeType.StringLiteral: 'StringLiteral'
+    case NodeType.BooleanLiteral: 'BooleanLiteral'
+    case NodeType.NullLiteral: 'NullLiteral'
+    case NodeType.Identifier: 'Identifier'
+    case NodeType.FunctionExpression: 'FunctionExpression'
+    case NodeType.CallExpression: 'CallExpression'
+    case NodeType.BlockStatement: 'BlockStatement'
+    case NodeType.ReturnStatement: 'ReturnStatement'
+    case NodeType.BreakStatement: 'BreakStatement'
+    case NodeType.ContinueStatement: 'ContinueStatement'
+    case NodeType.IfStatement: 'IfStatement'
+    case NodeType.WhileStatement: 'WhileStatement'
+    case NodeType.ForStatement: 'ForStatement'
+    case NodeType.ForInStatement: 'ForInStatement'
+    case NodeType.Parameter: 'Parameter'
+    case NodeType.ClassDeclaration: 'ClassDeclaration'
+    case NodeType.FieldDefinition: 'FieldDefinition'
+    case NodeType.MethodDefinition: 'MethodDefinition'
+    case NodeType.NewExpression: 'NewExpression'
+    case NodeType.MemberExpression: 'MemberExpression'
+    case NodeType.ThisExpression: 'ThisExpression'
+    case NodeType.ArrayLiteral: 'ArrayLiteral'
+    case NodeType.RecordLiteral: 'RecordLiteral'
+    case NodeType.PropertyAssignment: 'PropertyAssignment'
+    case NodeType.TupleLiteral: 'TupleLiteral'
+    case NodeType.InlineTupleLiteral: 'InlineTupleLiteral'
+    case NodeType.IndexExpression: 'IndexExpression'
+    case NodeType.TypeParameter: 'TypeParameter'
+    case NodeType.InterfaceDeclaration: 'InterfaceDeclaration'
+    case NodeType.MethodSignature: 'MethodSignature'
+    case NodeType.AccessorDeclaration: 'AccessorDeclaration'
+    case NodeType.SuperExpression: 'SuperExpression'
+    case NodeType.MixinDeclaration: 'MixinDeclaration'
+    case NodeType.DeclareFunction: 'DeclareFunction'
+    case NodeType.ImportDeclaration: 'ImportDeclaration'
+    case NodeType.ImportSpecifier: 'ImportSpecifier'
+    case NodeType.RecordTypeAnnotation: 'RecordTypeAnnotation'
+    case NodeType.PropertySignature: 'PropertySignature'
+    case NodeType.TupleTypeAnnotation: 'TupleTypeAnnotation'
+    case NodeType.InlineTupleTypeAnnotation: 'InlineTupleTypeAnnotation'
+    case NodeType.RecordPattern: 'RecordPattern'
+    case NodeType.TuplePattern: 'TuplePattern'
+    case NodeType.InlineTuplePattern: 'InlineTuplePattern'
+    case NodeType.BindingProperty: 'BindingProperty'
+    case NodeType.AssignmentPattern: 'AssignmentPattern'
+    case NodeType.AsPattern: 'AsPattern'
+    case NodeType.FunctionTypeAnnotation: 'FunctionTypeAnnotation'
+    case NodeType.TemplateLiteral: 'TemplateLiteral'
+    case NodeType.TaggedTemplateExpression: 'TaggedTemplateExpression'
+    case NodeType.TemplateElement: 'TemplateElement'
+    case NodeType.TypeAliasDeclaration: 'TypeAliasDeclaration'
+    case NodeType.AsExpression: 'AsExpression'
+    case NodeType.IsExpression: 'IsExpression'
+    case NodeType.Decorator: 'Decorator'
+    case NodeType.UnaryExpression: 'UnaryExpression'
+    case NodeType.ThrowExpression: 'ThrowExpression'
+    case NodeType.TryExpression: 'TryExpression'
+    case NodeType.CatchClause: 'CatchClause'
+    case NodeType.MatchExpression: 'MatchExpression'
+    case NodeType.MatchCase: 'MatchCase'
+    case NodeType.ClassPattern: 'ClassPattern'
+    case NodeType.LogicalPattern: 'LogicalPattern'
+    case NodeType.IfExpression: 'IfExpression'
+    case NodeType.AccessorSignature: 'AccessorSignature'
+    case NodeType.LiteralTypeAnnotation: 'LiteralTypeAnnotation'
+    case NodeType.ThisTypeAnnotation: 'ThisTypeAnnotation'
+    case NodeType.SpreadElement: 'SpreadElement'
+    case NodeType.ExportAllDeclaration: 'ExportAllDeclaration'
+    case NodeType.SymbolPropertyName: 'SymbolPropertyName'
+    case NodeType.EnumDeclaration: 'EnumDeclaration'
+    case NodeType.EnumMember: 'EnumMember'
+    case NodeType.RangeExpression: 'RangeExpression'
+    case NodeType.LetPatternCondition: 'LetPatternCondition'
+    case NodeType.SymbolDeclaration: 'SymbolDeclaration'
+    case NodeType.PipelineExpression: 'PipelineExpression'
+    case NodeType.PipePlaceholder: 'PipePlaceholder'
+    case NodeType.FieldInitializer: 'FieldInitializer'
+    case NodeType.MapLiteral: 'MapLiteral'
+    case NodeType.MapEntry: 'MapEntry'
+    case NodeType.NamedTypeAnnotation: 'NamedTypeAnnotation'
+    case NodeType.UnionTypeAnnotation: 'UnionTypeAnnotation'
+  }
+};
+
+// ============================================================================
+// Core Conversion Functions
+// ============================================================================
+
+/**
+ * Convert any AST node to a JsonObject.
+ */
+export let nodeToJson = (node: Node): JsonObject => {
+  let obj = new JsonObject();
+  obj['type'] = nodeTypeToString(node.nodeType);
+  
+  match (node) {
+    // Patterns
+    case IdentifierPattern { name }: {
+      obj['name'] = name;
+    }
+    case RecordPattern { properties }: {
+      obj['properties'] = bindingPropertiesToJson(properties);
+    }
+    case TuplePattern { elements }: {
+      obj['elements'] = patternsToJson(elements);
+    }
+    
+    // Literals
+    case NumberLiteral { value, raw }: {
+      obj['value'] = new Box<f64>(value);
+      obj['raw'] = raw;
+    }
+    case StringLiteral { value }: {
+      obj['value'] = value;
+    }
+    case BooleanLiteral { value }: {
+      obj['value'] = new Box<boolean>(value);
+    }
+    case NullLiteral {}: {
+      // No additional fields
+    }
+    case Identifier { name }: {
+      obj['name'] = name;
+    }
+    
+    // Expressions
+    case BinaryExpression { operator, left, right }: {
+      obj['operator'] = operator;
+      obj['left'] = nodeToJson(left);
+      obj['right'] = nodeToJson(right);
+    }
+    case UnaryExpression { operator, argument, prefix }: {
+      obj['operator'] = operator;
+      obj['argument'] = nodeToJson(argument);
+      obj['prefix'] = new Box<boolean>(prefix);
+    }
+    case AssignmentExpression { left, value }: {
+      obj['left'] = nodeToJson(left);
+      obj['value'] = nodeToJson(value);
+    }
+    case CallExpression { callee, args, typeArguments }: {
+      obj['callee'] = nodeToJson(callee);
+      obj['arguments'] = expressionsToJson(args);
+      if (typeArguments != null) {
+        obj['typeArguments'] = typeAnnotationsToJson(typeArguments as Array<TypeAnnotation>);
+      } else { };
+    }
+    case MemberExpression { object, property }: {
+      obj['object'] = nodeToJson(object);
+      obj['property'] = nodeToJson(property);
+    }
+    case IndexExpression { object, index }: {
+      obj['object'] = nodeToJson(object);
+      obj['index'] = nodeToJson(index);
+    }
+    case ThisExpression {}: {
+      // No additional fields
+    }
+    case FunctionExpression { params, returnType, body }: {
+      obj['params'] = parametersToJson(params);
+      if (returnType != null) {
+        obj['returnType'] = nodeToJson(returnType as Node);
+      } else { };
+      obj['body'] = nodeToJson(body);
+    }
+    
+    // Arrays, Records, Tuples
+    case ArrayLiteral { elements }: {
+      obj['elements'] = expressionsToJson(elements);
+    }
+    case RecordLiteral { properties }: {
+      obj['properties'] = propertyAssignmentsToJson(properties);
+    }
+    case TupleLiteral { elements }: {
+      obj['elements'] = expressionsToJson(elements);
+    }
+    case PropertyAssignment { name, value }: {
+      obj['name'] = nodeToJson(name);
+      obj['value'] = nodeToJson(value);
+    }
+    case BindingProperty { name, value }: {
+      obj['name'] = nodeToJson(name);
+      obj['value'] = nodeToJson(value);
+    }
+    
+    // Statements
+    case VariableDeclaration { kind, pattern, typeAnnotation, init, exported }: {
+      obj['kind'] = kind;
+      obj['pattern'] = nodeToJson(pattern);
+      if (typeAnnotation != null) {
+        obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
+      } else { };
+      obj['init'] = nodeToJson(init);
+      obj['exported'] = new Box<boolean>(exported);
+    }
+    case ExpressionStatement { expression }: {
+      obj['expression'] = nodeToJson(expression);
+    }
+    case BlockStatement { body }: {
+      obj['body'] = statementsToJson(body);
+    }
+    case ReturnStatement { argument }: {
+      if (argument != null) {
+        obj['argument'] = nodeToJson(argument as Expression);
+      } else { };
+    }
+    case BreakStatement {}: {
+      // No additional fields
+    }
+    case ContinueStatement {}: {
+      // No additional fields
+    }
+    case IfStatement { test, consequent, alternate }: {
+      obj['test'] = nodeToJson(test);
+      obj['consequent'] = nodeToJson(consequent);
+      if (alternate != null) {
+        obj['alternate'] = nodeToJson(alternate as Statement);
+      } else { };
+    }
+    case WhileStatement { test, body }: {
+      obj['test'] = nodeToJson(test);
+      obj['body'] = nodeToJson(body);
+    }
+    
+    // Parameters
+    case Parameter { name, typeAnnotation, optional, defaultValue }: {
+      obj['name'] = nodeToJson(name);
+      if (typeAnnotation != null) {
+        obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
+      } else { };
+      obj['optional'] = new Box<boolean>(optional);
+      if (defaultValue != null) {
+        obj['defaultValue'] = nodeToJson(defaultValue as Expression);
+      } else { };
+    }
+    
+    // Type Annotations
+    case NamedTypeAnnotation { name, typeArguments }: {
+      obj['name'] = name;
+      if (typeArguments != null) {
+        obj['typeArguments'] = typeAnnotationsToJson(typeArguments as Array<TypeAnnotation>);
+      } else { };
+    }
+    case UnionTypeAnnotation { types }: {
+      obj['types'] = typeAnnotationsToJson(types);
+    }
+    
+    // Module
+    case Module { body, path, source }: {
+      obj['body'] = statementsToJson(body);
+      obj['path'] = path;
+    }
+    
+    // Default: just type field is already set
+    case _: {}
+  }
+  
+  return obj;
+};
+
+// ============================================================================
+// Array Conversion Helpers
+// ============================================================================
+
+let statementsToJson = (stmts: Array<Statement>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < stmts.length) {
+    arr.push(nodeToJson(stmts[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let expressionsToJson = (exprs: Array<Expression>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < exprs.length) {
+    arr.push(nodeToJson(exprs[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let parametersToJson = (params: Array<Parameter>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < params.length) {
+    arr.push(nodeToJson(params[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let propertyAssignmentsToJson = (props: Array<PropertyAssignment>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < props.length) {
+    arr.push(nodeToJson(props[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let bindingPropertiesToJson = (props: Array<BindingProperty>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < props.length) {
+    arr.push(nodeToJson(props[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let patternsToJson = (patterns: Array<Pattern | null>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < patterns.length) {
+    let p = patterns[i];
+    if (p != null) {
+      arr.push(nodeToJson(p as Pattern));
+    } else {
+      arr.push(null);
+    }
+    i = i + 1;
+  }
+  return arr;
+};
+
+let typeAnnotationsToJson = (types: Array<TypeAnnotation>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < types.length) {
+    arr.push(nodeToJson(types[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/**
+ * Convert an AST node to a JSON string.
+ */
+export let astToJsonString = (node: Node): string => {
+  let json = nodeToJson(node);
+  return stringify(json);
+};
