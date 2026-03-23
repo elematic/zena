@@ -4,7 +4,6 @@
  */
 
 import {execSync, spawnSync} from 'node:child_process';
-import {existsSync} from 'node:fs';
 import {dirname, join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {glob} from 'glob';
@@ -79,7 +78,7 @@ for (const wasmFile of wasmFiles.sort()) {
     },
   );
 
-  const output = result.stdout?.trim() || '';
+  const output = result.stdout?.trim() ?? '';
   const returnValue = output.split('\n').pop()?.trim();
 
   if (result.status === 0 && returnValue === '0') {

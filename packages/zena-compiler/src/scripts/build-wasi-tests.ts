@@ -63,10 +63,11 @@ for (const zenaFile of files) {
     );
     console.log(`  ✓ ${relPath}`);
     built++;
-  } catch (e) {
+  } catch (e: unknown) {
     console.error(`  ✗ ${relPath}`);
-    if (e.stderr) {
-      console.error(`    ${e.stderr.toString().trim()}`);
+    if (e instanceof Error && 'stderr' in e) {
+      const stderr = (e as {stderr: Buffer | string}).stderr;
+      console.error(`    ${stderr.toString().trim()}`);
     }
     failed++;
   }
