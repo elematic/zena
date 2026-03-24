@@ -11,6 +11,28 @@ export enum Encoding {
   WTF16    // 1 - UTF-16 for JS interop
 }
 
+/**
+ * An sequence of unicode code points, stored as a view into a ByteArray with a
+ * specified encoding.
+ *
+ * Strings are immutable and comparable by value. They are created by the
+ * compiler for literals, by string operations like concatenation and slicing,
+ * StringBuilders, template literals, etc. The internal design allows for
+ * efficient slicing and concatenation without copying, while still providing
+ * value semantics for equality and immutability.
+ *
+ * Strings take care to mostly hide the underlying encoding details, in order to
+ * be portable across platforms with different native string representations.
+ * Zena can be compiled to platforms with either UTF-8 or UTF-16 native strings,
+ * and the String class abstracts over these differences, to zupport efficient
+ * string sharing with host platforms. Encoding is mostly an internal detail,
+ * but it can be observed in some cases, like the getByteAt() and sliceBytes()
+ * methods.
+ * 
+ * Use StringReader for parsing strings, which provides safe methods for slicing
+ * at code point boundaries. Use StringBuilder for efficient construction of
+ * strings from parts.
+ */
 export final class String {
   // Internal storage - accessed by compiler intrinsics
   #data: ByteArray;    // Backing storage (may be shared with other Strings)
@@ -24,13 +46,6 @@ export final class String {
     : #data = data, #start = start, #end = end, #encoding = encoding {}
 
   /**
-   * Creates a new string by concatenating all parts.
-   * This is more efficient than chained + operators for multiple strings,
-   * as it allocates the result array only once.
-   *
-   * Used internally by template literals.
-   */
-  /**
    * Creates a String from a ByteArray with given bounds and encoding.
    * This is used by StringBuilder and other internal operations.
    */
@@ -38,6 +53,11 @@ export final class String {
     return new String(data, start, end, encoding);
   }
 
+  /**
+   * Creates a new string by concatenating all parts.
+   * This is more efficient than chained + operators for multiple strings,
+   * as it allocates the result array only once.
+   */
   static fromParts(parts: array<String>): String {
     // First pass: calculate total length
     let partsLen = __array_len(parts);
