@@ -1081,23 +1081,27 @@ export function instantiateGenericClass(
   if (cached) {
     // Update cached class if the source class has been modified since caching.
     // This can happen when type aliases are resolved before classes are fully checked.
+    //
+    // Also detect lazy-substituted instances from substituteType() which share
+    // the methods/fields Maps by reference with the generic source. These need
+    // full substitution since their field/method types are still generic.
     const typeMap = new Map<string, Type>();
     genericClass.typeParameters!.forEach((param, index) => {
       typeMap.set(param.name, typeArguments[index]);
     });
     const substitute = (type: Type) => substituteType(type, typeMap, ctx);
 
-    // Update constructorType if source now has one
-    if (!cached.constructorType && genericClass.constructorType) {
-      cached.constructorType = substituteFunctionType(
-        genericClass.constructorType,
-        typeMap,
-        ctx,
-      );
-    }
-
-    // Update methods if source has more than cached
-    if (genericClass.methods.size > cached.methods.size) {
+    // If cached.methods is the same reference as genericClass.methods, it was
+    // created by substituteType's lazy path (spread from source). We must
+    // create a new Map with properly substituted method types.
+    if (cached.methods === genericClass.methods) {
+      const newMethods = new Map<string, FunctionType>();
+      for (const [name, fn] of genericClass.methods) {
+        newMethods.set(name, substituteFunctionType(fn, typeMap, ctx));
+      }
+      cached.methods = newMethods;
+    } else if (genericClass.methods.size > cached.methods.size) {
+      // Update methods if source has more than cached
       for (const [name, fn] of genericClass.methods) {
         if (!cached.methods.has(name)) {
           cached.methods.set(name, substituteFunctionType(fn, typeMap, ctx));
@@ -1105,13 +1109,34 @@ export function instantiateGenericClass(
       }
     }
 
-    // Update fields if source has more than cached
-    if (genericClass.fields.size > cached.fields.size) {
+    // Same for fields: if shared reference, substitute all fields
+    if (cached.fields === genericClass.fields) {
+      const newFields = new Map<string, Type>();
+      for (const [name, type] of genericClass.fields) {
+        newFields.set(name, substitute(type));
+      }
+      cached.fields = newFields;
+    } else if (genericClass.fields.size > cached.fields.size) {
+      // Update fields if source has more than cached
       for (const [name, type] of genericClass.fields) {
         if (!cached.fields.has(name)) {
           cached.fields.set(name, substitute(type));
         }
       }
+    }
+
+    // Update constructorType if source now has one, or if cached shares the
+    // same reference (lazy path copied it without substitution)
+    if (
+      genericClass.constructorType &&
+      (!cached.constructorType ||
+        cached.constructorType === genericClass.constructorType)
+    ) {
+      cached.constructorType = substituteFunctionType(
+        genericClass.constructorType,
+        typeMap,
+        ctx,
+      );
     }
 
     // Update implements if source has more than cached

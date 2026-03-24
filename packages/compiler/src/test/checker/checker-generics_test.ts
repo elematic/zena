@@ -360,4 +360,75 @@ suite('TypeChecker - Generics', () => {
       /does not satisfy constraint.*for type parameter/,
     );
   });
+
+  suite('lazy instantiation cache', () => {
+    test('constructor type is substituted when generic class is lazily cached via field type', () => {
+      // When Container<i32> is instantiated, substituteType creates a lazy Box<i32>
+      // for the field type. This lazy instance shares constructorType by reference
+      // with the generic Box<T>. When new Box<i32>(42) later calls
+      // instantiateGenericClass, it must substitute the cached constructorType.
+      const input = `
+        class Box<T> {
+          value: T;
+          new(v: T) : value = v {}
+        }
+
+        class Container<T> {
+          box: Box<T>;
+          new(b: Box<T>) : box = b {}
+        }
+
+        let c = new Container<i32>(new Box<i32>(42));
+        let b = new Box<i32>(10);
+      `;
+      const errors = TypeChecker.forModule(new Parser(input).parse()).check();
+      assert.deepStrictEqual(errors, []);
+    });
+
+    test('methods are substituted when generic class is lazily cached via field type', () => {
+      // Same pattern but exercising method return types on the cached instance.
+      const input = `
+        class Wrapper<T> {
+          value: T;
+          new(v: T) : value = v {}
+          get(): T {
+            return this.value;
+          }
+        }
+
+        class Holder<T> {
+          inner: Wrapper<T>;
+          new(w: Wrapper<T>) : inner = w {}
+        }
+
+        let h = new Holder<i32>(new Wrapper<i32>(1));
+        let w = new Wrapper<i32>(2);
+        let v: i32 = w.get();
+      `;
+      const errors = TypeChecker.forModule(new Parser(input).parse()).check();
+      assert.deepStrictEqual(errors, []);
+    });
+
+    test('fields are substituted when generic class is lazily cached via field type', () => {
+      // Accessing a field typed T on a lazily cached instance must resolve to
+      // the concrete type argument, not the unsubstituted type parameter.
+      const input = `
+        class Cell<T> {
+          data: T;
+          new(d: T) : data = d {}
+        }
+
+        class Grid<T> {
+          cell: Cell<T>;
+          new(c: Cell<T>) : cell = c {}
+        }
+
+        let g = new Grid<i32>(new Cell<i32>(5));
+        let c = new Cell<i32>(10);
+        let v: i32 = c.data;
+      `;
+      const errors = TypeChecker.forModule(new Parser(input).parse()).check();
+      assert.deepStrictEqual(errors, []);
+    });
+  });
 });
