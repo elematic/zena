@@ -46,7 +46,11 @@ import {
   TupleLiteral,
   RecordPattern,
   BindingProperty,
-  TuplePattern
+  TuplePattern,
+  CaseClassParam,
+  ClassDeclaration,
+  FieldDefinition,
+  MethodDefinition
 } from './ast.zena';
 
 // ============================================================================
@@ -153,6 +157,11 @@ export class Parser {
     }
     if (this.#match(TokenType.Var)) {
       return this.#parseVariableDeclaration('var', exported, startToken);
+    }
+    
+    // Class declarations
+    if (this.#check(TokenType.Class) || this.#check(TokenType.Final) || this.#check(TokenType.Abstract)) {
+      return this.#parseClassDeclarationEntry(exported, startToken);
     }
     
     // Control flow
@@ -831,6 +840,169 @@ export class Parser {
     let startToken = this.#peek();
     let token = this.#consume(TokenType.Identifier, "Expected identifier");
     return new Identifier(token.value, this.#makeLocation(startToken));
+  }
+  
+  // ==========================================================================
+  // Class Declarations
+  // ==========================================================================
+  
+  #parseClassDeclarationEntry(exported: boolean, startToken: Token): ClassDeclaration {
+    var isFinal = false;
+    var isAbstract = false;
+    
+    if (this.#match(TokenType.Final)) {
+      isFinal = true;
+    } else if (this.#match(TokenType.Abstract)) {
+      isAbstract = true;
+    }
+    
+    this.#consume(TokenType.Class, "Expected 'class'");
+    return this.#parseClassDeclaration(exported, isFinal, isAbstract, startToken);
+  }
+  
+  #parseClassDeclaration(exported: boolean, isFinal: boolean, isAbstract: boolean, startToken: Token): ClassDeclaration {
+    let name = this.#parseIdentifier();
+    
+    // Type parameters: class Foo<T, U>
+    var typeParameters: Array<TypeAnnotation> | null = null;
+    if (this.#match(TokenType.Less)) {
+      let tps = new Array<TypeAnnotation>(4);
+      tps.push(this.#parseTypeAnnotation());
+      while (this.#match(TokenType.Comma)) {
+        tps.push(this.#parseTypeAnnotation());
+      }
+      this.#consume(TokenType.Greater, "Expected '>' after type parameters");
+      typeParameters = tps;
+    }
+    
+    // Case class parameters: class Point(x: f64, y: f64)
+    var caseParams: Array<CaseClassParam> | null = null;
+    if (this.#match(TokenType.LParen)) {
+      let cps = new Array<CaseClassParam>(4);
+      if (!this.#check(TokenType.RParen)) {
+        cps.push(this.#parseCaseClassParam());
+        while (this.#match(TokenType.Comma)) {
+          cps.push(this.#parseCaseClassParam());
+        }
+      }
+      this.#consume(TokenType.RParen, "Expected ')' after case class parameters");
+      caseParams = cps;
+    }
+    
+    // Extends clause
+    var superClass: TypeAnnotation | null = null;
+    if (this.#match(TokenType.Extends)) {
+      superClass = this.#parseTypeAnnotation();
+    }
+    
+    // With clause (mixins)
+    var mixins: Array<TypeAnnotation> | null = null;
+    if (this.#match(TokenType.With)) {
+      let ms = new Array<TypeAnnotation>(4);
+      ms.push(this.#parseTypeAnnotation());
+      while (this.#match(TokenType.Comma)) {
+        ms.push(this.#parseTypeAnnotation());
+      }
+      mixins = ms;
+    }
+    
+    // Implements clause
+    var implementsList: Array<TypeAnnotation> | null = null;
+    if (this.#match(TokenType.Implements)) {
+      let impls = new Array<TypeAnnotation>(4);
+      impls.push(this.#parseTypeAnnotation());
+      while (this.#match(TokenType.Comma)) {
+        impls.push(this.#parseTypeAnnotation());
+      }
+      implementsList = impls;
+    }
+    
+    // Body is optional for case classes
+    let body = new Array<Node>(8);
+    if (this.#match(TokenType.LBrace)) {
+      while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+        body.push(this.#parseClassMember());
+      }
+      this.#consume(TokenType.RBrace, "Expected '}' after class body");
+    } else if (caseParams == null) {
+      this.#consume(TokenType.LBrace, "Expected '{' before class body");
+    }
+    
+    return new ClassDeclaration(
+      name, typeParameters, caseParams, superClass, mixins, implementsList,
+      body, exported, isFinal, isAbstract, this.#makeLocation(startToken)
+    );
+  }
+  
+  #parseCaseClassParam(): CaseClassParam {
+    let paramStart = this.#peek();
+    var mutability: string | null = null;
+    if (this.#match(TokenType.Var)) {
+      mutability = 'var';
+    } else if (this.#match(TokenType.Let)) {
+      mutability = 'let';
+    }
+    let paramName = this.#parseIdentifier();
+    this.#consume(TokenType.Colon, "Expected ':' after case class parameter name");
+    let typeAnnotation = this.#parseTypeAnnotation();
+    return new CaseClassParam(paramName, typeAnnotation, mutability, this.#makeLocation(paramStart));
+  }
+  
+  #parseClassMember(): Node {
+    let startToken = this.#peek();
+    
+    // Check for field mutability prefix
+    var mutability: string | null = null;
+    if (this.#match(TokenType.Let)) {
+      mutability = 'let';
+    } else if (this.#match(TokenType.Var)) {
+      mutability = 'var';
+    }
+    
+    // Constructor: new(...)
+    if (this.#check(TokenType.New)) {
+      this.#advance();
+      return this.#parseMethodBody(new Identifier('<constructor>', this.#makeLocation(startToken)), false, false, false, startToken);
+    }
+    
+    let name = this.#parseIdentifier();
+    
+    // Method: name(params) { ... }
+    if (this.#check(TokenType.LParen)) {
+      return this.#parseMethodBody(name, false, false, false, startToken);
+    }
+    
+    // Field: name: Type;
+    this.#consume(TokenType.Colon, "Expected ':' after field name");
+    let typeAnnotation = this.#parseTypeAnnotation();
+    
+    var value: Expression | null = null;
+    if (this.#match(TokenType.Equals)) {
+      value = this.#parseExpression();
+    }
+    
+    this.#consume(TokenType.Semi, "Expected ';' after field declaration");
+    return new FieldDefinition(name, typeAnnotation, value, false, mutability, this.#makeLocation(startToken));
+  }
+  
+  #parseMethodBody(name: Identifier, isFinal: boolean, isAbstract: boolean, isStatic: boolean, startToken: Token): MethodDefinition {
+    this.#consume(TokenType.LParen, "Expected '(' after method name");
+    let params = this.#parseParameters();
+    this.#consume(TokenType.RParen, "Expected ')' after parameters");
+    
+    var returnType: TypeAnnotation | null = null;
+    if (this.#match(TokenType.Colon)) {
+      returnType = this.#parseTypeAnnotation();
+    }
+    
+    // Method body
+    var body: Node | null = null;
+    if (this.#check(TokenType.LBrace)) {
+      let blockStart = this.#advance();
+      body = this.#parseBlockStatement(blockStart);
+    }
+    
+    return new MethodDefinition(name, params, returnType, body, isFinal, isAbstract, isStatic, this.#makeLocation(startToken));
   }
 }
 

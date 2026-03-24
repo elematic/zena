@@ -343,13 +343,13 @@ class Server {
 
 A regular class differs from a case class:
 
-| | Case class | Regular class |
-|---|---|---|
-| Declaration | `class Foo(x: T)` | `class Foo { ... }` |
-| Auto-constructor | Yes | No (manual `new(...)`) |
-| Auto `==` and `hash` | Yes (structural) | No (reference identity) |
-| Default mutability | Immutable | Immutable (same as case class) |
-| Can be `in` hierarchy | Yes | No — use `extends` |
+|                       | Case class        | Regular class                  |
+| --------------------- | ----------------- | ------------------------------ |
+| Declaration           | `class Foo(x: T)` | `class Foo { ... }`            |
+| Auto-constructor      | Yes               | No (manual `new(...)`)         |
+| Auto `==` and `hash`  | Yes (structural)  | No (reference identity)        |
+| Default mutability    | Immutable         | Immutable (same as case class) |
+| Can be `in` hierarchy | Yes               | No — use `extends`             |
 
 ## WASM Representation
 

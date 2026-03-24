@@ -105,6 +105,7 @@ import {
   type SymbolPropertyName,
   type SymbolDeclaration,
   type LetPatternCondition,
+  type CaseClassParam,
 } from './ast.js';
 
 /**
@@ -137,6 +138,7 @@ export interface Visitor<T = void> {
   visitForStatement?(node: ForStatement, context: T): void;
   visitForInStatement?(node: ForInStatement, context: T): void;
   visitClassDeclaration?(node: ClassDeclaration, context: T): void;
+  visitCaseClassParam?(node: CaseClassParam, context: T): void;
   visitInterfaceDeclaration?(node: InterfaceDeclaration, context: T): void;
   visitMixinDeclaration?(node: MixinDeclaration, context: T): void;
   visitDeclareFunction?(node: DeclareFunction, context: T): void;
@@ -697,6 +699,14 @@ export function visit<T>(
       // symbol is an identifier reference to the symbol variable
       visit((node as SymbolPropertyName).symbol, visitor, context);
       break;
+    case NodeType.CaseClassParam:
+      visitor.visitCaseClassParam?.(node as CaseClassParam, context);
+      visitTypeAnnotation(
+        (node as CaseClassParam).typeAnnotation,
+        visitor,
+        context,
+      );
+      break;
 
     // Nodes we skip (template elements, etc.)
     case NodeType.TemplateElement:
@@ -824,6 +834,9 @@ function visitClassDeclarationChildren<T>(
 ): void {
   for (const tp of node.typeParameters ?? []) {
     visit(tp, visitor, context);
+  }
+  for (const param of node.caseParams ?? []) {
+    visit(param, visitor, context);
   }
   visitTypeAnnotation(node.superClass, visitor, context);
   for (const mixin of node.mixins ?? []) {

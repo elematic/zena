@@ -1842,6 +1842,53 @@ Fields are currently **mutable by default**. Use `let` for immutable fields.
 > requiring `var` for mutable fields. See the [classes design doc](design/classes.md#migration-to-immutable-by-default)
 > for the migration plan.
 
+### Case Classes
+
+A class with a parameter list after its name is a **case class** — a concise
+declaration that auto-generates fields and a constructor:
+
+```zena
+class Point(x: f64, y: f64)
+```
+
+This desugars to a class with immutable fields and a constructor that assigns
+each parameter to the corresponding field. Case classes can also have a body
+for additional members:
+
+```zena
+class Point(x: f64, y: f64) {
+  distance(): f64 { return sqrt(x * x + y * y); }
+}
+```
+
+#### Mutable fields
+
+By default, case class parameters become immutable fields. Use `var` for
+mutable fields:
+
+```zena
+class Counter(name: string, var count: i32)
+// name is immutable, count is mutable
+```
+
+#### Generic case classes
+
+```zena
+class Pair<A, B>(first: A, second: B)
+class Box<T>(value: T)
+```
+
+#### Inheritance
+
+Case classes support `extends`, `with`, and `implements`:
+
+```zena
+class Binary(left: Expr, right: Expr) extends Expr
+class Event(name: string) with Timestamped implements Hashable
+```
+
+The class body is optional when there are no additional members.
+
 ```zena
 class User {
   id: i32;                    // Mutable (default)

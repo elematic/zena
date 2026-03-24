@@ -103,7 +103,7 @@ These features were previously listed as "desirable / next-phase" but are now im
 Remaining desirable features (not yet implemented)
 
 - [ ] ADT / Tagged Union support (sum types) — would make AST node definitions more ergonomic and type-safe. Can be emulated with classes + `match` or `{ kind: string, payload: ... }` records.
-- [ ] Regular expression *literals* — the regex engine exists in the stdlib but there's no literal syntax (use `Regex.compile("pattern")` instead).
+- [ ] Regular expression _literals_ — the regex engine exists in the stdlib but there's no literal syntax (use `Regex.compile("pattern")` instead).
 - [ ] Richer numeric literal support (binary `0b`, octal `0o`, underscores in numeric literals).
 - [ ] Hex/unicode escape sequences in string literals (`\xHH`, `\uHHHH`).
 

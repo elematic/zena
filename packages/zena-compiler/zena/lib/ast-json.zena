@@ -15,7 +15,8 @@ import {
   MemberExpression, IndexExpression, ThisExpression,
   ArrayLiteral, RecordLiteral, TupleLiteral, PropertyAssignment,
   RecordPattern, TuplePattern, BindingProperty,
-  NamedTypeAnnotation, UnionTypeAnnotation
+  NamedTypeAnnotation, UnionTypeAnnotation,
+  CaseClassParam, ClassDeclaration, FieldDefinition, MethodDefinition
 } from './ast.zena';
 
 // ============================================================================
@@ -109,8 +110,9 @@ let nodeTypeToString = (t: NodeType): string => {
     case NodeType.FieldInitializer: 'FieldInitializer'
     case NodeType.MapLiteral: 'MapLiteral'
     case NodeType.MapEntry: 'MapEntry'
-    case NodeType.NamedTypeAnnotation: 'NamedTypeAnnotation'
+    case NodeType.NamedTypeAnnotation: 'TypeAnnotation'
     case NodeType.UnionTypeAnnotation: 'UnionTypeAnnotation'
+    case NodeType.CaseClassParam: 'CaseClassParam'
   }
 };
 
@@ -283,6 +285,64 @@ export let nodeToJson = (node: Node): JsonObject => {
       obj['path'] = path;
     }
     
+    // Class Declarations
+    case ClassDeclaration { name, typeParameters, caseParams, superClass, mixins, implementsList, body, exported, isFinal, isAbstract }: {
+      obj['name'] = nodeToJson(name);
+      if (typeParameters != null) {
+        obj['typeParameters'] = typeAnnotationsToJson(typeParameters as Array<TypeAnnotation>);
+      } else { };
+      if (caseParams != null) {
+        obj['caseParams'] = caseClassParamsToJson(caseParams as Array<CaseClassParam>);
+      } else { };
+      if (superClass != null) {
+        obj['superClass'] = nodeToJson(superClass as Node);
+      } else { };
+      if (mixins != null) {
+        obj['mixins'] = typeAnnotationsToJson(mixins as Array<TypeAnnotation>);
+      } else { };
+      if (implementsList != null) {
+        obj['implements'] = typeAnnotationsToJson(implementsList as Array<TypeAnnotation>);
+      } else { };
+      obj['body'] = nodesToJson(body);
+      obj['exported'] = new Box<boolean>(exported);
+      obj['isFinal'] = new Box<boolean>(isFinal);
+      obj['isAbstract'] = new Box<boolean>(isAbstract);
+      obj['isExtension'] = new Box<boolean>(false);
+    }
+    case CaseClassParam { name, typeAnnotation, mutability }: {
+      obj['name'] = nodeToJson(name);
+      obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
+      if (mutability != null) {
+        obj['mutability'] = mutability as string;
+      } else { };
+    }
+    case FieldDefinition { name, typeAnnotation, value, isFinal, mutability }: {
+      obj['name'] = nodeToJson(name);
+      obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
+      if (value != null) {
+        obj['value'] = nodeToJson(value as Node);
+      } else { };
+      obj['isFinal'] = new Box<boolean>(isFinal);
+      if (mutability != null) {
+        obj['mutability'] = mutability as string;
+      } else { };
+    }
+    case MethodDefinition { name, params, returnType, body, isFinal, isAbstract, isStatic }: {
+      obj['name'] = nodeToJson(name);
+      obj['params'] = parametersToJson(params);
+      if (returnType != null) {
+        obj['returnType'] = nodeToJson(returnType as Node);
+      } else { };
+      if (body != null) {
+        obj['body'] = nodeToJson(body as Node);
+      } else { };
+      obj['isFinal'] = new Box<boolean>(isFinal);
+      obj['isAbstract'] = new Box<boolean>(isAbstract);
+      obj['isStatic'] = new Box<boolean>(isStatic);
+      obj['isDeclare'] = new Box<boolean>(false);
+      obj['decorators'] = new JsonArray();
+    }
+    
     // Default: just type field is already set
     case _: {}
   }
@@ -364,6 +424,26 @@ let typeAnnotationsToJson = (types: Array<TypeAnnotation>): JsonArray => {
   var i = 0;
   while (i < types.length) {
     arr.push(nodeToJson(types[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let caseClassParamsToJson = (params: Array<CaseClassParam>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < params.length) {
+    arr.push(nodeToJson(params[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let nodesToJson = (nodes: Array<Node>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < nodes.length) {
+    arr.push(nodeToJson(nodes[i]));
     i = i + 1;
   }
   return arr;

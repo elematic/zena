@@ -126,6 +126,7 @@ export const NodeType = {
   SuperInitializer: 'SuperInitializer',
   MapLiteral: 'MapLiteral',
   MapEntry: 'MapEntry',
+  CaseClassParam: 'CaseClassParam',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -583,10 +584,28 @@ export interface Identifier extends Node {
   name: string;
 }
 
+/**
+ * A parameter in a case class declaration.
+ * Example: `class Point(x: f64, var y: f64)`
+ */
+export interface CaseClassParam extends Node {
+  type: typeof NodeType.CaseClassParam;
+  name: Identifier;
+  typeAnnotation: TypeAnnotation;
+  /**
+   * Field mutability:
+   * - undefined or 'let': Immutable field
+   * - 'var': Mutable field
+   */
+  mutability?: 'let' | 'var';
+}
+
 export interface ClassDeclaration extends Node {
   type: typeof NodeType.ClassDeclaration;
   name: Identifier;
   typeParameters?: TypeParameter[];
+  /** Case class parameters: `class Point(x: f64, y: f64)` */
+  caseParams?: CaseClassParam[];
   superClass?: TypeAnnotation;
   mixins?: TypeAnnotation[];
   implements?: TypeAnnotation[];

@@ -8,6 +8,7 @@ import {
   type BlockStatement,
   type BreakStatement,
   type CallExpression,
+  type CaseClassParam,
   type CatchClause,
   type ClassDeclaration,
   type ContinueStatement,
@@ -2348,6 +2349,40 @@ export class Parser {
     const name = this.#parseIdentifier();
     const typeParameters = this.#parseTypeParameters();
 
+    // Case class parameters: class Point(x: f64, y: f64)
+    let caseParams: CaseClassParam[] | undefined;
+    if (!isExtension && this.#match(TokenType.LParen)) {
+      caseParams = [];
+      if (!this.#check(TokenType.RParen)) {
+        do {
+          const paramStart = this.#peek();
+          let mutability: 'let' | 'var' | undefined;
+          if (this.#match(TokenType.Var)) {
+            mutability = 'var';
+          } else if (this.#match(TokenType.Let)) {
+            mutability = 'let';
+          }
+          const paramName = this.#parseIdentifier();
+          this.#consume(
+            TokenType.Colon,
+            "Expected ':' after case class parameter name.",
+          );
+          const typeAnnotation = this.#parseTypeAnnotation();
+          caseParams.push({
+            type: NodeType.CaseClassParam,
+            name: paramName,
+            typeAnnotation,
+            mutability,
+            loc: this.#loc(paramStart, this.#previous()),
+          });
+        } while (this.#match(TokenType.Comma));
+      }
+      this.#consume(
+        TokenType.RParen,
+        "Expected ')' after case class parameters.",
+      );
+    }
+
     let onType: TypeAnnotation | undefined;
     if (isExtension) {
       this.#consume(
@@ -2379,21 +2414,24 @@ export class Parser {
       } while (this.#match(TokenType.Comma));
     }
 
-    this.#consume(TokenType.LBrace, "Expected '{' before class body.");
-
+    // Body is optional for case classes
     const body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[] =
       [];
-    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
-      body.push(this.#parseClassMember());
+    if (this.#match(TokenType.LBrace)) {
+      while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+        body.push(this.#parseClassMember());
+      }
+      this.#consume(TokenType.RBrace, "Expected '}' after class body.");
+    } else if (!caseParams) {
+      this.#consume(TokenType.LBrace, "Expected '{' before class body.");
     }
-
-    this.#consume(TokenType.RBrace, "Expected '}' after class body.");
     const endToken = this.#previous();
 
     return {
       type: NodeType.ClassDeclaration,
       name,
       typeParameters,
+      caseParams,
       superClass,
       mixins: mixins.length > 0 ? mixins : undefined,
       implements: implementsList.length > 0 ? implementsList : undefined,
