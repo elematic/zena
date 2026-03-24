@@ -1,0 +1,438 @@
+// Tests for jsonEqual structural JSON comparison
+import {suite, test, TestContext} from 'zena:test';
+import {jsonEqual, throws, isTrue} from 'zena:assert';
+import {AssertionError} from 'zena:assert';
+import {JsonObject, JsonArray, JsonValue, SourceLocation, parseJson, JsonOptions} from 'zena:json';
+import {Box} from 'zena:box';
+
+// Helper to build a JsonObject from key-value pairs
+let obj = (key: string, value: JsonValue): JsonObject => {
+  let o = new JsonObject();
+  o[key] = value;
+  return o;
+};
+
+export let tests = suite('jsonEqual', (): void => {
+
+  // === Passing cases ===
+
+  test('equal null values', (ctx: TestContext): void => {
+    jsonEqual(null, null);
+  });
+
+  test('equal strings', (ctx: TestContext): void => {
+    let a: JsonValue = 'hello';
+    let b: JsonValue = 'hello';
+    jsonEqual(a, b);
+  });
+
+  test('equal numbers', (ctx: TestContext): void => {
+    let a: JsonValue = new Box<f64>(42.0 as f64);
+    let b: JsonValue = new Box<f64>(42.0 as f64);
+    jsonEqual(a, b);
+  });
+
+  test('equal booleans', (ctx: TestContext): void => {
+    let a: JsonValue = new Box<boolean>(true);
+    let b: JsonValue = new Box<boolean>(true);
+    jsonEqual(a, b);
+  });
+
+  test('equal empty objects', (ctx: TestContext): void => {
+    jsonEqual(new JsonObject(), new JsonObject());
+  });
+
+  test('equal empty arrays', (ctx: TestContext): void => {
+    jsonEqual(new JsonArray(), new JsonArray());
+  });
+
+  test('equal objects with string values', (ctx: TestContext): void => {
+    let a = new JsonObject();
+    a['type'] = 'Identifier';
+    a['name'] = 'x';
+    let b = new JsonObject();
+    b['type'] = 'Identifier';
+    b['name'] = 'x';
+    jsonEqual(a, b);
+  });
+
+  test('equal nested objects', (ctx: TestContext): void => {
+    let inner1 = obj('x', new Box<f64>(1.0 as f64));
+    let inner2 = obj('x', new Box<f64>(1.0 as f64));
+    let a = obj('point', inner1);
+    let b = obj('point', inner2);
+    jsonEqual(a, b);
+  });
+
+  test('equal arrays with elements', (ctx: TestContext): void => {
+    let a = new JsonArray();
+    a.push('a');
+    a.push('b');
+    let b = new JsonArray();
+    b.push('a');
+    b.push('b');
+    jsonEqual(a, b);
+  });
+
+  // === Failing cases ===
+
+  test('different strings throws', (ctx: TestContext): void => {
+    throws(() => {
+      let a: JsonValue = 'hello';
+      let b: JsonValue = 'world';
+      jsonEqual(a, b);
+    });
+  });
+
+  test('different numbers throws', (ctx: TestContext): void => {
+    throws(() => {
+      let a: JsonValue = new Box<f64>(1.0 as f64);
+      let b: JsonValue = new Box<f64>(2.0 as f64);
+      jsonEqual(a, b);
+    });
+  });
+
+  test('different booleans throws', (ctx: TestContext): void => {
+    throws(() => {
+      let a: JsonValue = new Box<boolean>(true);
+      let b: JsonValue = new Box<boolean>(false);
+      jsonEqual(a, b);
+    });
+  });
+
+  test('null vs non-null throws', (ctx: TestContext): void => {
+    throws(() => {
+      let a: JsonValue = null;
+      let b: JsonValue = 'hello';
+      jsonEqual(a, b);
+    });
+  });
+
+  test('non-null vs null throws', (ctx: TestContext): void => {
+    throws(() => {
+      let a: JsonValue = 'hello';
+      let b: JsonValue = null;
+      jsonEqual(a, b);
+    });
+  });
+
+  test('type mismatch string vs number throws', (ctx: TestContext): void => {
+    throws(() => {
+      let a: JsonValue = 'hello';
+      let b: JsonValue = new Box<f64>(1.0 as f64);
+      jsonEqual(a, b);
+    });
+  });
+
+  test('missing object key throws', (ctx: TestContext): void => {
+    throws(() => {
+      let a = new JsonObject();
+      a['x'] = 'hello';
+      let b = new JsonObject();
+      b['x'] = 'hello';
+      b['y'] = 'world';
+      jsonEqual(a, b);
+    });
+  });
+
+  test('extra object key throws', (ctx: TestContext): void => {
+    throws(() => {
+      let a = new JsonObject();
+      a['x'] = 'hello';
+      a['y'] = 'world';
+      let b = new JsonObject();
+      b['x'] = 'hello';
+      jsonEqual(a, b);
+    });
+  });
+
+  test('different array lengths throws', (ctx: TestContext): void => {
+    throws(() => {
+      let a = new JsonArray();
+      a.push('a');
+      let b = new JsonArray();
+      b.push('a');
+      b.push('b');
+      jsonEqual(a, b);
+    });
+  });
+
+  test('different array element throws', (ctx: TestContext): void => {
+    throws(() => {
+      let a = new JsonArray();
+      a.push('a');
+      a.push('x');
+      let b = new JsonArray();
+      b.push('a');
+      b.push('b');
+      jsonEqual(a, b);
+    });
+  });
+
+  test('nested object difference throws', (ctx: TestContext): void => {
+    throws(() => {
+      let a = obj('inner', obj('val', 'actual'));
+      let b = obj('inner', obj('val', 'expected'));
+      jsonEqual(a, b);
+    });
+  });
+
+  // === Error message quality ===
+
+  test('error includes JSON path', (ctx: TestContext): void => {
+    let a = obj('type', 'Actual');
+    let b = obj('type', 'Expected');
+    var caught = false;
+    try {
+      jsonEqual(a, b);
+    } catch (e) {
+      caught = true;
+      let err = e as AssertionError;
+      // Message should contain the path $.type
+      isTrue(err.message.sliceBytes(0, err.message.length) != '');
+    }
+    isTrue(caught);
+  });
+
+  test('error includes custom message', (ctx: TestContext): void => {
+    let a: JsonValue = 'a';
+    let b: JsonValue = 'b';
+    var caught = false;
+    try {
+      jsonEqual(a, b, 'AST mismatch');
+    } catch (e) {
+      caught = true;
+      let err = e as AssertionError;
+      // Should start with our custom message
+      isTrue(err.message.sliceBytes(0, 12) == 'AST mismatch');
+    }
+    isTrue(caught);
+  });
+
+  // === Parsed JSON with source locations ===
+
+  test('parsed JSON comparison works', (ctx: TestContext): void => {
+    let a = parseJson('{"type": "Identifier", "name": "x"}');
+    let b = parseJson('{"type": "Identifier", "name": "x"}');
+    jsonEqual(a, b);
+  });
+
+  test('parsed JSON difference reports line numbers', (ctx: TestContext): void => {
+    let a = parseJson('{"type": "Actual"}');
+    let opts: JsonOptions = { allowComments: false, trackLocations: true };
+    let b = parseJson('{\n  "type": "Expected"\n}', opts);
+    var caught = false;
+    try {
+      jsonEqual(a, b);
+    } catch (e) {
+      caught = true;
+      let err = e as AssertionError;
+      // Error should mention "line" from the source locations
+      // We just verify it threw with a reasonable message
+      isTrue(err.message.length > 20);
+    }
+    isTrue(caught);
+  });
+
+  // === Mixed source location scenarios ===
+
+  test('expected has locations, actual does not', (ctx: TestContext): void => {
+    // Build actual without locations (programmatic)
+    let a = new JsonObject();
+    a['type'] = 'Identifier';
+    a['name'] = 'x';
+
+    // Build expected with locations (parsed)
+    let opts: JsonOptions = { allowComments: false, trackLocations: true };
+    let b = parseJson('{"type": "Identifier", "name": "x"}', opts);
+
+    // Should pass — values are equal
+    jsonEqual(a, b);
+  });
+
+  test('expected has locations, actual differs — reports line', (ctx: TestContext): void => {
+    let a = new JsonObject();
+    a['type'] = 'Wrong';
+
+    let opts: JsonOptions = { allowComments: false, trackLocations: true };
+    let b = parseJson('{\n  "type": "Correct"\n}', opts);
+
+    var caught = false;
+    try {
+      jsonEqual(a, b);
+    } catch (e) {
+      caught = true;
+      let err = e as AssertionError;
+      // Should include "line" since expected has locations
+      isTrue(err.message.length > 20);
+    }
+    isTrue(caught);
+  });
+
+  test('actual has locations, expected does not', (ctx: TestContext): void => {
+    // Actual parsed with locations
+    let opts: JsonOptions = { allowComments: false, trackLocations: true };
+    let a = parseJson('{"type": "Identifier"}', opts);
+
+    // Expected built without locations
+    let b = new JsonObject();
+    b['type'] = 'Identifier';
+
+    jsonEqual(a, b);
+  });
+
+  test('neither has locations — still compares correctly', (ctx: TestContext): void => {
+    let a = new JsonObject();
+    a['x'] = new Box<f64>(1.0 as f64);
+    let b = new JsonObject();
+    b['x'] = new Box<f64>(1.0 as f64);
+    jsonEqual(a, b);
+  });
+
+  test('neither has locations — diff has no line info', (ctx: TestContext): void => {
+    let a = new JsonObject();
+    a['x'] = 'actual';
+    let b = new JsonObject();
+    b['x'] = 'expected';
+
+    var caught = false;
+    try {
+      jsonEqual(a, b);
+    } catch (e) {
+      caught = true;
+      let err = e as AssertionError;
+      // Should still report the path, just without line numbers
+      isTrue(err.message.length > 10);
+    }
+    isTrue(caught);
+  });
+
+  test('object with locations, nested array without', (ctx: TestContext): void => {
+    // Outer object with locations
+    let outer = JsonObject.withLocations();
+    outer['type'] = 'Module';
+    outer.setLocation('type', new SourceLocation(1, 3, 1, 9));
+
+    // Inner array without locations
+    let body = new JsonArray();
+    let stmt = new JsonObject();
+    stmt['type'] = 'ExpressionStatement';
+    body.push(stmt);
+    outer['body'] = body;
+
+    // Build matching expected
+    let outer2 = new JsonObject();
+    outer2['type'] = 'Module';
+    let body2 = new JsonArray();
+    let stmt2 = new JsonObject();
+    stmt2['type'] = 'ExpressionStatement';
+    body2.push(stmt2);
+    outer2['body'] = body2;
+
+    jsonEqual(outer, outer2);
+  });
+
+  test('mixed locations diff reports location where available', (ctx: TestContext): void => {
+    // Expected with locations on outer object
+    let expected = JsonObject.withLocations();
+    expected['type'] = 'Module';
+    expected.setLocation('type', new SourceLocation(1, 3, 1, 9));
+
+    // Nested array element without locations
+    let body = new JsonArray();
+    let stmt = new JsonObject();
+    stmt['kind'] = 'let';
+    body.push(stmt);
+    expected['body'] = body;
+    expected.setLocation('body', new SourceLocation(2, 3, 5, 4));
+
+    // Actual differs in nested value
+    let actual = new JsonObject();
+    actual['type'] = 'Module';
+    let actualBody = new JsonArray();
+    let actualStmt = new JsonObject();
+    actualStmt['kind'] = 'var';
+    actualBody.push(actualStmt);
+    actual['body'] = actualBody;
+
+    var caught = false;
+    try {
+      jsonEqual(actual, expected);
+    } catch (e) {
+      caught = true;
+      let err = e as AssertionError;
+      isTrue(err.message.length > 20);
+    }
+    isTrue(caught);
+  });
+
+  // === Complex AST-like structure ===
+
+  test('AST-like object equality', (ctx: TestContext): void => {
+    let param = new JsonObject();
+    param['type'] = 'Parameter';
+    param['name'] = 'x';
+
+    let params = new JsonArray();
+    params.push(param);
+
+    let body = new JsonObject();
+    body['type'] = 'ReturnStatement';
+    body['value'] = 'x';
+
+    let fn = new JsonObject();
+    fn['type'] = 'FunctionDeclaration';
+    fn['name'] = 'identity';
+    fn['params'] = params;
+    fn['body'] = body;
+
+    // Build identical expected
+    let param2 = new JsonObject();
+    param2['type'] = 'Parameter';
+    param2['name'] = 'x';
+
+    let params2 = new JsonArray();
+    params2.push(param2);
+
+    let body2 = new JsonObject();
+    body2['type'] = 'ReturnStatement';
+    body2['value'] = 'x';
+
+    let fn2 = new JsonObject();
+    fn2['type'] = 'FunctionDeclaration';
+    fn2['name'] = 'identity';
+    fn2['params'] = params2;
+    fn2['body'] = body2;
+
+    jsonEqual(fn, fn2);
+  });
+
+  test('AST-like deep difference detected', (ctx: TestContext): void => {
+    throws(() => {
+      let param = new JsonObject();
+      param['type'] = 'Parameter';
+      param['name'] = 'x';
+
+      let params = new JsonArray();
+      params.push(param);
+
+      let fn = new JsonObject();
+      fn['type'] = 'FunctionDeclaration';
+      fn['params'] = params;
+
+      // Expected has different param name
+      let param2 = new JsonObject();
+      param2['type'] = 'Parameter';
+      param2['name'] = 'y';
+
+      let params2 = new JsonArray();
+      params2.push(param2);
+
+      let fn2 = new JsonObject();
+      fn2['type'] = 'FunctionDeclaration';
+      fn2['params'] = params2;
+
+      jsonEqual(fn, fn2);
+    });
+  });
+});

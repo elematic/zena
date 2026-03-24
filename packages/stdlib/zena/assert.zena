@@ -1,4 +1,8 @@
 import { Error } from 'zena:error';
+import { JsonValue, JsonObject, JsonArray, SourceLocation } from 'zena:json';
+import { Box } from 'zena:box';
+import { Array } from 'zena:growable-array';
+import { StringBuilder } from 'zena:string-builder';
 
 export class AssertionError extends Error {
   op: string;
@@ -99,4 +103,237 @@ export let doesNotThrow = (fn: () => void, message: string = 'Expected function 
 
 export let fail = (message: string = 'Test failed'): never => {
   throw new AssertionError(message, 'fail');
+};
+
+// ============================================================================
+// Structural JSON comparison
+// ============================================================================
+
+// Describe the JSON type of a value for error messages.
+let describeJsonType = (value: JsonValue): string => {
+  if (value == null) { return 'null'; }
+  if (value is JsonObject) { return 'object'; }
+  if (value is JsonArray) { return 'array'; }
+  if (value is string) { return 'string'; }
+  if (value is Box<f64>) { return 'number'; }
+  if (value is Box<boolean>) { return 'boolean'; }
+  return 'unknown';
+};
+
+// Short string representation of a JSON value for error messages.
+let describeJsonValue = (value: JsonValue): string => {
+  if (value == null) { return 'null'; }
+  if (value is string) {
+    let s = value as string;
+    if (s.length > 50) {
+      return '"' + s.sliceBytes(0, 47) + '..."';
+    }
+    return '"' + s + '"';
+  }
+  if (value is Box<f64>) {
+    let sb = new StringBuilder();
+    sb.appendF64((value as Box<f64>).value);
+    return sb.toString();
+  }
+  if (value is Box<boolean>) {
+    return if ((value as Box<boolean>).value) { 'true' } else { 'false' };
+  }
+  if (value is JsonObject) {
+    let sb = new StringBuilder();
+    sb.append('{...} (');
+    sb.appendI32((value as JsonObject).size);
+    sb.append(' keys)');
+    return sb.toString();
+  }
+  if (value is JsonArray) {
+    let sb = new StringBuilder();
+    sb.append('[...] (');
+    sb.appendI32((value as JsonArray).length);
+    sb.append(' elements)');
+    return sb.toString();
+  }
+  return 'unknown';
+};
+
+// Format a single diff entry with path, source location, and expected/actual.
+let formatJsonDiff = (path: string, loc: SourceLocation | null, expected: string, actual: string): string => {
+  let sb = new StringBuilder();
+  sb.append('  at ');
+  sb.append(path);
+  if (loc != null) {
+    let l = loc as SourceLocation;
+    sb.append(' (line ');
+    sb.appendI32(l.line);
+    sb.append(')');
+  }
+  sb.append(':\n    expected: ');
+  sb.append(expected);
+  sb.append('\n    actual:   ');
+  sb.append(actual);
+  return sb.toString();
+};
+
+// Format an array index as a string, e.g. "[3]"
+let indexStr = (i: i32): string => {
+  let sb = new StringBuilder();
+  sb.append('[');
+  sb.appendI32(i);
+  sb.append(']');
+  return sb.toString();
+};
+
+// Recursively collect structural differences between two JSON values.
+// Stops after maxDiffs differences have been found.
+let collectJsonDiffs = (
+  actual: JsonValue,
+  expected: JsonValue,
+  path: string,
+  loc: SourceLocation | null,
+  diffs: Array<string>,
+  maxDiffs: i32
+): void => {
+  if (diffs.length >= maxDiffs) { return; }
+
+  // Both null — equal
+  if (actual == null && expected == null) { return; }
+
+  // Null mismatch
+  if (expected == null) {
+    diffs.push(formatJsonDiff(path, loc, 'null', describeJsonValue(actual)));
+    return;
+  }
+  if (actual == null) {
+    diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), 'null'));
+    return;
+  }
+
+  // Object comparison
+  if (expected is JsonObject) {
+    if (!(actual is JsonObject)) {
+      diffs.push(formatJsonDiff(path, loc, 'object', describeJsonType(actual)));
+      return;
+    }
+    let expectedObj = expected as JsonObject;
+    let actualObj = actual as JsonObject;
+
+    // Missing keys (in expected but not actual)
+    expectedObj.forEach((key: string, value: any) => {
+      if (diffs.length >= maxDiffs) { return; }
+      if (!actualObj.has(key)) {
+        let keyLoc = expectedObj.locationOf(key);
+        diffs.push(formatJsonDiff(path + '.' + key, keyLoc, describeJsonValue(value as JsonValue), 'missing'));
+      }
+    });
+
+    // Extra keys (in actual but not expected)
+    actualObj.forEach((key: string, value: any) => {
+      if (diffs.length >= maxDiffs) { return; }
+      if (!expectedObj.has(key)) {
+        diffs.push(formatJsonDiff(path + '.' + key, null, 'missing', describeJsonValue(value as JsonValue)));
+      }
+    });
+
+    // Recurse on shared keys
+    expectedObj.forEach((key: string, value: any) => {
+      if (diffs.length >= maxDiffs) { return; }
+      if (actualObj.has(key)) {
+        let keyLoc = expectedObj.locationOf(key);
+        collectJsonDiffs(actualObj[key], value as JsonValue, path + '.' + key, keyLoc, diffs, maxDiffs);
+      }
+    });
+    return;
+  }
+
+  // Array comparison
+  if (expected is JsonArray) {
+    if (!(actual is JsonArray)) {
+      diffs.push(formatJsonDiff(path, loc, 'array', describeJsonType(actual)));
+      return;
+    }
+    let expectedArr = expected as JsonArray;
+    let actualArr = actual as JsonArray;
+
+    if (expectedArr.length != actualArr.length && diffs.length < maxDiffs) {
+      let sb = new StringBuilder();
+      sb.append('array length ');
+      sb.appendI32(expectedArr.length);
+      let sb2 = new StringBuilder();
+      sb2.append('array length ');
+      sb2.appendI32(actualArr.length);
+      diffs.push(formatJsonDiff(path, loc, sb.toString(), sb2.toString()));
+    }
+
+    let minLen = if (expectedArr.length < actualArr.length) { expectedArr.length } else { actualArr.length };
+    var i = 0;
+    while (i < minLen && diffs.length < maxDiffs) {
+      let elemLoc = expectedArr.locationOf(i);
+      collectJsonDiffs(actualArr[i], expectedArr[i], path + indexStr(i), elemLoc, diffs, maxDiffs);
+      i = i + 1;
+    }
+    return;
+  }
+
+  // String comparison
+  if (expected is string) {
+    if (!(actual is string)) {
+      diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonType(actual)));
+      return;
+    }
+    if ((actual as string) != (expected as string)) {
+      diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonValue(actual)));
+    }
+    return;
+  }
+
+  // Number comparison
+  if (expected is Box<f64>) {
+    if (!(actual is Box<f64>)) {
+      diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonType(actual)));
+      return;
+    }
+    let expectedNum = (expected as Box<f64>).value;
+    let actualNum = (actual as Box<f64>).value;
+    if (expectedNum != actualNum) {
+      diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonValue(actual)));
+    }
+    return;
+  }
+
+  // Boolean comparison
+  if (expected is Box<boolean>) {
+    if (!(actual is Box<boolean>)) {
+      diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonType(actual)));
+      return;
+    }
+    let expectedBool = (expected as Box<boolean>).value;
+    let actualBool = (actual as Box<boolean>).value;
+    if (expectedBool != actualBool) {
+      diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonValue(actual)));
+    }
+    return;
+  }
+};
+
+// Assert that two JSON values are structurally equal.
+// Reports up to 10 differences with JSON paths and source locations (if available
+// on the expected value, e.g. when parsed with parseJson).
+export let jsonEqual = (actual: JsonValue, expected: JsonValue, message: string = 'JSON mismatch'): void => {
+  let diffs = new Array<string>(8);
+  collectJsonDiffs(actual, expected, '$', null, diffs, 10);
+  if (diffs.length > 0) {
+    let sb = new StringBuilder();
+    sb.append(message);
+    sb.append(' (');
+    sb.appendI32(diffs.length);
+    sb.append(' difference');
+    if (diffs.length > 1) { sb.append('s'); }
+    sb.append('):\n');
+    var i = 0;
+    while (i < diffs.length) {
+      sb.append(diffs[i]);
+      sb.append('\n');
+      i = i + 1;
+    }
+    throw new AssertionError(sb.toString(), 'jsonEqual');
+  }
 };
