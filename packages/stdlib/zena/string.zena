@@ -156,6 +156,36 @@ export final class String {
     __byte_array_copy(target, targetOffset, this.#data, this.#start + start, len);
   }
 
+  // Compares `length` bytes of this string starting at `offset` against
+  // `other` starting at `other.#start`.
+  #regionEquals(
+      other: String,
+      offset: i32,
+      length: i32): boolean {
+    if (length > this.#end - this.#start) {
+      return false;
+    }
+    var i = 0;
+    for (var i = 0; i < length; i = i + 1) {
+      if (__byte_array_get(this.#data, offset + i) != 
+          __byte_array_get(other.#data, other.#start + i)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Returns true if this string starts with the given prefix.
+  startsWith(prefix: String): boolean {
+    return this.#regionEquals(prefix, this.#start, prefix.#end - prefix.#start);
+  }
+
+  // Returns true if this string ends with the given suffix.
+  endsWith(suffix: String): boolean {
+    let suffixLen = suffix.#end - suffix.#start;
+    return this.#regionEquals(suffix, this.#end - suffixLen, suffixLen);
+  }
+
   // Concatenation operator - always allocates a new backing array
   operator +(other: String): String {
     let len1 = this.#end - this.#start;
@@ -168,23 +198,11 @@ export final class String {
 
   // Equality operator - compares the bytes in each view
   operator ==(other: String): boolean {
-    let len1 = this.#end - this.#start;
-    let len2 = other.#end - other.#start;
-
-    // Quick length check
-    if (len1 != len2) {
+    let length = other.#end - other.#start;
+    if (length != this.#end - this.#start) {
       return false;
     }
-
-    // Compare bytes
-    var i = 0;
-    while (i < len1) {
-      if (__byte_array_get(this.#data, this.#start + i) != __byte_array_get(other.#data, other.#start + i)) {
-        return false;
-      }
-      i = i + 1;
-    }
-    return true;
+    return this.#regionEquals(other, this.#start, length);
   }
 
   // String hash is implemented by the compiler in codegen/expressions.ts:
