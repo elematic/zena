@@ -1044,4 +1044,63 @@ suite('TypeChecker: Type Narrowing', () => {
       assert.equal(errors.length, 0);
     });
   });
+
+  suite('mixed && and || narrowing', () => {
+    test('should narrow with && containing ||: x != null && (y == null || y.value)', () => {
+      const input = `
+        class Data {
+          value: i32;
+          new(value: i32) : value = value {}
+        }
+
+        let test = (x: Data | null, y: Data | null): boolean => {
+          return x != null && (y == null || y.value > 0);
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.equal(errors.length, 0);
+    });
+
+    test('should narrow with || containing &&: x == null || (y != null && y.value)', () => {
+      const input = `
+        class Data {
+          value: i32;
+          new(value: i32) : value = value {}
+        }
+
+        let test = (x: Data | null, y: Data | null): boolean => {
+          return x == null || (y != null && y.value > 0);
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.equal(errors.length, 0);
+    });
+
+    test('should narrow deeply nested: a && (b || (c && d))', () => {
+      const input = `
+        class Data {
+          value: i32;
+          new(value: i32) : value = value {}
+        }
+
+        let test = (a: Data | null, b: Data | null, c: Data | null): boolean => {
+          return a != null && (b == null || (c != null && c.value > 0));
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.equal(errors.length, 0);
+    });
+  });
 });
