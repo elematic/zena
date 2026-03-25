@@ -184,6 +184,7 @@ import {
 } from './types.js';
 import {
   checkStatement,
+  extractAllInverseNarrowingsFromCondition,
   extractAllNarrowingsFromCondition,
   predeclareFunction,
 } from './statements.js';
@@ -2034,6 +2035,21 @@ function checkBinaryExpression(
     const narrowings = extractAllNarrowingsFromCondition(ctx, expr.left);
     if (narrowings.length > 0) {
       // Enter a temporary scope to apply all narrowings for the right operand only
+      ctx.enterScope();
+      for (const narrowing of narrowings) {
+        ctx.narrowType(narrowing.variableName, narrowing.narrowedType);
+      }
+      right = checkExpression(ctx, expr.right);
+      ctx.exitScope();
+    } else {
+      right = checkExpression(ctx, expr.right);
+    }
+  } else if (expr.operator === '||') {
+    // Special handling for || operator: apply INVERSE narrowing from left to right
+    // For `x == null || x.foo`, if the right side runs, we know x == null was false
+    left = checkExpression(ctx, expr.left);
+    const narrowings = extractAllInverseNarrowingsFromCondition(ctx, expr.left);
+    if (narrowings.length > 0) {
       ctx.enterScope();
       for (const narrowing of narrowings) {
         ctx.narrowType(narrowing.variableName, narrowing.narrowedType);

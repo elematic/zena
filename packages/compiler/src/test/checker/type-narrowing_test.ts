@@ -891,4 +891,157 @@ suite('TypeChecker: Type Narrowing', () => {
       assert.equal(errors.length, 0);
     });
   });
+
+  suite('|| operator narrowing', () => {
+    test('should narrow nullable type in right side of || (inverse narrowing)', () => {
+      const input = `
+        let process = (data: {isInvalid: boolean} | null): boolean => {
+          return data == null || data.isInvalid;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.equal(errors.length, 0);
+    });
+
+    test('should narrow class type in right side of ||', () => {
+      const input = `
+        class Node {
+          value: i32;
+          new(value: i32) : value = value {}
+        }
+
+        let isInvalid = (node: Node | null): boolean => {
+          return node == null || node.value < 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.equal(errors.length, 0);
+    });
+
+    test('should narrow with === null check', () => {
+      const input = `
+        class Container {
+          value: i32;
+          new(value: i32) : value = value {}
+        }
+
+        let isEmpty = (c: Container | null): boolean => {
+          return c === null || c.value == 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.equal(errors.length, 0);
+    });
+
+    test('should narrow with swapped null check (null == x)', () => {
+      const input = `
+        class Box {
+          content: string;
+          new(content: string) : content = content {}
+        }
+
+        let isEmpty = (box: Box | null): boolean => {
+          return null == box || box.content == '';
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.equal(errors.length, 0);
+    });
+
+    test('should fail without null check on left side', () => {
+      const input = `
+        let test = (data: {foo: boolean} | null): boolean => {
+          return data.foo || false;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.ok(errors.length >= 1, 'Should have at least 1 error');
+      assert.ok(
+        errors.some((e) => e.message.includes('null')),
+        'Should have error about null',
+      );
+    });
+
+    test('should not narrow when check is unrelated', () => {
+      const input = `
+        let test = (data: {foo: boolean} | null, flag: boolean): boolean => {
+          return flag || data.foo;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.ok(errors.length >= 1, 'Should have at least 1 error');
+      assert.ok(
+        errors.some((e) => e.message.includes('null')),
+        'Should have error about null',
+      );
+    });
+
+    test('should handle chained || with multiple null checks', () => {
+      const input = `
+        class Inner {
+          isValid: boolean;
+          new() : isValid = true {}
+        }
+
+        class Outer {
+          let inner: Inner | null;
+          new() : inner = null {}
+        }
+
+        let isInvalid = (outer: Outer | null): boolean => {
+          return outer == null || outer.inner == null || outer.inner.isValid == false;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.equal(errors.length, 0);
+    });
+
+    test('should narrow inside if condition with ||', () => {
+      // The || narrowing allows accessing data.value inside the condition
+      const input = `
+        class Data {
+          value: i32;
+          new(value: i32) : value = value {}
+        }
+
+        let isInvalidOrNegative = (data: Data | null): boolean => {
+          return data == null || data.value < 0;
+        };
+      `;
+      const parser = new Parser(input);
+      const ast = parser.parse();
+      const checker = TypeChecker.forModule(ast);
+      const errors = checker.check();
+
+      assert.equal(errors.length, 0);
+    });
+  });
 });

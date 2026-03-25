@@ -434,6 +434,66 @@ const collectNarrowings = (
 };
 
 /**
+ * Extract all inverse type narrowings from a condition expression,
+ * including all narrowings from chained || expressions.
+ *
+ * For `a || b || c`, this collects inverse narrowings from all three parts.
+ * This is used when checking the right side of || to apply the inverse
+ * narrowings from the left side.
+ *
+ * Example: `data == null || data.foo` - when evaluating `data.foo`,
+ * we know `data == null` was false, so `data` is not null.
+ */
+export const extractAllInverseNarrowingsFromCondition = (
+  ctx: CheckerContext,
+  condition: Expression,
+): TypeNarrowing[] => {
+  const narrowings: TypeNarrowing[] = [];
+  collectInverseNarrowings(ctx, condition, narrowings);
+  return narrowings;
+};
+
+/**
+ * Helper to recursively collect all inverse narrowings from a condition.
+ * Uses a scope to apply accumulated narrowings when processing
+ * the right side of || expressions.
+ */
+const collectInverseNarrowings = (
+  ctx: CheckerContext,
+  condition: Expression,
+  narrowings: TypeNarrowing[],
+): void => {
+  // For || expressions, collect from both sides
+  if (condition.type === NodeType.BinaryExpression) {
+    const binary = condition as BinaryExpression;
+    if (binary.operator === '||') {
+      // First collect inverse narrowings from the left side
+      collectInverseNarrowings(ctx, binary.left, narrowings);
+
+      // For the right side, we need to apply all collected narrowings so far
+      // to correctly resolve types
+      if (narrowings.length > 0) {
+        ctx.enterScope();
+        for (const n of narrowings) {
+          ctx.narrowType(n.variableName, n.narrowedType);
+        }
+        collectInverseNarrowings(ctx, binary.right, narrowings);
+        ctx.exitScope();
+      } else {
+        collectInverseNarrowings(ctx, binary.right, narrowings);
+      }
+      return;
+    }
+  }
+
+  // For non-|| conditions, extract the single inverse narrowing
+  const narrowing = extractInverseNarrowingFromCondition(ctx, condition);
+  if (narrowing) {
+    narrowings.push(narrowing);
+  }
+};
+
+/**
  * Result of extracting a null comparison target.
  */
 interface NullComparisonTarget {
@@ -514,7 +574,7 @@ const extractNullComparisonTarget = (
  * - `x is T` else branch -> x with T subtracted (if union)
  * - `obj.field !== null` else branch -> obj.field is null (if field is immutable)
  */
-const extractInverseNarrowingFromCondition = (
+export const extractInverseNarrowingFromCondition = (
   ctx: CheckerContext,
   condition: Expression,
 ): TypeNarrowing | null => {
