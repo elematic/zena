@@ -182,7 +182,11 @@ import {
   validateType,
   validateNoInlineTuple,
 } from './types.js';
-import {checkStatement, predeclareFunction} from './statements.js';
+import {
+  checkStatement,
+  extractAllNarrowingsFromCondition,
+  predeclareFunction,
+} from './statements.js';
 
 /**
  * Resolves a member (field or method) type from a class, handling generic type substitution.
@@ -2023,7 +2027,23 @@ function checkBinaryExpression(
   const leftIsLiteral = expr.left.type === NodeType.NumberLiteral;
   const rightIsLiteral = expr.right.type === NodeType.NumberLiteral;
 
-  if (leftIsLiteral && !rightIsLiteral) {
+  // Special handling for && operator: apply narrowing from left to right
+  if (expr.operator === '&&') {
+    left = checkExpression(ctx, expr.left);
+    // Extract all narrowings from left operand (handles chained && expressions)
+    const narrowings = extractAllNarrowingsFromCondition(ctx, expr.left);
+    if (narrowings.length > 0) {
+      // Enter a temporary scope to apply all narrowings for the right operand only
+      ctx.enterScope();
+      for (const narrowing of narrowings) {
+        ctx.narrowType(narrowing.variableName, narrowing.narrowedType);
+      }
+      right = checkExpression(ctx, expr.right);
+      ctx.exitScope();
+    } else {
+      right = checkExpression(ctx, expr.right);
+    }
+  } else if (leftIsLiteral && !rightIsLiteral) {
     // Check right first to get context for left (e.g., `0 < x` where x is i64)
     right = checkExpression(ctx, expr.right);
     const contextualType = right.kind === TypeKind.Number ? right : undefined;
@@ -2866,7 +2886,7 @@ function checkMemberExpression(
   ) {
     if (objectType.kind !== Types.Unknown.kind) {
       ctx.diagnostics.reportError(
-        `Property access on non-class type '${typeToString(objectType)}'.`,
+        `Property access not supported on type '${typeToString(objectType)}'.`,
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.loc),
       );

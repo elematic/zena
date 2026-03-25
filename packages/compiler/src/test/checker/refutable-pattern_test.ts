@@ -265,7 +265,7 @@ suite('Checker: refutable patterns in let/var declarations', () => {
         'Should reject String | never for property access',
       );
       assert.ok(
-        errors.some((d) => /non-class type/i.test(d.message)),
+        errors.some((d) => /property access not supported/i.test(d.message)),
         `Expected property access error, got: ${errors.map((d) => d.message).join(', ')}`,
       );
     });

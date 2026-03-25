@@ -96,7 +96,7 @@ import {
  * For example, `x !== null` narrows `x` by removing `null`.
  * The variableName can be a simple name like "x" or a path like "obj.field".
  */
-interface TypeNarrowing {
+export interface TypeNarrowing {
   variableName: string;
   narrowedType: Type;
 }
@@ -321,7 +321,7 @@ const findMatchingOverload = (
  * - `x is T` -> narrows x to T (true branch)
  * - `obj.field !== null` -> narrows obj.field if field is immutable
  */
-const extractNarrowingFromCondition = (
+export const extractNarrowingFromCondition = (
   ctx: CheckerContext,
   condition: Expression,
 ): TypeNarrowing | null => {
@@ -342,6 +342,13 @@ const extractNarrowingFromCondition = (
 
   const binary = condition as BinaryExpression;
   const op = binary.operator;
+
+  // Handle && by extracting narrowing from the left operand
+  // For `a && b`, the narrowing from `a` is applied when checking `b`
+  // This enables chained narrowing like `x != null && x.y != null`
+  if (op === '&&') {
+    return extractNarrowingFromCondition(ctx, binary.left);
+  }
 
   // Handle !== and != (not equal to null)
   if (op === '!==' || op === '!=') {
@@ -367,6 +374,63 @@ const extractNarrowingFromCondition = (
   }
 
   return null;
+};
+
+/**
+ * Extract all type narrowings from a condition expression, including
+ * all narrowings from chained && expressions.
+ *
+ * For `a && b && c`, this collects narrowings from all three parts.
+ * This is used when checking the right side of && to apply all
+ * accumulated narrowings from the left side.
+ */
+export const extractAllNarrowingsFromCondition = (
+  ctx: CheckerContext,
+  condition: Expression,
+): TypeNarrowing[] => {
+  const narrowings: TypeNarrowing[] = [];
+  collectNarrowings(ctx, condition, narrowings);
+  return narrowings;
+};
+
+/**
+ * Helper to recursively collect all narrowings from a condition.
+ * Uses a scope to apply accumulated narrowings when processing
+ * the right side of && expressions.
+ */
+const collectNarrowings = (
+  ctx: CheckerContext,
+  condition: Expression,
+  narrowings: TypeNarrowing[],
+): void => {
+  // For && expressions, collect from both sides
+  if (condition.type === NodeType.BinaryExpression) {
+    const binary = condition as BinaryExpression;
+    if (binary.operator === '&&') {
+      // First collect narrowings from the left side
+      collectNarrowings(ctx, binary.left, narrowings);
+
+      // For the right side, we need to apply all collected narrowings so far
+      // to correctly resolve types (e.g., for `outer != null && outer.inner != null`)
+      if (narrowings.length > 0) {
+        ctx.enterScope();
+        for (const n of narrowings) {
+          ctx.narrowType(n.variableName, n.narrowedType);
+        }
+        collectNarrowings(ctx, binary.right, narrowings);
+        ctx.exitScope();
+      } else {
+        collectNarrowings(ctx, binary.right, narrowings);
+      }
+      return;
+    }
+  }
+
+  // For non-&& conditions, extract the single narrowing
+  const narrowing = extractNarrowingFromCondition(ctx, condition);
+  if (narrowing) {
+    narrowings.push(narrowing);
+  }
 };
 
 /**
