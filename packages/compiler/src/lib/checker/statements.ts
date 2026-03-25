@@ -2747,9 +2747,116 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
   }
 
+  // Process case class parameters: register fields, constructor, and operator ==
+  if (decl.caseParams) {
+    // Validate: case classes cannot be abstract or extension
+    if (decl.isAbstract) {
+      ctx.diagnostics.reportError(
+        `Abstract classes cannot have case class parameters.`,
+        DiagnosticCode.UnsupportedFeature,
+        ctx.getLocation(decl.name.loc),
+      );
+    }
+    if (decl.isExtension) {
+      ctx.diagnostics.reportError(
+        `Extension classes cannot have case class parameters.`,
+        DiagnosticCode.UnsupportedFeature,
+        ctx.getLocation(decl.name.loc),
+      );
+    }
+
+    const paramTypes: Type[] = [];
+    const parameterNames: string[] = [];
+
+    for (const param of decl.caseParams) {
+      const fieldName = param.name.name;
+      const fieldType = resolveTypeAnnotation(ctx, param.typeAnnotation);
+
+      // Inline tuples cannot appear in field types
+      validateNoInlineTuple(fieldType, ctx, 'field types');
+
+      // Check for duplicate fields (including inherited)
+      if (classType.fields.has(fieldName)) {
+        ctx.diagnostics.reportError(
+          `Duplicate field '${fieldName}' in class '${className}'.`,
+          DiagnosticCode.DuplicateDeclaration,
+          ctx.getLocation(param.name.loc),
+        );
+        continue;
+      }
+
+      // Register field
+      classType.fields.set(fieldName, fieldType);
+      classType.fieldMutability!.set(fieldName, param.mutability !== 'var');
+
+      // Track mutability
+      if (param.mutability === 'var') {
+        if (!classType.mutableFields) {
+          classType.mutableFields = new Set();
+        }
+        classType.mutableFields.add(fieldName);
+      }
+
+      // Register implicit getter (and setter if mutable) - same as regular fields
+      if (!fieldName.startsWith('#')) {
+        const getterName = getGetterName(fieldName);
+        classType.vtable.push(getterName);
+        classType.methods.set(getterName, {
+          kind: TypeKind.Function,
+          parameters: [],
+          returnType: fieldType,
+          isFinal: false,
+        });
+
+        if (param.mutability === 'var') {
+          const setterName = getSetterName(fieldName);
+          classType.vtable.push(setterName);
+          classType.methods.set(setterName, {
+            kind: TypeKind.Function,
+            parameters: [fieldType],
+            returnType: Types.Void,
+            isFinal: false,
+          });
+        }
+      }
+
+      // Store the resolved type on the param node
+      param.name.inferredType = fieldType;
+
+      paramTypes.push(fieldType);
+      parameterNames.push(fieldName);
+    }
+
+    // Auto-generate constructor type
+    classType.constructorType = {
+      kind: TypeKind.Function,
+      parameters: paramTypes,
+      parameterNames,
+      returnType: Types.Void,
+    };
+
+    // Auto-generate operator == method
+    // Takes one parameter of the same class type, returns boolean
+    const eqParamType = ctx.currentClass ?? classType;
+    classType.methods.set('==', {
+      kind: TypeKind.Function,
+      parameters: [eqParamType],
+      returnType: Types.Boolean,
+    });
+    classType.vtable.push('==');
+  }
+
   // 1. First pass: Collect members to build the ClassType
   const localFields = new Set<string>();
   const localMethods = new Set<string>();
+
+  // Pre-populate with case class fields so body members can detect conflicts
+  if (decl.caseParams) {
+    for (const param of decl.caseParams) {
+      localFields.add(param.name.name);
+    }
+    localMethods.add('==');
+  }
 
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
@@ -3273,6 +3380,13 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   if (superType) {
     for (const [name] of superType.fields) {
       ctx.initializedFields.add(name);
+    }
+  }
+
+  // Case class params are always initialized by the auto-generated constructor
+  if (decl.caseParams) {
+    for (const param of decl.caseParams) {
+      ctx.initializedFields.add(param.name.name);
     }
   }
 
