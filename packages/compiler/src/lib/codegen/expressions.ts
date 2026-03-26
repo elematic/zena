@@ -2891,9 +2891,48 @@ function generateMemberFromBindingWithObjectOnStack(
   }
 
   if (binding.kind === 'record-field') {
-    // Record field access - use vtable dispatch for type safety
-    // For now, throw an error as record optional chaining is complex
-    throw new Error('Optional chaining on record fields not yet supported');
+    const {recordType, fieldName} = binding;
+    const recordInfo = ensureRecordDispatchType(ctx, recordType);
+    const fieldInfo = recordInfo.fields.get(fieldName);
+    if (!fieldInfo) {
+      throw new Error(`Record field '${fieldName}' not found in record type`);
+    }
+
+    // Object (fat pointer) is already on the stack - store in local
+    const fatPtrLocal = ctx.declareLocal('$$opt_record_ptr', [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(recordInfo.fatPtrTypeIndex),
+    ]);
+
+    // Cast to fat pointer type and store
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(recordInfo.fatPtrTypeIndex));
+    body.push(Opcode.local_set);
+    body.push(...WasmModule.encodeSignedLEB128(fatPtrLocal));
+
+    // Get instance (field 0 of fat pointer)
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(fatPtrLocal));
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(recordInfo.fatPtrTypeIndex));
+    body.push(0); // instance field
+
+    // Get vtable (field 1 of fat pointer)
+    body.push(Opcode.local_get);
+    body.push(...WasmModule.encodeSignedLEB128(fatPtrLocal));
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(recordInfo.fatPtrTypeIndex));
+    body.push(1); // vtable field
+
+    // Get getter function from vtable
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(recordInfo.vtableTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+    // Call the getter function
+    body.push(Opcode.call_ref);
+    body.push(...WasmModule.encodeSignedLEB128(fieldInfo.typeIndex));
+    return;
   }
 }
 
