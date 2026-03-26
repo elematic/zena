@@ -13,7 +13,7 @@ import {suite, test} from 'node:test';
 
 // Import compiler
 import {Parser, TypeChecker, CodeGenerator, Compiler} from '../lib/index.js';
-import {DiagnosticSeverity} from '../lib/diagnostics.js';
+import {DiagnosticSeverity, formatDiagnostic} from '../lib/diagnostics.js';
 
 // Import stdlib module loader
 import {
@@ -411,9 +411,14 @@ async function runExecutionTest(
     (d) => d.severity === DiagnosticSeverity.Error,
   );
   if (errors.length > 0) {
-    throw new Error(
-      `Compilation failed: ${errors.map((d) => d.message).join(', ')}`,
-    );
+    const formattedErrors = errors.map((d) => {
+      let source: string | undefined;
+      if (d.location?.file && existsSync(d.location.file)) {
+        source = readFileSync(d.location.file, 'utf-8');
+      }
+      return formatDiagnostic(d, source);
+    });
+    throw new Error(`Compilation failed:\n\n${formattedErrors.join('\n\n')}`);
   }
 
   // Pass modules directly to codegen (no bundling needed)
