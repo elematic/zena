@@ -306,6 +306,41 @@ suite('Parser - Classes', () => {
     assert.strictEqual(ctor.initializerList[1].value.type, NodeType.Identifier);
   });
 
+  test('should parse constructor with semicolon body', () => {
+    const input = `
+      class Point {
+        let x: i32;
+        new(x: i32);
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const classDecl = ast.body[0] as ClassDeclaration;
+    const ctor = classDecl.body[1] as MethodDefinition;
+    assert.strictEqual((ctor.name as Identifier).name, CONSTRUCTOR_NAME);
+    assert.ok(ctor.body);
+    assert.strictEqual(ctor.body.body.length, 0);
+  });
+
+  test('should parse constructor with initializer list and semicolon body', () => {
+    const input = `
+      class Point {
+        let x: i32;
+        let y: i32;
+        new(x: i32, y: i32) : x = x, y = y;
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const classDecl = ast.body[0] as ClassDeclaration;
+    const ctor = classDecl.body[2] as MethodDefinition;
+    assert.strictEqual((ctor.name as Identifier).name, CONSTRUCTOR_NAME);
+    assert.ok(ctor.initializerList);
+    assert.strictEqual(ctor.initializerList.length, 2);
+    assert.ok(ctor.body);
+    assert.strictEqual(ctor.body.body.length, 0);
+  });
+
   test('should parse initializer list with expressions', () => {
     const input = `
       class Rectangle {

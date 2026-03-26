@@ -2975,6 +2975,12 @@ export class Parser {
           TokenType.Semi,
           `Expected ';' after ${isAbstract ? 'abstract' : 'declared'} method signature.`,
         );
+      } else if (isConstructor && this.#match(TokenType.Semi)) {
+        body = {
+          type: NodeType.BlockStatement,
+          body: [],
+          loc: this.#locFromToken(this.#previous()),
+        };
       } else {
         this.#consume(TokenType.LBrace, "Expected '{' before method body.");
         body = this.#parseBlockStatement();

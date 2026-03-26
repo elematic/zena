@@ -2032,6 +2032,22 @@ preventing uninitialized field access if the superclass calls virtual methods.
 - `super()` is required for derived classes and must be last
 - Private fields use `#` prefix: `new(x: i32) : #field = x { }`
 
+#### Semicolon Body
+
+Constructors with no body logic can use a semicolon instead of `{}`:
+
+```zena
+class Point {
+  let x: i32;
+  let y: i32;
+  new(x: i32, y: i32) : x = x, y = y;
+}
+
+class Empty {
+  new();
+}
+```
+
 ### Generic Classes
 
 Classes can be generic by specifying type parameters:
