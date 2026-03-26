@@ -357,10 +357,11 @@ export class Parser {
   #parseLogicalOr(): Expression {
     var expr = this.#parseLogicalAnd();
     
-    while (this.#match(TokenType.PipePipe)) {
-      let startToken = this.#previous();
+    while (this.#check(TokenType.PipePipe) || this.#check(TokenType.QuestionQuestion)) {
+      let op = this.#advance();
       let right = this.#parseLogicalAnd();
-      expr = new BinaryExpression('||', expr, right, this.#makeLocation(startToken));
+      let opStr = op.value;
+      expr = new BinaryExpression(opStr, expr, right, this.#makeLocation(op));
     }
     
     return expr;
@@ -448,7 +449,7 @@ export class Parser {
     
     while (true) {
       if (this.#match(TokenType.LParen)) {
-        expr = this.#finishCall(expr);
+        expr = this.#finishCall(expr, false);
       } else if (this.#match(TokenType.Dot)) {
         let name = this.#parseIdentifier();
         expr = new MemberExpression(expr, name, null);
@@ -456,6 +457,19 @@ export class Parser {
         let index = this.#parseExpression();
         this.#consume(TokenType.RBracket, "Expected ']' after index");
         expr = new IndexExpression(expr, index, null);
+      } else if (this.#match(TokenType.QuestionDot)) {
+        let name = this.#parseIdentifier();
+        let member = new MemberExpression(expr, name, null);
+        member.optional = true;
+        expr = member;
+      } else if (this.#match(TokenType.QuestionLBracket)) {
+        let index = this.#parseExpression();
+        this.#consume(TokenType.RBracket, "Expected ']' after index");
+        let indexExpr = new IndexExpression(expr, index, null);
+        indexExpr.optional = true;
+        expr = indexExpr;
+      } else if (this.#match(TokenType.QuestionLParen)) {
+        expr = this.#finishCall(expr, true);
       } else {
         break;
       }
@@ -464,7 +478,7 @@ export class Parser {
     return expr;
   }
   
-  #finishCall(callee: Expression): CallExpression {
+  #finishCall(callee: Expression, optional: boolean): CallExpression {
     let startToken = this.#previous();
     let args = new Array<Expression>(4);
     
@@ -477,7 +491,11 @@ export class Parser {
     
     this.#consume(TokenType.RParen, "Expected ')' after arguments");
     
-    return new CallExpression(callee, args, null, this.#makeLocation(startToken));
+    let call = new CallExpression(callee, args, null, this.#makeLocation(startToken));
+    if (optional) {
+      call.optional = true;
+    }
+    return call;
   }
   
   #parsePrimary(): Expression {

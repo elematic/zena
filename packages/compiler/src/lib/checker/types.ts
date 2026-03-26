@@ -168,6 +168,67 @@ export function isNullableType(type: Type): boolean {
 }
 
 /**
+ * Extracts the non-null part from a type.
+ * For `T | null`, returns `T`.
+ * For `null`, returns `never`.
+ * For non-nullable types, returns the type unchanged.
+ */
+export function getNonNullableType(type: Type, ctx: CheckerContext): Type {
+  if (type.kind === TypeKind.Null) {
+    return Types.Never;
+  }
+  if (type.kind === TypeKind.Union) {
+    const union = type as UnionType;
+    const nonNullTypes = union.types.filter((t) => t.kind !== TypeKind.Null);
+    if (nonNullTypes.length === 0) {
+      return Types.Never;
+    }
+    if (nonNullTypes.length === 1) {
+      return nonNullTypes[0];
+    }
+    // Return a new union without null
+    return {
+      kind: TypeKind.Union,
+      types: nonNullTypes,
+    } as UnionType;
+  }
+  if (type.kind === TypeKind.TypeAlias) {
+    return getNonNullableType((type as TypeAliasType).target, ctx);
+  }
+  // Non-nullable type, return as-is
+  return type;
+}
+
+/**
+ * Creates a nullable version of a type.
+ * For non-null types, returns `T | null`.
+ * For types already containing null, returns the type unchanged.
+ * For `null`, returns `null`.
+ */
+export function makeNullable(type: Type, ctx: CheckerContext): Type {
+  if (type.kind === TypeKind.Null) {
+    return type;
+  }
+  if (type.kind === TypeKind.Union) {
+    const union = type as UnionType;
+    if (union.types.some((t) => t.kind === TypeKind.Null)) {
+      // Already nullable
+      return type;
+    }
+    // Add null to the union
+    return {
+      kind: TypeKind.Union,
+      types: [...union.types, Types.Null],
+    } as UnionType;
+  }
+  // Create T | null
+  return {
+    kind: TypeKind.Union,
+    types: [type, Types.Null],
+  } as UnionType;
+}
+
+/**
  * Widens a literal type to its base type.
  * For example, LiteralType{value: true} -> Types.Boolean
  * This is used for mutable variables (var) to allow reassignment.

@@ -178,3 +178,86 @@ test('boolean boxed to any preserves type identity', async () => {
 - Original issue: `42 is boolean` returned `true` because both used `Box<i32>`
 - Type narrowing issue: `x as i32` after `x is i32` check used narrowed type
   instead of WASM type
+
+## When Auto-Boxing Happens
+
+Auto-boxing occurs when a primitive value must be represented as a reference
+type. Here are all the cases:
+
+### 1. Assignment to `any` Type
+
+The most common case. When assigning a primitive to a variable, field, or
+parameter of type `any`:
+
+```zena
+let x: any = 42;         // i32 → Box<i32>
+let y: any = true;       // boolean → Box<boolean>
+obj.anyField = 3.14;     // f64 → Box<f64>
+```
+
+### 2. Nullable Primitives from Optional Chaining
+
+When optional chaining (`?.`, `?[`, `?()`) accesses a primitive value, the
+result type is `T | null`. Since WASM primitives cannot be null, the value must
+be boxed:
+
+```zena
+class Point { x: i32 = 0; }
+let p: Point | null = null;
+let x = p?.x;  // Type: i32 | null → Represented as Box<i32> | null
+
+let arr: FixedArray<i32> | null = null;
+let elem = arr?[0];  // Type: i32 | null → Represented as Box<i32> | null
+```
+
+**Optimization**: When optional chaining is immediately followed by nullish
+coalescing (`??`) with a primitive fallback, boxing can be avoided entirely.
+This works for both member access (`?.`) and index access (`?[]`):
+
+```zena
+let x = p?.x ?? 0;       // No boxing - result is raw i32
+let y = arr?[0] ?? -1;   // No boxing - result is raw i32
+```
+
+This fusion optimization detects the `optionalExpr ?? fallback` pattern and
+generates a single conditional that returns either the accessed value or the
+fallback directly, skipping the box/unbox cycle.
+
+### 3. Interface Method Returns/Parameters
+
+When a class method's parameter or return type is more specific than the
+interface's:
+
+```zena
+interface Numbered { getValue(): any; }
+class Counter implements Numbered {
+  count: i32 = 0;
+  getValue(): i32 { return this.count; }  // i32 boxed to satisfy 'any' return
+}
+```
+
+### 4. Union Types with Primitives and References (Banned)
+
+Unions that mix primitives with reference types are **prohibited** by the type
+checker to avoid requiring auto-boxing:
+
+```zena
+let x: i32 | string = ...;  // ERROR: Cannot mix primitives with reference types
+```
+
+This is intentional - allowing such unions would require boxing the primitive to
+create a uniform representation, which conflicts with Zena's goal of minimal
+runtime overhead.
+
+## Boxing Avoidance Strategies
+
+To minimize boxing overhead:
+
+1. **Use concrete types**: Avoid `any` when the type is known
+2. **Use `??` with optional chaining**: `p?.x ?? 0` avoids boxing via fusion
+3. **Check null before accessing**: Instead of `match (p?.x)` (boxes the
+   primitive), check `p == null` first then access `p.x` directly
+
+**Note**: `match` expressions on optional chaining (`match (p?.x)`) still
+require boxing because the scrutinee must be stored in a temp variable for
+pattern matching.

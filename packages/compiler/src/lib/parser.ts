@@ -1082,7 +1082,10 @@ export class Parser {
   #parseLogicalOr(): Expression {
     let left = this.#parseLogicalAnd();
 
-    while (this.#match(TokenType.PipePipe)) {
+    while (
+      this.#match(TokenType.PipePipe) ||
+      this.#match(TokenType.QuestionQuestion)
+    ) {
       const operator = this.#previous().value;
       const right = this.#parseLogicalAnd();
       left = {
@@ -1486,6 +1489,26 @@ export class Parser {
               loc: this.#loc(expr, property),
             };
           }
+        } else if (this.#match(TokenType.QuestionDot)) {
+          // Optional member access: expr?.property
+          let property: Identifier;
+          if (this.#match(TokenType.Hash)) {
+            const id = this.#parseIdentifier();
+            property = {
+              type: NodeType.Identifier,
+              name: '#' + id.name,
+              loc: id.loc,
+            };
+          } else {
+            property = this.#parseIdentifier();
+          }
+          expr = {
+            type: NodeType.MemberExpression,
+            object: expr,
+            property,
+            optional: true,
+            loc: this.#loc(expr, property),
+          };
         } else if (this.#match(TokenType.LBracket)) {
           const index = this.#parseExpression();
           this.#consume(TokenType.RBracket, "Expected ']' after index.");
@@ -1494,6 +1517,18 @@ export class Parser {
             type: NodeType.IndexExpression,
             object: expr,
             index,
+            loc: this.#loc(expr, endToken),
+          };
+        } else if (this.#match(TokenType.QuestionLBracket)) {
+          // Optional index access: expr?[index]
+          const index = this.#parseExpression();
+          this.#consume(TokenType.RBracket, "Expected ']' after index.");
+          const endToken = this.#previous();
+          expr = {
+            type: NodeType.IndexExpression,
+            object: expr,
+            index,
+            optional: true,
             loc: this.#loc(expr, endToken),
           };
         } else {
@@ -1508,6 +1543,9 @@ export class Parser {
     while (true) {
       if (this.#match(TokenType.LParen)) {
         expr = this.#finishCall(expr);
+      } else if (this.#match(TokenType.QuestionLParen)) {
+        // Optional call: expr?()
+        expr = this.#finishCall(expr, undefined, true);
       } else if (this.#match(TokenType.Dot)) {
         // Check for symbol member access: obj.:symbol or obj.:Iface.symbol
         if (this.#match(TokenType.Colon)) {
@@ -1562,6 +1600,26 @@ export class Parser {
             loc: this.#loc(expr, property),
           };
         }
+      } else if (this.#match(TokenType.QuestionDot)) {
+        // Optional member access: expr?.property
+        let property: Identifier;
+        if (this.#match(TokenType.Hash)) {
+          const id = this.#parseIdentifier();
+          property = {
+            type: NodeType.Identifier,
+            name: '#' + id.name,
+            loc: id.loc,
+          };
+        } else {
+          property = this.#parseIdentifier();
+        }
+        expr = {
+          type: NodeType.MemberExpression,
+          object: expr,
+          property,
+          optional: true,
+          loc: this.#loc(expr, property),
+        };
       } else if (this.#match(TokenType.LBracket)) {
         const index = this.#parseExpression();
         this.#consume(TokenType.RBracket, "Expected ']' after index.");
@@ -1570,6 +1628,18 @@ export class Parser {
           type: NodeType.IndexExpression,
           object: expr,
           index,
+          loc: this.#loc(expr, endToken),
+        };
+      } else if (this.#match(TokenType.QuestionLBracket)) {
+        // Optional index access: expr?[index]
+        const index = this.#parseExpression();
+        this.#consume(TokenType.RBracket, "Expected ']' after index.");
+        const endToken = this.#previous();
+        expr = {
+          type: NodeType.IndexExpression,
+          object: expr,
+          index,
+          optional: true,
           loc: this.#loc(expr, endToken),
         };
       } else if (this.#check(TokenType.Less) && this.#isGenericCall()) {
@@ -1636,6 +1706,7 @@ export class Parser {
   #finishCall(
     callee: Expression,
     typeArguments?: TypeAnnotation[],
+    optional?: boolean,
   ): CallExpression {
     const args: Expression[] = [];
     if (!this.#check(TokenType.RParen)) {
@@ -1649,6 +1720,7 @@ export class Parser {
     return {
       type: NodeType.CallExpression,
       callee,
+      optional,
       typeArguments,
       arguments: args,
       loc: this.#loc(callee, endToken),

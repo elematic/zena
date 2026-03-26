@@ -1201,6 +1201,59 @@ not allowed**; cast one to the other first.
 
 Operands must be of type `boolean`.
 
+### Nullish Coalescing (`??`)
+
+The nullish coalescing operator `??` returns its right-hand operand when the
+left-hand operand is `null`, and the left-hand operand otherwise. It is a
+short-circuiting operator: the right side is only evaluated if the left is
+`null`.
+
+```zena
+let name: string | null = null;
+let display = name ?? 'Anonymous';  // 'Anonymous'
+
+let value: string | null = 'hello';
+let result = value ?? 'default';    // 'hello'
+```
+
+`??` has the same precedence as `||`. Unlike JavaScript, Zena allows mixing
+`??` with `||` and `&&` without parentheses.
+
+### Optional Chaining (`?.`, `?[]`, `?()`)
+
+Optional chaining operators allow safe access to properties, elements, and
+methods on values that may be `null`. If the value before the operator is
+`null`, the entire chain short-circuits and evaluates to `null`.
+
+```zena
+class User {
+  name: string;
+  new(name: string) { this.name = name; }
+}
+
+let user: User | null = null;
+
+// Property access
+let name = user?.name;       // null (not a runtime error)
+
+// Index access
+let items: Items | null = null;
+let first = items?[0];       // null
+
+// Method call
+let callback: ((a: i32) => i32) | null = null;
+let result = callback?(42);  // null
+```
+
+Optional chaining can be combined with nullish coalescing to provide defaults:
+
+```zena
+let display = user?.name ?? 'Anonymous';
+```
+
+The result type of an optional chain is `T | null`, where `T` is the type of
+the accessed property, element, or call result.
+
 ### Operator Precedence
 
 Operators are listed from highest to lowest precedence:
@@ -1216,7 +1269,7 @@ Operators are listed from highest to lowest precedence:
 9. Bitwise XOR (`^`)
 10. Bitwise OR (`|`)
 11. Logical AND (`&&`)
-12. Logical OR (`||`)
+12. Logical OR / Nullish Coalescing (`||`, `??`)
 13. Pipeline (`|>`)
 14. Assignment (`=`)
 

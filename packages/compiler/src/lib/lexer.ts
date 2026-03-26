@@ -84,6 +84,10 @@ export const TokenType = {
   AmpersandAmpersand: 'AmpersandAmpersand',
   Caret: 'Caret',
   Question: 'Question',
+  QuestionQuestion: 'QuestionQuestion',
+  QuestionDot: 'QuestionDot',
+  QuestionLBracket: 'QuestionLBracket',
+  QuestionLParen: 'QuestionLParen',
 
   // Punctuation
   LParen: 'LParen',
@@ -699,14 +703,56 @@ export function tokenize(source: string): Token[] {
         });
         break;
       case '?':
-        tokens.push({
-          type: TokenType.Question,
-          value: '?',
-          line,
-          column: startColumn,
-          start: startIndex,
-          end: current,
-        });
+        if (peek() === '?') {
+          advance();
+          tokens.push({
+            type: TokenType.QuestionQuestion,
+            value: '??',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else if (peek() === '.') {
+          advance();
+          tokens.push({
+            type: TokenType.QuestionDot,
+            value: '?.',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else if (peek() === '[') {
+          advance();
+          tokens.push({
+            type: TokenType.QuestionLBracket,
+            value: '?[',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else if (peek() === '(') {
+          advance();
+          tokens.push({
+            type: TokenType.QuestionLParen,
+            value: '?(',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Question,
+            value: '?',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        }
         break;
       case '(':
         tokens.push({

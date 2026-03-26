@@ -1361,11 +1361,154 @@ function generateArrayLiteral(
   body.push(...WasmModule.encodeSignedLEB128(expr.elements.length));
 }
 
+/**
+ * Generate optional chaining index access: obj?[index]
+ * Returns null if obj is null, otherwise returns obj[index]
+ */
+function generateOptionalIndexExpression(
+  ctx: CodegenContext,
+  expr: IndexExpression,
+  body: number[],
+) {
+  // Generate object and save to local
+  generateExpression(ctx, expr.object, body);
+  const objWasmType = inferType(ctx, expr.object);
+  const tempObj = ctx.declareLocal('$$optional_idx_obj', objWasmType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempObj));
+
+  // Check if object is null
+  body.push(Opcode.ref_is_null);
+  body.push(Opcode.i32_eqz); // Convert to "is not null"
+
+  // Determine result type from inferred type
+  let results: number[][] = [];
+  if (expr.inferredType) {
+    results = mapReturnTypeToWasmResults(ctx, expr.inferredType);
+  }
+
+  // Check if we need to box a primitive result
+  // If expr.inferredType is T | null and T is primitive, we need boxing
+  let needsBoxing = false;
+  let primitiveInnerType: Type | null = null;
+  if (expr.inferredType && expr.inferredType.kind === TypeKind.Union) {
+    const unionType = expr.inferredType as UnionType;
+    const nonNullTypes = unionType.types.filter(
+      (t) => t.kind !== TypeKind.Null,
+    );
+    if (nonNullTypes.length === 1) {
+      const innerType = nonNullTypes[0];
+      if (
+        innerType.kind === TypeKind.Number ||
+        innerType.kind === TypeKind.Boolean
+      ) {
+        needsBoxing = true;
+        primitiveInnerType = innerType;
+      }
+    }
+  }
+
+  body.push(Opcode.if);
+  if (results.length === 0) {
+    body.push(ValType.void);
+  } else {
+    const blockTypeIndex = ctx.module.addType([], results);
+    body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
+  }
+
+  // Then block (object is not null) - access the index
+  // Put the object back on the stack
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempObj));
+
+  // Generate the index expression
+  generateExpression(ctx, expr.index, body);
+
+  // Now perform the actual index access
+  // We need to do this manually since we've already pushed object and index
+  generateIndexAccessAfterOperands(ctx, expr, body);
+
+  // Box the primitive if needed - mapCheckerTypeToWasmType returns Box<T> for T | null
+  if (needsBoxing && primitiveInnerType) {
+    const primitiveWasmType = mapCheckerTypeToWasmType(ctx, primitiveInnerType);
+    boxPrimitive(ctx, primitiveWasmType, body, primitiveInnerType);
+  }
+
+  body.push(Opcode.else);
+
+  // Else block (object is null) - return null or default
+  if (results.length > 0) {
+    body.push(Opcode.ref_null);
+    // Get the heap type from the result type
+    body.push(...results[0].slice(1)); // Skip the first byte (ref type marker) and use heap type
+  }
+
+  body.push(Opcode.end);
+}
+
+/**
+ * Generate the index access operation after object and index are already on the stack.
+ * This handles operator[], array.get, etc.
+ */
+function generateIndexAccessAfterOperands(
+  ctx: CodegenContext,
+  expr: IndexExpression,
+  body: number[],
+) {
+  // Check if this is an overloaded operator[] call on a user-defined class (not extension class)
+  if (expr.resolvedOperatorMethod && expr.object.inferredType) {
+    const objectCheckerType = expr.object.inferredType;
+
+    if (objectCheckerType.kind === TypeKind.Class) {
+      let classType = objectCheckerType as ClassType;
+      if (ctx.currentTypeArguments.size > 0 && ctx.checkerContext) {
+        classType = ctx.checkerContext.substituteTypeParams(
+          classType,
+          ctx.currentTypeArguments,
+        ) as ClassType;
+      }
+
+      const classInfo = ctx.getClassInfo(classType);
+      if (classInfo && !classInfo.isExtension) {
+        const mangledName = '[]' + getSignatureKey(expr.resolvedOperatorMethod);
+        let methodInfo = classInfo.methods.get(mangledName);
+        if (!methodInfo) {
+          methodInfo = classInfo.methods.get('[]');
+        }
+
+        if (methodInfo) {
+          if (methodInfo.intrinsic) {
+            // For intrinsics, we can't use the normal path since operands are already on stack
+            throw new Error(
+              'Optional chaining on intrinsic operator[] not yet supported',
+            );
+          }
+          body.push(Opcode.call);
+          body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+          return;
+        }
+      }
+    }
+  }
+
+  // Handle array access (WASM array.get)
+  const objectType = inferType(ctx, expr.object);
+  const structTypeIndex = getHeapTypeIndex(ctx, objectType);
+
+  // Assume it's a GC array - use array.get with the type index
+  body.push(0xfb, GcOpcode.array_get);
+  body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+}
+
 function generateIndexExpression(
   ctx: CodegenContext,
   expr: IndexExpression,
   body: number[],
 ) {
+  // Handle optional chaining: obj?[index]
+  if (expr.optional) {
+    generateOptionalIndexExpression(ctx, expr, body);
+    return;
+  }
+
   // Check if this is an overloaded operator[] call on a user-defined class (not extension class)
   if (expr.resolvedOperatorMethod && expr.object.inferredType) {
     const objectCheckerType = expr.object.inferredType;
@@ -2325,11 +2468,446 @@ function generateNewExpression(
   body.push(...WasmModule.encodeSignedLEB128(tempLocal));
 }
 
+/**
+ * Try to generate fused code for optional chaining with nullish coalescing.
+ * Pattern: p?.x ?? fallback where x is primitive
+ *
+ * This optimization avoids boxing primitives. Instead of:
+ *   box(p.x) ?? fallback -> unbox
+ * We generate:
+ *   if (p != null) { p.x } else { fallback }
+ *
+ * Returns true if the fusion was applied, false otherwise.
+ */
+function tryGenerateFusedOptionalNullish(
+  ctx: CodegenContext,
+  expr: BinaryExpression,
+  body: number[],
+): boolean {
+  const left = expr.left;
+
+  // Handle optional member expressions (p?.x)
+  if (
+    left.type === NodeType.MemberExpression &&
+    (left as MemberExpression).optional
+  ) {
+    return tryGenerateFusedOptionalMemberNullish(
+      ctx,
+      expr,
+      left as MemberExpression,
+      body,
+    );
+  }
+
+  // Handle optional index expressions (arr?[i])
+  if (
+    left.type === NodeType.IndexExpression &&
+    (left as IndexExpression).optional
+  ) {
+    return tryGenerateFusedOptionalIndexNullish(
+      ctx,
+      expr,
+      left as IndexExpression,
+      body,
+    );
+  }
+
+  return false;
+}
+
+/**
+ * Try to generate fused code for optional member access with nullish coalescing.
+ */
+function tryGenerateFusedOptionalMemberNullish(
+  ctx: CodegenContext,
+  expr: BinaryExpression,
+  memberExpr: MemberExpression,
+  body: number[],
+): boolean {
+  // Check if the property access would result in a primitive that needs boxing
+  // The inferred type of the member expression is T | null where T is the actual field type
+  if (
+    !memberExpr.inferredType ||
+    memberExpr.inferredType.kind !== TypeKind.Union
+  ) {
+    return false;
+  }
+
+  const unionType = memberExpr.inferredType as UnionType;
+  const nonNullTypes = unionType.types.filter((t) => t.kind !== TypeKind.Null);
+  if (nonNullTypes.length !== 1) {
+    return false;
+  }
+
+  const innerType = nonNullTypes[0];
+  if (
+    innerType.kind !== TypeKind.Number &&
+    innerType.kind !== TypeKind.Boolean
+  ) {
+    return false; // Not a primitive, no optimization needed
+  }
+
+  // We have an optional member access on a primitive field with ?? - apply fusion!
+
+  // Generate object and save to local
+  generateExpression(ctx, memberExpr.object, body);
+  const objWasmType = inferType(ctx, memberExpr.object);
+  const tempObj = ctx.declareLocal('$$fused_obj', objWasmType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempObj));
+
+  // Check if object is null
+  body.push(Opcode.ref_is_null);
+  body.push(Opcode.i32_eqz); // Convert to "is not null"
+
+  // Determine result type - should be the primitive type (result of ?? expression)
+  let results: number[][] = [];
+  if (expr.inferredType) {
+    results = mapReturnTypeToWasmResults(ctx, expr.inferredType);
+  }
+
+  body.push(Opcode.if);
+  if (results.length === 0) {
+    body.push(ValType.void);
+  } else {
+    const blockTypeIndex = ctx.module.addType([], results);
+    body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
+  }
+
+  // Then block (object is not null) - access the property directly (no boxing!)
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempObj));
+
+  const binding = ctx.semanticContext.getResolvedBinding(memberExpr);
+  if (binding) {
+    const memberBinding = binding as
+      | FieldBinding
+      | GetterBinding
+      | MethodBinding
+      | RecordFieldBinding;
+    if (
+      memberBinding.kind === 'field' ||
+      memberBinding.kind === 'getter' ||
+      memberBinding.kind === 'record-field'
+    ) {
+      // Generate member access with object already on stack - no boxing
+      generateMemberFromBindingWithObjectOnStack(
+        ctx,
+        memberBinding,
+        memberExpr.object,
+        body,
+      );
+    } else {
+      return false; // Method reference not supported in fusion
+    }
+  } else {
+    return false; // No binding, can't optimize
+  }
+
+  body.push(Opcode.else);
+
+  // Else block (object is null) - return fallback value
+  generateExpression(ctx, expr.right, body);
+
+  body.push(Opcode.end);
+
+  return true;
+}
+
+/**
+ * Try to generate fused code for optional index access with nullish coalescing.
+ */
+function tryGenerateFusedOptionalIndexNullish(
+  ctx: CodegenContext,
+  expr: BinaryExpression,
+  indexExpr: IndexExpression,
+  body: number[],
+): boolean {
+  // Check if the index access would result in a primitive that needs boxing
+  // The inferred type of the index expression is T | null where T is the element type
+  if (
+    !indexExpr.inferredType ||
+    indexExpr.inferredType.kind !== TypeKind.Union
+  ) {
+    return false;
+  }
+
+  const unionType = indexExpr.inferredType as UnionType;
+  const nonNullTypes = unionType.types.filter((t) => t.kind !== TypeKind.Null);
+  if (nonNullTypes.length !== 1) {
+    return false;
+  }
+
+  const innerType = nonNullTypes[0];
+  if (
+    innerType.kind !== TypeKind.Number &&
+    innerType.kind !== TypeKind.Boolean
+  ) {
+    return false; // Not a primitive, no optimization needed
+  }
+
+  // We have an optional index access on a primitive element with ?? - apply fusion!
+
+  // Generate object and save to local
+  generateExpression(ctx, indexExpr.object, body);
+  const objWasmType = inferType(ctx, indexExpr.object);
+  const tempObj = ctx.declareLocal('$$fused_idx_obj', objWasmType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempObj));
+
+  // Check if object is null
+  body.push(Opcode.ref_is_null);
+  body.push(Opcode.i32_eqz); // Convert to "is not null"
+
+  // Determine result type - should be the primitive type (result of ?? expression)
+  let results: number[][] = [];
+  if (expr.inferredType) {
+    results = mapReturnTypeToWasmResults(ctx, expr.inferredType);
+  }
+
+  body.push(Opcode.if);
+  if (results.length === 0) {
+    body.push(ValType.void);
+  } else {
+    const blockTypeIndex = ctx.module.addType([], results);
+    body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
+  }
+
+  // Then block (object is not null) - access the index directly (no boxing!)
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempObj));
+
+  // Generate the index expression
+  generateExpression(ctx, indexExpr.index, body);
+
+  // Perform the actual index access (no boxing!)
+  generateIndexAccessAfterOperands(ctx, indexExpr, body);
+
+  body.push(Opcode.else);
+
+  // Else block (object is null) - return fallback value
+  generateExpression(ctx, expr.right, body);
+
+  body.push(Opcode.end);
+
+  return true;
+}
+
+/**
+ * Generate optional chaining member access: obj?.property
+ * Returns null if obj is null, otherwise returns obj.property
+ */
+function generateOptionalMemberExpression(
+  ctx: CodegenContext,
+  expr: MemberExpression,
+  body: number[],
+) {
+  // Generate object and save to local
+  generateExpression(ctx, expr.object, body);
+  const objWasmType = inferType(ctx, expr.object);
+  const tempObj = ctx.declareLocal('$$optional_obj', objWasmType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempObj));
+
+  // Check if object is null
+  body.push(Opcode.ref_is_null);
+  body.push(Opcode.i32_eqz); // Convert to "is not null"
+
+  // Determine result type from inferred type
+  let results: number[][] = [];
+  if (expr.inferredType) {
+    results = mapReturnTypeToWasmResults(ctx, expr.inferredType);
+  }
+
+  // Check if we need to box a primitive result
+  // If expr.inferredType is T | null and T is primitive, we need boxing
+  let needsBoxing = false;
+  let primitiveInnerType: Type | null = null;
+  if (expr.inferredType && expr.inferredType.kind === TypeKind.Union) {
+    const unionType = expr.inferredType as UnionType;
+    const nonNullTypes = unionType.types.filter(
+      (t) => t.kind !== TypeKind.Null,
+    );
+    if (nonNullTypes.length === 1) {
+      const innerType = nonNullTypes[0];
+      if (
+        innerType.kind === TypeKind.Number ||
+        innerType.kind === TypeKind.Boolean
+      ) {
+        needsBoxing = true;
+        primitiveInnerType = innerType;
+      }
+    }
+  }
+
+  body.push(Opcode.if);
+  if (results.length === 0) {
+    body.push(ValType.void);
+  } else {
+    const blockTypeIndex = ctx.module.addType([], results);
+    body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
+  }
+
+  // Then block (object is not null) - access the property
+  // Load the object from the local
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempObj));
+
+  // Now generate the member access with object already on stack
+  const binding = ctx.semanticContext.getResolvedBinding(expr);
+  if (binding) {
+    const memberBinding = binding as
+      | FieldBinding
+      | GetterBinding
+      | MethodBinding
+      | RecordFieldBinding;
+    if (
+      memberBinding.kind === 'field' ||
+      memberBinding.kind === 'getter' ||
+      memberBinding.kind === 'record-field'
+    ) {
+      // Generate member access with object already on stack
+      generateMemberFromBindingWithObjectOnStack(
+        ctx,
+        memberBinding,
+        expr.object,
+        body,
+      );
+
+      // Box the primitive if needed - mapCheckerTypeToWasmType returns Box<T> for T | null
+      if (needsBoxing && primitiveInnerType) {
+        const primitiveWasmType = mapCheckerTypeToWasmType(
+          ctx,
+          primitiveInnerType,
+        );
+        boxPrimitive(ctx, primitiveWasmType, body, primitiveInnerType);
+      }
+    } else {
+      throw new Error(
+        `Optional chaining on method reference not yet supported`,
+      );
+    }
+  } else {
+    throw new Error(
+      `Optional chaining requires resolved binding for member '${expr.property.name}'`,
+    );
+  }
+
+  body.push(Opcode.else);
+
+  // Else block (object is null) - return null
+  // Push null of the appropriate type
+  if (results.length > 0) {
+    body.push(Opcode.ref_null);
+    // Get the heap type from the result type
+    body.push(...results[0].slice(1)); // Skip the first byte (ref type marker) and use heap type
+  }
+
+  body.push(Opcode.end);
+}
+
+/**
+ * Generate member access from binding when object is already on the stack.
+ */
+function generateMemberFromBindingWithObjectOnStack(
+  ctx: CodegenContext,
+  binding: FieldBinding | GetterBinding | RecordFieldBinding,
+  objectExpr: Expression,
+  body: number[],
+): void {
+  if (binding.kind === 'field') {
+    // Get struct type and field index
+    let classType = binding.classType;
+    if (
+      ctx.currentTypeArguments.size > 0 &&
+      ctx.checkerContext &&
+      classType.kind === TypeKind.Class
+    ) {
+      classType = ctx.checkerContext.substituteTypeParams(
+        classType,
+        ctx.currentTypeArguments,
+      ) as ClassType;
+    }
+
+    if (classType.kind !== TypeKind.Class) {
+      throw new Error(`Field access on non-class type: ${classType.kind}`);
+    }
+
+    const classInfo = ctx.getClassInfo(classType as ClassType);
+    if (!classInfo) {
+      throw new Error(
+        `Class info not found for ${(classType as ClassType).name}`,
+      );
+    }
+
+    const fieldInfo = classInfo.fields.get(binding.fieldName);
+    if (!fieldInfo) {
+      throw new Error(`Field '${binding.fieldName}' not found`);
+    }
+
+    // Cast to concrete type if needed (ref.cast without null)
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+
+    // struct.get
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+    return;
+  }
+
+  if (binding.kind === 'getter') {
+    // Call the getter method
+    let classType = binding.classType;
+    if (
+      ctx.currentTypeArguments.size > 0 &&
+      ctx.checkerContext &&
+      classType.kind === TypeKind.Class
+    ) {
+      classType = ctx.checkerContext.substituteTypeParams(
+        classType,
+        ctx.currentTypeArguments,
+      ) as ClassType;
+    }
+
+    if (classType.kind !== TypeKind.Class) {
+      throw new Error(`Getter access on non-class type: ${classType.kind}`);
+    }
+
+    const classInfo = ctx.getClassInfo(classType as ClassType);
+    if (!classInfo) {
+      throw new Error(
+        `Class info not found for ${(classType as ClassType).name}`,
+      );
+    }
+
+    const getterName = 'get_' + binding.methodName.replace('get:', '');
+    const methodInfo = classInfo.methods.get(getterName);
+    if (!methodInfo) {
+      throw new Error(`Getter '${getterName}' not found`);
+    }
+
+    // Cast and call
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+
+    body.push(Opcode.call);
+    body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+    return;
+  }
+
+  if (binding.kind === 'record-field') {
+    // Record field access - use vtable dispatch for type safety
+    // For now, throw an error as record optional chaining is complex
+    throw new Error('Optional chaining on record fields not yet supported');
+  }
+}
+
 function generateMemberExpression(
   ctx: CodegenContext,
   expr: MemberExpression,
   body: number[],
 ) {
+  // Handle optional chaining: obj?.property
+  if (expr.optional) {
+    generateOptionalMemberExpression(ctx, expr, body);
+    return;
+  }
+
   // Handle symbol member access: obj.:symbol
   if (expr.isSymbolAccess && expr.resolvedSymbol) {
     generateSymbolMemberAccess(ctx, expr, body);
@@ -2449,11 +3027,168 @@ function generateThisExpression(
   }
 }
 
+/**
+ * Generate optional chaining call: func?()
+ * Returns null if func is null, otherwise returns func()
+ */
+function generateOptionalCallExpression(
+  ctx: CodegenContext,
+  expr: CallExpression,
+  body: number[],
+) {
+  // Generate callee (closure struct) and save to local
+  generateExpression(ctx, expr.callee, body);
+  const calleeWasmType = inferType(ctx, expr.callee);
+  const tempCallee = ctx.declareLocal('$$optional_callee', calleeWasmType);
+  body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempCallee));
+
+  // Check if callee is null
+  body.push(Opcode.ref_is_null);
+  body.push(Opcode.i32_eqz); // Convert to "is not null"
+
+  // Determine result type from inferred type
+  let results: number[][] = [];
+  if (expr.inferredType) {
+    results = mapReturnTypeToWasmResults(ctx, expr.inferredType);
+  }
+
+  // Check if we need to box a primitive result
+  // If expr.inferredType is T | null and T is primitive, we need boxing
+  let needsBoxing = false;
+  let primitiveInnerType: Type | null = null;
+  if (expr.inferredType && expr.inferredType.kind === TypeKind.Union) {
+    const unionType = expr.inferredType as UnionType;
+    const nonNullTypes = unionType.types.filter(
+      (t) => t.kind !== TypeKind.Null,
+    );
+    if (nonNullTypes.length === 1) {
+      const innerType = nonNullTypes[0];
+      if (
+        innerType.kind === TypeKind.Number ||
+        innerType.kind === TypeKind.Boolean
+      ) {
+        needsBoxing = true;
+        primitiveInnerType = innerType;
+      }
+    }
+  }
+
+  body.push(Opcode.if);
+  if (results.length === 0) {
+    body.push(ValType.void);
+  } else {
+    const blockTypeIndex = ctx.module.addType([], results);
+    body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
+  }
+
+  // Then block (callee is not null) - call the function
+  //
+  // The callee is a closure struct with:
+  // - Field 0: function reference
+  // - Field 1: captured context
+  //
+  // We need to call it properly: push context, push args, push func ref, call_ref
+
+  // Extract the function type from the callee's checker type
+  let calleeCheckerType = expr.callee.inferredType;
+  if (!calleeCheckerType) {
+    throw new Error('Optional call requires inferred type for callee');
+  }
+
+  // Extract function type from union if present (FunctionType | null)
+  if (calleeCheckerType.kind === TypeKind.Union) {
+    const unionType = calleeCheckerType as UnionType;
+    const funcTypes = unionType.types.filter(
+      (t) => t.kind === TypeKind.Function,
+    );
+    if (funcTypes.length === 0) {
+      throw new Error('Optional call requires function type in callee union');
+    }
+    calleeCheckerType = funcTypes[0];
+  }
+
+  if (calleeCheckerType.kind !== TypeKind.Function) {
+    throw new Error('Optional call requires function type for callee');
+  }
+
+  // Get the closure struct type for this function type
+  const closureWasmType = mapCheckerTypeToWasmType(ctx, calleeCheckerType);
+  const closureTypeIndex = decodeTypeIndex(closureWasmType);
+  const closureInfo = ctx.closureStructs.get(closureTypeIndex);
+
+  if (!closureInfo) {
+    throw new Error(
+      'Optional call on non-closure type - closure info not found',
+    );
+  }
+
+  // Get function type from closure struct (field 0 is the func ref)
+  const funcRefTypeIndex = ctx.module.getStructFieldType(closureTypeIndex, 0);
+  const funcTypeIndex = decodeTypeIndex(funcRefTypeIndex);
+
+  // 1. Push context (field 1 of closure struct)
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempCallee));
+  // Cast to the closure struct type (in case the local has a more general type)
+  body.push(0xfb, GcOpcode.ref_cast_null);
+  body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
+  body.push(1); // Field 1: context
+
+  // 2. Generate arguments
+  const sigParams = ctx.module.getFunctionTypeParams(funcTypeIndex);
+  // sigParams[0] is context, so actual params start at index 1
+  for (let i = 0; i < expr.arguments.length; i++) {
+    const arg = expr.arguments[i];
+    const expectedType = sigParams[i + 1]; // +1 to skip context
+    if (expectedType) {
+      generateAdaptedArgument(ctx, arg, expectedType, body);
+    } else {
+      generateExpression(ctx, arg, body);
+    }
+  }
+
+  // 3. Push function reference (field 0 of closure struct)
+  body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempCallee));
+  body.push(0xfb, GcOpcode.ref_cast_null);
+  body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
+  body.push(0xfb, GcOpcode.struct_get);
+  body.push(...WasmModule.encodeSignedLEB128(closureTypeIndex));
+  body.push(0); // Field 0: func ref
+
+  // 4. call_ref
+  body.push(Opcode.call_ref);
+  body.push(...WasmModule.encodeSignedLEB128(funcTypeIndex));
+
+  // Box the primitive if needed - mapCheckerTypeToWasmType returns Box<T> for T | null
+  if (needsBoxing && primitiveInnerType) {
+    const primitiveWasmType = mapCheckerTypeToWasmType(ctx, primitiveInnerType);
+    boxPrimitive(ctx, primitiveWasmType, body, primitiveInnerType);
+  }
+
+  body.push(Opcode.else);
+
+  // Else block (callee is null) - return null
+  if (results.length > 0) {
+    body.push(Opcode.ref_null);
+    // Get the heap type from the result type
+    body.push(...results[0].slice(1)); // Skip the first byte (ref type marker) and use heap type
+  }
+
+  body.push(Opcode.end);
+}
+
 function generateCallExpression(
   ctx: CodegenContext,
   expr: CallExpression,
   body: number[],
 ) {
+  // Handle optional chaining: func?()
+  if (expr.optional) {
+    generateOptionalCallExpression(ctx, expr, body);
+    return;
+  }
+
   if ((expr.callee as any).type === NodeType.SuperExpression) {
     if (ctx.currentClass && ctx.currentClass.isExtension) {
       // Extension class super call: super(array_instance)
@@ -4386,6 +5121,91 @@ function generateBinaryExpression(
     // Else block (left was false)
     generateExpression(ctx, expr.right, body);
     // Stack: [right]
+
+    body.push(Opcode.end);
+    return;
+  }
+
+  if (expr.operator === '??') {
+    // Nullish coalescing: left ?? right
+    // if (left != null) { return left } else { return right }
+
+    // Optimization: Fuse optional chaining with ?? to avoid boxing primitives
+    // Pattern: p?.x ?? fallback where x is primitive
+    // Instead of: box(p.x) ?? fallback -> unbox
+    // Generate:   if (p != null) { p.x } else { fallback }
+    if (tryGenerateFusedOptionalNullish(ctx, expr, body)) {
+      return;
+    }
+
+    // Generate left and save to local
+    generateExpression(ctx, expr.left, body);
+    const leftWasmType = inferType(ctx, expr.left);
+    const tempLeft = ctx.declareLocal('$$nullish_left', leftWasmType);
+    body.push(Opcode.local_tee, ...WasmModule.encodeSignedLEB128(tempLeft));
+
+    // Check if left is null
+    body.push(Opcode.ref_is_null);
+    body.push(Opcode.i32_eqz); // Convert to "is not null"
+
+    // Determine result type from inferred type
+    let results: number[][] = [];
+    if (expr.inferredType) {
+      results = mapReturnTypeToWasmResults(ctx, expr.inferredType);
+    }
+
+    // Check if we need to unbox: left is Box<T> | null, result is raw T
+    // This happens with p?.x ?? 0 where p?.x returns Box<i32> | null, result is i32
+    let needsUnboxing = false;
+    let primitiveInnerType: Type | null = null;
+    if (
+      expr.left.inferredType &&
+      expr.left.inferredType.kind === TypeKind.Union
+    ) {
+      const unionType = expr.left.inferredType as UnionType;
+      const nonNullTypes = unionType.types.filter(
+        (t) => t.kind !== TypeKind.Null,
+      );
+      if (nonNullTypes.length === 1) {
+        const innerType = nonNullTypes[0];
+        if (
+          innerType.kind === TypeKind.Number ||
+          innerType.kind === TypeKind.Boolean
+        ) {
+          // Left is T | null where T is primitive
+          // Check if result is the raw primitive (i.e., no boxing needed in result)
+          if (
+            expr.inferredType &&
+            (expr.inferredType.kind === TypeKind.Number ||
+              expr.inferredType.kind === TypeKind.Boolean)
+          ) {
+            needsUnboxing = true;
+            primitiveInnerType = innerType;
+          }
+        }
+      }
+    }
+
+    body.push(Opcode.if);
+    if (results.length === 0) {
+      body.push(ValType.void);
+    } else {
+      const blockTypeIndex = ctx.module.addType([], results);
+      body.push(...WasmModule.encodeSignedLEB128(blockTypeIndex));
+    }
+
+    // Then block (left is not null) - return left (possibly unboxed)
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLeft));
+
+    // Unbox if left was a boxed primitive and result is raw primitive
+    if (needsUnboxing && primitiveInnerType) {
+      unboxPrimitive(ctx, results[0], body, primitiveInnerType);
+    }
+
+    body.push(Opcode.else);
+
+    // Else block (left is null) - return right
+    generateExpression(ctx, expr.right, body);
 
     body.push(Opcode.end);
     return;

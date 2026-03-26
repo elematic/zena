@@ -181,6 +181,9 @@ import {
   substituteType,
   validateType,
   validateNoInlineTuple,
+  isNullableType,
+  getNonNullableType,
+  makeNullable,
 } from './types.js';
 import {
   checkStatement,
@@ -1358,7 +1361,28 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     return Types.Void;
   }
 
-  const calleeType = checkExpression(ctx, expr.callee);
+  let calleeType = checkExpression(ctx, expr.callee);
+
+  // Handle optional call: expr?()
+  // If the callee is nullable, we extract the non-null type for the call
+  // and make the result nullable. If non-nullable, optional call is a no-op.
+  let shouldMakeNullable = false;
+  if (expr.optional && isNullableType(calleeType)) {
+    shouldMakeNullable = true;
+    calleeType = getNonNullableType(calleeType, ctx);
+  }
+
+  // Helper to wrap result in nullable if needed
+  const wrapResult = (type: Type): Type => {
+    if (
+      shouldMakeNullable &&
+      type.kind !== TypeKind.Unknown &&
+      type.kind !== TypeKind.Void
+    ) {
+      return makeNullable(type, ctx);
+    }
+    return type;
+  };
 
   // Determine expected parameter types for contextual typing of closures
   // For non-generic functions, we know the parameter types immediately.
@@ -1441,7 +1465,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       }
     }
 
-    return returnType || Types.Void;
+    return wrapResult(returnType || Types.Void);
   }
 
   if (calleeType.kind !== TypeKind.Function) {
@@ -1642,7 +1666,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     }
   }
 
-  return funcType.returnType;
+  return wrapResult(funcType.returnType);
 }
 
 function inferTypeArguments(
@@ -2058,6 +2082,33 @@ function checkBinaryExpression(
       ctx.exitScope();
     } else {
       right = checkExpression(ctx, expr.right);
+    }
+  } else if (expr.operator === '??') {
+    // Nullish coalescing operator: lhs ?? rhs
+    // If lhs is null, returns rhs; otherwise returns lhs
+    left = checkExpression(ctx, expr.left);
+    right = checkExpression(ctx, expr.right);
+
+    if (!isNullableType(left)) {
+      // Left is not nullable, ?? is a no-op, result is left type
+      // This could be a warning in the future
+      return left;
+    }
+
+    // Result is non-null left type | right type
+    const nonNullLeft = getNonNullableType(left, ctx);
+    if (isAssignableTo(ctx, right, nonNullLeft)) {
+      // Right is subtype of non-null left, result is non-null left
+      return nonNullLeft;
+    } else if (isAssignableTo(ctx, nonNullLeft, right)) {
+      // Non-null left is subtype of right, result is right
+      return right;
+    } else {
+      // Create union of non-null left and right
+      return {
+        kind: TypeKind.Union,
+        types: [nonNullLeft, right],
+      } as UnionType;
     }
   } else if (leftIsLiteral && !rightIsLiteral) {
     // Check right first to get context for left (e.g., `0 < x` where x is i64)
@@ -2772,11 +2823,28 @@ function checkMemberExpression(
   ctx: CheckerContext,
   expr: MemberExpression,
 ): Type {
-  const objectType = checkExpression(ctx, expr.object);
+  let objectType = checkExpression(ctx, expr.object);
+
+  // Handle optional chaining: obj?.property
+  // If the object is nullable, we extract the non-null type for property lookup
+  // and make the result nullable. If non-nullable, optional chaining is a no-op.
+  let shouldMakeNullable = false;
+  if (expr.optional && isNullableType(objectType)) {
+    shouldMakeNullable = true;
+    objectType = getNonNullableType(objectType, ctx);
+  }
+
+  // Helper to wrap result in nullable if needed
+  const wrapResult = (type: Type): Type => {
+    if (shouldMakeNullable && type.kind !== TypeKind.Unknown) {
+      return makeNullable(type, ctx);
+    }
+    return type;
+  };
 
   // Handle symbol member access: obj.:symbol
   if (expr.isSymbolAccess) {
-    return checkSymbolMemberAccess(ctx, expr, objectType);
+    return wrapResult(checkSymbolMemberAccess(ctx, expr, objectType));
   }
 
   if (
@@ -2837,7 +2905,7 @@ function checkMemberExpression(
         };
         ctx.semanticContext.setResolvedBinding(expr, binding);
 
-        return resolvedMethod;
+        return wrapResult(resolvedMethod);
       }
 
       // Also check for fields (e.g., FixedArray.length)
@@ -2856,13 +2924,13 @@ function checkMemberExpression(
         };
         ctx.semanticContext.setResolvedBinding(expr, binding);
 
-        return resolvedType;
+        return wrapResult(resolvedType);
       }
     }
 
     if (expr.property.name === LENGTH_PROPERTY) {
       // Fallback for intrinsic array.length (should have been caught above)
-      return Types.I32;
+      return wrapResult(Types.I32);
     }
   }
 
@@ -2886,7 +2954,7 @@ function checkMemberExpression(
       };
       ctx.semanticContext.setResolvedBinding(expr, binding);
 
-      return finalType;
+      return wrapResult(finalType);
     }
     ctx.diagnostics.reportError(
       `Property '${memberName}' does not exist on type '${typeToString(objectType)}'.`,
@@ -2972,7 +3040,7 @@ function checkMemberExpression(
       };
       ctx.semanticContext.setResolvedBinding(expr, binding);
 
-      return fieldType;
+      return wrapResult(fieldType);
     }
 
     const methodType = ctx.currentClass.methods.get(memberName)!;
@@ -2987,7 +3055,7 @@ function checkMemberExpression(
     };
     ctx.semanticContext.setResolvedBinding(expr, binding);
 
-    return methodType;
+    return wrapResult(methodType);
   }
 
   // Check fields
@@ -3018,7 +3086,7 @@ function checkMemberExpression(
     };
     ctx.semanticContext.setResolvedBinding(expr, binding);
 
-    return finalType;
+    return wrapResult(finalType);
   }
 
   // Check methods
@@ -3042,7 +3110,7 @@ function checkMemberExpression(
     };
     ctx.semanticContext.setResolvedBinding(expr, binding);
 
-    return resolvedType;
+    return wrapResult(resolvedType);
   }
 
   // Check getters
@@ -3074,7 +3142,7 @@ function checkMemberExpression(
     };
     ctx.semanticContext.setResolvedBinding(expr, binding);
 
-    return resolvedGetter.returnType;
+    return wrapResult(resolvedGetter.returnType);
   }
 
   ctx.diagnostics.reportError(
@@ -3331,8 +3399,25 @@ function checkIndexExpression(
   ctx: CheckerContext,
   expr: IndexExpression,
 ): Type {
-  const objectType = checkExpression(ctx, expr.object);
+  let objectType = checkExpression(ctx, expr.object);
   const indexType = checkExpression(ctx, expr.index);
+
+  // Handle optional chaining: obj?[index]
+  // If the object is nullable, we extract the non-null type for indexing
+  // and make the result nullable. If non-nullable, optional chaining is a no-op.
+  let shouldMakeNullable = false;
+  if (expr.optional && isNullableType(objectType)) {
+    shouldMakeNullable = true;
+    objectType = getNonNullableType(objectType, ctx);
+  }
+
+  // Helper to wrap result in nullable if needed
+  const wrapResult = (type: Type): Type => {
+    if (shouldMakeNullable && type.kind !== TypeKind.Unknown) {
+      return makeNullable(type, ctx);
+    }
+    return type;
+  };
 
   if (
     objectType.kind === TypeKind.Class ||
@@ -3390,7 +3475,7 @@ function checkIndexExpression(
       }
       // Store the resolved operator method for codegen
       expr.resolvedOperatorMethod = selectedOverload;
-      return selectedOverload.returnType;
+      return wrapResult(selectedOverload.returnType);
     }
   }
 
@@ -3416,7 +3501,7 @@ function checkIndexExpression(
     // Check for narrowed type based on the full path (e.g., "t[0]")
     const path = getExpressionPath(expr, ctx);
     const narrowedType = path ? ctx.getNarrowedType(path) : undefined;
-    return narrowedType ?? elementType;
+    return wrapResult(narrowedType ?? elementType);
   }
 
   // Check for extension class operator[] on Array types (e.g., FixedArray<T>.operator[](Range))
@@ -3467,7 +3552,7 @@ function checkIndexExpression(
             expr.resolvedOperatorMethod = resolvedCandidate;
             // Store the extension class type for codegen to use
             expr.extensionClassType = instantiatedClassType;
-            return resolvedCandidate.returnType;
+            return wrapResult(resolvedCandidate.returnType);
           }
         }
       }
@@ -3504,7 +3589,7 @@ function checkIndexExpression(
     return Types.Unknown;
   }
 
-  return (objectType as ArrayType).elementType;
+  return wrapResult((objectType as ArrayType).elementType);
 }
 
 function checkSuperExpression(

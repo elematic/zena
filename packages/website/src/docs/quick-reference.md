@@ -393,6 +393,29 @@ a || b; // Logical OR (short-circuit)
 !a; // Logical NOT
 ```
 
+### Nullish Coalescing
+
+The `??` operator returns the right operand when the left is `null`:
+
+```ts
+let name: String | null = null;
+let display = name ?? 'Anonymous'; // 'Anonymous'
+```
+
+`??` has the same precedence as `||`.
+
+### Optional Chaining
+
+Safe access on potentially `null` values. Short-circuits to `null` if the
+receiver is `null`.
+
+```ts
+let name = user?.name;       // Property access
+let first = items?[0];       // Index access
+let result = callback?(42);  // Call
+let display = user?.name ?? 'Anonymous'; // With fallback
+```
+
 ### Bitwise
 
 ```ts
@@ -476,7 +499,7 @@ let x = $; // ❌ Error: '$' can only be used inside a pipeline expression
 10. Bitwise XOR: `^`
 11. Bitwise OR: `|`
 12. Logical AND: `&&`
-13. Logical OR: `||`
+13. Logical OR / Nullish Coalescing: `||`, `??`
 14. Pipeline: `|>`
 
 > **Note**: `as` currently binds looser than arithmetic, so `a + b as i64` means

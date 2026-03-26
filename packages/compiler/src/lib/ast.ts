@@ -348,6 +348,8 @@ export interface IndexExpression extends Node {
   type: typeof NodeType.IndexExpression;
   object: Expression;
   index: Expression;
+  /** True if this is optional chaining (?[]) */
+  optional?: boolean;
   /** Set by checker when operator[] method is resolved (for class types) */
   resolvedOperatorMethod?: FunctionType;
   /** Set by checker for extension class operator[] (e.g., FixedArray on array types) */
@@ -765,6 +767,8 @@ export interface MemberExpression extends Node {
   type: typeof NodeType.MemberExpression;
   object: Expression;
   property: Identifier;
+  /** True if this is optional chaining (?.) */
+  optional?: boolean;
   /** True if this is symbol member access (obj.:symbol) */
   isSymbolAccess?: boolean;
   /** For symbol access, the full symbol path expression (e.g., Iterable.iterator as MemberExpression) */
@@ -788,6 +792,8 @@ export interface FunctionExpression extends Node {
 export interface CallExpression extends Node {
   type: typeof NodeType.CallExpression;
   callee: Expression;
+  /** True if this is optional call (?()) */
+  optional?: boolean;
   typeArguments?: TypeAnnotation[];
   arguments: Expression[];
   resolvedFunctionType?: Type;

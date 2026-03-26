@@ -6019,10 +6019,26 @@ export function mapCheckerTypeToWasmType(
       (t) => t.kind !== TypeKind.Null,
     );
     if (nonNullTypes.length === 1) {
-      // It's T | null - use the non-null type's mapping
+      // It's T | null - determine if we need boxing for primitives
+      let innerType = nonNullTypes[0];
+
+      // Handle nullable primitives: i32 | null, boolean | null, etc.
+      // WASM primitives can't be nullable, so we must box them as Box<T>.
+      // The boxed type is a reference type that CAN be nullable.
+      if (
+        innerType.kind === TypeKind.Number ||
+        innerType.kind === TypeKind.Boolean
+      ) {
+        // Get Box<T> struct type for the primitive
+        const boxClassInfo = getBoxClassInfo(ctx, innerType);
+        return [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(boxClassInfo.structTypeIndex),
+        ];
+      }
+
       // For class types, ensure we use the interned version to avoid creating
       // duplicate ClassInfo objects (important for self-referential generics)
-      let innerType = nonNullTypes[0];
       if (innerType.kind === TypeKind.Class) {
         const classType = innerType as ClassType;
         if (classType.genericSource && classType.typeArguments) {

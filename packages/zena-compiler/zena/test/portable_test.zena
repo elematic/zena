@@ -9,6 +9,7 @@ import { parseJson, JsonValue, JsonOptions } from 'zena:json';
 import { console } from 'zena:console';
 import { parse } from '../lib/parser.zena';
 import { nodeToJson } from '../lib/ast-json.zena';
+import { ExpressionStatement } from '../lib/ast.zena';
 
 // ============================================================================
 // Skip list — tests that the self-hosted parser cannot yet match
@@ -166,12 +167,15 @@ let discoverTests = (dirPath: string, relPrefix: string, skips: FixedArray<SkipE
           // Determine target from directives
           let target = parseTarget(source);
           
-          let actual = if (target == "statement") {
-            nodeToJson(mod.body[0])
+          var actual = nodeToJson(mod);
+          if (target == "statement") {
+            actual = nodeToJson(mod.body[0]);
           } else {
-            // Default: serialize entire module
-            nodeToJson(mod)
-          };
+            if (target == "expression") {
+              let stmt = mod.body[0] as ExpressionStatement;
+              actual = nodeToJson(stmt.expression);
+            } else {}
+          }
           
           jsonEqual(actual, expected, capturedFilePath);
         });
