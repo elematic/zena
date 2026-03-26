@@ -6,7 +6,7 @@ suite('Codegen: Private Fields', () => {
   test('Basic private field access', async () => {
     const source = `
       class Counter {
-        #count: i32 = 0;
+        var #count: i32 = 0;
         
         increment() {
           this.#count = this.#count + 1;
@@ -53,12 +53,12 @@ suite('Codegen: Private Fields', () => {
   test('Private field shadowing in inheritance', async () => {
     const source = `
       class A {
-        #val: i32 = 10;
+        var #val: i32 = 10;
         getA(): i32 { return this.#val; }
       }
       
       class B extends A {
-        #val: i32 = 20;
+        var #val: i32 = 20;
         getB(): i32 { return this.#val; }
       }
       

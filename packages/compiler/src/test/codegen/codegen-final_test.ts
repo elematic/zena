@@ -58,7 +58,7 @@ suite('CodeGenerator - Final Modifier', () => {
   test('should compile and run final accessor', async () => {
     const input = `
       class Container {
-        value: i32;
+        var value: i32;
         new(v: i32) : value = v {}
         
         final val: i32 {
@@ -191,7 +191,7 @@ suite('CodeGenerator - Final Modifier', () => {
     // Version with final accessor
     const source1 = `
       class Widget {
-        #value: i32 = 42;
+        var #value: i32 = 42;
         final val: i32 {
           get { return this.#value; }
         }
@@ -207,7 +207,7 @@ suite('CodeGenerator - Final Modifier', () => {
     // Version with non-final accessor
     const source2 = `
       class Widget {
-        #value: i32 = 42;
+        var #value: i32 = 42;
         val: i32 {
           get { return this.#value; }
         }
@@ -241,7 +241,7 @@ suite('CodeGenerator - Final Modifier', () => {
     // Version with final accessor
     const source1 = `
       class Widget {
-        #value: i32 = 0;
+        var #value: i32 = 0;
         final val: i32 {
           get { return this.#value; }
           set(v) { this.#value = v; }
@@ -259,7 +259,7 @@ suite('CodeGenerator - Final Modifier', () => {
     // Version with non-final accessor
     const source2 = `
       class Widget {
-        #value: i32 = 0;
+        var #value: i32 = 0;
         val: i32 {
           get { return this.#value; }
           set(v) { this.#value = v; }

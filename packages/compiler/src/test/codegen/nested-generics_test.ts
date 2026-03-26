@@ -139,13 +139,13 @@ suite('Codegen: Nested Generics', () => {
     test('derived class uses parent type parameter', async () => {
       const source = `
         class Base<T> {
-          value: T;
+          var value: T;
           new(v: T) : value = v {}
           get(): T { return this.value; }
         }
 
         class Derived<T> extends Base<T> {
-          extra: i32;
+          var extra: i32;
           new(v: T, e: i32) : extra = e, super(v) { }
           getExtra(): i32 { return this.extra; }
         }
@@ -185,17 +185,17 @@ suite('Codegen: Nested Generics', () => {
     test('three-level inheritance with generics', async () => {
       const source = `
         class A<T> {
-          a: T;
+          var a: T;
           new(v: T) : a = v {}
         }
 
         class B<T> extends A<T> {
-          b: i32;
+          var b: i32;
           new(v: T, x: i32) : b = x, super(v) { }
         }
 
         class C<T> extends B<T> {
-          c: i32;
+          var c: i32;
           new(v: T, x: i32, y: i32) : c = y, super(v, x) { }
         }
 

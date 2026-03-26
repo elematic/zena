@@ -45,7 +45,7 @@ suite('Field-level DCE', () => {
   test('plain fields are eliminated when write-only', async () => {
     const source = `
       class Counter {
-        value: i32;
+        var value: i32;
         writeOnly: i32;  // Plain field - automatically pure
         
         new() : value = 0, writeOnly = 100 {}  // Written but never read
@@ -100,7 +100,7 @@ suite('Field-level DCE', () => {
   test('field both read and written is kept', async () => {
     const source = `
       class Box {
-        value: i32;
+        var value: i32;
         
         new(v: i32) : value = v {}
         
@@ -153,8 +153,8 @@ suite('Field-level DCE', () => {
   test('multiple assignments to eliminated field are all skipped', async () => {
     const source = `
       class Tracker {
-        counter: i32;
-        unused: i32;  // Never read - should be eliminated
+        var counter: i32;
+        var unused: i32;  // Never read - should be eliminated
         
         new() : counter = 0, unused = 0 {}
         
@@ -209,7 +209,7 @@ suite('Field-level DCE', () => {
   test('@pure on explicit accessor enables elimination when write-only', async () => {
     const source = `
       class Item {
-        #backingStore: i32 = 0;
+        var #backingStore: i32 = 0;
         
         @pure
         metadata: i32 {
@@ -244,7 +244,7 @@ suite('Field-level DCE', () => {
   test('explicit accessor without @pure is kept even if write-only', async () => {
     const source = `
       class Logger {
-        #logCount: i32 = 0;
+        var #logCount: i32 = 0;
         
         // Accessor without @pure - might have side effects
         logLevel: i32 {

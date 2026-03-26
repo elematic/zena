@@ -29,10 +29,13 @@ export class JsonObject {
   #locations: HashMap<string, SourceLocation> | null = null;
 
   static withLocations(): JsonObject {
-    let obj = new JsonObject();
-    obj.#locations = new HashMap<string, SourceLocation>();
-    return obj;
+    return new JsonObject(true);
   }
+
+  new(withLocations: boolean = false)
+    : #locations = 
+        if (withLocations) { new HashMap<string, SourceLocation>() }
+        else { null } {}
 
   operator [](key: string): JsonValue {
     if (!this.#fields.has(key)) {
@@ -100,10 +103,13 @@ export class JsonArray {
   #locations: Array<SourceLocation> | null = null;
 
   static withLocations(): JsonArray {
-    let arr = new JsonArray();
-    arr.#locations = new Array<SourceLocation>();
-    return arr;
+    return new JsonArray(true);
   }
+
+  new(withLocations: boolean = false)
+    : #locations = 
+        if (withLocations) { new Array<SourceLocation>() }
+        else { null } {}
 
   operator [](index: i32): JsonValue {
     return this.#elements[index];
@@ -368,7 +374,10 @@ export class JsonParseError extends Error {
   #line: i32;
   #column: i32;
 
-  new(message: string, line: i32, column: i32) : #line = line, #column = column, super(message) { }
+  new(message: string, line: i32, column: i32)
+    : #line = line, 
+      #column = column, 
+      super(message) {}
 
   line: i32 {
     get { return this.#line; }
@@ -383,20 +392,17 @@ export class JsonParseError extends Error {
 
 class JsonParser {
   #reader: StringReader;
-  #line: i32 = 1;
-  #column: i32 = 1;
-  #lineStart: i32 = 0;  // byte position where current line started
-  #allowComments: boolean = false;
-  #trackLocations: boolean = false;
+  #allowComments: boolean;
+  #trackLocations: boolean;
+  var #line: i32 = 1;
+  var #column: i32 = 1;
+  var #lineStart: i32 = 0;  // byte position where current line started
 
   new(input: string, options: JsonOptions | null)
-    : #reader = new StringReader(input)
-  {
-    if (options != null) {
-      this.#allowComments = options.allowComments;
-      this.#trackLocations = options.trackLocations;
-    }
-  }
+    : #reader = new StringReader(input),
+      #allowComments = options?.allowComments ?? false,
+      #trackLocations = options?.trackLocations ?? false
+  {}
 
   parse(): JsonValue {
     this.#skipWhitespaceAndComments();
@@ -1014,7 +1020,7 @@ export class JsonBuilder {
   #sb: StringBuilder = new StringBuilder();
   #stack: Array<i32> = new Array<i32>();    // Track nesting: STACK_OBJECT or STACK_ARRAY
   #counts: Array<i32> = new Array<i32>();   // Track item count at each level (for comma handling)
-  #needsValue: boolean = false;  // True after key(), expecting a value next
+  var #needsValue: boolean = false;  // True after key(), expecting a value next
 
   // === Object methods ===
 

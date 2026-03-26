@@ -152,7 +152,7 @@ export interface MixinType extends Type {
   typeArguments?: Type[];
   onType?: ClassType;
   fields: Map<string, Type>;
-  /** Tracks which fields are immutable (declared with `let`). If not present or key missing, field is mutable. */
+  /** Tracks field mutability. true = mutable (declared with `var`), false = immutable (bare or `let`). */
   fieldMutability?: Map<string, boolean>;
   methods: Map<string, FunctionType>;
   symbolFields?: Map<SymbolType, Type>;
@@ -168,7 +168,7 @@ export interface ClassType extends Type {
   superType?: ClassType;
   implements: InterfaceType[];
   fields: Map<string, Type>;
-  /** Tracks which fields are immutable (declared with `let`). If not present or key missing, field is mutable. */
+  /** Tracks field mutability. true = mutable (declared with `var`), false = immutable (bare or `let`). */
   fieldMutability?: Map<string, boolean>;
   methods: Map<string, FunctionType>;
   statics: Map<string, Type>;
@@ -183,11 +183,6 @@ export interface ClassType extends Type {
   isSyntheticMixinThis?: boolean; // True for the synthetic `This` type inside mixin bodies
   onType?: Type;
   genericSource?: ClassType;
-  /**
-   * Set of mutable field names. Fields not in this set are immutable.
-   * Immutable fields can only be assigned in the constructor.
-   */
-  mutableFields?: Set<string>;
   /**
    * For fields with private setters (var(#name) syntax), maps the public
    * field name to its setter name (private name or symbol).

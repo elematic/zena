@@ -7,7 +7,7 @@ suite('TypeChecker - Accessors', () => {
   test('should check valid accessor declaration', () => {
     const input = `
       class Box {
-        #value: i32;
+        var #value: i32;
         
         new(v: i32) : #value = v {}
 

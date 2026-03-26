@@ -44,10 +44,8 @@ suite('caught error handling', () => {
       import { Error } from 'zena:error';
       
       class ErrorHandler {
-        lastError: Error | null;
-        
-        new() : lastError = null {}
-        
+        var lastError: Error | null = null;
+                
         setError(e: Error | null): void {
           this.lastError = e;
         }
@@ -100,10 +98,7 @@ suite('caught error handling', () => {
       import { Error } from 'zena:error';
       
       class Container {
-        error: Error | null;
-        new() {
-          this.error = null;
-        }
+        var error: Error | null = null;
       }
       
       export let main = (): i32 => {

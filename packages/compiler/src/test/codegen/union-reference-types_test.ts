@@ -29,7 +29,7 @@ suite('CodeGenerator - Union Reference Types', () => {
 
   test('record union with class should compile', async () => {
     const source = `
-      class Point { x: i32; y: i32; new(x: i32, y: i32) : x = x, y = y {} }
+      class Point { var x: i32; y: i32; new(x: i32, y: i32) : x = x, y = y {} }
 
       export let main = (): i32 => {
         let x: { a: i32, b: string } | Point = { a: 1, b: 'hello' };

@@ -20,9 +20,9 @@ suite('class method multi-value returns', () => {
 
         class Producer {
           #wrapper: Wrapper;
-          #done: boolean;
+          var #done: boolean = false;
 
-          new(v: i32) : #wrapper = new Wrapper(v), #done = false {}
+          new(v: i32) : #wrapper = new Wrapper(v) {}
 
           // Returns union of tuples with reference type element
           next(): inline (true, Wrapper) | inline (false, never) {
@@ -54,10 +54,10 @@ suite('class method multi-value returns', () => {
       // Verify _ works correctly for primitive types too
       const source = `
         class Counter {
-          #count: i32;
+          var #count: i32 = 0;
           #max: i32;
 
-          new(max: i32) : #count = 0, #max = max {}
+          new(max: i32) : #max = max {}
 
           next(): inline (true, i32) | inline (false, never) {
             if (this.#count >= this.#max) {
@@ -88,7 +88,7 @@ suite('class method multi-value returns', () => {
       // Verify _ works with generic class types (using stdlib Box)
       const source = `
         class OptionalBox {
-          #hasValue: boolean;
+          var #hasValue: boolean;
           #box: Box<i32>;
 
           new(value: i32) : #hasValue = true, #box = new Box(value) {}

@@ -69,7 +69,7 @@ suite('Debug generic interface', () => {
       }
 
       export class MyArray<T> implements Sequence<T> {
-        #items: Array<T>;
+        var #items: Array<T>;
 
         length: i32 {
           get {

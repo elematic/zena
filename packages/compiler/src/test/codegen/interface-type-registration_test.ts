@@ -31,7 +31,7 @@ suite('Interface Type Registration', () => {
       }
 
       class ConsoleLogger implements Logger {
-        logged: i32 = 0;
+        var logged: i32 = 0;
 
         log(message: Message): void {
           this.logged = this.logged + 1;
@@ -175,7 +175,7 @@ suite('Interface Type Registration', () => {
       }
 
       class Box implements Container {
-        item: Item;
+        var item: Item;
         new(item: Item) : item = item {}
       }
 
@@ -203,7 +203,7 @@ suite('Interface Type Registration', () => {
       }
 
       class DataWrapper implements Wrapper<Data> {
-        data: Data;
+        var data: Data;
 
         new() : data = new Data(0) {}
 
@@ -241,7 +241,7 @@ suite('Interface Type Registration', () => {
       }
 
       class ContentHolder implements Holder {
-        #content: Content;
+        var #content: Content;
 
         new() : #content = new Content(0) {}
 

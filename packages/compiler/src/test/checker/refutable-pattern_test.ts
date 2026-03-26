@@ -200,7 +200,7 @@ suite('Checker: refutable patterns in let/var declarations', () => {
     test('let binding with class iterator returning discriminated union', async () => {
       const source = `
         class Counter {
-          count: i32;
+          var count: i32;
           max: i32;
 
           new(max: i32) : count = 0, max = max {}
@@ -329,7 +329,7 @@ suite('Checker: refutable patterns in let/var declarations', () => {
     test('discriminated unions still work in while-let', async () => {
       const source = `
         class Counter {
-          count: i32;
+          var count: i32;
           new() : count = 0 {}
           next(): inline (true, i32) | inline (false, never) {
             if (this.count < 3) {

@@ -66,7 +66,7 @@ suite('CodeGenerator - Destructuring', () => {
   test('should destructure class instance', async () => {
     const code = `
       class Point {
-        x: i32;
+        var x: i32;
         y: i32;
         new(x: i32, y: i32) : x = x, y = y {}
       }
@@ -83,7 +83,7 @@ suite('CodeGenerator - Destructuring', () => {
   test('should destructure nested class instance', async () => {
     const code = `
       class Point {
-        x: i32;
+        var x: i32;
         y: i32;
         new(x: i32, y: i32) : x = x, y = y {}
       }

@@ -227,7 +227,7 @@ suite('rec block optimization', () => {
   test('program with class — struct types in rec block, func types standalone', async () => {
     const result = await compileAndRun(`
       class Point {
-        x: i32;
+        var x: i32;
         y: i32;
         new(x: i32, y: i32) : x = x, y = y {}
       }
@@ -240,7 +240,7 @@ suite('rec block optimization', () => {
 
     const wasm = compileToWasm(`
       class Point {
-        x: i32;
+        var x: i32;
         y: i32;
         new(x: i32, y: i32) : x = x, y = y {}
       }
@@ -272,7 +272,7 @@ suite('rec block optimization', () => {
     const result = await compileAndRun(`
       class Node {
         value: i32;
-        next: Node | null;
+        var next: Node | null;
         new(value: i32) : value = value, next = null {}
       }
       export let main = () => {
@@ -285,7 +285,7 @@ suite('rec block optimization', () => {
     const wasm = compileToWasm(`
       class Node {
         value: i32;
-        next: Node | null;
+        var next: Node | null;
         new(value: i32) : value = value, next = null {}
       }
       export let main = () => {
@@ -353,7 +353,7 @@ suite('rec block optimization', () => {
   test('standalone function types reduce rec block size', () => {
     const wasm = compileToWasm(`
       class Foo {
-        value: i32;
+        var value: i32;
         new(v: i32) : value = v {}
         getV(): i32 { return this.value; }
         setV(v: i32) { this.value = v; }

@@ -6,7 +6,7 @@ suite('Super Initializer Codegen', () => {
   test('super() in initializer list for derived class', async () => {
     const result = await compileAndRun(`
       class Base {
-        x: i32;
+        var x: i32;
         new(x: i32) : x = x {}
       }
       class Derived extends Base {
@@ -25,7 +25,7 @@ suite('Super Initializer Codegen', () => {
   test('super() only in initializer list (no local fields)', async () => {
     const result = await compileAndRun(`
       class Base {
-        x: i32;
+        var x: i32;
         new(x: i32) : x = x {}
       }
       class Derived extends Base {
@@ -43,7 +43,7 @@ suite('Super Initializer Codegen', () => {
   test('super() with default field values', async () => {
     const result = await compileAndRun(`
       class Base {
-        x: i32 = 5;
+        var x: i32 = 5;
         new() {}
       }
       class Derived extends Base {
@@ -64,11 +64,11 @@ suite('Super Initializer Codegen', () => {
   test('super() in initializer list with body code', async () => {
     const result = await compileAndRun(`
       class Base {
-        x: i32;
+        var x: i32;
         new(x: i32) : x = x {}
       }
       class Derived extends Base {
-        y: i32;
+        var y: i32;
         new(a: i32, b: i32) : y = b, super(a) {
           // Body executes after super() and field init
           this.y = this.y + this.x;
@@ -85,7 +85,7 @@ suite('Super Initializer Codegen', () => {
   test('private field in initializer list with super()', async () => {
     const result = await compileAndRun(`
       class Base {
-        x: i32;
+        var x: i32;
         new(x: i32) : x = x {}
       }
       class Derived extends Base {
@@ -124,7 +124,7 @@ suite('Super Initializer Codegen', () => {
   test('super() no args with superclass that has no constructor', async () => {
     const result = await compileAndRun(`
       class Base {
-        x: i32 = 10;
+        var x: i32 = 10;
       }
       class Derived extends Base {
         y: i32;
@@ -142,7 +142,7 @@ suite('Super Initializer Codegen', () => {
   test('multi-level inheritance with super() in init list', async () => {
     const result = await compileAndRun(`
       class A {
-        x: i32;
+        var x: i32;
         new(x: i32) : x = x {}
       }
       class B extends A {

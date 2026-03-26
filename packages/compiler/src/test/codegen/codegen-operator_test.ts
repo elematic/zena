@@ -24,7 +24,7 @@ suite('CodeGenerator - Operators', () => {
   test('should compile and run operator []=', async () => {
     const input = `
       class Box {
-        value: i32;
+        var value: i32;
         new() : value = 0 {}
         operator []=(index: i32, val: i32): void {
           this.value = index + val;

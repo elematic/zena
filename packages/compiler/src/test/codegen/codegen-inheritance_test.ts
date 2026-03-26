@@ -6,7 +6,7 @@ suite('CodeGenerator - Inheritance', () => {
   test('should inherit fields', async () => {
     const source = `
       class Point {
-        x: i32;
+        var x: i32;
         y: i32;
         new(x: i32, y: i32) : x = x, y = y {}
       }

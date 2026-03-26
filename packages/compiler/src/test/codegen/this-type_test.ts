@@ -6,7 +6,7 @@ suite('CodeGenerator - This Type', () => {
   test('this type in class method parameter', async () => {
     const source = `
       class Point {
-        x: i32;
+        var x: i32;
         y: i32;
         
         new(x: i32, y: i32) : x = x, y = y {}
@@ -33,7 +33,7 @@ suite('CodeGenerator - This Type', () => {
   test('this type in class method return type for fluent API', async () => {
     const source = `
       class Builder {
-        value: i32 = 0;
+        var value: i32 = 0;
         
         setValue(v: i32): this {
           this.value = v;
@@ -87,7 +87,7 @@ suite('CodeGenerator - This Type', () => {
   test('this type in generic class', async () => {
     const source = `
       class Container<T> {
-        value: T;
+        var value: T;
         
         new(value: T) : value = value {}
         

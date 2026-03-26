@@ -38,7 +38,7 @@ suite('static fields', () => {
   test('static field write from static method', async () => {
     const source = `
       class Counter {
-        static value: i32 = 10;
+        static var value: i32 = 10;
         
         static get(): i32 {
           return Counter.value;

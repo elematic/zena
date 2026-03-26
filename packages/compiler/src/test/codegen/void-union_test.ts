@@ -79,7 +79,7 @@ suite('Void Union Types', () => {
       }
 
       class A extends Base {
-        x: i32;
+        var x: i32;
         maybeY: MyBox | null;
         new(x: i32, maybeY: MyBox | null) : x = x, maybeY = maybeY, super(1) { }
       }
@@ -130,7 +130,7 @@ suite('Void Union Types', () => {
       }
 
       class A extends Base {
-        x: i32;
+        var x: i32;
         maybeY: MyBox | null;
         new(x: i32, maybeY: MyBox | null) : x = x, maybeY = maybeY, super(1) { }
       }

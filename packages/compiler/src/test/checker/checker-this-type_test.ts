@@ -34,7 +34,7 @@ suite('TypeChecker - This Type', () => {
   test('should resolve `this` type in class method return type', () => {
     const input = `
       class Builder {
-        value: i32 = 0;
+        var value: i32 = 0;
         
         setValue(v: i32): this {
           this.value = v;

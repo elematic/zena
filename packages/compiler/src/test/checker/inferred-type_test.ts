@@ -626,7 +626,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
   test('accessor setter type annotation', () => {
     const ast = parseAndCheck(`
       class Box {
-        #value: i32 = 0;
+        var #value: i32 = 0;
         value: i32 {
           set(v) { this.#value = v; }
         }

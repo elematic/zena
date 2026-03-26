@@ -140,7 +140,7 @@ suite('for-in loops', () => {
       import { Iterator, Iterable } from 'zena:iterator';
 
       final class CounterIterator implements Iterator<i32> {
-        #current: i32;
+        var #current: i32;
         #max: i32;
         
         new(max: i32) : #current = 0, #max = max {}
@@ -187,7 +187,7 @@ suite('for-in loops', () => {
       import { Iterator, Iterable } from 'zena:iterator';
 
       final class RangeIterator implements Iterator<i32> {
-        #current: i32;
+        var #current: i32;
         #end: i32;
         
         new(start: i32, end: i32) : #current = start, #end = end {}

@@ -392,6 +392,7 @@ function checkMatchExpression(
       ctx.diagnostics.reportError(
         `Unreachable case. The match is already exhaustive.`,
         DiagnosticCode.UnreachableCode,
+        ctx.getLocation(expr.loc),
       );
     }
 
@@ -416,6 +417,7 @@ function checkMatchExpression(
             ctx.diagnostics.reportError(
               `Ambiguous match case: '${typeToString(patternType)}' and '${typeToString(prev)}' extend the same underlying type and are indistinguishable at runtime.`,
               DiagnosticCode.TypeMismatch,
+              ctx.getLocation(expr.loc),
             );
           }
         }
@@ -435,6 +437,7 @@ function checkMatchExpression(
         ctx.diagnostics.reportError(
           `Match guard must be a boolean expression, got ${typeToString(guardType)}`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
       }
     }
@@ -448,6 +451,7 @@ function checkMatchExpression(
     ctx.diagnostics.reportError(
       `Non-exhaustive match. Remaining type: ${typeToString(remainingType)}`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
     );
   }
 
@@ -471,6 +475,7 @@ function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
     ctx.diagnostics.reportError(
       `Expected boolean condition in if expression, got ${typeToString(testType)}`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
     );
   }
 
@@ -567,6 +572,7 @@ export function checkMatchPattern(
           ctx.diagnostics.reportError(
             `Type mismatch: cannot match number against ${typeToString(discriminantType)}`,
             DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
           );
         }
       }
@@ -582,6 +588,7 @@ export function checkMatchPattern(
         ctx.diagnostics.reportError(
           `Type mismatch: cannot match string against ${typeToString(discriminantType)}`,
           DiagnosticCode.TypeMismatch,
+          undefined /* TODO fix location */,
         );
       }
       break;
@@ -595,6 +602,7 @@ export function checkMatchPattern(
         ctx.diagnostics.reportError(
           `Type mismatch: cannot match boolean against ${typeToString(discriminantType)}`,
           DiagnosticCode.TypeMismatch,
+          undefined /* TODO fix location */,
         );
       }
       break;
@@ -612,6 +620,7 @@ export function checkMatchPattern(
         ctx.diagnostics.reportError(
           `'${className}' is not a class.`,
           DiagnosticCode.SymbolNotFound,
+          undefined /* TODO fix location */,
         );
         return;
       }
@@ -629,6 +638,7 @@ export function checkMatchPattern(
         ctx.diagnostics.reportError(
           `Type mismatch: cannot match class '${className}' against ${typeToString(discriminantType)}`,
           DiagnosticCode.TypeMismatch,
+          undefined /* TODO fix location */,
         );
       }
 
@@ -648,6 +658,7 @@ export function checkMatchPattern(
           ctx.diagnostics.reportError(
             `Property '${propName}' does not exist on type '${className}'.`,
             DiagnosticCode.PropertyNotFound,
+            undefined /* TODO fix location */,
           );
           continue;
         }
@@ -694,6 +705,7 @@ export function checkMatchPattern(
             ctx.diagnostics.reportError(
               `Property '${propName}' does not exist on type '${typeToString(discriminantType)}'.`,
               DiagnosticCode.PropertyNotFound,
+              undefined /* TODO fix location */,
             );
             continue;
           }
@@ -719,6 +731,7 @@ export function checkMatchPattern(
             ctx.diagnostics.reportError(
               `Property '${propName}' does not exist on type '${typeToString(discriminantType)}'.`,
               DiagnosticCode.PropertyNotFound,
+              undefined /* TODO fix location */,
             );
             continue;
           }
@@ -742,6 +755,7 @@ export function checkMatchPattern(
           ctx.diagnostics.reportError(
             `Pattern does not match any type in the union '${typeToString(discriminantType)}'.`,
             DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
           );
         } else {
           // For each property, check against the union of property types from matching members
@@ -759,6 +773,7 @@ export function checkMatchPattern(
           ctx.diagnostics.reportError(
             `Cannot destructure non-object type '${typeToString(discriminantType)}'.`,
             DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
           );
         }
       }
@@ -791,6 +806,7 @@ export function checkMatchPattern(
           ctx.diagnostics.reportError(
             `Tuple pattern has ${tuplePattern.elements.length} elements but type has ${tupleType.elementTypes.length}.`,
             DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
           );
         }
 
@@ -811,6 +827,7 @@ export function checkMatchPattern(
           ctx.diagnostics.reportError(
             `Cannot destructure non-tuple type '${typeToString(discriminantType)}'.`,
             DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
           );
           break;
         }
@@ -835,6 +852,7 @@ export function checkMatchPattern(
           ctx.diagnostics.reportError(
             `Tuple pattern has ${tuplePattern.elements.length} elements but type has ${elemCount}.`,
             DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
           );
         }
 
@@ -868,6 +886,7 @@ export function checkMatchPattern(
           ctx.diagnostics.reportError(
             `Cannot destructure non-tuple type '${typeToString(discriminantType)}'.`,
             DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
           );
         }
       }
@@ -899,6 +918,7 @@ export function checkMatchPattern(
             ctx.diagnostics.reportError(
               `Variable '${name}' is bound in the left branch of the OR pattern but not the right.`,
               DiagnosticCode.TypeMismatch,
+              undefined /* TODO fix location */,
             );
           }
         }
@@ -909,6 +929,7 @@ export function checkMatchPattern(
             ctx.diagnostics.reportError(
               `Variable '${name}' is bound in the right branch of the OR pattern but not the left.`,
               DiagnosticCode.TypeMismatch,
+              undefined /* TODO fix location */,
             );
           }
         }
@@ -939,6 +960,7 @@ export function checkMatchPattern(
         ctx.diagnostics.reportError(
           `Type mismatch: cannot match '${typeToString(memberType)}' against '${typeToString(discriminantType)}'.`,
           DiagnosticCode.TypeMismatch,
+          undefined /* TODO fix location */,
         );
       }
       break;
@@ -1134,6 +1156,7 @@ function checkUnaryExpression(
       ctx.diagnostics.reportError(
         `Operator '!' requires boolean operand, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
     return Types.Boolean;
@@ -1142,6 +1165,7 @@ function checkUnaryExpression(
       ctx.diagnostics.reportError(
         `Operator '-' requires numeric operand, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -1161,6 +1185,7 @@ function checkThrowExpression(
       ctx.diagnostics.reportError(
         `Thrown value must be an instance of Error, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
   }
@@ -1303,6 +1328,7 @@ function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {
       `Cannot cast primitive type '${typeToString(sourceType)}' to reference type '${typeToString(targetType)}'. ` +
         `Use string concatenation or a conversion function instead.`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
     );
   }
 
@@ -1417,6 +1443,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
       ctx.diagnostics.reportError(
         `Cannot call union type ${typeToString(calleeType)}: not all members are functions.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -1432,6 +1459,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
         ctx.diagnostics.reportError(
           `Union member ${typeToString(member)} requires ${funcMember.parameters.length} arguments, but only ${argTypes.length} were provided.`,
           DiagnosticCode.ArgumentCountMismatch,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -1442,6 +1470,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
           ctx.diagnostics.reportError(
             `Argument ${i + 1} of type ${typeToString(argTypes[i])} is not assignable to parameter of type ${typeToString(funcMember.parameters[i])} in union member ${typeToString(member)}.`,
             DiagnosticCode.TypeMismatch,
+            ctx.getLocation(expr.loc),
           );
           return Types.Unknown;
         }
@@ -1459,6 +1488,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
           ctx.diagnostics.reportError(
             `Incompatible return types in union call: ${typeToString(returnType)} vs ${typeToString(funcMember.returnType)}.`,
             DiagnosticCode.TypeMismatch,
+            ctx.getLocation(expr.loc),
           );
           return Types.Unknown;
         }
@@ -1472,6 +1502,7 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
     ctx.diagnostics.reportError(
       `Type mismatch: expected function, got ${typeToString(calleeType)}`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -1783,6 +1814,7 @@ function checkAssignmentExpression(
       ctx.diagnostics.reportError(
         `Variable '${varName}' is not defined.`,
         DiagnosticCode.SymbolNotFound,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -1800,6 +1832,7 @@ function checkAssignmentExpression(
       ctx.diagnostics.reportError(
         `Cannot assign to immutable variable '${varName}'.`,
         DiagnosticCode.InvalidAssignment,
+        ctx.getLocation(expr.loc),
       );
     }
 
@@ -1808,6 +1841,7 @@ function checkAssignmentExpression(
       ctx.diagnostics.reportError(
         `Type mismatch in assignment: expected ${typeToString(symbol.type)}, got ${typeToString(valueType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
 
@@ -1824,6 +1858,7 @@ function checkAssignmentExpression(
         ctx.diagnostics.reportError(
           `Property assignment on non-class type '${typeToString(objectType)}'.`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
       }
       return Types.Unknown;
@@ -1840,6 +1875,7 @@ function checkAssignmentExpression(
         ctx.diagnostics.reportError(
           `'${symbolName}' is not defined or is not a symbol.`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -1857,6 +1893,7 @@ function checkAssignmentExpression(
           ctx.diagnostics.reportError(
             `Type mismatch in assignment: expected ${typeToString(resolvedFieldType)}, got ${typeToString(valueType)}`,
             DiagnosticCode.TypeMismatch,
+            ctx.getLocation(expr.loc),
           );
         }
         return valueType;
@@ -1865,6 +1902,7 @@ function checkAssignmentExpression(
       ctx.diagnostics.reportError(
         `Symbol '${symbolType.debugName ?? '<symbol>'}' does not exist on type '${classType.name}'.`,
         DiagnosticCode.PropertyNotFound,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -1875,10 +1913,26 @@ function checkAssignmentExpression(
       const fieldType = classType.fields.get(memberName)!;
       const valueType = checkExpression(ctx, expr.value);
 
+      if (
+        classType.kind === TypeKind.Class &&
+        !(classType as ClassType).fieldMutability?.get(memberName)
+      ) {
+        // Accessor-backed fields with a setter are writable even without 'var'
+        const setterName = getSetterName(memberName);
+        if (!classType.methods.has(setterName)) {
+          ctx.diagnostics.reportError(
+            `Cannot assign to immutable field '${memberName}'.`,
+            DiagnosticCode.InvalidAssignment,
+            ctx.getLocation(expr.loc),
+          );
+        }
+      }
+
       if (!isAssignableTo(ctx, valueType, fieldType)) {
         ctx.diagnostics.reportError(
           `Type mismatch in assignment: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
       }
 
@@ -1938,6 +1992,7 @@ function checkAssignmentExpression(
         ctx.diagnostics.reportError(
           `Type mismatch in assignment: expected ${typeToString(paramType)}, got ${typeToString(valueType)}`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
       }
       return valueType;
@@ -1949,6 +2004,7 @@ function checkAssignmentExpression(
       ctx.diagnostics.reportError(
         `Cannot assign to read-only property '${memberName}'.`,
         DiagnosticCode.InvalidAssignment,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -1956,6 +2012,7 @@ function checkAssignmentExpression(
     ctx.diagnostics.reportError(
       `Field '${memberName}' does not exist on type '${classType.name}'.`,
       DiagnosticCode.PropertyNotFound,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   } else if (expr.left.type === NodeType.IndexExpression) {
@@ -1982,12 +2039,14 @@ function checkAssignmentExpression(
           ctx.diagnostics.reportError(
             `Operator []= must take exactly two arguments (index and value).`,
             DiagnosticCode.ArgumentCountMismatch,
+            ctx.getLocation(expr.loc),
           );
         } else {
           if (!isAssignableTo(ctx, indexType, resolvedSetter.parameters[0])) {
             ctx.diagnostics.reportError(
               `Type mismatch in index: expected ${typeToString(resolvedSetter.parameters[0])}, got ${typeToString(indexType)}`,
               DiagnosticCode.TypeMismatch,
+              ctx.getLocation(expr.loc),
             );
           }
 
@@ -1996,6 +2055,7 @@ function checkAssignmentExpression(
             ctx.diagnostics.reportError(
               `Type mismatch in assignment: expected ${typeToString(resolvedSetter.parameters[1])}, got ${typeToString(valueType)}`,
               DiagnosticCode.TypeMismatch,
+              ctx.getLocation(expr.loc),
             );
           }
 
@@ -2012,6 +2072,7 @@ function checkAssignmentExpression(
         ctx.diagnostics.reportError(
           `Cannot assign to read-only indexer.`,
           DiagnosticCode.InvalidAssignment,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -2026,6 +2087,7 @@ function checkAssignmentExpression(
       ctx.diagnostics.reportError(
         `Type mismatch in assignment: expected ${typeToString(elementType)}, got ${typeToString(valueType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
 
@@ -2146,6 +2208,7 @@ function checkBinaryExpression(
         ctx.diagnostics.reportError(
           `Operator ${expr.operator} must take exactly one argument.`,
           DiagnosticCode.ArgumentCountMismatch,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -2154,6 +2217,7 @@ function checkBinaryExpression(
         ctx.diagnostics.reportError(
           `Type mismatch in operator ${expr.operator}: expected ${typeToString(resolvedMethod.parameters[0])}, got ${typeToString(right)}`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -2313,6 +2377,7 @@ function checkBinaryExpression(
         ctx.diagnostics.reportError(
           `Operator '${expr.operator}' cannot be applied to type '${typeToString(left)}' and '${typeToString(right)}'.`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -2327,6 +2392,7 @@ function checkBinaryExpression(
         ctx.diagnostics.reportError(
           `Operator '${expr.operator}' cannot be applied to types '${typeToString(left)}' and '${typeToString(right)}'.`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -2339,6 +2405,7 @@ function checkBinaryExpression(
         ctx.diagnostics.reportError(
           `Operator '${expr.operator}' requires boolean operands, got ${typeToString(left)} and ${typeToString(right)}.`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -2412,6 +2479,7 @@ function checkFunctionExpression(
       ctx.diagnostics.reportError(
         `Parameter '${param.name.name}' has no type annotation and cannot be inferred from context.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
       type = Types.Unknown;
     }
@@ -2446,6 +2514,7 @@ function checkFunctionExpression(
         ctx.diagnostics.reportError(
           `Type mismatch: default value ${typeToString(initType)} is not assignable to ${typeToString(type)}`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
       }
     }
@@ -2487,6 +2556,7 @@ function checkFunctionExpression(
       ctx.diagnostics.reportError(
         `Type mismatch: expected return type ${typeToString(expectedReturnType)}, got ${typeToString(bodyType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
   }
@@ -2514,6 +2584,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
     ctx.diagnostics.reportError(
       `'${className}' is not a class.`,
       DiagnosticCode.SymbolNotFound,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -2524,6 +2595,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
     ctx.diagnostics.reportError(
       `Cannot instantiate abstract class '${className}'.`,
       DiagnosticCode.CannotInstantiateAbstractClass,
+      ctx.getLocation(expr.loc),
     );
   }
 
@@ -2532,11 +2604,13 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
       ctx.diagnostics.reportError(
         `Type '${className}' is not generic.`,
         DiagnosticCode.GenericTypeArgumentMismatch,
+        ctx.getLocation(expr.loc),
       );
     } else if (classType.typeParameters.length !== expr.typeArguments.length) {
       ctx.diagnostics.reportError(
         `Expected ${classType.typeParameters.length} type arguments, got ${expr.typeArguments.length}.`,
         DiagnosticCode.GenericTypeArgumentMismatch,
+        ctx.getLocation(expr.loc),
       );
     } else {
       const typeArguments = expr.typeArguments.map((arg) =>
@@ -2571,6 +2645,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
       ctx.diagnostics.reportError(
         `Generic type '${className}' requires type arguments.`,
         DiagnosticCode.GenericTypeArgumentMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
   }
@@ -2582,6 +2657,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
       ctx.diagnostics.reportError(
         `Class '${className}' has no constructor but arguments were provided.`,
         DiagnosticCode.ArgumentCountMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
     return classType;
@@ -2603,6 +2679,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
       ctx.diagnostics.reportError(
         `Expected ${minArity}-${constructor.parameters.length} arguments, got ${expr.arguments.length}`,
         DiagnosticCode.ArgumentCountMismatch,
+        ctx.getLocation(expr.loc),
       );
     } else {
       // Fill in missing arguments with default values
@@ -2641,6 +2718,7 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
       ctx.diagnostics.reportError(
         `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
   }
@@ -2672,6 +2750,7 @@ function checkSymbolMemberAccess(
       ctx.diagnostics.reportError(
         `'${symbolName}' is not defined or is not a symbol.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -2700,6 +2779,7 @@ function checkSymbolMemberAccess(
           ctx.diagnostics.reportError(
             `Static symbol '${propertyName}' not found in interface '${objectName}'.`,
             DiagnosticCode.TypeMismatch,
+            ctx.getLocation(expr.loc),
           );
           return Types.Unknown;
         }
@@ -2720,6 +2800,7 @@ function checkSymbolMemberAccess(
           ctx.diagnostics.reportError(
             `Static symbol '${propertyName}' not found in class '${objectName}'.`,
             DiagnosticCode.TypeMismatch,
+            ctx.getLocation(expr.loc),
           );
           return Types.Unknown;
         }
@@ -2727,6 +2808,7 @@ function checkSymbolMemberAccess(
         ctx.diagnostics.reportError(
           `'${objectName}' is not an interface or class.`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
         return Types.Unknown;
       }
@@ -2734,6 +2816,7 @@ function checkSymbolMemberAccess(
       ctx.diagnostics.reportError(
         `Invalid symbol path.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -2741,6 +2824,7 @@ function checkSymbolMemberAccess(
     ctx.diagnostics.reportError(
       `Invalid symbol expression.`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -2782,6 +2866,7 @@ function checkSymbolMemberAccess(
     ctx.diagnostics.reportError(
       `Symbol member access is only supported on classes, interfaces, and arrays.`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -2815,6 +2900,7 @@ function checkSymbolMemberAccess(
   ctx.diagnostics.reportError(
     `Symbol '${symbolType.debugName ?? '<symbol>'}' does not exist on type '${classType.name}'.`,
     DiagnosticCode.PropertyNotFound,
+    ctx.getLocation(expr.loc),
   );
   return Types.Unknown;
 }
@@ -2861,6 +2947,7 @@ function checkMemberExpression(
         ctx.diagnostics.reportError(
           `Cannot access field '${memberName}' before initialization.`,
           DiagnosticCode.UnknownError,
+          ctx.getLocation(expr.loc),
         );
       }
     }
@@ -3197,6 +3284,7 @@ function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
       ctx.diagnostics.reportError(
         `Array element type mismatch. Expected '${typeToString(firstType)}', got '${typeToString(elementTypes[i])}'.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
   }
@@ -3223,6 +3311,7 @@ function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {
             spreadType,
           )}`,
           DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
         );
         continue;
       }
@@ -3278,6 +3367,7 @@ function checkMapLiteral(ctx: CheckerContext, expr: MapLiteral): Type {
     ctx.diagnostics.reportError(
       "HashMap type not found. Import from 'zena:map'.",
       DiagnosticCode.TypeNotFound,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -3289,6 +3379,7 @@ function checkMapLiteral(ctx: CheckerContext, expr: MapLiteral): Type {
     ctx.diagnostics.reportError(
       'Empty map literal requires type annotation. Use `new HashMap<K, V>()` instead.',
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -3311,6 +3402,7 @@ function checkMapLiteral(ctx: CheckerContext, expr: MapLiteral): Type {
       ctx.diagnostics.reportError(
         `Map key type mismatch: expected '${typeToString(firstKeyType)}', got '${typeToString(keyTypes[i])}'.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
   }
@@ -3322,6 +3414,7 @@ function checkMapLiteral(ctx: CheckerContext, expr: MapLiteral): Type {
       ctx.diagnostics.reportError(
         `Map value type mismatch: expected '${typeToString(firstValueType)}', got '${typeToString(valueTypes[i])}'.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
   }
@@ -3464,12 +3557,14 @@ function checkIndexExpression(
         ctx.diagnostics.reportError(
           `Operator [] must take exactly one argument.`,
           DiagnosticCode.ArgumentCountMismatch,
+          ctx.getLocation(expr.loc),
         );
       } else {
         if (!isAssignableTo(ctx, indexType, selectedOverload.parameters[0])) {
           ctx.diagnostics.reportError(
             `Type mismatch in index: expected ${typeToString(selectedOverload.parameters[0])}, got ${typeToString(indexType)}`,
             DiagnosticCode.TypeMismatch,
+            ctx.getLocation(expr.loc),
           );
         }
       }
@@ -3486,6 +3581,7 @@ function checkIndexExpression(
       ctx.diagnostics.reportError(
         `Tuple index must be a compile-time known value.`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -3493,6 +3589,7 @@ function checkIndexExpression(
       ctx.diagnostics.reportError(
         `Tuple index out of bounds: ${index}`,
         DiagnosticCode.IndexOutOfBounds,
+        ctx.getLocation(expr.loc),
       );
       return Types.Unknown;
     }
@@ -3566,6 +3663,7 @@ function checkIndexExpression(
     ctx.diagnostics.reportError(
       `Array index must be i32, got ${typeToString(indexType)}`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
     );
   }
 
@@ -3577,6 +3675,7 @@ function checkIndexExpression(
     ctx.diagnostics.reportError(
       `Index expression only supported on arrays, strings, or types with [] operator, got ${typeToString(objectType)}`,
       DiagnosticCode.NotIndexable,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -3585,6 +3684,7 @@ function checkIndexExpression(
     ctx.diagnostics.reportError(
       `Strings cannot be indexed directly. Use .getByteAt() or convert to array.`,
       DiagnosticCode.NotIndexable,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -3600,6 +3700,7 @@ function checkSuperExpression(
     ctx.diagnostics.reportError(
       `'super' can only be used inside a class.`,
       DiagnosticCode.UnknownError,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -3608,6 +3709,7 @@ function checkSuperExpression(
     ctx.diagnostics.reportError(
       `Class '${ctx.currentClass.name}' does not have a superclass.`,
       DiagnosticCode.UnknownError,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -3715,6 +3817,7 @@ function checkTaggedTemplateExpression(
     ctx.diagnostics.reportError(
       `Tagged template tag must be a function, got ${typeToString(tagType)}`,
       DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -3732,6 +3835,7 @@ function checkTaggedTemplateExpression(
     ctx.diagnostics.reportError(
       `Tagged template tag function must accept at least 2 parameters (strings and values)`,
       DiagnosticCode.ArgumentCountMismatch,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -3948,6 +4052,7 @@ function checkRangeExpression(
       ctx.diagnostics.reportError(
         `Range start must be i32, got ${typeToString(startType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
   }
@@ -3958,6 +4063,7 @@ function checkRangeExpression(
       ctx.diagnostics.reportError(
         `Range end must be i32, got ${typeToString(endType)}`,
         DiagnosticCode.TypeMismatch,
+        ctx.getLocation(expr.loc),
       );
     }
   }
@@ -3984,6 +4090,7 @@ function checkRangeExpression(
     ctx.diagnostics.reportError(
       `Range type '${rangeTypeName}' not found. Import from 'zena:range'.`,
       DiagnosticCode.TypeNotFound,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }
@@ -4028,6 +4135,7 @@ function checkPipePlaceholder(
     ctx.diagnostics.reportError(
       `'$' can only be used inside a pipeline expression (|>).`,
       DiagnosticCode.SymbolNotFound,
+      ctx.getLocation(expr.loc),
     );
     return Types.Unknown;
   }

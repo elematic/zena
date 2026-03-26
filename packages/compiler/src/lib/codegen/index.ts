@@ -254,8 +254,14 @@ export class CodeGenerator {
       }
     }
 
-    // 4. Define Class Structs (Fourth pass)
-    // Now that all classes have reserved indices, define the actual struct types
+    // 4. Define Class Structs
+    // Now that all classes have reserved indices, define the actual struct types.
+    //
+    // NOTE: Subclass constructors currently use struct_new_default + struct.set,
+    // which requires inherited fields to be mutable in WASM even if they are
+    // language-level immutable. A future optimization could use initializer
+    // lists to collect all field values (including parent fields) and use
+    // struct.new for the full struct, enabling truly immutable inherited fields.
     for (const statement of statements) {
       if (statement.type === NodeType.ClassDeclaration) {
         if (!this.#isUsed(statement as ClassDeclaration)) continue;

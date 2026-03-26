@@ -66,7 +66,7 @@ suite('Checker: Union Types', () => {
     const diagnostics = check(`
       class A {}
       class Box {
-        value: A | string = "";
+        var value: A | string = "";
       }
       let b = new Box();
       b.value = new A();
@@ -79,7 +79,7 @@ suite('Checker: Union Types', () => {
     const diagnostics = check(`
       class A {}
       class Box {
-        value: A | string = "";
+        var value: A | string = "";
       }
       let b = new Box();
       b.value = true;

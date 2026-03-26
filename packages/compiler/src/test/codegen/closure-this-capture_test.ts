@@ -6,7 +6,7 @@ suite('Codegen: Closure this capture', () => {
   test('closure capturing this calls method correctly', async () => {
     const result = await compileAndRun(`
       class Counter {
-        value: i32 = 0;
+        var value: i32 = 0;
 
         increment() {
           this.value = this.value + 1;
@@ -30,7 +30,7 @@ suite('Codegen: Closure this capture', () => {
   test('closure capturing this passed as callback', async () => {
     const result = await compileAndRun(`
       class Parser {
-        count: i32 = 0;
+        var count: i32 = 0;
 
         parse(): i32 {
           this.count = this.count + 10;
@@ -53,7 +53,7 @@ suite('Codegen: Closure this capture', () => {
   test('closure capturing this with private method', async () => {
     const result = await compileAndRun(`
       class Helper {
-        state: i32 = 5;
+        var state: i32 = 5;
 
         #double() {
           this.state = this.state * 2;

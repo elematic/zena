@@ -6,7 +6,7 @@ suite('Codegen: Match Guard', () => {
   test('should compile and run match guard', async () => {
     const source = `
       class Point {
-        x: i32;
+        var x: i32;
         y: i32;
         new(x: i32, y: i32) : x = x, y = y {}
       }

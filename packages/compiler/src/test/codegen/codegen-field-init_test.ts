@@ -90,7 +90,7 @@ suite('Codegen - Field Initialization', () => {
       
       class Derived extends Base {
         x: i32 = 100;
-        capturedX: Box<i32> | null;  // No initializer - defaults to null, then setup() sets it
+        var capturedX: Box<i32> | null;  // No initializer - defaults to null, then setup() sets it
 
         setup(): void {
           // Hazard: this.x is not initialized yet!

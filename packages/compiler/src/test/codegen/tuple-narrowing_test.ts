@@ -14,7 +14,7 @@ suite('tuple narrowing', () => {
     const result = await compileAndRun(
       `
       class Counter {
-        count: i32;
+        var count: i32;
         
         new() : count = 0 {}
         

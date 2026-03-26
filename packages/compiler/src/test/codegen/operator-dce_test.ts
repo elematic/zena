@@ -35,7 +35,7 @@ suite('Operator Method DCE', () => {
   test('operator []= is kept when used via index assignment syntax', async () => {
     const source = `
       class Box {
-        #value: i32;
+        var #value: i32;
         
         new() : #value = 0 {}
         
@@ -67,7 +67,7 @@ suite('Operator Method DCE', () => {
   test('operator == is kept when used via equality syntax', async () => {
     const source = `
       class Point {
-        x: i32;
+        var x: i32;
         
         new(x: i32) : x = x {}
         
@@ -104,7 +104,7 @@ suite('Operator Method DCE', () => {
   test('operator != uses operator == method', async () => {
     const source = `
       class Point {
-        x: i32;
+        var x: i32;
         
         new(x: i32) : x = x {}
         

@@ -80,8 +80,8 @@ describe('Exports', () => {
           return `
               import { FixedArray } from 'zena:array';
               export class Point {
-                x: i32;
-                y: i32;
+                var x: i32;
+                var y: i32;
                 new(x: i32, y: i32) {
                   this.x = x;
                   this.y = y;

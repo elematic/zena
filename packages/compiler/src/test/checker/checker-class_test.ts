@@ -45,7 +45,7 @@ suite('TypeChecker - Classes', () => {
   test('should detect type mismatch in field assignment', () => {
     const input = `
       class Point {
-        x: i32 = 0;
+        var x: i32 = 0;
         new() {
           this.x = "hello";
         }

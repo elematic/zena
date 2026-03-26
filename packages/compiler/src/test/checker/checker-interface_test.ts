@@ -90,9 +90,8 @@ suite('TypeChecker - Interfaces', () => {
     const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
-    assert.strictEqual(errors.length, 2);
+    assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /Getter for 'y' is missing/);
-    assert.match(errors[1].message, /Setter for 'y' is missing/);
   });
 
   test('should detect incorrect field type', () => {
@@ -109,7 +108,7 @@ suite('TypeChecker - Interfaces', () => {
     const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
 
-    assert.strictEqual(errors.length, 2);
+    assert.strictEqual(errors.length, 1);
     assert.match(
       errors[0].message,
       /Getter for 'x' is type .* but expected .*/,
@@ -143,7 +142,7 @@ suite('TypeChecker - Interfaces', () => {
         value: i32 { get; set; }
       }
       class Box implements Container {
-        _value: i32 = 0;
+        var _value: i32 = 0;
         value: i32 {
           get { return this._value; }
           set(v) { this._value = v; }
@@ -250,7 +249,7 @@ suite('TypeChecker - Interfaces', () => {
         value: i32 { get; set; }
       }
       class Box implements Container {
-        value: i32 = 0;
+        var value: i32 = 0;
       }
     `;
     const parser = new Parser(input);
@@ -261,13 +260,32 @@ suite('TypeChecker - Interfaces', () => {
     assert.deepStrictEqual(errors, []);
   });
 
+  test('should not satisfy interface accessor with immutbale field', () => {
+    const input = `
+      interface Container {
+        value: i32 { get; set; }
+      }
+      class Box implements Container {
+        value: i32 = 0;
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = TypeChecker.forModule(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0].message, /incorrectly implements interface/);
+    assert.match(errors[0].message, /Setter for 'value' is missing/);
+  });
+
   test('should satisfy interface field with accessor', () => {
     const input = `
       interface Container {
         value: i32;
       }
       class Box implements Container {
-        _val: i32 = 0;
+        var _val: i32 = 0;
         value: i32 {
           get { return this._val; }
           set(v) { this._val = v; }
@@ -280,6 +298,99 @@ suite('TypeChecker - Interfaces', () => {
     const errors = checker.check();
 
     assert.deepStrictEqual(errors, []);
+  });
+
+  test('should not satisfy interface mutable field with accessor', () => {
+    const input = `
+      interface Container {
+        var value: i32;
+      }
+      class Box implements Container {
+        _val: i32 = 0;
+        value: i32 {
+          get { return this._val; }
+        }
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = TypeChecker.forModule(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0].message, /incorrectly implements interface/);
+    assert.match(errors[0].message, /Setter for 'value' is missing/);
+  });
+
+  test('immutable interface field + immutable class field passes', () => {
+    const input = `
+      interface Readable {
+        x: i32;
+      }
+      class Impl implements Readable {
+        x: i32;
+        new() : x = 10 {}
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = TypeChecker.forModule(ast);
+    const errors = checker.check();
+
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('immutable interface field + var class field passes', () => {
+    const input = `
+      interface Readable {
+        x: i32;
+      }
+      class Impl implements Readable {
+        var x: i32 = 0;
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = TypeChecker.forModule(ast);
+    const errors = checker.check();
+
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('var interface field + var class field passes', () => {
+    const input = `
+      interface Mutable {
+        var x: i32;
+      }
+      class Impl implements Mutable {
+        var x: i32 = 0;
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = TypeChecker.forModule(ast);
+    const errors = checker.check();
+
+    assert.deepStrictEqual(errors, []);
+  });
+
+  test('var interface field + immutable class field fails', () => {
+    const input = `
+      interface Mutable {
+        var x: i32;
+      }
+      class Impl implements Mutable {
+        x: i32;
+        new() : x = 10 {}
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+    const checker = TypeChecker.forModule(ast);
+    const errors = checker.check();
+
+    assert.strictEqual(errors.length, 1);
+    assert.match(errors[0].message, /Setter for 'x' is missing/);
   });
 });
 

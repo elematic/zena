@@ -19,7 +19,7 @@ suite('Cross-module class inheritance', () => {
     const exports = await compileAndInstantiate({
       '/base.zena': `
         export class Base {
-          x: i32;
+          var x: i32;
           new(x: i32) : x = x {}
         }
       `,
@@ -46,7 +46,7 @@ suite('Cross-module class inheritance', () => {
     const exports = await compileAndInstantiate({
       '/base.zena': `
         export class Base {
-          value: i32;
+          var value: i32;
           new(v: i32) : value = v {}
         }
       `,
@@ -107,7 +107,7 @@ suite('Cross-module class inheritance', () => {
     const exports = await compileAndInstantiate({
       '/base.zena': `
         export class Base {
-          #value: i32;
+          var #value: i32;
           new(v: i32) : #value = v {}
           value: i32 {
             get { return this.#value; }

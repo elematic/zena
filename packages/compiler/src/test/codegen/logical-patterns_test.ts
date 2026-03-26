@@ -57,7 +57,7 @@ suite('CodeGenerator - Logical Patterns', () => {
 
   test('should match logical AND pattern', async () => {
     const result = await compileAndRun(`
-      class A { x: i32; new(x: i32) : x = x {} }
+      class A { var x: i32; new(x: i32) : x = x {} }
 
       export let main = (): i32 => {
         let obj = new A(10);
@@ -72,7 +72,7 @@ suite('CodeGenerator - Logical Patterns', () => {
 
   test('should match logical AND pattern with bindings', async () => {
     const result = await compileAndRun(`
-      class Point { x: i32; y: i32; new(x: i32, y: i32) : x = x, y = y {} }
+      class Point { var x: i32; y: i32; new(x: i32, y: i32) : x = x, y = y {} }
 
       export let main = (): i32 => {
         let p = new Point(10, 20);

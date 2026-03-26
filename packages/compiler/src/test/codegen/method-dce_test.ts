@@ -6,7 +6,7 @@ suite('Method-level DCE', () => {
   test('unused method is fully eliminated', async () => {
     const source = `
       class Counter {
-        #value: i32;
+        var #value: i32;
         
         new() : #value = 0 {}
         
@@ -95,8 +95,8 @@ suite('Method-level DCE', () => {
   test('setter called is kept, unused setter is replaced', async () => {
     const source = `
       class Box {
-        #value: i32;
-        #label: i32;
+        var #value: i32;
+        var #label: i32;
         
         new() : #value = 0, #label = 0 {}
         

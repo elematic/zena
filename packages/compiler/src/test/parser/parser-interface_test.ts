@@ -176,4 +176,68 @@ suite('Parser - Interfaces', () => {
       }
     }
   });
+
+  test('should parse interface with var field', () => {
+    const input = `
+      interface Mutable {
+        var x: i32;
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0];
+    assert.strictEqual(decl.type, NodeType.InterfaceDeclaration);
+    if (decl.type === NodeType.InterfaceDeclaration) {
+      assert.strictEqual(decl.body.length, 1);
+      const field = decl.body[0];
+      assert.strictEqual(field.type, NodeType.FieldDefinition);
+      if (field.type === NodeType.FieldDefinition) {
+        assert.strictEqual(field.name.type, NodeType.Identifier);
+        if (field.name.type === NodeType.Identifier) {
+          assert.strictEqual(field.name.name, 'x');
+        }
+        assert.strictEqual(field.mutability, 'var');
+      }
+    }
+  });
+
+  test('should parse interface with immutable field (no modifier)', () => {
+    const input = `
+      interface Readable {
+        x: i32;
+      }
+    `;
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0];
+    if (decl.type === NodeType.InterfaceDeclaration) {
+      const field = decl.body[0];
+      assert.strictEqual(field.type, NodeType.FieldDefinition);
+      if (field.type === NodeType.FieldDefinition) {
+        assert.strictEqual(field.mutability, undefined);
+      }
+    }
+  });
+
+  test('should reject var on interface methods', () => {
+    const input = `
+      interface Bad {
+        var run(): void;
+      }
+    `;
+    const parser = new Parser(input);
+    assert.throws(() => parser.parse(), /var.*not allowed on methods/);
+  });
+
+  test('should reject var on interface accessor signatures', () => {
+    const input = `
+      interface Bad {
+        var x: i32 { get; set; }
+      }
+    `;
+    const parser = new Parser(input);
+    assert.throws(() => parser.parse(), /var.*not allowed on accessor/);
+  });
 });

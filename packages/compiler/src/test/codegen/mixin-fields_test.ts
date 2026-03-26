@@ -6,7 +6,7 @@ suite('mixin fields', () => {
   test('simple mixin field with i32', async () => {
     const source = `
 mixin Chainable {
-  next: i32;
+  var next: i32;
 }
 
 class ChainNode with Chainable {
@@ -32,7 +32,7 @@ export let main = (): i32 => {
   test('mixin field with initializer', async () => {
     const source = `
 mixin Chainable {
-  next: i32 = 99;
+  var next: i32 = 99;
 }
 
 class ChainNode with Chainable {
@@ -62,7 +62,7 @@ class Node {
 }
 
 mixin Chainable {
-  next: Node | null;
+  var next: Node | null;
 }
 
 class ChainNode with Chainable {
@@ -98,7 +98,7 @@ export let main = (): i32 => {
     // The mixin field type references the class that uses the mixin
     const source = `
 mixin Chainable {
-  next: ChainNode | null;
+  var next: ChainNode | null;
 }
 
 class ChainNode with Chainable {
@@ -139,7 +139,7 @@ export let main = (): i32 => {
     const source = `
 class SimpleNode {
   id: i32;
-  next: SimpleNode | null;
+  var next: SimpleNode | null;
   new(id: i32) : id = id {}
 }
 

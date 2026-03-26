@@ -6,7 +6,7 @@ suite('CodeGenerator - operator +', () => {
   test('should compile and run basic operator +', async () => {
     const input = `
       class Vector {
-        x: i32;
+        var x: i32;
         y: i32;
         new(x: i32, y: i32) : x = x, y = y {}
         operator +(other: Vector): Vector {

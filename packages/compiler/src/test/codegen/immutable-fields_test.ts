@@ -104,7 +104,7 @@ suite('Codegen: Immutable Fields', () => {
   test('mutable field can be modified', async () => {
     const source = `
       class Box {
-        value: i32 = 0;
+        var value: i32 = 0;
         
         set(v: i32): void {
           this.value = v;

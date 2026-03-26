@@ -128,7 +128,7 @@ suite('Binary Size', () => {
     test('unused class is eliminated with DCE', async () => {
       const withUnused = `
         class Unused {
-          x: i32;
+          var x: i32;
           new() { this.x = 0; }
         }
         export let main = () => 42;
@@ -235,7 +235,7 @@ suite('Binary Size', () => {
     test('unused method is eliminated with DCE', async () => {
       const withUnusedMethod = `
         class Counter {
-          #value: i32;
+          var #value: i32;
           new() { this.#value = 0; }
           increment(): i32 { return this.#value = this.#value + 1; }
           decrement(): i32 { return this.#value = this.#value - 1; }
@@ -249,7 +249,7 @@ suite('Binary Size', () => {
       `;
       const withoutUnusedMethod = `
         class Counter {
-          #value: i32;
+          var #value: i32;
           new() { this.#value = 0; }
           increment(): i32 { return this.#value = this.#value + 1; }
           getValue(): i32 { return this.#value; }
@@ -282,8 +282,8 @@ suite('Binary Size', () => {
     test('unused getter is eliminated with DCE', async () => {
       const withUnusedGetter = `
         class Point {
-          #x: i32;
-          #y: i32;
+          var #x: i32;
+          var #y: i32;
           new(x: i32, y: i32) { this.#x = x; this.#y = y; }
           x: i32 { get { return this.#x; } }
           y: i32 { get { return this.#y; } }
@@ -295,8 +295,8 @@ suite('Binary Size', () => {
       `;
       const withoutUnusedGetter = `
         class Point {
-          #x: i32;
-          #y: i32;
+          var #x: i32;
+          var #y: i32;
           new(x: i32, y: i32) { this.#x = x; this.#y = y; }
           x: i32 { get { return this.#x; } }
         }
@@ -326,11 +326,12 @@ suite('Binary Size', () => {
 
     test('unused implicit field getter is eliminated with DCE', async () => {
       // Test that a field's getter is eliminated when it's never read
-      // Both programs have 2 fields, but only the first reads both, second reads only one
+      // Both programs have 2 fields, but only the first reads both, second
+      // reads only one
       const usesAllGetters = `
         class Person {
-          name: i32;
-          age: i32;
+          var name: i32;
+          var age: i32;
           new(n: i32, a: i32) { this.name = n; this.age = a; }
         }
         export let main = () => {
@@ -340,8 +341,8 @@ suite('Binary Size', () => {
       `;
       const usesOneGetter = `
         class Person {
-          name: i32;
-          age: i32;
+          var name: i32;
+          var age: i32;
           new(n: i32, a: i32) { this.name = n; this.age = a; }
         }
         export let main = () => {
@@ -395,7 +396,7 @@ suite('Binary Size', () => {
     test('multiple unused methods are all eliminated', async () => {
       const manyUnusedMethods = `
         class BigClass {
-          #value: i32;
+          var #value: i32;
           new() { this.#value = 0; }
           method1(): i32 { return 1; }
           method2(): i32 { return 2; }
@@ -411,7 +412,7 @@ suite('Binary Size', () => {
       `;
       const minimalMethods = `
         class BigClass {
-          #value: i32;
+          var #value: i32;
           new() { this.#value = 0; }
           getValue(): i32 { return this.#value; }
         }

@@ -690,7 +690,7 @@ export interface FieldDefinition extends Node {
   decorators?: Decorator[];
   /**
    * Field mutability:
-   * - 'let' or undefined: Immutable field (only assignable in constructor)
+   * - undefined or 'let': Immutable field (only assignable in initializer)
    * - 'var': Mutable field with public setter
    */
   mutability?: 'let' | 'var';

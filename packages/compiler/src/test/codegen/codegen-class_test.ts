@@ -25,7 +25,7 @@ suite('CodeGenerator - Classes', () => {
   test('should compile and run field assignment', async () => {
     const input = `
       class Point {
-        x: i32 = 0;
+        var x: i32 = 0;
         new() {}
       }
       export let main = (): i32 => {

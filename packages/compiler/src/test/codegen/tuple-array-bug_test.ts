@@ -103,7 +103,7 @@ interface Allocator {
 }
 
 class BumpAllocator implements Allocator {
-  offset: i32;
+  var offset: i32;
   new() : offset = 0 {}
   allocate(size: i32): i32 {
     let result = this.offset;

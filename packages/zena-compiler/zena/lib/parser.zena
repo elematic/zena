@@ -59,7 +59,7 @@ import {
 
 export class Parser {
   #tokens: Array<Token>;
-  #current: i32;
+  var #current: i32;
   #source: string;
   #path: string;
   
@@ -452,22 +452,18 @@ export class Parser {
         expr = this.#finishCall(expr, false);
       } else if (this.#match(TokenType.Dot)) {
         let name = this.#parseIdentifier();
-        expr = new MemberExpression(expr, name, null);
+        expr = new MemberExpression(expr, name, false, null);
       } else if (this.#match(TokenType.LBracket)) {
         let index = this.#parseExpression();
         this.#consume(TokenType.RBracket, "Expected ']' after index");
-        expr = new IndexExpression(expr, index, null);
+        expr = new IndexExpression(expr, index, false, null);
       } else if (this.#match(TokenType.QuestionDot)) {
         let name = this.#parseIdentifier();
-        let member = new MemberExpression(expr, name, null);
-        member.optional = true;
-        expr = member;
+        expr = new MemberExpression(expr, name, true, null);
       } else if (this.#match(TokenType.QuestionLBracket)) {
         let index = this.#parseExpression();
         this.#consume(TokenType.RBracket, "Expected ']' after index");
-        let indexExpr = new IndexExpression(expr, index, null);
-        indexExpr.optional = true;
-        expr = indexExpr;
+        expr = new IndexExpression(expr, index, true, null);
       } else if (this.#match(TokenType.QuestionLParen)) {
         expr = this.#finishCall(expr, true);
       } else {
@@ -491,11 +487,7 @@ export class Parser {
     
     this.#consume(TokenType.RParen, "Expected ')' after arguments");
     
-    let call = new CallExpression(callee, args, null, this.#makeLocation(startToken));
-    if (optional) {
-      call.optional = true;
-    }
-    return call;
+    return new CallExpression(callee, args, null, optional, this.#makeLocation(startToken));
   }
   
   #parsePrimary(): Expression {

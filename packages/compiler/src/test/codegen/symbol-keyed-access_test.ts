@@ -8,7 +8,7 @@ suite('Codegen: Symbol-Keyed Access', () => {
 symbol myField;
 
 class Data {
-  :myField: i32;
+  var :myField: i32;
   
   new(val: i32) {
     this.:myField = val;
@@ -51,8 +51,8 @@ symbol first;
 symbol second;
 
 class Pair {
-  :first: i32;
-  :second: i32;
+  var :first: i32;
+  var :second: i32;
   
   new(a: i32, b: i32) {
     this.:first = a;
@@ -78,8 +78,8 @@ import {sym as otherSym} from '/other.zena';
 symbol sym;
 
 class Data {
-  :sym: i32;
-  :otherSym: i32;
+  var :sym: i32;
+  var :otherSym: i32;
   
   new() {
     this.:sym = 10;
@@ -133,7 +133,7 @@ symbol secretValue;
 
 class Mixed {
   publicValue: i32;
-  :secretValue: i32;
+  var :secretValue: i32;
   
   new(pub: i32, secret: i32) : publicValue = pub {
     this.:secretValue = secret;

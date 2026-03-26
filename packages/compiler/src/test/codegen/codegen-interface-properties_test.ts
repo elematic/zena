@@ -11,8 +11,8 @@ suite('CodeGenerator - Interface Properties', () => {
       }
       
       class PointImpl implements Point {
-        x: i32;
-        y: i32;
+        var x: i32;
+        var y: i32;
         new(x: i32, y: i32) : x = x, y = y {}
       }
       
@@ -55,7 +55,7 @@ suite('CodeGenerator - Interface Properties', () => {
       }
       
       class Box implements Container {
-        _value: i32 = 0;
+        var _value: i32 = 0;
         value: i32 {
           get { return this._value; }
           set(v) { this._value = v; }
@@ -102,7 +102,7 @@ suite('CodeGenerator - Interface Properties', () => {
       }
       
       class Box implements WriteOnly {
-        _value: i32 = 0;
+        var _value: i32 = 0;
         value: i32 {
           set(v) { this._value = v; }
         }
@@ -118,5 +118,68 @@ suite('CodeGenerator - Interface Properties', () => {
     `;
     const result = await compileAndRun(input);
     assert.strictEqual(result, 50);
+  });
+
+  test('should read immutable interface field', async () => {
+    const input = `
+      interface Readable {
+        x: i32;
+      }
+
+      class Impl implements Readable {
+        x: i32;
+        new(x: i32) : x = x {}
+      }
+
+      export let main = (): i32 => {
+        let obj = new Impl(42);
+        let r: Readable = obj;
+        return r.x;
+      };
+    `;
+    const result = await compileAndRun(input);
+    assert.strictEqual(result, 42);
+  });
+
+  test('should read and write var interface field', async () => {
+    const input = `
+      interface Mutable {
+        var x: i32;
+      }
+
+      class Impl implements Mutable {
+        var x: i32 = 0;
+      }
+
+      export let main = (): i32 => {
+        let obj = new Impl();
+        let m: Mutable = obj;
+        m.x = 99;
+        return m.x;
+      };
+    `;
+    const result = await compileAndRun(input);
+    assert.strictEqual(result, 99);
+  });
+
+  test('var class field satisfies immutable interface field', async () => {
+    const input = `
+      interface Readable {
+        x: i32;
+      }
+
+      class Impl implements Readable {
+        var x: i32 = 0;
+      }
+
+      export let main = (): i32 => {
+        let obj = new Impl();
+        obj.x = 77;
+        let r: Readable = obj;
+        return r.x;
+      };
+    `;
+    const result = await compileAndRun(input);
+    assert.strictEqual(result, 77);
   });
 });

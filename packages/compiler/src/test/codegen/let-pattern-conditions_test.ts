@@ -74,7 +74,7 @@ suite('let-pattern conditions', () => {
     test('iterate until false', async () => {
       const result = await compileAndRun(`
         class Counter {
-          value: i32;
+          var value: i32;
           new() : value = 0 {}
           
           next(): inline (boolean, i32) {
@@ -101,7 +101,7 @@ suite('let-pattern conditions', () => {
     test('variable only in scope inside loop body', async () => {
       const result = await compileAndRun(`
         class Counter {
-          value: i32;
+          var value: i32;
           new() : value = 0 {}
           
           next(): inline (boolean, i32) {
@@ -150,7 +150,7 @@ suite('let-pattern conditions', () => {
     test('while let with discriminated union iterator', async () => {
       const result = await compileAndRun(`
         class Iterator {
-          index: i32;
+          var index: i32;
           new() : index = 0 {}
           
           next(): inline (true, i32) | inline (false, never) {

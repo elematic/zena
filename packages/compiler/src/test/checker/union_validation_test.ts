@@ -74,10 +74,7 @@ suite('Union Validation Tests', () => {
 
       // Valid: T is bounded by anyref, so T | null is OK
       class Container<T extends anyref> {
-        val: T | null;
-        new() {
-          this.val = null;
-        }
+        var val: T | null = null;
       }
 
       export let main = (): void => {

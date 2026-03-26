@@ -44,7 +44,7 @@ suite('CodeGenerator - Union Types', () => {
 
   test('should compile class union types', async () => {
     const source = `
-      class A { x: i32; new(x: i32) : x = x {} }
+      class A { var x: i32; new(x: i32) : x = x {} }
       class B { y: i32; new(y: i32) : y = y {} }
 
       export let main = (): i32 => {

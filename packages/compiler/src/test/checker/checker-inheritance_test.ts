@@ -7,11 +7,11 @@ suite('TypeChecker - Inheritance', () => {
   test('should check valid inheritance', () => {
     const input = `
       class Animal {
-        name: string = "";
+        var name: string = "";
         speak(): void {}
       }
       class Dog extends Animal {
-        breed: string = "";
+        var breed: string = "";
         bark(): void {}
       }
       let d = new Dog();

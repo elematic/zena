@@ -830,6 +830,30 @@ export function defineInterfaceMethods(
         typeIndex: funcTypeIndex,
         type: fieldType,
       });
+
+      // Mutable fields (declared with `var`) also get a setter in the vtable
+      if (member.mutability === 'var') {
+        const setterParams: number[][] = [
+          [ValType.ref_null, ValType.anyref],
+          mapped,
+        ];
+        const setterFuncTypeIndex = ctx.module.addType(setterParams, []);
+
+        vtableFields.push({
+          type: [
+            ValType.ref,
+            ...WasmModule.encodeSignedLEB128(setterFuncTypeIndex),
+          ],
+          mutable: false,
+        });
+
+        const setterName = getSetterName(memberName);
+        methodIndices.set(setterName, {
+          index: methodIndex++,
+          typeIndex: setterFuncTypeIndex,
+          returnType: [],
+        });
+      }
     } else if (member.type === NodeType.AccessorSignature) {
       const propName = getMemberName(member.name);
       const propCheckerType = interfaceType.fields.get(propName);

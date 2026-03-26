@@ -24,7 +24,7 @@ suite('CodeGenerator - Advanced Operators', () => {
   test('should support generic operator []=', async () => {
     const input = `
       class Container<T> {
-        item: T;
+        var item: T;
         new(item: T) : item = item {}
         operator []=(index: i32, value: T): void {
           this.item = value;

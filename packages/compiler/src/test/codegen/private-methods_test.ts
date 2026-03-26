@@ -27,7 +27,7 @@ suite('Codegen: Private Methods', () => {
   test('Private method call on another instance', async () => {
     const source = `
       class Secret {
-        #value: i32;
+        var #value: i32;
         
         new(v: i32) : #value = v {}
         

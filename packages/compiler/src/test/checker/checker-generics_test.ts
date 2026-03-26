@@ -56,7 +56,7 @@ suite('TypeChecker - Generics', () => {
   test('should check field access on generic instance', () => {
     const input = `
       class Box<T> {
-        value: T;
+        var value: T;
         new(v: T) : value = v {}
       }
       let b = new Box<i32>(10);
@@ -73,7 +73,7 @@ suite('TypeChecker - Generics', () => {
   test('should detect type mismatch on field access', () => {
     const input = `
       class Box<T> {
-        value: T;
+        var value: T;
         new(v: T) : value = v {}
       }
       let b = new Box<i32>(10);

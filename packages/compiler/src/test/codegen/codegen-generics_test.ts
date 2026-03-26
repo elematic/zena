@@ -80,7 +80,7 @@ suite('Codegen: Generics', () => {
       import { log } from 'zena:console';
       
       class Base<T> {
-        value: T;
+        var value: T;
         new(value: T) : value = value {}
         getValue(): T {
           return this.value;
@@ -88,7 +88,7 @@ suite('Codegen: Generics', () => {
       }
       
       class Derived<T> extends Base<T> {
-        extra: i32;
+        var extra: i32;
         new(value: T, extra: i32) : extra = extra, super(value) { }
         getExtra(): i32 {
           return this.extra;
@@ -175,7 +175,7 @@ suite('Codegen: Generics', () => {
       import { log } from 'zena:console';
       
       class Box<T> {
-        value: T;
+        var value: T;
         new(value: T) : value = value {}
         getValue(): T {
           return this.value;

@@ -10,7 +10,7 @@ describe('Shadowing Tests', () => {
       {
         [entryPoint]: `
       export class String {
-        val: i32;
+        var val: i32;
         new(v: i32) : val = v {}
       }
 

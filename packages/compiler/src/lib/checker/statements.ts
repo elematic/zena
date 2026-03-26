@@ -145,7 +145,7 @@ const getExpressionPath = (
  * Check if an expression path refers to an immutable location.
  * For narrowing to be safe, ALL fields/indices in the path must be immutable.
  *
- * - For classes: field must be declared with `let` (not in mutableFields)
+ * - For classes: field must not be mutable (fieldMutability entry is false)
  * - For records: all record fields are immutable by nature
  * - For tuples: all tuple elements are immutable by nature
  *
@@ -166,7 +166,7 @@ const isExpressionPathImmutable = (
     if (objectType.kind === TypeKind.Class) {
       const classType = objectType as ClassType;
       if (!classType.fields.has(fieldName)) return false;
-      const isImmutable = !classType.mutableFields?.has(fieldName);
+      const isImmutable = !classType.fieldMutability?.get(fieldName);
       if (!isImmutable) return false;
     }
     // Handle RecordType - all record fields are immutable by nature
@@ -933,6 +933,7 @@ const predeclareMixin = (ctx: CheckerContext, decl: MixinDeclaration) => {
     typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
     onType: undefined, // Will be resolved in full check
     fields: new Map(),
+    fieldMutability: new Map(),
     methods: new Map(),
     symbolFields: new Map(),
     symbolMethods: new Map(),
@@ -2651,8 +2652,8 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
         // Copy field mutability from supertype
         if (superType.fieldMutability) {
-          for (const [name, isFinal] of superType.fieldMutability) {
-            intermediateType.fieldMutability!.set(name, isFinal);
+          for (const [name, isMutable] of superType.fieldMutability) {
+            intermediateType.fieldMutability!.set(name, isMutable);
           }
         }
         for (const [name, type] of superType.methods) {
@@ -2808,9 +2809,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
     // Inherit field mutability
     if (superType.fieldMutability) {
-      for (const [name, isFinal] of superType.fieldMutability) {
+      for (const [name, isMutable] of superType.fieldMutability) {
         if (!name.startsWith('#')) {
-          classType.fieldMutability!.set(name, isFinal);
+          classType.fieldMutability!.set(name, isMutable);
         }
       }
     }
@@ -2913,13 +2914,13 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       classType.fields.set(fieldName, fieldType);
       classType.fieldMutability!.set(fieldName, param.mutability !== 'var');
 
-      // Track mutability
-      if (param.mutability === 'var') {
-        if (!classType.mutableFields) {
-          classType.mutableFields = new Set();
-        }
-        classType.mutableFields.add(fieldName);
-      }
+      // // Track mutability
+      // if (param.mutability === 'var') {
+      //   if (!classType.mutableFields) {
+      //     classType.mutableFields = new Set();
+      //   }
+      //   classType.mutableFields.add(fieldName);
+      // }
 
       // Register implicit getter (and setter if mutable) - same as regular fields
       if (!fieldName.startsWith('#')) {
@@ -3082,7 +3083,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       }
 
       classType.fields.set(memberName, fieldType);
-      classType.fieldMutability!.set(memberName, member.isFinal);
+      classType.fieldMutability!.set(memberName, member.mutability === 'var');
 
       // Track declared fields (e.g., `declare length: i32`)
       if (member.isDeclare) {
@@ -3098,16 +3099,6 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           classType.fieldsWithInitializers = new Set();
         }
         classType.fieldsWithInitializers.add(memberName);
-      }
-
-      // Track field mutability based on let/var modifiers
-      // Fields are mutable by default; only `let` makes them immutable
-      const isMutableField = member.mutability !== 'let';
-      if (isMutableField) {
-        if (!classType.mutableFields) {
-          classType.mutableFields = new Set();
-        }
-        classType.mutableFields.add(memberName);
       }
 
       // Track private setter names for var(#name) syntax
@@ -3133,8 +3124,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         });
 
         // Setter (if mutable and no private setter specified)
-        // Mutable fields (bare or var) have public setters unless var(#name) syntax is used
-        const hasPublicSetter = isMutableField && !member.setterName;
+        // Mutable fields (var) have public setters unless var(#name) syntax is used
+        const hasPublicSetter =
+          member.mutability === 'var' && !member.setterName;
         if (hasPublicSetter) {
           classType.vtable.push(setterName);
           classType.methods.set(setterName, {
@@ -3534,6 +3526,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
             ctx.diagnostics.reportError(
               `Type mismatch for symbol field '${memberNameInfo.symbolType?.debugName ?? '<symbol>'}': expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
               DiagnosticCode.TypeMismatch,
+              undefined /* TODO fix location */,
             );
           }
         }
@@ -3551,6 +3544,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           ctx.diagnostics.reportError(
             `Type mismatch for field '${memberName}': expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
             DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
           );
         }
       }
@@ -3680,6 +3674,7 @@ function checkInterfaceDeclaration(
         ctx.diagnostics.reportError(
           `Interface '${interfaceName}' can only extend other interfaces.`,
           DiagnosticCode.TypeMismatch,
+          undefined /* TODO fix location */,
         );
       } else {
         const parentInterface = type as InterfaceType;
@@ -3766,6 +3761,7 @@ function checkInterfaceDeclaration(
         ctx.diagnostics.reportError(
           `Duplicate method '${memberName}' in interface '${interfaceName}'.`,
           DiagnosticCode.DuplicateDeclaration,
+          undefined /* TODO fix location */,
         );
       } else {
         interfaceType.methods.set(memberName, methodType);
@@ -3787,14 +3783,13 @@ function checkInterfaceDeclaration(
         ctx.diagnostics.reportError(
           `Duplicate field '${memberName}' in interface '${interfaceName}'.`,
           DiagnosticCode.DuplicateDeclaration,
+          undefined /* TODO fix location */,
         );
       } else {
         interfaceType.fields.set(memberName, type);
 
-        // Implicit accessors
+        // Implicit accessors - getter always, setter only for `var` fields
         const getterName = getGetterName(memberName);
-        const setterName = getSetterName(memberName);
-
         interfaceType.methods.set(getterName, {
           kind: TypeKind.Function,
           parameters: [],
@@ -3802,12 +3797,15 @@ function checkInterfaceDeclaration(
           isFinal: false,
         });
 
-        interfaceType.methods.set(setterName, {
-          kind: TypeKind.Function,
-          parameters: [type],
-          returnType: Types.Void,
-          isFinal: false,
-        });
+        if (member.mutability === 'var') {
+          const setterName = getSetterName(memberName);
+          interfaceType.methods.set(setterName, {
+            kind: TypeKind.Function,
+            parameters: [type],
+            returnType: Types.Void,
+            isFinal: false,
+          });
+        }
       }
     } else if (member.type === NodeType.AccessorSignature) {
       const type = resolveTypeAnnotation(ctx, member.typeAnnotation);
@@ -3826,6 +3824,7 @@ function checkInterfaceDeclaration(
         ctx.diagnostics.reportError(
           `Duplicate field '${memberName}' in interface '${interfaceName}'.`,
           DiagnosticCode.DuplicateDeclaration,
+          undefined /* TODO fix location */,
         );
       } else {
         interfaceType.fields.set(memberName, type);
@@ -3866,6 +3865,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
           ctx.diagnostics.reportError(
             '@intrinsic is only allowed in zena: modules.',
             DiagnosticCode.DecoratorNotAllowed,
+            undefined /* TODO fix location */,
           );
         }
 
@@ -3873,6 +3873,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
           ctx.diagnostics.reportError(
             '@intrinsic requires exactly one argument (the intrinsic name).',
             DiagnosticCode.ArgumentCountMismatch,
+            undefined /* TODO fix location */,
           );
         } else {
           const name = decorator.args[0].value;
@@ -3910,6 +3911,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
             ctx.diagnostics.reportError(
               `Unknown intrinsic '${name}'.`,
               DiagnosticCode.UnknownIntrinsic,
+              undefined /* TODO fix location */,
             );
           }
         }
@@ -3917,6 +3919,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
         ctx.diagnostics.reportError(
           `Unknown decorator '@${decorator.name}'.`,
           DiagnosticCode.DecoratorNotAllowed,
+          undefined /* TODO fix location */,
         );
       }
     }
@@ -3973,6 +3976,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
         ctx.diagnostics.reportError(
           `Type mismatch: default value ${typeToString(initType)} is not assignable to ${typeToString(type)}`,
           DiagnosticCode.TypeMismatch,
+          undefined /* TODO fix location */,
         );
       }
     }
@@ -4083,6 +4087,7 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
     ctx.diagnostics.reportError(
       `Constructors in derived classes and extensions must call 'super()'.`,
       DiagnosticCode.UnknownError,
+      undefined /* TODO fix location */,
     );
   }
 
@@ -4107,6 +4112,7 @@ function checkSuperInitializer(
     ctx.diagnostics.reportError(
       `'super' call can only be used inside a class constructor.`,
       DiagnosticCode.UnknownError,
+      undefined /* TODO fix location */,
     );
     return;
   }
@@ -4121,6 +4127,7 @@ function checkSuperInitializer(
       ctx.diagnostics.reportError(
         `Extension class constructor must call 'super' with exactly one argument.`,
         DiagnosticCode.ArgumentCountMismatch,
+        undefined /* TODO fix location */,
       );
     } else {
       const argType = checkExpression(ctx, superInit.arguments[0]);
@@ -4128,6 +4135,7 @@ function checkSuperInitializer(
         ctx.diagnostics.reportError(
           `Type mismatch in super call: expected ${typeToString(ctx.currentClass.onType)}, got ${typeToString(argType)}`,
           DiagnosticCode.TypeMismatch,
+          undefined /* TODO fix location */,
         );
       }
     }
@@ -4141,6 +4149,7 @@ function checkSuperInitializer(
     ctx.diagnostics.reportError(
       `Class '${ctx.currentClass.name}' does not have a superclass.`,
       DiagnosticCode.UnknownError,
+      undefined /* TODO fix location */,
     );
     return;
   }
@@ -4153,6 +4162,7 @@ function checkSuperInitializer(
       ctx.diagnostics.reportError(
         `Superclass '${superClass.name}' has no constructor but arguments were provided.`,
         DiagnosticCode.ArgumentCountMismatch,
+        undefined /* TODO fix location */,
       );
     }
     ctx.isThisInitialized = true;
@@ -4163,6 +4173,7 @@ function checkSuperInitializer(
     ctx.diagnostics.reportError(
       `Expected ${constructor.parameters.length} arguments, got ${superInit.arguments.length}.`,
       DiagnosticCode.ArgumentCountMismatch,
+      undefined /* TODO fix location */,
     );
   }
 
@@ -4178,6 +4189,7 @@ function checkSuperInitializer(
       ctx.diagnostics.reportError(
         `Type mismatch in argument ${i + 1}: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
         DiagnosticCode.TypeMismatch,
+        undefined /* TODO fix location */,
       );
     }
   }
@@ -4243,11 +4255,13 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       ctx.diagnostics.reportError(
         `Unknown type '${decl.on.name}' in 'on' clause.`,
         DiagnosticCode.SymbolNotFound,
+        undefined /* TODO fix location */,
       );
     } else if (type.kind !== TypeKind.Class) {
       ctx.diagnostics.reportError(
         `Mixin 'on' type must be a class.`,
         DiagnosticCode.TypeMismatch,
+        undefined /* TODO fix location */,
       );
     } else {
       onType = type as ClassType;
@@ -4264,6 +4278,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
       onType,
       fields: new Map(),
+      fieldMutability: new Map(),
       methods: new Map(),
     };
     ctx.declare(mixinName, mixinType, 'type');
@@ -4311,6 +4326,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         ctx.diagnostics.reportError(
           `'${typeToString(composedMixinType)}' is not a mixin.`,
           DiagnosticCode.TypeMismatch,
+          undefined /* TODO fix location */,
         );
         continue;
       }
@@ -4323,11 +4339,13 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
           ctx.diagnostics.reportError(
             `Mixin '${mixinName}' composes '${composedMixin.name}' which requires 'on ${composedMixin.onType.name}', but '${mixinName}' has no 'on' clause.`,
             DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
           );
         } else if (!isAssignableTo(ctx, onType, composedMixin.onType)) {
           ctx.diagnostics.reportError(
             `Mixin '${mixinName}' on '${onType.name}' is not compatible with composed mixin '${composedMixin.name}' on '${composedMixin.onType.name}'.`,
             DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
           );
         }
       }
@@ -4338,6 +4356,12 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
           // Shadowing check?
         }
         mixinType.fields.set(name, type);
+      }
+      // Copy fieldMutability from composed mixin
+      if (composedMixin.fieldMutability) {
+        for (const [name, isMutable] of composedMixin.fieldMutability) {
+          mixinType.fieldMutability!.set(name, isMutable);
+        }
       }
       for (const [name, type] of composedMixin.methods) {
         mixinType.methods.set(name, type);
@@ -4362,6 +4386,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       ctx.diagnostics.reportError(
         `Mixins cannot define constructors.`,
         DiagnosticCode.ConstructorInMixin,
+        undefined /* TODO fix location */,
       );
       continue;
     }
@@ -4383,9 +4408,15 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         ctx.diagnostics.reportError(
           `Duplicate field '${memberName}' in mixin '${mixinName}'.`,
           DiagnosticCode.DuplicateDeclaration,
+          undefined /* TODO fix location */,
         );
       }
       mixinType.fields.set(memberName, fieldType);
+
+      // Track field mutability
+      if (member.mutability === 'var') {
+        mixinType.fieldMutability!.set(memberName, true);
+      }
 
       // Implicit accessors
       if (!memberName.startsWith('#')) {
@@ -4523,6 +4554,13 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         thisType.fields.set(name, type);
       }
     }
+    if (onType.fieldMutability) {
+      for (const [name, isMutable] of onType.fieldMutability) {
+        if (!name.startsWith('#') && !thisType.fieldMutability!.has(name)) {
+          thisType.fieldMutability!.set(name, isMutable);
+        }
+      }
+    }
     for (const [name, type] of onType.methods) {
       if (!thisType.methods.has(name)) {
         thisType.methods.set(name, type);
@@ -4573,6 +4611,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
           ctx.diagnostics.reportError(
             `Type mismatch in symbol field initializer: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
             DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
           );
         }
         continue;
@@ -4584,6 +4623,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         ctx.diagnostics.reportError(
           `Type mismatch in field initializer: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
           DiagnosticCode.TypeMismatch,
+          undefined /* TODO fix location */,
         );
       }
     } else if (member.type === NodeType.AccessorDeclaration) {

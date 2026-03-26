@@ -54,7 +54,7 @@ suite('CodeGenerator - Method Overloading', () => {
   test('should resolve overloaded methods with class parameter', async () => {
     const source = `
       class Point {
-        x: i32;
+        var x: i32;
         y: i32;
         
         new(x: i32, y: i32) : x = x, y = y {}
@@ -147,7 +147,7 @@ suite('CodeGenerator - Method Overloading', () => {
   test('should support overloaded operators', async () => {
     const source = `
       class Point {
-        x: i32;
+        var x: i32;
         y: i32;
         
         new(x: i32, y: i32) : x = x, y = y {}

@@ -62,7 +62,7 @@ suite('Checker - Optional Parameters', () => {
   test('should support optional parameters in constructors', () => {
     const diagnostics = check(`
       class C {
-        x: string | null;
+        var x: string | null;
         new(x?: string) {
           this.x = x;
         }

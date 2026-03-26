@@ -26,7 +26,7 @@ export let main = () => {
     const source = `
 class ListNode {
   value: i32;
-  next: ListNode;
+  var next: ListNode;
   
   new(value: i32, next: ListNode) : value = value, next = next {}
 }

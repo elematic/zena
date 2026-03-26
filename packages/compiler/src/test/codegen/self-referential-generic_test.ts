@@ -26,7 +26,7 @@ suite('self-referential generic types', () => {
     const source = `
       class ListNode<T> {
         data: T;
-        next: ListNode<T> | null;
+        var next: ListNode<T> | null;
         
         new(data: T) : data = data, next = null {}
       }
@@ -57,8 +57,8 @@ suite('self-referential generic types', () => {
     const source = `
       class TreeNode<T> {
         value: T;
-        left: TreeNode<T> | null;
-        right: TreeNode<T> | null;
+        var left: TreeNode<T> | null;
+        var right: TreeNode<T> | null;
         
         new(value: T) : value = value, left = null, right = null {}
       }

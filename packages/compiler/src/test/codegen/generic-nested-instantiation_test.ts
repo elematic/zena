@@ -104,7 +104,7 @@ class Entry<K, V> {
 class EntryIterator<K, V> {
   currentKey: K;
   currentValue: V;
-  hasMore: boolean = true;
+  var hasMore: boolean = true;
 
   new(k: K, v: V) : currentKey = k, currentValue = v {}
 
@@ -143,7 +143,7 @@ class Result<T> {
 }
 
 class Producer<T> {
-  val: T;
+  var val: T;
   new(v: T) : val = v {}
 
   // Multiple methods that all create Result<T>

@@ -2628,16 +2628,27 @@ export class Parser {
       }
     }
 
-    // Parse field mutability: `let` (immutable, explicit) or `var` (mutable)
+    // Parse field mutability: bare or `let` (immutable) or `var` (mutable)
     // Syntax: `let name: Type`, `var name: Type`, `var(#setter) name: Type`
     let mutability: 'let' | 'var' | undefined;
     let setterName: Identifier | SymbolPropertyName | undefined;
 
+    // Helper: check if `:` after let/var starts a symbol property name
+    // `var :sym: Type` → Var, Colon, Ident, Colon → symbol field
+    // `var: Type` → Var, Colon, Ident, Semi/Equals → field named 'var'
+    const isSymbolFieldAfterKeyword = (offset: number) =>
+      this.#peek(offset).type === TokenType.Colon &&
+      this.#peek(offset + 1).type === TokenType.Identifier &&
+      (this.#peek(offset + 2).type === TokenType.Colon ||
+        this.#peek(offset + 2).type === TokenType.Dot);
+
     if (this.#check(TokenType.Let)) {
       // Disambiguate: `let name: Type` vs field named `let`
       // `let` followed by `:` or `(` or `<` means `let` is a name
+      // Exception: `let :sym: Type` is a symbol field with let mutability
       if (
-        this.#peek(1).type !== TokenType.Colon &&
+        (this.#peek(1).type !== TokenType.Colon ||
+          isSymbolFieldAfterKeyword(1)) &&
         this.#peek(1).type !== TokenType.LParen &&
         this.#peek(1).type !== TokenType.Less
       ) {
@@ -2647,6 +2658,7 @@ export class Parser {
     } else if (this.#check(TokenType.Var)) {
       // Disambiguate: `var name: Type` or `var(#setter) name: Type` vs field named `var`
       // `var` followed by `:` or `<` means `var` is a name
+      // Exception: `var :sym: Type` is a symbol field with var mutability
       // `var` followed by `(` could be setter syntax OR method named `var`
       // We check: `var(` followed by `#` or `:` is setter syntax
       const nextType = this.#peek(1).type;
@@ -2658,7 +2670,7 @@ export class Parser {
             this.#peek(2).value === 'set'));
 
       if (
-        nextType !== TokenType.Colon &&
+        (nextType !== TokenType.Colon || isSymbolFieldAfterKeyword(1)) &&
         nextType !== TokenType.Less &&
         (nextType !== TokenType.LParen || isSetterSyntax)
       ) {
@@ -3167,6 +3179,13 @@ export class Parser {
       };
     }
 
+    // Check for `var` modifier on interface fields
+    let mutableField = false;
+    if (this.#check(TokenType.Var)) {
+      mutableField = true;
+      this.#advance();
+    }
+
     let name: Identifier | SymbolPropertyName;
     // Symbol member: :symbolName or :Iface.symbolName for methods
     if (this.#match(TokenType.Colon)) {
@@ -3221,6 +3240,9 @@ export class Parser {
 
     // Method: name(params): ReturnType;
     if (this.#match(TokenType.LParen)) {
+      if (mutableField) {
+        throw new Error("'var' modifier is not allowed on methods.");
+      }
       const params: Parameter[] = [];
       if (!this.#check(TokenType.RParen)) {
         let seenOptional = false;
@@ -3294,6 +3316,11 @@ export class Parser {
     const typeAnnotation = this.#parseTypeAnnotation();
 
     if (this.#match(TokenType.LBrace)) {
+      if (mutableField) {
+        throw new Error(
+          "'var' modifier is not allowed on accessor signatures.",
+        );
+      }
       let hasGetter = false;
       let hasSetter = false;
 
@@ -3326,7 +3353,8 @@ export class Parser {
       type: NodeType.FieldDefinition,
       name,
       typeAnnotation,
-      isFinal: false, // Interfaces don't support final fields yet
+      mutability: mutableField ? ('var' as const) : undefined,
+      isFinal: false,
       isStatic: false,
     };
   }

@@ -74,7 +74,7 @@ suite('interface closure contravariance', () => {
       interface HasLength { length: i32; }
 
       class MyArray implements HasLength {
-        length: i32;
+        var length: i32;
         new(len: i32) : length = len {}
         process(f: (item: i32, arr: HasLength) => i32): i32 { return f(10, this); }
       }

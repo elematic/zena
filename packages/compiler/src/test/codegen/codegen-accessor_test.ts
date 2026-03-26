@@ -6,7 +6,7 @@ suite('CodeGenerator - Accessors', () => {
   test('should compile and run accessor getter and setter', async () => {
     const input = `
       class Box {
-        #value: i32;
+        var #value: i32;
         
         new(v: i32) : #value = v {}
 
@@ -32,7 +32,7 @@ suite('CodeGenerator - Accessors', () => {
   test('should compile and run accessor with only getter', async () => {
     const input = `
       class Box {
-        #value: i32;
+        var #value: i32;
         
         new(v: i32) : #value = v {}
 

@@ -87,7 +87,7 @@ suite('Codegen: Exception handling with multi-module imports', () => {
   test('module with class and try/catch', async () => {
     const exports = await compileAndInstantiate(`
       class Counter {
-        value: i32 = 0;
+        var value: i32 = 0;
         
         increment(): i32 {
           this.value = this.value + 1;

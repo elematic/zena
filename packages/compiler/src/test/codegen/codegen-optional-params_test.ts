@@ -33,7 +33,7 @@ suite('CodeGenerator - Optional Parameters and Defaults', () => {
   test('should support optional parameters with defaults in constructors', async () => {
     const source = `
       class Point {
-        x: i32;
+        var x: i32;
         y: i32;
         new(x: i32, y: i32 = 0) : x = x, y = y {}
       }

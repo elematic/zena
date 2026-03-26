@@ -6,7 +6,7 @@ suite('CodeGenerator - Super', () => {
   test('should compile and run super constructor call', async () => {
     const source = `
       class A {
-        x: i32;
+        var x: i32;
         new(x: i32) : x = x {}
       }
       class B extends A {
@@ -45,7 +45,7 @@ suite('CodeGenerator - Super', () => {
   test('should compile and run super field access', async () => {
     const source = `
       class A {
-        x: i32;
+        var x: i32;
         new() : x = 100 {}
       }
       class B extends A {

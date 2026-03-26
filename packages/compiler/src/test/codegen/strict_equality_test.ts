@@ -5,7 +5,7 @@ import assert from 'node:assert';
 test('strict equality operator', async () => {
   const source = `
     class Point {
-      x: i32;
+      var x: i32;
       new(x: i32) : x = x {}
       
       operator ==(other: Point): boolean {

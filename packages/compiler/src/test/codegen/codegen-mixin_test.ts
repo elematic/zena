@@ -6,7 +6,7 @@ suite('CodeGenerator - Mixins', () => {
   test('should compile and run basic mixin application', async () => {
     const source = `
       mixin M {
-        x: i32 = 10;
+        var x: i32 = 10;
         getX(): i32 { return this.x; }
       }
       class C with M {}
@@ -96,7 +96,7 @@ suite('CodeGenerator - Mixins', () => {
   test('should compile and run mixin with accessors', async () => {
     const source = `
       mixin M {
-        #val: i32 = 0;
+        var #val: i32 = 0;
         val: i32 {
           get { return this.#val; }
           set(v) { this.#val = v; }

@@ -56,7 +56,7 @@ suite('CodeGenerator - Global Assignment', () => {
 
   test('should allow assigning to nullable global variables', async () => {
     const input = `
-      class Foo { x: i32 = 0; new() {} }
+      class Foo { var x: i32 = 0; new() {} }
       var g: Foo | null = null;
 
       export let test = (): i32 => {

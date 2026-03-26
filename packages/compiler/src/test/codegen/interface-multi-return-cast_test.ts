@@ -11,8 +11,8 @@ suite('interface multi-return ref cast', () => {
       import { Iterator } from 'zena:iterator';
 
       final class SingleIter implements Iterator<string> {
-        #value: string;
-        #done: boolean;
+        var #value: string;
+        var #done: boolean;
 
         new(value: string) : #value = value, #done = false {}
 
@@ -45,8 +45,8 @@ suite('interface multi-return ref cast', () => {
       import { Iterator } from 'zena:iterator';
 
       final class SingleIter2 implements Iterator<string> {
-        #value: string;
-        #done: boolean;
+        var #value: string;
+        var #done: boolean;
 
         new(value: string) : #value = value, #done = false {}
 

@@ -57,7 +57,7 @@ export let main = () => {
 symbol hidden;
 
 class Container {
-  #value: i32;
+  var #value: i32;
   
   new(v: i32) : #value = v {}
   
@@ -81,7 +81,7 @@ export let main = () => {
 symbol value;
 
 class Wrapper {
-  #data: i32;
+  var #data: i32;
   
   new() : #data = 0 {}
   
