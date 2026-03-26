@@ -3025,11 +3025,13 @@ export class Parser {
       );
     }
 
-    // Field: name: Type; or name: Type = value;
-    this.#consume(TokenType.Colon, "Expected ':' after field name.");
-    const typeAnnotation = this.#parseTypeAnnotation();
+    // Field: name: Type; or name: Type = value; or name = value;
+    let typeAnnotation: TypeAnnotation | undefined;
+    if (this.#match(TokenType.Colon)) {
+      typeAnnotation = this.#parseTypeAnnotation();
+    }
 
-    if (this.#match(TokenType.LBrace)) {
+    if (typeAnnotation && this.#match(TokenType.LBrace)) {
       if (mutability || setterName) {
         throw new Error(
           'Field mutability (let/var) cannot be combined with accessor blocks.',
@@ -3048,6 +3050,12 @@ export class Parser {
     let value: Expression | undefined;
     if (this.#match(TokenType.Equals)) {
       value = this.#parseExpression();
+    }
+
+    if (!typeAnnotation && !value) {
+      throw new Error(
+        "Expected ':' for type annotation or '=' for initializer after field name.",
+      );
     }
 
     this.#consume(TokenType.Semi, "Expected ';' after field declaration.");

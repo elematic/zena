@@ -2301,8 +2301,8 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
       const memberName = getMemberName(member.name);
-      // Use the annotation's inferredType (set by the checker)
-      if (!member.typeAnnotation.inferredType) {
+      // Use the field's inferredType (set by the checker)
+      if (!member.inferredType) {
         throw new Error(
           `Field ${memberName} in ${decl.name.name} missing inferredType`,
         );
@@ -2320,10 +2320,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
         continue;
       }
 
-      const wasmType = mapCheckerTypeToWasmType(
-        ctx,
-        member.typeAnnotation.inferredType,
-      );
+      const wasmType = mapCheckerTypeToWasmType(ctx, member.inferredType);
       const fieldName = manglePrivateName(decl.name.name, memberName);
 
       if (!fields.has(fieldName)) {
@@ -2717,15 +2714,15 @@ export function registerClassMethods(
       });
     } else if (member.type === NodeType.AccessorDeclaration) {
       const propName = getMemberName(member.name);
-      // Use the annotation's inferredType (set by the checker)
-      if (!member.typeAnnotation.inferredType) {
+      // Use the field's inferredType (set by the checker)
+      if (!member.typeAnnotation!.inferredType) {
         throw new Error(
           `Accessor ${propName} in ${decl.name.name} missing inferredType`,
         );
       }
       const propType = mapCheckerTypeToWasmType(
         ctx,
-        member.typeAnnotation.inferredType,
+        member.typeAnnotation!.inferredType,
       );
 
       // Getter
@@ -2883,16 +2880,13 @@ export function registerClassMethods(
           }
         }
 
-        // Use the annotation's inferredType (set by the checker)
-        if (!member.typeAnnotation.inferredType) {
+        // Use the field's inferredType (set by the checker)
+        if (!member.inferredType) {
           throw new Error(
             `Field ${propName} in ${decl.name.name} missing inferredType`,
           );
         }
-        const propType = mapCheckerTypeToWasmType(
-          ctx,
-          member.typeAnnotation.inferredType,
-        );
+        const propType = mapCheckerTypeToWasmType(ctx, member.inferredType);
 
         // Getter
         const getterName = getGetterName(propName);
@@ -4396,13 +4390,8 @@ function instantiateClassImpl(
   }
 
   // Helper to resolve a type annotation's inferredType with type parameter substitution
-  const resolveType = (annotation: TypeAnnotation): number[] => {
-    if (!annotation.inferredType) {
-      throw new Error(
-        `Type annotation missing inferredType in instantiateClass for ${specializedName}`,
-      );
-    }
-    let inferredType = annotation.inferredType;
+  const resolveCheckerType = (type: Type): number[] => {
+    let inferredType = type;
 
     // Handle ThisType by substituting it with the current class type.
     // This is necessary because mapCheckerTypeToWasmType relies on ctx.currentClass
@@ -4420,6 +4409,15 @@ function instantiateClassImpl(
       return mapCheckerTypeToWasmType(ctx, substituted);
     }
     return mapCheckerTypeToWasmType(ctx, inferredType);
+  };
+
+  const resolveType = (annotation: TypeAnnotation): number[] => {
+    if (!annotation.inferredType) {
+      throw new Error(
+        `Type annotation missing inferredType in instantiateClass for ${specializedName}`,
+      );
+    }
+    return resolveCheckerType(annotation.inferredType);
   };
 
   // Ensure all nested types within the checker's ClassType are instantiated.
@@ -4575,7 +4573,9 @@ function instantiateClassImpl(
     for (const member of decl.body) {
       if (member.type === NodeType.FieldDefinition) {
         const memberName = getMemberName(member.name);
-        const wasmType = resolveType(member.typeAnnotation);
+        const wasmType = member.typeAnnotation
+          ? resolveType(member.typeAnnotation)
+          : resolveCheckerType(member.inferredType!);
         const fieldName = manglePrivateName(specializedName, memberName);
         // Check if field is immutable (let modifier)
         const isMutable = member.mutability !== 'let';
@@ -4947,7 +4947,7 @@ function instantiateClassImpl(
         });
       } else if (member.type === NodeType.AccessorDeclaration) {
         const propName = getMemberName(member.name);
-        const propType = resolveType(member.typeAnnotation);
+        const propType = resolveType(member.typeAnnotation!);
 
         // Getter
         if (member.getter) {
@@ -5067,7 +5067,9 @@ function instantiateClassImpl(
           }
 
           const propName = getMemberName(member.name);
-          const propType = resolveType(member.typeAnnotation);
+          const propType = member.typeAnnotation
+            ? resolveType(member.typeAnnotation)
+            : resolveCheckerType(member.inferredType!);
 
           // Register Getter
           const regGetterName = getGetterName(propName);
@@ -5555,7 +5557,7 @@ function applyMixin(
       // Use checker's inferredType for identity-based resolution
       const wasmType = mapCheckerTypeToWasmType(
         ctx,
-        member.typeAnnotation.inferredType!,
+        member.inferredType ?? member.typeAnnotation!.inferredType!,
       );
       const fieldName = manglePrivateName(
         intermediateName,

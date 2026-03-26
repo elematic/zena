@@ -346,7 +346,8 @@ export class CodeGenerator {
             globalInitializers.push({
               index: globalIndex,
               init: member.value,
-              targetType: member.typeAnnotation?.inferredType,
+              targetType:
+                member.inferredType ?? member.typeAnnotation?.inferredType,
               sourceType: member.value.inferredType,
             });
           }

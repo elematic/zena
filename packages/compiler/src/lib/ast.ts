@@ -682,8 +682,10 @@ export interface MethodSignature extends Node {
 export interface FieldDefinition extends Node {
   type: typeof NodeType.FieldDefinition;
   name: Identifier | SymbolPropertyName;
-  typeAnnotation: TypeAnnotation;
+  typeAnnotation?: TypeAnnotation;
   value?: Expression;
+  /** Resolved type for this field, populated by the checker. */
+  inferredType?: Type;
   isFinal: boolean;
   isStatic: boolean;
   isDeclare?: boolean;

@@ -1023,7 +1023,9 @@ function visitFieldDefinitionChildren<T>(
   if (node.name.type === NodeType.SymbolPropertyName) {
     visit(node.name, visitor, context);
   }
-  visitTypeAnnotation(node.typeAnnotation, visitor, context);
+  if (node.typeAnnotation) {
+    visitTypeAnnotation(node.typeAnnotation, visitor, context);
+  }
   visit(node.value, visitor, context);
 }
 

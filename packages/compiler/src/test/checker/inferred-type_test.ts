@@ -172,8 +172,8 @@ suite('Checker - inferredType on TypeAnnotations', () => {
         (m as FieldDefinition).name.type === NodeType.Identifier &&
         ((m as FieldDefinition).name as any).name === 'y',
     ) as FieldDefinition;
-    assertAnnotationHasInferredType(xField.typeAnnotation, 'field x');
-    assertAnnotationHasInferredType(yField.typeAnnotation, 'field y');
+    assertAnnotationHasInferredType(xField.typeAnnotation!, 'field x');
+    assertAnnotationHasInferredType(yField.typeAnnotation!, 'field y');
   });
 
   test('class method parameter and return type annotations', () => {
@@ -332,7 +332,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
       (m) => m.type === NodeType.FieldDefinition,
     ) as FieldDefinition;
     assertAnnotationHasInferredType(
-      field.typeAnnotation,
+      field.typeAnnotation!,
       'interface field type',
     );
   });
@@ -520,7 +520,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
     const method = mixin.body.find(
       (m) => m.type === NodeType.MethodDefinition,
     ) as MethodDefinition;
-    assertAnnotationHasInferredType(field.typeAnnotation, 'mixin field type');
+    assertAnnotationHasInferredType(field.typeAnnotation!, 'mixin field type');
     assertAnnotationHasInferredType(method.returnType!, 'mixin method return');
   });
 

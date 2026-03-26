@@ -2997,6 +2997,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       // Check for static symbol declaration
       if (
         member.isStatic &&
+        member.typeAnnotation &&
         member.typeAnnotation.type === NodeType.TypeAnnotation &&
         member.typeAnnotation.name === 'symbol' &&
         member.name.type === NodeType.Identifier
@@ -3015,7 +3016,20 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       }
 
       const memberNameInfo = resolveMemberName(ctx, member.name);
-      const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      let fieldType: Type;
+      if (member.typeAnnotation) {
+        fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      } else {
+        // Infer field type from initializer
+        ctx.isCheckingFieldInitializer = true;
+        fieldType = checkExpression(ctx, member.value!);
+        ctx.isCheckingFieldInitializer = false;
+        // For mutable fields, widen literal types to base types
+        if (member.mutability === 'var') {
+          fieldType = widenLiteralType(fieldType, ctx);
+        }
+      }
+      member.inferredType = fieldType;
 
       // Inline tuples cannot appear in field types
       validateNoInlineTuple(fieldType, ctx, 'field types');
@@ -3139,7 +3153,8 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       }
     } else if (member.type === NodeType.AccessorDeclaration) {
       const memberNameInfo = resolveMemberName(ctx, member.name);
-      const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation!);
+      member.inferredType = fieldType;
 
       // Inline tuples cannot appear in accessor types
       validateNoInlineTuple(fieldType, ctx, 'accessor types');
@@ -3534,7 +3549,10 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       }
       const memberName = memberNameInfo.name;
 
-      if (member.value) {
+      if (member.value && member.typeAnnotation) {
+        // Only type-check the initializer against the declared type when there
+        // IS an explicit type annotation. When the type was inferred from the
+        // initializer (no annotation), re-checking is redundant.
         ctx.isCheckingFieldInitializer = true;
         const valueType = checkExpression(ctx, member.value);
         ctx.isCheckingFieldInitializer = false;
@@ -3767,7 +3785,8 @@ function checkInterfaceDeclaration(
         interfaceType.methods.set(memberName, methodType);
       }
     } else if (member.type === NodeType.FieldDefinition) {
-      const type = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      const type = resolveTypeAnnotation(ctx, member.typeAnnotation!);
+      member.inferredType = type;
 
       // Inline tuples cannot appear in interface field types
       validateNoInlineTuple(type, ctx, 'field types');
@@ -3808,7 +3827,7 @@ function checkInterfaceDeclaration(
         }
       }
     } else if (member.type === NodeType.AccessorSignature) {
-      const type = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      const type = resolveTypeAnnotation(ctx, member.typeAnnotation!);
 
       // Inline tuples cannot appear in accessor types
       validateNoInlineTuple(type, ctx, 'accessor types');
@@ -4392,7 +4411,19 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     }
 
     if (member.type === NodeType.FieldDefinition) {
-      const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      let fieldType: Type;
+      if (member.typeAnnotation) {
+        fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      } else {
+        // Infer field type from initializer
+        ctx.isCheckingFieldInitializer = true;
+        fieldType = checkExpression(ctx, member.value!);
+        ctx.isCheckingFieldInitializer = false;
+        if (member.mutability === 'var') {
+          fieldType = widenLiteralType(fieldType, ctx);
+        }
+      }
+      member.inferredType = fieldType;
 
       // Inline tuples cannot appear in mixin field types
       validateNoInlineTuple(fieldType, ctx, 'field types');
@@ -4483,7 +4514,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         mixinType.methods.set(memberNameInfo.name, methodType);
       }
     } else if (member.type === NodeType.AccessorDeclaration) {
-      const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation);
+      const fieldType = resolveTypeAnnotation(ctx, member.typeAnnotation!);
 
       // Inline tuples cannot appear in accessor types
       validateNoInlineTuple(fieldType, ctx, 'accessor types');
@@ -4606,25 +4637,29 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         const fieldType = mixinType.symbolFields?.get(
           memberNameInfo.symbolType!,
         );
-        const valueType = checkExpression(ctx, member.value);
-        if (fieldType && !isAssignableTo(ctx, valueType, fieldType)) {
-          ctx.diagnostics.reportError(
-            `Type mismatch in symbol field initializer: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
-            DiagnosticCode.TypeMismatch,
-            undefined /* TODO fix location */,
-          );
+        if (member.typeAnnotation) {
+          const valueType = checkExpression(ctx, member.value);
+          if (fieldType && !isAssignableTo(ctx, valueType, fieldType)) {
+            ctx.diagnostics.reportError(
+              `Type mismatch in symbol field initializer: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+              DiagnosticCode.TypeMismatch,
+              undefined /* TODO fix location */,
+            );
+          }
         }
         continue;
       }
 
-      const fieldType = mixinType.fields.get(memberNameInfo.name)!;
-      const valueType = checkExpression(ctx, member.value);
-      if (!isAssignableTo(ctx, valueType, fieldType)) {
-        ctx.diagnostics.reportError(
-          `Type mismatch in field initializer: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
-          DiagnosticCode.TypeMismatch,
-          undefined /* TODO fix location */,
-        );
+      if (member.typeAnnotation) {
+        const fieldType = mixinType.fields.get(memberNameInfo.name)!;
+        const valueType = checkExpression(ctx, member.value);
+        if (!isAssignableTo(ctx, valueType, fieldType)) {
+          ctx.diagnostics.reportError(
+            `Type mismatch in field initializer: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+            DiagnosticCode.TypeMismatch,
+            undefined /* TODO fix location */,
+          );
+        }
       }
     } else if (member.type === NodeType.AccessorDeclaration) {
       const memberNameInfo = resolveMemberName(ctx, member.name);

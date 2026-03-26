@@ -57,7 +57,7 @@ suite('Parser: Union Types', () => {
     if (decl.type === NodeType.ClassDeclaration) {
       const field = decl.body[0];
       if (field.type === NodeType.FieldDefinition) {
-        const type = field.typeAnnotation;
+        const type = field.typeAnnotation!;
         assert.strictEqual(type.type, NodeType.UnionTypeAnnotation);
         if (type.type === NodeType.UnionTypeAnnotation) {
           assert.strictEqual(type.types.length, 2);
