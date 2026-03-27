@@ -199,7 +199,7 @@ async function runTestFile(filePath: string): Promise<void> {
   }
 
   if (mode === 'parse') {
-    await runParseTest(filePath, content, directives, relPath);
+    await runParseTest(filePath, content, directives, errors, relPath);
   } else if (mode === 'check') {
     await runCheckTest(filePath, content, directives, errors, relPath);
   } else if (mode === 'run') {
@@ -213,8 +213,33 @@ async function runParseTest(
   filePath: string,
   content: string,
   directives: TestDirectives,
+  expectedErrors: ExpectedError[],
   relPath: string,
 ) {
+  // If errors are expected, the parser should throw
+  if (expectedErrors.length > 0) {
+    try {
+      const parser = new Parser(content);
+      parser.parse();
+      throw new Error(
+        `Expected parse error matching ${expectedErrors.map((e) => e.regex).join(', ')}, but parsing succeeded.`,
+      );
+    } catch (e: any) {
+      // If this is our "expected parse error" sentinel, re-throw
+      if (e.message.startsWith('Expected parse error matching')) throw e;
+
+      // Match the thrown error against expected patterns
+      for (const expected of expectedErrors) {
+        if (!expected.regex.test(e.message)) {
+          throw new Error(
+            `Expected parse error matching ${expected.regex} on line ${expected.line}, but got: ${e.message}`,
+          );
+        }
+      }
+    }
+    return;
+  }
+
   const parser = new Parser(content);
   const ast = parser.parse();
 

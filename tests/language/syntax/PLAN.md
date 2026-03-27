@@ -29,17 +29,17 @@ tests/language/syntax/
 │
 ├── literals/
 │   ├── numbers/
-│   │   ├── integer.zena                    [ts] parser_test
-│   │   ├── negative-integer.zena           [new]
-│   │   ├── float.zena                      [ts] parser_test
-│   │   ├── hex.zena                        [ts] hex_literals_test
-│   │   ├── hex-uppercase.zena              [ts] hex_literals_test
-│   │   ├── hex-mixed-case.zena             [ts] hex_literals_test
-│   │   ├── zero.zena                       [new]
-│   │   ├── large-integer.zena              [new]
+│   │   ├── integer.zena                    [done] parser_test
+│   │   ├── negative-integer.zena           [done]
+│   │   ├── float.zena                      [done] parser_test
+│   │   ├── hex.zena                        [done] hex_literals_test
+│   │   ├── hex-uppercase.zena              [done] hex_literals_test
+│   │   ├── hex-mixed-case.zena             [done] hex_literals_test
+│   │   ├── zero.zena                       [done]
+│   │   ├── large-integer.zena              [done]
 │   │   └── errors/
-│   │       ├── invalid-hex.zena            [new] e.g., 0xGG
-│   │       └── leading-dot.zena            [new] e.g., .5
+│   │       ├── invalid-hex.zena            [done] e.g., 0xGG
+│   │       └── leading-dot.zena            [done] e.g., .5
 │   │
 │   ├── strings/
 │   │   ├── single-quotes.zena              [ts] lexer_test

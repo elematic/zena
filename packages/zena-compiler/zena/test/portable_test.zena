@@ -39,6 +39,25 @@ let endsWith = (s: string, suffix: string): boolean => {
   return s.sliceBytes(s.length - suffix.length, s.length) == suffix;
 };
 
+let contains = (s: string, sub: string): boolean => {
+  if (sub.length > s.length) {
+    return false;
+  }
+  var i = 0;
+  while (i <= s.length - sub.length) {
+    if (s.sliceBytes(i, i + sub.length) == sub) {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+};
+
+// Returns true if the source has any // @error: directive
+let hasErrorDirective = (source: string): boolean => {
+  return contains(source, "// @error:");
+};
+
 
 // ============================================================================
 // Directive parsing
@@ -146,8 +165,12 @@ let discoverTests = (dirPath: string, relPrefix: string, skips: FixedArray<SkipE
     // Build snapshot path: replace .zena with .ast.json
     let snapshotPath = filePath.sliceBytes(0, filePath.length - 5) + ".ast.json";
     
-    // Only test if snapshot exists
-    if (exists(snapshotPath)) {
+    // Read source to check for @error directives
+    let source = readFile(filePath);
+    let isErrorTest = hasErrorDirective(source);
+
+    // Test if snapshot exists (positive test) or @error directive present (error test)
+    if (exists(snapshotPath) || isErrorTest) {
       let reason = isSkipped(relPath, skips);
       if (reason != null) {
         // Skip — test is in skip list
@@ -157,27 +180,42 @@ let discoverTests = (dirPath: string, relPrefix: string, skips: FixedArray<SkipE
         let capturedFilePath = filePath;
         let capturedSnapshotPath = snapshotPath;
         let capturedFileName = fileName;
+        let capturedIsErrorTest = isErrorTest;
+        let capturedSource = source;
 
         test(capturedFileName, (ctx: TestContext): void => {
-          let source = readFile(capturedFilePath);
-          let expectedSnapshot = readFile(capturedSnapshotPath);
-          let expected = parseJson(expectedSnapshot, { allowComments: false, trackLocations: true });
-          let mod = parse(source, capturedFileName);
-          
-          // Determine target from directives
-          let target = parseTarget(source);
-          
-          var actual = nodeToJson(mod);
-          if (target == "statement") {
-            actual = nodeToJson(mod.body[0]);
+          if (capturedIsErrorTest) {
+            // Error test: parser should throw
+            let threw = try {
+              parse(capturedSource, capturedFileName);
+              false
+            } catch (e) {
+              true
+            };
+            if (!threw) {
+              throw new Error("Expected parse error (has @error directive) but parsing succeeded: " + capturedFilePath);
+            }
           } else {
-            if (target == "expression") {
-              let stmt = mod.body[0] as ExpressionStatement;
-              actual = nodeToJson(stmt.expression);
-            } else {}
-          }
+            // Positive test: compare AST against snapshot
+            let expectedSnapshot = readFile(capturedSnapshotPath);
+            let expected = parseJson(expectedSnapshot, { allowComments: false, trackLocations: true });
+            let mod = parse(capturedSource, capturedFileName);
           
-          jsonEqual(actual, expected, capturedFilePath);
+            // Determine target from directives
+            let target = parseTarget(capturedSource);
+          
+            var actual = nodeToJson(mod);
+            if (target == "statement") {
+              actual = nodeToJson(mod.body[0]);
+            } else {
+              if (target == "expression") {
+                let stmt = mod.body[0] as ExpressionStatement;
+                actual = nodeToJson(stmt.expression);
+              } else {}
+            }
+          
+            jsonEqual(actual, expected, capturedFilePath);
+          }
         });
       }
     }
