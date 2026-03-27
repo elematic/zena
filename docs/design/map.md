@@ -103,12 +103,14 @@ Keys must support:
 
 ### Empty Map Literal
 
-The `{:}` syntax creates an empty map. The key and value types are inferred from context:
+The `{=>}` syntax creates an empty map, mirroring the `=>` separator used in
+map entries (just as `{}` is an empty record using the `:` record separator).
+The key and value types are inferred from context:
 
 ```zena
-let m: Map<String, i32> = {:};  // Type from annotation
+let m: Map<String, i32> = {=>};  // Type from annotation
 let fn = (m: Map<i32, String>) => { ... };
-fn({:});                         // Type from parameter
+fn({=>});                         // Type from parameter
 ```
 
 ## API

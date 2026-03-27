@@ -14,6 +14,41 @@ against.
 - Error tests use `// @error: regex` for expected parse errors.
 - Precedence/associativity tests verify tree shape (which operand is deeper).
 
+## Porting Workflow
+
+The portable test runner lives at `packages/compiler/src/test/portable-runner.ts`
+and is invoked via the `portable-syntax_test.ts` test file, which discovers all
+`.zena` files under `tests/language/syntax/` recursively.
+
+**Snapshot auto-generation**: When a `.zena` file has no corresponding
+`.ast.json` file, the runner parses the source, strips location info, and writes
+the cleaned AST as the snapshot automatically. So the porting workflow is:
+
+1. Create only the `.zena` file.
+2. Run `npm test -w @zena-lang/compiler` (Wireit runs the portable suite).
+3. Verify the auto-generated `.ast.json` looks correct.
+4. Commit both files.
+
+**AST cleanup**: The runner's `stripLocation()` removes `loc`, `start`, `end`,
+`inferredType`, and `inferredTypeArguments` fields recursively before comparison.
+
+### Gotchas discovered during porting
+
+- **`{` is ambiguous with blocks**: Record literals (`{x: 1}`) and map literals
+  (`{"a" => 1}`) cannot use `@target: expression` because the parser treats a
+  leading `{` as a block statement. Use `@target: statement` with a `let`
+  binding instead (e.g., `let r = {x: 1};`).
+- **Empty braces `{}` always parse as empty record**: There is no empty map
+  literal syntax. The `maps/empty.zena` entry in the plan is not portable as a
+  map test.
+- **Single-element parens are grouping, not tuples**: `(42)` parses as just a
+  `NumberLiteral`, not a `TupleLiteral`. Tuples require 2+ elements. `(42,)`
+  trailing-comma syntax for single-element tuples is not supported. Empty parens
+  `()` throw an error.
+- **Record shorthand has no flag**: `{x}` produces a `PropertyAssignment` where
+  both `name` and `value` are `Identifier` nodes with the same `name` string.
+  There is no `shorthand: true` field.
+
 ## Status Key
 
 - **[done]** — Portable tests already exist
@@ -65,24 +100,25 @@ tests/language/syntax/
 │   │   └── trailing-comma.zena             [done]
 │   │
 │   ├── records/
-│   │   ├── empty.zena                      [ts] records-tuples_test
-│   │   ├── single-field.zena               [ts] records-tuples_test
-│   │   ├── multiple-fields.zena            [ts] records-tuples_test
-│   │   ├── shorthand.zena                  [ts] records-tuples_test
-│   │   ├── nested.zena                     [ts] records-tuples_test
-│   │   └── spread.zena                     [new]
+│   │   ├── empty.zena                      [done] records-tuples_test
+│   │   ├── single-field.zena               [done] records-tuples_test
+│   │   ├── multiple-fields.zena            [done] records-tuples_test
+│   │   ├── shorthand.zena                  [done] records-tuples_test
+│   │   ├── single-field-shorthand.zena     [done]
+│   │   ├── nested.zena                     [done] records-tuples_test
+│   │   └── spread.zena                     [done]
 │   │
 │   ├── tuples/
-│   │   ├── two-elements.zena              [ts] records-tuples_test
-│   │   ├── three-elements.zena            [new]
-│   │   ├── nested.zena                    [ts] records-tuples_test
-│   │   └── single-element.zena            [new] — disambiguation from parens
+│   │   ├── two-elements.zena              [done] records-tuples_test
+│   │   ├── three-elements.zena            [done]
+│   │   ├── nested.zena                    [done] records-tuples_test
+│   │   └── single-element.zena            [done] — disambiguation from parens
 │   │
 │   └── maps/
-│       ├── empty.zena                      [ts] map-literal_test
-│       ├── single-entry.zena               [ts] map-literal_test
-│       ├── multiple-entries.zena            [ts] map-literal_test
-│       └── trailing-comma.zena             [new]
+│       ├── empty.zena                      [ts] map-literal_test — {} is always empty record
+│       ├── single-entry.zena               [done] map-literal_test
+│       ├── multiple-entries.zena            [done] map-literal_test
+│       └── trailing-comma.zena             [done]
 │
 ├── template-literals/
 │   ├── simple.zena                         [ts] template-literal_test
@@ -520,28 +556,28 @@ tests/language/syntax/
 
 ## Test Counts Summary
 
-| Group                    | Done | Port from TS | New | Total |
-|--------------------------|------|--------------|-----|-------|
-| **Literals**             | 0    | ~14          | ~18 | ~32   |
-| **Template Literals**    | 0    | ~5           | ~4  | ~9    |
-| **Identifiers**          | 0    | ~5           | ~2  | ~7    |
-| **Comments**             | 0    | ~2           | ~2  | ~4    |
-| **Variables**            | 1    | ~3           | ~5  | ~9    |
-| **Operators**            | 7    | ~10          | ~30 | ~47   |
-| **Expressions**          | 0    | ~20          | ~10 | ~30   |
-| **Statements**           | 0    | ~6           | ~12 | ~18   |
-| **Functions**            | 0    | ~8           | ~6  | ~14   |
-| **Classes**              | 14   | ~18          | ~8  | ~40   |
-| **Interfaces**           | 0    | ~6           | ~1  | ~7    |
-| **Mixins**               | 0    | ~3           | ~3  | ~6    |
-| **Enums**                | 0    | 0            | ~4  | ~4    |
-| **Types**                | 0    | ~15          | ~5  | ~20   |
-| **Destructuring**        | 0    | ~5           | ~2  | ~7    |
-| **Imports**              | 0    | ~3           | ~3  | ~6    |
-| **Decorators & Declare** | 0    | ~6           | ~1  | ~7    |
-| **Symbols**              | 0    | ~1           | 0   | ~1    |
-| **General Errors**       | 0    | 0            | ~5  | ~5    |
-| **TOTAL**                | **22** | **~130**  | **~121** | **~273** |
+| Group                    | Done   | Port from TS | New      | Total    |
+| ------------------------ | ------ | ------------ | -------- | -------- |
+| **Literals**             | 0      | ~14          | ~18      | ~32      |
+| **Template Literals**    | 0      | ~5           | ~4       | ~9       |
+| **Identifiers**          | 0      | ~5           | ~2       | ~7       |
+| **Comments**             | 0      | ~2           | ~2       | ~4       |
+| **Variables**            | 1      | ~3           | ~5       | ~9       |
+| **Operators**            | 7      | ~10          | ~30      | ~47      |
+| **Expressions**          | 0      | ~20          | ~10      | ~30      |
+| **Statements**           | 0      | ~6           | ~12      | ~18      |
+| **Functions**            | 0      | ~8           | ~6       | ~14      |
+| **Classes**              | 14     | ~18          | ~8       | ~40      |
+| **Interfaces**           | 0      | ~6           | ~1       | ~7       |
+| **Mixins**               | 0      | ~3           | ~3       | ~6       |
+| **Enums**                | 0      | 0            | ~4       | ~4       |
+| **Types**                | 0      | ~15          | ~5       | ~20      |
+| **Destructuring**        | 0      | ~5           | ~2       | ~7       |
+| **Imports**              | 0      | ~3           | ~3       | ~6       |
+| **Decorators & Declare** | 0      | ~6           | ~1       | ~7       |
+| **Symbols**              | 0      | ~1           | 0        | ~1       |
+| **General Errors**       | 0      | 0            | ~5       | ~5       |
+| **TOTAL**                | **22** | **~130**     | **~121** | **~273** |
 
 ## Porting Priority
 

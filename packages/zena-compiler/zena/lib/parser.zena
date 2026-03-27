@@ -42,7 +42,10 @@ import {
   ThisExpression,
   ArrayLiteral,
   PropertyAssignment,
+  SpreadElement,
   RecordLiteral,
+  MapEntry,
+  MapLiteral,
   TupleLiteral,
   RecordPattern,
   BindingProperty,
@@ -525,17 +528,31 @@ export class Parser {
       return new ThisExpression(this.#makeLocation(startToken));
     }
     
-    // Parenthesized expression or arrow function
+    // Parenthesized expression, tuple, or arrow function
     if (this.#match(TokenType.LParen)) {
       // Check for arrow function: (params) =>
       if (this.#isArrowFunction()) {
         return this.#parseArrowFunction(startToken);
       }
       
-      // Regular parenthesized expression
-      let expr = this.#parseExpression();
+      // Parse first expression
+      let first = this.#parseExpression();
+      
+      // If comma follows, it's a tuple literal
+      if (this.#match(TokenType.Comma)) {
+        let elements = new Array<Expression>(4);
+        elements.push(first);
+        elements.push(this.#parseExpression());
+        while (this.#match(TokenType.Comma)) {
+          elements.push(this.#parseExpression());
+        }
+        this.#consume(TokenType.RParen, "Expected ')' after tuple");
+        return new TupleLiteral(elements, this.#makeLocation(startToken));
+      }
+      
+      // Single expression: grouping
       this.#consume(TokenType.RParen, "Expected ')' after expression");
-      return expr;
+      return first;
     }
     
     // Array literal
@@ -543,9 +560,9 @@ export class Parser {
       return this.#parseArrayLiteral(startToken);
     }
     
-    // Record literal
+    // Record or map literal
     if (this.#match(TokenType.LBrace)) {
-      return this.#parseRecordLiteral(startToken);
+      return this.#parseRecordOrMapLiteral(startToken);
     }
     
     // Identifier
@@ -769,28 +786,79 @@ export class Parser {
     return new ArrayLiteral(elements, this.#makeLocation(startToken));
   }
   
-  #parseRecordLiteral(startToken: Token): RecordLiteral {
-    let properties = new Array<PropertyAssignment>(4);
+  #parseRecordOrMapLiteral(startToken: Token): Expression {
+    // Empty: {} → empty record
+    if (this.#check(TokenType.RBrace)) {
+      this.#advance();
+      return new RecordLiteral(
+        new Array<Node>(0),
+        this.#makeLocation(startToken)
+      );
+    }
     
-    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
-      let propStart = this.#peek();
-      let name = this.#parseIdentifier();
+    // Spread element: definitely a record
+    if (this.#check(TokenType.DotDotDot)) {
+      let properties = new Array<Node>(4);
+      return this.#parseRecordProperties(startToken, properties);
+    }
+    
+    // Parse the first expression to determine record vs map
+    let firstExpr = this.#parseExpression();
+    
+    // If followed by =>, it's a map literal
+    if (this.#match(TokenType.Arrow)) {
+      let firstValue = this.#parseExpression();
+      let entries = new Array<MapEntry>(4);
+      entries.push(new MapEntry(firstExpr, firstValue, this.#makeLocation(startToken)));
       
-      // Shorthand: { x } means { x: x }
-      var value: Expression = name;
-      if (this.#match(TokenType.Colon)) {
-        value = this.#parseExpression();
+      while (this.#match(TokenType.Comma)) {
+        if (this.#check(TokenType.RBrace)) {
+          break; // trailing comma
+        }
+        let entryStart = this.#peek();
+        let key = this.#parseExpression();
+        this.#consume(TokenType.Arrow, "Expected '=>' in map entry");
+        let value = this.#parseExpression();
+        entries.push(new MapEntry(key, value, this.#makeLocation(entryStart)));
       }
       
-      properties.push(new PropertyAssignment(name, value, this.#makeLocation(propStart)));
-      
-      if (!this.#check(TokenType.RBrace)) {
-        this.#consume(TokenType.Comma, "Expected ',' after property");
+      this.#consume(TokenType.RBrace, "Expected '}' after map literal");
+      return new MapLiteral(entries, this.#makeLocation(startToken));
+    }
+    
+    // Otherwise it's a record — first expression must be an identifier
+    let name = firstExpr as Identifier;
+    var value: Expression = name;
+    if (this.#match(TokenType.Colon)) {
+      value = this.#parseExpression();
+    }
+    
+    let properties = new Array<Node>(4);
+    properties.push(new PropertyAssignment(name, value, this.#makeLocation(startToken)));
+    return this.#parseRecordProperties(startToken, properties);
+  }
+  
+  #parseRecordProperties(startToken: Token, properties: Array<Node>): RecordLiteral {
+    while (this.#match(TokenType.Comma) || this.#check(TokenType.DotDotDot)) {
+      if (this.#check(TokenType.RBrace)) {
+        break; // trailing comma
+      }
+      if (this.#match(TokenType.DotDotDot)) {
+        let spreadStart = this.#previous();
+        let argument = this.#parseExpression();
+        properties.push(new SpreadElement(argument, this.#makeLocation(spreadStart)));
+      } else {
+        let propStart = this.#peek();
+        let propName = this.#parseIdentifier();
+        var propValue: Expression = propName;
+        if (this.#match(TokenType.Colon)) {
+          propValue = this.#parseExpression();
+        }
+        properties.push(new PropertyAssignment(propName, propValue, this.#makeLocation(propStart)));
       }
     }
     
     this.#consume(TokenType.RBrace, "Expected '}' after record");
-    
     return new RecordLiteral(properties, this.#makeLocation(startToken));
   }
   

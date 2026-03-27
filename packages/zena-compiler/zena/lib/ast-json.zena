@@ -13,7 +13,8 @@ import {
   BinaryExpression, UnaryExpression, AssignmentExpression,
   FunctionExpression, Parameter, CallExpression,
   MemberExpression, IndexExpression, ThisExpression,
-  ArrayLiteral, RecordLiteral, TupleLiteral, PropertyAssignment,
+  ArrayLiteral, RecordLiteral, TupleLiteral, PropertyAssignment, SpreadElement,
+  MapLiteral, MapEntry,
   RecordPattern, TuplePattern, BindingProperty,
   NamedTypeAnnotation, UnionTypeAnnotation,
   CaseClassParam, ClassDeclaration, FieldDefinition, MethodDefinition
@@ -214,12 +215,22 @@ export let nodeToJson = (node: Node): JsonObject => {
     case RecordLiteral { properties }: {
       obj['properties'] = propertyAssignmentsToJson(properties);
     }
+    case MapLiteral { entries }: {
+      obj['entries'] = mapEntriesToJson(entries);
+    }
+    case MapEntry { key, value }: {
+      obj['key'] = nodeToJson(key);
+      obj['value'] = nodeToJson(value);
+    }
     case TupleLiteral { elements }: {
       obj['elements'] = expressionsToJson(elements);
     }
     case PropertyAssignment { name, value }: {
       obj['name'] = nodeToJson(name);
       obj['value'] = nodeToJson(value);
+    }
+    case SpreadElement { argument }: {
+      obj['argument'] = nodeToJson(argument);
     }
     case BindingProperty { name, value }: {
       obj['name'] = nodeToJson(name);
@@ -393,11 +404,21 @@ let parametersToJson = (params: Array<Parameter>): JsonArray => {
   return arr;
 };
 
-let propertyAssignmentsToJson = (props: Array<PropertyAssignment>): JsonArray => {
+let propertyAssignmentsToJson = (props: Array<Node>): JsonArray => {
   let arr = new JsonArray();
   var i = 0;
   while (i < props.length) {
     arr.push(nodeToJson(props[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let mapEntriesToJson = (entries: Array<MapEntry>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < entries.length) {
+    arr.push(nodeToJson(entries[i]));
     i = i + 1;
   }
   return arr;
