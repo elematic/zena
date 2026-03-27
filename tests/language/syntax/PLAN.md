@@ -159,10 +159,10 @@ tests/language/syntax/
 │       └── reserved-keyword.zena          [done]
 │
 ├── comments/
-│   ├── single-line.zena                    [ts] lexer_test
-│   ├── multi-line.zena                     [ts] lexer_test
-│   ├── inline.zena                         [new]
-│   └── nested-multiline.zena              [new]
+│   ├── single-line.zena                    [done] lexer_test
+│   ├── multi-line.zena                     [done] lexer_test
+│   ├── inline.zena                         [done]
+│   └── nested-multiline.zena              [done]
 │
 ├── variables/
 │   ├── let-inferred.zena                   [done] variable_decl
