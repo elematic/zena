@@ -52,10 +52,10 @@ tests/language/syntax/
 │   │       └── unknown-escape.zena         [new]
 │   │
 │   ├── booleans/
-│   │   ├── true.zena                       [new]
-│   │   └── false.zena                      [new]
+│   │   ├── true.zena                       [done]
+│   │   └── false.zena                      [done]
 │   │
-│   ├── null.zena                           [ts] parser-null_test
+│   ├── null.zena                           [done] parser-null_test
 │   │
 │   ├── arrays/
 │   │   ├── empty.zena                      [new]
