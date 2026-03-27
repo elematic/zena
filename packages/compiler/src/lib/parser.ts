@@ -1815,10 +1815,11 @@ export class Parser {
 
   #parseArrayLiteral(startToken: Token): ArrayLiteral {
     const elements: Expression[] = [];
-    if (!this.#check(TokenType.RBracket)) {
-      do {
-        elements.push(this.#parseExpression());
-      } while (this.#match(TokenType.Comma));
+    while (!this.#check(TokenType.RBracket) && !this.#isAtEnd()) {
+      elements.push(this.#parseExpression());
+      if (!this.#check(TokenType.RBracket)) {
+        this.#consume(TokenType.Comma, "Expected ',' after array element.");
+      }
     }
     this.#consume(TokenType.RBracket, "Expected ']' after array elements.");
     const endToken = this.#previous();

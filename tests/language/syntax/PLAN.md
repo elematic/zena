@@ -58,11 +58,11 @@ tests/language/syntax/
 │   ├── null.zena                           [done] parser-null_test
 │   │
 │   ├── arrays/
-│   │   ├── empty.zena                      [new]
-│   │   ├── single-element.zena             [new]
-│   │   ├── multiple-elements.zena          [new]
-│   │   ├── nested.zena                     [new]
-│   │   └── trailing-comma.zena             [new]
+│   │   ├── empty.zena                      [done]
+│   │   ├── single-element.zena             [done]
+│   │   ├── multiple-elements.zena          [done]
+│   │   ├── nested.zena                     [done]
+│   │   └── trailing-comma.zena             [done]
 │   │
 │   ├── records/
 │   │   ├── empty.zena                      [ts] records-tuples_test
