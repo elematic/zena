@@ -162,8 +162,6 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke m
 - You NEVER need to delete build outputs manually; Wireit tracks
   inputs/outputs. If a script doesn't run because it was cached, its outputs
   remain unchanged. A passing test is still passing if it's skipped.
-- If you want to see more output for a script, set the WIREIT_LOGGER environment
-  variable to `simple` (e.g., `WIREIT_LOGGER=simple npm test`).
 
 - **Root**: Contains the workspace configuration and global scripts.
 - **packages/compiler**: The core compiler implementation (`@zena-lang/compiler`).
