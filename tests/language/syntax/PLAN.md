@@ -166,17 +166,17 @@ tests/language/syntax/
 │
 ├── variables/
 │   ├── let-inferred.zena                   [done] variable_decl
-│   ├── let-typed.zena                      [new]
-│   ├── var-inferred.zena                   [ts] parser_test
-│   ├── var-typed.zena                      [new]
-│   ├── const-function.zena                [ts] parser_test
-│   ├── exported-let.zena                  [new]
-│   ├── exported-var.zena                  [new]
+│   ├── let-typed.zena                      [done]
+│   ├── var-inferred.zena                   [done] parser_test
+│   ├── var-typed.zena                      [done]
+│   ├── const-function.zena                [done] parser_test
+│   ├── exported-let.zena                  [done]
+│   ├── exported-var.zena                  [done]
 │   └── errors/
-│       ├── const-suggested.zena           [ts] variable-declaration-errors_test
-│       ├── Let-suggested.zena             [ts] variable-declaration-errors_test
-│       ├── missing-initializer.zena       [new]
-│       └── duplicate-declaration.zena     [new] (may be checker-level)
+│       ├── const-suggested.zena           [done] variable-declaration-errors_test
+│       ├── let-suggested.zena             [done] variable-declaration-errors_test
+│       ├── missing-initializer.zena       [done]
+│       └── duplicate-declaration.zena     [new] (checker-level)
 │
 ├── operators/
 │   ├── arithmetic/
