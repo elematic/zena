@@ -42,17 +42,13 @@ tests/language/syntax/
 │   │       └── leading-dot.zena            [done] e.g., .5
 │   │
 │   ├── strings/
-│   │   ├── single-quotes.zena              [ts] lexer_test
-│   │   ├── double-quotes.zena              [ts] lexer_test
-│   │   ├── empty.zena                      [new]
-│   │   ├── escape-newline.zena             [ts] lexer_test
-│   │   ├── escape-tab.zena                 [ts] lexer_test
-│   │   ├── escape-backslash.zena           [ts] lexer_test
-│   │   ├── escape-quote.zena               [ts] lexer_test
-│   │   ├── escape-carriage-return.zena     [new]
+│   │   ├── single-quotes.zena              [done] lexer_test
+│   │   ├── double-quotes.zena              [done] lexer_test
+│   │   ├── empty.zena                      [done]
+│   │   ├── escape-characters.zena          [done] lexer_test
 │   │   ├── escape-null.zena                [new]
 │   │   └── errors/
-│   │       ├── unterminated.zena           [new]
+│   │       ├── unterminated.zena           [new] Isn't failing correctly
 │   │       └── unknown-escape.zena         [new]
 │   │
 │   ├── booleans/
