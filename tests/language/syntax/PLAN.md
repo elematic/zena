@@ -48,6 +48,19 @@ the cleaned AST as the snapshot automatically. So the porting workflow is:
 - **Record shorthand has no flag**: `{x}` produces a `PropertyAssignment` where
   both `name` and `value` are `Identifier` nodes with the same `name` string.
   There is no `shorthand: true` field.
+- **Self-hosted parser may lack support**: When porting tests, the self-hosted
+  parser (`packages/zena-compiler/`) may not yet support the syntax being tested.
+  You must add support to all three files: `ast.zena` (AST class definitions),
+  `parser.zena` (parsing logic), and `ast-json.zena` (JSON serialization). The
+  tokenizer usually already has the tokens. Always run **both** test suites:
+  `npm run test:portable -w @zena-lang/compiler` (TS) and
+  `npm test -w @zena-lang/zena-compiler` (self-hosted/WASI).
+- **`let` vs `var` in Zena**: `let` bindings are immutable. If you need to
+  reassign a variable (e.g., `raw = fallback`), use `var`.
+- **`if` without `else`**: In Zena, `if` blocks don't require an `else` clause.
+  Do not add `else { };` when the else branch is empty — simple `if (cond) { ... }`
+  works fine. The TS compiler rejects spurious semicolons after `else { }` in
+  some contexts.
 
 ## Status Key
 
@@ -114,25 +127,25 @@ tests/language/syntax/
 │   │   ├── nested.zena                    [done] records-tuples_test
 │   │   └── single-element.zena            [done] — disambiguation from parens
 │   │
-│   └── maps/
-│       ├── empty.zena                      [ts] map-literal_test — {} is always empty record
-│       ├── single-entry.zena               [done] map-literal_test
-│       ├── multiple-entries.zena            [done] map-literal_test
-│       └── trailing-comma.zena             [done]
-│
-├── template-literals/
-│   ├── simple.zena                         [ts] template-literal_test
-│   ├── empty.zena                          [ts] template-literal_test
-│   ├── substitution.zena                   [ts] template-literal_test
-│   ├── multiple-substitutions.zena         [ts] template-literal_test
-│   ├── nested-template.zena               [new]
-│   ├── expression-in-substitution.zena    [new]
-│   ├── tagged/
-│   │   ├── basic.zena                     [ts] template-literal_test
-│   │   ├── with-substitution.zena         [ts] template-literal_test
-│   │   └── member-tag.zena                [new]
-│   └── errors/
-│       └── unterminated.zena              [new]
+│   ├── maps/
+│   │   ├── empty.zena                      [ts] map-literal_test — {} is always empty record
+│   │   ├── single-entry.zena               [done] map-literal_test
+│   │   ├── multiple-entries.zena            [done] map-literal_test
+│   │   └── trailing-comma.zena             [done]
+│   │
+│   └── template-literals/
+│       ├── simple.zena                     [done] template-literal_test
+│       ├── empty.zena                      [done] template-literal_test
+│       ├── substitution.zena               [done] template-literal_test
+│       ├── multiple-substitutions.zena     [done] template-literal_test
+│       ├── nested-template.zena            [done]
+│       ├── expression-in-substitution.zena [done]
+│       ├── tagged/
+│       │   ├── basic.zena                  [done] template-literal_test
+│       │   ├── with-substitution.zena      [done] template-literal_test
+│       │   └── member-tag.zena             [done]
+│       └── errors/
+│           └── unterminated.zena           [new]
 │
 ├── identifiers/
 │   ├── simple.zena                         [ts] identifiers_test
@@ -559,7 +572,7 @@ tests/language/syntax/
 | Group                    | Done   | Port from TS | New      | Total    |
 | ------------------------ | ------ | ------------ | -------- | -------- |
 | **Literals**             | 0      | ~14          | ~18      | ~32      |
-| **Template Literals**    | 0      | ~5           | ~4       | ~9       |
+| **Template Literals**    | 9      | 0            | ~1       | ~10      |
 | **Identifiers**          | 0      | ~5           | ~2       | ~7       |
 | **Comments**             | 0      | ~2           | ~2       | ~4       |
 | **Variables**            | 1      | ~3           | ~5       | ~9       |

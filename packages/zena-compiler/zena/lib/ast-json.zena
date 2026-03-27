@@ -10,6 +10,7 @@ import {
   IfStatement, WhileStatement, ReturnStatement, BreakStatement, ContinueStatement,
   Identifier, IdentifierPattern,
   NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral,
+  TemplateElement, TemplateLiteral, TaggedTemplateExpression,
   BinaryExpression, UnaryExpression, AssignmentExpression,
   FunctionExpression, Parameter, CallExpression,
   MemberExpression, IndexExpression, ThisExpression,
@@ -153,6 +154,21 @@ export let nodeToJson = (node: Node): JsonObject => {
     }
     case NullLiteral {}: {
       // No additional fields
+    }
+    case TemplateElement { cooked, raw, tail }: {
+      let valueObj = new JsonObject();
+      valueObj['cooked'] = cooked;
+      valueObj['raw'] = raw;
+      obj['value'] = valueObj;
+      obj['tail'] = new Box<boolean>(tail);
+    }
+    case TemplateLiteral { quasis, expressions }: {
+      obj['quasis'] = templateElementsToJson(quasis);
+      obj['expressions'] = expressionsToJson(expressions);
+    }
+    case TaggedTemplateExpression { tag, quasi }: {
+      obj['tag'] = nodeToJson(tag);
+      obj['quasi'] = nodeToJson(quasi);
     }
     case Identifier { name }: {
       obj['name'] = name;
@@ -389,6 +405,16 @@ let expressionsToJson = (exprs: Array<Expression>): JsonArray => {
   var i = 0;
   while (i < exprs.length) {
     arr.push(nodeToJson(exprs[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let templateElementsToJson = (elems: Array<TemplateElement>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < elems.length) {
+    arr.push(nodeToJson(elems[i]));
     i = i + 1;
   }
   return arr;

@@ -53,7 +53,10 @@ import {
   CaseClassParam,
   ClassDeclaration,
   FieldDefinition,
-  MethodDefinition
+  MethodDefinition,
+  TemplateElement,
+  TemplateLiteral,
+  TaggedTemplateExpression
 } from './ast.zena';
 
 // ============================================================================
@@ -469,6 +472,10 @@ export class Parser {
         expr = new IndexExpression(expr, index, true, null);
       } else if (this.#match(TokenType.QuestionLParen)) {
         expr = this.#finishCall(expr, true);
+      } else if (this.#check(TokenType.NoSubstitutionTemplate) || this.#check(TokenType.TemplateHead)) {
+        let tagStartToken = this.#peek();
+        let quasi = this.#parsePrimary();
+        expr = new TaggedTemplateExpression(expr, quasi as TemplateLiteral, this.#makeLocation(tagStartToken));
       } else {
         break;
       }
@@ -523,6 +530,24 @@ export class Parser {
       return new StringLiteral(token.value, this.#makeLocation(startToken));
     }
     
+    // Template literal (no substitution)
+    if (this.#match(TokenType.NoSubstitutionTemplate)) {
+      let token = this.#previous();
+      let quasis = new Array<TemplateElement>(1);
+      var raw = token.rawValue;
+      if (raw == null) {
+        raw = token.value;
+      }
+      quasis.push(new TemplateElement(token.value, raw as string, true, this.#makeLocation(token)));
+      let expressions = new Array<Expression>(0);
+      return new TemplateLiteral(quasis, expressions, this.#makeLocation(startToken));
+    }
+    
+    // Template literal (with substitutions)
+    if (this.#match(TokenType.TemplateHead)) {
+      return this.#parseTemplateLiteral(startToken);
+    }
+    
     // This expression
     if (this.#match(TokenType.This)) {
       return new ThisExpression(this.#makeLocation(startToken));
@@ -571,6 +596,44 @@ export class Parser {
     }
     
     throw new Error("Unexpected token in expression");
+  }
+  
+  #parseTemplateLiteral(startToken: Token): TemplateLiteral {
+    let headToken = this.#previous();
+    let quasis = new Array<TemplateElement>(4);
+    let expressions = new Array<Expression>(4);
+    
+    // Add the head quasi
+    var headRaw = headToken.rawValue;
+    if (headRaw == null) {
+      headRaw = headToken.value;
+    }
+    quasis.push(new TemplateElement(headToken.value, headRaw as string, false, this.#makeLocation(headToken)));
+    
+    // Parse expression
+    expressions.push(this.#parseExpression());
+    
+    // Parse middle parts and tail
+    while (this.#match(TokenType.TemplateMiddle)) {
+      let midToken = this.#previous();
+      var midRaw = midToken.rawValue;
+      if (midRaw == null) {
+        midRaw = midToken.value;
+      }
+      quasis.push(new TemplateElement(midToken.value, midRaw as string, false, this.#makeLocation(midToken)));
+      expressions.push(this.#parseExpression());
+    }
+    
+    // Expect tail
+    this.#consume(TokenType.TemplateTail, "Expected template tail after expression");
+    let tailToken = this.#previous();
+    var tailRaw = tailToken.rawValue;
+    if (tailRaw == null) {
+      tailRaw = tailToken.value;
+    }
+    quasis.push(new TemplateElement(tailToken.value, tailRaw as string, true, this.#makeLocation(tailToken)));
+    
+    return new TemplateLiteral(quasis, expressions, this.#makeLocation(startToken));
   }
   
   #parseNumber(raw: string): f64 {
