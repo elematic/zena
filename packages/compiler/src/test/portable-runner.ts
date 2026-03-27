@@ -171,6 +171,8 @@ function stripLocation(obj: any): any {
     const newObj: any = {};
     for (const key in obj) {
       if (key === 'loc' || key === 'start' || key === 'end') continue;
+      if (key === 'inferredType' || key === 'inferredTypeArguments') continue;
+      if (key === 'path' || key === 'isStdlib' || key === 'source' || key === 'imports' || key === 'exports' || key === 'diagnostics') continue;
       newObj[key] = stripLocation(obj[key]);
     }
     return newObj;

@@ -148,15 +148,15 @@ tests/language/syntax/
 │           └── unterminated.zena           [new]
 │
 ├── identifiers/
-│   ├── simple.zena                         [ts] identifiers_test
-│   ├── with-underscore.zena               [ts] identifiers_test
-│   ├── with-dollar.zena                   [ts] identifiers_test
-│   ├── leading-underscore.zena            [ts] identifiers_test
-│   ├── leading-dollar.zena                [ts] identifiers_test
-│   ├── keyword-like.zena                  [ts] identifiers_test (from, as, etc.)
+│   ├── simple.zena                         [done] identifiers_test
+│   ├── with-underscore.zena               [done] identifiers_test
+│   ├── with-dollar.zena                   [done] identifiers_test
+│   ├── leading-underscore.zena            [done] identifiers_test
+│   ├── leading-dollar.zena                [done] identifiers_test
+│   ├── keyword-like.zena                  [done] identifiers_test (from, as, etc.)
 │   └── errors/
-│       ├── starts-with-digit.zena         [new]
-│       └── reserved-keyword.zena          [new]
+│       ├── starts-with-digit.zena         [done]
+│       └── reserved-keyword.zena          [done]
 │
 ├── comments/
 │   ├── single-line.zena                    [ts] lexer_test
@@ -573,7 +573,7 @@ tests/language/syntax/
 | ------------------------ | ------ | ------------ | -------- | -------- |
 | **Literals**             | 0      | ~14          | ~18      | ~32      |
 | **Template Literals**    | 9      | 0            | ~1       | ~10      |
-| **Identifiers**          | 0      | ~5           | ~2       | ~7       |
+| **Identifiers**          | 8      | 0            | 0        | 8        |
 | **Comments**             | 0      | ~2           | ~2       | ~4       |
 | **Variables**            | 1      | ~3           | ~5       | ~9       |
 | **Operators**            | 7      | ~10          | ~30      | ~47      |

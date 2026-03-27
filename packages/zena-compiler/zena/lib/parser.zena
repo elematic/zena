@@ -296,8 +296,11 @@ export class Parser {
   
   #parseIdentifierPattern(): IdentifierPattern {
     let startToken = this.#peek();
-    let token = this.#consume(TokenType.Identifier, "Expected identifier");
-    return new IdentifierPattern(token.value, this.#makeLocation(startToken));
+    if (this.#isIdentifier()) {
+      let token = this.#advance();
+      return new IdentifierPattern(token.value, this.#makeLocation(startToken));
+    }
+    throw new Error("Expected identifier");
   }
   
   #parseRecordPattern(startToken: Token): RecordPattern {
@@ -590,8 +593,8 @@ export class Parser {
       return this.#parseRecordOrMapLiteral(startToken);
     }
     
-    // Identifier
-    if (this.#check(TokenType.Identifier)) {
+    // Identifier (including contextual keywords)
+    if (this.#isIdentifier()) {
       return this.#parseIdentifier();
     }
     
@@ -952,7 +955,7 @@ export class Parser {
     let startToken = this.#peek();
     
     // Named type or primitive
-    if (this.#check(TokenType.Identifier)) {
+    if (this.#isIdentifier()) {
       let name = this.#advance().value;
       
       // Check for type arguments: Type<T>
@@ -977,10 +980,37 @@ export class Parser {
   // Helper Methods
   // ==========================================================================
   
+  #isIdentifier(): boolean {
+    let t = this.#peek().kind;
+    return t == TokenType.Identifier
+      || t == TokenType.From
+      || t == TokenType.Type
+      || t == TokenType.As
+      || t == TokenType.Is
+      || t == TokenType.On
+      || t == TokenType.Abstract
+      || t == TokenType.Declare
+      || t == TokenType.Mixin
+      || t == TokenType.Operator
+      || t == TokenType.Static
+      || t == TokenType.Extension
+      || t == TokenType.Distinct
+      || t == TokenType.Final
+      || t == TokenType.Extends
+      || t == TokenType.Implements
+      || t == TokenType.With
+      || t == TokenType.Case
+      || t == TokenType.Match
+      || t == TokenType.Throw;
+  }
+
   #parseIdentifier(): Identifier {
     let startToken = this.#peek();
-    let token = this.#consume(TokenType.Identifier, "Expected identifier");
-    return new Identifier(token.value, this.#makeLocation(startToken));
+    if (this.#isIdentifier()) {
+      let token = this.#advance();
+      return new Identifier(token.value, this.#makeLocation(startToken));
+    }
+    throw new Error("Expected identifier");
   }
   
   // ==========================================================================
