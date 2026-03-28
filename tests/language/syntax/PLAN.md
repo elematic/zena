@@ -323,38 +323,38 @@ tests/language/syntax/
 │
 ├── statements/
 │   ├── blocks/
-│   │   ├── simple.zena                    [ts] block-statement_test
-│   │   ├── nested.zena                    [new]
-│   │   └── empty.zena                     [new]
+│   │   ├── simple.zena                    [done] block-statement_test
+│   │   ├── nested.zena                    [done]
+│   │   └── empty.zena                     [done]
 │   │
 │   ├── if/
-│   │   ├── simple.zena                    [new]
-│   │   ├── if-else.zena                   [new]
-│   │   ├── if-else-if.zena                [new]
-│   │   └── let-pattern.zena              [new] — if (let x = expr)
+│   │   ├── simple.zena                    [done]
+│   │   ├── if-else.zena                   [done]
+│   │   ├── if-else-if.zena                [done]
+│   │   └── let-pattern.zena              [done] — if (let x = expr)
 │   │
 │   ├── while/
-│   │   ├── simple.zena                    [ts] parser_test
-│   │   ├── let-pattern.zena              [new] — while (let x = expr)
-│   │   └── break-continue.zena           [new]
+│   │   ├── simple.zena                    [done] parser_test
+│   │   ├── let-pattern.zena              [done] — while (let x = expr)
+│   │   └── break-continue.zena           [done]
 │   │
 │   ├── for/
-│   │   ├── c-style.zena                   [ts] parser-for_test
-│   │   ├── empty-init.zena                [ts] parser-for_test
-│   │   ├── empty-test.zena                [ts] parser-for_test
-│   │   ├── empty-update.zena              [ts] parser-for_test
-│   │   ├── all-empty.zena                 [ts] parser-for_test
-│   │   └── for-in.zena                    [new]
+│   │   ├── c-style.zena                   [done] parser-for_test
+│   │   ├── empty-init.zena                [done] parser-for_test
+│   │   ├── empty-test.zena                [done] parser-for_test
+│   │   ├── empty-update.zena              [done] parser-for_test
+│   │   ├── all-empty.zena                 [done] parser-for_test
+│   │   └── for-in.zena                    [done]
 │   │
 │   ├── return/
-│   │   ├── value.zena                     [new]
-│   │   ├── void.zena                      [new]
-│   │   └── tuple.zena                     [new] — return (a, b)
+│   │   ├── value.zena                     [done]
+│   │   ├── void.zena                      [done]
+│   │   └── tuple.zena                     [done] — return (a, b)
 │   │
-│   ├── break.zena                         [new]
-│   ├── continue.zena                      [new]
+│   ├── break.zena                         [done]
+│   ├── continue.zena                      [done]
 │   │
-│   └── expression-statement.zena          [new]
+│   └── expression-statement.zena          [done]
 │
 ├── functions/
 │   ├── arrow/

@@ -32,6 +32,9 @@ import {
   ContinueStatement,
   IfStatement,
   WhileStatement,
+  ForStatement,
+  ForInStatement,
+  LetPatternCondition,
   NamedTypeAnnotation,
   UnionTypeAnnotation,
   Parameter,
@@ -207,6 +210,9 @@ export class Parser {
     if (this.#match(TokenType.While)) {
       return this.#parseWhileStatement(startToken);
     }
+    if (this.#match(TokenType.For)) {
+      return this.#parseForStatement(startToken);
+    }
     
     // Block statement
     if (this.#match(TokenType.LBrace)) {
@@ -250,7 +256,7 @@ export class Parser {
   
   #parseIfStatement(startToken: Token): IfStatement {
     this.#consume(TokenType.LParen, "Expected '(' after 'if'");
-    let test = this.#parseExpression();
+    let test = this.#parseCondition();
     this.#consume(TokenType.RParen, "Expected ')' after condition");
     
     let consequent = this.#parseStatement();
@@ -265,12 +271,94 @@ export class Parser {
   
   #parseWhileStatement(startToken: Token): WhileStatement {
     this.#consume(TokenType.LParen, "Expected '(' after 'while'");
-    let test = this.#parseExpression();
+    let test = this.#parseCondition();
     this.#consume(TokenType.RParen, "Expected ')' after condition");
     
     let body = this.#parseStatement();
     
     return new WhileStatement(test, body, this.#makeLocation(startToken));
+  }
+  
+  #parseCondition(): Node {
+    if (this.#match(TokenType.Let)) {
+      return this.#parseLetPatternCondition();
+    }
+    return this.#parseExpression();
+  }
+  
+  #parseLetPatternCondition(): LetPatternCondition {
+    let startToken = this.#previous();
+    let pattern = this.#parsePattern();
+    this.#consume(TokenType.Equals, "Expected '=' after pattern in let condition");
+    let init = this.#parseExpression();
+    return new LetPatternCondition(pattern, init, this.#makeLocation(startToken));
+  }
+  
+  #parseForStatement(startToken: Token): Statement {
+    this.#consume(TokenType.LParen, "Expected '(' after 'for'");
+    
+    if (this.#match(TokenType.Let)) {
+      // Could be for-in or C-style with let declaration
+      let pattern = this.#parsePattern();
+      
+      if (this.#match(TokenType.In)) {
+        // for-in loop
+        let iterable = this.#parseExpression();
+        this.#consume(TokenType.RParen, "Expected ')' after for-in iterable");
+        let body = this.#parseStatement();
+        return new ForInStatement(pattern, iterable, body, this.#makeLocation(startToken));
+      }
+      
+      // C-style for with let declaration
+      this.#consume(TokenType.Equals, "Expected '=' or 'in' after pattern in for statement");
+      let initExpr = this.#parseExpression();
+      let init = new VariableDeclaration('let', pattern, null, initExpr, false, this.#makeLocation(startToken));
+      return this.#parseCStyleFor(startToken, init);
+    }
+    
+    if (this.#match(TokenType.Var)) {
+      // C-style for with var declaration
+      let varStart = this.#previous();
+      let pattern = this.#parsePattern();
+      
+      var typeAnnotation: TypeAnnotation | null = null;
+      if (this.#match(TokenType.Colon)) {
+        typeAnnotation = this.#parseTypeAnnotation();
+      }
+      
+      this.#consume(TokenType.Equals, "Expected '=' after variable name");
+      let initExpr = this.#parseExpression();
+      let init = new VariableDeclaration('var', pattern, typeAnnotation, initExpr, false, this.#makeLocation(varStart));
+      return this.#parseCStyleFor(startToken, init);
+    }
+    
+    // Parse init as expression, or empty
+    var init: Node | null = null;
+    if (!this.#check(TokenType.Semi)) {
+      init = this.#parseExpression();
+    }
+    
+    return this.#parseCStyleFor(startToken, init);
+  }
+  
+  #parseCStyleFor(startToken: Token, init: Node | null): ForStatement {
+    this.#consume(TokenType.Semi, "Expected ';' after for initializer");
+    
+    var test: Expression | null = null;
+    if (!this.#check(TokenType.Semi)) {
+      test = this.#parseExpression();
+    }
+    this.#consume(TokenType.Semi, "Expected ';' after for condition");
+    
+    var update: Expression | null = null;
+    if (!this.#check(TokenType.RParen)) {
+      update = this.#parseExpression();
+    }
+    this.#consume(TokenType.RParen, "Expected ')' after for clauses");
+    
+    let body = this.#parseStatement();
+    
+    return new ForStatement(init, test, update, body, this.#makeLocation(startToken));
   }
   
   #parseBlockStatement(startToken: Token): BlockStatement {
@@ -290,7 +378,7 @@ export class Parser {
     
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       // Check for keywords that definitely start statements
-      if (this.#check(TokenType.Let) || this.#check(TokenType.Var) || this.#check(TokenType.Return) || this.#check(TokenType.While) || this.#check(TokenType.If) || this.#check(TokenType.Class)) {
+      if (this.#check(TokenType.Let) || this.#check(TokenType.Var) || this.#check(TokenType.Return) || this.#check(TokenType.While) || this.#check(TokenType.If) || this.#check(TokenType.For) || this.#check(TokenType.Break) || this.#check(TokenType.Continue) || this.#check(TokenType.Class)) {
         body.push(this.#parseStatement());
         continue;
       }
@@ -592,9 +680,14 @@ export class Parser {
       return this.#parseRecordPattern(startToken, false);
     }
     
-    // Tuple pattern: [a, b] or (a, b)
+    // Tuple pattern: [a, b]
     if (this.#match(TokenType.LBracket)) {
       return this.#parseTuplePattern(startToken);
+    }
+    
+    // Tuple pattern with parens: (a, b)
+    if (this.#match(TokenType.LParen)) {
+      return this.#parseParenTuplePattern(startToken);
     }
     
     // Identifier pattern (most common case)
@@ -653,6 +746,20 @@ export class Parser {
     }
     
     this.#consume(TokenType.RBracket, "Expected ']' after tuple pattern");
+    return new TuplePattern(elements, this.#makeLocation(startToken));
+  }
+  
+  #parseParenTuplePattern(startToken: Token): TuplePattern {
+    let elements = new Array<Node | null>(4);
+    
+    if (!this.#check(TokenType.RParen)) {
+      elements.push(this.#parseMatchPattern());
+      while (this.#match(TokenType.Comma)) {
+        elements.push(this.#parseMatchPattern());
+      }
+    }
+    
+    this.#consume(TokenType.RParen, "Expected ')' after tuple pattern");
     return new TuplePattern(elements, this.#makeLocation(startToken));
   }
   
