@@ -14,7 +14,7 @@ import {
   TemplateElement, TemplateLiteral, TaggedTemplateExpression,
   BinaryExpression, UnaryExpression, AssignmentExpression,
   AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder,
-  FunctionExpression, Parameter, CallExpression,
+  FunctionExpression, Parameter, CallExpression, TypeParameter,
   MemberExpression, IndexExpression, ThisExpression, NewExpression,
   ArrayLiteral, RecordLiteral, TupleLiteral, PropertyAssignment, SpreadElement,
   MapLiteral, MapEntry,
@@ -267,7 +267,10 @@ export let nodeToJson = (node: Node): JsonObject => {
       } else { };
       obj['arguments'] = expressionsToJson(args);
     }
-    case FunctionExpression { params, returnType, body }: {
+    case FunctionExpression { typeParameters, params, returnType, body }: {
+      if (typeParameters != null) {
+        obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
+      } else { };
       obj['params'] = parametersToJson(params);
       if (returnType != null) {
         obj['returnType'] = nodeToJson(returnType as Node);
@@ -412,7 +415,18 @@ export let nodeToJson = (node: Node): JsonObject => {
       } else { };
       obj['optional'] = new Box<boolean>(optional);
       if (defaultValue != null) {
-        obj['defaultValue'] = nodeToJson(defaultValue as Expression);
+        obj['initializer'] = nodeToJson(defaultValue as Expression);
+      } else { };
+    }
+    
+    // Type Parameters
+    case TypeParameter { name, constraint, defaultType }: {
+      obj['name'] = name;
+      if (constraint != null) {
+        obj['constraint'] = nodeToJson(constraint as Node);
+      } else { };
+      if (defaultType != null) {
+        obj['default'] = nodeToJson(defaultType as Node);
       } else { };
     }
     
@@ -436,7 +450,7 @@ export let nodeToJson = (node: Node): JsonObject => {
     case ClassDeclaration { name, typeParameters, caseParams, superClass, mixins, implementsList, body, exported, isFinal, isAbstract }: {
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
-        obj['typeParameters'] = typeAnnotationsToJson(typeParameters as Array<TypeAnnotation>);
+        obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
       } else { };
       if (caseParams != null) {
         obj['caseParams'] = caseClassParamsToJson(caseParams as Array<CaseClassParam>);
@@ -532,6 +546,16 @@ let templateElementsToJson = (elems: Array<TemplateElement>): JsonArray => {
 };
 
 let parametersToJson = (params: Array<Parameter>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < params.length) {
+    arr.push(nodeToJson(params[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let typeParametersToJson = (params: Array<TypeParameter>): JsonArray => {
   let arr = new JsonArray();
   var i = 0;
   while (i < params.length) {

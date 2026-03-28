@@ -37,6 +37,7 @@ import {
   LetPatternCondition,
   NamedTypeAnnotation,
   UnionTypeAnnotation,
+  TypeParameter,
   Parameter,
   FunctionExpression,
   CallExpression,
@@ -1121,11 +1122,19 @@ export class Parser {
       return this.#parseTryExpression(startToken);
     }
     
+    // Generic arrow function: <T>(x: T) => x
+    if (this.#check(TokenType.Less) && this.#isGenericArrowFunction()) {
+      this.#advance(); // consume '<'
+      let typeParams = this.#parseTypeParameterList();
+      this.#consume(TokenType.LParen, "Expected '(' after type parameters");
+      return this.#parseArrowFunction(startToken, typeParams);
+    }
+    
     // Parenthesized expression, tuple, or arrow function
     if (this.#match(TokenType.LParen)) {
       // Check for arrow function: (params) =>
       if (this.#isArrowFunction()) {
-        return this.#parseArrowFunction(startToken);
+        return this.#parseArrowFunction(startToken, null);
       }
       
       // Parse first expression
@@ -1349,10 +1358,10 @@ export class Parser {
   
   #isArrowFunction(): boolean {
     // Look ahead to determine if this is an arrow function
-    // Simple heuristic: check for () => or (identifier) => or (identifier: type) =>
+    // Handles: () => or (identifier) => or (identifier: type) => or (...): ReturnType =>
     
     var depth = 1;
-    var i = 1;
+    var i = 0;
     
     // Find matching )
     while (depth > 0) {
@@ -1368,12 +1377,97 @@ export class Parser {
       i = i + 1;
     }
     
-    // Check if next token after ) is =>
+    // Check if next token after ) is => or : (return type annotation)
     let nextToken = this.#tokens[this.#current + i];
-    return nextToken.kind == TokenType.Arrow;
+    if (nextToken.kind == TokenType.Arrow) {
+      return true;
+    }
+    if (nextToken.kind == TokenType.Colon) {
+      // Could be return type annotation: (...): Type =>
+      // Skip past the type to find =>
+      i = i + 1;
+      while (true) {
+        let t = this.#tokens[this.#current + i];
+        if (t.kind == TokenType.EOF) { return false; }
+        if (t.kind == TokenType.Arrow) { return true; }
+        if (t.kind == TokenType.LBrace || t.kind == TokenType.Semi) { return false; }
+        // Handle nested < > for generic types
+        if (t.kind == TokenType.Less) {
+          var depth2 = 1;
+          i = i + 1;
+          while (depth2 > 0) {
+            let t2 = this.#tokens[this.#current + i];
+            if (t2.kind == TokenType.EOF) { return false; }
+            if (t2.kind == TokenType.Less) { depth2 = depth2 + 1; }
+            if (t2.kind == TokenType.Greater) { depth2 = depth2 - 1; }
+            i = i + 1;
+          }
+        } else {
+          i = i + 1;
+        }
+      }
+    }
+    return false;
   }
   
-  #parseArrowFunction(startToken: Token): FunctionExpression {
+  #isGenericArrowFunction(): boolean {
+    // Check if <...> is followed by (
+    var depth = 1;
+    var i = 1; // skip the <
+    
+    while (depth > 0) {
+      let token = this.#tokens[this.#current + i];
+      if (token.kind == TokenType.EOF) { return false; }
+      if (token.kind == TokenType.Less) { depth = depth + 1; }
+      else if (token.kind == TokenType.Greater) { depth = depth - 1; }
+      i = i + 1;
+    }
+    
+    // After > should be (
+    let nextToken = this.#tokens[this.#current + i];
+    return nextToken.kind == TokenType.LParen;
+  }
+  
+  #parseTypeParameterList(): Array<TypeParameter> {
+    let params = new Array<TypeParameter>(4);
+    
+    let startToken = this.#peek();
+    let name = this.#advance().value;
+    
+    var constraint: TypeAnnotation | null = null;
+    if (this.#match(TokenType.Extends)) {
+      constraint = this.#parseTypeAnnotation();
+    }
+    
+    var defaultType: TypeAnnotation | null = null;
+    if (this.#match(TokenType.Equals)) {
+      defaultType = this.#parseTypeAnnotation();
+    }
+    
+    params.push(new TypeParameter(name, constraint, defaultType, this.#makeLocation(startToken)));
+    
+    while (this.#match(TokenType.Comma)) {
+      let tpStart = this.#peek();
+      let tpName = this.#advance().value;
+      
+      var tpConstraint: TypeAnnotation | null = null;
+      if (this.#match(TokenType.Extends)) {
+        tpConstraint = this.#parseTypeAnnotation();
+      }
+      
+      var tpDefault: TypeAnnotation | null = null;
+      if (this.#match(TokenType.Equals)) {
+        tpDefault = this.#parseTypeAnnotation();
+      }
+      
+      params.push(new TypeParameter(tpName, tpConstraint, tpDefault, this.#makeLocation(tpStart)));
+    }
+    
+    this.#consume(TokenType.Greater, "Expected '>' after type parameters");
+    return params;
+  }
+  
+  #parseArrowFunction(startToken: Token, typeParameters: Array<TypeParameter> | null): FunctionExpression {
     // We're after the '('
     let params = this.#parseParameters();
     
@@ -1391,10 +1485,10 @@ export class Parser {
     if (this.#check(TokenType.LBrace)) {
       let blockStart = this.#advance();
       let body = this.#parseBlockStatement(blockStart);
-      return new FunctionExpression(params, returnType, body, this.#makeLocation(startToken));
+      return new FunctionExpression(typeParameters, params, returnType, body, this.#makeLocation(startToken));
     } else {
       let body = this.#parseExpression();
-      return new FunctionExpression(params, returnType, body, this.#makeLocation(startToken));
+      return new FunctionExpression(typeParameters, params, returnType, body, this.#makeLocation(startToken));
     }
   }
   
@@ -1416,7 +1510,7 @@ export class Parser {
     let name = this.#parseIdentifier();
     
     // Check for optional parameter
-    let optional = this.#match(TokenType.Question);
+    var optional = this.#match(TokenType.Question);
     
     // Type annotation
     var typeAnnotation: TypeAnnotation | null = null;
@@ -1428,6 +1522,7 @@ export class Parser {
     var defaultValue: Expression | null = null;
     if (this.#match(TokenType.Equals)) {
       defaultValue = this.#parseExpression();
+      optional = true;
     }
     
     return new Parameter(name, typeAnnotation, optional, defaultValue, this.#makeLocation(startToken));
@@ -1631,15 +1726,9 @@ export class Parser {
     let name = this.#parseIdentifier();
     
     // Type parameters: class Foo<T, U>
-    var typeParameters: Array<TypeAnnotation> | null = null;
+    var typeParameters: Array<TypeParameter> | null = null;
     if (this.#match(TokenType.Less)) {
-      let tps = new Array<TypeAnnotation>(4);
-      tps.push(this.#parseTypeAnnotation());
-      while (this.#match(TokenType.Comma)) {
-        tps.push(this.#parseTypeAnnotation());
-      }
-      this.#consume(TokenType.Greater, "Expected '>' after type parameters");
-      typeParameters = tps;
+      typeParameters = this.#parseTypeParameterList();
     }
     
     // Case class parameters: class Point(x: f64, y: f64)

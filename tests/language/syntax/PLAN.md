@@ -358,26 +358,26 @@ tests/language/syntax/
 │
 ├── functions/
 │   ├── arrow/
-│   │   ├── expression-body.zena           [ts] parser_test
-│   │   ├── block-body.zena                [new]
-│   │   ├── no-params.zena                 [new]
-│   │   ├── single-param.zena              [new]
-│   │   ├── multiple-params.zena           [new]
-│   │   ├── typed-params.zena              [ts] parser_test
-│   │   ├── return-type.zena               [new]
-│   │   ├── optional-param.zena            [ts] parser-optional-params_test
-│   │   ├── default-param.zena             [new]
-│   │   └── contextual-typing.zena        [ts] contextual-typing-parser_test
+│   │   ├── expression-body.zena           [done] parser_test
+│   │   ├── block-body.zena                [done]
+│   │   ├── no-params.zena                 [done]
+│   │   ├── single-param.zena              [done]
+│   │   ├── multiple-params.zena           [done]
+│   │   ├── typed-params.zena              [done] parser_test
+│   │   ├── return-type.zena               [done]
+│   │   ├── optional-param.zena            [done] parser-optional-params_test
+│   │   ├── default-param.zena             [done]
+│   │   └── contextual-typing.zena        [done] contextual-typing-parser_test
 │   │
 │   ├── generic/
-│   │   ├── single-param.zena              [ts] generics-parser_test
-│   │   ├── multiple-params.zena           [ts] generics-parser_test
-│   │   ├── constraint.zena                [ts] generics-parser_test
-│   │   ├── default-type.zena              [ts] generics-parser_test
-│   │   └── nested-generic.zena            [new]
+│   │   ├── single-param.zena              [done] generics-parser_test
+│   │   ├── multiple-params.zena           [done] generics-parser_test
+│   │   ├── constraint.zena                [done] generics-parser_test
+│   │   ├── default-type.zena              [done] generics-parser_test
+│   │   └── nested-generic.zena            [done]
 │   │
 │   └── closure/
-│       └── captures-variable.zena         [new]
+│       └── captures-variable.zena         [done]
 │
 ├── classes/
 │   ├── basic/
