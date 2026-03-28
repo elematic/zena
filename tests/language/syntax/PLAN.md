@@ -318,14 +318,8 @@ tests/language/syntax/
 │   │   ├── catch-no-param.zena            [done] try-catch_test
 │   │   └── nested.zena                    [done] try-catch_test
 │   │
-│   ├── inline-tuples/
-│   │   ├── type-annotation.zena           [ts] inline-tuples_test
-│   │   ├── return-expression.zena         [ts] inline-tuples_test
-│   │   ├── destructuring.zena             [ts] inline-tuples_test
-│   │   └── union-of-tuples.zena           [ts] inline-tuples_test
-│   │
 │   └── grouping/
-│       └── parenthesized.zena             [new] — (a + b)
+│       └── parenthesized.zena             [done] — (a + b)
 │
 ├── statements/
 │   ├── blocks/
@@ -514,6 +508,9 @@ tests/language/syntax/
 │   │
 │   ├── inline-tuple-types/
 │   │   ├── basic.zena                     [ts] inline-tuples_test
+│   │   ├── type-annotation.zena           [ts] inline-tuples_test
+│   │   ├── return-expression.zena         [ts] inline-tuples_test
+│   │   ├── destructuring.zena             [ts] inline-tuples_test
 │   │   └── union-of-tuples.zena           [ts] inline-tuples_test
 │   │
 │   └── this-type/
