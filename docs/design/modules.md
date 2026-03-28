@@ -44,7 +44,7 @@ Zena supports two syntaxes for importing named exports:
 - **Extensions**: File extensions are required (e.g., `.zena`).
 - **Standard Library**: Use the `zena:` protocol (e.g., `zena:string`).
 - **Absolute Paths**: Not supported.
-- **Bare Specifiers**: Not supported yet (reserved for package maps).
+- **Package Specifiers**: `package:path` format via package maps (see below).
 
 ### Exports
 
@@ -58,6 +58,71 @@ export class Calculator {
   // ...
 }
 ```
+
+## Package Maps
+
+Zena uses **package maps** to resolve bare specifiers (imports that don't start
+with `./`, `../`, or `zena:`). A package map is a JSON file that maps package
+names to source directories.
+
+### `zena-packages.json`
+
+```json
+{
+  "packages": {
+    "zena-compiler": "./packages/zena-compiler/zena/lib",
+    "zena-formatter": "./packages/zena-formatter/zena/lib"
+  }
+}
+```
+
+### Resolution
+
+All non-relative specifiers use the `package:path` format. `zena` is a reserved
+package name that maps to the standard library.
+
+```zena
+import { String } from 'zena:string';              // stdlib (reserved)
+import { parse } from 'zena-compiler:parser';       // user package
+import { format } from 'zena-formatter:format';     // user package
+```
+
+**Rules:**
+
+1. If the specifier starts with `./` or `../`, resolve as a relative path.
+2. Otherwise, split on the first `:` to get `package` and `path`.
+3. If the package is `zena`, resolve via the standard library.
+4. Otherwise, look up the package name in the `packages` map to get the directory.
+5. If there's a subpath, resolve `<directory>/<subpath>.zena`.
+6. If there's no subpath, resolve `<directory>/index.zena`.
+7. All directory paths in the map are relative to the `zena-packages.json` file.
+
+### CompilerHost Integration
+
+The `CompilerHost.resolve()` method handles three cases:
+
+```
+resolve(specifier, referrer):
+  if specifier starts with './' or '../'  → relative path resolution
+  split on ':'  → package:path
+    if package == 'zena'  → stdlib resolution
+    else  → package map lookup
+```
+
+The host loads `zena-packages.json` at initialization. No recursive lookup (no
+`node_modules`-style walking up directories). One manifest, one flat map.
+
+### Rationale
+
+- **No file-system walking**: Resolution is a pure dictionary lookup + path
+  join. Fast, deterministic, no surprises.
+- **Explicit over implicit**: Every package dependency is listed in one file.
+- **Familiar model**: Follows JavaScript import maps
+  (`https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap`).
+- **Minimal**: No version resolution, no lock files, no registry. Just
+  "this name maps to this directory."
+- **Future-proof**: When we add a real package manager, it generates this file.
+  The compiler never needs to know about package managers.
 
 ## Compilation & Resolution
 

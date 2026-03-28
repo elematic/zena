@@ -7,12 +7,28 @@ import {
   isInternalModule,
 } from '@zena-lang/stdlib';
 
+export interface PackageMap {
+  packages: Record<string, string>;
+}
+
 export class NodeCompilerHost implements CompilerHost {
   #virtualFiles: Map<string, string> = new Map();
   #target: Target;
+  #packageMap: Map<string, string>;
 
-  constructor(target: Target = 'host') {
+  constructor(
+    target: Target = 'host',
+    packageMap?: PackageMap,
+    packageMapDir?: string,
+  ) {
     this.#target = target;
+    this.#packageMap = new Map();
+    if (packageMap) {
+      const base = packageMapDir ?? process.cwd();
+      for (const [name, dir] of Object.entries(packageMap.packages)) {
+        this.#packageMap.set(name, resolve(base, dir));
+      }
+    }
   }
 
   /**
@@ -24,14 +40,30 @@ export class NodeCompilerHost implements CompilerHost {
   }
 
   resolve(specifier: string, referrer: string): string {
-    if (specifier.startsWith('zena:')) {
-      const name = specifier.substring(5);
-      // Internal modules can only be imported from other stdlib modules
+    if (specifier.startsWith('./') || specifier.startsWith('../')) {
+      const dir = dirname(referrer);
+      return resolve(dir, specifier);
+    }
+
+    // package:path format — split on first colon
+    const colonIndex = specifier.indexOf(':');
+    if (colonIndex === -1) {
+      throw new Error(
+        `Cannot resolve specifier: ${specifier} (expected package:path format)`,
+      );
+    }
+
+    const packageName = specifier.substring(0, colonIndex);
+    const subpath = specifier.substring(colonIndex + 1) || null;
+
+    // stdlib — 'zena' is a reserved package name
+    if (packageName === 'zena') {
+      const name = subpath!;
       if (isInternalModule(name)) {
         if (!referrer.startsWith('zena:')) {
           throw new Error(`Cannot import internal module: ${specifier}`);
         }
-        return specifier; // Allow as-is for stdlib-to-stdlib imports
+        return specifier;
       }
       const resolved = resolveStdlibModule(name, this.#target);
       if (!resolved) {
@@ -40,14 +72,16 @@ export class NodeCompilerHost implements CompilerHost {
       return `zena:${resolved}`;
     }
 
-    if (specifier.startsWith('./') || specifier.startsWith('../')) {
-      // referrer is absolute path
-      const dir = dirname(referrer);
-      const path = resolve(dir, specifier);
-      return path;
+    // User package — resolve via package map
+    const packageDir = this.#packageMap.get(packageName);
+    if (packageDir) {
+      const file = subpath ? `${subpath}.zena` : 'index.zena';
+      return resolve(packageDir, file);
     }
 
-    throw new Error(`Cannot resolve specifier: ${specifier}`);
+    throw new Error(
+      `Cannot resolve specifier: ${specifier} (unknown package '${packageName}')`,
+    );
   }
 
   load(path: string): string {
@@ -73,5 +107,18 @@ export class NodeCompilerHost implements CompilerHost {
       throw new Error(`File not found: ${path}`);
     }
     return readFileSync(path, 'utf-8');
+  }
+
+  /**
+   * Load a package map from a zena-packages.json file.
+   * Returns undefined if the file doesn't exist.
+   */
+  static loadPackageMap(
+    filePath: string,
+  ): {map: PackageMap; dir: string} | undefined {
+    if (!existsSync(filePath)) return undefined;
+    const content = readFileSync(filePath, 'utf-8');
+    const map = JSON.parse(content) as PackageMap;
+    return {map, dir: dirname(filePath)};
   }
 }
