@@ -180,46 +180,46 @@ tests/language/syntax/
 │
 ├── operators/
 │   ├── arithmetic/
-│   │   ├── add.zena                       [ts] parser_test
-│   │   ├── subtract.zena                  [ts] parser_test
-│   │   ├── multiply.zena                  [ts] parser_test
-│   │   ├── divide.zena                    [ts] parser_test
-│   │   ├── modulo.zena                    [new]
-│   │   └── mixed.zena                     [new] — e.g., a + b * c (precedence)
+│   │   ├── add.zena                       [done] parser_test
+│   │   ├── subtract.zena                  [done] parser_test
+│   │   ├── multiply.zena                  [done] parser_test
+│   │   ├── divide.zena                    [done] parser_test
+│   │   ├── modulo.zena                    [done]
+│   │   └── mixed.zena                     [done] — e.g., a + b * c (precedence)
 │   │
 │   ├── comparison/
-│   │   ├── less-than.zena                 [new]
-│   │   ├── less-equal.zena                [new]
-│   │   ├── greater-than.zena              [new]
-│   │   ├── greater-equal.zena             [new]
-│   │   ├── equal.zena                     [new]
-│   │   ├── not-equal.zena                 [new]
-│   │   ├── strict-equal.zena              [new]
-│   │   └── strict-not-equal.zena          [new]
+│   │   ├── less-than.zena                 [done]
+│   │   ├── less-equal.zena                [done]
+│   │   ├── greater-than.zena              [done]
+│   │   ├── greater-equal.zena             [done]
+│   │   ├── equal.zena                     [done]
+│   │   ├── not-equal.zena                 [done]
+│   │   ├── strict-equal.zena              [done]
+│   │   └── strict-not-equal.zena          [done]
 │   │
 │   ├── logical/
-│   │   ├── and.zena                       [new]
-│   │   ├── or.zena                        [new]
-│   │   ├── not.zena                       [ts] unary_test
-│   │   └── mixed.zena                     [new] — a && b || c (precedence)
+│   │   ├── and.zena                       [done]
+│   │   ├── or.zena                        [done]
+│   │   ├── not.zena                       [done] unary_test
+│   │   └── mixed.zena                     [done] — a && b || c (precedence)
 │   │
 │   ├── bitwise/
-│   │   ├── and.zena                       [new]
-│   │   ├── or.zena                        [new]
-│   │   ├── xor.zena                       [new]
-│   │   ├── shift-left.zena                [ts] shift-operators_test
-│   │   ├── shift-right.zena               [ts] shift-operators_test
-│   │   ├── unsigned-shift-right.zena      [ts] shift-operators_test
-│   │   └── mixed.zena                     [new] — a & b | c (precedence)
+│   │   ├── and.zena                       [done]
+│   │   ├── or.zena                        [done]
+│   │   ├── xor.zena                       [done]
+│   │   ├── shift-left.zena                [done] shift-operators_test
+│   │   ├── shift-right.zena               [done] shift-operators_test
+│   │   ├── unsigned-shift-right.zena      [done] shift-operators_test
+│   │   └── mixed.zena                     [done] — a & b | c (precedence)
 │   │
 │   ├── unary/
-│   │   ├── negate.zena                    [ts] unary_test
-│   │   ├── not.zena                       [ts] unary_test
-│   │   └── double-negate.zena             [new]
+│   │   ├── negate.zena                    [done] unary_test
+│   │   ├── not.zena                       [done] unary_test
+│   │   └── double-negate.zena             [done]
 │   │
 │   ├── assignment/
-│   │   ├── simple.zena                    [ts] parser_test
-│   │   └── member-assignment.zena         [new]
+│   │   ├── simple.zena                    [done] parser_test
+│   │   └── member-assignment.zena         [done]
 │   │
 │   ├── null-coalescing/
 │   │   ├── basic.zena                     [done]
@@ -233,33 +233,33 @@ tests/language/syntax/
 │   │   └── chained.zena                   [done]
 │   │
 │   ├── range/
-│   │   ├── closed.zena                    [ts] range-expression_test
-│   │   ├── open-end.zena                  [ts] range-expression_test
-│   │   ├── open-start.zena                [ts] range-expression_test
-│   │   └── unbounded.zena                 [ts] range-expression_test
+│   │   ├── closed.zena                    [done] range-expression_test
+│   │   ├── open-end.zena                  [done] range-expression_test
+│   │   ├── open-start.zena                [done] range-expression_test
+│   │   └── unbounded.zena                 [done] range-expression_test
 │   │
 │   ├── pipeline/
-│   │   ├── basic.zena                     [ts] parser-pipeline_test
-│   │   ├── chained.zena                   [ts] parser-pipeline_test
-│   │   └── placeholder.zena              [ts] parser-pipeline_test
+│   │   ├── basic.zena                     [done] parser-pipeline_test
+│   │   ├── chained.zena                   [done] parser-pipeline_test
+│   │   └── placeholder.zena              [done] parser-pipeline_test
 │   │
 │   ├── cast/
-│   │   ├── as-expression.zena             [new]
-│   │   └── is-expression.zena             [new]
+│   │   ├── as-expression.zena             [done]
+│   │   └── is-expression.zena             [done]
 │   │
 │   └── precedence/
-│       ├── mul-before-add.zena            [new] — a + b * c
-│       ├── add-before-compare.zena        [new] — a + b < c + d
-│       ├── compare-before-logical.zena    [new] — a < b && c > d
-│       ├── and-before-or.zena             [new] — a && b || c
-│       ├── bitwise-order.zena             [new] — a & b ^ c | d
-│       ├── shift-before-compare.zena      [new] — a << 1 < b
-│       ├── unary-before-binary.zena       [new] — -a + b
-│       ├── parens-override.zena           [new] — (a + b) * c
-│       ├── pipeline-precedence.zena       [new] — a + b |> f($)
-│       ├── range-precedence.zena          [new] — a + 1 .. b - 1
-│       ├── nullish-vs-logical.zena        [new] — ensure ?? doesn't mix with ||
-│       └── assignment-lowest.zena         [new] — x = a + b * c
+│       ├── mul-before-add.zena            [done] — a + b * c
+│       ├── add-before-compare.zena        [done] — a + b < c + d
+│       ├── compare-before-logical.zena    [done] — a < b && c > d
+│       ├── and-before-or.zena             [done] — a && b || c
+│       ├── bitwise-order.zena             [done] — a & b ^ c | d
+│       ├── shift-before-compare.zena      [done] — a << 1 < b
+│       ├── unary-before-binary.zena       [done] — -a + b
+│       ├── parens-override.zena           [done] — (a + b) * c
+│       ├── pipeline-precedence.zena       [done] — a + b |> f($)
+│       ├── range-precedence.zena          [done] — a + 1 .. b - 1
+│       ├── nullish-vs-logical.zena        [done] — ensure ?? doesn't mix with ||
+│       └── assignment-lowest.zena         [done] — x = a + b * c
 │
 ├── expressions/
 │   ├── calls/
@@ -576,7 +576,7 @@ tests/language/syntax/
 | **Identifiers**          | 8      | 0            | 0        | 8        |
 | **Comments**             | 0      | ~2           | ~2       | ~4       |
 | **Variables**            | 1      | ~3           | ~5       | ~9       |
-| **Operators**            | 7      | ~10          | ~30      | ~47      |
+| **Operators**            | 51     | 0            | ~7       | ~58      |
 | **Expressions**          | 0      | ~20          | ~10      | ~30      |
 | **Statements**           | 0      | ~6           | ~12      | ~18      |
 | **Functions**            | 0      | ~8           | ~6       | ~14      |

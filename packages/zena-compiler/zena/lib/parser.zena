@@ -56,7 +56,12 @@ import {
   MethodDefinition,
   TemplateElement,
   TemplateLiteral,
-  TaggedTemplateExpression
+  TaggedTemplateExpression,
+  AsExpression,
+  IsExpression,
+  RangeExpression,
+  PipelineExpression,
+  PipePlaceholder
 } from './ast.zena';
 
 // ============================================================================
@@ -352,12 +357,24 @@ export class Parser {
   }
   
   #parseAssignment(): Expression {
-    let expr = this.#parseLogicalOr();
+    let expr = this.#parsePipeline();
     
     if (this.#match(TokenType.Equals)) {
       let startToken = this.#previous();
       let value = this.#parseAssignment();
       return new AssignmentExpression(expr, value, this.#makeLocation(startToken));
+    }
+    
+    return expr;
+  }
+  
+  #parsePipeline(): Expression {
+    var expr = this.#parseLogicalOr();
+    
+    while (this.#match(TokenType.PipeGreater)) {
+      let startToken = this.#previous();
+      let right = this.#parseLogicalOr();
+      expr = new PipelineExpression(expr, right, this.#makeLocation(startToken));
     }
     
     return expr;
@@ -377,12 +394,48 @@ export class Parser {
   }
   
   #parseLogicalAnd(): Expression {
-    var expr = this.#parseEquality();
+    var expr = this.#parseBitwiseOr();
     
     while (this.#match(TokenType.AmpersandAmpersand)) {
       let startToken = this.#previous();
-      let right = this.#parseEquality();
+      let right = this.#parseBitwiseOr();
       expr = new BinaryExpression('&&', expr, right, this.#makeLocation(startToken));
+    }
+    
+    return expr;
+  }
+  
+  #parseBitwiseOr(): Expression {
+    var expr = this.#parseBitwiseXor();
+    
+    while (this.#match(TokenType.Pipe)) {
+      let startToken = this.#previous();
+      let right = this.#parseBitwiseXor();
+      expr = new BinaryExpression('|', expr, right, this.#makeLocation(startToken));
+    }
+    
+    return expr;
+  }
+  
+  #parseBitwiseXor(): Expression {
+    var expr = this.#parseBitwiseAnd();
+    
+    while (this.#match(TokenType.Caret)) {
+      let startToken = this.#previous();
+      let right = this.#parseBitwiseAnd();
+      expr = new BinaryExpression('^', expr, right, this.#makeLocation(startToken));
+    }
+    
+    return expr;
+  }
+  
+  #parseBitwiseAnd(): Expression {
+    var expr = this.#parseEquality();
+    
+    while (this.#match(TokenType.Ampersand)) {
+      let startToken = this.#previous();
+      let right = this.#parseEquality();
+      expr = new BinaryExpression('&', expr, right, this.#makeLocation(startToken));
     }
     
     return expr;
@@ -403,14 +456,80 @@ export class Parser {
   }
   
   #parseComparison(): Expression {
-    var expr = this.#parseTerm();
+    var expr = this.#parseShift();
     
     while (this.#check(TokenType.Less) || this.#check(TokenType.LessEquals) ||
            this.#check(TokenType.Greater) || this.#check(TokenType.GreaterEquals)) {
       let op = this.#advance();
-      let right = this.#parseTerm();
+      let right = this.#parseShift();
       let opStr = op.value;
       expr = new BinaryExpression(opStr, expr, right, this.#makeLocation(op));
+    }
+    
+    return expr;
+  }
+  
+  #parseShift(): Expression {
+    var expr = this.#parseRange();
+    
+    while (this.#check(TokenType.LessLess) || this.#check(TokenType.GreaterGreater) ||
+           this.#check(TokenType.GreaterGreaterGreater)) {
+      let op = this.#advance();
+      let right = this.#parseRange();
+      let opStr = op.value;
+      expr = new BinaryExpression(opStr, expr, right, this.#makeLocation(op));
+    }
+    
+    return expr;
+  }
+  
+  #parseRange(): Expression {
+    let startToken = this.#peek();
+    
+    // Handle prefix range: ..end or ..
+    if (this.#match(TokenType.DotDot)) {
+      if (this.#check(TokenType.Comma) || this.#check(TokenType.Semi) ||
+          this.#check(TokenType.RParen) || this.#check(TokenType.RBracket) ||
+          this.#check(TokenType.RBrace)) {
+        // .. with no end -> FullRange
+        return new RangeExpression(null, null, this.#makeLocation(startToken));
+      } else {
+        // ..end -> ToRange
+        let end = this.#parseAs();
+        return new RangeExpression(null, end, this.#makeLocation(startToken));
+      }
+    }
+    
+    var left = this.#parseAs();
+    
+    // Handle postfix range: start.. or bounded range: start..end
+    if (this.#match(TokenType.DotDot)) {
+      if (this.#check(TokenType.Comma) || this.#check(TokenType.Semi) ||
+          this.#check(TokenType.RParen) || this.#check(TokenType.RBracket) ||
+          this.#check(TokenType.RBrace)) {
+        // start.. with no end -> FromRange
+        return new RangeExpression(left, null, this.#makeLocation(startToken));
+      } else {
+        // start..end -> BoundedRange
+        let end = this.#parseAs();
+        return new RangeExpression(left, end, this.#makeLocation(startToken));
+      }
+    }
+    
+    return left;
+  }
+  
+  #parseAs(): Expression {
+    var expr = this.#parseTerm();
+    
+    while (this.#check(TokenType.As) || this.#check(TokenType.Is)) {
+      let op = this.#advance();
+      let typeAnnotation = this.#parseTypeAnnotation();
+      if (op.kind == TokenType.As) {
+        expr = new AsExpression(expr, typeAnnotation, this.#makeLocation(op));
+      } else {
+        expr = new IsExpression(expr, typeAnnotation, this.#makeLocation(op));
+      }
     }
     
     return expr;
@@ -591,6 +710,12 @@ export class Parser {
     // Record or map literal
     if (this.#match(TokenType.LBrace)) {
       return this.#parseRecordOrMapLiteral(startToken);
+    }
+    
+    // Pipeline placeholder ($)
+    if (this.#isIdentifier() && this.#peek().value == '$') {
+      let token = this.#advance();
+      return new PipePlaceholder(this.#makeLocation(token));
     }
     
     // Identifier (including contextual keywords)

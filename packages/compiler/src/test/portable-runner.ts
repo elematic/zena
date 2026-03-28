@@ -170,9 +170,24 @@ function stripLocation(obj: any): any {
   } else if (obj && typeof obj === 'object') {
     const newObj: any = {};
     for (const key in obj) {
-      if (key === 'loc' || key === 'start' || key === 'end') continue;
+      if (key === 'loc') continue;
+      // Strip 'start'/'end' unless the value is an AST node (has 'type') or null
+      if (
+        (key === 'start' || key === 'end') &&
+        obj[key] !== null &&
+        !(typeof obj[key] === 'object' && 'type' in obj[key])
+      )
+        continue;
       if (key === 'inferredType' || key === 'inferredTypeArguments') continue;
-      if (key === 'path' || key === 'isStdlib' || key === 'source' || key === 'imports' || key === 'exports' || key === 'diagnostics') continue;
+      if (
+        key === 'path' ||
+        key === 'isStdlib' ||
+        key === 'source' ||
+        key === 'imports' ||
+        key === 'exports' ||
+        key === 'diagnostics'
+      )
+        continue;
       newObj[key] = stripLocation(obj[key]);
     }
     return newObj;
