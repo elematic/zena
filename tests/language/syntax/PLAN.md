@@ -310,13 +310,13 @@ tests/language/syntax/
 │   │   ├── enum-pattern.zena              [done] enum-pattern_test
 │   │   └── multiple-cases.zena            [done]
 │   │
-│   ├── throw.zena                         [ts] throw_test
+│   ├── throw.zena                         [done] throw_test
 │   │
 │   ├── try-catch/
-│   │   ├── basic.zena                     [ts] try-catch_test
-│   │   ├── with-finally.zena              [ts] try-catch_test
-│   │   ├── catch-no-finally.zena          [ts] try-catch_test
-│   │   └── nested.zena                    [ts] try-catch_test
+│   │   ├── basic.zena                     [done] try-catch_test
+│   │   ├── with-finally.zena              [done] try-catch_test
+│   │   ├── catch-no-param.zena            [done] try-catch_test
+│   │   └── nested.zena                    [done] try-catch_test
 │   │
 │   ├── inline-tuples/
 │   │   ├── type-annotation.zena           [ts] inline-tuples_test

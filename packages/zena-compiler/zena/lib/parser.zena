@@ -68,7 +68,10 @@ import {
   RangeExpression,
   PipelineExpression,
   PipePlaceholder,
-  NewExpression
+  NewExpression,
+  ThrowExpression,
+  TryExpression,
+  CatchClause
 } from './ast.zena';
 
 // ============================================================================
@@ -516,11 +519,65 @@ export class Parser {
     return new IfExpression(test, consequent, alternate, this.#makeLocation(startToken));
   }
   
+  #parseTryExpression(startToken: Token): TryExpression {
+    this.#consume(TokenType.LBrace, "Expected '{' after 'try'");
+    let body = this.#parseBlockAsExpression(this.#previous());
+    
+    var handler: CatchClause | null = null;
+    var finalizer: BlockStatement | null = null;
+    
+    if (this.#match(TokenType.Catch)) {
+      let catchToken = this.#previous();
+      var param: Identifier | null = null;
+      
+      if (this.#match(TokenType.LParen)) {
+        param = this.#parseIdentifier();
+        this.#consume(TokenType.RParen, "Expected ')' after catch parameter");
+      }
+      
+      this.#consume(TokenType.LBrace, "Expected '{' after catch");
+      let catchBody = this.#parseBlockAsExpression(this.#previous());
+      
+      handler = new CatchClause(param, catchBody, this.#makeLocation(catchToken));
+    }
+    
+    if (this.#match(TokenType.Finally)) {
+      this.#consume(TokenType.LBrace, "Expected '{' after 'finally'");
+      finalizer = this.#parseBlockAsExpression(this.#previous());
+    }
+    
+    if (handler == null && finalizer == null) {
+      throw new Error("Expected 'catch' or 'finally' after try block");
+    }
+    
+    return new TryExpression(body, handler, finalizer, this.#makeLocation(startToken));
+  }
+  
   #parseExpressionStatement(): ExpressionStatement {
     let startToken = this.#peek();
     let expr = this.#parseExpression();
-    this.#consume(TokenType.Semi, "Expected ';' after expression");
+    if (this.#isBlockEndedExpression(expr)) {
+      if (this.#check(TokenType.Semi)) {
+        this.#advance();
+      }
+    } else {
+      this.#consume(TokenType.Semi, "Expected ';' after expression");
+    }
     return new ExpressionStatement(expr, this.#makeLocation(startToken));
+  }
+  
+  #isBlockEndedExpression(expr: Expression): boolean {
+    if (expr.nodeType == NodeType.MatchExpression) { return true; }
+    if (expr.nodeType == NodeType.TryExpression) { return true; }
+    if (expr.nodeType == NodeType.IfExpression) {
+      let ifExpr = expr as IfExpression;
+      if (ifExpr.alternate.nodeType == NodeType.BlockStatement) { return true; }
+      if (ifExpr.alternate.nodeType == NodeType.IfExpression) {
+        return this.#isBlockEndedExpression(ifExpr.alternate as Expression);
+      }
+      return false;
+    }
+    return false;
   }
   
   // ==========================================================================
@@ -820,6 +877,21 @@ export class Parser {
       return new UnaryExpression(opStr, argument, true, this.#makeLocation(op));
     }
     
+    if (this.#check(TokenType.Throw)) {
+      let next = this.#peek2().kind;
+      if (next != TokenType.RParen
+        && next != TokenType.RBrace
+        && next != TokenType.RBracket
+        && next != TokenType.Comma
+        && next != TokenType.Semi
+        && next != TokenType.EOF
+        && next != TokenType.Dot) {
+        let startToken = this.#advance();
+        let argument = this.#parseExpression();
+        return new ThrowExpression(argument, this.#makeLocation(startToken));
+      }
+    }
+    
     return this.#parseCall();
   }
   
@@ -935,6 +1007,11 @@ export class Parser {
     // If expression: if (cond) expr else expr
     if (this.#match(TokenType.If)) {
       return this.#parseIfExpression(startToken);
+    }
+    
+    // Try expression: try { ... } catch (e) { ... } finally { ... }
+    if (this.#match(TokenType.Try)) {
+      return this.#parseTryExpression(startToken);
     }
     
     // Parenthesized expression, tuple, or arrow function

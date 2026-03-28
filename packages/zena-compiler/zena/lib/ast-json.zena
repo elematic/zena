@@ -19,6 +19,7 @@ import {
   MapLiteral, MapEntry,
   RecordPattern, TuplePattern, BindingProperty, AsPattern, ClassPattern, LogicalPattern,
   MatchExpression, MatchCase, IfExpression,
+  ThrowExpression, TryExpression, CatchClause,
   NamedTypeAnnotation, UnionTypeAnnotation,
   CaseClassParam, ClassDeclaration, FieldDefinition, MethodDefinition
 } from './ast.zena';
@@ -351,6 +352,30 @@ export let nodeToJson = (node: Node): JsonObject => {
       obj['test'] = nodeToJson(test);
       obj['consequent'] = nodeToJson(consequent);
       obj['alternate'] = nodeToJson(alternate);
+    }
+    case ThrowExpression { argument }: {
+      obj['argument'] = nodeToJson(argument);
+    }
+    case TryExpression { body, handler, finalizer }: {
+      obj['body'] = nodeToJson(body);
+      if (handler != null) {
+        obj['handler'] = nodeToJson(handler as CatchClause);
+      } else {
+        obj['handler'] = null;
+      };
+      if (finalizer != null) {
+        obj['finalizer'] = nodeToJson(finalizer as BlockStatement);
+      } else {
+        obj['finalizer'] = null;
+      };
+    }
+    case CatchClause { param, body }: {
+      if (param != null) {
+        obj['param'] = nodeToJson(param as Identifier);
+      } else {
+        obj['param'] = null;
+      };
+      obj['body'] = nodeToJson(body);
     }
     case WhileStatement { test, body }: {
       obj['test'] = nodeToJson(test);
