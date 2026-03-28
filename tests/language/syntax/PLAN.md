@@ -445,21 +445,21 @@ tests/language/syntax/
 │       └── with-super.zena               [done] initializer-list-private_test
 │
 ├── interfaces/
-│   ├── empty.zena                          [ts] parser-interface_test
-│   ├── with-methods.zena                  [ts] parser-interface_test
-│   ├── with-fields.zena                   [ts] parser-interface_test
-│   ├── extends.zena                       [ts] parser-interface_test
-│   ├── generic.zena                       [ts] parser-interface_test
-│   ├── implements.zena                    [ts] parser-interface_test
-│   └── accessor-signature.zena            [new]
+│   ├── empty.zena                         [done] parser-interface_test
+│   ├── with-methods.zena                  [done] parser-interface_test
+│   ├── with-fields.zena                   [done] parser-interface_test
+│   ├── extends.zena                       [done] parser-interface_test
+│   ├── generic.zena                       [done] parser-interface_test
+│   ├── implements.zena                    [done] parser-interface_test
+│   └── accessor-signature.zena            [done]
 │
 ├── mixins/
-│   ├── basic.zena                          [ts] parser-mixin_test
-│   ├── with-on-clause.zena                [ts] parser-mixin_test
-│   ├── with-fields.zena                   [new]
-│   ├── with-methods.zena                  [new]
-│   ├── class-with-mixin.zena              [ts] parser-mixin_test
-│   └── generic.zena                       [ts] generic-method_test
+│   ├── basic.zena                         [done] parser-mixin_test
+│   ├── with-on-clause.zena                [done] parser-mixin_test
+│   ├── with-fields.zena                   [done]
+│   ├── with-methods.zena                  [done]
+│   ├── class-with-mixin.zena              [done] parser-mixin_test
+│   └── generic.zena                       [done] generic-method_test
 │
 ├── enums/
 │   ├── basic.zena                          [new]

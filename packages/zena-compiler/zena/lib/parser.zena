@@ -69,6 +69,10 @@ import {
   SuperExpression,
   FieldInitializer,
   SuperInitializer,
+  InterfaceDeclaration,
+  MixinDeclaration,
+  MethodSignature,
+  AccessorSignature,
   TemplateElement,
   TemplateLiteral,
   TaggedTemplateExpression,
@@ -196,6 +200,16 @@ export class Parser {
     // Class declarations
     if (this.#check(TokenType.Class) || this.#check(TokenType.Final) || this.#check(TokenType.Abstract) || this.#check(TokenType.Extension)) {
       return this.#parseClassDeclarationEntry(exported, startToken);
+    }
+    
+    // Interface declarations
+    if (this.#match(TokenType.Interface)) {
+      return this.#parseInterfaceDeclaration(exported, startToken);
+    }
+    
+    // Mixin declarations
+    if (this.#match(TokenType.Mixin)) {
+      return this.#parseMixinDeclaration(exported, startToken);
     }
     
     // Control flow
@@ -2102,6 +2116,156 @@ export class Parser {
     }
     this.#consume(TokenType.RParen, "Expected ')' after super arguments");
     return new SuperInitializer(args, this.#makeLocation(superStart));
+  }
+  
+  // ==========================================================================
+  // Interface Declarations
+  // ==========================================================================
+  
+  #parseInterfaceDeclaration(exported: boolean, startToken: Token): InterfaceDeclaration {
+    let name = this.#parseIdentifier();
+    
+    // Type parameters: interface Foo<T>
+    var typeParameters: Array<TypeParameter> | null = null;
+    if (this.#match(TokenType.Less)) {
+      typeParameters = this.#parseTypeParameterList();
+    }
+    
+    // Extends clause: interface Foo extends Bar, Baz
+    var extendsList: Array<TypeAnnotation> | null = null;
+    if (this.#match(TokenType.Extends)) {
+      let exts = new Array<TypeAnnotation>(4);
+      exts.push(this.#parseTypeAnnotation());
+      while (this.#match(TokenType.Comma)) {
+        exts.push(this.#parseTypeAnnotation());
+      }
+      extendsList = exts;
+    }
+    
+    this.#consume(TokenType.LBrace, "Expected '{' before interface body");
+    
+    let body = new Array<Node>(8);
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      body.push(this.#parseInterfaceMember());
+    }
+    
+    this.#consume(TokenType.RBrace, "Expected '}' after interface body");
+    
+    return new InterfaceDeclaration(name, typeParameters, extendsList, body, exported, this.#makeLocation(startToken));
+  }
+  
+  #parseInterfaceMember(): Node {
+    let startToken = this.#peek();
+    
+    // Check for `var` modifier on interface fields
+    var mutableField = false;
+    if (this.#check(TokenType.Var)) {
+      mutableField = true;
+      this.#advance();
+    }
+    
+    let name = this.#parseIdentifier();
+    
+    // Type parameters for methods
+    var typeParameters: Array<TypeParameter> | null = null;
+    if (this.#match(TokenType.Less)) {
+      typeParameters = this.#parseTypeParameterList();
+    }
+    
+    // Method: name(params): ReturnType;
+    if (this.#match(TokenType.LParen)) {
+      if (mutableField) {
+        throw new Error("'var' modifier is not allowed on methods.");
+      }
+      let params = this.#parseParameters();
+      this.#consume(TokenType.RParen, "Expected ')' after parameters");
+      
+      var returnType: TypeAnnotation | null = null;
+      if (this.#match(TokenType.Colon)) {
+        returnType = this.#parseTypeAnnotation();
+      }
+      
+      this.#consume(TokenType.Semi, "Expected ';' after method signature");
+      
+      return new MethodSignature(name, typeParameters, params, returnType, this.#makeLocation(startToken));
+    }
+    
+    if (typeParameters != null) {
+      throw new Error("Fields cannot have type parameters.");
+    }
+    
+    // Field: name: Type;  or  Accessor: name: Type { get; set; }
+    this.#consume(TokenType.Colon, "Expected ':' after field name");
+    let typeAnnotation = this.#parseTypeAnnotation();
+    
+    // Check for accessor signature: { get; set; }
+    if (this.#match(TokenType.LBrace)) {
+      if (mutableField) {
+        throw new Error("'var' modifier is not allowed on accessor signatures.");
+      }
+      var hasGetter = false;
+      var hasSetter = false;
+      
+      while (!this.#match(TokenType.RBrace)) {
+        let id = this.#parseIdentifier();
+        if (id.name == "get") {
+          hasGetter = true;
+        } else if (id.name == "set") {
+          hasSetter = true;
+        } else {
+          throw new Error("Expected 'get' or 'set' in accessor signature, got '" + id.name + "'");
+        }
+        this.#consume(TokenType.Semi, "Expected ';' after accessor specifier");
+      }
+      
+      return new AccessorSignature(name, typeAnnotation, hasGetter, hasSetter, this.#makeLocation(startToken));
+    }
+    
+    this.#consume(TokenType.Semi, "Expected ';' after field declaration");
+    
+    return new FieldDefinition(name, typeAnnotation, null, false, if (mutableField) { "var" } else { null }, this.#makeLocation(startToken));
+  }
+  
+  // ==========================================================================
+  // Mixin Declarations
+  // ==========================================================================
+  
+  #parseMixinDeclaration(exported: boolean, startToken: Token): MixinDeclaration {
+    let name = this.#parseIdentifier();
+    
+    // Type parameters: mixin Foo<T>
+    var typeParameters: Array<TypeParameter> | null = null;
+    if (this.#match(TokenType.Less)) {
+      typeParameters = this.#parseTypeParameterList();
+    }
+    
+    // On clause: mixin Foo on Bar
+    var on: Identifier | null = null;
+    if (this.#match(TokenType.On)) {
+      on = this.#parseIdentifier();
+    }
+    
+    // With clause: mixin Foo with A, B
+    var mixins: Array<TypeAnnotation> | null = null;
+    if (this.#match(TokenType.With)) {
+      let ms = new Array<TypeAnnotation>(4);
+      ms.push(this.#parseTypeAnnotation());
+      while (this.#match(TokenType.Comma)) {
+        ms.push(this.#parseTypeAnnotation());
+      }
+      mixins = ms;
+    }
+    
+    this.#consume(TokenType.LBrace, "Expected '{' before mixin body");
+    
+    let body = new Array<Node>(8);
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      body.push(this.#parseClassMember());
+    }
+    
+    this.#consume(TokenType.RBrace, "Expected '}' after mixin body");
+    
+    return new MixinDeclaration(name, typeParameters, on, mixins, body, exported, this.#makeLocation(startToken));
   }
 }
 

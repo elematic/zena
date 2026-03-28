@@ -3371,6 +3371,8 @@ export class Parser {
       mutability: mutableField ? ('var' as const) : undefined,
       isFinal: false,
       isStatic: false,
+      isDeclare: false,
+      decorators: [],
     };
   }
 

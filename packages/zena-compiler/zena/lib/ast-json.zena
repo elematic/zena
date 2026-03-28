@@ -24,7 +24,8 @@ import {
   NamedTypeAnnotation, UnionTypeAnnotation,
   CaseClassParam, ClassDeclaration, FieldDefinition, MethodDefinition,
   AccessorDeclaration, SetterInfo, SuperExpression,
-  FieldInitializer, SuperInitializer
+  FieldInitializer, SuperInitializer,
+  InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature
 } from './ast.zena';
 
 // ============================================================================
@@ -547,6 +548,51 @@ export let nodeToJson = (node: Node): JsonObject => {
     }
     case SuperInitializer { args }: {
       obj['arguments'] = expressionsToJson(args);
+    }
+    
+    // Interface Declarations
+    case InterfaceDeclaration { name, typeParameters, extendsList, body, exported }: {
+      obj['name'] = nodeToJson(name);
+      if (typeParameters != null) {
+        obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
+      } else { };
+      if (extendsList != null) {
+        obj['extends'] = typeAnnotationsToJson(extendsList as Array<TypeAnnotation>);
+      } else { };
+      obj['body'] = nodesToJson(body);
+      obj['exported'] = new Box<boolean>(exported);
+    }
+    case MethodSignature { name, typeParameters, params, returnType }: {
+      obj['name'] = nodeToJson(name);
+      if (typeParameters != null) {
+        obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
+      } else { };
+      obj['params'] = parametersToJson(params);
+      if (returnType != null) {
+        obj['returnType'] = nodeToJson(returnType as Node);
+      } else { };
+    }
+    case AccessorSignature { name, typeAnnotation, hasGetter, hasSetter }: {
+      obj['name'] = nodeToJson(name);
+      obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
+      obj['hasGetter'] = new Box<boolean>(hasGetter);
+      obj['hasSetter'] = new Box<boolean>(hasSetter);
+    }
+    
+    // Mixin Declarations
+    case MixinDeclaration { name, typeParameters, on, mixins, body, exported }: {
+      obj['name'] = nodeToJson(name);
+      if (typeParameters != null) {
+        obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
+      } else { };
+      if (on != null) {
+        obj['on'] = nodeToJson(on as Node);
+      } else { };
+      if (mixins != null) {
+        obj['mixins'] = typeAnnotationsToJson(mixins as Array<TypeAnnotation>);
+      } else { };
+      obj['body'] = nodesToJson(body);
+      obj['exported'] = new Box<boolean>(exported);
     }
     
     // Default: just type field is already set
