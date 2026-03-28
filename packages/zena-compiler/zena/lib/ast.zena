@@ -92,6 +92,7 @@ export enum NodeType {
   PipelineExpression,
   PipePlaceholder,
   FieldInitializer,
+  SuperInitializer,
   MapLiteral,
   MapEntry,
   NamedTypeAnnotation,
@@ -567,6 +568,12 @@ export class ThisExpression extends Expression {
   { }
 }
 
+export class SuperExpression extends Expression {
+  new(loc: SourceLocation | null)
+    : super(NodeType.SuperExpression, loc)
+  { }
+}
+
 export class NewExpression extends Expression {
   callee: Identifier;
   typeArguments: Array<TypeAnnotation> | null;
@@ -796,6 +803,8 @@ export class ClassDeclaration extends Statement {
   exported: boolean;
   isFinal: boolean;
   isAbstract: boolean;
+  isExtension: boolean;
+  onType: TypeAnnotation | null;
   
   new(
     name: Identifier,
@@ -808,6 +817,8 @@ export class ClassDeclaration extends Statement {
     exported: boolean,
     isFinal: boolean,
     isAbstract: boolean,
+    isExtension: boolean,
+    onType: TypeAnnotation | null,
     loc: SourceLocation | null
   ) : name = name,
       typeParameters = typeParameters,
@@ -819,6 +830,8 @@ export class ClassDeclaration extends Statement {
       exported = exported,
       isFinal = isFinal,
       isAbstract = isAbstract,
+      isExtension = isExtension,
+      onType = onType,
       super(NodeType.ClassDeclaration, loc)
   { }
 }
@@ -841,14 +854,65 @@ export class FieldDefinition extends Node {
 
 export class MethodDefinition extends Node {
   name: Identifier;
+  typeParameters: Array<TypeParameter> | null;
   params: Array<Parameter>;
   returnType: TypeAnnotation | null;
   body: Node | null; // BlockStatement or Expression
+  initializerList: Array<Node> | null;
+  superInitializer: Node | null;
   isFinal: boolean;
   isAbstract: boolean;
   isStatic: boolean;
   
-  new(name: Identifier, params: Array<Parameter>, returnType: TypeAnnotation | null, body: Node | null, isFinal: boolean, isAbstract: boolean, isStatic: boolean, loc: SourceLocation | null)
-    : name = name, params = params, returnType = returnType, body = body, isFinal = isFinal, isAbstract = isAbstract, isStatic = isStatic, super(NodeType.MethodDefinition, loc)
+  new(name: Identifier, typeParameters: Array<TypeParameter> | null, params: Array<Parameter>, returnType: TypeAnnotation | null, body: Node | null, initializerList: Array<Node> | null, superInitializer: Node | null, isFinal: boolean, isAbstract: boolean, isStatic: boolean, loc: SourceLocation | null)
+    : name = name, typeParameters = typeParameters, params = params, returnType = returnType, body = body, initializerList = initializerList, superInitializer = superInitializer, isFinal = isFinal, isAbstract = isAbstract, isStatic = isStatic, super(NodeType.MethodDefinition, loc)
+  { }
+}
+
+// ============================================================================
+// Accessor Declaration
+// ============================================================================
+
+export class AccessorDeclaration extends Node {
+  name: Identifier;
+  typeAnnotation: TypeAnnotation;
+  getter: BlockStatement | null;
+  setter: Node | null; // holds { param: Identifier, body: BlockStatement } via SetterInfo
+  isFinal: boolean;
+  isStatic: boolean;
+  
+  new(name: Identifier, typeAnnotation: TypeAnnotation, getter: BlockStatement | null, setter: Node | null, isFinal: boolean, isStatic: boolean, loc: SourceLocation | null)
+    : name = name, typeAnnotation = typeAnnotation, getter = getter, setter = setter, isFinal = isFinal, isStatic = isStatic, super(NodeType.AccessorDeclaration, loc)
+  { }
+}
+
+// Helper for setter info - stored as a generic node with param and body
+export class SetterInfo extends Node {
+  param: Identifier;
+  body: BlockStatement;
+  
+  new(param: Identifier, body: BlockStatement, loc: SourceLocation | null)
+    : param = param, body = body, super(NodeType.AccessorDeclaration, loc)
+  { }
+}
+
+// ============================================================================
+// Initializer List Entries
+// ============================================================================
+
+export class FieldInitializer extends Node {
+  field: Identifier;
+  value: Expression;
+  
+  new(field: Identifier, value: Expression, loc: SourceLocation | null)
+    : field = field, value = value, super(NodeType.FieldInitializer, loc)
+  { }
+}
+
+export class SuperInitializer extends Node {
+  args: Array<Expression>;
+  
+  new(args: Array<Expression>, loc: SourceLocation | null)
+    : args = args, super(NodeType.SuperInitializer, loc)
   { }
 }

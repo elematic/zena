@@ -64,6 +64,11 @@ import {
   ClassDeclaration,
   FieldDefinition,
   MethodDefinition,
+  AccessorDeclaration,
+  SetterInfo,
+  SuperExpression,
+  FieldInitializer,
+  SuperInitializer,
   TemplateElement,
   TemplateLiteral,
   TaggedTemplateExpression,
@@ -189,7 +194,7 @@ export class Parser {
     }
     
     // Class declarations
-    if (this.#check(TokenType.Class) || this.#check(TokenType.Final) || this.#check(TokenType.Abstract)) {
+    if (this.#check(TokenType.Class) || this.#check(TokenType.Final) || this.#check(TokenType.Abstract) || this.#check(TokenType.Extension)) {
       return this.#parseClassDeclarationEntry(exported, startToken);
     }
     
@@ -1106,6 +1111,11 @@ export class Parser {
       return new ThisExpression(this.#makeLocation(startToken));
     }
     
+    // Super expression
+    if (this.#match(TokenType.Super)) {
+      return new SuperExpression(this.#makeLocation(startToken));
+    }
+    
     // Match expression: match (expr) { case ...: ... }
     if (this.#check(TokenType.Match) && this.#peek2().kind == TokenType.LParen) {
       this.#advance();
@@ -1711,18 +1721,26 @@ export class Parser {
   #parseClassDeclarationEntry(exported: boolean, startToken: Token): ClassDeclaration {
     var isFinal = false;
     var isAbstract = false;
+    var isExtension = false;
     
     if (this.#match(TokenType.Final)) {
       isFinal = true;
+      // final extension class
+      if (this.#check(TokenType.Extension)) {
+        isExtension = true;
+        this.#advance();
+      }
     } else if (this.#match(TokenType.Abstract)) {
       isAbstract = true;
+    } else if (this.#match(TokenType.Extension)) {
+      isExtension = true;
     }
     
     this.#consume(TokenType.Class, "Expected 'class'");
-    return this.#parseClassDeclaration(exported, isFinal, isAbstract, startToken);
+    return this.#parseClassDeclaration(exported, isFinal, isAbstract, isExtension, startToken);
   }
   
-  #parseClassDeclaration(exported: boolean, isFinal: boolean, isAbstract: boolean, startToken: Token): ClassDeclaration {
+  #parseClassDeclaration(exported: boolean, isFinal: boolean, isAbstract: boolean, isExtension: boolean, startToken: Token): ClassDeclaration {
     let name = this.#parseIdentifier();
     
     // Type parameters: class Foo<T, U>
@@ -1731,9 +1749,16 @@ export class Parser {
       typeParameters = this.#parseTypeParameterList();
     }
     
+    // Extension class: on TargetType
+    var onType: TypeAnnotation | null = null;
+    if (isExtension) {
+      this.#consume(TokenType.On, "Expected 'on' after extension class name");
+      onType = this.#parseTypeAnnotation();
+    }
+    
     // Case class parameters: class Point(x: f64, y: f64)
     var caseParams: Array<CaseClassParam> | null = null;
-    if (this.#match(TokenType.LParen)) {
+    if (!isExtension && this.#match(TokenType.LParen)) {
       let cps = new Array<CaseClassParam>(4);
       if (!this.#check(TokenType.RParen)) {
         cps.push(this.#parseCaseClassParam());
@@ -1748,6 +1773,9 @@ export class Parser {
     // Extends clause
     var superClass: TypeAnnotation | null = null;
     if (this.#match(TokenType.Extends)) {
+      if (isExtension) {
+        throw new Error("Extension classes cannot use 'extends'");
+      }
       superClass = this.#parseTypeAnnotation();
     }
     
@@ -1786,7 +1814,7 @@ export class Parser {
     
     return new ClassDeclaration(
       name, typeParameters, caseParams, superClass, mixins, implementsList,
-      body, exported, isFinal, isAbstract, this.#makeLocation(startToken)
+      body, exported, isFinal, isAbstract, isExtension, onType, this.#makeLocation(startToken)
     );
   }
   
@@ -1807,48 +1835,228 @@ export class Parser {
   #parseClassMember(): Node {
     let startToken = this.#peek();
     
+    // Check for member-level modifiers
+    var isFinal = false;
+    var isAbstract = false;
+    
+    if (this.#check(TokenType.Final) && this.#peek2().kind != TokenType.Colon) {
+      isFinal = true;
+      this.#advance();
+    } else if (this.#check(TokenType.Abstract) && this.#peek2().kind != TokenType.Colon) {
+      isAbstract = true;
+      this.#advance();
+    }
+    
     // Check for field mutability prefix
     var mutability: string | null = null;
-    if (this.#match(TokenType.Let)) {
+    if (this.#check(TokenType.Let) && this.#peek2().kind != TokenType.Colon && this.#peek2().kind != TokenType.LParen) {
+      this.#advance();
       mutability = 'let';
-    } else if (this.#match(TokenType.Var)) {
+    } else if (this.#check(TokenType.Var) && this.#peek2().kind != TokenType.Colon && this.#peek2().kind != TokenType.LParen) {
+      this.#advance();
       mutability = 'var';
     }
     
     // Constructor: new(...)
     if (this.#check(TokenType.New)) {
       this.#advance();
-      return this.#parseMethodBody(new Identifier('<constructor>', this.#makeLocation(startToken)), false, false, false, startToken);
+      return this.#parseMethodBody(new Identifier('<constructor>', this.#makeLocation(startToken)), null, isFinal, isAbstract, false, startToken);
+    }
+    
+    // Operator method: operator ==(other), operator [](index), operator +(other)
+    if (this.#check(TokenType.Operator)) {
+      this.#advance();
+      var opName = "";
+      if (this.#match(TokenType.LBracket)) {
+        // operator [] or operator []=
+        this.#consume(TokenType.RBracket, "Expected ']' after operator '['");
+        if (this.#match(TokenType.Equals)) {
+          opName = "[]=";
+        } else {
+          opName = "[]";
+        }
+      } else {
+        // operator ==, operator +, etc.
+        let opToken = this.#advance();
+        opName = opToken.value;
+        // Check for == (two consecutive = tokens)
+        if (opName == "=" && this.#check(TokenType.Equals)) {
+          this.#advance();
+          opName = "==";
+        }
+      }
+      let operatorName = new Identifier(opName, this.#makeLocation(startToken));
+      return this.#parseMethodBody(operatorName, null, isFinal, isAbstract, false, startToken);
+    }
+    
+    // Private field/method: #name
+    if (this.#check(TokenType.Hash)) {
+      this.#advance();
+      let privateName = this.#parseIdentifier();
+      let hashName = new Identifier("#" + privateName.name, this.#makeLocation(startToken));
+      
+      // Private method: #name(params) { ... }
+      if (this.#check(TokenType.LParen)) {
+        return this.#parseMethodBody(hashName, null, isFinal, isAbstract, false, startToken);
+      }
+      
+      // Private field: #name: Type;
+      this.#consume(TokenType.Colon, "Expected ':' after private field name");
+      let typeAnnotation = this.#parseTypeAnnotation();
+      var value: Expression | null = null;
+      if (this.#match(TokenType.Equals)) {
+        value = this.#parseExpression();
+      }
+      this.#consume(TokenType.Semi, "Expected ';' after field declaration");
+      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, mutability, this.#makeLocation(startToken));
     }
     
     let name = this.#parseIdentifier();
     
-    // Method: name(params) { ... }
-    if (this.#check(TokenType.LParen)) {
-      return this.#parseMethodBody(name, false, false, false, startToken);
+    // Generic method: name<T>(params) { ... }
+    if (this.#check(TokenType.Less) && this.#isGenericMethodStart()) {
+      this.#advance(); // consume '<'
+      let typeParams = this.#parseTypeParameterList();
+      return this.#parseMethodBody(name, typeParams, isFinal, isAbstract, false, startToken);
     }
     
-    // Field: name: Type;
+    // Method: name(params) { ... }
+    if (this.#check(TokenType.LParen)) {
+      return this.#parseMethodBody(name, null, isFinal, isAbstract, false, startToken);
+    }
+    
+    // Field: name: Type; -OR- Accessor: name: Type { get { } set(v) { } }
     this.#consume(TokenType.Colon, "Expected ':' after field name");
     let typeAnnotation = this.#parseTypeAnnotation();
     
-    var value: Expression | null = null;
+    // Check for accessor block
+    if (this.#check(TokenType.LBrace)) {
+      return this.#parseAccessorBlock(name, typeAnnotation, isFinal, startToken);
+    }
+    
+    var fieldValue: Expression | null = null;
     if (this.#match(TokenType.Equals)) {
-      value = this.#parseExpression();
+      fieldValue = this.#parseExpression();
     }
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-    return new FieldDefinition(name, typeAnnotation, value, false, mutability, this.#makeLocation(startToken));
+    return new FieldDefinition(name, typeAnnotation, fieldValue, isFinal, mutability, this.#makeLocation(startToken));
   }
   
-  #parseMethodBody(name: Identifier, isFinal: boolean, isAbstract: boolean, isStatic: boolean, startToken: Token): MethodDefinition {
+  // Check if < starts a generic method (vs a comparison expression)
+  #isGenericMethodStart(): boolean {
+    // Save position and try to parse type parameter list
+    let saved = this.#current;
+    var depth = 1;
+    this.#advance(); // skip past '<' (already consumed by caller check)
+    while (depth > 0 && !this.#isAtEnd()) {
+      if (this.#check(TokenType.Less)) {
+        depth = depth + 1;
+      } else if (this.#check(TokenType.Greater)) {
+        depth = depth - 1;
+      }
+      if (depth > 0) {
+        this.#advance();
+      }
+    }
+    // After matching '>', check if next token is '('
+    var result = false;
+    if (depth == 0) {
+      this.#advance(); // skip '>'
+      result = this.#check(TokenType.LParen);
+    }
+    this.#current = saved;
+    return result;
+  }
+  
+  #parseAccessorBlock(name: Identifier, typeAnnotation: TypeAnnotation, isFinal: boolean, startToken: Token): AccessorDeclaration {
+    this.#consume(TokenType.LBrace, "Expected '{' for accessor block");
+    
+    var getter: BlockStatement | null = null;
+    var setter: Node | null = null;
+    
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      let keyword = this.#peek();
+      if (keyword.value == "get") {
+        if (getter != null) {
+          throw new Error("Duplicate getter");
+        }
+        this.#advance();
+        let blockStart = this.#peek();
+        this.#consume(TokenType.LBrace, "Expected '{' after get");
+        getter = this.#parseBlockStatement(blockStart);
+      } else if (keyword.value == "set") {
+        if (setter != null) {
+          throw new Error("Duplicate setter");
+        }
+        this.#advance();
+        this.#consume(TokenType.LParen, "Expected '(' after set");
+        let param = this.#parseIdentifier();
+        this.#consume(TokenType.RParen, "Expected ')' after setter parameter");
+        let blockStart = this.#peek();
+        this.#consume(TokenType.LBrace, "Expected '{' after setter parameter");
+        let body = this.#parseBlockStatement(blockStart);
+        setter = new SetterInfo(param, body, this.#makeLocation(keyword));
+      } else {
+        throw new Error("Expected 'get' or 'set' in accessor block");
+      }
+    }
+    
+    if (getter == null && setter == null) {
+      throw new Error("Accessor must have at least a getter or a setter");
+    }
+    
+    this.#consume(TokenType.RBrace, "Expected '}' after accessor block");
+    return new AccessorDeclaration(name, typeAnnotation, getter, setter, isFinal, false, this.#makeLocation(startToken));
+  }
+  
+  #parseMethodBody(name: Identifier, typeParameters: Array<TypeParameter> | null, isFinal: boolean, isAbstract: boolean, isStatic: boolean, startToken: Token): MethodDefinition {
     this.#consume(TokenType.LParen, "Expected '(' after method name");
     let params = this.#parseParameters();
     this.#consume(TokenType.RParen, "Expected ')' after parameters");
     
     var returnType: TypeAnnotation | null = null;
     if (this.#match(TokenType.Colon)) {
-      returnType = this.#parseTypeAnnotation();
+      // Check for initializer list (: field = value, ...) vs return type
+      // If this is a constructor, the colon starts an initializer list
+      if (name.name == "<constructor>") {
+        // Parse initializer list
+        let initList = new Array<Node>(4);
+        var superInit: Node | null = null;
+        
+        // First entry
+        if (this.#check(TokenType.Super)) {
+          superInit = this.#parseSuperInitializer();
+        } else {
+          initList.push(this.#parseFieldInitializer());
+        }
+        
+        while (this.#match(TokenType.Comma)) {
+          if (this.#check(TokenType.Super)) {
+            superInit = this.#parseSuperInitializer();
+          } else {
+            initList.push(this.#parseFieldInitializer());
+          }
+        }
+        
+        // Body: either { } or ;
+        var body: Node | null = null;
+        if (this.#check(TokenType.LBrace)) {
+          let blockStart = this.#advance();
+          body = this.#parseBlockStatement(blockStart);
+        } else if (this.#match(TokenType.Semi)) {
+          body = new BlockStatement(new Array<Statement>(0), this.#makeLocation(startToken));
+        }
+        
+        var initListResult: Array<Node> | null = null;
+        if (initList.length > 0) {
+          initListResult = initList;
+        }
+        
+        return new MethodDefinition(name, typeParameters, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, this.#makeLocation(startToken));
+      } else {
+        returnType = this.#parseTypeAnnotation();
+      }
     }
     
     // Method body
@@ -1856,9 +2064,44 @@ export class Parser {
     if (this.#check(TokenType.LBrace)) {
       let blockStart = this.#advance();
       body = this.#parseBlockStatement(blockStart);
+    } else if (this.#match(TokenType.Semi)) {
+      // Abstract method or semicolon body — treated as empty block
+      if (!isAbstract) {
+        body = new BlockStatement(new Array<Statement>(0), this.#makeLocation(startToken));
+      }
     }
     
-    return new MethodDefinition(name, params, returnType, body, isFinal, isAbstract, isStatic, this.#makeLocation(startToken));
+    return new MethodDefinition(name, typeParameters, params, returnType, body, null, null, isFinal, isAbstract, isStatic, this.#makeLocation(startToken));
+  }
+  
+  #parseFieldInitializer(): FieldInitializer {
+    let initStart = this.#peek();
+    // Handle #private field names
+    var fieldName: Identifier = if (this.#check(TokenType.Hash)) {
+      this.#advance();
+      let privName = this.#parseIdentifier();
+      new Identifier("#" + privName.name, this.#makeLocation(initStart))
+    } else {
+      this.#parseIdentifier()
+    };
+    this.#consume(TokenType.Equals, "Expected '=' in initializer");
+    let value = this.#parseExpression();
+    return new FieldInitializer(fieldName, value, this.#makeLocation(initStart));
+  }
+  
+  #parseSuperInitializer(): SuperInitializer {
+    let superStart = this.#peek();
+    this.#consume(TokenType.Super, "Expected 'super'");
+    this.#consume(TokenType.LParen, "Expected '(' after super");
+    let args = new Array<Expression>(4);
+    if (!this.#check(TokenType.RParen)) {
+      args.push(this.#parseExpression());
+      while (this.#match(TokenType.Comma)) {
+        args.push(this.#parseExpression());
+      }
+    }
+    this.#consume(TokenType.RParen, "Expected ')' after super arguments");
+    return new SuperInitializer(args, this.#makeLocation(superStart));
   }
 }
 

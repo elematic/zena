@@ -381,45 +381,45 @@ tests/language/syntax/
 │
 ├── classes/
 │   ├── basic/
-│   │   ├── empty.zena                     [new]
-│   │   ├── with-fields.zena               [ts] parser-class_test
-│   │   ├── with-methods.zena              [ts] parser-class_test
-│   │   ├── with-constructor.zena          [new]
-│   │   ├── exported.zena                  [new]
-│   │   └── field-mutability.zena          [new] — let vs var fields
+│   │   ├── empty.zena                     [done]
+│   │   ├── with-fields.zena               [done] parser-class_test
+│   │   ├── with-methods.zena              [done] parser-class_test
+│   │   ├── with-constructor.zena          [done]
+│   │   ├── exported.zena                  [done]
+│   │   └── field-mutability.zena          [done] — let vs var fields
 │   │
 │   ├── inheritance/
-│   │   ├── extends.zena                   [ts] parser_test (basic)
-│   │   ├── super-constructor.zena         [ts] parser-super_test
-│   │   ├── super-method.zena              [ts] parser-super_test
-│   │   ├── super-field.zena               [ts] parser-super_test
-│   │   └── abstract-class.zena            [ts] parser-abstract_test
+│   │   ├── extends.zena                   [done] parser_test (basic)
+│   │   ├── super-constructor.zena         [done] parser-super_test
+│   │   ├── super-method.zena              [done] parser-super_test
+│   │   ├── super-field.zena               [done] parser-super_test
+│   │   └── abstract-class.zena            [done] parser-abstract_test
 │   │
 │   ├── modifiers/
-│   │   ├── final-class.zena               [ts] parser-final_test
-│   │   ├── final-method.zena              [ts] parser-final_test
-│   │   ├── abstract-method.zena           [ts] parser-abstract_test
-│   │   └── private-fields.zena            [ts] parser-private-fields_test
+│   │   ├── final-class.zena               [done] parser-final_test
+│   │   ├── final-method.zena              [done] parser-final_test
+│   │   ├── abstract-method.zena           [done] parser-abstract_test
+│   │   └── private-fields.zena            [done] parser-private-fields_test
 │   │
 │   ├── accessors/
-│   │   ├── getter.zena                    [ts] parser-class_test
-│   │   ├── setter.zena                    [ts] parser-class_test
-│   │   └── getter-setter-pair.zena        [new]
+│   │   ├── getter.zena                    [done] parser-class_test
+│   │   ├── setter.zena                    [done] parser-class_test
+│   │   └── getter-setter-pair.zena        [done]
 │   │
 │   ├── operators/
-│   │   ├── operator-eq.zena               [ts] operator_parser_test
-│   │   ├── operator-index.zena            [ts] operator_parser_test
-│   │   ├── operator-index-set.zena        [ts] operator_parser_test
-│   │   ├── operator-plus.zena             [ts] operator_parser_test
-│   │   └── operator-overloaded.zena       [new] — multiple signatures
+│   │   ├── operator-eq.zena               [done] operator_parser_test
+│   │   ├── operator-index.zena            [done] operator_parser_test
+│   │   ├── operator-index-set.zena        [done] operator_parser_test
+│   │   ├── operator-plus.zena             [done] operator_parser_test
+│   │   └── operator-overloaded.zena       [done] — multiple signatures
 │   │
 │   ├── generic-class/
-│   │   ├── single-param.zena              [ts] generics-parser_test
-│   │   ├── multiple-params.zena           [ts] generics-parser_test
-│   │   ├── constraint.zena                [ts] generics-parser_test
-│   │   ├── default-type.zena              [ts] generics-parser_test
-│   │   ├── generic-method.zena            [ts] generic-method_test
-│   │   └── extends-generic.zena           [ts] generics-parser_test
+│   │   ├── single-param.zena              [done] generics-parser_test
+│   │   ├── multiple-params.zena           [done] generics-parser_test
+│   │   ├── constraint.zena                [done] generics-parser_test
+│   │   ├── default-type.zena              [done] generics-parser_test
+│   │   ├── generic-method.zena            [done] generic-method_test
+│   │   └── extends-generic.zena           [done] generics-parser_test
 │   │
 │   ├── case-classes/                       [done] — 14 tests already ported
 │   │   ├── basic.zena
@@ -438,11 +438,11 @@ tests/language/syntax/
 │   │   └── all-clauses.zena
 │   │
 │   ├── extension/
-│   │   └── basic.zena                     [new]
+│   │   └── basic.zena                     [done]
 │   │
 │   └── initializer-list/
-│       ├── basic.zena                     [ts] initializer-list-private_test
-│       └── with-super.zena               [ts] initializer-list-private_test
+│       ├── basic.zena                     [done] initializer-list-private_test
+│       └── with-super.zena               [done] initializer-list-private_test
 │
 ├── interfaces/
 │   ├── empty.zena                          [ts] parser-interface_test

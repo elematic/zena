@@ -22,7 +22,9 @@ import {
   MatchExpression, MatchCase, IfExpression,
   ThrowExpression, TryExpression, CatchClause,
   NamedTypeAnnotation, UnionTypeAnnotation,
-  CaseClassParam, ClassDeclaration, FieldDefinition, MethodDefinition
+  CaseClassParam, ClassDeclaration, FieldDefinition, MethodDefinition,
+  AccessorDeclaration, SetterInfo, SuperExpression,
+  FieldInitializer, SuperInitializer
 } from './ast.zena';
 
 // ============================================================================
@@ -114,6 +116,7 @@ let nodeTypeToString = (t: NodeType): string => {
     case NodeType.PipelineExpression: 'PipelineExpression'
     case NodeType.PipePlaceholder: 'PipePlaceholder'
     case NodeType.FieldInitializer: 'FieldInitializer'
+    case NodeType.SuperInitializer: 'SuperInitializer'
     case NodeType.MapLiteral: 'MapLiteral'
     case NodeType.MapEntry: 'MapEntry'
     case NodeType.NamedTypeAnnotation: 'TypeAnnotation'
@@ -447,7 +450,7 @@ export let nodeToJson = (node: Node): JsonObject => {
     }
     
     // Class Declarations
-    case ClassDeclaration { name, typeParameters, caseParams, superClass, mixins, implementsList, body, exported, isFinal, isAbstract }: {
+    case ClassDeclaration { name, typeParameters, caseParams, superClass, mixins, implementsList, body, exported, isFinal, isAbstract, isExtension, onType }: {
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
@@ -468,7 +471,10 @@ export let nodeToJson = (node: Node): JsonObject => {
       obj['exported'] = new Box<boolean>(exported);
       obj['isFinal'] = new Box<boolean>(isFinal);
       obj['isAbstract'] = new Box<boolean>(isAbstract);
-      obj['isExtension'] = new Box<boolean>(false);
+      obj['isExtension'] = new Box<boolean>(isExtension);
+      if (onType != null) {
+        obj['onType'] = nodeToJson(onType as Node);
+      } else { };
     }
     case CaseClassParam { name, typeAnnotation, mutability }: {
       obj['name'] = nodeToJson(name);
@@ -484,12 +490,18 @@ export let nodeToJson = (node: Node): JsonObject => {
         obj['value'] = nodeToJson(value as Node);
       } else { };
       obj['isFinal'] = new Box<boolean>(isFinal);
+      obj['isStatic'] = new Box<boolean>(false);
+      obj['isDeclare'] = new Box<boolean>(false);
+      obj['decorators'] = new JsonArray();
       if (mutability != null) {
         obj['mutability'] = mutability as string;
       } else { };
     }
-    case MethodDefinition { name, params, returnType, body, isFinal, isAbstract, isStatic }: {
+    case MethodDefinition { name, typeParameters, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic }: {
       obj['name'] = nodeToJson(name);
+      if (typeParameters != null) {
+        obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
+      } else { };
       obj['params'] = parametersToJson(params);
       if (returnType != null) {
         obj['returnType'] = nodeToJson(returnType as Node);
@@ -497,11 +509,44 @@ export let nodeToJson = (node: Node): JsonObject => {
       if (body != null) {
         obj['body'] = nodeToJson(body as Node);
       } else { };
+      if (initializerList != null) {
+        obj['initializerList'] = nodesToJson(initializerList as Array<Node>);
+      } else { };
+      if (superInitializer != null) {
+        obj['superInitializer'] = nodeToJson(superInitializer as Node);
+      } else { };
       obj['isFinal'] = new Box<boolean>(isFinal);
       obj['isAbstract'] = new Box<boolean>(isAbstract);
       obj['isStatic'] = new Box<boolean>(isStatic);
       obj['isDeclare'] = new Box<boolean>(false);
       obj['decorators'] = new JsonArray();
+    }
+    case AccessorDeclaration { name, typeAnnotation, getter, setter, isFinal, isStatic }: {
+      obj['name'] = nodeToJson(name);
+      obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
+      if (getter != null) {
+        obj['getter'] = nodeToJson(getter as Node);
+      } else { };
+      if (setter != null) {
+        let setterInfo = setter as SetterInfo;
+        let setterObj = new JsonObject();
+        setterObj['param'] = nodeToJson(setterInfo.param);
+        setterObj['body'] = nodeToJson(setterInfo.body);
+        obj['setter'] = setterObj;
+      } else { };
+      obj['isFinal'] = new Box<boolean>(isFinal);
+      obj['isStatic'] = new Box<boolean>(isStatic);
+      obj['decorators'] = new JsonArray();
+    }
+    case SuperExpression {}: {
+      // No additional fields
+    }
+    case FieldInitializer { field, value }: {
+      obj['field'] = nodeToJson(field);
+      obj['value'] = nodeToJson(value);
+    }
+    case SuperInitializer { args }: {
+      obj['arguments'] = expressionsToJson(args);
     }
     
     // Default: just type field is already set
