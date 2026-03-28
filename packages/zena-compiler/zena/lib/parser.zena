@@ -61,7 +61,8 @@ import {
   IsExpression,
   RangeExpression,
   PipelineExpression,
-  PipePlaceholder
+  PipePlaceholder,
+  NewExpression
 } from './ast.zena';
 
 // ============================================================================
@@ -716,6 +717,31 @@ export class Parser {
     if (this.#isIdentifier() && this.#peek().value == '$') {
       let token = this.#advance();
       return new PipePlaceholder(this.#makeLocation(token));
+    }
+    
+    // New expression
+    if (this.#match(TokenType.New)) {
+      let callee = this.#parseIdentifier();
+      var typeArguments: Array<TypeAnnotation> | null = null;
+      if (this.#match(TokenType.Less)) {
+        let args = new Array<TypeAnnotation>(4);
+        args.push(this.#parseTypeAnnotation());
+        while (this.#match(TokenType.Comma)) {
+          args.push(this.#parseTypeAnnotation());
+        }
+        this.#consume(TokenType.Greater, "Expected '>' after type arguments");
+        typeArguments = args;
+      }
+      this.#consume(TokenType.LParen, "Expected '(' after class name");
+      let args = new Array<Expression>(4);
+      if (!this.#check(TokenType.RParen)) {
+        args.push(this.#parseExpression());
+        while (this.#match(TokenType.Comma)) {
+          args.push(this.#parseExpression());
+        }
+      }
+      this.#consume(TokenType.RParen, "Expected ')' after arguments");
+      return new NewExpression(callee, typeArguments, args, this.#makeLocation(startToken));
     }
     
     // Identifier (including contextual keywords)

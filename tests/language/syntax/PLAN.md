@@ -263,24 +263,24 @@ tests/language/syntax/
 │
 ├── expressions/
 │   ├── calls/
-│   │   ├── simple.zena                    [ts] parser_test
-│   │   ├── multiple-args.zena             [new]
-│   │   ├── no-args.zena                   [new]
-│   │   ├── nested.zena                    [new]
-│   │   ├── method-call.zena               [new]
-│   │   └── chained-method.zena            [new]
+│   │   ├── simple.zena                    [done] parser_test
+│   │   ├── multiple-args.zena             [done]
+│   │   ├── no-args.zena                   [done]
+│   │   ├── nested.zena                    [done]
+│   │   ├── method-call.zena               [done]
+│   │   └── chained-method.zena            [done]
 │   │
 │   ├── member-access/
-│   │   ├── simple.zena                    [new]
-│   │   ├── chained.zena                   [new]
-│   │   └── computed-index.zena            [new]
+│   │   ├── simple.zena                    [done]
+│   │   ├── chained.zena                   [done]
+│   │   └── computed-index.zena            [done]
 │   │
 │   ├── new/
-│   │   ├── simple.zena                    [new]
-│   │   ├── with-args.zena                 [new]
-│   │   └── generic.zena                   [new]
+│   │   ├── simple.zena                    [done]
+│   │   ├── with-args.zena                 [done]
+│   │   └── generic.zena                   [done]
 │   │
-│   ├── this.zena                          [new]
+│   ├── this.zena                          [done]
 │   │
 │   ├── super/
 │   │   ├── constructor-call.zena          [ts] parser-super_test
