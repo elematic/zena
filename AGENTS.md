@@ -254,6 +254,7 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke m
     - **This Type**: `docs/design/this-type.md`
     - **Multi-Return Values**: `docs/design/multi-return-values.md`
     - **Filesystem**: `docs/design/filesystem.md`
+    - **Formatter**: `docs/design/formatter.md`
 
 ## Future Considerations
 
