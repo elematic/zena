@@ -2589,15 +2589,18 @@ function checkFunctionExpression(
   } else {
     bodyType = checkExpression(ctx, expr.body as Expression);
 
-    if (
-      expectedReturnType.kind !== Types.Unknown.kind &&
-      !isAssignableTo(ctx, bodyType, expectedReturnType)
-    ) {
-      ctx.diagnostics.reportError(
-        `Type mismatch: expected return type ${typeToString(expectedReturnType)}, got ${typeToString(bodyType)}`,
-        DiagnosticCode.TypeMismatch,
-        ctx.getLocation(expr.loc),
-      );
+    if (expectedReturnType.kind !== Types.Unknown.kind) {
+      if (!isAssignableTo(ctx, bodyType, expectedReturnType)) {
+        ctx.diagnostics.reportError(
+          `Type mismatch: expected return type ${typeToString(expectedReturnType)}, got ${typeToString(bodyType)}`,
+          DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
+        );
+      }
+      // Use the declared return type, not the inferred body type.
+      // This matches block-body behavior and ensures the FunctionType's
+      // returnType reflects the annotation (e.g. Doc, not ArrayDoc).
+      bodyType = expectedReturnType;
     }
   }
 

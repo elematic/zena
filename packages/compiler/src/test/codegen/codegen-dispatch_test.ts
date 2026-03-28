@@ -41,4 +41,25 @@ suite('CodeGenerator - Dynamic Dispatch', () => {
     const result = await compileAndRun(input);
     assert.strictEqual(result, 1);
   });
+
+  test('expression-body arrow with declared base return type', async () => {
+    // Regression: expression-body arrows used the inferred body type (Child)
+    // as FunctionType.returnType instead of the declared type (Base),
+    // causing a WASM type mismatch when the result was stored in a local.
+    const input = `
+      class Base {
+        value(): i32 { return 1; }
+      }
+      class Child extends Base {
+        value(): i32 { return 42; }
+      }
+      let make = (): Base => new Child();
+      export let main = (): i32 => {
+        let b = make();
+        return b.value();
+      };
+    `;
+    const result = await compileAndRun(input);
+    assert.strictEqual(result, 42);
+  });
 });
