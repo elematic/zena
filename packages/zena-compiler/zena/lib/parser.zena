@@ -50,6 +50,12 @@ import {
   RecordPattern,
   BindingProperty,
   TuplePattern,
+  AsPattern,
+  ClassPattern,
+  LogicalPattern,
+  MatchExpression,
+  MatchCase,
+  IfExpression,
   CaseClassParam,
   ClassDeclaration,
   FieldDefinition,
@@ -100,6 +106,10 @@ export class Parser {
   
   #peek(): Token {
     return this.#tokens[this.#current];
+  }
+  
+  #peek2(): Token {
+    return this.#tokens[this.#current + 1];
   }
   
   #previous(): Token {
@@ -272,6 +282,240 @@ export class Parser {
     return new BlockStatement(body, this.#makeLocation(startToken));
   }
   
+  #parseBlockAsExpression(startToken: Token): BlockStatement {
+    let body = new Array<Statement>(8);
+    
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      // Check for keywords that definitely start statements
+      if (this.#check(TokenType.Let) || this.#check(TokenType.Var) || this.#check(TokenType.Return) || this.#check(TokenType.While) || this.#check(TokenType.If) || this.#check(TokenType.Class)) {
+        body.push(this.#parseStatement());
+        continue;
+      }
+      
+      // If we're at a semicolon, parse the statement
+      if (this.#check(TokenType.Semi)) {
+        body.push(this.#parseStatement());
+        continue;
+      }
+      
+      // Try to parse as expression
+      let expr = this.#parseExpression();
+      
+      // If next token is '}', this is the trailing expression (no semicolon needed)
+      if (this.#check(TokenType.RBrace)) {
+        body.push(new ExpressionStatement(expr, expr.loc));
+        break;
+      }
+      
+      // Otherwise, we expect a semicolon (it's a regular expression statement)
+      this.#consume(TokenType.Semi, "Expected ';' after expression");
+      body.push(new ExpressionStatement(expr, expr.loc));
+    }
+    
+    this.#consume(TokenType.RBrace, "Expected '}' after block");
+    
+    return new BlockStatement(body, this.#makeLocation(startToken));
+  }
+  
+  // ==========================================================================
+  // Match Expression
+  // ==========================================================================
+  
+  #parseMatchExpression(startToken: Token): MatchExpression {
+    this.#consume(TokenType.LParen, "Expected '(' after 'match'");
+    let discriminant = this.#parseExpression();
+    this.#consume(TokenType.RParen, "Expected ')' after match discriminant");
+    this.#consume(TokenType.LBrace, "Expected '{' before match cases");
+    
+    let cases = new Array<MatchCase>(4);
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      cases.push(this.#parseMatchCase());
+    }
+    this.#consume(TokenType.RBrace, "Expected '}' after match cases");
+    
+    return new MatchExpression(discriminant, cases, this.#makeLocation(startToken));
+  }
+  
+  #parseMatchCase(): MatchCase {
+    this.#consume(TokenType.Case, "Expected 'case'");
+    let startToken = this.#previous();
+    let pattern = this.#parseMatchPattern();
+    
+    var guard: Expression | null = null;
+    if (this.#match(TokenType.If)) {
+      guard = this.#parseExpression();
+    }
+    
+    this.#consume(TokenType.Colon, "Expected ':' after case pattern");
+    
+    return if (this.#match(TokenType.LBrace)) {
+      let body: Node = this.#parseBlockAsExpression(this.#previous());
+      new MatchCase(pattern, guard, body, this.#makeLocation(startToken))
+    } else {
+      let body: Node = this.#parseExpression();
+      new MatchCase(pattern, guard, body, this.#makeLocation(startToken))
+    };
+  }
+  
+  #parseMatchPattern(): Node {
+    return this.#parseLogicalOrPattern();
+  }
+  
+  #parseLogicalOrPattern(): Node {
+    var left = this.#parseLogicalAndPattern();
+    while (this.#match(TokenType.Pipe)) {
+      let right = this.#parseLogicalAndPattern();
+      left = new LogicalPattern('||', left, right, null);
+    }
+    return left;
+  }
+  
+  #parseLogicalAndPattern(): Node {
+    var left = this.#parseAsPattern();
+    while (this.#match(TokenType.Ampersand)) {
+      let right = this.#parseAsPattern();
+      left = new LogicalPattern('&&', left, right, null);
+    }
+    return left;
+  }
+  
+  #parseAsPattern(): Node {
+    let pattern = this.#parsePrimaryPattern();
+    if (this.#match(TokenType.As)) {
+      let name = this.#parseIdentifier();
+      return new AsPattern(pattern, name, null);
+    }
+    return pattern;
+  }
+  
+  #parsePrimaryPattern(): Node {
+    let startToken = this.#peek();
+    
+    // Number literal pattern
+    if (this.#match(TokenType.Number)) {
+      let token = this.#previous();
+      let value = this.#parseNumber(token.value);
+      return new NumberLiteral(value, token.value, this.#makeLocation(startToken));
+    }
+    
+    // String literal pattern
+    if (this.#match(TokenType.String)) {
+      let token = this.#previous();
+      return new StringLiteral(token.value, this.#makeLocation(startToken));
+    }
+    
+    // Boolean literal patterns
+    if (this.#match(TokenType.True)) {
+      return new BooleanLiteral(true, this.#makeLocation(startToken));
+    }
+    if (this.#match(TokenType.False)) {
+      return new BooleanLiteral(false, this.#makeLocation(startToken));
+    }
+    
+    // Null literal pattern
+    if (this.#match(TokenType.Null)) {
+      return new NullLiteral(this.#makeLocation(startToken));
+    }
+    
+    // Record pattern: { a, b }
+    if (this.#match(TokenType.LBrace)) {
+      return this.#parseRecordPattern(startToken, true);
+    }
+    
+    // Tuple pattern: (a, b)
+    if (this.#match(TokenType.LParen)) {
+      return this.#parseMatchTuplePattern(startToken);
+    }
+    
+    // Identifier, wildcard, class pattern, or member expression pattern
+    if (this.#isIdentifier()) {
+      let ident = this.#parseIdentifier();
+      
+      // Class pattern: ClassName { ... }
+      if (this.#check(TokenType.LBrace)) {
+        this.#advance();
+        let properties = new Array<BindingProperty>(4);
+        while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+          let propStart = this.#peek();
+          let name = this.#parseIdentifier();
+          var value: Node = new IdentifierPattern(name.name, name.loc);
+          if (this.#match(TokenType.Colon)) {
+            value = this.#parseMatchPattern();
+          }
+          properties.push(new BindingProperty(name, value, this.#makeLocation(propStart)));
+          if (!this.#check(TokenType.RBrace)) {
+            this.#consume(TokenType.Comma, "Expected ',' after property");
+          }
+        }
+        this.#consume(TokenType.RBrace, "Expected '}' after class pattern");
+        return new ClassPattern(ident, properties, this.#makeLocation(startToken));
+      }
+      
+      // Member expression pattern: Enum.Member or A.B.C
+      if (this.#check(TokenType.Dot)) {
+        var obj: Expression = ident;
+        while (this.#match(TokenType.Dot)) {
+          let prop = this.#parseIdentifier();
+          obj = new MemberExpression(obj, prop, false, this.#makeLocation(startToken));
+        }
+        return obj;
+      }
+      
+      // Plain identifier or wildcard
+      return ident;
+    }
+    
+    throw new Error("Unexpected token in pattern");
+  }
+  
+  #parseMatchTuplePattern(startToken: Token): TuplePattern {
+    let elements = new Array<Node | null>(4);
+    
+    if (!this.#check(TokenType.RParen)) {
+      elements.push(this.#parseMatchPattern());
+      while (this.#match(TokenType.Comma)) {
+        elements.push(this.#parseMatchPattern());
+      }
+    }
+    
+    this.#consume(TokenType.RParen, "Expected ')' after tuple pattern");
+    return new TuplePattern(elements, this.#makeLocation(startToken));
+  }
+  
+  // ==========================================================================
+  // If Expression
+  // ==========================================================================
+  
+  #parseIfExpression(startToken: Token): IfExpression {
+    this.#consume(TokenType.LParen, "Expected '(' after 'if'");
+    let test = this.#parseExpression();
+    this.#consume(TokenType.RParen, "Expected ')' after if condition");
+    
+    var consequent: Node = if (this.#match(TokenType.LBrace)) {
+      let b: Node = this.#parseBlockAsExpression(this.#previous());
+      b
+    } else {
+      let e: Node = this.#parseExpression();
+      e
+    };
+    
+    this.#consume(TokenType.Else, "Expected 'else' after consequent in if expression");
+    
+    var alternate: Node = if (this.#match(TokenType.LBrace)) {
+      let b: Node = this.#parseBlockAsExpression(this.#previous());
+      b
+    } else if (this.#check(TokenType.If)) {
+      this.#advance();
+      let e: Node = this.#parseIfExpression(this.#previous());
+      e
+    } else {
+      let e: Node = this.#parseExpression();
+      e
+    };
+    
+    return new IfExpression(test, consequent, alternate, this.#makeLocation(startToken));
+  }
+  
   #parseExpressionStatement(): ExpressionStatement {
     let startToken = this.#peek();
     let expr = this.#parseExpression();
@@ -288,7 +532,7 @@ export class Parser {
     
     // Record pattern: { a, b }
     if (this.#match(TokenType.LBrace)) {
-      return this.#parseRecordPattern(startToken);
+      return this.#parseRecordPattern(startToken, false);
     }
     
     // Tuple pattern: [a, b] or (a, b)
@@ -309,7 +553,7 @@ export class Parser {
     throw new Error("Expected identifier");
   }
   
-  #parseRecordPattern(startToken: Token): RecordPattern {
+  #parseRecordPattern(startToken: Token, matchContext: boolean): RecordPattern {
     let properties = new Array<BindingProperty>(4);
     
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
@@ -317,9 +561,15 @@ export class Parser {
       let name = this.#parseIdentifier();
       
       // Shorthand: { x } means { x: x }
-      var value: Pattern = new IdentifierPattern(name.name, name.loc);
+      var value: Node = new IdentifierPattern(name.name, name.loc);
       if (this.#match(TokenType.Colon)) {
-        value = this.#parsePattern();
+        value = if (matchContext) {
+          let m: Node = this.#parseMatchPattern();
+          m
+        } else {
+          let p: Node = this.#parsePattern();
+          p
+        };
       }
       
       properties.push(new BindingProperty(name, value, this.#makeLocation(propStart)));
@@ -334,7 +584,7 @@ export class Parser {
   }
   
   #parseTuplePattern(startToken: Token): TuplePattern {
-    let elements = new Array<Pattern | null>(4);
+    let elements = new Array<Node | null>(4);
     
     while (!this.#check(TokenType.RBracket) && !this.#isAtEnd()) {
       // TODO: Support holes in tuple patterns (null elements)
@@ -674,6 +924,17 @@ export class Parser {
     // This expression
     if (this.#match(TokenType.This)) {
       return new ThisExpression(this.#makeLocation(startToken));
+    }
+    
+    // Match expression: match (expr) { case ...: ... }
+    if (this.#check(TokenType.Match) && this.#peek2().kind == TokenType.LParen) {
+      this.#advance();
+      return this.#parseMatchExpression(startToken);
+    }
+    
+    // If expression: if (cond) expr else expr
+    if (this.#match(TokenType.If)) {
+      return this.#parseIfExpression(startToken);
     }
     
     // Parenthesized expression, tuple, or arrow function

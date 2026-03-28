@@ -288,26 +288,27 @@ tests/language/syntax/
 │   │   └── field-access.zena              [ts] parser-super_test
 │   │
 │   ├── if-expression/
-│   │   ├── simple.zena                    [ts] if-expression_test
-│   │   ├── nested.zena                    [ts] if-expression_test
-│   │   ├── with-comparison.zena           [ts] if-expression_test
-│   │   └── with-block.zena                [new]
+│   │   ├── simple.zena                    [done] if-expression_test
+│   │   ├── nested.zena                    [done] if-expression_test
+│   │   ├── without-braces.zena            [done]
+│   │   ├── with-comparison.zena           [done] if-expression_test
+│   │   └── with-block.zena                [done]
 │   │
 │   ├── match/
-│   │   ├── literal-pattern.zena           [ts] match-expression_test
-│   │   ├── identifier-pattern.zena        [ts] match-expression_test
-│   │   ├── wildcard-pattern.zena          [ts] match-expression_test
-│   │   ├── record-pattern.zena            [ts] match-expression_test
-│   │   ├── tuple-pattern.zena             [ts] match-expression_test
-│   │   ├── class-pattern.zena             [ts] match-expression_test
-│   │   ├── as-pattern.zena                [ts] match-expression_test
-│   │   ├── or-pattern.zena                [ts] match-expression_test
-│   │   ├── and-pattern.zena               [ts] match-expression_test
-│   │   ├── guard.zena                     [ts] parser-match-guard_test
-│   │   ├── block-body.zena                [ts] match-expression_test / block-statement_test
-│   │   ├── nested-pattern.zena            [ts] match-expression_test
-│   │   ├── enum-pattern.zena              [ts] enum-pattern_test
-│   │   └── multiple-cases.zena            [new]
+│   │   ├── literal-pattern.zena           [done] match-expression_test
+│   │   ├── identifier-pattern.zena        [done] match-expression_test
+│   │   ├── wildcard-pattern.zena          [done] match-expression_test
+│   │   ├── record-pattern.zena            [done] match-expression_test
+│   │   ├── tuple-pattern.zena             [done] match-expression_test
+│   │   ├── class-pattern.zena             [done] match-expression_test
+│   │   ├── as-pattern.zena                [done] match-expression_test
+│   │   ├── or-pattern.zena                [done] match-expression_test
+│   │   ├── and-pattern.zena               [done] match-expression_test
+│   │   ├── guard.zena                     [done] parser-match-guard_test
+│   │   ├── block-body.zena                [done] match-expression_test / block-statement_test
+│   │   ├── nested-pattern.zena            [done] match-expression_test
+│   │   ├── enum-pattern.zena              [done] enum-pattern_test
+│   │   └── multiple-cases.zena            [done]
 │   │
 │   ├── throw.zena                         [ts] throw_test
 │   │

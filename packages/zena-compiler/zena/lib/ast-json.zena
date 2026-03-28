@@ -17,7 +17,8 @@ import {
   MemberExpression, IndexExpression, ThisExpression, NewExpression,
   ArrayLiteral, RecordLiteral, TupleLiteral, PropertyAssignment, SpreadElement,
   MapLiteral, MapEntry,
-  RecordPattern, TuplePattern, BindingProperty,
+  RecordPattern, TuplePattern, BindingProperty, AsPattern, ClassPattern, LogicalPattern,
+  MatchExpression, MatchCase, IfExpression,
   NamedTypeAnnotation, UnionTypeAnnotation,
   CaseClassParam, ClassDeclaration, FieldDefinition, MethodDefinition
 } from './ast.zena';
@@ -140,6 +141,19 @@ export let nodeToJson = (node: Node): JsonObject => {
     }
     case TuplePattern { elements }: {
       obj['elements'] = patternsToJson(elements);
+    }
+    case AsPattern { pattern, name }: {
+      obj['pattern'] = nodeToJson(pattern);
+      obj['name'] = nodeToJson(name);
+    }
+    case ClassPattern { name, properties }: {
+      obj['name'] = nodeToJson(name);
+      obj['properties'] = bindingPropertiesToJson(properties);
+    }
+    case LogicalPattern { operator, left, right }: {
+      obj['operator'] = operator;
+      obj['left'] = nodeToJson(left);
+      obj['right'] = nodeToJson(right);
     }
     
     // Literals
@@ -322,6 +336,22 @@ export let nodeToJson = (node: Node): JsonObject => {
         obj['alternate'] = nodeToJson(alternate as Statement);
       } else { };
     }
+    case MatchExpression { discriminant, cases }: {
+      obj['discriminant'] = nodeToJson(discriminant);
+      obj['cases'] = matchCasesToJson(cases);
+    }
+    case MatchCase { pattern, guard, body }: {
+      obj['pattern'] = nodeToJson(pattern);
+      if (guard != null) {
+        obj['guard'] = nodeToJson(guard as Expression);
+      } else { };
+      obj['body'] = nodeToJson(body);
+    }
+    case IfExpression { test, consequent, alternate }: {
+      obj['test'] = nodeToJson(test);
+      obj['consequent'] = nodeToJson(consequent);
+      obj['alternate'] = nodeToJson(alternate);
+    }
     case WhileStatement { test, body }: {
       obj['test'] = nodeToJson(test);
       obj['body'] = nodeToJson(body);
@@ -494,13 +524,23 @@ let bindingPropertiesToJson = (props: Array<BindingProperty>): JsonArray => {
   return arr;
 };
 
-let patternsToJson = (patterns: Array<Pattern | null>): JsonArray => {
+let matchCasesToJson = (cases: Array<MatchCase>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < cases.length) {
+    arr.push(nodeToJson(cases[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let patternsToJson = (patterns: Array<Node | null>): JsonArray => {
   let arr = new JsonArray();
   var i = 0;
   while (i < patterns.length) {
     let p = patterns[i];
     if (p != null) {
-      arr.push(nodeToJson(p as Pattern));
+      arr.push(nodeToJson(p));
     } else {
       arr.push(null);
     }
