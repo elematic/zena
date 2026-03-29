@@ -2831,12 +2831,27 @@ export class Parser {
 
     const typeParameters = this.#parseTypeParameters();
 
+    const isConstructorName =
+      name.type === NodeType.Identifier && name.name === CONSTRUCTOR_NAME;
+
     // Method: name(params) { ... }
     if (this.#match(TokenType.LParen)) {
       const params: Parameter[] = [];
       if (!this.#check(TokenType.RParen)) {
         let seenOptional = false;
         do {
+          // Check for `this.field` constructor parameter
+          let isThisParam = false;
+          if (
+            isConstructorName &&
+            this.#check(TokenType.This) &&
+            this.#checkAhead(TokenType.Dot, 1)
+          ) {
+            this.#advance(); // consume 'this'
+            this.#advance(); // consume '.'
+            isThisParam = true;
+          }
+
           const paramName = this.#parseIdentifier();
           let optional = false;
           if (this.#match(TokenType.Question)) {
@@ -2844,8 +2859,14 @@ export class Parser {
             seenOptional = true;
           }
 
-          this.#consume(TokenType.Colon, "Expected ':' for type annotation");
-          const typeAnnotation = this.#parseTypeAnnotation();
+          let typeAnnotation: TypeAnnotation | undefined;
+          if (!isThisParam) {
+            this.#consume(TokenType.Colon, "Expected ':' for type annotation");
+            typeAnnotation = this.#parseTypeAnnotation();
+          } else if (this.#match(TokenType.Colon)) {
+            // this.field params can have an optional explicit type annotation
+            typeAnnotation = this.#parseTypeAnnotation();
+          }
 
           let initializer: Expression | undefined;
           if (this.#match(TokenType.Equals)) {
@@ -2866,7 +2887,11 @@ export class Parser {
             typeAnnotation,
             optional,
             initializer,
-            loc: this.#loc(paramName, initializer || typeAnnotation),
+            isThisParam: isThisParam || undefined,
+            loc: this.#loc(
+              paramName,
+              initializer || typeAnnotation || paramName,
+            ),
           });
         } while (this.#match(TokenType.Comma));
       }
@@ -2877,8 +2902,7 @@ export class Parser {
       // super(args) must be the last entry if present
       let initializerList: FieldInitializer[] | undefined;
       let superInitializer: SuperInitializer | undefined;
-      const isConstructor =
-        name.type === NodeType.Identifier && name.name === CONSTRUCTOR_NAME;
+      const isConstructor = isConstructorName;
 
       // Check if we have an initializer list
       // Valid starts: `: field =`, `: #field =`, or `: super(`
@@ -2963,6 +2987,34 @@ export class Parser {
             loc: this.#loc(superToken, rparen),
           };
         }
+      }
+
+      // Synthesize FieldInitializer entries for this.field parameters
+      const hasThisParams = params.some((p) => p.isThisParam);
+      if (isConstructor && hasThisParams) {
+        if (!initializerList) {
+          initializerList = [];
+        }
+        // Prepend this.field assignments before any explicit initializer list entries
+        const thisInits: FieldInitializer[] = [];
+        for (const param of params) {
+          if (!param.isThisParam) continue;
+          thisInits.push({
+            type: NodeType.FieldInitializer,
+            field: {
+              type: NodeType.Identifier,
+              name: param.name.name,
+              loc: param.name.loc,
+            },
+            value: {
+              type: NodeType.Identifier,
+              name: param.name.name,
+              loc: param.name.loc,
+            },
+            loc: param.loc,
+          });
+        }
+        initializerList = [...thisInits, ...initializerList];
       }
 
       let returnType: TypeAnnotation | undefined;

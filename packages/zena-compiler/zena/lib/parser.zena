@@ -1531,12 +1531,21 @@ export class Parser {
   
   #parseParameter(): Parameter {
     let startToken = this.#peek();
+    
+    // Check for this.field constructor parameter
+    var isThisParam = false;
+    if (this.#check(TokenType.This) && this.#peek2().kind == TokenType.Dot) {
+      this.#advance(); // consume 'this'
+      this.#advance(); // consume '.'
+      isThisParam = true;
+    }
+    
     let name = this.#parseIdentifier();
     
     // Check for optional parameter
     var optional = this.#match(TokenType.Question);
     
-    // Type annotation
+    // Type annotation (optional for this.field params)
     var typeAnnotation: TypeAnnotation | null = null;
     if (this.#match(TokenType.Colon)) {
       typeAnnotation = this.#parseTypeAnnotation();
@@ -1549,7 +1558,7 @@ export class Parser {
       optional = true;
     }
     
-    return new Parameter(name, typeAnnotation, optional, defaultValue, this.#makeLocation(startToken));
+    return new Parameter(name, typeAnnotation, optional, defaultValue, isThisParam, this.#makeLocation(startToken));
   }
   
   #parseArrayLiteral(startToken: Token): ArrayLiteral {
@@ -2029,6 +2038,21 @@ export class Parser {
     let params = this.#parseParameters();
     this.#consume(TokenType.RParen, "Expected ')' after parameters");
     
+    // Synthesize FieldInitializer entries for this.field params
+    let thisInits = new Array<Node>(4);
+    var i = 0;
+    while (i < params.length) {
+      let p = params[i];
+      if (p.isThisParam) {
+        thisInits.push(new FieldInitializer(
+          new Identifier(p.name.name, p.name.loc),
+          new Identifier(p.name.name, p.name.loc),
+          p.loc
+        ));
+      }
+      i = i + 1;
+    }
+    
     var returnType: TypeAnnotation | null = null;
     if (this.#match(TokenType.Colon)) {
       // Check for initializer list (: field = value, ...) vs return type
@@ -2053,6 +2077,19 @@ export class Parser {
           }
         }
         
+        // Prepend this.field initializers before explicit ones
+        let combined = new Array<Node>(thisInits.length + initList.length);
+        var j = 0;
+        while (j < thisInits.length) {
+          combined.push(thisInits[j]);
+          j = j + 1;
+        }
+        j = 0;
+        while (j < initList.length) {
+          combined.push(initList[j]);
+          j = j + 1;
+        }
+        
         // Body: either { } or ;
         var body: Node | null = null;
         if (this.#check(TokenType.LBrace)) {
@@ -2063,8 +2100,8 @@ export class Parser {
         }
         
         var initListResult: Array<Node> | null = null;
-        if (initList.length > 0) {
-          initListResult = initList;
+        if (combined.length > 0) {
+          initListResult = combined;
         }
         
         return new MethodDefinition(name, typeParameters, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, this.#makeLocation(startToken));
@@ -2085,7 +2122,13 @@ export class Parser {
       }
     }
     
-    return new MethodDefinition(name, typeParameters, params, returnType, body, null, null, isFinal, isAbstract, isStatic, this.#makeLocation(startToken));
+    // If we have this.field params but no explicit initializer list
+    var thisInitResult: Array<Node> | null = null;
+    if (thisInits.length > 0) {
+      thisInitResult = thisInits;
+    }
+    
+    return new MethodDefinition(name, typeParameters, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, this.#makeLocation(startToken));
   }
   
   #parseFieldInitializer(): FieldInitializer {

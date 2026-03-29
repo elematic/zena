@@ -2048,6 +2048,43 @@ class Empty {
 }
 ```
 
+#### `this.` Constructor Parameters
+
+For the common pattern of constructor parameters that directly assign to fields,
+use Dart-style `this.field` parameters. The type is inferred from the field declaration:
+
+```zena
+class Point {
+  let x: i32;
+  let y: i32;
+  new(this.x, this.y);
+}
+```
+
+This is equivalent to:
+
+```zena
+class Point {
+  let x: i32;
+  let y: i32;
+  new(x: i32, y: i32) : x = x, y = y;
+}
+```
+
+`this.` parameters can be mixed with regular parameters and explicit initializer lists:
+
+```zena
+class Rect {
+  width: i32;
+  height: i32;
+  new(this.width, this.height, scale: i32)
+    : width = width * scale, height = height * scale {}
+}
+```
+
+When combined with an explicit initializer list, the `this.` assignments are applied
+first, then the explicit initializer list entries (which can override them).
+
 ### Generic Classes
 
 Classes can be generic by specifying type parameters:

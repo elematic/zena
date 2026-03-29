@@ -3254,7 +3254,14 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       ctx.enterScope();
       const typeParameters = createTypeParameters(ctx, member.typeParameters);
 
-      const paramTypes = member.params.map((p) => resolveParameterType(ctx, p));
+      const paramTypes = member.params.map((p) => {
+        if (p.isThisParam) {
+          // this.field param: resolve type from field
+          const fieldType = classType.fields.get(p.name.name);
+          return fieldType ?? Types.Unknown;
+        }
+        return resolveParameterType(ctx, p);
+      });
       const parameterNames = member.params.map((p) => p.name.name);
       const optionalParameters = member.params.map((p) => p.optional);
       const parameterInitializers = member.params.map((p) => p.initializer);
@@ -3996,7 +4003,34 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
 
   // Declare parameters
   for (const param of method.params) {
-    const type = resolveParameterType(ctx, param);
+    let type: Type;
+    if (param.isThisParam) {
+      // this.field parameter: infer type from the class field
+      const fieldType = ctx.currentClass?.fields.get(param.name.name);
+      if (!fieldType) {
+        ctx.diagnostics.reportError(
+          `Field '${param.name.name}' does not exist on class '${ctx.currentClass?.name ?? '<unknown>'}'.`,
+          DiagnosticCode.TypeMismatch,
+          ctx.getLocation(param.loc),
+        );
+        type = Types.Unknown;
+      } else if (param.typeAnnotation) {
+        // Explicit type annotation given - resolve and check assignability
+        type = resolveTypeAnnotation(ctx, param.typeAnnotation);
+        if (!isAssignableTo(ctx, type, fieldType)) {
+          ctx.diagnostics.reportError(
+            `Type '${typeToString(type)}' is not assignable to field '${param.name.name}' of type '${typeToString(fieldType)}'.`,
+            DiagnosticCode.TypeMismatch,
+            ctx.getLocation(param.loc),
+          );
+        }
+      } else {
+        type = fieldType;
+      }
+      param.inferredType = type;
+    } else {
+      type = resolveParameterType(ctx, param);
+    }
     ctx.declare(param.name.name, type, 'let', param);
 
     if (param.initializer) {
@@ -4059,6 +4093,13 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
     if (method.initializerList) {
       for (const init of method.initializerList) {
         fieldsInInitializerList.add(init.field.name);
+      }
+    }
+
+    // Collect fields initialized via this.field parameters
+    for (const param of method.params) {
+      if (param.isThisParam) {
+        fieldsInInitializerList.add(param.name.name);
       }
     }
 
@@ -4491,7 +4532,13 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       const parameterInitializers: any[] = [];
 
       for (const param of member.params) {
-        const type = resolveParameterType(ctx, param);
+        let type: Type;
+        if (param.isThisParam) {
+          const fieldType = mixinType.fields.get(param.name.name);
+          type = fieldType ?? Types.Unknown;
+        } else {
+          type = resolveParameterType(ctx, param);
+        }
         paramTypes.push(type);
         parameterNames.push(param.name.name);
         optionalParameters.push(param.optional);

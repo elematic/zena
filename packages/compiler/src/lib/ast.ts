@@ -900,6 +900,8 @@ export interface Parameter extends Node {
   initializer?: Expression;
   /** Inferred type, populated by the checker. Used for contextual typing. */
   inferredType?: Type;
+  /** Dart-style `this.field` constructor parameter. Auto-assigns to field. */
+  isThisParam?: boolean;
 }
 
 export interface TypeParameter extends Node {
