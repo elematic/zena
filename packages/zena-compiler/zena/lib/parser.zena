@@ -84,7 +84,9 @@ import {
   NewExpression,
   ThrowExpression,
   TryExpression,
-  CatchClause
+  CatchClause,
+  EnumDeclaration,
+  EnumMember
 } from './ast.zena';
 
 // ============================================================================
@@ -210,6 +212,11 @@ export class Parser {
     // Mixin declarations
     if (this.#match(TokenType.Mixin)) {
       return this.#parseMixinDeclaration(exported, startToken);
+    }
+    
+    // Enum declarations
+    if (this.#match(TokenType.Enum)) {
+      return this.#parseEnumDeclaration(exported, startToken);
     }
     
     // Control flow
@@ -2309,6 +2316,29 @@ export class Parser {
     this.#consume(TokenType.RBrace, "Expected '}' after mixin body");
     
     return new MixinDeclaration(name, typeParameters, on, mixins, body, exported, this.#makeLocation(startToken));
+  }
+  
+  #parseEnumDeclaration(exported: boolean, startToken: Token): EnumDeclaration {
+    let name = this.#parseIdentifier();
+    this.#consume(TokenType.LBrace, "Expected '{' after enum name");
+    
+    let members = new Array<EnumMember>(8);
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      let memberStartToken = this.#peek();
+      let memberName = this.#parseIdentifier();
+      var initializer: Expression | null = null;
+      if (this.#match(TokenType.Equals)) {
+        initializer = this.#parseExpression();
+      }
+      members.push(new EnumMember(memberName, initializer, this.#makeLocation(memberStartToken)));
+      if (!this.#check(TokenType.RBrace)) {
+        this.#consume(TokenType.Comma, "Expected ',' after enum member");
+      }
+    }
+    
+    this.#consume(TokenType.RBrace, "Expected '}' after enum body");
+    
+    return new EnumDeclaration(name, members, exported, this.#makeLocation(startToken));
   }
 }
 

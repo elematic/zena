@@ -462,10 +462,10 @@ tests/language/syntax/
 │   └── generic.zena                       [done] generic-method_test
 │
 ├── enums/
-│   ├── basic.zena                          [new]
-│   ├── with-values.zena                   [new]
-│   ├── string-values.zena                 [new]
-│   └── exported.zena                      [new]
+│   ├── basic.zena                          [done]
+│   ├── with-values.zena                   [done]
+│   ├── string-values.zena                 [done]
+│   └── exported.zena                      [done]
 │
 ├── types/
 │   ├── annotations/

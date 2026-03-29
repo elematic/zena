@@ -25,7 +25,8 @@ import {
   CaseClassParam, ClassDeclaration, FieldDefinition, MethodDefinition,
   AccessorDeclaration, SetterInfo, SuperExpression,
   FieldInitializer, SuperInitializer,
-  InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature
+  InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature,
+  EnumDeclaration, EnumMember
 } from './ast.zena';
 
 // ============================================================================
@@ -598,6 +599,19 @@ export let nodeToJson = (node: Node): JsonObject => {
       obj['exported'] = new Box<boolean>(exported);
     }
     
+    // Enum Declarations
+    case EnumDeclaration { name, members, exported }: {
+      obj['name'] = nodeToJson(name);
+      obj['members'] = enumMembersToJson(members);
+      obj['exported'] = new Box<boolean>(exported);
+    }
+    case EnumMember { name, initializer }: {
+      obj['name'] = nodeToJson(name);
+      if (initializer != null) {
+        obj['initializer'] = nodeToJson(initializer as Expression);
+      } else { };
+    }
+    
     // Default: just type field is already set
     case _: {}
   }
@@ -634,6 +648,16 @@ let templateElementsToJson = (elems: Array<TemplateElement>): JsonArray => {
   var i = 0;
   while (i < elems.length) {
     arr.push(nodeToJson(elems[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let enumMembersToJson = (members: Array<EnumMember>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < members.length) {
+    arr.push(nodeToJson(members[i]));
     i = i + 1;
   }
   return arr;
