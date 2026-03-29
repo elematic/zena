@@ -100,4 +100,49 @@ suite('Union Validation Tests', () => {
 
     await compileAndRun(source, 'main');
   });
+
+  test('Union type rejected on RHS of is', async () => {
+    const source = `
+      class Cat {}
+      class Dog {}
+
+      export let main = (): i32 => {
+        let x: anyref = new Cat();
+        if (x is Cat | Dog) {
+          return 1;
+        }
+        return 0;
+      };
+    `;
+
+    try {
+      await compileAndRun(source, 'main');
+      assert.fail('Should have failed compilation');
+    } catch (e: any) {
+      assert.match(e.message, /Cannot use union type.*with 'is'/);
+    }
+  });
+
+  test('Union type alias rejected on RHS of is', async () => {
+    const source = `
+      class Cat {}
+      class Dog {}
+      type Pet = Cat | Dog;
+
+      export let main = (): i32 => {
+        let x: anyref = new Cat();
+        if (x is Pet) {
+          return 1;
+        }
+        return 0;
+      };
+    `;
+
+    try {
+      await compileAndRun(source, 'main');
+      assert.fail('Should have failed compilation');
+    } catch (e: any) {
+      assert.match(e.message, /Cannot use union type.*with 'is'/);
+    }
+  });
 });

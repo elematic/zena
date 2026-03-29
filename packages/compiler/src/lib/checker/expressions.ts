@@ -1337,7 +1337,17 @@ function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {
 
 function checkIsExpression(ctx: CheckerContext, expr: IsExpression): Type {
   checkExpression(ctx, expr.expression);
-  resolveTypeAnnotation(ctx, expr.typeAnnotation);
+  const targetType = resolveTypeAnnotation(ctx, expr.typeAnnotation);
+
+  // Reject union types as is-check targets
+  if (targetType.kind === TypeKind.Union) {
+    ctx.diagnostics.reportError(
+      `Cannot use union type '${typeToString(targetType)}' with 'is'. Test each type separately.`,
+      DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.typeAnnotation.loc),
+    );
+  }
+
   return Types.Boolean;
 }
 
