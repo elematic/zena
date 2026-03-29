@@ -1437,6 +1437,7 @@ function checkDeclareFunction(ctx: CheckerContext, decl: DeclareFunction) {
     ctx.module!.exports!.set(`value:${decl.name.name}`, {
       type: exportedType,
       kind: 'let',
+      declaration: decl,
     });
   }
 }
@@ -2969,6 +2970,15 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       returnType: Types.Boolean,
     });
     classType.vtable.push('==');
+
+    // Auto-generate hashCode() method
+    // Takes no parameters, returns i32
+    classType.methods.set('hashCode', {
+      kind: TypeKind.Function,
+      parameters: [],
+      returnType: Types.I32,
+    });
+    classType.vtable.push('hashCode');
   }
 
   // 1. First pass: Collect members to build the ClassType

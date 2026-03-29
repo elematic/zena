@@ -25,6 +25,10 @@ export const growableArrayModule = fs.readFileSync(
   path.join(stdlibDir, 'growable-array.zena'),
   'utf-8',
 );
+export const hashableModule = fs.readFileSync(
+  path.join(stdlibDir, 'hashable.zena'),
+  'utf-8',
+);
 export const stringModule = fs.readFileSync(
   path.join(stdlibDir, 'string.zena'),
   'utf-8',

@@ -2347,6 +2347,39 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
     }
   }
 
+  // Process case class parameter fields
+  if (decl.caseParams) {
+    for (const param of decl.caseParams) {
+      const memberName = param.name.name;
+      if (!param.typeAnnotation.inferredType) {
+        throw new Error(
+          `Case class param ${memberName} in ${decl.name.name} missing inferredType`,
+        );
+      }
+
+      // Check if field is eliminable (unobservable - never read)
+      if (ctx.isFieldEliminable(classType, memberName)) {
+        eliminatedFields.add(memberName);
+        continue;
+      }
+
+      const wasmType = mapCheckerTypeToWasmType(
+        ctx,
+        param.typeAnnotation.inferredType,
+      );
+
+      if (!fields.has(memberName)) {
+        const isMutable = param.mutability === 'var';
+        fields.set(memberName, {
+          index: fieldIndex++,
+          type: wasmType,
+          mutable: isMutable,
+        });
+        fieldTypes.push({type: wasmType, mutable: isMutable});
+      }
+    }
+  }
+
   // Define the struct type at the reserved index
   ctx.module.defineStructType(structTypeIndex, fieldTypes, superTypeIndex);
 
@@ -2430,27 +2463,126 @@ export function registerClassMethods(
       getMemberName(m.name) === CONSTRUCTOR_NAME,
   );
   if (!hasConstructor && !classInfo.isExtension) {
-    const bodyStmts: any[] = [];
-    if (currentSuperClassInfo) {
-      bodyStmts.push({
-        type: NodeType.ExpressionStatement,
-        expression: {
-          type: NodeType.CallExpression,
-          callee: {type: NodeType.SuperExpression},
-          arguments: [],
-        },
-      });
+    if (decl.caseParams && decl.caseParams.length > 0) {
+      // Synthesize constructor from case params: new(x: T, y: T) {}
+      // Field initialization is handled directly in the constructor body generation
+      // via the _caseClassCtor marker, using local.get for parameter values.
+      const params = decl.caseParams.map((p) => ({
+        type: NodeType.Parameter,
+        name: p.name,
+        typeAnnotation: p.typeAnnotation,
+        optional: false,
+        inferredType: p.typeAnnotation.inferredType,
+      })) as any[];
+      const bodyStmts: any[] = [];
+      if (currentSuperClassInfo) {
+        bodyStmts.push({
+          type: NodeType.ExpressionStatement,
+          expression: {
+            type: NodeType.CallExpression,
+            callee: {type: NodeType.SuperExpression},
+            arguments: [],
+          },
+        });
+      }
+      members.push({
+        type: NodeType.MethodDefinition,
+        name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
+        params,
+        body: {type: NodeType.BlockStatement, body: bodyStmts},
+        isFinal: false,
+        isAbstract: false,
+        isStatic: false,
+        isDeclare: false,
+        _caseClassCtor: true, // marker for body generation
+      } as MethodDefinition & {_caseClassCtor?: boolean});
+    } else {
+      const bodyStmts: any[] = [];
+      if (currentSuperClassInfo) {
+        bodyStmts.push({
+          type: NodeType.ExpressionStatement,
+          expression: {
+            type: NodeType.CallExpression,
+            callee: {type: NodeType.SuperExpression},
+            arguments: [],
+          },
+        });
+      }
+      members.push({
+        type: NodeType.MethodDefinition,
+        name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
+        params: [],
+        body: {type: NodeType.BlockStatement, body: bodyStmts},
+        isFinal: false,
+        isAbstract: false,
+        isStatic: false,
+        isDeclare: false,
+      } as MethodDefinition);
     }
-    members.push({
-      type: NodeType.MethodDefinition,
-      name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
-      params: [],
-      body: {type: NodeType.BlockStatement, body: bodyStmts},
-      isFinal: false,
-      isAbstract: false,
-      isStatic: false,
-      isDeclare: false,
-    } as MethodDefinition);
+  }
+
+  // Synthesize operator == for case classes
+  if (decl.caseParams && decl.caseParams.length > 0) {
+    const hasEqOperator = members.some(
+      (m) =>
+        m.type === NodeType.MethodDefinition && getMemberName(m.name) === '==',
+    );
+    if (!hasEqOperator) {
+      // Create a synthetic operator == method
+      // The body will be generated directly as WASM in the body generation phase
+      const otherParam = {
+        type: NodeType.Parameter,
+        name: {type: NodeType.Identifier, name: 'other'},
+        typeAnnotation: {
+          type: NodeType.TypeAnnotation,
+          name: decl.name.name,
+          inferredType: classType,
+        },
+        optional: false,
+        inferredType: classType,
+      };
+      members.push({
+        type: NodeType.MethodDefinition,
+        name: {type: NodeType.Identifier, name: '=='},
+        params: [otherParam],
+        returnType: {
+          type: NodeType.TypeAnnotation,
+          name: 'boolean',
+          inferredType: Types.Boolean,
+        },
+        body: {type: NodeType.BlockStatement, body: []},
+        isFinal: false,
+        isAbstract: false,
+        isStatic: false,
+        isDeclare: false,
+        _caseClassEq: true, // marker for body generation
+      } as MethodDefinition & {_caseClassEq?: boolean});
+    }
+
+    // Synthesize hashCode() for case classes
+    const hasHashCode = members.some(
+      (m) =>
+        m.type === NodeType.MethodDefinition &&
+        getMemberName(m.name) === 'hashCode',
+    );
+    if (!hasHashCode) {
+      members.push({
+        type: NodeType.MethodDefinition,
+        name: {type: NodeType.Identifier, name: 'hashCode'},
+        params: [],
+        returnType: {
+          type: NodeType.TypeAnnotation,
+          name: 'i32',
+          inferredType: Types.I32,
+        },
+        body: {type: NodeType.BlockStatement, body: []},
+        isFinal: false,
+        isAbstract: false,
+        isStatic: false,
+        isDeclare: false,
+        _caseClassHash: true, // marker for body generation
+      } as MethodDefinition & {_caseClassHash?: boolean});
+    }
   }
 
   // Track which base method names have overloads (for vtable and mangling decisions)
@@ -3031,6 +3163,119 @@ export function registerClassMethods(
     }
   }
 
+  // Register implicit accessors for case class parameter fields
+  if (decl.caseParams) {
+    for (const param of decl.caseParams) {
+      const propName = param.name.name;
+
+      // Check if this field was eliminated due to DCE
+      if (classInfo.eliminatedFields?.has(propName)) {
+        continue;
+      }
+
+      if (!param.typeAnnotation.inferredType) {
+        throw new Error(
+          `Case class param ${propName} in ${decl.name.name} missing inferredType`,
+        );
+      }
+      const propType = mapCheckerTypeToWasmType(
+        ctx,
+        param.typeAnnotation.inferredType,
+      );
+
+      // Getter
+      const getterName = getGetterName(propName);
+      if (
+        !vtable.includes(getterName) &&
+        ctx.isMethodUsed(classType, getterName)
+      ) {
+        vtable.push(getterName);
+      }
+
+      const thisType = [
+        ValType.ref_null,
+        ...WasmModule.encodeSignedLEB128(structTypeIndex),
+      ];
+
+      const getterParams = [thisType];
+      const getterResults = [propType];
+
+      let getterTypeIndex = -1;
+      if (ctx.isMethodUsed(classType, getterName)) {
+        let isOverride = false;
+        if (currentSuperClassInfo?.methods.has(getterName)) {
+          getterTypeIndex =
+            currentSuperClassInfo.methods.get(getterName)!.typeIndex;
+          isOverride = true;
+        }
+        if (!isOverride) {
+          getterTypeIndex = ctx.module.addType(getterParams, getterResults);
+        }
+      }
+
+      let getterFuncIndex = -1;
+      if (ctx.isMethodUsed(classType, getterName)) {
+        getterFuncIndex = ctx.module.addFunction(getterTypeIndex!);
+        ctx.setFunctionDebugName(
+          getterFuncIndex,
+          `${decl.name.name}.${getterName}`,
+        );
+      }
+
+      methods.set(getterName, {
+        index: getterFuncIndex,
+        returnType: getterResults[0],
+        typeIndex: getterTypeIndex!,
+        paramTypes: getterParams,
+        isFinal: false,
+      });
+
+      // Setter (only for var fields)
+      if (param.mutability === 'var') {
+        const setterName = getSetterName(propName);
+        if (
+          !vtable.includes(setterName) &&
+          ctx.isMethodUsed(classType, setterName)
+        ) {
+          vtable.push(setterName);
+        }
+
+        const setterParams = [thisType, propType];
+        const setterResults: number[][] = [];
+
+        let setterTypeIndex = -1;
+        if (ctx.isMethodUsed(classType, setterName)) {
+          let isSetterOverride = false;
+          if (currentSuperClassInfo?.methods.has(setterName)) {
+            setterTypeIndex =
+              currentSuperClassInfo.methods.get(setterName)!.typeIndex;
+            isSetterOverride = true;
+          }
+          if (!isSetterOverride) {
+            setterTypeIndex = ctx.module.addType(setterParams, setterResults);
+          }
+        }
+
+        let setterFuncIndex = -1;
+        if (ctx.isMethodUsed(classType, setterName)) {
+          setterFuncIndex = ctx.module.addFunction(setterTypeIndex!);
+          ctx.setFunctionDebugName(
+            setterFuncIndex,
+            `${decl.name.name}.${setterName}`,
+          );
+        }
+
+        methods.set(setterName, {
+          index: setterFuncIndex,
+          returnType: [],
+          typeIndex: setterTypeIndex!,
+          paramTypes: setterParams,
+          isFinal: false,
+        });
+      }
+    }
+  }
+
   // Skip vtable creation for extension classes with no virtual methods and no super vtable
   // This avoids creating empty struct types and unused globals
   if (
@@ -3215,27 +3460,128 @@ export function generateClassMethods(
       getMemberName(m.name) === CONSTRUCTOR_NAME,
   );
   if (!hasConstructor && !classInfo.isExtension) {
-    const bodyStmts: any[] = [];
-    if (decl.superClass) {
-      bodyStmts.push({
-        type: NodeType.ExpressionStatement,
-        expression: {
-          type: NodeType.CallExpression,
-          callee: {type: NodeType.SuperExpression},
-          arguments: [],
-        },
-      });
+    if (decl.caseParams && decl.caseParams.length > 0) {
+      // Case class: synthesize constructor with case params
+      const params = decl.caseParams.map((p) => ({
+        type: NodeType.Parameter,
+        name: p.name,
+        typeAnnotation: p.typeAnnotation,
+        optional: false,
+        inferredType: p.typeAnnotation.inferredType,
+      })) as any[];
+      const bodyStmts: any[] = [];
+      if (decl.superClass) {
+        bodyStmts.push({
+          type: NodeType.ExpressionStatement,
+          expression: {
+            type: NodeType.CallExpression,
+            callee: {type: NodeType.SuperExpression},
+            arguments: [],
+          },
+        });
+      }
+      members.push({
+        type: NodeType.MethodDefinition,
+        name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
+        params,
+        body: {type: NodeType.BlockStatement, body: bodyStmts},
+        isFinal: false,
+        isAbstract: false,
+        isStatic: false,
+        isDeclare: false,
+        _caseClassCtor: true,
+      } as MethodDefinition & {_caseClassCtor?: boolean});
+    } else {
+      const bodyStmts: any[] = [];
+      if (decl.superClass) {
+        bodyStmts.push({
+          type: NodeType.ExpressionStatement,
+          expression: {
+            type: NodeType.CallExpression,
+            callee: {type: NodeType.SuperExpression},
+            arguments: [],
+          },
+        });
+      }
+      members.push({
+        type: NodeType.MethodDefinition,
+        name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
+        params: [],
+        body: {type: NodeType.BlockStatement, body: bodyStmts},
+        isFinal: false,
+        isAbstract: false,
+        isStatic: false,
+        isDeclare: false,
+      } as MethodDefinition);
     }
-    members.push({
-      type: NodeType.MethodDefinition,
-      name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
-      params: [],
-      body: {type: NodeType.BlockStatement, body: bodyStmts},
-      isFinal: false,
-      isAbstract: false,
-      isStatic: false,
-      isDeclare: false,
-    } as MethodDefinition);
+  }
+
+  // Add synthesized operator == for case classes (needs body generation)
+  if (decl.caseParams && decl.caseParams.length > 0) {
+    const hasEqOperator = members.some(
+      (m) =>
+        m.type === NodeType.MethodDefinition && getMemberName(m.name) === '==',
+    );
+    if (!hasEqOperator) {
+      const eqMethodInfo = classInfo.methods.get('==');
+      if (eqMethodInfo && eqMethodInfo.index !== -1) {
+        const otherParam = {
+          type: NodeType.Parameter,
+          name: {type: NodeType.Identifier, name: 'other'},
+          typeAnnotation: {
+            type: NodeType.TypeAnnotation,
+            name: decl.name.name,
+            inferredType: lookupType,
+          },
+          optional: false,
+          inferredType: lookupType,
+        };
+        members.push({
+          type: NodeType.MethodDefinition,
+          name: {type: NodeType.Identifier, name: '=='},
+          params: [otherParam],
+          returnType: {
+            type: NodeType.TypeAnnotation,
+            name: 'boolean',
+            inferredType: Types.Boolean,
+          },
+          body: {type: NodeType.BlockStatement, body: []},
+          isFinal: false,
+          isAbstract: false,
+          isStatic: false,
+          isDeclare: false,
+          _caseClassEq: true,
+        } as MethodDefinition & {_caseClassEq?: boolean});
+      }
+    }
+
+    // Add synthesized hashCode() for case classes (needs body generation)
+    const hasHashCode = members.some(
+      (m) =>
+        m.type === NodeType.MethodDefinition &&
+        getMemberName(m.name) === 'hashCode',
+    );
+    if (!hasHashCode) {
+      const hashMethodInfo = classInfo.methods.get('hashCode');
+      if (hashMethodInfo && hashMethodInfo.index !== -1) {
+        members.push({
+          type: NodeType.MethodDefinition,
+          name: {type: NodeType.Identifier, name: 'hashCode'},
+          params: [],
+          returnType: {
+            type: NodeType.TypeAnnotation,
+            name: 'i32',
+            inferredType: Types.I32,
+          },
+          body: {type: NodeType.BlockStatement, body: []},
+          isFinal: false,
+          isAbstract: false,
+          isStatic: false,
+          isDeclare: false,
+          _caseClassHash: true,
+        } as MethodDefinition & {_caseClassHash?: boolean});
+      }
+    }
   }
 
   for (const member of members) {
@@ -3482,6 +3828,17 @@ export function generateClassMethods(
             }
           }
 
+          // For case class constructors, map field names to param local indices
+          // so we can emit local.get directly without going through AST expressions
+          const caseParamLocals = new Map<string, number>();
+          if ((member as any)._caseClassCtor && decl.caseParams) {
+            for (let i = 0; i < decl.caseParams.length; i++) {
+              const paramName = decl.caseParams[i].name.name;
+              const fieldName = manglePrivateName(decl.name.name, paramName);
+              caseParamLocals.set(fieldName, i);
+            }
+          }
+
           // Generate values for all fields in index order
           // Get sorted field entries by index
           const sortedFields = Array.from(classInfo.fields.entries()).sort(
@@ -3509,6 +3866,14 @@ export function generateClassMethods(
               body.push(Opcode.ref_null);
               const brandTypeIndex = classInfo.brandTypeIndex!;
               body.push(...WasmModule.encodeSignedLEB128(brandTypeIndex));
+              continue;
+            }
+
+            // Case class param field - emit local.get directly
+            const caseParamIdx = caseParamLocals.get(name);
+            if (caseParamIdx !== undefined) {
+              body.push(Opcode.local_get);
+              body.push(...WasmModule.encodeSignedLEB128(caseParamIdx));
               continue;
             }
 
@@ -3565,6 +3930,25 @@ export function generateClassMethods(
               if (fieldInfo) {
                 body.push(Opcode.local_get, 0); // this
                 generateExpression(ctx, init.value, body);
+                body.push(0xfb, GcOpcode.struct_set);
+                body.push(
+                  ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+                );
+                body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+              }
+            }
+          }
+
+          // 1b. For case class constructors, generate struct_set from param locals directly
+          if ((member as any)._caseClassCtor && decl.caseParams) {
+            for (let i = 0; i < decl.caseParams.length; i++) {
+              const paramName = decl.caseParams[i].name.name;
+              const fieldName = manglePrivateName(decl.name.name, paramName);
+              const fieldInfo = classInfo.fields.get(fieldName);
+              if (fieldInfo) {
+                body.push(Opcode.local_get, 0); // this
+                body.push(Opcode.local_get);
+                body.push(...WasmModule.encodeSignedLEB128(i + 1)); // params start at 1 (after this)
                 body.push(0xfb, GcOpcode.struct_set);
                 body.push(
                   ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
@@ -3823,7 +4207,15 @@ export function generateClassMethods(
           body.push(...WasmModule.encodeSignedLEB128(ctx.thisLocalIndex));
         }
       } else {
-        if (member.body && member.body.type === NodeType.BlockStatement) {
+        // Check if this is a synthesized case class operator ==
+        if ((member as any)._caseClassEq && decl.caseParams) {
+          generateCaseClassEqBody(ctx, decl, classInfo, body);
+        } else if ((member as any)._caseClassHash && decl.caseParams) {
+          generateCaseClassHashBody(ctx, decl, classInfo, body);
+        } else if (
+          member.body &&
+          member.body.type === NodeType.BlockStatement
+        ) {
           generateBlockStatement(ctx, member.body, body);
           if (methodInfo.returnType && methodInfo.returnType.length > 0) {
             body.push(Opcode.unreachable);
@@ -4026,6 +4418,53 @@ export function generateClassMethods(
 
             ctx.module.addCode(setterInfo.index, [], setterBody);
           }
+        }
+      }
+    }
+  }
+
+  // Generate getter/setter bodies for case class parameter fields
+  if (decl.caseParams) {
+    for (const param of decl.caseParams) {
+      const propName = param.name.name;
+
+      if (classInfo.eliminatedFields?.has(propName)) {
+        continue;
+      }
+
+      const fieldInfo = classInfo.fields.get(propName);
+      if (!fieldInfo) continue;
+
+      // Getter
+      const getterName = getGetterName(propName);
+      const getterInfo = classInfo.methods.get(getterName);
+      if (getterInfo && getterInfo.index !== -1) {
+        const getterBody: number[] = [];
+        getterBody.push(Opcode.local_get, 0); // this
+        getterBody.push(0xfb, GcOpcode.struct_get);
+        getterBody.push(
+          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+        );
+        getterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+        getterBody.push(Opcode.end);
+        ctx.module.addCode(getterInfo.index, [], getterBody);
+      }
+
+      // Setter (only for var fields)
+      if (param.mutability === 'var') {
+        const setterName = getSetterName(propName);
+        const setterInfo = classInfo.methods.get(setterName);
+        if (setterInfo && setterInfo.index !== -1) {
+          const setterBody: number[] = [];
+          setterBody.push(Opcode.local_get, 0); // this
+          setterBody.push(Opcode.local_get, 1); // val
+          setterBody.push(0xfb, GcOpcode.struct_set);
+          setterBody.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+          setterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+          setterBody.push(Opcode.end);
+          ctx.module.addCode(setterInfo.index, [], setterBody);
         }
       }
     }
@@ -4588,6 +5027,23 @@ function instantiateClassImpl(
       }
     }
 
+    // Process case class parameter fields
+    if (decl.caseParams) {
+      for (const param of decl.caseParams) {
+        const memberName = param.name.name;
+        const wasmType = resolveType(param.typeAnnotation);
+        const isMutable = param.mutability === 'var';
+        if (!fields.has(memberName)) {
+          fields.set(memberName, {
+            index: fieldIndex++,
+            type: wasmType,
+            mutable: isMutable,
+          });
+          fieldTypes.push({type: wasmType, mutable: isMutable});
+        }
+      }
+    }
+
     ctx.module.defineStructType(structTypeIndex, fieldTypes, superTypeIndex);
   }
 
@@ -4711,27 +5167,123 @@ function instantiateClassImpl(
         getMemberName(m.name) === CONSTRUCTOR_NAME,
     );
     if (!hasConstructor && !decl.isExtension) {
-      const bodyStmts: any[] = [];
-      if (decl.superClass) {
-        bodyStmts.push({
-          type: NodeType.ExpressionStatement,
-          expression: {
-            type: NodeType.CallExpression,
-            callee: {type: NodeType.SuperExpression},
-            arguments: [],
-          },
-        });
+      if (decl.caseParams && decl.caseParams.length > 0) {
+        // Case class: synthesize constructor with case params
+        const caseCtorParams = decl.caseParams.map((p) => ({
+          type: NodeType.Parameter,
+          name: p.name,
+          typeAnnotation: p.typeAnnotation,
+          optional: false,
+          inferredType: p.typeAnnotation.inferredType,
+        })) as any[];
+        const bodyStmts: any[] = [];
+        if (decl.superClass) {
+          bodyStmts.push({
+            type: NodeType.ExpressionStatement,
+            expression: {
+              type: NodeType.CallExpression,
+              callee: {type: NodeType.SuperExpression},
+              arguments: [],
+            },
+          });
+        }
+        members.push({
+          type: NodeType.MethodDefinition,
+          name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
+          params: caseCtorParams,
+          body: {type: NodeType.BlockStatement, body: bodyStmts},
+          isFinal: false,
+          isAbstract: false,
+          isStatic: false,
+          isDeclare: false,
+          _caseClassCtor: true,
+        } as MethodDefinition & {_caseClassCtor?: boolean});
+      } else {
+        const bodyStmts: any[] = [];
+        if (decl.superClass) {
+          bodyStmts.push({
+            type: NodeType.ExpressionStatement,
+            expression: {
+              type: NodeType.CallExpression,
+              callee: {type: NodeType.SuperExpression},
+              arguments: [],
+            },
+          });
+        }
+        members.push({
+          type: NodeType.MethodDefinition,
+          name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
+          params: [],
+          body: {type: NodeType.BlockStatement, body: bodyStmts},
+          isFinal: false,
+          isAbstract: false,
+          isStatic: false,
+          isDeclare: false,
+        } as MethodDefinition);
       }
-      members.push({
-        type: NodeType.MethodDefinition,
-        name: {type: NodeType.Identifier, name: CONSTRUCTOR_NAME},
-        params: [],
-        body: {type: NodeType.BlockStatement, body: bodyStmts},
-        isFinal: false,
-        isAbstract: false,
-        isStatic: false,
-        isDeclare: false,
-      } as MethodDefinition);
+    }
+
+    // Synthesize operator == for case classes
+    if (decl.caseParams && decl.caseParams.length > 0) {
+      const hasEqOperator = members.some(
+        (m) =>
+          m.type === NodeType.MethodDefinition &&
+          getMemberName(m.name) === '==',
+      );
+      if (!hasEqOperator) {
+        const otherParam = {
+          type: NodeType.Parameter,
+          name: {type: NodeType.Identifier, name: 'other'},
+          typeAnnotation: {
+            type: NodeType.TypeAnnotation,
+            name: decl.name.name,
+            inferredType: checkerType,
+          },
+          optional: false,
+          inferredType: checkerType,
+        };
+        members.push({
+          type: NodeType.MethodDefinition,
+          name: {type: NodeType.Identifier, name: '=='},
+          params: [otherParam],
+          returnType: {
+            type: NodeType.TypeAnnotation,
+            name: 'boolean',
+            inferredType: Types.Boolean,
+          },
+          body: {type: NodeType.BlockStatement, body: []},
+          isFinal: false,
+          isAbstract: false,
+          isStatic: false,
+          isDeclare: false,
+          _caseClassEq: true,
+        } as MethodDefinition & {_caseClassEq?: boolean});
+      }
+
+      // Synthesize hashCode() for case classes
+      const hasHashCode = members.some(
+        (m) =>
+          m.type === NodeType.MethodDefinition &&
+          getMemberName(m.name) === 'hashCode',
+      );
+      if (!hasHashCode) {
+        members.push({
+          type: NodeType.MethodDefinition,
+          name: {type: NodeType.Identifier, name: 'hashCode'},
+          params: [],
+          returnType: {
+            type: NodeType.TypeAnnotation,
+            name: 'i32',
+            inferredType: Types.I32,
+          },
+          body: {type: NodeType.BlockStatement, body: []},
+          isFinal: false,
+          isAbstract: false,
+          isStatic: false,
+          isDeclare: false,
+          _caseClassHash: true,
+        } as MethodDefinition & {_caseClassHash?: boolean});
+      }
     }
 
     // Track which base method names have overloads (for vtable and mangling decisions)
@@ -4806,9 +5358,17 @@ function instantiateClassImpl(
         // Build checker types for signature mangling
         const paramCheckerTypes: Type[] = [];
 
+        // Check if constructor should skip 'this' param (immutable fields pattern)
+        const classHasImmutableFields = hasImmutableFields(classInfo);
+        const skipThisParam =
+          methodName === CONSTRUCTOR_NAME &&
+          classHasImmutableFields &&
+          !decl.isExtension;
+
         if (
           !member.isStatic &&
-          !(decl.isExtension && methodName === CONSTRUCTOR_NAME)
+          !(decl.isExtension && methodName === CONSTRUCTOR_NAME) &&
+          !skipThisParam
         ) {
           params.push(thisType);
         }
@@ -4863,6 +5423,11 @@ function instantiateClassImpl(
         if (methodName === CONSTRUCTOR_NAME) {
           if (decl.isExtension && onType) {
             results = [onType];
+          } else if (classHasImmutableFields) {
+            // Immutable-fields constructor returns the struct ref
+            results = [
+              [ValType.ref, ...WasmModule.encodeSignedLEB128(structTypeIndex)],
+            ];
           } else if (member.isStatic && member.returnType) {
             const mapped = resolveType(member.returnType);
             if (mapped.length > 0) results = [mapped];
@@ -5169,6 +5734,97 @@ function instantiateClassImpl(
       }
     }
 
+    // Register case class parameter accessors (getters/setters)
+    if (decl.caseParams) {
+      for (const param of decl.caseParams) {
+        const propName = param.name.name;
+        const propType = resolveType(param.typeAnnotation);
+
+        let thisType: number[];
+        if (decl.isExtension && onType) {
+          thisType = onType;
+        } else {
+          thisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(structTypeIndex),
+          ];
+        }
+
+        // Getter
+        const regGetterName = getGetterName(propName);
+        if (!vtable.includes(regGetterName)) {
+          vtable.push(regGetterName);
+        }
+
+        if (baseClassInfo?.methods.has(regGetterName)) {
+          thisType = baseClassInfo.methods.get(regGetterName)!.paramTypes[0];
+        }
+
+        const getterParams = [thisType];
+        const getterResults = [propType];
+
+        let getterTypeIndex: number;
+        let isGetterOverride = false;
+        if (baseClassInfo?.methods.has(regGetterName)) {
+          getterTypeIndex = baseClassInfo.methods.get(regGetterName)!.typeIndex;
+          isGetterOverride = true;
+        }
+        if (!isGetterOverride) {
+          getterTypeIndex = ctx.module.addType(getterParams, getterResults);
+        }
+
+        const getterFuncIndex = ctx.module.addFunction(getterTypeIndex!);
+        ctx.setFunctionDebugName(
+          getterFuncIndex,
+          `${specializedName}.${regGetterName}`,
+        );
+
+        methods.set(regGetterName, {
+          index: getterFuncIndex,
+          returnType: getterResults[0],
+          typeIndex: getterTypeIndex!,
+          paramTypes: getterParams,
+          isFinal: false,
+        });
+
+        // Setter (only for var fields)
+        if (param.mutability === 'var') {
+          const regSetterName = getSetterName(propName);
+          if (!vtable.includes(regSetterName)) {
+            vtable.push(regSetterName);
+          }
+
+          const setterParams = [thisType, propType];
+          const setterResults: number[][] = [];
+
+          let setterTypeIndex: number;
+          let isSetterOverride = false;
+          if (baseClassInfo?.methods.has(regSetterName)) {
+            setterTypeIndex =
+              baseClassInfo.methods.get(regSetterName)!.typeIndex;
+            isSetterOverride = true;
+          }
+          if (!isSetterOverride) {
+            setterTypeIndex = ctx.module.addType(setterParams, setterResults);
+          }
+
+          const setterFuncIndex = ctx.module.addFunction(setterTypeIndex!);
+          ctx.setFunctionDebugName(
+            setterFuncIndex,
+            `${specializedName}.${regSetterName}`,
+          );
+
+          methods.set(regSetterName, {
+            index: setterFuncIndex,
+            returnType: [],
+            typeIndex: setterTypeIndex!,
+            paramTypes: setterParams,
+            isFinal: false,
+          });
+        }
+      }
+    }
+
     // Create VTable Struct Type
     if (classInfo.isExtension) {
       const declForGen = {
@@ -5380,6 +6036,136 @@ function generateMixinFieldInitializers(
 
     // Update base name for next mixin in chain
     baseName = intermediateName;
+  }
+}
+
+/**
+ * Generate the body of an auto-generated operator == for a case class.
+ * Compares each case param field by value, ANDing results together.
+ */
+function generateCaseClassEqBody(
+  ctx: CodegenContext,
+  decl: ClassDeclaration,
+  classInfo: ClassInfo,
+  body: number[],
+) {
+  const caseParams = decl.caseParams!;
+  const structTypeIndex = classInfo.structTypeIndex;
+
+  if (caseParams.length === 0) {
+    // No fields - always equal
+    body.push(Opcode.i32_const, 1);
+    return;
+  }
+
+  // Generate field-by-field comparison
+  // For each field: get this.field, get other.field, compare
+  // AND all results together
+  let firstField = true;
+  for (const param of caseParams) {
+    const propName = param.name.name;
+    const fieldInfo = classInfo.fields.get(propName);
+    if (!fieldInfo) continue; // eliminated by DCE
+
+    // this.field
+    body.push(Opcode.local_get, 0); // this
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+    // other.field
+    body.push(Opcode.local_get, 1); // other
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+    // Compare based on WASM type
+    const fieldType = fieldInfo.type;
+    if (fieldType.length === 1 && fieldType[0] === ValType.i32) {
+      body.push(Opcode.i32_eq);
+    } else if (fieldType.length === 1 && fieldType[0] === ValType.i64) {
+      body.push(Opcode.i64_eq);
+    } else if (fieldType.length === 1 && fieldType[0] === ValType.f32) {
+      body.push(Opcode.f32_eq);
+    } else if (fieldType.length === 1 && fieldType[0] === ValType.f64) {
+      body.push(Opcode.f64_eq);
+    } else {
+      // Reference type - use ref.eq (identity comparison)
+      body.push(Opcode.ref_eq);
+    }
+
+    // AND with previous result (skip for the first field)
+    if (!firstField) {
+      body.push(Opcode.i32_and);
+    }
+    firstField = false;
+  }
+}
+
+/**
+ * Generate the body of an auto-generated hashCode() for a case class.
+ * Combines field hashes using: hash = hash * 31 + fieldHash
+ */
+function generateCaseClassHashBody(
+  ctx: CodegenContext,
+  decl: ClassDeclaration,
+  classInfo: ClassInfo,
+  body: number[],
+) {
+  const caseParams = decl.caseParams!;
+  const structTypeIndex = classInfo.structTypeIndex;
+
+  if (caseParams.length === 0) {
+    // No fields - return 0
+    body.push(Opcode.i32_const, 0);
+    return;
+  }
+
+  // Start with hash = 0
+  // For each field: hash = hash * 31 + fieldHash
+  let firstField = true;
+  for (const param of caseParams) {
+    const propName = param.name.name;
+    const fieldInfo = classInfo.fields.get(propName);
+    if (!fieldInfo) continue; // eliminated by DCE
+
+    if (!firstField) {
+      // Multiply accumulated hash by 31: hash * 31
+      body.push(Opcode.i32_const, 31);
+      body.push(Opcode.i32_mul);
+    }
+
+    // Get this.field
+    body.push(Opcode.local_get, 0); // this
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
+
+    // Convert to i32 hash based on WASM type
+    const fieldType = fieldInfo.type;
+    if (fieldType.length === 1 && fieldType[0] === ValType.i32) {
+      // i32: use value directly
+    } else if (fieldType.length === 1 && fieldType[0] === ValType.i64) {
+      // i64: wrap to i32 (low 32 bits)
+      body.push(Opcode.i32_wrap_i64);
+    } else if (fieldType.length === 1 && fieldType[0] === ValType.f32) {
+      // f32: reinterpret as i32
+      body.push(Opcode.i32_reinterpret_f32);
+    } else if (fieldType.length === 1 && fieldType[0] === ValType.f64) {
+      // f64: reinterpret as i64, then wrap to i32
+      body.push(Opcode.i64_reinterpret_f64);
+      body.push(Opcode.i32_wrap_i64);
+    } else {
+      // Reference type - drop and use 0 (identity-based hashing not available)
+      body.push(Opcode.drop);
+      body.push(Opcode.i32_const, 0);
+    }
+
+    // Add to accumulated hash (skip for the first field)
+    if (!firstField) {
+      body.push(Opcode.i32_add);
+    }
+    firstField = false;
   }
 }
 

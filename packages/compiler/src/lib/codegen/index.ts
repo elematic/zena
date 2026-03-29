@@ -275,7 +275,15 @@ export class CodeGenerator {
     for (const statement of statements) {
       if (statement.type === NodeType.DeclareFunction) {
         const decl = statement as DeclareFunction;
-        if (!this.#isUsed(decl)) continue;
+        // Generic intrinsic functions must always be registered because they're
+        // inlined at codegen time via ctx.globalIntrinsics (no function index
+        // allocated). DCE may incorrectly mark them as unused when they're called
+        // indirectly from stdlib modules.
+        const isGenericIntrinsic =
+          decl.typeParameters &&
+          decl.typeParameters.length > 0 &&
+          decl.decorators?.some((d) => d.name === 'intrinsic');
+        if (!isGenericIntrinsic && !this.#isUsed(decl)) continue;
         // Skip WASI imports - already processed in Pass 0
         const moduleName = decl.externalModule || 'env';
         if (moduleName === 'wasi_snapshot_preview1') continue;

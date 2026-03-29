@@ -145,12 +145,14 @@ export class Compiler {
         const resolved = this.#host.resolve(specifier, 'prelude');
 
         // Load via LibraryLoader (this loads transitive dependencies too)
-        this.#loader.load(resolved);
+        const lib = this.#loader.load(resolved);
 
-        // Convert ALL loaded libraries to Modules (including transitive dependencies)
-        for (const lib of this.#loader.libraries()) {
-          if (!this.#modules.has(lib.path)) {
-            this.#modules.set(lib.path, this.#getModule(lib));
+        // Use computeGraph to get proper topological order for this module
+        // and all its transitive dependencies
+        const graph = this.#loader.computeGraph(lib);
+        for (const dep of graph.libraries) {
+          if (!this.#modules.has(dep.path)) {
+            this.#modules.set(dep.path, this.#getModule(dep));
           }
         }
 

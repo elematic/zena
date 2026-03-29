@@ -55,6 +55,7 @@ function loadStdlib(target: 'host' | 'wasi' = 'host'): Map<string, string> {
     'immutable-array',
     'fixed-array',
     'growable-array',
+    'hashable',
     'map',
     'box',
     'iterator',
