@@ -145,4 +145,45 @@ suite('Union Validation Tests', () => {
       assert.match(e.message, /Cannot use union type.*with 'is'/);
     }
   });
+
+  test('Union type rejected on RHS of as', async () => {
+    const source = `
+      class Cat {}
+      class Dog {}
+
+      export let main = (): i32 => {
+        let x: anyref = new Cat();
+        let y = x as (Cat | Dog);
+        return 0;
+      };
+    `;
+
+    try {
+      await compileAndRun(source, 'main');
+      assert.fail('Should have failed compilation');
+    } catch (e: any) {
+      assert.match(e.message, /Cannot use union type.*cast target/);
+    }
+  });
+
+  test('Union type alias rejected on RHS of as', async () => {
+    const source = `
+      class Cat {}
+      class Dog {}
+      type Pet = Cat | Dog;
+
+      export let main = (): i32 => {
+        let x: anyref = new Cat();
+        let y = x as Pet;
+        return 0;
+      };
+    `;
+
+    try {
+      await compileAndRun(source, 'main');
+      assert.fail('Should have failed compilation');
+    } catch (e: any) {
+      assert.match(e.message, /Cannot use union type.*cast target/);
+    }
+  });
 });

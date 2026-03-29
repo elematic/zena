@@ -1322,6 +1322,15 @@ function checkAsExpression(ctx: CheckerContext, expr: AsExpression): Type {
   const sourceType = checkExpression(ctx, expr.expression);
   const targetType = resolveTypeAnnotation(ctx, expr.typeAnnotation);
 
+  // Reject union types as cast targets
+  if (targetType.kind === TypeKind.Union) {
+    ctx.diagnostics.reportError(
+      `Cannot use union type '${typeToString(targetType)}' as cast target. Cast to each type separately.`,
+      DiagnosticCode.TypeMismatch,
+      ctx.getLocation(expr.typeAnnotation.loc),
+    );
+  }
+
   // Validate the cast is semantically valid
   if (!isValidCast(sourceType, targetType)) {
     ctx.diagnostics.reportError(
