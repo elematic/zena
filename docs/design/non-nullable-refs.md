@@ -64,7 +64,7 @@ nullability:
 ```typescript
 if (nonNullTypes.length === 1) {
   // ...primitive boxing unchanged...
-  
+
   // Reference types: get the non-nullable encoding, make it nullable
   const innerWasm = mapCheckerTypeToWasmType(ctx, innerType); // [ref, idx]
   if (innerWasm[0] === ValType.ref) {

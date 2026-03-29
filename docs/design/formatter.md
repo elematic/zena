@@ -41,6 +41,7 @@ simplifies everything: no options threading, no conditional formatting paths, no
 "which style is default" debates.
 
 Fixed decisions:
+
 - 2-space indentation
 - 80-character line width
 - Single quotes for strings
@@ -97,27 +98,27 @@ enum DocCommandType {
 
 ### Commands (Ported 1:1 from Prettier)
 
-| Command | Prettier equivalent | Semantics |
-|---------|-------------------|-----------|
-| `group(doc)` | `group` | Try to fit contents on one line. If not, break. |
-| `group(doc, shouldBreak: true)` | `group({shouldBreak})` | Pre-broken group. |
-| `group(doc, id: sym)` | `group({id})` | Named group for `ifBreak` cross-references. |
-| `indent(doc)` | `indent` | Increase indentation by one level. |
-| `dedent(doc)` | `dedent` | Decrease indentation by one level. |
-| `align(n, doc)` | `align` | Increase indent by `n` spaces (not a level). |
-| `line` | `line` | Space if flat, newline if broken. |
-| `softline` | `softline` | Nothing if flat, newline if broken. |
-| `hardline` | `hardline` | Always newline. Forces parent groups to break. |
-| `literalline` | `literalline` | Always newline, no re-indentation (for template literals). |
-| `ifBreak(broken, flat)` | `ifBreak` | Conditional on enclosing group's break status. |
-| `ifBreak(broken, flat, groupId: sym)` | `ifBreak({groupId})` | Conditional on a named group. |
-| `fill(parts)` | `fill` | Fill-wrap: break only at line boundaries that overflow. |
-| `lineSuffix(doc)` | `lineSuffix` | Buffer content and flush before next newline (for trailing comments). |
-| `lineSuffixBoundary` | `lineSuffixBoundary` | Force-flush `lineSuffix` buffer. |
-| `breakParent` | `breakParent` | Force all ancestor groups to break. |
-| `trim` | `trim` | Remove trailing whitespace on current line. |
-| `indentIfBreak(doc, groupId)` | `indentIfBreak` | `ifBreak(indent(doc), doc, groupId)` optimized. |
-| `label(tag, doc)` | `label` | Annotate doc for heuristic decisions. |
+| Command                               | Prettier equivalent    | Semantics                                                             |
+| ------------------------------------- | ---------------------- | --------------------------------------------------------------------- |
+| `group(doc)`                          | `group`                | Try to fit contents on one line. If not, break.                       |
+| `group(doc, shouldBreak: true)`       | `group({shouldBreak})` | Pre-broken group.                                                     |
+| `group(doc, id: sym)`                 | `group({id})`          | Named group for `ifBreak` cross-references.                           |
+| `indent(doc)`                         | `indent`               | Increase indentation by one level.                                    |
+| `dedent(doc)`                         | `dedent`               | Decrease indentation by one level.                                    |
+| `align(n, doc)`                       | `align`                | Increase indent by `n` spaces (not a level).                          |
+| `line`                                | `line`                 | Space if flat, newline if broken.                                     |
+| `softline`                            | `softline`             | Nothing if flat, newline if broken.                                   |
+| `hardline`                            | `hardline`             | Always newline. Forces parent groups to break.                        |
+| `literalline`                         | `literalline`          | Always newline, no re-indentation (for template literals).            |
+| `ifBreak(broken, flat)`               | `ifBreak`              | Conditional on enclosing group's break status.                        |
+| `ifBreak(broken, flat, groupId: sym)` | `ifBreak({groupId})`   | Conditional on a named group.                                         |
+| `fill(parts)`                         | `fill`                 | Fill-wrap: break only at line boundaries that overflow.               |
+| `lineSuffix(doc)`                     | `lineSuffix`           | Buffer content and flush before next newline (for trailing comments). |
+| `lineSuffixBoundary`                  | `lineSuffixBoundary`   | Force-flush `lineSuffix` buffer.                                      |
+| `breakParent`                         | `breakParent`          | Force all ancestor groups to break.                                   |
+| `trim`                                | `trim`                 | Remove trailing whitespace on current line.                           |
+| `indentIfBreak(doc, groupId)`         | `indentIfBreak`        | `ifBreak(indent(doc), doc, groupId)` optimized.                       |
+| `label(tag, doc)`                     | `label`                | Annotate doc for heuristic decisions.                                 |
 
 **What we skip:** `conditionalGroup` (Prettier itself calls it a "last resort"
 that triggers exponential complexity), `cursor` (IDE integration, not needed
@@ -141,12 +142,12 @@ let lineSuffix = (doc: Doc): Doc => { ... };
 
 ### Source Mapping
 
-| Prettier file | Zena file | Status |
-|---|---|---|
-| `src/document/builders/*.js` | `formatter/doc-builders.zena` | — |
-| `src/document/printer/printer.js` | `formatter/doc-printer.zena` | — |
-| `src/document/printer/indent.js` | `formatter/doc-indent.zena` | — |
-| `src/document/utilities/*.js` | `formatter/doc-utils.zena` | — |
+| Prettier file                     | Zena file                     | Status |
+| --------------------------------- | ----------------------------- | ------ |
+| `src/document/builders/*.js`      | `formatter/doc-builders.zena` | —      |
+| `src/document/printer/printer.js` | `formatter/doc-printer.zena`  | —      |
+| `src/document/printer/indent.js`  | `formatter/doc-indent.zena`   | —      |
+| `src/document/utilities/*.js`     | `formatter/doc-utils.zena`    | —      |
 
 ---
 
@@ -277,14 +278,14 @@ correctly (e.g., 2-level indent + 3-space align). We port this representation.
 
 ### Source Mapping
 
-| Prettier source | What it does | Port priority |
-|---|---|---|
-| `printer.js` core loop | The `printDocToString` function | P0 — port first |
-| `printer.js` `fits()` | Line-fitting check | P0 — port with core loop |
-| `printer.js` `propagateBreaks()` | Pre-pass for hardline propagation | P0 — port with core loop |
-| `indent.js` | Indent representation and generation | P0 — needed by core loop |
-| `builders/*.js` | Doc command constructors | P0 — needed by printer |
-| `utilities/*.js` | `stripTrailingHardline`, `cleanDoc`, etc. | P1 — port as needed |
+| Prettier source                  | What it does                              | Port priority            |
+| -------------------------------- | ----------------------------------------- | ------------------------ |
+| `printer.js` core loop           | The `printDocToString` function           | P0 — port first          |
+| `printer.js` `fits()`            | Line-fitting check                        | P0 — port with core loop |
+| `printer.js` `propagateBreaks()` | Pre-pass for hardline propagation         | P0 — port with core loop |
+| `indent.js`                      | Indent representation and generation      | P0 — needed by core loop |
+| `builders/*.js`                  | Doc command constructors                  | P0 — needed by printer   |
+| `utilities/*.js`                 | `stripTrailingHardline`, `cleanDoc`, etc. | P1 — port as needed      |
 
 ---
 
@@ -344,75 +345,75 @@ Listed roughly in order of implementation priority.
 
 **Tier 1 — Expressions & basics** (needed for any output):
 
-| AST Node | Formatting approach |
-|---|---|
-| `NumberLiteral` | Print raw value |
-| `StringLiteral` | Normalize to single quotes |
-| `BooleanLiteral` | `true` / `false` |
-| `NullLiteral` | `null` |
-| `Identifier` | Print name |
-| `BinaryExpression` | `group([left, " ", op, indent([line, right])])` |
-| `UnaryExpression` | `[op, arg]` or `[arg, op]` |
-| `AssignmentExpression` | `group([left, " = ", indent([line, right])])` |
-| `MemberExpression` | `[object, ".", property]` with chain grouping |
-| `IndexExpression` | `[object, "[", index, "]"]` |
-| `CallExpression` | `group(["(", indent([softline, args]), softline, ")"])` |
-| `NewExpression` | `["new ", callee, "(", args, ")"]` |
-| `ThisExpression` | `this` |
-| `SuperExpression` | `super` |
-| `TemplateLiteral` | Template parts with embedded expressions |
-| `AsExpression` / `IsExpression` | `[expr, " as ", type]` |
-| `PipelineExpression` | `group([left, indent([line, "|> ", right])])` |
-| `RangeExpression` | `[start, "..", end]` |
-| `ThrowExpression` | `["throw ", expr]` |
+| AST Node                        | Formatting approach                                     |
+| ------------------------------- | ------------------------------------------------------- | --------------- |
+| `NumberLiteral`                 | Print raw value                                         |
+| `StringLiteral`                 | Normalize to single quotes                              |
+| `BooleanLiteral`                | `true` / `false`                                        |
+| `NullLiteral`                   | `null`                                                  |
+| `Identifier`                    | Print name                                              |
+| `BinaryExpression`              | `group([left, " ", op, indent([line, right])])`         |
+| `UnaryExpression`               | `[op, arg]` or `[arg, op]`                              |
+| `AssignmentExpression`          | `group([left, " = ", indent([line, right])])`           |
+| `MemberExpression`              | `[object, ".", property]` with chain grouping           |
+| `IndexExpression`               | `[object, "[", index, "]"]`                             |
+| `CallExpression`                | `group(["(", indent([softline, args]), softline, ")"])` |
+| `NewExpression`                 | `["new ", callee, "(", args, ")"]`                      |
+| `ThisExpression`                | `this`                                                  |
+| `SuperExpression`               | `super`                                                 |
+| `TemplateLiteral`               | Template parts with embedded expressions                |
+| `AsExpression` / `IsExpression` | `[expr, " as ", type]`                                  |
+| `PipelineExpression`            | `group([left, indent([line, "                           | > ", right])])` |
+| `RangeExpression`               | `[start, "..", end]`                                    |
+| `ThrowExpression`               | `["throw ", expr]`                                      |
 
 **Tier 2 — Statements**:
 
-| AST Node | Formatting approach |
-|---|---|
-| `VariableDeclaration` | `[let/var, " ", name, typeAnnot?, " = ", indent(init), ";"]` |
-| `ExpressionStatement` | `[expr, ";"]` |
-| `BlockStatement` | `["{", indent([hardline, stmts]), hardline, "}"]` |
-| `ReturnStatement` | `["return", expr?, ";"]` |
-| `BreakStatement` / `ContinueStatement` | `["break;"]` / `["continue;"]` |
-| `IfStatement` | Group with `else` chaining |
-| `WhileStatement` | `["while (", cond, ") ", body]` |
-| `ForStatement` | `["for (", init, "; ", test, "; ", update, ") ", body]` |
-| `ForInStatement` | `["for (let ", pattern, " in ", expr, ") ", body]` |
+| AST Node                               | Formatting approach                                          |
+| -------------------------------------- | ------------------------------------------------------------ |
+| `VariableDeclaration`                  | `[let/var, " ", name, typeAnnot?, " = ", indent(init), ";"]` |
+| `ExpressionStatement`                  | `[expr, ";"]`                                                |
+| `BlockStatement`                       | `["{", indent([hardline, stmts]), hardline, "}"]`            |
+| `ReturnStatement`                      | `["return", expr?, ";"]`                                     |
+| `BreakStatement` / `ContinueStatement` | `["break;"]` / `["continue;"]`                               |
+| `IfStatement`                          | Group with `else` chaining                                   |
+| `WhileStatement`                       | `["while (", cond, ") ", body]`                              |
+| `ForStatement`                         | `["for (", init, "; ", test, "; ", update, ") ", body]`      |
+| `ForInStatement`                       | `["for (let ", pattern, " in ", expr, ") ", body]`           |
 
 **Tier 3 — Functions & closures**:
 
-| AST Node | Formatting approach |
-|---|---|
+| AST Node             | Formatting approach                               |
+| -------------------- | ------------------------------------------------- |
 | `FunctionExpression` | Params group + return type + body (block or expr) |
-| `Parameter` | `[name, "?", ": ", type, " = ", default]` |
-| `TypeParameter` | `[name, " extends ", constraint]` |
+| `Parameter`          | `[name, "?", ": ", type, " = ", default]`         |
+| `TypeParameter`      | `[name, " extends ", constraint]`                 |
 
 **Tier 4 — Classes & types**:
 
-| AST Node | Formatting approach |
-|---|---|
-| `ClassDeclaration` | Header group (name, extends, with, implements) + body |
-| `FieldDefinition` | `[mutability, name, ": ", type, " = ", init, ";"]` |
-| `MethodDefinition` | Signature + body |
-| `AccessorDeclaration` | `get`/`set` + name + body |
-| `InterfaceDeclaration` | Like class but only signatures |
-| `MixinDeclaration` | Like class |
-| `EnumDeclaration` | `["enum ", name, " {", indent(members), "}"]` |
-| `TypeAliasDeclaration` | `["type ", name, " = ", type, ";"]` |
+| AST Node               | Formatting approach                                   |
+| ---------------------- | ----------------------------------------------------- |
+| `ClassDeclaration`     | Header group (name, extends, with, implements) + body |
+| `FieldDefinition`      | `[mutability, name, ": ", type, " = ", init, ";"]`    |
+| `MethodDefinition`     | Signature + body                                      |
+| `AccessorDeclaration`  | `get`/`set` + name + body                             |
+| `InterfaceDeclaration` | Like class but only signatures                        |
+| `MixinDeclaration`     | Like class                                            |
+| `EnumDeclaration`      | `["enum ", name, " {", indent(members), "}"]`         |
+| `TypeAliasDeclaration` | `["type ", name, " = ", type, ";"]`                   |
 
 **Tier 5 — Patterns & advanced**:
 
-| AST Node | Formatting approach |
-|---|---|
-| `MatchExpression` | `["match (", expr, ") {", indent(cases), "}"]` |
-| `MatchCase` | `["case ", pattern, guard?, ": ", body]` |
-| `RecordPattern` / `TuplePattern` | Like corresponding literals |
-| `ClassPattern` | `[name, " {", fields, "}"]` |
-| `TryExpression` | `["try ", body, " catch", catchClause, " finally", finally]` |
-| `ImportDeclaration` | `["import {", specifiers, "} from ", source, ";"]` |
-| `Decorator` | `["@", name, "(", args, ")"]` |
-| `DeclareFunction` | `["declare function ", name, sig, ";"]` |
+| AST Node                         | Formatting approach                                          |
+| -------------------------------- | ------------------------------------------------------------ |
+| `MatchExpression`                | `["match (", expr, ") {", indent(cases), "}"]`               |
+| `MatchCase`                      | `["case ", pattern, guard?, ": ", body]`                     |
+| `RecordPattern` / `TuplePattern` | Like corresponding literals                                  |
+| `ClassPattern`                   | `[name, " {", fields, "}"]`                                  |
+| `TryExpression`                  | `["try ", body, " catch", catchClause, " finally", finally]` |
+| `ImportDeclaration`              | `["import {", specifiers, "} from ", source, ";"]`           |
+| `Decorator`                      | `["@", name, "(", args, ")"]`                                |
+| `DeclareFunction`                | `["declare function ", name, sig, ";"]`                      |
 
 ### Key Formatting Patterns
 
@@ -446,7 +447,7 @@ arr
   .reduce(h, init)
 ```
 
-Doc: `group([object, indent([softline, ".", method, "(", args, ")"] for each)])` 
+Doc: `group([object, indent([softline, ".", method, "(", args, ")"] for each)])`
 
 **Binary expression chains**:
 
@@ -460,7 +461,7 @@ a
   + c
 ```
 
-Doc: `group([left, indent([line, op, " ", right])])` 
+Doc: `group([left, indent([line, op, " ", right])])`
 
 **If-else chains**:
 
@@ -524,6 +525,7 @@ algorithm is language-independent.
 
 4. **Test each function in isolation.** The doc printer can be tested without
    any AST — just construct Doc values directly and check string output:
+
    ```zena
    // Test: group that fits on one line
    let doc = group(["hello", " ", "world"]);
@@ -660,50 +662,50 @@ Track each Prettier source function and its Zena equivalent.
 
 **`src/document/builders/`**
 
-| Prettier function | Zena function | Status |
-|---|---|---|
-| `group(contents, opts)` | `group` | — |
-| `indent(contents)` | `indent` | — |
-| `dedent(contents)` | `dedent` | — |
-| `align(widthOrString, contents)` | `align` | — |
-| `fill(parts)` | `fill` | — |
-| `ifBreak(breakContents, flatContents, opts)` | `ifBreak` | — |
-| `indentIfBreak(contents, opts)` | `indentIfBreak` | — |
-| `lineSuffix(contents)` | `lineSuffix` | — |
-| `join(sep, docs)` | `join` | — |
-| `label(label, doc)` | `label` | — |
-| `line` | `line` | — |
-| `softline` | `softline` | — |
-| `hardline` | `hardline` | — |
-| `literalline` | `literalline` | — |
-| `breakParent` | `breakParent` | — |
-| `lineSuffixBoundary` | `lineSuffixBoundary` | — |
-| `trim` | `trim` | — |
-| `cursor` | — | Skip |
-| `conditionalGroup` | — | Skip |
+| Prettier function                            | Zena function        | Status |
+| -------------------------------------------- | -------------------- | ------ |
+| `group(contents, opts)`                      | `group`              | —      |
+| `indent(contents)`                           | `indent`             | —      |
+| `dedent(contents)`                           | `dedent`             | —      |
+| `align(widthOrString, contents)`             | `align`              | —      |
+| `fill(parts)`                                | `fill`               | —      |
+| `ifBreak(breakContents, flatContents, opts)` | `ifBreak`            | —      |
+| `indentIfBreak(contents, opts)`              | `indentIfBreak`      | —      |
+| `lineSuffix(contents)`                       | `lineSuffix`         | —      |
+| `join(sep, docs)`                            | `join`               | —      |
+| `label(label, doc)`                          | `label`              | —      |
+| `line`                                       | `line`               | —      |
+| `softline`                                   | `softline`           | —      |
+| `hardline`                                   | `hardline`           | —      |
+| `literalline`                                | `literalline`        | —      |
+| `breakParent`                                | `breakParent`        | —      |
+| `lineSuffixBoundary`                         | `lineSuffixBoundary` | —      |
+| `trim`                                       | `trim`               | —      |
+| `cursor`                                     | —                    | Skip   |
+| `conditionalGroup`                           | —                    | Skip   |
 
 **`src/document/printer/`**
 
-| Prettier function | Zena function | Status |
-|---|---|---|
-| `printDocToString(doc, opts)` | `printDocToString` | — |
-| `fits(next, restCommands, width, ...)` | `fits` | — |
-| `propagateBreaks(doc)` | `propagateBreaks` | — |
-| `generateIndent(ind, newPart, opts)` | `generateIndent` | — |
-| `makeIndent(ind, opts)` | `makeIndent` | — |
-| `makeAlign(ind, widthOrString, opts)` | `makeAlign` | — |
-| `rootIndent()` | `rootIndent` | — |
-| `trim(out)` | `trimOutput` | — |
+| Prettier function                      | Zena function      | Status |
+| -------------------------------------- | ------------------ | ------ |
+| `printDocToString(doc, opts)`          | `printDocToString` | —      |
+| `fits(next, restCommands, width, ...)` | `fits`             | —      |
+| `propagateBreaks(doc)`                 | `propagateBreaks`  | —      |
+| `generateIndent(ind, newPart, opts)`   | `generateIndent`   | —      |
+| `makeIndent(ind, opts)`                | `makeIndent`       | —      |
+| `makeAlign(ind, widthOrString, opts)`  | `makeAlign`        | —      |
+| `rootIndent()`                         | `rootIndent`       | —      |
+| `trim(out)`                            | `trimOutput`       | —      |
 
 **`src/document/utilities/`**
 
-| Prettier function | Zena function | Status |
-|---|---|---|
-| `stripTrailingHardline(doc)` | `stripTrailingHardline` | — |
-| `cleanDoc(doc)` | — | Port if needed |
-| `getDocType(doc)` | — | Port if needed |
-| `willBreak(doc)` | `willBreak` | — |
-| `canBreak(doc)` | — | Port if needed |
+| Prettier function            | Zena function           | Status         |
+| ---------------------------- | ----------------------- | -------------- |
+| `stripTrailingHardline(doc)` | `stripTrailingHardline` | —              |
+| `cleanDoc(doc)`              | —                       | Port if needed |
+| `getDocType(doc)`            | —                       | Port if needed |
+| `willBreak(doc)`             | `willBreak`             | —              |
+| `canBreak(doc)`              | —                       | Port if needed |
 
 ### Appendix B: Zena Printer Checklist
 
@@ -711,104 +713,104 @@ Track each AST node type and its print function.
 
 **Tier 1 — Expressions (P0)**
 
-| AST Node | Print function | Status |
-|---|---|---|
-| `NumberLiteral` | `printNumberLiteral` | — |
-| `StringLiteral` | `printStringLiteral` | — |
-| `BooleanLiteral` | `printBooleanLiteral` | — |
-| `NullLiteral` | `printNullLiteral` | — |
-| `Identifier` | `printIdentifier` | — |
-| `BinaryExpression` | `printBinaryExpression` | — |
-| `UnaryExpression` | `printUnaryExpression` | — |
-| `AssignmentExpression` | `printAssignmentExpression` | — |
-| `MemberExpression` | `printMemberExpression` | — |
-| `IndexExpression` | `printIndexExpression` | — |
-| `CallExpression` | `printCallExpression` | — |
-| `NewExpression` | `printNewExpression` | — |
-| `ThisExpression` | `printThisExpression` | — |
-| `SuperExpression` | `printSuperExpression` | — |
-| `TemplateLiteral` | `printTemplateLiteral` | — |
-| `TaggedTemplateExpression` | `printTaggedTemplate` | — |
-| `AsExpression` | `printAsExpression` | — |
-| `IsExpression` | `printIsExpression` | — |
-| `PipelineExpression` | `printPipelineExpression` | — |
-| `RangeExpression` | `printRangeExpression` | — |
-| `ThrowExpression` | `printThrowExpression` | — |
-| `ArrayLiteral` | `printArrayLiteral` | — |
-| `RecordLiteral` | `printRecordLiteral` | — |
-| `TupleLiteral` | `printTupleLiteral` | — |
-| `InlineTupleLiteral` | `printInlineTupleLiteral` | — |
-| `MapLiteral` | `printMapLiteral` | — |
-| `IfExpression` | `printIfExpression` | — |
+| AST Node                   | Print function              | Status |
+| -------------------------- | --------------------------- | ------ |
+| `NumberLiteral`            | `printNumberLiteral`        | —      |
+| `StringLiteral`            | `printStringLiteral`        | —      |
+| `BooleanLiteral`           | `printBooleanLiteral`       | —      |
+| `NullLiteral`              | `printNullLiteral`          | —      |
+| `Identifier`               | `printIdentifier`           | —      |
+| `BinaryExpression`         | `printBinaryExpression`     | —      |
+| `UnaryExpression`          | `printUnaryExpression`      | —      |
+| `AssignmentExpression`     | `printAssignmentExpression` | —      |
+| `MemberExpression`         | `printMemberExpression`     | —      |
+| `IndexExpression`          | `printIndexExpression`      | —      |
+| `CallExpression`           | `printCallExpression`       | —      |
+| `NewExpression`            | `printNewExpression`        | —      |
+| `ThisExpression`           | `printThisExpression`       | —      |
+| `SuperExpression`          | `printSuperExpression`      | —      |
+| `TemplateLiteral`          | `printTemplateLiteral`      | —      |
+| `TaggedTemplateExpression` | `printTaggedTemplate`       | —      |
+| `AsExpression`             | `printAsExpression`         | —      |
+| `IsExpression`             | `printIsExpression`         | —      |
+| `PipelineExpression`       | `printPipelineExpression`   | —      |
+| `RangeExpression`          | `printRangeExpression`      | —      |
+| `ThrowExpression`          | `printThrowExpression`      | —      |
+| `ArrayLiteral`             | `printArrayLiteral`         | —      |
+| `RecordLiteral`            | `printRecordLiteral`        | —      |
+| `TupleLiteral`             | `printTupleLiteral`         | —      |
+| `InlineTupleLiteral`       | `printInlineTupleLiteral`   | —      |
+| `MapLiteral`               | `printMapLiteral`           | —      |
+| `IfExpression`             | `printIfExpression`         | —      |
 
 **Tier 2 — Statements (P0)**
 
-| AST Node | Print function | Status |
-|---|---|---|
-| `Module` | `printModule` | — |
-| `VariableDeclaration` | `printVariableDeclaration` | — |
-| `ExpressionStatement` | `printExpressionStatement` | — |
-| `BlockStatement` | `printBlockStatement` | — |
-| `ReturnStatement` | `printReturnStatement` | — |
-| `BreakStatement` | `printBreakStatement` | — |
-| `ContinueStatement` | `printContinueStatement` | — |
-| `IfStatement` | `printIfStatement` | — |
-| `WhileStatement` | `printWhileStatement` | — |
-| `ForStatement` | `printForStatement` | — |
-| `ForInStatement` | `printForInStatement` | — |
+| AST Node              | Print function             | Status |
+| --------------------- | -------------------------- | ------ |
+| `Module`              | `printModule`              | —      |
+| `VariableDeclaration` | `printVariableDeclaration` | —      |
+| `ExpressionStatement` | `printExpressionStatement` | —      |
+| `BlockStatement`      | `printBlockStatement`      | —      |
+| `ReturnStatement`     | `printReturnStatement`     | —      |
+| `BreakStatement`      | `printBreakStatement`      | —      |
+| `ContinueStatement`   | `printContinueStatement`   | —      |
+| `IfStatement`         | `printIfStatement`         | —      |
+| `WhileStatement`      | `printWhileStatement`      | —      |
+| `ForStatement`        | `printForStatement`        | —      |
+| `ForInStatement`      | `printForInStatement`      | —      |
 
 **Tier 3 — Functions (P1)**
 
-| AST Node | Print function | Status |
-|---|---|---|
-| `FunctionExpression` | `printFunctionExpression` | — |
-| `Parameter` | `printParameter` | — |
-| `TypeParameter` | `printTypeParameter` | — |
+| AST Node             | Print function            | Status |
+| -------------------- | ------------------------- | ------ |
+| `FunctionExpression` | `printFunctionExpression` | —      |
+| `Parameter`          | `printParameter`          | —      |
+| `TypeParameter`      | `printTypeParameter`      | —      |
 
 **Tier 4 — Classes & Types (P1)**
 
-| AST Node | Print function | Status |
-|---|---|---|
-| `ClassDeclaration` | `printClassDeclaration` | — |
-| `FieldDefinition` | `printFieldDefinition` | — |
-| `MethodDefinition` | `printMethodDefinition` | — |
-| `AccessorDeclaration` | `printAccessorDeclaration` | — |
-| `InterfaceDeclaration` | `printInterfaceDeclaration` | — |
-| `MixinDeclaration` | `printMixinDeclaration` | — |
-| `EnumDeclaration` | `printEnumDeclaration` | — |
-| `TypeAliasDeclaration` | `printTypeAliasDeclaration` | — |
+| AST Node               | Print function              | Status |
+| ---------------------- | --------------------------- | ------ |
+| `ClassDeclaration`     | `printClassDeclaration`     | —      |
+| `FieldDefinition`      | `printFieldDefinition`      | —      |
+| `MethodDefinition`     | `printMethodDefinition`     | —      |
+| `AccessorDeclaration`  | `printAccessorDeclaration`  | —      |
+| `InterfaceDeclaration` | `printInterfaceDeclaration` | —      |
+| `MixinDeclaration`     | `printMixinDeclaration`     | —      |
+| `EnumDeclaration`      | `printEnumDeclaration`      | —      |
+| `TypeAliasDeclaration` | `printTypeAliasDeclaration` | —      |
 
 **Tier 5 — Patterns & Advanced (P2)**
 
-| AST Node | Print function | Status |
-|---|---|---|
-| `MatchExpression` | `printMatchExpression` | — |
-| `MatchCase` | `printMatchCase` | — |
-| `RecordPattern` | `printRecordPattern` | — |
-| `TuplePattern` | `printTuplePattern` | — |
-| `InlineTuplePattern` | `printInlineTuplePattern` | — |
-| `ClassPattern` | `printClassPattern` | — |
-| `LogicalPattern` | `printLogicalPattern` | — |
-| `AsPattern` | `printAsPattern` | — |
-| `TryExpression` | `printTryExpression` | — |
-| `CatchClause` | `printCatchClause` | — |
-| `ImportDeclaration` | `printImportDeclaration` | — |
-| `ExportAllDeclaration` | `printExportAllDeclaration` | — |
-| `Decorator` | `printDecorator` | — |
-| `DeclareFunction` | `printDeclareFunction` | — |
+| AST Node               | Print function              | Status |
+| ---------------------- | --------------------------- | ------ |
+| `MatchExpression`      | `printMatchExpression`      | —      |
+| `MatchCase`            | `printMatchCase`            | —      |
+| `RecordPattern`        | `printRecordPattern`        | —      |
+| `TuplePattern`         | `printTuplePattern`         | —      |
+| `InlineTuplePattern`   | `printInlineTuplePattern`   | —      |
+| `ClassPattern`         | `printClassPattern`         | —      |
+| `LogicalPattern`       | `printLogicalPattern`       | —      |
+| `AsPattern`            | `printAsPattern`            | —      |
+| `TryExpression`        | `printTryExpression`        | —      |
+| `CatchClause`          | `printCatchClause`          | —      |
+| `ImportDeclaration`    | `printImportDeclaration`    | —      |
+| `ExportAllDeclaration` | `printExportAllDeclaration` | —      |
+| `Decorator`            | `printDecorator`            | —      |
+| `DeclareFunction`      | `printDeclareFunction`      | —      |
 
 **Type Annotations**
 
-| AST Node | Print function | Status |
-|---|---|---|
-| `NamedTypeAnnotation` | `printNamedType` | — |
-| `UnionTypeAnnotation` | `printUnionType` | — |
-| `FunctionTypeAnnotation` | `printFunctionType` | — |
-| `RecordTypeAnnotation` | `printRecordType` | — |
-| `TupleTypeAnnotation` | `printTupleType` | — |
-| `InlineTupleTypeAnnotation` | `printInlineTupleType` | — |
-| `LiteralTypeAnnotation` | `printLiteralType` | — |
-| `ThisTypeAnnotation` | `printThisType` | — |
+| AST Node                    | Print function         | Status |
+| --------------------------- | ---------------------- | ------ |
+| `NamedTypeAnnotation`       | `printNamedType`       | —      |
+| `UnionTypeAnnotation`       | `printUnionType`       | —      |
+| `FunctionTypeAnnotation`    | `printFunctionType`    | —      |
+| `RecordTypeAnnotation`      | `printRecordType`      | —      |
+| `TupleTypeAnnotation`       | `printTupleType`       | —      |
+| `InlineTupleTypeAnnotation` | `printInlineTupleType` | —      |
+| `LiteralTypeAnnotation`     | `printLiteralType`     | —      |
+| `ThisTypeAnnotation`        | `printThisType`        | —      |
 
 ---
 
