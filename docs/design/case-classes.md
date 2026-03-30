@@ -421,6 +421,107 @@ embedded DSLs.
 This is not planned for the initial implementation but the `extends` clause
 on inline case variants provides a natural syntax for it.
 
+#### Shared base fields
+
+Sealed hierarchies often have fields shared by all variants — the canonical
+example is a source location (`loc`) on every AST node. There are three
+approaches, each with different trade-offs.
+
+**Approach 1: Constructor forwarding (ideal)**
+
+The base class declares the shared field as a case parameter, and each variant
+forwards its own `loc` to the base via `extends`:
+
+```zena
+sealed class Node(loc: SourceLocation) {
+  case Expr, Stmt
+  span(): Span => loc.toSpan()
+}
+
+// Distributed variant — regular class can call super()
+class Binary(left: Expr, op: Token, right: Expr, loc: SourceLocation) extends Node
+
+// Inline variant — requires constructor forwarding syntax
+sealed class Expr(loc: SourceLocation) extends Node {
+  case Binary(left: Expr, op: Token, right: Expr, loc: SourceLocation) extends Expr(loc)
+}
+```
+
+This is the most ergonomic syntax and is shown in the examples section below.
+However, it requires parser and checker support for constructor argument
+forwarding on inline `case` variants (`extends Expr(loc)`), which is not yet
+implemented. Distributed variants (regular classes) can already call `super()`
+in their constructors, so this approach works today for distributed variants.
+
+**Approach 2: Abstract fields (interim)**
+
+The base class declares the shared field as `abstract`, and each concrete
+variant includes it in its case parameters:
+
+```zena
+sealed class Node {
+  case Expr, Stmt
+  abstract loc: SourceLocation | null
+  span(): Span => loc.toSpan()
+}
+
+sealed abstract class Expr extends Node {
+  case Binary, Literal, Ident
+}
+
+class Binary(left: Expr, op: Token, right: Expr, loc: SourceLocation | null) extends Expr
+class Literal(value: i32, loc: SourceLocation | null) extends Expr
+```
+
+Each concrete variant's `loc` case parameter generates a field + getter that
+satisfies the abstract declaration. This works today with no compiler changes
+beyond what is already implemented for abstract fields and case classes.
+
+The trade-off is that the base class has no field storage for `loc` — it's
+only accessible through the virtual getter. This means every access goes
+through the vtable, though the engine may devirtualize this since the hierarchy
+is sealed.
+
+> **Known issue**: When a case parameter has the same name as an inherited
+> abstract field, the compiler currently generates duplicate vtable entries
+> (one from the abstract field, one from the case parameter getter). This is
+> a pre-existing bug that also affects regular fields and should be fixed
+> separately.
+
+**Approach 3: Regular classes with explicit constructors**
+
+For maximum control, use regular class declarations with manual `super()` calls:
+
+```zena
+sealed class Node {
+  case Expr, Stmt
+  loc: SourceLocation | null
+  new(loc: SourceLocation | null) : loc = loc {}
+}
+
+abstract class Expr extends Node {
+  // ... listed in Node's case declaration
+}
+
+class Binary extends Expr {
+  let left: Expr
+  let op: Token
+  let right: Expr
+  new(left: Expr, op: Token, right: Expr, loc: SourceLocation | null) :
+    left = left, op = op, right = right { super(loc) }
+}
+```
+
+This works today but sacrifices the conciseness that makes case classes
+attractive. It's viable for small hierarchies but impractical for 50+ AST
+node types.
+
+**Recommendation**: Use **Approach 2 (abstract fields)** for near-term sealed
+hierarchies like the self-hosted compiler AST. Plan **Approach 1 (constructor
+forwarding)** as a future enhancement once inline `case` variants support
+`extends Base(args)` syntax. This keeps the existing examples in this document
+as the target design while providing a working solution today.
+
 ### 4. Adding Methods and State to Variants
 
 Case classes start as pure data but can grow incrementally:
