@@ -86,7 +86,8 @@ import {
   TryExpression,
   CatchClause,
   EnumDeclaration,
-  EnumMember
+  EnumMember,
+  SealedVariant
 } from './ast.zena';
 
 // ============================================================================
@@ -197,6 +198,11 @@ export class Parser {
     }
     if (this.#match(TokenType.Var)) {
       return this.#parseVariableDeclaration('var', exported, startToken);
+    }
+    
+    // Sealed class declarations
+    if (this.#check(TokenType.Sealed)) {
+      return this.#parseSealedClassEntry(exported, startToken);
     }
     
     // Class declarations
@@ -1732,7 +1738,8 @@ export class Parser {
       || t == TokenType.With
       || t == TokenType.Case
       || t == TokenType.Match
-      || t == TokenType.Throw;
+      || t == TokenType.Throw
+      || t == TokenType.Sealed;
   }
 
   #parseIdentifier(): Identifier {
@@ -1767,10 +1774,18 @@ export class Parser {
     }
     
     this.#consume(TokenType.Class, "Expected 'class'");
-    return this.#parseClassDeclaration(exported, isFinal, isAbstract, isExtension, startToken);
+    return this.#parseClassDeclaration(exported, isFinal, isAbstract, isExtension, false, startToken);
   }
   
-  #parseClassDeclaration(exported: boolean, isFinal: boolean, isAbstract: boolean, isExtension: boolean, startToken: Token): ClassDeclaration {
+  #parseSealedClassEntry(exported: boolean, startToken: Token): ClassDeclaration {
+    this.#consume(TokenType.Sealed, "Expected 'sealed'");
+    // sealed abstract class ...
+    let isAbstract = this.#match(TokenType.Abstract);
+    this.#consume(TokenType.Class, "Expected 'class' after 'sealed'");
+    return this.#parseClassDeclaration(exported, false, isAbstract, false, true, startToken);
+  }
+  
+  #parseClassDeclaration(exported: boolean, isFinal: boolean, isAbstract: boolean, isExtension: boolean, isSealed: boolean, startToken: Token): ClassDeclaration {
     let name = this.#parseIdentifier();
     
     // Type parameters: class Foo<T, U>
@@ -1833,9 +1848,14 @@ export class Parser {
     
     // Body is optional for case classes
     let body = new Array<Node>(8);
+    let sealedVariants = new Array<SealedVariant>(4);
     if (this.#match(TokenType.LBrace)) {
       while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
-        body.push(this.#parseClassMember());
+        if (isSealed && this.#check(TokenType.Case)) {
+          this.#parseSealedVariants(sealedVariants);
+        } else {
+          body.push(this.#parseClassMember());
+        }
       }
       this.#consume(TokenType.RBrace, "Expected '}' after class body");
     } else if (caseParams == null) {
@@ -1844,7 +1864,9 @@ export class Parser {
     
     return new ClassDeclaration(
       name, typeParameters, caseParams, superClass, mixins, implementsList,
-      body, exported, isFinal, isAbstract, isExtension, onType, this.#makeLocation(startToken)
+      body, exported, isFinal, isAbstract, isExtension, isSealed,
+      if (sealedVariants.length > 0) { sealedVariants } else { null },
+      onType, this.#makeLocation(startToken)
     );
   }
   
@@ -1860,6 +1882,33 @@ export class Parser {
     this.#consume(TokenType.Colon, "Expected ':' after case class parameter name");
     let typeAnnotation = this.#parseTypeAnnotation();
     return new CaseClassParam(paramName, typeAnnotation, mutability, this.#makeLocation(paramStart));
+  }
+  
+  #parseSealedVariants(variants: Array<SealedVariant>): void {
+    this.#consume(TokenType.Case, "Expected 'case' for sealed variant");
+    // Parse comma-separated variants: case A, B, C(x: i32)
+    variants.push(this.#parseSealedVariant());
+    while (this.#match(TokenType.Comma)) {
+      variants.push(this.#parseSealedVariant());
+    }
+  }
+  
+  #parseSealedVariant(): SealedVariant {
+    let variantStart = this.#peek();
+    let variantName = this.#parseIdentifier();
+    var params: Array<CaseClassParam> | null = null;
+    if (this.#match(TokenType.LParen)) {
+      let ps = new Array<CaseClassParam>(4);
+      if (!this.#check(TokenType.RParen)) {
+        ps.push(this.#parseCaseClassParam());
+        while (this.#match(TokenType.Comma)) {
+          ps.push(this.#parseCaseClassParam());
+        }
+      }
+      this.#consume(TokenType.RParen, "Expected ')' after sealed variant parameters");
+      params = ps;
+    }
+    return new SealedVariant(variantName, params, this.#makeLocation(variantStart));
   }
   
   #parseClassMember(): Node {

@@ -106,6 +106,7 @@ import {
   type SymbolDeclaration,
   type LetPatternCondition,
   type CaseClassParam,
+  type SealedVariant,
 } from './ast.js';
 
 /**
@@ -139,6 +140,7 @@ export interface Visitor<T = void> {
   visitForInStatement?(node: ForInStatement, context: T): void;
   visitClassDeclaration?(node: ClassDeclaration, context: T): void;
   visitCaseClassParam?(node: CaseClassParam, context: T): void;
+  visitSealedVariant?(node: SealedVariant, context: T): void;
   visitInterfaceDeclaration?(node: InterfaceDeclaration, context: T): void;
   visitMixinDeclaration?(node: MixinDeclaration, context: T): void;
   visitDeclareFunction?(node: DeclareFunction, context: T): void;
@@ -837,6 +839,9 @@ function visitClassDeclarationChildren<T>(
   }
   for (const param of node.caseParams ?? []) {
     visit(param, visitor, context);
+  }
+  for (const variant of node.sealedVariants ?? []) {
+    visitor.visitSealedVariant?.(variant, context);
   }
   visitTypeAnnotation(node.superClass, visitor, context);
   for (const mixin of node.mixins ?? []) {

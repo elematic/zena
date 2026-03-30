@@ -1326,6 +1326,70 @@ extension class StringExt on String {
 "".isEmpty();       // true
 ```
 
+### Case Classes
+
+A class with a parameter list after its name is a **case class**—a concise
+declaration that auto-generates fields, a constructor, `operator ==`, and
+`hashCode()`. Case classes are **implicitly final** and cannot be extended.
+
+```ts
+class Point(x: f64, y: f64)
+
+let a = new Point(1.0, 2.0);
+let b = new Point(1.0, 2.0);
+a == b;    // true (structural equality)
+a.x;       // 1.0
+```
+
+Case classes can have a body for additional members, and support `extends`,
+`with`, and `implements`:
+
+```ts
+class Point(x: f64, y: f64) {
+  distance(): f64 { return sqrt(x * x + y * y); }
+}
+
+class Counter(name: String, var count: i32)  // var for mutable fields
+class Pair<A, B>(first: A, second: B)        // Generic case classes
+class Event(name: String) with Timestamped implements Hashable
+```
+
+### Sealed Classes
+
+Sealed classes restrict which classes can extend them. Only the variants listed
+in the sealed class body (or explicitly allowed) may be direct subclasses. This
+enables exhaustive pattern matching—the compiler knows every possible case.
+
+Sealed classes are **implicitly abstract** and cannot be instantiated directly.
+
+```ts
+sealed class Expr {
+  case Binary(left: Expr, op: String, right: Expr)
+  case Literal(value: i32)
+  case Unary(op: String, expr: Expr)
+}
+
+// Inline variants are case classes—with auto-generated fields, ==, hashCode
+
+let expr = new Binary(new Literal(1), '+', new Literal(2));
+
+// Exhaustive match—compiler ensures all cases are covered
+let result = match (expr) {
+  case Binary { left, op, right }: eval(left) + eval(right)
+  case Literal { value }: value
+  case Unary { op, expr }: -eval(expr)
+};
+```
+
+Variants can also be declared separately using `extends`:
+
+```ts
+sealed class Shape { }
+
+class Circle(radius: f64) extends Shape
+class Rectangle(width: f64, height: f64) extends Shape
+```
+
 ### Operator Overloading
 
 Classes can overload operators to provide custom behavior for built-in syntax.

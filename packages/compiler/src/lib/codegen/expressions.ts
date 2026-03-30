@@ -2350,6 +2350,16 @@ function generateNewExpression(
     );
   }
 
+  // Unit variant singleton: use global.get instead of allocating
+  if (
+    classInfo.singletonGlobalIndex !== undefined &&
+    expr.arguments.length === 0
+  ) {
+    body.push(Opcode.global_get);
+    body.push(...WasmModule.encodeSignedLEB128(classInfo.singletonGlobalIndex));
+    return;
+  }
+
   if (classInfo.isExtension && classInfo.onType) {
     // Extension class instantiation
     const ctor = classInfo.methods.get(CONSTRUCTOR_NAME);
@@ -11280,6 +11290,24 @@ function generateMatchPatternCheck(
 ) {
   switch ((pattern as any).type) {
     case NodeType.Identifier:
+      // Check if this is a sealed variant pattern (has inferredType from checker)
+      if ((pattern as any).inferredType?.kind === TypeKind.Class) {
+        const variantType = (pattern as any).inferredType as ClassType;
+        const classInfo = ctx.getClassInfo(variantType);
+        if (classInfo) {
+          // Generate ref.test for the variant's struct type
+          body.push(
+            Opcode.local_get,
+            ...WasmModule.encodeSignedLEB128(discriminantLocal),
+          );
+          body.push(0xfb, GcOpcode.ref_test_null);
+          body.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+          break;
+        }
+      }
+      // Regular variable pattern - always matches
       body.push(Opcode.i32_const, 1);
       break;
 

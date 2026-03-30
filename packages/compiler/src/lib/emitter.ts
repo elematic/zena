@@ -95,12 +95,13 @@ export class WasmModule {
     index: number,
     fields: {type: number[]; mutable: boolean}[],
     superTypeIndex?: number,
+    isFinal?: boolean,
   ): void {
     const internalIndex = this.#toInternalIndex(index);
     if (this.#types[internalIndex] !== null) {
       throw new Error(`Type at index ${index} is already defined`);
     }
-    const buffer = this.#encodeStructType(fields, superTypeIndex);
+    const buffer = this.#encodeStructType(fields, superTypeIndex, isFinal);
     this.#types[internalIndex] = buffer;
   }
 
@@ -113,22 +114,23 @@ export class WasmModule {
     index: number,
     fields: {type: number[]; mutable: boolean}[],
     superTypeIndex?: number,
+    isFinal?: boolean,
   ): void {
     const internalIndex = this.#toInternalIndex(index);
     if (internalIndex < 0 || internalIndex >= this.#types.length) {
       throw new Error(`Invalid type index: ${index}`);
     }
-    const buffer = this.#encodeStructType(fields, superTypeIndex);
+    const buffer = this.#encodeStructType(fields, superTypeIndex, isFinal);
     this.#types[internalIndex] = buffer;
   }
 
   #encodeStructType(
     fields: {type: number[]; mutable: boolean}[],
     superTypeIndex?: number,
+    isFinal?: boolean,
   ): number[] {
     const buffer: number[] = [];
-    // Always use sub to allow extensibility
-    buffer.push(0x50); // sub
+    buffer.push(isFinal ? 0x4f : 0x50); // sub final or sub
     if (superTypeIndex !== undefined) {
       this.#writeUnsignedLEB128(buffer, 1);
       this.#writeUnsignedLEB128(buffer, superTypeIndex);
@@ -148,8 +150,9 @@ export class WasmModule {
   public addStructType(
     fields: {type: number[]; mutable: boolean}[],
     superTypeIndex?: number,
+    isFinal?: boolean,
   ): number {
-    const buffer = this.#encodeStructType(fields, superTypeIndex);
+    const buffer = this.#encodeStructType(fields, superTypeIndex, isFinal);
     this.#types.push(buffer);
     // External index accounts for pre-rec types
     return this.#preRecTypes.length + this.#types.length - 1;

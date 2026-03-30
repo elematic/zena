@@ -545,6 +545,27 @@ export function checkMatchPattern(
       // Variable pattern: matches anything, binds variable
       // If name is '_', it's a wildcard (no binding)
       if (pattern.name !== '_') {
+        // Check if identifier refers to a sealed variant (unit variant pattern)
+        const resolvedType = ctx.resolveType(pattern.name);
+        if (
+          resolvedType &&
+          resolvedType.kind === TypeKind.Class &&
+          discriminantType.kind === TypeKind.Class
+        ) {
+          const discClass = discriminantType as ClassType;
+          if (
+            discClass.isSealed &&
+            discClass.sealedVariants?.some(
+              (v) =>
+                v === resolvedType ||
+                v.name === (resolvedType as ClassType).name,
+            )
+          ) {
+            // Treat as a class pattern for sealed variant
+            (pattern as any).inferredType = resolvedType;
+            break;
+          }
+        }
         ctx.declare(pattern.name, discriminantType, 'let', pattern);
       }
       break;
@@ -3915,8 +3936,67 @@ function subtractType(
   if (pattern.type === NodeType.Identifier && pattern.name === '_') {
     return Types.Never;
   }
+
+  // Helper: subtract a pattern type from sealed variants, handling transitive
+  // sealed hierarchies (sum of sums). If a variant is itself sealed and the
+  // pattern covers one of its sub-variants, recursively subtract.
+  const subtractFromSealedVariants = (
+    variants: ClassType[],
+    patType: Type,
+  ): ClassType[] | null => {
+    const remaining: ClassType[] = [];
+    let changed = false;
+    for (const v of variants) {
+      if (isAssignableTo(ctx, v, patType)) {
+        // Pattern directly covers this variant
+        changed = true;
+        continue;
+      }
+      // If variant is itself sealed, check if pattern covers a sub-variant
+      if (v.isSealed && v.sealedVariants && v.sealedVariants.length > 0) {
+        const subRemaining = subtractFromSealedVariants(
+          v.sealedVariants,
+          patType,
+        );
+        if (subRemaining !== null) {
+          changed = true;
+          if (subRemaining.length > 0) {
+            // Partially covered — keep variant with fewer sub-variants
+            remaining.push({...v, sealedVariants: subRemaining} as ClassType);
+          }
+          // else: fully covered — drop this variant
+          continue;
+        }
+      }
+      remaining.push(v);
+    }
+    return changed ? remaining : null;
+  };
+
   // Handle Variable Pattern (matches everything)
+  // But check if this is a sealed variant pattern first
   if (pattern.type === NodeType.Identifier) {
+    if ((pattern as any).inferredType) {
+      // This is a sealed variant pattern - treat like a class pattern
+      const patType = (pattern as any).inferredType as Type;
+      if (type.kind === TypeKind.Class) {
+        const classType = type as ClassType;
+        if (classType.isSealed && classType.sealedVariants && patType) {
+          const remaining = subtractFromSealedVariants(
+            classType.sealedVariants,
+            patType,
+          );
+          if (remaining !== null) {
+            if (remaining.length === 0) return Types.Never;
+            return {
+              ...classType,
+              sealedVariants: remaining,
+            } as ClassType;
+          }
+        }
+      }
+      return type;
+    }
     return Types.Never;
   }
   if (pattern.type === NodeType.AsPattern) {
@@ -3954,6 +4034,8 @@ function subtractType(
     const patType = ctx.resolveType(className);
 
     if (type.kind === TypeKind.Class) {
+      const classType = type as ClassType;
+
       if (patType && isAssignableTo(ctx, type, patType)) {
         // Pattern class covers the type.
         // Check properties.
@@ -3961,6 +4043,21 @@ function subtractType(
 
         // If properties are present, we assume it's partial unless we prove otherwise.
         // For now, assume if there are properties, it's NOT exhaustive for the class.
+      }
+
+      // Sealed class exhaustiveness: matching a variant subtracts it from the variant set
+      if (classType.isSealed && classType.sealedVariants && patType) {
+        const remaining = subtractFromSealedVariants(
+          classType.sealedVariants,
+          patType,
+        );
+        if (remaining !== null) {
+          if (remaining.length === 0) return Types.Never;
+          return {
+            ...classType,
+            sealedVariants: remaining,
+          } as ClassType;
+        }
       }
     }
     return type;

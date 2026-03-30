@@ -1,0 +1,36 @@
+// @mode: run
+// @result: 10
+// Sum of sums: match on root type with all concrete leaf cases
+sealed class Node {
+  case Expr, Stmt
+}
+
+sealed class Expr extends Node {
+  case Binary, Literal
+}
+
+class Binary(left: Expr, right: Expr) extends Expr
+class Literal(value: i32) extends Expr
+
+sealed class Stmt extends Node {
+  case Print
+}
+
+class Print(expr: Expr) extends Stmt
+
+let eval = (e: Expr): i32 => match (e) {
+  case Literal { value as v }: v
+  case Binary { left as l, right as r }: eval(l) + eval(r)
+};
+
+// Match on Node with all concrete leaf cases — transitive exhaustiveness
+let describe = (n: Node): string => match (n) {
+  case Binary {}: "binary"
+  case Literal {}: "literal"
+  case Print {}: "print"
+};
+
+export let main = (): i32 => {
+  let e: Expr = new Binary(new Literal(3), new Literal(7));
+  return eval(e);
+};

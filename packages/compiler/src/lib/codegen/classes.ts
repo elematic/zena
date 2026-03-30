@@ -81,6 +81,64 @@ export function hasImmutableFields(classInfo: ClassInfo): boolean {
   return false;
 }
 
+/**
+ * Check if a class has only internal fields (vtable, brands) and no user-defined fields.
+ * Used to detect unit variants in sealed hierarchies for singleton optimization.
+ */
+function hasOnlyInternalFields(classInfo: ClassInfo): boolean {
+  for (const [name] of classInfo.fields) {
+    if (name === '__vtable' || name.startsWith('__brand_')) continue;
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Create a singleton global for a unit variant class.
+ * The global holds a pre-allocated instance with only vtable and brand fields.
+ */
+function createUnitVariantSingleton(
+  ctx: CodegenContext,
+  classInfo: ClassInfo,
+): void {
+  // Build the struct.new init expression for all fields in index order
+  const initBytes: number[] = [];
+  const sortedFields = Array.from(classInfo.fields.entries()).sort(
+    (a, b) => a[1].index - b[1].index,
+  );
+
+  for (const [name, info] of sortedFields) {
+    if (name === '__vtable') {
+      if (classInfo.vtableGlobalIndex !== undefined) {
+        initBytes.push(Opcode.global_get);
+        initBytes.push(
+          ...WasmModule.encodeSignedLEB128(classInfo.vtableGlobalIndex),
+        );
+      } else {
+        initBytes.push(Opcode.ref_null);
+        initBytes.push(HeapType.eq);
+      }
+    } else if (name.startsWith('__brand_')) {
+      initBytes.push(Opcode.ref_null);
+      // Extract the heap type from the field type (skip the ref_null prefix byte)
+      for (let i = 1; i < info.type.length; i++) {
+        initBytes.push(info.type[i]);
+      }
+    }
+  }
+
+  initBytes.push(0xfb, GcOpcode.struct_new);
+  initBytes.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
+
+  const globalIndex = ctx.module.addGlobal(
+    [ValType.ref, ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex)],
+    false, // immutable
+    initBytes,
+  );
+
+  classInfo.singletonGlobalIndex = globalIndex;
+}
+
 import {ExportDesc, GcOpcode, HeapType, Opcode, ValType} from '../wasm.js';
 import type {CodegenContext} from './context.js';
 import {
@@ -2381,7 +2439,13 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   }
 
   // Define the struct type at the reserved index
-  ctx.module.defineStructType(structTypeIndex, fieldTypes, superTypeIndex);
+  const isFinal = !!(decl.isFinal || decl.caseParams);
+  ctx.module.defineStructType(
+    structTypeIndex,
+    fieldTypes,
+    superTypeIndex,
+    isFinal,
+  );
 
   let onType: number[] | undefined;
   // Note: Extension classes return early at the top of this function,
@@ -2475,7 +2539,9 @@ export function registerClassMethods(
         inferredType: p.typeAnnotation.inferredType,
       })) as any[];
       const bodyStmts: any[] = [];
-      if (currentSuperClassInfo) {
+      // Only add super() if we're NOT using the struct_new pattern (immutable fields)
+      // The struct_new pattern initializes all fields (incl. inherited) directly.
+      if (currentSuperClassInfo && !hasImmutableFields(classInfo)) {
         bodyStmts.push({
           type: NodeType.ExpressionStatement,
           expression: {
@@ -2498,7 +2564,7 @@ export function registerClassMethods(
       } as MethodDefinition & {_caseClassCtor?: boolean});
     } else {
       const bodyStmts: any[] = [];
-      if (currentSuperClassInfo) {
+      if (currentSuperClassInfo && !hasImmutableFields(classInfo)) {
         bodyStmts.push({
           type: NodeType.ExpressionStatement,
           expression: {
@@ -3320,6 +3386,11 @@ export function registerClassMethods(
   classInfo.vtableTypeIndex = vtableTypeIndex;
   classInfo.vtableGlobalIndex = vtableGlobalIndex;
 
+  // Create singleton global for unit variant classes (sealed hierarchy optimization)
+  if (classInfo.superClass && hasOnlyInternalFields(classInfo)) {
+    createUnitVariantSingleton(ctx, classInfo);
+  }
+
   generateInterfaceVTable(ctx, classInfo, decl);
 
   if (ctx.shouldExport(decl) && !decl.isExtension) {
@@ -3470,7 +3541,8 @@ export function generateClassMethods(
         inferredType: p.typeAnnotation.inferredType,
       })) as any[];
       const bodyStmts: any[] = [];
-      if (decl.superClass) {
+      // Only add super() if we're NOT using the struct_new pattern (immutable fields)
+      if (decl.superClass && !hasImmutableFields(classInfo)) {
         bodyStmts.push({
           type: NodeType.ExpressionStatement,
           expression: {
@@ -3493,7 +3565,7 @@ export function generateClassMethods(
       } as MethodDefinition & {_caseClassCtor?: boolean});
     } else {
       const bodyStmts: any[] = [];
-      if (decl.superClass) {
+      if (decl.superClass && !hasImmutableFields(classInfo)) {
         bodyStmts.push({
           type: NodeType.ExpressionStatement,
           expression: {
@@ -3742,7 +3814,7 @@ export function generateClassMethods(
         // Re-check for immutable fields at body generation time
         const classHasImmutableFields = hasImmutableFields(classInfo);
 
-        if (classHasImmutableFields && !hasSuperClass) {
+        if (classHasImmutableFields) {
           // For classes with immutable fields, use struct_new pattern:
           // 1. Build a map of field values from initializer list and inline defaults
           // 2. Generate values for all fields in index order
@@ -3862,10 +3934,8 @@ export function generateClassMethods(
               continue;
             }
             if (name.startsWith('__brand_')) {
-              // Brand field - push null of brand type
-              body.push(Opcode.ref_null);
-              const brandTypeIndex = classInfo.brandTypeIndex!;
-              body.push(...WasmModule.encodeSignedLEB128(brandTypeIndex));
+              // Brand field - push null of the correct brand type from field info
+              generateDefaultValue(ctx, info.type, body);
               continue;
             }
 
@@ -4100,6 +4170,32 @@ export function generateClassMethods(
                   initializedFields,
                   body,
                 );
+
+                // For case class constructors with superclass, initialize case param fields
+                if ((member as any)._caseClassCtor && decl.caseParams) {
+                  for (let i = 0; i < decl.caseParams.length; i++) {
+                    const paramName = decl.caseParams[i].name.name;
+                    const fieldName = manglePrivateName(
+                      decl.name.name,
+                      paramName,
+                    );
+                    const fieldInfo = classInfo.fields.get(fieldName);
+                    if (fieldInfo) {
+                      body.push(Opcode.local_get, 0); // this
+                      body.push(Opcode.local_get);
+                      body.push(...WasmModule.encodeSignedLEB128(i + 1)); // params start at 1 (after this)
+                      body.push(0xfb, GcOpcode.struct_set);
+                      body.push(
+                        ...WasmModule.encodeSignedLEB128(
+                          classInfo.structTypeIndex,
+                        ),
+                      );
+                      body.push(
+                        ...WasmModule.encodeSignedLEB128(fieldInfo.index),
+                      );
+                    }
+                  }
+                }
               }
             }
 
@@ -5044,7 +5140,13 @@ function instantiateClassImpl(
       }
     }
 
-    ctx.module.defineStructType(structTypeIndex, fieldTypes, superTypeIndex);
+    const isFinal = !!(decl.isFinal || decl.caseParams);
+    ctx.module.defineStructType(
+      structTypeIndex,
+      fieldTypes,
+      superTypeIndex,
+      isFinal,
+    );
   }
 
   const methods = new Map<
@@ -5177,7 +5279,8 @@ function instantiateClassImpl(
           inferredType: p.typeAnnotation.inferredType,
         })) as any[];
         const bodyStmts: any[] = [];
-        if (decl.superClass) {
+        // Only add super() if we're NOT using the struct_new pattern (immutable fields)
+        if (decl.superClass && !hasImmutableFields(classInfo)) {
           bodyStmts.push({
             type: NodeType.ExpressionStatement,
             expression: {
@@ -5200,7 +5303,7 @@ function instantiateClassImpl(
         } as MethodDefinition & {_caseClassCtor?: boolean});
       } else {
         const bodyStmts: any[] = [];
-        if (decl.superClass) {
+        if (decl.superClass && !hasImmutableFields(classInfo)) {
           bodyStmts.push({
             type: NodeType.ExpressionStatement,
             expression: {
@@ -5875,6 +5978,11 @@ function instantiateClassImpl(
     classInfo.vtableTypeIndex = vtableTypeIndex;
     classInfo.vtableGlobalIndex = vtableGlobalIndex;
 
+    // Create singleton global for unit variant classes (sealed hierarchy optimization)
+    if (classInfo.superClass && hasOnlyInternalFields(classInfo)) {
+      createUnitVariantSingleton(ctx, classInfo);
+    }
+
     generateInterfaceVTable(ctx, classInfo, decl);
 
     if (ctx.shouldExport(decl) && structTypeIndex !== -1) {
@@ -6041,7 +6149,16 @@ function generateMixinFieldInitializers(
 
 /**
  * Generate the body of an auto-generated operator == for a case class.
- * Compares each case param field by value, ANDing results together.
+ * First checks runtime type identity via ref.test, then compares each
+ * case param field by value, ANDing results together.
+ *
+ * The type check ensures that a base class instance and a subclass instance
+ * with identical fields are NOT considered equal, preserving symmetry
+ * (a == b iff b == a).
+ *
+ * TODO: Elide the ref.test when the class is provably a leaf (final, no
+ * known subclasses). This is safe because ref.test is only needed to
+ * distinguish base/subclass instances with the same field prefix.
  */
 function generateCaseClassEqBody(
   ctx: CodegenContext,
@@ -6053,10 +6170,30 @@ function generateCaseClassEqBody(
   const structTypeIndex = classInfo.structTypeIndex;
 
   if (caseParams.length === 0) {
-    // No fields - always equal
-    body.push(Opcode.i32_const, 1);
+    // No fields - check type identity only
+    body.push(Opcode.local_get, 1); // other
+    body.push(0xfb, GcOpcode.ref_test);
+    body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
     return;
   }
+
+  // Guard: check that 'other' is an instance of exactly this class's type.
+  // Case classes use sub final, so ref.test is an exact type check (no
+  // subtypes exist). This guard is needed when == is called through a
+  // superclass reference (e.g., sealed class dispatch) where the static
+  // type of 'other' is the parent class, not this specific variant.
+  //
+  // TODO: Elide the ref.test when we can statically prove both operands
+  // are the same concrete type (e.g., both are Circle, not Shape).
+  //
+  //   if (!(other ref.test ThisStruct)) return false;
+  body.push(Opcode.local_get, 1); // other
+  body.push(0xfb, GcOpcode.ref_test);
+  body.push(...WasmModule.encodeSignedLEB128(structTypeIndex));
+  body.push(Opcode.i32_eqz);
+  body.push(Opcode.if, ValType.i32);
+  body.push(Opcode.i32_const, 0); // false
+  body.push(Opcode.else);
 
   // Generate field-by-field comparison
   // For each field: get this.field, get other.field, compare
@@ -6100,6 +6237,8 @@ function generateCaseClassEqBody(
     }
     firstField = false;
   }
+
+  body.push(Opcode.end); // end if/else
 }
 
 /**

@@ -177,6 +177,7 @@ export interface ClassType extends Type {
   constructorType?: FunctionType;
   vtable: string[]; // Ordered list of method names
   isFinal?: boolean;
+  isCaseClass?: boolean;
   isAbstract?: boolean;
   isExtension?: boolean;
   isMixinIntermediate?: boolean; // True for synthetic intermediate mixin classes
@@ -199,6 +200,12 @@ export interface ClassType extends Type {
    * Declared fields are provided by intrinsics and don't need initialization.
    */
   declaredFields?: Set<string>;
+  /** True for sealed classes that restrict direct subclassing to listed variants. */
+  isSealed?: boolean;
+  /** The declared variant names from the AST, used for the extends restriction check. */
+  sealedVariantNames?: Set<string>;
+  /** The set of concrete variant types for a sealed class. Populated by the checker. */
+  sealedVariants?: ClassType[];
 }
 
 const I32 = {kind: TypeKind.Number, name: 'i32'} as NumberType;

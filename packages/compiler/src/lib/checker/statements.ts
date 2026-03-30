@@ -864,8 +864,16 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
     constructorType: undefined,
     vtable: [],
     isFinal: decl.isFinal,
-    isAbstract: decl.isAbstract,
+    isCaseClass: decl.caseParams ? true : undefined,
+    isAbstract: decl.isAbstract || decl.isSealed,
     isExtension: decl.isExtension,
+    isSealed: decl.isSealed || undefined,
+    sealedVariantNames:
+      decl.isSealed && decl.sealedVariants
+        ? new Set(decl.sealedVariants.map((v) => v.name.name))
+        : decl.isSealed
+          ? new Set()
+          : undefined,
     onType: undefined,
   };
 
@@ -2516,6 +2524,9 @@ function resolveMemberName(
 function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   const className = decl.name.name;
 
+  // Skip re-checking if this class was already fully checked (e.g., synthetic sealed variant)
+  if ((decl as any)._checked) return;
+
   // Local classes (classes declared inside functions) are not supported
   if (ctx.currentFunctionReturnType !== null) {
     ctx.diagnostics.reportError(
@@ -2580,6 +2591,23 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           DiagnosticCode.TypeMismatch,
           ctx.getLocation(decl.superClass!.loc),
         );
+      }
+      if (superType.isCaseClass) {
+        ctx.diagnostics.reportError(
+          `Cannot extend case class '${superType.name}'. Case classes are implicitly final.`,
+          DiagnosticCode.TypeMismatch,
+          ctx.getLocation(decl.superClass!.loc),
+        );
+      }
+      // Sealed class restriction: only listed variants can directly extend
+      if (superType.isSealed && superType.sealedVariantNames) {
+        if (!superType.sealedVariantNames.has(className)) {
+          ctx.diagnostics.reportError(
+            `Class '${className}' cannot extend sealed class '${superType.name}'. Only listed variants can directly extend a sealed class.`,
+            DiagnosticCode.TypeMismatch,
+            ctx.getLocation(decl.superClass!.loc),
+          );
+        }
       }
     }
   }
@@ -2770,8 +2798,16 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       constructorType: undefined,
       vtable: [],
       isFinal: decl.isFinal,
-      isAbstract: decl.isAbstract,
+      isCaseClass: decl.caseParams ? true : undefined,
+      isAbstract: decl.isAbstract || decl.isSealed,
       isExtension: decl.isExtension,
+      isSealed: decl.isSealed || undefined,
+      sealedVariantNames:
+        decl.isSealed && decl.sealedVariants
+          ? new Set(decl.sealedVariants.map((v) => v.name.name))
+          : decl.isSealed
+            ? new Set()
+            : undefined,
       onType: undefined,
     };
     ctx.declare(className, classType, 'type');
@@ -3291,7 +3327,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       }
       const memberName = memberNameInfo.name;
 
-      if (member.isAbstract && !decl.isAbstract) {
+      if (member.isAbstract && !decl.isAbstract && !decl.isSealed) {
         ctx.diagnostics.reportError(
           `Abstract method '${memberName}' can only appear within an abstract class.`,
           DiagnosticCode.AbstractMethodInConcreteClass,
@@ -3509,7 +3545,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   }
 
   // Check abstract methods implementation
-  if (!decl.isAbstract) {
+  if (!decl.isAbstract && !decl.isSealed) {
     for (const [name, method] of classType.methods) {
       if (method.isAbstract) {
         ctx.diagnostics.reportError(
@@ -3597,7 +3633,7 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
   ctx.initializedFields = previousInitializedFields;
 
   // Check for uninitialized non-nullable fields in classes without constructors
-  if (!classType.constructorType && !decl.isAbstract) {
+  if (!classType.constructorType && !decl.isAbstract && !decl.isSealed) {
     const superType = classType.superType;
     for (const [fieldName, fieldType] of classType.fields) {
       // Skip inherited fields
@@ -3629,8 +3665,114 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
   }
 
+  // For sealed classes without case declarations: no direct subclassing allowed
+  if (decl.isSealed && !decl.sealedVariants) {
+    classType.sealedVariants = [];
+  }
+
   ctx.exitClass();
   ctx.exitScope();
+
+  // Process sealed class variants (after exiting class scope so variants
+  // are declared in the parent scope and visible to match expressions)
+  if (decl.isSealed && decl.sealedVariants) {
+    classType.sealedVariants = [];
+
+    for (const variant of decl.sealedVariants) {
+      const variantName = variant.name.name;
+
+      // Look up the variant class type. It may be:
+      // 1. An inline variant (with params) that we need to synthesize
+      // 2. A distributed variant defined elsewhere with `extends`
+      const existingType = ctx.resolveType(variantName);
+
+      if (variant.params) {
+        // Inline variant: synthesize a case class extending this sealed class
+        if (existingType && existingType.kind === TypeKind.Class) {
+          ctx.diagnostics.reportError(
+            `Duplicate declaration: inline variant '${variantName}' conflicts with existing class.`,
+            DiagnosticCode.DuplicateDeclaration,
+            ctx.getLocation(variant.name.loc),
+          );
+          continue;
+        }
+
+        // Create the synthetic ClassDeclaration AST node for the inline variant
+        const syntheticDecl: ClassDeclaration = {
+          type: NodeType.ClassDeclaration,
+          name: variant.name,
+          caseParams: variant.params,
+          superClass: {
+            type: NodeType.TypeAnnotation,
+            name: className,
+            loc: decl.name.loc,
+          },
+          body: [],
+          exported: decl.exported,
+          isFinal: false,
+          isAbstract: false,
+          isExtension: false,
+          isSealed: false,
+          loc: variant.loc,
+        };
+
+        // Pre-declare and then check the synthetic class
+        predeclareClass(ctx, syntheticDecl);
+        checkClassDeclaration(ctx, syntheticDecl);
+
+        // Add to module body so codegen can find the class
+        if (ctx.module) {
+          ctx.module.body.push(syntheticDecl);
+        }
+
+        const variantType = syntheticDecl.inferredType as ClassType | undefined;
+        if (variantType) {
+          classType.sealedVariants.push(variantType);
+        }
+      } else {
+        // Unit variant or distributed variant (name-only reference)
+        if (existingType && existingType.kind === TypeKind.Class) {
+          // Distributed variant: already defined elsewhere with `extends`
+          classType.sealedVariants.push(existingType as ClassType);
+        } else {
+          // Unit variant: synthesize a class with no fields
+          const syntheticDecl: ClassDeclaration = {
+            type: NodeType.ClassDeclaration,
+            name: variant.name,
+            superClass: {
+              type: NodeType.TypeAnnotation,
+              name: className,
+              loc: decl.name.loc,
+            },
+            body: [],
+            exported: decl.exported,
+            isFinal: false,
+            isAbstract: false,
+            isExtension: false,
+            isSealed: false,
+            loc: variant.loc,
+          };
+
+          predeclareClass(ctx, syntheticDecl);
+          checkClassDeclaration(ctx, syntheticDecl);
+
+          // Add to module body so codegen can find the class
+          if (ctx.module) {
+            ctx.module.body.push(syntheticDecl);
+          }
+
+          const variantType = syntheticDecl.inferredType as
+            | ClassType
+            | undefined;
+          if (variantType) {
+            classType.sealedVariants.push(variantType);
+          }
+        }
+      }
+    }
+  }
+
+  (decl as any)._checked = true;
 }
 
 function checkInterfaceDeclaration(

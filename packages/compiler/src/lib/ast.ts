@@ -127,6 +127,7 @@ export const NodeType = {
   MapLiteral: 'MapLiteral',
   MapEntry: 'MapEntry',
   CaseClassParam: 'CaseClassParam',
+  SealedVariant: 'SealedVariant',
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -617,7 +618,21 @@ export interface ClassDeclaration extends Node {
   isFinal: boolean;
   isAbstract: boolean;
   isExtension: boolean;
+  isSealed: boolean;
+  /** Sealed variant declarations: `case A, B, C(x: i32)` inside sealed class body */
+  sealedVariants?: SealedVariant[];
   onType?: TypeAnnotation;
+}
+
+/**
+ * A variant declaration inside a sealed class body.
+ * Example: `case Binary(left: Expr, op: Token, right: Expr)` or `case Nil`
+ */
+export interface SealedVariant extends Node {
+  type: typeof NodeType.SealedVariant;
+  name: Identifier;
+  /** Parameters for inline variant (case class syntax) */
+  params?: CaseClassParam[];
 }
 
 export interface MixinDeclaration extends Node {

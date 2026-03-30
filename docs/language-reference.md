@@ -1898,14 +1898,21 @@ Fields are currently **mutable by default**. Use `let` for immutable fields.
 ### Case Classes
 
 A class with a parameter list after its name is a **case class** — a concise
-declaration that auto-generates fields and a constructor:
+declaration that auto-generates fields, a constructor, `operator ==`, and
+`hashCode()`:
 
 ```zena
 class Point(x: f64, y: f64)
 ```
 
 This desugars to a class with immutable fields and a constructor that assigns
-each parameter to the corresponding field. Case classes can also have a body
+each parameter to the corresponding field.
+
+**Case classes are implicitly final** — they cannot be extended by other
+classes. This ensures the correctness of auto-generated equality (which uses
+exact type identity) and enables WASM `sub final` optimization.
+
+Case classes can also have a body
 for additional members:
 
 ```zena
@@ -2084,6 +2091,93 @@ class Rect {
 
 When combined with an explicit initializer list, the `this.` assignments are applied
 first, then the explicit initializer list entries (which can override them).
+
+### Sealed Classes
+
+A `sealed` class restricts which classes can extend it. All variants must be
+declared in the same source file using `case` declarations inside the class body.
+
+Sealed classes are implicitly abstract — they cannot be instantiated directly,
+only their variants can:
+
+```zena
+sealed class Shape {
+  case Circle(radius: i32)
+  case Rect(width: i32, height: i32)
+}
+
+let s: Shape = new Circle(5); // OK
+// new Shape() would be an error — sealed classes are abstract
+```
+
+Each `case` declaration creates a subclass with the specified fields. Variants
+can also be declared without fields (**unit variants**):
+
+```zena
+sealed class Color {
+  case Red, Green, Blue
+}
+```
+
+Unit variants are allocated as singletons — multiple calls to `new Red()`
+return the same instance.
+
+Instances are created with `new`:
+
+```zena
+let s: Shape = new Circle(5);
+let c: Color = new Green();
+```
+
+#### Exhaustive pattern matching
+
+Match expressions on sealed class types must cover all variants:
+
+```zena
+let area = match (s) {
+  case Circle { radius as r }: r * r * 3
+  case Rect { width as w, height as h }: w * h
+};
+```
+
+Unit variants use identifier patterns:
+
+```zena
+let name = match (c) {
+  case Red: "red"
+  case Green: "green"
+  case Blue: "blue"
+};
+```
+
+#### Distributed variants
+
+Variants can also be declared as separate classes that extend the sealed base.
+These must still be listed in the sealed class's `case` declaration:
+
+```zena
+sealed class Expr {
+  case Add, Lit
+}
+
+class Add(left: Expr, right: Expr) extends Expr
+class Lit(value: i32) extends Expr
+```
+
+A distributed variant can itself be a sealed class, enabling nested sum types
+(sum of sums):
+
+```zena
+sealed class Node {
+  case Expr, Stmt
+}
+
+sealed class Expr extends Node {
+  case Binary, Literal
+}
+```
+
+Only classes named in the `case` declaration may extend a `sealed` class.
 
 ### Generic Classes
 

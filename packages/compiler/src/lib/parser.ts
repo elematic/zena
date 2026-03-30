@@ -51,6 +51,7 @@ import {
   type RecordPattern,
   type RecordTypeAnnotation,
   type ReturnStatement,
+  type SealedVariant,
   type SourceLocation,
   type SpreadElement,
   type Statement,
@@ -177,6 +178,7 @@ export class Parser {
             true,
             false,
             true,
+            false,
             startToken,
           );
         }
@@ -186,6 +188,19 @@ export class Parser {
           true,
           false,
           false,
+          false,
+          startToken,
+        );
+      }
+      if (this.#match(TokenType.Sealed)) {
+        const isAbstract = this.#match(TokenType.Abstract);
+        this.#consume(TokenType.Class, "Expected 'class' after 'sealed'.");
+        return this.#parseClassDeclaration(
+          true,
+          false,
+          isAbstract,
+          false,
+          true,
           startToken,
         );
       }
@@ -195,6 +210,7 @@ export class Parser {
           true,
           false,
           true,
+          false,
           false,
           startToken,
         );
@@ -206,12 +222,14 @@ export class Parser {
           false,
           false,
           true,
+          false,
           startToken,
         );
       }
       if (this.#match(TokenType.Class)) {
         return this.#parseClassDeclaration(
           true,
+          false,
           false,
           false,
           false,
@@ -273,6 +291,23 @@ export class Parser {
           true,
           false,
           false,
+          false,
+          startToken,
+        );
+      }
+      this.#current--;
+    }
+    if (this.#match(TokenType.Sealed)) {
+      // Disambiguate `sealed class` vs `sealed + 1`
+      if (this.#check(TokenType.Class) || this.#check(TokenType.Abstract)) {
+        const isAbstract = this.#match(TokenType.Abstract);
+        this.#consume(TokenType.Class, "Expected 'class' after 'sealed'.");
+        return this.#parseClassDeclaration(
+          false,
+          false,
+          isAbstract,
+          false,
+          true,
           startToken,
         );
       }
@@ -286,6 +321,7 @@ export class Parser {
           false,
           false,
           true,
+          false,
           false,
           startToken,
         );
@@ -301,6 +337,7 @@ export class Parser {
           false,
           false,
           true,
+          false,
           startToken,
         );
       }
@@ -308,6 +345,7 @@ export class Parser {
     }
     if (this.#match(TokenType.Class)) {
       return this.#parseClassDeclaration(
+        false,
         false,
         false,
         false,
@@ -2416,6 +2454,7 @@ export class Parser {
     isFinal: boolean = false,
     isAbstract: boolean = false,
     isExtension: boolean = false,
+    isSealed: boolean = false,
     startToken?: Token,
   ): ClassDeclaration {
     const actualStartToken = startToken || this.#previous();
@@ -2490,9 +2529,15 @@ export class Parser {
     // Body is optional for case classes
     const body: (FieldDefinition | MethodDefinition | AccessorDeclaration)[] =
       [];
+    const sealedVariants: SealedVariant[] = [];
     if (this.#match(TokenType.LBrace)) {
       while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
-        body.push(this.#parseClassMember());
+        // Parse `case` declarations inside sealed class bodies
+        if (isSealed && this.#check(TokenType.Case)) {
+          this.#parseSealedVariants(sealedVariants);
+        } else {
+          body.push(this.#parseClassMember());
+        }
       }
       this.#consume(TokenType.RBrace, "Expected '}' after class body.");
     } else if (!caseParams) {
@@ -2513,9 +2558,61 @@ export class Parser {
       isFinal,
       isAbstract,
       isExtension,
+      isSealed,
+      sealedVariants: sealedVariants.length > 0 ? sealedVariants : undefined,
       onType,
       loc: this.#loc(actualStartToken, endToken),
     };
+  }
+
+  /**
+   * Parse sealed variant declarations: `case A, B, C(x: i32)`
+   * Each `case` keyword introduces one or more comma-separated variants.
+   */
+  #parseSealedVariants(variants: SealedVariant[]): void {
+    this.#consume(TokenType.Case, "Expected 'case' for sealed variant.");
+    do {
+      const variantStart = this.#peek();
+      const variantName = this.#parseIdentifier();
+      let params: CaseClassParam[] | undefined;
+      if (this.#match(TokenType.LParen)) {
+        params = [];
+        if (!this.#check(TokenType.RParen)) {
+          do {
+            const paramStart = this.#peek();
+            let mutability: 'let' | 'var' | undefined;
+            if (this.#match(TokenType.Var)) {
+              mutability = 'var';
+            } else if (this.#match(TokenType.Let)) {
+              mutability = 'let';
+            }
+            const paramName = this.#parseIdentifier();
+            this.#consume(
+              TokenType.Colon,
+              "Expected ':' after sealed variant parameter name.",
+            );
+            const typeAnnotation = this.#parseTypeAnnotation();
+            params.push({
+              type: NodeType.CaseClassParam,
+              name: paramName,
+              typeAnnotation,
+              mutability,
+              loc: this.#loc(paramStart, this.#previous()),
+            });
+          } while (this.#match(TokenType.Comma));
+        }
+        this.#consume(
+          TokenType.RParen,
+          "Expected ')' after sealed variant parameters.",
+        );
+      }
+      variants.push({
+        type: NodeType.SealedVariant,
+        name: variantName,
+        params,
+        loc: this.#loc(variantStart, this.#previous()),
+      });
+    } while (this.#match(TokenType.Comma));
   }
 
   #parseMixinDeclaration(

@@ -46,6 +46,7 @@ export const TokenType = {
   Enum: 'Enum',
   In: 'In',
   Inline: 'Inline',
+  Sealed: 'Sealed',
 
   // Identifiers & Literals
   Identifier: 'Identifier',
@@ -172,6 +173,7 @@ const KEYWORDS: Record<string, TokenType> = Object.assign(Object.create(null), {
   enum: TokenType.Enum,
   in: TokenType.In,
   inline: TokenType.Inline,
+  sealed: TokenType.Sealed,
 });
 
 export function tokenize(source: string): Token[] {

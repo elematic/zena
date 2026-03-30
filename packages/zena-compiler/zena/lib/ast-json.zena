@@ -22,7 +22,7 @@ import {
   MatchExpression, MatchCase, IfExpression,
   ThrowExpression, TryExpression, CatchClause,
   NamedTypeAnnotation, UnionTypeAnnotation,
-  CaseClassParam, ClassDeclaration, FieldDefinition, MethodDefinition,
+  CaseClassParam, SealedVariant, ClassDeclaration, FieldDefinition, MethodDefinition,
   AccessorDeclaration, SetterInfo, SuperExpression,
   FieldInitializer, SuperInitializer,
   InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature,
@@ -124,6 +124,7 @@ let nodeTypeToString = (t: NodeType): string => {
     case NodeType.NamedTypeAnnotation: 'TypeAnnotation'
     case NodeType.UnionTypeAnnotation: 'UnionTypeAnnotation'
     case NodeType.CaseClassParam: 'CaseClassParam'
+    case NodeType.SealedVariant: 'SealedVariant'
   }
 };
 
@@ -455,7 +456,7 @@ export let nodeToJson = (node: Node): JsonObject => {
     }
     
     // Class Declarations
-    case ClassDeclaration { name, typeParameters, caseParams, superClass, mixins, implementsList, body, exported, isFinal, isAbstract, isExtension, onType }: {
+    case ClassDeclaration { name, typeParameters, caseParams, superClass, mixins, implementsList, body, exported, isFinal, isAbstract, isExtension, isSealed, sealedVariants, onType }: {
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
@@ -477,8 +478,18 @@ export let nodeToJson = (node: Node): JsonObject => {
       obj['isFinal'] = new Box<boolean>(isFinal);
       obj['isAbstract'] = new Box<boolean>(isAbstract);
       obj['isExtension'] = new Box<boolean>(isExtension);
+      obj['isSealed'] = new Box<boolean>(isSealed);
+      if (sealedVariants != null) {
+        obj['sealedVariants'] = sealedVariantsToJson(sealedVariants as Array<SealedVariant>);
+      } else { };
       if (onType != null) {
         obj['onType'] = nodeToJson(onType as Node);
+      } else { };
+    }
+    case SealedVariant { name, params }: {
+      obj['name'] = nodeToJson(name);
+      if (params != null) {
+        obj['params'] = caseClassParamsToJson(params as Array<CaseClassParam>);
       } else { };
     }
     case CaseClassParam { name, typeAnnotation, mutability }: {
@@ -753,6 +764,16 @@ let caseClassParamsToJson = (params: Array<CaseClassParam>): JsonArray => {
   var i = 0;
   while (i < params.length) {
     arr.push(nodeToJson(params[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let sealedVariantsToJson = (variants: Array<SealedVariant>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < variants.length) {
+    arr.push(nodeToJson(variants[i]));
     i = i + 1;
   }
   return arr;

@@ -81,6 +81,11 @@ export interface ClassInfo {
    * Set to true after defineClassStruct completes.
    */
   structDefined?: boolean;
+  /**
+   * For unit variant classes (sealed hierarchy variants with no fields):
+   * the WASM global index holding the singleton instance.
+   */
+  singletonGlobalIndex?: number;
 }
 
 export interface InterfaceInfo {
