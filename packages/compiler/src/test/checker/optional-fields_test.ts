@@ -3,7 +3,12 @@ import {suite, test} from 'node:test';
 import {Parser} from '../../lib/parser.js';
 import {TypeChecker} from '../../lib/checker/index.js';
 import {TypeKind, type UnionType} from '../../lib/types.js';
-import {type ClassDeclaration, type FieldDefinition, type InterfaceDeclaration, type MixinDeclaration} from '../../lib/ast.js';
+import {
+  type ClassDeclaration,
+  type FieldDefinition,
+  type InterfaceDeclaration,
+  type MixinDeclaration,
+} from '../../lib/ast.js';
 
 suite('Checker - Optional Fields', () => {
   test('optional class field has nullable type', () => {
@@ -84,7 +89,7 @@ suite('Checker - Optional Fields', () => {
     const errors = checker.check();
 
     assert.ok(errors.length > 0);
-    assert.ok(errors.some(e => e.message.includes('primitive')));
+    assert.ok(errors.some((e) => e.message.includes('primitive')));
   });
 
   test('non-optional class field is unchanged', () => {

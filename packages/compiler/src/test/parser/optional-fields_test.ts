@@ -113,7 +113,10 @@ suite('Parser - Optional Fields', () => {
       }
     `;
     const parser = new Parser(input);
-    assert.throws(() => parser.parse(), /Optional fields cannot have accessor blocks/);
+    assert.throws(
+      () => parser.parse(),
+      /Optional fields cannot have accessor blocks/,
+    );
   });
 
   test('should reject optional field without type annotation', () => {
@@ -123,6 +126,9 @@ suite('Parser - Optional Fields', () => {
       }
     `;
     const parser = new Parser(input);
-    assert.throws(() => parser.parse(), /Optional fields must have a type annotation/);
+    assert.throws(
+      () => parser.parse(),
+      /Optional fields must have a type annotation/,
+    );
   });
 });

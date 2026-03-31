@@ -1190,11 +1190,11 @@ Optional fields work with `abstract` and private (`#`) fields:
 
 ```ts
 abstract class Base {
-  abstract metadata?: String;  // Subclasses must provide
+  abstract metadata?: String; // Subclasses must provide
 }
 
 class Cache {
-  #lastResult?: String;  // Private optional field
+  #lastResult?: String; // Private optional field
 }
 ```
 

@@ -3214,9 +3214,7 @@ export class Parser {
         );
       }
       if (isOptional) {
-        throw new Error(
-          'Optional fields cannot have accessor blocks.',
-        );
+        throw new Error('Optional fields cannot have accessor blocks.');
       }
       return this.#parseAccessorDeclaration(
         name,
@@ -3526,9 +3524,7 @@ export class Parser {
         );
       }
       if (isOptional) {
-        throw new Error(
-          'Optional fields cannot have accessor blocks.',
-        );
+        throw new Error('Optional fields cannot have accessor blocks.');
       }
       let hasGetter = false;
       let hasSetter = false;
