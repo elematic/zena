@@ -4,822 +4,202 @@
 import { Array } from 'zena:array';
 
 // ============================================================================
-// Node Types
-// ============================================================================
-
-// Node type discriminators as an enum
-export enum NodeType {
-  Module,
-  VariableDeclaration,
-  ExpressionStatement,
-  BinaryExpression,
-  AssignmentExpression,
-  NumberLiteral,
-  StringLiteral,
-  BooleanLiteral,
-  NullLiteral,
-  Identifier,
-  FunctionExpression,
-  CallExpression,
-  BlockStatement,
-  ReturnStatement,
-  BreakStatement,
-  ContinueStatement,
-  IfStatement,
-  WhileStatement,
-  ForStatement,
-  ForInStatement,
-  Parameter,
-  ClassDeclaration,
-  FieldDefinition,
-  MethodDefinition,
-  NewExpression,
-  MemberExpression,
-  ThisExpression,
-  ArrayLiteral,
-  RecordLiteral,
-  PropertyAssignment,
-  TupleLiteral,
-  InlineTupleLiteral,
-  IndexExpression,
-  TypeParameter,
-  InterfaceDeclaration,
-  MethodSignature,
-  AccessorDeclaration,
-  SuperExpression,
-  MixinDeclaration,
-  DeclareFunction,
-  ImportDeclaration,
-  ImportSpecifier,
-  RecordTypeAnnotation,
-  PropertySignature,
-  TupleTypeAnnotation,
-  InlineTupleTypeAnnotation,
-  RecordPattern,
-  TuplePattern,
-  InlineTuplePattern,
-  BindingProperty,
-  AssignmentPattern,
-  AsPattern,
-  FunctionTypeAnnotation,
-  TemplateLiteral,
-  TaggedTemplateExpression,
-  TemplateElement,
-  TypeAliasDeclaration,
-  AsExpression,
-  IsExpression,
-  Decorator,
-  UnaryExpression,
-  ThrowExpression,
-  TryExpression,
-  CatchClause,
-  MatchExpression,
-  MatchCase,
-  ClassPattern,
-  LogicalPattern,
-  IfExpression,
-  AccessorSignature,
-  LiteralTypeAnnotation,
-  ThisTypeAnnotation,
-  SpreadElement,
-  ExportAllDeclaration,
-  SymbolPropertyName,
-  EnumDeclaration,
-  EnumMember,
-  RangeExpression,
-  LetPatternCondition,
-  SymbolDeclaration,
-  PipelineExpression,
-  PipePlaceholder,
-  FieldInitializer,
-  SuperInitializer,
-  MapLiteral,
-  MapEntry,
-  NamedTypeAnnotation,
-  UnionTypeAnnotation,
-  CaseClassParam,
-  SealedVariant
-}
-
-// ============================================================================
 // Source Location
 // ============================================================================
 
-export class SourceLocation {
-  line: i32;      // 1-based line number
-  column: i32;    // 1-based column number
-  start: i32;     // 0-based start index (inclusive)
-  end: i32;       // 0-based end index (exclusive)
-  
-  new(line: i32, column: i32, start: i32, end: i32)
-    : line = line, column = column, start = start, end = end
-  { }
-}
+export class SourceLocation(
+  /** 1-based line number */
+  line: i32,
+  /** 1-based column number */
+  column: i32,
+  /** 0-based start index (inclusive) */
+  start: i32,
+  /** 0-based end index (exclusive) */
+  end: i32)
 
 // ============================================================================
-// Base Node - All AST nodes inherit from this
+// Base Node - Sealed Hierarchy
 // ============================================================================
 
-export abstract class Node {
-  nodeType: NodeType;
-  loc: SourceLocation | null;
-  
-  new(nodeType: NodeType, loc: SourceLocation | null)
-    : nodeType = nodeType, loc = loc
-  { }
+export sealed class Node {
+  // Sub-hierarchies
+  case Expression, Statement, Pattern, TypeAnnotation
+
+  // Direct case classes
+  case Module
+  case TemplateElement, PropertyAssignment, SpreadElement, MapEntry
+  case BindingProperty, MatchCase, LetPatternCondition
+  case TypeParameter, Parameter
+  case CaseClassParam, SealedVariant
+  case FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo
+  case FieldInitializer, SuperInitializer
+  case MethodSignature, AccessorSignature
+  case EnumMember, CatchClause
+
+  abstract loc: SourceLocation | null;
 }
 
 // ============================================================================
 // Module
 // ============================================================================
 
-export class Module extends Node {
-  body: Array<Statement>;
-  path: string;
-  source: string;
-  
-  new(body: Array<Statement>, path: string, source: string, loc: SourceLocation | null)
-    : body = body, path = path, source = source, super(NodeType.Module, loc)
-  { }
-}
-
-// ============================================================================
-// Patterns
-// ============================================================================
-
-export abstract class Pattern extends Node {
-  new(nodeType: NodeType, loc: SourceLocation | null)
-    : super(nodeType, loc)
-  { }
-}
+export class Module(
+  body: Array<Statement>,
+  path: string,
+  source: string,
+  loc: SourceLocation | null) extends Node
 
 // ============================================================================
 // Expressions
 // ============================================================================
 
-export abstract class Expression extends Node {
-  new(nodeType: NodeType, loc?: SourceLocation)
-    : super(nodeType, loc)
-  { }
+export sealed class Expression extends Node {
+  // Identifiers & Literals
+  case Identifier
+  case NumberLiteral(value: f64, raw: string, loc: SourceLocation | null)
+  case StringLiteral(value: string, loc: SourceLocation | null)
+  case BooleanLiteral(value: boolean, loc: SourceLocation | null)
+  case NullLiteral(loc: SourceLocation | null)
+
+  // Templates
+  case TemplateLiteral(
+    quasis: Array<TemplateElement>,
+    expressions: Array<Expression>,
+    loc: SourceLocation | null)
+  case TaggedTemplateExpression(
+    tag: Expression,
+    quasi: TemplateLiteral,
+    loc: SourceLocation | null)
+
+  // Operators
+  case BinaryExpression(
+    operator: string,
+    left: Expression,
+    right: Expression,
+    loc: SourceLocation | null)
+  case UnaryExpression(
+    operator: string,
+    argument: Expression,
+    prefix: boolean,
+    loc: SourceLocation | null)
+  case AssignmentExpression(
+    left: Expression,
+    value: Expression,
+    loc: SourceLocation | null)
+  case AsExpression(
+    expression: Expression,
+    typeAnnotation: TypeAnnotation,
+    loc: SourceLocation | null)
+  case IsExpression(
+    expression: Expression,
+    typeAnnotation: TypeAnnotation,
+    loc: SourceLocation | null)
+  case RangeExpression(
+    start: Expression | null,
+    end: Expression | null,
+    loc: SourceLocation | null)
+  case PipelineExpression(
+    left: Expression,
+    right: Expression,
+    loc: SourceLocation | null)
+  case PipePlaceholder(loc: SourceLocation | null)
+
+  // Functions & Calls
+  case FunctionExpression(
+    typeParameters: Array<TypeParameter> | null,
+    params: Array<Parameter>,
+    returnType: TypeAnnotation | null,
+    body: Node,
+    loc: SourceLocation | null)
+  case CallExpression(
+    callee: Expression,
+    args: Array<Expression>,
+    typeArguments: Array<TypeAnnotation> | null,
+    optional: boolean,
+    loc: SourceLocation | null)
+
+  // Member Access
+  case MemberExpression(
+    object: Expression,
+    property: Identifier,
+    optional: boolean,
+    loc: SourceLocation | null)
+  case IndexExpression(
+    object: Expression,
+    index: Expression,
+    optional: boolean,
+    loc: SourceLocation | null)
+  case ThisExpression(loc: SourceLocation | null)
+  case SuperExpression(loc: SourceLocation | null)
+  case NewExpression(
+    callee: Identifier,
+    typeArguments: Array<TypeAnnotation> | null,
+    args: Array<Expression>,
+    loc: SourceLocation | null)
+
+  // Collection Literals
+  case ArrayLiteral(elements: Array<Expression>, loc: SourceLocation | null)
+  case RecordLiteral(properties: Array<Node>, loc: SourceLocation | null)
+  case MapLiteral(entries: Array<MapEntry>, loc: SourceLocation | null)
+  case TupleLiteral(elements: Array<Expression>, loc: SourceLocation | null)
+
+  // Control Flow Expressions
+  case MatchExpression(
+    discriminant: Expression,
+    cases: Array<MatchCase>,
+    loc: SourceLocation | null)
+  case IfExpression(
+    test: Expression,
+    consequent: Node,
+    alternate: Node,
+    loc: SourceLocation | null)
+
+  // Error Handling Expressions
+  case ThrowExpression(argument: Expression, loc: SourceLocation | null)
+  case TryExpression(
+    body: BlockStatement,
+    handler: CatchClause | null,
+    finalizer: BlockStatement | null,
+    loc: SourceLocation | null)
 }
+
+export class Identifier(name: string, loc: SourceLocation | null) extends Expression
 
 // ============================================================================
 // Statements
 // ============================================================================
 
-export abstract class Statement extends Node {
-  new(nodeType: NodeType, loc: SourceLocation | null)
-    : super(nodeType, loc)
-  { }
-}
-
-// ============================================================================
-// Type Annotations
-// ============================================================================
-
-export abstract class TypeAnnotation extends Node {
-  new(nodeType: NodeType, loc: SourceLocation | null)
-    : super(nodeType, loc)
-  { }
-}
-
-// ============================================================================
-// Identifier (can be both Pattern and Expression)
-// ============================================================================
-
-export class Identifier extends Expression {
-  name: string;
-  
-  new(name: string, loc: SourceLocation | null)
-    : name = name, super(NodeType.Identifier, loc)
-  { }
-}
-
-// IdentifierPattern - same structure as Identifier but extends Pattern
-// Used when an identifier appears in a pattern context (e.g., let x = 1)
-export class IdentifierPattern extends Pattern {
-  name: string;
-  
-  new(name: string, loc: SourceLocation | null)
-    : name = name, super(NodeType.Identifier, loc)
-  { }
-}
-
-// ============================================================================
-// Literals
-// ============================================================================
-
-export class NumberLiteral extends Expression {
-  value: f64;
-  raw: string;
-  
-  new(value: f64, raw: string, loc: SourceLocation | null)
-    : value = value, raw = raw, super(NodeType.NumberLiteral, loc)
-  { }
-}
-
-export class StringLiteral extends Expression {
-  value: string;
-  
-  new(value: string, loc: SourceLocation | null)
-    : value = value, super(NodeType.StringLiteral, loc)
-  { }
-}
-
-export class BooleanLiteral extends Expression {
-  value: boolean;
-  
-  new(value: boolean, loc: SourceLocation | null)
-    : value = value, super(NodeType.BooleanLiteral, loc)
-  { }
-}
-
-export class NullLiteral extends Expression {
-  new(loc: SourceLocation | null)
-    : super(NodeType.NullLiteral, loc)
-  { }
-}
-
-export class TemplateElement extends Node {
-  cooked: string;
-  raw: string;
-  tail: boolean;
-  
-  new(cooked: string, raw: string, tail: boolean, loc: SourceLocation | null)
-    : cooked = cooked, raw = raw, tail = tail, super(NodeType.TemplateElement, loc);
-}
-
-export class TemplateLiteral extends Expression {
-  quasis: Array<TemplateElement>;
-  expressions: Array<Expression>;
-  
-  new(quasis: Array<TemplateElement>, expressions: Array<Expression>, loc: SourceLocation | null)
-    : quasis = quasis, expressions = expressions, super(NodeType.TemplateLiteral, loc);
-}
-
-export class TaggedTemplateExpression extends Expression {
-  tag: Expression;
-  quasi: TemplateLiteral;
-  
-  new(tag: Expression, quasi: TemplateLiteral, loc: SourceLocation | null)
-    : tag = tag, quasi = quasi, super(NodeType.TaggedTemplateExpression, loc);
-}
-
-// ============================================================================
-// Operators
-// ============================================================================
-
-export class BinaryExpression extends Expression {
-  operator: string;
-  left: Expression;
-  right: Expression;
-  
-  new(operator: string, left: Expression, right: Expression, loc: SourceLocation | null)
-    : operator = operator, left = left, right = right, super(NodeType.BinaryExpression, loc)
-  { }
-}
-
-export class UnaryExpression extends Expression {
-  operator: string;
-  argument: Expression;
-  prefix: boolean;
-  
-  new(operator: string, argument: Expression, prefix: boolean, loc: SourceLocation | null)
-    : operator = operator, argument = argument, prefix = prefix, super(NodeType.UnaryExpression, loc)
-  { }
-}
-
-export class AssignmentExpression extends Expression {
-  left: Expression;
-  value: Expression;
-  
-  new(left: Expression, value: Expression, loc: SourceLocation | null)
-    : left = left, value = value, super(NodeType.AssignmentExpression, loc)
-  { }
-}
-
-export class AsExpression extends Expression {
-  expression: Expression;
-  typeAnnotation: TypeAnnotation;
-  
-  new(expression: Expression, typeAnnotation: TypeAnnotation, loc: SourceLocation | null)
-    : expression = expression, typeAnnotation = typeAnnotation, super(NodeType.AsExpression, loc)
-  { }
-}
-
-export class IsExpression extends Expression {
-  expression: Expression;
-  typeAnnotation: TypeAnnotation;
-  
-  new(expression: Expression, typeAnnotation: TypeAnnotation, loc: SourceLocation | null)
-    : expression = expression, typeAnnotation = typeAnnotation, super(NodeType.IsExpression, loc)
-  { }
-}
-
-export class RangeExpression extends Expression {
-  start: Expression | null;
-  end: Expression | null;
-  
-  new(start: Expression | null, end: Expression | null, loc: SourceLocation | null)
-    : start = start, end = end, super(NodeType.RangeExpression, loc)
-  { }
-}
-
-export class PipelineExpression extends Expression {
-  left: Expression;
-  right: Expression;
-  
-  new(left: Expression, right: Expression, loc: SourceLocation | null)
-    : left = left, right = right, super(NodeType.PipelineExpression, loc)
-  { }
-}
-
-export class PipePlaceholder extends Expression {
-  new(loc: SourceLocation | null)
-    : super(NodeType.PipePlaceholder, loc)
-  { }
-}
-
-// ============================================================================
-// Variable Declaration
-// ============================================================================
-
-export class VariableDeclaration extends Statement {
-  kind: string; // 'let' or 'var'
-  pattern: Pattern;
-  typeAnnotation: TypeAnnotation | null;
-  init: Expression;
-  exported: boolean;
-  
-  new(kind: string, pattern: Pattern, typeAnnotation: TypeAnnotation | null, init: Expression, exported: boolean, loc: SourceLocation | null)
-    : kind = kind, pattern = pattern, typeAnnotation = typeAnnotation, init = init, exported = exported, super(NodeType.VariableDeclaration, loc)
-  { }
-}
-
-// ============================================================================
-// Expression Statement
-// ============================================================================
-
-export class ExpressionStatement extends Statement {
-  expression: Expression;
-  
-  new(expression: Expression, loc: SourceLocation | null)
-    : expression = expression, super(NodeType.ExpressionStatement, loc)
-  { }
-}
-
-// ============================================================================
-// Block Statement
-// ============================================================================
-
-export class BlockStatement extends Statement {
-  body: Array<Statement>;
-  
-  new(body: Array<Statement>, loc: SourceLocation | null)
-    : body = body, super(NodeType.BlockStatement, loc)
-  { }
-}
-
-// ============================================================================
-// Control Flow
-// ============================================================================
-
-export class ReturnStatement extends Statement {
-  argument: Expression | null;
-  
-  new(argument: Expression | null, loc: SourceLocation | null)
-    : argument = argument, super(NodeType.ReturnStatement, loc)
-  { }
-}
-
-export class BreakStatement extends Statement {
-  new(loc: SourceLocation | null)
-    : super(NodeType.BreakStatement, loc)
-  { }
-}
-
-export class ContinueStatement extends Statement {
-  new(loc: SourceLocation | null)
-    : super(NodeType.ContinueStatement, loc)
-  { }
-}
-
-export class IfStatement extends Statement {
-  test: Node;
-  consequent: Statement;
-  alternate: Statement | null;
-  
-  new(test: Node, consequent: Statement, alternate: Statement | null, loc: SourceLocation | null)
-    : test = test, consequent = consequent, alternate = alternate, super(NodeType.IfStatement, loc)
-  { }
-}
-
-export class WhileStatement extends Statement {
-  test: Node;
-  body: Statement;
-  
-  new(test: Node, body: Statement, loc: SourceLocation | null)
-    : test = test, body = body, super(NodeType.WhileStatement, loc)
-  { }
-}
-
-export class ForStatement extends Statement {
-  init: Node | null;
-  test: Expression | null;
-  update: Expression | null;
-  body: Statement;
-  
-  new(init: Node | null, test: Expression | null, update: Expression | null, body: Statement, loc: SourceLocation | null)
-    : init = init, test = test, update = update, body = body, super(NodeType.ForStatement, loc)
-  { }
-}
-
-export class ForInStatement extends Statement {
-  pattern: Pattern;
-  iterable: Expression;
-  body: Statement;
-  
-  new(pattern: Pattern, iterable: Expression, body: Statement, loc: SourceLocation | null)
-    : pattern = pattern, iterable = iterable, body = body, super(NodeType.ForInStatement, loc)
-  { }
-}
-
-export class LetPatternCondition extends Node {
-  pattern: Pattern;
-  init: Expression;
-  
-  new(pattern: Pattern, init: Expression, loc: SourceLocation | null)
-    : pattern = pattern, init = init, super(NodeType.LetPatternCondition, loc)
-  { }
-}
-
-// ============================================================================
-// Type Annotations
-// ============================================================================
-
-export class NamedTypeAnnotation extends TypeAnnotation {
-  name: string;
-  typeArguments: Array<TypeAnnotation> | null;
-  
-  new(name: string, typeArguments: Array<TypeAnnotation> | null, loc: SourceLocation | null)
-    : name = name, typeArguments = typeArguments, super(NodeType.NamedTypeAnnotation, loc)
-  { }
-}
-
-export class UnionTypeAnnotation extends TypeAnnotation {
-  types: Array<TypeAnnotation>;
-  
-  new(types: Array<TypeAnnotation>, loc: SourceLocation | null)
-    : types = types, super(NodeType.UnionTypeAnnotation, loc)
-  { }
-}
-
-// ============================================================================
-// Type Parameters
-// ============================================================================
-
-export class TypeParameter extends Node {
-  name: string;
-  constraint: TypeAnnotation | null;
-  defaultType: TypeAnnotation | null;
-  
-  new(name: string, constraint: TypeAnnotation | null, defaultType: TypeAnnotation | null, loc: SourceLocation | null)
-    : name = name, constraint = constraint, defaultType = defaultType, super(NodeType.TypeParameter, loc)
-  { }
-}
-
-// ============================================================================
-// Parameters and Functions
-// ============================================================================
-
-export class Parameter extends Node {
-  name: Identifier;
-  typeAnnotation: TypeAnnotation | null;
-  optional: boolean;
-  defaultValue: Expression | null;
-  isThisParam: boolean;
-  
-  new(name: Identifier, typeAnnotation: TypeAnnotation | null, optional: boolean, defaultValue: Expression | null, isThisParam: boolean, loc: SourceLocation | null)
-    : name = name, typeAnnotation = typeAnnotation, optional = optional, defaultValue = defaultValue, isThisParam = isThisParam, super(NodeType.Parameter, loc)
-  { }
-}
-
-export class FunctionExpression extends Expression {
-  typeParameters: Array<TypeParameter> | null;
-  params: Array<Parameter>;
-  returnType: TypeAnnotation | null;
-  body: Node; // Expression or BlockStatement
-  
-  new(typeParameters: Array<TypeParameter> | null, params: Array<Parameter>, returnType: TypeAnnotation | null, body: Node, loc: SourceLocation | null)
-    : typeParameters = typeParameters, params = params, returnType = returnType, body = body, super(NodeType.FunctionExpression, loc)
-  { }
-}
-
-// ============================================================================
-// Function Calls
-// ============================================================================
-
-export class CallExpression extends Expression {
-  callee: Expression;
-  args: Array<Expression>;  // Renamed from 'arguments' to avoid keyword issues
-  typeArguments: Array<TypeAnnotation> | null;
-  optional: boolean;
-  
-  new(callee: Expression, args: Array<Expression>, typeArguments: Array<TypeAnnotation> | null, optional: boolean, loc: SourceLocation | null)
-    : callee = callee,
-      args = args,
-      typeArguments = typeArguments,
-      optional = optional,
-      super(NodeType.CallExpression, loc)
-  { }
-}
-
-// ============================================================================
-// Member Access
-// ============================================================================
-
-export class MemberExpression extends Expression {
-  object: Expression;
-  property: Identifier;
-  optional: boolean;
-  
-  new(object: Expression, property: Identifier, optional: boolean, loc: SourceLocation | null)
-    : object = object,
-      property = property,
-      optional = optional,
-      super(NodeType.MemberExpression, loc)
-  { }
-}
-
-export class IndexExpression extends Expression {
-  object: Expression;
-  index: Expression;
-  optional: boolean;
-  
-  new(object: Expression, index: Expression, optional: boolean, loc: SourceLocation | null)
-    : object = object,
-      index = index,
-      optional = optional,
-      super(NodeType.IndexExpression, loc)
-  { }
-}
-
-export class ThisExpression extends Expression {
-  new(loc: SourceLocation | null)
-    : super(NodeType.ThisExpression, loc)
-  { }
-}
-
-export class SuperExpression extends Expression {
-  new(loc: SourceLocation | null)
-    : super(NodeType.SuperExpression, loc)
-  { }
-}
-
-export class NewExpression extends Expression {
-  callee: Identifier;
-  typeArguments: Array<TypeAnnotation> | null;
-  args: Array<Expression>;
-  
-  new(callee: Identifier, typeArguments: Array<TypeAnnotation> | null, args: Array<Expression>, loc: SourceLocation | null)
-    : callee = callee,
-      typeArguments = typeArguments,
-      args = args,
-      super(NodeType.NewExpression, loc)
-  { }
-}
-
-// ============================================================================
-// Array and Record Literals
-// ============================================================================
-
-export class ArrayLiteral extends Expression {
-  elements: Array<Expression>;
-  
-  new(elements: Array<Expression>, loc: SourceLocation | null)
-    : elements = elements, super(NodeType.ArrayLiteral, loc)
-  { }
-}
-
-export class PropertyAssignment extends Node {
-  name: Identifier;
-  value: Expression;
-  
-  new(name: Identifier, value: Expression, loc: SourceLocation | null)
-    : name = name, value = value, super(NodeType.PropertyAssignment, loc)
-  { }
-}
-
-export class SpreadElement extends Node {
-  argument: Expression;
-  
-  new(argument: Expression, loc: SourceLocation | null)
-    : argument = argument, super(NodeType.SpreadElement, loc);
-}
-
-export class RecordLiteral extends Expression {
-  properties: Array<Node>;
-  
-  new(properties: Array<Node>, loc: SourceLocation | null)
-    : properties = properties, super(NodeType.RecordLiteral, loc);
-}
-
-export class MapEntry extends Node {
-  key: Expression;
-  value: Expression;
-  
-  new(key: Expression, value: Expression, loc: SourceLocation | null)
-    : key = key, value = value, super(NodeType.MapEntry, loc);
-}
-
-export class MapLiteral extends Expression {
-  entries: Array<MapEntry>;
-  
-  new(entries: Array<MapEntry>, loc: SourceLocation | null)
-    : entries = entries, super(NodeType.MapLiteral, loc);
-}
-
-export class TupleLiteral extends Expression {
-  elements: Array<Expression>;
-  
-  new(elements: Array<Expression>, loc: SourceLocation | null)
-    : elements = elements, super(NodeType.TupleLiteral, loc)
-  { }
-}
-
-// ============================================================================
-// Patterns for Destructuring
-// ============================================================================
-
-export class RecordPattern extends Pattern {
-  properties: Array<BindingProperty>;
-  
-  new(properties: Array<BindingProperty>, loc: SourceLocation | null)
-    : properties = properties, super(NodeType.RecordPattern, loc)
-  { }
-}
-
-export class BindingProperty extends Node {
-  name: Identifier;
-  value: Node;
-  
-  new(name: Identifier, value: Node, loc: SourceLocation | null)
-    : name = name, value = value, super(NodeType.BindingProperty, loc)
-  { }
-}
-
-export class TuplePattern extends Pattern {
-  elements: Array<Node | null>;
-  
-  new(elements: Array<Node | null>, loc: SourceLocation | null)
-    : elements = elements, super(NodeType.TuplePattern, loc)
-  { }
-}
-
-export class AsPattern extends Pattern {
-  pattern: Node;
-  name: Identifier;
-  
-  new(pattern: Node, name: Identifier, loc: SourceLocation | null)
-    : pattern = pattern, name = name, super(NodeType.AsPattern, loc)
-  { }
-}
-
-export class ClassPattern extends Pattern {
-  name: Identifier;
-  properties: Array<BindingProperty>;
-  
-  new(name: Identifier, properties: Array<BindingProperty>, loc: SourceLocation | null)
-    : name = name, properties = properties, super(NodeType.ClassPattern, loc)
-  { }
-}
-
-export class LogicalPattern extends Pattern {
-  operator: string;
-  left: Node;
-  right: Node;
-  
-  new(operator: string, left: Node, right: Node, loc: SourceLocation | null)
-    : operator = operator, left = left, right = right, super(NodeType.LogicalPattern, loc)
-  { }
-}
-
-// ============================================================================
-// Match Expression
-// ============================================================================
-
-export class MatchExpression extends Expression {
-  discriminant: Expression;
-  cases: Array<MatchCase>;
-  
-  new(discriminant: Expression, cases: Array<MatchCase>, loc: SourceLocation | null)
-    : discriminant = discriminant, cases = cases, super(NodeType.MatchExpression, loc)
-  { }
-}
-
-export class MatchCase extends Node {
-  pattern: Node;
-  guard: Expression | null;
-  body: Node; // Expression or BlockStatement
-  
-  new(pattern: Node, guard: Expression | null, body: Node, loc: SourceLocation | null)
-    : pattern = pattern, guard = guard, body = body, super(NodeType.MatchCase, loc)
-  { }
-}
-
-// ============================================================================
-// If Expression
-// ============================================================================
-
-export class IfExpression extends Expression {
-  test: Expression;
-  consequent: Node; // Expression or BlockStatement
-  alternate: Node; // Expression, BlockStatement, or IfExpression
-  
-  new(test: Expression, consequent: Node, alternate: Node, loc: SourceLocation | null)
-    : test = test, consequent = consequent, alternate = alternate, super(NodeType.IfExpression, loc)
-  { }
-}
-
-// ============================================================================
-// Throw Expression
-// ============================================================================
-
-export class ThrowExpression extends Expression {
-  argument: Expression;
-  
-  new(argument: Expression, loc: SourceLocation | null)
-    : argument = argument, super(NodeType.ThrowExpression, loc)
-  { }
-}
-
-// ============================================================================
-// Try/Catch Expression
-// ============================================================================
-
-export class TryExpression extends Expression {
-  body: BlockStatement;
-  handler: CatchClause | null;
-  finalizer: BlockStatement | null;
-  
-  new(body: BlockStatement, handler: CatchClause | null, finalizer: BlockStatement | null, loc: SourceLocation | null)
-    : body = body, handler = handler, finalizer = finalizer, super(NodeType.TryExpression, loc)
-  { }
-}
-
-export class CatchClause extends Node {
-  param: Identifier | null;
-  body: BlockStatement;
-  
-  new(param: Identifier | null, body: BlockStatement, loc: SourceLocation | null)
-    : param = param, body = body, super(NodeType.CatchClause, loc)
-  { }
-}
-
-// ============================================================================
-// Case Class Parameter
-// ============================================================================
-
-export class CaseClassParam extends Node {
-  name: Identifier;
-  typeAnnotation: TypeAnnotation;
-  mutability: string | null; // null, 'let', or 'var'
-  
-  new(name: Identifier, typeAnnotation: TypeAnnotation, mutability: string | null, loc: SourceLocation | null)
-    : name = name, typeAnnotation = typeAnnotation, mutability = mutability, super(NodeType.CaseClassParam, loc)
-  { }
-}
-
-export class SealedVariant extends Node {
-  name: Identifier;
-  params: Array<CaseClassParam> | null;
-  
-  new(name: Identifier, params: Array<CaseClassParam> | null, loc: SourceLocation | null)
-    : name = name, params = params, super(NodeType.SealedVariant, loc)
-  { }
-}
-
-// ============================================================================
-// Class Declarations
-// ============================================================================
-
-export class ClassDeclaration extends Statement {
-  name: Identifier;
-  typeParameters: Array<TypeParameter> | null;
-  caseParams: Array<CaseClassParam> | null;
-  superClass: TypeAnnotation | null;
-  mixins: Array<TypeAnnotation> | null;
-  implementsList: Array<TypeAnnotation> | null;
-  body: Array<Node>;
-  exported: boolean;
-  isFinal: boolean;
-  isAbstract: boolean;
-  isExtension: boolean;
-  isSealed: boolean;
-  sealedVariants: Array<SealedVariant> | null;
-  onType: TypeAnnotation | null;
-  
-  new(
+export sealed class Statement extends Node {
+  case VariableDeclaration(
+    kind: string,
+    pattern: Pattern,
+    typeAnnotation: TypeAnnotation | null,
+    init: Expression,
+    exported: boolean,
+    loc: SourceLocation | null)
+  case ExpressionStatement(expression: Expression, loc: SourceLocation | null)
+  case BlockStatement
+  case ReturnStatement(argument: Expression | null, loc: SourceLocation | null)
+  case BreakStatement(loc: SourceLocation | null)
+  case ContinueStatement(loc: SourceLocation | null)
+  case IfStatement(
+    test: Node,
+    consequent: Statement,
+    alternate: Statement | null,
+    loc: SourceLocation | null)
+  case WhileStatement(test: Node, body: Statement, loc: SourceLocation | null)
+  case ForStatement(
+    init: Node | null,
+    test: Expression | null,
+    update: Expression | null,
+    body: Statement,
+    loc: SourceLocation | null)
+  case ForInStatement(
+    pattern: Pattern,
+    iterable: Expression,
+    body: Statement,
+    loc: SourceLocation | null)
+  case ClassDeclaration(
     name: Identifier,
     typeParameters: Array<TypeParameter> | null,
     caseParams: Array<CaseClassParam> | null,
@@ -834,230 +214,248 @@ export class ClassDeclaration extends Statement {
     isSealed: boolean,
     sealedVariants: Array<SealedVariant> | null,
     onType: TypeAnnotation | null,
-    loc: SourceLocation | null
-  ) : name = name,
-      typeParameters = typeParameters,
-      caseParams = caseParams,
-      superClass = superClass,
-      mixins = mixins,
-      implementsList = implementsList,
-      body = body,
-      exported = exported,
-      isFinal = isFinal,
-      isAbstract = isAbstract,
-      isExtension = isExtension,
-      isSealed = isSealed,
-      sealedVariants = sealedVariants,
-      onType = onType,
-      super(NodeType.ClassDeclaration, loc)
-  { }
-}
-
-// ============================================================================
-// Class Members
-// ============================================================================
-
-export class FieldDefinition extends Node {
-  name: Identifier;
-  typeAnnotation: TypeAnnotation;
-  value: Expression | null;
-  isFinal: boolean;
-  isAbstract: boolean;
-  isOptional: boolean;
-  mutability: string | null; // null, 'let', or 'var'
-  
-  new(name: Identifier, typeAnnotation: TypeAnnotation, value: Expression | null, isFinal: boolean, isAbstract: boolean, isOptional: boolean, mutability: string | null, loc: SourceLocation | null)
-    : name = name, typeAnnotation = typeAnnotation, value = value, isFinal = isFinal, isAbstract = isAbstract, isOptional = isOptional, mutability = mutability, super(NodeType.FieldDefinition, loc)
-  { }
-}
-
-export class MethodDefinition extends Node {
-  name: Identifier;
-  typeParameters: Array<TypeParameter> | null;
-  params: Array<Parameter>;
-  returnType: TypeAnnotation | null;
-  body: Node | null; // BlockStatement or Expression
-  initializerList: Array<Node> | null;
-  superInitializer: Node | null;
-  isFinal: boolean;
-  isAbstract: boolean;
-  isStatic: boolean;
-  
-  new(name: Identifier, typeParameters: Array<TypeParameter> | null, params: Array<Parameter>, returnType: TypeAnnotation | null, body: Node | null, initializerList: Array<Node> | null, superInitializer: Node | null, isFinal: boolean, isAbstract: boolean, isStatic: boolean, loc: SourceLocation | null)
-    : name = name, typeParameters = typeParameters, params = params, returnType = returnType, body = body, initializerList = initializerList, superInitializer = superInitializer, isFinal = isFinal, isAbstract = isAbstract, isStatic = isStatic, super(NodeType.MethodDefinition, loc)
-  { }
-}
-
-// ============================================================================
-// Accessor Declaration
-// ============================================================================
-
-export class AccessorDeclaration extends Node {
-  name: Identifier;
-  typeAnnotation: TypeAnnotation;
-  getter: BlockStatement | null;
-  setter: Node | null; // holds { param: Identifier, body: BlockStatement } via SetterInfo
-  isFinal: boolean;
-  isStatic: boolean;
-  
-  new(name: Identifier, typeAnnotation: TypeAnnotation, getter: BlockStatement | null, setter: Node | null, isFinal: boolean, isStatic: boolean, loc: SourceLocation | null)
-    : name = name, typeAnnotation = typeAnnotation, getter = getter, setter = setter, isFinal = isFinal, isStatic = isStatic, super(NodeType.AccessorDeclaration, loc)
-  { }
-}
-
-// Helper for setter info - stored as a generic node with param and body
-export class SetterInfo extends Node {
-  param: Identifier;
-  body: BlockStatement;
-  
-  new(param: Identifier, body: BlockStatement, loc: SourceLocation | null)
-    : param = param, body = body, super(NodeType.AccessorDeclaration, loc)
-  { }
-}
-
-// ============================================================================
-// Initializer List Entries
-// ============================================================================
-
-export class FieldInitializer extends Node {
-  field: Identifier;
-  value: Expression;
-  
-  new(field: Identifier, value: Expression, loc: SourceLocation | null)
-    : field = field, value = value, super(NodeType.FieldInitializer, loc)
-  { }
-}
-
-export class SuperInitializer extends Node {
-  args: Array<Expression>;
-  
-  new(args: Array<Expression>, loc: SourceLocation | null)
-    : args = args, super(NodeType.SuperInitializer, loc)
-  { }
-}
-
-// ============================================================================
-// Interface Declaration
-// ============================================================================
-
-export class InterfaceDeclaration extends Statement {
-  name: Identifier;
-  typeParameters: Array<TypeParameter> | null;
-  extendsList: Array<TypeAnnotation> | null;
-  body: Array<Node>;
-  exported: boolean;
-  
-  new(
+    loc: SourceLocation | null)
+  case InterfaceDeclaration(
     name: Identifier,
     typeParameters: Array<TypeParameter> | null,
     extendsList: Array<TypeAnnotation> | null,
     body: Array<Node>,
     exported: boolean,
-    loc: SourceLocation | null
-  ) : name = name,
-      typeParameters = typeParameters,
-      extendsList = extendsList,
-      body = body,
-      exported = exported,
-      super(NodeType.InterfaceDeclaration, loc);
-}
-
-export class MethodSignature extends Node {
-  name: Identifier;
-  typeParameters: Array<TypeParameter> | null;
-  params: Array<Parameter>;
-  returnType: TypeAnnotation | null;
-  
-  new(
-    name: Identifier,
-    typeParameters: Array<TypeParameter> | null,
-    params: Array<Parameter>,
-    returnType: TypeAnnotation | null,
-    loc: SourceLocation | null
-  ) : name = name,
-      typeParameters = typeParameters,
-      params = params,
-      returnType = returnType,
-      super(NodeType.MethodSignature, loc);
-}
-
-export class AccessorSignature extends Node {
-  name: Identifier;
-  typeAnnotation: TypeAnnotation;
-  hasGetter: boolean;
-  hasSetter: boolean;
-  
-  new(
-    name: Identifier,
-    typeAnnotation: TypeAnnotation,
-    hasGetter: boolean,
-    hasSetter: boolean,
-    loc: SourceLocation | null
-  ) : name = name,
-      typeAnnotation = typeAnnotation,
-      hasGetter = hasGetter,
-      hasSetter = hasSetter,
-      super(NodeType.AccessorSignature, loc);
-}
-
-// ============================================================================
-// Enum Declaration
-// ============================================================================
-
-export class EnumMember extends Node {
-  name: Identifier;
-  initializer: Expression | null;
-  
-  new(
-    name: Identifier,
-    initializer: Expression | null,
-    loc: SourceLocation | null
-  ) : name = name,
-      initializer = initializer,
-      super(NodeType.EnumMember, loc);
-}
-
-export class EnumDeclaration extends Statement {
-  name: Identifier;
-  members: Array<EnumMember>;
-  exported: boolean;
-  
-  new(
+    loc: SourceLocation | null)
+  case EnumDeclaration(
     name: Identifier,
     members: Array<EnumMember>,
     exported: boolean,
-    loc: SourceLocation | null
-  ) : name = name,
-      members = members,
-      exported = exported,
-      super(NodeType.EnumDeclaration, loc);
-}
-
-// ============================================================================
-// Mixin Declaration
-// ============================================================================
-
-export class MixinDeclaration extends Statement {
-  name: Identifier;
-  typeParameters: Array<TypeParameter> | null;
-  on: Identifier | null;
-  mixins: Array<TypeAnnotation> | null;
-  body: Array<Node>;
-  exported: boolean;
-  
-  new(
+    loc: SourceLocation | null)
+  case MixinDeclaration(
     name: Identifier,
     typeParameters: Array<TypeParameter> | null,
     on: Identifier | null,
     mixins: Array<TypeAnnotation> | null,
     body: Array<Node>,
     exported: boolean,
-    loc: SourceLocation | null
-  ) : name = name,
-      typeParameters = typeParameters,
-      on = on,
-      mixins = mixins,
-      body = body,
-      exported = exported,
-      super(NodeType.MixinDeclaration, loc);
+    loc: SourceLocation | null)
 }
+
+export class BlockStatement(body: Array<Statement>, loc: SourceLocation | null) extends Statement
+
+// ============================================================================
+// Patterns
+// ============================================================================
+
+export sealed class Pattern extends Node {
+  case IdentifierPattern(name: string, loc: SourceLocation | null)
+  case RecordPattern(properties: Array<BindingProperty>, loc: SourceLocation | null)
+  case TuplePattern(elements: Array<Node | null>, loc: SourceLocation | null)
+  case AsPattern(pattern: Node, name: Identifier, loc: SourceLocation | null)
+  case ClassPattern(
+    name: Identifier,
+    properties: Array<BindingProperty>,
+    loc: SourceLocation | null)
+  case LogicalPattern(
+    operator: string,
+    left: Node,
+    right: Node,
+    loc: SourceLocation | null)
+}
+
+// ============================================================================
+// Type Annotations
+// ============================================================================
+
+export sealed class TypeAnnotation extends Node {
+  case NamedTypeAnnotation(
+    name: string,
+    typeArguments: Array<TypeAnnotation> | null,
+    loc: SourceLocation | null)
+  case UnionTypeAnnotation(
+    types: Array<TypeAnnotation>,
+    loc: SourceLocation | null)
+}
+
+// ============================================================================
+// Template Elements
+// ============================================================================
+
+export class TemplateElement(
+  cooked: string,
+  raw: string,
+  tail: boolean,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Record & Map Entries
+// ============================================================================
+
+export class PropertyAssignment(
+  name: Identifier,
+  value: Expression,
+  loc: SourceLocation | null) extends Node
+
+export class SpreadElement(
+  argument: Expression,
+  loc: SourceLocation | null) extends Node
+
+export class MapEntry(
+  key: Expression,
+  value: Expression,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Pattern Helpers
+// ============================================================================
+
+export class BindingProperty(
+  name: Identifier,
+  value: Node,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Match Expression Helpers
+// ============================================================================
+
+export class MatchCase(
+  pattern: Node,
+  guard: Expression | null,
+  body: Node,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Control Flow Helpers
+// ============================================================================
+
+export class LetPatternCondition(
+  pattern: Pattern,
+  init: Expression,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Type Parameters
+// ============================================================================
+
+export class TypeParameter(
+  name: string,
+  constraint: TypeAnnotation | null,
+  defaultType: TypeAnnotation | null,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Parameters
+// ============================================================================
+
+export class Parameter(
+  name: Identifier,
+  typeAnnotation: TypeAnnotation | null,
+  optional: boolean,
+  defaultValue: Expression | null,
+  isThisParam: boolean,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Case Class & Sealed Variant Helpers
+// ============================================================================
+
+export class CaseClassParam(
+  name: Identifier,
+  typeAnnotation: TypeAnnotation,
+  mutability: string | null,
+  loc: SourceLocation | null) extends Node
+
+export class SealedVariant(
+  name: Identifier,
+  params: Array<CaseClassParam> | null,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Class Members
+// ============================================================================
+
+export class FieldDefinition(
+  name: Identifier,
+  typeAnnotation: TypeAnnotation,
+  value: Expression | null,
+  isFinal: boolean,
+  isAbstract: boolean,
+  isOptional: boolean,
+  mutability: string | null,
+  loc: SourceLocation | null) extends Node
+
+export class MethodDefinition(
+  name: Identifier,
+  typeParameters: Array<TypeParameter> | null,
+  params: Array<Parameter>,
+  returnType: TypeAnnotation | null,
+  body: Node | null,
+  initializerList: Array<Node> | null,
+  superInitializer: Node | null,
+  isFinal: boolean,
+  isAbstract: boolean,
+  isStatic: boolean,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Accessors
+// ============================================================================
+
+export class AccessorDeclaration(
+  name: Identifier,
+  typeAnnotation: TypeAnnotation,
+  getter: BlockStatement | null,
+  setter: Node | null,
+  isFinal: boolean,
+  isStatic: boolean,
+  loc: SourceLocation | null) extends Node
+
+export class SetterInfo(
+  param: Identifier,
+  body: BlockStatement,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Initializer List Entries
+// ============================================================================
+
+export class FieldInitializer(
+  field: Identifier,
+  value: Expression,
+  loc: SourceLocation | null) extends Node
+
+export class SuperInitializer(
+  args: Array<Expression>,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Interface Members
+// ============================================================================
+
+export class MethodSignature(
+  name: Identifier,
+  typeParameters: Array<TypeParameter> | null,
+  params: Array<Parameter>,
+  returnType: TypeAnnotation | null,
+  loc: SourceLocation | null) extends Node
+
+export class AccessorSignature(
+  name: Identifier,
+  typeAnnotation: TypeAnnotation,
+  hasGetter: boolean,
+  hasSetter: boolean,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Enum Members
+// ============================================================================
+
+export class EnumMember(
+  name: Identifier,
+  initializer: Expression | null,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Error Handling Helpers
+// ============================================================================
+
+export class CatchClause(
+  param: Identifier | null,
+  body: BlockStatement,
+  loc: SourceLocation | null) extends Node

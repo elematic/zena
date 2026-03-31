@@ -5,7 +5,7 @@ import { JsonObject, JsonArray, stringify } from 'zena:json';
 import { Box } from 'zena:box';
 import { Array } from 'zena:array';
 import {
-  Node, NodeType, Module, Statement, Expression, Pattern, TypeAnnotation,
+  Node, Module, Statement, Expression, Pattern, TypeAnnotation,
   VariableDeclaration, ExpressionStatement, BlockStatement,
   IfStatement, WhileStatement, ForStatement, ForInStatement, LetPatternCondition,
   ReturnStatement, BreakStatement, ContinueStatement,
@@ -30,114 +30,112 @@ import {
 } from './ast.zena';
 
 // ============================================================================
-// Node Type to String Conversion
-// ============================================================================
-
-let nodeTypeToString = (t: NodeType): string => {
-  match (t) {
-    case NodeType.Module: 'Module'
-    case NodeType.VariableDeclaration: 'VariableDeclaration'
-    case NodeType.ExpressionStatement: 'ExpressionStatement'
-    case NodeType.BinaryExpression: 'BinaryExpression'
-    case NodeType.AssignmentExpression: 'AssignmentExpression'
-    case NodeType.NumberLiteral: 'NumberLiteral'
-    case NodeType.StringLiteral: 'StringLiteral'
-    case NodeType.BooleanLiteral: 'BooleanLiteral'
-    case NodeType.NullLiteral: 'NullLiteral'
-    case NodeType.Identifier: 'Identifier'
-    case NodeType.FunctionExpression: 'FunctionExpression'
-    case NodeType.CallExpression: 'CallExpression'
-    case NodeType.BlockStatement: 'BlockStatement'
-    case NodeType.ReturnStatement: 'ReturnStatement'
-    case NodeType.BreakStatement: 'BreakStatement'
-    case NodeType.ContinueStatement: 'ContinueStatement'
-    case NodeType.IfStatement: 'IfStatement'
-    case NodeType.WhileStatement: 'WhileStatement'
-    case NodeType.ForStatement: 'ForStatement'
-    case NodeType.ForInStatement: 'ForInStatement'
-    case NodeType.Parameter: 'Parameter'
-    case NodeType.ClassDeclaration: 'ClassDeclaration'
-    case NodeType.FieldDefinition: 'FieldDefinition'
-    case NodeType.MethodDefinition: 'MethodDefinition'
-    case NodeType.NewExpression: 'NewExpression'
-    case NodeType.MemberExpression: 'MemberExpression'
-    case NodeType.ThisExpression: 'ThisExpression'
-    case NodeType.ArrayLiteral: 'ArrayLiteral'
-    case NodeType.RecordLiteral: 'RecordLiteral'
-    case NodeType.PropertyAssignment: 'PropertyAssignment'
-    case NodeType.TupleLiteral: 'TupleLiteral'
-    case NodeType.InlineTupleLiteral: 'InlineTupleLiteral'
-    case NodeType.IndexExpression: 'IndexExpression'
-    case NodeType.TypeParameter: 'TypeParameter'
-    case NodeType.InterfaceDeclaration: 'InterfaceDeclaration'
-    case NodeType.MethodSignature: 'MethodSignature'
-    case NodeType.AccessorDeclaration: 'AccessorDeclaration'
-    case NodeType.SuperExpression: 'SuperExpression'
-    case NodeType.MixinDeclaration: 'MixinDeclaration'
-    case NodeType.DeclareFunction: 'DeclareFunction'
-    case NodeType.ImportDeclaration: 'ImportDeclaration'
-    case NodeType.ImportSpecifier: 'ImportSpecifier'
-    case NodeType.RecordTypeAnnotation: 'RecordTypeAnnotation'
-    case NodeType.PropertySignature: 'PropertySignature'
-    case NodeType.TupleTypeAnnotation: 'TupleTypeAnnotation'
-    case NodeType.InlineTupleTypeAnnotation: 'InlineTupleTypeAnnotation'
-    case NodeType.RecordPattern: 'RecordPattern'
-    case NodeType.TuplePattern: 'TuplePattern'
-    case NodeType.InlineTuplePattern: 'InlineTuplePattern'
-    case NodeType.BindingProperty: 'BindingProperty'
-    case NodeType.AssignmentPattern: 'AssignmentPattern'
-    case NodeType.AsPattern: 'AsPattern'
-    case NodeType.FunctionTypeAnnotation: 'FunctionTypeAnnotation'
-    case NodeType.TemplateLiteral: 'TemplateLiteral'
-    case NodeType.TaggedTemplateExpression: 'TaggedTemplateExpression'
-    case NodeType.TemplateElement: 'TemplateElement'
-    case NodeType.TypeAliasDeclaration: 'TypeAliasDeclaration'
-    case NodeType.AsExpression: 'AsExpression'
-    case NodeType.IsExpression: 'IsExpression'
-    case NodeType.Decorator: 'Decorator'
-    case NodeType.UnaryExpression: 'UnaryExpression'
-    case NodeType.ThrowExpression: 'ThrowExpression'
-    case NodeType.TryExpression: 'TryExpression'
-    case NodeType.CatchClause: 'CatchClause'
-    case NodeType.MatchExpression: 'MatchExpression'
-    case NodeType.MatchCase: 'MatchCase'
-    case NodeType.ClassPattern: 'ClassPattern'
-    case NodeType.LogicalPattern: 'LogicalPattern'
-    case NodeType.IfExpression: 'IfExpression'
-    case NodeType.AccessorSignature: 'AccessorSignature'
-    case NodeType.LiteralTypeAnnotation: 'LiteralTypeAnnotation'
-    case NodeType.ThisTypeAnnotation: 'ThisTypeAnnotation'
-    case NodeType.SpreadElement: 'SpreadElement'
-    case NodeType.ExportAllDeclaration: 'ExportAllDeclaration'
-    case NodeType.SymbolPropertyName: 'SymbolPropertyName'
-    case NodeType.EnumDeclaration: 'EnumDeclaration'
-    case NodeType.EnumMember: 'EnumMember'
-    case NodeType.RangeExpression: 'RangeExpression'
-    case NodeType.LetPatternCondition: 'LetPatternCondition'
-    case NodeType.SymbolDeclaration: 'SymbolDeclaration'
-    case NodeType.PipelineExpression: 'PipelineExpression'
-    case NodeType.PipePlaceholder: 'PipePlaceholder'
-    case NodeType.FieldInitializer: 'FieldInitializer'
-    case NodeType.SuperInitializer: 'SuperInitializer'
-    case NodeType.MapLiteral: 'MapLiteral'
-    case NodeType.MapEntry: 'MapEntry'
-    case NodeType.NamedTypeAnnotation: 'TypeAnnotation'
-    case NodeType.UnionTypeAnnotation: 'UnionTypeAnnotation'
-    case NodeType.CaseClassParam: 'CaseClassParam'
-    case NodeType.SealedVariant: 'SealedVariant'
-  }
-};
-
-// ============================================================================
 // Core Conversion Functions
 // ============================================================================
+
+/**
+ * Get the type name string for an AST node.
+ */
+let nodeTypeName = (node: Node): string => {
+  match (node) {
+    // Patterns
+    case IdentifierPattern {}: 'Identifier'
+    case RecordPattern {}: 'RecordPattern'
+    case TuplePattern {}: 'TuplePattern'
+    case AsPattern {}: 'AsPattern'
+    case ClassPattern {}: 'ClassPattern'
+    case LogicalPattern {}: 'LogicalPattern'
+    // Literals
+    case NumberLiteral {}: 'NumberLiteral'
+    case StringLiteral {}: 'StringLiteral'
+    case BooleanLiteral {}: 'BooleanLiteral'
+    case NullLiteral {}: 'NullLiteral'
+    case Identifier {}: 'Identifier'
+    // Templates
+    case TemplateLiteral {}: 'TemplateLiteral'
+    case TaggedTemplateExpression {}: 'TaggedTemplateExpression'
+    case TemplateElement {}: 'TemplateElement'
+    // Operators
+    case BinaryExpression {}: 'BinaryExpression'
+    case UnaryExpression {}: 'UnaryExpression'
+    case AssignmentExpression {}: 'AssignmentExpression'
+    case AsExpression {}: 'AsExpression'
+    case IsExpression {}: 'IsExpression'
+    case RangeExpression {}: 'RangeExpression'
+    case PipelineExpression {}: 'PipelineExpression'
+    case PipePlaceholder {}: 'PipePlaceholder'
+    // Functions & Calls
+    case FunctionExpression {}: 'FunctionExpression'
+    case CallExpression {}: 'CallExpression'
+    // Member Access
+    case MemberExpression {}: 'MemberExpression'
+    case IndexExpression {}: 'IndexExpression'
+    case ThisExpression {}: 'ThisExpression'
+    case SuperExpression {}: 'SuperExpression'
+    case NewExpression {}: 'NewExpression'
+    // Collections
+    case ArrayLiteral {}: 'ArrayLiteral'
+    case RecordLiteral {}: 'RecordLiteral'
+    case MapLiteral {}: 'MapLiteral'
+    case TupleLiteral {}: 'TupleLiteral'
+    case PropertyAssignment {}: 'PropertyAssignment'
+    case SpreadElement {}: 'SpreadElement'
+    case MapEntry {}: 'MapEntry'
+    case BindingProperty {}: 'BindingProperty'
+    // Statements
+    case VariableDeclaration {}: 'VariableDeclaration'
+    case ExpressionStatement {}: 'ExpressionStatement'
+    case BlockStatement {}: 'BlockStatement'
+    case ReturnStatement {}: 'ReturnStatement'
+    case BreakStatement {}: 'BreakStatement'
+    case ContinueStatement {}: 'ContinueStatement'
+    case IfStatement {}: 'IfStatement'
+    case WhileStatement {}: 'WhileStatement'
+    case ForStatement {}: 'ForStatement'
+    case ForInStatement {}: 'ForInStatement'
+    // Expressions
+    case MatchExpression {}: 'MatchExpression'
+    case MatchCase {}: 'MatchCase'
+    case IfExpression {}: 'IfExpression'
+    case ThrowExpression {}: 'ThrowExpression'
+    case TryExpression {}: 'TryExpression'
+    case CatchClause {}: 'CatchClause'
+    case LetPatternCondition {}: 'LetPatternCondition'
+    // Parameters
+    case Parameter {}: 'Parameter'
+    case TypeParameter {}: 'TypeParameter'
+    // Type Annotations
+    case NamedTypeAnnotation {}: 'TypeAnnotation'
+    case UnionTypeAnnotation {}: 'UnionTypeAnnotation'
+    // Module
+    case Module {}: 'Module'
+    // Declarations
+    case ClassDeclaration {}: 'ClassDeclaration'
+    case InterfaceDeclaration {}: 'InterfaceDeclaration'
+    case EnumDeclaration {}: 'EnumDeclaration'
+    case MixinDeclaration {}: 'MixinDeclaration'
+    // Class Members
+    case FieldDefinition {}: 'FieldDefinition'
+    case MethodDefinition {}: 'MethodDefinition'
+    case AccessorDeclaration {}: 'AccessorDeclaration'
+    case MethodSignature {}: 'MethodSignature'
+    case AccessorSignature {}: 'AccessorSignature'
+    // Helpers
+    case CaseClassParam {}: 'CaseClassParam'
+    case SealedVariant {}: 'SealedVariant'
+    case FieldInitializer {}: 'FieldInitializer'
+    case SuperInitializer {}: 'SuperInitializer'
+    case EnumMember {}: 'EnumMember'
+    case SetterInfo {}: 'AccessorDeclaration'
+  }
+};
 
 /**
  * Convert any AST node to a JsonObject.
  */
 export let nodeToJson = (node: Node): JsonObject => {
   let obj = new JsonObject();
-  obj['type'] = nodeTypeToString(node.nodeType);
+  obj['type'] = nodeTypeName(node);
   
   match (node) {
     // Patterns
@@ -627,7 +625,7 @@ export let nodeToJson = (node: Node): JsonObject => {
       } else { };
     }
     
-    // Default: just type field is already set
+    // Default: type field is already set
     case _: {}
   }
   
