@@ -200,6 +200,12 @@ export interface ClassType extends Type {
    * Declared fields are provided by intrinsics and don't need initialization.
    */
   declaredFields?: Set<string>;
+  /**
+   * Set of field names that are abstract (e.g., `abstract loc: i32`).
+   * Abstract fields have no storage — subclasses must provide a concrete field
+   * or case parameter with the same name. The getter is in the vtable with isAbstract.
+   */
+  abstractFields?: Set<string>;
   /** True for sealed classes that restrict direct subclassing to listed variants. */
   isSealed?: boolean;
   /** The declared variant names from the AST, used for the extends restriction check. */

@@ -2837,6 +2837,7 @@ export class Parser {
           loc: name.loc,
         },
         isFinal: true,
+        isAbstract: false,
         isStatic: true,
         isDeclare,
         decorators,
@@ -3155,13 +3156,35 @@ export class Parser {
     }
 
     if (isAbstract) {
-      // Abstract fields? Not supported yet, or maybe they are just fields without init?
-      // For now, let's assume abstract is only for methods.
-      // Or maybe abstract fields are allowed?
-      // "Virtual Fields: Implement Uniform Access Principle (treat public fields as virtual properties with default accessors)."
-      // If we have abstract fields, they would be abstract accessors.
-      // For now, let's error if abstract is used on field.
-      throw new Error('Abstract fields are not supported yet.');
+      // Abstract fields: no storage, no initializer. Subclasses must provide
+      // a concrete field (or case parameter) with the same name.
+      // Syntax: `abstract loc: i32;` (read-only) or `abstract var loc: i32;` (writable)
+      if (typeParameters) {
+        throw new Error('Fields cannot have type parameters.');
+      }
+      if (setterName) {
+        throw new Error('Abstract fields cannot have setter names.');
+      }
+      this.#consume(TokenType.Colon, "Expected ':' after abstract field name.");
+      const typeAnnotation = this.#parseTypeAnnotation();
+      this.#consume(
+        TokenType.Semi,
+        "Expected ';' after abstract field declaration.",
+      );
+
+      return {
+        type: NodeType.FieldDefinition,
+        name,
+        typeAnnotation,
+        value: undefined,
+        isFinal: false,
+        isAbstract: true,
+        isStatic: false,
+        isDeclare: false,
+        mutability,
+        decorators,
+        loc: this.#loc(startToken, this.#previous()),
+      } as FieldDefinition;
     }
 
     if (typeParameters) {
@@ -3216,6 +3239,7 @@ export class Parser {
       typeAnnotation,
       value,
       isFinal,
+      isAbstract: false,
       isStatic,
       isDeclare,
       decorators,
@@ -3519,6 +3543,7 @@ export class Parser {
       typeAnnotation,
       mutability: mutableField ? ('var' as const) : undefined,
       isFinal: false,
+      isAbstract: false,
       isStatic: false,
       isDeclare: false,
       decorators: [],

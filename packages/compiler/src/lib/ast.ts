@@ -702,6 +702,7 @@ export interface FieldDefinition extends Node {
   /** Resolved type for this field, populated by the checker. */
   inferredType?: Type;
   isFinal: boolean;
+  isAbstract: boolean;
   isStatic: boolean;
   isDeclare?: boolean;
   decorators?: Decorator[];

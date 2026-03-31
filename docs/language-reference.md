@@ -2179,6 +2179,42 @@ sealed class Expr extends Node {
 
 Only classes named in the `case` declaration may extend a `sealed` class.
 
+#### Abstract fields
+
+Sealed and abstract classes can declare `abstract` fields. An abstract field
+has no storage in the base class — subclasses must provide a concrete field
+or case parameter with the same name and type:
+
+```zena
+sealed class Node {
+  case Binary, Literal
+  abstract loc: i32;
+}
+
+class Binary(left: Node, right: Node, loc: i32) extends Node
+class Literal(value: i32, loc: i32) extends Node
+```
+
+The abstract field generates a virtual getter in the base class vtable,
+so it can be accessed polymorphically:
+
+```zena
+let getLoc = (n: Node): i32 => n.loc;  // dispatches via vtable
+```
+
+Abstract fields can also be satisfied by regular fields in non-case subclasses:
+
+```zena
+abstract class Base {
+  abstract id: i32;
+}
+
+class Derived extends Base {
+  id: i32;
+  new(id: i32) : id = id, super() {}
+}
+```
+
 ### Generic Classes
 
 Classes can be generic by specifying type parameters:

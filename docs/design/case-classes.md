@@ -474,19 +474,13 @@ class Literal(value: i32, loc: SourceLocation | null) extends Expr
 ```
 
 Each concrete variant's `loc` case parameter generates a field + getter that
-satisfies the abstract declaration. This works today with no compiler changes
-beyond what is already implemented for abstract fields and case classes.
+satisfies the abstract declaration. The compiler handles vtable slot reuse
+and `this` downcasting automatically.
 
 The trade-off is that the base class has no field storage for `loc` — it's
 only accessible through the virtual getter. This means every access goes
 through the vtable, though the engine may devirtualize this since the hierarchy
 is sealed.
-
-> **Known issue**: When a case parameter has the same name as an inherited
-> abstract field, the compiler currently generates duplicate vtable entries
-> (one from the abstract field, one from the case parameter getter). This is
-> a pre-existing bug that also affects regular fields and should be fixed
-> separately.
 
 **Approach 3: Regular classes with explicit constructors**
 

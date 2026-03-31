@@ -2858,6 +2858,15 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         classType.methods.set(name, type);
       }
     }
+    // Inherit abstract field tracking
+    if (superType.abstractFields) {
+      if (!classType.abstractFields) {
+        classType.abstractFields = new Set();
+      }
+      for (const name of superType.abstractFields) {
+        classType.abstractFields.add(name);
+      }
+    }
   }
 
   if (decl.exported && ctx.module) {
@@ -2959,10 +2968,33 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       //   classType.mutableFields.add(fieldName);
       // }
 
+      // Check if overriding an inherited abstract field
+      const isAbstractOverride = superType?.abstractFields?.has(fieldName);
+      if (isAbstractOverride) {
+        // Validate type compatibility with the abstract field
+        const abstractGetterName = getGetterName(fieldName);
+        const abstractGetter = superType!.methods.get(abstractGetterName);
+        if (
+          abstractGetter &&
+          !isAssignableTo(ctx, fieldType, abstractGetter.returnType)
+        ) {
+          ctx.diagnostics.reportError(
+            `Case parameter '${fieldName}' must be compatible with abstract field type.`,
+            DiagnosticCode.TypeMismatch,
+            ctx.getLocation(param.name.loc),
+          );
+        }
+        // Mark abstract field as satisfied
+        classType.abstractFields?.delete(fieldName);
+      }
+
       // Register implicit getter (and setter if mutable) - same as regular fields
       if (!fieldName.startsWith('#')) {
         const getterName = getGetterName(fieldName);
-        classType.vtable.push(getterName);
+        // Don't duplicate vtable entry if getter is already inherited (e.g., from abstract field)
+        if (!classType.vtable.includes(getterName)) {
+          classType.vtable.push(getterName);
+        }
         classType.methods.set(getterName, {
           kind: TypeKind.Function,
           parameters: [],
@@ -2972,7 +3004,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
         if (param.mutability === 'var') {
           const setterName = getSetterName(fieldName);
-          classType.vtable.push(setterName);
+          if (!classType.vtable.includes(setterName)) {
+            classType.vtable.push(setterName);
+          }
           classType.methods.set(setterName, {
             kind: TypeKind.Function,
             parameters: [fieldType],
@@ -3097,6 +3131,55 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       }
       localFields.add(memberName);
 
+      // Abstract fields: no storage, subclasses must provide concrete implementation
+      if (member.isAbstract) {
+        if (!decl.isAbstract && !decl.isSealed) {
+          ctx.diagnostics.reportError(
+            `Abstract field '${memberName}' can only appear within an abstract or sealed class.`,
+            DiagnosticCode.AbstractMethodInConcreteClass,
+            ctx.getLocation(member.name.loc),
+          );
+        }
+
+        // Register as abstract field (no storage in this class)
+        if (!classType.abstractFields) {
+          classType.abstractFields = new Set();
+        }
+        classType.abstractFields.add(memberName);
+
+        // Don't add to classType.fields — abstract fields have no storage.
+        // But we DO register the getter in the vtable so subclasses can override it.
+        if (!memberName.startsWith('#')) {
+          const getterName = getGetterName(memberName);
+          if (!classType.vtable.includes(getterName)) {
+            classType.vtable.push(getterName);
+          }
+          classType.methods.set(getterName, {
+            kind: TypeKind.Function,
+            parameters: [],
+            returnType: fieldType,
+            isFinal: false,
+            isAbstract: true,
+          });
+
+          // Abstract var fields also require a setter
+          if (member.mutability === 'var') {
+            const setterName = getSetterName(memberName);
+            if (!classType.vtable.includes(setterName)) {
+              classType.vtable.push(setterName);
+            }
+            classType.methods.set(setterName, {
+              kind: TypeKind.Function,
+              parameters: [fieldType],
+              returnType: Types.Void,
+              isFinal: false,
+              isAbstract: true,
+            });
+          }
+        }
+        continue;
+      }
+
       // Check if it's a redeclaration of an inherited field
       if (classType.fields.has(memberName)) {
         if (superType && superType.fields.has(memberName)) {
@@ -3142,6 +3225,23 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
       }
 
+      // Check if this concrete field satisfies an inherited abstract field
+      if (classType.abstractFields?.has(memberName)) {
+        const abstractGetterName = getGetterName(memberName);
+        const abstractGetter = superType?.methods.get(abstractGetterName);
+        if (
+          abstractGetter &&
+          !isAssignableTo(ctx, fieldType, abstractGetter.returnType)
+        ) {
+          ctx.diagnostics.reportError(
+            `Field '${memberName}' must be compatible with abstract field type.`,
+            DiagnosticCode.TypeMismatch,
+            ctx.getLocation(member.name.loc),
+          );
+        }
+        classType.abstractFields.delete(memberName);
+      }
+
       classType.fields.set(memberName, fieldType);
       classType.fieldMutability!.set(memberName, member.mutability === 'var');
 
@@ -3174,8 +3274,10 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         const getterName = getGetterName(memberName);
         const setterName = getSetterName(memberName);
 
-        // Getter
-        classType.vtable.push(getterName);
+        // Getter — don't duplicate vtable entry if already inherited (e.g., from abstract field)
+        if (!classType.vtable.includes(getterName)) {
+          classType.vtable.push(getterName);
+        }
         classType.methods.set(getterName, {
           kind: TypeKind.Function,
           parameters: [],
@@ -3188,7 +3290,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         const hasPublicSetter =
           member.mutability === 'var' && !member.setterName;
         if (hasPublicSetter) {
-          classType.vtable.push(setterName);
+          if (!classType.vtable.includes(setterName)) {
+            classType.vtable.push(setterName);
+          }
           classType.methods.set(setterName, {
             kind: TypeKind.Function,
             parameters: [fieldType],
@@ -3544,12 +3648,15 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
   }
 
-  // Check abstract methods implementation
+  // Check abstract methods/fields implementation
   if (!decl.isAbstract && !decl.isSealed) {
     for (const [name, method] of classType.methods) {
       if (method.isAbstract) {
+        const label = isGetterName(name)
+          ? `abstract field '${getPropertyNameFromAccessor(name)}'`
+          : `abstract method '${name}'`;
         ctx.diagnostics.reportError(
-          `Non-abstract class '${className}' does not implement abstract method '${name}'.`,
+          `Non-abstract class '${className}' does not implement ${label}.`,
           DiagnosticCode.AbstractMethodNotImplemented,
           ctx.getLocation(decl.name.loc),
         );

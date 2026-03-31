@@ -1987,7 +1987,7 @@ export class Parser {
         value = this.#parseExpression();
       }
       this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, mutability, this.#makeLocation(startToken));
+      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, mutability, this.#makeLocation(startToken));
     }
     
     let name = this.#parseIdentifier();
@@ -2002,6 +2002,14 @@ export class Parser {
     // Method: name(params) { ... }
     if (this.#check(TokenType.LParen)) {
       return this.#parseMethodBody(name, null, isFinal, isAbstract, false, startToken);
+    }
+    
+    // Abstract field: abstract name: Type; or abstract var name: Type;
+    if (isAbstract) {
+      this.#consume(TokenType.Colon, "Expected ':' after abstract field name.");
+      let typeAnnotation = this.#parseTypeAnnotation();
+      this.#consume(TokenType.Semi, "Expected ';' after abstract field declaration.");
+      return new FieldDefinition(name, typeAnnotation, null, false, true, mutability, this.#makeLocation(startToken));
     }
     
     // Field: name: Type; -OR- Accessor: name: Type { get { } set(v) { } }
@@ -2019,7 +2027,7 @@ export class Parser {
     }
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-    return new FieldDefinition(name, typeAnnotation, fieldValue, isFinal, mutability, this.#makeLocation(startToken));
+    return new FieldDefinition(name, typeAnnotation, fieldValue, isFinal, false, mutability, this.#makeLocation(startToken));
   }
   
   // Check if < starts a generic method (vs a comparison expression)
@@ -2322,7 +2330,7 @@ export class Parser {
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
     
-    return new FieldDefinition(name, typeAnnotation, null, false, if (mutableField) { "var" } else { null }, this.#makeLocation(startToken));
+    return new FieldDefinition(name, typeAnnotation, null, false, false, if (mutableField) { "var" } else { null }, this.#makeLocation(startToken));
   }
   
   // ==========================================================================

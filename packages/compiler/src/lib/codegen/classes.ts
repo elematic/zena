@@ -2359,6 +2359,12 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   for (const member of decl.body) {
     if (member.type === NodeType.FieldDefinition) {
       const memberName = getMemberName(member.name);
+
+      // Abstract fields have no storage — skip struct allocation
+      if (member.isAbstract) {
+        continue;
+      }
+
       // Use the field's inferredType (set by the checker)
       if (!member.inferredType) {
         throw new Error(
@@ -3058,6 +3064,104 @@ export function registerClassMethods(
       }
     } else if (member.type === NodeType.FieldDefinition) {
       if (member.isStatic) continue;
+      // Abstract fields: register vtable slot and type but no function body
+      if (member.isAbstract) {
+        const propName = getMemberName(member.name);
+        if (!propName.startsWith('#')) {
+          const getterName = getGetterName(propName);
+          if (
+            !vtable.includes(getterName) &&
+            ctx.isMethodUsed(classType, getterName)
+          ) {
+            vtable.push(getterName);
+          }
+
+          if (ctx.isMethodUsed(classType, getterName)) {
+            if (!member.inferredType) {
+              throw new Error(
+                `Abstract field ${propName} in ${decl.name.name} missing inferredType`,
+              );
+            }
+            const propType = mapCheckerTypeToWasmType(ctx, member.inferredType);
+
+            const thisType = [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(structTypeIndex),
+            ];
+            const params = [thisType];
+            const results = [propType];
+
+            let typeIndex = -1;
+            let isOverride = false;
+            if (currentSuperClassInfo?.methods.has(getterName)) {
+              typeIndex =
+                currentSuperClassInfo.methods.get(getterName)!.typeIndex;
+              isOverride = true;
+            }
+            if (!isOverride) {
+              typeIndex = ctx.module.addType(params, results);
+            }
+
+            // Allocate function (body will be `unreachable`, like abstract methods)
+            const funcIndex = ctx.module.addFunction(typeIndex);
+            methods.set(getterName, {
+              index: funcIndex,
+              returnType: results[0],
+              typeIndex,
+              paramTypes: params,
+              isFinal: false,
+            });
+          }
+
+          // Abstract var fields also need a setter
+          if (member.mutability === 'var') {
+            const setterName = getSetterName(propName);
+            if (
+              !vtable.includes(setterName) &&
+              ctx.isMethodUsed(classType, setterName)
+            ) {
+              vtable.push(setterName);
+            }
+
+            if (ctx.isMethodUsed(classType, setterName)) {
+              const propType = mapCheckerTypeToWasmType(
+                ctx,
+                member.inferredType!,
+              );
+              const thisType = [
+                ValType.ref_null,
+                ...WasmModule.encodeSignedLEB128(structTypeIndex),
+              ];
+              const setterParams = [thisType, propType];
+              const setterResults: number[][] = [];
+
+              let setterTypeIndex = -1;
+              let isSetterOverride = false;
+              if (currentSuperClassInfo?.methods.has(setterName)) {
+                setterTypeIndex =
+                  currentSuperClassInfo.methods.get(setterName)!.typeIndex;
+                isSetterOverride = true;
+              }
+              if (!isSetterOverride) {
+                setterTypeIndex = ctx.module.addType(
+                  setterParams,
+                  setterResults,
+                );
+              }
+
+              const setterFuncIndex = ctx.module.addFunction(setterTypeIndex);
+              methods.set(setterName, {
+                index: setterFuncIndex,
+                returnType: [],
+                typeIndex: setterTypeIndex,
+                paramTypes: setterParams,
+                isFinal: false,
+              });
+            }
+          }
+        }
+        continue;
+      }
       // Register implicit accessors for public fields
       if (!getMemberName(member.name).startsWith('#')) {
         const propName = getMemberName(member.name);
@@ -3122,21 +3226,21 @@ export function registerClassMethods(
         // since intrinsic calls are inlined and don't use function types
         // Also skip for unused methods (DCE)
         let typeIndex = -1;
+        let getterIsOverride = false;
         if (
           !intrinsic &&
           !member.isDeclare &&
           ctx.isMethodUsed(classType, getterName)
         ) {
-          let isOverride = false;
           if (currentSuperClassInfo) {
             if (currentSuperClassInfo.methods.has(getterName)) {
               typeIndex =
                 currentSuperClassInfo.methods.get(getterName)!.typeIndex;
-              isOverride = true;
+              getterIsOverride = true;
             }
           }
 
-          if (!isOverride) {
+          if (!getterIsOverride) {
             typeIndex = ctx.module.addType(params, results);
           }
         }
@@ -3159,7 +3263,9 @@ export function registerClassMethods(
           index: funcIndex,
           returnType: results[0],
           typeIndex: typeIndex!,
-          paramTypes: params,
+          paramTypes: getterIsOverride
+            ? currentSuperClassInfo!.methods.get(getterName)!.paramTypes
+            : params,
           isFinal: member.isFinal,
           intrinsic,
         });
@@ -3183,12 +3289,12 @@ export function registerClassMethods(
           // For intrinsics (isDeclare or @intrinsic), skip type creation
           // Also skip for unused methods (DCE)
           let setterTypeIndex = -1;
+          let isSetterOverride = false;
           if (
             !intrinsic &&
             !member.isDeclare &&
             ctx.isMethodUsed(classType, setterName)
           ) {
-            let isSetterOverride = false;
             if (currentSuperClassInfo) {
               if (currentSuperClassInfo.methods.has(setterName)) {
                 setterTypeIndex =
@@ -3220,7 +3326,9 @@ export function registerClassMethods(
             index: setterFuncIndex,
             returnType: [],
             typeIndex: setterTypeIndex!,
-            paramTypes: setterParams,
+            paramTypes: isSetterOverride
+              ? currentSuperClassInfo!.methods.get(setterName)!.paramTypes
+              : setterParams,
             isFinal: member.isFinal,
             intrinsic,
           });
@@ -3267,14 +3375,14 @@ export function registerClassMethods(
       const getterResults = [propType];
 
       let getterTypeIndex = -1;
+      let getterIsOverride = false;
       if (ctx.isMethodUsed(classType, getterName)) {
-        let isOverride = false;
         if (currentSuperClassInfo?.methods.has(getterName)) {
           getterTypeIndex =
             currentSuperClassInfo.methods.get(getterName)!.typeIndex;
-          isOverride = true;
+          getterIsOverride = true;
         }
-        if (!isOverride) {
+        if (!getterIsOverride) {
           getterTypeIndex = ctx.module.addType(getterParams, getterResults);
         }
       }
@@ -3292,7 +3400,9 @@ export function registerClassMethods(
         index: getterFuncIndex,
         returnType: getterResults[0],
         typeIndex: getterTypeIndex!,
-        paramTypes: getterParams,
+        paramTypes: getterIsOverride
+          ? currentSuperClassInfo!.methods.get(getterName)!.paramTypes
+          : getterParams,
         isFinal: false,
       });
 
@@ -3310,8 +3420,8 @@ export function registerClassMethods(
         const setterResults: number[][] = [];
 
         let setterTypeIndex = -1;
+        let isSetterOverride = false;
         if (ctx.isMethodUsed(classType, setterName)) {
-          let isSetterOverride = false;
           if (currentSuperClassInfo?.methods.has(setterName)) {
             setterTypeIndex =
               currentSuperClassInfo.methods.get(setterName)!.typeIndex;
@@ -3335,7 +3445,9 @@ export function registerClassMethods(
           index: setterFuncIndex,
           returnType: [],
           typeIndex: setterTypeIndex!,
-          paramTypes: setterParams,
+          paramTypes: isSetterOverride
+            ? currentSuperClassInfo!.methods.get(setterName)!.paramTypes
+            : setterParams,
           isFinal: false,
         });
       }
@@ -4447,6 +4559,35 @@ export function generateClassMethods(
     } else if (member.type === NodeType.FieldDefinition) {
       if (member.isDeclare) continue;
       if (member.isStatic) continue;
+      if (member.isAbstract) {
+        // Generate unreachable body for abstract field getter (like abstract methods)
+        const propName = getMemberName(member.name);
+        if (!propName.startsWith('#')) {
+          const getterName = getGetterName(propName);
+          const getterInfo = classInfo.methods.get(getterName);
+          if (getterInfo && getterInfo.index !== -1) {
+            ctx.module.addCode(
+              getterInfo.index,
+              [],
+              [Opcode.unreachable, Opcode.end],
+            );
+          }
+
+          // Also generate unreachable body for abstract var setter
+          if (member.mutability === 'var') {
+            const setterName = getSetterName(propName);
+            const setterInfo = classInfo.methods.get(setterName);
+            if (setterInfo && setterInfo.index !== -1) {
+              ctx.module.addCode(
+                setterInfo.index,
+                [],
+                [Opcode.unreachable, Opcode.end],
+              );
+            }
+          }
+        }
+        continue;
+      }
       if (
         member.decorators &&
         member.decorators.some((d) => d.name === 'intrinsic')
@@ -4478,9 +4619,32 @@ export function generateClassMethods(
         // Only check if function was allocated - don't re-check DCE (see comment in method body generation)
         if (getterInfo.index !== -1) {
           const getterBody: number[] = [];
+          const extraLocals: number[][] = [];
+
+          // Downcast 'this' if getter type uses parent struct (abstract field override)
+          let thisLocal = 0;
+          const thisTypeIndex = getHeapTypeIndex(ctx, getterInfo.paramTypes[0]);
+          if (
+            thisTypeIndex !== -1 &&
+            thisTypeIndex !== classInfo.structTypeIndex
+          ) {
+            const realThisType = [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ];
+            extraLocals.push(realThisType);
+            const realThisLocal = 1; // first extra local after 'this' param
+            getterBody.push(Opcode.local_get, 0);
+            getterBody.push(0xfb, GcOpcode.ref_cast_null);
+            getterBody.push(
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            );
+            getterBody.push(Opcode.local_set, realThisLocal);
+            thisLocal = realThisLocal;
+          }
 
           // this.field
-          getterBody.push(Opcode.local_get, 0); // this
+          getterBody.push(Opcode.local_get, thisLocal); // this
           getterBody.push(0xfb, GcOpcode.struct_get);
           getterBody.push(
             ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
@@ -4488,7 +4652,7 @@ export function generateClassMethods(
           getterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
           getterBody.push(Opcode.end);
 
-          ctx.module.addCode(getterInfo.index, [], getterBody);
+          ctx.module.addCode(getterInfo.index, extraLocals, getterBody);
         }
 
         // Setter (skip for immutable `let` fields)
@@ -4501,10 +4665,37 @@ export function generateClassMethods(
           // Only check if function was allocated - don't re-check DCE (see comment in method body generation)
           if (setterInfo && setterInfo.index !== -1) {
             const setterBody: number[] = [];
+            const setterExtraLocals: number[][] = [];
+
+            // Downcast 'this' if setter type uses parent struct (abstract field override)
+            let setterThisLocal = 0;
+            let setterValLocal = 1;
+            const setterThisTypeIndex = getHeapTypeIndex(
+              ctx,
+              setterInfo.paramTypes[0],
+            );
+            if (
+              setterThisTypeIndex !== -1 &&
+              setterThisTypeIndex !== classInfo.structTypeIndex
+            ) {
+              const realThisType = [
+                ValType.ref_null,
+                ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+              ];
+              setterExtraLocals.push(realThisType);
+              const realThisLocal = 2; // after 'this' and 'val' params
+              setterBody.push(Opcode.local_get, 0);
+              setterBody.push(0xfb, GcOpcode.ref_cast_null);
+              setterBody.push(
+                ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+              );
+              setterBody.push(Opcode.local_set, realThisLocal);
+              setterThisLocal = realThisLocal;
+            }
 
             // this.field = val
-            setterBody.push(Opcode.local_get, 0); // this
-            setterBody.push(Opcode.local_get, 1); // val
+            setterBody.push(Opcode.local_get, setterThisLocal); // this
+            setterBody.push(Opcode.local_get, setterValLocal); // val
             setterBody.push(0xfb, GcOpcode.struct_set);
             setterBody.push(
               ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
@@ -4512,7 +4703,7 @@ export function generateClassMethods(
             setterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
             setterBody.push(Opcode.end);
 
-            ctx.module.addCode(setterInfo.index, [], setterBody);
+            ctx.module.addCode(setterInfo.index, setterExtraLocals, setterBody);
           }
         }
       }
@@ -4536,14 +4727,38 @@ export function generateClassMethods(
       const getterInfo = classInfo.methods.get(getterName);
       if (getterInfo && getterInfo.index !== -1) {
         const getterBody: number[] = [];
-        getterBody.push(Opcode.local_get, 0); // this
+        const extraLocals: number[][] = [];
+
+        // Downcast 'this' if getter type uses parent struct (abstract field override)
+        let thisLocal = 0;
+        const thisTypeIndex = getHeapTypeIndex(ctx, getterInfo.paramTypes[0]);
+        if (
+          thisTypeIndex !== -1 &&
+          thisTypeIndex !== classInfo.structTypeIndex
+        ) {
+          const realThisType = [
+            ValType.ref_null,
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          ];
+          extraLocals.push(realThisType);
+          const realThisLocal = 1; // first extra local after 'this' param
+          getterBody.push(Opcode.local_get, 0);
+          getterBody.push(0xfb, GcOpcode.ref_cast_null);
+          getterBody.push(
+            ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+          );
+          getterBody.push(Opcode.local_set, realThisLocal);
+          thisLocal = realThisLocal;
+        }
+
+        getterBody.push(Opcode.local_get, thisLocal); // this
         getterBody.push(0xfb, GcOpcode.struct_get);
         getterBody.push(
           ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
         );
         getterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
         getterBody.push(Opcode.end);
-        ctx.module.addCode(getterInfo.index, [], getterBody);
+        ctx.module.addCode(getterInfo.index, extraLocals, getterBody);
       }
 
       // Setter (only for var fields)
@@ -4552,15 +4767,43 @@ export function generateClassMethods(
         const setterInfo = classInfo.methods.get(setterName);
         if (setterInfo && setterInfo.index !== -1) {
           const setterBody: number[] = [];
-          setterBody.push(Opcode.local_get, 0); // this
-          setterBody.push(Opcode.local_get, 1); // val
+          const setterExtraLocals: number[][] = [];
+
+          // Downcast 'this' if setter type uses parent struct (abstract field override)
+          let setterThisLocal = 0;
+          const setterValLocal = 1;
+          const setterThisTypeIndex = getHeapTypeIndex(
+            ctx,
+            setterInfo.paramTypes[0],
+          );
+          if (
+            setterThisTypeIndex !== -1 &&
+            setterThisTypeIndex !== classInfo.structTypeIndex
+          ) {
+            const realThisType = [
+              ValType.ref_null,
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            ];
+            setterExtraLocals.push(realThisType);
+            const realThisLocal = 2; // after 'this' and 'val' params
+            setterBody.push(Opcode.local_get, 0);
+            setterBody.push(0xfb, GcOpcode.ref_cast_null);
+            setterBody.push(
+              ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+            );
+            setterBody.push(Opcode.local_set, realThisLocal);
+            setterThisLocal = realThisLocal;
+          }
+
+          setterBody.push(Opcode.local_get, setterThisLocal); // this
+          setterBody.push(Opcode.local_get, setterValLocal); // val
           setterBody.push(0xfb, GcOpcode.struct_set);
           setterBody.push(
             ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
           );
           setterBody.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
           setterBody.push(Opcode.end);
-          ctx.module.addCode(setterInfo.index, [], setterBody);
+          ctx.module.addCode(setterInfo.index, setterExtraLocals, setterBody);
         }
       }
     }
