@@ -4,6 +4,7 @@ import {CheckerContext} from './context.js';
 import {
   checkStatement,
   predeclareType,
+  predeclareSealedVariants,
   predeclareFunction,
   processImport,
   resolveTypeAliases,
@@ -111,6 +112,13 @@ export class TypeChecker {
     // This enables forward references (e.g., a mixin field referencing a class that uses the mixin)
     for (const stmt of ctx.module!.body) {
       predeclareType(ctx, stmt);
+    }
+
+    // Pass 1.5: pre-declare inline sealed variants
+    // Runs after all regular classes are predeclared so we can distinguish
+    // inline/unit variants from distributed references to standalone classes.
+    for (const stmt of ctx.module!.body) {
+      predeclareSealedVariants(ctx, stmt);
     }
 
     // Second pass: process imports so types are available for function signatures

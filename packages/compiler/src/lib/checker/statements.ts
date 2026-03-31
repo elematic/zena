@@ -898,6 +898,57 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
 };
 
 /**
+ * Pre-declares inline sealed variants so they're available in pass 4 (function predeclaration).
+ * Must run AFTER all regular classes are predeclared (pass 1) so we can distinguish
+ * inline variants from distributed references to standalone classes.
+ */
+export const predeclareSealedVariants = (
+  ctx: CheckerContext,
+  stmt: Statement,
+) => {
+  if (stmt.type !== NodeType.ClassDeclaration) return;
+
+  const decl = stmt as ClassDeclaration;
+  if (!decl.isSealed || !decl.sealedVariants) return;
+
+  const className = decl.name.name;
+
+  for (const variant of decl.sealedVariants) {
+    const variantName = variant.name.name;
+
+    // Skip if already declared (e.g., distributed variant defined as standalone class)
+    if (ctx.resolveTypeLocal(variantName)) {
+      continue;
+    }
+
+    // Create a synthetic ClassDeclaration for the variant
+    const syntheticDecl: ClassDeclaration = {
+      type: NodeType.ClassDeclaration,
+      name: variant.name,
+      caseParams: variant.params,
+      superClass: {
+        type: NodeType.TypeAnnotation,
+        name: className,
+        loc: decl.name.loc,
+      },
+      body: [],
+      exported: decl.exported,
+      isFinal: false,
+      isAbstract: false,
+      isExtension: false,
+      isSealed: false,
+      loc: variant.loc,
+    };
+
+    // Store the synthetic decl on the variant for reuse in pass 5
+    (variant as any)._syntheticDecl = syntheticDecl;
+
+    // Pre-declare the variant class (creates placeholder type)
+    predeclareClass(ctx, syntheticDecl);
+  }
+};
+
+/**
  * Pre-declares a mixin type with empty fields/methods.
  */
 const predeclareMixin = (ctx: CheckerContext, decl: MixinDeclaration) => {
@@ -3804,15 +3855,39 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
       if (variant.params) {
         // Inline variant: synthesize a case class extending this sealed class
         if (existingType && existingType.kind === TypeKind.Class) {
-          ctx.diagnostics.reportError(
-            `Duplicate declaration: inline variant '${variantName}' conflicts with existing class.`,
-            DiagnosticCode.DuplicateDeclaration,
-            ctx.getLocation(variant.name.loc),
-          );
+          // Check if this is our pre-declared placeholder (from pass 1)
+          const syntheticDecl = (variant as any)._syntheticDecl as
+            | ClassDeclaration
+            | undefined;
+          if (!syntheticDecl || syntheticDecl.inferredType !== existingType) {
+            // Not our placeholder — genuine conflict with another class
+            ctx.diagnostics.reportError(
+              `Duplicate declaration: inline variant '${variantName}' conflicts with existing class.`,
+              DiagnosticCode.DuplicateDeclaration,
+              ctx.getLocation(variant.name.loc),
+            );
+            continue;
+          }
+
+          // Our placeholder — proceed to full check
+          checkClassDeclaration(ctx, syntheticDecl);
+
+          // Add to module body so codegen can find the class
+          if (ctx.module) {
+            ctx.module.body.push(syntheticDecl);
+          }
+
+          const variantType = syntheticDecl.inferredType as
+            | ClassType
+            | undefined;
+          if (variantType) {
+            classType.sealedVariants.push(variantType);
+          }
           continue;
         }
 
         // Create the synthetic ClassDeclaration AST node for the inline variant
+        // (fallback for cases where predeclaration didn't happen, e.g., synthetic sealed classes)
         const syntheticDecl: ClassDeclaration = {
           type: NodeType.ClassDeclaration,
           name: variant.name,
@@ -3846,7 +3921,31 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         }
       } else {
         // Unit variant or distributed variant (name-only reference)
-        if (existingType && existingType.kind === TypeKind.Class) {
+        const preDeclaredSynth = (variant as any)._syntheticDecl as
+          | ClassDeclaration
+          | undefined;
+
+        if (
+          preDeclaredSynth &&
+          existingType &&
+          existingType.kind === TypeKind.Class &&
+          preDeclaredSynth.inferredType === existingType
+        ) {
+          // Our pre-declared placeholder (from pass 1.5) — proceed to full check
+          checkClassDeclaration(ctx, preDeclaredSynth);
+
+          // Add to module body so codegen can find the class
+          if (ctx.module) {
+            ctx.module.body.push(preDeclaredSynth);
+          }
+
+          const variantType = preDeclaredSynth.inferredType as
+            | ClassType
+            | undefined;
+          if (variantType) {
+            classType.sealedVariants.push(variantType);
+          }
+        } else if (existingType && existingType.kind === TypeKind.Class) {
           // Distributed variant: already defined elsewhere with `extends`
           classType.sealedVariants.push(existingType as ClassType);
         } else {
