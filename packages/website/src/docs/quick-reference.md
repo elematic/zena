@@ -1160,6 +1160,44 @@ let n = c.count;  // OK - reading is public
 c.count = 5;      // Error - no public setter
 ```
 
+### Optional Fields
+
+Fields marked with `?` are shorthand for `Type | null`. They default to `null`
+when not set in the constructor. Like explicit nullable unions, optional fields
+cannot use primitive types directly—use `Box<T>` if needed.
+
+```ts
+class User {
+  name: String;
+  bio?: String;  // Same as bio: String | null
+
+  new(name: String) {
+    this.name = name;
+    // bio defaults to null
+  }
+}
+
+interface Configurable {
+  label?: String;  // Optional interface field
+}
+
+mixin Timestamped {
+  updatedAt?: String;  // Optional mixin field
+}
+```
+
+Optional fields work with `abstract` and private (`#`) fields:
+
+```ts
+abstract class Base {
+  abstract metadata?: String;  // Subclasses must provide
+}
+
+class Cache {
+  #lastResult?: String;  // Private optional field
+}
+```
+
 ### Initializer Lists
 
 For immutable fields that need constructor parameters, use Dart-style

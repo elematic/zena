@@ -3165,6 +3165,7 @@ export class Parser {
       if (setterName) {
         throw new Error('Abstract fields cannot have setter names.');
       }
+      const isOptional = this.#match(TokenType.Question);
       this.#consume(TokenType.Colon, "Expected ':' after abstract field name.");
       const typeAnnotation = this.#parseTypeAnnotation();
       this.#consume(
@@ -3181,6 +3182,7 @@ export class Parser {
         isAbstract: true,
         isStatic: false,
         isDeclare: false,
+        isOptional: isOptional || undefined,
         mutability,
         decorators,
         loc: this.#loc(startToken, this.#previous()),
@@ -3198,7 +3200,8 @@ export class Parser {
       );
     }
 
-    // Field: name: Type; or name: Type = value; or name = value;
+    // Field: name: Type; or name?: Type; or name: Type = value; or name = value;
+    const isOptional = this.#match(TokenType.Question);
     let typeAnnotation: TypeAnnotation | undefined;
     if (this.#match(TokenType.Colon)) {
       typeAnnotation = this.#parseTypeAnnotation();
@@ -3210,6 +3213,11 @@ export class Parser {
           'Field mutability (let/var) cannot be combined with accessor blocks.',
         );
       }
+      if (isOptional) {
+        throw new Error(
+          'Optional fields cannot have accessor blocks.',
+        );
+      }
       return this.#parseAccessorDeclaration(
         name,
         typeAnnotation,
@@ -3217,6 +3225,12 @@ export class Parser {
         isStatic,
         decorators,
         startToken,
+      );
+    }
+
+    if (isOptional && !typeAnnotation) {
+      throw new Error(
+        "Optional fields must have a type annotation: 'name?: Type'.",
       );
     }
 
@@ -3242,6 +3256,7 @@ export class Parser {
       isAbstract: false,
       isStatic,
       isDeclare,
+      isOptional: isOptional || undefined,
       decorators,
       mutability,
       setterName,
@@ -3499,7 +3514,8 @@ export class Parser {
       throw new Error('Fields cannot have type parameters.');
     }
 
-    // Field: name: Type;
+    // Field: name: Type; or name?: Type;
+    const isOptional = this.#match(TokenType.Question);
     this.#consume(TokenType.Colon, "Expected ':' after field name.");
     const typeAnnotation = this.#parseTypeAnnotation();
 
@@ -3507,6 +3523,11 @@ export class Parser {
       if (mutableField) {
         throw new Error(
           "'var' modifier is not allowed on accessor signatures.",
+        );
+      }
+      if (isOptional) {
+        throw new Error(
+          'Optional fields cannot have accessor blocks.',
         );
       }
       let hasGetter = false;
@@ -3542,6 +3563,7 @@ export class Parser {
       name,
       typeAnnotation,
       mutability: mutableField ? ('var' as const) : undefined,
+      isOptional: isOptional || undefined,
       isFinal: false,
       isAbstract: false,
       isStatic: false,

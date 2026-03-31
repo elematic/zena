@@ -705,6 +705,8 @@ export interface FieldDefinition extends Node {
   isAbstract: boolean;
   isStatic: boolean;
   isDeclare?: boolean;
+  /** Optional field (`name?: Type`). Implies `Type | null`. */
+  isOptional?: boolean;
   decorators?: Decorator[];
   /**
    * Field mutability:

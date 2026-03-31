@@ -1979,7 +1979,8 @@ export class Parser {
         return this.#parseMethodBody(hashName, null, isFinal, isAbstract, false, startToken);
       }
       
-      // Private field: #name: Type;
+      // Private field: #name: Type; or #name?: Type;
+      let isOptional = this.#match(TokenType.Question);
       this.#consume(TokenType.Colon, "Expected ':' after private field name");
       let typeAnnotation = this.#parseTypeAnnotation();
       var value: Expression | null = null;
@@ -1987,7 +1988,7 @@ export class Parser {
         value = this.#parseExpression();
       }
       this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, mutability, this.#makeLocation(startToken));
+      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, isOptional, mutability, this.#makeLocation(startToken));
     }
     
     let name = this.#parseIdentifier();
@@ -2004,15 +2005,17 @@ export class Parser {
       return this.#parseMethodBody(name, null, isFinal, isAbstract, false, startToken);
     }
     
-    // Abstract field: abstract name: Type; or abstract var name: Type;
+    // Abstract field: abstract name: Type; or abstract name?: Type;
     if (isAbstract) {
+      let isOptional = this.#match(TokenType.Question);
       this.#consume(TokenType.Colon, "Expected ':' after abstract field name.");
       let typeAnnotation = this.#parseTypeAnnotation();
       this.#consume(TokenType.Semi, "Expected ';' after abstract field declaration.");
-      return new FieldDefinition(name, typeAnnotation, null, false, true, mutability, this.#makeLocation(startToken));
+      return new FieldDefinition(name, typeAnnotation, null, false, true, isOptional, mutability, this.#makeLocation(startToken));
     }
     
-    // Field: name: Type; -OR- Accessor: name: Type { get { } set(v) { } }
+    // Field: name: Type; or name?: Type; -OR- Accessor: name: Type { get { } set(v) { } }
+    let isOptional = this.#match(TokenType.Question);
     this.#consume(TokenType.Colon, "Expected ':' after field name");
     let typeAnnotation = this.#parseTypeAnnotation();
     
@@ -2027,7 +2030,7 @@ export class Parser {
     }
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-    return new FieldDefinition(name, typeAnnotation, fieldValue, isFinal, false, mutability, this.#makeLocation(startToken));
+    return new FieldDefinition(name, typeAnnotation, fieldValue, isFinal, false, isOptional, mutability, this.#makeLocation(startToken));
   }
   
   // Check if < starts a generic method (vs a comparison expression)
@@ -2301,7 +2304,8 @@ export class Parser {
       throw new Error("Fields cannot have type parameters.");
     }
     
-    // Field: name: Type;  or  Accessor: name: Type { get; set; }
+    // Field: name: Type; or name?: Type;  or  Accessor: name: Type { get; set; }
+    let isOptional = this.#match(TokenType.Question);
     this.#consume(TokenType.Colon, "Expected ':' after field name");
     let typeAnnotation = this.#parseTypeAnnotation();
     
@@ -2330,7 +2334,7 @@ export class Parser {
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
     
-    return new FieldDefinition(name, typeAnnotation, null, false, false, if (mutableField) { "var" } else { null }, this.#makeLocation(startToken));
+    return new FieldDefinition(name, typeAnnotation, null, false, false, isOptional, if (mutableField) { "var" } else { null }, this.#makeLocation(startToken));
   }
   
   // ==========================================================================

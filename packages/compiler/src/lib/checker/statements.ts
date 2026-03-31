@@ -1116,20 +1116,24 @@ function resolveParameterType(ctx: CheckerContext, param: Parameter): Type {
   }
   let type = resolveTypeAnnotation(ctx, param.typeAnnotation);
   if (param.optional && !param.initializer) {
-    if (type.kind === TypeKind.Union) {
-      type = {
-        kind: TypeKind.Union,
-        types: [...(type as UnionType).types, Types.Null],
-      } as UnionType;
-    } else {
-      type = {
-        kind: TypeKind.Union,
-        types: [type, Types.Null],
-      } as UnionType;
-    }
+    type = makeNullableType(type);
     validateType(type, ctx);
   }
   return type;
+}
+
+/** Wraps a type in `T | null`. If the type is already a union, appends null. */
+function makeNullableType(type: Type): Type {
+  if (type.kind === TypeKind.Union) {
+    return {
+      kind: TypeKind.Union,
+      types: [...(type as UnionType).types, Types.Null],
+    } as UnionType;
+  }
+  return {
+    kind: TypeKind.Union,
+    types: [type, Types.Null],
+  } as UnionType;
 }
 
 /**
@@ -3109,6 +3113,10 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           fieldType = widenLiteralType(fieldType, ctx);
         }
       }
+      if (member.isOptional) {
+        fieldType = makeNullableType(fieldType);
+        validateType(fieldType, ctx);
+      }
       member.inferredType = fieldType;
 
       // Inline tuples cannot appear in field types
@@ -4051,7 +4059,11 @@ function checkInterfaceDeclaration(
         interfaceType.methods.set(memberName, methodType);
       }
     } else if (member.type === NodeType.FieldDefinition) {
-      const type = resolveTypeAnnotation(ctx, member.typeAnnotation!);
+      let type = resolveTypeAnnotation(ctx, member.typeAnnotation!);
+      if (member.isOptional) {
+        type = makeNullableType(type);
+        validateType(type, ctx);
+      }
       member.inferredType = type;
 
       // Inline tuples cannot appear in interface field types
@@ -4722,6 +4734,10 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
         if (member.mutability === 'var') {
           fieldType = widenLiteralType(fieldType, ctx);
         }
+      }
+      if (member.isOptional) {
+        fieldType = makeNullableType(fieldType);
+        validateType(fieldType, ctx);
       }
       member.inferredType = fieldType;
 

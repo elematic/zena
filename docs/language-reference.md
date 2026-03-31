@@ -1895,6 +1895,35 @@ Fields are currently **mutable by default**. Use `let` for immutable fields.
 > requiring `var` for mutable fields. See the [classes design doc](design/classes.md#migration-to-immutable-by-default)
 > for the migration plan.
 
+### Optional Fields
+
+Fields can be marked optional with `?`, which makes their type `T | null`:
+
+```zena
+class TreeNode {
+  value: i32;
+  var left?: TreeNode;   // Type is TreeNode | null
+  var right?: TreeNode;  // Type is TreeNode | null
+
+  new(value: i32) : value = value {}
+}
+```
+
+Optional fields are syntactic sugar for a union with `null`. The same
+restrictions apply: **primitive types cannot be optional** (since `i32 | null`
+would require boxing). Optional fields work in classes, interfaces, and mixins.
+
+```zena
+interface Container {
+  child?: Element;       // OK: reference type
+  // count?: i32;        // Error: primitives cannot be optional
+}
+
+mixin Linkable {
+  var next?: Node;
+}
+```
+
 ### Case Classes
 
 A class with a parameter list after its name is a **case class** — a concise
