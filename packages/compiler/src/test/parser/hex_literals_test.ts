@@ -14,7 +14,6 @@ suite('Parser - Hex Literals', () => {
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
       if (decl.init.type === NodeType.NumberLiteral) {
-        assert.strictEqual(decl.init.value, 16);
         assert.strictEqual(decl.init.raw, '0x10');
       }
     }
@@ -30,7 +29,6 @@ suite('Parser - Hex Literals', () => {
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
       if (decl.init.type === NodeType.NumberLiteral) {
-        assert.strictEqual(decl.init.value, 255);
         assert.strictEqual(decl.init.raw, '0XFF');
       }
     }
@@ -46,7 +44,6 @@ suite('Parser - Hex Literals', () => {
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
       if (decl.init.type === NodeType.NumberLiteral) {
-        assert.strictEqual(decl.init.value, 123);
         assert.strictEqual(decl.init.raw, '123');
       }
     }
@@ -62,7 +59,6 @@ suite('Parser - Hex Literals', () => {
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
       if (decl.init.type === NodeType.NumberLiteral) {
-        assert.strictEqual(decl.init.value, 12.34);
         assert.strictEqual(decl.init.raw, '12.34');
       }
     }
@@ -78,7 +74,6 @@ suite('Parser - Hex Literals', () => {
     if (decl.type === NodeType.VariableDeclaration) {
       assert.strictEqual(decl.init.type, NodeType.NumberLiteral);
       if (decl.init.type === NodeType.NumberLiteral) {
-        assert.strictEqual(decl.init.value, 2147483647);
         assert.strictEqual(decl.init.raw, '0x7FFFFFFF');
       }
     }

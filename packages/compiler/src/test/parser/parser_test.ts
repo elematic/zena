@@ -290,7 +290,7 @@ suite('Parser', () => {
         }
         assert.strictEqual(expr.index.type, NodeType.NumberLiteral);
         if (expr.index.type === NodeType.NumberLiteral) {
-          assert.strictEqual(expr.index.value, 0);
+          assert.strictEqual(expr.index.raw, '0');
         }
       }
     }

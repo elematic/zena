@@ -13,9 +13,9 @@ suite('Parser: Records and Tuples', () => {
     assert.strictEqual(init.type, NodeType.RecordLiteral);
     assert.strictEqual(init.properties.length, 2);
     assert.strictEqual(init.properties[0].name.name, 'x');
-    assert.strictEqual(init.properties[0].value.value, 1);
+    assert.strictEqual(init.properties[0].value.raw, '1');
     assert.strictEqual(init.properties[1].name.name, 'y');
-    assert.strictEqual(init.properties[1].value.value, 2);
+    assert.strictEqual(init.properties[1].value.raw, '2');
   });
 
   test('parses tuple literal', () => {
@@ -25,7 +25,7 @@ suite('Parser: Records and Tuples', () => {
     const init = decl.init;
     assert.strictEqual(init.type, NodeType.TupleLiteral);
     assert.strictEqual(init.elements.length, 2);
-    assert.strictEqual(init.elements[0].value, 1);
+    assert.strictEqual(init.elements[0].raw, '1');
     assert.strictEqual(init.elements[1].value, 'hello');
   });
 
@@ -94,7 +94,7 @@ suite('Parser: Records and Tuples', () => {
     assert.strictEqual(init.properties[0].value.name, 'x');
 
     assert.strictEqual(init.properties[1].name.name, 'y');
-    assert.strictEqual(init.properties[1].value.value, 2);
+    assert.strictEqual(init.properties[1].value.raw, '2');
 
     assert.strictEqual(init.properties[2].name.name, 'z');
     assert.strictEqual(init.properties[2].value.name, 'z');

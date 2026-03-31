@@ -15,10 +15,10 @@ suite('Parser: Map Literals', () => {
 
     assert.strictEqual(init.entries[0].type, NodeType.MapEntry);
     assert.strictEqual(init.entries[0].key.value, 'a');
-    assert.strictEqual(init.entries[0].value.value, 1);
+    assert.strictEqual(init.entries[0].value.raw, '1');
 
     assert.strictEqual(init.entries[1].key.value, 'b');
-    assert.strictEqual(init.entries[1].value.value, 2);
+    assert.strictEqual(init.entries[1].value.raw, '2');
   });
 
   test('parses map literal with number keys', () => {
@@ -28,7 +28,7 @@ suite('Parser: Map Literals', () => {
     assert.strictEqual(init.type, NodeType.MapLiteral);
     assert.strictEqual(init.entries.length, 2);
 
-    assert.strictEqual(init.entries[0].key.value, 1);
+    assert.strictEqual(init.entries[0].key.raw, '1');
     assert.strictEqual(init.entries[0].value.value, 'one');
   });
 

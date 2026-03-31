@@ -564,8 +564,7 @@ export interface CatchClause extends Node {
 
 export interface NumberLiteral extends Node {
   type: typeof NodeType.NumberLiteral;
-  value: number;
-  raw?: string;
+  raw: string;
 }
 
 export interface StringLiteral extends Node {

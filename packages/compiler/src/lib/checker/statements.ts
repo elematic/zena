@@ -25,6 +25,7 @@ import {
   type MemberExpression,
   type MethodDefinition,
   type MixinDeclaration,
+  type NumberLiteral,
   type Parameter,
   type Pattern,
   type RecordPattern,
@@ -1939,7 +1940,8 @@ function checkLiteralMatch(
   }
   if (expr.type === NodeType.NumberLiteral) {
     return (
-      typeof literalType.value === 'number' && expr.value === literalType.value
+      typeof literalType.value === 'number' &&
+      Number(expr.raw) === literalType.value
     );
   }
   if (expr.type === NodeType.BooleanLiteral) {
@@ -5236,7 +5238,7 @@ function checkEnumDeclaration(ctx: CheckerContext, decl: EnumDeclaration) {
         }
 
         if (member.initializer.type === NodeType.NumberLiteral) {
-          const val = Number((member.initializer as any).value);
+          const val = Number((member.initializer as NumberLiteral).raw);
           member.resolvedValue = val;
           nextValue = val + 1;
         } else {

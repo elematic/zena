@@ -95,7 +95,7 @@ export const getCompileTimeNumericValue = (
 ): number | null => {
   // Direct number literal
   if (expr.type === NodeType.NumberLiteral) {
-    return (expr as NumberLiteral).value;
+    return Number((expr as NumberLiteral).raw);
   }
 
   // Identifier - check if it has a compile-time known numeric value
@@ -128,7 +128,9 @@ export const getCompileTimeNumericValue = (
         decl.type === NodeType.VariableDeclaration &&
         (decl as VariableDeclaration).init.type === NodeType.NumberLiteral
       ) {
-        return ((decl as VariableDeclaration).init as NumberLiteral).value;
+        return Number(
+          ((decl as VariableDeclaration).init as NumberLiteral).raw,
+        );
       }
     }
   }
@@ -1044,7 +1046,7 @@ function getLiteralPatternType(pattern: Pattern): LiteralType | null {
     case NodeType.NumberLiteral:
       return {
         kind: TypeKind.Literal,
-        value: (pattern as NumberLiteral).value,
+        value: Number((pattern as NumberLiteral).raw),
       } as LiteralType;
     case NodeType.StringLiteral:
       return {
@@ -1397,7 +1399,7 @@ function checkExpressionAgainstLiteralType(
     if (expr.type === NodeType.NumberLiteral) {
       return (
         typeof literalType.value === 'number' &&
-        (expr as NumberLiteral).value === literalType.value
+        Number((expr as NumberLiteral).raw) === literalType.value
       );
     }
     if (expr.type === NodeType.BooleanLiteral) {
@@ -4015,7 +4017,10 @@ function subtractType(
     // If type is a LiteralType and matches, return Never.
     if (type.kind === TypeKind.Literal) {
       const litType = type as LiteralType;
-      const patVal = (pattern as any).value;
+      const patVal =
+        pattern.type === NodeType.NumberLiteral
+          ? Number((pattern as NumberLiteral).raw)
+          : (pattern as any).value;
       if (litType.value === patVal) return Types.Never;
       return type;
     }
@@ -4128,7 +4133,7 @@ function subtractType(
                 // Subtract the literal value from the underlying type
                 const literalPattern = {
                   type: NodeType.NumberLiteral,
-                  value: memberValue,
+                  raw: String(memberValue),
                 } as NumberLiteral;
 
                 const remaining = subtractType(

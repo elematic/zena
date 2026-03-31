@@ -19,9 +19,9 @@ suite('Parser - Range expressions', () => {
     assert.ok(init.start);
     assert.ok(init.end);
     assert.strictEqual(init.start.type, NodeType.NumberLiteral);
-    assert.strictEqual(init.start.value, 1);
+    assert.strictEqual(init.start.raw, '1');
     assert.strictEqual(init.end.type, NodeType.NumberLiteral);
-    assert.strictEqual(init.end.value, 10);
+    assert.strictEqual(init.end.raw, '10');
   });
 
   test('should parse from range a..', () => {
@@ -36,7 +36,7 @@ suite('Parser - Range expressions', () => {
     assert.ok(init.start);
     assert.strictEqual(init.end, null);
     assert.strictEqual(init.start.type, NodeType.NumberLiteral);
-    assert.strictEqual(init.start.value, 5);
+    assert.strictEqual(init.start.raw, '5');
   });
 
   test('should parse to range ..b', () => {
@@ -51,7 +51,7 @@ suite('Parser - Range expressions', () => {
     assert.strictEqual(init.start, null);
     assert.ok(init.end);
     assert.strictEqual(init.end.type, NodeType.NumberLiteral);
-    assert.strictEqual(init.end.value, 10);
+    assert.strictEqual(init.end.raw, '10');
   });
 
   test('should parse full range ..', () => {

@@ -737,7 +737,6 @@ export class Parser {
       const token = this.#previous();
       pattern = {
         type: NodeType.NumberLiteral,
-        value: Number(token.value),
         raw: token.value,
         loc: this.#locFromToken(token),
       };
@@ -1794,7 +1793,6 @@ export class Parser {
       const token = this.#previous();
       return {
         type: NodeType.NumberLiteral,
-        value: Number(token.value),
         raw: token.value,
         loc: this.#locFromToken(token),
       };

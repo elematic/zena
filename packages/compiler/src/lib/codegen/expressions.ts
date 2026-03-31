@@ -565,22 +565,18 @@ function generateUnaryExpression(
       const type = inferType(ctx, expr.argument);
       if (type.length === 1 && type[0] === ValType.f32) {
         body.push(Opcode.f32_const);
-        body.push(...WasmModule.encodeF32(-lit.value));
+        body.push(...WasmModule.encodeF32(-Number(lit.raw)));
       } else if (type.length === 1 && type[0] === ValType.f64) {
         body.push(Opcode.f64_const);
-        body.push(...WasmModule.encodeF64(-lit.value));
+        body.push(...WasmModule.encodeF64(-Number(lit.raw)));
       } else if (type.length === 1 && type[0] === ValType.i64) {
         body.push(Opcode.i64_const);
         body.push(
-          ...WasmModule.encodeSignedLEB128(
-            BigInt.asIntN(64, -BigInt(lit.raw ?? lit.value)),
-          ),
+          ...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, -BigInt(lit.raw))),
         );
       } else {
         body.push(Opcode.i32_const);
-        body.push(
-          ...WasmModule.encodeSignedLEB128(-Number(lit.raw ?? lit.value) | 0),
-        );
+        body.push(...WasmModule.encodeSignedLEB128(-Number(lit.raw) | 0));
       }
       return;
     }
@@ -653,9 +649,7 @@ function generateAsExpression(
       const lit = expr.expression as NumberLiteral;
       body.push(Opcode.i64_const);
       body.push(
-        ...WasmModule.encodeSignedLEB128(
-          BigInt.asIntN(64, BigInt(lit.raw ?? lit.value)),
-        ),
+        ...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, BigInt(lit.raw))),
       );
       return;
     }
@@ -670,9 +664,7 @@ function generateAsExpression(
         .argument as NumberLiteral;
       body.push(Opcode.i64_const);
       body.push(
-        ...WasmModule.encodeSignedLEB128(
-          BigInt.asIntN(64, -BigInt(lit.raw ?? lit.value)),
-        ),
+        ...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, -BigInt(lit.raw))),
       );
       return;
     }
@@ -686,7 +678,7 @@ function generateAsExpression(
     if (expr.expression.type === NodeType.NumberLiteral) {
       const lit = expr.expression as NumberLiteral;
       body.push(Opcode.f64_const);
-      body.push(...WasmModule.encodeF64(lit.value));
+      body.push(...WasmModule.encodeF64(Number(lit.raw)));
       return;
     }
     // Negated NumberLiteral → f64 (e.g. -3.14 as f64)
@@ -699,7 +691,7 @@ function generateAsExpression(
       const lit = (expr.expression as UnaryExpression)
         .argument as NumberLiteral;
       body.push(Opcode.f64_const);
-      body.push(...WasmModule.encodeF64(-lit.value));
+      body.push(...WasmModule.encodeF64(-Number(lit.raw)));
       return;
     }
   }
@@ -1908,7 +1900,7 @@ function generateIndexExpression(
       if (expr.index.type !== NodeType.NumberLiteral) {
         throw new Error('Tuple index must be a constant number');
       }
-      const index = (expr.index as NumberLiteral).value;
+      const index = Number((expr.index as NumberLiteral).raw);
 
       const types = tupleKey.split(';');
       if (index < 0 || index >= types.length) {
@@ -5905,7 +5897,8 @@ function generateNumberLiteral(
   expr: NumberLiteral,
   body: number[],
 ) {
-  let isFloat = !Number.isInteger(expr.value);
+  let isFloat =
+    expr.raw.includes('.') || expr.raw.includes('e') || expr.raw.includes('E');
   let isF64 = false;
   let isI64 = false;
 
@@ -5927,24 +5920,20 @@ function generateNumberLiteral(
   if (isFloat) {
     if (isF64) {
       body.push(Opcode.f64_const);
-      body.push(...WasmModule.encodeF64(expr.value));
+      body.push(...WasmModule.encodeF64(Number(expr.raw)));
     } else {
       body.push(Opcode.f32_const);
-      body.push(...WasmModule.encodeF32(expr.value));
+      body.push(...WasmModule.encodeF32(Number(expr.raw)));
     }
   } else {
     if (isI64) {
       body.push(Opcode.i64_const);
       body.push(
-        ...WasmModule.encodeSignedLEB128(
-          BigInt.asIntN(64, BigInt(expr.raw ?? expr.value)),
-        ),
+        ...WasmModule.encodeSignedLEB128(BigInt.asIntN(64, BigInt(expr.raw))),
       );
     } else {
       body.push(Opcode.i32_const);
-      body.push(
-        ...WasmModule.encodeSignedLEB128(Number(expr.raw ?? expr.value) | 0),
-      );
+      body.push(...WasmModule.encodeSignedLEB128(Number(expr.raw) | 0));
     }
   }
 }
@@ -11392,7 +11381,9 @@ function generateMatchPatternCheck(
       ) {
         body.push(
           Opcode.i32_const,
-          ...WasmModule.encodeSignedLEB128((pattern as NumberLiteral).value),
+          ...WasmModule.encodeSignedLEB128(
+            Number((pattern as NumberLiteral).raw),
+          ),
         );
         body.push(Opcode.i32_eq);
       } else if (
@@ -11401,7 +11392,7 @@ function generateMatchPatternCheck(
       ) {
         body.push(
           Opcode.f32_const,
-          ...WasmModule.encodeF32((pattern as NumberLiteral).value),
+          ...WasmModule.encodeF32(Number((pattern as NumberLiteral).raw)),
         );
         body.push(Opcode.f32_eq);
       } else {
