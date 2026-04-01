@@ -555,16 +555,44 @@ export function checkMatchPattern(
           discriminantType.kind === TypeKind.Class
         ) {
           const discClass = discriminantType as ClassType;
+          const discSource = discClass.genericSource || discClass;
           if (
-            discClass.isSealed &&
-            discClass.sealedVariants?.some(
-              (v) =>
-                v === resolvedType ||
-                v.name === (resolvedType as ClassType).name,
-            )
+            discSource.isSealed &&
+            discSource.sealedVariants?.some((v) => v === resolvedType)
           ) {
-            // Treat as a class pattern for sealed variant
-            (pattern as any).inferredType = resolvedType;
+            // Treat as a class pattern for sealed variant.
+            // For generic sealed classes, instantiate the variant type.
+            let variantType = resolvedType as ClassType;
+            if (
+              variantType.typeParameters &&
+              variantType.typeParameters.length > 0 &&
+              discClass.typeArguments &&
+              discSource.typeParameters
+            ) {
+              const typeMap = new Map<string, Type>();
+              discSource.typeParameters.forEach((param, index) => {
+                if (index < discClass.typeArguments!.length) {
+                  typeMap.set(param.name, discClass.typeArguments![index]);
+                }
+              });
+              const identityArgs = variantType.typeParameters.map(
+                (p) =>
+                  ({
+                    kind: TypeKind.TypeParameter,
+                    name: p.name,
+                  }) as TypeParameterType,
+              );
+              const withIdentity = {
+                ...variantType,
+                typeArguments: identityArgs,
+                genericSource: variantType,
+              } as ClassType;
+              variantType = ctx.substituteTypeParams(
+                withIdentity,
+                typeMap,
+              ) as ClassType;
+            }
+            (pattern as any).inferredType = variantType;
             break;
           }
         }
@@ -648,7 +676,58 @@ export function checkMatchPattern(
         return;
       }
 
-      const classType = type as ClassType;
+      let classType = type as ClassType;
+
+      // For generic sealed variant matching: if the pattern class is a generic
+      // variant (e.g., Ok<T>) and the discriminant is an instantiated sealed class
+      // (e.g., Result<i32>), instantiate the variant's type parameters.
+      if (
+        classType.typeParameters &&
+        classType.typeParameters.length > 0 &&
+        discriminantType.kind === TypeKind.Class
+      ) {
+        const discClass = discriminantType as ClassType;
+        const sealedSource = discClass.genericSource || discClass;
+        if (
+          sealedSource.isSealed &&
+          sealedSource.sealedVariants &&
+          discClass.typeArguments
+        ) {
+          // Check if pattern class is a variant of the discriminant's sealed type
+          const isVariant = sealedSource.sealedVariants.some(
+            (v) =>
+              (v.genericSource || v) === (classType.genericSource || classType),
+          );
+          if (isVariant && sealedSource.typeParameters) {
+            // Build type map from the sealed parent's type params to the discriminant's type args
+            const typeMap = new Map<string, Type>();
+            sealedSource.typeParameters.forEach((param, index) => {
+              if (index < discClass.typeArguments!.length) {
+                typeMap.set(param.name, discClass.typeArguments![index]);
+              }
+            });
+            // classType is a generic template (has typeParameters but no typeArguments).
+            // substituteType only processes classes with typeArguments, so we first
+            // create an identity-instantiated version, then substitute.
+            const identityArgs = classType.typeParameters.map(
+              (p) =>
+                ({
+                  kind: TypeKind.TypeParameter,
+                  name: p.name,
+                }) as TypeParameterType,
+            );
+            const withIdentity = {
+              ...classType,
+              typeArguments: identityArgs,
+              genericSource: classType,
+            } as ClassType;
+            classType = ctx.substituteTypeParams(
+              withIdentity,
+              typeMap,
+            ) as ClassType;
+          }
+        }
+      }
 
       // Store the resolved class type on the pattern for codegen
       classPattern.inferredType = classType;
@@ -3902,9 +3981,11 @@ export function getPatternType(
   switch (pattern.type) {
     case NodeType.ClassPattern: {
       const classPattern = pattern as ClassPattern;
-      const type = ctx.resolveType(classPattern.name.name);
-      if (type && type.kind === TypeKind.Class) {
-        return type as ClassType;
+      if (
+        classPattern.inferredType &&
+        classPattern.inferredType.kind === TypeKind.Class
+      ) {
+        return classPattern.inferredType as ClassType;
       }
       return null;
     }
@@ -3945,35 +4026,88 @@ function subtractType(
   // Helper: subtract a pattern type from sealed variants, handling transitive
   // sealed hierarchies (sum of sums). If a variant is itself sealed and the
   // pattern covers one of its sub-variants, recursively subtract.
+  // When discriminantType is provided and is an instantiated generic sealed class,
+  // variants are instantiated before comparison (variants may be uninstantiated
+  // due to the spread in substituteType).
   const subtractFromSealedVariants = (
     variants: ClassType[],
     patType: Type,
+    discriminantType?: ClassType,
   ): ClassType[] | null => {
+    // Build type map for instantiating generic variants
+    let typeMap: Map<string, Type> | undefined;
+    if (discriminantType) {
+      const source = discriminantType.genericSource || discriminantType;
+      if (source.typeParameters && discriminantType.typeArguments) {
+        typeMap = new Map<string, Type>();
+        source.typeParameters.forEach((param, index) => {
+          if (index < discriminantType.typeArguments!.length) {
+            typeMap!.set(param.name, discriminantType.typeArguments![index]);
+          }
+        });
+      }
+    }
     const remaining: ClassType[] = [];
     let changed = false;
     for (const v of variants) {
-      if (isAssignableTo(ctx, v, patType)) {
+      let instantiatedV = v;
+      if (
+        typeMap &&
+        v.typeParameters &&
+        v.typeParameters.length > 0 &&
+        !v.typeArguments
+      ) {
+        // v is a generic template — create identity-instantiated version first
+        const identityArgs = v.typeParameters.map(
+          (p) =>
+            ({
+              kind: TypeKind.TypeParameter,
+              name: p.name,
+            }) as TypeParameterType,
+        );
+        const withIdentity = {
+          ...v,
+          typeArguments: identityArgs,
+          genericSource: v,
+        } as ClassType;
+        instantiatedV = ctx.substituteTypeParams(
+          withIdentity,
+          typeMap,
+        ) as ClassType;
+      } else if (typeMap) {
+        instantiatedV = ctx.substituteTypeParams(v, typeMap) as ClassType;
+      }
+      if (isAssignableTo(ctx, instantiatedV, patType)) {
         // Pattern directly covers this variant
         changed = true;
         continue;
       }
       // If variant is itself sealed, check if pattern covers a sub-variant
-      if (v.isSealed && v.sealedVariants && v.sealedVariants.length > 0) {
+      const vSource = instantiatedV.genericSource || instantiatedV;
+      if (
+        vSource.isSealed &&
+        vSource.sealedVariants &&
+        vSource.sealedVariants.length > 0
+      ) {
         const subRemaining = subtractFromSealedVariants(
-          v.sealedVariants,
+          vSource.sealedVariants,
           patType,
+          instantiatedV,
         );
         if (subRemaining !== null) {
           changed = true;
           if (subRemaining.length > 0) {
             // Partially covered — keep variant with fewer sub-variants
-            remaining.push({...v, sealedVariants: subRemaining} as ClassType);
+            remaining.push({
+              ...instantiatedV,
+              sealedVariants: subRemaining,
+            } as ClassType);
           }
           // else: fully covered — drop this variant
           continue;
         }
       }
-      remaining.push(v);
+      remaining.push(instantiatedV);
     }
     return changed ? remaining : null;
   };
@@ -3984,19 +4118,24 @@ function subtractType(
     if ((pattern as any).inferredType) {
       // This is a sealed variant pattern - treat like a class pattern
       const patType = (pattern as any).inferredType as Type;
+
+      if (patType && isAssignableTo(ctx, type, patType)) {
+        return Types.Never;
+      }
+
       if (type.kind === TypeKind.Class) {
         const classType = type as ClassType;
-        if (classType.isSealed && classType.sealedVariants && patType) {
+        const sealedSource = classType.genericSource || classType;
+        if (sealedSource.isSealed && sealedSource.sealedVariants && patType) {
           const remaining = subtractFromSealedVariants(
-            classType.sealedVariants,
+            sealedSource.sealedVariants,
             patType,
+            classType,
           );
           if (remaining !== null) {
             if (remaining.length === 0) return Types.Never;
-            return {
-              ...classType,
-              sealedVariants: remaining,
-            } as ClassType;
+            if (remaining.length === 1) return remaining[0];
+            return createUnionType(remaining);
           }
         }
       }
@@ -4038,33 +4177,37 @@ function subtractType(
   // Handle Classes
   if (pattern.type === NodeType.ClassPattern) {
     const classPattern = pattern as ClassPattern;
-    const className = classPattern.name.name;
-    const patType = ctx.resolveType(className);
+    const patType = classPattern.inferredType;
 
     if (type.kind === TypeKind.Class) {
       const classType = type as ClassType;
 
       if (patType && isAssignableTo(ctx, type, patType)) {
         // Pattern class covers the type.
-        // Check properties.
+        // Class pattern properties that are pure bindings (identifiers) always match.
+        // Only nested refining patterns (literals, nested class/record patterns) may
+        // cause a partial match.
         if (classPattern.properties.length === 0) return Types.Never;
-
-        // If properties are present, we assume it's partial unless we prove otherwise.
-        // For now, assume if there are properties, it's NOT exhaustive for the class.
+        const allBindings = classPattern.properties.every(
+          (p) => p.value.type === NodeType.Identifier,
+        );
+        if (allBindings) return Types.Never;
       }
 
-      // Sealed class exhaustiveness: matching a variant subtracts it from the variant set
-      if (classType.isSealed && classType.sealedVariants && patType) {
+      // Sealed class exhaustiveness: matching a variant subtracts it from the set.
+      // sealedVariants is a definitional property — always read from the source type,
+      // never from an instantiation (which may have been created before variants were populated).
+      const sealedSource = classType.genericSource || classType;
+      if (sealedSource.isSealed && sealedSource.sealedVariants && patType) {
         const remaining = subtractFromSealedVariants(
-          classType.sealedVariants,
+          sealedSource.sealedVariants,
           patType,
+          classType,
         );
         if (remaining !== null) {
           if (remaining.length === 0) return Types.Never;
-          return {
-            ...classType,
-            sealedVariants: remaining,
-          } as ClassType;
+          if (remaining.length === 1) return remaining[0];
+          return createUnionType(remaining);
         }
       }
     }

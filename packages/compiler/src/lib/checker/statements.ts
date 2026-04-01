@@ -36,6 +36,8 @@ import {
   type SymbolPropertyName,
   type TuplePattern,
   type TypeAliasDeclaration,
+  type TypeAnnotation,
+  type NamedTypeAnnotation,
   type TypeParameter,
   type InlineTuplePattern,
   type VariableDeclaration,
@@ -903,6 +905,30 @@ const predeclareClass = (ctx: CheckerContext, decl: ClassDeclaration) => {
  * Must run AFTER all regular classes are predeclared (pass 1) so we can distinguish
  * inline variants from distributed references to standalone classes.
  */
+
+/**
+ * Build the superClass annotation for a sealed variant.
+ * If the parent has type parameters, produces e.g. `Result<T, E>` instead of just `Result`.
+ */
+const buildVariantSuperClass = (
+  className: string,
+  decl: ClassDeclaration,
+): NamedTypeAnnotation => {
+  const typeArguments: TypeAnnotation[] | undefined = decl.typeParameters
+    ? decl.typeParameters.map((tp) => ({
+        type: NodeType.TypeAnnotation as typeof NodeType.TypeAnnotation,
+        name: tp.name,
+        loc: tp.loc,
+      }))
+    : undefined;
+  return {
+    type: NodeType.TypeAnnotation,
+    name: className,
+    typeArguments,
+    loc: decl.name.loc,
+  };
+};
+
 export const predeclareSealedVariants = (
   ctx: CheckerContext,
   stmt: Statement,
@@ -926,12 +952,9 @@ export const predeclareSealedVariants = (
     const syntheticDecl: ClassDeclaration = {
       type: NodeType.ClassDeclaration,
       name: variant.name,
+      typeParameters: decl.typeParameters,
       caseParams: variant.params,
-      superClass: {
-        type: NodeType.TypeAnnotation,
-        name: className,
-        loc: decl.name.loc,
-      },
+      superClass: buildVariantSuperClass(className, decl),
       body: [],
       exported: decl.exported,
       isFinal: false,
@@ -3893,12 +3916,9 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
         const syntheticDecl: ClassDeclaration = {
           type: NodeType.ClassDeclaration,
           name: variant.name,
+          typeParameters: decl.typeParameters,
           caseParams: variant.params,
-          superClass: {
-            type: NodeType.TypeAnnotation,
-            name: className,
-            loc: decl.name.loc,
-          },
+          superClass: buildVariantSuperClass(className, decl),
           body: [],
           exported: decl.exported,
           isFinal: false,
@@ -3955,11 +3975,8 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
           const syntheticDecl: ClassDeclaration = {
             type: NodeType.ClassDeclaration,
             name: variant.name,
-            superClass: {
-              type: NodeType.TypeAnnotation,
-              name: className,
-              loc: decl.name.loc,
-            },
+            typeParameters: decl.typeParameters,
+            superClass: buildVariantSuperClass(className, decl),
             body: [],
             exported: decl.exported,
             isFinal: false,

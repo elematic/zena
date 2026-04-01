@@ -63,7 +63,6 @@ suite('CodeGenerator - Pattern Matching', () => {
         return match (obj) {
           case A { x as v }: v
           case B { y as v }: v + 100
-          case _: -1
         };
       };
     `);
@@ -80,7 +79,6 @@ suite('CodeGenerator - Pattern Matching', () => {
         return match (obj) {
           case A { x as v }: v
           case B { y as v }: v + 100
-          case _: -1
         };
       };
     `);
@@ -95,7 +93,6 @@ suite('CodeGenerator - Pattern Matching', () => {
         let obj = new A(10);
         return match (obj) {
           case A { x: _ }: 1
-          case _: 0
         };
       };
     `);
@@ -188,7 +185,6 @@ suite('CodeGenerator - Pattern Matching', () => {
         let obj = new A(10);
         return match (obj) {
           case A { x: _ } as a: a.x
-          case _: 0
         };
       };
     `);
