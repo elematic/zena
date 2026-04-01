@@ -443,18 +443,6 @@ export class CheckerContext {
       return exportInfo.info.type;
     }
 
-    // Fallback for legacy/unmangled prelude exports
-    if (this.preludeExports.has(name)) {
-      const exportInfo = this.preludeExports.get(name)!;
-      if (exportInfo.info.kind !== 'type') {
-        this.usedPreludeSymbols.set(name, {
-          modulePath: exportInfo.modulePath,
-          exportName: exportInfo.exportName,
-        });
-        return exportInfo.info.type;
-      }
-    }
-
     return undefined;
   }
 
@@ -512,24 +500,20 @@ export class CheckerContext {
       };
     }
 
-    // Fallback for legacy/unmangled prelude exports
-    if (this.preludeExports.has(name)) {
-      const exportInfo = this.preludeExports.get(name)!;
-      if (exportInfo.info.kind === 'type') {
-        this.usedPreludeSymbols.set(name, {
-          modulePath: exportInfo.modulePath,
-          exportName: exportInfo.exportName,
-        });
-        return {
-          ...exportInfo.info,
-          modulePath: exportInfo.modulePath,
-        };
-      }
-    }
-
     return undefined;
   }
 
+  /**
+   * Resolve a type name from source code via lexical scope lookup.
+   *
+   * Walks the scope stack (innermost to outermost), then checks prelude exports,
+   * then built-in primitive types. The returned Type object is the interned
+   * reference — callers can compare by identity, not by name.
+   *
+   * This is the correct way to resolve user-written type names from the AST.
+   * For well-known stdlib types (Error, String, etc.), prefer getWellKnownType()
+   * or resolveWellKnownType() which look up by canonical module location.
+   */
   resolveType(name: string): Type | undefined {
     const key = `type:${name}`;
     for (let i = this.scopes.length - 1; i >= 0; i--) {
@@ -546,18 +530,6 @@ export class CheckerContext {
         exportName: exportInfo.exportName,
       });
       return exportInfo.info.type;
-    }
-
-    // Fallback for legacy/unmangled prelude exports
-    if (this.preludeExports.has(name)) {
-      const exportInfo = this.preludeExports.get(name)!;
-      if (exportInfo.info.kind === 'type') {
-        this.usedPreludeSymbols.set(name, {
-          modulePath: exportInfo.modulePath,
-          exportName: exportInfo.exportName,
-        });
-        return exportInfo.info.type;
-      }
     }
 
     // Built-in types (implicitly global)
@@ -583,12 +555,9 @@ export class CheckerContext {
       case TypeNames.Any:
         return Types.Any;
       case TypeNames.String: {
-        // 'string' is an alias for the 'String' class if it exists in scope
-        const stringType = this.resolveType(Types.String.name);
-        if (stringType) return stringType;
-
-        const wellKnown = this.getWellKnownType(Types.String.name);
-        return wellKnown || Types.String;
+        // TODO: 'string' is currently an alias for the 'String' class from
+        // zena:string. Remove this when all occurrences of 'string' are removed
+        return this.getWellKnownType(Types.String.name) || Types.String;
       }
       case TypeKind.ByteArray:
         return Types.ByteArray;
@@ -644,16 +613,6 @@ export class CheckerContext {
       return exportInfo.info;
     }
 
-    // Check prelude (legacy)
-    if (this.preludeExports.has(name)) {
-      const exportInfo = this.preludeExports.get(name)!;
-      this.usedPreludeSymbols.set(name, {
-        modulePath: exportInfo.modulePath,
-        exportName: exportInfo.exportName,
-      });
-      return exportInfo.info;
-    }
-
     return undefined;
   }
 
@@ -666,6 +625,12 @@ export class CheckerContext {
       [Types.String.name, 'zena:string'],
       [TypeNames.FixedArray, 'zena:fixed-array'],
       [TypeNames.HashMap, 'zena:map'],
+      [TypeNames.Error, 'zena:error'],
+      [TypeNames.TemplateStringsArray, 'zena:template-strings-array'],
+      [TypeNames.BoundedRange, 'zena:range'],
+      [TypeNames.FromRange, 'zena:range'],
+      [TypeNames.ToRange, 'zena:range'],
+      [TypeNames.FullRange, 'zena:range'],
     ]);
 
   getWellKnownType(name: string): Type | undefined {
@@ -688,6 +653,15 @@ export class CheckerContext {
       return symbol.type;
     }
     return undefined;
+  }
+
+  /**
+   * Resolve a well-known type by canonical module first, then scope fallback.
+   * Use this for types that may be defined locally in user code (e.g., Error)
+   * but have a canonical stdlib definition.
+   */
+  resolveWellKnownType(name: string): Type | undefined {
+    return this.getWellKnownType(name) ?? this.resolveType(name);
   }
 
   // ============================================================

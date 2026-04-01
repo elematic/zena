@@ -1281,7 +1281,7 @@ function checkThrowExpression(
   expr: ThrowExpression,
 ): Type {
   const argType = checkExpression(ctx, expr.argument);
-  const errorType = ctx.resolveType('Error');
+  const errorType = ctx.resolveWellKnownType(TypeNames.Error);
   if (errorType) {
     if (!isAssignableTo(ctx, argType, errorType)) {
       ctx.diagnostics.reportError(
@@ -1324,7 +1324,8 @@ function checkCatchClause(ctx: CheckerContext, clause: CatchClause): Type {
 
   // If there's a parameter, bind it to the Error type (or eqref for now)
   if (clause.param) {
-    const errorType = ctx.resolveType('Error') ?? Types.Unknown;
+    const errorType =
+      ctx.resolveWellKnownType(TypeNames.Error) ?? Types.Unknown;
     ctx.declare(clause.param.name, errorType, 'let', clause.param);
   }
 
@@ -3923,7 +3924,9 @@ function checkTaggedTemplateExpression(
   expr: TaggedTemplateExpression,
 ): Type {
   // Resolve TemplateStringsArray type for DCE tracking
-  const stringsArrayType = ctx.resolveType('TemplateStringsArray');
+  const stringsArrayType = ctx.resolveWellKnownType(
+    TypeNames.TemplateStringsArray,
+  );
   if (stringsArrayType) {
     expr.resolvedStringsArrayType = stringsArrayType;
   }
@@ -4352,7 +4355,7 @@ function checkRangeExpression(
   }
 
   // Look up the Range type from the zena:range module
-  const rangeType = ctx.resolveType(rangeTypeName);
+  const rangeType = ctx.getWellKnownType(rangeTypeName);
   if (!rangeType) {
     ctx.diagnostics.reportError(
       `Range type '${rangeTypeName}' not found. Import from 'zena:range'.`,

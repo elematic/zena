@@ -1684,7 +1684,7 @@ export function isAssignableTo(
     const lit = source as LiteralType;
     if (typeof lit.value === 'string') {
       // String literals are assignable to string type
-      const stringType = ctx.resolveType(Types.String.name);
+      const stringType = ctx.getWellKnownType(Types.String.name);
       if (stringType && target === stringType) return true;
       if (
         target.kind === TypeKind.Class &&
