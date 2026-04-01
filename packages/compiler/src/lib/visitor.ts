@@ -522,7 +522,9 @@ export function visit<T>(
       visitor.visitIfExpression?.(node as IfExpression, context);
       visit((node as IfExpression).test, visitor, context);
       visit((node as IfExpression).consequent, visitor, context);
-      visit((node as IfExpression).alternate, visitor, context);
+      if ((node as IfExpression).alternate) {
+        visit((node as IfExpression).alternate!, visitor, context);
+      }
       break;
     case NodeType.RangeExpression:
       visitor.visitRangeExpression?.(node as RangeExpression, context);

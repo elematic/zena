@@ -115,4 +115,49 @@ suite('Codegen - If Expression', () => {
     `);
     assert.strictEqual(result, 1);
   });
+
+  test('should support if without else (void)', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        var x = 10;
+        if (true) {
+          x = 20;
+        }
+        return x;
+      };
+    `);
+    assert.strictEqual(result, 20);
+  });
+
+  test('should support if without else (condition false)', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        var x = 10;
+        if (false) {
+          x = 20;
+        }
+        return x;
+      };
+    `);
+    assert.strictEqual(result, 10);
+  });
+
+  test('should support if without else in match case', async () => {
+    const result = await compileAndRun(`
+      export let main = (): i32 => {
+        var result = 0;
+        let x = 1;
+        match (x) {
+          case 1: {
+            if (true) {
+              result = 42;
+            }
+          }
+          case _: {}
+        }
+        return result;
+      };
+    `);
+    assert.strictEqual(result, 42);
+  });
 });

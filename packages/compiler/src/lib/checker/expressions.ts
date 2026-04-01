@@ -482,6 +482,12 @@ function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
   }
 
   const consequentType = checkIfBranch(ctx, expr.consequent);
+
+  // If there is no else branch, the if expression has type void
+  if (!expr.alternate) {
+    return Types.Void;
+  }
+
   const alternateType = checkIfBranch(ctx, expr.alternate);
 
   // If both branches have the same type, return that type.

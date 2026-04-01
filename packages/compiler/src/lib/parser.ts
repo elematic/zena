@@ -903,6 +903,7 @@ export class Parser {
     if (expression.type === NodeType.TryExpression) return true;
     if (expression.type === NodeType.IfExpression) {
       const ifExpr = expression as IfExpression;
+      if (!ifExpr.alternate) return true;
       if (ifExpr.alternate.type === NodeType.BlockStatement) return true;
       if (ifExpr.alternate.type === NodeType.IfExpression) {
         return this.#isBlockEndedExpression(ifExpr.alternate as Expression);
@@ -1933,20 +1934,17 @@ export class Parser {
       consequent = this.#parseExpression();
     }
 
-    this.#consume(
-      TokenType.Else,
-      "Expected 'else' after consequent in if expression.",
-    );
-
-    let alternate: Expression | BlockStatement;
-    if (this.#match(TokenType.LBrace)) {
-      alternate = this.#parseBlockAsExpression();
-    } else if (this.#check(TokenType.If)) {
-      // else if
-      this.#advance();
-      alternate = this.#parseIfExpression();
-    } else {
-      alternate = this.#parseExpression();
+    let alternate: Expression | BlockStatement | null = null;
+    if (this.#match(TokenType.Else)) {
+      if (this.#match(TokenType.LBrace)) {
+        alternate = this.#parseBlockAsExpression();
+      } else if (this.#check(TokenType.If)) {
+        // else if
+        this.#advance();
+        alternate = this.#parseIfExpression();
+      } else {
+        alternate = this.#parseExpression();
+      }
     }
 
     return {
@@ -1954,7 +1952,7 @@ export class Parser {
       test,
       consequent,
       alternate,
-      loc: this.#loc(startToken, alternate),
+      loc: this.#loc(startToken, alternate ?? consequent),
     };
   }
 
@@ -2054,7 +2052,12 @@ export class Parser {
       }
 
       // Otherwise, we expect a semicolon (it's a regular expression statement)
-      this.#consume(TokenType.Semi, "Expected ';' after expression.");
+      // Block-ended expressions (if, match, try with block body) don't require semicolons
+      if (!this.#isBlockEndedExpression(expr)) {
+        this.#consume(TokenType.Semi, "Expected ';' after expression.");
+      } else if (this.#check(TokenType.Semi)) {
+        this.#advance();
+      }
       body.push({
         type: NodeType.ExpressionStatement,
         expression: expr,
@@ -4333,7 +4336,7 @@ export class Parser {
   #consume(type: TokenType, message: string): Token {
     if (this.#check(type)) return this.#advance();
     throw new Error(
-      message + ` Got ${this.#peek().type} at line ${this.#peek().line}`,
+      `${this.#path}:${this.#peek().line}: ${message} Got ${this.#peek().type}`,
     );
   }
 
@@ -4379,7 +4382,7 @@ export class Parser {
     }
 
     throw new Error(
-      message + ` Got ${this.#peek().type} at line ${this.#peek().line}`,
+      `${this.#path}:${this.#peek().line}: ${message} Got ${this.#peek().type}`,
     );
   }
 

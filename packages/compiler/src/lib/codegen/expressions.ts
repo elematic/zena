@@ -11235,9 +11235,11 @@ function generateIfExpression(
   // don't leave values on the stack
   generateIfBranch(ctx, expr.consequent, body, results.length === 0);
 
-  // Generate else branch
-  body.push(Opcode.else);
-  generateIfBranch(ctx, expr.alternate, body, results.length === 0);
+  // Generate else branch (if present)
+  if (expr.alternate) {
+    body.push(Opcode.else);
+    generateIfBranch(ctx, expr.alternate, body, results.length === 0);
+  }
 
   body.push(Opcode.end);
 }

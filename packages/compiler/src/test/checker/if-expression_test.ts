@@ -66,4 +66,31 @@ suite('TypeChecker - If Expression', () => {
     `);
     assert.strictEqual(diagnostics.length, 0);
   });
+
+  test('should accept if without else as void expression', () => {
+    const diagnostics = check(`
+      let foo = (cond: boolean): void => {
+        if (cond) {
+          let x = 1;
+        }
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
+
+  test('should accept if without else in match case', () => {
+    const diagnostics = check(`
+      let foo = (x: i32): void => {
+        match (x) {
+          case 1: {
+            if (true) {
+              let y = 2;
+            }
+          }
+          case _: {}
+        }
+      };
+    `);
+    assert.strictEqual(diagnostics.length, 0);
+  });
 });

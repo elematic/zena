@@ -479,7 +479,7 @@ export interface IfExpression extends Node {
   type: typeof NodeType.IfExpression;
   test: Expression;
   consequent: Expression | BlockStatement;
-  alternate: Expression | BlockStatement;
+  alternate: Expression | BlockStatement | null;
 }
 
 export interface BinaryExpression extends Node {
