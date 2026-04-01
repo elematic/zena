@@ -18,7 +18,7 @@ suite('array of tuples bug', () => {
   });
 
   // Test nullable array of tuples WITHOUT cache
-  test('Array<(Descriptor, string)> | null - nullable array', async () => {
+  test('Array<(Descriptor, String)> | null - nullable array', async () => {
     const result = await compileAndRun(`
       import { Array } from 'zena:growable-array';
 
@@ -28,10 +28,10 @@ suite('array of tuples bug', () => {
       }
 
       export let main = (): i32 => {
-        var arr: Array<(Descriptor, string)> | null = null;
+        var arr: Array<(Descriptor, String)> | null = null;
         
         // Initialize
-        let newArr = new Array<(Descriptor, string)>();
+        let newArr = new Array<(Descriptor, String)>();
         newArr.push((new Descriptor(42), "hello"));
         arr = newArr;
         
@@ -48,7 +48,7 @@ suite('array of tuples bug', () => {
   });
 
   // Test global nullable array of tuples (the actual pattern from fs.zena)
-  test('global Array<(Descriptor, string)> | null', async () => {
+  test('global Array<(Descriptor, String)> | null', async () => {
     const result = await compileAndRun(`
       import { Array } from 'zena:growable-array';
 
@@ -58,11 +58,11 @@ suite('array of tuples bug', () => {
       }
 
       // Global cache like in fs.zena
-      var __cache: Array<(Descriptor, string)> | null = null;
+      var __cache: Array<(Descriptor, String)> | null = null;
 
       export let main = (): i32 => {
         // Initialize
-        let newArr = new Array<(Descriptor, string)>();
+        let newArr = new Array<(Descriptor, String)>();
         newArr.push((new Descriptor(42), "hello"));
         __cache = newArr;
         
@@ -78,14 +78,14 @@ suite('array of tuples bug', () => {
     assert.strictEqual(result, 47); // 42 + 5
   });
 
-  // Test that (i as string) is rejected by the checker
-  test('rejects (i32 as string) cast at compile time', async () => {
+  // Test that (i as String) is rejected by the checker
+  test('rejects (i32 as String) cast at compile time', async () => {
     await assert.rejects(
       () =>
         compileAndInstantiate(`
         export let main = (): i32 => {
           var i = 42;
-          let s = i as string;
+          let s = i as String;
           return s.length;
         };
       `),
@@ -93,14 +93,14 @@ suite('array of tuples bug', () => {
     );
   });
 
-  // Test that (boolean as string) is also rejected
-  test('rejects (boolean as string) cast at compile time', async () => {
+  // Test that (boolean as String) is also rejected
+  test('rejects (boolean as String) cast at compile time', async () => {
     await assert.rejects(
       () =>
         compileAndInstantiate(`
         export let main = (): i32 => {
           let b = true;
-          let s = b as string;
+          let s = b as String;
           return s.length;
         };
       `),
@@ -109,7 +109,7 @@ suite('array of tuples bug', () => {
   });
 
   // Control: same thing without cast (using string literals)
-  test('Array<(class, string)> in loop without cast', async () => {
+  test('Array<(class, String)> in loop without cast', async () => {
     const result = await compileAndRun(`
       import { Array } from 'zena:growable-array';
 
@@ -119,7 +119,7 @@ suite('array of tuples bug', () => {
       }
 
       export let main = (): i32 => {
-        let result = new Array<(Descriptor, string)>();
+        let result = new Array<(Descriptor, String)>();
         
         for (var i = 0; i < 2; i = i + 1) {
           let path = "path";
@@ -134,7 +134,7 @@ suite('array of tuples bug', () => {
   });
 
   // Simpler version without null union
-  test('Array<(Descriptor, string)> - simple push and access', async () => {
+  test('Array<(Descriptor, String)> - simple push and access', async () => {
     const result = await compileAndRun(`
       import { Array } from 'zena:growable-array';
 
@@ -144,7 +144,7 @@ suite('array of tuples bug', () => {
       }
 
       export let main = (): i32 => {
-        let arr = new Array<(Descriptor, string)>();
+        let arr = new Array<(Descriptor, String)>();
         arr.push((new Descriptor(42), "hello"));
         let (desc, name) = arr[0];
         return desc.handle + name.length;

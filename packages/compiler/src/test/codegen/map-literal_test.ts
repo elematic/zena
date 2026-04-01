@@ -88,7 +88,7 @@ suite('Codegen - Map Literals', () => {
     const result = await compileAndRun(`
       import {HashMap} from 'zena:map';
 
-      let makeMap = (): HashMap<string, i32> => {
+      let makeMap = (): HashMap<String, i32> => {
         return {"one" => 1, "two" => 2};
       };
 

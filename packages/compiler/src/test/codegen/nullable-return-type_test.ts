@@ -6,8 +6,8 @@ suite('nullable return type', () => {
   test('function returning record with nullable field', async () => {
     const source = `
       export type Foo = {
-        name: string,
-        value: string | null
+        name: String,
+        value: String | null
       };
 
       export let makeFoo = (): Foo => {
@@ -30,8 +30,8 @@ suite('nullable return type', () => {
   test('function returning record with non-null nullable field', async () => {
     const source = `
       export type Foo = {
-        name: string,
-        value: string | null
+        name: String,
+        value: String | null
       };
 
       export let makeFoo = (): Foo => {

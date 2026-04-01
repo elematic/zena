@@ -40,7 +40,7 @@ suite('Parser (Generics)', () => {
   });
 
   test('should parse generic class instantiation', () => {
-    const input = 'let m = new Map<i32, string>();';
+    const input = 'let m = new Map<i32, String>();';
     const parser = new Parser(input);
     const ast = parser.parse();
 
@@ -54,13 +54,13 @@ suite('Parser (Generics)', () => {
         assert.ok(expr.typeArguments);
         assert.strictEqual(expr.typeArguments.length, 2);
         assert.strictEqual((expr.typeArguments[0] as any).name, 'i32');
-        assert.strictEqual((expr.typeArguments[1] as any).name, 'string');
+        assert.strictEqual((expr.typeArguments[1] as any).name, 'String');
       }
     }
   });
 
   test('should parse nested generic type annotation', () => {
-    const input = 'class Container { field: Map<string, List<i32>>; }';
+    const input = 'class Container { field: Map<String, List<i32>>; }';
     const parser = new Parser(input);
     const ast = parser.parse();
 
@@ -74,7 +74,7 @@ suite('Parser (Generics)', () => {
         assert.strictEqual(type.name, 'Map');
         assert.ok(type.typeArguments);
         assert.strictEqual(type.typeArguments.length, 2);
-        assert.strictEqual(type.typeArguments[0].name, 'string');
+        assert.strictEqual(type.typeArguments[0].name, 'String');
 
         const nested = type.typeArguments[1];
         assert.strictEqual(nested.name, 'List');

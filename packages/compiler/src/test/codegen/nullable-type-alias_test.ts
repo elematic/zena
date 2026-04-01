@@ -6,7 +6,7 @@ suite('nullable type alias', () => {
   test('nullable field in record should work with null', async () => {
     const source = `
       export let test = () => {
-        let record: { name: string | null } = { name: null };
+        let record: { name: String | null } = { name: null };
         return record.name == null;
       };
     `;
@@ -15,10 +15,10 @@ suite('nullable type alias', () => {
     assert.strictEqual(result, 1); // true = 1
   });
 
-  test('nullable field can be assigned string', async () => {
+  test('nullable field can be assigned String', async () => {
     const source = `
       export let test = () => {
-        let record: { name: string | null } = { name: "hello" };
+        let record: { name: String | null } = { name: "hello" };
         return record.name == null;
       };
     `;
@@ -29,7 +29,7 @@ suite('nullable type alias', () => {
 
   test('type alias with nullable field works', async () => {
     const source = `
-      export type Foo = { value: string | null };
+      export type Foo = { value: String | null };
       
       export let test = () => {
         let foo: Foo = { value: null };
@@ -44,8 +44,8 @@ suite('nullable type alias', () => {
   test('type alias with multiple fields including nullable', async () => {
     const source = `
       export type Foo = {
-        name: string,
-        value: string | null
+        name: String,
+        value: String | null
       };
 
       export let main = (): i32 => {

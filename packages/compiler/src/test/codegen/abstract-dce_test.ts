@@ -27,20 +27,20 @@ suite('Abstract Class DCE', () => {
     assert.strictEqual(result, 1);
   });
 
-  test('abstract class string field getter works polymorphically', async () => {
+  test('abstract class String field getter works polymorphically', async () => {
     const source = `
       abstract class Base {
-        name: string;
+        name: String;
         
-        new(name: string) : name = name { }
+        new(name: String) : name = name { }
       }
       
       class Child extends Base {
         new() : super('test') { }
       }
       
-      // Access string field through base class type
-      let getName = (b: Base): string => b.name;
+      // Access String field through base class type
+      let getName = (b: Base): String => b.name;
       
       export let main = (): i32 => {
         let child = new Child();

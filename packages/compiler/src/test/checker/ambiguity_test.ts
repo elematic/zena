@@ -5,8 +5,8 @@ import * as assert from 'node:assert';
 suite('Ambiguity and Distinguishability Tests', () => {
   test('Distinct types on reference types in union should fail', async () => {
     const source = `
-      distinct type IdA = string;
-      distinct type IdB = string;
+      distinct type IdA = String;
+      distinct type IdB = String;
 
       export let main = (): void => {
         let x: IdA | IdB = "hello" as IdA;
@@ -28,11 +28,11 @@ suite('Ambiguity and Distinguishability Tests', () => {
     // Currently fails because distinct types are not classes.
     // This test just documents that behavior.
     const source = `
-      distinct type IdA = string;
-      distinct type IdB = string;
+      distinct type IdA = String;
+      distinct type IdB = String;
 
       export let main = (): void => {
-        let x: string = "hello";
+        let x: String = "hello";
         match (x) {
             case IdA {}: {}
             case IdB {}: {}
@@ -77,18 +77,18 @@ suite('Ambiguity and Distinguishability Tests', () => {
   test('Multiple extension types on same underlying type in union should fail', async () => {
     // Having multiple extension classes on the same underlying type is fine in general -
     // the static type determines which extension is used. However, a UNION of two such
-    // extension types (e.g., `StringExt1 | StringExt2` where both extend string) would be
+    // extension types (e.g., `StringExt1 | StringExt2` where both extend String) would be
     // ambiguous at runtime since you couldn't distinguish between them.
     // Currently we don't have two extension types on the same base in stdlib to test this,
     // so we just verify that valid extension unions work.
     const source = `
-      // string | null is valid - null is distinguishable from string
+      // String | null is valid - null is distinguishable from String
       export let main = (): void => {
-        let x: string | null = null;
+        let x: String | null = null;
       };
     `;
 
-    // This should pass since string | null is valid
+    // This should pass since String | null is valid
     await compileAndRun(source, 'main');
   });
 });

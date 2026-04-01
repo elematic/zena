@@ -3,17 +3,17 @@ import assert from 'node:assert';
 import {compileToWasm} from './utils.js';
 
 suite('CodeGenerator - Cast Optimization', () => {
-  test('should elide cast for distinct type alias of string', () => {
+  test('should elide cast for distinct type alias of String', () => {
     const codeNoCast = `
-      type ID = string;
-      export let main = (s: string): string => {
+      type ID = String;
+      export let main = (s: String): String => {
         return s;
       };
     `;
 
     const codeWithCast = `
-      type ID = string;
-      export let main = (s: string): string => {
+      type ID = String;
+      export let main = (s: String): String => {
         return s as ID;
       };
     `;

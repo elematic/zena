@@ -11,19 +11,19 @@ import assert from 'node:assert';
 import {compileAndRun} from './utils.js';
 
 suite('Codegen: Array collecting from interface iterators', () => {
-  test('collect from forEach with Array<string>', async () => {
+  test('collect from forEach with Array<String>', async () => {
     const result = await compileAndRun(`
       import {HashMap} from 'zena:map';
       import {Array} from 'zena:growable-array';
 
       export let main = (): i32 => {
-        let m = new HashMap<string, i32>();
+        let m = new HashMap<String, i32>();
         m["a"] = 1;
         m["b"] = 2;
         m["c"] = 3;
 
-        let keys = new Array<string>();
-        m.forEach((key: string, value: i32): void => {
+        let keys = new Array<String>();
+        m.forEach((key: String, value: i32): void => {
           keys.push(key);
         });
 
@@ -33,17 +33,17 @@ suite('Codegen: Array collecting from interface iterators', () => {
     assert.strictEqual(result, 3);
   });
 
-  test('collect from for-in loop with Array<string>', async () => {
+  test('collect from for-in loop with Array<String>', async () => {
     const result = await compileAndRun(`
       import {HashMap, MapEntry} from 'zena:map';
       import {Array} from 'zena:growable-array';
 
       export let main = (): i32 => {
-        let m = new HashMap<string, i32>();
+        let m = new HashMap<String, i32>();
         m["x"] = 10;
         m["y"] = 20;
 
-        let keys = new Array<string>();
+        let keys = new Array<String>();
         for (let entry in m) {
           keys.push(entry.key);
         }
@@ -60,13 +60,13 @@ suite('Codegen: Array collecting from interface iterators', () => {
       import {Array} from 'zena:growable-array';
 
       export let main = (): i32 => {
-        let m = new HashMap<string, i32>();
+        let m = new HashMap<String, i32>();
         m["a"] = 10;
         m["b"] = 20;
         m["c"] = 30;
 
         let vals = new Array<i32>();
-        m.forEach((key: string, value: i32): void => {
+        m.forEach((key: String, value: i32): void => {
           vals.push(value);
         });
 
@@ -76,19 +76,19 @@ suite('Codegen: Array collecting from interface iterators', () => {
     assert.strictEqual(result, 60);
   });
 
-  test('OrderedMap keys collected into Array<string>', async () => {
+  test('OrderedMap keys collected into Array<String>', async () => {
     const result = await compileAndRun(`
       import {OrderedMap} from 'zena:ordered-map';
       import {Array} from 'zena:growable-array';
 
       export let main = (): i32 => {
-        let m = new OrderedMap<string, i32>();
+        let m = new OrderedMap<String, i32>();
         m["first"] = 1;
         m["second"] = 2;
         m["third"] = 3;
 
-        let keys = new Array<string>();
-        m.forEach((key: string, value: i32): void => {
+        let keys = new Array<String>();
+        m.forEach((key: String, value: i32): void => {
           keys.push(key);
         });
 
@@ -105,11 +105,11 @@ suite('Codegen: Array collecting from interface iterators', () => {
       import {Array} from 'zena:growable-array';
 
       export let main = (): i32 => {
-        let m = new OrderedMap<string, i32>();
+        let m = new OrderedMap<String, i32>();
         m["a"] = 10;
         m["b"] = 20;
 
-        let entries = new Array<MapEntry<string, i32>>();
+        let entries = new Array<MapEntry<String, i32>>();
         for (let entry in m) {
           entries.push(entry);
         }

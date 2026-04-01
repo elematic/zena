@@ -23,7 +23,7 @@ suite('Checker: Records and Tuples', () => {
   test('infers record literal type (mismatch)', () => {
     const {diagnostics} = check(`
       let r = { x: 1, y: 2 };
-      let check: { x: string, y: i32 } = r;
+      let check: { x: String, y: i32 } = r;
     `);
     assert.strictEqual(diagnostics.length, 1);
     assert.match(diagnostics[0].message, /Type mismatch/);
@@ -40,7 +40,7 @@ suite('Checker: Records and Tuples', () => {
   test('infers tuple literal type (mismatch)', () => {
     const {diagnostics} = check(`
       let t = (1, true);
-      let check: (string, boolean) = t;
+      let check: (String, boolean) = t;
     `);
     assert.strictEqual(diagnostics.length, 1);
     assert.match(diagnostics[0].message, /Type mismatch/);
@@ -154,8 +154,8 @@ suite('Checker: Records and Tuples', () => {
 
   test('function parameter with optional record fields', () => {
     const {diagnostics} = check(`
-      let request = (opts: { url: string, timeout?: i32 }): string => opts.url;
-      export let main = (): string => {
+      let request = (opts: { url: String, timeout?: i32 }): String => opts.url;
+      export let main = (): String => {
         return request({ url: "/api" });
       };
     `);
@@ -164,8 +164,8 @@ suite('Checker: Records and Tuples', () => {
 
   test('function parameter with optional fields - providing optional', () => {
     const {diagnostics} = check(`
-      let request = (opts: { url: string, timeout?: i32 }): string => opts.url;
-      export let main = (): string => {
+      let request = (opts: { url: String, timeout?: i32 }): String => opts.url;
+      export let main = (): String => {
         return request({ url: "/api", timeout: 5000 });
       };
     `);

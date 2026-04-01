@@ -54,7 +54,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
       };
 
       // Copy string to linear memory
-      let stringToMem = (s: string): (i32, i32) => {
+      let stringToMem = (s: String): (i32, i32) => {
         let len = s.length;
         let ptr = alloc(len);
         for (var i = 0; i < len; i = i + 1) {
@@ -65,7 +65,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
 
       // Read a file and return [dataPtr, dataLen] for inspection
       // Returns [-1, errorCode] on error
-      export let readFileToMemory = (path: string): inline (i32, i32) => {
+      export let readFileToMemory = (path: String): inline (i32, i32) => {
         // Get preopened directories
         let preopensPtr = alloc(16);
         wasiGetDirectories(preopensPtr);
@@ -181,7 +181,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
       };
 
       // Copy string to linear memory
-      let stringToMem = (s: string): (i32, i32) => {
+      let stringToMem = (s: String): (i32, i32) => {
         let len = s.length;
         let ptr = alloc(len);
         for (var i = 0; i < len; i = i + 1) {
@@ -191,7 +191,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
       };
 
       // Write content to a file
-      export let writeFile = (path: string, content: string): i32 => {
+      export let writeFile = (path: String, content: String): i32 => {
         // Get preopened directories
         let preopensPtr = alloc(16);
         wasiGetDirectories(preopensPtr);
@@ -401,7 +401,7 @@ suite('CodeGenerator - WASI Filesystem', () => {
         return ptr;
       };
 
-      let stringToMem = (s: string): (i32, i32) => {
+      let stringToMem = (s: String): (i32, i32) => {
         let len = s.length;
         let ptr = alloc(len);
         for (var i = 0; i < len; i = i + 1) {

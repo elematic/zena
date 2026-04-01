@@ -6,12 +6,12 @@ suite('CodeGenerator - Casts', () => {
   test('should compile and run valid downcast', async () => {
     const source = `
       class Animal {
-        name: string;
-        new(name: string) : name = name {}
+        name: String;
+        new(name: String) : name = name {}
       }
       class Dog extends Animal {
-        breed: string;
-        new(name: string, breed: string) : breed = breed, super(name) {}
+        breed: String;
+        new(name: String, breed: String) : breed = breed, super(name) {}
       }
 
       export let main = (): boolean => {
@@ -29,16 +29,16 @@ suite('CodeGenerator - Casts', () => {
   test('should trap on invalid downcast', async () => {
     const source = `
       class Animal {
-        name: string;
-        new(name: string) : name = name {}
+        name: String;
+        new(name: String) : name = name {}
       }
       class Dog extends Animal {
-        breed: string;
-        new(name: string, breed: string) : breed = breed, super(name) {}
+        breed: String;
+        new(name: String, breed: String) : breed = breed, super(name) {}
       }
       class Cat extends Animal {
         lives: i32;
-        new(name: string) : lives = 9, super(name) {}
+        new(name: String) : lives = 9, super(name) {}
       }
 
       export let main = (): void => {

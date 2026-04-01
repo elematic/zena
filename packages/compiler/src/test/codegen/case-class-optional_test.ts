@@ -5,7 +5,7 @@ import {compileAndRun} from './utils.js';
 suite('Case class optional parameters', () => {
   test('optional param defaults to null', async () => {
     const result = await compileAndRun(`
-      class Node(value: i32, label?: string)
+      class Node(value: i32, label?: String)
 
       export let main = (): boolean => {
         let n = new Node(1);
@@ -17,7 +17,7 @@ suite('Case class optional parameters', () => {
 
   test('optional param can be provided', async () => {
     const result = await compileAndRun(`
-      class Node(value: i32, label?: string)
+      class Node(value: i32, label?: String)
 
       export let main = (): i32 => {
         let n = new Node(1, 'hello');

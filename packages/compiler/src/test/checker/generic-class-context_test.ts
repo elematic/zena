@@ -53,7 +53,7 @@ suite('Generic Class Context Consistency', () => {
         }
         
         export let main = (): i32 => {
-          let c = new Calculator<string>(7);
+          let c = new Calculator<String>(7);
           return c.calculate(6);
         };
       `;
@@ -103,8 +103,8 @@ suite('Generic Class Context Consistency', () => {
         }
         
         export let main = (): i32 => {
-          let items: array<string> = ["a", "b"];
-          let c = new Container<string>(items);
+          let items: array<String> = ["a", "b"];
+          let c = new Container<String>(items);
           return c.transform<i32>(42);
         };
       `;
@@ -130,7 +130,7 @@ suite('Generic Class Context Consistency', () => {
         
         export let main = (): i32 => {
           let o = new Outer<i32>(42);
-          return o.process<string>("ignored");
+          return o.process<String>("ignored");
         };
       `;
       const result = await compileAndRun(source, 'main');
@@ -244,7 +244,7 @@ suite('Generic Class Context Consistency', () => {
         
         export let main = (): i32 => {
           let intBox = new Box<i32>(42);
-          let strBox = new Box<string>("hello");
+          let strBox = new Box<String>("hello");
           // Both are separate instantiations, should not be confused
           return intBox.getValue();
         };

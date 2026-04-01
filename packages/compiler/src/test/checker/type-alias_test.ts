@@ -6,7 +6,7 @@ import {TypeChecker} from '../../lib/checker/index.js';
 suite('TypeChecker - Type Aliases', () => {
   test('should support basic type aliases', () => {
     const input = `
-      type ID = string;
+      type ID = String;
       let x: ID = 'hello';
     `;
     const parser = new Parser(input);
@@ -23,7 +23,7 @@ suite('TypeChecker - Type Aliases', () => {
         value: T;
         new(v: T) : value = v {}
       }
-      type StringBox = Box<string>;
+      type StringBox = Box<String>;
       let b: StringBox = new Box('hello');
     `;
     const parser = new Parser(input);

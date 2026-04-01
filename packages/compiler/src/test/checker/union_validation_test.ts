@@ -52,7 +52,7 @@ suite('Union Validation Tests', () => {
       }
 
       export let main = (): void => {
-        let c = new Container<string>();
+        let c = new Container<String>();
       };
     `;
 
@@ -85,7 +85,7 @@ suite('Union Validation Tests', () => {
         let c = new Container<Box<i32>>();
         
         // Valid: Instantiating generic with String (reference type)
-        let s = new Container<string>();
+        let s = new Container<String>();
 
         // Valid: Array is a reference type
         let arr: array<i32> | null = null;
@@ -94,7 +94,7 @@ suite('Union Validation Tests', () => {
         let bytes: ByteArray | null = null;
 
         // Valid: String is a reference type (extension class)
-        let str: string | null = null;
+        let str: String | null = null;
       };
     `;
 

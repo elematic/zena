@@ -18,7 +18,7 @@ describe('Exports', () => {
               import { add } from './math';
               import { FixedArray } from 'zena:array';
               export let main = () => add(1, 2);
-              export declare function print(s: string): void;
+              export declare function print(s: String): void;
             `;
         }
         if (specifier === '/math.zena') {

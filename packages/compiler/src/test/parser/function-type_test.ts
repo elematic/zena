@@ -30,14 +30,14 @@ suite('Parser: Function Types', () => {
   });
 
   test('parses a function type with no parameters', () => {
-    const parser = new Parser('var f: () => string = null;');
+    const parser = new Parser('var f: () => String = null;');
     const module = parser.parse();
     const decl = module.body[0] as any;
     const type = decl.typeAnnotation;
 
     assert.equal(type.type, NodeType.FunctionTypeAnnotation);
     assert.equal(type.params.length, 0);
-    assert.equal(type.returnType.name, 'string');
+    assert.equal(type.returnType.name, 'String');
   });
 
   test('parses nested function types', () => {

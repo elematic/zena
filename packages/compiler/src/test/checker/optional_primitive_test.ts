@@ -32,7 +32,7 @@ suite('Optional Primitive Parameters', () => {
 
   test('Optional reference parameter should pass', async () => {
     const source = `
-      export let foo = (x?: string) => {};
+      export let foo = (x?: String) => {};
       export let main = () => {
         foo();
       };

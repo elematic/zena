@@ -28,7 +28,7 @@ suite('TypeChecker - Generics', () => {
         new(v: T) : value = v {}
       }
       let b = new Box<i32>(10);
-      let s = new Box<string>('hello');
+      let s = new Box<String>('hello');
     `;
     const parser = new Parser(input);
     const ast = parser.parse();

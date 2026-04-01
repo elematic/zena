@@ -10,13 +10,13 @@ suite('interface multi-return ref cast', () => {
     const result = await compileAndRun(`
       import { Iterator } from 'zena:iterator';
 
-      final class SingleIter implements Iterator<string> {
-        var #value: string;
+      final class SingleIter implements Iterator<String> {
+        var #value: String;
         var #done: boolean;
 
-        new(value: string) : #value = value, #done = false {}
+        new(value: String) : #value = value, #done = false {}
 
-        next(): inline (true, string) | inline (false, never) {
+        next(): inline (true, String) | inline (false, never) {
           if (!this.#done) {
             this.#done = true;
             return (true, this.#value);
@@ -25,7 +25,7 @@ suite('interface multi-return ref cast', () => {
         }
       }
 
-      let getIter = (): Iterator<string> => new SingleIter("test");
+      let getIter = (): Iterator<String> => new SingleIter("test");
 
       export let main = (): i32 => {
         let iter = getIter();
@@ -44,13 +44,13 @@ suite('interface multi-return ref cast', () => {
     const result = await compileAndRun(`
       import { Iterator } from 'zena:iterator';
 
-      final class SingleIter2 implements Iterator<string> {
-        var #value: string;
+      final class SingleIter2 implements Iterator<String> {
+        var #value: String;
         var #done: boolean;
 
-        new(value: string) : #value = value, #done = false {}
+        new(value: String) : #value = value, #done = false {}
 
-        next(): inline (true, string) | inline (false, never) {
+        next(): inline (true, String) | inline (false, never) {
           if (!this.#done) {
             this.#done = true;
             return (true, this.#value);
@@ -59,7 +59,7 @@ suite('interface multi-return ref cast', () => {
         }
       }
 
-      let getIter2 = (): Iterator<string> => new SingleIter2("test");
+      let getIter2 = (): Iterator<String> => new SingleIter2("test");
 
       export let main = (): i32 => {
         let iter = getIter2();

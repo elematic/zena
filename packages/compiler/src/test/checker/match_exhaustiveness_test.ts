@@ -45,7 +45,7 @@ suite('TypeChecker - Match Exhaustiveness', () => {
 
   test('should report error for non-exhaustive discriminated union', () => {
     const input = `
-      type Result = {status: 'success', value: string} | {status: 'error', error: string};
+      type Result = {status: 'success', value: String} | {status: 'error', error: String};
       let r: Result = {status: 'success' as 'success', value: 'ok'};
       match (r) {
         case {status: 'success'}: "ok"

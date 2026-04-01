@@ -47,7 +47,7 @@ suite('Parser - Abstract Classes', () => {
   test('should parse concrete method in abstract class', () => {
     const input = `
       abstract class Shape {
-        getType(): string { return "Shape"; }
+        getType(): String { return "Shape"; }
       }
     `;
     const parser = new Parser(input);

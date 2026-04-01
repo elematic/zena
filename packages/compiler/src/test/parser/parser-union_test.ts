@@ -5,7 +5,7 @@ import {NodeType} from '../../lib/ast.js';
 
 suite('Parser: Union Types', () => {
   test('should parse union type in variable declaration', () => {
-    const input = 'let x: i32 | string = 10;';
+    const input = 'let x: i32 | String = 10;';
     const parser = new Parser(input);
     const ast = parser.parse();
 
@@ -18,7 +18,7 @@ suite('Parser: Union Types', () => {
       if (type.type === NodeType.UnionTypeAnnotation) {
         assert.strictEqual(type.types.length, 2);
         assert.strictEqual((type.types[0] as any).name, 'i32');
-        assert.strictEqual((type.types[1] as any).name, 'string');
+        assert.strictEqual((type.types[1] as any).name, 'String');
       }
     }
   });

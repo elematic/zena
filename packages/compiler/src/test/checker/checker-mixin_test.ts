@@ -158,20 +158,20 @@ suite('Checker - Mixins', () => {
 
   test('should fail if class applies mixins with incompatible signatures', () => {
     // This is tricky because mixins are applied sequentially.
-    // If A defines foo(): i32 and B defines foo(): string
+    // If A defines foo(): i32 and B defines foo(): String
     // class C with A, B
     // C extends (Base+A)+B
     // (Base+A) has foo(): i32
-    // B has foo(): string
+    // B has foo(): String
     // B overrides foo.
     // If B overrides, it must be compatible with Base+A.
-    // string is not compatible with i32 (invariant/covariant return type).
+    // String is not compatible with i32 (invariant/covariant return type).
     const source = `
       mixin A {
         foo(): i32 { return 0; }
       }
       mixin B {
-        foo(): string { return "s"; }
+        foo(): String { return "s"; }
       }
       class C with A, B {}
     `;
@@ -183,7 +183,7 @@ suite('Checker - Mixins', () => {
   test('should fail if base class signature is incompatible with mixin', () => {
     const source = `
       class Base {
-        foo(): string { return "s"; }
+        foo(): String { return "s"; }
       }
       mixin M {
         foo(): i32 { return 0; }

@@ -554,10 +554,9 @@ export class CheckerContext {
         return Types.AnyRef;
       case TypeNames.Any:
         return Types.Any;
-      case TypeNames.String:
-      case 'String': {
+      case TypeNames.String: {
         // The String type is sometimes used in tests where the prelude isn't
-        // available.
+        // available so we need to provide it here.
         return this.getWellKnownType(Types.String.name) || Types.String;
       }
       case TypeKind.ByteArray:

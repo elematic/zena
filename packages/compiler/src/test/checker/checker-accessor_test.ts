@@ -57,7 +57,7 @@ suite('TypeChecker - Accessors', () => {
         #value: i32 = 0;
         value: i32 {
           set(v) {
-             let s: string = v; // Error: v is i32
+             let s: String = v; // Error: v is i32
           }
         }
       }

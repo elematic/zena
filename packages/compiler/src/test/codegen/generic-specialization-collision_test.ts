@@ -180,7 +180,7 @@ suite('Codegen: Generic Specialization Collision', () => {
   // handles UnionTypeAnnotation and LiteralTypeAnnotation properly for
   // generating distinct specialization keys.
   test.skip('union type should create proper specialization key', async () => {
-    // Box<'a' | 'b'> should have a distinct key from Box<string>
+    // Box<'a' | 'b'> should have a distinct key from Box<String>
     // This test is complex because string literals like 'a' create
     // LiteralTypeAnnotation in type position, but StringLiteral in value position
     const files: Record<string, string> = {

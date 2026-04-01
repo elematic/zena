@@ -31,15 +31,15 @@ suite('CodeGenerator - Generic Interfaces', () => {
         map(input: In): Out;
       }
 
-      class Stringifier<T> implements Mapper<T, string> {
-        map(input: T): string {
+      class Stringifier<T> implements Mapper<T, String> {
+        map(input: T): String {
           return "value"; // Simplified for test
         }
       }
 
       export let main = () => {
         var s = new Stringifier<i32>();
-        var m: Mapper<i32, string> = s;
+        var m: Mapper<i32, String> = s;
         // We can't easily test string return yet without more stdlib, 
         // so just checking it compiles and runs without crashing is good.
         // Let's return length or something if we can, or just 1.

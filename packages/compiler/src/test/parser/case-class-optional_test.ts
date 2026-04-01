@@ -23,7 +23,7 @@ suite('Parser - Optional Case Class Parameters', () => {
   });
 
   test('should parse all-optional case class parameters', () => {
-    const input = `class Config(name?: string, value?: i32)`;
+    const input = `class Config(name?: String, value?: i32)`;
     const parser = new Parser(input);
     const ast = parser.parse();
     const classDecl = ast.body[0] as ClassDeclaration;
@@ -50,7 +50,7 @@ suite('Parser - Optional Case Class Parameters', () => {
   test('should parse optional in sealed variant params', () => {
     const input = `
       sealed class Node {
-        case Leaf(value: i32, label?: string)
+        case Leaf(value: i32, label?: String)
       }
     `;
     const parser = new Parser(input);

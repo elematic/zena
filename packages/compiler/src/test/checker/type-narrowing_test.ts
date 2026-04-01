@@ -248,16 +248,16 @@ suite('TypeChecker: Type Narrowing', () => {
     test('should narrow type after is check', () => {
       const input = `
         class Animal {
-          name: string;
-          new(name: string) : name = name {}
+          name: String;
+          new(name: String) : name = name {}
         }
 
         class Dog extends Animal {
-          breed: string;
-          new(name: string, breed: string) : breed = breed, super(name) { }
+          breed: String;
+          new(name: String, breed: String) : breed = breed, super(name) { }
         }
 
-        let process = (animal: Animal): string => {
+        let process = (animal: Animal): String => {
           if (animal is Dog) {
             return animal.breed;
           }
@@ -279,15 +279,15 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Cat {
           new() {}
-          meow(): string { return "meow"; }
+          meow(): String { return "meow"; }
         }
 
         class Dog {
           new() {}
-          bark(): string { return "woof"; }
+          bark(): String { return "woof"; }
         }
 
-        let process = (pet: Cat | Dog): string => {
+        let process = (pet: Cat | Dog): String => {
           if (pet is Cat) {
             return pet.meow();
           }
@@ -309,15 +309,15 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Cat {
           new() {}
-          meow(): string { return "meow"; }
+          meow(): String { return "meow"; }
         }
 
         class Dog {
           new() {}
-          bark(): string { return "woof"; }
+          bark(): String { return "woof"; }
         }
 
-        let process = (pet: Cat | Dog): string => {
+        let process = (pet: Cat | Dog): String => {
           if (pet is Cat) {
             return pet.meow();
           } else {
@@ -340,15 +340,15 @@ suite('TypeChecker: Type Narrowing', () => {
       const input = `
         class Cat {
           new() {}
-          meow(): string { return "meow"; }
+          meow(): String { return "meow"; }
         }
 
         class Dog {
           new() {}
-          bark(): string { return "woof"; }
+          bark(): String { return "woof"; }
         }
 
-        let process = (pet: Cat | Dog): string => {
+        let process = (pet: Cat | Dog): String => {
           if (pet is Cat) {
             return pet.bark();
           }
@@ -663,7 +663,7 @@ suite('TypeChecker: Type Narrowing', () => {
           new(value: i32) : value = value {}
         }
 
-        let process = (t: ((Container | null, i32), string)): i32 => {
+        let process = (t: ((Container | null, i32), String)): i32 => {
           if (t[0][0] !== null) {
             return t[0][0].value;
           }
@@ -711,7 +711,7 @@ suite('TypeChecker: Type Narrowing', () => {
 
     test('should support tuple access with let index', () => {
       const input = `
-        let getTupleElement = (t: (i32, string)): i32 => {
+        let getTupleElement = (t: (i32, String)): i32 => {
           let idx = 0;
           return t[idx];
         };
@@ -729,7 +729,7 @@ suite('TypeChecker: Type Narrowing', () => {
 
     test('should error on var index (not compile-time known)', () => {
       const input = `
-        let getTupleElement = (t: (i32, string)): i32 => {
+        let getTupleElement = (t: (i32, String)): i32 => {
           var idx = 0;
           return t[idx];
         };
@@ -745,7 +745,7 @@ suite('TypeChecker: Type Narrowing', () => {
 
     test('should error on parameter index (not compile-time known)', () => {
       const input = `
-        let getTupleElement = (t: (i32, string), idx: i32): i32 => {
+        let getTupleElement = (t: (i32, String), idx: i32): i32 => {
           return t[idx];
         };
       `;
@@ -815,8 +815,8 @@ suite('TypeChecker: Type Narrowing', () => {
     test('should narrow with swapped null check (null != x)', () => {
       const input = `
         class Box {
-          content: string;
-          new(content: string) : content = content {}
+          content: String;
+          new(content: String) : content = content {}
         }
 
         let hasContent = (box: Box | null): boolean => {
@@ -948,8 +948,8 @@ suite('TypeChecker: Type Narrowing', () => {
     test('should narrow with swapped null check (null == x)', () => {
       const input = `
         class Box {
-          content: string;
-          new(content: string) : content = content {}
+          content: String;
+          new(content: String) : content = content {}
         }
 
         let isEmpty = (box: Box | null): boolean => {

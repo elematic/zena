@@ -4,15 +4,15 @@ import {compileModules} from '../codegen/utils.js';
 import {DiagnosticSeverity, type Diagnostic} from '../../lib/diagnostics.js';
 
 describe('Built-in Shadowing Tests', () => {
-  it('should allow shadowing i32 with string', () => {
+  it('should allow shadowing i32 with String', () => {
     const modules = compileModules(`
-      type i32 = string;
+      type i32 = String;
       
       export let main = () => {
         // If i32 is shadowed, this should be valid
         let s: i32 = "hello";
         
-        // And this should be invalid (assigning number to string)
+        // And this should be invalid (assigning number to String)
         let n: i32 = 123;
       };
     `);
@@ -41,7 +41,7 @@ describe('Built-in Shadowing Tests', () => {
 
     assert.ok(
       numberAssignError,
-      'Should have error assigning number to shadowed i32 (string)',
+      'Should have error assigning number to shadowed i32 (String)',
     );
   });
 

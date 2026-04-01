@@ -81,7 +81,7 @@ suite('Codegen - Optional Fields', () => {
   test('optional string field', async () => {
     const source = `
       class Config {
-        var name?: string;
+        var name?: String;
         new() {}
       }
 

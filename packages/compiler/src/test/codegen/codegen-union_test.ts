@@ -80,7 +80,7 @@ suite('CodeGenerator - Union Types', () => {
       class Box { value: i32; new(v: i32) : value = v {} }
 
       export let main = (): i32 => {
-        let x: string | Box = 'hello';
+        let x: String | Box = 'hello';
         return 1;
       };
     `;

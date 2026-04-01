@@ -5,8 +5,8 @@ import {compileAndRun} from './utils.js';
 suite('function type casting from union', () => {
   test('cast function from union and call', async () => {
     const source = `
-      let call_fn = (f: string | (x: i32) => i32, x: i32): i32 => {
-        if (f is string) {
+      let call_fn = (f: String | (x: i32) => i32, x: i32): i32 => {
+        if (f is String) {
           return 0;
         } else {
           return (f as (x: i32) => i32)(x);  // explicit cast + call
@@ -24,8 +24,8 @@ suite('function type casting from union', () => {
 
   test('narrowing should work in else branch after is check', async () => {
     const source = `
-      let call_fn = (f: string | (x: i32) => i32, x: i32): i32 => {
-        if (f is string) {
+      let call_fn = (f: String | (x: i32) => i32, x: i32): i32 => {
+        if (f is String) {
           return 0;
         } else {
           // f should be narrowed to (x: i32) => i32 here
@@ -44,8 +44,8 @@ suite('function type casting from union', () => {
 
   test('narrowing with string branch executed', async () => {
     const source = `
-      let call_fn = (f: string | (x: i32) => i32, x: i32): i32 => {
-        if (f is string) {
+      let call_fn = (f: String | (x: i32) => i32, x: i32): i32 => {
+        if (f is String) {
           return 42;
         } else {
           return f(x);
@@ -62,8 +62,8 @@ suite('function type casting from union', () => {
 
   test('function with multiple parameters', async () => {
     const source = `
-      let call_fn = (f: string | (a: i32, b: i32) => i32): i32 => {
-        if (f is string) {
+      let call_fn = (f: String | (a: i32, b: i32) => i32): i32 => {
+        if (f is String) {
           return 0;
         } else {
           return f(10, 20);
@@ -81,8 +81,8 @@ suite('function type casting from union', () => {
 
   test('function with no parameters', async () => {
     const source = `
-      let call_fn = (f: string | () => i32): i32 => {
-        if (f is string) {
+      let call_fn = (f: String | () => i32): i32 => {
+        if (f is String) {
           return 0;
         } else {
           return f();
@@ -100,8 +100,8 @@ suite('function type casting from union', () => {
 
   test('closure with captured variables', async () => {
     const source = `
-      let call_fn = (f: string | (x: i32) => i32, x: i32): i32 => {
-        if (f is string) {
+      let call_fn = (f: String | (x: i32) => i32, x: i32): i32 => {
+        if (f is String) {
           return 0;
         } else {
           return f(x);

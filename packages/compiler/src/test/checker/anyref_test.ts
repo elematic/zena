@@ -6,7 +6,7 @@ import {TypeChecker} from '../../lib/checker/index.js';
 suite('AnyRef Checker', () => {
   test('should allow assigning reference types to anyref', () => {
     const input = `
-      let s: string = "hello";
+      let s: String = "hello";
       let a: anyref = s;
       let b: anyref = null;
     `;

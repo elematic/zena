@@ -251,8 +251,8 @@ suite('Type Interning', () => {
       // Union types are created structurally. This test documents current behavior.
       // Note: The checker may not intern union types currently.
       const modules = compileModules(`
-        export let getUnionA = (): i32 | string => 1;
-        export let getUnionB = (): i32 | string => 'hello';
+        export let getUnionA = (): i32 | String => 1;
+        export let getUnionB = (): i32 | String => 'hello';
       `);
 
       const mainModule = modules.find((m) => m.path === '/main.zena')!;
@@ -268,7 +268,7 @@ suite('Type Interning', () => {
     test('type alias to union resolves consistently', () => {
       // When using a type alias, all references should resolve to semantically equivalent types
       const modules = compileModules(`
-        type Result = i32 | string;
+        type Result = i32 | String;
 
         export let getResultA = (): Result => 1;
         export let getResultB = (): Result => 'hello';

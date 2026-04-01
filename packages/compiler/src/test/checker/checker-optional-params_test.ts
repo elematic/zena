@@ -14,7 +14,7 @@ function check(source: string) {
 suite('Checker - Optional Parameters', () => {
   test('should allow optional parameter without default', () => {
     const diagnostics = check(`
-      let f = (x?: string) => {};
+      let f = (x?: String) => {};
       f("hello");
       f();
     `);
@@ -23,8 +23,8 @@ suite('Checker - Optional Parameters', () => {
 
   test('should infer optional parameter type as union with null', () => {
     const diagnostics = check(`
-      let f = (x?: string) => {
-        let y: string | null = x; // Should be assignable
+      let f = (x?: String) => {
+        let y: String | null = x; // Should be assignable
       };
     `);
     assert.strictEqual(diagnostics.length, 0);
@@ -32,7 +32,7 @@ suite('Checker - Optional Parameters', () => {
 
   test('should allow passing null to optional parameter', () => {
     const diagnostics = check(`
-      let f = (x?: string) => {};
+      let f = (x?: String) => {};
       f(null);
     `);
     assert.strictEqual(diagnostics.length, 0);
@@ -40,7 +40,7 @@ suite('Checker - Optional Parameters', () => {
 
   test('should fail if passing wrong type to optional parameter', () => {
     const diagnostics = check(`
-      let f = (x?: string) => {};
+      let f = (x?: String) => {};
       f(123);
     `);
     assert.strictEqual(diagnostics.length, 1);
@@ -50,7 +50,7 @@ suite('Checker - Optional Parameters', () => {
   test('should support optional parameters in methods', () => {
     const diagnostics = check(`
       class C {
-        m(x?: string) {}
+        m(x?: String) {}
       }
       let c = new C();
       c.m("hello");
@@ -62,8 +62,8 @@ suite('Checker - Optional Parameters', () => {
   test('should support optional parameters in constructors', () => {
     const diagnostics = check(`
       class C {
-        var x: string | null;
-        new(x?: string) {
+        var x: String | null;
+        new(x?: String) {
           this.x = x;
         }
       }
@@ -76,10 +76,10 @@ suite('Checker - Optional Parameters', () => {
   test('should support optional parameters in interfaces', () => {
     const diagnostics = check(`
       interface I {
-        m(x?: string): void;
+        m(x?: String): void;
       }
       class C implements I {
-        m(x?: string) {}
+        m(x?: String) {}
       }
       let i: I = new C();
       i.m("hello");
@@ -91,7 +91,7 @@ suite('Checker - Optional Parameters', () => {
   test('should support optional parameters in mixins', () => {
     const diagnostics = check(`
       mixin M {
-        m(x?: string) {}
+        m(x?: String) {}
       }
       class C with M {}
       let c = new C();
@@ -104,7 +104,7 @@ suite('Checker - Optional Parameters', () => {
   test('should support optional parameters in declare function', () => {
     const diagnostics = check(`
       @external("env", "f")
-      declare function f(x?: string): void;
+      declare function f(x?: String): void;
       f("hello");
       f();
     `);

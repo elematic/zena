@@ -196,7 +196,7 @@ suite('Super Initializer in Constructor', () => {
   test('error: extension class super() with wrong type', () => {
     const errors = checkSource(`
       extension class MyInt on i32 {
-        new(value: string) : super(value) {
+        new(value: String) : super(value) {
         }
       }
       export let main = (): i32 => 0;

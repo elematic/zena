@@ -2,10 +2,10 @@ import {suite, test} from 'node:test';
 import {compileAndRun} from './utils.js';
 
 suite('CodeGenerator - Type Aliases', () => {
-  test('should compile and run type alias for string', async () => {
+  test('should compile and run type alias for String', async () => {
     const code = `
-      type Name = string;
-      export let main = (): string => {
+      type Name = String;
+      export let main = (): String => {
         let s: Name = "hello";
         return s;
       };
@@ -15,8 +15,8 @@ suite('CodeGenerator - Type Aliases', () => {
 
   test('should compile and run cast to type alias', async () => {
     const code = `
-      type Name = string;
-      export let main = (): string => {
+      type Name = String;
+      export let main = (): String => {
         let s = "hello" as Name;
         return s;
       };
@@ -26,7 +26,7 @@ suite('CodeGenerator - Type Aliases', () => {
 
   test('should compile and run tuple type alias', async () => {
     const source = `
-      type Foo = (string, i32);
+      type Foo = (String, i32);
 
       let f = (x: Foo): i32 => {
         return x[1];

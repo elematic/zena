@@ -56,13 +56,13 @@ suite('CodeGenerator - Template Literals', () => {
 
   test('should compile template literal return', async () => {
     const source = `
-      export let main = (): string => {
+      export let main = (): String => {
         return \`hello\`;
       };
     `;
 
     const result = await compileAndRun(source);
-    assert.ok(result); // Should return a non-null string reference
+    assert.ok(result); // Should return a non-null String reference
   });
 
   test('should compile template literal with escape sequences', async () => {

@@ -10,8 +10,8 @@ suite('AnyRef', () => {
       };
 
       export let testAssign = (): void => {
-        let s: string = "hello";
-        let a: anyref = s; // string -> anyref
+        let s: String = "hello";
+        let a: anyref = s; // String -> anyref
         
         let o: anyref = null; // null -> anyref
       };
@@ -28,7 +28,7 @@ suite('AnyRef', () => {
       }
 
       export let testAssignments = (): void => {
-        let a: anyref = "string";
+        let a: anyref = "String";
         let b: anyref = new Point(1);
         let c: anyref = new Box(123);
         let d: anyref = [1, 2, 3];
@@ -41,7 +41,7 @@ suite('AnyRef', () => {
   test('can return anyref from function', async () => {
     const source = `
       export let getAny = (i: i32): anyref => {
-        if (i == 0) return "string";
+        if (i == 0) return "String";
         if (i == 1) return new Box(10);
         return null;
       };

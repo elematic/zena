@@ -128,7 +128,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
 
   test('function parameter type annotation', () => {
     const ast = parseAndCheck(`
-      let f = (x: i32, y: string) => x;
+      let f = (x: i32, y: String) => x;
     `);
     const decl = ast.body[0] as VariableDeclaration;
     const arrow = decl.init as FunctionExpression;
@@ -246,7 +246,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
 
   test('record type annotation', () => {
     const ast = parseAndCheck(`
-      let r: {x: i32, y: string} = {x: 1, y: 'hi'};
+      let r: {x: i32, y: String} = {x: 1, y: 'hi'};
     `);
     const varDecl = ast.body[0] as VariableDeclaration;
     assertAnnotationHasInferredType(varDecl.typeAnnotation!, 'record type');
@@ -264,7 +264,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
 
   test('tuple type annotation', () => {
     const ast = parseAndCheck(`
-      let t: (i32, string, boolean) = (1, 'hi', true);
+      let t: (i32, String, boolean) = (1, 'hi', true);
     `);
     const varDecl = ast.body[0] as VariableDeclaration;
     assertAnnotationHasInferredType(varDecl.typeAnnotation!, 'tuple type');
@@ -277,7 +277,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
 
   test('function type annotation', () => {
     const ast = parseAndCheck(`
-      let f: (x: i32, y: string) => boolean = (x: i32, y: string) => true;
+      let f: (x: i32, y: String) => boolean = (x: i32, y: String) => true;
     `);
     const varDecl = ast.body[0] as VariableDeclaration;
     assertAnnotationHasInferredType(varDecl.typeAnnotation!, 'function type');
@@ -324,7 +324,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
   test('interface field type annotation', () => {
     const ast = parseAndCheck(`
       interface Named {
-        name: string;
+        name: String;
       }
     `);
     const iface = ast.body[0] as InterfaceDeclaration;
@@ -394,7 +394,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
   test('declare function parameters and return type', () => {
     const ast = parseAndCheck(`
       @external("env", "log")
-      declare function log(msg: string): void;
+      declare function log(msg: String): void;
     `);
     // The declare function is parsed differently - it has params in the function decl
     // Let's look for FunctionDeclaration instead
@@ -481,14 +481,14 @@ suite('Checker - inferredType on TypeAnnotations', () => {
         second: B;
         new(first: A, second: B) : first = first, second = second {}
       }
-      let nested: Box<Pair<i32, string>> = new Box<Pair<i32, string>>(new Pair<i32, string>(1, 'hi'));
+      let nested: Box<Pair<i32, String>> = new Box<Pair<i32, String>>(new Pair<i32, String>(1, 'hi'));
     `);
     const varDecl = ast.body[2] as VariableDeclaration;
     assertAnnotationHasInferredType(varDecl.typeAnnotation!, 'nested generic');
-    // Box<Pair<i32, string>>
+    // Box<Pair<i32, String>>
     const box = varDecl.typeAnnotation as NamedTypeAnnotation;
     assertAnnotationHasInferredType(box.typeArguments![0], 'Box type arg');
-    // Pair<i32, string>
+    // Pair<i32, String>
     const pair = box.typeArguments![0] as NamedTypeAnnotation;
     assertAnnotationHasInferredType(pair.typeArguments![0], 'Pair first arg');
     assertAnnotationHasInferredType(pair.typeArguments![1], 'Pair second arg');
@@ -496,7 +496,7 @@ suite('Checker - inferredType on TypeAnnotations', () => {
 
   test('optional parameter type annotation', () => {
     const ast = parseAndCheck(`
-      let f = (x?: string): string | null => x;
+      let f = (x?: String): String | null => x;
     `);
     const decl = ast.body[0] as VariableDeclaration;
     const arrow = decl.init as FunctionExpression;

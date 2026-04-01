@@ -267,7 +267,7 @@ export const TypeNames = {
   Never: 'never',
   Null: 'null',
   Boolean: 'boolean',
-  String: 'string',
+  String: 'String',
   Any: 'any',
   AnyRef: 'anyref',
   EqRef: 'eqref',

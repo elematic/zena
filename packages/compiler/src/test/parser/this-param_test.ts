@@ -66,7 +66,7 @@ suite('Parser - this.field constructor parameters', () => {
       class Rect {
         width: i32;
         height: i32;
-        new(this.width, this.height, name: string) {}
+        new(this.width, this.height, name: String) {}
       }
     `;
     const parser = new Parser(input);

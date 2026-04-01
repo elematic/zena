@@ -21,7 +21,7 @@ suite('DeclareFunction export DCE', () => {
       import {HashMap} from 'zena:map';
 
       export let main = (): i32 => {
-        let m = new HashMap<string, i32>();
+        let m = new HashMap<String, i32>();
         m['hello'] = 1;
         m['world'] = 2;
         return 0;

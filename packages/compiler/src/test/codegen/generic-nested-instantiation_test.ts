@@ -74,10 +74,10 @@ class BoxPairFactory<T> {
 
   new(v: T) : boxedValue = new Box<T>(v) {}
 
-  // Creates Pair<string, Box<T>> - both the outer Pair and inner Box
+  // Creates Pair<String, Box<T>> - both the outer Pair and inner Box
   // must be correctly resolved
-  makePair(key: string): Pair<string, Box<T>> {
-    return new Pair<string, Box<T>>(key, this.boxedValue);
+  makePair(key: String): Pair<String, Box<T>> {
+    return new Pair<String, Box<T>>(key, this.boxedValue);
   }
 }
 
@@ -120,11 +120,11 @@ class EntryIterator<K, V> {
 }
 
 export let main = (): i32 => {
-  let iter = new EntryIterator<string, i32>("test", 42);
+  let iter = new EntryIterator<String, i32>("test", 42);
   let (hasValue, entry) = iter.next();
   if (hasValue) {
     // Use cast to access the entry since narrowing may not work through union
-    return (entry as Entry<string, i32>).value;
+    return (entry as Entry<String, i32>).value;
   }
   return 0;
 };

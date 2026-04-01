@@ -25,7 +25,7 @@ export let main = (): i32 => {
     assert.strictEqual(result, 125); // 50 + 75
   });
 
-  test('Array<(Class, string)> should not create duplicate WASM types', async () => {
+  test('Array<(Class, String)> should not create duplicate WASM types', async () => {
     const source = `
 import { Array } from 'zena:growable-array';
 
@@ -34,8 +34,8 @@ class Descriptor {
   new(h: i32) : handle = h {}
 }
 
-let makePreopens = (): Array<(Descriptor, string)> => {
-  let result = new Array<(Descriptor, string)>();
+let makePreopens = (): Array<(Descriptor, String)> => {
+  let result = new Array<(Descriptor, String)>();
   result.push((new Descriptor(1), '/tmp'));
   result.push((new Descriptor(2), '/data'));
   return result;
@@ -67,7 +67,7 @@ enum FileType {
 }
 
 type DirEntry = {
-  name: string,
+  name: String,
   fileType: FileType,
 };
 

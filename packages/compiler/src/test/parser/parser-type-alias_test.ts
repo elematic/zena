@@ -5,7 +5,7 @@ import {Parser} from '../../lib/parser.js';
 
 suite('Parser - Type Aliases', () => {
   test('should parse basic type alias', () => {
-    const input = 'type ID = string;';
+    const input = 'type ID = String;';
     const parser = new Parser(input);
     const ast = parser.parse();
 
@@ -14,7 +14,7 @@ suite('Parser - Type Aliases', () => {
     assert.strictEqual(decl.type, NodeType.TypeAliasDeclaration);
     assert.strictEqual(decl.name.name, 'ID');
     // @ts-ignore
-    assert.strictEqual(decl.typeAnnotation.name, 'string');
+    assert.strictEqual(decl.typeAnnotation.name, 'String');
   });
 
   test('should parse generic type alias', () => {
@@ -31,7 +31,7 @@ suite('Parser - Type Aliases', () => {
   });
 
   test('should parse exported type alias', () => {
-    const input = 'export type ID = string;';
+    const input = 'export type ID = String;';
     const parser = new Parser(input);
     const ast = parser.parse();
 
@@ -42,7 +42,7 @@ suite('Parser - Type Aliases', () => {
   });
 
   test('should parse tuple type alias', () => {
-    const parser = new Parser('type Foo = (string, i32);');
+    const parser = new Parser('type Foo = (String, i32);');
     const module = parser.parse();
     assert.strictEqual(module.body[0].type, NodeType.TypeAliasDeclaration);
     const decl = module.body[0] as any;

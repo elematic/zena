@@ -89,7 +89,7 @@ suite('AST Visitor', () => {
   });
 
   test('visits type annotations', () => {
-    const ast = parse('let x: Map<string, i32> = null;');
+    const ast = parse('let x: Map<String, i32> = null;');
     const typeNames: string[] = [];
 
     visit<void>(
@@ -102,8 +102,8 @@ suite('AST Visitor', () => {
       undefined,
     );
 
-    // Map, string, i32
-    assert.deepStrictEqual(typeNames, ['Map', 'string', 'i32']);
+    // Map, String, i32
+    assert.deepStrictEqual(typeNames, ['Map', 'String', 'i32']);
   });
 
   test('visits new expression callee', () => {

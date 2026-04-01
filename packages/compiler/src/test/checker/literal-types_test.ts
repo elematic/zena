@@ -102,10 +102,10 @@ suite('Checker: Literal Types', () => {
     assert.strictEqual(errors.length, 0);
   });
 
-  test('should assign literal to its base type - string', () => {
+  test('should assign literal to its base type - String', () => {
     const input = `
       let x: 'hello' = 'hello';
-      let y: string = x;
+      let y: String = x;
     `;
     const parser = new Parser(input);
     const ast = parser.parse();

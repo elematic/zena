@@ -55,7 +55,7 @@ suite('TypeChecker: Template Literals', () => {
   test('should check tagged template with valid tag function', () => {
     // Use i32 types since String type may not be available in base checker
     const input = `
-      let tag = (strings: i32, values: i32): i32 => 0;
+      let tag = (Strings: i32, values: i32): i32 => 0;
       let x = tag\`hello \${42}\`;
     `;
     const parser = new Parser(input);

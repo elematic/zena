@@ -157,7 +157,7 @@ suite('CodeGenerator - Method Overloading', () => {
           return this.y;
         }
         
-        operator [](name: string): i32 {
+        operator [](name: String): i32 {
           if (name == 'x') return this.x;
           return this.y;
         }
@@ -166,7 +166,7 @@ suite('CodeGenerator - Method Overloading', () => {
       export let main = (): i32 => {
         let p = new Point(10, 20);
         let a = p[0];        // i32 index -> 10
-        let b = p['y'];      // string index -> 20
+        let b = p['y'];      // String index -> 20
         return a + b;        // 30
       };
     `;

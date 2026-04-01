@@ -101,7 +101,7 @@ suite('Checker - Field Initialization', () => {
     const source = `
       class Point {
         let x: i32;
-        new(name: string) : x = name { }
+        new(name: String) : x = name { }
       }
     `;
     const parser = new Parser(source);

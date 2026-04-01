@@ -5,7 +5,7 @@ import {NodeType, type DeclareFunction} from '../../lib/ast.js';
 
 suite('Parser - Declare Function', () => {
   test('should parse simple declare function', () => {
-    const source = 'declare function log(s: string): void;';
+    const source = 'declare function log(s: String): void;';
     const parser = new Parser(source);
     const module = parser.parse();
 
@@ -15,13 +15,13 @@ suite('Parser - Declare Function', () => {
     assert.strictEqual(decl.name.name, 'log');
     assert.strictEqual(decl.params.length, 1);
     assert.strictEqual(decl.params[0].name.name, 's');
-    assert.strictEqual((decl.params[0].typeAnnotation as any).name, 'string');
+    assert.strictEqual((decl.params[0].typeAnnotation as any).name, 'String');
     assert.strictEqual((decl.returnType as any).name, 'void');
   });
 
   test('should parse decorated declare function', () => {
     const source =
-      '@external("env", "print") declare function log(s: string): void;';
+      '@external("env", "print") declare function log(s: String): void;';
     const parser = new Parser(source);
     const module = parser.parse();
 

@@ -6,8 +6,8 @@ suite('Codegen: Throw', () => {
   test('should throw an exception', async () => {
     const source = `
       class Error {
-        message: string;
-        new(message: string) : message = message {}
+        message: String;
+        new(message: String) : message = message {}
       }
       
       export function main() {
@@ -23,8 +23,8 @@ suite('Codegen: Throw', () => {
   test('throw in expression context', async () => {
     const source = `
       class Error {
-        message: string;
-        new(message: string) : message = message {}
+        message: String;
+        new(message: String) : message = message {}
       }
       
       export function main() {

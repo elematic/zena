@@ -69,7 +69,7 @@ suite('Checker: Destructuring', () => {
     const diagnostics = check(`
       let p = { x: 1 };
       let { x } = p;
-      let s: string = x; // Error: i32 is not string
+      let s: String = x; // Error: i32 is not String
     `);
     assert.strictEqual(diagnostics.length, 1);
     assert.strictEqual(diagnostics[0].code, DiagnosticCode.TypeMismatch);
@@ -127,7 +127,7 @@ suite('Checker: Destructuring', () => {
 
   test('allows multiple fields with some optional having defaults', () => {
     const diagnostics = check(`
-      let request = (opts: {url: string, timeout?: i32, retries?: i32}) => {
+      let request = (opts: {url: String, timeout?: i32, retries?: i32}) => {
         let {url, timeout = 30000, retries = 3} = opts;
         return timeout + retries;
       };
@@ -140,9 +140,9 @@ suite('Checker: Destructuring', () => {
       // When spreading a record with optional fields, the optional fields
       // should remain optional in the result
       const diagnostics = check(`
-        let base: {url: string, timeout?: i32} = {url: "/api"};
+        let base: {url: String, timeout?: i32} = {url: "/api"};
         let extended = {...base, extra: true};
-        // extended should have type {url: string, timeout?: i32, extra: bool}
+        // extended should have type {url: String, timeout?: i32, extra: bool}
         // So destructuring timeout still requires a default
         let {url, timeout = 30000, extra} = extended;
       `);
@@ -153,7 +153,7 @@ suite('Checker: Destructuring', () => {
       // If you spread and then provide a value for an optional field,
       // it becomes required in the result
       const diagnostics = check(`
-        let base: {url: string, timeout?: i32} = {url: "/api"};
+        let base: {url: String, timeout?: i32} = {url: "/api"};
         let withTimeout = {...base, timeout: 5000};
         // timeout is now required (has a concrete value)
         let {url, timeout} = withTimeout;  // No default needed
@@ -164,7 +164,7 @@ suite('Checker: Destructuring', () => {
     test('spread record still requires default for unoverwritten optional', () => {
       // Spread doesn't magically provide defaults
       const diagnostics = check(`
-        let base: {url: string, timeout?: i32, retries?: i32} = {url: "/api"};
+        let base: {url: String, timeout?: i32, retries?: i32} = {url: "/api"};
         let partial = {...base, timeout: 5000};
         // retries is still optional
         let {retries} = partial;  // Error: needs default

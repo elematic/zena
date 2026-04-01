@@ -6,7 +6,7 @@ suite('Template Literals - Binary Size', () => {
   test('DCE removes unused string-convert functions', async () => {
     // String-only template literal - does NOT use any string-convert functions
     const stringOnlySource = `
-      export let main = (): string => {
+      export let main = (): String => {
         let name = "world";
         return \`hello \${name}\`;
       };
@@ -14,7 +14,7 @@ suite('Template Literals - Binary Size', () => {
 
     // Template literal with i32 - USES i32ToString from string-convert
     const withPrimitiveSource = `
-      export let main = (): string => {
+      export let main = (): String => {
         let n: i32 = 42;
         return \`value: \${n}\`;
       };
@@ -63,7 +63,7 @@ suite('Template Literals - Binary Size', () => {
   test('baseline: template literal with no interpolation binary size', async () => {
     // Simplest possible template literal
     const source = `
-      export let main = (): string => {
+      export let main = (): String => {
         return \`hello world\`;
       };
     `;
@@ -80,20 +80,20 @@ suite('Template Literals - Binary Size', () => {
 suite('Template Literals - Primitive Support', () => {
   test('i32 in template literal', async () => {
     const source = `
-      export let main = (): string => {
+      export let main = (): String => {
         let n: i32 = 42;
         return \`value: \${n}\`;
       };
     `;
 
     const result = await compileAndRun(source);
-    // Should return a non-null string reference
+    // Should return a non-null String reference
     assert.ok(result);
   });
 
   test('negative i32 in template literal', async () => {
     const source = `
-      export let main = (): string => {
+      export let main = (): String => {
         let n: i32 = -123;
         return \`value: \${n}\`;
       };
@@ -105,7 +105,7 @@ suite('Template Literals - Primitive Support', () => {
 
   test('i64 in template literal', async () => {
     const source = `
-      export let main = (): string => {
+      export let main = (): String => {
         let n: i64 = 9007199254740992 as i64;
         return \`value: \${n}\`;
       };
@@ -117,7 +117,7 @@ suite('Template Literals - Primitive Support', () => {
 
   test('f32 in template literal', async () => {
     const source = `
-      export let main = (): string => {
+      export let main = (): String => {
         let n: f32 = 3.14 as f32;
         return \`value: \${n}\`;
       };
@@ -129,7 +129,7 @@ suite('Template Literals - Primitive Support', () => {
 
   test('bool in template literal', async () => {
     const source = `
-      export let main = (): string => {
+      export let main = (): String => {
         let b = true;
         return \`value: \${b}\`;
       };
@@ -141,7 +141,7 @@ suite('Template Literals - Primitive Support', () => {
 
   test('multiple primitives in template literal', async () => {
     const source = `
-      export let main = (): string => {
+      export let main = (): String => {
         let a: i32 = 1;
         let b: i32 = 2;
         return \`\${a} + \${b} = \${a + b}\`;
@@ -152,9 +152,9 @@ suite('Template Literals - Primitive Support', () => {
     assert.ok(result);
   });
 
-  test('mixed primitives and strings in template literal', async () => {
+  test('mixed primitives and Strings in template literal', async () => {
     const source = `
-      export let main = (): string => {
+      export let main = (): String => {
         let name = "answer";
         let value: i32 = 42;
         return \`The \${name} is \${value}\`;
@@ -168,7 +168,7 @@ suite('Template Literals - Primitive Support', () => {
   // Binary size tracking test - includes i32 interpolation
   test('i32 template literal binary size', async () => {
     const source = `
-      export let main = (): string => {
+      export let main = (): String => {
         let n: i32 = 42;
         return \`value: \${n}\`;
       };

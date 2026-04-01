@@ -40,7 +40,7 @@ suite('CodeGenerator - WASI Bindings', () => {
           return new OutputStream(__get_stdout());
         }
 
-        write(s: string): void {
+        write(s: String): void {
           let len = s.length;
           let ptr = alloc(len);
           

@@ -26,7 +26,7 @@ suite('Checker: Never Type', () => {
 
       let test = () => {
         let x: i32 = fail();
-        let y: string = fail();
+        let y: String = fail();
         let z: boolean = fail();
       };
     `;
@@ -40,8 +40,8 @@ suite('Checker: Never Type', () => {
 
   test('can use never in union', () => {
     const input = `
-      let test = (x: string | never) => {
-        let y: string = x;
+      let test = (x: String | never) => {
+        let y: String = x;
       };
     `;
     const parser = new Parser(input, {path: 'zena:test', isStdlib: true});

@@ -40,7 +40,7 @@ suite('Codegen: Generic Methods', () => {
       }
 
       let c = new Calculator();
-      assert((c.add<string>(1, 2)) == 3);
+      assert((c.add<String>(1, 2)) == 3);
       assert((c.generic<i32>(123)) == 123);
      `;
 

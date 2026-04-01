@@ -330,16 +330,16 @@ export let main = (): i32 => {
 };
 
 // Suite accessors - call result() which handles null check
-export let getSuiteName = (): string => result().name;
+export let getSuiteName = (): String => result().name;
 export let getSuitePassed = (): i32 => result().passed;
 export let getSuiteFailed = (): i32 => result().failed;
 export let getTestCount = (): i32 => result().tests.length;
 export let getNestedSuiteCount = (): i32 => result().suites.length;
 
 // Test result accessors (by index)
-export let getTestName = (index: i32): string => result().tests[index].name;
+export let getTestName = (index: i32): String => result().tests[index].name;
 export let getTestPassed = (index: i32): boolean => result().tests[index].passed;
-export let getTestError = (index: i32): string | null => result().tests[index].error;
+export let getTestError = (index: i32): String | null => result().tests[index].error;
 
 // Nested suite accessors
 var currentNestedSuite: SuiteResult | null = null;
@@ -355,13 +355,13 @@ let nested = (): SuiteResult => {
   return new SuiteResult('');
 };
 
-export let getNestedSuiteName = (): string => nested().name;
+export let getNestedSuiteName = (): String => nested().name;
 export let getNestedSuitePassed = (): i32 => nested().passed;
 export let getNestedSuiteFailed = (): i32 => nested().failed;
 export let getNestedTestCount = (): i32 => nested().tests.length;
-export let getNestedTestName = (index: i32): string => nested().tests[index].name;
+export let getNestedTestName = (index: i32): String => nested().tests[index].name;
 export let getNestedTestPassed = (index: i32): boolean => nested().tests[index].passed;
-export let getNestedTestError = (index: i32): string | null => nested().tests[index].error;
+export let getNestedTestError = (index: i32): String | null => nested().tests[index].error;
 `;
       // Register the virtual wrapper file on the SAME host
       host.registerVirtualFile(wrapperPath, wrapperSource);

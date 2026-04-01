@@ -45,7 +45,7 @@ suite('Parser - Sealed Classes', () => {
       sealed class Expr {
         case Binary(left: Expr, op: i32, right: Expr)
         case Literal(value: i32)
-        case Ident(name: string)
+        case Ident(name: String)
       }
     `;
     const parser = new Parser(input);
@@ -76,7 +76,7 @@ suite('Parser - Sealed Classes', () => {
       sealed class Token {
         case Plus, Minus, Star
         case Number(value: i32)
-        case Ident(name: string)
+        case Ident(name: String)
       }
     `;
     const parser = new Parser(input);

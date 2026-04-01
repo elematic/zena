@@ -41,14 +41,14 @@ suite('Parser: Records and Tuples', () => {
   });
 
   test('parses tuple type', () => {
-    const parser = new Parser('let t: (i32, string) = (1, "s");');
+    const parser = new Parser('let t: (i32, String) = (1, "s");');
     const module = parser.parse();
     const decl = module.body[0] as any;
     const type = decl.typeAnnotation;
     assert.strictEqual(type.type, NodeType.TupleTypeAnnotation);
     assert.strictEqual(type.elementTypes.length, 2);
     assert.strictEqual(type.elementTypes[0].name, 'i32');
-    assert.strictEqual(type.elementTypes[1].name, 'string');
+    assert.strictEqual(type.elementTypes[1].name, 'String');
   });
 
   test('parses nested records and tuples', () => {
@@ -131,7 +131,7 @@ suite('Parser: Records and Tuples', () => {
   });
 
   test('parses type alias with optional record fields', () => {
-    const parser = new Parser('type Opts = { url: string, timeout?: i32 };');
+    const parser = new Parser('type Opts = { url: String, timeout?: i32 };');
     const module = parser.parse();
     const decl = module.body[0] as any;
     assert.strictEqual(decl.type, NodeType.TypeAliasDeclaration);

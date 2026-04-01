@@ -24,8 +24,8 @@ suite('Checker: Union Types', () => {
 
   test('should support null in union', () => {
     const diagnostics = check(`
-      let x: string | null = "hello";
-      let y: string | null = null;
+      let x: String | null = "hello";
+      let y: String | null = null;
     `);
     assert.strictEqual(diagnostics.length, 0);
   });
@@ -66,7 +66,7 @@ suite('Checker: Union Types', () => {
     const diagnostics = check(`
       class A {}
       class Box {
-        var value: A | string = "";
+        var value: A | String = "";
       }
       let b = new Box();
       b.value = new A();
@@ -79,7 +79,7 @@ suite('Checker: Union Types', () => {
     const diagnostics = check(`
       class A {}
       class Box {
-        var value: A | string = "";
+        var value: A | String = "";
       }
       let b = new Box();
       b.value = true;
@@ -91,7 +91,7 @@ suite('Checker: Union Types', () => {
   test('should support union return type', () => {
     const diagnostics = check(`
       class A {}
-      let f = (x: boolean): A | string => {
+      let f = (x: boolean): A | String => {
         if (x) {
           return new A();
         } else {
@@ -105,7 +105,7 @@ suite('Checker: Union Types', () => {
   test('should fail if return value is not in union', () => {
     const diagnostics = check(`
       class A {}
-      let f = (): A | string => {
+      let f = (): A | String => {
         return true;
       };
     `);

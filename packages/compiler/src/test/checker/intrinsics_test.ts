@@ -65,7 +65,7 @@ suite('TypeChecker - Intrinsics', () => {
   test('should check types for intrinsics', () => {
     const input = `
       let test = (a: array<i32>) => {
-        let l: string = __array_len(a); // Error: i32 vs string
+        let l: String = __array_len(a); // Error: i32 vs String
       };
     `;
     const diagnostics = check(input);

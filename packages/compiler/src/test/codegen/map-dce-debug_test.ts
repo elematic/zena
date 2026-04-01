@@ -60,7 +60,7 @@ suite('Map DCE Debug', () => {
     const source = `
       import {HashMap} from 'zena:map';
       export let main = () => {
-        let m = new HashMap<string, i32>();
+        let m = new HashMap<String, i32>();
         return 42;
       };
     `;

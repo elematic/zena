@@ -138,9 +138,9 @@ suite('Cross-module class inheritance', () => {
     const exports = await compileAndInstantiate({
       '/base.zena': `
         export class Animal {
-          name: string;
-          new(name: string) : name = name {}
-          speak(): string {
+          name: String;
+          new(name: String) : name = name {}
+          speak(): String {
             return "...";
           }
         }
@@ -149,13 +149,13 @@ suite('Cross-module class inheritance', () => {
         import {Animal} from '/base.zena';
         
         class Dog extends Animal {
-          new(name: string) : super(name) { }
-          speak(): string {
+          new(name: String) : super(name) { }
+          speak(): String {
             return "woof";
           }
         }
         
-        let getSound = (a: Animal): string => {
+        let getSound = (a: Animal): String => {
           return a.speak();
         };
         
@@ -177,7 +177,7 @@ suite('Cross-module class inheritance', () => {
       
       class CustomError extends Error {
         code: i32;
-        new(message: string, code: i32) : code = code, super(message) { }
+        new(message: String, code: i32) : code = code, super(message) { }
       }
       
       export let main = (): i32 => {
@@ -194,7 +194,7 @@ suite('Cross-module class inheritance', () => {
       
       class CustomError extends Error {
         #code: i32;
-        new(message: string, code: i32) : #code = code, super(message) { }
+        new(message: String, code: i32) : #code = code, super(message) { }
         code: i32 {
           get { return this.#code; }
         }
