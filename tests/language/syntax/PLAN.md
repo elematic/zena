@@ -62,6 +62,40 @@ the cleaned AST as the snapshot automatically. So the porting workflow is:
   works fine. The TS compiler rejects spurious semicolons after `else { }` in
   some contexts.
 
+### Self-hosted compiler gotchas (ast.zena / parser.zena / ast-json.zena)
+
+These apply when modifying the self-hosted parser to support new syntax:
+
+- **`JsonArray()` takes no arguments**: Always `new JsonArray()`. There is no
+  capacity constructor. Use `.push()` in a while loop to populate.
+- **Match on `Node` must be exhaustive**: `Node` is a sealed class. When
+  matching a subset of cases (e.g., only `StringLiteral | NumberLiteral |
+  BooleanLiteral` from a `Node` field), you must include `case _: {}` as a
+  default or the compiler rejects it.
+- **No field renaming in class patterns**: `case Foo { field: newName }` is not
+  supported. Use `case Foo { field }` instead. Shadowing works — an inner match
+  can rebind `value` even if the outer case already bound it.
+- **`#check()` vs `#match()`**: `#check(TokenType.X)` only peeks at the next
+  token. `#match(TokenType.X)` peeks AND consumes it. When calling methods like
+  `#parseTypeParameterList()` that expect `<` to already be consumed, use
+  `#match`, not `#check`.
+- **`else { };` in match case blocks**: Inside match case bodies (which are
+  block expressions), if-statements that have no meaningful else branch still
+  need `else { };` because existing code follows this pattern. The outer block
+  is an expression context where the compiler expects it. Follow the existing
+  patterns in `ast-json.zena`.
+- **Build errors reference .zena source lines**: When the TS compiler fails to
+  compile a `.zena` file, the reported line number is in the source `.zena` file
+  (not the test file). The build script is at
+  `packages/zena-compiler/scripts/build-wasi-tests.js`.
+- **Key files to modify**: When adding a new AST node to the self-hosted parser:
+  1. `ast.zena` — Add the case class to the appropriate sealed class (`Node`,
+     `Statement`, `Expression`, `TypeAnnotation`, etc.)
+  2. `parser.zena` — Add parsing logic. Import new types at the top.
+  3. `ast-json.zena` — Add the type name mapping in `nodeTypeName()` AND the
+     field serialization in the main `match` block of `nodeToJson()`. Import
+     new types at the top.
+
 ## Status Key
 
 - **[done]** — Portable tests already exist
