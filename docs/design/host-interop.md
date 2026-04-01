@@ -89,7 +89,7 @@ Host functions receive the string as `externref` plus its length:
 ```zena
 // In console.zena
 @external("console", "log_string")
-declare function __console_log_string(s: string, len: i32): void;
+declare function __console_log_string(s: String, len: i32): void;
 
 // Usage:
 __console_log_string(message, message.length);
@@ -162,20 +162,20 @@ The console standard library (`stdlib/console.zena`) uses the V8-optimized patte
 ```zena
 // External host functions receive string ref + length
 @external("console", "log_string")
-declare function __console_log_string(s: string, len: i32): void;
+declare function __console_log_string(s: String, len: i32): void;
 
 // Console interface - matches JavaScript's Console API (subset)
 export interface Console {
-  log(message: string): void;
-  error(message: string): void;
-  warn(message: string): void;
-  info(message: string): void;
-  debug(message: string): void;
+  log(message: String): void;
+  error(message: String): void;
+  warn(message: String): void;
+  info(message: String): void;
+  debug(message: String): void;
 }
 
 // HostConsole passes strings to host with length
 export class HostConsole implements Console {
-  log(message: string): void {
+  log(message: String): void {
     __console_log_string(message, message.length);
   }
   // ... other methods

@@ -28,7 +28,7 @@ Understanding these terms is crucial for working on the compiler:
 
 - **Input**: Source string.
 - **Output**: Stream of `Token`s.
-- **Key Function**: `tokenize(source: string): Token[]`
+- **Key Function**: `tokenize(source: String): Token[]`
 - **Responsibility**: Tokenizes the input, handling whitespace, comments, and literals.
 
 ### 2. Parser (`packages/compiler/src/lib/parser.ts`)
@@ -266,7 +266,7 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
 
 ### Type Annotation Types
 
-Type annotations (e.g., `x: i32`, `fn(a: string): void`) get their `inferredType` set by `resolveTypeAnnotation()` in `checker/types.ts`. This converts the syntactic annotation to a semantic `Type` object.
+Type annotations (e.g., `x: i32`, `fn(a: String): void`) get their `inferredType` set by `resolveTypeAnnotation()` in `checker/types.ts`. This converts the syntactic annotation to a semantic `Type` object.
 
 Tests for annotation coverage are in `test/checker/inferred-type_test.ts`.
 

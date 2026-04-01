@@ -152,7 +152,7 @@ WASI operations frequently fail (file not found, permission denied). Two options
 // Standard library Result type
 type Result<T, E> = { ok: true, value: T } | { ok: false, error: E };
 
-let openAt = (path: string): Result<Descriptor, FsErrorCode> => { ... };
+let openAt = (path: String): Result<Descriptor, FsErrorCode> => { ... };
 
 // Usage with pattern matching
 match (openAt("config.json")) {
@@ -166,7 +166,7 @@ match (openAt("config.json")) {
 
 ```zena
 // Throws FsError on any failure
-let openAtOrThrow = (path: string): Descriptor => { ... };
+let openAtOrThrow = (path: String): Descriptor => { ... };
 ```
 
 **Guideline**: Use `Result<T, E>` when callers commonly handle both cases
@@ -202,7 +202,7 @@ WASI records map directly to Zena's immutable record types:
 // WIT: record directory-entry { type: descriptor-type, name: string }
 type DirectoryEntry = {
   entryType: DescriptorType,
-  name: string,
+  name: String,
 };
 
 // WIT: record descriptor-stat { type, size, ... }
@@ -290,7 +290,7 @@ enum FsErrorCode {
 class FsError extends Error {
   code: FsErrorCode;
 
-  new(code: FsErrorCode, path: string) {
+  new(code: FsErrorCode, path: String) {
     super(`Filesystem error: ${code} for ${path}`);
     this.code = code;
   }
@@ -320,7 +320,7 @@ type FileStat = {
 
 // Directory entry (immutable record)
 type DirEntry = {
-  name: string,
+  name: String,
   fileType: FileType,
 };
 
@@ -336,37 +336,37 @@ class Descriptor implements Disposable {
   readAll(): ByteArray { ... }
 
   // Read file as string (zero-copy LinearString → GC conversion)
-  readString(): string { ... }
+  readString(): String { ... }
 
   // Write bytes to file
   write(data: ByteArray): void { ... }
 
   // Write string (UTF-8) to file
-  writeString(data: string): void { ... }
+  writeString(data: String): void { ... }
 
   // Open a file/directory relative to this descriptor
-  openAt(path: string, flags: OpenFlags): Result<Descriptor, FsErrorCode> { ... }
+  openAt(path: String, flags: OpenFlags): Result<Descriptor, FsErrorCode> { ... }
 
   // Create a file for writing
-  createAt(path: string): Result<Descriptor, FsErrorCode> { ... }
+  createAt(path: String): Result<Descriptor, FsErrorCode> { ... }
 
   // Get file/directory metadata
   stat(): Result<FileStat, FsErrorCode> { ... }
 
   // Get metadata of a path relative to this descriptor
-  statAt(path: string): Result<FileStat, FsErrorCode> { ... }
+  statAt(path: String): Result<FileStat, FsErrorCode> { ... }
 
   // List directory contents
   readDir(): Result<Array<DirEntry>, FsErrorCode> { ... }
 
   // Create a directory
-  mkdirAt(path: string): Result<void, FsErrorCode> { ... }
+  mkdirAt(path: String): Result<void, FsErrorCode> { ... }
 
   // Delete a file
-  unlinkAt(path: string): Result<void, FsErrorCode> { ... }
+  unlinkAt(path: String): Result<void, FsErrorCode> { ... }
 
   // Delete a directory
-  rmdirAt(path: string): Result<void, FsErrorCode> { ... }
+  rmdirAt(path: String): Result<void, FsErrorCode> { ... }
 
   // Dispose the descriptor (release handle)
   dispose(): void {
@@ -390,7 +390,7 @@ enum OpenFlags {
 // Preopen entry: descriptor + mount path
 type Preopen = {
   descriptor: Descriptor,
-  path: string,
+  path: String,
 };
 
 // Get preopened directories from the WASI runtime
@@ -413,25 +413,25 @@ let getRootDir = (): Result<Descriptor, FsErrorCode> => {
 // Convenience functions using the root preopen
 // These throw on error for simpler usage patterns
 
-let readFile = (path: string): string => {
+let readFile = (path: String): String => {
   using root = getRootDir().unwrap();
   using file = root.openAt(path, OpenFlags.Read).unwrap();
   return file.readString();
 };
 
-let writeFile = (path: string, content: string): void => {
+let writeFile = (path: String, content: String): void => {
   using root = getRootDir().unwrap();
   using file = root.createAt(path).unwrap();
   file.writeString(content);
 };
 
-let listDir = (path: string): Array<DirEntry> => {
+let listDir = (path: String): Array<DirEntry> => {
   using root = getRootDir().unwrap();
   using dir = root.openAt(path, OpenFlags.Read).unwrap();
   return dir.readDir().unwrap();
 };
 
-let exists = (path: string): boolean => {
+let exists = (path: String): boolean => {
   match (getRootDir()) {
     case { ok: false } => false,
     case { ok: true, value: root } => {
@@ -562,7 +562,7 @@ Linear memory buffers must be explicitly freed. The `using` declaration
 provides automatic cleanup:
 
 ```zena
-func readFile(path: string): ByteArray {
+func readFile(path: String): ByteArray {
   using pathBuf = path.toLinearString();     // Allocates linear memory
   using dataBuf = U8Buffer.alloc(4096);      // Allocates linear memory
 
@@ -596,7 +596,7 @@ if (filename.endsWith(".zena")) {
 }
 
 // Writing: GCString → LinearString → WASI
-func writeLog(msg: string): void {
+func writeLog(msg: String): void {
   using linear = msg.toLinearString();  // Copy GC → linear
   wasi_write(logFd, linear.ptr, linear.length);
 }  // linear memory freed
@@ -607,7 +607,7 @@ func writeLog(msg: string): void {
 For operations that allocate many buffers with shared lifetime:
 
 ```zena
-func processDirectory(path: string): void {
+func processDirectory(path: String): void {
   using arena = new Arena();
 
   // All buffers allocated from arena
@@ -638,7 +638,7 @@ class Descriptor implements Disposable {
 }
 
 // Usage with using declaration
-func copyFile(src: string, dst: string): void {
+func copyFile(src: String, dst: String): void {
   using srcFd = openAt(src, OpenFlags.Read);
   using dstFd = createAt(dst);
 
@@ -805,14 +805,14 @@ Consider a `Path` abstraction for path manipulation:
 
 ```zena
 class Path {
-  #parts: Array<string>;
+  #parts: Array<String>;
 
-  static parse(s: string): Path { ... }
+  static parse(s: String): Path { ... }
   join(other: Path): Path { ... }
   parent(): Path | null { ... }
-  filename(): string { ... }
-  extension(): string | null { ... }
-  toString(): string { ... }
+  filename(): String { ... }
+  extension(): String | null { ... }
+  toString(): String { ... }
 }
 ```
 
@@ -822,5 +822,5 @@ When WASI Preview 3 stabilizes with async support, add async file operations:
 
 ```zena
 // Future API
-let readFileAsync = async (path: string): Promise<string> => { ... };
+let readFileAsync = async (path: String): Promise<String> => { ... };
 ```

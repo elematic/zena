@@ -441,7 +441,7 @@ import {Greeter} from './greeter.wit';
   }
 """
 class MyGreeter implements Greeter {
-  greet(name: string) => "Hello, " + name;
+  greet(name: String) => "Hello, " + name;
 }
 ```
 

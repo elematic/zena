@@ -197,7 +197,7 @@ The Rust example above can already be modeled in Zena (verbosely):
 abstract class Message {}
 class Quit extends Message {}
 class Move extends Message { x: i32; y: i32; ... }
-class Write extends Message { text: string; ... }
+class Write extends Message { text: String; ... }
 ```
 
 Or using discriminating unions of records (if we add an explicit discriminator):
@@ -206,7 +206,7 @@ Or using discriminating unions of records (if we add an explicit discriminator):
 type Message =
   | { kind: 'Quit' }
   | { kind: 'Move', x: i32, y: i32 }
-  | { kind: 'Write', text: string };
+  | { kind: 'Write', text: String };
 ```
 
 ### The Case for Tagged Enums

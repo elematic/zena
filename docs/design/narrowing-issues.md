@@ -146,7 +146,7 @@ Record patterns don't narrow unions based on literal field values (discriminated
 unions).
 
 ```zena
-type Result = { kind: "success", value: i32 } | { kind: "error", message: string };
+type Result = { kind: "success", value: i32 } | { kind: "error", message: String };
 
 let r: Result = ...;
 if (let { kind: "success", value } = r) {
@@ -169,7 +169,7 @@ values.
 
 ```zena
 class Success { kind: "success"; value: i32; }
-class Error { kind: "error"; message: string; }
+class Error { kind: "error"; message: String; }
 
 let r: Success | Error = ...;
 // No way to narrow based on kind field value

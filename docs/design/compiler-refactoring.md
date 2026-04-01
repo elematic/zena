@@ -116,10 +116,10 @@ export class SemanticContext {
   readonly nodeSymbols = new Map<Node, Symbol>();
 
   // Module-level declarations (types, functions, classes, interfaces)
-  readonly moduleDeclarations = new Map<string, Map<string, Declaration>>();
+  readonly moduleDeclarations = new Map<String, Map<String, Declaration>>();
 
   // Cache of already-checked modules (by module path)
-  readonly checkedModules = new Set<string>();
+  readonly checkedModules = new Set<String>();
 
   // Reverse mapping: which module exports which declaration
   readonly declarationOrigin = new Map<Declaration, string>();
@@ -165,7 +165,7 @@ export interface LibraryLoader {
   /**
    * Get all libraries reachable from entry points, in topological order.
    */
-  getLibraryGraph(entryPoints: string[]): Promise<string[]>;
+  getLibraryGraph(entryPoints: string[]): Promise<String[]>;
 }
 ```
 
@@ -584,7 +584,7 @@ set persists across multiple `compile()` calls on the same Compiler instance.
 
 **Changes made:**
 
-1. Added `#checkedModules = new Set<string>()` to `Compiler` class
+1. Added `#checkedModules = new Set<String>()` to `Compiler` class
 2. Changed `#checkModules()` to use `this.#checkedModules` instead of a local `checked` set
 3. Removed `_checked` property from `ClassType`, `InterfaceType`, and `MixinType` interfaces
 4. Removed `_checked` guards and assignments from `checkClassDeclaration`,
@@ -1589,7 +1589,7 @@ and uses the declaration for identity-based index lookups.
 
 **Summary of changes:**
 
-1. Changed `ClassInfo.implements` from `Map<string, ...>` to `Map<InterfaceType, ...>`
+1. Changed `ClassInfo.implements` from `Map<String, ...>` to `Map<InterfaceType, ...>`
 2. Added `InterfaceInfo.checkerType` field to store the checker's `InterfaceType`
 3. Updated `generateInterfaceVTable()` to use `ClassType.implements[i]` for identity-based keys
 4. Updated `preRegisterInterface()` to set `checkerType` on `InterfaceInfo`
@@ -1610,7 +1610,7 @@ and uses the declaration for identity-based index lookups.
 
 **Original problem description (for reference):**
 
-`ClassInfo.implements` was a `Map<string, ...>` keyed by interface name.
+`ClassInfo.implements` was a `Map<String, ...>` keyed by interface name.
 
 When a class implements a generic interface, the key was a specialized name like
 `"Sequence<i32>"`. This required string manipulation to build the lookup key,
@@ -1623,7 +1623,7 @@ which went against our goal of identity-based lookups.
 // Example: Sequence<T> with T->i32 becomes "Sequence<i32>"
 function substituteInterfaceName(
   impl: TypeAnnotation,
-  typeContext?: Map<string, TypeAnnotation>,
+  typeContext?: Map<String, TypeAnnotation>,
 ): string { ... }
 ```
 
@@ -1728,7 +1728,7 @@ This is a larger change that should be done as part of the broader type internin
 
 **Background:**
 
-`ctx.classes` is a `Map<string, ClassInfo>` keyed by specialized class name
+`ctx.classes` is a `Map<String, ClassInfo>` keyed by specialized class name
 (e.g., `"Array<i32>"`). This requires building string keys and is fragile when
 class names change. The identity-based alternative uses `WeakMap<ClassType, ClassInfo>`
 which is keyed by the checker's interned type objects.
@@ -1762,7 +1762,7 @@ lookup because we don't have a `ClassType` at that point—just a name string.
 
 1. **Checker binding**: Checker resolves identifier and attaches `ResolvedBinding`
    with `kind: 'class'` to the AST node. Codegen checks binding kind.
-2. **Separate registry**: Add `ctx.classNames: Set<string>` for O(1) name checks
+2. **Separate registry**: Add `ctx.classNames: Set<String>` for O(1) name checks
    without conflating with `ClassInfo` lookup.
 
 The first approach aligns with the broader "checker-driven resolution" direction
@@ -1861,7 +1861,7 @@ may resolve to the wrong class.
 export class Item { value: i32; new(v: i32) { this.value = v; } }
 
 // Module B (zena:test/module-b)
-export class Item { name: string; new(n: string) { this.name = n; } }
+export class Item { name: String; new(n: String) { this.name = n; } }
 
 // Main module
 import { Item as ItemA } from 'zena:test/module-a';
@@ -1895,16 +1895,16 @@ class Box<T> {
   new(v: T) { this.value = v; }
 }
 
-const strBox = new Box<string>('test');
+const strBox = new Box<String>('test');
 
-// Later, use the Box<string> type in a function signature
-const getLength = (b: Box<string>) => b.value.length;
+// Later, use the Box<String> type in a function signature
+const getLength = (b: Box<String>) => b.value.length;
 
 export const test = () => getLength(strBox);
 ```
 
 **Expected:** Returns `4`  
-**Current risk:** The `Box<string>` in `getLength`'s signature may create a
+**Current risk:** The `Box<String>` in `getLength`'s signature may create a
 different specialized name than the one created for `strBox`, causing a type
 mismatch or wrong struct index.
 
@@ -1970,15 +1970,15 @@ documents the `substituteInterfaceName()` workaround and the proper fix.
 
 ```zena
 // Module A
-export interface Printable { print(): string; }
+export interface Printable { print(): String; }
 
 // Module B
 import { Printable } from 'zena:test/module-a';
 
 export class Item implements Printable {
-  name: string;
-  new(n: string) { this.name = n; }
-  print(): string { return this.name; }
+  name: String;
+  new(n: String) { this.name = n; }
+  print(): String { return this.name; }
 }
 
 // Main
@@ -2137,7 +2137,7 @@ via `getCheckerTypeKey()` and used those for registry lookups.
    ```typescript
    class CheckerContext {
      // Cache for interned generic instantiations
-     #internedTypes = new Map<string, Type>();
+     #internedTypes = new Map<String, Type>();
 
      // Unique IDs for types (for computing interning keys)
      #typeIdCounter = 0;

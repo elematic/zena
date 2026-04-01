@@ -19,7 +19,7 @@ declaration
 
 ### 2.2 Supported Decorators
 
-#### `@external(module: string, name: string)`
+#### `@external(module: String, name: String)`
 
 The `@external` decorator is used to map a `declare function` statement to a specific WebAssembly import.
 
@@ -71,7 +71,7 @@ class HomeController { ... }
 Decorators that wrap a method to add behavior (logging, validation, caching).
 
 ```zena
-let log = (target: any, name: string, descriptor: Descriptor) => {
+let log = (target: any, name: String, descriptor: Descriptor) => {
   let original = descriptor.value;
   descriptor.value = (args) => {
     print("Calling " + name);
@@ -102,7 +102,7 @@ To support type checking, decorators should be defined as functions with specifi
 // Method Decorator Signature
 type MethodDecorator<T, R> = (
   target: Object,
-  propertyKey: string,
+  propertyKey: String,
   descriptor: TypedPropertyDescriptor<T, R>,
 ) => TypedPropertyDescriptor<T, R> | void;
 ```

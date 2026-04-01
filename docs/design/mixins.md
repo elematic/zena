@@ -26,7 +26,7 @@ Mixins are applied to a class using the `with` keyword in the `class` declaratio
 
 ```zena
 class User {
-  name: string;
+  name: String;
 }
 
 class RegisteredUser extends User with Timestamped {
@@ -205,7 +205,7 @@ class Base {
 
 mixin M on Base {
   // We know super accepts (i32)
-  new(id: i32, name: string) {
+  new(id: i32, name: String) {
     super(id);
     this.name = name;
   }

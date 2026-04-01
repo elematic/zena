@@ -55,7 +55,7 @@ This is the most efficient array representation (no wrapper object, direct
 
 ```zena
 let nums = [1, 2, 3];           // FixedArray<i32>
-let names = ["Alice", "Bob"];    // FixedArray<string>
+let names = ["Alice", "Bob"];    // FixedArray<String>
 let empty: FixedArray<i32> = []; // empty array (type annotation required)
 ```
 
@@ -235,7 +235,7 @@ exploded onto the stack.
 **Inline record parameters** enable argument explosion:
 
 ```zena
-let draw = (opts: inline {x: i32; y: i32; color: string}) => { ... };
+let draw = (opts: inline {x: i32; y: i32; color: String}) => { ... };
 draw({x: 10, y: 20, color: "red"});   // zero allocation — args exploded
 ```
 
@@ -275,8 +275,8 @@ disambiguates maps from records (which use `:`).
 ### 5.2 Design
 
 ```zena
-let scores = {"Alice" => 95, "Bob" => 87};     // Map<string, i32>
-let lookup = {1 => "one", 2 => "two"};          // Map<i32, string>
+let scores = {"Alice" => 95, "Bob" => 87};     // Map<String, i32>
+let lookup = {1 => "one", 2 => "two"};          // Map<i32, String>
 
 // Multi-line
 let config = {
@@ -289,7 +289,7 @@ let config = {
 **Empty map**: Maps require explicit construction (cannot use `{}`):
 
 ```zena
-let m = new Map<string, i32>();   // explicit
+let m = new Map<String, i32>();   // explicit
 ```
 
 This avoids ambiguity with empty records and empty blocks.
@@ -308,8 +308,8 @@ The `=>` token after the first expression is the unambiguous signal for a map.
 ### 5.4 Type Inference
 
 ```zena
-let m = {"a" => 1, "b" => 2};          // Map<string, i32>
-let m: Map<string, i32> = {"a" => 1};  // explicit annotation
+let m = {"a" => 1, "b" => 2};          // Map<String, i32>
+let m: Map<String, i32> = {"a" => 1};  // explicit annotation
 ```
 
 Key and value types are inferred from the first entry, unified across all
@@ -457,7 +457,7 @@ Built-in literals produce "default" types without macros:
 | `[1, 2, 3]`  | `FixedArray<i32>`  | Native WASM GC array |
 | `{x: 1}`     | Record             | Structural type      |
 | `(1, "a")`   | Boxed tuple        | WASM GC struct       |
-| `{"a" => 1}` | `Map<string, i32>` | Standard hash map    |
+| `{"a" => 1}` | `Map<String, i32>` | Standard hash map    |
 
 Macros produce specialized or optimized variants:
 
@@ -465,7 +465,7 @@ Macros produce specialized or optimized variants:
 | ---------------------- | ----------------------- | ----------------------- |
 | `@Array[1, 2, 3]`      | `Array<i32>`            | Growable, no copy       |
 | `@Set[1, 2, 3]`        | `Set<i32>`              | Hash set                |
-| `@MultiMap{"a" => 1}`  | `MultiMap<string, i32>` | Multiple values per key |
+| `@MultiMap{"a" => 1}`  | `MultiMap<String, i32>` | Multiple values per key |
 | `@Vec3[1.0, 2.0, 3.0]` | `Vec3`                  | Fixed-size math vector  |
 
 ### 9.4 Parsing

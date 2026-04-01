@@ -127,7 +127,7 @@ This security model points toward more general language features:
 
    ```zena
    library(fs: FileSystem) {
-     export let processFile = (path: string) => fs.read(path);
+     export let processFile = (path: String) => fs.read(path);
    }
    ```
 
@@ -378,7 +378,7 @@ A declarative macro uses `@macro` and returns a quasi-quote:
 
 ```zena
 @macro
-let assert = (expr: Expression<bool>, message?: string): Statement => {
+let assert = (expr: Expression<bool>, message?: String): Statement => {
   match expr.ast {
     case BinaryExpr { left, op, right } => q{
       {
@@ -462,7 +462,7 @@ site. This keeps the weirdness explicit and local.
 The function signature would accept `Quote<T>`:
 
 ```zena
-let lazyLog = (expr: Quote<string>): void => {
+let lazyLog = (expr: Quote<String>): void => {
   if (logLevel >= DEBUG) {
     console.log(expr.eval());  // Only evaluates if needed
   }

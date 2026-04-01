@@ -49,7 +49,7 @@ The `$type_arg` field stores a reference to a `TypeInfo` object that describes w
 
 ```zena
 class TypeInfo {
-  name: string;
+  name: String;
   // For generic instantiations, stores the type arguments
   typeArgs: FixedArray<TypeInfo>?;
   // For classes, stores the class declaration info
@@ -167,7 +167,7 @@ Should `Box<i32>` and `Box<u32>` share code?
 
 ### Literal Types and Unions
 
-For `Box<'a' | 'b'>` vs `Box<string>`:
+For `Box<'a' | 'b'>` vs `Box<String>`:
 
 - Both erase to `string` at runtime
 - Could share the same struct type
@@ -261,13 +261,13 @@ These also use fast WASM struct checks since we're only checking the "shape":
 Check some type arguments but not others:
 
 ```zena
-x is Map<string, unknown>  // any Map with string keys
+x is Map<String, unknown>  // any Map with string keys
 ```
 
 Generated code:
 
 ```wasm
-;; x is Map<string, unknown>
+;; x is Map<String, unknown>
 (if (ref.test $Map_ref (local.get $x))
   (then
     ;; Check first type arg only
@@ -281,13 +281,13 @@ Generated code:
 Only when checking specific generic instantiation:
 
 ```zena
-x is Map<string, Dog>  // specific instantiation
+x is Map<String, Dog>  // specific instantiation
 ```
 
 Generated code:
 
 ```wasm
-;; x is Map<string, Dog>
+;; x is Map<String, Dog>
 (if (ref.test $Map_ref (local.get $x))
   (then
     (call $typeInfoEquals
@@ -300,7 +300,7 @@ Generated code:
 For hot paths, we could generate specialized comparison functions:
 
 ```wasm
-;; Specialized check for "is Map<string, Dog>"
+;; Specialized check for "is Map<String, Dog>"
 (func $is_Map_string_Dog (param $x (ref null $Object)) (result i32)
   (if (ref.test $Map_ref (local.get $x))
     (then
@@ -317,7 +317,7 @@ For hot paths, we could generate specialized comparison functions:
 | `x is Dog`                   | Non-generic class | Fast `ref.test`                  |
 | `x is Map`                   | Generic base      | Fast `ref.test`                  |
 | `x is Map<unknown, unknown>` | Wildcard          | Fast `ref.test`                  |
-| `x is Map<string, unknown>`  | Partial           | `ref.test` + 1 TypeInfo check    |
-| `x is Map<string, Dog>`      | Full              | `ref.test` + full TypeInfo check |
+| `x is Map<String, unknown>`  | Partial           | `ref.test` + 1 TypeInfo check    |
+| `x is Map<String, Dog>`      | Full              | `ref.test` + full TypeInfo check |
 
 This tiered approach means most `is` checks remain fast, and only fully-specified generic instantiation checks pay the TypeInfo comparison cost.

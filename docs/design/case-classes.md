@@ -106,7 +106,7 @@ there's only one concrete class.
 Use `var` to opt into mutability for specific fields:
 
 ```zena
-class Counter(name: string, var count: i32)
+class Counter(name: String, var count: i32)
 // name is immutable, count is mutable
 ```
 
@@ -126,8 +126,8 @@ This affects both traditional and case class syntax:
 // Traditional syntax — fields are now immutable unless marked `var`
 class User {
   id: i32               // immutable (new default)
-  var email: string     // mutable (explicit)
-  var(#phone) phone: string  // mutable, private setter
+  var email: String     // mutable (explicit)
+  var(#phone) phone: String  // mutable, private setter
 }
 ```
 
@@ -169,7 +169,7 @@ sealed class Expr {
   case Binary(left: Expr, op: Token, right: Expr)
   case Unary(op: Token, operand: Expr)
   case Literal(value: i32)
-  case Ident(name: string)
+  case Ident(name: String)
 }
 ```
 
@@ -221,7 +221,7 @@ Variants with no fields (unit variants) are supported:
 sealed class Token {
   case Plus, Minus, Star, Slash, Eof
   case Number(value: i32)
-  case Ident(name: string)
+  case Ident(name: String)
 }
 ```
 
@@ -248,7 +248,7 @@ sealed abstract class Expr(loc: SourceLocation) extends Node {
 // Concrete leaves — these are the actual case classes
 class Binary(left: Expr, op: Token, right: Expr, loc: SourceLocation) extends Expr
 class Literal(value: i32, loc: SourceLocation) extends Expr
-class Ident(name: string, loc: SourceLocation) extends Expr
+class Ident(name: String, loc: SourceLocation) extends Expr
 ```
 
 Exhaustiveness checking only considers **concrete leaves**. Since abstract
@@ -332,7 +332,7 @@ sealed abstract class Expr(loc: SourceLocation) extends Node {
 
 class Binary(left: Expr, op: Token, right: Expr, loc: SourceLocation) extends Expr
 class Literal(value: i32, loc: SourceLocation) extends Expr
-class Ident(name: string, loc: SourceLocation) extends Expr
+class Ident(name: String, loc: SourceLocation) extends Expr
 class Call(callee: Expr, args: FixedArray<Expr>, loc: SourceLocation) extends Expr
 
 // stmt.zena — another sealed sub-hierarchy
@@ -340,7 +340,7 @@ sealed abstract class Stmt(loc: SourceLocation) extends Node {
   case VarDecl, Return, ExprStmt
 }
 
-class VarDecl(name: string, init: Expr, loc: SourceLocation) extends Stmt
+class VarDecl(name: String, init: Expr, loc: SourceLocation) extends Stmt
 class Return(value: Expr | null, loc: SourceLocation) extends Stmt
 class ExprStmt(expr: Expr, loc: SourceLocation) extends Stmt
 ```
@@ -354,7 +354,7 @@ The only instantiable objects are the concrete leaves: `Binary`, `Literal`,
 granularity:
 
 ```zena
-const describe = (n: Node): string => match (n) {
+const describe = (n: Node): String => match (n) {
   // Match an entire sub-hierarchy
   case Expr: "expression at ${n.span()}"
   // Match individual leaves
@@ -574,7 +574,7 @@ enum TokenKind { Plus, Minus, Star, Number, Ident, Eof }
 sealed class Token {
   case Operator(kind: TokenKind, pos: i32)
   case NumLit(value: i32, pos: i32)
-  case IdentTok(name: string, pos: i32)
+  case IdentTok(name: String, pos: i32)
 }
 ```
 
@@ -754,7 +754,7 @@ enum TokenKind {
   Number, String, Ident, Eof
 }
 
-class Token(kind: TokenKind, value: string, pos: i32)
+class Token(kind: TokenKind, value: String, pos: i32)
 
 // node.zena — top-level sealed hierarchy
 sealed class Node(loc: SourceLocation) {
@@ -771,10 +771,10 @@ sealed abstract class Expr(loc: SourceLocation) extends Node {
 
 class BinaryExpr(left: Expr, op: Token, right: Expr, loc: SourceLocation) extends Expr
 class UnaryExpr(op: Token, operand: Expr, loc: SourceLocation) extends Expr
-class LiteralExpr(value: string, kind: TokenKind, loc: SourceLocation) extends Expr
-class IdentExpr(name: string, loc: SourceLocation) extends Expr
+class LiteralExpr(value: String, kind: TokenKind, loc: SourceLocation) extends Expr
+class IdentExpr(name: String, loc: SourceLocation) extends Expr
 class CallExpr(callee: Expr, args: FixedArray<Expr>, loc: SourceLocation) extends Expr
-class MemberExpr(object: Expr, property: string, loc: SourceLocation) extends Expr
+class MemberExpr(object: Expr, property: String, loc: SourceLocation) extends Expr
 class IfExpr(cond: Expr, then: Expr, else_: Expr | null, loc: SourceLocation) extends Expr
 class MatchExpr(subject: Expr, cases: FixedArray<MatchCase>, loc: SourceLocation) extends Expr
 
@@ -783,14 +783,14 @@ sealed abstract class Stmt(loc: SourceLocation) extends Node {
   case VarDecl, FnDecl, ClassDecl, ExprStmt, ReturnStmt
 }
 
-class VarDecl(name: string, type_: TypeAnnot | null, init: Expr, loc: SourceLocation) extends Stmt
-class FnDecl(name: string, params: FixedArray<Param>, body: Expr, loc: SourceLocation) extends Stmt
-class ClassDecl(name: string, fields: FixedArray<Field>, methods: FixedArray<FnDecl>, loc: SourceLocation) extends Stmt
+class VarDecl(name: String, type_: TypeAnnot | null, init: Expr, loc: SourceLocation) extends Stmt
+class FnDecl(name: String, params: FixedArray<Param>, body: Expr, loc: SourceLocation) extends Stmt
+class ClassDecl(name: String, fields: FixedArray<Field>, methods: FixedArray<FnDecl>, loc: SourceLocation) extends Stmt
 class ExprStmt(expr: Expr, loc: SourceLocation) extends Stmt
 class ReturnStmt(value: Expr | null, loc: SourceLocation) extends Stmt
 
 // Matching at top level — handles all Nodes exhaustively
-const nodeKind = (n: Node): string => match (n) {
+const nodeKind = (n: Node): String => match (n) {
   case Expr: "expr"
   case Stmt: "stmt"
 }

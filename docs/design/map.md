@@ -58,7 +58,7 @@ The compiler will generate specialized hashing logic based on the type `T`:
   - `string`: Computes FNV-1a hash (or calls a runtime helper).
 - **Records & Tuples**:
   - Computes a structural hash by combining the hashes of all fields (e.g., `hash = hash * 31 + fieldHash`).
-  - This enables **Composite Keys** (e.g., `Map<(i32, i32), string>`).
+  - This enables **Composite Keys** (e.g., `Map<(i32, i32), String>`).
 - **Classes**:
   - Checks if the class implements `Hashable`.
   - If yes: Calls `value.hashCode()`.

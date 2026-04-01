@@ -289,7 +289,7 @@ keyword.
 ```zena
 type ID = string;
 type Point = {x: i32; y: i32};
-type Callback = (result: string) => void;
+type Callback = (result: String) => void;
 ```
 
 Type aliases can be generic:
@@ -357,7 +357,7 @@ Union types describe a value that can be one of several types. They are written
 using the `|` operator.
 
 ```zena
-let x: string | null = null;
+let x: String | null = null;
 x = 'hello';
 ```
 
@@ -366,8 +366,8 @@ x = 'hello';
 Union types in Zena are restricted to **Reference Types**. You cannot create a
 union containing a value primitive (`i32`, `f32`, `boolean`).
 
-- **Valid**: `string | null`, `MyClass | MyInterface`, `array<i32> | null`. -
-  **Invalid**: `i32 | null`, `boolean | string`.
+- **Valid**: `String | null`, `MyClass | MyInterface`, `array<i32> | null`. -
+  **Invalid**: `i32 | null`, `boolean | String`.
 
 This restriction exists because value primitives in WASM have a different memory
 representation (stack/value) than reference types (heap/pointer). Mixing them in
@@ -437,15 +437,15 @@ removes that type in the else branch (for unions):
 ```zena
 class Cat {
   new() {}
-  meow(): string { return "meow"; }
+  meow(): String { return "meow"; }
 }
 
 class Dog {
   new() {}
-  bark(): string { return "woof"; }
+  bark(): String { return "woof"; }
 }
 
-let speak = (pet: Cat | Dog): string => {
+let speak = (pet: Cat | Dog): String => {
   if (pet is Cat) {
     // pet is narrowed to Cat
     return pet.meow();
@@ -742,14 +742,14 @@ list:
 let identity = <T>(x: T): T => x;
 
 let num = identity<i32>(42);
-let str = identity<string>('hello');
+let str = identity<String>('hello');
 ```
 
 Generic type parameters can be constrained:
 
 ```zena
 class Printable {
-  toString(): string {
+  toString(): String {
     return 'object';
   }
 }
@@ -784,10 +784,10 @@ map((item, index) => item + index); // Ignores array
 // Assignment to Union Type
 type Handler = (a: i32, b: i32) => void;
 
-// Target is Union: Handler | string
+// Target is Union: Handler | String
 // Provided: (a: i32) => void
 // Result: Adapts to Handler
-let h: Handler | string = (a: i32) => {};
+let h: Handler | String = (a: i32) => {};
 
 ```
 
@@ -806,8 +806,8 @@ with `null` (e.g., `T | null`). Because unions cannot contain primitive types,
 `Box<T>`.
 
 ```zena
-// ✅ Valid: Reference type (string | null)
-let greet = (name?: string) => { ... };
+// ✅ Valid: Reference type (String | null)
+let greet = (name?: String) => { ... };
 
 // ✅ Valid: Primitive with default value (type is i32)
 let increment = (amount: i32 = 1) => { ... };
@@ -820,8 +820,8 @@ let process = (val?: Box<i32>) => { ... };
 ```
 
 ```zena
-let greet = (name: string, greeting?: string) => {
-  // greeting is inferred as string | null
+let greet = (name: String, greeting?: String) => {
+  // greeting is inferred as String | null
   if (greeting == null) {
     return `Hello, ${name}`;
   }
@@ -880,7 +880,7 @@ increment(10, 5); // 15
    entirely does.
 
    ```zena
-   let greet = (name: string | null = 'World') => `Hello, ${name}`;
+   let greet = (name: String | null = 'World') => `Hello, ${name}`;
 
    greet();       // "Hello, World" - default used
    greet('Alice'); // "Hello, Alice"
@@ -1209,10 +1209,10 @@ short-circuiting operator: the right side is only evaluated if the left is
 `null`.
 
 ```zena
-let name: string | null = null;
+let name: String | null = null;
 let display = name ?? 'Anonymous';  // 'Anonymous'
 
-let value: string | null = 'hello';
+let value: String | null = 'hello';
 let result = value ?? 'default';    // 'hello'
 ```
 
@@ -1227,8 +1227,8 @@ methods on values that may be `null`. If the value before the operator is
 
 ```zena
 class User {
-  name: string;
-  new(name: string) { this.name = name; }
+  name: String;
+  new(name: String) { this.name = name; }
 }
 
 let user: User | null = null;
@@ -1956,7 +1956,7 @@ By default, case class parameters become immutable fields. Use `var` for
 mutable fields:
 
 ```zena
-class Counter(name: string, var count: i32)
+class Counter(name: String, var count: i32)
 // name is immutable, count is mutable
 ```
 
@@ -1966,8 +1966,8 @@ Case class parameters can be marked optional with `?`. Optional parameters
 become nullable fields (`T | null`) and can be omitted in the constructor call:
 
 ```zena
-class Node(value: i32, label?: string)
-// label has type `string | null`
+class Node(value: i32, label?: String)
+// label has type `String | null`
 
 let a = new Node(1);          // label defaults to null
 let b = new Node(1, 'hello'); // label is 'hello'
@@ -1976,7 +1976,7 @@ let b = new Node(1, 'hello'); // label is 'hello'
 Optional and mutable can be combined:
 
 ```zena
-class Config(name: string, var cache?: i32)
+class Config(name: String, var cache?: i32)
 ```
 
 #### Generic case classes
@@ -1992,7 +1992,7 @@ Case classes support `extends`, `with`, and `implements`:
 
 ```zena
 class Binary(left: Expr, right: Expr) extends Expr
-class Event(name: string) with Timestamped implements Hashable
+class Event(name: String) with Timestamped implements Hashable
 ```
 
 The class body is optional when there are no additional members.
@@ -2001,8 +2001,8 @@ The class body is optional when there are no additional members.
 class User {
   id: i32;                    // Mutable (default)
   let created: i64;           // Immutable (constructor only)
-  var email: string;          // Explicit mutable (same as bare)
-  var(#phone) phone: string;  // Mutable with private setter
+  var email: String;          // Explicit mutable (same as bare)
+  var(#phone) phone: String;  // Mutable with private setter
 }
 ```
 
@@ -2287,8 +2287,8 @@ Generic type parameters can be constrained using the `extends` keyword:
 
 ```zena
 class Animal {
-  name: string;
-  new(name: string) {
+  name: String;
+  new(name: String) {
     this.name = name;
   }
 }
@@ -2333,7 +2333,7 @@ Generic methods can be called with explicit type arguments or inferred.
 ```zena
 let c = new Container();
 c.value = 10;
-let s = c.map<string>((v) => 'Value: ' + v); // Explicit
+let s = c.map<String>((v) => 'Value: ' + v); // Explicit
 let n = c.map((v) => v * 2); // Inferred
 ```
 
@@ -2352,7 +2352,7 @@ class Printer {
     console.log('f32: ' + val);
   }
 
-  print(val: string): void {
+  print(val: String): void {
     console.log('string: ' + val);
   }
 }
@@ -2434,13 +2434,13 @@ Overloading also works with index operator methods:
 
 ```zena
 class MultiMap {
-  data: Map<i32, string>;
+  data: Map<i32, String>;
 
-  operator [](key: i32): string {
+  operator [](key: i32): String {
     return this.data.get(key);
   }
 
-  operator [](key: string): string {
+  operator [](key: String): String {
     // Lookup by string key (hashed)
     return this.data.get(hash(key));
   }
@@ -2600,7 +2600,7 @@ The following pairs of types are indistinguishable at runtime:
 #### Valid Distinguishable Types
 
 - **Classes**: `class A {}` and `class B {}` are always distinguishable.
-- **Reified Generics**: `Box<i32>` and `Box<string>` are distinguishable because
+- **Reified Generics**: `Box<i32>` and `Box<String>` are distinguishable because
   `i32` and `string` have different runtime representations.
 - **Primitives**: `i32` and `string` are distinguishable.
 
@@ -2767,7 +2767,7 @@ This enables discriminated unions with inline tuples.
 
 ```zena
 // A function that may or may not return a value
-let tryParse = (s: string): inline (true, i32) | inline (false, never) => {
+let tryParse = (s: String): inline (true, i32) | inline (false, never) => {
   if (s == "42") {
     return (true, 42);
   }
@@ -2856,7 +2856,7 @@ them to other modules or the host environment.
 
 ```zena
 export let add = (a: i32, b: i32) => a + b;
-export declare function print(s: string): void;
+export declare function print(s: String): void;
 export class Point { ... }
 ```
 
@@ -3018,7 +3018,7 @@ automatically imported into every module.
 
 ```zena
 let nums = [1, 2, 3];              // FixedArray<i32>
-let names = ["Alice", "Bob"];       // FixedArray<string>
+let names = ["Alice", "Bob"];       // FixedArray<String>
 let empty: FixedArray<i32> = [];    // empty (type annotation required)
 ```
 
@@ -3053,8 +3053,8 @@ A mutable hash map implementation.
 Maps can be created using the literal syntax `{key => value, ...}`:
 
 ```zena
-let scores = {"Alice" => 95, "Bob" => 87};     // Map<string, i32>
-let lookup = {1 => "one", 2 => "two"};          // Map<i32, string>
+let scores = {"Alice" => 95, "Bob" => 87};     // Map<String, i32>
+let lookup = {1 => "one", 2 => "two"};          // Map<i32, String>
 
 // Multi-line with trailing comma
 let config = {
@@ -3071,7 +3071,7 @@ Key and value types are inferred from the entries.
 Maps can also be created explicitly:
 
 ```zena
-let map = new Map<string, i32>();
+let map = new Map<String, i32>();
 map.set("one", 1);
 map["two"] = 2;  // operator []= syntax
 ```
@@ -3124,8 +3124,8 @@ The `Error` class is part of the standard library and is available globally.
 
 ```zena
 class Error {
-  message: string;
-  new(message: string) { this.message = message; }
+  message: String;
+  new(message: String) { this.message = message; }
 }
 ```
 

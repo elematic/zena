@@ -242,7 +242,7 @@ Unions that mix primitives with reference types are **prohibited** by the type
 checker to avoid requiring auto-boxing:
 
 ```zena
-let x: i32 | string = ...;  // ERROR: Cannot mix primitives with reference types
+let x: i32 | String = ...;  // ERROR: Cannot mix primitives with reference types
 ```
 
 This is intentional - allowing such unions would require boxing the primitive to

@@ -36,7 +36,7 @@ Several problems motivate this design:
 
 ```zena
 // Capability received, not imported
-let processFile = (fs: FileSystem, path: string) => {
+let processFile = (fs: FileSystem, path: String) => {
   let contents = fs.read(path);
   // ...
 };
@@ -48,7 +48,7 @@ Libraries declare their required capabilities as parameters:
 
 ```zena
 library(fs: FileSystem, net?: Network) {
-  export let fetch = (url: string) => { ... };
+  export let fetch = (url: String) => { ... };
 }
 ```
 

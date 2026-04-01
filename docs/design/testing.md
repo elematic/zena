@@ -192,43 +192,43 @@ assertion because Zena has no implicit type coercion. Use `isTrue()` instead.
 // zena:assert
 
 export class AssertionError extends Error {
-  operator: string;
+  operator: String;
 
-  new(message: string, operator: string) {
+  new(message: String, operator: String) {
     super(message);
     this.operator = operator;
   }
 }
 
 // Core assertions
-export let equal: <T>(actual: T, expected: T, message?: string) => void;
-export let notEqual: <T>(actual: T, expected: T, message?: string) => void;
+export let equal: <T>(actual: T, expected: T, message?: String) => void;
+export let notEqual: <T>(actual: T, expected: T, message?: String) => void;
 
 // Reference equality (===)
-export let same: <T>(actual: T, expected: T, message?: string) => void;
-export let notSame: <T>(actual: T, expected: T, message?: string) => void;
+export let same: <T>(actual: T, expected: T, message?: String) => void;
+export let notSame: <T>(actual: T, expected: T, message?: String) => void;
 
 // Comparison assertions
-export let greater: <T>(actual: T, expected: T, message?: string) => void;
-export let greaterOrEqual: <T>(actual: T, expected: T, message?: string) => void;
-export let less: <T>(actual: T, expected: T, message?: string) => void;
-export let lessOrEqual: <T>(actual: T, expected: T, message?: string) => void;
+export let greater: <T>(actual: T, expected: T, message?: String) => void;
+export let greaterOrEqual: <T>(actual: T, expected: T, message?: String) => void;
+export let less: <T>(actual: T, expected: T, message?: String) => void;
+export let lessOrEqual: <T>(actual: T, expected: T, message?: String) => void;
 
 // Null/boolean assertions
-export let isNull: <T>(value: T | null, message?: string) => void;
-export let isNotNull: <T>(value: T | null, message?: string) => void;
-export let isTrue: (value: boolean, message?: string) => void;
-export let isFalse: (value: boolean, message?: string) => void;
+export let isNull: <T>(value: T | null, message?: String) => void;
+export let isNotNull: <T>(value: T | null, message?: String) => void;
+export let isTrue: (value: boolean, message?: String) => void;
+export let isFalse: (value: boolean, message?: String) => void;
 
 // Type assertions
-export let isInstanceOf: <T>(value: any, type: T, message?: string) => void;
+export let isInstanceOf: <T>(value: any, type: T, message?: String) => void;
 
 // Exception assertions
-export let throws: (fn: () => void, message?: string) => void;
-export let doesNotThrow: (fn: () => void, message?: string) => void;
+export let throws: (fn: () => void, message?: String) => void;
+export let doesNotThrow: (fn: () => void, message?: String) => void;
 
 // Unconditional failure
-export let fail: (message?: string) => never;
+export let fail: (message?: String) => never;
 ```
 
 #### Assertion Semantics
@@ -264,23 +264,23 @@ The test module provides the test runner and organization functions.
 // zena:test
 
 export class TestContext {
-  name: string;
-  new(name: string) {
+  name: String;
+  new(name: String) {
     this.name = name;
   }
 
   // Diagnostic output during test
-  diagnostic(message: string): void;
+  diagnostic(message: String): void;
 }
 
 // Test result tracking
 export class TestResult {
-  name: string;
+  name: String;
   passed: boolean;
   error: Error | null;
   duration: i32;  // milliseconds (when we have timing)
 
-  new(name: string, passed: boolean, error: Error | null) {
+  new(name: String, passed: boolean, error: Error | null) {
     this.name = name;
     this.passed = passed;
     this.error = error;
@@ -288,12 +288,12 @@ export class TestResult {
 }
 
 export class SuiteResult {
-  name: string;
+  name: String;
   tests: Array<TestResult>;
   passed: i32;
   failed: i32;
 
-  new(name: string) {
+  new(name: String) {
     this.name = name;
     this.tests = new Array<TestResult>();
     this.passed = 0;
@@ -302,12 +302,12 @@ export class SuiteResult {
 }
 
 // Test registration and execution
-export let test: (name: string, fn: (ctx: TestContext) => void) => void;
-export let suite: (name: string, fn: () => void) => void;
+export let test: (name: String, fn: (ctx: TestContext) => void) => void;
+export let suite: (name: String, fn: () => void) => void;
 
 // Skip/only modifiers (for test isolation)
-export let skip: (name: string, fn: (ctx: TestContext) => void) => void;
-export let only: (name: string, fn: (ctx: TestContext) => void) => void;
+export let skip: (name: String, fn: (ctx: TestContext) => void) => void;
+export let only: (name: String, fn: (ctx: TestContext) => void) => void;
 
 // Lifecycle hooks
 export let beforeEach: (fn: () => void) => void;
@@ -382,19 +382,19 @@ console.log(`Passed: ${results.passed}, Failed: ${results.failed}`);
 - `packages/stdlib/zena/assert.zena` created
 - `AssertionError` class extending `Error`
 - Core assertions:
-  - `ok(value: boolean, message?: string): void`
-  - `equal<T>(actual: T, expected: T, message?: string): void`
-  - `notEqual<T>(actual: T, expected: T, message?: string): void`
+  - `ok(value: boolean, message?: String): void`
+  - `equal<T>(actual: T, expected: T, message?: String): void`
+  - `notEqual<T>(actual: T, expected: T, message?: String): void`
   - `strictEqual<T>` (alias for `equal`)
   - `notStrictEqual<T>` (alias for `notEqual`)
-  - `fail(message?: string): never`
+  - `fail(message?: String): never`
 - Extended assertions (from Phase 2):
-  - `same<T>(actual: T, expected: T, message?: string): void` (reference equality)
-  - `notSame<T>(actual: T, expected: T, message?: string): void`
-  - `isNull<T>(value: T | null, message?: string): void`
-  - `isNotNull<T>(value: T | null, message?: string): void`
-  - `isTrue(value: boolean, message?: string): void`
-  - `isFalse(value: boolean, message?: string): void`
+  - `same<T>(actual: T, expected: T, message?: String): void` (reference equality)
+  - `notSame<T>(actual: T, expected: T, message?: String): void`
+  - `isNull<T>(value: T | null, message?: String): void`
+  - `isNotNull<T>(value: T | null, message?: String): void`
+  - `isTrue(value: boolean, message?: String): void`
+  - `isFalse(value: boolean, message?: String): void`
 - Test file: `packages/compiler/src/test/stdlib/assert_test.ts`
 
 **Note**: The `AssertionError` class currently only stores `message` and `operator`,
@@ -406,11 +406,11 @@ boxing mechanism for arbitrary values yet.
 1. ~~Create `packages/stdlib/zena/assert.zena`~~
 2. ~~Implement `AssertionError` class extending `Error`~~
 3. ~~Implement core assertions:~~
-   - ~~`ok(value: boolean, message?: string)`~~
-   - ~~`equal<T>(actual: T, expected: T, message?: string)`~~
-   - ~~`notEqual<T>(actual: T, expected: T, message?: string)`~~
-   - ~~`fail(message?: string): never`~~
-   - `fail(message?: string): never`
+   - ~~`ok(value: boolean, message?: String)`~~
+   - ~~`equal<T>(actual: T, expected: T, message?: String)`~~
+   - ~~`notEqual<T>(actual: T, expected: T, message?: String)`~~
+   - ~~`fail(message?: String): never`~~
+   - `fail(message?: String): never`
 
 **Implementation Notes**:
 
@@ -421,9 +421,9 @@ import { Error } from 'zena:error';
 export class AssertionError extends Error {
   actual: any;
   expected: any;
-  operator: string;
+  operator: String;
 
-  new(message: string, actual: any, expected: any, operator: string) {
+  new(message: String, actual: any, expected: any, operator: String) {
     super(message);
     this.actual = actual;
     this.expected = expected;
@@ -431,19 +431,19 @@ export class AssertionError extends Error {
   }
 }
 
-export let ok = (value: boolean, message: string = 'Expected truthy value') => {
+export let ok = (value: boolean, message: String = 'Expected truthy value') => {
   if (!value) {
     throw new AssertionError(message, value as any, true as any, 'ok');
   }
 };
 
-export let equal = <T>(actual: T, expected: T, message: string = 'Values not equal') => {
+export let equal = <T>(actual: T, expected: T, message: String = 'Values not equal') => {
   if (actual != expected) {
     throw new AssertionError(message, actual as any, expected as any, '==');
   }
 };
 
-export let fail = (message: string = 'Test failed'): never => {
+export let fail = (message: String = 'Test failed'): never => {
   throw new AssertionError(message, null, null, 'fail');
 };
 ```
@@ -454,16 +454,16 @@ export let fail = (message: string = 'Test failed'): never => {
 
 **Implemented**:
 
-- `isNull<T>(value: T | null, message?: string)` ✅
-- `isNotNull<T>(value: T | null, message?: string)` ✅
-- `isTrue(value: boolean, message?: string)` ✅
-- `isFalse(value: boolean, message?: string)` ✅
-- `same<T>(actual: T, expected: T, message?: string)` ✅ (reference equality)
-- `notSame<T>(actual: T, expected: T, message?: string)` ✅
-- `greater<T>(actual: T, expected: T, message?: string)` ✅
-- `greaterOrEqual<T>(actual: T, expected: T, message?: string)` ✅
-- `less<T>(actual: T, expected: T, message?: string)` ✅
-- `lessOrEqual<T>(actual: T, expected: T, message?: string)` ✅
+- `isNull<T>(value: T | null, message?: String)` ✅
+- `isNotNull<T>(value: T | null, message?: String)` ✅
+- `isTrue(value: boolean, message?: String)` ✅
+- `isFalse(value: boolean, message?: String)` ✅
+- `same<T>(actual: T, expected: T, message?: String)` ✅ (reference equality)
+- `notSame<T>(actual: T, expected: T, message?: String)` ✅
+- `greater<T>(actual: T, expected: T, message?: String)` ✅
+- `greaterOrEqual<T>(actual: T, expected: T, message?: String)` ✅
+- `less<T>(actual: T, expected: T, message?: String)` ✅
+- `lessOrEqual<T>(actual: T, expected: T, message?: String)` ✅
 
 ### Phase 3: Exception Assertions ✅ COMPLETE
 
@@ -471,8 +471,8 @@ export let fail = (message: string = 'Test failed'): never => {
 
 **Implemented**:
 
-- `throws(fn: () => void, message?: string)` ✅
-- `doesNotThrow(fn: () => void, message?: string)` ✅
+- `throws(fn: () => void, message?: String)` ✅
+- `doesNotThrow(fn: () => void, message?: String)` ✅
 
 **Implementation Notes**:
 
@@ -480,7 +480,7 @@ Since `try`/`catch` is an expression in Zena (not a statement), exception assert
 use the expression form to capture whether an exception was thrown:
 
 ```zena
-export let throws = (fn: () => void, message: string = 'Expected function to throw'): void => {
+export let throws = (fn: () => void, message: String = 'Expected function to throw'): void => {
   let threw = try {
     fn();
     false
@@ -516,23 +516,23 @@ import { Array } from 'zena:array';
 import { console } from 'zena:console';
 
 export class TestContext {
-  name: string;
+  name: String;
 
-  new(name: string) {
+  new(name: String) {
     this.name = name;
   }
 
-  diagnostic(message: string): void {
+  diagnostic(message: String): void {
     console.log(`  # ${message}`);
   }
 }
 
 export class TestResult {
-  name: string;
+  name: String;
   passed: boolean;
   error: Error | null;
 
-  new(name: string, passed: boolean, error: Error | null) {
+  new(name: String, passed: boolean, error: Error | null) {
     this.name = name;
     this.passed = passed;
     this.error = error;
@@ -540,10 +540,10 @@ export class TestResult {
 }
 
 class TestCase {
-  name: string;
+  name: String;
   fn: (ctx: TestContext) => void;
 
-  new(name: string, fn: (ctx: TestContext) => void) {
+  new(name: String, fn: (ctx: TestContext) => void) {
     this.name = name;
     this.fn = fn;
   }
@@ -554,7 +554,7 @@ var tests = new Array<TestCase>();
 var passedCount: i32 = 0;
 var failedCount: i32 = 0;
 
-export let test = (name: string, fn: (ctx: TestContext) => void) => {
+export let test = (name: String, fn: (ctx: TestContext) => void) => {
   tests.push(new TestCase(name, fn));
 };
 
@@ -623,7 +623,7 @@ synchronous. When async is added, we can extend the API:
 
 ```zena
 // Future async support
-export let test: (name: string, fn: (ctx: TestContext) => void | Promise<void>) => void;
+export let test: (name: String, fn: (ctx: TestContext) => void | Promise<void>) => void;
 ```
 
 ### 2. Global Test Registry vs Explicit Runner

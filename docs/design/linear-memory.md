@@ -739,7 +739,7 @@ import {Memory, defaultAllocator} from 'zena:memory';
 // GC object table for passing closures via userData
 let gcTable: Table<Object> = new Table(100);
 
-const execWithCallback = (db: Database, sql: string,
+const execWithCallback = (db: Database, sql: String,
                           callback: (row: Row) => void): void => {
   let mem = Memory.default;
 

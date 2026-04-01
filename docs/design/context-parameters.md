@@ -34,7 +34,7 @@ the downsides of option (3).
 A `context` parameter is declared with the `context` keyword before the parameter name:
 
 ```zena
-let log = (message: string, context logger: Logger?) => {
+let log = (message: String, context logger: Logger?) => {
   logger?.write(message);
 };
 
@@ -121,7 +121,7 @@ how the compiler resolves arguments at call sites.
 ### Example: Basic Call
 
 ```zena
-let greet = (name: string, context logger: Logger?) => {
+let greet = (name: String, context logger: Logger?) => {
   logger?.write("Hello, " + name);
 };
 
@@ -197,7 +197,7 @@ When a function with context parameters is used as a value, the context paramete
 are part of its type:
 
 ```zena
-let greet = (name: string, context logger: Logger?) => { ... };
+let greet = (name: String, context logger: Logger?) => { ... };
 
 // Type of greet is: (string, context logger: Logger?) -> void
 let fn: (string, Logger?) -> void = greet;
@@ -220,7 +220,7 @@ simple and predictable.
 ### Example: Higher-Order Functions
 
 ```zena
-let withTiming = <T>(name: string, fn: () -> T, context tracer: Tracer?) => {
+let withTiming = <T>(name: String, fn: () -> T, context tracer: Tracer?) => {
   tracer?.mark(name + ":start");
   let result = fn();
   tracer?.mark(name + ":end");
@@ -345,7 +345,7 @@ with tracer: Tracer.console() {
 For context parameters in async functions:
 
 ```zena
-let fetchAndTrace = async (url: string, context tracer: Tracer?) => {
+let fetchAndTrace = async (url: String, context tracer: Tracer?) => {
   tracer?.mark("fetch:start");
   let data = await fetch(url);
   tracer?.mark("fetch:end");
@@ -365,7 +365,7 @@ async state machine. No special async context propagation needed.
 Context parameters work with generics:
 
 ```zena
-let traced = <T>(name: string, fn: () -> T, context tracer: Tracer?) => {
+let traced = <T>(name: String, fn: () -> T, context tracer: Tracer?) => {
   tracer?.mark(name + ":start");
   let result = fn();
   tracer?.mark(name + ":end");
@@ -1159,7 +1159,7 @@ function pointers, dynamic dispatch), assume context might be used.
 ```zena
 TracerContext.with(myTracer, () => {
   // This closure uses context
-  let traced = <T>(name: string, fn: () => T) => {
+  let traced = <T>(name: String, fn: () => T) => {
     TracerContext.current()?.mark(name + ":start");  // ← context-using
     let result = fn();
     TracerContext.current()?.mark(name + ":end");    // ← context-using

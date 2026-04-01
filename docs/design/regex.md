@@ -22,7 +22,7 @@ in Zena.
 
 Regular expressions are created via a constructor:
 
-```typescript
+```zena
 import {Regex} from 'zena:regex';
 
 const pattern = new Regex('ab+c');
@@ -34,7 +34,7 @@ const result = pattern.test('abbbc'); // true
 If/when tagged template literals are supported, a more ergonomic syntax becomes
 available:
 
-```typescript
+```zena
 import {regex} from 'zena:regex';
 
 const pattern = regex`ab+c`;
@@ -124,7 +124,7 @@ If needed, add support for:
 
 ### Regex Class
 
-```typescript
+```zena
 export class Regex {
   // Constructor - compiles the pattern
   new(pattern: string);
@@ -145,13 +145,13 @@ export class Regex {
   replaceAll(input: string, replacement: string): string;
 
   // Split string by pattern
-  split(input: string): Array<string>;
+  split(input: string): Array<String>;
 }
 ```
 
 ### Match Class
 
-```typescript
+```zena
 export class Match {
   // The matched substring
   value: string;
@@ -160,7 +160,7 @@ export class Match {
   index: i32;
 
   // Captured groups (if any)
-  groups: Array<string>;
+  groups: Array<String>;
 }
 ```
 
@@ -169,7 +169,7 @@ export class Match {
 Regex flags can be passed as an optional second argument or encoded in the
 pattern:
 
-```typescript
+```zena
 const caseInsensitive = new Regex('hello', 'i');
 // OR
 const caseInsensitive = new Regex('(?i)hello');
@@ -200,7 +200,7 @@ Given Zena's UTF-8 string representation:
 
 The regex module follows the standard library conventions:
 
-```typescript
+```zena
 // Explicit import - only includes regex if used
 import {Regex} from 'zena:regex';
 ```

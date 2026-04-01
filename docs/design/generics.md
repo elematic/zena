@@ -33,12 +33,12 @@ key to Zena's design.
 
 2.  **Reification (C#)**:
     - **Concept**: Generic type information is preserved at runtime. `List<int>`
-      and `List<string>` are distinct types.
+      and `List<String>` are distinct types.
     - **Implication**: You can check `instanceof T` or create `new T[]`.
     - **C# Implementation**:
       - **Value Types (`int`)**: Uses **Monomorphization**. The runtime
         generates specialized code for `List<int>`.
-      - **Reference Types (`string`)**: Uses **Code Sharing**. `List<string>`
+      - **Reference Types (`string`)**: Uses **Code Sharing**. `List<String>`
         and `List<object>` share the same machine code (since all references are
         pointers), but maintain distinct type metadata tables.
 
@@ -202,8 +202,8 @@ class Map<K, V> {
 }
 ```
 
-The compiler will generate `Map_i32_string` when the user writes `new Map<i32,
-string>()`.
+The compiler will generate `Map_i32_String` when the user writes `new Map<i32,
+String>()`.
 
 ## Future Considerations: Tunability & Hybrid Approaches
 

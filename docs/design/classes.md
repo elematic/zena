@@ -43,8 +43,8 @@ immutable fields that can only be assigned during construction.
 class User {
   id: i32;                      // Mutable (default). Can be reassigned.
   let created: i64 = now();     // Immutable. Only assignable in constructor.
-  var email: string;            // Explicit mutable (same as bare).
-  var(#phone) phone: string;    // Mutable with private setter (public getter).
+  var email: String;            // Explicit mutable (same as bare).
+  var(#phone) phone: String;    // Mutable with private setter (public getter).
 }
 ```
 
@@ -234,8 +234,8 @@ Once migration is complete:
 ```zena
 class User {
   id: i32;                      // Immutable (default). Only assignable in constructor.
-  var email: string;            // Explicit mutable. Can be reassigned.
-  var(#phone) phone: string;    // Mutable with private setter.
+  var email: String;            // Explicit mutable. Can be reassigned.
+  var(#phone) phone: String;    // Mutable with private setter.
 }
 ```
 
@@ -542,7 +542,7 @@ class Base {
 
 ```zena
 class Config {
-  final apiUrl: string;        // Immutable + non-overridable (optimal)
+  final apiUrl: String;        // Immutable + non-overridable (optimal)
   final var retryCount: i32;   // Mutable + non-overridable
   var(#value) value: i32;      // Immutable public, mutable private, overridable
 }

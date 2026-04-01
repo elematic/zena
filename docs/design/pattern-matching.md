@@ -34,11 +34,11 @@ class Box<T> {
 }
 
 let b1 = new Box<i32>(1);
-let b2 = new Box<string>('a');
+let b2 = new Box<String>('a');
 
 // These are distinct types at runtime!
 b1 is Box<i32>; // true
-b1 is Box<string>; // false
+b1 is Box<String>; // false
 ```
 
 This allows for powerful runtime differentiation of generic types.
@@ -156,7 +156,7 @@ Instead of multiple implementations, an author can define a single function that
 
 ```zena
 // 1. Define the Union Type
-type Input = i32 | string;
+type Input = i32 | String;
 
 // 2. Single Implementation
 let print = (val: Input) => {
@@ -179,13 +179,13 @@ print('hello'); // Works
 Because WASM function references are typed, `is` can even distinguish between function signatures.
 
 ```zena
-type Callback = ((i: i32) => void) | ((s: string) => void);
+type Callback = ((i: i32) => void) | ((s: String) => void);
 
 let dispatch = (cb: Callback) => {
   if (cb is ((i: i32) => void)) {
     cb(123);
   } else {
-    // Compiler knows it must be (s: string) => void
+    // Compiler knows it must be (s: String) => void
     cb("text");
   }
 }

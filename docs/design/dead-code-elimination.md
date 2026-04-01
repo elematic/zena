@@ -322,7 +322,7 @@ Generic declarations are templates, not actual runtime code. The usage analysis
 should:
 
 1. Track usage of the generic template (e.g., `class Box<T>`)
-2. Track usage of each instantiation (e.g., `Box<i32>`, `Box<string>`)
+2. Track usage of each instantiation (e.g., `Box<i32>`, `Box<String>`)
 3. Only emit instantiations that are actually used
 
 This aligns with how codegen already handles generics - only instantiated types

@@ -87,7 +87,7 @@ command. This is **the** thing we port faithfully.
 
 ```zena
 // The core document type — a tagged union
-type Doc = string | Array<Doc> | DocCommand;
+type Doc = String | Array<Doc> | DocCommand;
 
 enum DocCommandType {
   Group, Indent, Dedent, Align, IfBreak, Fill, Line, Softline, Hardline,

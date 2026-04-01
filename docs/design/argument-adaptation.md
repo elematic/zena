@@ -104,8 +104,8 @@ type SimpleHandler = (a: i32) => void;
 // Here, it matches SimpleHandler directly, so NO adaptation occurs.
 
 type ComplexHandler = (a: i32, b: i32, c: i32) => void;
-// Target: ComplexHandler | string
+// Target: ComplexHandler | String
 // Provided: (a: i32) => void
 // Result: Adapts to ComplexHandler
-let x: ComplexHandler | string = (a) => {};
+let x: ComplexHandler | String = (a) => {};
 ```

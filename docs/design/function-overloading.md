@@ -32,11 +32,11 @@ This approach allows the type checker to correlate input types with output types
 let format:
     // Signatures (Overloads)
     // If called with one arg, returns string
-    (val: i32) =? string |
+    (val: i32) =? String |
     // If called with two args, returns array
     (val: i32, width: i32) =? string[]
   // Implementation
-  = (val: i32, width?: i32): string | string[] => {
+  = (val: i32, width?: i32): String | String[] => {
     if (width == null) {
       return val.toString();
     } else {

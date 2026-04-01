@@ -60,8 +60,8 @@ The `finally` block does not contribute to the expression's value.
 
 ```zena
 class Error {
-  message: string;
-  new(message: string) {
+  message: String;
+  new(message: String) {
     this.message = message;
   }
 }

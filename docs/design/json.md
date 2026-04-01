@@ -8,14 +8,14 @@ A JSON parser for Zena that uses a hybrid union/class design for ergonomic acces
 
 ```zena
 // Primitive values use standard types (JS-like)
-type JsonPrimitive = string | Box<f64> | Box<boolean> | null;
+type JsonPrimitive = String | Box<f64> | Box<boolean> | null;
 
 // Container classes for objects and arrays
 class JsonObject {
-  operator [](key: string): JsonValue | null;
-  operator []=(key: string, value: JsonValue): void;
-  has(key: string): boolean;
-  delete(key: string): boolean;
+  operator [](key: String): JsonValue | null;
+  operator []=(key: String, value: JsonValue): void;
+  has(key: String): boolean;
+  delete(key: String): boolean;
   size: i32 { get; }
 }
 
@@ -27,7 +27,7 @@ class JsonArray {
 }
 
 // The union type
-type JsonValue = JsonObject | JsonArray | string | Box<f64> | Box<boolean> | null;
+type JsonValue = JsonObject | JsonArray | String | Box<f64> | Box<boolean> | null;
 ```
 
 ## Type Checking
@@ -84,7 +84,7 @@ let port = jsonGetOr(config, ".server.port", new Box(8080));
 
 ## Key Order
 
-**Phase 1**: Uses standard `Map<string, JsonValue>` (no order guarantee).
+**Phase 1**: Uses standard `Map<String, JsonValue>` (no order guarantee).
 
 **TODO Phase 2**: Implement `OrderedMap` that preserves insertion order for JSON round-tripping.
 
@@ -95,7 +95,7 @@ class JsonParseError extends Error {
   line: i32;
   column: i32;
 
-  new(message: string, line: i32, column: i32) {
+  new(message: String, line: i32, column: i32) {
     super(message);
     this.line = line;
     this.column = column;
@@ -114,7 +114,7 @@ try {
 
 ```zena
 // Types
-type JsonValue = JsonObject | JsonArray | string | Box<f64> | Box<boolean> | null;
+type JsonValue = JsonObject | JsonArray | String | Box<f64> | Box<boolean> | null;
 class JsonObject { ... }
 class JsonArray { ... }
 class JsonOptions { allowComments: boolean; trackLocations: boolean; }
@@ -122,7 +122,7 @@ class JsonParseError extends Error { line: i32; column: i32; }
 class SourceLocation { line: i32; column: i32; endLine: i32; endColumn: i32; }
 
 // Functions
-parseJson(input: string, options?: JsonOptions): JsonValue;
-jsonGet(value: JsonValue, path: string): JsonValue | null;
-jsonGetOr<T>(value: JsonValue, path: string, defaultValue: T): T;
+parseJson(input: String, options?: JsonOptions): JsonValue;
+jsonGet(value: JsonValue, path: String): JsonValue | null;
+jsonGetOr<T>(value: JsonValue, path: String, defaultValue: T): T;
 ```

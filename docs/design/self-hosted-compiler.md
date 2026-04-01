@@ -142,10 +142,10 @@ CodegenContext. Fields alone exist in 4+ places with different representations.
 **Self-hosted design:** One authoritative type representation with clear
 ownership.
 
-```
+```zena
 class ClassType {
   id: i32                    // Unique, interned
-  name: string
+  name: String
   declaration: i32           // AST node ID (link back to source)
 
   // Generic info
@@ -159,7 +159,7 @@ class ClassType {
   mixins: Array<MixinType>
 
   // Members — all in one place
-  members: Map<string, Member>
+  members: Map<String, Member>
 
   // Flags
   isFinal: boolean
@@ -172,7 +172,7 @@ class ClassType {
 enum MemberKind { Field, Method, Getter, Setter, Constructor }
 
 class Member {
-  name: string
+  name: String
   kind: MemberKind
   type: Type                 // Field type or function signature
   isPrivate: boolean
@@ -199,7 +199,7 @@ class TypeContext {
   intern(type: Type): Type
 
   // Factory methods that auto-intern
-  makeClassType(name: string, typeParams: ...): ClassType
+  makeClassType(name: String, typeParams: ...): ClassType
   instantiateClass(template: ClassType, args: Array<Type>): ClassType
   makeUnionType(members: Array<Type>): UnionType
   // ...
@@ -409,7 +409,7 @@ These also serve as excellent tests of the parser and checker in isolation.
 - Complete type annotation parsing
 - Snapshot test coverage matching the TypeScript parser
 
-**Deliverable:** `parse(source: string): Module` producing a correct, immutable
+**Deliverable:** `parse(source: String): Module` producing a correct, immutable
 AST for any valid Zena program.
 
 ### Milestone 1: Formatter
@@ -429,7 +429,7 @@ consistent style. This is:
   during parsing — either as node properties or in a side table)
 - Configurable style (indent width, quote style) via a config record
 
-**Deliverable:** `format(source: string): string`
+**Deliverable:** `format(source: String): String`
 
 ### Milestone 2: Name Resolution & Module System
 
@@ -451,10 +451,10 @@ This is the foundation the checker needs, but is useful on its own for:
 
 **Data structures:**
 
-```
+```zena
 class Scope {
   parent: Scope?
-  bindings: Map<string, Binding>
+  bindings: Map<String, Binding>
 }
 
 enum BindingKind { Variable, Function, Class, Interface, TypeAlias, Import, ... }
@@ -462,7 +462,7 @@ enum BindingKind { Variable, Function, Class, Interface, TypeAlias, Import, ... 
 class Binding {
   kind: BindingKind
   declaration: i32  // AST node ID
-  module: string    // Which module declared it
+  module: String    // Which module declared it
 }
 ```
 
@@ -662,7 +662,7 @@ class BinaryExpression extends Expression {
 }
 
 class ClassDeclaration extends Statement {
-  name: string
+  name: String
   typeParameters: Array<TypeParameter>
   superClass: TypeAnnotation?
   interfaces: Array<TypeAnnotation>
@@ -678,7 +678,7 @@ The formatter needs comments; the checker doesn't.
 
 ### Semantic Model
 
-```
+```zena
 class SemanticModel {
   // Type context (interning, factory methods)
   types: TypeContext
@@ -688,7 +688,7 @@ class SemanticModel {
   bindings: Map<i32, Binding>      // identifier → what it resolves to
 
   // Per-module info
-  moduleExports: Map<string, Map<string, ExportedSymbol>>
+  moduleExports: Map<String, Map<String, ExportedSymbol>>
 
   // Global class/interface registry
   classHierarchy: ClassHierarchy
@@ -700,10 +700,10 @@ class SemanticModel {
 
 ### Type Context and Interning
 
-```
+```zena
 class TypeContext {
   // All types live here; interned by structural equality
-  #interned: Map<string, Type>
+  #interned: Map<String, Type>
   #nextId: i32
 
   // Primitive singletons
@@ -718,7 +718,7 @@ class TypeContext {
   neverType: NeverType
 
   // Create or retrieve interned types
-  classType(decl: i32, name: string, ...): ClassType
+  classType(decl: i32, name: String, ...): ClassType
   instantiate(template: ClassType, args: Array<Type>): ClassType
   union(members: Array<Type>): UnionType
   functionType(params: Array<Type>, ret: Type): FunctionType
@@ -735,7 +735,7 @@ class TypeContext {
 
 A dedicated structure for navigating the class/interface graph:
 
-```
+```zena
 class ClassHierarchy {
   // O(1) lookups
   superType(class: ClassType): ClassType?
@@ -744,11 +744,11 @@ class ClassHierarchy {
 
   // Vtable (semantic, not WASM-specific)
   vtableSlots(class: ClassType): Array<Member>
-  vtableSlot(class: ClassType, method: string): i32
+  vtableSlot(class: ClassType, method: String): i32
 
   // Interface conformance
   implementsInterface(class: ClassType, iface: InterfaceType): boolean
-  interfaceMethodMapping(class: ClassType, iface: InterfaceType): Map<string, Member>
+  interfaceMethodMapping(class: ClassType, iface: InterfaceType): Map<String, Member>
 }
 ```
 
@@ -940,14 +940,14 @@ The TypeScript compiler already has a clean host abstraction:
 
 ```
 interface CompilerHost {
-  resolve(specifier: string, referrer: string): string
-  load(path: string): string
+  resolve(specifier: String, referrer: String): String
+  load(path: String): String
 }
 ```
 
 This is minimal and works: `resolve` maps an import specifier to a canonical
 path, `load` returns the source text. The CLI implements this with Node.js
-file system calls. Tests implement it with an in-memory `Map<string, string>`.
+file system calls. Tests implement it with an in-memory `Map<String, String>`.
 
 ### What We Need for the Self-Hosted Compiler
 
@@ -966,7 +966,7 @@ Keep this.
 in-browser IDE), module loading may need to be asynchronous (fetching files
 over HTTP). The current `load` is synchronous. Options:
 
-- Make `load` return `string | Promise<string>` — messy but pragmatic.
+- Make `load` return `String | Promise<String>` — messy but pragmatic.
 - Make the entire compilation async — clean but Zena doesn't have `async` yet.
 - Require the host to pre-load all files and provide them synchronously —
   works for playgrounds, messy for large projects.
@@ -982,7 +982,7 @@ rules:
 - LSP: Files open in the editor override disk versions
 - Testing: In-memory file maps
 
-The current `resolve(specifier, referrer): string` is flexible enough for
+The current `resolve(specifier, referrer): String` is flexible enough for
 all of these. The host controls the resolution logic entirely.
 
 **5. File watching (LSP).** The LSP needs to know when files change on disk.
@@ -995,17 +995,17 @@ the compiler to re-check.
 interface CompilerHost {
   // Module resolution: specifier (e.g., './math', 'zena:array') + referrer
   // → canonical path (e.g., '/project/src/math.zena', 'zena:array')
-  resolve(specifier: string, referrer: string): string
+  resolve(specifier: String, referrer: String): String
 
   // Load source text for a canonical path
-  load(path: string): string
+  load(path: String): String
 
   // Optional: check if a path exists (useful for resolution)
-  exists(path: string): boolean
+  exists(path: String): boolean
 
   // Optional: file version/hash for incremental compilation
   // Returns null if versioning is not supported
-  version(path: string): string?
+  version(path: String): String?
 }
 ```
 
@@ -1017,7 +1017,7 @@ file's version hasn't changed, its AST and semantic model can be reused.
 
 A web-based playground would implement `CompilerHost` with:
 
-- A `Map<string, string>` of virtual files (editor contents)
+- A `Map<String, String>` of virtual files (editor contents)
 - Pre-bundled stdlib source (loaded at page init)
 - `resolve` maps `'zena:*'` to stdlib, `'./*'` to virtual files
 - `load` reads from the map
@@ -1042,7 +1042,7 @@ An LSP host would implement `CompilerHost` with:
 ### Testing Scenario
 
 Test hosts (like the current `InMemoryHost`) work as-is. Provide a
-`Map<string, string>` and the compiler operates on it. No changes needed.
+`Map<String, String>` and the compiler operates on it. No changes needed.
 
 ---
 

@@ -26,11 +26,11 @@ For standard Zena classes, we typically follow the TypeScript model. A method ca
 ```zena
 class Converter {
   // Signatures
-  process(item: string): string;
-  process(item: i32): string;
+  process(item: String): String;
+  process(item: i32): String;
 
   // Implementation
-  process(item: string | i32): string {
+  process(item: String | i32): String {
     if (item is string) {
       return `String: ${item}`;
     } else {

@@ -55,7 +55,7 @@ enum ExitCode {
 let getEnvironment = (): Array<EnvVar>
 
 // Get a single environment variable by name
-let getEnv = (name: string): string?
+let getEnv = (name: String): String?
 ```
 
 **Example:**
@@ -76,10 +76,10 @@ let port = getEnv("PORT") ?? "8080";
 
 ```zena
 // Get all command-line arguments
-let getArguments = (): Array<string>
+let getArguments = (): Array<String>
 
 // Get just the program name
-let getProgramName = (): string
+let getProgramName = (): String
 ```
 
 **Example:**
@@ -129,16 +129,16 @@ exitSuccess();
 
 ```zena
 // Check option types
-let isOption = (arg: string): bool       // starts with -
-let isShortOption = (arg: string): bool  // -x format
-let isLongOption = (arg: string): bool   // --name format
+let isOption = (arg: String): bool       // starts with -
+let isShortOption = (arg: String): bool  // -x format
+let isLongOption = (arg: String): bool   // --name format
 
 // Parse long option with value
-let parseLongOption = (arg: string): ParsedOption
+let parseLongOption = (arg: String): ParsedOption
 
 type ParsedOption = {
-  name: string,
-  value: string?,
+  name: String,
+  value: String?,
 }
 ```
 
@@ -226,7 +226,7 @@ exposed via:
 
 ```zena
 // Option 1: Add to zena:cli
-let readLine = (): string?
+let readLine = (): String?
 
 // Option 2: Integrate with zena:io streams
 import { stdin } from 'zena:io';
@@ -247,9 +247,9 @@ The P2 implementation would look like:
 ```zena
 // Future P2 implementation (conceptual)
 @import("wasi:cli/environment", "get-arguments")
-declare function __wasi_get_arguments(): Array<string>;
+declare function __wasi_get_arguments(): Array<String>;
 
-export let getArguments = (): Array<string> => {
+export let getArguments = (): Array<String> => {
   return __wasi_get_arguments();  // Direct, no marshalling needed with CM-GC
 };
 ```

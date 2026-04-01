@@ -81,9 +81,9 @@ class Builder {
 }
 
 class ExtendedBuilder extends Builder {
-  #name: string = '';
+  #name: String = '';
 
-  setName(n: string): this {
+  setName(n: String): this {
     this.#name = n;
     return this;
   }

@@ -91,7 +91,7 @@ The `.zir` file is a binary format containing:
 │ Header                                 │
 │   magic: "ZIR\0"                       │
 │   ir_version: u16                      │
-│   zena_version: string (informational) │
+│   zena_version: String (informational) │
 │   source_hash: [u8; 32]                │
 │   flags: u32                           │
 └────────────────────────────────────────┘
@@ -143,15 +143,15 @@ interface ModuleSummary {
 }
 
 interface ClassSummary {
-  name: string;
-  superClass: string | null;
-  interfaces: string[];
+  name: String;
+  superClass: String | null;
+  interfaces: String[];
   isFinal: boolean;
   methods: MethodSummary[];
 }
 
 interface MethodSummary {
-  name: string;
+  name: String;
   signature: TypeRef;
   isFinal: boolean;
   isOverride: boolean;

@@ -181,7 +181,7 @@ See `docs/design/arrays.md` for full details.
 #### 3. Console
 
 - **Implementation**: Host interop via `@external` declarations.
-- **API**: `console.log(message: string)`
+- **API**: `console.log(message: String)`
 - **Status**: ✅ Implemented
 
 See `docs/design/host-interop.md` for full details.
@@ -225,7 +225,7 @@ interface Array<T> extends Sequence<T> {
 
   // Derived operations
   subarray(start: i32, end: i32): Array<T>;
-  join(separator: string): string;
+  join(separator: String): String;
 }
 
 // Default implementation backed by FixedArray<T>

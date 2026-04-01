@@ -222,7 +222,7 @@ The tag distinguishes every unique _source-level_ type parameter combination, no
 | `TaggedBox<Seconds>` | `$TaggedBox_i32_shared`    | 2        |
 | `TaggedBox<u32>`     | `$TaggedBox_i32_shared`    | 3        |
 | `TaggedBox<f32>`     | `$TaggedBox_f32_shared`    | 0        |
-| `TaggedBox<string>`  | `$TaggedBox_string_shared` | 0        |
+| `TaggedBox<String>`  | `$TaggedBox_string_shared` | 0        |
 | `TaggedBox<Animal>`  | `$TaggedBox_ref_shared`    | 0        |
 | `TaggedBox<Dog>`     | `$TaggedBox_ref_shared`    | 1        |
 
@@ -611,7 +611,7 @@ In JavaScript, `Symbol.hasInstance` slows down ALL `instanceof` checks because t
 
 ```zena
 // Regular class - no override
-class Animal { name: string; }
+class Animal { name: String; }
 
 // Tagged class - overrides `is`
 class Box<T> {
@@ -697,7 +697,7 @@ TypeId<i32>           // 0
 TypeId<i64>           // 1
 TypeId<f32>           // 2
 TypeId<f64>           // 3
-TypeId<string>        // 4
+TypeId<String>        // 4
 TypeId<Meters>        // 5 (distinct from i32!)
 TypeId<Seconds>       // 6
 TypeId<Box<i32>>      // 7

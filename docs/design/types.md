@@ -270,7 +270,7 @@ class Container<T> {
 
 The problem with `T | null` where `T` is unbounded:
 
-1.  **Instantiation trap**: `Container<string>` works fine, but `Container<i32>`
+1.  **Instantiation trap**: `Container<String>` works fine, but `Container<i32>`
     creates `i32 | null`, which violates the primitive-in-union rule.
 2.  **Late error**: Without this rule, the error would only appear when the
     generic is instantiated with a primitive — possibly far from where the

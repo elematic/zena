@@ -98,7 +98,7 @@ When a function accepts a Record as an argument, the compiler can "explode" the 
 **Source**:
 
 ```zena
-let draw = (opts: { x: i32, y: i32, color: string }) => { ... }
+let draw = (opts: { x: i32, y: i32, color: String }) => { ... }
 
 draw({ x: 10, y: 20, color: "red" });
 ```
@@ -185,7 +185,7 @@ Optional fields allow callers to omit fields entirely. This is the "option bag" 
 
 ```zena
 type RequestOpts = {
-  url: string,
+  url: String,
   timeout?: i32,   // Optional - caller can omit
   retries?: i32,
 };
@@ -310,7 +310,7 @@ We will adopt TypeScript's syntax.
 // Record Type
 type User = {
   id: i32;
-  name: string;
+  name: String;
 };
 
 // Tuple Type

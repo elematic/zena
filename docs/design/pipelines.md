@@ -257,13 +257,13 @@ module zena:performance {
   // Core tracer interface
   interface Tracer {
     // Record a named instant
-    let mark: (name: string, data: any?) => void;
+    let mark: (name: String, data: any?) => void;
 
     // Measure duration of a block
-    let measure: <T>(name: string, fn: () => T) => T;
+    let measure: <T>(name: String, fn: () => T) => T;
 
     // Start/end spans (for structured tracing)
-    let spanStart: (name: string, data: any?) => SpanId;
+    let spanStart: (name: String, data: any?) => SpanId;
     let spanEnd: (id: SpanId, data: any?) => void;
   }
 
@@ -273,7 +273,7 @@ module zena:performance {
   let bufferTracer: () => BufferTracer;       // Collects events for later
 
   // Convenience for wrapping functions
-  let traced = <T>(name: string, fn: () => T, context tracer: Tracer?) => T;
+  let traced = <T>(name: String, fn: () => T, context tracer: Tracer?) => T;
 }
 ```
 
@@ -383,7 +383,7 @@ let browserTracer: () => Tracer;
 
 // In Node.js - integrate with OpenTelemetry
 @external("host", "createOTelTracer")
-let otelTracer: (serviceName: string) => Tracer;
+let otelTracer: (serviceName: String) => Tracer;
 
 // Usage
 with browserTracer() {

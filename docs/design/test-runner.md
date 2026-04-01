@@ -385,15 +385,15 @@ When we eventually want a native runner, we'll need `zena:fs`:
 ```zena
 // zena:fs (future)
 export interface FileInfo {
-  name: string;
+  name: String;
   isDirectory: boolean;
   size: i64;
 }
 
-export let readFile: (path: string) => string;
-export let writeFile: (path: string, content: string) => void;
-export let readDir: (path: string) => Array<FileInfo>;
-export let exists: (path: string) => boolean;
+export let readFile: (path: String) => string;
+export let writeFile: (path: String, content: String) => void;
+export let readDir: (path: String) => Array<FileInfo>;
+export let exists: (path: String) => boolean;
 ```
 
 This maps to WASI Preview 2's `wasi:filesystem/types` interface. The main work

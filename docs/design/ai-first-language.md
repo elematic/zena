@@ -55,7 +55,7 @@ The first line of defense: **tools that catch bugs automatically**, without requ
 Benefits: errors appear at the source (not at some distant runtime location), agents get immediate feedback without running code, types serve as machine-readable documentation, and refactoring propagates through the type system.
 
 ```zena
-let processUser = (id: i32, name: string, settings: UserSettings): Result<User> => {
+let processUser = (id: i32, name: String, settings: UserSettings): Result<User> => {
   // Type system ensures correct usage throughout
 };
 ```
@@ -64,7 +64,7 @@ let processUser = (id: i32, name: string, settings: UserSettings): Result<User> 
 
 Many languages trade soundness for convenience. TypeScript has intentional unsoundness (bivariant function parameters, `any`, type assertions) because humans found strict typing burdensome. **AI doesn't share this burden.** We can reclaim soundness.
 
-**Non-nullable by default**: References cannot be null unless explicitly marked (`string` vs `string | null`), eliminating the "billion dollar mistake" at compile time.
+**Non-nullable by default**: References cannot be null unless explicitly marked (`String` vs `String | null`), eliminating the "billion dollar mistake" at compile time.
 
 **No implicit coercion**: Operations require matching types. No silent `"1" + 1 = "11"` surprises.
 
@@ -237,7 +237,7 @@ One might assume AI would prefer minimal syntax—like Lisp. But **AI handles ri
 
 ```zena
 // Pattern matching - one way to write it, compiler enforces exhaustiveness
-let describe = (shape: Shape): string => match (shape) {
+let describe = (shape: Shape): String => match (shape) {
   case Circle { radius }: `Circle with radius ${radius}`
   case Rectangle { width, height }: `Rectangle ${width}x${height}`
   case Point { x, y }: `Point at (${x}, ${y})`
@@ -300,7 +300,7 @@ Track side effects in the type system:
 
 ```zena
 let pureAdd = (a: i32, b: i32): i32 => a + b;           // Pure
-let readFile = (path: string): IO<string> => { ... };   // Has IO effect
+let readFile = (path: String): IO<String> => { ... };   // Has IO effect
 ```
 
 This enables compiler optimization (pure functions can be memoized), easier testing (pure functions need no mocking), and clearer reasoning (know what a function can do from its signature).
