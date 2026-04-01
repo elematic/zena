@@ -2843,6 +2843,18 @@ function checkNewExpression(ctx: CheckerContext, expr: NewExpression): Type {
             expr.arguments.push(nullLiteral);
           }
         }
+      } else {
+        // No initializers array — inject null for each missing optional param
+        for (
+          let i = expr.arguments.length;
+          i < constructor.parameters.length;
+          i++
+        ) {
+          const nullLiteral: Expression = {
+            type: NodeType.NullLiteral,
+          };
+          expr.arguments.push(nullLiteral);
+        }
       }
     }
   }

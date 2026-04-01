@@ -1960,6 +1960,25 @@ class Counter(name: string, var count: i32)
 // name is immutable, count is mutable
 ```
 
+#### Optional parameters
+
+Case class parameters can be marked optional with `?`. Optional parameters
+become nullable fields (`T | null`) and can be omitted in the constructor call:
+
+```zena
+class Node(value: i32, label?: string)
+// label has type `string | null`
+
+let a = new Node(1);          // label defaults to null
+let b = new Node(1, 'hello'); // label is 'hello'
+```
+
+Optional and mutable can be combined:
+
+```zena
+class Config(name: string, var cache?: i32)
+```
+
 #### Generic case classes
 
 ```zena

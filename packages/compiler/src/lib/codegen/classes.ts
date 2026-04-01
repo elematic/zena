@@ -2415,7 +2415,11 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
   if (decl.caseParams) {
     for (const param of decl.caseParams) {
       const memberName = param.name.name;
-      if (!param.typeAnnotation.inferredType) {
+      // Use param.name.inferredType (set by checker, includes optional -> nullable)
+      // Fall back to typeAnnotation.inferredType for non-optional params
+      const checkerType =
+        param.name.inferredType ?? param.typeAnnotation.inferredType;
+      if (!checkerType) {
         throw new Error(
           `Case class param ${memberName} in ${decl.name.name} missing inferredType`,
         );
@@ -2427,10 +2431,7 @@ export function defineClassStruct(ctx: CodegenContext, decl: ClassDeclaration) {
         continue;
       }
 
-      const wasmType = mapCheckerTypeToWasmType(
-        ctx,
-        param.typeAnnotation.inferredType,
-      );
+      const wasmType = mapCheckerTypeToWasmType(ctx, checkerType);
 
       if (!fields.has(memberName)) {
         const isMutable = param.mutability === 'var';
@@ -2541,8 +2542,8 @@ export function registerClassMethods(
         type: NodeType.Parameter,
         name: p.name,
         typeAnnotation: p.typeAnnotation,
-        optional: false,
-        inferredType: p.typeAnnotation.inferredType,
+        optional: !!p.optional,
+        inferredType: p.name.inferredType ?? p.typeAnnotation.inferredType,
       })) as any[];
       const bodyStmts: any[] = [];
       // Only add super() if we're NOT using the struct_new pattern (immutable fields)
@@ -3347,15 +3348,14 @@ export function registerClassMethods(
         continue;
       }
 
-      if (!param.typeAnnotation.inferredType) {
+      const checkerType =
+        param.name.inferredType ?? param.typeAnnotation.inferredType;
+      if (!checkerType) {
         throw new Error(
           `Case class param ${propName} in ${decl.name.name} missing inferredType`,
         );
       }
-      const propType = mapCheckerTypeToWasmType(
-        ctx,
-        param.typeAnnotation.inferredType,
-      );
+      const propType = mapCheckerTypeToWasmType(ctx, checkerType);
 
       // Getter
       const getterName = getGetterName(propName);
@@ -3649,8 +3649,8 @@ export function generateClassMethods(
         type: NodeType.Parameter,
         name: p.name,
         typeAnnotation: p.typeAnnotation,
-        optional: false,
-        inferredType: p.typeAnnotation.inferredType,
+        optional: !!p.optional,
+        inferredType: p.name.inferredType ?? p.typeAnnotation.inferredType,
       })) as any[];
       const bodyStmts: any[] = [];
       // Only add super() if we're NOT using the struct_new pattern (immutable fields)

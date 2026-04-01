@@ -600,6 +600,12 @@ export interface CaseClassParam extends Node {
    * - 'var': Mutable field
    */
   mutability?: 'let' | 'var';
+  /**
+   * Whether this parameter is optional (`name?: Type`).
+   * Optional case params have nullable field types (`Type | null`)
+   * and can be omitted in the constructor call.
+   */
+  optional?: boolean;
 }
 
 export interface ClassDeclaration extends Node {

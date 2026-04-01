@@ -3021,7 +3021,12 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
 
     for (const param of decl.caseParams) {
       const fieldName = param.name.name;
-      const fieldType = resolveTypeAnnotation(ctx, param.typeAnnotation);
+      let fieldType = resolveTypeAnnotation(ctx, param.typeAnnotation);
+
+      // Optional case params get nullable field type
+      if (param.optional) {
+        fieldType = makeNullableType(fieldType);
+      }
 
       // Inline tuples cannot appear in field types
       validateNoInlineTuple(fieldType, ctx, 'field types');
@@ -3104,11 +3109,14 @@ function checkClassDeclaration(ctx: CheckerContext, decl: ClassDeclaration) {
     }
 
     // Auto-generate constructor type
+    const optionalParameters = decl.caseParams.map((p) => !!p.optional);
+    const hasOptionals = optionalParameters.some((o) => o);
     classType.constructorType = {
       kind: TypeKind.Function,
       parameters: paramTypes,
       parameterNames,
       returnType: Types.Void,
+      ...(hasOptionals ? {optionalParameters} : {}),
     };
 
     // Auto-generate operator == method

@@ -2473,6 +2473,7 @@ export class Parser {
             mutability = 'let';
           }
           const paramName = this.#parseIdentifier();
+          const optional = this.#match(TokenType.Question);
           this.#consume(
             TokenType.Colon,
             "Expected ':' after case class parameter name.",
@@ -2483,6 +2484,7 @@ export class Parser {
             name: paramName,
             typeAnnotation,
             mutability,
+            optional: optional || undefined,
             loc: this.#loc(paramStart, this.#previous()),
           });
         } while (this.#match(TokenType.Comma));
@@ -2585,6 +2587,7 @@ export class Parser {
               mutability = 'let';
             }
             const paramName = this.#parseIdentifier();
+            const optional = this.#match(TokenType.Question);
             this.#consume(
               TokenType.Colon,
               "Expected ':' after sealed variant parameter name.",
@@ -2595,6 +2598,7 @@ export class Parser {
               name: paramName,
               typeAnnotation,
               mutability,
+              optional: optional || undefined,
               loc: this.#loc(paramStart, this.#previous()),
             });
           } while (this.#match(TokenType.Comma));
