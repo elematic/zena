@@ -115,12 +115,12 @@ final class Parser {
   new(flags: Flags) : #flags = flags;
 
   // Parse a regular expression pattern into an AST
-  static parse(pattern: string, flags: Flags): Ast {
+  static parse(pattern: String, flags: Flags): Ast {
     let parser = new Parser(flags);
     return parser.#parseInternal(pattern);
   }
 
-  #parseInternal(pattern: string): Ast {
+  #parseInternal(pattern: String): Ast {
     this.#pattern = pattern;
     var pos = 0;
     let len = pattern.length;
@@ -441,7 +441,7 @@ final class Parser {
   }
 
   // Parse a character class [...]
-  #parseClass(pattern: string, startPos: i32): i32 {
+  #parseClass(pattern: String, startPos: i32): i32 {
     var pos = startPos + 1; // Skip the '['
     let len = pattern.length;
     let ast = Ast.create(Op.CharClass, this.#flags);
@@ -663,7 +663,7 @@ final class Parser {
   }
 
   // Parse escape sequences
-  #parseEscape(pattern: string, pos: i32): i32 {
+  #parseEscape(pattern: String, pos: i32): i32 {
     if (pos + 1 >= pattern.length) {
       throw new Error('Trailing backslash in pattern');
     }
@@ -777,7 +777,7 @@ final class Parser {
   }
 
   // Parse counted repetition {n}, {n,}, {n,m}
-  #parseRepeat(pattern: string, pos: i32): i32 {
+  #parseRepeat(pattern: String, pos: i32): i32 {
     var i = pos + 1;
     let len = pattern.length;
 
@@ -858,7 +858,7 @@ final class Parser {
   }
 
   // Check for and parse non-greedy modifier '?'
-  #maybeParseNonGreedy(pattern: string, pos: i32): i32 {
+  #maybeParseNonGreedy(pattern: String, pos: i32): i32 {
     if (pos < pattern.length && pattern.getByteAt(pos) == 63) { // '?'
       // Set non-greedy flag on the top of stack
       let n = this.#stack.length;
@@ -872,7 +872,7 @@ final class Parser {
   }
 
   // Parse special group sequences: (?:...), (?i), (?m), (?s), (?i:...), etc.
-  #parseSpecialGroup(pattern: string, pos: i32, len: i32): i32 {
+  #parseSpecialGroup(pattern: String, pos: i32, len: i32): i32 {
     // pos is at '(', pos+1 is '?'
     var i = pos + 2;  // Start after '(?'
     
@@ -974,7 +974,7 @@ final class Parser {
 }
 
 // Public parse function
-export let parsePattern = (pattern: string, flags: Flags): Ast => {
+export let parsePattern = (pattern: String, flags: Flags): Ast => {
   return Parser.parse(pattern, flags);
 };
 
@@ -1576,7 +1576,7 @@ final class NfaRunner {
   // Check if the NFA matches anywhere in the input, starting search from startSearchPos
   // Returns the start position of the match (relative to input start), or -1 if no match
   // offset indicates where 'input' starts in the original full text (for anchor handling)
-  match(input: string, startSearchPos: i32, offset: i32): i32 {
+  match(input: String, startSearchPos: i32, offset: i32): i32 {
     let inputLen = input.length;
     var startPos = startSearchPos;
     while (startPos <= inputLen) {
@@ -1602,7 +1602,7 @@ final class NfaRunner {
 
   // Check if the NFA matches starting at the given position
   // offset is the position in the original text where 'input' begins
-  #matchAt(input: string, startPos: i32, offset: i32): boolean {
+  #matchAt(input: String, startPos: i32, offset: i32): boolean {
     let inputLen = input.length;
     // Two lists for current and next threads
     var runq = new Array<Thread>();
@@ -1720,7 +1720,7 @@ final class NfaRunner {
 
   // Add a thread to the queue, following epsilon transitions (splits, captures, anchors)
   // This follows Go's add() function which handles InstCapture specially
-  #addThread(q: Array<Thread>, s: State, pos: i32, cap: Array<i32>, input: string, inputLen: i32): void {
+  #addThread(q: Array<Thread>, s: State, pos: i32, cap: Array<i32>, input: String, inputLen: i32): void {
     if (s.lastList == this.#listId) {
       return; // Already processed this state in this step
     }
@@ -1826,7 +1826,7 @@ final class NfaRunner {
   }
 
   // Check if position is a word boundary
-  #isWordBoundary(input: string, pos: i32, inputLen: i32): boolean {
+  #isWordBoundary(input: String, pos: i32, inputLen: i32): boolean {
     let before = pos > 0 && this.#isWordChar(input.getByteAt(pos - 1));
     let after = pos < inputLen && this.#isWordChar(input.getByteAt(pos));
     // Word boundary is where one side is a word char and the other isn't
@@ -1862,16 +1862,16 @@ final class NfaRunner {
 // ============================================================================
 
 export final class Match {
-  value: string;
+  value: String;
   index: i32;
-  groups: Array<string>;
-  #groupNames: Array<string>;
+  groups: Array<String>;
+  #groupNames: Array<String>;
 
-  new(value: string, index: i32, groups: Array<string>, groupNames: Array<string>)
+  new(value: String, index: i32, groups: Array<String>, groupNames: Array<String>)
       : value = value, index = index, groups = groups, #groupNames = groupNames;
 
   // Get a captured group by name. Returns null if name not found or group didn't match.
-  group(name: string): string | null {
+  group(name: String): String | null {
     var i = 0;
     while (i < this.#groupNames.length) {
       if (this.#groupNames[i] == name) {
@@ -1956,15 +1956,15 @@ export final class Match {
  * The `regex` template tag avoids this by using raw strings.
  */
 export final class Regex {
-  var #pattern: string;
-  var #flags: string;
+  var #pattern: String;
+  var #flags: String;
   var #start: State | null = null;
   #matchState = new State(StateType.Match);
   var #isLiteral = false;
   var #numCap = 2;
-  #groupNames = new Array<string>();
+  #groupNames = new Array<String>();
 
-  new(pattern: string, flags: string = '')
+  new(pattern: String, flags: String = '')
       : #pattern = pattern, #flags = flags {
     // Check if pattern is a simple literal (no metacharacters)
     this.#isLiteral = this.#checkLiteral(pattern);
@@ -1994,7 +1994,7 @@ export final class Regex {
   }
 
   // Check if pattern contains only literal characters
-  #checkLiteral(pattern: string): boolean {
+  #checkLiteral(pattern: String): boolean {
     var i = 0;
     while (i < pattern.length) {
       let c = pattern.getByteAt(i);
@@ -2011,7 +2011,7 @@ export final class Regex {
   }
 
   // Parse flag string into Flags enum
-  #parseFlags(flagStr: string): Flags {
+  #parseFlags(flagStr: String): Flags {
     var flags: i32 = 0;
     var i = 0;
     while (i < flagStr.length) {
@@ -2028,7 +2028,7 @@ export final class Regex {
     return flags as Flags;
   }
 
-  test(input: string): boolean {
+  test(input: String): boolean {
     if (this.#isLiteral) {
       return this.#findLiteral(input, 0) >= 0;
     }
@@ -2036,7 +2036,7 @@ export final class Regex {
     return runner.match(input, 0, 0) >= 0;
   }
 
-  exec(input: string, startIndex: i32 = 0): Match | null {
+  exec(input: String, startIndex: i32 = 0): Match | null {
     if (this.#isLiteral) {
       let index = this.#findLiteral(input, startIndex);
       if (index < 0) {
@@ -2045,8 +2045,8 @@ export final class Regex {
       return new Match(
         input.sliceBytes(index, index + this.#pattern.length),
         index,
-        new Array<string>(),
-        new Array<string>()  // No named groups in literal mode
+        new Array<String>(),
+        new Array<String>()  // No named groups in literal mode
       );
     }
     let runner = new NfaRunner(this.#start as State, this.#matchState, this.#numCap);
@@ -2070,7 +2070,7 @@ export final class Regex {
     }
 
     // Extract group strings from captures[2], captures[3], etc.
-    let groups = new Array<string>();
+    let groups = new Array<String>();
     var i = 2;
     while (i < caps.length) {
       let groupStart = caps[i];
@@ -2092,7 +2092,7 @@ export final class Regex {
   }
 
   // Find the length of the match starting at the given position
-  #findMatchLength(input: string, startPos: i32): i32 {
+  #findMatchLength(input: String, startPos: i32): i32 {
     // Run NFA to find the shortest/longest match
     // For now, find the longest match (greedy)
     let inputLen = input.length;
@@ -2205,7 +2205,7 @@ export final class Regex {
     return false;
   }
 
-  matchAll(input: string): Array<Match> {
+  matchAll(input: String): Array<Match> {
     let matches = new Array<Match>();
     if (this.#isLiteral) {
       let patternLen = this.#pattern.length;
@@ -2213,7 +2213,7 @@ export final class Regex {
         // Empty pattern matches at every position (0, 1, 2, ..., input.length)
         var i = 0;
         while (i <= input.length) {
-          matches.push(new Match('', i, new Array<string>(), new Array<string>()));
+          matches.push(new Match('', i, new Array<String>(), new Array<String>()));
           i = i + 1;
         }
         return matches;
@@ -2227,8 +2227,8 @@ export final class Regex {
         matches.push(new Match(
           input.sliceBytes(index, index + patternLen),
           index,
-          new Array<string>(),
-          new Array<string>()  // No named groups in literal mode
+          new Array<String>(),
+          new Array<String>()  // No named groups in literal mode
         ));
         pos = index + patternLen;
       }
@@ -2265,7 +2265,7 @@ export final class Regex {
       }
 
       // Extract group strings from captures[2], captures[3], etc.
-      let groups = new Array<string>();
+      let groups = new Array<String>();
       var capIdx = 2;
       while (capIdx < caps.length) {
         let groupStart = caps[capIdx];
@@ -2297,7 +2297,7 @@ export final class Regex {
     return matches;
   }
 
-  replace(input: string, replacement: string): string {
+  replace(input: String, replacement: String): String {
     let result = this.exec(input);
     if (result == null) {
       return input;
@@ -2310,7 +2310,7 @@ export final class Regex {
 
   // TODO: use a union type when https://github.com/justinfagnani/zena/issues/58
   // is fixed.
-  replace(input: string, replacer: (m: Match) => string): string {
+  replace(input: String, replacer: (m: Match) => String): String {
     let result = this.exec(input);
     if (result == null) {
       return input;
@@ -2321,21 +2321,21 @@ export final class Regex {
     return before + replacer(m) + after;
   }
 
-  replaceAll(input: string, replacement: string): string {
+  replaceAll(input: String, replacement: String): String {
     return this.#replaceAllImpl(input, (m: Match) => replacement);
   }
 
-  replaceAll(input: string, replacer: (m: Match) => string): string {
+  replaceAll(input: String, replacer: (m: Match) => String): String {
     return this.#replaceAllImpl(input, replacer);
   }
 
-  #replaceAllImpl(input: string, replacer: (m: Match) => string): string {
+  #replaceAllImpl(input: String, replacer: (m: Match) => String): String {
     let matches = this.matchAll(input);
     // Special case: empty pattern on empty input returns no matches,
     // but should produce one replacement
     if (matches.length == 0) {
       if (this.#pattern.length == 0 && input.length == 0) {
-        return replacer(new Match('', 0, new Array<string>(), new Array<string>()));
+        return replacer(new Match('', 0, new Array<String>(), new Array<String>()));
       }
       return input;
     }
@@ -2364,8 +2364,8 @@ export final class Regex {
     return sb.toString();
   }
 
-  split(input: string): Array<string> {
-    let parts = new Array<string>();
+  split(input: String): Array<String> {
+    let parts = new Array<String>();
     if (this.#isLiteral) {
       let patternLen = this.#pattern.length;
       if (patternLen == 0) {
@@ -2418,7 +2418,7 @@ export final class Regex {
     return parts;
   }
 
-  #findLiteral(input: string, startPos: i32): i32 {
+  #findLiteral(input: String, startPos: i32): i32 {
     let patternLen = this.#pattern.length;
     let inputLen = input.length;
     if (patternLen == 0) {
@@ -2463,13 +2463,13 @@ export final class Regex {
  *   let re = regex`\d+`;       // instead of Regex.compile("\\d+")
  *   let re = regex`\w+@\w+`;   // instead of Regex.compile("\\w+@\\w+")
  */
-export let regex = (strings: TemplateStringsArray, values: FixedArray<string>) => {
+export let regex = (strings: TemplateStringsArray, values: FixedArray<String>) => {
   // Simple case: no interpolation, just use the raw string
   if (values.length == 0) {
     return new Regex(strings.raw[0]);
   }
   let numParts = strings.length * 2 - 1;
-  let parts = new Array<string>(numParts);
+  let parts = new Array<String>(numParts);
   // With interpolation: interleave strings and values
   var pattern = strings.raw[0];
   var i = 0;

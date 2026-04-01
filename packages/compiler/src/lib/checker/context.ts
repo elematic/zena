@@ -554,9 +554,10 @@ export class CheckerContext {
         return Types.AnyRef;
       case TypeNames.Any:
         return Types.Any;
-      case TypeNames.String: {
-        // TODO: 'string' is currently an alias for the 'String' class from
-        // zena:string. Remove this when all occurrences of 'string' are removed
+      case TypeNames.String:
+      case 'String': {
+        // The String type is sometimes used in tests where the prelude isn't
+        // available.
         return this.getWellKnownType(Types.String.name) || Types.String;
       }
       case TypeKind.ByteArray:

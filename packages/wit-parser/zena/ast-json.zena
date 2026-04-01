@@ -21,7 +21,7 @@ import {Case, EnumCaseDef, FlagDef, ResourceFunc, ResourceFuncTag, Docs} from '.
 // ============================================================================
 
 /** Normalize an identifier - strip '%' prefix if present (explicit escaping). */
-let normalizeId = (name: string): string => {
+let normalizeId = (name: String): String => {
   if (name.length > 0 && name.getByteAt(0) == 37) { // '%'
     return name.sliceBytes(1, name.length);
   } else {
@@ -39,15 +39,15 @@ let normalizeId = (name: string): string => {
  */
 class TypeRef {
   isIndex: boolean;
-  strValue: string;
+  strValue: String;
   indexValue: i32;
 
-  new(isIndex: boolean, strValue: string, indexValue: i32)
+  new(isIndex: boolean, strValue: String, indexValue: i32)
     : isIndex = isIndex,
       strValue = strValue,
       indexValue = indexValue;
 
-  static str(s: string): TypeRef {
+  static str(s: String): TypeRef {
     return new TypeRef(false, s, 0);
   }
 
@@ -58,41 +58,41 @@ class TypeRef {
 
 /** Field in a record type. */
 class RecordField {
-  var name: string;
+  var name: String;
   var typeRef: TypeRef;
 
-  new(name: string, typeRef: TypeRef) : name = name, typeRef = typeRef;
+  new(name: String, typeRef: TypeRef) : name = name, typeRef = typeRef;
 }
 
 /** Case in a variant type. */
 class VariantCase {
-  var name: string;
+  var name: String;
   var typeRef: TypeRef | null;
 
-  new(name: string, typeRef: TypeRef | null) : name = name, typeRef = typeRef;
+  new(name: String, typeRef: TypeRef | null) : name = name, typeRef = typeRef;
 }
 
 /** Case in an enum type (with optional docs). */
 class EnumCase {
-  var name: string;
+  var name: String;
   var docs: Docs | null;
 
-  new(name: string, docs: Docs | null) : name = name, docs = docs;
+  new(name: String, docs: Docs | null) : name = name, docs = docs;
 }
 
 /** An entry in the types array. */
 class TypeEntry {
-  var name: string | null;
+  var name: String | null;
   var kind: TypeKind;
   var owner: Option<i32>;
   var docs: Docs | null;
 
-  new(name: string | null, kind: TypeKind, owner: Option<i32>, docs: Docs | null) : name = name, kind = kind, owner = owner, docs = docs;
+  new(name: String | null, kind: TypeKind, owner: Option<i32>, docs: Docs | null) : name = name, kind = kind, owner = owner, docs = docs;
 }
 
 /** The kind object for a type entry. */
 class TypeKind {
-  var tag: string;
+  var tag: String;
   var tupleTypes: Array<TypeRef> | null = null;
   var inner: TypeRef | null = null;
   var okType: TypeRef | null = null;
@@ -100,21 +100,21 @@ class TypeKind {
   var fields: Array<RecordField> | null = null;
   var cases: Array<VariantCase> | null = null;
   var enumCases: Array<EnumCase> | null = null;
-  var flagValues: Array<string> | null = null;
+  var flagValues: Array<String> | null = null;
   // For handle types (borrow/own)
   var borrowIndex = -1;
   var ownIndex = -1;
 
-  new(tag: string) : tag = tag;
+  new(tag: String) : tag = tag;
 }
 
 /** Entry for a package in the output. */
 class PackageEntry {
-  var name: string;
-  var interfaces = new HashMap<string, i32>();
-  var worlds = new HashMap<string, i32>();
+  var name: String;
+  var interfaces = new HashMap<String, i32>();
+  var worlds = new HashMap<String, i32>();
 
-  new(name: string) : name = name;
+  new(name: String) : name = name;
 }
 
 /** Tracks indices during serialization. */
@@ -123,14 +123,14 @@ class SerializeContext {
   var worlds = new Array<WorldDef>();
   var types = new Array<TypeEntry>();
   var packages = new Array<PackageEntry>();
-  var interfaceIndices = new HashMap<string, i32>();
-  var worldIndices = new HashMap<string, i32>();
-  var typeIndices = new HashMap<string, i32>();
+  var interfaceIndices = new HashMap<String, i32>();
+  var worldIndices = new HashMap<String, i32>();
+  var typeIndices = new HashMap<String, i32>();
   // Maps to track borrow/own types by resource index
   var borrowTypeIndices = new HashMap<i32, i32>();
   var ownTypeIndices = new HashMap<i32, i32>();
   // Map to track complex anonymous types by canonical key
-  var anonTypeIndices = new HashMap<string, i32>();
+  var anonTypeIndices = new HashMap<String, i32>();
   // Track which type indices are resources (for bare resource name -> own<resource> conversion)
   var resourceTypeIndices = new HashMap<i32, i32>();
   var currentPackageIndex = 0;
@@ -159,7 +159,7 @@ class SerializeContext {
   }
   
   /** Get or create an anonymous type with the given key. */
-  getOrCreateAnonType(key: string, kind: TypeKind): i32 {
+  getOrCreateAnonType(key: String, kind: TypeKind): i32 {
     if (this.anonTypeIndices.has(key)) {
       let (idx, _) = this.anonTypeIndices.get(key);
       return idx;
@@ -259,7 +259,7 @@ class SerializeContext {
   }
   
   /** Get canonical key for a TypeRef. */
-  typeRefToKey(ref: TypeRef): string {
+  typeRefToKey(ref: TypeRef): String {
     if (ref.isIndex) {
       return "#" + i32ToString(ref.indexValue);
     } else {
@@ -386,7 +386,7 @@ class SerializeContext {
 // Helper Functions (defined before use)
 // ============================================================================
 
-let formatPackageName = (name: PackageName | null): string => {
+let formatPackageName = (name: PackageName | null): String => {
   if (name == null) { return ""; }
   let n = name as PackageName;
   var result = normalizeId(n.namespace.name) + ":" + normalizeId(n.name.name);
@@ -396,7 +396,7 @@ let formatPackageName = (name: PackageName | null): string => {
   return result;
 };
 
-let typeDefTagToString = (tag: TypeDefTag): string => {
+let typeDefTagToString = (tag: TypeDefTag): String => {
   if (tag == TypeDefTag.Record) { return "record"; }
   if (tag == TypeDefTag.Flags) { return "flags"; }
   if (tag == TypeDefTag.Variant) { return "variant"; }
@@ -426,7 +426,7 @@ let isPrimitiveType = (t: Type): boolean => {
 };
 
 /** Get primitive type as string. Only valid for primitive types. */
-let primitiveTypeToString = (t: Type): string => {
+let primitiveTypeToString = (t: Type): String => {
   if (t.tag == TypeTag.U8) { return "u8"; }
   if (t.tag == TypeTag.U16) { return "u16"; }
   if (t.tag == TypeTag.U32) { return "u32"; }
@@ -457,7 +457,7 @@ let serializeTypeRef = (b: JsonBuilder, ref: TypeRef): void => {
   }
 };
 
-let typeToString = (ctx: SerializeContext, t: Type): string => {
+let typeToString = (ctx: SerializeContext, t: Type): String => {
   if (t.tag == TypeTag.U8) { return "u8"; }
   if (t.tag == TypeTag.U16) { return "u16"; }
   if (t.tag == TypeTag.U32) { return "u32"; }
@@ -580,7 +580,7 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, ownerInterface: i32):
       idx = idx + 1;
     }
   } else if (td.tag == TypeDefTag.Flags) {
-    let flagsArr = new Array<string>();
+    let flagsArr = new Array<String>();
     kind.flagValues = flagsArr;
     let flags = td.flags as Array<FlagDef>;
     var idx = 0;
@@ -620,7 +620,7 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, ownerInterface: i32):
   return typeIdx;
 };
 
-let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: ResourceFunc, resourceName: string, ifaceIndex: i32): void => {
+let serializeResourceFunc = (b: JsonBuilder, ctx: SerializeContext, rf: ResourceFunc, resourceName: String, ifaceIndex: i32): void => {
   b.beginObject();
   
   // Get the resource type index
@@ -856,7 +856,7 @@ let serializeTypeKind = (b: JsonBuilder, kind: TypeKind): void => {
     b.key("flags").beginObject();
     b.key("flags").beginArray();
     if (kind.flagValues != null) {
-      let flags = kind.flagValues as Array<string>;
+      let flags = kind.flagValues as Array<String>;
       var idx = 0;
       while (idx < flags.length) {
         b.string(flags[idx]);
@@ -934,7 +934,7 @@ let serializeTypeEntry = (b: JsonBuilder, entry: TypeEntry): void => {
 };
 
 /** Serialize a world function (for import/export). */
-let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: string, func: Func): void => {
+let serializeWorldFunction = (b: JsonBuilder, ctx: SerializeContext, name: String, func: Func): void => {
   b.beginObject();
   b.key("name").string(name);
   
@@ -1042,13 +1042,13 @@ let serializePackage = (b: JsonBuilder, pkg: PackageEntry): void => {
   b.key("name").string(pkg.name);
   
   b.key("interfaces").beginObject();
-  pkg.interfaces.forEach((name: string, idx: i32) => {
+  pkg.interfaces.forEach((name: String, idx: i32) => {
     b.key(name).i32(idx);
   });
   b.endObject();
   
   b.key("worlds").beginObject();
-  pkg.worlds.forEach((name: string, idx: i32) => {
+  pkg.worlds.forEach((name: String, idx: i32) => {
     b.key(name).i32(idx);
   });
   b.endObject();
@@ -1154,7 +1154,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast): void => {
 /**
  * Serialize a parsed AST to JSON format matching wasm-tools output.
  */
-export let serializeAstToJson = (ast: Ast): string => {
+export let serializeAstToJson = (ast: Ast): String => {
   let ctx = new SerializeContext();
   collectFromAst(ctx, ast);
   

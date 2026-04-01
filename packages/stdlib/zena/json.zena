@@ -22,11 +22,11 @@ export final class SourceLocation {
 // === JSON Value Types ===
 
 // Forward declaration for recursive type
-export type JsonValue = JsonObject | JsonArray | string | Box<f64> | Box<boolean> | null;
+export type JsonValue = JsonObject | JsonArray | String | Box<f64> | Box<boolean> | null;
 
 export class JsonObject {
-  #fields = new OrderedMap<string, JsonValue>();
-  #locations: HashMap<string, SourceLocation> | null = null;
+  #fields = new OrderedMap<String, JsonValue>();
+  #locations: HashMap<String, SourceLocation> | null = null;
 
   static withLocations(): JsonObject {
     return new JsonObject(true);
@@ -34,25 +34,25 @@ export class JsonObject {
 
   new(withLocations: boolean = false)
     : #locations = 
-        if (withLocations) { new HashMap<string, SourceLocation>() }
+        if (withLocations) { new HashMap<String, SourceLocation>() }
         else { null } {}
 
-  operator [](key: string): JsonValue {
+  operator [](key: String): JsonValue {
     if (!this.#fields.has(key)) {
       return null;
     }
     return this.#fields.getOr(key, null);
   }
 
-  operator []=(key: string, value: JsonValue): void {
+  operator []=(key: String, value: JsonValue): void {
     this.#fields.set(key, value);
   }
 
-  has(key: string): boolean {
+  has(key: String): boolean {
     return this.#fields.has(key);
   }
 
-  delete(key: string): boolean {
+  delete(key: String): boolean {
     return this.#fields.delete(key);
   }
 
@@ -63,12 +63,12 @@ export class JsonObject {
   }
 
   // Source location for a key (only if tracking enabled)
-  locationOf(key: string): SourceLocation | null {
+  locationOf(key: String): SourceLocation | null {
     let locs = this.#locations;
     if (locs == null) {
       return null;
     }
-    let locsMap = locs as HashMap<string, SourceLocation>;
+    let locsMap = locs as HashMap<String, SourceLocation>;
     if (!locsMap.has(key)) {
       return null;
     }
@@ -77,21 +77,21 @@ export class JsonObject {
   }
 
   // Internal: set location for a key
-  setLocation(key: string, loc: SourceLocation): void {
+  setLocation(key: String, loc: SourceLocation): void {
     let locs = this.#locations;
     if (locs != null) {
-      let locsMap = locs as HashMap<string, SourceLocation>;
+      let locsMap = locs as HashMap<String, SourceLocation>;
       locsMap.set(key, loc);
     }
   }
 
   // Iterate over all key-value pairs
-  forEach(callback: (key: string, value: JsonValue) => void): void {
+  forEach(callback: (key: String, value: JsonValue) => void): void {
     this.#fields.forEach(callback);
   }
 
   // Serialize to JSON string
-  stringify(): string {
+  stringify(): String {
     let sb = new StringBuilder();
     stringifyObject(sb, this, null, 0);
     return sb.toString();
@@ -152,7 +152,7 @@ export class JsonArray {
   }
 
   // Serialize to JSON string
-  stringify(): string {
+  stringify(): String {
     let sb = new StringBuilder();
     stringifyArray(sb, this, null, 0);
     return sb.toString();
@@ -161,7 +161,7 @@ export class JsonArray {
 
 // === JSON Stringify Helpers ===
 
-let escapeJsonString = (sb: StringBuilder, s: string): void => {
+let escapeJsonString = (sb: StringBuilder, s: String): void => {
   sb.append("\"");
   var i = 0;
   let len = s.length;
@@ -230,15 +230,15 @@ let stringifyF64 = (sb: StringBuilder, n: f64): void => {
   sb.appendF64(n);
 };
 
-let stringifyValue = (sb: StringBuilder, value: any, indent: string | null, depth: i32): void => {
+let stringifyValue = (sb: StringBuilder, value: any, indent: String | null, depth: i32): void => {
   if (value == null) {
     sb.append("null");
   } else if (value is JsonObject) {
     stringifyObject(sb, value as JsonObject, indent, depth);
   } else if (value is JsonArray) {
     stringifyArray(sb, value as JsonArray, indent, depth);
-  } else if (value is string) {
-    escapeJsonString(sb, value as string);
+  } else if (value is String) {
+    escapeJsonString(sb, value as String);
   } else if (value is Box<f64>) {
     let boxed = value as Box<f64>;
     stringifyF64(sb, boxed.value);
@@ -258,7 +258,7 @@ let stringifyValue = (sb: StringBuilder, value: any, indent: string | null, dept
   }
 };
 
-let writeIndent = (sb: StringBuilder, indent: string, depth: i32): void => {
+let writeIndent = (sb: StringBuilder, indent: String, depth: i32): void => {
   var i = 0;
   while (i < depth) {
     sb.append(indent);
@@ -266,10 +266,10 @@ let writeIndent = (sb: StringBuilder, indent: string, depth: i32): void => {
   }
 };
 
-let stringifyObject = (sb: StringBuilder, obj: JsonObject, indent: string | null, depth: i32): void => {
+let stringifyObject = (sb: StringBuilder, obj: JsonObject, indent: String | null, depth: i32): void => {
   if (indent != null) {
     // Pretty-print mode
-    let ind = indent as string;
+    let ind = indent as String;
     if (obj.size == 0) {
       sb.append("{}");
       return;
@@ -277,7 +277,7 @@ let stringifyObject = (sb: StringBuilder, obj: JsonObject, indent: string | null
     sb.append("{");
     sb.append("\n");
     var first = true;
-    obj.forEach((key: string, value: any) => {
+    obj.forEach((key: String, value: any) => {
       if (!first) {
         sb.append(",");
         sb.append("\n");
@@ -295,7 +295,7 @@ let stringifyObject = (sb: StringBuilder, obj: JsonObject, indent: string | null
     // Compact mode
     sb.append("{");
     var first = true;
-    obj.forEach((key: string, value: any) => {
+    obj.forEach((key: String, value: any) => {
       if (!first) {
         sb.append(",");
       }
@@ -308,11 +308,11 @@ let stringifyObject = (sb: StringBuilder, obj: JsonObject, indent: string | null
   }
 };
 
-let stringifyArray = (sb: StringBuilder, arr: JsonArray, indent: string | null, depth: i32): void => {
+let stringifyArray = (sb: StringBuilder, arr: JsonArray, indent: String | null, depth: i32): void => {
   let len = arr.length;
   if (indent != null) {
     // Pretty-print mode
-    let ind = indent as string;
+    let ind = indent as String;
     if (len == 0) {
       sb.append("[]");
       return;
@@ -352,7 +352,7 @@ let stringifyArray = (sb: StringBuilder, arr: JsonArray, indent: string | null, 
  * @param value The JSON value to serialize
  * @param indent Optional indentation string for pretty-printing (e.g., "  " or "\t")
  */
-export let stringify = (value: any, indent: string | null = null): string => {
+export let stringify = (value: any, indent: String | null = null): String => {
   let sb = new StringBuilder();
   stringifyValue(sb, value, indent, 0);
   if (indent != null) {
@@ -374,7 +374,7 @@ export class JsonParseError extends Error {
   #line: i32;
   #column: i32;
 
-  new(message: string, line: i32, column: i32)
+  new(message: String, line: i32, column: i32)
     : #line = line, 
       #column = column, 
       super(message);
@@ -398,7 +398,7 @@ class JsonParser {
   var #column = 1;
   var #lineStart = 0;  // byte position where current line started
 
-  new(input: string, options: JsonOptions | null)
+  new(input: String, options: JsonOptions | null)
     : #reader = new StringReader(input),
       #allowComments = options?.allowComments ?? false,
       #trackLocations = options?.trackLocations ?? false
@@ -556,7 +556,7 @@ class JsonParser {
     return arr;
   }
 
-  #parseString(): string {
+  #parseString(): String {
     this.#expect(34);  // '"'
     
     let start = this.#reader.mark();
@@ -594,11 +594,11 @@ class JsonParser {
     return raw;
   }
 
-  #unescapeString(raw: string): string {
+  #unescapeString(raw: String): String {
     // TODO: Implement proper string unescaping
     // For now, handle common escapes
     let reader = new StringReader(raw);
-    var parts = new Array<string>();
+    var parts = new Array<String>();
     var start = reader.mark();
     
     while (!reader.isAtEnd) {
@@ -728,7 +728,7 @@ class JsonParser {
     return new Box(value);
   }
 
-  #parseFloat(s: string): f64 {
+  #parseFloat(s: String): f64 {
     // TODO: Implement proper string-to-float conversion
     // For now, use a simple integer parser
     let reader = new StringReader(s);
@@ -831,7 +831,7 @@ class JsonParser {
     return null;
   }
 
-  #expectWord(word: string): void {
+  #expectWord(word: String): void {
     let reader = new StringReader(word);
     while (!reader.isAtEnd) {
       let expected = reader.advanceByte();
@@ -906,14 +906,14 @@ class JsonParser {
     this.#column = this.#column + 1;
   }
 
-  #error(message: string): never {
+  #error(message: String): never {
     throw new JsonParseError(message, this.#line, this.#column);
   }
 }
 
 // === Public API ===
 
-export let parseJson = (input: string, options: JsonOptions | null = null): JsonValue => {
+export let parseJson = (input: String, options: JsonOptions | null = null): JsonValue => {
   let parser = new JsonParser(input, options);
   return parser.parse();
 };
@@ -921,7 +921,7 @@ export let parseJson = (input: string, options: JsonOptions | null = null): Json
 // === jq-Style Query Functions ===
 
 // Get a value by path (e.g., ".foo.bar[0].baz")
-export let jsonGet = (value: JsonValue, path: string): JsonValue => {
+export let jsonGet = (value: JsonValue, path: String): JsonValue => {
   let reader = new StringReader(path);
   var current: JsonValue = value;
   
@@ -1062,7 +1062,7 @@ export class JsonBuilder {
 
   // === Key (for objects) ===
 
-  key(k: string): JsonBuilder {
+  key(k: String): JsonBuilder {
     this.#writeCommaIfNeeded();
     this.#writeEscapedString(k);
     this.#sb.append(":");
@@ -1072,7 +1072,7 @@ export class JsonBuilder {
 
   // === Value methods ===
 
-  string(v: string): JsonBuilder {
+  string(v: String): JsonBuilder {
     this.#writeCommaIfNeeded();
     this.#writeEscapedString(v);
     this.#incrementCount();
@@ -1120,7 +1120,7 @@ export class JsonBuilder {
 
   // === Raw JSON (for pre-serialized content) ===
 
-  raw(json: string): JsonBuilder {
+  raw(json: String): JsonBuilder {
     this.#writeCommaIfNeeded();
     this.#sb.append(json);
     this.#incrementCount();
@@ -1129,7 +1129,7 @@ export class JsonBuilder {
 
   // === Get result ===
 
-  toString(): string {
+  toString(): String {
     return this.#sb.toString();
   }
 
@@ -1158,7 +1158,7 @@ export class JsonBuilder {
     this.#needsValue = false;
   }
 
-  #writeEscapedString(s: string): void {
+  #writeEscapedString(s: String): void {
     this.#sb.append("\"");
     var i = 0;
     let len = s.length;

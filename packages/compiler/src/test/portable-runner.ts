@@ -13,6 +13,7 @@ import {suite, test} from 'node:test';
 
 // Import compiler
 import {Parser, TypeChecker, CodeGenerator, Compiler} from '../lib/index.js';
+import type {Diagnostic} from '../lib/diagnostics.js';
 import {DiagnosticSeverity, formatDiagnostic} from '../lib/diagnostics.js';
 
 // Import stdlib module loader
@@ -300,7 +301,7 @@ async function runCheckTest(
   // Check if the test has imports - if so, use the full compiler
   const hasImports = content.includes('import ');
 
-  let diagnostics: Array<{message: string; severity?: number}>;
+  let diagnostics: Diagnostic[];
 
   if (hasImports) {
     // Use full compiler to resolve imports
@@ -371,8 +372,11 @@ async function runCheckTest(
     });
 
     if (!found) {
+      const formatted = diagnostics
+        .map((d) => formatDiagnostic(d, content))
+        .join('\n');
       throw new Error(
-        `Expected error matching ${expected.regex} on line ${expected.line}, but found none.\nActual errors: ${diagnostics.map((d) => d.message).join(', ') || '(none)'}`,
+        `Expected error matching ${expected.regex} on line ${expected.line}, but found none.\nActual errors:\n${formatted || '(none)'}`,
       );
     }
   }
@@ -383,9 +387,10 @@ async function runCheckTest(
       (d) => d.severity === DiagnosticSeverity.Error,
     );
     if (errors.length > 0) {
-      throw new Error(
-        `Unexpected errors: ${errors.map((d) => d.message).join(', ')}`,
-      );
+      const formatted = errors
+        .map((d) => formatDiagnostic(d, content))
+        .join('\n');
+      throw new Error(`Unexpected errors:\n${formatted}`);
     }
   }
 }

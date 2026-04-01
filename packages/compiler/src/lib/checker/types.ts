@@ -765,10 +765,11 @@ function resolveTypeAnnotationInternal(
   const type = ctx.resolveType(name);
 
   if (!type) {
-    ctx.diagnostics.reportError(
-      `Unknown type '${name}'.`,
-      DiagnosticCode.SymbolNotFound,
-    );
+    const message =
+      name === 'string'
+        ? `Unknown type 'string'. Did you mean 'String'?`
+        : `Unknown type '${name}'.`;
+    ctx.diagnostics.reportError(message, DiagnosticCode.SymbolNotFound);
     return Types.Unknown;
   }
 

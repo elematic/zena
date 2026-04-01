@@ -170,7 +170,7 @@ let allocOrPanic = (size: i32): i32 => {
  * @param ptr - Pointer to the start of the string
  * @returns A Zena string
  */
-let readCString = (ptr: i32): string => {
+let readCString = (ptr: i32): String => {
   // Find the null terminator
   var len = 0;
   while (mem.getU8(ptr + len) != 0) {
@@ -192,7 +192,7 @@ let readCString = (ptr: i32): string => {
  * @param len - Length of the string in bytes
  * @returns A Zena string
  */
-let readStringWithLength = (ptr: i32, len: i32): string => {
+let readStringWithLength = (ptr: i32, len: i32): String => {
   // Build a GC byte array from linear memory
   let bytes = newByteArray(len);
   for (var i = 0; i < len; i = i + 1) {
@@ -207,11 +207,11 @@ let readStringWithLength = (ptr: i32, len: i32): string => {
 
 /**
  * A key-value pair representing an environment variable.
- * Matches WASI P2's tuple<string, string> representation.
+ * Matches WASI P2's tuple<String, String> representation.
  */
 export type EnvVar = {
-  name: string,
-  value: string,
+  name: String,
+  value: String,
 };
 
 /**
@@ -313,7 +313,7 @@ export let getEnvironment = (): Array<EnvVar> => {
  * let port = getEnv("PORT") ?? "8080";
  * ```
  */
-export let getEnv = (name: string): string | null => {
+export let getEnv = (name: String): String | null => {
   let envs = getEnvironment();
   for (var i = 0; i < envs.length; i = i + 1) {
     let env = envs[i];
@@ -350,7 +350,7 @@ export let getEnv = (name: string): string | null => {
  * }
  * ```
  */
-export let getArguments = (): Array<string> => {
+export let getArguments = (): Array<String> => {
   // Step 1: Get sizes
   let argcPtr = allocOrPanic(4);
   let argvBufSizePtr = allocOrPanic(4);
@@ -359,7 +359,7 @@ export let getArguments = (): Array<string> => {
   if (errno != 0) {
     alloc.free(argcPtr);
     alloc.free(argvBufSizePtr);
-    return new Array<string>();
+    return new Array<String>();
   }
   
   let argc = mem.getI32(argcPtr);
@@ -368,7 +368,7 @@ export let getArguments = (): Array<string> => {
   alloc.free(argvBufSizePtr);
   
   if (argc == 0) {
-    return new Array<string>();
+    return new Array<String>();
   }
   
   // Step 2: Allocate buffers
@@ -380,11 +380,11 @@ export let getArguments = (): Array<string> => {
   if (errno != 0) {
     alloc.free(argvPtr);
     alloc.free(argvBufPtr);
-    return new Array<string>();
+    return new Array<String>();
   }
   
   // Step 4: Parse into array
-  let result = new Array<string>();
+  let result = new Array<String>();
   
   for (var i = 0; i < argc; i = i + 1) {
     let strPtr = mem.getI32(argvPtr + i * 4);
@@ -412,7 +412,7 @@ export let getArguments = (): Array<string> => {
  * console.log("Usage: " + getProgramName() + " [options] <file>");
  * ```
  */
-export let getProgramName = (): string => {
+export let getProgramName = (): String => {
   let args = getArguments();
   if (args.length > 0) {
     return args[0];
@@ -446,7 +446,7 @@ export let getProgramName = (): string => {
  * }
  * ```
  */
-export let initialCwd = (): string | null => {
+export let initialCwd = (): String | null => {
   // WASI P1 doesn't have a direct API for this.
   // Common convention: check PWD environment variable
   return getEnv("PWD");
@@ -524,9 +524,9 @@ export let exitFailure = (): void => {
  */
 export type ParsedOption = {
   /** The option name (without leading dashes). */
-  name: string,
+  name: String,
   /** The option value, if provided (for --name=value or -n value). Null if no value. */
-  value: string | null
+  value: String | null
 };
 
 /**
@@ -535,7 +535,7 @@ export type ParsedOption = {
  * @param arg - The argument to check
  * @returns true if it's a short option (single dash + single char)
  */
-export let isShortOption = (arg: string): boolean => {
+export let isShortOption = (arg: String): boolean => {
   // Short option: exactly "-X" where X is not '-' (45 = '-')
   if (arg.length != 2) {
     return false;
@@ -555,7 +555,7 @@ export let isShortOption = (arg: string): boolean => {
  * @param arg - The argument to check
  * @returns true if it's a long option (starts with --)
  */
-export let isLongOption = (arg: string): boolean => {
+export let isLongOption = (arg: String): boolean => {
   // Long option: starts with "--" (45 = '-') and has at least one more char
   if (arg.length < 3) {
     return false;
@@ -572,7 +572,7 @@ export let isLongOption = (arg: string): boolean => {
  * @param arg - The argument to check
  * @returns true if it starts with a dash
  */
-export let isOption = (arg: string): boolean => {
+export let isOption = (arg: String): boolean => {
   // Any option starts with '-' (byte 45)
   if (arg.length == 0) {
     return false;
@@ -595,7 +595,7 @@ export let isOption = (arg: string): boolean => {
  * // opt2.name == "verbose", opt2.value == null
  * ```
  */
-export let parseLongOption = (arg: string): ParsedOption => {
+export let parseLongOption = (arg: String): ParsedOption => {
   // Remove leading --
   let optPart = arg.sliceBytes(2, arg.length);
   

@@ -84,7 +84,7 @@ export class FsError extends Error {
   code: FsErrorCode;
   errno: i32;
 
-  new(errno: i32, message: string) : errno = errno, code = __errnoToCode(errno), super(message);
+  new(errno: i32, message: String) : errno = errno, code = __errnoToCode(errno), super(message);
 }
 
 // ============================================================================
@@ -110,7 +110,7 @@ export type FileStat = {
 
 // Directory entry
 export type DirEntry = {
-  name: string,
+  name: String,
   fileType: FileType,
 };
 
@@ -317,7 +317,7 @@ let SCRATCH_PTR: i32 = allocAlignedOrPanic(SCRATCH_SIZE, 8);
 // ============================================================================
 
 // Copy a Zena string to linear memory, return (ptr, len)
-let __stringToLinear = (s: string): (i32, i32) => {
+let __stringToLinear = (s: String): (i32, i32) => {
   let len = s.length;
   let ptr = allocOrPanic(len);
   for (var i = 0; i < len; i = i + 1) {
@@ -327,7 +327,7 @@ let __stringToLinear = (s: string): (i32, i32) => {
 };
 
 // Read a string from linear memory
-let __linearToString = (ptr: i32, len: i32): string => {
+let __linearToString = (ptr: i32, len: i32): String => {
   // Build a GC byte array from linear memory
   let bytes = newByteArray(len);
   for (var i = 0; i < len; i = i + 1) {
@@ -338,7 +338,7 @@ let __linearToString = (ptr: i32, len: i32): string => {
 };
 
 // Convert errno to string for error messages
-let __errnoToString = (errno: i32): string => {
+let __errnoToString = (errno: i32): String => {
   return match (errno) {
     case 2: "EACCES"
     case 8: "EBADF"
@@ -360,7 +360,7 @@ let __errnoToString = (errno: i32): string => {
 };
 
 // Check WASI errno and throw if non-zero
-let __checkErrno = (errno: i32, operation: string): void => {
+let __checkErrno = (errno: i32, operation: String): void => {
   if (errno != 0) {
     throw new FsError(errno, operation + " failed with errno " + __errnoToString(errno));
   }
@@ -471,7 +471,7 @@ export class Descriptor {
   }
 
   // Read the entire file as a UTF-8 string
-  readString(): string {
+  readString(): String {
     let bytes = this.readAllBytes();
     return new String(bytes, 0, __byte_array_length(bytes), Encoding.WTF8);
   }
@@ -499,7 +499,7 @@ export class Descriptor {
   }
 
   // Write a string (UTF-8) to the file
-  writeString(data: string): void {
+  writeString(data: String): void {
     if (this.#closed) {
       throw new FsError(8, "Descriptor is closed");
     }
@@ -515,7 +515,7 @@ export class Descriptor {
   }
 
   // Open a file or directory relative to this descriptor
-  openAt(path: string, flags: DescriptorFlags): Descriptor {
+  openAt(path: String, flags: DescriptorFlags): Descriptor {
     if (this.#closed) {
       throw new FsError(8, "Descriptor is closed");
     }
@@ -551,7 +551,7 @@ export class Descriptor {
   }
 
   // Create a new file for writing (truncate if exists)
-  createAt(path: string): Descriptor {
+  createAt(path: String): Descriptor {
     if (this.#closed) {
       throw new FsError(8, "Descriptor is closed");
     }
@@ -605,7 +605,7 @@ export class Descriptor {
   }
 
   // Get metadata for a path relative to this descriptor
-  statAt(path: string): FileStat {
+  statAt(path: String): FileStat {
     if (this.#closed) {
       throw new FsError(8, "Descriptor is closed");
     }
@@ -688,7 +688,7 @@ export class Descriptor {
   }
 
   // Create a directory
-  mkdirAt(path: string): void {
+  mkdirAt(path: String): void {
     if (this.#closed) {
       throw new FsError(8, "Descriptor is closed");
     }
@@ -699,7 +699,7 @@ export class Descriptor {
   }
 
   // Delete a file
-  unlinkAt(path: string): void {
+  unlinkAt(path: String): void {
     if (this.#closed) {
       throw new FsError(8, "Descriptor is closed");
     }
@@ -710,7 +710,7 @@ export class Descriptor {
   }
 
   // Delete a directory
-  rmdirAt(path: string): void {
+  rmdirAt(path: String): void {
     if (this.#closed) {
       throw new FsError(8, "Descriptor is closed");
     }
@@ -734,7 +734,7 @@ export class Descriptor {
 // ============================================================================
 
 // Cache of preopened directories
-var __preopensCache: Array<(Descriptor, string)> | null = null;
+var __preopensCache: Array<(Descriptor, String)> | null = null;
 
 /**
  * Returns all preopened directories granted to this WASM module.
@@ -758,13 +758,13 @@ var __preopensCache: Array<(Descriptor, string)> | null = null;
  * }
  * ```
  */
-export let getPreopens = (): Array<(Descriptor, string)> => {
+export let getPreopens = (): Array<(Descriptor, String)> => {
   let cached = __preopensCache;
   if (cached != null) {
     return cached;
   }
   
-  let result = new Array<(Descriptor, string)>();
+  let result = new Array<(Descriptor, String)>();
   
   // In WASI P1, preopened directories start at fd 3 (0=stdin, 1=stdout, 2=stderr)
   // We iterate upward until fd_prestat_get fails
@@ -834,7 +834,7 @@ export let getRootDir = (): Descriptor => {
  * 
  * @throws FsError if the file doesn't exist or cannot be read.
  */
-export let readFile = (path: string): string => {
+export let readFile = (path: String): String => {
   let root = getRootDir();
   let file = root.openAt(path, DescriptorFlags.Read);
   let content = file.readString();
@@ -849,7 +849,7 @@ export let readFile = (path: string): string => {
  * 
  * @throws FsError if the file doesn't exist or cannot be read.
  */
-export let readFileBytes = (path: string): ByteArray => {
+export let readFileBytes = (path: String): ByteArray => {
   let root = getRootDir();
   let file = root.openAt(path, DescriptorFlags.Read);
   let content = file.readAllBytes();
@@ -865,7 +865,7 @@ export let readFileBytes = (path: string): ByteArray => {
  * @throws FsError if the file cannot be written (e.g., permission denied,
  *         directory doesn't exist, or read-only filesystem).
  */
-export let writeFile = (path: string, content: string): void => {
+export let writeFile = (path: String, content: String): void => {
   let root = getRootDir();
   let file = root.createAt(path);
   file.writeString(content);
@@ -879,7 +879,7 @@ export let writeFile = (path: string, content: string): void => {
  * 
  * @throws FsError if the file cannot be written.
  */
-export let writeFileBytes = (path: string, content: ByteArray): void => {
+export let writeFileBytes = (path: String, content: ByteArray): void => {
   let root = getRootDir();
   let file = root.createAt(path);
   file.writeBytes(content);
@@ -895,7 +895,7 @@ export let writeFileBytes = (path: string, content: ByteArray): void => {
  * @returns Array of directory entries with name and file type.
  * @throws FsError if the path doesn't exist or is not a directory.
  */
-export let listDir = (path: string): Array<DirEntry> => {
+export let listDir = (path: String): Array<DirEntry> => {
   let root = getRootDir();
   // For directory listing, we need to open with directory rights
   let (pathPtr, pathLen) = __stringToLinear(path);
@@ -927,7 +927,7 @@ export let listDir = (path: string): Array<DirEntry> => {
  * 
  * @returns true if the path exists, false otherwise.
  */
-export let exists = (path: string): boolean => {
+export let exists = (path: String): boolean => {
   let root = getRootDir();
   return try {
     root.statAt(path);
@@ -943,7 +943,7 @@ export let exists = (path: string): boolean => {
  * 
  * @returns true if the path exists and is a file, false otherwise.
  */
-export let isFile = (path: string): boolean => {
+export let isFile = (path: String): boolean => {
   let root = getRootDir();
   return try {
     let stat = root.statAt(path);
@@ -958,7 +958,7 @@ export let isFile = (path: string): boolean => {
  * 
  * @returns true if the path exists and is a directory, false otherwise.
  */
-export let isDirectory = (path: string): boolean => {
+export let isDirectory = (path: String): boolean => {
   let root = getRootDir();
   return try {
     let stat = root.statAt(path);
@@ -976,7 +976,7 @@ export let isDirectory = (path: string): boolean => {
  * 
  * @throws FsError if the directory cannot be created.
  */
-export let mkdir = (path: string): void => {
+export let mkdir = (path: String): void => {
   let root = getRootDir();
   root.mkdirAt(path);
 };
@@ -988,7 +988,7 @@ export let mkdir = (path: string): void => {
  * 
  * @throws FsError if the file doesn't exist or cannot be deleted.
  */
-export let unlink = (path: string): void => {
+export let unlink = (path: String): void => {
   let root = getRootDir();
   root.unlinkAt(path);
 };
@@ -1002,7 +1002,7 @@ export let unlink = (path: string): void => {
  * @throws FsError if the directory doesn't exist, is not empty, or cannot
  *         be deleted.
  */
-export let rmdir = (path: string): void => {
+export let rmdir = (path: String): void => {
   let root = getRootDir();
   root.rmdirAt(path);
 };
