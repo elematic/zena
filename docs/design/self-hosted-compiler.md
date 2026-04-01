@@ -284,47 +284,213 @@ the door open for parallelism and incremental checking later.
 
 ### 5. Visitor Infrastructure
 
-**Currently:** One AST visitor (`visitor.ts`). No type visitor. Many passes do
-ad-hoc traversal.
+**Currently (TS):** One AST visitor (`visitor.ts`) with a ~60-method optional
+interface, a `NodeType` enum for dispatch, and a 500-line `switch` that casts
+to each concrete type. A `default: break` silently swallows new node types.
 
-**Self-hosted design:** Two visitor systems from the start:
+**Self-hosted design:** The Zena AST is a sealed hierarchy with nested
+sub-hierarchies (`Node → Expression → BinaryExpression`). This means `match`
+expressions **are** the visitor dispatch — the compiler generates discriminant
+tags, exhaustive checking, and safe casts. We don't need to port the TypeScript
+`Visitor<T>` interface; it was a workaround for TypeScript's lack of sum types.
 
-**AST Visitor** — for passes that traverse syntax:
+#### What we provide: `walk` + `walkChildren`
 
-```
-interface AstVisitor<C> {
-  // Called for every node; return false to skip children
-  enter(node: Node, ctx: C): boolean
-  leave(node: Node, ctx: C): void
+A thin utility module (`visitor.zena`) provides automatic tree traversal:
 
-  // Specific overrides (optional)
-  visitClassDeclaration(node: ClassDeclaration, ctx: C): void
-  visitBinaryExpression(node: BinaryExpression, ctx: C): void
-  // ...
+```zena
+// Walk a node tree: enter is called pre-order, leave is called post-order.
+// Return false from enter to skip children.
+export let walk = (node: Node, enter: (Node) => boolean, leave: (Node) => void) => {
+  if (!enter(node)) { return; }
+  walkChildren(node, enter, leave);
+  leave(node);
 }
 
-// Pre-order traversal
-let walk = <C>(node: Node, visitor: AstVisitor<C>, ctx: C) => { ... }
-```
+// Walk children only — for when you want to handle the root specially.
+export let walkChildren = (node: Node, enter: (Node) => boolean, leave: (Node) => void) => {
+  match (node) {
+    // === Module ===
+    case Module(body, _, _, _):
+      for (let stmt in body) { walk(stmt, enter, leave); }
 
-**Type Visitor** — for passes that traverse the type graph:
-
-```
-interface TypeVisitor<C> {
-  visitClassType(type: ClassType, ctx: C): Type
-  visitFunctionType(type: FunctionType, ctx: C): Type
-  visitUnionType(type: UnionType, ctx: C): Type
-  visitTypeParameter(type: TypeParameter, ctx: C): Type
-  // ...
+    // === Expressions ===
+    case BinaryExpression(_, left, right, _): {
+      walk(left, enter, leave);
+      walk(right, enter, leave);
+    }
+    case UnaryExpression(_, argument, _, _):
+      walk(argument, enter, leave);
+    case CallExpression(callee, args, typeArgs, _, _): {
+      walk(callee, enter, leave);
+      for (let arg in args) { walk(arg, enter, leave); }
+      if (let ta = typeArgs) { for (let t in ta) { walk(t, enter, leave); } }
+    }
+    case FunctionExpression(typeParams, params, returnType, body, _): {
+      if (let tp = typeParams) { for (let t in tp) { walk(t, enter, leave); } }
+      for (let p in params) { walk(p, enter, leave); }
+      if (let rt = returnType) { walk(rt, enter, leave); }
+      walk(body, enter, leave);
+    }
+    // ... every other Node variant — exhaustive
+    case Identifier(_, _): {}        // leaf
+    case NumberLiteral(_, _): {}     // leaf
+    case BooleanLiteral(_, _): {}    // leaf
+    case NullLiteral(_): {}          // leaf
+    // ...
+  }
 }
 
-// Useful for: type substitution, type printing, type serialization,
-// finding all type parameters in a type, etc.
-let walkType = <C>(type: Type, visitor: TypeVisitor<C>, ctx: C) => { ... }
+// Convenience: walk with enter only (no leave callback).
+export let walkEnter = (node: Node, fn: (Node) => void) => {
+  walk(node, (n) => { fn(n); return true; }, (n) => {});
+}
 ```
 
-The type visitor alone would simplify several current TS compiler operations:
-`substituteTypeParams`, `computeTypeKey`, type printing, and more.
+#### Why this is better than the TypeScript visitor
+
+| TypeScript Visitor                         | Zena `match` + `walk`                             |
+| ------------------------------------------ | -------------------------------------------------- |
+| ~60 optional interface methods             | Zero — callers use closures + `match`              |
+| `NodeType` enum (manual discriminant)      | Sealed class **is** the discriminant               |
+| 500-line `switch` with casts               | Exhaustive `match` with destructuring              |
+| `visitor.visitFoo?.(node)` null checks     | Pattern match — zero overhead                      |
+| Silent `default: break` on new nodes       | **Compile error** on unhandled variant             |
+| `visitChildren` reflection fallback        | Explicit children in `walkChildren`                |
+
+The key advantage is **exhaustiveness**: when a new AST node is added, every
+`match` on `Node` in the codebase produces a compile error until updated. The
+TypeScript visitor silently ignores new node types via `default: break`, which
+has been a recurring source of bugs.
+
+#### Pattern 1: Simple collection (enter-only)
+
+For simple analyses that collect information in a single pass:
+
+```zena
+// Collect all identifiers in an AST
+let identifiers: Array<String> = [];
+walkEnter(ast, (node) => {
+  match (node) {
+    case Identifier(name, _): identifiers.push(name)
+    case _: {}
+  }
+});
+```
+
+#### Pattern 2: Scoped analysis (enter + leave)
+
+For analyses that need scope tracking or depth:
+
+```zena
+// Capture analysis: track variables referenced inside closures
+var insideClosure = false;
+let captured: Array<String> = [];
+
+walk(ast, (node) => {
+  match (node) {
+    case FunctionExpression(_, _, _, _, _): {
+      insideClosure = true;
+    }
+    case Identifier(name, _): {
+      if (insideClosure) { captured.push(name); }
+    }
+    case _: {}
+  }
+  return true;
+}, (node) => {
+  match (node) {
+    case FunctionExpression(_, _, _, _, _): {
+      insideClosure = false;
+    }
+    case _: {}
+  }
+});
+```
+
+#### Pattern 3: Skipping subtrees
+
+Return `false` from `enter` to skip a node's children:
+
+```zena
+// Visit top-level declarations only, don't recurse into bodies
+walk(ast, (node) => {
+  match (node) {
+    case Module(_, _, _, _): return true  // recurse into module body
+    case ClassDeclaration(name, _, _, _, _, _, _, _, _, _, _, _, _, _, _): {
+      registerClass(name);
+      return false;  // don't recurse into class body
+    }
+    case _: return false  // skip everything else
+  }
+}, (n) => {});
+```
+
+#### Pattern 4: Full control (direct `match`, no walker)
+
+Passes that need full control over recursion order — like the formatter and
+codegen — don't use `walk` at all. They write recursive functions with `match`:
+
+```zena
+// Formatter: convert AST to Doc IR
+let printNode = (node: Node): Doc => match (node) {
+  case BinaryExpression(op, left, right, _):
+    group(concat(printNode(left), text(" ${op} "), printNode(right)))
+  case Identifier(name, _):
+    text(name)
+  case CallExpression(callee, args, _, _, _):
+    group(concat(
+      printNode(callee),
+      text("("),
+      indent(join(text(", "), args.map(printNode))),
+      text(")")
+    ))
+  // ... exhaustive — compiler enforces all cases
+}
+```
+
+This is the primary pattern for the formatter: each node type maps to a `Doc`
+structure, with recursive calls to `printNode` for children. No walker needed.
+
+#### Pattern 5: Sub-hierarchy matching
+
+The nested sealed hierarchy (`Node → Expression`, `Node → Statement`) enables
+matching at any granularity:
+
+```zena
+// Route to sub-handlers by hierarchy level
+let processNode = (node: Node) => match (node) {
+  case Expression: handleExpr(node)
+  case Statement: handleStmt(node)
+  case Pattern: handlePattern(node)
+  case TypeAnnotation: handleType(node)
+  case _: {}  // other direct Node variants
+}
+
+// Sub-handler gets exhaustive matching on Expression variants
+let handleExpr = (expr: Expression) => match (expr) {
+  case BinaryExpression(op, left, right, _): ...
+  case Identifier(name, _): ...
+  // exhaustive within Expression's variants
+}
+```
+
+#### Type Visitor (future)
+
+The AST walker covers Milestone 1 (formatter) and the early checker milestones.
+When we build the type checker, we'll also need a **type visitor** for
+traversing the `Type` graph (not the AST). This is useful for:
+
+- Type substitution (`substituteTypeParams`)
+- Type key computation (`computeTypeKey`)
+- Type printing
+- Finding all type parameters referenced in a type
+
+Since `Type` will also be a sealed hierarchy (`ClassType`, `FunctionType`,
+`UnionType`, `TypeParameterType`, ...), the same pattern applies: a
+`walkType` function with an exhaustive `match` over `Type` variants. We'll
+add this when the checker is built — it depends on the `Type` hierarchy
+design.
 
 ### 6. Analysis Passes: Between Checking and Codegen
 
@@ -778,7 +944,7 @@ CheckerContext, CodegenContext, and ClassInfo.
 | AST mutation    | Checker sets `inferredType` on nodes         | Checker writes to SemanticModel side table                         |
 | Class members   | Spread across ClassType, ClassInfo, AST      | Single `members` map on ClassType; codegen adds indices separately |
 | Type lookup     | Mix of name-based and identity-based         | Identity-only via interning                                        |
-| Visitors        | One AST visitor, no type visitor             | AST visitor + type visitor from day one                            |
+| Visitors        | 60-method optional interface + switch/cast   | Sealed `match` + thin `walk`/`walkChildren` utility               |
 | Checker passes  | 5 passes over all modules together           | 2 phases: file-local, per-module (DAG); then analysis passes       |
 | Generic context | `currentTypeParamMap` stack in codegen       | Type substitution via TypeContext.substitute()                     |
 | Vtable layout   | Computed in both checker and codegen         | Computed once in ClassHierarchy                                    |

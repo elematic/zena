@@ -1,0 +1,448 @@
+// AST Visitor Infrastructure
+//
+// Provides tree traversal utilities for compiler passes. Uses Zena's sealed
+// class hierarchy + exhaustive match instead of the TypeScript-style visitor
+// interface pattern.
+//
+// Three entry points:
+//   walk(node, enter, leave)  — full pre+post-order traversal
+//   walkEnter(node, fn)       — pre-order only (convenience)
+//   walkChildren(node, enter, leave) — traverse children without visiting root
+
+import { Array } from 'zena:array';
+
+import {
+  Node, Module,
+  // Expressions
+  Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral,
+  NullLiteral, TemplateLiteral, TaggedTemplateExpression, BinaryExpression,
+  UnaryExpression, AssignmentExpression, AsExpression, IsExpression,
+  RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression,
+  CallExpression, MemberExpression, IndexExpression, ThisExpression,
+  SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral,
+  TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression,
+  // Statements
+  Statement, VariableDeclaration, ExpressionStatement, BlockStatement,
+  ReturnStatement, BreakStatement, ContinueStatement, IfStatement,
+  WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
+  InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
+  ImportDeclaration, ExportAllDeclaration, DeclareFunction, SymbolDeclaration,
+  // Patterns
+  Pattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
+  ClassPattern, LogicalPattern, AssignmentPattern,
+  // Type Annotations
+  TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation,
+  FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation,
+  TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation,
+  // Direct Node variants
+  TemplateElement, PropertyAssignment, SpreadElement, MapEntry,
+  BindingProperty, MatchCase, LetPatternCondition, TypeParameter, Parameter,
+  CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition,
+  AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer,
+  MethodSignature, AccessorSignature, EnumMember, CatchClause,
+  PropertySignature, ImportSpecifier, Decorator,
+  SymbolPropertyName
+} from './ast.zena';
+
+
+// ============================================================================
+// walkChildren — exhaustive match over every Node variant
+// ============================================================================
+
+/// Visit all children of a node without visiting the node itself.
+export let walkChildren = (node: Node, enter: (n: Node) => boolean, leave: (n: Node) => void): void => {
+  match (node) {
+
+    // =======================================================================
+    // Module
+    // =======================================================================
+    case Module {body}: {
+      for (let stmt in body) { walk(stmt, enter, leave); }
+    }
+
+    // =======================================================================
+    // Expressions
+    // =======================================================================
+
+    // -- Literals & Leaves (no children) --
+    case Identifier {}: {}
+    case NumberLiteral {}: {}
+    case StringLiteral {}: {}
+    case BooleanLiteral {}: {}
+    case NullLiteral {}: {}
+    case ThisExpression {}: {}
+    case SuperExpression {}: {}
+    case PipePlaceholder {}: {}
+
+    // -- Templates --
+    case TemplateLiteral {quasis, expressions}: {
+      for (let q in quasis) { walk(q, enter, leave); }
+      for (let e in expressions) { walk(e, enter, leave); }
+    }
+    case TaggedTemplateExpression {tag, quasi}: {
+      walk(tag, enter, leave);
+      walk(quasi, enter, leave);
+    }
+
+    // -- Operators --
+    case BinaryExpression {left, right}: {
+      walk(left, enter, leave);
+      walk(right, enter, leave);
+    }
+    case UnaryExpression {argument}: {
+      walk(argument, enter, leave);
+    }
+    case AssignmentExpression {left, value}: {
+      walk(left, enter, leave);
+      walk(value, enter, leave);
+    }
+    case AsExpression {expression, typeAnnotation}: {
+      walk(expression, enter, leave);
+      walk(typeAnnotation, enter, leave);
+    }
+    case IsExpression {expression, typeAnnotation}: {
+      walk(expression, enter, leave);
+      walk(typeAnnotation, enter, leave);
+    }
+    case RangeExpression {start, end}: {
+      if (start != null) { walk(start, enter, leave); }
+      if (end != null) { walk(end, enter, leave); }
+    }
+    case PipelineExpression {left, right}: {
+      walk(left, enter, leave);
+      walk(right, enter, leave);
+    }
+
+    // -- Functions & Calls --
+    case FunctionExpression {typeParameters, params, returnType, body}: {
+      if (typeParameters != null) { for (let t in (typeParameters as Array<TypeParameter>)) { walk(t, enter, leave); } }
+      for (let p in params) { walk(p, enter, leave); }
+      if (returnType != null) { walk(returnType, enter, leave); }
+      walk(body, enter, leave);
+    }
+    case CallExpression {callee, args, typeArguments}: {
+      walk(callee, enter, leave);
+      for (let a in args) { walk(a, enter, leave); }
+      if (typeArguments != null) { for (let t in (typeArguments as Array<TypeAnnotation>)) { walk(t, enter, leave); } }
+    }
+
+    // -- Member Access --
+    // property is a field name, not a reference — don't visit
+    case MemberExpression {object}: {
+      walk(object, enter, leave);
+    }
+    case IndexExpression {object, index}: {
+      walk(object, enter, leave);
+      walk(index, enter, leave);
+    }
+    case NewExpression {callee, typeArguments, args}: {
+      walk(callee, enter, leave);
+      if (typeArguments != null) { for (let t in (typeArguments as Array<TypeAnnotation>)) { walk(t, enter, leave); } }
+      for (let a in args) { walk(a, enter, leave); }
+    }
+
+    // -- Collection Literals --
+    case ArrayLiteral {elements}: {
+      for (let e in elements) { walk(e, enter, leave); }
+    }
+    case RecordLiteral {properties}: {
+      for (let p in properties) { walk(p, enter, leave); }
+    }
+    case MapLiteral {entries}: {
+      for (let e in entries) { walk(e, enter, leave); }
+    }
+    case TupleLiteral {elements}: {
+      for (let e in elements) { walk(e, enter, leave); }
+    }
+
+    // -- Control Flow Expressions --
+    case MatchExpression {discriminant, cases}: {
+      walk(discriminant, enter, leave);
+      for (let c in cases) { walk(c, enter, leave); }
+    }
+    case IfExpression {test, consequent, alternate}: {
+      walk(test, enter, leave);
+      walk(consequent, enter, leave);
+      walk(alternate, enter, leave);
+    }
+
+    // -- Error Handling Expressions --
+    case ThrowExpression {argument}: {
+      walk(argument, enter, leave);
+    }
+    case TryExpression {body, handler, finalizer}: {
+      walk(body, enter, leave);
+      if (handler != null) { walk(handler, enter, leave); }
+      if (finalizer != null) { walk(finalizer, enter, leave); }
+    }
+
+    // =======================================================================
+    // Statements
+    // =======================================================================
+    case VariableDeclaration {pattern, typeAnnotation, init}: {
+      walk(pattern, enter, leave);
+      if (typeAnnotation != null) { walk(typeAnnotation, enter, leave); }
+      walk(init, enter, leave);
+    }
+    case ExpressionStatement {expression}: {
+      walk(expression, enter, leave);
+    }
+    case BlockStatement {body}: {
+      for (let stmt in body) { walk(stmt, enter, leave); }
+    }
+    case ReturnStatement {argument}: {
+      if (argument != null) { walk(argument, enter, leave); }
+    }
+    case BreakStatement {}: {}
+    case ContinueStatement {}: {}
+    case IfStatement {test, consequent, alternate}: {
+      walk(test, enter, leave);
+      walk(consequent, enter, leave);
+      if (alternate != null) { walk(alternate, enter, leave); }
+    }
+    case WhileStatement {test, body}: {
+      walk(test, enter, leave);
+      walk(body, enter, leave);
+    }
+    case ForStatement {init, test, update, body}: {
+      if (init != null) { walk(init, enter, leave); }
+      if (test != null) { walk(test, enter, leave); }
+      if (update != null) { walk(update, enter, leave); }
+      walk(body, enter, leave);
+    }
+    case ForInStatement {pattern, iterable, body}: {
+      walk(pattern, enter, leave);
+      walk(iterable, enter, leave);
+      walk(body, enter, leave);
+    }
+    case ClassDeclaration {name, typeParameters, caseParams, superClass, mixins, implementsList, body, sealedVariants}: {
+      walk(name, enter, leave);
+      if (typeParameters != null) { for (let t in (typeParameters as Array<TypeParameter>)) { walk(t, enter, leave); } }
+      if (caseParams != null) { for (let p in (caseParams as Array<CaseClassParam>)) { walk(p, enter, leave); } }
+      if (superClass != null) { walk(superClass, enter, leave); }
+      if (mixins != null) { for (let m in (mixins as Array<TypeAnnotation>)) { walk(m, enter, leave); } }
+      if (implementsList != null) { for (let i in (implementsList as Array<TypeAnnotation>)) { walk(i, enter, leave); } }
+      for (let member in body) { walk(member, enter, leave); }
+      if (sealedVariants != null) { for (let v in (sealedVariants as Array<SealedVariant>)) { walk(v, enter, leave); } }
+    }
+    case InterfaceDeclaration {name, typeParameters, extendsList, body}: {
+      walk(name, enter, leave);
+      if (typeParameters != null) { for (let t in (typeParameters as Array<TypeParameter>)) { walk(t, enter, leave); } }
+      if (extendsList != null) { for (let e in (extendsList as Array<TypeAnnotation>)) { walk(e, enter, leave); } }
+      for (let member in body) { walk(member, enter, leave); }
+    }
+    case EnumDeclaration {name, members}: {
+      walk(name, enter, leave);
+      for (let m in members) { walk(m, enter, leave); }
+    }
+    case MixinDeclaration {name, typeParameters, on, mixins, body}: {
+      walk(name, enter, leave);
+      if (typeParameters != null) { for (let t in (typeParameters as Array<TypeParameter>)) { walk(t, enter, leave); } }
+      if (on != null) { walk(on, enter, leave); }
+      if (mixins != null) { for (let m in (mixins as Array<TypeAnnotation>)) { walk(m, enter, leave); } }
+      for (let member in body) { walk(member, enter, leave); }
+    }
+    case TypeAliasDeclaration {name, typeParameters, typeAnnotation}: {
+      walk(name, enter, leave);
+      if (typeParameters != null) { for (let t in (typeParameters as Array<TypeParameter>)) { walk(t, enter, leave); } }
+      walk(typeAnnotation, enter, leave);
+    }
+    case ImportDeclaration {moduleSpecifier, imports}: {
+      walk(moduleSpecifier, enter, leave);
+      for (let spec in imports) { walk(spec, enter, leave); }
+    }
+    case ExportAllDeclaration {moduleSpecifier}: {
+      walk(moduleSpecifier, enter, leave);
+    }
+    case DeclareFunction {name, typeParameters, params, returnType, decorators}: {
+      walk(name, enter, leave);
+      if (typeParameters != null) { for (let t in (typeParameters as Array<TypeParameter>)) { walk(t, enter, leave); } }
+      for (let p in params) { walk(p, enter, leave); }
+      walk(returnType, enter, leave);
+      for (let d in decorators) { walk(d, enter, leave); }
+    }
+    case SymbolDeclaration {name}: {
+      walk(name, enter, leave);
+    }
+
+    // =======================================================================
+    // Patterns
+    // =======================================================================
+    case IdentifierPattern {}: {}  // leaf
+    case RecordPattern {properties}: {
+      for (let p in properties) { walk(p, enter, leave); }
+    }
+    case TuplePattern {elements}: {
+      for (let e in elements) { if (e !== null) { walk(e, enter, leave); } }
+    }
+    case AsPattern {pattern, name}: {
+      walk(pattern, enter, leave);
+      walk(name, enter, leave);
+    }
+    case ClassPattern {name, properties}: {
+      walk(name, enter, leave);
+      for (let p in properties) { walk(p, enter, leave); }
+    }
+    case LogicalPattern {left, right}: {
+      walk(left, enter, leave);
+      walk(right, enter, leave);
+    }
+    case AssignmentPattern {left, right}: {
+      walk(left, enter, leave);
+      walk(right, enter, leave);
+    }
+
+    // =======================================================================
+    // Type Annotations
+    // =======================================================================
+    case NamedTypeAnnotation {typeArguments}: {
+      if (typeArguments !== null) { for (let t in (typeArguments as Array<TypeAnnotation>)) { walk(t, enter, leave); } }
+    }
+    case UnionTypeAnnotation {types}: {
+      for (let t in types) { walk(t, enter, leave); }
+    }
+    case FunctionTypeAnnotation {params, returnType}: {
+      for (let p in params) { walk(p, enter, leave); }
+      walk(returnType, enter, leave);
+    }
+    case LiteralTypeAnnotation {value}: {
+      walk(value, enter, leave);
+    }
+    case RecordTypeAnnotation {properties}: {
+      for (let p in properties) { walk(p, enter, leave); }
+    }
+    case TupleTypeAnnotation {elementTypes}: {
+      for (let t in elementTypes) { walk(t, enter, leave); }
+    }
+    case InlineTupleTypeAnnotation {elementTypes}: {
+      for (let t in elementTypes) { walk(t, enter, leave); }
+    }
+    case ThisTypeAnnotation {}: {}  // leaf
+
+    // =======================================================================
+    // Direct Node variants (not in sub-hierarchies)
+    // =======================================================================
+    case TemplateElement {}: {}  // leaf
+    case PropertyAssignment {name, value}: {
+      walk(name, enter, leave);
+      walk(value, enter, leave);
+    }
+    case SpreadElement {argument}: {
+      walk(argument, enter, leave);
+    }
+    case MapEntry {key, value}: {
+      walk(key, enter, leave);
+      walk(value, enter, leave);
+    }
+    case BindingProperty {name, value}: {
+      walk(name, enter, leave);
+      walk(value, enter, leave);
+    }
+    case MatchCase {pattern, guard, body}: {
+      walk(pattern, enter, leave);
+      if (guard !== null) { walk(guard, enter, leave); }
+      walk(body, enter, leave);
+    }
+    case LetPatternCondition {pattern, init}: {
+      walk(pattern, enter, leave);
+      walk(init, enter, leave);
+    }
+    case TypeParameter {constraint, defaultType}: {
+      if (constraint !== null) { walk(constraint, enter, leave); }
+      if (defaultType !== null) { walk(defaultType, enter, leave); }
+    }
+    case Parameter {name, typeAnnotation, defaultValue}: {
+      walk(name, enter, leave);
+      if (typeAnnotation !== null) { walk(typeAnnotation, enter, leave); }
+      if (defaultValue !== null) { walk(defaultValue, enter, leave); }
+    }
+    case CaseClassParam {name, typeAnnotation}: {
+      walk(name, enter, leave);
+      walk(typeAnnotation, enter, leave);
+    }
+    case SealedVariant {name, params}: {
+      walk(name, enter, leave);
+      if (params !== null) { for (let p in (params as Array<CaseClassParam>)) { walk(p, enter, leave); } }
+    }
+    case FieldDefinition {name, typeAnnotation, value}: {
+      walk(name, enter, leave);
+      walk(typeAnnotation, enter, leave);
+      if (value !== null) { walk(value, enter, leave); }
+    }
+    case MethodDefinition {name, typeParameters, params, returnType, body, initializerList, superInitializer}: {
+      walk(name, enter, leave);
+      if (typeParameters !== null) { for (let t in (typeParameters as Array<TypeParameter>)) { walk(t, enter, leave); } }
+      for (let p in params) { walk(p, enter, leave); }
+      if (returnType !== null) { walk(returnType, enter, leave); }
+      if (body !== null) { walk(body, enter, leave); }
+      if (initializerList !== null) { for (let i in (initializerList as Array<Node>)) { walk(i, enter, leave); } }
+      if (superInitializer !== null) { walk(superInitializer, enter, leave); }
+    }
+    case AccessorDeclaration {name, typeAnnotation, getter, setter}: {
+      walk(name, enter, leave);
+      walk(typeAnnotation, enter, leave);
+      if (getter !== null) { walk(getter, enter, leave); }
+      if (setter !== null) { walk(setter, enter, leave); }
+    }
+    case SetterInfo {param, body}: {
+      walk(param, enter, leave);
+      walk(body, enter, leave);
+    }
+    case FieldInitializer {field, value}: {
+      walk(field, enter, leave);
+      walk(value, enter, leave);
+    }
+    case SuperInitializer {args}: {
+      for (let a in args) { walk(a, enter, leave); }
+    }
+    case MethodSignature {name, typeParameters, params, returnType}: {
+      walk(name, enter, leave);
+      if (typeParameters !== null) { for (let t in (typeParameters as Array<TypeParameter>)) { walk(t, enter, leave); } }
+      for (let p in params) { walk(p, enter, leave); }
+      if (returnType !== null) { walk(returnType, enter, leave); }
+    }
+    case AccessorSignature {name, typeAnnotation}: {
+      walk(name, enter, leave);
+      walk(typeAnnotation, enter, leave);
+    }
+    case EnumMember {name, initializer}: {
+      walk(name, enter, leave);
+      if (initializer !== null) { walk(initializer, enter, leave); }
+    }
+    case CatchClause {param, body}: {
+      if (param !== null) { walk(param, enter, leave); }
+      walk(body, enter, leave);
+    }
+    case PropertySignature {name, typeAnnotation}: {
+      walk(name, enter, leave);
+      walk(typeAnnotation, enter, leave);
+    }
+    case ImportSpecifier {imported, local}: {
+      walk(imported, enter, leave);
+      walk(local, enter, leave);
+    }
+    case Decorator {}: {}  // leaf (args are string literals, no child nodes to walk)
+    case SymbolPropertyName {symbolRef}: {
+      walk(symbolRef, enter, leave);
+    }
+  }
+};
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/// Walk a node tree in pre+post order.
+/// `enter` is called before children — return false to skip the subtree.
+/// `leave` is called after children.
+export let walk = (node: Node, enter: (n: Node) => boolean, leave: (n: Node) => void): void => {
+  if (!enter(node)) { return; }
+  walkChildren(node, enter, leave);
+  leave(node);
+};
+
+/// Walk with an enter callback only (no leave). Visits every node.
+export let walkEnter = (node: Node, fn: (n: Node) => void): void => {
+  walk(node, (n) => { fn(n); return true; }, (n) => {});
+};
+

@@ -1,0 +1,239 @@
+// Visitor tests
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { Array } from 'zena:array';
+import { parse } from '../lib/parser.zena';
+import {
+  Node, Module, Expression, Statement, Pattern, TypeAnnotation,
+  Identifier, NumberLiteral, StringLiteral, BinaryExpression,
+  VariableDeclaration, FunctionExpression, ClassDeclaration,
+  IfExpression, MatchExpression, MatchCase, FieldDefinition,
+  MethodDefinition, IdentifierPattern, NamedTypeAnnotation,
+  TemplateLiteral, RecordLiteral, PropertyAssignment, TupleLiteral,
+  ArrayLiteral, InterfaceDeclaration, MethodSignature,
+  LetPatternCondition, Parameter
+} from '../lib/ast.zena';
+import { walk, walkEnter, walkChildren } from '../lib/visitor.zena';
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+let tests = suite('AST Visitor', (): void => {
+
+  test('visits all identifiers in simple expression', (ctx: TestContext): void => {
+    let ast = parse('let x = a + b;', 'test.zena');
+    let identifiers = new Array<String>();
+
+    walkEnter(ast, (node) => {
+      match (node) {
+        case Identifier {name}: identifiers.push(name)
+        case _: {}
+      }
+    });
+
+    // x is in the pattern (IdentifierPattern, not Identifier), a and b are references
+    equal(identifiers.length, 2);
+    equal(identifiers[0], 'a');
+    equal(identifiers[1], 'b');
+  });
+
+  test('visits function parameters', (ctx: TestContext): void => {
+    let ast = parse('let f = (x: i32, y: i32) => x + y;', 'test.zena');
+    let paramNames = new Array<String>();
+
+    walkEnter(ast, (node) => {
+      match (node) {
+        case Parameter {name}: paramNames.push(name.name)
+        case _: {}
+      }
+    });
+
+    equal(paramNames.length, 2);
+    equal(paramNames[0], 'x');
+    equal(paramNames[1], 'y');
+  });
+
+  test('visits class declaration members', (ctx: TestContext): void => {
+    let source = "class Point { x: i32; y: i32; new(x: i32, y: i32) { this.x = x; this.y = y; } }";
+    let ast = parse(source, 'test.zena');
+
+    var fieldCount = 0;
+    var methodCount = 0;
+
+    walkEnter(ast, (node) => {
+      match (node) {
+        case FieldDefinition {}: fieldCount = fieldCount + 1
+        case MethodDefinition {}: methodCount = methodCount + 1
+        case _: {}
+      }
+    });
+
+    equal(fieldCount, 2);
+    equal(methodCount, 1);
+  });
+
+  test('visits type annotations', (ctx: TestContext): void => {
+    let ast = parse('let x: Map<String, i32> = null;', 'test.zena');
+    let typeNames = new Array<String>();
+
+    walkEnter(ast, (node) => {
+      match (node) {
+        case NamedTypeAnnotation {name}: typeNames.push(name)
+        case _: {}
+      }
+    });
+
+    // Map, String, i32
+    equal(typeNames.length, 3);
+    equal(typeNames[0], 'Map');
+    equal(typeNames[1], 'String');
+    equal(typeNames[2], 'i32');
+  });
+
+  test('visits string literals', (ctx: TestContext): void => {
+    let ast = parse("let s = 'hello';", 'test.zena');
+    let strings = new Array<String>();
+
+    walkEnter(ast, (node) => {
+      match (node) {
+        case StringLiteral {value}: strings.push(value)
+        case _: {}
+      }
+    });
+
+    equal(strings.length, 1);
+    equal(strings[0], 'hello');
+  });
+
+  test('visits array literals', (ctx: TestContext): void => {
+    let ast = parse('let arr = [1, 2, 3];', 'test.zena');
+
+    var arrayCount = 0;
+    var numberCount = 0;
+
+    walkEnter(ast, (node) => {
+      match (node) {
+        case ArrayLiteral {}: arrayCount = arrayCount + 1
+        case NumberLiteral {}: numberCount = numberCount + 1
+        case _: {}
+      }
+    });
+
+    equal(arrayCount, 1);
+    equal(numberCount, 3);
+  });
+
+  test('enter returning false skips children', (ctx: TestContext): void => {
+    // Two declarations — skip the second one's subtree
+    let ast = parse('let x = 1; let y = 2;', 'test.zena');
+    let numbers = new Array<String>();
+    var declCount = 0;
+
+    walk(ast, (node) => {
+      match (node) {
+        case VariableDeclaration {}: {
+          declCount = declCount + 1;
+          // Skip children of second declaration
+          return declCount < 2;
+        }
+        case NumberLiteral {raw}: numbers.push(raw)
+        case _: {}
+      }
+      return true;
+    }, (n) => {});
+
+    // Only the first number literal should be visited
+    equal(numbers.length, 1);
+    equal(numbers[0], '1');
+  });
+
+  test('leave is called after children', (ctx: TestContext): void => {
+    let ast = parse('let x = a + b;', 'test.zena');
+    let order = new Array<String>();
+
+    walk(ast, (node) => {
+      match (node) {
+        case BinaryExpression {}: order.push('binary-enter')
+        case Identifier {name}: order.push(`id:${name}`)
+        case _: {}
+      }
+      return true;
+    }, (node) => {
+      match (node) {
+        case BinaryExpression {}: order.push('binary-leave')
+        case _: {}
+      }
+    });
+
+    // Binary entered, then children (a, b), then binary left
+    // Find the indices
+    var binaryEnterIdx = -1;
+    var idAIdx = -1;
+    var idBIdx = -1;
+    var binaryLeaveIdx = -1;
+    for (var i = 0; i < order.length; i = i + 1) {
+      if (order[i] == 'binary-enter') { binaryEnterIdx = i; }
+      if (order[i] == 'id:a') { idAIdx = i; }
+      if (order[i] == 'id:b') { idBIdx = i; }
+      if (order[i] == 'binary-leave') { binaryLeaveIdx = i; }
+    }
+
+    isTrue(binaryEnterIdx < idAIdx);
+    isTrue(idAIdx < idBIdx);
+    isTrue(idBIdx < binaryLeaveIdx);
+  });
+
+  test('counts nodes via walkEnter', (ctx: TestContext): void => {
+    let ast = parse('let x = if (true) { 1 } else { 2 };', 'test.zena');
+    var count = 0;
+
+    walkEnter(ast, (node) => {
+      count = count + 1;
+    });
+
+    // Should visit: Module, VarDecl, IdentifierPattern, IfExpression,
+    // BooleanLiteral, Block+NumberLiteral, Block+NumberLiteral, ...
+    isTrue(count > 5);
+  });
+
+  test('visits record literals and properties', (ctx: TestContext): void => {
+    let ast = parse('let obj = { x: 1, y: 2 };', 'test.zena');
+
+    var recordCount = 0;
+    var propCount = 0;
+
+    walkEnter(ast, (node) => {
+      match (node) {
+        case RecordLiteral {}: recordCount = recordCount + 1
+        case PropertyAssignment {}: propCount = propCount + 1
+        case _: {}
+      }
+    });
+
+    equal(recordCount, 1);
+    equal(propCount, 2);
+  });
+
+  test('visits tuple literals', (ctx: TestContext): void => {
+    let ast = parse("let t = (1, 'hello');", 'test.zena');
+    var tupleCount = 0;
+
+    walkEnter(ast, (node) => {
+      match (node) {
+        case TupleLiteral {}: tupleCount = tupleCount + 1
+        case _: {}
+      }
+    });
+
+    equal(tupleCount, 1);
+  });
+
+});
+
+// Entry point - returns number of failed tests (0 = success)
+export let main = (): i32 => {
+  let result = tests.run();
+  return result.failed;
+};
