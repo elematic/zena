@@ -63,6 +63,7 @@ import {
   AsPattern,
   ClassPattern,
   LogicalPattern,
+  AssignmentPattern,
   MatchExpression,
   MatchCase,
   IfExpression,
@@ -769,6 +770,16 @@ export class Parser {
           let p: Node = this.#parsePattern();
           p
         };
+      } else if (this.#match(TokenType.As)) {
+        // Rename: { x as y }
+        let newName = this.#parseIdentifier();
+        value = new IdentifierPattern(newName.name, newName.loc);
+      }
+      
+      // Default value: { x = 1 }
+      if (this.#match(TokenType.Equals)) {
+        let defaultValue = this.#parseExpression();
+        value = new AssignmentPattern(value, defaultValue, this.#makeLocation(propStart));
       }
       
       properties.push(new BindingProperty(name, value, this.#makeLocation(propStart)));

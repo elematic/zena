@@ -70,7 +70,7 @@ These apply when modifying the self-hosted parser to support new syntax:
   capacity constructor. Use `.push()` in a while loop to populate.
 - **Match on `Node` must be exhaustive**: `Node` is a sealed class. When
   matching a subset of cases (e.g., only `StringLiteral | NumberLiteral |
-  BooleanLiteral` from a `Node` field), you must include `case _: {}` as a
+BooleanLiteral` from a `Node` field), you must include `case _: {}` as a
   default or the compiler rejects it.
 - **No field renaming in class patterns**: `case Foo { field: newName }` is not
   supported. Use `case Foo { field }` instead. Shadowing works — an inner match
@@ -553,19 +553,19 @@ tests/language/syntax/
 │
 ├── destructuring/
 │   ├── record/
-│   │   ├── basic.zena                     [ts] destructuring_test
-│   │   ├── with-rename.zena               [ts] destructuring_test
-│   │   ├── with-default.zena              [ts] destructuring_test
-│   │   ├── nested.zena                    [ts] destructuring_test
-│   │   └── in-parameter.zena              [new]
+│   │   ├── basic.zena                     [done] destructuring_test
+│   │   ├── with-rename.zena               [done] destructuring_test
+│   │   ├── with-default.zena              [done] destructuring_test
+│   │   ├── nested.zena                    [done] destructuring_test
+│   │   └── in-parameter.zena              [new] — needs parameter destructuring support
 │   │
 │   ├── tuple/
-│   │   ├── basic.zena                     [ts] destructuring_test
-│   │   ├── nested.zena                    [ts] destructuring_test
-│   │   └── inline-tuple.zena              [ts] inline-tuples_test
+│   │   ├── basic.zena                     [done] destructuring_test
+│   │   ├── nested.zena                    [done] destructuring_test
+│   │   └── inline-tuple.zena              [done] inline-tuples_test
 │   │
 │   └── errors/
-│       └── invalid-target.zena            [new]
+│       └── invalid-target.zena            [done]
 │
 ├── imports/
 │   ├── named.zena                          [ts] parser-imports_test
