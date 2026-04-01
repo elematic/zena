@@ -30,7 +30,8 @@ import {
   AccessorDeclaration, SetterInfo, SuperExpression,
   FieldInitializer, SuperInitializer,
   InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature,
-  EnumDeclaration, EnumMember
+  EnumDeclaration, EnumMember,
+  ImportDeclaration, ImportSpecifier, ExportAllDeclaration
 } from './ast.zena';
 
 // ============================================================================
@@ -140,6 +141,9 @@ let nodeTypeName = (node: Node): String => {
     case EnumMember {}: 'EnumMember'
     case PropertySignature {}: 'PropertySignature'
     case SetterInfo {}: 'AccessorDeclaration'
+    case ImportDeclaration {}: 'ImportDeclaration'
+    case ImportSpecifier {}: 'ImportSpecifier'
+    case ExportAllDeclaration {}: 'ExportAllDeclaration'
   }
 };
 
@@ -519,6 +523,19 @@ export let nodeToJson = (node: Node): JsonObject => {
       obj['body'] = statementsToJson(body);
     }
     
+    // Imports / Exports
+    case ImportDeclaration { moduleSpecifier, imports }: {
+      obj['moduleSpecifier'] = nodeToJson(moduleSpecifier);
+      obj['imports'] = importSpecifiersToJson(imports);
+    }
+    case ImportSpecifier { imported, local }: {
+      obj['imported'] = nodeToJson(imported);
+      obj['local'] = nodeToJson(local);
+    }
+    case ExportAllDeclaration { moduleSpecifier }: {
+      obj['moduleSpecifier'] = nodeToJson(moduleSpecifier);
+    }
+    
     // Class Declarations
     case ClassDeclaration { name, typeParameters, caseParams, superClass, mixins, implementsList, body, exported, isFinal, isAbstract, isExtension, isSealed, sealedVariants, onType }: {
       obj['name'] = nodeToJson(name);
@@ -716,6 +733,16 @@ let statementsToJson = (stmts: Array<Statement>): JsonArray => {
   var i = 0;
   while (i < stmts.length) {
     arr.push(nodeToJson(stmts[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let importSpecifiersToJson = (specs: Array<ImportSpecifier>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < specs.length) {
+    arr.push(nodeToJson(specs[i]));
     i = i + 1;
   }
   return arr;

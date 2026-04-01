@@ -95,7 +95,10 @@ import {
   EnumDeclaration,
   EnumMember,
   SealedVariant,
-  TypeAliasDeclaration
+  TypeAliasDeclaration,
+  ImportDeclaration,
+  ImportSpecifier,
+  ExportAllDeclaration
 } from './ast.zena';
 
 // ============================================================================
@@ -120,12 +123,73 @@ export class Parser {
   parse(): Module {
     let body = new Array<Statement>(16);
     
+    // Parse imports at the top of the file
+    while (this.#check(TokenType.Import) || this.#check(TokenType.From)) {
+      if (this.#check(TokenType.From) && this.#peek2().kind != TokenType.String) {
+        break;
+      }
+      body.push(this.#parseImportDeclaration());
+    }
+    
     while (!this.#isAtEnd()) {
       let stmt = this.#parseStatement();
       body.push(stmt);
     }
     
     return new Module(body, this.#path, this.#source, null);
+  }
+  
+  // ==========================================================================
+  // Import Parsing
+  // ==========================================================================
+  
+  #parseImportDeclaration(): ImportDeclaration {
+    let startToken = this.#peek();
+    if (this.#match(TokenType.Import)) {
+      let imports = this.#parseImportSpecifiers();
+      this.#consume(TokenType.From, "Expected 'from'");
+      let moduleSpecifier = this.#parseStringLiteralNode();
+      this.#consume(TokenType.Semi, "Expected ';'");
+      return new ImportDeclaration(moduleSpecifier, imports, this.#makeLocation(startToken));
+    }
+    
+    if (this.#match(TokenType.From)) {
+      let moduleSpecifier = this.#parseStringLiteralNode();
+      this.#consume(TokenType.Import, "Expected 'import'");
+      let imports = this.#parseImportSpecifiers();
+      this.#consume(TokenType.Semi, "Expected ';'");
+      return new ImportDeclaration(moduleSpecifier, imports, this.#makeLocation(startToken));
+    }
+    
+    throw new Error('Expected import declaration.');
+  }
+  
+  #parseImportSpecifiers(): Array<ImportSpecifier> {
+    this.#consume(TokenType.LBrace, "Expected '{'");
+    let imports = new Array<ImportSpecifier>(4);
+    if (!this.#check(TokenType.RBrace)) {
+      let imported = this.#parseIdentifier();
+      var local = imported;
+      if (this.#match(TokenType.As)) {
+        local = this.#parseIdentifier();
+      }
+      imports.push(new ImportSpecifier(imported, local, null));
+      while (this.#match(TokenType.Comma)) {
+        let imported2 = this.#parseIdentifier();
+        var local2 = imported2;
+        if (this.#match(TokenType.As)) {
+          local2 = this.#parseIdentifier();
+        }
+        imports.push(new ImportSpecifier(imported2, local2, null));
+      }
+    }
+    this.#consume(TokenType.RBrace, "Expected '}'");
+    return imports;
+  }
+  
+  #parseStringLiteralNode(): StringLiteral {
+    let token = this.#consume(TokenType.String, "Expected string literal");
+    return new StringLiteral(token.value, null);
   }
   
   // ==========================================================================
@@ -198,7 +262,22 @@ export class Parser {
     // Export prefix
     var exported = false;
     if (this.#match(TokenType.Export)) {
+      // export * from '...';
+      if (this.#match(TokenType.Star)) {
+        this.#consume(TokenType.From, "Expected 'from' after '*'");
+        let moduleSpecifier = this.#parseStringLiteralNode();
+        this.#consume(TokenType.Semi, "Expected ';' after export declaration");
+        return new ExportAllDeclaration(moduleSpecifier, this.#makeLocation(startToken));
+      }
       exported = true;
+    }
+    
+    // Reject late imports
+    if (this.#check(TokenType.Import)) {
+      throw new Error('Imports must appear at the top of the file.');
+    }
+    if (this.#check(TokenType.From) && this.#peek2().kind == TokenType.String) {
+      throw new Error('Imports must appear at the top of the file.');
     }
     
     // Variable declarations

@@ -180,13 +180,15 @@ function stripLocation(obj: any): any {
       )
         continue;
       if (key === 'inferredType' || key === 'inferredTypeArguments') continue;
+      // Strip Module-level metadata fields (but not ImportDeclaration.imports)
       if (
-        key === 'path' ||
-        key === 'isStdlib' ||
-        key === 'source' ||
-        key === 'imports' ||
-        key === 'exports' ||
-        key === 'diagnostics'
+        obj.type === 'Module' &&
+        (key === 'path' ||
+          key === 'isStdlib' ||
+          key === 'source' ||
+          key === 'imports' ||
+          key === 'exports' ||
+          key === 'diagnostics')
       )
         continue;
       newObj[key] = stripLocation(obj[key]);

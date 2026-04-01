@@ -568,12 +568,12 @@ tests/language/syntax/
 │       └── invalid-target.zena            [done]
 │
 ├── imports/
-│   ├── named.zena                          [ts] parser-imports_test
-│   ├── multiple.zena                      [ts] parser-imports_test
-│   ├── flipped.zena                       [ts] parser-imports_test
+│   ├── named.zena                          [done] parser-imports_test
+│   ├── multiple.zena                      [done] parser-imports_test
+│   ├── flipped.zena                       [done] parser-imports_test
 │   ├── default.zena                       [new]
 │   ├── star.zena                          [new]
-│   └── export-all.zena                    [new]
+│   └── export-all.zena                    [done]
 │
 ├── decorators/
 │   ├── simple.zena                         [ts] decorator_test
