@@ -36,6 +36,13 @@ import {
   LetPatternCondition,
   NamedTypeAnnotation,
   UnionTypeAnnotation,
+  FunctionTypeAnnotation,
+  LiteralTypeAnnotation,
+  RecordTypeAnnotation,
+  TupleTypeAnnotation,
+  InlineTupleTypeAnnotation,
+  ThisTypeAnnotation,
+  PropertySignature,
   TypeParameter,
   Parameter,
   FunctionExpression,
@@ -86,7 +93,8 @@ import {
   CatchClause,
   EnumDeclaration,
   EnumMember,
-  SealedVariant
+  SealedVariant,
+  TypeAliasDeclaration
 } from './ast.zena';
 
 // ============================================================================
@@ -96,11 +104,12 @@ import {
 export class Parser {
   #tokens: Array<Token>;
   var #current: i32;
+  var #extraGreaters: i32;
   #source: String;
   #path: String;
   
   new(source: String, path: String)
-    : #source = source, #path = path, #tokens = tokenize(source), #current = 0
+    : #source = source, #path = path, #tokens = tokenize(source), #current = 0, #extraGreaters = 0
   { }
   
   // ==========================================================================
@@ -222,6 +231,15 @@ export class Parser {
     // Enum declarations
     if (this.#match(TokenType.Enum)) {
       return this.#parseEnumDeclaration(exported, startToken);
+    }
+    
+    // Type alias declarations: type X = Y; or distinct type X = Y;
+    if (this.#check(TokenType.Type)) {
+      return this.#parseTypeAliasDeclaration(exported, false, startToken);
+    }
+    if (this.#check(TokenType.Distinct)) {
+      this.#advance(); // consume 'distinct'
+      return this.#parseTypeAliasDeclaration(exported, true, startToken);
     }
     
     // Control flow
@@ -1687,6 +1705,63 @@ export class Parser {
   #parsePrimaryType(): TypeAnnotation {
     let startToken = this.#peek();
     
+    // this type
+    if (this.#check(TokenType.This)) {
+      this.#advance();
+      return new ThisTypeAnnotation(this.#makeLocation(startToken));
+    }
+    
+    // Boolean literal types: true / false
+    if (this.#check(TokenType.True)) {
+      this.#advance();
+      return new LiteralTypeAnnotation(new BooleanLiteral(true, this.#makeLocation(startToken)), this.#makeLocation(startToken));
+    }
+    if (this.#check(TokenType.False)) {
+      this.#advance();
+      return new LiteralTypeAnnotation(new BooleanLiteral(false, this.#makeLocation(startToken)), this.#makeLocation(startToken));
+    }
+    
+    // Null type
+    if (this.#check(TokenType.Null)) {
+      this.#advance();
+      return new NamedTypeAnnotation('null', null, this.#makeLocation(startToken));
+    }
+    
+    // Number literal type
+    if (this.#check(TokenType.Number)) {
+      let token = this.#advance();
+      return new LiteralTypeAnnotation(new NumberLiteral(token.value, this.#makeLocation(startToken)), this.#makeLocation(startToken));
+    }
+    
+    // String literal type
+    if (this.#check(TokenType.String)) {
+      let token = this.#advance();
+      return new LiteralTypeAnnotation(new StringLiteral(token.value, this.#makeLocation(startToken)), this.#makeLocation(startToken));
+    }
+    
+    // inline tuple type: inline (T1, T2)
+    if (this.#check(TokenType.Inline)) {
+      this.#advance();
+      this.#consume(TokenType.LParen, "Expected '(' after 'inline'");
+      let elementTypes = new Array<TypeAnnotation>(4);
+      elementTypes.push(this.#parseTypeAnnotation());
+      while (this.#match(TokenType.Comma)) {
+        elementTypes.push(this.#parseTypeAnnotation());
+      }
+      this.#consume(TokenType.RParen, "Expected ')' after inline tuple type elements");
+      return new InlineTupleTypeAnnotation(elementTypes, this.#makeLocation(startToken));
+    }
+    
+    // Parenthesized: function type or tuple type
+    if (this.#check(TokenType.LParen)) {
+      return this.#parseFunctionOrTupleType(startToken);
+    }
+    
+    // Record type: { x: i32, y: i32 }
+    if (this.#check(TokenType.LBrace)) {
+      return this.#parseRecordType(startToken);
+    }
+    
     // Named type or primitive
     if (this.#isIdentifier()) {
       let name = this.#advance().value;
@@ -1699,7 +1774,7 @@ export class Parser {
         while (this.#match(TokenType.Comma)) {
           args.push(this.#parseTypeAnnotation());
         }
-        this.#consume(TokenType.Greater, "Expected '>' after type arguments");
+        this.#consumeGreater("Expected '>' after type arguments");
         typeArgs = args;
       }
       
@@ -1707,6 +1782,123 @@ export class Parser {
     }
     
     throw new Error("Expected type annotation");
+  }
+  
+  #parseFunctionOrTupleType(startToken: Token): TypeAnnotation {
+    this.#advance(); // consume '('
+    
+    // Empty parens: () => ReturnType (function type with no params)
+    if (this.#check(TokenType.RParen)) {
+      this.#advance(); // consume ')'
+      // Must be followed by '=>' for function type
+      this.#consume(TokenType.Arrow, "Expected '=>' after '()'");
+      let returnType = this.#parseTypeAnnotation();
+      return new FunctionTypeAnnotation(
+        new Array<String>(0),
+        new Array<TypeAnnotation>(0),
+        returnType,
+        this.#makeLocation(startToken));
+    }
+    
+    // Try to determine if this is a function type or tuple type
+    // Function type has named params: (name: Type, ...) => ReturnType
+    // Tuple type has just types: (Type1, Type2)
+    // Heuristic: if we see Identifier followed by ':', it's a function type
+    if (this.#isIdentifier() && this.#peek2().kind == TokenType.Colon) {
+      // Function type
+      let paramNames = new Array<String>(4);
+      let params = new Array<TypeAnnotation>(4);
+      
+      // Parse first param
+      let paramName = this.#advance().value;
+      this.#consume(TokenType.Colon, "Expected ':' after parameter name");
+      let paramType = this.#parseTypeAnnotation();
+      paramNames.push(paramName);
+      params.push(paramType);
+      
+      // Parse remaining params
+      while (this.#match(TokenType.Comma)) {
+        let nextName = this.#advance().value;
+        this.#consume(TokenType.Colon, "Expected ':' after parameter name");
+        let nextType = this.#parseTypeAnnotation();
+        paramNames.push(nextName);
+        params.push(nextType);
+      }
+      
+      this.#consume(TokenType.RParen, "Expected ')' after function type parameters");
+      this.#consume(TokenType.Arrow, "Expected '=>' after function type parameters");
+      let returnType = this.#parseTypeAnnotation();
+      
+      return new FunctionTypeAnnotation(paramNames, params, returnType, this.#makeLocation(startToken));
+    }
+    
+    // Tuple type: (Type1, Type2)
+    let elementTypes = new Array<TypeAnnotation>(4);
+    elementTypes.push(this.#parseTypeAnnotation());
+    while (this.#match(TokenType.Comma)) {
+      elementTypes.push(this.#parseTypeAnnotation());
+    }
+    this.#consume(TokenType.RParen, "Expected ')' after tuple type elements");
+    
+    return new TupleTypeAnnotation(elementTypes, this.#makeLocation(startToken));
+  }
+  
+  #parseRecordType(startToken: Token): TypeAnnotation {
+    this.#advance(); // consume '{'
+    let properties = new Array<PropertySignature>(4);
+    
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      let propStartToken = this.#peek();
+      let propName = this.#parseIdentifier();
+      
+      // Check for optional: name?:
+      var optional = false;
+      if (this.#match(TokenType.Question)) {
+        optional = true;
+      }
+      
+      this.#consume(TokenType.Colon, "Expected ':' after property name in record type");
+      let propType = this.#parseTypeAnnotation();
+      
+      properties.push(new PropertySignature(propName, propType, optional, this.#makeLocation(propStartToken)));
+      
+      if (!this.#check(TokenType.RBrace)) {
+        this.#consume(TokenType.Comma, "Expected ',' between record type properties");
+      }
+    }
+    
+    this.#consume(TokenType.RBrace, "Expected '}' after record type");
+    return new RecordTypeAnnotation(properties, this.#makeLocation(startToken));
+  }
+  
+  /**
+   * Consume a '>' token in type context. Handles '>>' and '>>>' by consuming
+   * one '>' and leaving the rest for subsequent parsing via #extraGreaters.
+   */
+  #consumeGreater(message: String): Token {
+    // Check if we have a pending '>' from a previous '>>' split
+    if (this.#extraGreaters > 0) {
+      this.#extraGreaters = this.#extraGreaters - 1;
+      return this.#previous();
+    }
+    
+    if (this.#check(TokenType.Greater)) {
+      return this.#advance();
+    }
+    
+    if (this.#check(TokenType.GreaterGreater)) {
+      // '>>' in type context: consume as one '>' and mark one pending
+      this.#extraGreaters = this.#extraGreaters + 1;
+      return this.#advance();
+    }
+    
+    if (this.#check(TokenType.GreaterGreaterGreater)) {
+      // '>>>' in type context: consume as one '>' and mark two pending
+      this.#extraGreaters = this.#extraGreaters + 2;
+      return this.#advance();
+    }
+    
+    throw new Error(message);
   }
   
   // ==========================================================================
@@ -2397,6 +2589,23 @@ export class Parser {
     this.#consume(TokenType.RBrace, "Expected '}' after enum body");
     
     return new EnumDeclaration(name, members, exported, this.#makeLocation(startToken));
+  }
+  
+  #parseTypeAliasDeclaration(exported: boolean, isDistinct: boolean, startToken: Token): TypeAliasDeclaration {
+    this.#consume(TokenType.Type, "Expected 'type' keyword");
+    let name = this.#parseIdentifier();
+    
+    // Optional type parameters
+    var typeParameters: Array<TypeParameter> | null = null;
+    if (this.#match(TokenType.Less)) {
+      typeParameters = this.#parseTypeParameterList();
+    }
+    
+    this.#consume(TokenType.Equals, "Expected '=' after type alias name");
+    let typeAnnotation = this.#parseTypeAnnotation();
+    this.#consume(TokenType.Semi, "Expected ';' after type alias declaration");
+    
+    return new TypeAliasDeclaration(name, typeParameters, typeAnnotation, exported, isDistinct, this.#makeLocation(startToken));
   }
 }
 

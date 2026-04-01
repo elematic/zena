@@ -4,6 +4,7 @@
 import { JsonObject, JsonArray, stringify } from 'zena:json';
 import { Box } from 'zena:box';
 import { Array } from 'zena:array';
+import { StringReader } from 'zena:string-reader';
 import {
   Node, Module, Statement, Expression, Pattern, TypeAnnotation,
   VariableDeclaration, ExpressionStatement, BlockStatement,
@@ -22,6 +23,9 @@ import {
   MatchExpression, MatchCase, IfExpression,
   ThrowExpression, TryExpression, CatchClause,
   NamedTypeAnnotation, UnionTypeAnnotation,
+  FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation,
+  TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation,
+  PropertySignature, TypeAliasDeclaration,
   CaseClassParam, SealedVariant, ClassDeclaration, FieldDefinition, MethodDefinition,
   AccessorDeclaration, SetterInfo, SuperExpression,
   FieldInitializer, SuperInitializer,
@@ -107,6 +111,12 @@ let nodeTypeName = (node: Node): String => {
     // Type Annotations
     case NamedTypeAnnotation {}: 'TypeAnnotation'
     case UnionTypeAnnotation {}: 'UnionTypeAnnotation'
+    case FunctionTypeAnnotation {}: 'FunctionTypeAnnotation'
+    case LiteralTypeAnnotation {}: 'LiteralTypeAnnotation'
+    case RecordTypeAnnotation {}: 'RecordTypeAnnotation'
+    case TupleTypeAnnotation {}: 'TupleTypeAnnotation'
+    case InlineTupleTypeAnnotation {}: 'InlineTupleTypeAnnotation'
+    case ThisTypeAnnotation {}: 'ThisTypeAnnotation'
     // Module
     case Module {}: 'Module'
     // Declarations
@@ -114,6 +124,7 @@ let nodeTypeName = (node: Node): String => {
     case InterfaceDeclaration {}: 'InterfaceDeclaration'
     case EnumDeclaration {}: 'EnumDeclaration'
     case MixinDeclaration {}: 'MixinDeclaration'
+    case TypeAliasDeclaration {}: 'TypeAliasDeclaration'
     // Class Members
     case FieldDefinition {}: 'FieldDefinition'
     case MethodDefinition {}: 'MethodDefinition'
@@ -126,6 +137,7 @@ let nodeTypeName = (node: Node): String => {
     case FieldInitializer {}: 'FieldInitializer'
     case SuperInitializer {}: 'SuperInitializer'
     case EnumMember {}: 'EnumMember'
+    case PropertySignature {}: 'PropertySignature'
     case SetterInfo {}: 'AccessorDeclaration'
   }
 };
@@ -446,6 +458,56 @@ export let nodeToJson = (node: Node): JsonObject => {
     case UnionTypeAnnotation { types }: {
       obj['types'] = typeAnnotationsToJson(types);
     }
+    case FunctionTypeAnnotation { paramNames, params, returnType }: {
+      let namesArr = new JsonArray();
+      var i = 0;
+      while (i < paramNames.length) {
+        namesArr.push(paramNames[i]);
+        i = i + 1;
+      }
+      obj['paramNames'] = namesArr;
+      obj['params'] = typeAnnotationsToJson(params);
+      obj['returnType'] = nodeToJson(returnType as Node);
+    }
+    case LiteralTypeAnnotation { value }: {
+      match (value) {
+        case StringLiteral { value }: {
+          obj['value'] = value;
+        }
+        case NumberLiteral { raw }: {
+          obj['value'] = new Box<f64>(stringToF64(raw));
+        }
+        case BooleanLiteral { value }: {
+          obj['value'] = new Box<boolean>(value);
+        }
+        case _: {}
+      }
+    }
+    case RecordTypeAnnotation { properties }: {
+      let arr = new JsonArray();
+      var i = 0;
+      while (i < properties.length) {
+        arr.push(nodeToJson(properties[i] as Node));
+        i = i + 1;
+      }
+      obj['properties'] = arr;
+    }
+    case TupleTypeAnnotation { elementTypes }: {
+      obj['elementTypes'] = typeAnnotationsToJson(elementTypes);
+    }
+    case InlineTupleTypeAnnotation { elementTypes }: {
+      obj['elementTypes'] = typeAnnotationsToJson(elementTypes);
+    }
+    case ThisTypeAnnotation {}: {
+      // No additional fields
+    }
+    case PropertySignature { name, typeAnnotation, optional }: {
+      obj['name'] = nodeToJson(name as Node);
+      obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
+      if (optional) {
+        obj['optional'] = new Box<boolean>(true);
+      } else { };
+    }
     
     // Module
     case Module { body, path, source }: {
@@ -616,6 +678,15 @@ export let nodeToJson = (node: Node): JsonObject => {
       obj['name'] = nodeToJson(name);
       obj['members'] = enumMembersToJson(members);
       obj['exported'] = new Box<boolean>(exported);
+    }
+    case TypeAliasDeclaration { name, typeParameters, typeAnnotation, exported, isDistinct }: {
+      obj['name'] = nodeToJson(name);
+      if (typeParameters != null) {
+        obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
+      } else { };
+      obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
+      obj['exported'] = new Box<boolean>(exported);
+      obj['isDistinct'] = new Box<boolean>(isDistinct);
     }
     case EnumMember { name, initializer }: {
       obj['name'] = nodeToJson(name);
@@ -788,6 +859,51 @@ let nodesToJson = (nodes: Array<Node>): JsonArray => {
     i = i + 1;
   }
   return arr;
+};
+
+// ============================================================================
+// Number Parsing Helper
+// ============================================================================
+
+let stringToF64 = (raw: String): f64 => {
+  let reader = new StringReader(raw);
+  var result: f64 = 0.0 as f64;
+  var negative = false;
+  
+  if (!reader.isAtEnd && reader.peekByte() == 45) { // '-'
+    negative = true;
+    reader.advanceByte();
+  }
+  
+  // Integer part
+  while (!reader.isAtEnd) {
+    let b = reader.peekByte();
+    if (b >= 48 && b <= 57) { // '0'-'9'
+      result = result * (10.0 as f64) + ((b - 48) as f64);
+      reader.advanceByte();
+    } else {
+      break;
+    }
+  }
+  
+  // Fractional part
+  if (!reader.isAtEnd && reader.peekByte() == 46) { // '.'
+    reader.advanceByte();
+    var fracDiv: f64 = 10.0 as f64;
+    while (!reader.isAtEnd) {
+      let fb = reader.peekByte();
+      if (fb >= 48 && fb <= 57) {
+        result = result + ((fb - 48) as f64) / fracDiv;
+        fracDiv = fracDiv * (10.0 as f64);
+        reader.advanceByte();
+      } else {
+        break;
+      }
+    }
+  }
+  
+  if (negative) { result = (0.0 as f64) - result; }
+  return result;
 };
 
 // ============================================================================

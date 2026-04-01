@@ -469,53 +469,53 @@ tests/language/syntax/
 │
 ├── types/
 │   ├── annotations/
-│   │   ├── primitive.zena                 [new] — x: i32
-│   │   ├── named.zena                     [new] — x: Point
-│   │   ├── generic.zena                   [new] — x: Array<i32>
-│   │   ├── nested-generic.zena            [new] — x: Map<string, Array<i32>>
-│   │   └── nullable.zena                  [ts] parser-null_test — x: T | null
+│   │   ├── primitive.zena                 [done]
+│   │   ├── named.zena                     [done]
+│   │   ├── generic.zena                   [done]
+│   │   ├── nested-generic.zena            [done]
+│   │   └── nullable.zena                  [done]
 │   │
 │   ├── aliases/
-│   │   ├── simple.zena                    [ts] parser-type-alias_test
-│   │   ├── generic.zena                   [ts] parser-type-alias_test
-│   │   └── distinct.zena                  [ts] parser-type-alias_test
+│   │   ├── simple.zena                    [done]
+│   │   ├── generic.zena                   [done]
+│   │   └── distinct.zena                  [done]
 │   │
 │   ├── unions/
-│   │   ├── two-types.zena                 [ts] parser-union_test
-│   │   ├── three-types.zena               [ts] parser-union_test
-│   │   └── nullable.zena                  [ts] parser-union_test
+│   │   ├── two-types.zena                 [done]
+│   │   ├── three-types.zena               [done]
+│   │   └── nullable.zena                  [done]
 │   │
 │   ├── function-types/
-│   │   ├── no-params.zena                 [ts] function-type_test
-│   │   ├── single-param.zena              [ts] function-type_test
-│   │   ├── multiple-params.zena           [ts] function-type_test
-│   │   └── returning-function.zena        [ts] function-type_test
+│   │   ├── no-params.zena                 [done]
+│   │   ├── single-param.zena              [done]
+│   │   ├── multiple-params.zena           [done]
+│   │   └── returning-function.zena        [done]
 │   │
 │   ├── literal-types/
-│   │   ├── string.zena                    [ts] literal-types_test
-│   │   ├── number.zena                    [ts] literal-types_test
-│   │   ├── boolean-true.zena              [ts] literal-types_test
-│   │   └── boolean-false.zena             [ts] literal-types_test
+│   │   ├── string.zena                    [done]
+│   │   ├── number.zena                    [done]
+│   │   ├── boolean-true.zena              [done]
+│   │   └── boolean-false.zena             [done]
 │   │
 │   ├── record-types/
-│   │   ├── basic.zena                     [ts] records-tuples_test
-│   │   ├── optional-field.zena            [ts] records-tuples_test
-│   │   └── nested.zena                    [new]
+│   │   ├── basic.zena                     [done]
+│   │   ├── optional-field.zena            [done]
+│   │   └── nested.zena                    [done]
 │   │
 │   ├── tuple-types/
-│   │   ├── basic.zena                     [ts] records-tuples_test
-│   │   └── nested.zena                    [new]
+│   │   ├── basic.zena                     [done]
+│   │   └── nested.zena                    [done]
 │   │
 │   ├── inline-tuple-types/
-│   │   ├── basic.zena                     [ts] inline-tuples_test
-│   │   ├── type-annotation.zena           [ts] inline-tuples_test
-│   │   ├── return-expression.zena         [ts] inline-tuples_test
-│   │   ├── destructuring.zena             [ts] inline-tuples_test
-│   │   └── union-of-tuples.zena           [ts] inline-tuples_test
+│   │   ├── basic.zena                     [done]
+│   │   ├── type-annotation.zena           [done]
+│   │   ├── return-expression.zena         [done]
+│   │   ├── destructuring.zena             [done]
+│   │   └── union-of-tuples.zena           [done]
 │   │
 │   └── this-type/
-│       ├── return-type.zena               [ts] this-type_test
-│       └── parameter-type.zena            [ts] this-type_test
+│       ├── return-type.zena               [done]
+│       └── parameter-type.zena            [done]
 │
 ├── destructuring/
 │   ├── record/

@@ -35,6 +35,7 @@ export sealed class Node {
   case FieldInitializer, SuperInitializer
   case MethodSignature, AccessorSignature
   case EnumMember, CatchClause
+  case PropertySignature
 
   abstract loc?: SourceLocation;
 }
@@ -233,6 +234,13 @@ export sealed class Statement extends Node {
     body: Array<Node>,
     exported: boolean,
     loc?: SourceLocation)
+  case TypeAliasDeclaration(
+    name: Identifier,
+    typeParameters: Array<TypeParameter> | null,
+    typeAnnotation: TypeAnnotation,
+    exported: boolean,
+    isDistinct: boolean,
+    loc?: SourceLocation)
 }
 
 // ============================================================================
@@ -266,6 +274,25 @@ export sealed class TypeAnnotation extends Node {
     loc?: SourceLocation)
   case UnionTypeAnnotation(
     types: Array<TypeAnnotation>,
+    loc?: SourceLocation)
+  case FunctionTypeAnnotation(
+    paramNames: Array<String>,
+    params: Array<TypeAnnotation>,
+    returnType: TypeAnnotation,
+    loc?: SourceLocation)
+  case LiteralTypeAnnotation(
+    value: Node,
+    loc?: SourceLocation)
+  case RecordTypeAnnotation(
+    properties: Array<PropertySignature>,
+    loc?: SourceLocation)
+  case TupleTypeAnnotation(
+    elementTypes: Array<TypeAnnotation>,
+    loc?: SourceLocation)
+  case InlineTupleTypeAnnotation(
+    elementTypes: Array<TypeAnnotation>,
+    loc?: SourceLocation)
+  case ThisTypeAnnotation(
     loc?: SourceLocation)
 }
 
@@ -455,4 +482,14 @@ export class EnumMember(
 export class CatchClause(
   param: Identifier | null,
   body: BlockStatement,
+  loc?: SourceLocation) extends Node
+
+// ============================================================================
+// Property Signatures (for Record Type Annotations)
+// ============================================================================
+
+export class PropertySignature(
+  name: Identifier,
+  typeAnnotation: TypeAnnotation,
+  optional: boolean,
   loc?: SourceLocation) extends Node
