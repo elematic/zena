@@ -5688,6 +5688,48 @@ function generateBinaryExpression(
       t[0] === ValType.funcref);
 
   if (isRefType(leftType) && isRefType(rightType)) {
+    // Unwrap interface fat pointers before reference comparison.
+    // Fat pointers are (instance, vtable) structs — comparing them directly
+    // with ref_eq would fail when the same object is boxed with different
+    // vtables (e.g., upcasted to different interfaces). Extract field 0
+    // (the instance) so ref_eq compares the underlying objects.
+    const leftIsInterface = expr.left.inferredType?.kind === TypeKind.Interface;
+    const rightIsInterface =
+      expr.right.inferredType?.kind === TypeKind.Interface;
+    if (leftIsInterface || rightIsInterface) {
+      const leftInterfaceInfo = leftIsInterface
+        ? ctx.getInterfaceInfo(expr.left.inferredType as InterfaceType)
+        : undefined;
+      const rightInterfaceInfo = rightIsInterface
+        ? ctx.getInterfaceInfo(expr.right.inferredType as InterfaceType)
+        : undefined;
+
+      // Stack: [left, right]. Save right to temp, unwrap left, reload & unwrap right.
+      const tempRight = ctx.declareLocal('$$eq_iface_right', rightType);
+      body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempRight));
+
+      if (leftInterfaceInfo) {
+        // Extract instance (field 0) from fat pointer and cast anyref -> eqref
+        body.push(0xfb, GcOpcode.struct_get);
+        body.push(
+          ...WasmModule.encodeSignedLEB128(leftInterfaceInfo.structTypeIndex),
+        );
+        body.push(...WasmModule.encodeSignedLEB128(0));
+        body.push(0xfb, GcOpcode.ref_cast_null, 0x6d); // ref.cast null eq
+      }
+
+      body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempRight));
+      if (rightInterfaceInfo) {
+        // Extract instance (field 0) from fat pointer and cast anyref -> eqref
+        body.push(0xfb, GcOpcode.struct_get);
+        body.push(
+          ...WasmModule.encodeSignedLEB128(rightInterfaceInfo.structTypeIndex),
+        );
+        body.push(...WasmModule.encodeSignedLEB128(0));
+        body.push(0xfb, GcOpcode.ref_cast_null, 0x6d); // ref.cast null eq
+      }
+    }
+
     if (expr.operator === '===') {
       body.push(Opcode.ref_eq);
       return;

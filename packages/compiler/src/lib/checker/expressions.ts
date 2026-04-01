@@ -2434,6 +2434,16 @@ function checkBinaryExpression(
         typesMatch =
           isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
       }
+      // Allow reference equality between any class/interface types —
+      // a single object can implement multiple interfaces, so unrelated
+      // interface types may still refer to the same instance.
+      if (!typesMatch) {
+        const isRefKind = (t: Type) =>
+          t.kind === TypeKind.Class || t.kind === TypeKind.Interface;
+        if (isRefKind(left) && isRefKind(right)) {
+          typesMatch = true;
+        }
+      }
       resultType = Types.Boolean;
     } else if (expr.operator === '===' || expr.operator === '!==') {
       // Allow comparing boolean literal types with each other
@@ -2442,6 +2452,14 @@ function checkBinaryExpression(
       } else {
         typesMatch =
           isAssignableTo(ctx, left, right) || isAssignableTo(ctx, right, left);
+      }
+      // Allow reference equality between any class/interface types
+      if (!typesMatch) {
+        const isRefKind = (t: Type) =>
+          t.kind === TypeKind.Class || t.kind === TypeKind.Interface;
+        if (isRefKind(left) && isRefKind(right)) {
+          typesMatch = true;
+        }
       }
       resultType = Types.Boolean;
     } else if (expr.operator === '&&' || expr.operator === '||') {
