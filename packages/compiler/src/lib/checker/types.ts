@@ -612,14 +612,6 @@ function resolveTypeAnnotationInternal(
     }
 
     if (hasPrimitive && hasReference) {
-      const typeStr = types
-        .map((t) => `kind=${t.kind},name=${(t as any).name || '?'}`)
-        .join(' | ');
-      console.error(`[RESOLVE_UNION_DEBUG] Failed: ${typeStr}`);
-      console.error(
-        `[RESOLVE_UNION_DEBUG] Stack:`,
-        new Error().stack?.split('\n').slice(1, 8).join('\n'),
-      );
       ctx.diagnostics.reportError(
         `Union types cannot mix primitive types with reference types. Use 'Box<T>' to box primitives.`,
         DiagnosticCode.TypeMismatch,
@@ -987,17 +979,6 @@ export function validateType(type: Type, ctx: CheckerContext) {
     }
 
     if (hasPrimitive && hasReference) {
-      const typeStr = ut.types
-        .map(
-          (t) =>
-            `kind=${t.kind},name=${(t as any).name || '?'},elTypes=${(t as any).elementTypes?.map((e: any) => `kind=${e.kind},name=${e.name || '?'}`).join('+') || 'none'}`,
-        )
-        .join(' | ');
-      console.error(`[UNION_DEBUG] Failed: ${typeStr}`);
-      console.error(
-        `[UNION_DEBUG] Stack:`,
-        new Error().stack?.split('\n').slice(1, 8).join('\n'),
-      );
       ctx.diagnostics.reportError(
         `Union types cannot mix primitive types with reference types. Use 'Box<T>' to box primitives.`,
         DiagnosticCode.TypeMismatch,
@@ -1690,10 +1671,9 @@ export function isAssignableTo(
       if (
         target.kind === TypeKind.Class &&
         (target as ClassType).name === Types.String.name
-      )
+      ) {
         return true;
-
-      // console.log(`[DEBUG] isAssignableTo string literal. Target: ${typeToString(target)} (${target.kind}). StringType: ${stringType ? typeToString(stringType) : 'undefined'}`);
+      }
     } else if (typeof lit.value === 'number') {
       // Number literals are assignable to i32 (default for integer literals)
       // TODO: Support more flexible literal-to-numeric-type assignment based on value range
