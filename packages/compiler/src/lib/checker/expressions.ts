@@ -188,6 +188,7 @@ import {
   makeNullable,
 } from './types.js';
 import {
+  checkPattern,
   checkStatement,
   extractAllInverseNarrowingsFromCondition,
   extractAllNarrowingsFromCondition,
@@ -2648,7 +2649,12 @@ function checkFunctionExpression(
     // Store the inferred type on the parameter for codegen
     param.inferredType = type;
 
-    ctx.declare(param.name.name, type, 'let', param);
+    // For destructured parameters, declare pattern bindings instead of synthetic name
+    if (param.pattern) {
+      checkPattern(ctx, param.pattern, type, 'let');
+    } else {
+      ctx.declare(param.name.name, type, 'let', param);
+    }
     paramTypes.push(type);
     parameterNames.push(param.name.name);
     optionalParameters.push(param.optional);

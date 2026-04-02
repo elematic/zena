@@ -1284,7 +1284,7 @@ function getInlineTupleElementTypes(type: Type | undefined): Type[] | null {
   return null;
 }
 
-function generatePatternBinding(
+export function generatePatternBinding(
   ctx: CodegenContext,
   pattern: Pattern,
   valueType: number[],

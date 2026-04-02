@@ -151,6 +151,7 @@ import {
 import {
   generateBlockStatement,
   generateFunctionStatement,
+  generatePatternBinding,
 } from './statements.js';
 import type {ClassInfo, InterfaceInfo, RecordInfo} from './types.js';
 
@@ -3853,6 +3854,21 @@ export function generateClassMethods(
         const paramType = methodInfo.paramTypes[paramTypeIndex];
         ctx.defineParam(param.name.name, paramType, param);
       }
+
+      // Generate destructuring for pattern parameters
+      for (const param of member.params) {
+        if (param.pattern) {
+          const paramLocal = ctx.getLocal(param.name.name);
+          if (!paramLocal)
+            throw new Error(
+              `Missing local for destructured param ${param.name.name}`,
+            );
+          body.push(Opcode.local_get);
+          body.push(...WasmModule.encodeSignedLEB128(paramLocal.index));
+          generatePatternBinding(ctx, param.pattern, paramLocal.type, body);
+        }
+      }
+
       if (classInfo.isExtension && methodName === CONSTRUCTOR_NAME) {
         // Extension constructor: 'this' is a local variable, not a param
         const thisLocalIndex = ctx.declareLocal('this', classInfo.onType!);

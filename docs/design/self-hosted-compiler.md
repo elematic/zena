@@ -349,14 +349,14 @@ export let walkEnter = (node: Node, fn: (Node) => void) => {
 
 #### Why this is better than the TypeScript visitor
 
-| TypeScript Visitor                         | Zena `match` + `walk`                             |
-| ------------------------------------------ | -------------------------------------------------- |
-| ~60 optional interface methods             | Zero — callers use closures + `match`              |
-| `NodeType` enum (manual discriminant)      | Sealed class **is** the discriminant               |
-| 500-line `switch` with casts               | Exhaustive `match` with destructuring              |
-| `visitor.visitFoo?.(node)` null checks     | Pattern match — zero overhead                      |
-| Silent `default: break` on new nodes       | **Compile error** on unhandled variant             |
-| `visitChildren` reflection fallback        | Explicit children in `walkChildren`                |
+| TypeScript Visitor                     | Zena `match` + `walk`                  |
+| -------------------------------------- | -------------------------------------- |
+| ~60 optional interface methods         | Zero — callers use closures + `match`  |
+| `NodeType` enum (manual discriminant)  | Sealed class **is** the discriminant   |
+| 500-line `switch` with casts           | Exhaustive `match` with destructuring  |
+| `visitor.visitFoo?.(node)` null checks | Pattern match — zero overhead          |
+| Silent `default: break` on new nodes   | **Compile error** on unhandled variant |
+| `visitChildren` reflection fallback    | Explicit children in `walkChildren`    |
 
 The key advantage is **exhaustiveness**: when a new AST node is added, every
 `match` on `Node` in the codebase produces a compile error until updated. The
@@ -944,7 +944,7 @@ CheckerContext, CodegenContext, and ClassInfo.
 | AST mutation    | Checker sets `inferredType` on nodes         | Checker writes to SemanticModel side table                         |
 | Class members   | Spread across ClassType, ClassInfo, AST      | Single `members` map on ClassType; codegen adds indices separately |
 | Type lookup     | Mix of name-based and identity-based         | Identity-only via interning                                        |
-| Visitors        | 60-method optional interface + switch/cast   | Sealed `match` + thin `walk`/`walkChildren` utility               |
+| Visitors        | 60-method optional interface + switch/cast   | Sealed `match` + thin `walk`/`walkChildren` utility                |
 | Checker passes  | 5 passes over all modules together           | 2 phases: file-local, per-module (DAG); then analysis passes       |
 | Generic context | `currentTypeParamMap` stack in codegen       | Type substitution via TypeContext.substitute()                     |
 | Vtable layout   | Computed in both checker and codegen         | Computed once in ClassHierarchy                                    |

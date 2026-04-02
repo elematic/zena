@@ -91,6 +91,7 @@ import {
 import {
   generateBlockStatement,
   generateFunctionStatement,
+  generatePatternBinding,
 } from './statements.js';
 import type {ClassInfo, InterfaceInfo} from './types.js';
 import {
@@ -8848,6 +8849,20 @@ function generateFunctionExpression(
     expr.params.forEach((p, i) => {
       ctx.defineParam(p.name.name, paramTypes[i], p);
     });
+
+    // Generate destructuring for pattern parameters
+    for (const p of expr.params) {
+      if (p.pattern) {
+        const paramLocal = ctx.getLocal(p.name.name);
+        if (!paramLocal)
+          throw new Error(
+            `Missing local for destructured param ${p.name.name}`,
+          );
+        funcBody.push(Opcode.local_get);
+        funcBody.push(...WasmModule.encodeSignedLEB128(paramLocal.index));
+        generatePatternBinding(ctx, p.pattern, paramLocal.type, funcBody);
+      }
+    }
 
     // Unpack Context
     if (captureList.length > 0) {

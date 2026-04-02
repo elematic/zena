@@ -911,6 +911,63 @@ increment(10, 5); // 15
 
 When a default value is provided, the parameter type in the function body is the non-nullable type (unless the default value itself is null).
 
+### Destructured Parameters
+
+Function parameters can use destructuring patterns to extract fields from
+records, tuples, or class instances directly in the parameter list. A type
+annotation is required for destructured parameters.
+
+#### Record Destructured Parameters
+
+```zena
+let getX = ({x, y}: {x: i32, y: i32}) => x;
+getX({x: 10, y: 20}); // 10
+
+// With renaming
+let getFirst = ({x as a, y as b}: {x: i32, y: i32}) => a;
+```
+
+#### Tuple Destructured Parameters
+
+```zena
+let sum = ((a, b): (i32, i32)) => a + b;
+sum((3, 4)); // 7
+```
+
+#### Multiple Destructured Parameters
+
+Destructured and normal parameters can be mixed freely:
+
+```zena
+let combine = (scale: i32, {x, y}: {x: i32, y: i32}) => x * scale + y * scale;
+combine(2, {x: 3, y: 4}); // 14
+```
+
+#### Destructured Parameters with Defaults
+
+When a destructured parameter has a default value, the default is used if the
+argument is omitted. The default value is then destructured:
+
+```zena
+let origin = ({x, y}: {x: i32, y: i32} = {x: 0, y: 0}) => x + y;
+origin();             // 0 (default used)
+origin({x: 3, y: 4}); // 7 (provided value used)
+```
+
+#### Class Method Destructured Parameters
+
+Destructured parameters work in class methods as well:
+
+```zena
+class Calculator {
+  offset: i32;
+  new(offset: i32) { this.offset = offset; }
+  add({x, y}: {x: i32, y: i32}): i32 {
+    return this.offset + x + y;
+  }
+}
+```
+
 ### Calling Union Types
 
 Zena supports calling a function that is typed as a Union of function types,

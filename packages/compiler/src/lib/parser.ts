@@ -63,6 +63,7 @@ import {
   type TemplateElement,
   type TemplateLiteral,
   type TryExpression,
+  type TuplePattern,
   type TypeAnnotation,
   type TypeParameter,
   type TypeAliasDeclaration,
@@ -997,6 +998,53 @@ export class Parser {
         return this.#parseArrowFunctionDefinition();
       }
 
+      // Case 2b: ({...}: Type) => ... — destructured record parameter
+      // Must disambiguate from parenthesized record literal: ({x: 1, y: 2})
+      // After the matching }, check for : (type annotation), , (next param),
+      // or ) followed by => or : (return type)
+      if (this.#peek(1).type === TokenType.LBrace) {
+        const braceClose = this.#findMatchingBraceOffset(1);
+        if (braceClose > 0) {
+          const afterBrace = this.#peek(braceClose + 1).type;
+          if (
+            afterBrace === TokenType.Colon ||
+            afterBrace === TokenType.Comma
+          ) {
+            return this.#parseArrowFunctionDefinition();
+          }
+          if (afterBrace === TokenType.RParen) {
+            const afterParen = this.#peek(braceClose + 2).type;
+            if (
+              afterParen === TokenType.Arrow ||
+              afterParen === TokenType.Colon
+            ) {
+              return this.#parseArrowFunctionDefinition();
+            }
+          }
+        }
+      }
+
+      // Case 2c: (( ... ) — destructured tuple parameter
+      // Disambiguate from nested parenthesized expression by checking for
+      // pattern-like structure: (( ident , ... ): type
+      if (this.#peek(1).type === TokenType.LParen) {
+        // Look for a tuple pattern: ((a, b): ...)
+        // A tuple pattern has identifier, comma inside inner parens
+        if (
+          this.#isIdentifier(this.#peek(2).type) &&
+          this.#peek(3).type === TokenType.Comma
+        ) {
+          // Find the matching ) for the inner parens, then check for :
+          const innerCloseOffset = this.#findMatchingParenOffset(1);
+          if (
+            innerCloseOffset > 0 &&
+            this.#peek(innerCloseOffset + 1).type === TokenType.Colon
+          ) {
+            return this.#parseArrowFunctionDefinition();
+          }
+        }
+      }
+
       // Case 3: (param) => ... or (param, ...) => ...
       // Contextual typing - parameter without type annotation
       if (this.#isIdentifier(this.#peek(1).type)) {
@@ -1054,18 +1102,50 @@ export class Parser {
     const params: Parameter[] = [];
     if (!this.#check(TokenType.RParen)) {
       let seenOptional = false;
+      let destructIndex = 0;
       do {
-        const name = this.#parseIdentifier();
+        // Check for destructured parameter: { ... } or ( ... )
+        let pattern: RecordPattern | TuplePattern | undefined;
+        let name: Identifier;
+
+        if (this.#check(TokenType.LBrace)) {
+          this.#advance(); // consume '{'
+          pattern = this.#parseRecordPattern();
+          name = {
+            type: NodeType.Identifier,
+            name: `$$destruct_${destructIndex++}`,
+            loc: pattern.loc,
+          };
+        } else if (this.#check(TokenType.LParen)) {
+          this.#advance(); // consume '('
+          const tuplePattern = this.#parseTupleOrInlineTuplePattern();
+          if (tuplePattern.type !== NodeType.TuplePattern) {
+            throw new Error(
+              'Expected tuple destructuring pattern with at least 2 elements.',
+            );
+          }
+          pattern = tuplePattern as TuplePattern;
+          name = {
+            type: NodeType.Identifier,
+            name: `$$destruct_${destructIndex++}`,
+            loc: pattern.loc,
+          };
+        } else {
+          name = this.#parseIdentifier();
+        }
+
         let optional = false;
         if (this.#match(TokenType.Question)) {
           optional = true;
           seenOptional = true;
         }
 
-        // Type annotation is optional - allows contextual typing
+        // Type annotation is optional for simple params, required for destructured
         let typeAnnotation: TypeAnnotation | undefined;
         if (this.#match(TokenType.Colon)) {
           typeAnnotation = this.#parseTypeAnnotation();
+        } else if (pattern) {
+          throw new Error('Destructured parameters require a type annotation.');
         }
 
         let initializer: Expression | undefined;
@@ -1084,6 +1164,7 @@ export class Parser {
         params.push({
           type: NodeType.Parameter,
           name,
+          pattern,
           typeAnnotation,
           optional,
           initializer,
@@ -2942,6 +3023,7 @@ export class Parser {
       const params: Parameter[] = [];
       if (!this.#check(TokenType.RParen)) {
         let seenOptional = false;
+        let destructIndex = 0;
         do {
           // Check for `this.field` constructor parameter
           let isThisParam = false;
@@ -2955,7 +3037,36 @@ export class Parser {
             isThisParam = true;
           }
 
-          const paramName = this.#parseIdentifier();
+          // Check for destructured parameter: { ... } or ( ... )
+          let pattern: RecordPattern | TuplePattern | undefined;
+          let paramName: Identifier;
+
+          if (!isThisParam && this.#check(TokenType.LBrace)) {
+            this.#advance(); // consume '{'
+            pattern = this.#parseRecordPattern();
+            paramName = {
+              type: NodeType.Identifier,
+              name: `$$destruct_${destructIndex++}`,
+              loc: pattern.loc,
+            };
+          } else if (!isThisParam && this.#check(TokenType.LParen)) {
+            this.#advance(); // consume '('
+            const tuplePattern = this.#parseTupleOrInlineTuplePattern();
+            if (tuplePattern.type !== NodeType.TuplePattern) {
+              throw new Error(
+                'Expected tuple destructuring pattern with at least 2 elements.',
+              );
+            }
+            pattern = tuplePattern as TuplePattern;
+            paramName = {
+              type: NodeType.Identifier,
+              name: `$$destruct_${destructIndex++}`,
+              loc: pattern.loc,
+            };
+          } else {
+            paramName = this.#parseIdentifier();
+          }
+
           let optional = false;
           if (this.#match(TokenType.Question)) {
             optional = true;
@@ -2963,7 +3074,13 @@ export class Parser {
           }
 
           let typeAnnotation: TypeAnnotation | undefined;
-          if (!isThisParam) {
+          if (pattern) {
+            this.#consume(
+              TokenType.Colon,
+              'Destructured parameters require a type annotation.',
+            );
+            typeAnnotation = this.#parseTypeAnnotation();
+          } else if (!isThisParam) {
             this.#consume(TokenType.Colon, "Expected ':' for type annotation");
             typeAnnotation = this.#parseTypeAnnotation();
           } else if (this.#match(TokenType.Colon)) {
@@ -2987,6 +3104,7 @@ export class Parser {
           params.push({
             type: NodeType.Parameter,
             name: paramName,
+            pattern,
             typeAnnotation,
             optional,
             initializer,
@@ -4319,6 +4437,19 @@ export class Parser {
       offset++;
     }
     return offset - 1; // offset of the RParen
+  }
+
+  #findMatchingBraceOffset(startOffset: number): number {
+    let depth = 1;
+    let offset = startOffset + 1;
+    while (depth > 0) {
+      const token = this.#peek(offset);
+      if (token.type === TokenType.EOF) return -1;
+      if (token.type === TokenType.LBrace) depth++;
+      if (token.type === TokenType.RBrace) depth--;
+      offset++;
+    }
+    return offset - 1; // offset of the RBrace
   }
 
   #peek(distance = 0): Token {

@@ -918,6 +918,8 @@ export interface ForInStatement extends Node {
 export interface Parameter extends Node {
   type: typeof NodeType.Parameter;
   name: Identifier;
+  /** Destructuring pattern. When set, `name` is a synthetic identifier. */
+  pattern?: RecordPattern | TuplePattern;
   typeAnnotation?: TypeAnnotation;
   optional: boolean;
   initializer?: Expression;

@@ -28,6 +28,7 @@ import {generateAdaptedArgument, generateExpression} from './expressions.js';
 import {
   generateBlockStatement,
   generateFunctionStatement,
+  generatePatternBinding,
 } from './statements.js';
 import type {ClassInfo} from './types.js';
 
@@ -181,6 +182,18 @@ export function generateFunctionBody(
   });
 
   const body: number[] = [];
+
+  // Generate destructuring for pattern parameters
+  for (const p of func.params) {
+    if (p.pattern) {
+      const paramLocal = ctx.getLocal(p.name.name);
+      if (!paramLocal)
+        throw new Error(`Missing local for destructured param ${p.name.name}`);
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(paramLocal.index));
+      generatePatternBinding(ctx, p.pattern, paramLocal.type, body);
+    }
+  }
   if (func.body.type === NodeType.BlockStatement) {
     const blockBody = func.body as BlockStatement;
     const hasReturnType = returnType && returnType.length > 0;
@@ -685,6 +698,19 @@ function generateMethodBody(
   });
 
   const body: number[] = [];
+
+  // Generate destructuring for pattern parameters
+  for (const p of method.params) {
+    if (p.pattern) {
+      const paramLocal = ctx.getLocal(p.name.name);
+      if (!paramLocal)
+        throw new Error(`Missing local for destructured param ${p.name.name}`);
+      body.push(Opcode.local_get);
+      body.push(...WasmModule.encodeSignedLEB128(paramLocal.index));
+      generatePatternBinding(ctx, p.pattern, paramLocal.type, body);
+    }
+  }
+
   if (method.body && method.body.type === NodeType.BlockStatement) {
     generateBlockStatement(ctx, method.body as BlockStatement, body);
     if (returnType && returnType.length > 0) {

@@ -113,11 +113,12 @@ export class Parser {
   #tokens: Array<Token>;
   var #current: i32;
   var #extraGreaters: i32;
+  var #destructParamCounter: i32;
   #source: String;
   #path: String;
   
   new(source: String, path: String)
-    : #source = source, #path = path, #tokens = tokenize(source), #current = 0, #extraGreaters = 0
+    : #source = source, #path = path, #tokens = tokenize(source), #current = 0, #extraGreaters = 0, #destructParamCounter = 0
   { }
   
   // ==========================================================================
@@ -1696,6 +1697,56 @@ export class Parser {
   #parseParameter(): Parameter {
     let startToken = this.#peek();
     
+    // Destructured record parameter: {x, y}: Type
+    if (this.#check(TokenType.LBrace)) {
+      let braceToken = this.#advance(); // consume '{'
+      let pattern = this.#parseRecordPattern(braceToken, false);
+      
+      // Type annotation is required for destructured parameters
+      if (!this.#check(TokenType.Colon)) {
+        throw new Error("Destructured parameters require a type annotation.");
+      }
+      this.#advance(); // consume ':'
+      let typeAnnotation = this.#parseTypeAnnotation();
+      
+      // Default value
+      var optional = false;
+      var defaultValue: Expression | null = null;
+      if (this.#match(TokenType.Equals)) {
+        defaultValue = this.#parseExpression();
+        optional = true;
+      }
+      
+      let syntheticName = new Identifier(`$$destruct_${this.#destructParamCounter}`, this.#makeLocation(startToken));
+      this.#destructParamCounter = this.#destructParamCounter + 1;
+      return new Parameter(syntheticName, pattern, typeAnnotation, optional, defaultValue, false, this.#makeLocation(startToken));
+    }
+    
+    // Destructured tuple parameter: (a, b): Type
+    if (this.#check(TokenType.LParen)) {
+      let parenToken = this.#advance(); // consume '('
+      let pattern = this.#parseParenTuplePattern(parenToken);
+      
+      // Type annotation is required for destructured parameters
+      if (!this.#check(TokenType.Colon)) {
+        throw new Error("Destructured parameters require a type annotation.");
+      }
+      this.#advance(); // consume ':'
+      let typeAnnotation = this.#parseTypeAnnotation();
+      
+      // Default value
+      var optional2 = false;
+      var defaultValue2: Expression | null = null;
+      if (this.#match(TokenType.Equals)) {
+        defaultValue2 = this.#parseExpression();
+        optional2 = true;
+      }
+      
+      let syntheticName = new Identifier(`$$destruct_${this.#destructParamCounter}`, this.#makeLocation(startToken));
+      this.#destructParamCounter = this.#destructParamCounter + 1;
+      return new Parameter(syntheticName, pattern, typeAnnotation, optional2, defaultValue2, false, this.#makeLocation(startToken));
+    }
+    
     // Check for this.field constructor parameter
     var isThisParam = false;
     if (this.#check(TokenType.This) && this.#peek2().kind == TokenType.Dot) {
@@ -1707,22 +1758,22 @@ export class Parser {
     let name = this.#parseIdentifier();
     
     // Check for optional parameter
-    var optional = this.#match(TokenType.Question);
+    var optional3 = this.#match(TokenType.Question);
     
     // Type annotation (optional for this.field params)
-    var typeAnnotation: TypeAnnotation | null = null;
+    var typeAnnotation2: TypeAnnotation | null = null;
     if (this.#match(TokenType.Colon)) {
-      typeAnnotation = this.#parseTypeAnnotation();
+      typeAnnotation2 = this.#parseTypeAnnotation();
     }
     
     // Default value
-    var defaultValue: Expression | null = null;
+    var defaultValue3: Expression | null = null;
     if (this.#match(TokenType.Equals)) {
-      defaultValue = this.#parseExpression();
-      optional = true;
+      defaultValue3 = this.#parseExpression();
+      optional3 = true;
     }
     
-    return new Parameter(name, typeAnnotation, optional, defaultValue, isThisParam, this.#makeLocation(startToken));
+    return new Parameter(name, null, typeAnnotation2, optional3, defaultValue3, isThisParam, this.#makeLocation(startToken));
   }
   
   #parseArrayLiteral(startToken: Token): ArrayLiteral {

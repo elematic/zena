@@ -1102,6 +1102,7 @@ function visitParameterChildren<T>(
   context: T,
 ): void {
   visit(node.name, visitor, context);
+  if (node.pattern) visit(node.pattern, visitor, context);
   visitTypeAnnotation(node.typeAnnotation, visitor, context);
   visit(node.initializer, visitor, context);
 }

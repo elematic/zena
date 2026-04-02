@@ -4,6 +4,9 @@ import {
   type FunctionExpression,
   type Identifier,
   type Node,
+  type Pattern,
+  type RecordPattern,
+  type TuplePattern,
   type VariableDeclaration,
 } from '../ast.js';
 
@@ -12,13 +15,41 @@ export interface CaptureInfo {
   mutableCaptures: Set<string>;
 }
 
+/** Collect all identifiers bound by a pattern into the given set. */
+function collectPatternLocals(pattern: Pattern, locals: Set<string>): void {
+  switch (pattern.type) {
+    case NodeType.Identifier:
+      locals.add((pattern as Identifier).name);
+      break;
+    case NodeType.RecordPattern:
+      for (const prop of (pattern as RecordPattern).properties) {
+        collectPatternLocals(prop.value, locals);
+      }
+      break;
+    case NodeType.TuplePattern:
+      for (const elem of (pattern as TuplePattern).elements) {
+        if (elem) collectPatternLocals(elem, locals);
+      }
+      break;
+    case NodeType.AssignmentPattern:
+      collectPatternLocals((pattern as any).left, locals);
+      break;
+  }
+}
+
 export function analyzeCaptures(func: FunctionExpression): CaptureInfo {
   const captures = new Set<string>();
   const mutableCaptures = new Set<string>();
   const locals = new Set<string>();
 
   // Add params to locals
-  func.params.forEach((p) => locals.add(p.name.name));
+  func.params.forEach((p) => {
+    if (p.pattern) {
+      collectPatternLocals(p.pattern, locals);
+    } else {
+      locals.add(p.name.name);
+    }
+  });
 
   // We need a better visitor that handles scoping.
   // Since we don't have a full visitor infrastructure, I'll write a specific one.
@@ -82,7 +113,13 @@ function traverseWithScope(
     case NodeType.FunctionExpression: {
       const func = node as FunctionExpression;
       const newLocals = new Set(locals);
-      func.params.forEach((p) => newLocals.add(p.name.name));
+      func.params.forEach((p) => {
+        if (p.pattern) {
+          collectPatternLocals(p.pattern, newLocals);
+        } else {
+          newLocals.add(p.name.name);
+        }
+      });
 
       // We don't traverse body with *our* locals, because nested function has its own scope.
       // But if nested function uses a variable that is NOT in newLocals, it captures it.

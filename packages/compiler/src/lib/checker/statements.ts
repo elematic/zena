@@ -2079,7 +2079,7 @@ function checkVariableDeclaration(
   }
 }
 
-function checkPattern(
+export function checkPattern(
   ctx: CheckerContext,
   pattern: Pattern,
   type: Type,
@@ -4418,7 +4418,12 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
     } else {
       type = resolveParameterType(ctx, param);
     }
-    ctx.declare(param.name.name, type, 'let', param);
+    // For destructured parameters, declare pattern bindings instead of synthetic name
+    if (param.pattern) {
+      checkPattern(ctx, param.pattern, type, 'let');
+    } else {
+      ctx.declare(param.name.name, type, 'let', param);
+    }
 
     if (param.initializer) {
       const initType = checkExpression(ctx, param.initializer);
@@ -5070,7 +5075,11 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
       ctx.enterScope();
       member.params.forEach((param, index) => {
         const type = methodType!.parameters[index];
-        ctx.declare(param.name.name, type, 'let', param);
+        if (param.pattern) {
+          checkPattern(ctx, param.pattern, type, 'let');
+        } else {
+          ctx.declare(param.name.name, type, 'let', param);
+        }
       });
       if (member.body) {
         checkStatement(ctx, member.body);
