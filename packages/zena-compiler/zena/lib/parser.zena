@@ -708,7 +708,7 @@ export class Parser {
         var obj: Expression = ident;
         while (this.#match(TokenType.Dot)) {
           let prop = this.#parseIdentifier();
-          obj = new MemberExpression(obj, prop, false, this.#makeLocation(startToken));
+          obj = new MemberExpression(obj, prop, false, false, null, this.#makeLocation(startToken));
         }
         return obj;
       }
@@ -1180,15 +1180,30 @@ export class Parser {
       if (this.#match(TokenType.LParen)) {
         expr = this.#finishCall(expr, false);
       } else if (this.#match(TokenType.Dot)) {
-        let name = this.#parseIdentifier();
-        expr = new MemberExpression(expr, name, false, null);
+        if (this.#match(TokenType.Colon)) {
+          // Symbol member access: obj.:sym or obj.:Iface.sym
+          var symbolPath: Expression = this.#parseIdentifier();
+          while (this.#match(TokenType.Dot)) {
+            let prop = this.#parseIdentifier();
+            symbolPath = new MemberExpression(symbolPath, prop, false, false, null, null);
+          }
+          let property: Identifier = if (symbolPath is Identifier) {
+            symbolPath as Identifier
+          } else {
+            (symbolPath as MemberExpression).property
+          };
+          expr = new MemberExpression(expr, property, false, true, symbolPath, null);
+        } else {
+          let name = this.#parseIdentifier();
+          expr = new MemberExpression(expr, name, false, false, null, null);
+        }
       } else if (this.#match(TokenType.LBracket)) {
         let index = this.#parseExpression();
         this.#consume(TokenType.RBracket, "Expected ']' after index");
         expr = new IndexExpression(expr, index, false, null);
       } else if (this.#match(TokenType.QuestionDot)) {
         let name = this.#parseIdentifier();
-        expr = new MemberExpression(expr, name, true, null);
+        expr = new MemberExpression(expr, name, true, false, null, null);
       } else if (this.#match(TokenType.QuestionLBracket)) {
         let index = this.#parseExpression();
         this.#consume(TokenType.RBracket, "Expected ']' after index");
@@ -2324,7 +2339,7 @@ export class Parser {
       var symbolExpr: Expression = this.#parseIdentifier();
       while (this.#match(TokenType.Dot)) {
         let prop = this.#parseIdentifier();
-        symbolExpr = new MemberExpression(symbolExpr, prop, false, this.#makeLocation(symStart));
+        symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, this.#makeLocation(symStart));
       }
       let symPropName = new SymbolPropertyName(symbolExpr, this.#makeLocation(symStart));
       
