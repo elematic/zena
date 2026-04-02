@@ -32,7 +32,8 @@ import {
   InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature,
   EnumDeclaration, EnumMember,
   ImportDeclaration, ImportSpecifier, ExportAllDeclaration,
-  Decorator, DeclareFunction
+  Decorator, DeclareFunction,
+  SymbolDeclaration, SymbolPropertyName
 } from './ast.zena';
 
 // ============================================================================
@@ -147,6 +148,8 @@ let nodeTypeName = (node: Node): String => {
     case ExportAllDeclaration {}: 'ExportAllDeclaration'
     case Decorator {}: 'Decorator'
     case DeclareFunction {}: 'DeclareFunction'
+    case SymbolDeclaration {}: 'SymbolDeclaration'
+    case SymbolPropertyName {}: 'SymbolPropertyName'
   }
 };
 
@@ -605,7 +608,7 @@ export let nodeToJson = (node: Node): JsonObject => {
         obj['mutability'] = mutability as String;
       }
     }
-    case FieldDefinition { name, typeAnnotation, value, isFinal, isAbstract, isOptional, mutability, decorators }: {
+    case FieldDefinition { name, typeAnnotation, value, isFinal, isAbstract, isOptional, isStatic, isDeclare, mutability, decorators }: {
       obj['name'] = nodeToJson(name);
       obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
       if (value != null) {
@@ -613,8 +616,8 @@ export let nodeToJson = (node: Node): JsonObject => {
       }
       obj['isFinal'] = new Box<boolean>(isFinal);
       obj['isAbstract'] = new Box<boolean>(isAbstract);
-      obj['isStatic'] = new Box<boolean>(false);
-      obj['isDeclare'] = new Box<boolean>(false);
+      obj['isStatic'] = new Box<boolean>(isStatic);
+      obj['isDeclare'] = new Box<boolean>(isDeclare);
       if (isOptional) {
         obj['isOptional'] = new Box<boolean>(true);
       }
@@ -623,7 +626,7 @@ export let nodeToJson = (node: Node): JsonObject => {
         obj['mutability'] = mutability as String;
       }
     }
-    case MethodDefinition { name, typeParameters, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic, decorators }: {
+    case MethodDefinition { name, typeParameters, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic, isDeclare, decorators }: {
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
@@ -644,7 +647,7 @@ export let nodeToJson = (node: Node): JsonObject => {
       obj['isFinal'] = new Box<boolean>(isFinal);
       obj['isAbstract'] = new Box<boolean>(isAbstract);
       obj['isStatic'] = new Box<boolean>(isStatic);
-      obj['isDeclare'] = new Box<boolean>(false);
+      obj['isDeclare'] = new Box<boolean>(isDeclare);
       obj['decorators'] = decoratorsToJson(decorators);
     }
     case AccessorDeclaration { name, typeAnnotation, getter, setter, isFinal, isStatic, decorators }: {
@@ -740,6 +743,15 @@ export let nodeToJson = (node: Node): JsonObject => {
       if (initializer != null) {
         obj['initializer'] = nodeToJson(initializer as Expression);
       }
+    }
+    
+    // Symbol Declarations
+    case SymbolDeclaration { name, exported }: {
+      obj['name'] = nodeToJson(name);
+      obj['exported'] = new Box<boolean>(exported);
+    }
+    case SymbolPropertyName { symbolRef }: {
+      obj['symbol'] = nodeToJson(symbolRef);
     }
     
     // Default: type field is already set

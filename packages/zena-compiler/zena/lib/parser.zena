@@ -100,7 +100,9 @@ import {
   ImportSpecifier,
   ExportAllDeclaration,
   Decorator,
-  DeclareFunction
+  DeclareFunction,
+  SymbolDeclaration,
+  SymbolPropertyName
 } from './ast.zena';
 
 // ============================================================================
@@ -344,6 +346,12 @@ export class Parser {
     if (this.#check(TokenType.Distinct)) {
       this.#advance(); // consume 'distinct'
       return this.#parseTypeAliasDeclaration(exported, true, startToken);
+    }
+    
+    // Symbol declarations
+    if (this.#check(TokenType.Symbol) && this.#peek2().kind == TokenType.Identifier) {
+      this.#advance(); // consume 'symbol'
+      return this.#parseSymbolDeclaration(exported, startToken);
     }
     
     // Control flow
@@ -2297,7 +2305,49 @@ export class Parser {
         value = this.#parseExpression();
       }
       this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, isOptional, mutability, decorators, this.#makeLocation(startToken));
+      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, isOptional, false, false, mutability, decorators, this.#makeLocation(startToken));
+    }
+    
+    // Static symbol declaration: static symbol name;
+    if (this.#check(TokenType.Static) && this.#peek2().kind == TokenType.Symbol) {
+      this.#advance(); // consume 'static'
+      this.#advance(); // consume 'symbol'
+      let symName = this.#parseIdentifier();
+      this.#consume(TokenType.Semi, "Expected ';' after symbol declaration");
+      return new FieldDefinition(symName, new NamedTypeAnnotation('symbol', null, symName.loc), null, true, false, false, true, false, null, decorators, this.#makeLocation(startToken));
+    }
+    
+    // Symbol-keyed member: :symbolName
+    if (this.#check(TokenType.Colon) && this.#peek2().kind == TokenType.Identifier) {
+      this.#advance(); // consume ':'
+      let symStart = this.#previous();
+      var symbolExpr: Expression = this.#parseIdentifier();
+      while (this.#match(TokenType.Dot)) {
+        let prop = this.#parseIdentifier();
+        symbolExpr = new MemberExpression(symbolExpr, prop, false, this.#makeLocation(symStart));
+      }
+      let symPropName = new SymbolPropertyName(symbolExpr, this.#makeLocation(symStart));
+      
+      // Symbol-keyed method: :name(params) { ... }
+      if (this.#check(TokenType.LParen)) {
+        return this.#parseMethodBody(symPropName, null, isFinal, isAbstract, false, decorators, startToken);
+      }
+      
+      // Symbol-keyed field: :name: Type;
+      this.#consume(TokenType.Colon, "Expected ':' after symbol field name");
+      let symTypeAnnotation = this.#parseTypeAnnotation();
+      
+      // Check for accessor block
+      if (this.#check(TokenType.LBrace)) {
+        return this.#parseAccessorBlock(symPropName, symTypeAnnotation, isFinal, decorators, startToken);
+      }
+      
+      var symFieldValue: Expression | null = null;
+      if (this.#match(TokenType.Equals)) {
+        symFieldValue = this.#parseExpression();
+      }
+      this.#consume(TokenType.Semi, "Expected ';' after field declaration");
+      return new FieldDefinition(symPropName, symTypeAnnotation, symFieldValue, isFinal, false, false, false, false, mutability, decorators, this.#makeLocation(startToken));
     }
     
     let name = this.#parseIdentifier();
@@ -2320,7 +2370,7 @@ export class Parser {
       this.#consume(TokenType.Colon, "Expected ':' after abstract field name.");
       let typeAnnotation = this.#parseTypeAnnotation();
       this.#consume(TokenType.Semi, "Expected ';' after abstract field declaration.");
-      return new FieldDefinition(name, typeAnnotation, null, false, true, isOptional, mutability, decorators, this.#makeLocation(startToken));
+      return new FieldDefinition(name, typeAnnotation, null, false, true, isOptional, false, false, mutability, decorators, this.#makeLocation(startToken));
     }
     
     // Field: name: Type; or name?: Type; -OR- Accessor: name: Type { get { } set(v) { } }
@@ -2339,7 +2389,7 @@ export class Parser {
     }
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-    return new FieldDefinition(name, typeAnnotation, fieldValue, isFinal, false, isOptional, mutability, decorators, this.#makeLocation(startToken));
+    return new FieldDefinition(name, typeAnnotation, fieldValue, isFinal, false, isOptional, false, false, mutability, decorators, this.#makeLocation(startToken));
   }
   
   // Check if < starts a generic method (vs a comparison expression)
@@ -2368,7 +2418,7 @@ export class Parser {
     return result;
   }
   
-  #parseAccessorBlock(name: Identifier, typeAnnotation: TypeAnnotation, isFinal: boolean, decorators: Array<Decorator>, startToken: Token): AccessorDeclaration {
+  #parseAccessorBlock(name: Node, typeAnnotation: TypeAnnotation, isFinal: boolean, decorators: Array<Decorator>, startToken: Token): AccessorDeclaration {
     this.#consume(TokenType.LBrace, "Expected '{' for accessor block");
     
     var getter: BlockStatement | null = null;
@@ -2409,7 +2459,7 @@ export class Parser {
     return new AccessorDeclaration(name, typeAnnotation, getter, setter, isFinal, false, decorators, this.#makeLocation(startToken));
   }
   
-  #parseMethodBody(name: Identifier, typeParameters: Array<TypeParameter> | null, isFinal: boolean, isAbstract: boolean, isStatic: boolean, decorators: Array<Decorator>, startToken: Token): MethodDefinition {
+  #parseMethodBody(name: Node, typeParameters: Array<TypeParameter> | null, isFinal: boolean, isAbstract: boolean, isStatic: boolean, decorators: Array<Decorator>, startToken: Token): MethodDefinition {
     this.#consume(TokenType.LParen, "Expected '(' after method name");
     let params = this.#parseParameters();
     this.#consume(TokenType.RParen, "Expected ')' after parameters");
@@ -2433,7 +2483,11 @@ export class Parser {
     if (this.#match(TokenType.Colon)) {
       // Check for initializer list (: field = value, ...) vs return type
       // If this is a constructor, the colon starts an initializer list
-      if (name.name == "<constructor>") {
+      let isConstructor = match (name) {
+        case Identifier { name }: name == "<constructor>"
+        case _: false
+      };
+      if (isConstructor) {
         // Parse initializer list
         let initList = new Array<Node>(4);
         var superInit: Node | null = null;
@@ -2480,7 +2534,7 @@ export class Parser {
           initListResult = combined;
         }
         
-        return new MethodDefinition(name, typeParameters, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, decorators, this.#makeLocation(startToken));
+        return new MethodDefinition(name, typeParameters, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, false, decorators, this.#makeLocation(startToken));
       } else {
         returnType = this.#parseTypeAnnotation();
       }
@@ -2504,7 +2558,7 @@ export class Parser {
       thisInitResult = thisInits;
     }
     
-    return new MethodDefinition(name, typeParameters, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, decorators, this.#makeLocation(startToken));
+    return new MethodDefinition(name, typeParameters, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, false, decorators, this.#makeLocation(startToken));
   }
   
   #parseFieldInitializer(): FieldInitializer {
@@ -2656,6 +2710,15 @@ export class Parser {
   #parseInterfaceMember(): Node {
     let startToken = this.#peek();
     
+    // Static symbol declaration: static symbol name;
+    if (this.#check(TokenType.Static) && this.#peek2().kind == TokenType.Symbol) {
+      this.#advance(); // consume 'static'
+      this.#advance(); // consume 'symbol'
+      let symName = this.#parseIdentifier();
+      this.#consume(TokenType.Semi, "Expected ';' after symbol declaration");
+      return new SymbolDeclaration(symName, false, this.#makeLocation(startToken));
+    }
+    
     // Check for `var` modifier on interface fields
     var mutableField = false;
     if (this.#check(TokenType.Var)) {
@@ -2723,7 +2786,7 @@ export class Parser {
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
     
-    return new FieldDefinition(name, typeAnnotation, null, false, false, isOptional, if (mutableField) { "var" } else { null }, new Array<Decorator>(0), this.#makeLocation(startToken));
+    return new FieldDefinition(name, typeAnnotation, null, false, false, isOptional, false, false, if (mutableField) { "var" } else { null }, new Array<Decorator>(0), this.#makeLocation(startToken));
   }
   
   // ==========================================================================
@@ -2789,6 +2852,12 @@ export class Parser {
     this.#consume(TokenType.RBrace, "Expected '}' after enum body");
     
     return new EnumDeclaration(name, members, exported, this.#makeLocation(startToken));
+  }
+  
+  #parseSymbolDeclaration(exported: boolean, startToken: Token): SymbolDeclaration {
+    let name = this.#parseIdentifier();
+    this.#consume(TokenType.Semi, "Expected ';' after symbol declaration");
+    return new SymbolDeclaration(name, exported, this.#makeLocation(startToken));
   }
   
   #parseTypeAliasDeclaration(exported: boolean, isDistinct: boolean, startToken: Token): TypeAliasDeclaration {

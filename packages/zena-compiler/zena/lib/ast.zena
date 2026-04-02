@@ -38,6 +38,7 @@ export sealed class Node {
   case PropertySignature
   case ImportSpecifier
   case Decorator
+  case SymbolPropertyName
 
   abstract loc?: SourceLocation;
 }
@@ -260,6 +261,10 @@ export sealed class Statement extends Node {
     exported: boolean,
     decorators: Array<Decorator>,
     loc?: SourceLocation)
+  case SymbolDeclaration(
+    name: Identifier,
+    exported: boolean,
+    loc?: SourceLocation)
 }
 
 // ============================================================================
@@ -427,18 +432,20 @@ export class SealedVariant(
 // ============================================================================
 
 export class FieldDefinition(
-  name: Identifier,
+  name: Node,
   typeAnnotation: TypeAnnotation,
   value: Expression | null,
   isFinal: boolean,
   isAbstract: boolean,
   isOptional: boolean,
+  isStatic: boolean,
+  isDeclare: boolean,
   mutability: String | null,
   decorators: Array<Decorator>,
   loc?: SourceLocation) extends Node
 
 export class MethodDefinition(
-  name: Identifier,
+  name: Node,
   typeParameters: Array<TypeParameter> | null,
   params: Array<Parameter>,
   returnType: TypeAnnotation | null,
@@ -448,6 +455,7 @@ export class MethodDefinition(
   isFinal: boolean,
   isAbstract: boolean,
   isStatic: boolean,
+  isDeclare: boolean,
   decorators: Array<Decorator>,
   loc?: SourceLocation) extends Node
 
@@ -456,7 +464,7 @@ export class MethodDefinition(
 // ============================================================================
 
 export class AccessorDeclaration(
-  name: Identifier,
+  name: Node,
   typeAnnotation: TypeAnnotation,
   getter: BlockStatement | null,
   setter: Node | null,
@@ -536,4 +544,12 @@ export class PropertySignature(
 export class Decorator(
   name: String,
   args: Array<StringLiteral>,
+  loc?: SourceLocation) extends Node
+
+// ============================================================================
+// Symbol Property Names
+// ============================================================================
+
+export class SymbolPropertyName(
+  symbolRef: Expression,
   loc?: SourceLocation) extends Node

@@ -587,7 +587,12 @@ tests/language/syntax/
 │   └── overloaded.zena                    [done]
 │
 ├── symbols/
-│   └── basic.zena                          [ts] symbol-declaration_test
+│   ├── basic.zena                          [done] symbol-declaration_test
+│   ├── exported.zena                      [done] symbol-declaration_test
+│   ├── multiple.zena                      [done] symbol-declaration_test
+│   ├── class-static-symbol.zena           [done]
+│   ├── symbol-keyed-field.zena            [done]
+│   └── symbol-keyed-method.zena           [done]
 │
 └── errors/
     ├── unexpected-token.zena              [new]
@@ -620,7 +625,7 @@ tests/language/syntax/
 | **Destructuring**        | 0      | ~5           | ~2       | ~7       |
 | **Imports**              | 0      | ~3           | ~3       | ~6       |
 | **Decorators & Declare** | 0      | ~6           | ~1       | ~7       |
-| **Symbols**              | 0      | ~1           | 0        | ~1       |
+| **Symbols**              | 6      | 0            | 0        | 6        |
 | **General Errors**       | 0      | 0            | ~5       | ~5       |
 | **TOTAL**                | **22** | **~130**     | **~121** | **~273** |
 
