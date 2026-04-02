@@ -914,17 +914,41 @@ When a default value is provided, the parameter type in the function body is the
 ### Destructured Parameters
 
 Function parameters can use destructuring patterns to extract fields from
-records, tuples, or class instances directly in the parameter list. A type
-annotation is required for destructured parameters.
+records, tuples, or class instances directly in the parameter list.
 
 #### Record Destructured Parameters
 
+The **combined syntax** declares field names and types together, avoiding
+duplication:
+
 ```zena
-let getX = ({x, y}: {x: i32, y: i32}) => x;
+let getX = ({x: i32, y: i32}) => x;
 getX({x: 10, y: 20}); // 10
 
 // With renaming
+let getFirst = ({x as a: i32, y as b: i32}) => a;
+
+// With field default
+let getX = ({x: i32 = 0, y: i32}) => x;
+```
+
+The **separate syntax** uses a pattern followed by an explicit type annotation:
+
+```zena
+let getX = ({x, y}: {x: i32, y: i32}) => x;
+
+// With renaming (separate syntax)
 let getFirst = ({x as a, y as b}: {x: i32, y: i32}) => a;
+```
+
+#### Contextual Typing
+
+When the expected parameter type is known from context, the type annotation can
+be omitted entirely:
+
+```zena
+let apply = (f: (p: {x: i32, y: i32}) => i32) => f({x: 1, y: 2});
+apply(({x, y}) => x + y); // 3 — types inferred from f's parameter type
 ```
 
 #### Tuple Destructured Parameters
@@ -939,7 +963,7 @@ sum((3, 4)); // 7
 Destructured and normal parameters can be mixed freely:
 
 ```zena
-let combine = (scale: i32, {x, y}: {x: i32, y: i32}) => x * scale + y * scale;
+let combine = (scale: i32, {x: i32, y: i32}) => x * scale + y * scale;
 combine(2, {x: 3, y: 4}); // 14
 ```
 
@@ -949,7 +973,7 @@ When a destructured parameter has a default value, the default is used if the
 argument is omitted. The default value is then destructured:
 
 ```zena
-let origin = ({x, y}: {x: i32, y: i32} = {x: 0, y: 0}) => x + y;
+let origin = ({x: i32, y: i32} = {x: 0, y: 0}) => x + y;
 origin();             // 0 (default used)
 origin({x: 3, y: 4}); // 7 (provided value used)
 ```
@@ -962,7 +986,7 @@ Destructured parameters work in class methods as well:
 class Calculator {
   offset: i32;
   new(offset: i32) { this.offset = offset; }
-  add({x, y}: {x: i32, y: i32}): i32 {
+  add({x: i32, y: i32}): i32 {
     return this.offset + x + y;
   }
 }

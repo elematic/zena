@@ -78,12 +78,17 @@ suite('Parser (Destructured Parameters)', () => {
     assert.ok(fn.params[1].pattern);
   });
 
-  test('destructured parameter requires type annotation', () => {
+  test('destructured parameter without type annotation (contextual typing)', () => {
     const input = 'let f = ({x, y}) => x;';
-    assert.throws(() => {
-      const parser = new Parser(input);
-      parser.parse();
-    }, /type annotation/i);
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0] as VariableDeclaration;
+    const fn = decl.init as FunctionExpression;
+    const param = fn.params[0];
+    assert.ok(param.pattern);
+    assert.strictEqual(param.pattern!.type, NodeType.RecordPattern);
+    assert.strictEqual(param.typeAnnotation, undefined);
   });
 
   test('record destructured parameter with renaming', () => {
@@ -97,5 +102,115 @@ suite('Parser (Destructured Parameters)', () => {
     const pattern = param.pattern as RecordPattern;
     assert.strictEqual(pattern.properties[0].name.name, 'x');
     assert.strictEqual((pattern.properties[0].value as any).name, 'a');
+  });
+
+  test('combined record syntax: ({x: i32, y: i32}) => x', () => {
+    const input = 'let f = ({x: i32, y: i32}) => x;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0] as VariableDeclaration;
+    const fn = decl.init as FunctionExpression;
+    assert.strictEqual(fn.params.length, 1);
+
+    const param = fn.params[0];
+    assert.ok(param.pattern);
+    assert.strictEqual(param.pattern!.type, NodeType.RecordPattern);
+    assert.strictEqual(param.name.name.startsWith('$$destruct_'), true);
+
+    // Pattern has simple bindings (value = identifier matching name)
+    const pattern = param.pattern as RecordPattern;
+    assert.strictEqual(pattern.properties.length, 2);
+    assert.strictEqual(pattern.properties[0].name.name, 'x');
+    assert.strictEqual((pattern.properties[0].value as any).name, 'x'); // shorthand
+    assert.strictEqual(pattern.properties[1].name.name, 'y');
+    assert.strictEqual((pattern.properties[1].value as any).name, 'y');
+
+    // Type annotation is synthesized as RecordTypeAnnotation
+    assert.ok(param.typeAnnotation);
+    assert.strictEqual(
+      param.typeAnnotation!.type,
+      NodeType.RecordTypeAnnotation,
+    );
+    const recType = param.typeAnnotation as any;
+    assert.strictEqual(recType.properties.length, 2);
+    assert.strictEqual(recType.properties[0].name.name, 'x');
+    assert.strictEqual(recType.properties[0].typeAnnotation.name, 'i32');
+    assert.strictEqual(recType.properties[1].name.name, 'y');
+    assert.strictEqual(recType.properties[1].typeAnnotation.name, 'i32');
+  });
+
+  test('combined record syntax with rename: ({x as a: i32}) => a', () => {
+    const input = 'let f = ({x as a: i32}) => a;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0] as VariableDeclaration;
+    const fn = decl.init as FunctionExpression;
+    const param = fn.params[0];
+    const pattern = param.pattern as RecordPattern;
+
+    // Pattern has rename
+    assert.strictEqual(pattern.properties[0].name.name, 'x');
+    assert.strictEqual((pattern.properties[0].value as any).name, 'a');
+
+    // Type annotation covers origin field
+    assert.ok(param.typeAnnotation);
+    const recType = param.typeAnnotation as any;
+    assert.strictEqual(recType.properties[0].name.name, 'x');
+    assert.strictEqual(recType.properties[0].typeAnnotation.name, 'i32');
+  });
+
+  test('combined record syntax with default: ({x: i32 = 5}) => x', () => {
+    const input = 'let f = ({x: i32 = 5}) => x;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0] as VariableDeclaration;
+    const fn = decl.init as FunctionExpression;
+    const param = fn.params[0];
+    const pattern = param.pattern as RecordPattern;
+
+    // Value should be AssignmentPattern with default 5
+    assert.strictEqual(
+      pattern.properties[0].value.type,
+      NodeType.AssignmentPattern,
+    );
+    const assign = pattern.properties[0].value as any;
+    assert.strictEqual(assign.left.name, 'x');
+    assert.strictEqual(assign.right.raw, '5');
+
+    // Type annotation present
+    assert.ok(param.typeAnnotation);
+    const recType = param.typeAnnotation as any;
+    assert.strictEqual(recType.properties[0].typeAnnotation.name, 'i32');
+  });
+
+  test('combined record syntax with param default: ({x: i32} = default) => x', () => {
+    const input = 'let f = ({x: i32} = defaultVal) => x;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0] as VariableDeclaration;
+    const fn = decl.init as FunctionExpression;
+    const param = fn.params[0];
+    assert.ok(param.pattern);
+    assert.ok(param.typeAnnotation);
+    assert.ok(param.initializer);
+    assert.strictEqual(param.optional, true);
+    assert.strictEqual((param.initializer as any).name, 'defaultVal');
+  });
+
+  test('tuple destructured parameter without type annotation', () => {
+    const input = 'let f = ((a, b)) => a;';
+    const parser = new Parser(input);
+    const ast = parser.parse();
+
+    const decl = ast.body[0] as VariableDeclaration;
+    const fn = decl.init as FunctionExpression;
+    const param = fn.params[0];
+    assert.ok(param.pattern);
+    assert.strictEqual(param.pattern!.type, NodeType.TuplePattern);
+    assert.strictEqual(param.typeAnnotation, undefined);
   });
 });

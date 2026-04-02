@@ -114,11 +114,12 @@ export class Parser {
   var #current: i32;
   var #extraGreaters: i32;
   var #destructParamCounter: i32;
+  var #combinedTypeAnnotation: RecordTypeAnnotation | null;
   #source: String;
   #path: String;
   
   new(source: String, path: String)
-    : #source = source, #path = path, #tokens = tokenize(source), #current = 0, #extraGreaters = 0, #destructParamCounter = 0
+    : #source = source, #path = path, #tokens = tokenize(source), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null
   { }
   
   // ==========================================================================
@@ -903,6 +904,58 @@ export class Parser {
     
     this.#consume(TokenType.RBrace, "Expected '}' after record pattern");
     return new RecordPattern(properties, this.#makeLocation(startToken));
+  }
+  
+  // Parse combined record parameter pattern: {name: Type, name as alias: Type = default, ...}
+  // In parameter context, : after field name introduces a TypeAnnotation (not a Pattern).
+  // Sets this.#combinedTypeAnnotation if any field has a type annotation.
+  #parseRecordParamPattern(startToken: Token): RecordPattern {
+    let bindingProps = new Array<BindingProperty>(4);
+    let typeSigs = new Array<PropertySignature>(4);
+    var hasTypeAnnotations = false;
+    
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      let propStart = this.#peek();
+      let name = this.#parseIdentifier();
+      
+      var value: Node = new IdentifierPattern(name.name, name.loc);
+      var propType: TypeAnnotation | null = null;
+      
+      if (this.#match(TokenType.As)) {
+        let newName = this.#parseIdentifier();
+        value = new IdentifierPattern(newName.name, newName.loc);
+      }
+      
+      if (this.#match(TokenType.Colon)) {
+        propType = this.#parseTypeAnnotation();
+        hasTypeAnnotations = true;
+      }
+      
+      if (this.#match(TokenType.Equals)) {
+        let defaultExpr = this.#parseExpression();
+        value = new AssignmentPattern(value, defaultExpr, this.#makeLocation(propStart));
+      }
+      
+      bindingProps.push(new BindingProperty(name, value, this.#makeLocation(propStart)));
+      
+      if (propType != null) {
+        typeSigs.push(new PropertySignature(name, propType, false, this.#makeLocation(propStart)));
+      }
+      
+      if (!this.#check(TokenType.RBrace)) {
+        this.#consume(TokenType.Comma, "Expected ',' after property");
+      }
+    }
+    
+    this.#consume(TokenType.RBrace, "Expected '}' after record parameter pattern");
+    
+    if (hasTypeAnnotations) {
+      this.#combinedTypeAnnotation = new RecordTypeAnnotation(typeSigs, this.#makeLocation(startToken));
+    } else {
+      this.#combinedTypeAnnotation = null;
+    }
+    
+    return new RecordPattern(bindingProps, this.#makeLocation(startToken));
   }
   
   #parseTuplePattern(startToken: Token): TuplePattern {
@@ -1697,17 +1750,20 @@ export class Parser {
   #parseParameter(): Parameter {
     let startToken = this.#peek();
     
-    // Destructured record parameter: {x, y}: Type
+    // Destructured record parameter: {x: i32, y: i32} or {x, y}: Type or {x, y}
     if (this.#check(TokenType.LBrace)) {
       let braceToken = this.#advance(); // consume '{'
-      let pattern = this.#parseRecordPattern(braceToken, false);
+      let pattern = this.#parseRecordParamPattern(braceToken);
+      let combinedType = this.#combinedTypeAnnotation;
+      this.#combinedTypeAnnotation = null;
       
-      // Type annotation is required for destructured parameters
-      if (!this.#check(TokenType.Colon)) {
-        throw new Error("Destructured parameters require a type annotation.");
+      // Type annotation: explicit :Type after }, or combined from field types
+      var typeAnnotation: TypeAnnotation | null = null;
+      if (this.#match(TokenType.Colon)) {
+        typeAnnotation = this.#parseTypeAnnotation();
+      } else if (combinedType != null) {
+        typeAnnotation = combinedType;
       }
-      this.#advance(); // consume ':'
-      let typeAnnotation = this.#parseTypeAnnotation();
       
       // Default value
       var optional = false;
@@ -1722,17 +1778,16 @@ export class Parser {
       return new Parameter(syntheticName, pattern, typeAnnotation, optional, defaultValue, false, this.#makeLocation(startToken));
     }
     
-    // Destructured tuple parameter: (a, b): Type
+    // Destructured tuple parameter: (a, b): Type or (a, b)
     if (this.#check(TokenType.LParen)) {
       let parenToken = this.#advance(); // consume '('
       let pattern = this.#parseParenTuplePattern(parenToken);
       
-      // Type annotation is required for destructured parameters
-      if (!this.#check(TokenType.Colon)) {
-        throw new Error("Destructured parameters require a type annotation.");
+      // Type annotation (optional - contextual typing)
+      var typeAnnotation2: TypeAnnotation | null = null;
+      if (this.#match(TokenType.Colon)) {
+        typeAnnotation2 = this.#parseTypeAnnotation();
       }
-      this.#advance(); // consume ':'
-      let typeAnnotation = this.#parseTypeAnnotation();
       
       // Default value
       var optional2 = false;
@@ -1744,7 +1799,7 @@ export class Parser {
       
       let syntheticName = new Identifier(`$$destruct_${this.#destructParamCounter}`, this.#makeLocation(startToken));
       this.#destructParamCounter = this.#destructParamCounter + 1;
-      return new Parameter(syntheticName, pattern, typeAnnotation, optional2, defaultValue2, false, this.#makeLocation(startToken));
+      return new Parameter(syntheticName, pattern, typeAnnotation2, optional2, defaultValue2, false, this.#makeLocation(startToken));
     }
     
     // Check for this.field constructor parameter

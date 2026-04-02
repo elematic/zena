@@ -160,4 +160,70 @@ suite('CodeGenerator - Destructured Parameters', () => {
     const result = await compileAndRun(code);
     assert.strictEqual(result, 10);
   });
+
+  test('combined record syntax: ({x: i32, y: i32}) => x', async () => {
+    const code = `
+      let getX = ({x: i32, y: i32}) => x;
+
+      export let main = () => {
+        let p = { x: 10, y: 20 };
+        return getX(p);
+      };
+    `;
+    const result = await compileAndRun(code);
+    assert.strictEqual(result, 10);
+  });
+
+  test('combined record syntax: sum fields', async () => {
+    const code = `
+      let sum = ({x: i32, y: i32}) => x + y;
+
+      export let main = () => {
+        let p = { x: 3, y: 7 };
+        return sum(p);
+      };
+    `;
+    const result = await compileAndRun(code);
+    assert.strictEqual(result, 10);
+  });
+
+  test('combined record syntax with rename', async () => {
+    const code = `
+      let getA = ({x as a: i32, y as b: i32}) => a + b;
+
+      export let main = () => {
+        let p = { x: 5, y: 15 };
+        return getA(p);
+      };
+    `;
+    const result = await compileAndRun(code);
+    assert.strictEqual(result, 20);
+  });
+
+  test('combined record syntax with default param', async () => {
+    const code = `
+      let getX = ({x: i32, y: i32} = { x: 100, y: 200 }) => x;
+
+      export let main = () => {
+        return getX();
+      };
+    `;
+    const result = await compileAndRun(code);
+    assert.strictEqual(result, 100);
+  });
+
+  test('contextual typing: record destructured param', async () => {
+    const code = `
+      let apply = (f: (p: {x: i32, y: i32}) => i32): i32 => {
+        let p = { x: 42, y: 58 };
+        return f(p);
+      };
+
+      export let main = () => {
+        return apply(({x, y}) => x + y);
+      };
+    `;
+    const result = await compileAndRun(code);
+    assert.strictEqual(result, 100);
+  });
 });

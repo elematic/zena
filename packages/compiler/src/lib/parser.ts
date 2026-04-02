@@ -822,6 +822,82 @@ export class Parser {
     return pattern;
   }
 
+  /**
+   * Parse a record destructuring in parameter position.
+   * Supports combined syntax: {x: i32, y: i32} (type inline with name)
+   * and shorthand syntax: {x, y} (contextual typing or separate annotation).
+   * Returns both a RecordPattern and optionally a RecordTypeAnnotation.
+   */
+  #parseRecordParamPattern(): {
+    pattern: RecordPattern;
+    typeAnnotation?: RecordTypeAnnotation;
+  } {
+    const startToken = this.#previous(); // LBrace already consumed
+    const bindingProps: BindingProperty[] = [];
+    const typeSigs: PropertySignature[] = [];
+    let hasTypeAnnotations = false;
+
+    if (!this.#check(TokenType.RBrace)) {
+      do {
+        if (this.#check(TokenType.RBrace)) break;
+        const propName = this.#parseIdentifier();
+        let value: Pattern = propName;
+        let propType: TypeAnnotation | undefined;
+
+        if (this.#match(TokenType.As)) {
+          value = this.#parseIdentifier();
+        }
+
+        if (this.#match(TokenType.Colon)) {
+          propType = this.#parseTypeAnnotation();
+          hasTypeAnnotations = true;
+        }
+
+        if (this.#match(TokenType.Equals)) {
+          const defaultValue = this.#parseExpression();
+          value = {
+            type: NodeType.AssignmentPattern,
+            left: value,
+            right: defaultValue,
+          };
+        }
+
+        bindingProps.push({
+          type: NodeType.BindingProperty,
+          name: propName,
+          value,
+        });
+
+        if (propType) {
+          typeSigs.push({
+            type: NodeType.PropertySignature,
+            name: propName,
+            typeAnnotation: propType,
+            loc: this.#loc(propName, propType),
+          });
+        }
+      } while (this.#match(TokenType.Comma));
+    }
+    this.#consume(
+      TokenType.RBrace,
+      "Expected '}' after record parameter pattern.",
+    );
+    const endToken = this.#previous();
+    const pattern: RecordPattern = {
+      type: NodeType.RecordPattern,
+      properties: bindingProps,
+    };
+    let typeAnnotation: RecordTypeAnnotation | undefined;
+    if (hasTypeAnnotations) {
+      typeAnnotation = {
+        type: NodeType.RecordTypeAnnotation,
+        properties: typeSigs,
+        loc: this.#loc(startToken, endToken),
+      };
+    }
+    return {pattern, typeAnnotation};
+  }
+
   #parseRecordPattern(): RecordPattern {
     const properties: BindingProperty[] = [];
     if (!this.#check(TokenType.RBrace)) {
@@ -998,17 +1074,18 @@ export class Parser {
         return this.#parseArrowFunctionDefinition();
       }
 
-      // Case 2b: ({...}: Type) => ... — destructured record parameter
+      // Case 2b: ({...}) => ... — destructured record parameter
       // Must disambiguate from parenthesized record literal: ({x: 1, y: 2})
       // After the matching }, check for : (type annotation), , (next param),
-      // or ) followed by => or : (return type)
+      // = (default value), or ) followed by => or : (return type)
       if (this.#peek(1).type === TokenType.LBrace) {
         const braceClose = this.#findMatchingBraceOffset(1);
         if (braceClose > 0) {
           const afterBrace = this.#peek(braceClose + 1).type;
           if (
             afterBrace === TokenType.Colon ||
-            afterBrace === TokenType.Comma
+            afterBrace === TokenType.Comma ||
+            afterBrace === TokenType.Equals
           ) {
             return this.#parseArrowFunctionDefinition();
           }
@@ -1026,21 +1103,34 @@ export class Parser {
 
       // Case 2c: (( ... ) — destructured tuple parameter
       // Disambiguate from nested parenthesized expression by checking for
-      // pattern-like structure: (( ident , ... ): type
+      // pattern-like structure: (( ident , ... ): type OR ((ident, ...)) =>
       if (this.#peek(1).type === TokenType.LParen) {
-        // Look for a tuple pattern: ((a, b): ...)
+        // Look for a tuple pattern: ((a, b): ...) or ((a, b)) => ...
         // A tuple pattern has identifier, comma inside inner parens
         if (
           this.#isIdentifier(this.#peek(2).type) &&
           this.#peek(3).type === TokenType.Comma
         ) {
-          // Find the matching ) for the inner parens, then check for :
+          // Find the matching ) for the inner parens, then check for : or , or ) =>
           const innerCloseOffset = this.#findMatchingParenOffset(1);
-          if (
-            innerCloseOffset > 0 &&
-            this.#peek(innerCloseOffset + 1).type === TokenType.Colon
-          ) {
-            return this.#parseArrowFunctionDefinition();
+          if (innerCloseOffset > 0) {
+            const afterInner = this.#peek(innerCloseOffset + 1).type;
+            if (
+              afterInner === TokenType.Colon ||
+              afterInner === TokenType.Comma ||
+              afterInner === TokenType.Equals
+            ) {
+              return this.#parseArrowFunctionDefinition();
+            }
+            if (afterInner === TokenType.RParen) {
+              const afterOuter = this.#peek(innerCloseOffset + 2).type;
+              if (
+                afterOuter === TokenType.Arrow ||
+                afterOuter === TokenType.Colon
+              ) {
+                return this.#parseArrowFunctionDefinition();
+              }
+            }
           }
         }
       }
@@ -1106,11 +1196,14 @@ export class Parser {
       do {
         // Check for destructured parameter: { ... } or ( ... )
         let pattern: RecordPattern | TuplePattern | undefined;
+        let combinedTypeAnnotation: RecordTypeAnnotation | undefined;
         let name: Identifier;
 
         if (this.#check(TokenType.LBrace)) {
           this.#advance(); // consume '{'
-          pattern = this.#parseRecordPattern();
+          const combined = this.#parseRecordParamPattern();
+          pattern = combined.pattern;
+          combinedTypeAnnotation = combined.typeAnnotation;
           name = {
             type: NodeType.Identifier,
             name: `$$destruct_${destructIndex++}`,
@@ -1140,12 +1233,12 @@ export class Parser {
           seenOptional = true;
         }
 
-        // Type annotation is optional for simple params, required for destructured
+        // Type annotation: explicit `:Type` after pattern, or combined from record param
         let typeAnnotation: TypeAnnotation | undefined;
         if (this.#match(TokenType.Colon)) {
           typeAnnotation = this.#parseTypeAnnotation();
-        } else if (pattern) {
-          throw new Error('Destructured parameters require a type annotation.');
+        } else if (combinedTypeAnnotation) {
+          typeAnnotation = combinedTypeAnnotation;
         }
 
         let initializer: Expression | undefined;
