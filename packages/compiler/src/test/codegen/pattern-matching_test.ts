@@ -220,4 +220,32 @@ suite('CodeGenerator - Pattern Matching', () => {
     `);
     assert.strictEqual(result, 1);
   });
+
+  test('pattern binding should not shadow outer variable after match', async () => {
+    const result = await compileAndRun(`
+      class Wrapper {
+        x: i32;
+        new(x: i32) : x = x {}
+      }
+
+      let process = (x: Wrapper): i32 => {
+        // 'x' is Wrapper type here
+        let isSpecial = match (x) {
+          // Pattern binds 'x' as i32 (field of Wrapper), shadowing param
+          case Wrapper { x }: x == 42
+        };
+        // After match, 'x' must still be Wrapper, not i32
+        if (isSpecial) {
+          return x.x;
+        }
+        return 0;
+      };
+
+      export let main = (): i32 => {
+        let w = new Wrapper(42);
+        return process(w);
+      };
+    `);
+    assert.strictEqual(result, 42);
+  });
 });

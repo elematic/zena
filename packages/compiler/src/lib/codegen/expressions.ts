@@ -11139,7 +11139,8 @@ function generateMatchExpression(
     body.push(Opcode.i32_eqz);
     body.push(Opcode.br_if, 0);
 
-    // 2. Bind Variables
+    // 2. Bind Variables (in a new scope so pattern bindings don't leak)
+    ctx.pushScope();
     generateMatchPatternBindings(
       ctx,
       c.pattern,
@@ -11160,6 +11161,8 @@ function generateMatchExpression(
     // When match result is void (resultType.length === 0), generate body as statement
     const matchExpectsVoid = resultType.length === 0;
     generateMatchCaseBody(ctx, c.body, body, matchExpectsVoid);
+
+    ctx.popScope();
 
     // 5. Break to match done
     // We are inside:
