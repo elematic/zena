@@ -31,7 +31,8 @@ import {
   FieldInitializer, SuperInitializer,
   InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature,
   EnumDeclaration, EnumMember,
-  ImportDeclaration, ImportSpecifier, ExportAllDeclaration
+  ImportDeclaration, ImportSpecifier, ExportAllDeclaration,
+  Decorator, DeclareFunction
 } from './ast.zena';
 
 // ============================================================================
@@ -144,6 +145,8 @@ let nodeTypeName = (node: Node): String => {
     case ImportDeclaration {}: 'ImportDeclaration'
     case ImportSpecifier {}: 'ImportSpecifier'
     case ExportAllDeclaration {}: 'ExportAllDeclaration'
+    case Decorator {}: 'Decorator'
+    case DeclareFunction {}: 'DeclareFunction'
   }
 };
 
@@ -535,6 +538,28 @@ export let nodeToJson = (node: Node): JsonObject => {
     case ExportAllDeclaration { moduleSpecifier }: {
       obj['moduleSpecifier'] = nodeToJson(moduleSpecifier);
     }
+    case Decorator { name, args }: {
+      obj['name'] = name;
+      obj['args'] = decoratorArgsToJson(args);
+    }
+    case DeclareFunction { name, typeParameters, params, returnType, externalModule, externalName, exported, decorators }: {
+      obj['name'] = nodeToJson(name);
+      if (typeParameters != null) {
+        obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
+      } else { };
+      obj['params'] = parametersToJson(params);
+      obj['returnType'] = nodeToJson(returnType as Node);
+      if (externalModule != null) {
+        obj['externalModule'] = externalModule as String;
+      } else { };
+      if (externalName != null) {
+        obj['externalName'] = externalName as String;
+      } else { };
+      obj['exported'] = new Box<boolean>(exported);
+      if (decorators.length > 0) {
+        obj['decorators'] = decoratorsToJson(decorators);
+      } else { };
+    }
     
     // Class Declarations
     case ClassDeclaration { name, typeParameters, caseParams, superClass, mixins, implementsList, body, exported, isFinal, isAbstract, isExtension, isSealed, sealedVariants, onType }: {
@@ -580,7 +605,7 @@ export let nodeToJson = (node: Node): JsonObject => {
         obj['mutability'] = mutability as String;
       }
     }
-    case FieldDefinition { name, typeAnnotation, value, isFinal, isAbstract, isOptional, mutability }: {
+    case FieldDefinition { name, typeAnnotation, value, isFinal, isAbstract, isOptional, mutability, decorators }: {
       obj['name'] = nodeToJson(name);
       obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
       if (value != null) {
@@ -593,12 +618,12 @@ export let nodeToJson = (node: Node): JsonObject => {
       if (isOptional) {
         obj['isOptional'] = new Box<boolean>(true);
       }
-      obj['decorators'] = new JsonArray();
+      obj['decorators'] = decoratorsToJson(decorators);
       if (mutability != null) {
         obj['mutability'] = mutability as String;
       }
     }
-    case MethodDefinition { name, typeParameters, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic }: {
+    case MethodDefinition { name, typeParameters, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic, decorators }: {
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters as Array<TypeParameter>);
@@ -620,9 +645,9 @@ export let nodeToJson = (node: Node): JsonObject => {
       obj['isAbstract'] = new Box<boolean>(isAbstract);
       obj['isStatic'] = new Box<boolean>(isStatic);
       obj['isDeclare'] = new Box<boolean>(false);
-      obj['decorators'] = new JsonArray();
+      obj['decorators'] = decoratorsToJson(decorators);
     }
-    case AccessorDeclaration { name, typeAnnotation, getter, setter, isFinal, isStatic }: {
+    case AccessorDeclaration { name, typeAnnotation, getter, setter, isFinal, isStatic, decorators }: {
       obj['name'] = nodeToJson(name);
       obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
       if (getter != null) {
@@ -637,7 +662,7 @@ export let nodeToJson = (node: Node): JsonObject => {
       }
       obj['isFinal'] = new Box<boolean>(isFinal);
       obj['isStatic'] = new Box<boolean>(isStatic);
-      obj['decorators'] = new JsonArray();
+      obj['decorators'] = decoratorsToJson(decorators);
     }
     case SuperExpression {}: {
       // No additional fields
@@ -888,6 +913,26 @@ let nodesToJson = (nodes: Array<Node>): JsonArray => {
   var i = 0;
   while (i < nodes.length) {
     arr.push(nodeToJson(nodes[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let decoratorsToJson = (decorators: Array<Decorator>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < decorators.length) {
+    arr.push(nodeToJson(decorators[i]));
+    i = i + 1;
+  }
+  return arr;
+};
+
+let decoratorArgsToJson = (args: Array<StringLiteral>): JsonArray => {
+  let arr = new JsonArray();
+  var i = 0;
+  while (i < args.length) {
+    arr.push(nodeToJson(args[i] as Node));
     i = i + 1;
   }
   return arr;

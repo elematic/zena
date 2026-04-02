@@ -576,15 +576,15 @@ tests/language/syntax/
 │   └── export-all.zena                    [done]
 │
 ├── decorators/
-│   ├── simple.zena                         [ts] decorator_test
-│   ├── with-args.zena                     [ts] decorator_test
-│   ├── external.zena                      [ts] parser-declare_test
-│   └── multiple.zena                      [new]
+│   ├── simple.zena                         [done]
+│   ├── with-args.zena                     [done]
+│   ├── external.zena                      [done]
+│   └── multiple.zena                      [done]
 │
 ├── declare/
-│   ├── function.zena                       [ts] parser-declare_test
-│   ├── with-external.zena                 [ts] parser-declare_test
-│   └── overloaded.zena                    [ts] parser-declare_test
+│   ├── function.zena                       [done]
+│   ├── with-external.zena                 [done]
+│   └── overloaded.zena                    [done]
 │
 ├── symbols/
 │   └── basic.zena                          [ts] symbol-declaration_test
