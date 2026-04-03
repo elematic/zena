@@ -1269,6 +1269,42 @@ var x = 1;
 x = 2;
 ```
 
+#### Compound Assignment
+
+Compound assignment operators combine a binary operation with assignment. They
+read the current value, apply the operator with the right-hand side, and write
+the result back.
+
+- `+=` (Add and assign)
+- `-=` (Subtract and assign)
+- `*=` (Multiply and assign)
+- `/=` (Divide and assign)
+- `%=` (Modulo and assign)
+
+```zena
+var x = 10;
+x += 5;   // x is now 15
+x -= 3;   // x is now 12
+x *= 2;   // x is now 24
+x /= 4;   // x is now 6
+x %= 4;   // x is now 2
+```
+
+Compound assignment works with variables, class fields, and array indices:
+
+```zena
+class Counter {
+  var count: i32 = 0;
+  new() {}
+  increment(n: i32): void { this.count += n; }
+}
+
+var arr = [10, 20, 30];
+arr[1] += 5;  // arr[1] is now 25
+```
+
+Compound assignment also works with `operator +` overloading on classes.
+
 ### Grouping
 
 Parentheses `( )` can be used to group expressions and control precedence.
@@ -1373,7 +1409,7 @@ Operators are listed from highest to lowest precedence:
 11. Logical AND (`&&`)
 12. Logical OR / Nullish Coalescing (`||`, `??`)
 13. Pipeline (`|>`)
-14. Assignment (`=`)
+14. Assignment (`=`, `+=`, `-=`, `*=`, `/=`, `%=`)
 
 Operators at the same precedence level are left-associative (evaluated
 left-to-right).
@@ -3298,7 +3334,7 @@ ForInit ::= VariableDeclaration | Expression
 
 Expression ::= ArrowFunction | AssignmentExpression | BinaryExpression | CallExpression | NewExpression | MemberExpression | ArrayLiteral | IndexExpression | TemplateLiteral | TaggedTemplateExpression | ThrowExpression | UnaryExpression
 
-AssignmentExpression ::= (Identifier | MemberExpression | IndexExpression) "=" Expression
+AssignmentExpression ::= (Identifier | MemberExpression | IndexExpression) ("=" | "+=" | "-=" | "*=" | "/=" | "%=") Expression
 
 CallExpression ::= Expression "(" (Expression ("," Expression)*)? ")"
 

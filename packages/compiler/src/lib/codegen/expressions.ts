@@ -931,7 +931,10 @@ function generateIsExpression(
     // Check if types match
     if (typesAreEqual(sourceType, targetType)) {
       body.push(Opcode.i32_const, 1);
-    } else if (targetType.length === 1 && (targetType[0] === ValType.anyref || targetType[0] === ValType.eqref)) {
+    } else if (
+      targetType.length === 1 &&
+      (targetType[0] === ValType.anyref || targetType[0] === ValType.eqref)
+    ) {
       // Primitive is assignable to any (via boxing), so 'is any' is true?
       // But 'is' usually checks exact type or subtype.
       // '10 is any' -> true.
@@ -1858,9 +1861,7 @@ function generateIndexExpression(
 
           // Unbox if needed
           const expectedType = inferType(ctx, expr);
-          if (
-            isErasedRefType(methodInfo.returnType)
-          ) {
+          if (isErasedRefType(methodInfo.returnType)) {
             if (
               expectedType.length === 1 &&
               (expectedType[0] === ValType.i32 ||
@@ -2963,7 +2964,8 @@ function generateMemberExpression(
       | FieldBinding
       | GetterBinding
       | MethodBinding
-      | RecordFieldBinding;
+      | RecordFieldBinding
+      | SetterBinding;
     if (
       memberBinding.kind === 'field' ||
       memberBinding.kind === 'getter' ||
@@ -2977,6 +2979,34 @@ function generateMemberExpression(
       // This happens for:
       // - Method access (handled at call site, not as a value)
       // - Static field access like `ClassName.field` (uses globals, not struct.get)
+    }
+    // Setter bindings can appear here when reading the current value for compound
+    // assignment (e.g., `this.count += 1`). Derive the corresponding getter/field read.
+    if (memberBinding.kind === 'setter') {
+      const setterBinding = memberBinding as SetterBinding;
+      const fieldName = setterBinding.methodName.replace('set#', '');
+      // Construct a getter binding and try that first
+      const getterMethodName = getGetterName(fieldName);
+      const getterBinding: GetterBinding = {
+        kind: 'getter',
+        classType: setterBinding.classType,
+        methodName: getterMethodName,
+        isStaticDispatch: setterBinding.isStaticDispatch,
+        type: expr.inferredType!,
+      };
+      if (generateMemberFromBinding(ctx, getterBinding, expr.object, body)) {
+        return;
+      }
+      // If getter didn't work, try a direct field binding
+      const fieldBinding: FieldBinding = {
+        kind: 'field',
+        classType: setterBinding.classType,
+        fieldName,
+        type: expr.inferredType!,
+      };
+      if (generateMemberFromBinding(ctx, fieldBinding, expr.object, body)) {
+        return;
+      }
     }
   }
 
@@ -3493,10 +3523,7 @@ function generateCallExpression(
             // Interface returns erased ref but caller expects a more specific type
             const isAnyRef = isErasedRefType(actualType);
 
-            return (
-              isAnyRef &&
-              !isErasedRefType(expectedType)
-            );
+            return isAnyRef && !isErasedRefType(expectedType);
           });
 
         if (needsAdaptation) {
@@ -3761,7 +3788,9 @@ function generateCallExpression(
 
             // Downcast if needed (for erased ref case)
             const isAnyRef =
-              objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
+              objectType.length === 1 &&
+              (objectType[0] === ValType.anyref ||
+                objectType[0] === ValType.eqref);
             if (isAnyRef) {
               body.push(0xfb, GcOpcode.ref_cast_null);
               body.push(
@@ -3825,7 +3854,9 @@ function generateCallExpression(
 
             // Downcast if needed (for erased ref case)
             const isAnyRef =
-              objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
+              objectType.length === 1 &&
+              (objectType[0] === ValType.anyref ||
+                objectType[0] === ValType.eqref);
             if (isAnyRef) {
               body.push(0xfb, GcOpcode.ref_cast_null);
               body.push(
@@ -4167,7 +4198,45 @@ function generateCallExpression(
   }
 }
 
+/**
+ * For compound assignment (+=, -=, etc.), creates a synthetic BinaryExpression
+ * that represents `left op value`. The checker has already validated the types.
+ */
+const makeCompoundValueExpr = (
+  expr: AssignmentExpression,
+): BinaryExpression => ({
+  type: NodeType.BinaryExpression,
+  operator: expr.operator!,
+  left: expr.left as Expression,
+  right: expr.value,
+  loc: expr.loc,
+  resolvedOperatorMethod: expr.resolvedOperatorMethod,
+  inferredType: expr.inferredType,
+});
+
 function generateAssignmentExpression(
+  ctx: CodegenContext,
+  expr: AssignmentExpression,
+  body: number[],
+) {
+  // For compound assignment (+=, -=, etc.), wrap the value in a synthetic BinaryExpression
+  // that reads the left side and applies the operator. This reuses all existing
+  // binary expression codegen (type promotion, operator overloading, etc.).
+  const effectiveValue: Expression = expr.operator
+    ? makeCompoundValueExpr(expr)
+    : expr.value;
+
+  // Use the effective value throughout instead of expr.value
+  // Create a view with the effective value for passing to the rest of the codegen
+  const assignExpr: AssignmentExpression = expr.operator
+    ? {...expr, operator: undefined, value: effectiveValue}
+    : expr;
+
+  // Delegate to the regular assignment codegen with the desugared expression
+  generateAssignmentExpressionInner(ctx, assignExpr, body);
+}
+
+function generateAssignmentExpressionInner(
   ctx: CodegenContext,
   expr: AssignmentExpression,
   body: number[],
@@ -4438,9 +4507,7 @@ function generateAssignmentExpression(
             if (paramTypes.length > 1) {
               const indexType = inferType(ctx, indexExpr.index);
               const expectedIndexType = paramTypes[1];
-              if (
-                isErasedRefType(expectedIndexType)
-              ) {
+              if (isErasedRefType(expectedIndexType)) {
                 if (
                   indexType.length === 1 &&
                   (indexType[0] === ValType.i32 ||
@@ -4471,9 +4538,7 @@ function generateAssignmentExpression(
             // Box value if needed
             if (paramTypes.length > 2) {
               const expectedValueType = paramTypes[2];
-              if (
-                isErasedRefType(expectedValueType)
-              ) {
+              if (isErasedRefType(expectedValueType)) {
                 if (
                   valueType.length === 1 &&
                   (valueType[0] === ValType.i32 ||
@@ -6349,7 +6414,8 @@ function generateFieldFromBinding(
     // Cast if needed (e.g., from erased ref)
     const objectType = inferType(ctx, objectExpr);
     const isAnyRef =
-      objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
+      objectType.length === 1 &&
+      (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
     if (isAnyRef) {
       body.push(0xfb, GcOpcode.ref_cast_null);
       body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
@@ -6462,7 +6528,8 @@ function generateFieldFromBinding(
 
         // Cast if object is erased ref
         const isAnyRef =
-          objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
+          objectType.length === 1 &&
+          (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
         if (isAnyRef) {
           body.push(0xfb, GcOpcode.ref_cast_null);
           body.push(
@@ -6548,7 +6615,9 @@ function generateFieldFromBinding(
 
   // Cast if needed (e.g., from erased ref)
   const objectType = inferType(ctx, objectExpr);
-  const isAnyRef = objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
+  const isAnyRef =
+    objectType.length === 1 &&
+    (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
   if (isAnyRef) {
     body.push(0xfb, GcOpcode.ref_cast_null);
     body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
@@ -6840,7 +6909,9 @@ function generateGetterDynamicDispatch(
   generateExpression(ctx, objectExpr, body);
 
   // Cast if object is erased ref
-  const isAnyRef = objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
+  const isAnyRef =
+    objectType.length === 1 &&
+    (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
   if (isAnyRef) {
     body.push(0xfb, GcOpcode.ref_cast_null);
     body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));

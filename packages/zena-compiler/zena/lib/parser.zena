@@ -1002,10 +1002,26 @@ export class Parser {
     if (this.#match(TokenType.Equals)) {
       let startToken = this.#previous();
       let value = this.#parseAssignment();
-      return new AssignmentExpression(expr, value, this.#makeLocation(startToken));
+      return new AssignmentExpression(expr, value, null, this.#makeLocation(startToken));
+    }
+    
+    let compoundOp = this.#matchCompoundAssignment();
+    if (compoundOp != null) {
+      let startToken = this.#previous();
+      let value = this.#parseAssignment();
+      return new AssignmentExpression(expr, value, compoundOp, this.#makeLocation(startToken));
     }
     
     return expr;
+  }
+  
+  #matchCompoundAssignment(): String | null {
+    if (this.#match(TokenType.PlusEquals)) { return '+'; }
+    if (this.#match(TokenType.MinusEquals)) { return '-'; }
+    if (this.#match(TokenType.StarEquals)) { return '*'; }
+    if (this.#match(TokenType.SlashEquals)) { return '/'; }
+    if (this.#match(TokenType.PercentEquals)) { return '%'; }
+    return null;
   }
   
   #parsePipeline(): Expression {

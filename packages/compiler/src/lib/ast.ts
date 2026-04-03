@@ -494,7 +494,10 @@ export interface BinaryExpression extends Node {
 export interface AssignmentExpression extends Node {
   type: typeof NodeType.AssignmentExpression;
   left: Expression | Pattern;
+  operator?: '+' | '-' | '*' | '/' | '%';
   value: Expression;
+  /** Set by checker when a class operator method is resolved for compound assignment */
+  resolvedOperatorMethod?: FunctionType;
 }
 
 export interface AsExpression extends Node {

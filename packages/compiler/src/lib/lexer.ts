@@ -78,6 +78,11 @@ export const TokenType = {
   Star: 'Star',
   Slash: 'Slash',
   Percent: 'Percent',
+  PlusEquals: 'PlusEquals',
+  MinusEquals: 'MinusEquals',
+  StarEquals: 'StarEquals',
+  SlashEquals: 'SlashEquals',
+  PercentEquals: 'PercentEquals',
   Pipe: 'Pipe',
   PipePipe: 'PipePipe',
   PipeGreater: 'PipeGreater',
@@ -569,34 +574,70 @@ export function tokenize(source: string): Token[] {
         }
         break;
       case '+':
-        tokens.push({
-          type: TokenType.Plus,
-          value: '+',
-          line,
-          column: startColumn,
-          start: startIndex,
-          end: current,
-        });
+        if (peek() === '=') {
+          advance();
+          tokens.push({
+            type: TokenType.PlusEquals,
+            value: '+=',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Plus,
+            value: '+',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        }
         break;
       case '-':
-        tokens.push({
-          type: TokenType.Minus,
-          value: '-',
-          line,
-          column: startColumn,
-          start: startIndex,
-          end: current,
-        });
+        if (peek() === '=') {
+          advance();
+          tokens.push({
+            type: TokenType.MinusEquals,
+            value: '-=',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Minus,
+            value: '-',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        }
         break;
       case '*':
-        tokens.push({
-          type: TokenType.Star,
-          value: '*',
-          line,
-          column: startColumn,
-          start: startIndex,
-          end: current,
-        });
+        if (peek() === '=') {
+          advance();
+          tokens.push({
+            type: TokenType.StarEquals,
+            value: '*=',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Star,
+            value: '*',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        }
         break;
       case '/':
         if (peek() === '/') {
@@ -619,6 +660,16 @@ export function tokenize(source: string): Token[] {
             }
             advance();
           }
+        } else if (peek() === '=') {
+          advance();
+          tokens.push({
+            type: TokenType.SlashEquals,
+            value: '/=',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
         } else {
           tokens.push({
             type: TokenType.Slash,
@@ -631,14 +682,26 @@ export function tokenize(source: string): Token[] {
         }
         break;
       case '%':
-        tokens.push({
-          type: TokenType.Percent,
-          value: '%',
-          line,
-          column: startColumn,
-          start: startIndex,
-          end: current,
-        });
+        if (peek() === '=') {
+          advance();
+          tokens.push({
+            type: TokenType.PercentEquals,
+            value: '%=',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        } else {
+          tokens.push({
+            type: TokenType.Percent,
+            value: '%',
+            line,
+            column: startColumn,
+            start: startIndex,
+            end: current,
+          });
+        }
         break;
       case '|':
         if (peek() === '|') {

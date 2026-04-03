@@ -1036,7 +1036,35 @@ export class Parser {
       throw new Error('Invalid assignment target.');
     }
 
+    const compoundOp = this.#matchCompoundAssignment();
+    if (compoundOp) {
+      const value = this.#parseAssignment();
+      if (
+        expr.type === NodeType.Identifier ||
+        expr.type === NodeType.MemberExpression ||
+        expr.type === NodeType.IndexExpression
+      ) {
+        return {
+          type: NodeType.AssignmentExpression,
+          left: expr as Identifier | MemberExpression | IndexExpression,
+          operator: compoundOp,
+          value,
+          loc: this.#loc(expr, value),
+        };
+      }
+      throw new Error('Invalid assignment target.');
+    }
+
     return expr;
+  }
+
+  #matchCompoundAssignment(): '+' | '-' | '*' | '/' | '%' | null {
+    if (this.#match(TokenType.PlusEquals)) return '+';
+    if (this.#match(TokenType.MinusEquals)) return '-';
+    if (this.#match(TokenType.StarEquals)) return '*';
+    if (this.#match(TokenType.SlashEquals)) return '/';
+    if (this.#match(TokenType.PercentEquals)) return '%';
+    return null;
   }
 
   #parseArrowFunction(): Expression {

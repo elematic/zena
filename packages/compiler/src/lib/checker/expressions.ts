@@ -1931,6 +1931,109 @@ function inferTypeArguments(
   return result;
 }
 
+/**
+ * Validates the binary operation inside a compound assignment (e.g., += -= *= /= %=).
+ * Given the target type (LHS) and value type (RHS), checks that `targetType op valueType`
+ * is valid and returns the result type of the binary operation.
+ */
+function checkCompoundOperator(
+  ctx: CheckerContext,
+  expr: AssignmentExpression,
+  targetType: Type,
+  valueType: Type,
+): Type {
+  const op = expr.operator!;
+
+  // Check for operator overloading on class types
+  if (op === '+' && targetType.kind === TypeKind.Class) {
+    const classType = targetType as ClassType;
+    const method = classType.methods.get(op);
+    if (method) {
+      const resolvedMethod = resolveMemberType(
+        classType,
+        method,
+        ctx,
+      ) as FunctionType;
+      if (resolvedMethod.parameters.length !== 1) {
+        ctx.diagnostics.reportError(
+          `Operator ${op} must take exactly one argument.`,
+          DiagnosticCode.ArgumentCountMismatch,
+          ctx.getLocation(expr.loc),
+        );
+        return Types.Unknown;
+      }
+      if (!isAssignableTo(ctx, valueType, resolvedMethod.parameters[0])) {
+        ctx.diagnostics.reportError(
+          `Type mismatch in operator ${op}: expected ${typeToString(resolvedMethod.parameters[0])}, got ${typeToString(valueType)}`,
+          DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
+        );
+      }
+      expr.resolvedOperatorMethod = resolvedMethod;
+      return resolvedMethod.returnType;
+    }
+  }
+
+  // Numeric type checking
+  if (
+    targetType.kind === TypeKind.Number &&
+    valueType.kind === TypeKind.Number
+  ) {
+    const leftName = (targetType as NumberType).name;
+    const rightName = (valueType as NumberType).name;
+
+    const isI64 = (n: string) => n === Types.I64.name;
+    const isU64 = (n: string) => n === Types.U64.name;
+    const isF32 = (n: string) => n === Types.F32.name;
+    const isF64 = (n: string) => n === Types.F64.name;
+
+    if (op === '/') {
+      // Division always produces float, which may not be assignable back to integer target
+      let resultType: Type;
+      if (
+        isF64(leftName) ||
+        isF64(rightName) ||
+        isI64(leftName) ||
+        isI64(rightName) ||
+        isU64(leftName) ||
+        isU64(rightName)
+      ) {
+        resultType = Types.F64;
+      } else {
+        resultType = Types.F32;
+      }
+      return resultType;
+    }
+
+    // For +, -, *, %: same logic as binary expression type promotion
+    if (leftName === rightName) {
+      return targetType;
+    }
+    if (isF64(leftName) || isF64(rightName)) return Types.F64;
+    if (isF32(leftName) || isF32(rightName)) {
+      if (
+        isI64(leftName) ||
+        isI64(rightName) ||
+        isU64(leftName) ||
+        isU64(rightName)
+      )
+        return Types.F64;
+      return Types.F32;
+    }
+    if (isU64(leftName) || isU64(rightName)) return Types.U64;
+    if (isI64(leftName) || isI64(rightName)) return Types.I64;
+    // i32 + i32 or u32 + u32
+    return targetType;
+  }
+
+  ctx.diagnostics.reportError(
+    `Type mismatch: cannot apply operator '${op}' to ${typeToString(targetType)} and ${typeToString(valueType)}`,
+    DiagnosticCode.TypeMismatch,
+    ctx.getLocation(expr.loc),
+  );
+  return Types.Unknown;
+}
+
 function checkAssignmentExpression(
   ctx: CheckerContext,
   expr: AssignmentExpression,
@@ -1966,15 +2069,18 @@ function checkAssignmentExpression(
     }
 
     const valueType = checkExpression(ctx, expr.value);
-    if (!isAssignableTo(ctx, valueType, symbol.type)) {
+    const effectiveType = expr.operator
+      ? checkCompoundOperator(ctx, expr, symbol.type, valueType)
+      : valueType;
+    if (!isAssignableTo(ctx, effectiveType, symbol.type)) {
       ctx.diagnostics.reportError(
-        `Type mismatch in assignment: expected ${typeToString(symbol.type)}, got ${typeToString(valueType)}`,
+        `Type mismatch in assignment: expected ${typeToString(symbol.type)}, got ${typeToString(effectiveType)}`,
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.loc),
       );
     }
 
-    return valueType;
+    return effectiveType;
   } else if (expr.left.type === NodeType.MemberExpression) {
     const memberExpr = expr.left as MemberExpression;
     const objectType = checkExpression(ctx, memberExpr.object);
@@ -2040,7 +2146,12 @@ function checkAssignmentExpression(
 
     if (classType.fields.has(memberName)) {
       const fieldType = classType.fields.get(memberName)!;
+      // Annotate the member expression with its read type for compound assignment codegen
+      memberExpr.inferredType = fieldType;
       const valueType = checkExpression(ctx, expr.value);
+      const effectiveType = expr.operator
+        ? checkCompoundOperator(ctx, expr, fieldType, valueType)
+        : valueType;
 
       if (
         classType.kind === TypeKind.Class &&
@@ -2057,9 +2168,9 @@ function checkAssignmentExpression(
         }
       }
 
-      if (!isAssignableTo(ctx, valueType, fieldType)) {
+      if (!isAssignableTo(ctx, effectiveType, fieldType)) {
         ctx.diagnostics.reportError(
-          `Type mismatch in assignment: expected ${typeToString(fieldType)}, got ${typeToString(valueType)}`,
+          `Type mismatch in assignment: expected ${typeToString(fieldType)}, got ${typeToString(effectiveType)}`,
           DiagnosticCode.TypeMismatch,
           ctx.getLocation(expr.loc),
         );
@@ -2086,13 +2197,15 @@ function checkAssignmentExpression(
         isStatic: isStaticAccess,
       });
 
-      return valueType;
+      return effectiveType;
     }
 
     // Check setters
-    const setterName = getSetterName(memberName);
-    if (classType.methods.has(setterName)) {
-      const setter = classType.methods.get(setterName)!;
+    const setterName2 = getSetterName(memberName);
+    if (classType.methods.has(setterName2)) {
+      const setter = classType.methods.get(setterName2)!;
+      // Annotate with the property type for compound assignment codegen
+      memberExpr.inferredType = setter.parameters[0];
       const valueType = checkExpression(ctx, expr.value);
 
       // Determine if this is static setter access:
@@ -2110,21 +2223,24 @@ function checkAssignmentExpression(
       ctx.semanticContext.setResolvedBinding(memberExpr, {
         kind: 'setter',
         classType: classType as ClassType | InterfaceType,
-        methodName: setterName,
+        methodName: setterName2,
         isStaticDispatch: isFinalClass,
         isStatic: isStaticAccess,
       });
 
       // Setter param type
       const paramType = setter.parameters[0];
-      if (!isAssignableTo(ctx, valueType, paramType)) {
+      const effectiveType2 = expr.operator
+        ? checkCompoundOperator(ctx, expr, paramType, valueType)
+        : valueType;
+      if (!isAssignableTo(ctx, effectiveType2, paramType)) {
         ctx.diagnostics.reportError(
-          `Type mismatch in assignment: expected ${typeToString(paramType)}, got ${typeToString(valueType)}`,
+          `Type mismatch in assignment: expected ${typeToString(paramType)}, got ${typeToString(effectiveType2)}`,
           DiagnosticCode.TypeMismatch,
           ctx.getLocation(expr.loc),
         );
       }
-      return valueType;
+      return effectiveType2;
     }
 
     // Check if it is a read-only property (getter only)
@@ -2180,17 +2296,27 @@ function checkAssignmentExpression(
           }
 
           const valueType = checkExpression(ctx, expr.value);
-          if (!isAssignableTo(ctx, valueType, resolvedSetter.parameters[1])) {
+          const effectiveType = expr.operator
+            ? checkCompoundOperator(
+                ctx,
+                expr,
+                resolvedSetter.parameters[1],
+                valueType,
+              )
+            : valueType;
+          if (
+            !isAssignableTo(ctx, effectiveType, resolvedSetter.parameters[1])
+          ) {
             ctx.diagnostics.reportError(
-              `Type mismatch in assignment: expected ${typeToString(resolvedSetter.parameters[1])}, got ${typeToString(valueType)}`,
+              `Type mismatch in assignment: expected ${typeToString(resolvedSetter.parameters[1])}, got ${typeToString(effectiveType)}`,
               DiagnosticCode.TypeMismatch,
               ctx.getLocation(expr.loc),
             );
           }
 
           // Annotate the index expression with the value type (result of the assignment expression)
-          indexExpr.inferredType = valueType;
-          return valueType;
+          indexExpr.inferredType = effectiveType;
+          return effectiveType;
         }
         return Types.Unknown;
       }
@@ -2209,18 +2335,24 @@ function checkAssignmentExpression(
 
     // Check the index expression (this will annotate the object and index)
     const elementType = checkIndexExpression(ctx, indexExpr);
+    // Set inferredType for compound assignment codegen (the synthetic BinaryExpression
+    // reads the left-hand side, which needs inferredType)
+    indexExpr.inferredType = elementType;
 
     // Check if value is assignable to element type
     const valueType = checkExpression(ctx, expr.value);
-    if (!isAssignableTo(ctx, valueType, elementType)) {
+    const effectiveType = expr.operator
+      ? checkCompoundOperator(ctx, expr, elementType, valueType)
+      : valueType;
+    if (!isAssignableTo(ctx, effectiveType, elementType)) {
       ctx.diagnostics.reportError(
-        `Type mismatch in assignment: expected ${typeToString(elementType)}, got ${typeToString(valueType)}`,
+        `Type mismatch in assignment: expected ${typeToString(elementType)}, got ${typeToString(effectiveType)}`,
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(expr.loc),
       );
     }
 
-    return valueType;
+    return effectiveType;
   }
   return Types.Unknown;
 }

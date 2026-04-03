@@ -6,10 +6,10 @@ This document explores concurrency models for Zena, analyzing WASI P3's cooperat
 
 Zena uses **stackless async** (CPS/state machine transformation) exclusively:
 
-| Approach | Memory per Task | Scales to 1000s | Requires 🚟 | Implementation |
-|----------|-----------------|-----------------|-------------|----------------|
-| Stackful | 64KB+ (full stack) | ❌ Poor | Yes | Simple codegen |
-| **Stackless** | **~bytes (live vars only)** | **✅ Excellent** | **No** | **CPS transform** |
+| Approach      | Memory per Task             | Scales to 1000s  | Requires 🚟 | Implementation    |
+| ------------- | --------------------------- | ---------------- | ----------- | ----------------- |
+| Stackful      | 64KB+ (full stack)          | ❌ Poor          | Yes         | Simple codegen    |
+| **Stackless** | **~bytes (live vars only)** | **✅ Excellent** | **No**      | **CPS transform** |
 
 **Rationale**: UI frameworks with large component trees (1000s of awaiting components) cannot afford 64KB per suspended task. The CPS transform is table-stakes for modern async; once implemented, stackful offers no benefit.
 
@@ -20,14 +20,15 @@ Zena uses **stackless async** (CPS/state machine transformation) exclusively:
 WASI P3 introduces **cooperative green threads** that switch only at explicit program points (not preemptively). Key capabilities:
 
 ### Thread Built-ins
-| Built-in | Description |
-|----------|-------------|
-| `thread.new-indirect` | Creates a new suspended thread |
-| `thread.resume-later` | Resumes a suspended thread non-deterministically later |
-| `thread.yield-to` | Switch to given thread immediately, current resumed later |
-| `thread.switch-to` | Switch to given thread immediately, current left suspended |
-| `thread.suspend` | Explicitly suspend current thread |
-| `thread.yield` | Allow runtime to switch execution |
+
+| Built-in              | Description                                                |
+| --------------------- | ---------------------------------------------------------- |
+| `thread.new-indirect` | Creates a new suspended thread                             |
+| `thread.resume-later` | Resumes a suspended thread non-deterministically later     |
+| `thread.yield-to`     | Switch to given thread immediately, current resumed later  |
+| `thread.switch-to`    | Switch to given thread immediately, current left suspended |
+| `thread.suspend`      | Explicitly suspend current thread                          |
+| `thread.yield`        | Allow runtime to switch execution                          |
 
 ### Stackless Async ABI
 
@@ -41,6 +42,7 @@ The stackless ABI uses a **callback pattern**:
 This maps directly to our CPS-transformed code.
 
 ### Key Primitives
+
 - **Waitable sets**: epoll-like mechanism to wait on multiple concurrent operations
 - **Futures/Streams**: Unidirectional unbuffered channels with session types
 - **Backpressure**: Built-in mechanism to control concurrent export call admission
@@ -105,7 +107,7 @@ const fetchUser = async (id: i32) => User {
 ;; Callback - called by runtime when waitable has event
 (func $fetchUser_cb (param $event i32) (param $p1 i32) (param $p2 i32) (result i32)
   ;; Load state, switch on $stage:
-  ;; 
+  ;;
   ;; Stage 0 (getToken completed):
   ;;   - Store token in state
   ;;   - Call fetch(token, id) async
@@ -131,14 +133,14 @@ Stackless: 1000 × ~32B = 32KB typical (just state structs)
 
 The CPS transform handles all control flow constructs:
 
-| Construct | Handling |
-|-----------|----------|
-| Sequential | State machine stages |
-| `if/else` | Branches within stage, or split stages |
-| `while` | Loop state in struct, re-enter same stage |
-| `for-in` | Iterator state preserved |
+| Construct   | Handling                                            |
+| ----------- | --------------------------------------------------- |
+| Sequential  | State machine stages                                |
+| `if/else`   | Branches within stage, or split stages              |
+| `while`     | Loop state in struct, re-enter same stage           |
+| `for-in`    | Iterator state preserved                            |
 | `try/catch` | Handler state tracked, jump to catch stage on error |
-| `match` | Arms become stages if they contain await |
+| `match`     | Arms become stages if they contain await            |
 
 ### Open Questions
 
@@ -163,8 +165,8 @@ const instance = await WebAssembly.instantiate(module, {
       const url = decodeString(urlPtr, urlLen);
       const resp = await fetch(url);
       return encodeResponse(resp);
-    })
-  }
+    }),
+  },
 });
 
 // Wrap WASM export to return Promise
@@ -173,6 +175,7 @@ const result = await asyncExport(args);
 ```
 
 When WASM calls a `suspending` import:
+
 1. JS engine suspends the WASM stack
 2. Promise proceeds through JS event loop
 3. When Promise resolves, WASM stack resumes
@@ -180,12 +183,12 @@ When WASM calls a `suspending` import:
 
 ### JSPI vs WASI P3 Comparison
 
-| Feature | JSPI | WASI P3 |
-|---------|------|---------|
-| Host | Browser/JS only | Any WASI runtime |
-| Stack management | JS engine handles | Runtime handles |
-| Concurrency primitives | Via JS (Promise.all, etc.) | Built-in (waitable sets, streams) |
-| Multiple concurrent awaits | Multiple `promising` calls | Single callback handles all |
+| Feature                    | JSPI                       | WASI P3                           |
+| -------------------------- | -------------------------- | --------------------------------- |
+| Host                       | Browser/JS only            | Any WASI runtime                  |
+| Stack management           | JS engine handles          | Runtime handles                   |
+| Concurrency primitives     | Via JS (Promise.all, etc.) | Built-in (waitable sets, streams) |
+| Multiple concurrent awaits | Multiple `promising` calls | Single callback handles all       |
 
 ### Dual-Target Strategy
 
@@ -222,6 +225,7 @@ Our CPS transform works for **both** targets:
 ```
 
 **Key insight**: For JSPI, if every `await` is just an import call, we can emit **simpler linear code** without explicit state machines—JSPI handles the suspension. But this only works when:
+
 - All awaited values come from JS imports
 - No need for concurrent spawning within WASM
 
@@ -233,9 +237,9 @@ For full generality (spawn, join, select, internal futures), we use the CPS appr
 
 ```javascript
 // From JS: TWO separate stacks, can run concurrently ✅
-const p1 = wasmExport1();  // Creates suspendable stack 1
-const p2 = wasmExport2();  // Creates suspendable stack 2
-await Promise.all([p1, p2]);  // Both in flight
+const p1 = wasmExport1(); // Creates suspendable stack 1
+const p2 = wasmExport2(); // Creates suspendable stack 2
+await Promise.all([p1, p2]); // Both in flight
 ```
 
 ```wasm
@@ -255,6 +259,7 @@ const loadBoth = async () => {
 ```
 
 **With naive JSPI codegen** (sequential, slow):
+
 ```
 call fetch(url1)  → suspend → wait 500ms → resume
 call fetch(url2)  → suspend → wait 500ms → resume
@@ -262,6 +267,7 @@ Total: 1000ms
 ```
 
 **What we want** (concurrent, fast):
+
 ```
 Start fetch(url1) → Start fetch(url2) → wait ~500ms → both ready
 Total: ~500ms
@@ -291,7 +297,7 @@ For functions with potential concurrent awaits, we use CPS and return control to
 
 ```javascript
 // JS runtime for Zena async on JSPI hosts
-const pendingTasks = new Map();  // taskId -> Promise
+const pendingTasks = new Map(); // taskId -> Promise
 let nextTaskId = 1;
 
 const imports = {
@@ -299,51 +305,55 @@ const imports = {
   startFetch: (urlPtr, urlLen) => {
     const url = decodeString(urlPtr, urlLen);
     const taskId = nextTaskId++;
-    pendingTasks.set(taskId, 
-      fetch(url).then(r => ({ taskId, result: r }))
+    pendingTasks.set(
+      taskId,
+      fetch(url).then((r) => ({taskId, result: r})),
     );
     return taskId;
   },
-  
+
   startTimeout: (ms) => {
     const taskId = nextTaskId++;
-    pendingTasks.set(taskId, 
-      sleep(ms).then(() => ({ taskId, result: null }))
+    pendingTasks.set(
+      taskId,
+      sleep(ms).then(() => ({taskId, result: null})),
     );
     return taskId;
-  }
+  },
 };
 
 // Main loop - drives the WASM state machine
 async function runAsync(wasmEntry, wasmCallback, ...args) {
   let status = wasmEntry(...args);
-  
-  while ((status & 0xF) !== 0) {  // Not EXIT
-    if ((status & 0xF) === 2) {   // WAIT
+
+  while ((status & 0xf) !== 0) {
+    // Not EXIT
+    if ((status & 0xf) === 2) {
+      // WAIT
       const taskIds = getWaitSet(status >> 4);
-      const promises = taskIds.map(id => pendingTasks.get(id));
-      
+      const promises = taskIds.map((id) => pendingTasks.get(id));
+
       // Race all pending tasks - first completion wins
-      const { taskId, result } = await Promise.race(promises);
+      const {taskId, result} = await Promise.race(promises);
       pendingTasks.delete(taskId);
-      
+
       // Resume WASM with completed task info
       status = wasmCallback(taskId, encodeResult(result));
     }
   }
-  
-  return getResult();  // Extract final return value
+
+  return getResult(); // Extract final return value
 }
 ```
 
 ### Codegen Strategy Decision Tree
 
-| Scenario | Detection | Codegen |
-|----------|-----------|---------|
-| Sequential awaits only | All awaits in sequence, no spawn | JSPI linear (optimization) |
-| Multiple concurrent awaits | `spawn`, multiple `await` on futures | CPS + JS loop |
-| TaskGroup / structured | Uses `TaskGroup`, `spawn` | CPS + JS loop |
-| Internal futures | Creates `Future<T>` values | CPS + JS loop |
+| Scenario                   | Detection                            | Codegen                    |
+| -------------------------- | ------------------------------------ | -------------------------- |
+| Sequential awaits only     | All awaits in sequence, no spawn     | JSPI linear (optimization) |
+| Multiple concurrent awaits | `spawn`, multiple `await` on futures | CPS + JS loop              |
+| TaskGroup / structured     | Uses `TaskGroup`, `spawn`            | CPS + JS loop              |
+| Internal futures           | Creates `Future<T>` values           | CPS + JS loop              |
 
 **Implementation**: Always generate CPS. Apply JSPI linearization as an **optimization pass** for simple cases.
 
@@ -362,7 +372,7 @@ const loadBoth = async (url1: string, url2: string) => (Response, Response) {
 // JS import handles concurrency
 WebAssembly.suspending(async (fn1, arg1, fn2, arg2) => {
   return Promise.all([fn1(arg1), fn2(arg2)]);
-})
+});
 ```
 
 **Tradeoff**: Works but couples Zena code to JS-specific patterns.
@@ -391,11 +401,13 @@ Fiber.switchTo(otherFiber);
 ```
 
 **Pros**:
+
 - Maximum control over scheduling
 - Zero-overhead abstractions possible
 - Familiar to Go/Lua/Ruby users
 
 **Cons**:
+
 - Low-level, error-prone
 - No structured lifetime management
 - Manual state coordination
@@ -424,16 +436,18 @@ let results = async with TaskGroup.new() as group {
 ```
 
 **Pros**:
+
 - Eliminates leaked tasks
 - Clear lifetime boundaries
 - Natural error propagation (cancel siblings on failure)
 - Matches mental model of "do A, B, C concurrently then continue"
 
 **Cons**:
+
 - Less flexible than unstructured spawning
 - Some patterns harder (long-running background tasks)
 
-**Note**: WASI P3 has *minimal* structured concurrency - supertasks "tail call" into subtasks when they finish, but don't strictly wait. Zena could enforce stricter semantics.
+**Note**: WASI P3 has _minimal_ structured concurrency - supertasks "tail call" into subtasks when they finish, but don't strictly wait. Zena could enforce stricter semantics.
 
 ### 3. Channels (Stdlib, Not Language Feature)
 
@@ -446,7 +460,7 @@ let ch = Channel<i32>.new();
 // In one task - explicit await
 await ch.send(42);  // Suspends until receiver ready
 
-// In another task - explicit await  
+// In another task - explicit await
 let val = await ch.recv();  // Suspends until value available
 
 // Buffered channels - send doesn't suspend until buffer full
@@ -470,40 +484,45 @@ match result {
 }
 ```
 
-**Design Rationale**: 
+**Design Rationale**:
+
 - **One rule**: `await` = suspension point. No implicit blocking.
 - Channels are a **library type**, not language syntax.
 - Same CPS compilation as any async code.
 
 **Stdlib API**:
+
 ```zena
 // zena:channels
 class Channel<T> {
   static new() => Channel<T>;
   static buffered(capacity: i32) => Channel<T>;
   static select(...futures: array<Future<any>>) => async (i32, any);
-  
+
   send(value: T) => async void;
   recv() => async T;
-  
+
   trySend(value: T) => boolean;
   tryRecv() => T | null;
-  
+
   close() => void;
   isClosed() => boolean;
 }
 ```
 
 **Mapping to WASI P3**: Channels implemented using:
+
 - Internal queue + waitable for synchronization
 - `waitable-set.wait` + `waitable-set.poll` for select
 
 **Pros**:
+
 - Consistent with async/await (no implicit blocking)
 - Proven model (Go, Erlang/Elixir, Kotlin)
 - Just a library, no special compiler support
 
 **Cons**:
+
 - Slightly more verbose than Go (`await ch.send(x)` vs `ch <- x`)
 - Deadlock still possible
 
@@ -514,7 +533,7 @@ Isolated actors with message-passing:
 ```zena
 actor Counter {
   var count = 0;
-  
+
   receive Increment => { count = count + 1; }
   receive GetCount(replyTo: ActorRef<i32>) => { replyTo.send(count); }
 }
@@ -527,11 +546,13 @@ let count = counter.ask(GetCount);  // ask = send + await response
 ```
 
 **Pros**:
+
 - Complete isolation (no shared mutable state)
 - Location transparency (same API local or remote)
 - Natural failure isolation
 
 **Cons**:
+
 - Verbose for simple cases
 - Dead letters / undelivered messages
 - Ordering complexities
@@ -557,6 +578,7 @@ let sum = pool.reduce(numbers, 0, (acc, n) => acc + n);
 **Implementation**: Separate component instances with message passing.
 
 **Limitations**:
+
 - Serialization costs for complex data (structured clone)
 - Can't share class instances without custom serialization
 - Cumbersome API discourages use
@@ -587,16 +609,19 @@ Once WASM shared-everything-threads supports GC objects, we can do better than w
 #### Approaches from Other Languages
 
 **Rust: Ownership + Send/Sync traits**
+
 ```rust
 // Send = can be transferred to another thread
 // Sync = can be accessed from multiple threads (&T is Send)
 // Borrow checker enforces at compile time
 let data = Arc<Mutex<T>>;  // Shared mutable via explicit locking
 ```
-*Pros*: Zero-cost abstractions, compile-time safety
-*Cons*: Complex ownership system, steep learning curve
+
+_Pros_: Zero-cost abstractions, compile-time safety
+_Cons_: Complex ownership system, steep learning curve
 
 **Pony: Reference Capabilities**
+
 ```pony
 // iso  = isolated (unique reference, can transfer)
 // val  = deeply immutable (freely shareable)
@@ -607,10 +632,12 @@ let data = Arc<Mutex<T>>;  // Shared mutable via explicit locking
 let data: iso String = "hello"  // Unique owner
 othertask.send(consume data)    // Transfer ownership
 ```
-*Pros*: No data races by construction, no locks needed
-*Cons*: Capabilities are viral, complex mental model
+
+_Pros_: No data races by construction, no locks needed
+_Cons_: Capabilities are viral, complex mental model
 
 **Swift: Sendable + Actor Isolation**
+
 ```swift
 // Sendable marks types safe to share
 struct Point: Sendable { let x, y: Int }  // OK (immutable)
@@ -621,10 +648,12 @@ actor Counter {
   func increment() { count += 1 }  // Isolated mutation
 }
 ```
-*Pros*: Gradual adoption, familiar actor model
-*Cons*: Actors have async overhead, isolation can be limiting
+
+_Pros_: Gradual adoption, familiar actor model
+_Cons_: Actors have async overhead, isolation can be limiting
 
 **Verona: Regions + Cowns**
+
 ```verona
 // Cowns = Concurrent Owned objects (like actors but for data)
 // Regionsmutual = group objects together for atomic access
@@ -632,8 +661,9 @@ when (cown1, cown2) {
   // Have exclusive access to both cown1 and cown2
 }
 ```
-*Pros*: Fine-grained ownership, deadlock-free by construction
-*Cons*: Research language, complex runtime
+
+_Pros_: Fine-grained ownership, deadlock-free by construction
+_Cons_: Research language, complex runtime
 
 #### Proposed Design for Zena
 
@@ -663,6 +693,7 @@ let frozenTree = tree.freeze();  // Consumes tree, returns frozen
 ```
 
 **Compiler enforcement**:
+
 - `frozen` types can only contain `frozen` or primitive fields
 - Frozen values can be freely shared (no locking needed)
 - Parse trees, type representations, IR nodes are natural fits
@@ -715,6 +746,7 @@ parallel.scope((scope) => {
 ```
 
 **Scope guarantees**:
+
 - Borrowed data cannot escape the scope
 - Scope blocks until all tasks complete
 - Compiler verifies borrow exclusivity
@@ -766,6 +798,7 @@ class Region<T> {
 **Why context, not pattern-matching?**
 
 Pattern-matching `new Region(sendable () => { new Foo() })` can't handle:
+
 - Helper functions called from the callback
 - Constructor logic that creates other objects
 - Library code that allocates internally
@@ -782,7 +815,7 @@ class Node {
   value: i32;
   children: array<Node>;
   parent: Node | null;
-  
+
   #new(value: i32, parent: Node | null) {
     this.value = value;
     this.parent = parent;
@@ -795,7 +828,7 @@ var globalCounter = 0;
 
 class CountedNode {
   id: i32;
-  
+
   #new() {
     this.id = globalCounter;
     globalCounter = globalCounter + 1;  // Mutates external state!
@@ -817,13 +850,13 @@ var badGlobal = 0;
 
 class Foo {
   x: i32;
-  
+
   #new() {
     this.x = badGlobal;  // Error: reading mutable 'badGlobal' in Sendable class
     badGlobal = 1;       // Error: writing mutable 'badGlobal' in Sendable class
     this.helper();       // Checked transitively
   }
-  
+
   helper() {
     badGlobal = 2;       // Error: Foo.helper() captures mutable state
   }
@@ -877,15 +910,15 @@ let region = new Region(sendable () => {
 ```zena
 let outer = new Region(sendable () => {
   let node1 = new Node(1, null);  // In outer region
-  
+
   let inner = new Region(sendable () => {
     let node2 = new Node(2, null);  // In inner region
     return node2;
   });
-  
+
   // inner is a Region<Node> allocated in outer region
   // inner.root points to node2/inner region's objects
-  
+
   return { node1, inner };
 });
 ```
@@ -900,28 +933,28 @@ let config: frozen<Config> = ...;  // Frozen = world-readable
 let region = new Region(sendable () => {
   // OK: frozen values can be referenced from anywhere
   let node = new Node(1, config);  // config is not copied into region
-  
+
   // OK: primitives are values (copied)
   let x = 42;
   let node2 = new Node(x, null);
-  
+
   // OK: records are value types (copied)
   let span = { start: 0, end: 10 };
   let node3 = new Node(3, span);
-  
+
   return node;
 });
 ```
 
 **Comparison to explicit allocator approach**:
 
-| Aspect | Runtime Context | Explicit Allocator |
-|--------|-----------------|-------------------|
-| Helper functions | ✅ Just work | ❌ Must pass allocator |
-| Existing code | ✅ Works in regions | ❌ Must be rewritten |
-| Clarity | ⚠️ "Magic" allocation | ✅ Explicit |
-| Nested regions | ✅ Context stack | ✅ Different allocator names |
-| Performance | Small overhead (context check) | Zero overhead |
+| Aspect           | Runtime Context                | Explicit Allocator           |
+| ---------------- | ------------------------------ | ---------------------------- |
+| Helper functions | ✅ Just work                   | ❌ Must pass allocator       |
+| Existing code    | ✅ Works in regions            | ❌ Must be rewritten         |
+| Clarity          | ⚠️ "Magic" allocation          | ✅ Explicit                  |
+| Nested regions   | ✅ Context stack               | ✅ Different allocator names |
+| Performance      | Small overhead (context check) | Zero overhead                |
 
 **Recommendation**: Runtime context. The ergonomic benefits outweigh the small runtime cost. Code that doesn't know about regions "just works" when called from a region context.
 
@@ -948,7 +981,8 @@ let sealed: Region<Node> = region.seal();
 ```
 
 **Region rules**:
-- Objects are *born* in regions via `self.alloc()`, not moved in
+
+- Objects are _born_ in regions via `self.alloc()`, not moved in
 - Region objects can reference: other same-region objects, frozen objects, primitives
 - External code accesses region via `region.root` (the root object)
 - Transfer region = transfer all contained objects atomically
@@ -1057,7 +1091,7 @@ let processor = sendable (x: Data) => process(x, config);  // OK: config is froz
 // Compiler checks at call site
 
 parallel.map(items, (item) => {
-  counter = counter + 1;  // Error: closure passed to parallel.map captures 
+  counter = counter + 1;  // Error: closure passed to parallel.map captures
                           // mutable 'counter' which is not Sendable
   process(item)
 });
@@ -1074,13 +1108,14 @@ const parallelMap = <T, R>(items: array<T>, fn: sendable (T) => R) => array<R>;
 
 **Comparison**:
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| `sendable` keyword | Intent explicit, self-documenting | More syntax |
-| Inferred at call site | No new syntax | Errors at use site, not definition |
-| Type annotation | Composable, works with higher-order functions | Verbose |
+| Approach              | Pros                                          | Cons                               |
+| --------------------- | --------------------------------------------- | ---------------------------------- |
+| `sendable` keyword    | Intent explicit, self-documenting             | More syntax                        |
+| Inferred at call site | No new syntax                                 | Errors at use site, not definition |
+| Type annotation       | Composable, works with higher-order functions | Verbose                            |
 
 **Recommendation**: Support both:
+
 - Explicit `sendable` keyword for clarity when needed
 - Infer sendability at call sites for convenience (like Swift's `@Sendable`)
 - Sendable closures satisfy regular closure types (subtyping)
@@ -1109,13 +1144,13 @@ spawn sendable {
 
 ##### Summary of Sharing Modes
 
-| Mode | Mutability | Sharing | Use Case |
-|------|------------|---------|----------|
-| `frozen<T>` | Immutable | Free sharing | Parse trees, config, constants |
-| `isolated<T>` | Mutable | Transfer only | Work items, results |
-| `borrow` | Mutable | Scoped exclusive | Parallel subtree processing |
-| `share` | Read-only | Scoped shared | Parallel analysis |
-| `Region<T>` | Mutable | Transfer whole region | Object graphs (ASTs, DOMs) |
+| Mode          | Mutability | Sharing               | Use Case                       |
+| ------------- | ---------- | --------------------- | ------------------------------ |
+| `frozen<T>`   | Immutable  | Free sharing          | Parse trees, config, constants |
+| `isolated<T>` | Mutable    | Transfer only         | Work items, results            |
+| `borrow`      | Mutable    | Scoped exclusive      | Parallel subtree processing    |
+| `share`       | Read-only  | Scoped shared         | Parallel analysis              |
+| `Region<T>`   | Mutable    | Transfer whole region | Object graphs (ASTs, DOMs)     |
 
 ##### What We Avoid
 
@@ -1141,23 +1176,25 @@ spawn sendable {
 #### Polyfill: Same API on Workers/Components (Today)
 
 Before WASM GC gets native threading, we can implement the **same API** on top of:
+
 - **JS**: Web Workers / Node worker_threads
 - **WASI**: Spawning component instances (via wasmtime API or future WASI threading)
 
 **Key insight**: Since workers run the **same compiled code**, we get:
+
 - Identical class layouts and vtable offsets
 - Type-safe serialization without schema negotiation
 - Automatic `Sendable` enforcement at compile time
 
 ##### Implementation Strategy
 
-| Concept | True Shared Memory | Workers (Polyfill) |
-|---------|--------------------|--------------------|
-| `frozen<T>` | Share pointer | Serialize → send → deserialize (cached) |
-| `isolated<T>` | Transfer pointer | Serialize → send → delete original |
-| `borrow` scope | Lend pointer | Serialize → work → send back → apply |
-| `share` scope | Multiple read pointers | Serialize once → broadcast to all workers |
-| `Region` | Transfer base pointer | Serialize all region objects together |
+| Concept        | True Shared Memory     | Workers (Polyfill)                        |
+| -------------- | ---------------------- | ----------------------------------------- |
+| `frozen<T>`    | Share pointer          | Serialize → send → deserialize (cached)   |
+| `isolated<T>`  | Transfer pointer       | Serialize → send → delete original        |
+| `borrow` scope | Lend pointer           | Serialize → work → send back → apply      |
+| `share` scope  | Multiple read pointers | Serialize once → broadcast to all workers |
+| `Region`       | Transfer base pointer  | Serialize all region objects together     |
 
 ##### Generated Binary Serialization
 
@@ -1174,7 +1211,7 @@ impl Sendable for ASTNode {
     }
     self.span.serialize(buf);
   }
-  
+
   fn deserialize(buf: ByteBuffer) => ASTNode {
     let kind = buf.readI32() as NodeKind;
     let childCount = buf.readI32();
@@ -1189,6 +1226,7 @@ impl Sendable for ASTNode {
 ```
 
 **Optimizations**:
+
 1. **Varint encoding**: Small numbers use fewer bytes
 2. **String interning**: Send intern ID instead of bytes (for shared string tables)
 3. **Deduplication**: Track object identity to avoid serializing same object twice
@@ -1208,31 +1246,33 @@ const parseFiles = (files: array<string>) => array<isolated<AST>> {
 ```
 
 **With workers (today)**:
+
 ```
 Main                          Worker 1              Worker 2
 ────                          ────────              ────────
 files[0..N/2] ──serialize──►  deserialize
                               parse()
                               serialize result
-              ◄──────────────  
+              ◄──────────────
 files[N/2..N] ──serialize────────────────────────►  deserialize
                                                     parse()
                                                     serialize result
-              ◄────────────────────────────────────  
+              ◄────────────────────────────────────
 deserialize results
 return isolated<AST>[]
 ```
 
 **With true threading (future)**:
+
 ```
 Main                          Thread 1              Thread 2
 ────                          ────────              ────────
-files[0..N/2] ──pointer────►  
-                              parse() 
+files[0..N/2] ──pointer────►
+                              parse()
                               ◄──return isolated──
 files[N/2..N] ──pointer──────────────────────────►
                                                     parse()
-              ◄────────────────return isolated─────  
+              ◄────────────────return isolated─────
 return isolated<AST>[]
 ```
 
@@ -1243,11 +1283,11 @@ return isolated<AST>[]
 class WorkerPool {
   #workers: array<Worker>;
   #pending: Map<i32, TaskState>;
-  
+
   map<T: Sendable, R: Sendable>(items: array<T>, fn: (T) => R) => array<R> {
     let results = #[null; items.len()];
     let pending = items.len();
-    
+
     for (i, item) in items.enumerate() {
       let worker = this.#workers[i % this.#workers.len()];
       let msg = WorkerMessage {
@@ -1257,13 +1297,13 @@ class WorkerPool {
       };
       worker.postMessage(msg);
     }
-    
+
     while pending > 0 {
       let response = await this.#receiveAny();
       results[response.taskId] = R.deserialize(response.payload);
       pending = pending - 1;
     }
-    
+
     results
   }
 }
@@ -1271,19 +1311,21 @@ class WorkerPool {
 
 ##### Performance Considerations
 
-| Operation | Workers (Copy) | True Threading |
-|-----------|---------------|----------------|
-| Small object transfer | ~1μs | ~10ns |
-| Large tree (10K nodes) | ~1ms | ~10ns |
-| Read-only sharing | Copy per reader | Zero-cost |
-| Borrow + return | 2× serialize | Zero-cost |
+| Operation              | Workers (Copy)  | True Threading |
+| ---------------------- | --------------- | -------------- |
+| Small object transfer  | ~1μs            | ~10ns          |
+| Large tree (10K nodes) | ~1ms            | ~10ns          |
+| Read-only sharing      | Copy per reader | Zero-cost      |
+| Borrow + return        | 2× serialize    | Zero-cost      |
 
 **When workers are still worth it**:
+
 - Coarse-grained parallelism (parse whole files, not expressions)
 - Long-running tasks where transfer << compute
 - True CPU parallelism (vs cooperative async)
 
 **When to wait for true threading**:
+
 - Fine-grained parallelism (parallel tree visitors)
 - Frequent small transfers
 - Shared read-only data accessed by many tasks
@@ -1317,7 +1359,7 @@ const loadDashboard = async (userId: i32) => Dashboard {
   let (user, posts, notifications) = async with TaskGroup.new() {
     yield (
       spawn fetchUser(userId),
-      spawn fetchPosts(userId), 
+      spawn fetchPosts(userId),
       spawn fetchNotifications(userId),
     );
   };
@@ -1342,7 +1384,7 @@ const processPipeline = async () => {
   let input = Channel<RawData>.new();
   let parsed = Channel<ParsedData>.new();
   let output = Channel<Result>.new();
-  
+
   async with TaskGroup.new() {
     spawn reader(input);           // reads from source, sends to input
     spawn parser(input, parsed);   // await input.recv(), await parsed.send()
@@ -1365,24 +1407,28 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 ## Implementation Phases
 
 ### Phase 1: CPS Transform Infrastructure
+
 - [ ] Identify await points in async functions
 - [ ] Compute live variables at each await point
 - [ ] Generate state struct type per async function
 - [ ] Transform function body to state machine
 
 ### Phase 2: Async/Await Syntax
+
 - [ ] Add `async` keyword to function types
 - [ ] Add `await` expression (parser, checker)
 - [ ] Implement `Future<T>` type
 - [ ] Codegen: state machine entry + callback functions
 
 ### Phase 3: WASI P3 Backend
+
 - [ ] Emit callback ABI (entry returns status, companion callback)
 - [ ] Waitable-set creation and management
 - [ ] `task.return` for results
 - [ ] Subtask tracking for spawned work
 
 ### Phase 4: JSPI Backend
+
 - [ ] Detect "simple" async (sequential awaits on imports only)
 - [ ] Emit linear code for simple cases (JSPI `suspending` handles suspension)
 - [ ] CPS + JS event loop for concurrent cases
@@ -1390,12 +1436,14 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 - [ ] Generate JS glue for `suspending`/`promising` wrappers
 
 ### Phase 5: Structured Concurrency
+
 - [ ] TaskGroup/Nursery primitive
 - [ ] `spawn` within task groups
 - [ ] Automatic cancellation on error
 - [ ] Task state management (for CPS scheduler on all hosts)
 
 ### Phase 6: True Parallelism API (Worker Polyfill)
+
 - [ ] `Sendable` trait (auto-derived for safe types)
 - [ ] `frozen<T>` types (deeply immutable)
 - [ ] `isolated<T>` references (unique ownership, transferable)
@@ -1406,6 +1454,7 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 - [ ] Region serialization (batch transfer of object graphs)
 
 ### Phase 7: Channels (Stdlib Library)
+
 - [ ] `Channel<T>` class with `async send()` / `async recv()`
 - [ ] Buffered vs unbuffered variants
 - [ ] `trySend()` / `tryRecv()` non-blocking variants
@@ -1413,6 +1462,7 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 - [ ] No special compiler support - just uses async/await
 
 ### Phase 8: Native Shared-Memory (When WASM GC + shared-everything-threads ships)
+
 - [ ] Detect runtime supports shared GC refs
 - [ ] Replace serialization with pointer sharing for `frozen<T>`
 - [ ] Replace transfer-by-copy with move semantics for `isolated<T>`
@@ -1423,15 +1473,16 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 
 ## Comparison Summary
 
-| Model | Parallelism | Complexity | Safety | Best For |
-|-------|-------------|------------|--------|----------|
-| **async/await (CPS)** | Cooperative | Low | High | **Primary model** |
-| Structured Concurrency | Cooperative | Medium | Very High | Scoped concurrency |
-| Channels (stdlib) | Cooperative | Low | High | Pipelines, producer/consumer |
-| **True Parallelism (polyfill)** | True | Medium | Very High | **Today: compilers, batch processing** |
-| True Parallelism (native) | True | Medium | Very High | Future: same API, zero-copy |
+| Model                           | Parallelism | Complexity | Safety    | Best For                               |
+| ------------------------------- | ----------- | ---------- | --------- | -------------------------------------- |
+| **async/await (CPS)**           | Cooperative | Low        | High      | **Primary model**                      |
+| Structured Concurrency          | Cooperative | Medium     | Very High | Scoped concurrency                     |
+| Channels (stdlib)               | Cooperative | Low        | High      | Pipelines, producer/consumer           |
+| **True Parallelism (polyfill)** | True        | Medium     | Very High | **Today: compilers, batch processing** |
+| True Parallelism (native)       | True        | Medium     | Very High | Future: same API, zero-copy            |
 
 **Design Principles**:
+
 1. All suspension points are marked with `await` (no implicit blocking)
 2. Channels are a stdlib library, not a language feature
 3. True parallelism uses ownership types (`frozen`, `isolated`, `borrow`) not locks
@@ -1439,14 +1490,14 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 
 ### Target Host Compatibility
 
-| Feature | WASI P3 | JSPI (Browser/Node) |
-|---------|---------|---------------------|
-| Sequential async/await | ✅ Callback ABI | ✅ Linear `suspending` (simple) |
-| Concurrent async/await | ✅ Callback ABI | ✅ CPS + JS event loop |
-| spawn/TaskGroup | ✅ waitable-set | ✅ CPS + JS event loop |
-| True Parallelism (polyfill) | ✅ Component instances + serialization | ✅ Web Workers + serialization |
-| True Parallelism (native) | 🔮 shared-everything-threads | 🔮 SharedArrayBuffer + WASM threads |
-| Streams | ✅ Native | ⚠️ Via ReadableStream |
+| Feature                     | WASI P3                                | JSPI (Browser/Node)                 |
+| --------------------------- | -------------------------------------- | ----------------------------------- |
+| Sequential async/await      | ✅ Callback ABI                        | ✅ Linear `suspending` (simple)     |
+| Concurrent async/await      | ✅ Callback ABI                        | ✅ CPS + JS event loop              |
+| spawn/TaskGroup             | ✅ waitable-set                        | ✅ CPS + JS event loop              |
+| True Parallelism (polyfill) | ✅ Component instances + serialization | ✅ Web Workers + serialization      |
+| True Parallelism (native)   | 🔮 shared-everything-threads           | 🔮 SharedArrayBuffer + WASM threads |
+| Streams                     | ✅ Native                              | ⚠️ Via ReadableStream               |
 
 🔮 = Future (requires WASM GC + shared-everything-threads proposal)
 
@@ -1455,17 +1506,20 @@ const parser = async (input: Channel<RawData>, output: Channel<ParsedData>) => {
 ## References
 
 ### WASM & Web
+
 - [WASI P3 Concurrency](https://github.com/WebAssembly/component-model/blob/main/design/mvp/Concurrency.md)
 - [JSPI (JavaScript Promise Integration)](https://github.com/WebAssembly/js-promise-integration/)
 - [V8 JSPI Documentation](https://v8.dev/blog/jspi)
 - [WASM Shared-Everything Threads Proposal](https://github.com/WebAssembly/shared-everything-threads)
 
 ### Concurrency Models
+
 - [Structured Concurrency (Wikipedia)](https://en.wikipedia.org/wiki/Structured_concurrency)
 - [Notes on Structured Concurrency](https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful/)
 - [What Color is Your Function?](https://journal.stuffwithstuff.com/2015/02/01/what-color-is-your-function/)
 
 ### Reference Capabilities & Ownership
+
 - [Pony Reference Capabilities](https://www.ponylang.io/learn/#reference-capabilities)
 - [Pony Deny Capabilities Paper](https://www.ponylang.io/media/papers/fast-cheap-with-proof.pdf)
 - [Verona Language (Microsoft Research)](https://github.com/microsoft/verona)
