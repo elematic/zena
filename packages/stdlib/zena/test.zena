@@ -1,6 +1,7 @@
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
 import { Array } from 'zena:growable-array';
+import { StringBuilder } from 'zena:string-builder';
 
 // Test context passed to each test function
 export class TestContext {
@@ -158,4 +159,92 @@ export let suite = (name: String, fn: () => void): Suite => {
   }
   currentSuite = parentSuite;
   return newSuite;
+};
+
+// ============================================================================
+// Reporting
+// ============================================================================
+
+// Format a duration in milliseconds for display
+let formatDuration = (ms: i32): String => {
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
+  let secs = ms / 1000;
+  let remainder = ms % 1000;
+  return `${secs}.${remainder}s`;
+};
+
+// Build an indentation string (2 spaces per level)
+let indent = (level: i32): String => {
+  let sb = new StringBuilder(level * 2);
+  var i: i32 = 0;
+  while (i < level) {
+    sb.append('  ');
+    i = i + 1;
+  }
+  return sb.toString();
+};
+
+// Report a suite result tree to a write function (spec reporter style).
+// The write function is called once per line of output.
+let reportSuite = (result: SuiteResult, write: (s: String) => void, level: i32): void => {
+  let prefix = indent(level);
+
+  // Print suite header
+  if (level > 0) {
+    write(`${prefix}▶ ${result.name}`);
+  }
+
+  // Print test results
+  let testPrefix = indent(level + 1);
+  var i: i32 = 0;
+  while (i < result.tests.length) {
+    let t = result.tests[i];
+    if (t.passed) {
+      write(`${testPrefix}✔ ${t.name}`);
+    } else {
+      write(`${testPrefix}✖ ${t.name}`);
+      if (t.error !== null) {
+        write(`${testPrefix}    ${t.error}`);
+      }
+    }
+    i = i + 1;
+  }
+
+  // Print nested suites
+  var j: i32 = 0;
+  while (j < result.suites.length) {
+    reportSuite(result.suites[j], write, level + 1);
+    j = j + 1;
+  }
+};
+
+// Run a suite, print results, and return the number of failures.
+// This is the standard entry point for test runners.
+//
+// Usage in a test wrapper:
+//   import { tests } from './my_test.zena';
+//   import { runAndReport } from 'zena:test';
+//   export let main = (): i32 => runAndReport(tests, console.log);
+export let runAndReport = (s: Suite, write: (s: String) => void): i32 => {
+  let result = s.run();
+
+  // Print suite name as header
+  let icon = if (result.failed > 0) '✖' else '✔';
+  write(`${icon} ${result.name}`);
+
+  // Print test tree
+  reportSuite(result, write, 0);
+
+  // Print summary
+  let total = result.passed + result.failed;
+  write('');
+  if (result.failed == 0) {
+    write(`✓ ${result.passed} of ${total} test(s) passed`);
+  } else {
+    write(`✗ ${result.failed} failed, ${result.passed} passed of ${total} test(s)`);
+  }
+
+  return result.failed;
 };

@@ -2,11 +2,10 @@
 // and compares parsed AST JSON against .ast.json snapshots.
 // Requires WASI (run with wasmtime via npm run test:wasmtime)
 
-import { suite, test, TestContext, SuiteResult } from 'zena:test';
+import { suite, test, TestContext } from 'zena:test';
 import { jsonEqual } from 'zena:assert';
 import { readFile, listDir, exists, DirEntry, FileType } from 'zena:fs';
 import { parseJson, JsonValue, JsonOptions } from 'zena:json';
-import { console } from 'zena:console';
 import { parse } from '../lib/parser.zena';
 import { nodeToJson } from '../lib/ast-json.zena';
 import { ExpressionStatement } from '../lib/ast.zena';
@@ -242,47 +241,9 @@ let discoverTests = (dirPath: String, relPrefix: String, skips: FixedArray<SkipE
 };
 
 // ============================================================================
-// Result reporting
-// ============================================================================
-
-let printFailures = (result: SuiteResult, prefix: String): void => {
-  var i = 0;
-  while (i < result.tests.length) {
-    let t = result.tests[i];
-    if (!t.passed) {
-      let label = if (prefix.length > 0) { prefix + " > " + t.name } else { t.name };
-      console.error("  FAIL: " + label);
-      if (t.error != null) {
-        console.error("    " + t.error);
-      }
-    }
-    i = i + 1;
-  }
-  var j = 0;
-  while (j < result.suites.length) {
-    let sub = result.suites[j];
-    let subPrefix = if (prefix.length > 0) { prefix + " > " + sub.name } else { sub.name };
-    printFailures(sub, subPrefix);
-    j = j + 1;
-  }
-};
-
-// ============================================================================
 // Main test registration
 // ============================================================================
 
-let tests = suite('Portable Syntax Tests', (): void => {
+export let tests = suite('Portable Syntax Tests', (): void => {
   discoverTests("tests/language/syntax", "", skipList);
 });
-
-// Entry point — returns number of failed tests (0 = success)
-export let main = (): i32 => {
-  let result = tests.run();
-  if (result.failed > 0) {
-    console.error("");
-    console.error("Failed tests:");
-    printFailures(result, "");
-    console.error("");
-  }
-  return result.failed;
-};

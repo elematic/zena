@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Run zena-compiler tests using wasmtime.
+ *
+ * Each .wasm file exports main() which runs the test suite via runAndReport,
+ * printing results to stdout. The return value (last line) is the failure count.
  */
 
 import {execSync, spawnSync} from 'node:child_process';
@@ -17,6 +20,7 @@ const repoRoot = join(pkgDir, '..', '..');
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
+const DIM = '\x1b[2m';
 const NC = '\x1b[0m';
 
 // Check wasmtime is available
@@ -39,18 +43,20 @@ if (wasmFiles.length === 0) {
 }
 
 console.log('');
-console.log('Running wasmtime tests...');
-console.log('');
 
 let passed = 0;
 let failed = 0;
+let totalTests = 0;
+
+// Extract test count from runAndReport summary line
+const parseSummary = (report: string): number => {
+  // Matches "✓ N of M test(s) passed" or "✗ X failed, Y passed of M test(s)"
+  const match = report.match(/of (\d+) test/);
+  return match ? parseInt(match[1], 10) : 0;
+};
 
 for (const wasmFile of wasmFiles.sort()) {
   const relPath = relative(outDir, wasmFile);
-  const displayName = relPath.replace(/\.wasm$/, '');
-  const paddedName = displayName.padEnd(50);
-
-  process.stdout.write(`  ${paddedName} `);
 
   // Run from repo root with access to tests/language/ directory
   const result = spawnSync(
@@ -79,18 +85,28 @@ for (const wasmFile of wasmFiles.sort()) {
   );
 
   const output = result.stdout?.trim() ?? '';
-  const returnValue = output.split('\n').pop()?.trim();
+  // wasmtime --invoke prints the return value as the last line
+  const lines = output.split('\n');
+  const returnValue = lines.pop()?.trim();
+  // Everything before the return value is the test report
+  const report = lines.join('\n');
+  const testCount = parseSummary(report);
+  totalTests += testCount;
 
   if (result.status === 0 && returnValue === '0') {
-    console.log(`${GREEN}PASS${NC}`);
+    // Show a compact summary for passing suites
+    const displayName = relPath.replace(/\.wasm$/, '');
+    console.log(
+      `${GREEN}✔${NC} ${displayName} ${DIM}(${testCount} tests)${NC}`,
+    );
     passed++;
   } else {
-    console.log(`${RED}FAIL${NC}`);
-    if (result.stderr) {
-      console.log(`    ${result.stderr.trim().split('\n').join('\n    ')}`);
+    // Show the full report from runAndReport on failure
+    if (report) {
+      console.log(report);
     }
-    if (returnValue && returnValue !== '0') {
-      console.log(`    ${returnValue} test(s) failed`);
+    if (result.stderr) {
+      console.error(result.stderr.trim());
     }
     failed++;
   }
@@ -99,8 +115,12 @@ for (const wasmFile of wasmFiles.sort()) {
 console.log('');
 console.log('─'.repeat(50));
 if (failed === 0) {
-  console.log(`${GREEN}All ${passed} WASI test(s) passed${NC}`);
+  console.log(
+    `${GREEN}All ${passed} suite(s) passed (${totalTests} tests)${NC}`,
+  );
 } else {
-  console.log(`${RED}${failed} of ${passed + failed} test(s) failed${NC}`);
+  console.log(
+    `${RED}${failed} of ${passed + failed} suite(s) failed (${totalTests} tests)${NC}`,
+  );
   process.exit(1);
 }
