@@ -58,6 +58,27 @@ let $variable = 2;
 let camelCase = 3;
 ```
 
+## 1.3 Trailing Commas
+
+Trailing commas are allowed in all comma-separated lists enclosed by a delimiter:
+
+- Function parameter lists: `(a: i32, b: i32,)`
+- Function call arguments: `foo(1, 2,)`
+- Array literals: `[1, 2, 3,]`
+- Record literals: `{x: 1, y: 2,}`
+- Tuple literals: `(1, 2,)`
+- Map literals: `{"a" => 1, "b" => 2,}`
+- Import specifiers: `import {Foo, Bar,} from 'mod';`
+- Type parameters: `class Pair<K, V,>`
+- Type arguments: `new Pair<i32, i32,>()`
+- Record types: `{a: i32, b: i32,}`
+- Tuple types: `(i32, string,)`
+- Function types: `(a: i32, b: i32,) => void`
+- Destructuring patterns: `let {x, y,} = point;`
+- Class/case class parameters: `class Point(x: f64, y: f64,)`
+- Match patterns: `case Foo {a, b,}: ...`
+- Decorator arguments: `@external('mod', 'fn',)`
+
 ## 2. Types
 
 Zena is strongly typed. All expressions have a type determined at compile time.
