@@ -81,6 +81,7 @@
           ];
 
           shellHook = ''
+            unset DEVELOPER_DIR
             echo "Zena development environment"
             echo "Node.js version: $(node --version)"
             echo "npm version: $(npm --version)"
