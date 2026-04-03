@@ -926,7 +926,7 @@ export class Parser {
           name,
           value,
         });
-      } while (this.#match(TokenType.Comma));
+      } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RBrace));
     }
     this.#consume(TokenType.RBrace, "Expected '}' after record pattern.");
     return {
@@ -947,8 +947,10 @@ export class Parser {
 
     if (!this.#check(TokenType.RParen)) {
       do {
+        // Trailing comma: stop before closing paren
+        if (this.#check(TokenType.RParen)) break;
         // Support skipping: (a, , c) => [a, null, c]
-        if (this.#check(TokenType.Comma) || this.#check(TokenType.RParen)) {
+        if (this.#check(TokenType.Comma)) {
           elements.push(null);
         } else {
           elements.push(this.#parsePattern());
@@ -1262,7 +1264,7 @@ export class Parser {
           optional,
           initializer,
         });
-      } while (this.#match(TokenType.Comma));
+      } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
     }
     this.#consume(TokenType.RParen, "Expected ')'");
 
@@ -1633,7 +1635,7 @@ export class Parser {
       if (!this.#check(TokenType.RParen)) {
         do {
           args.push(this.#parseExpression());
-        } while (this.#match(TokenType.Comma));
+        } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
       }
       this.#consume(TokenType.RParen, "Expected ')' after arguments.");
       const endToken = this.#previous();
@@ -1924,7 +1926,7 @@ export class Parser {
     if (!this.#check(TokenType.RParen)) {
       do {
         args.push(this.#parseExpression());
-      } while (this.#match(TokenType.Comma));
+      } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
     }
     this.#consume(TokenType.RParen, "Expected ')' after arguments.");
     const endToken = this.#previous();
@@ -2664,7 +2666,7 @@ export class Parser {
             optional: optional || undefined,
             loc: this.#loc(paramStart, this.#previous()),
           });
-        } while (this.#match(TokenType.Comma));
+        } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
       }
       this.#consume(
         TokenType.RParen,
@@ -2778,7 +2780,7 @@ export class Parser {
               optional: optional || undefined,
               loc: this.#loc(paramStart, this.#previous()),
             });
-          } while (this.#match(TokenType.Comma));
+          } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
         }
         this.#consume(
           TokenType.RParen,
@@ -3207,7 +3209,7 @@ export class Parser {
               initializer || typeAnnotation || paramName,
             ),
           });
-        } while (this.#match(TokenType.Comma));
+        } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
       }
       this.#consume(TokenType.RParen, "Expected ')' after parameters.");
 
@@ -3289,7 +3291,7 @@ export class Parser {
           if (!this.#check(TokenType.RParen)) {
             do {
               args.push(this.#parseExpression());
-            } while (this.#match(TokenType.Comma));
+            } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
           }
           const rparen = this.#consume(
             TokenType.RParen,
@@ -3704,7 +3706,7 @@ export class Parser {
             optional,
             initializer,
           });
-        } while (this.#match(TokenType.Comma));
+        } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
       }
       this.#consume(TokenType.RParen, "Expected ')' after parameters.");
 
@@ -3805,7 +3807,7 @@ export class Parser {
           default: defaultValue,
           loc: this.#loc(id, defaultValue || constraint || id),
         });
-      } while (this.#match(TokenType.Comma));
+      } while (this.#match(TokenType.Comma) && !this.#checkGreater());
       this.#consumeGreater("Expected '>' after type parameters.");
       return params;
     }
@@ -3817,7 +3819,7 @@ export class Parser {
       const args: TypeAnnotation[] = [];
       do {
         args.push(this.#parseTypeAnnotation());
-      } while (this.#match(TokenType.Comma));
+      } while (this.#match(TokenType.Comma) && !this.#checkGreater());
       this.#consumeGreater("Expected '>' after type arguments.");
       return args;
     }
@@ -3836,7 +3838,7 @@ export class Parser {
     if (!this.#check(TokenType.RParen)) {
       do {
         elementTypes.push(this.#parseTypeAnnotation());
-      } while (this.#match(TokenType.Comma));
+      } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
     }
     this.#consume(TokenType.RParen, "Expected ')' after inline tuple types");
     const endToken = this.#previous();
@@ -3875,7 +3877,7 @@ export class Parser {
           paramNames.push('');
         }
         params.push(this.#parseTypeAnnotation());
-      } while (this.#match(TokenType.Comma));
+      } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
     }
     this.#consume(TokenType.RParen, "Expected ')'");
     // Function type: requires named parameters (a: i32, b: i32) => R
@@ -4164,7 +4166,7 @@ export class Parser {
     if (!this.#check(TokenType.RParen)) {
       do {
         elements.push(this.#parseExpression());
-      } while (this.#match(TokenType.Comma));
+      } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
     }
 
     this.#consume(TokenType.RParen, "Expected ')' after expression.");
@@ -4367,7 +4369,7 @@ export class Parser {
           optional,
           initializer,
         });
-      } while (this.#match(TokenType.Comma));
+      } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
     }
     this.#consume(TokenType.RParen, "Expected ')' after parameters");
 
@@ -4439,7 +4441,7 @@ export class Parser {
           local,
           loc: this.#loc(imported, local),
         });
-      } while (this.#match(TokenType.Comma));
+      } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RBrace));
     }
     this.#consume(TokenType.RBrace, "Expected '}'.");
     return imports;
@@ -4465,7 +4467,7 @@ export class Parser {
             throw new Error('Decorator arguments must be string literals');
           }
           args.push(arg as StringLiteral);
-        } while (this.#match(TokenType.Comma));
+        } while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen));
       }
       this.#consume(TokenType.RParen, "Expected ')' after decorator arguments");
     }
@@ -4576,6 +4578,10 @@ export class Parser {
       start: source.start + offset,
       end: source.start + offset + 1,
     };
+  }
+
+  #checkGreater(): boolean {
+    return this.#check(TokenType.Greater) || this.#check(TokenType.GreaterGreater) || this.#check(TokenType.GreaterGreaterGreater);
   }
 
   /**
