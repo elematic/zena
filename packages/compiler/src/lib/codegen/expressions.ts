@@ -80,6 +80,7 @@ import {
   getSymbolMemberName,
   hasImmutableFields,
   instantiateClass,
+  isErasedRefType,
   mapCheckerTypeToWasmType,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
@@ -885,8 +886,7 @@ function generateAsExpression(
       targetWasmType[0] === ValType.f32 ||
       targetWasmType[0] === ValType.f64) &&
     sourceWasmType &&
-    sourceWasmType.length === 1 &&
-    sourceWasmType[0] === ValType.anyref
+    isErasedRefType(sourceWasmType)
   ) {
     // Pass targetCheckerType to preserve semantic type (boolean vs i32)
     unboxPrimitive(ctx, targetWasmType, body, targetCheckerType);
@@ -930,7 +930,7 @@ function generateIsExpression(
     // Check if types match
     if (typesAreEqual(sourceType, targetType)) {
       body.push(Opcode.i32_const, 1);
-    } else if (targetType.length === 1 && targetType[0] === ValType.anyref) {
+    } else if (targetType.length === 1 && (targetType[0] === ValType.anyref || targetType[0] === ValType.eqref)) {
       // Primitive is assignable to any (via boxing), so 'is any' is true?
       // But 'is' usually checks exact type or subtype.
       // '10 is any' -> true.
@@ -1858,8 +1858,7 @@ function generateIndexExpression(
           // Unbox if needed
           const expectedType = inferType(ctx, expr);
           if (
-            methodInfo.returnType.length === 1 &&
-            methodInfo.returnType[0] === ValType.anyref
+            isErasedRefType(methodInfo.returnType)
           ) {
             if (
               expectedType.length === 1 &&
@@ -3490,16 +3489,12 @@ function generateCallExpression(
             const expectedType = expectedTypes[i];
             if (!expectedType) return false;
 
-            // Interface returns anyref but caller expects a more specific type
-            const isAnyRef =
-              (actualType.length === 1 && actualType[0] === ValType.anyref) ||
-              (actualType.length === 2 &&
-                actualType[0] === ValType.ref_null &&
-                actualType[1] === ValType.anyref);
+            // Interface returns erased ref but caller expects a more specific type
+            const isAnyRef = isErasedRefType(actualType);
 
             return (
               isAnyRef &&
-              !(expectedType.length === 1 && expectedType[0] === ValType.anyref)
+              !isErasedRefType(expectedType)
             );
           });
 
@@ -3529,11 +3524,7 @@ function generateCallExpression(
               ...WasmModule.encodeSignedLEB128(local),
             );
 
-            const isAnyRef =
-              (actualType.length === 1 && actualType[0] === ValType.anyref) ||
-              (actualType.length === 2 &&
-                actualType[0] === ValType.ref_null &&
-                actualType[1] === ValType.anyref);
+            const isAnyRef = isErasedRefType(actualType);
 
             if (isAnyRef && expectedType) {
               if (
@@ -3559,7 +3550,7 @@ function generateCallExpression(
           const expectedType = expectedTypes[0];
           const actualType = actualResults[0];
 
-          if (actualType.length === 1 && actualType[0] === ValType.anyref) {
+          if (isErasedRefType(actualType)) {
             if (
               expectedType &&
               expectedType.length === 1 &&
@@ -3767,9 +3758,9 @@ function generateCallExpression(
             // Get object (this)
             generateExpression(ctx, memberExpr.object, body);
 
-            // Downcast if needed (for anyref case)
+            // Downcast if needed (for erased ref case)
             const isAnyRef =
-              objectType.length === 1 && objectType[0] === ValType.anyref;
+              objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
             if (isAnyRef) {
               body.push(0xfb, GcOpcode.ref_cast_null);
               body.push(
@@ -3831,9 +3822,9 @@ function generateCallExpression(
             // Get object (this)
             generateExpression(ctx, memberExpr.object, body);
 
-            // Downcast if needed (for anyref case)
+            // Downcast if needed (for erased ref case)
             const isAnyRef =
-              objectType.length === 1 && objectType[0] === ValType.anyref;
+              objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
             if (isAnyRef) {
               body.push(0xfb, GcOpcode.ref_cast_null);
               body.push(
@@ -4447,8 +4438,7 @@ function generateAssignmentExpression(
               const indexType = inferType(ctx, indexExpr.index);
               const expectedIndexType = paramTypes[1];
               if (
-                expectedIndexType.length === 1 &&
-                expectedIndexType[0] === ValType.anyref
+                isErasedRefType(expectedIndexType)
               ) {
                 if (
                   indexType.length === 1 &&
@@ -4481,8 +4471,7 @@ function generateAssignmentExpression(
             if (paramTypes.length > 2) {
               const expectedValueType = paramTypes[2];
               if (
-                expectedValueType.length === 1 &&
-                expectedValueType[0] === ValType.anyref
+                isErasedRefType(expectedValueType)
               ) {
                 if (
                   valueType.length === 1 &&
@@ -4813,7 +4802,7 @@ function generateAssignmentExpression(
         // param 0 is this, param 1 is value
         if (paramTypes.length > 1) {
           const expectedType = paramTypes[1];
-          if (expectedType.length === 1 && expectedType[0] === ValType.anyref) {
+          if (isErasedRefType(expectedType)) {
             if (
               valueType.length === 1 &&
               (valueType[0] === ValType.i32 ||
@@ -4978,11 +4967,7 @@ function generateAssignmentExpression(
 
     const valueType = inferType(ctx, expr.value);
     if (
-      ((fieldInfo.type.length > 1 &&
-        fieldInfo.type[0] === ValType.ref_null &&
-        fieldInfo.type[1] === ValType.anyref) ||
-        (fieldInfo.type.length === 1 &&
-          fieldInfo.type[0] === ValType.anyref)) &&
+      isErasedRefType(fieldInfo.type) &&
       valueType.length === 1 &&
       (valueType[0] === ValType.i32 ||
         valueType[0] === ValType.i64 ||
@@ -5048,10 +5033,7 @@ function generateAssignmentExpression(
 
         const valueType = inferType(ctx, expr.value);
         if (
-          ((local.type.length > 1 &&
-            local.type[0] === ValType.ref_null &&
-            local.type[1] === ValType.anyref) ||
-            (local.type.length === 1 && local.type[0] === ValType.anyref)) &&
+          isErasedRefType(local.type) &&
           valueType.length === 1 &&
           (valueType[0] === ValType.i32 ||
             valueType[0] === ValType.i64 ||
@@ -5087,11 +5069,7 @@ function generateAssignmentExpression(
 
       const valueType = inferType(ctx, expr.value);
       if (
-        ((globalWasmType.length > 1 &&
-          globalWasmType[0] === ValType.ref_null &&
-          globalWasmType[1] === ValType.anyref) ||
-          (globalWasmType.length === 1 &&
-            globalWasmType[0] === ValType.anyref)) &&
+        isErasedRefType(globalWasmType) &&
         valueType.length === 1 &&
         (valueType[0] === ValType.i32 ||
           valueType[0] === ValType.i64 ||
@@ -6367,10 +6345,10 @@ function generateFieldFromBinding(
     // Generate the object expression
     generateExpression(ctx, objectExpr, body);
 
-    // Cast if needed (e.g., from anyref)
+    // Cast if needed (e.g., from erased ref)
     const objectType = inferType(ctx, objectExpr);
     const isAnyRef =
-      objectType.length === 1 && objectType[0] === ValType.anyref;
+      objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
     if (isAnyRef) {
       body.push(0xfb, GcOpcode.ref_cast_null);
       body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
@@ -6481,9 +6459,9 @@ function generateFieldFromBinding(
         const objectType = inferType(ctx, objectExpr);
         generateExpression(ctx, objectExpr, body);
 
-        // Cast if object is anyref
+        // Cast if object is erased ref
         const isAnyRef =
-          objectType.length === 1 && objectType[0] === ValType.anyref;
+          objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
         if (isAnyRef) {
           body.push(0xfb, GcOpcode.ref_cast_null);
           body.push(
@@ -6567,9 +6545,9 @@ function generateFieldFromBinding(
   // Generate the object expression
   generateExpression(ctx, objectExpr, body);
 
-  // Cast if needed (e.g., from anyref)
+  // Cast if needed (e.g., from erased ref)
   const objectType = inferType(ctx, objectExpr);
-  const isAnyRef = objectType.length === 1 && objectType[0] === ValType.anyref;
+  const isAnyRef = objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
   if (isAnyRef) {
     body.push(0xfb, GcOpcode.ref_cast_null);
     body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
@@ -6705,7 +6683,7 @@ function generateInterfaceFieldAccessWithInfo(
 
   // 7. Handle return value adaptation (unbox if needed)
   const actualType = fieldInfo.type;
-  if (actualType.length === 1 && actualType[0] === ValType.anyref) {
+  if (isErasedRefType(actualType)) {
     const wasmExpectedType = mapCheckerTypeToWasmType(ctx, expectedType);
     if (
       wasmExpectedType.length === 1 &&
@@ -6820,7 +6798,7 @@ function generateInterfaceGetterAccess(
 
   // 7. Handle return value adaptation (unbox if needed)
   const actualType = methodInfo.returnType;
-  if (actualType.length === 1 && actualType[0] === ValType.anyref) {
+  if (isErasedRefType(actualType)) {
     const wasmExpectedType = mapCheckerTypeToWasmType(ctx, expectedType);
     if (
       wasmExpectedType.length === 1 &&
@@ -6860,8 +6838,8 @@ function generateGetterDynamicDispatch(
   const objectType = inferType(ctx, objectExpr);
   generateExpression(ctx, objectExpr, body);
 
-  // Cast if object is anyref
-  const isAnyRef = objectType.length === 1 && objectType[0] === ValType.anyref;
+  // Cast if object is erased ref
+  const isAnyRef = objectType.length === 1 && (objectType[0] === ValType.anyref || objectType[0] === ValType.eqref);
   if (isAnyRef) {
     body.push(0xfb, GcOpcode.ref_cast_null);
     body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
@@ -10645,12 +10623,9 @@ export function generateAdaptedArgument(
     return;
   }
 
-  // Auto-boxing: Primitive -> Any
+  // Auto-boxing: Primitive -> erased ref (anyref/eqref)
   if (
-    ((expectedType.length > 1 &&
-      expectedType[0] === ValType.ref_null &&
-      expectedType[1] === ValType.anyref) ||
-      (expectedType.length === 1 && expectedType[0] === ValType.anyref)) &&
+    isErasedRefType(expectedType) &&
     actualType.length === 1 &&
     (actualType[0] === ValType.i32 ||
       actualType[0] === ValType.i64 ||
@@ -10845,17 +10820,14 @@ export function generateAdaptedArgument(
   // Eqref/Anyref -> Specific struct type cast
   // This is needed when the actual value is eqref/anyref (e.g., exception parameter)
   // but the expected type is a specific struct reference
-  const isActualEqref =
-    actualType.length === 1 && actualType[0] === ValType.eqref;
-  const isActualAnyref =
-    actualType.length === 1 && actualType[0] === ValType.anyref;
+  const isActualErased = isErasedRefType(actualType);
   const isExpectedStructRef =
     expectedType.length > 1 &&
     (expectedType[0] === ValType.ref || expectedType[0] === ValType.ref_null);
 
-  if ((isActualEqref || isActualAnyref) && isExpectedStructRef) {
+  if (isActualErased && isExpectedStructRef) {
     generateExpression(ctx, arg, body);
-    // Cast from eqref/anyref to specific struct type
+    // Cast from erased ref to specific struct type
     body.push(0xfb, GcOpcode.ref_cast_null);
     body.push(...expectedType.slice(1)); // type index
     return;
@@ -10918,14 +10890,10 @@ export function generateAdaptedArgument(
         const sourceType = expectedParams[i + 1];
         const targetType = actualParams[i + 1];
 
-        // Check if source is anyref and target is a specific struct type
-        // This handles `this` type in callback parameters: interface uses anyref,
+        // Check if source is erased ref and target is a specific struct type
+        // This handles `this` type in callback parameters: interface uses eqref/anyref,
         // but the actual closure expects a specific class type
-        const isSourceAnyRef =
-          (sourceType.length === 1 && sourceType[0] === ValType.anyref) ||
-          (sourceType.length === 2 &&
-            sourceType[0] === ValType.ref_null &&
-            sourceType[1] === ValType.anyref);
+        const isSourceAnyRef = isErasedRefType(sourceType);
         const isTargetStruct =
           targetType.length > 1 &&
           (targetType[0] === ValType.ref || targetType[0] === ValType.ref_null);
@@ -12428,7 +12396,7 @@ function generatePipelineExpression(
   const leftType = expr.left.inferredType;
   const wasmType = leftType
     ? mapCheckerTypeToWasmType(ctx, leftType)
-    : [ValType.anyref];
+    : [ValType.eqref];
 
   // Store in a temporary local
   const tempLocal = ctx.declareLocal('$$pipe', wasmType);

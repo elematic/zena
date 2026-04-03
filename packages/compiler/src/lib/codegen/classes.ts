@@ -316,8 +316,8 @@ export function ensureRecordDispatchType(
   for (let i = 0; i < sortedFields.length; i++) {
     const field = sortedFields[i];
 
-    // Getter type: (param anyref) -> fieldType
-    const getterParams = [[ValType.ref_null, ValType.anyref]];
+    // Getter type: (param eqref) -> fieldType
+    const getterParams = [[ValType.ref_null, ValType.eqref]];
     const getterResults = field.type.length > 0 ? [field.type] : [];
     const getterTypeIndex = ctx.module.addType(getterParams, getterResults);
 
@@ -337,9 +337,9 @@ export function ensureRecordDispatchType(
   // Create vtable struct type
   const vtableTypeIndex = ctx.module.addStructType(vtableFields);
 
-  // Create fat pointer struct type: (struct (field anyref) (field (ref $vtable)))
+  // Create fat pointer struct type: (struct (field eqref) (field (ref $vtable)))
   const fatPtrFields = [
-    {type: [ValType.ref_null, ValType.anyref], mutable: false}, // instance
+    {type: [ValType.ref_null, ValType.eqref], mutable: false}, // instance
     {
       type: [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
       mutable: false,
@@ -612,9 +612,9 @@ export function preRegisterInterface(
   );
 
   // Create interface struct type (fat pointer)
-  // (struct (field (ref null any)) (field (ref vtable)))
+  // (struct (field (ref null eq)) (field (ref vtable)))
   const interfaceFields = [
-    {type: [ValType.ref_null, ValType.anyref], mutable: true}, // instance
+    {type: [ValType.ref_null, ValType.eqref], mutable: true}, // instance
     {
       type: [ValType.ref, ...WasmModule.encodeSignedLEB128(vtableTypeIndex)],
       mutable: true,
@@ -790,8 +790,8 @@ export function defineInterfaceMethods(
         );
       }
 
-      // Function type: (param any, ...params) -> result
-      const params: number[][] = [[ValType.ref_null, ValType.anyref]]; // 'this' is (ref null any)
+      // Function type: (param eq, ...params) -> result
+      const params: number[][] = [[ValType.ref_null, ValType.eqref]]; // 'this' is (ref null eq)
       for (const paramType of methodType.parameters) {
         params.push(eraseAndMap(paramType));
       }
@@ -865,8 +865,8 @@ export function defineInterfaceMethods(
         );
       }
 
-      // Field getter: (param any) -> Type
-      const params: number[][] = [[ValType.ref_null, ValType.anyref]];
+      // Field getter: (param eq) -> Type
+      const params: number[][] = [[ValType.ref_null, ValType.eqref]];
       const results: number[][] = [];
       let fieldType: number[] = [];
       const mapped = eraseAndMap(fieldCheckerType);
@@ -892,7 +892,7 @@ export function defineInterfaceMethods(
       // Mutable fields (declared with `var`) also get a setter in the vtable
       if (member.mutability === 'var') {
         const setterParams: number[][] = [
-          [ValType.ref_null, ValType.anyref],
+          [ValType.ref_null, ValType.eqref],
           mapped,
         ];
         const setterFuncTypeIndex = ctx.module.addType(setterParams, []);
@@ -925,8 +925,8 @@ export function defineInterfaceMethods(
       if (member.hasGetter) {
         const methodName = getGetterName(propName);
 
-        // Function type: (param any) -> result
-        const params: number[][] = [[ValType.ref_null, ValType.anyref]];
+        // Function type: (param eq) -> result
+        const params: number[][] = [[ValType.ref_null, ValType.eqref]];
         const results: number[][] = [];
         if (propType.length > 0) {
           results.push(propType);
@@ -950,9 +950,9 @@ export function defineInterfaceMethods(
       if (member.hasSetter) {
         const methodName = getSetterName(propName);
 
-        // Function type: (param any, value) -> void
+        // Function type: (param eq, value) -> void
         const params: number[][] = [
-          [ValType.ref_null, ValType.anyref],
+          [ValType.ref_null, ValType.eqref],
           propType,
         ];
         const results: number[][] = [];
@@ -1123,13 +1123,8 @@ export function generateTrampoline(
     // Load argument
     body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(paramIndex));
 
-    // Check if interface param is anyref (either as single byte or ref_null anyref)
-    const isAnyRef =
-      (interfaceParamType.length === 1 &&
-        interfaceParamType[0] === ValType.anyref) ||
-      (interfaceParamType.length === 2 &&
-        interfaceParamType[0] === ValType.ref_null &&
-        interfaceParamType[1] === ValType.anyref);
+    // Check if interface param is an erased ref (anyref or eqref)
+    const isAnyRef = isErasedRefType(interfaceParamType);
 
     // Adapt if needed (unbox/cast)
     if (isAnyRef) {
@@ -1244,12 +1239,7 @@ export function generateTrampoline(
                 const classParam = classFuncParams[j];
                 const ifaceParam = interfaceFuncParams[j];
 
-                const ifaceIsAnyRef =
-                  (ifaceParam.length === 1 &&
-                    ifaceParam[0] === ValType.anyref) ||
-                  (ifaceParam.length === 2 &&
-                    ifaceParam[0] === ValType.ref_null &&
-                    ifaceParam[1] === ValType.anyref);
+                const ifaceIsAnyRef = isErasedRefType(ifaceParam);
 
                 if (
                   ifaceIsAnyRef &&
@@ -1333,12 +1323,7 @@ export function generateTrampoline(
                 const classResult = classFuncResults[j];
                 const ifaceResult = interfaceFuncResults[j];
 
-                const ifaceIsAnyRef =
-                  (ifaceResult.length === 1 &&
-                    ifaceResult[0] === ValType.anyref) ||
-                  (ifaceResult.length === 2 &&
-                    ifaceResult[0] === ValType.ref_null &&
-                    ifaceResult[1] === ValType.anyref);
+                const ifaceIsAnyRef = isErasedRefType(ifaceResult);
 
                 if (
                   ifaceIsAnyRef &&
@@ -1428,12 +1413,8 @@ export function generateTrampoline(
       const classType = classResults[i];
       if (!classType) return false;
 
-      // Check if interface expects anyref but class returns primitive
-      const isAnyRef =
-        (interfaceType.length === 1 && interfaceType[0] === ValType.anyref) ||
-        (interfaceType.length === 2 &&
-          interfaceType[0] === ValType.ref_null &&
-          interfaceType[1] === ValType.anyref);
+      // Check if interface expects erased ref but class returns primitive
+      const isAnyRef = isErasedRefType(interfaceType);
 
       if (isAnyRef) {
         // Check if class returns primitive
@@ -1491,11 +1472,7 @@ export function generateTrampoline(
         body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(local));
 
         // Check if needs adaptation
-        const isAnyRef =
-          (interfaceType.length === 1 && interfaceType[0] === ValType.anyref) ||
-          (interfaceType.length === 2 &&
-            interfaceType[0] === ValType.ref_null &&
-            interfaceType[1] === ValType.anyref);
+        const isAnyRef = isErasedRefType(interfaceType);
 
         if (isAnyRef) {
           // Check if class returns primitive - needs boxing
@@ -1576,8 +1553,7 @@ export function generateTrampoline(
 
       // 1. Primitive Boxing
       if (
-        interfaceResults[0].length === 1 &&
-        interfaceResults[0][0] === ValType.anyref &&
+        isErasedRefType(interfaceResults[0]) &&
         classReturnType.length === 1 &&
         (classReturnType[0] === ValType.i32 ||
           classReturnType[0] === ValType.i64 ||
@@ -7011,6 +6987,20 @@ export function ensureTypeInstantiated(
   mapCheckerTypeToWasmType(ctx, type);
 }
 
+/**
+ * Check if a WASM type is an erased reference type (anyref or eqref).
+ * Used in adaptation checks where either erased form needs casting.
+ */
+export function isErasedRefType(wasmType: number[]): boolean {
+  return (
+    (wasmType.length === 1 &&
+      (wasmType[0] === ValType.anyref || wasmType[0] === ValType.eqref)) ||
+    (wasmType.length === 2 &&
+      wasmType[0] === ValType.ref_null &&
+      (wasmType[1] === ValType.anyref || wasmType[1] === ValType.eqref))
+  );
+}
+
 export function mapCheckerTypeToWasmType(
   ctx: CodegenContext,
   type: Type,
@@ -7057,13 +7047,14 @@ export function mapCheckerTypeToWasmType(
   if (type.kind === TypeKind.Null) return [ValType.ref_null, HeapType.none];
   if (type.kind === TypeKind.Any || type.kind === TypeKind.AnyRef)
     return [ValType.anyref];
+  if (type.kind === TypeKind.EqRef) return [ValType.eqref];
   if (type.kind === TypeKind.ByteArray) {
     return [
       ValType.ref_null,
       ...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex),
     ];
   }
-  if (type.kind === TypeKind.Unknown) return [ValType.anyref];
+  if (type.kind === TypeKind.Unknown) return [ValType.eqref];
 
   // Handle This type - resolve to current class if available
   if (type.kind === TypeKind.This) {
@@ -7073,8 +7064,8 @@ export function mapCheckerTypeToWasmType(
         ...WasmModule.encodeSignedLEB128(ctx.currentClass.structTypeIndex),
       ];
     }
-    // In interface context (no currentClass), use anyref
-    return [ValType.anyref];
+    // In interface context (no currentClass), use eqref
+    return [ValType.eqref];
   }
 
   // Handle ClassType directly using identity-based lookups
@@ -7182,9 +7173,9 @@ export function mapCheckerTypeToWasmType(
     }
     // Class not found - this happens during interface method definition before
     // classes are instantiated. Since interfaces use type erasure (everything
-    // becomes anyref in the erased signature), we can safely return anyref here.
+    // becomes eqref in the erased signature), we can safely return eqref here.
     // The concrete class struct type will be used in the actual implementations.
-    return [ValType.anyref];
+    return [ValType.eqref];
   }
 
   // Handle InterfaceType directly using identity-based lookups
@@ -7195,8 +7186,8 @@ export function mapCheckerTypeToWasmType(
       return [ValType.ref_null, ...WasmModule.encodeSignedLEB128(structIndex)];
     }
     // Interface not registered yet - this can happen when an interface is used
-    // in a method signature before registration. Erase to anyref.
-    return [ValType.anyref];
+    // in a method signature before registration. Erase to eqref.
+    return [ValType.eqref];
   }
 
   // Handle Union types - use anyref for nullable reference types
@@ -7255,8 +7246,10 @@ export function mapCheckerTypeToWasmType(
       // All literals should have the same base type, use the first one
       return mapCheckerTypeToWasmType(ctx, nonNullTypes[0]);
     }
-    // For other unions (reference types), use anyref
-    return [ValType.anyref];
+    // For other unions (reference types), use eqref.
+    // All Zena reference types (classes, interfaces, closures, strings, arrays)
+    // compile to GC structs/arrays, which are subtypes of eqref.
+    return [ValType.eqref];
   }
 
   // Handle Literal types - map to their base type
