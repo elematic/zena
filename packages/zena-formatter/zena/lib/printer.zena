@@ -1,0 +1,1468 @@
+// Printer — converts Zena AST nodes into Doc IR
+//
+// This is the language-specific component. Each AST node type has a
+// printing function that produces Doc IR, which the doc-printer then
+// converts to a string.
+
+import { Array } from 'zena:array';
+import { parse } from 'zena-compiler:parser';
+import {
+  Node, Module,
+  // Expressions
+  Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral,
+  NullLiteral, TemplateLiteral, TaggedTemplateExpression, BinaryExpression,
+  UnaryExpression, AssignmentExpression, AsExpression, IsExpression,
+  RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression,
+  CallExpression, MemberExpression, IndexExpression, ThisExpression,
+  SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral,
+  TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression,
+  // Statements
+  Statement, VariableDeclaration, ExpressionStatement, BlockStatement,
+  ReturnStatement, BreakStatement, ContinueStatement, IfStatement,
+  WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
+  InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
+  ImportDeclaration, ExportAllDeclaration, DeclareFunction, SymbolDeclaration,
+  // Patterns
+  Pattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
+  ClassPattern, LogicalPattern, AssignmentPattern,
+  // Type Annotations
+  TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation,
+  FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation,
+  TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation,
+  // Direct Node variants
+  TemplateElement, PropertyAssignment, SpreadElement, MapEntry,
+  BindingProperty, MatchCase, LetPatternCondition, TypeParameter, Parameter,
+  CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition,
+  AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer,
+  MethodSignature, AccessorSignature, EnumMember, CatchClause,
+  PropertySignature, ImportSpecifier, Decorator,
+  SymbolPropertyName
+} from 'zena-compiler:ast';
+import {
+  Doc,
+  text,
+  concat,
+  group,
+  groupBreak,
+  indent,
+  line,
+  softline,
+  hardline,
+  join,
+  ifBreak
+} from './doc.zena';
+import { printDocToString, PrintOptions } from './doc-printer.zena';
+
+// ============================================================================
+// Array helpers
+// ============================================================================
+
+let docs2 = (a: Doc, b: Doc): Array<Doc> => {
+  let arr = new Array<Doc>();
+  arr.push(a);
+  arr.push(b);
+  return arr;
+};
+
+let docs3 = (a: Doc, b: Doc, c: Doc): Array<Doc> => {
+  let arr = new Array<Doc>();
+  arr.push(a);
+  arr.push(b);
+  arr.push(c);
+  return arr;
+};
+
+// ============================================================================
+// Main entry point
+// ============================================================================
+
+export let format = (source: String): String => {
+  let module = parse(source, '<input>');
+  let doc = printModule(module);
+  let options = new PrintOptions(80);
+  return printDocToString(doc, options);
+};
+
+// ============================================================================
+// Module
+// ============================================================================
+
+let printModule = (module: Module): Doc => {
+  let parts = new Array<Doc>();
+  var i = 0;
+  while (i < module.body.length) {
+    let stmt = module.body[i];
+    parts.push(printStatement(stmt));
+    if (i < module.body.length - 1) {
+      parts.push(hardline);
+      let next = module.body[i + 1];
+      if (needsBlankLineBetween(stmt, next)) {
+        parts.push(hardline);
+      }
+    }
+    i = i + 1;
+  }
+  if (module.body.length > 0) {
+    parts.push(hardline);
+  }
+  return concat(parts);
+};
+
+let needsBlankLineBetween = (a: Statement, b: Statement): boolean => {
+  match (a) {
+    case ClassDeclaration {}: { return true; }
+    case InterfaceDeclaration {}: { return true; }
+    case EnumDeclaration {}: { return true; }
+    case MixinDeclaration {}: { return true; }
+    case VariableDeclaration {init}: {
+      match (init) {
+        case FunctionExpression {}: { return true; }
+        case _: {}
+      }
+    }
+    case _: {}
+  }
+  match (b) {
+    case ClassDeclaration {}: { return true; }
+    case InterfaceDeclaration {}: { return true; }
+    case EnumDeclaration {}: { return true; }
+    case MixinDeclaration {}: { return true; }
+    case VariableDeclaration {init}: {
+      match (init) {
+        case FunctionExpression {}: { return true; }
+        case _: {}
+      }
+    }
+    case _: {}
+  }
+  return false;
+};
+
+// ============================================================================
+// Statements
+// ============================================================================
+
+let printStatement = (stmt: Statement): Doc => match (stmt) {
+  case VariableDeclaration {}: printVariableDeclaration(stmt as VariableDeclaration)
+  case ExpressionStatement {expression}: concat(docs2(printExpression(expression), text(';')))
+  case BlockStatement {}: printBlockStatement(stmt as BlockStatement)
+  case ReturnStatement {}: printReturnStatement(stmt as ReturnStatement)
+  case BreakStatement {}: text('break;')
+  case ContinueStatement {}: text('continue;')
+  case IfStatement {}: printIfStatement(stmt as IfStatement)
+  case WhileStatement {}: printWhileStatement(stmt as WhileStatement)
+  case ForStatement {}: printForStatement(stmt as ForStatement)
+  case ForInStatement {}: printForInStatement(stmt as ForInStatement)
+  case ClassDeclaration {}: printClassDeclaration(stmt as ClassDeclaration)
+  case InterfaceDeclaration {}: printInterfaceDeclaration(stmt as InterfaceDeclaration)
+  case EnumDeclaration {}: printEnumDeclaration(stmt as EnumDeclaration)
+  case MixinDeclaration {}: printMixinDeclaration(stmt as MixinDeclaration)
+  case TypeAliasDeclaration {}: printTypeAliasDeclaration(stmt as TypeAliasDeclaration)
+  case ImportDeclaration {}: printImportDeclaration(stmt as ImportDeclaration)
+  case ExportAllDeclaration {moduleSpecifier}: {
+    concat(docs3(text('export * from '), printExpression(moduleSpecifier), text(';')))
+  }
+  case DeclareFunction {}: printDeclareFunction(stmt as DeclareFunction)
+  case SymbolDeclaration {name, exported}: {
+    let parts = new Array<Doc>();
+    if (exported) { parts.push(text('export ')); }
+    parts.push(text('symbol '));
+    parts.push(text(name.name));
+    parts.push(text(';'));
+    concat(parts)
+  }
+};
+
+// ============================================================================
+// Variable Declaration
+// ============================================================================
+
+let printVariableDeclaration = (decl: VariableDeclaration): Doc => {
+  let parts = new Array<Doc>();
+  if (decl.exported) { parts.push(text('export ')); }
+  parts.push(text(decl.kind));
+  parts.push(text(' '));
+  parts.push(printPattern(decl.pattern));
+  if (decl.typeAnnotation != null) {
+    parts.push(text(': '));
+    parts.push(printTypeAnnotation(decl.typeAnnotation as TypeAnnotation));
+  }
+  parts.push(text(' = '));
+  parts.push(printExpression(decl.init));
+  parts.push(text(';'));
+  return group(concat(parts));
+};
+
+// ============================================================================
+// Return Statement
+// ============================================================================
+
+let printReturnStatement = (stmt: ReturnStatement): Doc => {
+  if (stmt.argument == null) { return text('return;'); }
+  let parts = new Array<Doc>();
+  parts.push(text('return '));
+  parts.push(printExpression(stmt.argument as Expression));
+  parts.push(text(';'));
+  return concat(parts);
+};
+
+// ============================================================================
+// Block Statement
+// ============================================================================
+
+let printBlockStatement = (block: BlockStatement): Doc => {
+  if (block.body.length == 0) { return text('{}'); }
+  let stmts = new Array<Doc>();
+  var i = 0;
+  while (i < block.body.length) {
+    stmts.push(printStatement(block.body[i]));
+    if (i < block.body.length - 1) { stmts.push(hardline); }
+    i = i + 1;
+  }
+  let parts = new Array<Doc>();
+  parts.push(text('{'));
+  parts.push(indent(concat(docs2(hardline, concat(stmts)))));
+  parts.push(hardline);
+  parts.push(text('}'));
+  return concat(parts);
+};
+
+// ============================================================================
+// If Statement
+// ============================================================================
+
+let printIfStatement = (stmt: IfStatement): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('if ('));
+  parts.push(printCondition(stmt.test));
+  parts.push(text(') '));
+  parts.push(printStatement(stmt.consequent));
+  if (stmt.alternate != null) {
+    let alt = stmt.alternate as Statement;
+    parts.push(text(' else '));
+    match (alt) {
+      case IfStatement {}: { parts.push(printIfStatement(alt as IfStatement)); }
+      case _: { parts.push(printStatement(alt)); }
+    }
+  }
+  return concat(parts);
+};
+
+// ============================================================================
+// While Statement
+// ============================================================================
+
+let printWhileStatement = (stmt: WhileStatement): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('while ('));
+  parts.push(printCondition(stmt.test));
+  parts.push(text(') '));
+  parts.push(printStatement(stmt.body));
+  return concat(parts);
+};
+
+// ============================================================================
+// For Statement
+// ============================================================================
+
+let printForStatement = (stmt: ForStatement): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('for ('));
+  if (stmt.init != null) { parts.push(printNode(stmt.init as Node)); }
+  parts.push(text('; '));
+  if (stmt.test != null) { parts.push(printExpression(stmt.test as Expression)); }
+  parts.push(text('; '));
+  if (stmt.update != null) { parts.push(printExpression(stmt.update as Expression)); }
+  parts.push(text(') '));
+  parts.push(printStatement(stmt.body));
+  return concat(parts);
+};
+
+// ============================================================================
+// For-In Statement
+// ============================================================================
+
+let printForInStatement = (stmt: ForInStatement): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('for (let '));
+  parts.push(printPattern(stmt.pattern));
+  parts.push(text(' in '));
+  parts.push(printExpression(stmt.iterable));
+  parts.push(text(') '));
+  parts.push(printStatement(stmt.body));
+  return concat(parts);
+};
+
+// ============================================================================
+// Class Declaration
+// ============================================================================
+
+let printClassDeclaration = (decl: ClassDeclaration): Doc => {
+  let parts = new Array<Doc>();
+  if (decl.exported) { parts.push(text('export ')); }
+  if (decl.isAbstract) { parts.push(text('abstract ')); }
+  if (decl.isFinal) { parts.push(text('final ')); }
+  if (decl.isSealed) { parts.push(text('sealed ')); }
+  if (decl.isExtension) { parts.push(text('extension ')); }
+  parts.push(text('class '));
+  parts.push(text(decl.name.name));
+
+  if (decl.typeParameters != null) {
+    parts.push(printTypeParams(decl.typeParameters as Array<TypeParameter>));
+  }
+
+  if (decl.caseParams != null) {
+    let cps = decl.caseParams as Array<CaseClassParam>;
+    parts.push(text('('));
+    let cpDocs = new Array<Doc>();
+    var i = 0;
+    while (i < cps.length) {
+      cpDocs.push(printCaseClassParam(cps[i]));
+      i = i + 1;
+    }
+    parts.push(join(text(', '), cpDocs));
+    parts.push(text(')'));
+  }
+
+  if (decl.superClass != null) {
+    parts.push(text(' extends '));
+    parts.push(printTypeAnnotation(decl.superClass as TypeAnnotation));
+  }
+
+  if (decl.onType != null) {
+    parts.push(text(' on '));
+    parts.push(printTypeAnnotation(decl.onType as TypeAnnotation));
+  }
+
+  if (decl.mixins != null) {
+    let mx = decl.mixins as Array<TypeAnnotation>;
+    if (mx.length > 0) {
+      parts.push(text(' with '));
+      parts.push(join(text(', '), mapTypeAnnotations(mx)));
+    }
+  }
+
+  if (decl.implementsList != null) {
+    let impls = decl.implementsList as Array<TypeAnnotation>;
+    if (impls.length > 0) {
+      parts.push(text(' implements '));
+      parts.push(join(text(', '), mapTypeAnnotations(impls)));
+    }
+  }
+
+  // Sealed variants
+  if (decl.sealedVariants != null) {
+    let variants = decl.sealedVariants as Array<SealedVariant>;
+    parts.push(text(' {'));
+    let variantDocs = new Array<Doc>();
+    var i = 0;
+    while (i < variants.length) {
+      variantDocs.push(printSealedVariant(variants[i]));
+      i = i + 1;
+    }
+    parts.push(indent(concat(docs2(hardline, join(hardline, variantDocs)))));
+    parts.push(hardline);
+    parts.push(text('}'));
+    return concat(parts);
+  }
+
+  if (decl.body.length == 0) {
+    if (decl.caseParams != null) {
+      // Concise case class — no braces
+    } else {
+      parts.push(text(' {}'));
+    }
+  } else {
+    parts.push(text(' '));
+    let members = new Array<Doc>();
+    var i = 0;
+    while (i < decl.body.length) {
+      members.push(printClassMember(decl.body[i]));
+      if (i < decl.body.length - 1) {
+        members.push(hardline);
+        let cur = decl.body[i];
+        let next = decl.body[i + 1];
+        match (cur) {
+          case MethodDefinition {}: { members.push(hardline); }
+          case _: {
+            match (next) {
+              case MethodDefinition {}: { members.push(hardline); }
+              case _: {}
+            }
+          }
+        }
+      }
+      i = i + 1;
+    }
+    parts.push(text('{'));
+    parts.push(indent(concat(docs2(hardline, concat(members)))));
+    parts.push(hardline);
+    parts.push(text('}'));
+  }
+
+  return concat(parts);
+};
+
+let printSealedVariant = (v: SealedVariant): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('case '));
+  parts.push(text(v.name.name));
+  if (v.params != null) {
+    let ps = v.params as Array<CaseClassParam>;
+    parts.push(text('('));
+    let pDocs = new Array<Doc>();
+    var i = 0;
+    while (i < ps.length) {
+      pDocs.push(printCaseClassParam(ps[i]));
+      i = i + 1;
+    }
+    parts.push(join(text(', '), pDocs));
+    parts.push(text(')'));
+  }
+  return concat(parts);
+};
+
+let printCaseClassParam = (param: CaseClassParam): Doc => {
+  let parts = new Array<Doc>();
+  if (param.mutability != null) {
+    parts.push(text(param.mutability as String));
+    parts.push(text(' '));
+  }
+  parts.push(text(param.name.name));
+  if (param.optional) { parts.push(text('?')); }
+  parts.push(text(': '));
+  parts.push(printTypeAnnotation(param.typeAnnotation));
+  return concat(parts);
+};
+
+let printClassMember = (member: Node): Doc => match (member) {
+  case FieldDefinition {}: printFieldDefinition(member as FieldDefinition)
+  case MethodDefinition {}: printMethodDefinition(member as MethodDefinition)
+  case AccessorDeclaration {}: printAccessorDeclaration(member as AccessorDeclaration)
+  case _: text('/* unknown member */')
+};
+
+let printFieldDefinition = (field: FieldDefinition): Doc => {
+  let parts = new Array<Doc>();
+  if (field.isStatic) { parts.push(text('static ')); }
+  if (field.isAbstract) { parts.push(text('abstract ')); }
+  if (field.isFinal) { parts.push(text('final ')); }
+  if (field.mutability != null) {
+    parts.push(text(field.mutability as String));
+    parts.push(text(' '));
+  }
+  parts.push(printNodeName(field.name));
+  if (field.isOptional) { parts.push(text('?')); }
+  parts.push(text(': '));
+  parts.push(printTypeAnnotation(field.typeAnnotation));
+  if (field.value != null) {
+    parts.push(text(' = '));
+    parts.push(printExpression(field.value as Expression));
+  }
+  parts.push(text(';'));
+  return concat(parts);
+};
+
+let printMethodDefinition = (method: MethodDefinition): Doc => {
+  let parts = new Array<Doc>();
+  if (method.isStatic) { parts.push(text('static ')); }
+  if (method.isAbstract) { parts.push(text('abstract ')); }
+  if (method.isFinal) { parts.push(text('final ')); }
+
+  parts.push(printNodeName(method.name));
+
+  if (method.typeParameters != null) {
+    parts.push(printTypeParams(method.typeParameters as Array<TypeParameter>));
+  }
+
+  parts.push(text('('));
+  parts.push(printParams(method.params));
+  parts.push(text(')'));
+
+  if (method.returnType != null) {
+    parts.push(text(': '));
+    parts.push(printTypeAnnotation(method.returnType as TypeAnnotation));
+  }
+
+  // Initializer list
+  if (method.initializerList != null) {
+    let inits = method.initializerList as Array<Node>;
+    if (inits.length > 0) {
+      parts.push(text(' : '));
+      let initDocs = new Array<Doc>();
+      var i = 0;
+      while (i < inits.length) {
+        initDocs.push(printInitializerEntry(inits[i]));
+        i = i + 1;
+      }
+      parts.push(join(text(', '), initDocs));
+    }
+  }
+
+  // Super initializer
+  if (method.superInitializer != null) {
+    match (method.superInitializer as Node) {
+      case SuperInitializer {args}: {
+        if (method.initializerList != null) {
+          parts.push(text(', '));
+        } else {
+          parts.push(text(' : '));
+        }
+        parts.push(text('super('));
+        let argDocs = new Array<Doc>();
+        var i = 0;
+        while (i < args.length) {
+          argDocs.push(printExpression(args[i]));
+          i = i + 1;
+        }
+        parts.push(join(text(', '), argDocs));
+        parts.push(text(')'));
+      }
+      case _: {}
+    }
+  }
+
+  if (method.body != null) {
+    let body = method.body as Node;
+    match (body) {
+      case BlockStatement {}: {
+        parts.push(text(' '));
+        parts.push(printBlockStatement(body as BlockStatement));
+      }
+      case _: {
+        parts.push(text(' '));
+        parts.push(printNode(body));
+      }
+    }
+  } else {
+    parts.push(text(';'));
+  }
+
+  return concat(parts);
+};
+
+let printInitializerEntry = (entry: Node): Doc => match (entry) {
+  case FieldInitializer {field, value}: {
+    concat(docs3(text(field.name), text(' = '), printExpression(value)))
+  }
+  case _: text('/* unknown initializer */')
+};
+
+let printAccessorDeclaration = (acc: AccessorDeclaration): Doc => {
+  let parts = new Array<Doc>();
+  if (acc.isStatic) { parts.push(text('static ')); }
+  if (acc.isFinal) { parts.push(text('final ')); }
+  parts.push(printNodeName(acc.name));
+  parts.push(text(': '));
+  parts.push(printTypeAnnotation(acc.typeAnnotation));
+  if (acc.getter != null) {
+    parts.push(text(' get '));
+    parts.push(printBlockStatement(acc.getter as BlockStatement));
+  }
+  if (acc.setter != null) {
+    match (acc.setter as Node) {
+      case SetterInfo {param, body}: {
+        parts.push(text(' set('));
+        parts.push(text(param.name));
+        parts.push(text(') '));
+        parts.push(printBlockStatement(body));
+      }
+      case _: {}
+    }
+  }
+  return concat(parts);
+};
+
+// ============================================================================
+// Interface Declaration
+// ============================================================================
+
+let printInterfaceDeclaration = (decl: InterfaceDeclaration): Doc => {
+  let parts = new Array<Doc>();
+  if (decl.exported) { parts.push(text('export ')); }
+  parts.push(text('interface '));
+  parts.push(text(decl.name.name));
+  if (decl.typeParameters != null) {
+    parts.push(printTypeParams(decl.typeParameters as Array<TypeParameter>));
+  }
+  if (decl.extendsList != null) {
+    let exts = decl.extendsList as Array<TypeAnnotation>;
+    if (exts.length > 0) {
+      parts.push(text(' extends '));
+      parts.push(join(text(', '), mapTypeAnnotations(exts)));
+    }
+  }
+  if (decl.body.length == 0) {
+    parts.push(text(' {}'));
+  } else {
+    parts.push(text(' {'));
+    let memberDocs = new Array<Doc>();
+    var i = 0;
+    while (i < decl.body.length) {
+      memberDocs.push(printInterfaceMember(decl.body[i]));
+      i = i + 1;
+    }
+    parts.push(indent(concat(docs2(hardline, join(hardline, memberDocs)))));
+    parts.push(hardline);
+    parts.push(text('}'));
+  }
+  return concat(parts);
+};
+
+let printInterfaceMember = (member: Node): Doc => match (member) {
+  case MethodSignature {name, typeParameters, params, returnType}: {
+    let parts = new Array<Doc>();
+    parts.push(text(name.name));
+    if (typeParameters != null) {
+      parts.push(printTypeParams(typeParameters as Array<TypeParameter>));
+    }
+    parts.push(text('('));
+    parts.push(printParams(params));
+    parts.push(text(')'));
+    if (returnType != null) {
+      parts.push(text(': '));
+      parts.push(printTypeAnnotation(returnType as TypeAnnotation));
+    }
+    parts.push(text(';'));
+    concat(parts)
+  }
+  case AccessorSignature {name, typeAnnotation}: {
+    let parts = new Array<Doc>();
+    parts.push(text(name.name));
+    parts.push(text(': '));
+    parts.push(printTypeAnnotation(typeAnnotation));
+    parts.push(text(';'));
+    concat(parts)
+  }
+  case PropertySignature {name, typeAnnotation}: {
+    let parts = new Array<Doc>();
+    parts.push(text(name.name));
+    parts.push(text(': '));
+    parts.push(printTypeAnnotation(typeAnnotation));
+    parts.push(text(';'));
+    concat(parts)
+  }
+  case _: text('/* unknown interface member */')
+};
+
+// ============================================================================
+// Enum Declaration
+// ============================================================================
+
+let printEnumDeclaration = (decl: EnumDeclaration): Doc => {
+  let parts = new Array<Doc>();
+  if (decl.exported) { parts.push(text('export ')); }
+  parts.push(text('enum '));
+  parts.push(text(decl.name.name));
+  parts.push(text(' {'));
+  let memberDocs = new Array<Doc>();
+  var i = 0;
+  while (i < decl.members.length) {
+    let m = decl.members[i];
+    if (m.initializer != null) {
+      memberDocs.push(concat(docs3(text(m.name.name), text(' = '), printExpression(m.initializer as Expression))));
+    } else {
+      memberDocs.push(text(m.name.name));
+    }
+    i = i + 1;
+  }
+  parts.push(indent(concat(docs2(hardline, join(concat(docs2(text(','), hardline)), memberDocs)))));
+  parts.push(hardline);
+  parts.push(text('}'));
+  return concat(parts);
+};
+
+// ============================================================================
+// Mixin Declaration
+// ============================================================================
+
+let printMixinDeclaration = (decl: MixinDeclaration): Doc => {
+  let parts = new Array<Doc>();
+  if (decl.exported) { parts.push(text('export ')); }
+  parts.push(text('mixin '));
+  parts.push(text(decl.name.name));
+  if (decl.typeParameters != null) {
+    parts.push(printTypeParams(decl.typeParameters as Array<TypeParameter>));
+  }
+  if (decl.on != null) {
+    parts.push(text(' on '));
+    parts.push(text((decl.on as Identifier).name));
+  }
+  if (decl.body.length == 0) {
+    parts.push(text(' {}'));
+  } else {
+    parts.push(text(' {'));
+    let memberDocs = new Array<Doc>();
+    var i = 0;
+    while (i < decl.body.length) {
+      memberDocs.push(printClassMember(decl.body[i]));
+      i = i + 1;
+    }
+    parts.push(indent(concat(docs2(hardline, join(hardline, memberDocs)))));
+    parts.push(hardline);
+    parts.push(text('}'));
+  }
+  return concat(parts);
+};
+
+// ============================================================================
+// Type Alias Declaration
+// ============================================================================
+
+let printTypeAliasDeclaration = (decl: TypeAliasDeclaration): Doc => {
+  let parts = new Array<Doc>();
+  if (decl.exported) { parts.push(text('export ')); }
+  if (decl.isDistinct) { parts.push(text('distinct ')); }
+  parts.push(text('type '));
+  parts.push(text(decl.name.name));
+  if (decl.typeParameters != null) {
+    parts.push(printTypeParams(decl.typeParameters as Array<TypeParameter>));
+  }
+  parts.push(text(' = '));
+  parts.push(printTypeAnnotation(decl.typeAnnotation));
+  parts.push(text(';'));
+  return concat(parts);
+};
+
+// ============================================================================
+// Import Declaration
+// ============================================================================
+
+let printImportDeclaration = (decl: ImportDeclaration): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('import {'));
+  let specDocs = new Array<Doc>();
+  var i = 0;
+  while (i < decl.imports.length) {
+    let spec = decl.imports[i];
+    if (spec.imported.name == spec.local.name) {
+      specDocs.push(text(spec.imported.name));
+    } else {
+      specDocs.push(concat(docs3(text(spec.imported.name), text(' as '), text(spec.local.name))));
+    }
+    i = i + 1;
+  }
+  parts.push(join(text(', '), specDocs));
+  parts.push(text('} from '));
+  parts.push(printExpression(decl.moduleSpecifier));
+  parts.push(text(';'));
+  return group(concat(parts));
+};
+
+// ============================================================================
+// Declare Function
+// ============================================================================
+
+let printDeclareFunction = (decl: DeclareFunction): Doc => {
+  let parts = new Array<Doc>();
+  var i = 0;
+  while (i < decl.decorators.length) {
+    parts.push(text('@'));
+    parts.push(text(decl.decorators[i].name));
+    parts.push(hardline);
+    i = i + 1;
+  }
+  if (decl.exported) { parts.push(text('export ')); }
+  parts.push(text('declare '));
+  parts.push(text(decl.name.name));
+  if (decl.typeParameters != null) {
+    parts.push(printTypeParams(decl.typeParameters as Array<TypeParameter>));
+  }
+  parts.push(text('('));
+  parts.push(printParams(decl.params));
+  parts.push(text('): '));
+  parts.push(printTypeAnnotation(decl.returnType));
+  parts.push(text(';'));
+  return concat(parts);
+};
+
+// ============================================================================
+// Expressions
+// ============================================================================
+
+let printExpression = (expr: Expression): Doc => match (expr) {
+  case Identifier {name}: text(name)
+  case NumberLiteral {raw}: text(raw)
+  case StringLiteral {}: printStringLiteral(expr as StringLiteral)
+  case BooleanLiteral {value}: if (value) { text('true') } else { text('false') }
+  case NullLiteral {}: text('null')
+  case ThisExpression {}: text('this')
+  case SuperExpression {}: text('super')
+  case PipePlaceholder {}: text('_')
+  case BinaryExpression {}: printBinaryExpression(expr as BinaryExpression)
+  case UnaryExpression {}: printUnaryExpression(expr as UnaryExpression)
+  case AssignmentExpression {}: printAssignmentExpression(expr as AssignmentExpression)
+  case MemberExpression {}: printMemberExpression(expr as MemberExpression)
+  case IndexExpression {}: printIndexExpression(expr as IndexExpression)
+  case CallExpression {}: printCallExpression(expr as CallExpression)
+  case NewExpression {}: printNewExpression(expr as NewExpression)
+  case FunctionExpression {}: printFunctionExpression(expr as FunctionExpression)
+  case ArrayLiteral {}: printArrayLiteral(expr as ArrayLiteral)
+  case RecordLiteral {}: printRecordLiteral(expr as RecordLiteral)
+  case TupleLiteral {}: printTupleLiteral(expr as TupleLiteral)
+  case MapLiteral {}: printMapLiteral(expr as MapLiteral)
+  case AsExpression {expression, typeAnnotation}: {
+    concat(docs3(printExpression(expression), text(' as '), printTypeAnnotation(typeAnnotation)))
+  }
+  case IsExpression {expression, typeAnnotation}: {
+    concat(docs3(printExpression(expression), text(' is '), printTypeAnnotation(typeAnnotation)))
+  }
+  case RangeExpression {}: printRangeExpression(expr as RangeExpression)
+  case PipelineExpression {}: printPipelineExpression(expr as PipelineExpression)
+  case TemplateLiteral {}: printTemplateLiteral(expr as TemplateLiteral)
+  case TaggedTemplateExpression {tag, quasi}: {
+    concat(docs2(printExpression(tag), printTemplateLiteral(quasi)))
+  }
+  case MatchExpression {}: printMatchExpression(expr as MatchExpression)
+  case IfExpression {}: printIfExpression(expr as IfExpression)
+  case ThrowExpression {argument}: concat(docs2(text('throw '), printExpression(argument)))
+  case TryExpression {}: printTryExpression(expr as TryExpression)
+};
+
+// ============================================================================
+// String Literals — normalize to single quotes
+// ============================================================================
+
+let printStringLiteral = (lit: StringLiteral): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text("'"));
+  // TODO: escape single quotes inside the string
+  parts.push(text(lit.value));
+  parts.push(text("'"));
+  return concat(parts);
+};
+
+// ============================================================================
+// Binary Expression
+// ============================================================================
+
+let printBinaryExpression = (expr: BinaryExpression): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(printExpression(expr.left));
+  parts.push(text(' '));
+  parts.push(text(expr.operator));
+  parts.push(text(' '));
+  parts.push(printExpression(expr.right));
+  return group(concat(parts));
+};
+
+// ============================================================================
+// Unary Expression
+// ============================================================================
+
+let printUnaryExpression = (expr: UnaryExpression): Doc => {
+  if (expr.prefix) {
+    return concat(docs2(text(expr.operator), printExpression(expr.argument)));
+  }
+  return concat(docs2(printExpression(expr.argument), text(expr.operator)));
+};
+
+// ============================================================================
+// Assignment Expression
+// ============================================================================
+
+let printAssignmentExpression = (expr: AssignmentExpression): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(printExpression(expr.left));
+  parts.push(text(' = '));
+  parts.push(printExpression(expr.value));
+  return group(concat(parts));
+};
+
+// ============================================================================
+// Member / Index Expression
+// ============================================================================
+
+let printMemberExpression = (expr: MemberExpression): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(printExpression(expr.object));
+  if (expr.optional) { parts.push(text('?.')); } else { parts.push(text('.')); }
+  parts.push(text(expr.property.name));
+  return concat(parts);
+};
+
+let printIndexExpression = (expr: IndexExpression): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(printExpression(expr.object));
+  if (expr.optional) { parts.push(text('?.[')); } else { parts.push(text('[')); }
+  parts.push(printExpression(expr.index));
+  parts.push(text(']'));
+  return concat(parts);
+};
+
+// ============================================================================
+// Call Expression
+// ============================================================================
+
+let printCallExpression = (expr: CallExpression): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(printExpression(expr.callee));
+  if (expr.typeArguments != null) {
+    let tas = expr.typeArguments as Array<TypeAnnotation>;
+    if (tas.length > 0) {
+      parts.push(text('<'));
+      parts.push(join(text(', '), mapTypeAnnotations(tas)));
+      parts.push(text('>'));
+    }
+  }
+  parts.push(group(concat(printArgList(expr.args))));
+  return concat(parts);
+};
+
+// ============================================================================
+// New Expression
+// ============================================================================
+
+let printNewExpression = (expr: NewExpression): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('new '));
+  parts.push(text(expr.callee.name));
+  if (expr.typeArguments != null) {
+    let tas = expr.typeArguments as Array<TypeAnnotation>;
+    if (tas.length > 0) {
+      parts.push(text('<'));
+      parts.push(join(text(', '), mapTypeAnnotations(tas)));
+      parts.push(text('>'));
+    }
+  }
+  parts.push(group(concat(printArgList(expr.args))));
+  return concat(parts);
+};
+
+let printArgList = (args: Array<Expression>): Array<Doc> => {
+  let parts = new Array<Doc>();
+  if (args.length == 0) {
+    parts.push(text('('));
+    parts.push(text(')'));
+    return parts;
+  }
+  let argDocs = new Array<Doc>();
+  var i = 0;
+  while (i < args.length) {
+    argDocs.push(printExpression(args[i]));
+    i = i + 1;
+  }
+  parts.push(text('('));
+  parts.push(indent(concat(docs2(softline, join(concat(docs2(text(','), line)), argDocs)))));
+  parts.push(softline);
+  parts.push(text(')'));
+  return parts;
+};
+
+// ============================================================================
+// Function Expression
+// ============================================================================
+
+let printFunctionExpression = (fn: FunctionExpression): Doc => {
+  let parts = new Array<Doc>();
+
+  if (fn.typeParameters != null) {
+    parts.push(printTypeParams(fn.typeParameters as Array<TypeParameter>));
+  }
+
+  parts.push(text('('));
+  parts.push(printParams(fn.params));
+  parts.push(text(')'));
+
+  if (fn.returnType != null) {
+    parts.push(text(': '));
+    parts.push(printTypeAnnotation(fn.returnType as TypeAnnotation));
+  }
+
+  parts.push(text(' => '));
+
+  match (fn.body) {
+    case BlockStatement {}: { parts.push(printBlockStatement(fn.body as BlockStatement)); }
+    case _: { parts.push(printExpression(fn.body as Expression)); }
+  }
+
+  return concat(parts);
+};
+
+let printParams = (params: Array<Parameter>): Doc => {
+  if (params.length == 0) { return text(''); }
+  let paramDocs = new Array<Doc>();
+  var i = 0;
+  while (i < params.length) {
+    paramDocs.push(printParam(params[i]));
+    i = i + 1;
+  }
+  return join(text(', '), paramDocs);
+};
+
+let printParam = (param: Parameter): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text(param.name.name));
+  if (param.optional) { parts.push(text('?')); }
+  if (param.typeAnnotation != null) {
+    parts.push(text(': '));
+    parts.push(printTypeAnnotation(param.typeAnnotation as TypeAnnotation));
+  }
+  if (param.defaultValue != null) {
+    parts.push(text(' = '));
+    parts.push(printExpression(param.defaultValue as Expression));
+  }
+  return concat(parts);
+};
+
+// ============================================================================
+// Literals (Array, Record, Tuple, Map)
+// ============================================================================
+
+let printArrayLiteral = (expr: ArrayLiteral): Doc => {
+  if (expr.elements.length == 0) { return text('[]'); }
+  let elemDocs = new Array<Doc>();
+  var i = 0;
+  while (i < expr.elements.length) {
+    elemDocs.push(printExpression(expr.elements[i]));
+    i = i + 1;
+  }
+  let inner = new Array<Doc>();
+  inner.push(text('['));
+  inner.push(indent(concat(docs2(softline, join(concat(docs2(text(','), line)), elemDocs)))));
+  inner.push(softline);
+  inner.push(text(']'));
+  return group(concat(inner));
+};
+
+let printRecordLiteral = (expr: RecordLiteral): Doc => {
+  if (expr.properties.length == 0) { return text('{}'); }
+  let propDocs = new Array<Doc>();
+  var i = 0;
+  while (i < expr.properties.length) {
+    let prop = expr.properties[i];
+    match (prop) {
+      case PropertyAssignment {name, value}: {
+        propDocs.push(concat(docs3(text(name.name), text(': '), printExpression(value))));
+      }
+      case SpreadElement {argument}: {
+        propDocs.push(concat(docs2(text('...'), printExpression(argument))));
+      }
+      case _: {}
+    }
+    i = i + 1;
+  }
+  let inner = new Array<Doc>();
+  inner.push(text('{'));
+  inner.push(indent(concat(docs2(line, join(concat(docs2(text(','), line)), propDocs)))));
+  inner.push(line);
+  inner.push(text('}'));
+  return group(concat(inner));
+};
+
+let printTupleLiteral = (expr: TupleLiteral): Doc => {
+  let elemDocs = new Array<Doc>();
+  var i = 0;
+  while (i < expr.elements.length) {
+    elemDocs.push(printExpression(expr.elements[i]));
+    i = i + 1;
+  }
+  return concat(docs3(text('('), join(text(', '), elemDocs), text(')')));
+};
+
+let printMapLiteral = (expr: MapLiteral): Doc => {
+  if (expr.entries.length == 0) { return text('#{}'); }
+  let entryDocs = new Array<Doc>();
+  var i = 0;
+  while (i < expr.entries.length) {
+    let entry = expr.entries[i];
+    entryDocs.push(concat(docs3(printExpression(entry.key), text(': '), printExpression(entry.value))));
+    i = i + 1;
+  }
+  let inner = new Array<Doc>();
+  inner.push(text('#{'));
+  inner.push(indent(concat(docs2(line, join(concat(docs2(text(','), line)), entryDocs)))));
+  inner.push(line);
+  inner.push(text('}'));
+  return group(concat(inner));
+};
+
+// ============================================================================
+// Range / Pipeline
+// ============================================================================
+
+let printRangeExpression = (expr: RangeExpression): Doc => {
+  let parts = new Array<Doc>();
+  if (expr.start != null) { parts.push(printExpression(expr.start as Expression)); }
+  parts.push(text('..'));
+  if (expr.end != null) { parts.push(printExpression(expr.end as Expression)); }
+  return concat(parts);
+};
+
+let printPipelineExpression = (expr: PipelineExpression): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(printExpression(expr.left));
+  parts.push(indent(concat(docs3(line, text('|> '), printExpression(expr.right)))));
+  return group(concat(parts));
+};
+
+// ============================================================================
+// Template Literals
+// ============================================================================
+
+let printTemplateLiteral = (expr: TemplateLiteral): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('`'));
+  var i = 0;
+  while (i < expr.quasis.length) {
+    parts.push(text(expr.quasis[i].raw));
+    if (i < expr.expressions.length) {
+      parts.push(text('${'));
+      parts.push(printExpression(expr.expressions[i]));
+      parts.push(text('}'));
+    }
+    i = i + 1;
+  }
+  parts.push(text('`'));
+  return concat(parts);
+};
+
+// ============================================================================
+// Match Expression
+// ============================================================================
+
+let printMatchExpression = (expr: MatchExpression): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('match ('));
+  parts.push(printExpression(expr.discriminant));
+  parts.push(text(') {'));
+  var i = 0;
+  while (i < expr.cases.length) {
+    let c = expr.cases[i];
+    let caseParts = new Array<Doc>();
+    caseParts.push(text('case '));
+    caseParts.push(printNode(c.pattern));
+    if (c.guard != null) {
+      caseParts.push(text(' if '));
+      caseParts.push(printExpression(c.guard as Expression));
+    }
+    caseParts.push(text(': '));
+    caseParts.push(printNode(c.body));
+    parts.push(indent(concat(docs2(hardline, concat(caseParts)))));
+    i = i + 1;
+  }
+  parts.push(hardline);
+  parts.push(text('}'));
+  return concat(parts);
+};
+
+// ============================================================================
+// If Expression
+// ============================================================================
+
+let printIfExpression = (expr: IfExpression): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('if ('));
+  parts.push(printExpression(expr.test));
+  parts.push(text(') '));
+  parts.push(printNode(expr.consequent));
+  parts.push(text(' else '));
+  parts.push(printNode(expr.alternate));
+  return concat(parts);
+};
+
+// ============================================================================
+// Try Expression
+// ============================================================================
+
+let printTryExpression = (expr: TryExpression): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('try '));
+  parts.push(printBlockStatement(expr.body));
+  if (expr.handler != null) {
+    let handler = expr.handler as CatchClause;
+    parts.push(text(' catch'));
+    if (handler.param != null) {
+      parts.push(text(' ('));
+      parts.push(text((handler.param as Identifier).name));
+      parts.push(text(')'));
+    }
+    parts.push(text(' '));
+    parts.push(printBlockStatement(handler.body));
+  }
+  if (expr.finalizer != null) {
+    parts.push(text(' finally '));
+    parts.push(printBlockStatement(expr.finalizer as BlockStatement));
+  }
+  return concat(parts);
+};
+
+// ============================================================================
+// Patterns
+// ============================================================================
+
+let printPattern = (pattern: Pattern): Doc => match (pattern) {
+  case IdentifierPattern {name}: text(name)
+  case RecordPattern {}: printRecordPattern(pattern as RecordPattern)
+  case TuplePattern {}: printTuplePattern(pattern as TuplePattern)
+  case AsPattern {pattern, name}: {
+    concat(docs3(printNode(pattern), text(' as '), text(name.name)))
+  }
+  case ClassPattern {name, properties}: {
+    let parts = new Array<Doc>();
+    parts.push(text(name.name));
+    if (properties.length > 0) {
+      parts.push(text(' {'));
+      let propDocs = new Array<Doc>();
+      var i = 0;
+      while (i < properties.length) {
+        propDocs.push(printBindingProperty(properties[i]));
+        i = i + 1;
+      }
+      parts.push(join(text(', '), propDocs));
+      parts.push(text('}'));
+    }
+    concat(parts)
+  }
+  case LogicalPattern {operator, left, right}: {
+    concat(docs3(printNode(left), concat(docs2(text(' '), text(operator))), concat(docs2(text(' '), printNode(right)))))
+  }
+  case AssignmentPattern {left, right}: {
+    concat(docs3(printNode(left), text(' = '), printExpression(right)))
+  }
+};
+
+let printRecordPattern = (pattern: RecordPattern): Doc => {
+  if (pattern.properties.length == 0) { return text('{}'); }
+  let propDocs = new Array<Doc>();
+  var i = 0;
+  while (i < pattern.properties.length) {
+    propDocs.push(printBindingProperty(pattern.properties[i]));
+    i = i + 1;
+  }
+  return concat(docs3(text('{'), join(text(', '), propDocs), text('}')));
+};
+
+let printBindingProperty = (bp: BindingProperty): Doc => {
+  match (bp.value) {
+    case IdentifierPattern {name}: {
+      if (name == bp.name.name) { return text(bp.name.name); }
+    }
+    case _: {}
+  }
+  return concat(docs3(text(bp.name.name), text(': '), printNode(bp.value)));
+};
+
+let printTuplePattern = (pattern: TuplePattern): Doc => {
+  let elemDocs = new Array<Doc>();
+  var i = 0;
+  while (i < pattern.elements.length) {
+    let elem = pattern.elements[i];
+    if (elem != null) {
+      elemDocs.push(printNode(elem as Node));
+    } else {
+      elemDocs.push(text('_'));
+    }
+    i = i + 1;
+  }
+  return concat(docs3(text('('), join(text(', '), elemDocs), text(')')));
+};
+
+// ============================================================================
+// Type Annotations
+// ============================================================================
+
+let printTypeAnnotation = (ann: TypeAnnotation): Doc => match (ann) {
+  case NamedTypeAnnotation {name, typeArguments}: {
+    let parts = new Array<Doc>();
+    parts.push(text(name));
+    if (typeArguments != null) {
+      let tas = typeArguments as Array<TypeAnnotation>;
+      if (tas.length > 0) {
+        parts.push(text('<'));
+        parts.push(join(text(', '), mapTypeAnnotations(tas)));
+        parts.push(text('>'));
+      }
+    }
+    concat(parts)
+  }
+  case UnionTypeAnnotation {types}: {
+    let typeDocs = new Array<Doc>();
+    var i = 0;
+    while (i < types.length) {
+      typeDocs.push(printTypeAnnotation(types[i]));
+      i = i + 1;
+    }
+    join(text(' | '), typeDocs)
+  }
+  case FunctionTypeAnnotation {params, returnType}: {
+    let parts = new Array<Doc>();
+    parts.push(text('('));
+    let pDocs = new Array<Doc>();
+    var i = 0;
+    while (i < params.length) {
+      pDocs.push(printTypeAnnotation(params[i]));
+      i = i + 1;
+    }
+    parts.push(join(text(', '), pDocs));
+    parts.push(text(') => '));
+    parts.push(printTypeAnnotation(returnType));
+    concat(parts)
+  }
+  case LiteralTypeAnnotation {value}: printNode(value)
+  case RecordTypeAnnotation {properties}: {
+    let propDocs = new Array<Doc>();
+    var i = 0;
+    while (i < properties.length) {
+      let p = properties[i];
+      propDocs.push(concat(docs3(text(p.name.name), text(': '), printTypeAnnotation(p.typeAnnotation))));
+      i = i + 1;
+    }
+    concat(docs3(text('{'), join(text(', '), propDocs), text('}')))
+  }
+  case TupleTypeAnnotation {elementTypes}: {
+    let eDocs = new Array<Doc>();
+    var i = 0;
+    while (i < elementTypes.length) {
+      eDocs.push(printTypeAnnotation(elementTypes[i]));
+      i = i + 1;
+    }
+    concat(docs3(text('('), join(text(', '), eDocs), text(')')))
+  }
+  case InlineTupleTypeAnnotation {elementTypes}: {
+    let eDocs = new Array<Doc>();
+    var i = 0;
+    while (i < elementTypes.length) {
+      eDocs.push(printTypeAnnotation(elementTypes[i]));
+      i = i + 1;
+    }
+    concat(docs3(text('('), join(text(', '), eDocs), text(')')))
+  }
+  case ThisTypeAnnotation {}: text('this')
+};
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+let printTypeParams = (tps: Array<TypeParameter>): Doc => {
+  if (tps.length == 0) { return text(''); }
+  let parts = new Array<Doc>();
+  parts.push(text('<'));
+  let tpDocs = new Array<Doc>();
+  var i = 0;
+  while (i < tps.length) {
+    let tp = tps[i];
+    let tpParts = new Array<Doc>();
+    tpParts.push(text(tp.name));
+    if (tp.constraint != null) {
+      tpParts.push(text(' extends '));
+      tpParts.push(printTypeAnnotation(tp.constraint as TypeAnnotation));
+    }
+    if (tp.defaultType != null) {
+      tpParts.push(text(' = '));
+      tpParts.push(printTypeAnnotation(tp.defaultType as TypeAnnotation));
+    }
+    tpDocs.push(concat(tpParts));
+    i = i + 1;
+  }
+  parts.push(join(text(', '), tpDocs));
+  parts.push(text('>'));
+  return concat(parts);
+};
+
+let mapTypeAnnotations = (anns: Array<TypeAnnotation>): Array<Doc> => {
+  let docs = new Array<Doc>();
+  var i = 0;
+  while (i < anns.length) {
+    docs.push(printTypeAnnotation(anns[i]));
+    i = i + 1;
+  }
+  return docs;
+};
+
+/// Print a FieldDefinition or MethodDefinition name, which may be an
+/// Identifier or SymbolPropertyName.
+let printNodeName = (name: Node): Doc => match (name) {
+  case Identifier {name}: text(name)
+  case SymbolPropertyName {symbolRef}: {
+    concat(docs3(text('['), printExpression(symbolRef), text(']')))
+  }
+  case _: text('/* unknown name */')
+};
+
+/// Print a condition — may be an Expression or LetPatternCondition.
+let printCondition = (node: Node): Doc => match (node) {
+  case LetPatternCondition {pattern, init}: {
+    concat(docs3(text('let '), printPattern(pattern), concat(docs2(text(' = '), printExpression(init)))))
+  }
+  case _: printExpression(node as Expression)
+};
+
+/// Generic Node printer — dispatches to the right sub-printer.
+let printNode = (node: Node): Doc => match (node) {
+  case Module {}: printModule(node as Module)
+  // Expressions
+  case Identifier {}: printExpression(node as Expression)
+  case NumberLiteral {}: printExpression(node as Expression)
+  case StringLiteral {}: printExpression(node as Expression)
+  case BooleanLiteral {}: printExpression(node as Expression)
+  case NullLiteral {}: printExpression(node as Expression)
+  case TemplateLiteral {}: printExpression(node as Expression)
+  case TaggedTemplateExpression {}: printExpression(node as Expression)
+  case BinaryExpression {}: printExpression(node as Expression)
+  case UnaryExpression {}: printExpression(node as Expression)
+  case AssignmentExpression {}: printExpression(node as Expression)
+  case AsExpression {}: printExpression(node as Expression)
+  case IsExpression {}: printExpression(node as Expression)
+  case RangeExpression {}: printExpression(node as Expression)
+  case PipelineExpression {}: printExpression(node as Expression)
+  case PipePlaceholder {}: printExpression(node as Expression)
+  case FunctionExpression {}: printExpression(node as Expression)
+  case CallExpression {}: printExpression(node as Expression)
+  case MemberExpression {}: printExpression(node as Expression)
+  case IndexExpression {}: printExpression(node as Expression)
+  case ThisExpression {}: printExpression(node as Expression)
+  case SuperExpression {}: printExpression(node as Expression)
+  case NewExpression {}: printExpression(node as Expression)
+  case ArrayLiteral {}: printExpression(node as Expression)
+  case RecordLiteral {}: printExpression(node as Expression)
+  case MapLiteral {}: printExpression(node as Expression)
+  case TupleLiteral {}: printExpression(node as Expression)
+  case MatchExpression {}: printExpression(node as Expression)
+  case IfExpression {}: printExpression(node as Expression)
+  case ThrowExpression {}: printExpression(node as Expression)
+  case TryExpression {}: printExpression(node as Expression)
+  // Statements
+  case VariableDeclaration {}: printStatement(node as Statement)
+  case ExpressionStatement {}: printStatement(node as Statement)
+  case BlockStatement {}: printStatement(node as Statement)
+  case ReturnStatement {}: printStatement(node as Statement)
+  case BreakStatement {}: printStatement(node as Statement)
+  case ContinueStatement {}: printStatement(node as Statement)
+  case IfStatement {}: printStatement(node as Statement)
+  case WhileStatement {}: printStatement(node as Statement)
+  case ForStatement {}: printStatement(node as Statement)
+  case ForInStatement {}: printStatement(node as Statement)
+  case ClassDeclaration {}: printStatement(node as Statement)
+  case InterfaceDeclaration {}: printStatement(node as Statement)
+  case EnumDeclaration {}: printStatement(node as Statement)
+  case MixinDeclaration {}: printStatement(node as Statement)
+  case TypeAliasDeclaration {}: printStatement(node as Statement)
+  case ImportDeclaration {}: printStatement(node as Statement)
+  case ExportAllDeclaration {}: printStatement(node as Statement)
+  case DeclareFunction {}: printStatement(node as Statement)
+  case SymbolDeclaration {}: printStatement(node as Statement)
+  // Patterns
+  case IdentifierPattern {}: printPattern(node as Pattern)
+  case RecordPattern {}: printPattern(node as Pattern)
+  case TuplePattern {}: printPattern(node as Pattern)
+  case AsPattern {}: printPattern(node as Pattern)
+  case ClassPattern {}: printPattern(node as Pattern)
+  case LogicalPattern {}: printPattern(node as Pattern)
+  case AssignmentPattern {}: printPattern(node as Pattern)
+  // Type Annotations
+  case NamedTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
+  case UnionTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
+  case FunctionTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
+  case LiteralTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
+  case RecordTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
+  case TupleTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
+  case InlineTupleTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
+  case ThisTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
+  // Direct variants
+  case LetPatternCondition {pattern, init}: {
+    concat(docs3(text('let '), printPattern(pattern), concat(docs2(text(' = '), printExpression(init)))))
+  }
+  case _: text('/* unknown node */')
+};

@@ -9,7 +9,8 @@ import {
 } from '@zena-lang/compiler';
 import {instantiate} from '@zena-lang/runtime';
 import {readFile, writeFile} from 'node:fs/promises';
-import {basename, resolve} from 'node:path';
+import {existsSync} from 'node:fs';
+import {basename, dirname, join, resolve} from 'node:path';
 import {parseArgs} from 'node:util';
 import {NodeCompilerHost} from './host.js';
 import {testCommand} from './test.js';
@@ -87,6 +88,38 @@ const printErrors = (errors: Diagnostic[], source?: string): void => {
   console.error(formatDiagnostics(errors, source));
 };
 
+/**
+ * Walk up from `startDir` looking for zena-packages.json.
+ * Returns the loaded package map + its directory, or undefined.
+ */
+const findPackageMap = (
+  startDir: string,
+): {map: import('./host.js').PackageMap; dir: string} | undefined => {
+  let dir = startDir;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const candidate = join(dir, 'zena-packages.json');
+    if (existsSync(candidate)) {
+      return NodeCompilerHost.loadPackageMap(candidate);
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break; // reached filesystem root
+    dir = parent;
+  }
+  return undefined;
+};
+
+/**
+ * Create a NodeCompilerHost with auto-discovered package map.
+ */
+const createHost = (target: Target = 'host'): NodeCompilerHost => {
+  const pkg = findPackageMap(process.cwd());
+  if (pkg) {
+    return new NodeCompilerHost(target, pkg.map, pkg.dir);
+  }
+  return new NodeCompilerHost(target);
+};
+
 const buildCommand = async (
   files: string[],
   output?: string,
@@ -99,7 +132,7 @@ const buildCommand = async (
     return 1;
   }
 
-  const host = new NodeCompilerHost(target);
+  const host = createHost(target);
   const compiler = new Compiler(host, {target});
 
   // For now, assume first file is entry point
@@ -150,7 +183,7 @@ const checkCommand = async (files: string[]): Promise<number> => {
     return 1;
   }
 
-  const host = new NodeCompilerHost('host');
+  const host = createHost('host');
   const compiler = new Compiler(host);
 
   // For now, assume first file is entry point
@@ -194,7 +227,7 @@ const runCommand = async (
     return 1;
   }
 
-  const host = new NodeCompilerHost(target);
+  const host = createHost(target);
   const compiler = new Compiler(host, {target});
   const entryPoint = resolve(process.cwd(), files[0]);
 

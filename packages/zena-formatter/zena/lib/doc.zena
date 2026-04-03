@@ -1,0 +1,240 @@
+// Doc IR — Prettier's document intermediate representation
+// Ported from Prettier's src/document/builders.js
+//
+// A Doc is either a string, an array of Docs, or a command.
+// Since Zena doesn't have untagged unions as first-class values yet,
+// we use a class hierarchy with a DocKind discriminator.
+
+import { Array } from 'zena:array';
+
+// ============================================================================
+// Doc Kind Discriminator
+// ============================================================================
+
+export enum DocKind {
+  Text,
+  Array,
+  Group,
+  Indent,
+  Dedent,
+  Align,
+  IfBreak,
+  Fill,
+  Line,
+  Softline,
+  Hardline,
+  LiteralLine,
+  LineSuffix,
+  LineSuffixBoundary,
+  BreakParent,
+  Trim,
+  IndentIfBreak,
+  Label
+}
+
+// ============================================================================
+// Doc Base Class
+// ============================================================================
+
+export abstract class Doc {
+  kind: DocKind;
+
+  new(kind: DocKind) : kind = kind;
+}
+
+// ============================================================================
+// Doc Types
+// ============================================================================
+
+export class TextDoc extends Doc {
+  value: String;
+
+  new(value: String) : value = value, super(DocKind.Text);
+}
+
+export class ArrayDoc extends Doc {
+  parts: Array<Doc>;
+
+  new(parts: Array<Doc>) : parts = parts, super(DocKind.Array);
+}
+
+export class GroupDoc extends Doc {
+  contents: Doc;
+  shouldBreak: boolean;
+  id: i32;
+
+  new(contents: Doc, shouldBreak: boolean, id: i32)
+    : contents = contents,
+      shouldBreak = shouldBreak,
+      id = id,
+      super(DocKind.Group);
+}
+
+export class IndentDoc extends Doc {
+  contents: Doc;
+
+  new(contents: Doc)
+    : contents = contents, super(DocKind.Indent);
+}
+
+export class DedentDoc extends Doc {
+  contents: Doc;
+
+  new(contents: Doc)
+    : contents = contents, super(DocKind.Dedent);
+}
+
+export class AlignDoc extends Doc {
+  n: i32;
+  contents: Doc;
+
+  new(n: i32, contents: Doc) : n = n, contents = contents, super(DocKind.Align);
+}
+
+export class IfBreakDoc extends Doc {
+  breakContents: Doc;
+  flatContents: Doc;
+  groupId: i32;
+
+  new(breakContents: Doc, flatContents: Doc, groupId: i32)
+    : breakContents = breakContents,
+      flatContents = flatContents,
+      groupId = groupId,
+      super(DocKind.IfBreak);
+}
+
+export class FillDoc extends Doc {
+  parts: Array<Doc>;
+
+  new(parts: Array<Doc>)
+    : parts = parts, super(DocKind.Fill);
+}
+
+export class LineSuffixDoc extends Doc {
+  contents: Doc;
+
+  new(contents: Doc)
+    : contents = contents, super(DocKind.LineSuffix);
+}
+
+export class IndentIfBreakDoc extends Doc {
+  contents: Doc;
+  groupId: i32;
+
+  new(contents: Doc, groupId: i32)
+    : contents = contents, groupId = groupId, super(DocKind.IndentIfBreak);
+}
+
+export class LabelDoc extends Doc {
+  label: String;
+  contents: Doc;
+
+  new(label: String, contents: Doc)
+    : label = label, contents = contents, super(DocKind.Label);
+}
+
+// Singleton line variants (no extra data)
+export class LineDoc extends Doc {
+  new() : super(DocKind.Line);
+}
+
+export class SoftlineDoc extends Doc {
+  new() : super(DocKind.Softline);
+}
+
+export class HardlineDoc extends Doc {
+  new() : super(DocKind.Hardline);
+}
+
+export class LiteralLineDoc extends Doc {
+  new() : super(DocKind.LiteralLine);
+}
+
+export class LineSuffixBoundaryDoc extends Doc {
+  new() : super(DocKind.LineSuffixBoundary);
+}
+
+export class BreakParentDoc extends Doc {
+  new() : super(DocKind.BreakParent);
+}
+
+export class TrimDoc extends Doc {
+  new() : super(DocKind.Trim);
+}
+
+// ============================================================================
+// Singletons
+// ============================================================================
+
+export let line: Doc = new LineDoc();
+export let softline: Doc = new SoftlineDoc();
+export let hardline: Doc = new HardlineDoc();
+export let literalline: Doc = new LiteralLineDoc();
+export let lineSuffixBoundary: Doc = new LineSuffixBoundaryDoc();
+export let breakParent: Doc = new BreakParentDoc();
+export let trim: Doc = new TrimDoc();
+
+// ============================================================================
+// Builder Functions
+// ============================================================================
+
+var nextGroupId: i32 = 1;
+
+export let text = (value: String): Doc => new TextDoc(value);
+
+export let group = (contents: Doc): Doc =>
+  new GroupDoc(contents, false, 0);
+
+export let groupBreak = (contents: Doc): Doc =>
+  new GroupDoc(contents, true, 0);
+
+export let groupWithId = (contents: Doc): GroupDoc => {
+  let id = nextGroupId;
+  nextGroupId = nextGroupId + 1;
+  return new GroupDoc(contents, false, id);
+};
+
+export let indent = (contents: Doc): Doc =>
+  new IndentDoc(contents);
+
+export let dedent = (contents: Doc): Doc =>
+  new DedentDoc(contents);
+
+export let align = (n: i32, contents: Doc): Doc =>
+  new AlignDoc(n, contents);
+
+export let ifBreak = (breakContents: Doc, flatContents: Doc): Doc =>
+  new IfBreakDoc(breakContents, flatContents, 0);
+
+export let ifBreakWithId = (breakContents: Doc, flatContents: Doc, groupId: i32): Doc =>
+  new IfBreakDoc(breakContents, flatContents, groupId);
+
+export let fill = (parts: Array<Doc>): Doc =>
+  new FillDoc(parts);
+
+export let lineSuffix = (contents: Doc): Doc =>
+  new LineSuffixDoc(contents);
+
+export let indentIfBreak = (contents: Doc, groupId: i32): Doc =>
+  new IndentIfBreakDoc(contents, groupId);
+
+export let label = (tag: String, contents: Doc): Doc =>
+  new LabelDoc(tag, contents);
+
+// Concat an array of docs
+export let concat = (parts: Array<Doc>): Doc =>
+  new ArrayDoc(parts);
+
+// Join docs with a separator
+export let join = (sep: Doc, docs: Array<Doc>): Doc => {
+  let parts = new Array<Doc>();
+  var i = 0;
+  while (i < docs.length) {
+    if (i > 0) {
+      parts.push(sep);
+    }
+    parts.push(docs[i]);
+    i = i + 1;
+  }
+  return new ArrayDoc(parts);
+};

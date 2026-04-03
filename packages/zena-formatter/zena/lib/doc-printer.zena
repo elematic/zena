@@ -1,0 +1,405 @@
+// Doc Printer — Prettier's line-breaking algorithm
+// Ported from Prettier's src/document/printer/printer.js
+//
+// Converts a Doc IR into a formatted string, handling line breaking,
+// indentation, and group flattening.
+
+import { Array } from 'zena:array';
+import { StringBuilder } from 'zena:string-builder';
+import {
+  Doc,
+  DocKind,
+  TextDoc,
+  ArrayDoc,
+  GroupDoc,
+  IndentDoc,
+  DedentDoc,
+  AlignDoc,
+  IfBreakDoc,
+  FillDoc,
+  LineSuffixDoc,
+  IndentIfBreakDoc,
+  LabelDoc
+} from './doc.zena';
+
+// ============================================================================
+// Mode: flat (try one line) or break (broken across lines)
+// ============================================================================
+
+export enum Mode {
+  Flat,
+  Break,
+}
+
+// ============================================================================
+// Indent representation
+// ============================================================================
+
+// Indentation is tracked as a simple level count.
+// Each level = 2 spaces (matching Zena's style).
+let INDENT_WIDTH: i32 = 2;
+
+// ============================================================================
+// Print Options
+// ============================================================================
+
+export class PrintOptions {
+  printWidth: i32;
+  tabWidth: i32;
+  useTabs: boolean;
+
+  new(printWidth: i32) : printWidth = printWidth, tabWidth = 2, useTabs = false;
+}
+
+// ============================================================================
+// Command on the print stack
+// ============================================================================
+
+class PrintCommand {
+  indent: i32;
+  mode: Mode;
+  doc: Doc;
+
+  new(indent: i32, mode: Mode, doc: Doc)
+    : indent = indent, mode = mode, doc = doc;
+}
+
+// ============================================================================
+// Group break tracking (for ifBreak with groupId)
+// ============================================================================
+
+// Track which group IDs have broken.
+// Simple approach: fixed-size array indexed by group ID.
+let MAX_GROUPS: i32 = 1024;
+
+class GroupBreakMap {
+  #broken: Array<boolean>;
+
+  new()
+    : #broken = new Array<boolean>()
+  {
+    var i = 0;
+    while (i < MAX_GROUPS) {
+      this.#broken.push(false);
+      i = i + 1;
+    }
+  }
+
+  set(id: i32, broken: boolean): void {
+    if (id > 0 && id < MAX_GROUPS) {
+      this.#broken[id] = broken;
+    }
+  }
+
+  get(id: i32): boolean {
+    if (id > 0 && id < MAX_GROUPS) {
+      return this.#broken[id];
+    }
+    return false;
+  }
+}
+
+// ============================================================================
+// propagateBreaks — pre-pass to propagate hardlines/breakParent upward
+// ============================================================================
+
+// For now, we handle breakParent during printing by checking shouldBreak.
+// A full propagateBreaks pass can be added later if needed.
+
+// ============================================================================
+// fits — check if doc fits within remaining width without breaking
+// ============================================================================
+
+let fits = (cmds: Array<PrintCommand>, width: i32): boolean => {
+  var remaining = width;
+
+  while (cmds.length > 0) {
+    if (remaining < 0) {
+      return false;
+    }
+
+    let cmd = cmds.pop();
+    let doc = cmd.doc;
+
+    if (doc.kind == DocKind.Text) {
+      let td = doc as TextDoc;
+      remaining = remaining - td.value.length;
+    } else if (doc.kind == DocKind.Array) {
+      let ad = doc as ArrayDoc;
+      // Push parts in reverse order so they process left-to-right (stack = LIFO)
+      var j = ad.parts.length - 1;
+      while (j >= 0) {
+        cmds.push(new PrintCommand(cmd.indent, cmd.mode, ad.parts[j]));
+        j = j - 1;
+      }
+    } else if (doc.kind == DocKind.Group) {
+      let gd = doc as GroupDoc;
+      // In fits check, treat group as flat (don't break)
+      cmds.push(new PrintCommand(cmd.indent, Mode.Flat, gd.contents));
+    } else if (doc.kind == DocKind.Indent) {
+      let id = doc as IndentDoc;
+      cmds.push(new PrintCommand(cmd.indent + 1, cmd.mode, id.contents));
+    } else if (doc.kind == DocKind.Dedent) {
+      let dd = doc as DedentDoc;
+      var newIndent = cmd.indent - 1;
+      if (newIndent < 0) { newIndent = 0; }
+      cmds.push(new PrintCommand(newIndent, cmd.mode, dd.contents));
+    } else if (doc.kind == DocKind.IfBreak) {
+      let ib = doc as IfBreakDoc;
+      // In fits check, always use flat contents
+      cmds.push(new PrintCommand(cmd.indent, cmd.mode, ib.flatContents));
+    } else if (doc.kind == DocKind.Line) {
+      if (cmd.mode == Mode.Flat) {
+        remaining = remaining - 1; // space
+      } else {
+        return true; // line break = fits
+      }
+    } else if (doc.kind == DocKind.Softline) {
+      if (cmd.mode == Mode.Flat) {
+        // nothing
+      } else {
+        return true;
+      }
+    } else if (doc.kind == DocKind.Hardline) {
+      return true;
+    } else if (doc.kind == DocKind.LiteralLine) {
+      return true;
+    }
+    // Other doc types: skip in fits check
+  }
+
+  return remaining >= 0;
+};
+
+// ============================================================================
+// printDocToString — the main algorithm
+// ============================================================================
+
+export let printDocToString = (doc: Doc, options: PrintOptions): String => {
+  let out = new StringBuilder();
+  let cmds = new Array<PrintCommand>();
+  let groupBreaks = new GroupBreakMap();
+  var lineSuffixes = new Array<PrintCommand>();
+
+  cmds.push(new PrintCommand(0, Mode.Break, doc));
+
+  var pos: i32 = 0; // current column position
+
+  while (cmds.length > 0) {
+    let cmd = cmds.pop();
+    let indentLevel = cmd.indent;
+    let mode = cmd.mode;
+    let d = cmd.doc;
+
+    if (d.kind == DocKind.Text) {
+      let td = d as TextDoc;
+      out.append(td.value);
+      pos = pos + td.value.length;
+
+    } else if (d.kind == DocKind.Array) {
+      let ad = d as ArrayDoc;
+      // Push parts in reverse order (stack = LIFO)
+      var i = ad.parts.length - 1;
+      while (i >= 0) {
+        cmds.push(new PrintCommand(indentLevel, mode, ad.parts[i]));
+        i = i - 1;
+      }
+
+    } else if (d.kind == DocKind.Group) {
+      let gd = d as GroupDoc;
+
+      if (gd.shouldBreak) {
+        // Pre-broken group
+        if (gd.id > 0) { groupBreaks.set(gd.id, true); }
+        cmds.push(new PrintCommand(indentLevel, Mode.Break, gd.contents));
+      } else {
+        // Try flat: build a temporary stack and check fits
+        let fitsCmds = new Array<PrintCommand>();
+        fitsCmds.push(new PrintCommand(indentLevel, Mode.Flat, gd.contents));
+
+        if (fits(fitsCmds, options.printWidth - pos)) {
+          // Fits on one line
+          if (gd.id > 0) { groupBreaks.set(gd.id, false); }
+          cmds.push(new PrintCommand(indentLevel, Mode.Flat, gd.contents));
+        } else {
+          // Must break
+          if (gd.id > 0) { groupBreaks.set(gd.id, true); }
+          cmds.push(new PrintCommand(indentLevel, Mode.Break, gd.contents));
+        }
+      }
+
+    } else if (d.kind == DocKind.Indent) {
+      let id = d as IndentDoc;
+      cmds.push(new PrintCommand(indentLevel + 1, mode, id.contents));
+
+    } else if (d.kind == DocKind.Dedent) {
+      let dd = d as DedentDoc;
+      var newIndent = indentLevel - 1;
+      if (newIndent < 0) { newIndent = 0; }
+      cmds.push(new PrintCommand(newIndent, mode, dd.contents));
+
+    } else if (d.kind == DocKind.Align) {
+      let ad = d as AlignDoc;
+      // Align adds spaces, not indent levels — approximate with indent
+      cmds.push(new PrintCommand(indentLevel + 1, mode, ad.contents));
+
+    } else if (d.kind == DocKind.IfBreak) {
+      let ib = d as IfBreakDoc;
+      var broken: boolean = false;
+      if (ib.groupId > 0) {
+        broken = groupBreaks.get(ib.groupId);
+      } else {
+        broken = mode == Mode.Break;
+      }
+      if (broken) {
+        cmds.push(new PrintCommand(indentLevel, mode, ib.breakContents));
+      } else {
+        cmds.push(new PrintCommand(indentLevel, mode, ib.flatContents));
+      }
+
+    } else if (d.kind == DocKind.Fill) {
+      let fd = d as FillDoc;
+      // Simple fill: just print all parts sequentially for now
+      var i = fd.parts.length - 1;
+      while (i >= 0) {
+        cmds.push(new PrintCommand(indentLevel, mode, fd.parts[i]));
+        i = i - 1;
+      }
+
+    } else if (d.kind == DocKind.Line) {
+      if (mode == Mode.Flat) {
+        out.append(' ');
+        pos = pos + 1;
+      } else {
+        // Flush line suffixes before newline
+        if (lineSuffixes.length > 0) {
+          // Push line first (bottom of stack, processed second)
+          cmds.push(new PrintCommand(indentLevel, mode, d));
+          // Push suffixes on top (processed first)
+          var i = 0;
+          while (i < lineSuffixes.length) {
+            cmds.push(lineSuffixes[i]);
+            i = i + 1;
+          }
+          lineSuffixes = new Array<PrintCommand>();
+        } else {
+          out.append('\n');
+          pos = 0;
+          // Emit indentation
+          var spaces = indentLevel * INDENT_WIDTH;
+          while (spaces > 0) {
+            out.append(' ');
+            spaces = spaces - 1;
+          }
+          pos = indentLevel * INDENT_WIDTH;
+        }
+      }
+
+    } else if (d.kind == DocKind.Softline) {
+      if (mode == Mode.Flat) {
+        // nothing
+      } else {
+        // Same as line in break mode
+        if (lineSuffixes.length > 0) {
+          // Push softline first (bottom of stack, processed second)
+          cmds.push(new PrintCommand(indentLevel, mode, d));
+          // Push suffixes on top (processed first)
+          var i = 0;
+          while (i < lineSuffixes.length) {
+            cmds.push(lineSuffixes[i]);
+            i = i + 1;
+          }
+          lineSuffixes = new Array<PrintCommand>();
+        } else {
+          out.append('\n');
+          pos = 0;
+          var spaces = indentLevel * INDENT_WIDTH;
+          while (spaces > 0) {
+            out.append(' ');
+            spaces = spaces - 1;
+          }
+          pos = indentLevel * INDENT_WIDTH;
+        }
+      }
+
+    } else if (d.kind == DocKind.Hardline) {
+      // Flush line suffixes before the newline
+      if (lineSuffixes.length > 0) {
+        // Push hardline first (bottom of stack, processed second)
+        cmds.push(new PrintCommand(indentLevel, mode, d));
+        // Push suffixes on top (processed first, before the hardline)
+        var i = 0;
+        while (i < lineSuffixes.length) {
+          cmds.push(lineSuffixes[i]);
+          i = i + 1;
+        }
+        lineSuffixes = new Array<PrintCommand>();
+      } else {
+        out.append('\n');
+        pos = 0;
+        var spaces = indentLevel * INDENT_WIDTH;
+        while (spaces > 0) {
+          out.append(' ');
+          spaces = spaces - 1;
+        }
+        pos = indentLevel * INDENT_WIDTH;
+      }
+
+    } else if (d.kind == DocKind.LiteralLine) {
+      out.append('\n');
+      pos = 0;
+      // No indentation for literal lines
+
+    } else if (d.kind == DocKind.LineSuffix) {
+      let ls = d as LineSuffixDoc;
+      lineSuffixes.push(new PrintCommand(indentLevel, mode, ls.contents));
+
+    } else if (d.kind == DocKind.LineSuffixBoundary) {
+      // Force-flush line suffixes
+      if (lineSuffixes.length > 0) {
+        var i = 0;
+        while (i < lineSuffixes.length) {
+          cmds.push(lineSuffixes[i]);
+          i = i + 1;
+        }
+        lineSuffixes = new Array<PrintCommand>();
+      }
+
+    } else if (d.kind == DocKind.BreakParent) {
+      // breakParent is handled during propagateBreaks pre-pass.
+      // For now, it's a no-op in the printer.
+
+    } else if (d.kind == DocKind.Trim) {
+      // Remove trailing whitespace — not yet implemented
+      // Would need to scan backwards in the StringBuilder
+
+    } else if (d.kind == DocKind.IndentIfBreak) {
+      let iib = d as IndentIfBreakDoc;
+      let broken = groupBreaks.get(iib.groupId);
+      if (broken) {
+        cmds.push(new PrintCommand(indentLevel + 1, mode, iib.contents));
+      } else {
+        cmds.push(new PrintCommand(indentLevel, mode, iib.contents));
+      }
+
+    } else if (d.kind == DocKind.Label) {
+      let ld = d as LabelDoc;
+      // Labels are transparent — just print contents
+      cmds.push(new PrintCommand(indentLevel, mode, ld.contents));
+    }
+  }
+
+  // Flush remaining line suffixes
+  var i = 0;
+  while (i < lineSuffixes.length) {
+    let cmd = lineSuffixes[i];
+    let d = cmd.doc;
+    if (d.kind == DocKind.Text) {
+      let td = d as TextDoc;
+      out.append(td.value);
+    }
+    i = i + 1;
+  }
+
+  return out.toString();
+};

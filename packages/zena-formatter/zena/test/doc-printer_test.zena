@@ -1,0 +1,351 @@
+// Doc printer unit tests — tests the line-breaking algorithm in isolation
+// without going through the parser. Constructs Doc IR directly and
+// verifies string output.
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal } from 'zena:assert';
+import { Array } from 'zena:array';
+import { console } from 'zena:console';
+import {
+  Doc,
+  text,
+  concat,
+  group,
+  groupBreak,
+  indent,
+  dedent,
+  join,
+  line,
+  softline,
+  hardline,
+  literalline,
+  ifBreak,
+  fill,
+  lineSuffix,
+  breakParent,
+  trim
+} from '../lib/doc.zena';
+import { printDocToString, PrintOptions } from '../lib/doc-printer.zena';
+
+// Helper: print a doc with a given width
+let print = (doc: Doc, width: i32): String => {
+  let opts = new PrintOptions(width);
+  return printDocToString(doc, opts);
+};
+
+// Helper: print a doc with default 80-col width
+let print80 = (doc: Doc): String => print(doc, 80);
+
+// Debug helper: check and log
+let check = (name: String, actual: String, expected: String): void => {
+  if (actual != expected) {
+    console.log('FAIL: ' + name);
+    console.log('  actual:   [' + actual + ']');
+    console.log('  expected: [' + expected + ']');
+  }
+  equal(actual, expected, name);
+};
+
+// Helper to build Array<Doc> from individual docs
+let docs2 = (a: Doc, b: Doc): Array<Doc> => {
+  let arr = new Array<Doc>();
+  arr.push(a);
+  arr.push(b);
+  return arr;
+};
+
+let docs3 = (a: Doc, b: Doc, c: Doc): Array<Doc> => {
+  let arr = new Array<Doc>();
+  arr.push(a);
+  arr.push(b);
+  arr.push(c);
+  return arr;
+};
+
+let docs4 = (a: Doc, b: Doc, c: Doc, d: Doc): Array<Doc> => {
+  let arr = new Array<Doc>();
+  arr.push(a);
+  arr.push(b);
+  arr.push(c);
+  arr.push(d);
+  return arr;
+};
+
+let docs5 = (a: Doc, b: Doc, c: Doc, d: Doc, e: Doc): Array<Doc> => {
+  let arr = new Array<Doc>();
+  arr.push(a);
+  arr.push(b);
+  arr.push(c);
+  arr.push(d);
+  arr.push(e);
+  return arr;
+};
+
+let tests = suite('doc-printer', () => {
+
+  // ========================================================================
+  // Basic text
+  // ========================================================================
+
+  suite('text', () => {
+    test('prints plain text', (t: TestContext) => {
+      check('prints plain text', print80(text('hello')), 'hello');
+    });
+
+    test('concatenates text docs', (t: TestContext) => {
+      let doc = concat(docs3(text('hello'), text(' '), text('world')));
+      check('concatenates text docs', print80(doc), 'hello world');
+    });
+  });
+
+  // ========================================================================
+  // Groups and line breaking
+  // ========================================================================
+
+  suite('group', () => {
+    test('group fits on one line', (t: TestContext) => {
+      let doc = group(concat(docs5(
+        text('a'), text(', '), text('b'), text(', '), text('c')
+      )));
+      check('group fits on one line', print80(doc), 'a, b, c');
+    });
+
+    test('group with line stays flat when it fits', (t: TestContext) => {
+      let parts = new Array<Doc>();
+      parts.push(text('a'));
+      parts.push(text(','));
+      parts.push(line);
+      parts.push(text('b'));
+      parts.push(text(','));
+      parts.push(line);
+      parts.push(text('c'));
+      let doc = group(concat(parts));
+      check('group line stays flat', print80(doc), 'a, b, c');
+    });
+
+    test('group with line breaks when too wide', (t: TestContext) => {
+      let parts = new Array<Doc>();
+      parts.push(text('a'));
+      parts.push(text(','));
+      parts.push(line);
+      parts.push(text('b'));
+      parts.push(text(','));
+      parts.push(line);
+      parts.push(text('c'));
+      let doc = group(concat(parts));
+      check('group line breaks too wide', print(doc, 5), 'a,\nb,\nc');
+    });
+
+    test('shouldBreak forces group to break', (t: TestContext) => {
+      let parts = new Array<Doc>();
+      parts.push(text('a'));
+      parts.push(text(','));
+      parts.push(line);
+      parts.push(text('b'));
+      let doc = groupBreak(concat(parts));
+      check('shouldBreak forces break', print80(doc), 'a,\nb');
+    });
+  });
+
+  // ========================================================================
+  // Softline
+  // ========================================================================
+
+  suite('softline', () => {
+    test('softline is empty when flat', (t: TestContext) => {
+      let doc = group(concat(docs3(text('a'), softline, text('b'))));
+      check('softline flat', print80(doc), 'ab');
+    });
+
+    test('softline is newline when broken', (t: TestContext) => {
+      let doc = group(concat(docs3(text('a'), softline, text('b'))));
+      check('softline newline', print(doc, 1), 'a\nb');
+    });
+  });
+
+  // ========================================================================
+  // Hardline
+  // ========================================================================
+
+  suite('hardline', () => {
+    test('hardline always breaks', (t: TestContext) => {
+      let doc = concat(docs3(text('a'), hardline, text('b')));
+      check('hardline always breaks', print80(doc), 'a\nb');
+    });
+  });
+
+  // ========================================================================
+  // Indent
+  // ========================================================================
+
+  suite('indent', () => {
+    test('indent adds spaces after line break', (t: TestContext) => {
+      let inner = concat(docs3(text('a'), hardline, text('b')));
+      let doc = indent(inner);
+      check('indent adds spaces', print80(doc), 'a\n  b');
+    });
+
+    test('nested indent adds more spaces', (t: TestContext) => {
+      let inner = concat(docs3(text('a'), hardline, text('b')));
+      let doc = indent(indent(inner));
+      check('nested indent', print80(doc), 'a\n    b');
+    });
+
+    test('indent inside group adds spaces when broken', (t: TestContext) => {
+      let doc = group(concat(docs4(
+        text('{'),
+        indent(concat(docs2(line, concat(docs3(text('a'), line, text('b')))))),
+        line,
+        text('}')
+      )));
+      // Should break because we force narrow width
+      let result = print(doc, 5);
+      check('indent in group', result, '{\n  a\n  b\n}');
+    });
+  });
+
+  // ========================================================================
+  // IfBreak
+  // ========================================================================
+
+  suite('ifBreak', () => {
+    test('ifBreak uses flat contents when group fits', (t: TestContext) => {
+      let doc = group(concat(docs3(
+        text('('),
+        ifBreak(text('BREAK'), text('flat')),
+        text(')')
+      )));
+      check('ifBreak flat', print80(doc), '(flat)');
+    });
+
+    test('ifBreak uses break contents when group breaks', (t: TestContext) => {
+      let doc = group(concat(docs5(
+        text('('),
+        ifBreak(text('BREAK'), text('flat')),
+        line,
+        text('long_text_here'),
+        text(')')
+      )));
+      let result = print(doc, 10);
+      check('ifBreak broken', result, '(BREAK\nlong_text_here)');
+    });
+  });
+
+  // ========================================================================
+  // Join
+  // ========================================================================
+
+  suite('join', () => {
+    test('join with separator', (t: TestContext) => {
+      let items = new Array<Doc>();
+      items.push(text('a'));
+      items.push(text('b'));
+      items.push(text('c'));
+      let doc = join(text(', '), items);
+      check('join separator', print80(doc), 'a, b, c');
+    });
+
+    test('join single item', (t: TestContext) => {
+      let items = new Array<Doc>();
+      items.push(text('a'));
+      let doc = join(text(', '), items);
+      check('join single', print80(doc), 'a');
+    });
+
+    test('join empty', (t: TestContext) => {
+      let items = new Array<Doc>();
+      let doc = join(text(', '), items);
+      check('join empty', print80(doc), '');
+    });
+  });
+
+  // ========================================================================
+  // Fill
+  // ========================================================================
+
+  suite('fill', () => {
+    test('fill prints all parts', (t: TestContext) => {
+      let parts = new Array<Doc>();
+      parts.push(text('word1'));
+      parts.push(text(' '));
+      parts.push(text('word2'));
+      parts.push(text(' '));
+      parts.push(text('word3'));
+      let doc = fill(parts);
+      check('fill parts', print80(doc), 'word1 word2 word3');
+    });
+  });
+
+  // ========================================================================
+  // LineSuffix
+  // ========================================================================
+
+  suite('lineSuffix', () => {
+    test('lineSuffix flushes before newline', (t: TestContext) => {
+      let doc = concat(docs3(
+        text('code'),
+        lineSuffix(text(' // comment')),
+        hardline
+      ));
+      // The comment should appear before the newline
+      let result = print80(doc);
+      check('lineSuffix flushes', result, 'code // comment\n');
+    });
+  });
+
+  // ========================================================================
+  // Real-world patterns
+  // ========================================================================
+
+  suite('patterns', () => {
+    test('argument list stays flat when short', (t: TestContext) => {
+      let args = new Array<Doc>();
+      args.push(text('a'));
+      args.push(text('b'));
+      let argList = join(concat(docs2(text(','), line)), args);
+      let doc = group(concat(docs5(
+        text('fn('),
+        indent(concat(docs2(softline, argList))),
+        softline,
+        text(')'),
+        text(';')
+      )));
+      check('arg list flat', print80(doc), 'fn(a, b);');
+    });
+
+    test('argument list breaks when long', (t: TestContext) => {
+      let args = new Array<Doc>();
+      args.push(text('longArgName1'));
+      args.push(text('longArgName2'));
+      args.push(text('longArgName3'));
+      let argList = join(concat(docs2(text(','), line)), args);
+      let doc = group(concat(docs5(
+        text('fn('),
+        indent(concat(docs2(softline, argList))),
+        softline,
+        text(')'),
+        text(';')
+      )));
+      let result = print(doc, 25);
+      check('arg list breaks', result, 'fn(\n  longArgName1,\n  longArgName2,\n  longArgName3\n);');
+    });
+
+    test('block statement formatting', (t: TestContext) => {
+      let stmts = concat(docs3(text('a;'), hardline, text('b;')));
+      let doc = concat(docs5(
+        text('{'),
+        indent(concat(docs2(hardline, stmts))),
+        hardline,
+        text('}'),
+        text('')
+      ));
+      check('block stmt', print80(doc), '{\n  a;\n  b;\n}');
+    });
+  });
+});
+
+// Entry point
+export let main = (): i32 => {
+  let result = tests.run();
+  return result.failed;
+};

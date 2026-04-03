@@ -654,6 +654,49 @@ Prettier has two categories of tests we can leverage:
 
 ---
 
+## Current Status
+
+The formatter compiles as self-hosted Zena code and runs on wasmtime via
+WASM-GC. All four tiers of AST printer coverage are implemented. The doc
+printer has the core algorithm working but several Prettier features remain
+simplified or stubbed.
+
+**What works today:**
+
+- Parse → Doc IR → String pipeline end-to-end
+- Whitespace normalization (`let   x=1;` → `let x = 1;`)
+- String quote normalization (double → single quotes)
+- Trailing newline insertion
+- All AST node types covered (expressions, statements, classes, patterns, etc.)
+- `group`/`indent`/`line`/`softline`/`hardline`/`ifBreak` line-breaking
+- `lineSuffix` / `lineSuffixBoundary` for trailing comments (infrastructure)
+- Idempotent formatting verified by tests
+
+**Known gaps (doc printer):**
+
+1. `propagateBreaks` — stub only; `breakParent` is a no-op
+2. `fill` — naive sequential concatenation, not Prettier's greedy fill
+3. Indent model — flat `i32` counter, not Prettier's linked-list indent/align stack
+4. `trim` — not implemented
+5. `fits` — simplified; no `hasLineSuffix` check or `Fill` handling
+6. `useTabs` / `tabWidth` — declared but not wired
+
+**Known gaps (printer):**
+
+1. Comment attachment — not started (parser needs comment collection)
+2. Method chain grouping — not implemented
+3. Binary expression chain breaking — basic only (no operator-first style)
+4. Long argument list wrapping — `group`/`indent` is set up but untested for
+   real overflow scenarios
+
+**Test coverage:**
+
+- 15 formatter tests (10 round-trip identity, 5 transformation)
+- Doc printer unit tests (separate test file)
+- Idempotency test
+
+---
+
 ## Tracking Progress
 
 ### Appendix A: Doc Printer Port Checklist
@@ -662,40 +705,40 @@ Track each Prettier source function and its Zena equivalent.
 
 **`src/document/builders/`**
 
-| Prettier function                            | Zena function        | Status |
-| -------------------------------------------- | -------------------- | ------ |
-| `group(contents, opts)`                      | `group`              | —      |
-| `indent(contents)`                           | `indent`             | —      |
-| `dedent(contents)`                           | `dedent`             | —      |
-| `align(widthOrString, contents)`             | `align`              | —      |
-| `fill(parts)`                                | `fill`               | —      |
-| `ifBreak(breakContents, flatContents, opts)` | `ifBreak`            | —      |
-| `indentIfBreak(contents, opts)`              | `indentIfBreak`      | —      |
-| `lineSuffix(contents)`                       | `lineSuffix`         | —      |
-| `join(sep, docs)`                            | `join`               | —      |
-| `label(label, doc)`                          | `label`              | —      |
-| `line`                                       | `line`               | —      |
-| `softline`                                   | `softline`           | —      |
-| `hardline`                                   | `hardline`           | —      |
-| `literalline`                                | `literalline`        | —      |
-| `breakParent`                                | `breakParent`        | —      |
-| `lineSuffixBoundary`                         | `lineSuffixBoundary` | —      |
-| `trim`                                       | `trim`               | —      |
-| `cursor`                                     | —                    | Skip   |
-| `conditionalGroup`                           | —                    | Skip   |
+| Prettier function                            | Zena function        | Status                       |
+| -------------------------------------------- | -------------------- | ---------------------------- |
+| `group(contents, opts)`                      | `group`              | Done                         |
+| `indent(contents)`                           | `indent`             | Done                         |
+| `dedent(contents)`                           | `dedent`             | Done                         |
+| `align(widthOrString, contents)`             | `align`              | Done (int-only)              |
+| `fill(parts)`                                | `fill`               | Done (naive)                 |
+| `ifBreak(breakContents, flatContents, opts)` | `ifBreak`            | Done                         |
+| `indentIfBreak(contents, opts)`              | `indentIfBreak`      | Done                         |
+| `lineSuffix(contents)`                       | `lineSuffix`         | Done                         |
+| `join(sep, docs)`                            | `join`               | Done                         |
+| `label(label, doc)`                          | `label`              | Done                         |
+| `line`                                       | `line`               | Done                         |
+| `softline`                                   | `softline`           | Done                         |
+| `hardline`                                   | `hardline`           | Done                         |
+| `literalline`                                | `literalline`        | Done                         |
+| `breakParent`                                | `breakParent`        | Done (IR only, printer stub) |
+| `lineSuffixBoundary`                         | `lineSuffixBoundary` | Done                         |
+| `trim`                                       | `trim`               | Done (IR only, printer stub) |
+| `cursor`                                     | —                    | Skip                         |
+| `conditionalGroup`                           | —                    | Skip                         |
 
 **`src/document/printer/`**
 
-| Prettier function                      | Zena function      | Status |
-| -------------------------------------- | ------------------ | ------ |
-| `printDocToString(doc, opts)`          | `printDocToString` | —      |
-| `fits(next, restCommands, width, ...)` | `fits`             | —      |
-| `propagateBreaks(doc)`                 | `propagateBreaks`  | —      |
-| `generateIndent(ind, newPart, opts)`   | `generateIndent`   | —      |
-| `makeIndent(ind, opts)`                | `makeIndent`       | —      |
-| `makeAlign(ind, widthOrString, opts)`  | `makeAlign`        | —      |
-| `rootIndent()`                         | `rootIndent`       | —      |
-| `trim(out)`                            | `trimOutput`       | —      |
+| Prettier function                      | Zena function      | Status            |
+| -------------------------------------- | ------------------ | ----------------- |
+| `printDocToString(doc, opts)`          | `printDocToString` | Done              |
+| `fits(next, restCommands, width, ...)` | `fits`             | Done (simplified) |
+| `propagateBreaks(doc)`                 | `propagateBreaks`  | Stub              |
+| `generateIndent(ind, newPart, opts)`   | `generateIndent`   | Done (flat i32)   |
+| `makeIndent(ind, opts)`                | `makeIndent`       | Done (flat i32)   |
+| `makeAlign(ind, widthOrString, opts)`  | `makeAlign`        | Done (≈+1 indent) |
+| `rootIndent()`                         | `rootIndent`       | Done              |
+| `trim(out)`                            | `trimOutput`       | Stub              |
 
 **`src/document/utilities/`**
 
@@ -715,89 +758,89 @@ Track each AST node type and its print function.
 
 | AST Node                   | Print function              | Status |
 | -------------------------- | --------------------------- | ------ |
-| `NumberLiteral`            | `printNumberLiteral`        | —      |
-| `StringLiteral`            | `printStringLiteral`        | —      |
-| `BooleanLiteral`           | `printBooleanLiteral`       | —      |
-| `NullLiteral`              | `printNullLiteral`          | —      |
-| `Identifier`               | `printIdentifier`           | —      |
-| `BinaryExpression`         | `printBinaryExpression`     | —      |
-| `UnaryExpression`          | `printUnaryExpression`      | —      |
-| `AssignmentExpression`     | `printAssignmentExpression` | —      |
-| `MemberExpression`         | `printMemberExpression`     | —      |
-| `IndexExpression`          | `printIndexExpression`      | —      |
-| `CallExpression`           | `printCallExpression`       | —      |
-| `NewExpression`            | `printNewExpression`        | —      |
-| `ThisExpression`           | `printThisExpression`       | —      |
-| `SuperExpression`          | `printSuperExpression`      | —      |
-| `TemplateLiteral`          | `printTemplateLiteral`      | —      |
-| `TaggedTemplateExpression` | `printTaggedTemplate`       | —      |
-| `AsExpression`             | `printAsExpression`         | —      |
-| `IsExpression`             | `printIsExpression`         | —      |
-| `PipelineExpression`       | `printPipelineExpression`   | —      |
-| `RangeExpression`          | `printRangeExpression`      | —      |
-| `ThrowExpression`          | `printThrowExpression`      | —      |
-| `ArrayLiteral`             | `printArrayLiteral`         | —      |
-| `RecordLiteral`            | `printRecordLiteral`        | —      |
-| `TupleLiteral`             | `printTupleLiteral`         | —      |
+| `NumberLiteral`            | `printNumberLiteral`        | Done   |
+| `StringLiteral`            | `printStringLiteral`        | Done   |
+| `BooleanLiteral`           | `printBooleanLiteral`       | Done   |
+| `NullLiteral`              | `printNullLiteral`          | Done   |
+| `Identifier`               | `printIdentifier`           | Done   |
+| `BinaryExpression`         | `printBinaryExpression`     | Done   |
+| `UnaryExpression`          | `printUnaryExpression`      | Done   |
+| `AssignmentExpression`     | `printAssignmentExpression` | Done   |
+| `MemberExpression`         | `printMemberExpression`     | Done   |
+| `IndexExpression`          | `printIndexExpression`      | Done   |
+| `CallExpression`           | `printCallExpression`       | Done   |
+| `NewExpression`            | `printNewExpression`        | Done   |
+| `ThisExpression`           | `printThisExpression`       | Done   |
+| `SuperExpression`          | `printSuperExpression`      | Done   |
+| `TemplateLiteral`          | `printTemplateLiteral`      | Done   |
+| `TaggedTemplateExpression` | `printTaggedTemplate`       | Done   |
+| `AsExpression`             | `printAsExpression`         | Done   |
+| `IsExpression`             | `printIsExpression`         | Done   |
+| `PipelineExpression`       | `printPipelineExpression`   | Done   |
+| `RangeExpression`          | `printRangeExpression`      | Done   |
+| `ThrowExpression`          | `printThrowExpression`      | Done   |
+| `ArrayLiteral`             | `printArrayLiteral`         | Done   |
+| `RecordLiteral`            | `printRecordLiteral`        | Done   |
+| `TupleLiteral`             | `printTupleLiteral`         | Done   |
 | `InlineTupleLiteral`       | `printInlineTupleLiteral`   | —      |
-| `MapLiteral`               | `printMapLiteral`           | —      |
-| `IfExpression`             | `printIfExpression`         | —      |
+| `MapLiteral`               | `printMapLiteral`           | Done   |
+| `IfExpression`             | `printIfExpression`         | Done   |
 
 **Tier 2 — Statements (P0)**
 
 | AST Node              | Print function             | Status |
 | --------------------- | -------------------------- | ------ |
-| `Module`              | `printModule`              | —      |
-| `VariableDeclaration` | `printVariableDeclaration` | —      |
-| `ExpressionStatement` | `printExpressionStatement` | —      |
-| `BlockStatement`      | `printBlockStatement`      | —      |
-| `ReturnStatement`     | `printReturnStatement`     | —      |
-| `BreakStatement`      | `printBreakStatement`      | —      |
-| `ContinueStatement`   | `printContinueStatement`   | —      |
-| `IfStatement`         | `printIfStatement`         | —      |
-| `WhileStatement`      | `printWhileStatement`      | —      |
-| `ForStatement`        | `printForStatement`        | —      |
-| `ForInStatement`      | `printForInStatement`      | —      |
+| `Module`              | `printModule`              | Done   |
+| `VariableDeclaration` | `printVariableDeclaration` | Done   |
+| `ExpressionStatement` | `printExpressionStatement` | Done   |
+| `BlockStatement`      | `printBlockStatement`      | Done   |
+| `ReturnStatement`     | `printReturnStatement`     | Done   |
+| `BreakStatement`      | `printBreakStatement`      | Done   |
+| `ContinueStatement`   | `printContinueStatement`   | Done   |
+| `IfStatement`         | `printIfStatement`         | Done   |
+| `WhileStatement`      | `printWhileStatement`      | Done   |
+| `ForStatement`        | `printForStatement`        | Done   |
+| `ForInStatement`      | `printForInStatement`      | Done   |
 
 **Tier 3 — Functions (P1)**
 
 | AST Node             | Print function            | Status |
 | -------------------- | ------------------------- | ------ |
-| `FunctionExpression` | `printFunctionExpression` | —      |
-| `Parameter`          | `printParameter`          | —      |
-| `TypeParameter`      | `printTypeParameter`      | —      |
+| `FunctionExpression` | `printFunctionExpression` | Done   |
+| `Parameter`          | `printParameter`          | Done   |
+| `TypeParameter`      | `printTypeParameter`      | Done   |
 
 **Tier 4 — Classes & Types (P1)**
 
 | AST Node               | Print function              | Status |
 | ---------------------- | --------------------------- | ------ |
-| `ClassDeclaration`     | `printClassDeclaration`     | —      |
-| `FieldDefinition`      | `printFieldDefinition`      | —      |
-| `MethodDefinition`     | `printMethodDefinition`     | —      |
-| `AccessorDeclaration`  | `printAccessorDeclaration`  | —      |
-| `InterfaceDeclaration` | `printInterfaceDeclaration` | —      |
-| `MixinDeclaration`     | `printMixinDeclaration`     | —      |
-| `EnumDeclaration`      | `printEnumDeclaration`      | —      |
-| `TypeAliasDeclaration` | `printTypeAliasDeclaration` | —      |
+| `ClassDeclaration`     | `printClassDeclaration`     | Done   |
+| `FieldDefinition`      | `printFieldDefinition`      | Done   |
+| `MethodDefinition`     | `printMethodDefinition`     | Done   |
+| `AccessorDeclaration`  | `printAccessorDeclaration`  | Done   |
+| `InterfaceDeclaration` | `printInterfaceDeclaration` | Done   |
+| `MixinDeclaration`     | `printMixinDeclaration`     | Done   |
+| `EnumDeclaration`      | `printEnumDeclaration`      | Done   |
+| `TypeAliasDeclaration` | `printTypeAliasDeclaration` | Done   |
 
 **Tier 5 — Patterns & Advanced (P2)**
 
-| AST Node               | Print function              | Status |
-| ---------------------- | --------------------------- | ------ |
-| `MatchExpression`      | `printMatchExpression`      | —      |
-| `MatchCase`            | `printMatchCase`            | —      |
-| `RecordPattern`        | `printRecordPattern`        | —      |
-| `TuplePattern`         | `printTuplePattern`         | —      |
-| `InlineTuplePattern`   | `printInlineTuplePattern`   | —      |
-| `ClassPattern`         | `printClassPattern`         | —      |
-| `LogicalPattern`       | `printLogicalPattern`       | —      |
-| `AsPattern`            | `printAsPattern`            | —      |
-| `TryExpression`        | `printTryExpression`        | —      |
-| `CatchClause`          | `printCatchClause`          | —      |
-| `ImportDeclaration`    | `printImportDeclaration`    | —      |
-| `ExportAllDeclaration` | `printExportAllDeclaration` | —      |
-| `Decorator`            | `printDecorator`            | —      |
-| `DeclareFunction`      | `printDeclareFunction`      | —      |
+| AST Node               | Print function              | Status       |
+| ---------------------- | --------------------------- | ------------ |
+| `MatchExpression`      | `printMatchExpression`      | Done         |
+| `MatchCase`            | `printMatchCase`            | Done         |
+| `RecordPattern`        | `printRecordPattern`        | Done         |
+| `TuplePattern`         | `printTuplePattern`         | Done         |
+| `InlineTuplePattern`   | `printInlineTuplePattern`   | —            |
+| `ClassPattern`         | `printClassPattern`         | Done         |
+| `LogicalPattern`       | `printLogicalPattern`       | Done         |
+| `AsPattern`            | `printAsPattern`            | Done         |
+| `TryExpression`        | `printTryExpression`        | Done         |
+| `CatchClause`          | `printCatchClause`          | Done         |
+| `ImportDeclaration`    | `printImportDeclaration`    | Done         |
+| `ExportAllDeclaration` | `printExportAllDeclaration` | Done         |
+| `Decorator`            | `printDecorator`            | Done (basic) |
+| `DeclareFunction`      | `printDeclareFunction`      | Done         |
 
 **Type Annotations**
 

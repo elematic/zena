@@ -1,0 +1,127 @@
+// Formatter test — verifies basic formatting via parse + print round-trip
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal } from 'zena:assert';
+import { format } from '../lib/printer.zena';
+import { console } from 'zena:console';
+
+let check = (name: String, actual: String, expected: String): void => {
+  if (actual != expected) {
+    console.log('FAIL: ' + name);
+    console.log('  actual:   [' + actual + ']');
+    console.log('  expected: [' + expected + ']');
+  }
+  equal(actual, expected, name);
+};
+
+let tests = suite('formatter', () => {
+  test('formats variable declaration', (t: TestContext) => {
+    let result = format('let x = 1;');
+    check('var decl', result, 'let x = 1;\n');
+  });
+
+  test('formats exported variable', (t: TestContext) => {
+    let result = format('export let x = 1;');
+    check('exported var', result, 'export let x = 1;\n');
+  });
+
+  test('formats mutable variable', (t: TestContext) => {
+    let result = format('var y = 42;');
+    check('mutable var', result, 'var y = 42;\n');
+  });
+
+  test('formats binary expression', (t: TestContext) => {
+    let result = format('let x = 1 + 2;');
+    check('binary expr', result, 'let x = 1 + 2;\n');
+  });
+
+  // SKIP: parser can't handle typed arrow function expressions yet
+  // test('formats function expression', (t: TestContext) => {
+  //   let result = format('let add = (a: i32, b: i32): i32 => a + b;');
+  //   check('function expr', result, 'let add = (a: i32, b: i32): i32 => a + b;\n');
+  // });
+
+  // SKIP: parser can't handle arrow function with block body yet
+  // test('formats if statement', (t: TestContext) => {
+  //   let result = format('let f = () => { if (true) { return 1; } }');
+  //   equal(result.length > 0, true);
+  // });
+
+  test('formats string literal with single quotes', (t: TestContext) => {
+    let result = format("let s = 'hello';");
+    check('string literal', result, "let s = 'hello';\n");
+  });
+
+  test('formats boolean literals', (t: TestContext) => {
+    let result = format('let a = true;');
+    check('boolean', result, 'let a = true;\n');
+  });
+
+  test('formats null literal', (t: TestContext) => {
+    let result = format('let a = null;');
+    check('null', result, 'let a = null;\n');
+  });
+
+  test('formats call expression', (t: TestContext) => {
+    let result = format('let x = add(1, 2);');
+    check('call expr', result, 'let x = add(1, 2);\n');
+  });
+
+  test('formats member expression', (t: TestContext) => {
+    let result = format('let x = a.b;');
+    check('member expr', result, 'let x = a.b;\n');
+  });
+
+  test('formats array literal', (t: TestContext) => {
+    let result = format('let a = [1, 2, 3];');
+    check('array literal', result, 'let a = [1, 2, 3];\n');
+  });
+
+  // === Transformation tests — verify the formatter changes input ===
+
+  test('normalizes extra whitespace', (t: TestContext) => {
+    let result = format('let   x=1;');
+    check('normalize ws', result, 'let x = 1;\n');
+  });
+
+  test('normalizes double quotes to single quotes', (t: TestContext) => {
+    let result = format('let s = "hello";');
+    check('normalize quotes', result, "let s = 'hello';\n");
+  });
+
+  test('normalizes extra operator spacing', (t: TestContext) => {
+    let result = format('let a = 1  +  2;');
+    check('normalize ops', result, 'let a = 1 + 2;\n');
+  });
+
+  test('adds trailing newline', (t: TestContext) => {
+    let result = format('let x = 1;');
+    // Last char should be newline
+    check('trailing newline', result, 'let x = 1;\n');
+  });
+
+  test('is idempotent', (t: TestContext) => {
+    let input = 'let x = 1  +  2;';
+    let first = format(input);
+    let second = format(first);
+    check('idempotent', second, first);
+  });
+});
+
+// Entry point - returns number of failed tests (0 = success)
+export let main = (): i32 => {
+  let result = tests.run();
+  // Print test results
+  var i: i32 = 0;
+  while (i < result.tests.length) {
+    let tr = result.tests[i];
+    if (!tr.passed) {
+      console.log('FAIL: ' + tr.name);
+      if (tr.error !== null) {
+        console.log('  error: ' + tr.error);
+      }
+    }
+    i = i + 1;
+  }
+  return result.failed;
+};
