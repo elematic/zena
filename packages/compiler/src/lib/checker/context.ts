@@ -1061,7 +1061,7 @@ export class CheckerContext {
     const typeMap = new Map<string, Type>();
     if (interfaceType.typeParameters) {
       for (const param of interfaceType.typeParameters) {
-        typeMap.set(param.name, Types.AnyRef);
+        typeMap.set(param.name, Types.EqRef);
       }
     }
     return typeMap;

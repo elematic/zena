@@ -23,6 +23,7 @@ export const TypeKind = {
   TypeParameter: 'TypeParameter',
   TypeAlias: 'TypeAlias',
   AnyRef: 'AnyRef',
+  EqRef: 'EqRef',
   Any: 'Any',
   Unknown: 'Unknown',
   Never: 'Never',
@@ -247,6 +248,7 @@ export const Types = {
   F32: F32,
   F64: F64,
   AnyRef: {kind: TypeKind.AnyRef} as Type,
+  EqRef: {kind: TypeKind.EqRef} as Type,
   Any: {kind: TypeKind.Any} as Type,
   Never: {kind: TypeKind.Never} as Type,
   /** Base symbol type used for 'symbol' type annotations. ID -1 means "any symbol". */

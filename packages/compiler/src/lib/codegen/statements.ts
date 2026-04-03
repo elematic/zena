@@ -28,10 +28,11 @@ import {
   type InlineTupleType,
   type UnionType,
 } from '../types.js';
-import {GcOpcode, Opcode, ValType, HeapType} from '../wasm.js';
+import {GcOpcode, Opcode, ValType} from '../wasm.js';
 import {
   decodeTypeIndex,
   getSymbolMemberName,
+  isErasedRefType,
   mapCheckerTypeToWasmType,
 } from './classes.js';
 import type {CodegenContext} from './context.js';
@@ -767,7 +768,7 @@ function generateIteratorNextCall(
   // The call returns (i32, anyref) since interface methods box return values.
   // We need to unbox the second value to the concrete element type.
   // First store the anyref, then unbox it.
-  const anyrefTemp = ctx.declareLocal('$$iter_anyref', [ValType.anyref]);
+  const anyrefTemp = ctx.declareLocal('$$iter_eqref', [ValType.eqref]);
   body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(anyrefTemp));
   // Now stack has just i32 (hasMore)
   // We need to return (i32, T) so push i32, then unboxed T
@@ -1063,12 +1064,8 @@ export function generateLocalVariableDeclaration(
     }
     type = mapCheckerTypeToWasmType(ctx, resolvedType);
 
-    // Union boxing (i32 -> anyref)
-    const isAnyRef =
-      (type.length === 1 && type[0] === ValType.anyref) ||
-      (type.length === 2 &&
-        type[0] === ValType.ref_null &&
-        type[1] === HeapType.any);
+    // Union boxing (i32 -> eqref/anyref)
+    const isAnyRef = isErasedRefType(type);
 
     if (
       isAnyRef &&
