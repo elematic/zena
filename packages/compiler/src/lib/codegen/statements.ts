@@ -104,9 +104,9 @@ export function generateBlockStatement(
     }
   }
 
-  // Check which functions reference other functions declared later in the block
-  // (this indicates potential mutual recursion that needs cells)
-  if (functionDecls.size >= 2) {
+  // Check which functions reference other functions declared at or after them in the block
+  // (this indicates self-recursion or mutual recursion that needs cells)
+  if (functionDecls.size >= 1) {
     const declOrder = Array.from(functionDecls.keys());
     for (const [name, {funcExpr}] of functionDecls) {
       const {captures} = analyzeCaptures(funcExpr);
@@ -114,8 +114,8 @@ export function generateBlockStatement(
       for (const capturedName of captures) {
         if (functionDecls.has(capturedName)) {
           const capturedIndex = declOrder.indexOf(capturedName);
-          // If we capture a function declared after us, both need cells
-          if (capturedIndex > myIndex) {
+          // If we capture ourselves or a function declared after us, both need cells
+          if (capturedIndex >= myIndex) {
             needsCell.add(name);
             needsCell.add(capturedName);
           }
