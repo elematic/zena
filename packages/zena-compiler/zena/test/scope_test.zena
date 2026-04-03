@@ -1,0 +1,506 @@
+// Tests for the scope system.
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { Array } from 'zena:array';
+import { parse } from '../lib/parser.zena';
+import {
+  Module,
+  Statement,
+  VariableDeclaration,
+  Identifier,
+  IdentifierPattern,
+  ClassDeclaration,
+  InterfaceDeclaration,
+  ImportDeclaration,
+  FunctionExpression,
+  TypeAliasDeclaration,
+  EnumDeclaration,
+  NewExpression,
+  ImportSpecifier
+} from '../lib/ast.zena';
+import {
+  Scope,
+  ScopeKind,
+  SymbolInfo,
+  ModuleExports,
+  ReferenceMap,
+  ScopeBuilder,
+  ScopeResult,
+  UnresolvedName
+} from '../lib/scope.zena';
+
+// ============================================================================
+// Scope Tests
+// ============================================================================
+
+export let tests = suite('Scope', (): void => {
+
+  // ==========================================================================
+  // Basic Scope Operations
+  // ==========================================================================
+
+  suite('Basic scope operations', (): void => {
+    test('declare and resolve value', (ctx: TestContext): void => {
+      let scope = new Scope(ScopeKind.Module, null);
+      // Use a dummy node for declaration.
+      let mod = parse('let x = 1;', 'test.zena');
+      let decl = mod.body[0];
+
+      let ok = scope.declareValue("x", "let", decl, "test.zena");
+      isTrue(ok);
+
+      let info = scope.resolveValue("x");
+      isTrue(info != null);
+      let sym = info as SymbolInfo;
+      equal(sym.kind, "let");
+      equal(sym.modulePath, "test.zena");
+    });
+
+    test('declare and resolve type', (ctx: TestContext): void => {
+      let scope = new Scope(ScopeKind.Module, null);
+      let mod = parse('class Foo {}', 'test.zena');
+      let decl = mod.body[0];
+
+      let ok = scope.declareType("Foo", decl, "test.zena");
+      isTrue(ok);
+
+      let info = scope.resolveType("Foo");
+      isTrue(info != null);
+      let sym = info as SymbolInfo;
+      equal(sym.kind, "type");
+    });
+
+    test('value and type namespaces are separate', (ctx: TestContext): void => {
+      let scope = new Scope(ScopeKind.Module, null);
+      let mod = parse('class Foo {}', 'test.zena');
+      let decl = mod.body[0];
+
+      scope.declareType("Foo", decl, "test.zena");
+      scope.declareValue("Foo", "let", decl, "test.zena");
+
+      // Both should resolve independently.
+      isTrue(scope.resolveType("Foo") != null);
+      isTrue(scope.resolveValue("Foo") != null);
+    });
+
+    test('duplicate declaration returns false', (ctx: TestContext): void => {
+      let scope = new Scope(ScopeKind.Module, null);
+      let mod = parse('let x = 1;', 'test.zena');
+      let decl = mod.body[0];
+
+      isTrue(scope.declareValue("x", "let", decl, "test.zena"));
+      isFalse(scope.declareValue("x", "let", decl, "test.zena"));
+    });
+
+    test('unresolved name returns null', (ctx: TestContext): void => {
+      let scope = new Scope(ScopeKind.Module, null);
+      let info = scope.resolveValue("nonexistent");
+      isTrue(info == null);
+    });
+  });
+
+  // ==========================================================================
+  // Nested Scopes
+  // ==========================================================================
+
+  suite('Nested scopes', (): void => {
+    test('child scope resolves from parent', (ctx: TestContext): void => {
+      let parent = new Scope(ScopeKind.Module, null);
+      let child = new Scope(ScopeKind.Block, parent);
+      let mod = parse('let x = 1;', 'test.zena');
+      let decl = mod.body[0];
+
+      parent.declareValue("x", "let", decl, "test.zena");
+
+      // Resolve from child should find parent's binding.
+      let info = child.resolveValue("x");
+      isTrue(info != null);
+    });
+
+    test('child shadows parent', (ctx: TestContext): void => {
+      let parent = new Scope(ScopeKind.Module, null);
+      let child = new Scope(ScopeKind.Block, parent);
+      let mod = parse('let x = 1; let y = 2;', 'test.zena');
+
+      parent.declareValue("x", "let", mod.body[0], "test.zena");
+      child.declareValue("x", "let", mod.body[1], "test.zena");
+
+      // Child's binding wins.
+      let info = child.resolveValue("x");
+      isTrue(info != null);
+      let sym = info as SymbolInfo;
+      // The declaration should be the child's (body[1]), not parent's.
+      isTrue(sym.declaration === mod.body[1]);
+    });
+
+    test('getLocal does not walk parents', (ctx: TestContext): void => {
+      let parent = new Scope(ScopeKind.Module, null);
+      let child = new Scope(ScopeKind.Block, parent);
+      let mod = parse('let x = 1;', 'test.zena');
+
+      parent.declareValue("x", "let", mod.body[0], "test.zena");
+
+      // getLocal on child should not find parent's binding.
+      let info = child.getLocalValue("x");
+      isTrue(info == null);
+    });
+
+    test('hasValue checks local scope only', (ctx: TestContext): void => {
+      let parent = new Scope(ScopeKind.Module, null);
+      let child = new Scope(ScopeKind.Block, parent);
+      let mod = parse('let x = 1;', 'test.zena');
+
+      parent.declareValue("x", "let", mod.body[0], "test.zena");
+
+      isFalse(child.hasValue("x"));
+      isTrue(parent.hasValue("x"));
+    });
+  });
+
+  // ==========================================================================
+  // Module Exports
+  // ==========================================================================
+
+  suite('Module exports', (): void => {
+    test('set and get value export', (ctx: TestContext): void => {
+      let exports = new ModuleExports();
+      let mod = parse('export let x = 1;', 'test.zena');
+      let decl = mod.body[0];
+      let info = new SymbolInfo("let", decl, "test.zena");
+
+      exports.setValue("x", info);
+
+      let got = exports.getValue("x");
+      isTrue(got != null);
+      equal((got as SymbolInfo).kind, "let");
+    });
+
+    test('set and get type export', (ctx: TestContext): void => {
+      let exports = new ModuleExports();
+      let mod = parse('class Foo {}', 'test.zena');
+      let decl = mod.body[0];
+      let info = new SymbolInfo("type", decl, "test.zena");
+
+      exports.setType("Foo", info);
+
+      let got = exports.getType("Foo");
+      isTrue(got != null);
+    });
+
+    test('hasValue and hasType', (ctx: TestContext): void => {
+      let exports = new ModuleExports();
+      let mod = parse('export class Foo {}', 'test.zena');
+      let decl = mod.body[0];
+      let typeInfo = new SymbolInfo("type", decl, "test.zena");
+      let valueInfo = new SymbolInfo("let", decl, "test.zena");
+
+      exports.setType("Foo", typeInfo);
+      exports.setValue("Foo", valueInfo);
+
+      isTrue(exports.hasType("Foo"));
+      isTrue(exports.hasValue("Foo"));
+      isFalse(exports.hasType("Bar"));
+      isFalse(exports.hasValue("Bar"));
+    });
+  });
+
+  // ==========================================================================
+  // ScopeBuilder - Variable Declarations
+  // ==========================================================================
+
+  suite('ScopeBuilder variables', (): void => {
+    test('let declaration is in scope', (ctx: TestContext): void => {
+      let mod = parse('let x = 1;', 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      let info = result.rootScope.resolveValue("x");
+      isTrue(info != null);
+      equal((info as SymbolInfo).kind, "let");
+    });
+
+    test('var declaration is in scope', (ctx: TestContext): void => {
+      let mod = parse('var y = 2;', 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      let info = result.rootScope.resolveValue("y");
+      isTrue(info != null);
+      equal((info as SymbolInfo).kind, "var");
+    });
+
+    test('exported variable appears in exports', (ctx: TestContext): void => {
+      let mod = parse('export let z = 3;', 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      isTrue(result.exports.hasValue("z"));
+    });
+
+    test('non-exported variable not in exports', (ctx: TestContext): void => {
+      let mod = parse('let w = 4;', 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      isFalse(result.exports.hasValue("w"));
+    });
+  });
+
+  // ==========================================================================
+  // ScopeBuilder - Classes
+  // ==========================================================================
+
+  suite('ScopeBuilder classes', (): void => {
+    test('class in both namespaces', (ctx: TestContext): void => {
+      let mod = parse('class Point { x: i32; }', 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      isTrue(result.rootScope.resolveValue("Point") != null);
+      isTrue(result.rootScope.resolveType("Point") != null);
+    });
+
+    test('exported class in both export namespaces', (ctx: TestContext): void => {
+      let mod = parse('export class Point { x: i32; }', 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      isTrue(result.exports.hasValue("Point"));
+      isTrue(result.exports.hasType("Point"));
+    });
+  });
+
+  // ==========================================================================
+  // ScopeBuilder - Functions
+  // ==========================================================================
+
+  suite('ScopeBuilder functions', (): void => {
+    test('annotated function is pre-declared', (ctx: TestContext): void => {
+      let source = "let add = (a: i32, b: i32): i32 => a + b;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      // Annotated functions should be pre-declared.
+      isTrue(result.rootScope.resolveValue("add") != null);
+    });
+
+    test('exported function appears in exports', (ctx: TestContext): void => {
+      let source = "export let add = (a: i32, b: i32): i32 => a + b;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      isTrue(result.exports.hasValue("add"));
+    });
+  });
+
+  // ==========================================================================
+  // ScopeBuilder - Imports
+  // ==========================================================================
+
+  suite('ScopeBuilder imports', (): void => {
+    test('import declares name in both namespaces', (ctx: TestContext): void => {
+      let source = "import { HashMap } from 'zena:map';";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      // Imports should be declared in both namespaces.
+      isTrue(result.rootScope.resolveValue("HashMap") != null);
+      isTrue(result.rootScope.resolveType("HashMap") != null);
+    });
+  });
+
+  // ==========================================================================
+  // ScopeBuilder - Unresolved Names
+  // ==========================================================================
+
+  suite('ScopeBuilder unresolved names', (): void => {
+    test('reference to undeclared name is unresolved', (ctx: TestContext): void => {
+      let source = "let x = y;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      // 'y' is not declared, so it should be unresolved.
+      isTrue(result.unresolvedValues.length > 0);
+      equal(result.unresolvedValues[0].name, "y");
+    });
+
+    test('reference to declared name is not unresolved', (ctx: TestContext): void => {
+      let source = "let x = 1; let y = x;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      // All names should resolve.
+      equal(result.unresolvedValues.length, 0);
+    });
+  });
+
+  // ==========================================================================
+  // ScopeBuilder - Type Aliases
+  // ==========================================================================
+
+  suite('ScopeBuilder type aliases', (): void => {
+    test('type alias in type namespace', (ctx: TestContext): void => {
+      let source = "type ID = i32;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      isTrue(result.rootScope.resolveType("ID") != null);
+      // Type aliases are NOT in value namespace.
+      isTrue(result.rootScope.resolveValue("ID") == null);
+    });
+
+    test('exported type alias in exports', (ctx: TestContext): void => {
+      let source = "export type ID = i32;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      isTrue(result.exports.hasType("ID"));
+    });
+  });
+
+  // ==========================================================================
+  // ScopeBuilder - Built-in Types
+  // ==========================================================================
+
+  suite('ScopeBuilder built-in types', (): void => {
+    test('primitive types are pre-seeded', (ctx: TestContext): void => {
+      let mod = parse('let x = 1;', 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      isTrue(result.rootScope.resolveType("i32") != null);
+      isTrue(result.rootScope.resolveType("i64") != null);
+      isTrue(result.rootScope.resolveType("f32") != null);
+      isTrue(result.rootScope.resolveType("f64") != null);
+      isTrue(result.rootScope.resolveType("boolean") != null);
+      isTrue(result.rootScope.resolveType("void") != null);
+      isTrue(result.rootScope.resolveType("never") != null);
+      isTrue(result.rootScope.resolveType("null") != null);
+    });
+
+    test('built-in types have null declaration', (ctx: TestContext): void => {
+      let mod = parse('let x = 1;', 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      let info = result.rootScope.resolveType("i32") as SymbolInfo;
+      isTrue(info.declaration == null);
+      equal(info.kind, "type");
+      equal(info.modulePath, "");
+    });
+
+    test('built-ins are only in type namespace', (ctx: TestContext): void => {
+      let mod = parse('let x = 1;', 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      isTrue(result.rootScope.resolveValue("i32") == null);
+    });
+
+    test('user type shadows built-in', (ctx: TestContext): void => {
+      let source = "type i32 = i64;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      let info = result.rootScope.resolveType("i32") as SymbolInfo;
+      // User's type alias should shadow the built-in.
+      isTrue(info.declaration != null);
+    });
+  });
+
+  // ==========================================================================
+  // ScopeBuilder - Forward References
+  // ==========================================================================
+
+  suite('ScopeBuilder forward references', (): void => {
+    test('function can reference later class (pre-declaration)', (ctx: TestContext): void => {
+      let source = "let make = (): Point => new Point(1, 2); class Point(x: i32, y: i32)";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      // Both should be declared.
+      isTrue(result.rootScope.resolveValue("make") != null);
+      isTrue(result.rootScope.resolveValue("Point") != null);
+      isTrue(result.rootScope.resolveType("Point") != null);
+    });
+  });
+
+  suite('ReferenceMap', (): void => {
+    test('resolved identifier is tracked', (ctx: TestContext): void => {
+      let source = "let x = 1; let y = x;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      // The `x` in `let y = x` should be a resolved reference.
+      // Find the Identifier node for the reference to `x`.
+      let yDecl = mod.body[1] as VariableDeclaration;
+      let xRef = yDecl.init as Identifier;
+      let sym = result.references.getByNode(xRef);
+      isTrue(sym != null);
+      equal((sym as SymbolInfo).kind, "let");
+    });
+
+    test('new expression callee is tracked', (ctx: TestContext): void => {
+      let source = "class Foo {} let x = new Foo();";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      let xDecl = mod.body[1] as VariableDeclaration;
+      let newExpr = xDecl.init as NewExpression;
+      let sym = result.references.getByNode(newExpr.callee);
+      isTrue(sym != null);
+      equal((sym as SymbolInfo).kind, "let");
+    });
+
+    test('unresolved identifier is not tracked', (ctx: TestContext): void => {
+      let source = "let x = y;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      let xDecl = mod.body[0] as VariableDeclaration;
+      let yRef = xDecl.init as Identifier;
+      let sym = result.references.getByNode(yRef);
+      isTrue(sym == null);
+    });
+
+    test('getByOffset finds reference', (ctx: TestContext): void => {
+      let source = "let x = 1; let y = x;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      // The `x` reference in `let y = x` — look up by its source offset.
+      // "let x = 1; let y = x;" — the final `x` is at offset 19.
+      let sym = result.references.getByOffset(19);
+      isTrue(sym != null);
+    });
+
+    test('import reference resolves to import specifier', (ctx: TestContext): void => {
+      let source = "import { HashMap } from 'zena:map'; let m = HashMap;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      let mDecl = mod.body[1] as VariableDeclaration;
+      let ref = mDecl.init as Identifier;
+      let sym = result.references.getByNode(ref);
+      isTrue(sym != null);
+      // The declaration should be the ImportSpecifier — the signal
+      // that further resolution through the imported module is needed.
+      isTrue((sym as SymbolInfo).declaration is ImportSpecifier);
+    });
+  });
+});
