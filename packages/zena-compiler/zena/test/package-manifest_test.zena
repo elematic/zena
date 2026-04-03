@@ -1,0 +1,147 @@
+// Tests for the package manifest parser and stdlib config builder.
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { CompilerHost } from '../lib/library-loader.zena';
+import { PackageConfig, ModuleExport } from '../lib/module-resolver.zena';
+import { loadPackageMap, buildStdlibConfig } from '../lib/package-manifest.zena';
+
+// ============================================================================
+// Test CompilerHost — serves files from a HashMap
+// ============================================================================
+
+class MockHost implements CompilerHost {
+  #files: HashMap<String, String>;
+
+  new() : #files = new HashMap<String, String>();
+
+  addFile(path: String, content: String): void {
+    this.#files.set(path, content);
+  }
+
+  readFile(path: String): String {
+    if (this.#files.has(path)) {
+      return this.#files[path];
+    }
+    return "";
+  }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+let tests = suite("Package Manifest", (): void => {
+
+  // --- loadPackageMap ---
+
+  suite("loadPackageMap", (): void => {
+
+    test("parses string shorthand packages", (t: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": "./lib/mylib"}}');
+
+      let packages = loadPackageMap(host, "/project/zena-packages.json");
+      isTrue(packages.has("mylib"));
+
+      let config = packages["mylib"];
+      equal(config.root, "/project/lib/mylib");
+      // String shorthand → open package (no exports restriction).
+      equal(config.exports == null, true);
+      equal(config.internal == null, true);
+    });
+
+    test("parses object form packages", (t: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib/mylib", "exports": {"utils": {}, "math": {}}, "internal": ["impl"]}}}');
+
+      let packages = loadPackageMap(host, "/project/zena-packages.json");
+      let config = packages["mylib"];
+      equal(config.root, "/project/lib/mylib");
+
+      // Exports present.
+      isTrue(config.exports != null);
+
+      // Internal modules.
+      isTrue(config.internal != null);
+      isTrue(config.isInternal("impl"));
+      isFalse(config.isInternal("utils"));
+    });
+
+    test("parses virtual module exports", (t: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib", "exports": {"console": {"virtual": {"host": "console-js", "wasi": "console-wasi"}}}}}}');
+
+      let packages = loadPackageMap(host, "/project/zena-packages.json");
+      let config = packages["mylib"];
+      let exports = config.exports as HashMap<String, ModuleExport>;
+      let consoleExport = exports["console"];
+      let virtual = consoleExport.virtual as HashMap<String, String>;
+      equal(virtual["host"], "console-js");
+      equal(virtual["wasi"], "console-wasi");
+    });
+
+    test("skips zena package from manifest", (t: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/zena-packages.json", '{"packages": {"zena": {"root": "/stdlib"}, "mylib": "./lib"}}');
+
+      let packages = loadPackageMap(host, "/project/zena-packages.json");
+      // "zena" is skipped — the compiler handles stdlib internally.
+      isFalse(packages.has("zena"));
+      isTrue(packages.has("mylib"));
+    });
+
+    test("handles empty packages", (t: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/zena-packages.json", '{"packages": {}}');
+
+      let packages = loadPackageMap(host, "/project/zena-packages.json");
+      equal(packages.size, 0);
+    });
+  });
+
+  // --- buildStdlibConfig ---
+
+  suite("buildStdlibConfig", (): void => {
+
+    test("sets root from argument", (t: TestContext): void => {
+      let config = buildStdlibConfig("/path/to/stdlib/zena");
+      equal(config.root, "/path/to/stdlib/zena");
+    });
+
+    test("includes public modules", (t: TestContext): void => {
+      let config = buildStdlibConfig("/stdlib");
+      let exports = config.exports as HashMap<String, ModuleExport>;
+      isTrue(exports.has("string"));
+      isTrue(exports.has("array"));
+      isTrue(exports.has("map"));
+      isTrue(exports.has("json"));
+      isTrue(exports.has("test"));
+    });
+
+    test("includes console as virtual module", (t: TestContext): void => {
+      let config = buildStdlibConfig("/stdlib");
+      let exports = config.exports as HashMap<String, ModuleExport>;
+      let consoleExport = exports["console"];
+      let virtual = consoleExport.virtual as HashMap<String, String>;
+      equal(virtual["host"], "console-host");
+      equal(virtual["wasi"], "console-wasi");
+    });
+
+    test("marks implementation modules as internal", (t: TestContext): void => {
+      let config = buildStdlibConfig("/stdlib");
+      isTrue(config.isInternal("console-host"));
+      isTrue(config.isInternal("console-wasi"));
+      isTrue(config.isInternal("console-interface"));
+      isFalse(config.isInternal("string"));
+    });
+  });
+});
+
+// Entry point - returns number of failed tests (0 = success)
+export let main = (): i32 => {
+  let result = tests.run();
+  return result.failed;
+};

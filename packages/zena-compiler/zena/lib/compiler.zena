@@ -1,0 +1,177 @@
+// Compiler entry point for the self-hosted Zena compiler.
+//
+// The Compiler orchestrates the full compilation pipeline:
+// 1. Module resolution (via ModuleResolver)
+// 2. Source loading and parsing (via LibraryLoader)
+// 3. Dependency graph computation
+// 4. [Future] Type checking
+// 5. [Future] Code generation
+//
+// Usage:
+//   let compiler = new Compiler(host, options);
+//   let result = compiler.compile("/path/to/main.zena");
+//   for (let lib in result.libraries) {
+//     // process each library in dependency order
+//   }
+
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { Error } from 'zena:error';
+import {
+  PackageConfig,
+  ModuleExport,
+  ModuleResolver,
+  ResolvedModule
+} from './module-resolver.zena';
+import {
+  CompilerHost,
+  LibraryLoader,
+  LibraryRecord,
+  LibraryGraph
+} from './library-loader.zena';
+import { buildStdlibConfig, loadPackageMap } from './package-manifest.zena';
+
+// Re-export types used by consumers.
+export { CompilerHost } from './library-loader.zena';
+export { PackageConfig, ModuleExport, ResolvedModule } from './module-resolver.zena';
+export { LibraryRecord, LibraryGraph } from './library-loader.zena';
+export { loadPackageMap, buildStdlibConfig } from './package-manifest.zena';
+
+// ============================================================================
+// Compiler Options
+// ============================================================================
+
+// Options for configuring the compiler.
+//
+// The stdlib ("zena" package) is always included automatically. The caller
+// must provide `stdlibRoot` so the compiler knows where to find stdlib
+// source files. User packages come from `packages` (typically loaded from
+// `zena-packages.json` via `loadPackageMap()`).
+export class CompilerOptions {
+  // Compilation target: "host" (JavaScript) or "wasi".
+  target: String;
+
+  // Absolute path to the stdlib's zena source directory.
+  // E.g., "/path/to/packages/stdlib/zena"
+  //
+  // This is required because the self-hosted compiler doesn't yet embed
+  // the stdlib sources. Eventually this won't be needed.
+  stdlibRoot: String;
+
+  // User package map: name → PackageConfig.
+  // The "zena" package should NOT be included here — it's added
+  // automatically from `stdlibRoot`.
+  // Loaded from zena-packages.json via `loadPackageMap()`.
+  packages: HashMap<String, PackageConfig>;
+
+  // Modules to inject as implicit imports in every source file (the prelude).
+  // Each entry is a specifier (e.g., "zena:string").
+  // If null, no prelude is injected.
+  prelude: Array<String> | null;
+
+  new(
+    target: String,
+    stdlibRoot: String,
+    packages: HashMap<String, PackageConfig>,
+    prelude: Array<String> | null
+  ) : target = target, stdlibRoot = stdlibRoot, packages = packages, prelude = prelude;
+}
+
+// ============================================================================
+// Compilation Result
+// ============================================================================
+
+// The result of a compilation.
+export class CompilationResult(
+  // All libraries in topological order (dependencies before dependents).
+  libraries: Array<LibraryRecord>,
+
+  // The entry point library.
+  entry: LibraryRecord,
+
+  // Whether a circular dependency was detected.
+  hasCycle: boolean
+)
+
+// ============================================================================
+// Compiler
+// ============================================================================
+
+// The main compiler entry point.
+//
+// Manages module resolution, loading, and (in the future) type checking
+// and code generation. The stdlib is always available — callers only need
+// to configure user packages and provide the stdlib root path.
+export class Compiler {
+  #host: CompilerHost;
+  #resolver: ModuleResolver;
+  #loader: LibraryLoader;
+  #options: CompilerOptions;
+
+  new(host: CompilerHost, options: CompilerOptions) {
+    this.#host = host;
+    this.#options = options;
+
+    // Build the combined package map: stdlib + user packages.
+    let allPackages = new HashMap<String, PackageConfig>();
+
+    // Always include stdlib.
+    let stdlibConfig = buildStdlibConfig(options.stdlibRoot);
+    allPackages.set("zena", stdlibConfig);
+
+    // Add user packages.
+    let userPkgIter = options.packages.keys();
+    while (let (true, name) = userPkgIter.next()) {
+      allPackages.set(name, options.packages[name]);
+    }
+
+    this.#resolver = new ModuleResolver(allPackages, options.target);
+    this.#loader = new LibraryLoader(host, this.#resolver);
+  }
+
+  // The module resolver used by this compiler.
+  resolver: ModuleResolver {
+    get { return this.#resolver; }
+  }
+
+  // Compile a program starting from an entry point.
+  //
+  // The entry point should be a canonical path (absolute file path or
+  // "package:module" specifier). The compiler will:
+  // 1. Load and parse the entry point and all transitive dependencies.
+  // 2. Compute the dependency graph in topological order.
+  // 3. [Future] Type-check all modules.
+  // 4. Return the compilation result.
+  compile(entryPoint: String): CompilationResult {
+    // Load prelude modules first (if configured).
+    if (this.#options.prelude != null) {
+      let prelude = this.#options.prelude as Array<String>;
+      var i = 0;
+      while (i < prelude.length) {
+        let specifier = prelude[i];
+        let resolved = this.#resolver.resolve(specifier, "");
+        this.#loader.load(resolved.path);
+        i = i + 1;
+      }
+    }
+
+    // Load the entry point and all transitive dependencies.
+    let entry = this.#loader.load(entryPoint);
+
+    // Compute topological order.
+    let graph = this.#loader.computeGraph(entry);
+
+    return new CompilationResult(graph.libraries, entry, graph.hasCycle);
+  }
+
+  // Resolve a specifier relative to a referrer.
+  // Convenience wrapper around the resolver.
+  resolve(specifier: String, referrer: String): ResolvedModule {
+    return this.#resolver.resolve(specifier, referrer);
+  }
+
+  // Get a previously loaded library by canonical path.
+  getLibrary(path: String): LibraryRecord | null {
+    return this.#loader.get(path);
+  }
+}

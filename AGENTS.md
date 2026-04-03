@@ -245,6 +245,7 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y --dir . --invoke m
     - **Modules**: `docs/design/modules.md`
     - **Name Resolution**: `docs/design/name-resolution.md`
     - **Optimizations**: `docs/design/optimizations.md`
+    - **Package Manifest**: `docs/design/package-manifest.md`
     - **Records & Tuples**: `docs/design/records-and-tuples.md`
     - **Standard Library**: `docs/design/standard-library.md`
     - **Strings**: `docs/design/strings.md`

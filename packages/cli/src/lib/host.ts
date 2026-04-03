@@ -7,8 +7,14 @@ import {
   isInternalModule,
 } from '@zena-lang/stdlib';
 
+export interface PackageConfigEntry {
+  root: string;
+  exports?: Record<string, {virtual?: Record<string, string>}>;
+  internal?: string[];
+}
+
 export interface PackageMap {
-  packages: Record<string, string>;
+  packages: Record<string, string | PackageConfigEntry>;
 }
 
 export class NodeCompilerHost implements CompilerHost {
@@ -25,7 +31,8 @@ export class NodeCompilerHost implements CompilerHost {
     this.#packageMap = new Map();
     if (packageMap) {
       const base = packageMapDir ?? process.cwd();
-      for (const [name, dir] of Object.entries(packageMap.packages)) {
+      for (const [name, value] of Object.entries(packageMap.packages)) {
+        const dir = typeof value === 'string' ? value : value.root;
         this.#packageMap.set(name, resolve(base, dir));
       }
     }

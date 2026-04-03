@@ -1,0 +1,221 @@
+// Library loading and caching for the Zena compiler.
+//
+// The LibraryLoader manages source loading, parsing, and caching. Each source
+// file is loaded exactly once and cached by its canonical path. This
+// guarantees identity: types from the same library source are always the
+// same object.
+//
+// The loader uses a ModuleResolver for import resolution and a CompilerHost
+// for file I/O.
+
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { Error } from 'zena:error';
+import { Module, Statement, ImportDeclaration, ExportAllDeclaration } from './ast.zena';
+import { parse } from './parser.zena';
+import { ModuleResolver, ResolvedModule } from './module-resolver.zena';
+
+// ============================================================================
+// Compiler Host
+// ============================================================================
+
+// Abstract interface for file I/O.
+//
+// The compiler host is the only point of contact between the compiler and
+// the outside world. Different implementations provide different backends:
+// - Filesystem (Node.js, WASI)
+// - In-memory (testing, browser playground)
+// - Network (future)
+export interface CompilerHost {
+  // Read the source code of a file by its canonical path.
+  // For stdlib modules, the path has the form "zena:module-name".
+  // For file modules, the path is an absolute filesystem path.
+  readFile(path: String): String;
+}
+
+// ============================================================================
+// Library Record
+// ============================================================================
+
+// A loaded and parsed library (source file).
+//
+// LibraryRecords are cached by canonical path. Requesting the same path
+// twice always returns the same record instance.
+export class LibraryRecord {
+  // Canonical path identifying this library.
+  path: String;
+
+  // Whether this library is part of the standard library.
+  isStdlib: boolean;
+
+  // The package this library belongs to (empty string if none).
+  packageName: String;
+
+  // The original source code.
+  source: String;
+
+  // Parsed AST.
+  ast: Module;
+
+  // Resolved import mappings.
+  // Key: import specifier as written in source (e.g., "./utils", "zena:string")
+  // Value: canonical resolved path
+  imports: HashMap<String, String>;
+
+  new(
+    path: String,
+    isStdlib: boolean,
+    packageName: String,
+    source: String,
+    ast: Module
+  )
+    : path = path,
+      isStdlib = isStdlib,
+      packageName = packageName,
+      source = source,
+      ast = ast,
+      imports = new HashMap<String, String>();
+}
+
+// ============================================================================
+// Library Graph
+// ============================================================================
+
+// Result of topologically sorting libraries by their dependencies.
+export class LibraryGraph(
+  // Libraries in topological order (dependencies before dependents).
+  libraries: Array<LibraryRecord>,
+
+  // True if a cycle was detected (libraries still returned, best-effort order).
+  hasCycle: boolean
+)
+
+// ============================================================================
+// Library Loader
+// ============================================================================
+
+// Loads, parses, and caches Zena libraries.
+//
+// The LibraryLoader is responsible for:
+// - Loading library source code (via CompilerHost)
+// - Parsing source into ASTs
+// - Caching loaded libraries by path (ensuring identity)
+// - Recursively loading dependencies (via import resolution)
+//
+// Usage:
+//   let loader = new LibraryLoader(host, resolver);
+//   let entry = loader.load("/path/to/main.zena");
+//   let graph = loader.computeGraph(entry);
+export class LibraryLoader {
+  #host: CompilerHost;
+  #resolver: ModuleResolver;
+  #cache: HashMap<String, LibraryRecord>;
+
+  new(host: CompilerHost, resolver: ModuleResolver)
+    : #host = host, #resolver = resolver, #cache = new HashMap<String, LibraryRecord>();
+
+  // Load a library by its canonical path.
+  //
+  // If the library has already been loaded, returns the cached record.
+  // Otherwise: loads source → parses → caches → recursively loads imports.
+  load(path: String): LibraryRecord {
+    if (this.#cache.has(path)) {
+      return this.#cache[path];
+    }
+
+    let isStdlib = path.startsWith("zena:");
+    let packageName = this.#resolver.findPackageForPath(path);
+
+    let source = this.#host.readFile(path);
+    let ast = parse(source, path);
+
+    // Cache the record BEFORE resolving imports to handle circular imports.
+    let record = new LibraryRecord(path, isStdlib, packageName, source, ast);
+    this.#cache.set(path, record);
+
+    // Resolve and recursively load imports.
+    var i = 0;
+    while (i < ast.body.length) {
+      let stmt = ast.body[i];
+      match (stmt) {
+        case ImportDeclaration {moduleSpecifier}: {
+          let specifier = moduleSpecifier.value;
+          let resolved = this.#resolver.resolve(specifier, path);
+          record.imports.set(specifier, resolved.path);
+          this.load(resolved.path);
+        }
+        case ExportAllDeclaration {moduleSpecifier}: {
+          let specifier = moduleSpecifier.value;
+          let resolved = this.#resolver.resolve(specifier, path);
+          record.imports.set(specifier, resolved.path);
+          this.load(resolved.path);
+        }
+        case _: {}
+      }
+      i = i + 1;
+    }
+
+    return record;
+  }
+
+  // Check if a library has already been loaded.
+  has(path: String): boolean {
+    return this.#cache.has(path);
+  }
+
+  // Get a previously loaded library without triggering a load.
+  get(path: String): LibraryRecord | null {
+    if (this.#cache.has(path)) {
+      return this.#cache[path];
+    }
+    return null;
+  }
+
+  // Compute the topological order of libraries starting from a root.
+  //
+  // Returns libraries in dependency order: if A imports B, then B appears
+  // before A. This ordering is required for correct type checking (a module's
+  // dependencies must be checked before the module itself).
+  computeGraph(entry: LibraryRecord): LibraryGraph {
+    let visited = new HashMap<String, i32>();
+    let stack = new HashMap<String, i32>();
+    let sorted = new Array<LibraryRecord>();
+    let hasCycle = this.#topoVisit(entry, visited, stack, sorted);
+    return new LibraryGraph(sorted, hasCycle);
+  }
+
+  #topoVisit(
+    lib: LibraryRecord,
+    visited: HashMap<String, i32>,
+    stack: HashMap<String, i32>,
+    sorted: Array<LibraryRecord>
+  ): boolean {
+    if (visited.has(lib.path)) {
+      return false;
+    }
+
+    if (stack.has(lib.path)) {
+      return true;
+    }
+
+    stack.set(lib.path, 1);
+
+    var hasCycle = false;
+
+    // Visit dependencies first.
+    let iter = lib.imports.keys();
+    while (let (true, specifier) = iter.next()) {
+      let importPath = lib.imports[specifier];
+      if (this.#cache.has(importPath)) {
+        if (this.#topoVisit(this.#cache[importPath], visited, stack, sorted)) {
+          hasCycle = true;
+        }
+      }
+    }
+
+    stack.delete(lib.path);
+    visited.set(lib.path, 1);
+    sorted.push(lib);
+    return hasCycle;
+  }
+}

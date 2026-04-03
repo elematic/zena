@@ -1,0 +1,323 @@
+// Module resolution for the Zena compiler.
+//
+// Resolves import specifiers to canonical module paths. Handles:
+// - Relative imports (./foo, ../bar)
+// - Package imports (package:module)
+// - Virtual modules (target-conditional resolution)
+// - Internal modules (package-private)
+//
+// Resolution is a pure function of configuration (packages + target).
+// No I/O is performed.
+
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { Error } from 'zena:error';
+
+// ============================================================================
+// Package Configuration
+// ============================================================================
+
+// Configuration for a single module export within a package.
+// For simple modules, `virtual` is null.
+// For target-conditional modules, `virtual` maps target names to
+// the actual implementation module name.
+export class ModuleExport {
+  virtual: HashMap<String, String> | null;
+
+  new(virtual: HashMap<String, String> | null)
+    : virtual = virtual;
+}
+
+// Configuration for a package in the package manifest.
+//
+// A package maps a name (e.g., "zena", "zena-compiler") to a root directory
+// containing .zena source files. Packages can optionally restrict which
+// modules are importable via `exports`, and hide implementation modules
+// via `internal`.
+export class PackageConfig {
+  // Absolute path to the package root directory.
+  root: String;
+
+  // Explicit module exports. If null, all .zena files are importable (open
+  // package). If present, only listed modules can be imported (closed package).
+  exports: HashMap<String, ModuleExport> | null;
+
+  // Internal module names. These can only be imported from within the same
+  // package (e.g., stdlib implementation modules like "console-host").
+  internal: Array<String> | null;
+
+  new(
+    root: String,
+    exports: HashMap<String, ModuleExport> | null,
+    internal: Array<String> | null
+  ) : root = root, exports = exports, internal = internal;
+
+  // Check if a module name is internal to this package.
+  isInternal(name: String): boolean {
+    if (this.internal == null) { return false; }
+    let arr = this.internal as Array<String>;
+    var i = 0;
+    while (i < arr.length) {
+      if (arr[i] == name) { return true; }
+      i = i + 1;
+    }
+    return false;
+  }
+}
+
+// ============================================================================
+// Resolution Result
+// ============================================================================
+
+// A resolved module with its canonical path and package info.
+export class ResolvedModule(
+  // Canonical path. For stdlib: "zena:string", "zena:console-wasi".
+  // For file modules: "/absolute/path/to/module.zena".
+  path: String,
+
+  // The package this module belongs to. Empty string for relative imports
+  // that don't fall under any known package.
+  packageName: String
+)
+
+// ============================================================================
+// Module Resolver
+// ============================================================================
+
+// Resolves import specifiers to canonical module paths.
+//
+// The resolver does not perform any I/O. It operates purely on its
+// configuration: a map of package names to PackageConfig, and a
+// compilation target string.
+//
+// Usage:
+//   let resolver = new ModuleResolver(packages, "host");
+//   let resolved = resolver.resolve("zena:string", "/my/file.zena");
+//   // resolved.path == "zena:string"
+export class ModuleResolver {
+  #packages: HashMap<String, PackageConfig>;
+  #target: String;
+
+  new(packages: HashMap<String, PackageConfig>, target: String)
+    : #packages = packages, #target = target;
+
+  // The compilation target (e.g., "host", "wasi").
+  target: String {
+    get { return this.#target; }
+  }
+
+  // Resolve an import specifier relative to a referrer module.
+  //
+  // Specifier formats:
+  // - Relative: "./foo.zena", "../bar.zena"
+  // - Package:  "zena:string", "mypackage:module"
+  resolve(specifier: String, referrer: String): ResolvedModule {
+    if (specifier.startsWith("./") || specifier.startsWith("../")) {
+      return this.resolveRelative(specifier, referrer);
+    }
+
+    let colonPos = indexOfByte(specifier, 58); // 58 = ':'
+    if (colonPos < 0) {
+      throw new Error(
+        "Invalid specifier: '" + specifier + "' (expected package:path format)"
+      );
+    }
+
+    let packageName = specifier.sliceBytes(0, colonPos);
+    let moduleName = specifier.sliceBytes(colonPos + 1, specifier.length);
+    return this.resolvePackage(packageName, moduleName, referrer);
+  }
+
+  // Resolve a relative import specifier.
+  resolveRelative(specifier: String, referrer: String): ResolvedModule {
+    let dir = dirName(referrer);
+    let resolved = normalizePath(dir + "/" + specifier);
+    let packageName = this.findPackageForPath(resolved);
+    return new ResolvedModule(resolved, packageName);
+  }
+
+  // Resolve a package import specifier.
+  resolvePackage(
+    packageName: String,
+    moduleName: String,
+    referrer: String
+  ): ResolvedModule {
+    let (config, found) = this.#packages.get(packageName);
+    if (!found) {
+      throw new Error("Unknown package: '" + packageName + "'");
+    }
+
+    // Internal modules bypass exports — only accessible within the package.
+    if (config.isInternal(moduleName)) {
+      if (!this.isInPackage(referrer, packageName)) {
+        throw new Error(
+          "Cannot import internal module '" + packageName + ":" + moduleName + "'"
+        );
+      }
+      return makeCanonicalPath(packageName, moduleName, config);
+    }
+
+    // Check exports if the package has an explicit export list.
+    if (config.exports != null) {
+      let exports = config.exports as HashMap<String, ModuleExport>;
+      if (!exports.has(moduleName)) {
+        throw new Error(
+          "Module '" + moduleName + "' not found in package '" + packageName + "'"
+        );
+      }
+
+      let moduleExport = exports[moduleName];
+
+      // Resolve virtual modules (target-conditional).
+      if (moduleExport.virtual != null) {
+        let virtual = moduleExport.virtual as HashMap<String, String>;
+        let (resolvedName, virtualFound) = virtual.get(this.#target);
+        if (virtualFound) {
+          return makeCanonicalPath(packageName, resolvedName, config);
+        }
+      }
+    }
+
+    return makeCanonicalPath(packageName, moduleName, config);
+  }
+
+  // Check if a referrer path is inside a given package.
+  isInPackage(referrer: String, packageName: String): boolean {
+    if (packageName == "zena") {
+      return referrer.startsWith("zena:");
+    }
+    let (config, found) = this.#packages.get(packageName);
+    if (!found) { return false; }
+    return referrer.startsWith(config.root);
+  }
+
+  // Find which package (if any) contains the given path.
+  findPackageForPath(path: String): String {
+    if (path.startsWith("zena:")) {
+      return "zena";
+    }
+    let iter = this.#packages.keys();
+    while (let (true, name) = iter.next()) {
+      let config = this.#packages[name];
+      if (path.startsWith(config.root)) {
+        return name;
+      }
+    }
+    return "";
+  }
+}
+
+// ============================================================================
+// Path Utilities
+// ============================================================================
+
+// Create a canonical path for a module in a package.
+// Stdlib modules use the "zena:" prefix; other packages resolve to file paths.
+let makeCanonicalPath = (
+  packageName: String,
+  moduleName: String,
+  config: PackageConfig
+): ResolvedModule => {
+  if (packageName == "zena") {
+    return new ResolvedModule("zena:" + moduleName, "zena");
+  }
+  let filePath = config.root + "/" + moduleName + ".zena";
+  return new ResolvedModule(filePath, packageName);
+};
+
+// Find the byte position of the first occurrence of a byte in a string.
+// Returns -1 if not found.
+export let indexOfByte = (s: String, byte: i32): i32 => {
+  var i = 0;
+  while (i < s.length) {
+    if (s.getByteAt(i) == byte) {
+      return i;
+    }
+    i = i + 1;
+  }
+  return 0 - 1;
+};
+
+// Get the directory portion of a path.
+// e.g., "/foo/bar/baz.zena" → "/foo/bar"
+// Returns "." if the path has no directory separator.
+export let dirName = (path: String): String => {
+  // For zena: canonical paths, the "directory" is meaningless for joining
+  // but we return the prefix so relative imports within stdlib work.
+  if (path.startsWith("zena:")) {
+    return "zena:";
+  }
+  var lastSlash = 0 - 1;
+  var i = 0;
+  while (i < path.length) {
+    if (path.getByteAt(i) == 47) { // 47 = '/'
+      lastSlash = i;
+    }
+    i = i + 1;
+  }
+  if (lastSlash < 0) {
+    return ".";
+  }
+  return path.sliceBytes(0, lastSlash);
+};
+
+// Normalize a path by resolving "." and ".." segments.
+// Preserves leading "/" for absolute paths.
+export let normalizePath = (path: String): String => {
+  let segments = splitByByte(path, 47); // 47 = '/'
+  let result = new Array<String>();
+  let isAbsolute = path.length > 0 && path.getByteAt(0) == 47;
+
+  var i = 0;
+  while (i < segments.length) {
+    let seg = segments[i];
+    if (seg == "." || seg == "") {
+      // Skip "." and empty segments (from "//")
+    } else if (seg == "..") {
+      if (result.length > 0) {
+        result.pop();
+      }
+    } else {
+      result.push(seg);
+    }
+    i = i + 1;
+  }
+
+  if (isAbsolute) {
+    return "/" + joinBySlash(result);
+  }
+  if (result.length == 0) {
+    return ".";
+  }
+  return joinBySlash(result);
+};
+
+// Split a string by a byte delimiter.
+export let splitByByte = (s: String, delim: i32): Array<String> => {
+  let parts = new Array<String>();
+  var start = 0;
+  var i = 0;
+  while (i < s.length) {
+    if (s.getByteAt(i) == delim) {
+      parts.push(s.sliceBytes(start, i));
+      start = i + 1;
+    }
+    i = i + 1;
+  }
+  parts.push(s.sliceBytes(start, s.length));
+  return parts;
+};
+
+// Join an array of path segments with "/".
+let joinBySlash = (segments: Array<String>): String => {
+  if (segments.length == 0) {
+    return "";
+  }
+  var result = segments[0];
+  var i = 1;
+  while (i < segments.length) {
+    result = result + "/" + segments[i];
+    i = i + 1;
+  }
+  return result;
+};

@@ -1,0 +1,170 @@
+// Package manifest parsing for the Zena compiler.
+//
+// Parses `zena-packages.json` files into `PackageConfig` maps. The manifest
+// format is:
+//
+//   {
+//     "packages": {
+//       "my-lib": "./packages/my-lib/zena/lib",         // shorthand
+//       "my-other-lib": {                                // full form
+//         "root": "./packages/other/zena/lib",
+//         "exports": {
+//           "utils": {},
+//           "console": { "virtual": { "host": "...", "wasi": "..." } }
+//         },
+//         "internal": ["impl-detail"]
+//       }
+//     }
+//   }
+
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { Error } from 'zena:error';
+import { parseJson, JsonValue, JsonObject, JsonArray } from 'zena:json';
+import { PackageConfig, ModuleExport } from './module-resolver.zena';
+import { CompilerHost } from './library-loader.zena';
+import { dirName, normalizePath } from './module-resolver.zena';
+
+// ============================================================================
+// Package Map Loading
+// ============================================================================
+
+// Load and parse a `zena-packages.json` file.
+//
+// The `manifestPath` is an absolute path to the manifest file. All relative
+// paths in the manifest are resolved against the manifest's directory.
+//
+// Returns a map of package name → PackageConfig. The "zena" package (stdlib)
+// is NOT included — the compiler adds that automatically.
+export let loadPackageMap = (
+  host: CompilerHost,
+  manifestPath: String
+): HashMap<String, PackageConfig> => {
+  let source = host.readFile(manifestPath);
+  let json = parseJson(source);
+  let root = json as JsonObject;
+  let packages = root["packages"] as JsonObject;
+  let manifestDir = dirName(manifestPath);
+  let result = new HashMap<String, PackageConfig>();
+
+  packages.forEach((name: String, value: JsonValue): void => {
+    // Skip "zena" — stdlib is handled by the compiler.
+    if (name == "zena") {
+      return;
+    }
+    let config = parsePackageEntry(value, manifestDir);
+    result.set(name, config);
+  });
+
+  return result;
+};
+
+// Parse a single package entry from the manifest.
+//
+// Supports two forms:
+// - String shorthand: "./path/to/lib" → open package with that root
+// - Object form: { root, exports?, internal? }
+let parsePackageEntry = (value: JsonValue, manifestDir: String): PackageConfig => {
+  // String shorthand: just a path.
+  if (value is String) {
+    let path = value as String;
+    let resolved = normalizePath(manifestDir + "/" + path);
+    return new PackageConfig(resolved, null, null);
+  }
+
+  // Object form.
+  let obj = value as JsonObject;
+  let rootValue = obj["root"] as String;
+  let root = normalizePath(manifestDir + "/" + rootValue);
+
+  // Parse exports (optional).
+  var exports: HashMap<String, ModuleExport> | null = null;
+  if (obj.has("exports")) {
+    let exportsMap = new HashMap<String, ModuleExport>();
+    let exportsObj = obj["exports"] as JsonObject;
+    exportsObj.forEach((moduleName: String, moduleValue: JsonValue): void => {
+      let moduleExport = parseModuleExport(moduleValue);
+      exportsMap.set(moduleName, moduleExport);
+    });
+    exports = exportsMap;
+  }
+
+  // Parse internal modules (optional).
+  var internal: Array<String> | null = null;
+  if (obj.has("internal")) {
+    let internalList = new Array<String>();
+    let internalArr = obj["internal"] as JsonArray;
+    var i = 0;
+    while (i < internalArr.length) {
+      let name = internalArr[i] as String;
+      internalList.push(name);
+      i = i + 1;
+    }
+    internal = internalList;
+  }
+
+  return new PackageConfig(root, exports, internal);
+};
+
+// Parse a module export entry: {} or { "virtual": { ... } }
+let parseModuleExport = (value: JsonValue): ModuleExport => {
+  let obj = value as JsonObject;
+
+  if (obj.has("virtual")) {
+    let virtualObj = obj["virtual"] as JsonObject;
+    let virtual = new HashMap<String, String>();
+    virtualObj.forEach((target: String, implName: JsonValue): void => {
+      virtual.set(target, implName as String);
+    });
+    return new ModuleExport(virtual);
+  }
+
+  return new ModuleExport(null);
+};
+
+// ============================================================================
+// Stdlib Configuration
+// ============================================================================
+
+// Build the standard library PackageConfig.
+//
+// The `stdlibRoot` is the absolute path to the stdlib's zena source
+// directory (e.g., "/path/to/packages/stdlib/zena").
+//
+// This is kept separate from user packages because the stdlib is a
+// language-level concept, not a user dependency. The compiler always
+// includes it. Eventually, the stdlib source could be embedded in the
+// compiler binary, eliminating the need for a path.
+export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
+  let exports = new HashMap<String, ModuleExport>();
+
+  // Public modules (no virtual mapping).
+  let publicModules = [
+    "array", "array-iterator", "assert", "box", "byte-array",
+    "byte-buffer", "cli", "error", "fixed-array", "fs",
+    "growable-array", "growable-array-iterator", "hashable",
+    "immutable-array", "iterator", "json", "map", "ordered-map",
+    "math", "memory", "option", "range", "regex", "sequence",
+    "set", "string", "string-builder", "string-convert",
+    "string-reader", "template-strings-array", "test"
+  ];
+  var i = 0;
+  while (i < publicModules.length) {
+    exports.set(publicModules[i], new ModuleExport(null));
+    i = i + 1;
+  }
+
+  // Virtual module: console → console-host / console-wasi.
+  let consoleVirtual = new HashMap<String, String>();
+  consoleVirtual.set("host", "console-host");
+  consoleVirtual.set("wasi", "console-wasi");
+  exports.set("console", new ModuleExport(consoleVirtual));
+
+  // Internal modules.
+  let internal = new Array<String>();
+  internal.push("console-host");
+  internal.push("console-wasi");
+  internal.push("console-interface");
+
+  return new PackageConfig(stdlibRoot, exports, internal);
+};
