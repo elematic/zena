@@ -172,7 +172,12 @@ const buildCommand = async (
     console.log(`Built ${outputPath}`);
     return 0;
   } catch (e: any) {
-    console.error('Compilation failed:', e.message);
+    console.error(`Compilation failed: ${e.message}`);
+    if (e.stack && !e.message.includes(':')) {
+      // If the message doesn't already have a file:line prefix,
+      // show which file was being compiled.
+      console.error(`  while compiling: ${entryPoint}`);
+    }
     return 1;
   }
 };

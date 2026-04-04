@@ -8,7 +8,7 @@
 // 5. [Future] Code generation
 //
 // Usage:
-//   let compiler = new Compiler(host, options);
+//   let compiler = createCompiler(host, options);
 //   let result = compiler.compile("/path/to/main.zena");
 //   for (let lib in result.libraries) {
 //     // process each library in dependency order
@@ -30,12 +30,21 @@ import {
   LibraryGraph
 } from './library-loader.zena';
 import { buildStdlibConfig, loadPackageMap } from './package-manifest.zena';
+import {
+  ScopeBuilder,
+  ScopeResult,
+  ModuleExports as ScopeModuleExports,
+  SymbolInfo,
+  UnresolvedName
+} from './scope.zena';
+import { ImportDeclaration, ImportSpecifier, ExportFromDeclaration } from './ast.zena';
 
 // Re-export types used by consumers.
 export { CompilerHost } from './library-loader.zena';
 export { PackageConfig, ModuleExport, ResolvedModule } from './module-resolver.zena';
 export { LibraryRecord, LibraryGraph } from './library-loader.zena';
 export { loadPackageMap, buildStdlibConfig } from './package-manifest.zena';
+export { ScopeResult, SymbolInfo, UnresolvedName } from './scope.zena';
 
 // ============================================================================
 // Compiler Options
@@ -102,32 +111,28 @@ export class CompilationResult(
 // Manages module resolution, loading, and (in the future) type checking
 // and code generation. The stdlib is always available — callers only need
 // to configure user packages and provide the stdlib root path.
+let buildResolver = (options: CompilerOptions): ModuleResolver => {
+  let allPackages = new HashMap<String, PackageConfig>();
+  let stdlibConfig = buildStdlibConfig(options.stdlibRoot);
+  allPackages.set("zena", stdlibConfig);
+  let userPkgIter = options.packages.keys();
+  while (let (true, name) = userPkgIter.next()) {
+    allPackages.set(name, options.packages[name]);
+  }
+  return new ModuleResolver(allPackages, options.target);
+};
+
 export class Compiler {
   #host: CompilerHost;
   #resolver: ModuleResolver;
   #loader: LibraryLoader;
   #options: CompilerOptions;
 
-  new(host: CompilerHost, options: CompilerOptions) {
-    this.#host = host;
-    this.#options = options;
-
-    // Build the combined package map: stdlib + user packages.
-    let allPackages = new HashMap<String, PackageConfig>();
-
-    // Always include stdlib.
-    let stdlibConfig = buildStdlibConfig(options.stdlibRoot);
-    allPackages.set("zena", stdlibConfig);
-
-    // Add user packages.
-    let userPkgIter = options.packages.keys();
-    while (let (true, name) = userPkgIter.next()) {
-      allPackages.set(name, options.packages[name]);
-    }
-
-    this.#resolver = new ModuleResolver(allPackages, options.target);
-    this.#loader = new LibraryLoader(host, this.#resolver);
-  }
+  new(host: CompilerHost, options: CompilerOptions, resolver: ModuleResolver, loader: LibraryLoader)
+    : #host = host,
+      #options = options,
+      #resolver = resolver,
+      #loader = loader;
 
   // The module resolver used by this compiler.
   resolver: ModuleResolver {
@@ -140,8 +145,9 @@ export class Compiler {
   // "package:module" specifier). The compiler will:
   // 1. Load and parse the entry point and all transitive dependencies.
   // 2. Compute the dependency graph in topological order.
-  // 3. [Future] Type-check all modules.
-  // 4. Return the compilation result.
+  // 3. Run scope analysis and wire up cross-module imports.
+  // 4. [Future] Type-check all modules.
+  // 5. Return the compilation result.
   compile(entryPoint: String): CompilationResult {
     // Load prelude modules first (if configured).
     if (this.#options.prelude != null) {
@@ -161,6 +167,9 @@ export class Compiler {
     // Compute topological order.
     let graph = this.#loader.computeGraph(entry);
 
+    // Run scope analysis on all libraries in dependency order.
+    this.#resolveScopes(graph.libraries);
+
     return new CompilationResult(graph.libraries, entry, graph.hasCycle);
   }
 
@@ -174,4 +183,134 @@ export class Compiler {
   getLibrary(path: String): LibraryRecord | null {
     return this.#loader.get(path);
   }
+
+  // Run scope analysis on all libraries in topological order.
+  //
+  // For each library:
+  // 1. Build the file-local scope tree (declarations, references).
+  // 2. Wire up imports by copying exported symbols from dependencies.
+  //
+  // Because libraries are in dependency order, when we process library L,
+  // all of L's dependencies already have their scopeResult populated.
+  #resolveScopes(libraries: Array<LibraryRecord>): void {
+    var i = 0;
+    while (i < libraries.length) {
+      let lib = libraries[i];
+
+      // Phase 1: Build file-local scopes.
+      let builder = new ScopeBuilder(lib.path);
+      let result = builder.build(lib.ast);
+      lib.scopeResult = result;
+
+      // Phase 2: Wire up cross-module imports.
+      this.#wireImports(lib, result);
+
+      i = i + 1;
+    }
+  }
+
+  // Wire up import specifiers to their resolved symbols from dependency modules.
+  //
+  // For each import in this library:
+  //   import { Foo } from './other';
+  //
+  // We look up './other' → canonical path → dependency LibraryRecord → its
+  // ModuleExports, then find 'Foo' and update the importing scope's bindings.
+  //
+  // After wiring, previously-unresolved references that were due to imports
+  // are now resolvable through the import specifier's declaration.
+  #wireImports(lib: LibraryRecord, result: ScopeResult): void {
+    let ast = lib.ast;
+    var j = 0;
+    while (j < ast.body.length) {
+      match (ast.body[j]) {
+        case ImportDeclaration {moduleSpecifier, imports}: {
+          let specifier = moduleSpecifier.value;
+
+          // Look up the resolved canonical path for this import.
+          if (lib.imports.has(specifier)) {
+            let depPath = lib.imports[specifier];
+
+            // Get the dependency's library record and scope result.
+            let depLib = this.#loader.get(depPath);
+            if (depLib != null) {
+              let dep = depLib as LibraryRecord;
+              if (dep.scopeResult != null) {
+                let depScope = dep.scopeResult as ScopeResult;
+                let depExports = depScope.exports;
+
+                // For each imported name, check that the dependency exports it.
+                var k = 0;
+                while (k < imports.length) {
+                  let spec = imports[k];
+                  let importedName = spec.imported.name;
+
+                  // Check if the dependency exports this name as a value or type.
+                  let valueExport = depExports.getValue(importedName);
+                  let typeExport = depExports.getType(importedName);
+
+                  if (valueExport == null && typeExport == null) {
+                    // The imported name doesn't exist in the dependency's exports.
+                    // Record as unresolved for later error reporting.
+                    result.unresolvedValues.push(new UnresolvedName(importedName, spec));
+                  }
+
+                  k = k + 1;
+                }
+              }
+            }
+          }
+        }
+        case ExportFromDeclaration {moduleSpecifier, specifiers}: {
+          let specifier = moduleSpecifier.value;
+
+          if (lib.imports.has(specifier)) {
+            let depPath = lib.imports[specifier];
+            let depLib = this.#loader.get(depPath);
+            if (depLib != null) {
+              let dep = depLib as LibraryRecord;
+              if (dep.scopeResult != null) {
+                let depScope = dep.scopeResult as ScopeResult;
+                let depExports = depScope.exports;
+
+                var m = 0;
+                while (m < specifiers.length) {
+                  let spec = specifiers[m];
+                  let importedName = spec.imported.name;
+                  let localName = spec.local.name;
+
+                  let valueExport = depExports.getValue(importedName);
+                  let typeExport = depExports.getType(importedName);
+
+                  if (valueExport == null && typeExport == null) {
+                    result.unresolvedValues.push(new UnresolvedName(importedName, spec));
+                  }
+                  if (valueExport != null) {
+                    result.exports.setValue(localName, valueExport as SymbolInfo);
+                  }
+                  if (typeExport != null) {
+                    result.exports.setType(localName, typeExport as SymbolInfo);
+                  }
+
+                  m = m + 1;
+                }
+              }
+            }
+          }
+        }
+        case _: {}
+      }
+      j = j + 1;
+    }
+  }
 }
+
+// Create a Compiler with the standard pipeline.
+//
+// Builds the module resolver from options and wires it into the loader.
+// Prefer this over calling `new Compiler(...)` directly.
+export let createCompiler = (host: CompilerHost, options: CompilerOptions): Compiler => {
+  let resolver = buildResolver(options);
+  let loader = new LibraryLoader(host, resolver);
+  return new Compiler(host, options, resolver, loader);
+};

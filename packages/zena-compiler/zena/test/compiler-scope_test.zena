@@ -1,0 +1,227 @@
+// Integration tests: Compiler + Scope Analysis
+//
+// Tests that the Compiler correctly runs scope analysis on loaded libraries
+// and wires up cross-module imports.
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { CompilerHost, LibraryRecord } from '../lib/library-loader.zena';
+import { PackageConfig, ModuleExport } from '../lib/module-resolver.zena';
+import { createCompiler, Compiler, CompilerOptions } from '../lib/compiler.zena';
+import { ScopeResult, SymbolInfo, UnresolvedName } from '../lib/scope.zena';
+import {
+  VariableDeclaration,
+  ImportSpecifier
+} from '../lib/ast.zena';
+
+// ============================================================================
+// Test CompilerHost — serves files from a HashMap
+// ============================================================================
+
+class MockHost implements CompilerHost {
+  #files: HashMap<String, String>;
+
+  new() : #files = new HashMap<String, String>();
+
+  addFile(path: String, content: String): void {
+    this.#files.set(path, content);
+  }
+
+  readFile(path: String): String {
+    if (this.#files.has(path)) {
+      return this.#files[path];
+    }
+    return "";
+  }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+// Create a compiler with stub stdlib and custom files.
+// The stub stdlib provides a minimal "zena:string" and "zena:array" module
+// so import resolution succeeds without real stdlib sources.
+let makeCompiler = (host: MockHost): Compiler => {
+  // Stub stdlib sources — keyed by canonical path (zena:module).
+  host.addFile("zena:string", "export class String {}");
+  host.addFile("zena:array", "export class Array {}");
+
+  let packages = new HashMap<String, PackageConfig>();
+  let options = new CompilerOptions("host", "/stdlib", packages, null);
+
+  return createCompiler(host, options);
+};
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+export let tests = suite('Compiler Scope Integration', (): void => {
+
+  // ==========================================================================
+  // Basic scope analysis after compile
+  // ==========================================================================
+
+  suite('scope analysis runs on compile', (): void => {
+
+    test('single file gets scope result', (ctx: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/main.zena", "let x = 1;");
+      let compiler = makeCompiler(host);
+      let result = compiler.compile("/project/main.zena");
+
+      // The entry library should have a scope result.
+      isTrue(result.entry.scopeResult != null);
+      let scope = result.entry.scopeResult as ScopeResult;
+      isTrue(scope.rootScope.resolveValue("x") != null);
+    });
+
+    test('all libraries in graph get scope results', (ctx: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/math.zena", "export let add = (a: i32, b: i32): i32 => a + b;");
+      host.addFile("/project/main.zena", "import { add } from './math.zena'; let result = add(1, 2);");
+      let compiler = makeCompiler(host);
+      let result = compiler.compile("/project/main.zena");
+
+      // All libraries should have scope results.
+      var i = 0;
+      while (i < result.libraries.length) {
+        isTrue(result.libraries[i].scopeResult != null);
+        i = i + 1;
+      }
+    });
+
+    test('exported values visible in dependency exports', (ctx: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/util.zena", "export let helper = 42;");
+      host.addFile("/project/main.zena", "import { helper } from './util.zena'; let x = helper;");
+      let compiler = makeCompiler(host);
+      let result = compiler.compile("/project/main.zena");
+
+      // Check util.zena's exports.
+      let utilLibMaybe = compiler.getLibrary("/project/util.zena");
+      isTrue(utilLibMaybe != null);
+      let utilLib = utilLibMaybe as LibraryRecord;
+      let utilScope = utilLib.scopeResult as ScopeResult;
+      isTrue(utilScope.exports.hasValue("helper"));
+    });
+  });
+
+  // ==========================================================================
+  // Cross-module import validation
+  // ==========================================================================
+
+  suite('cross-module imports', (): void => {
+
+    test('valid import has no unresolved names', (ctx: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/lib.zena", "export let greet = 'hello';");
+      host.addFile("/project/main.zena", "import { greet } from './lib.zena'; let x = greet;");
+      let compiler = makeCompiler(host);
+      let result = compiler.compile("/project/main.zena");
+
+      let mainScope = result.entry.scopeResult as ScopeResult;
+      // 'greet' is imported and used — should not appear in unresolved.
+      // Note: the scope builder marks it as resolved because imports are
+      // declared in the scope. Wire-up validates the export exists.
+      equal(mainScope.unresolvedValues.length, 0);
+    });
+
+    test('import of non-exported name is flagged', (ctx: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/lib.zena", "let secret = 42;");
+      host.addFile("/project/main.zena", "import { secret } from './lib.zena'; let x = secret;");
+      let compiler = makeCompiler(host);
+      let result = compiler.compile("/project/main.zena");
+
+      let mainScope = result.entry.scopeResult as ScopeResult;
+      // 'secret' is not exported from lib.zena — wire-up should add an unresolved entry.
+      isTrue(mainScope.unresolvedValues.length > 0);
+      equal(mainScope.unresolvedValues[0].name, "secret");
+    });
+
+    test('exported class is validated as type and value', (ctx: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/point.zena", "export class Point { x: i32; }");
+      host.addFile("/project/main.zena", "import { Point } from './point.zena'; let p = new Point();");
+      let compiler = makeCompiler(host);
+      let result = compiler.compile("/project/main.zena");
+
+      // Point should be exported as both type and value.
+      let pointLibMaybe = compiler.getLibrary("/project/point.zena");
+      isTrue(pointLibMaybe != null);
+      let pointLib = pointLibMaybe as LibraryRecord;
+      let pointScope = pointLib.scopeResult as ScopeResult;
+      isTrue(pointScope.exports.hasValue("Point"));
+      isTrue(pointScope.exports.hasType("Point"));
+
+      // No unresolved names in main.
+      let mainScope = result.entry.scopeResult as ScopeResult;
+      equal(mainScope.unresolvedValues.length, 0);
+    });
+  });
+
+  // ==========================================================================
+  // Dependency ordering
+  // ==========================================================================
+
+  suite('dependency ordering', (): void => {
+
+    test('dependencies are processed before dependents', (ctx: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/a.zena", "export let a = 1;");
+      host.addFile("/project/b.zena", "import { a } from './a.zena'; export let b = a;");
+      host.addFile("/project/main.zena", "import { b } from './b.zena'; let x = b;");
+      let compiler = makeCompiler(host);
+      let result = compiler.compile("/project/main.zena");
+
+      // All three libraries should have scope results (dependency order).
+      equal(result.libraries.length, 3);
+      var i = 0;
+      while (i < result.libraries.length) {
+        isTrue(result.libraries[i].scopeResult != null);
+        i = i + 1;
+      }
+
+      // a.zena should come before b.zena in the ordering.
+      let first = result.libraries[0];
+      let second = result.libraries[1];
+      equal(first.path, "/project/a.zena");
+      equal(second.path, "/project/b.zena");
+    });
+  });
+
+  // ==========================================================================
+  // Stdlib imports
+  // ==========================================================================
+
+  suite('stdlib imports', (): void => {
+
+    test('stdlib module gets scope result', (ctx: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/main.zena", "import { Array } from 'zena:array'; let x = 1;");
+      let compiler = makeCompiler(host);
+      let result = compiler.compile("/project/main.zena");
+
+      // The stdlib array module should be loaded and scoped.
+      let arrayLibMaybe = compiler.getLibrary("zena:array");
+      isTrue(arrayLibMaybe != null);
+      let arrayLib = arrayLibMaybe as LibraryRecord;
+      isTrue(arrayLib.scopeResult != null);
+    });
+
+    test('stdlib exported class passes import validation', (ctx: TestContext): void => {
+      let host = new MockHost();
+      host.addFile("/project/main.zena", "import { Array } from 'zena:array'; let x = Array;");
+      let compiler = makeCompiler(host);
+      let result = compiler.compile("/project/main.zena");
+
+      let mainScope = result.entry.scopeResult as ScopeResult;
+      // Array is exported from the stub stdlib — should pass validation.
+      equal(mainScope.unresolvedValues.length, 0);
+    });
+  });
+});
