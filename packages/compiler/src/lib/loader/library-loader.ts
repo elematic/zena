@@ -152,7 +152,8 @@ export class LibraryLoader {
     for (const stmt of ast.body) {
       if (
         stmt.type === 'ImportDeclaration' ||
-        stmt.type === 'ExportAllDeclaration'
+        stmt.type === 'ExportAllDeclaration' ||
+        stmt.type === 'ExportFromDeclaration'
       ) {
         const specifier = (stmt as any).moduleSpecifier.value;
         const resolvedPath = this.resolve(specifier, path);

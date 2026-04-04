@@ -11,7 +11,7 @@
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { Error } from 'zena:error';
-import { Module, Statement, ImportDeclaration, ExportAllDeclaration } from './ast.zena';
+import { Module, Statement, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration } from './ast.zena';
 import { parse } from './parser.zena';
 import { ModuleResolver, ResolvedModule } from './module-resolver.zena';
 
@@ -145,6 +145,12 @@ export class LibraryLoader {
           this.load(resolved.path);
         }
         case ExportAllDeclaration {moduleSpecifier}: {
+          let specifier = moduleSpecifier.value;
+          let resolved = this.#resolver.resolve(specifier, path);
+          record.imports.set(specifier, resolved.path);
+          this.load(resolved.path);
+        }
+        case ExportFromDeclaration {moduleSpecifier}: {
           let specifier = moduleSpecifier.value;
           let resolved = this.#resolver.resolve(specifier, path);
           record.imports.set(specifier, resolved.path);

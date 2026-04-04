@@ -18,6 +18,7 @@ import {
   type EnumMember,
   type Expression,
   type ExportAllDeclaration,
+  type ExportFromDeclaration,
   type FieldDefinition,
   type FieldInitializer,
   type ForInStatement,
@@ -259,6 +260,9 @@ export class Parser {
           true,
           startToken,
         );
+      }
+      if (this.#check(TokenType.LBrace)) {
+        return this.#parseExportFromDeclaration(startToken);
       }
       return this.#parseVariableDeclaration(true, true, startToken);
     }
