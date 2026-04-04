@@ -653,7 +653,10 @@ export class Parser {
       if (this.#match(TokenType.Let) || this.#match(TokenType.Var)) {
         kindToken = this.#previous();
       } else {
-        throw new Error("Expected 'let' or 'var' after 'export'.");
+        const t = this.#peek();
+        throw new Error(
+          `${this.#path}:${t.line}: Expected 'let' or 'var' after 'export'. Got ${t.type}`,
+        );
       }
     } else {
       kindToken = this.#previous();
@@ -4439,6 +4442,23 @@ export class Parser {
       externalName,
       exported,
       loc: this.#loc(actualStartToken, endToken),
+    };
+  }
+
+  #parseExportFromDeclaration(startToken: Token): ExportFromDeclaration {
+    const specifiers = this.#parseImportSpecifiers();
+    this.#consume(TokenType.From, "Expected 'from' after export specifiers.");
+    const moduleSpecifier = this.#parseStringLiteral();
+    this.#consume(
+      TokenType.Semi,
+      "Expected ';' after export-from declaration.",
+    );
+    const endToken = this.#previous();
+    return {
+      type: NodeType.ExportFromDeclaration,
+      specifiers,
+      moduleSpecifier,
+      loc: this.#loc(startToken, endToken),
     };
   }
 
