@@ -21,7 +21,7 @@ import {
   ReturnStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
-  ImportDeclaration, ExportAllDeclaration, DeclareFunction, SymbolDeclaration,
+  ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration,
   // Patterns
   Pattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
   ClassPattern, LogicalPattern, AssignmentPattern,
@@ -162,6 +162,7 @@ let printStatement = (stmt: Statement): Doc => match (stmt) {
   case ExportAllDeclaration {moduleSpecifier}: {
     concat(docs3(text('export * from '), printExpression(moduleSpecifier), text(';')))
   }
+  case ExportFromDeclaration {}: printExportFromDeclaration(stmt as ExportFromDeclaration)
   case DeclareFunction {}: printDeclareFunction(stmt as DeclareFunction)
   case SymbolDeclaration {name, exported}: {
     let parts = new Array<Doc>();
@@ -735,6 +736,31 @@ let printImportDeclaration = (decl: ImportDeclaration): Doc => {
   var i = 0;
   while (i < decl.imports.length) {
     let spec = decl.imports[i];
+    if (spec.imported.name == spec.local.name) {
+      specDocs.push(text(spec.imported.name));
+    } else {
+      specDocs.push(concat(docs3(text(spec.imported.name), text(' as '), text(spec.local.name))));
+    }
+    i = i + 1;
+  }
+  parts.push(join(text(', '), specDocs));
+  parts.push(text('} from '));
+  parts.push(printExpression(decl.moduleSpecifier));
+  parts.push(text(';'));
+  return group(concat(parts));
+};
+
+// ============================================================================
+// Export From Declaration
+// ============================================================================
+
+let printExportFromDeclaration = (decl: ExportFromDeclaration): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('export {'));
+  let specDocs = new Array<Doc>();
+  var i = 0;
+  while (i < decl.specifiers.length) {
+    let spec = decl.specifiers[i];
     if (spec.imported.name == spec.local.name) {
       specDocs.push(text(spec.imported.name));
     } else {
@@ -1441,6 +1467,7 @@ let printNode = (node: Node): Doc => match (node) {
   case TypeAliasDeclaration {}: printStatement(node as Statement)
   case ImportDeclaration {}: printStatement(node as Statement)
   case ExportAllDeclaration {}: printStatement(node as Statement)
+  case ExportFromDeclaration {}: printStatement(node as Statement)
   case DeclareFunction {}: printStatement(node as Statement)
   case SymbolDeclaration {}: printStatement(node as Statement)
   // Patterns

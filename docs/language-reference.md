@@ -2998,6 +2998,22 @@ export declare function print(s: String): void;
 export class Point { ... }
 ```
 
+#### Re-exports
+
+Symbols can be re-exported from other modules using `export { ... } from` or
+`export * from`:
+
+```zena
+// Re-export specific names
+export { Point, distance } from './geometry.zena';
+
+// Re-export with alias
+export { helper as util } from './helpers.zena';
+
+// Re-export all exports from a module
+export * from './types.zena';
+```
+
 ## 9. Intrinsics
 
 Intrinsics are special functions that map directly to compiler-generated code or

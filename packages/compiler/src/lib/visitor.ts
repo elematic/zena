@@ -43,6 +43,7 @@ import {
   type DeclareFunction,
   type ImportDeclaration,
   type ExportAllDeclaration,
+  type ExportFromDeclaration,
   type TypeAliasDeclaration,
   type EnumDeclaration,
   type BinaryExpression,
@@ -146,6 +147,7 @@ export interface Visitor<T = void> {
   visitDeclareFunction?(node: DeclareFunction, context: T): void;
   visitImportDeclaration?(node: ImportDeclaration, context: T): void;
   visitExportAllDeclaration?(node: ExportAllDeclaration, context: T): void;
+  visitExportFromDeclaration?(node: ExportFromDeclaration, context: T): void;
   visitTypeAliasDeclaration?(node: TypeAliasDeclaration, context: T): void;
   visitEnumDeclaration?(node: EnumDeclaration, context: T): void;
   visitEnumMember?(node: EnumMember, context: T): void;
@@ -355,6 +357,12 @@ export function visit<T>(
     case NodeType.ExportAllDeclaration:
       visitor.visitExportAllDeclaration?.(
         node as ExportAllDeclaration,
+        context,
+      );
+      break;
+    case NodeType.ExportFromDeclaration:
+      visitor.visitExportFromDeclaration?.(
+        node as ExportFromDeclaration,
         context,
       );
       break;

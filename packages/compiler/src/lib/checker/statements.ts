@@ -11,6 +11,7 @@ import {
   type DeclareFunction,
   type EnumDeclaration,
   type ExportAllDeclaration,
+  type ExportFromDeclaration,
   type Expression,
   type ForInStatement,
   type ForStatement,
@@ -1116,6 +1117,9 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement) {
     case NodeType.ExportAllDeclaration:
       checkExportAllDeclaration(ctx, stmt as ExportAllDeclaration);
       break;
+    case NodeType.ExportFromDeclaration:
+      checkExportFromDeclaration(ctx, stmt as ExportFromDeclaration);
+      break;
     case NodeType.VariableDeclaration:
       checkVariableDeclaration(ctx, stmt as VariableDeclaration);
       break;
@@ -1394,6 +1398,64 @@ function checkExportAllDeclaration(
       }
     }
     ctx.module!.exports!.set(name, symbolInfo);
+  }
+}
+
+function checkExportFromDeclaration(
+  ctx: CheckerContext,
+  decl: ExportFromDeclaration,
+) {
+  if (!ctx.module || !ctx.compiler) {
+    return;
+  }
+
+  const specifier = decl.moduleSpecifier.value;
+  const resolvedPath = ctx.module!.imports!.get(specifier);
+
+  if (!resolvedPath) {
+    ctx.diagnostics.reportError(
+      `Could not resolve module '${specifier}'`,
+      DiagnosticCode.ModuleNotFound,
+      ctx.getLocation(decl.moduleSpecifier.loc),
+    );
+    return;
+  }
+
+  const importedModule = ctx.compiler.getModule(resolvedPath);
+  if (!importedModule) {
+    ctx.diagnostics.reportError(
+      `Module '${specifier}' not found (resolved to '${resolvedPath}')`,
+      DiagnosticCode.ModuleNotFound,
+      ctx.getLocation(decl.moduleSpecifier.loc),
+    );
+    return;
+  }
+
+  for (const spec of decl.specifiers) {
+    const name = spec.imported.name;
+    const localName = spec.local.name;
+
+    // Look for the symbol in the imported module's exports (value or type)
+    const valueKey = `value:${name}`;
+    const typeKey = `type:${name}`;
+    const valueSymbol = importedModule.exports!.get(valueKey);
+    const typeSymbol = importedModule.exports!.get(typeKey);
+
+    if (!valueSymbol && !typeSymbol) {
+      ctx.diagnostics.reportError(
+        `Module '${specifier}' does not export '${name}'`,
+        DiagnosticCode.ModuleNotFound,
+        ctx.getLocation(spec.loc),
+      );
+      continue;
+    }
+
+    if (valueSymbol) {
+      ctx.module!.exports!.set(`value:${localName}`, valueSymbol);
+    }
+    if (typeSymbol) {
+      ctx.module!.exports!.set(`type:${localName}`, typeSymbol);
+    }
   }
 }
 

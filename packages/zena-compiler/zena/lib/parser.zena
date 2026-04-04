@@ -99,6 +99,7 @@ import {
   ImportDeclaration,
   ImportSpecifier,
   ExportAllDeclaration,
+  ExportFromDeclaration,
   Decorator,
   DeclareFunction,
   SymbolDeclaration,
@@ -290,6 +291,14 @@ export class Parser {
         let moduleSpecifier = this.#parseStringLiteralNode();
         this.#consume(TokenType.Semi, "Expected ';' after export declaration");
         return new ExportAllDeclaration(moduleSpecifier, this.#makeLocation(startToken));
+      }
+      // export { x, y } from '...';
+      if (this.#check(TokenType.LBrace)) {
+        let specifiers = this.#parseImportSpecifiers();
+        this.#consume(TokenType.From, "Expected 'from' after export specifiers");
+        let moduleSpecifier = this.#parseStringLiteralNode();
+        this.#consume(TokenType.Semi, "Expected ';' after export-from declaration");
+        return new ExportFromDeclaration(specifiers, moduleSpecifier, this.#makeLocation(startToken));
       }
       exported = true;
     }

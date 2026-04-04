@@ -114,6 +114,7 @@ export const NodeType = {
   ThisTypeAnnotation: 'ThisTypeAnnotation',
   SpreadElement: 'SpreadElement',
   ExportAllDeclaration: 'ExportAllDeclaration',
+  ExportFromDeclaration: 'ExportFromDeclaration',
   SymbolPropertyName: 'SymbolPropertyName',
   EnumDeclaration: 'EnumDeclaration',
   EnumMember: 'EnumMember',
@@ -216,6 +217,7 @@ export type Statement =
   | DeclareFunction
   | ImportDeclaration
   | ExportAllDeclaration
+  | ExportFromDeclaration
   | TypeAliasDeclaration
   | EnumDeclaration
   | SymbolDeclaration;
@@ -234,6 +236,12 @@ export interface ImportDeclaration extends Node {
 
 export interface ExportAllDeclaration extends Node {
   type: typeof NodeType.ExportAllDeclaration;
+  moduleSpecifier: StringLiteral;
+}
+
+export interface ExportFromDeclaration extends Node {
+  type: typeof NodeType.ExportFromDeclaration;
+  specifiers: ImportSpecifier[];
   moduleSpecifier: StringLiteral;
 }
 
