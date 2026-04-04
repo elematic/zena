@@ -106,6 +106,50 @@ let tests = suite('formatter', () => {
     let second = format(first);
     check('idempotent', second, first);
   });
+
+  // === Structures with hardlines (exercises propagateBreaks) ===
+
+  test('formats class with fields', (t: TestContext) => {
+    let input = "class Point {\n  x: i32;\n  y: i32;\n}\n";
+    let result = format(input);
+    check('class fields', result, input);
+  });
+
+  test('formats class with method', (t: TestContext) => {
+    let input = "class Point {\n  x: i32;\n\n  getX(): i32 {\n    return this.x;\n  }\n}\n";
+    let result = format(input);
+    // Verify round-trip of the formatted output
+    let second = format(result);
+    check('class method idempotent', second, result);
+  });
+
+  test('formats interface', (t: TestContext) => {
+    let input = "interface Drawable {\n  draw(): void;\n}\n";
+    let result = format(input);
+    check('interface', result, input);
+  });
+
+  test('formats enum', (t: TestContext) => {
+    let input = "enum Color {\n  Red,\n  Green,\n  Blue\n}\n";
+    let result = format(input);
+    check('enum', result, input);
+  });
+
+  test('formats import declaration', (t: TestContext) => {
+    let result = format("import {Array} from 'zena:array';");
+    check('import', result, "import {Array} from 'zena:array';\n");
+  });
+
+  test('formats type alias', (t: TestContext) => {
+    let result = format('type ID = i32;');
+    check('type alias', result, 'type ID = i32;\n');
+  });
+
+  test('blank line between class and variable', (t: TestContext) => {
+    let input = "class Foo {}\n\nlet x = 1;\n";
+    let result = format(input);
+    check('blank between class and var', result, input);
+  });
 });
 
 // Entry point - returns number of failed tests (0 = success)

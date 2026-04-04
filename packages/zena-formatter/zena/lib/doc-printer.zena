@@ -103,8 +103,87 @@ class GroupBreakMap {
 // propagateBreaks — pre-pass to propagate hardlines/breakParent upward
 // ============================================================================
 
-// For now, we handle breakParent during printing by checking shouldBreak.
-// A full propagateBreaks pass can be added later if needed.
+// Stack entry for the propagateBreaks traversal. When isExit is true,
+// this is a "group exit" marker: after all children of a group have been
+// processed, we pop the group stack and propagate its break status upward.
+class PropagateEntry {
+  doc: Doc;
+  isExit: boolean;
+
+  new(doc: Doc, isExit: boolean) : doc = doc, isExit = isExit;
+}
+
+let propagateBreaks = (doc: Doc): void => {
+  let stack = new Array<PropagateEntry>();
+  let groupStack = new Array<GroupDoc>();
+
+  stack.push(new PropagateEntry(doc, false));
+
+  while (stack.length > 0) {
+    let entry = stack.pop();
+    let d = entry.doc;
+
+    if (entry.isExit) {
+      // Exiting a group: pop from groupStack, propagate if broken
+      let g = groupStack.pop();
+      if (g.shouldBreak && groupStack.length > 0) {
+        groupStack[groupStack.length - 1].shouldBreak = true;
+      }
+    } else if (d.kind == DocKind.BreakParent
+        || d.kind == DocKind.Hardline
+        || d.kind == DocKind.LiteralLine) {
+      // These all force the enclosing group to break
+      if (groupStack.length > 0) {
+        groupStack[groupStack.length - 1].shouldBreak = true;
+      }
+    } else if (d.kind == DocKind.Group) {
+      let g = d as GroupDoc;
+      groupStack.push(g);
+      // Push exit marker (processed after all children)
+      stack.push(new PropagateEntry(d, true));
+      // Push contents (processed before exit marker — LIFO)
+      stack.push(new PropagateEntry(g.contents, false));
+      // If already broken, propagate to parent
+      if (g.shouldBreak && groupStack.length > 1) {
+        groupStack[groupStack.length - 2].shouldBreak = true;
+      }
+    } else {
+      // Push children for traversal
+      if (d.kind == DocKind.Array) {
+        let ad = d as ArrayDoc;
+        var i = ad.parts.length - 1;
+        while (i >= 0) {
+          stack.push(new PropagateEntry(ad.parts[i], false));
+          i = i - 1;
+        }
+      } else if (d.kind == DocKind.Indent) {
+        stack.push(new PropagateEntry((d as IndentDoc).contents, false));
+      } else if (d.kind == DocKind.Dedent) {
+        stack.push(new PropagateEntry((d as DedentDoc).contents, false));
+      } else if (d.kind == DocKind.Align) {
+        stack.push(new PropagateEntry((d as AlignDoc).contents, false));
+      } else if (d.kind == DocKind.IfBreak) {
+        let ib = d as IfBreakDoc;
+        stack.push(new PropagateEntry(ib.flatContents, false));
+        stack.push(new PropagateEntry(ib.breakContents, false));
+      } else if (d.kind == DocKind.Fill) {
+        let fd = d as FillDoc;
+        var i = fd.parts.length - 1;
+        while (i >= 0) {
+          stack.push(new PropagateEntry(fd.parts[i], false));
+          i = i - 1;
+        }
+      } else if (d.kind == DocKind.LineSuffix) {
+        stack.push(new PropagateEntry((d as LineSuffixDoc).contents, false));
+      } else if (d.kind == DocKind.IndentIfBreak) {
+        stack.push(new PropagateEntry((d as IndentIfBreakDoc).contents, false));
+      } else if (d.kind == DocKind.Label) {
+        stack.push(new PropagateEntry((d as LabelDoc).contents, false));
+      }
+      // Leaf nodes (Text, Line, Softline, etc.): no children
+    }
+  }
+};
 
 // ============================================================================
 // fits — check if doc fits within remaining width without breaking
@@ -176,6 +255,7 @@ let fits = (cmds: Array<PrintCommand>, width: i32): boolean => {
 // ============================================================================
 
 export let printDocToString = (doc: Doc, options: PrintOptions): String => {
+  propagateBreaks(doc);
   let out = new StringBuilder();
   let cmds = new Array<PrintCommand>();
   let groupBreaks = new GroupBreakMap();

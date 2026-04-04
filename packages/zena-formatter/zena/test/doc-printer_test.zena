@@ -342,6 +342,76 @@ let tests = suite('doc-printer', () => {
       check('block stmt', print80(doc), '{\n  a;\n  b;\n}');
     });
   });
+
+  // ========================================================================
+  // propagateBreaks
+  //
+  // These are NOT ports of Prettier tests — they're hand-written tests for
+  // our propagateBreaks implementation. The current printer doesn't emit
+  // breakParent yet, so these verify the algorithm at the IR level.
+  // See formatter_test.zena for source→output tests that exercise
+  // hardline propagation through real Zena code.
+  // ========================================================================
+
+  suite('propagateBreaks', () => {
+    test('breakParent forces enclosing group to break', (t: TestContext) => {
+      let parts = new Array<Doc>();
+      parts.push(text('a'));
+      parts.push(text(','));
+      parts.push(line);
+      parts.push(text('b'));
+      parts.push(breakParent);
+      let doc = group(concat(parts));
+      // Without propagateBreaks this fits on one line: "a, b"
+      // With propagateBreaks the group is forced to break
+      check('breakParent breaks group', print80(doc), 'a,\nb');
+    });
+
+    test('hardline forces enclosing group to break', (t: TestContext) => {
+      let parts = new Array<Doc>();
+      parts.push(text('a'));
+      parts.push(line);
+      parts.push(text('b'));
+      parts.push(hardline);
+      parts.push(text('c'));
+      let doc = group(concat(parts));
+      // hardline forces the group to break, so line becomes newline too
+      check('hardline breaks group', print80(doc), 'a\nb\nc');
+    });
+
+    test('breakParent propagates through nested groups', (t: TestContext) => {
+      let inner = group(concat(docs2(breakParent, text('x'))));
+      let outerParts = new Array<Doc>();
+      outerParts.push(text('a'));
+      outerParts.push(line);
+      outerParts.push(inner);
+      let outer = group(concat(outerParts));
+      // breakParent breaks inner, which propagates to outer
+      check('breakParent propagates', print80(outer), 'a\nx');
+    });
+
+    test('hardline in nested group breaks all ancestors', (t: TestContext) => {
+      let inner = group(concat(docs3(text('x'), hardline, text('y'))));
+      let outerParts = new Array<Doc>();
+      outerParts.push(text('{'));
+      outerParts.push(indent(concat(docs2(line, inner))));
+      outerParts.push(line);
+      outerParts.push(text('}'));
+      let outer = group(concat(outerParts));
+      // hardline breaks inner → propagates to outer
+      check('hardline propagates', print80(outer), '{\n  x\n  y\n}');
+    });
+
+    test('groups without breakParent remain unaffected', (t: TestContext) => {
+      let parts = new Array<Doc>();
+      parts.push(text('a'));
+      parts.push(text(','));
+      parts.push(line);
+      parts.push(text('b'));
+      let doc = group(concat(parts));
+      check('no breakParent stays flat', print80(doc), 'a, b');
+    });
+  });
 });
 
 // Entry point

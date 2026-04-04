@@ -674,12 +674,11 @@ simplified or stubbed.
 
 **Known gaps (doc printer):**
 
-1. `propagateBreaks` — stub only; `breakParent` is a no-op
-2. `fill` — naive sequential concatenation, not Prettier's greedy fill
-3. Indent model — flat `i32` counter, not Prettier's linked-list indent/align stack
-4. `trim` — not implemented
-5. `fits` — simplified; no `hasLineSuffix` check or `Fill` handling
-6. `useTabs` / `tabWidth` — declared but not wired
+1. `fill` — naive sequential concatenation, not Prettier's greedy fill
+2. Indent model — flat `i32` counter, not Prettier's linked-list indent/align stack
+3. `trim` — not implemented
+4. `fits` — simplified; no `hasLineSuffix` check or `Fill` handling
+5. `useTabs` / `tabWidth` — declared but not wired
 
 **Known gaps (printer):**
 
@@ -733,7 +732,7 @@ Track each Prettier source function and its Zena equivalent.
 | -------------------------------------- | ------------------ | ----------------- |
 | `printDocToString(doc, opts)`          | `printDocToString` | Done              |
 | `fits(next, restCommands, width, ...)` | `fits`             | Done (simplified) |
-| `propagateBreaks(doc)`                 | `propagateBreaks`  | Stub              |
+| `propagateBreaks(doc)`                 | `propagateBreaks`  | Done              |
 | `generateIndent(ind, newPart, opts)`   | `generateIndent`   | Done (flat i32)   |
 | `makeIndent(ind, opts)`                | `makeIndent`       | Done (flat i32)   |
 | `makeAlign(ind, widthOrString, opts)`  | `makeAlign`        | Done (≈+1 indent) |
