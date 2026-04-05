@@ -564,23 +564,31 @@ These also serve as excellent tests of the parser and checker in isolation.
 
 ## Milestone Plan
 
-### Milestone 0: Parser (In Progress)
+### Milestone 0: Parser ✅ Complete
 
-**Status:** ~65% complete. Tokenizer done. Parser handles core syntax.
+**Status:** Complete. Tokenizer, parser, and AST produce correct output for all
+Zena syntax. 389 portable syntax tests pass on both the bootstrap (TS) and
+self-hosted (Zena) parsers.
 
-**Remaining work:**
+**What was built:**
 
-- Complete all expression forms (match, try, template literals)
-- Complete all statement forms (decorators, enum declarations)
-- Complete type annotation parsing
-- Snapshot test coverage matching the TypeScript parser
+- `tokenizer.zena` — Full lexer with 50+ token types, string/template literal
+  handling, comment support, source position tracking (28 tests)
+- `parser.zena` — Complete recursive descent parser (~2000 lines) covering all
+  expressions, statements, patterns, type annotations, classes, interfaces,
+  mixins, enums, decorators, and import/export syntax (11+ unit tests + 389
+  portable snapshot tests)
+- `ast.zena` — Sealed AST node hierarchy: Module, Expression (30+ variants),
+  Statement (20+ variants), Pattern, TypeAnnotation, with case classes for each
+  concrete node type (~600 lines)
+- `ast-json.zena` — AST→JSON serialization for debugging and portable test
+  comparison (6 tests)
 
-**Deliverable:** `parse(source: String): Module` producing a correct, immutable
-AST for any valid Zena program.
+**Deliverable:** `parse(source: String, path: String): Module` ✅
 
-### Milestone 1: Formatter
+### Milestone 1: Formatter (Not Started)
 
-**Depends on:** Milestone 0 (parser)
+**Depends on:** Milestone 0 (parser) ✅
 
 **Scope:** A code formatter that parses Zena source and re-emits it with
 consistent style. This is:
@@ -597,47 +605,53 @@ consistent style. This is:
 
 **Deliverable:** `format(source: String): String`
 
-### Milestone 2: Name Resolution & Module System
+### Milestone 2: Name Resolution & Module System ✅ Complete
 
-**Depends on:** Milestone 0
+**Depends on:** Milestone 0 ✅
 
-**Scope:** Build the module graph and resolve all names to their declarations.
-This is the foundation the checker needs, but is useful on its own for:
+**What was built:**
 
-- "Go to definition" in an LSP
-- Import validation
-- Detecting unused imports
+- `module-resolver.zena` — Import resolution supporting stdlib (`zena:*`),
+  user packages, relative paths, target-conditional modules (`*.host.zena`,
+  `*.wasi.zena`), and internal modules (~700 lines, 30 tests)
+- `package-manifest.zena` — `zena-packages.json` parsing for package config
+  with shorthand and full-form syntax, stdlib config builder (9 tests)
+- `library-loader.zena` — Source loading, parsing, caching, dependency
+  resolution via `CompilerHost` interface. Handles circular imports via
+  cache-before-resolve. `LibraryRecord` tracks path, source, AST, resolved
+  import mappings, and scope results
+- `scope.zena` — Two-namespace (value + type) lexical scoping with Module,
+  Function, Block, and Class scope kinds. Tracks symbol info (let/var/type,
+  declaration node), module exports, reference tracking, unresolved name
+  detection, and pre-declaration for hoisted classes/functions (~800 lines,
+  39 tests)
+- `visitor.zena` — Generic `walk()` / `walkEnter()` / `walkChildren()` tree
+  traversal using exhaustive `match` (all AST node types covered, 12 tests)
+- `compiler.zena` — Main orchestrator wiring the pipeline: module resolution →
+  source loading/parsing → dependency graph (topological sort) → scope analysis
+  → cross-module import wiring with `ExportFromDeclaration` re-export support.
+  `createCompiler()` factory for clean construction (9 integration tests)
 
-**Key work:**
-
-- Module loader (resolve import specifiers to file paths and source)
-- Scope system (block scope, function scope, module scope)
-- Name resolution: every identifier maps to a declaration
-- Import/export wiring
-
-**Data structures:**
+**Data structures built:**
 
 ```zena
-class Scope {
-  parent: Scope?
-  bindings: Map<String, Binding>
-}
+// Scope hierarchy
+class Scope { parent, bindings: HashMap<String, SymbolInfo>, kind: ScopeKind }
+class SymbolInfo { name, kind: SymbolKind, declaration: Node }
+class ModuleExports { #values, #types: HashMap<String, SymbolInfo> }
 
-enum BindingKind { Variable, Function, Class, Interface, TypeAlias, Import, ... }
-
-class Binding {
-  kind: BindingKind
-  declaration: i32  // AST node ID
-  module: String    // Which module declared it
-}
+// Module resolution
+class ModuleResolver { resolve(specifier, referrer): ResolvedModule }
+class LibraryRecord { path, source, ast, imports, scopeResult }
+class LibraryLoader { load(path), computeGraph(entry): LibraryGraph }
 ```
 
-**Deliverable:** `resolve(modules: Array<Module>): NameResolutionResult` that
-maps every identifier to its declaration.
+**Deliverable:** `compiler.compile(entryPoint): CompilationResult` with all
+modules in dependency order, scopes built, imports validated ✅
 
-### Milestone 3: Type Checker (Core)
+### Milestone 3: Type Checker (Core) ← Next
 
-**Depends on:** Milestone 2
+**Depends on:** Milestone 2 ✅
 
 **Scope:** Type inference and validation for the core language. Port the
 checking logic from the TypeScript compiler, but with the new data structure
@@ -1100,20 +1114,24 @@ We may want something similar for large Zena codebases:
 
 ## Compiler Host API
 
-### Current Design
+### Current Design ✅ Implemented
 
-The TypeScript compiler already has a clean host abstraction:
+The self-hosted compiler has a clean host abstraction:
 
-```
+```zena
 interface CompilerHost {
-  resolve(specifier: String, referrer: String): String
-  load(path: String): String
+  readFile(path: String): String
 }
 ```
 
-This is minimal and works: `resolve` maps an import specifier to a canonical
-path, `load` returns the source text. The CLI implements this with Node.js
-file system calls. Tests implement it with an in-memory `Map<String, String>`.
+Module resolution is handled separately by `ModuleResolver`, which takes a
+package map and resolves specifiers to canonical paths. The `LibraryLoader`
+combines both: it uses `ModuleResolver` for resolution and `CompilerHost` for
+source loading. The `Compiler` class wires everything together via
+`createCompiler(host, options)`.
+
+This separation works well: CLI implements `CompilerHost` with filesystem I/O,
+tests implement it with `MockHost` backed by `HashMap<String, String>`.
 
 ### What We Need for the Self-Hosted Compiler
 
@@ -1214,12 +1232,13 @@ Test hosts (like the current `InMemoryHost`) work as-is. Provide a
 
 ## Next Steps
 
-1. Finish the parser (Milestone 0). This is already in progress.
+1. ~~Finish the parser (Milestone 0).~~ ✅ Complete — 389 portable tests pass.
 2. Start the formatter (Milestone 1) as soon as the parser is complete enough
-   to parse real Zena files. This validates the AST design.
-3. Design the `SemanticModel` and `TypeContext` data structures in detail.
+   to parse real Zena files. This validates the AST design. **Ready to start.**
+3. ~~Port name resolution (Milestone 2).~~ ✅ Complete — module resolution,
+   scope building, cross-module import wiring all done.
+4. Design the `SemanticModel` and `TypeContext` data structures in detail.
    Write them up with concrete Zena type definitions before implementing.
-4. Port name resolution (Milestone 2) — this is the first piece that requires
-   cross-module thinking.
+   **This is the next architectural design step.**
 5. Begin type checker porting (Milestone 3a) with primitive types and
    expressions. Use the existing test suite to validate.
