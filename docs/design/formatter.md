@@ -674,11 +674,10 @@ simplified or stubbed.
 
 **Known gaps (doc printer):**
 
-1. `fill` — naive sequential concatenation, not Prettier's greedy fill
-2. Indent model — flat `i32` counter, not Prettier's linked-list indent/align stack
-3. `trim` — not implemented
-4. `fits` — simplified; no `hasLineSuffix` check or `Fill` handling
-5. `useTabs` / `tabWidth` — declared but not wired
+1. Indent model — flat `i32` counter, not Prettier's linked-list indent/align stack
+2. `trim` — not implemented
+3. `fits` — simplified; no `hasLineSuffix` check, no `restCmds` scan
+4. `useTabs` / `tabWidth` — declared but not wired
 
 **Known gaps (printer):**
 
@@ -710,7 +709,7 @@ Track each Prettier source function and its Zena equivalent.
 | `indent(contents)`                           | `indent`             | Done                         |
 | `dedent(contents)`                           | `dedent`             | Done                         |
 | `align(widthOrString, contents)`             | `align`              | Done (int-only)              |
-| `fill(parts)`                                | `fill`               | Done (naive)                 |
+| `fill(parts)`                            | `fill`               | Done                         |
 | `ifBreak(breakContents, flatContents, opts)` | `ifBreak`            | Done                         |
 | `indentIfBreak(contents, opts)`              | `indentIfBreak`      | Done                         |
 | `lineSuffix(contents)`                       | `lineSuffix`         | Done                         |

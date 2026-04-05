@@ -243,6 +243,13 @@ let fits = (cmds: Array<PrintCommand>, width: i32): boolean => {
       return true;
     } else if (doc.kind == DocKind.LiteralLine) {
       return true;
+    } else if (doc.kind == DocKind.Fill) {
+      let fd = doc as FillDoc;
+      var j = fd.parts.length - 1;
+      while (j >= 0) {
+        cmds.push(new PrintCommand(cmd.indent, cmd.mode, fd.parts[j]));
+        j = j - 1;
+      }
     }
     // Other doc types: skip in fits check
   }
@@ -339,11 +346,64 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
 
     } else if (d.kind == DocKind.Fill) {
       let fd = d as FillDoc;
-      // Simple fill: just print all parts sequentially for now
-      var i = fd.parts.length - 1;
-      while (i >= 0) {
-        cmds.push(new PrintCommand(indentLevel, mode, fd.parts[i]));
-        i = i - 1;
+      let parts = fd.parts;
+
+      if (parts.length == 0) {
+        // Empty fill — nothing to do
+      } else if (parts.length == 1) {
+        // Single content item
+        cmds.push(new PrintCommand(indentLevel, Mode.Flat, parts[0]));
+      } else {
+        let content = parts[0];
+        let whitespace = parts[1];
+
+        // Build remaining parts (parts[2..])
+        let remaining = new Array<Doc>();
+        var j = 2;
+        while (j < parts.length) {
+          remaining.push(parts[j]);
+          j = j + 1;
+        }
+
+        if (remaining.length == 0) {
+          // Last content+whitespace pair — print both flat
+          cmds.push(new PrintCommand(indentLevel, Mode.Flat, whitespace));
+          cmds.push(new PrintCommand(indentLevel, Mode.Flat, content));
+        } else {
+          // Greedy: check if content fits flat
+          let contentFitsCmds = new Array<PrintCommand>();
+          contentFitsCmds.push(new PrintCommand(indentLevel, Mode.Flat, content));
+          let contentFits = fits(contentFitsCmds, options.printWidth - pos);
+
+          let remainingFill = new FillDoc(remaining);
+
+          if (contentFits) {
+            // Check if content + whitespace(flat) + nextContent also fits
+            let bothCmds = new Array<PrintCommand>();
+            // Push in reverse for stack (LIFO): content processed first
+            bothCmds.push(new PrintCommand(indentLevel, Mode.Flat, remaining[0]));
+            bothCmds.push(new PrintCommand(indentLevel, Mode.Flat, whitespace));
+            bothCmds.push(new PrintCommand(indentLevel, Mode.Flat, content));
+            let bothFit = fits(bothCmds, options.printWidth - pos);
+
+            if (bothFit) {
+              // Everything fits: content flat, whitespace flat, continue
+              cmds.push(new PrintCommand(indentLevel, mode, remainingFill));
+              cmds.push(new PrintCommand(indentLevel, Mode.Flat, whitespace));
+              cmds.push(new PrintCommand(indentLevel, Mode.Flat, content));
+            } else {
+              // Content fits but next won't: break whitespace
+              cmds.push(new PrintCommand(indentLevel, mode, remainingFill));
+              cmds.push(new PrintCommand(indentLevel, Mode.Break, whitespace));
+              cmds.push(new PrintCommand(indentLevel, Mode.Flat, content));
+            }
+          } else {
+            // Content doesn't fit: break both
+            cmds.push(new PrintCommand(indentLevel, mode, remainingFill));
+            cmds.push(new PrintCommand(indentLevel, Mode.Break, whitespace));
+            cmds.push(new PrintCommand(indentLevel, Mode.Break, content));
+          }
+        }
       }
 
     } else if (d.kind == DocKind.Line) {
