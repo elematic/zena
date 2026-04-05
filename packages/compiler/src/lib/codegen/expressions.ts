@@ -1333,7 +1333,18 @@ function generateArrayLiteral(
   let typeIndex: number;
 
   if (expr.inferredType) {
-    const wasmType = mapCheckerTypeToWasmType(ctx, expr.inferredType);
+    let checkerType = expr.inferredType;
+    // Array literals are typed as FixedArray<T> (ClassType extension on array<T>).
+    // Extract the underlying ArrayType to get the WASM array type directly,
+    // avoiding full FixedArray class instantiation (which can fail inside
+    // generic contexts with unresolved type parameters).
+    if (checkerType.kind === TypeKind.Class) {
+      const classType = checkerType as ClassType;
+      if (classType.isExtension && classType.onType) {
+        checkerType = classType.onType;
+      }
+    }
+    const wasmType = mapCheckerTypeToWasmType(ctx, checkerType);
     typeIndex = decodeTypeIndex(wasmType);
   } else {
     // Fallback / Default to i32
