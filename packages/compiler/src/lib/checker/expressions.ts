@@ -3565,30 +3565,38 @@ function checkThisExpression(ctx: CheckerContext, expr: ThisExpression): Type {
 }
 
 function checkArrayLiteral(ctx: CheckerContext, expr: ArrayLiteral): Type {
+  let elementType: Type;
   if (expr.elements.length === 0) {
-    // Empty array literal, infer as Array<Unknown> or similar?
-    // For now, let's assume Array<i32> if empty, or maybe we need a bottom type.
-    // Better: Array<any> (if we had any).
-    // Let's return Array<Unknown> and hope it gets refined or cast.
-    return ctx.getOrCreateArrayType(Types.Unknown);
-  }
-
-  const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
-  // Check if all element types are compatible.
-  // For simplicity, take the first type and check if others are assignable to it.
-  // A better approach would be finding the common supertype.
-  const firstType = elementTypes[0];
-  for (let i = 1; i < elementTypes.length; i++) {
-    if (!isAssignableTo(ctx, elementTypes[i], firstType)) {
-      ctx.diagnostics.reportError(
-        `Array element type mismatch. Expected '${typeToString(firstType)}', got '${typeToString(elementTypes[i])}'.`,
-        DiagnosticCode.TypeMismatch,
-        ctx.getLocation(expr.loc),
-      );
+    elementType = Types.Unknown;
+  } else {
+    const elementTypes = expr.elements.map((e) => checkExpression(ctx, e));
+    // Check if all element types are compatible.
+    // For simplicity, take the first type and check if others are assignable to it.
+    // A better approach would be finding the common supertype.
+    elementType = elementTypes[0];
+    for (let i = 1; i < elementTypes.length; i++) {
+      if (!isAssignableTo(ctx, elementTypes[i], elementType)) {
+        ctx.diagnostics.reportError(
+          `Array element type mismatch. Expected '${typeToString(elementType)}', got '${typeToString(elementTypes[i])}'.`,
+          DiagnosticCode.TypeMismatch,
+          ctx.getLocation(expr.loc),
+        );
+      }
     }
   }
 
-  return ctx.getOrCreateArrayType(firstType);
+  // Array literals are typed as FixedArray<T> (not raw array<T>).
+  // This enables normal Class→Interface assignability for Sequence, Iterable, etc.
+  const genericFixedArray = ctx.getWellKnownType(TypeNames.FixedArray);
+  if (genericFixedArray && genericFixedArray.kind === TypeKind.Class) {
+    const genericClass = genericFixedArray as ClassType;
+    if (genericClass.typeParameters && genericClass.typeParameters.length > 0) {
+      return instantiateGenericClass(genericClass, [elementType], ctx);
+    }
+  }
+
+  // Fallback for contexts without stdlib (e.g., minimal tests)
+  return ctx.getOrCreateArrayType(elementType);
 }
 
 function checkRecordLiteral(ctx: CheckerContext, expr: RecordLiteral): Type {

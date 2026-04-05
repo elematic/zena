@@ -1803,7 +1803,11 @@ export function isAssignableTo(
 
       current = current.superType;
     }
-    return false;
+    // Extension classes can be assignable via onType (e.g., FixedArray<i32> → ArrayExt<i32>
+    // because both are extensions on array<i32>). Fall through to the extension check below.
+    if (!sourceClass.isExtension) {
+      return false;
+    }
   }
 
   if (source.kind === TypeKind.Class && target.kind === TypeKind.Interface) {
@@ -1965,9 +1969,38 @@ export function isAssignableTo(
   }
 
   // Check if source type has an extension that implements the target interface
-  if (target.kind === TypeKind.Interface) {
-    // Iterate all classes to find extensions
-    // Classes are in the global scope (index 0)
+  if (target.kind === TypeKind.Interface && source.kind === TypeKind.Array) {
+    // For raw array<T> types, check extension classes that implement the target.
+    // User code normally produces FixedArray<T> ClassType (via array literals),
+    // which goes through the Class→Interface path above. This path handles:
+    // 1. FixedArray's own interfaces (Sequence, Iterable, MutableSequence)
+    // 2. User-defined extension classes on array<T> that implement custom interfaces
+    const sourceElem = (source as ArrayType).elementType;
+
+    // First check FixedArray (well-known, always available)
+    const genericArrayType = ctx.getWellKnownType(TypeNames.FixedArray);
+    if (genericArrayType && genericArrayType.kind === TypeKind.Class) {
+      const genericClassType = genericArrayType as ClassType;
+      if (
+        genericClassType.typeParameters &&
+        genericClassType.typeParameters.length > 0
+      ) {
+        const appliedClass = instantiateGenericClass(
+          genericClassType,
+          [sourceElem],
+          ctx,
+        );
+        if (
+          appliedClass.implements.some((impl) =>
+            isAssignableTo(ctx, impl, target),
+          )
+        ) {
+          return true;
+        }
+      }
+    }
+
+    // Check user-defined extension classes on array<T> in scope
     if (ctx.scopes.length > 0) {
       const globalScope = ctx.scopes[0];
       for (const info of globalScope.values()) {
@@ -1976,14 +2009,12 @@ export function isAssignableTo(
           if (classType.isExtension && classType.onType) {
             let appliedClass = classType;
 
-            // Handle generic extension inference for FixedArray
+            // Handle generic extension inference
             if (
               classType.typeParameters &&
               classType.typeParameters.length > 0 &&
-              source.kind === TypeKind.Array &&
               classType.onType.kind === TypeKind.Array
             ) {
-              const sourceElem = (source as ArrayType).elementType;
               const onTypeElem = (classType.onType as ArrayType).elementType;
 
               if (onTypeElem.kind === TypeKind.TypeParameter) {

@@ -612,6 +612,72 @@ function generateIteratorMethodCall(
       );
     }
   }
+  // Handle interface types (e.g. Sequence<T>, Iterable<T>) via fat pointer dispatch
+  else if (iterableType.kind === TypeKind.Interface) {
+    const interfaceType = iterableType as InterfaceType;
+    const interfaceInfo = ctx.getInterfaceInfo(interfaceType);
+    if (!interfaceInfo) {
+      throw new Error(`Interface info not found for ${interfaceType.name}`);
+    }
+
+    // Look up the symbol method in the interface
+    const methodName = getSymbolMemberName(iteratorSymbol);
+    const methodInfo = interfaceInfo.methods.get(methodName);
+    if (!methodInfo) {
+      throw new Error(
+        `Method '${methodName}' not found in interface ${interfaceType.name}`,
+      );
+    }
+
+    // Interface dispatch: fat pointer → vtable → function ref → call
+    const fatPtrType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex),
+    ];
+    const tempLocal = ctx.declareLocal('$$for_in_iterable', fatPtrType);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(tempLocal));
+
+    // Get vtable from fat pointer (field 1)
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(1)); // vtable field
+
+    // Cast vtable
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex));
+
+    // Get function from vtable
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.vtableTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(methodInfo.index));
+
+    // Cast function to specific type
+    body.push(0xfb, GcOpcode.ref_cast_null);
+    body.push(...WasmModule.encodeSignedLEB128(methodInfo.typeIndex));
+
+    // Store function ref
+    const funcRefType = [
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+    ];
+    const funcRefLocal = ctx.declareLocal('$$for_in_iter_func', funcRefType);
+    body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+
+    // Load instance (this) from fat pointer (field 0)
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(tempLocal));
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(interfaceInfo.structTypeIndex));
+    body.push(...WasmModule.encodeSignedLEB128(0)); // instance field
+
+    // Load function ref and call_ref
+    body.push(Opcode.local_get, ...WasmModule.encodeSignedLEB128(funcRefLocal));
+    body.push(
+      Opcode.call_ref,
+      ...WasmModule.encodeSignedLEB128(methodInfo.typeIndex),
+    );
+    return;
+  }
   // Unsupported type
   else {
     throw new Error(
