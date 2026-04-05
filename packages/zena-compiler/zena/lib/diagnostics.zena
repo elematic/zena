@@ -1,0 +1,168 @@
+/**
+ * Diagnostic infrastructure for the Zena compiler.
+ *
+ * Diagnostics are errors and warnings produced by the checker and other
+ * compiler passes. They are collected in a DiagnosticBag and reported
+ * to the user.
+ */
+
+import { Array } from 'zena:array';
+import { SourceLocation } from './ast.zena';
+
+export enum DiagnosticSeverity {
+  Error,
+  Warning,
+  Information
+}
+
+/**
+ * Each diagnostic has a unique code for programmatic identification.
+ * Ranges:
+ *   1000-1999: Parser errors
+ *   2000-2999: Checker errors
+ *   3000-3999: Checker warnings
+ */
+export enum DiagnosticCode {
+  // Parser Errors
+  UnexpectedToken,
+  ExpectedToken,
+
+  // Checker Errors
+  TypeMismatch,
+  SymbolNotFound,
+  DuplicateDeclaration,
+  InvalidAssignment,
+  ReturnOutsideFunction,
+  ArgumentCountMismatch,
+  PropertyNotFound,
+  NotCallable,
+  NotIndexable,
+  GenericTypeArgumentMismatch,
+  ConstructorInMixin,
+  AbstractMethodInConcreteClass,
+  AbstractMethodNotImplemented,
+  CannotInstantiateAbstractClass,
+  ModuleNotFound,
+  IndexOutOfBounds,
+  InvalidOperator,
+  BreakOutsideLoop,
+  ContinueOutsideLoop,
+  UnreachableCode,
+  UninitializedField,
+  MissingReturnType,
+  IncompatibleTypes,
+  InvalidCast,
+  NonExhaustiveMatch,
+  InvalidPattern,
+  CircularType,
+  DuplicateField,
+  DuplicateMethod,
+  PrivateAccess,
+  ReadonlyAssignment,
+
+  // Warnings
+  UnusedVariable,
+  UnusedImport,
+  ShadowedVariable
+}
+
+/**
+ * Points to a specific location in source code.
+ */
+export class DiagnosticLocation(
+  file: String,
+  start: i32,
+  length: i32,
+  line: i32,
+  column: i32
+)
+
+/**
+ * A single diagnostic message (error, warning, or info).
+ */
+export class Diagnostic(
+  code: DiagnosticCode,
+  message: String,
+  severity: DiagnosticSeverity,
+  location: DiagnosticLocation | null
+)
+
+/**
+ * Collects diagnostics during a compiler pass.
+ */
+export class DiagnosticBag {
+  #diagnostics: Array<Diagnostic>;
+  #file: String;
+
+  new(file: String)
+    : #diagnostics = new Array<Diagnostic>(),
+      #file = file;
+
+  // Report a diagnostic directly.
+  report(diagnostic: Diagnostic): void {
+    this.#diagnostics.push(diagnostic);
+  }
+
+  // Report an error with a message and optional source location.
+  reportError(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
+    let location: DiagnosticLocation | null = null;
+    if (loc != null) {
+      let sl = loc as SourceLocation;
+      location = new DiagnosticLocation(
+        this.#file, sl.start, sl.end - sl.start, sl.line, sl.column
+      );
+    }
+    this.#diagnostics.push(new Diagnostic(
+      code, message, new DiagnosticSeverity.Error(), location
+    ));
+  }
+
+  // Report a warning with a message and optional source location.
+  reportWarning(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
+    let location: DiagnosticLocation | null = null;
+    if (loc != null) {
+      let sl = loc as SourceLocation;
+      location = new DiagnosticLocation(
+        this.#file, sl.start, sl.end - sl.start, sl.line, sl.column
+      );
+    }
+    this.#diagnostics.push(new Diagnostic(
+      code, message, new DiagnosticSeverity.Warning(), location
+    ));
+  }
+
+  // Whether any error-level diagnostics have been reported.
+  hasErrors(): boolean {
+    var i = 0;
+    while (i < this.#diagnostics.length) {
+      if (this.#diagnostics[i].severity is DiagnosticSeverity.Error) {
+        return true;
+      }
+      i = i + 1;
+    }
+    return false;
+  }
+
+  // All collected diagnostics.
+  diagnostics: Array<Diagnostic> {
+    get { return this.#diagnostics; }
+  }
+}
+
+/**
+ * Format a diagnostic as a human-readable string.
+ */
+export let formatDiagnostic = (d: Diagnostic, source: String): String => {
+  var result = "";
+  match (d.severity) {
+    case DiagnosticSeverity.Error: { result = "error"; }
+    case DiagnosticSeverity.Warning: { result = "warning"; }
+    case DiagnosticSeverity.Information: { result = "info"; }
+  }
+  if (d.location != null) {
+    let loc = d.location as DiagnosticLocation;
+    result = result + " [" + loc.file + ":" + loc.line + ":" + loc.column + "]";
+  }
+  result = result + ": " + d.message;
+  return result;
+};

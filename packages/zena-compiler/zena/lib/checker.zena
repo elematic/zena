@@ -1,0 +1,1381 @@
+/**
+ * Type checker for the Zena compiler.
+ *
+ * The checker walks the AST, infers types, validates compatibility,
+ * and populates the SemanticModel with type information. The AST is
+ * never mutated — all semantic data lives in the SemanticModel.
+ *
+ * Architecture:
+ * - Name resolution for values delegates to the scope pass's
+ *   ReferenceMap (Identifier → SymbolInfo → binding type). The checker
+ *   has no value scope stack.
+ * - Binding types are stored in SemanticModel via SymbolInfo.id keys,
+ *   set at declaration time and read at reference time.
+ * - Type annotation resolution uses the checker's own type-name scope
+ *   stack, since the scope pass doesn't record type annotation references.
+ * - Built-in types (i32, boolean, etc.) are pre-registered as singletons
+ *   in the type-name scope.
+ * - Narrowing uses SymbolInfo.id keys for identity-based precision.
+ * - The checker produces a SemanticModel + diagnostics as output.
+ */
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import {
+  Node, Module, SourceLocation,
+  // Expressions
+  Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral,
+  NullLiteral, BinaryExpression, UnaryExpression, AssignmentExpression,
+  FunctionExpression, CallExpression, MemberExpression, IndexExpression,
+  ThisExpression, SuperExpression, NewExpression, AsExpression, IsExpression,
+  ArrayLiteral, RecordLiteral, TupleLiteral, MapLiteral,
+  TemplateLiteral, TaggedTemplateExpression, MatchExpression, IfExpression,
+  ThrowExpression, TryExpression, RangeExpression, PipelineExpression,
+  PipePlaceholder,
+  // Statements
+  Statement, VariableDeclaration, ExpressionStatement, BlockStatement,
+  ReturnStatement, BreakStatement, ContinueStatement, IfStatement,
+  WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
+  InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
+  TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration,
+  ExportFromDeclaration, DeclareFunction, SymbolDeclaration,
+  // Patterns
+  Pattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
+  ClassPattern, LogicalPattern, AssignmentPattern,
+  // Type Annotations
+  TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation,
+  FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation,
+  TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation,
+  // Helpers
+  TypeParameter, Parameter, FieldDefinition, MethodDefinition,
+  AccessorDeclaration, MatchCase, PropertyAssignment, SpreadElement,
+  LetPatternCondition, BindingProperty, PropertySignature,
+  CaseClassParam, FieldInitializer, SuperInitializer
+} from './ast.zena';
+import {
+  Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
+  BooleanType, VoidType, NullType, NeverType, UnknownType, AnyType,
+  AnyRefType, EqRefType, ByteArrayType,
+  BoolLiteralType, StringLiteralType,
+  ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
+  UnionType as UnionT, RecordType as RecordT,
+  FunctionType, ClassType, InterfaceType, MixinType,
+  TypeParameterType, TypeAliasType, SymbolType, ThisType,
+  isNumericType, isIntegerType, isFloatType, is64BitType,
+  numericTypeName, isBooleanLike, widenType, baseType,
+  promoteNumeric, typeToString
+} from './types.zena';
+import { SemanticModel } from './semantic-model.zena';
+import {
+  Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity,
+  DiagnosticLocation
+} from './diagnostics.zena';
+import { ScopeResult, SymbolInfo } from './scope.zena';
+
+// ============================================================================
+// Checker Context
+// ============================================================================
+
+/**
+ * Internal state for the type checker.
+ *
+ * Name resolution for values (variables, parameters, functions) is
+ * delegated to the scope pass's ReferenceMap. The checker no longer
+ * maintains its own value scope stack. Instead:
+ *
+ *   Declaration time: the checker stores a binding's type in the
+ *   SemanticModel via `model.setBindingType(symbolInfo, type)`.
+ *
+ *   Reference time: an Identifier is resolved through the ReferenceMap
+ *   to its SymbolInfo, then `model.getBindingType(info)` recovers the
+ *   type. Narrowings are checked first (keyed by SymbolInfo.id).
+ *
+ * The checker still maintains its own type-name scope stack because
+ * the scope pass's ReferenceMap only covers value-namespace identifiers,
+ * not type annotations. Type names (i32, MyClass, T, etc.) are resolved
+ * through this stack.
+ */
+class CheckerContext {
+  model =  = new SemanticModel();
+  diagnostics: DiagnosticBag;
+
+  /**
+   * Type namespace scope stack: maps type names (i32, MyClass, etc.) to Types.
+   * The scope pass doesn't record type annotation references in the
+   * ReferenceMap, so the checker resolves type names itself.
+   */
+  #typeScopes =  = new Array<HashMap<String, Type>>();
+
+  /**
+   * Narrowed types (control-flow narrowing) per scope level.
+   * Keyed by SymbolInfo.id so narrowing survives across scopes that
+   * reference the same binding, and is robust against shadowing.
+   * Kept as a stack so narrowings are automatically discarded when
+   * their enclosing scope exits.
+   */
+  #narrowings =  = new Array<HashMap<i32, Type>>();
+
+  /**
+   * The current function's expected return type, or null if not in a function.
+   */
+  var #returnType?: Type = null;
+
+  /**
+   * Loop nesting depth (for break/continue validation).
+   */
+  var #loopDepth = 0;
+
+  /**
+   * The scope result from name resolution (for reference lookups).
+   */
+  #scopeResult?: ScopeResult | null;
+
+  /**
+   * Type ID counter for generating unique IDs (ClassType, InterfaceType).
+   */
+  var #nextTypeId = 0;
+
+  new(file: String, scopeResult: ScopeResult | null)
+    : diagnostics = new DiagnosticBag(file),
+      #scopeResult = scopeResult {
+    
+    // Initialize with module-level scope.
+    this.#typeScopes.push(new HashMap<String, Type>());
+    this.#narrowings.push(new HashMap<i32, Type>());
+
+    // Wire the scope pass's maps into the SemanticModel
+    // so consumers have a single object for all queries.
+    if (scopeResult != null) {
+      let sr = scopeResult as ScopeResult;
+      this.model.setReferences(sr.references);
+      this.model.setDeclarations(sr.declarations);
+    }
+
+    // Pre-register built-in types in the type namespace.
+    this.declareBuiltinType("i32", new I32Type());
+    this.declareBuiltinType("u32", new U32Type());
+    this.declareBuiltinType("i64", new I64Type());
+    this.declareBuiltinType("u64", new U64Type());
+    this.declareBuiltinType("f32", new F32Type());
+    this.declareBuiltinType("f64", new F64Type());
+    this.declareBuiltinType("boolean", new BooleanType());
+    this.declareBuiltinType("void", new VoidType());
+    this.declareBuiltinType("null", new NullType());
+    this.declareBuiltinType("never", new NeverType());
+  }
+
+  /**
+   * Register a built-in type in the type namespace.
+   */
+  declareBuiltinType(name: String, t: Type): void {
+    this.#typeScopes[0].set(name, t);
+  }
+
+  /**
+   * Generate a fresh type ID.
+   */
+  freshTypeId(): i32 {
+    let id = this.#nextTypeId;
+    this.#nextTypeId = this.#nextTypeId + 1;
+    return id;
+  }
+
+  // --- Scope management ---
+
+  /**
+   * Push a new scope frame (for type names and narrowings).
+   * Value-namespace scoping is handled by the scope pass's ReferenceMap.
+   */
+  enterScope(): void {
+    this.#typeScopes.push(new HashMap<String, Type>());
+    this.#narrowings.push(new HashMap<i32, Type>());
+  }
+
+  exitScope(): void {
+    this.#typeScopes.pop();
+    this.#narrowings.pop();
+  }
+
+  // --- Value binding (via SemanticModel + SymbolInfo) ---
+
+  /**
+   * Store a binding's type in the SemanticModel, keyed by SymbolInfo.
+   * Called when processing declarations (VariableDeclaration, parameters).
+   */
+  declareBinding(info: SymbolInfo, t: Type): void {
+    this.model.setBindingType(info, t);
+    // Also store on the declaration node for getNodeType() queries.
+    if (info.declaration != null) {
+      this.model.setNodeType(info.declaration as Node, t);
+    }
+  }
+
+  /**
+   * Resolve an identifier's type via the ReferenceMap.
+   * Checks narrowings first, then falls back to the binding type.
+   */
+  resolveIdentifier(node: Node): Type | null {
+    let info = this.model.resolve(node);
+    if (info == null) { return null; }
+    let si = info as SymbolInfo;
+
+    // Check narrowings first (innermost to outermost).
+    var i = this.#narrowings.length - 1;
+    while (i >= 0) {
+      if (this.#narrowings[i].has(si.id)) {
+        return this.#narrowings[i][si.id];
+      }
+      i = i - 1;
+    }
+
+    // Fall back to the binding type stored by the checker.
+    return this.model.getBindingType(si);
+  }
+
+  // --- Type name resolution ---
+
+  /**
+   * Declare a type name in the current scope.
+   */
+  declareTypeName(name: String, t: Type): void {
+    let top = this.#typeScopes[this.#typeScopes.length - 1];
+    top.set(name, t);
+  }
+
+  /**
+   * Resolve a type name by walking the scope chain outward.
+   */
+  resolveTypeName(name: String): Type | null {
+    var i = this.#typeScopes.length - 1;
+    while (i >= 0) {
+      if (this.#typeScopes[i].has(name)) {
+        return this.#typeScopes[i][name];
+      }
+      i = i - 1;
+    }
+    return null;
+  }
+
+  // --- Return type ---
+
+  returnType: Type | null {
+    get { return this.#returnType; }
+  }
+
+  setReturnType(t: Type | null): void {
+    this.#returnType = t;
+  }
+
+  // --- Loop depth ---
+
+  enterLoop(): void { this.#loopDepth = this.#loopDepth + 1; }
+  exitLoop(): void { this.#loopDepth = this.#loopDepth - 1; }
+  inLoop(): boolean { return this.#loopDepth > 0; }
+
+  // --- Narrowing ---
+
+  /**
+   * Narrow a binding's type within the current scope.
+   * Keyed by SymbolInfo.id for identity-based precision.
+   */
+  narrowBinding(info: SymbolInfo, t: Type): void {
+    let top = this.#narrowings[this.#narrowings.length - 1];
+    top.set(info.id, t);
+  }
+
+  // --- Scope result access ---
+
+  scopeResult: ScopeResult | null {
+    get { return this.#scopeResult; }
+  }
+
+  // --- Error helpers ---
+
+  error(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
+    this.diagnostics.reportError(message, code, loc);
+  }
+
+  warning(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
+    this.diagnostics.reportWarning(message, code, loc);
+  }
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/**
+ * Result of checking a module.
+ */
+export class CheckResult(
+  model: SemanticModel,
+  diagnostics: Array<Diagnostic>
+)
+
+/**
+ * Check a module AST and produce type information.
+ *
+ * `scopeResult` is the output of scope analysis for this module.
+ * If null, the checker will work without cross-module import info.
+ */
+export let checkModule = (ast: Module, scopeResult: ScopeResult | null): CheckResult => {
+  let ctx = new CheckerContext(ast.path, scopeResult);
+
+  // Process top-level statements.
+  var i = 0;
+  while (i < ast.body.length) {
+    checkStatement(ctx, ast.body[i]);
+    i = i + 1;
+  }
+
+  // Collect diagnostics from the bag into the model.
+  let bagDiags = ctx.diagnostics.diagnostics;
+  var j = 0;
+  while (j < bagDiags.length) {
+    ctx.model.addDiagnostic(bagDiags[j]);
+    j = j + 1;
+  }
+
+  return new CheckResult(ctx.model, bagDiags);
+};
+
+/**
+ * Resolve a type annotation AST node to a Type.
+ */
+let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => match (ann) {
+  case NamedTypeAnnotation {name, typeArguments}: {
+    // Look up the name in the type scope.
+    let resolved = ctx.resolveTypeName(name);
+    if (resolved == null) {
+      ctx.error(
+        "Type '" + name + "' not found.",
+        new DiagnosticCode.SymbolNotFound(),
+        ann.loc
+      );
+      return new UnknownType();
+    }
+    // TODO: Handle generic type arguments.
+    resolved as Type
+  }
+  case UnionTypeAnnotation {types}: {
+    let resolved = new Array<Type>();
+    var i = 0;
+    while (i < types.length) {
+      resolved.push(resolveTypeAnnotation(ctx, types[i]));
+      i = i + 1;
+    }
+    createUnionType(resolved)
+  }
+  case FunctionTypeAnnotation {params, returnType}: {
+    let paramTypes = new Array<Type>();
+    var i = 0;
+    while (i < params.length) {
+      paramTypes.push(resolveTypeAnnotation(ctx, params[i]));
+      i = i + 1;
+    }
+    let retType = resolveTypeAnnotation(ctx, returnType);
+    new FunctionType(paramTypes, null, retType)
+  }
+  case LiteralTypeAnnotation {value}: {
+    match (value) {
+      case BooleanLiteral {value}: new BoolLiteralType(value)
+      case NumberLiteral {raw}: {
+        // Number literal type — check for decimal point to decide base type.
+        // For now, treat as i32.
+        new I32Type()
+      }
+      case StringLiteral {value}: new StringLiteralType(value)
+      case NullLiteral {}: new NullType()
+      case _: new UnknownType()
+    }
+  }
+  case RecordTypeAnnotation {properties}: {
+    let props = new HashMap<String, Type>();
+    var i = 0;
+    while (i < properties.length) {
+      let prop = properties[i];
+      props.set(prop.name.name, resolveTypeAnnotation(ctx, prop.typeAnnotation));
+      i = i + 1;
+    }
+    new RecordT(props, null)
+  }
+  case TupleTypeAnnotation {elementTypes}: {
+    let elTypes = new Array<Type>();
+    var i = 0;
+    while (i < elementTypes.length) {
+      elTypes.push(resolveTypeAnnotation(ctx, elementTypes[i]));
+      i = i + 1;
+    }
+    new TupleT(elTypes)
+  }
+  case InlineTupleTypeAnnotation {elementTypes}: {
+    let elTypes = new Array<Type>();
+    var i = 0;
+    while (i < elementTypes.length) {
+      elTypes.push(resolveTypeAnnotation(ctx, elementTypes[i]));
+      i = i + 1;
+    }
+    new InlineTupleT(elTypes)
+  }
+  case ThisTypeAnnotation {}: new ThisType()
+};
+
+/**
+ * Create a union type, flattening nested unions and deduplicating.
+ */
+let createUnionType = (types: Array<Type>): Type => {
+  let flat = new Array<Type>();
+
+  // Flatten nested unions.
+  var i = 0;
+  while (i < types.length) {
+    match (types[i]) {
+      case UnionT {types: inner}: {
+        var j = 0;
+        while (j < inner.length) {
+          flat.push(inner[j]);
+          j = j + 1;
+        }
+      }
+      case NeverType: {}  // Remove never from unions.
+      case _: flat.push(types[i])
+    }
+    i = i + 1;
+  }
+
+  // Deduplicate (simple: compare by typeToString).
+  // TODO: Use identity-based deduplication.
+  let seen = new HashMap<String, boolean>();
+  let deduped = new Array<Type>();
+  i = 0;
+  while (i < flat.length) {
+    let key = typeToString(flat[i]);
+    if (!seen.has(key)) {
+      seen.set(key, true);
+      deduped.push(flat[i]);
+    }
+    i = i + 1;
+  }
+
+  if (deduped.length == 0) { return new NeverType(); }
+  if (deduped.length == 1) { return deduped[0]; }
+  return new UnionT(deduped);
+};
+
+/**
+ * Check if `source` is assignable to `target`.
+ */
+let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean => {
+  // Same type (identity check via match).
+  if (typesEqual(source, target)) { return true; }
+
+  // `never` is assignable to anything.
+  if (source is NeverType) { return true; }
+
+  // Anything is assignable to `unknown` or `any`.
+  if (target is UnknownType || target is AnyType) { return true; }
+
+  // `null` is assignable to nullable unions.
+  if (source is NullType) {
+    match (target) {
+      case UnionT {types}: {
+        var i = 0;
+        while (i < types.length) {
+          if (types[i] is NullType) { return true; }
+          i = i + 1;
+        }
+      }
+      case _: {}
+    }
+    return false;
+  }
+
+  // Boolean literal assignable to boolean.
+  if (source is BoolLiteralType && target is BooleanType) { return true; }
+
+  // Union source: all members must be assignable to target.
+  match (source) {
+    case UnionT {types: sourceTypes}: {
+      var i = 0;
+      while (i < sourceTypes.length) {
+        if (!isAssignableTo(ctx, sourceTypes[i], target)) { return false; }
+        i = i + 1;
+      }
+      return true;
+    }
+    case _: {}
+  }
+
+  // Union target: source must be assignable to at least one member.
+  match (target) {
+    case UnionT {types: targetTypes}: {
+      var i = 0;
+      while (i < targetTypes.length) {
+        if (isAssignableTo(ctx, source, targetTypes[i])) { return true; }
+        i = i + 1;
+      }
+      return false;
+    }
+    case _: {}
+  }
+
+  // Numeric: allow implicit widening in some cases.
+  // For now, require exact numeric type match (strict).
+  // This matches Zena's no-coercion design.
+
+  return false;
+};
+
+/**
+ * Check if two types are structurally equal.
+ */
+let typesEqual = (a: Type, b: Type): boolean => {
+  // For now, use a simple structural comparison based on type kind.
+  // Identity-based comparison will come with interning.
+  match (a) {
+    case I32Type: b is I32Type
+    case U32Type: b is U32Type
+    case I64Type: b is I64Type
+    case U64Type: b is U64Type
+    case F32Type: b is F32Type
+    case F64Type: b is F64Type
+    case BooleanType: b is BooleanType
+    case VoidType: b is VoidType
+    case NullType: b is NullType
+    case NeverType: b is NeverType
+    case UnknownType: b is UnknownType
+    case AnyType: b is AnyType
+    case AnyRefType: b is AnyRefType
+    case EqRefType: b is EqRefType
+    case ByteArrayType: b is ByteArrayType
+    case BoolLiteralType {value: va}: {
+      match (b) {
+        case BoolLiteralType {value: vb}: va == vb
+        case _: false
+      }
+    }
+    case StringLiteralType {value: va}: {
+      match (b) {
+        case StringLiteralType {value: vb}: va == vb
+        case _: false
+      }
+    }
+    case ClassType as ca: {
+      // Identity-based: same object.
+      match (b) {
+        case ClassType as cb: ca.id == cb.id
+        case _: false
+      }
+    }
+    case InterfaceType as ia: {
+      match (b) {
+        case InterfaceType as ib: ia.id == ib.id
+        case _: false
+      }
+    }
+    case _: false  // Conservative: other types require identity.
+  }
+};
+
+let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
+  match (stmt) {
+    case VariableDeclaration {kind, pattern, typeAnnotation, init, loc}: {
+      checkVariableDeclaration(ctx, kind, pattern, typeAnnotation, init, loc);
+    }
+    case ExpressionStatement {expression}: {
+      checkExpression(ctx, expression, null);
+    }
+    case BlockStatement {body}: {
+      ctx.enterScope();
+      var i = 0;
+      while (i < body.length) {
+        checkStatement(ctx, body[i]);
+        i = i + 1;
+      }
+      ctx.exitScope();
+    }
+    case ReturnStatement {argument, loc}: {
+      let expectedReturn = ctx.returnType;
+      if (argument != null) {
+        let argExpr = argument as Expression;
+        let argType = checkExpression(ctx, argExpr, expectedReturn);
+        if (expectedReturn != null) {
+          let expected = expectedReturn as Type;
+          if (!isAssignableTo(ctx, argType, expected)) {
+            ctx.error(
+              "Type mismatch: cannot return '" + typeToString(argType) +
+              "' from function expecting '" + typeToString(expected) + "'.",
+              new DiagnosticCode.TypeMismatch(),
+              loc
+            );
+          }
+        }
+      } else {
+        // return; — function should return void.
+        if (expectedReturn != null) {
+          let expected = expectedReturn as Type;
+          if (!(expected is VoidType)) {
+            ctx.error(
+              "Missing return value. Expected '" + typeToString(expected) + "'.",
+              new DiagnosticCode.TypeMismatch(),
+              loc
+            );
+          }
+        }
+      }
+    }
+    case IfStatement {test, consequent, alternate, loc}: {
+      // Check condition.
+      match (test) {
+        case LetPatternCondition {}: {
+          // TODO: if-let patterns
+          checkStatement(ctx, consequent);
+          if (alternate != null) {
+            checkStatement(ctx, alternate as Statement);
+          }
+        }
+        case _: {
+          let testExpr = test as Expression;
+          let testType = checkExpression(ctx, testExpr, null);
+          validateConditionType(ctx, testType, testExpr);
+          checkStatement(ctx, consequent);
+          if (alternate != null) {
+            checkStatement(ctx, alternate as Statement);
+          }
+        }
+      }
+    }
+    case WhileStatement {test, body, loc}: {
+      match (test) {
+        case LetPatternCondition {}: {
+          // TODO: while-let patterns
+          ctx.enterLoop();
+          checkStatement(ctx, body);
+          ctx.exitLoop();
+        }
+        case _: {
+          let testExpr = test as Expression;
+          let testType = checkExpression(ctx, testExpr, null);
+          validateConditionType(ctx, testType, testExpr);
+          ctx.enterLoop();
+          checkStatement(ctx, body);
+          ctx.exitLoop();
+        }
+      }
+    }
+    case ForStatement {init, test, update, body, loc}: {
+      ctx.enterScope();
+      if (init != null) {
+        match (init as Node) {
+          case VariableDeclaration as vd: {
+            checkStatement(ctx, vd);
+          }
+          case _: {
+            let initExpr = init as Expression;
+            checkExpression(ctx, initExpr, null);
+          }
+        }
+      }
+      if (test != null) {
+        let testExpr = test as Expression;
+        let testType = checkExpression(ctx, testExpr, null);
+        validateConditionType(ctx, testType, testExpr);
+      }
+      if (update != null) {
+        let updateExpr = update as Expression;
+        checkExpression(ctx, updateExpr, null);
+      }
+      ctx.enterLoop();
+      checkStatement(ctx, body);
+      ctx.exitLoop();
+      ctx.exitScope();
+    }
+    case BreakStatement {loc}: {
+      if (!ctx.inLoop()) {
+        ctx.error("'break' outside of loop.", new DiagnosticCode.BreakOutsideLoop(), loc);
+      }
+    }
+    case ContinueStatement {loc}: {
+      if (!ctx.inLoop()) {
+        ctx.error("'continue' outside of loop.", new DiagnosticCode.ContinueOutsideLoop(), loc);
+      }
+    }
+    // Declarations that are handled during pre-pass or skipped for now.
+    case ImportDeclaration {}: {}
+    case ExportAllDeclaration {}: {}
+    case ExportFromDeclaration {}: {}
+    case ClassDeclaration {}: {}      // TODO: Milestone 3b
+    case InterfaceDeclaration {}: {}  // TODO: Milestone 3b
+    case EnumDeclaration {}: {}       // TODO: Milestone 3d
+    case MixinDeclaration {}: {}      // TODO: Milestone 3b
+    case TypeAliasDeclaration {name, typeAnnotation, loc}: {
+      let aliasType = resolveTypeAnnotation(ctx, typeAnnotation);
+      ctx.declareTypeName(name.name, aliasType);
+    }
+    case DeclareFunction {}: {}       // TODO: External function declarations
+    case SymbolDeclaration {}: {}     // TODO: Symbol declarations
+    case ForInStatement {}: {}        // TODO: For-in loops
+  }
+};
+
+let checkVariableDeclaration = (
+  ctx: CheckerContext,
+  kind: String,
+  pattern: Pattern,
+  typeAnnotation: TypeAnnotation | null,
+  init: Expression,
+  loc: SourceLocation | null
+): void => {
+  // Infer the type of the initializer.
+  let expectedType: Type | null = null;
+  if (typeAnnotation != null) {
+    expectedType = resolveTypeAnnotation(ctx, typeAnnotation as TypeAnnotation);
+  }
+
+  let initType = checkExpression(ctx, init, expectedType);
+
+  // For `var` bindings, widen literal types.
+  var declType = initType;
+  if (kind == "var" && typeAnnotation == null) {
+    declType = widenType(initType);
+  }
+
+  // If an explicit type annotation is present, validate assignability.
+  if (expectedType != null) {
+    let expected = expectedType as Type;
+    if (!isAssignableTo(ctx, initType, expected)) {
+      ctx.error(
+        "Type mismatch: '" + typeToString(initType) +
+        "' is not assignable to '" + typeToString(expected) + "'.",
+        new DiagnosticCode.TypeMismatch(),
+        loc
+      );
+    }
+    declType = expected;
+  }
+
+  // Bind the declared names in the pattern.
+  bindPattern(ctx, pattern, declType);
+};
+
+/**
+ * Bind names from a pattern, registering their types via the
+ * DeclarationMap → SymbolInfo → SemanticModel.setBindingType path.
+ */
+let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
+  match (pattern) {
+    case IdentifierPattern as pat: {
+      let info = ctx.model.resolveDeclaration(pat);
+      if (info != null) {
+        ctx.declareBinding(info as SymbolInfo, t);
+      }
+    }
+    case RecordPattern {properties}: {
+      // For record destructuring: { x, y } = record.
+      match (t) {
+        case RecordT {properties: recordProps}: {
+          var i = 0;
+          while (i < properties.length) {
+            let prop = properties[i];
+            let propName = prop.name.name;
+            if (recordProps.has(propName)) {
+              let propType = recordProps[propName];
+              bindPattern(ctx, prop.value as Pattern, propType);
+            } else {
+              ctx.error(
+                "Property '" + propName + "' does not exist on type '" + typeToString(t) + "'.",
+                new DiagnosticCode.PropertyNotFound(),
+                prop.loc
+              );
+            }
+            i = i + 1;
+          }
+        }
+        case _: {
+          // If not a record, just bind the property names as unknown.
+          var i = 0;
+          while (i < properties.length) {
+            bindPattern(ctx, properties[i].value as Pattern, new UnknownType());
+            i = i + 1;
+          }
+        }
+      }
+    }
+    case TuplePattern {elements}: {
+      match (t) {
+        case TupleT {elementTypes}: {
+          var i = 0;
+          while (i < elements.length) {
+            if (elements[i] != null) {
+              let elem = elements[i] as Node;
+              if (i < elementTypes.length) {
+                bindPattern(ctx, elem as Pattern, elementTypes[i]);
+              } else {
+                bindPattern(ctx, elem as Pattern, new UnknownType());
+              }
+            }
+            i = i + 1;
+          }
+        }
+        case InlineTupleT {elementTypes}: {
+          var i = 0;
+          while (i < elements.length) {
+            if (elements[i] != null) {
+              let elem = elements[i] as Node;
+              if (i < elementTypes.length) {
+                bindPattern(ctx, elem as Pattern, elementTypes[i]);
+              } else {
+                bindPattern(ctx, elem as Pattern, new UnknownType());
+              }
+            }
+            i = i + 1;
+          }
+        }
+        case _: {
+          var i = 0;
+          while (i < elements.length) {
+            if (elements[i] != null) {
+              bindPattern(ctx, (elements[i] as Node) as Pattern, new UnknownType());
+            }
+            i = i + 1;
+          }
+        }
+      }
+    }
+    case AsPattern {pattern: inner, name}: {
+      // `pattern as name` — bind both the inner pattern and the alias.
+      bindPattern(ctx, inner as Pattern, t);
+      // The `name` (Identifier node) was used as declaration in scope builder.
+      let info = ctx.model.resolveDeclaration(name);
+      if (info != null) {
+        ctx.declareBinding(info as SymbolInfo, t);
+      }
+    }
+    case AssignmentPattern {left, right}: {
+      // `name = default` — bind the name; the default provides the type.
+      bindPattern(ctx, left as Pattern, t);
+    }
+    case ClassPattern {}: {}        // TODO: Milestone 3b
+    case LogicalPattern {}: {}      // TODO
+  }
+};
+
+/**
+ * Check an expression and return its inferred type.
+ * `expectedType` is a contextual type hint (may be null).
+ */
+let checkExpression = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => {
+  let t = checkExpressionInner(ctx, expr, expectedType);
+  // Record the inferred type in the semantic model.
+  ctx.model.setNodeType(expr, t);
+  return t;
+};
+
+let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => match (expr) {
+  // --- Literals ---
+
+  case NumberLiteral {raw, loc}: {
+    // Check if the literal has a decimal point → float.
+    var isFloat = false;
+    var i = 0;
+    while (i < raw.length) {
+      if (raw[i] == '.') {
+        isFloat = true;
+      }
+      i = i + 1;
+    }
+
+    if (isFloat) {
+      // Float literal — default to f32; use context to pick f64.
+      if (expectedType != null) {
+        let expected = expectedType as Type;
+        if (expected is F64Type) { return new F64Type(); }
+        if (expected is F32Type) { return new F32Type(); }
+        if (isNumericType(expected)) { return new F32Type(); }
+      }
+      new F32Type()
+    } else {
+      // Integer literal — default to i32; use context to pick other int types.
+      if (expectedType != null) {
+        let expected = expectedType as Type;
+        if (isNumericType(expected)) { return expected; }
+      }
+      new I32Type()
+    }
+  }
+
+  case StringLiteral {value, loc}: {
+    // String literals have type String (the stdlib class).
+    // For now, look up "String" in the type scope.
+    let stringType = ctx.resolveTypeName("String");
+    if (stringType != null) {
+      return stringType as Type;
+    }
+    // Fallback: return unknown if String is not in scope.
+    // This should not happen if prelude is loaded.
+    new UnknownType()
+  }
+
+  case BooleanLiteral {value, loc}: {
+    // Boolean literals get literal types (true or false).
+    new BoolLiteralType(value)
+  }
+
+  case NullLiteral {loc}: new NullType()
+
+  // --- Identifiers ---
+
+  case Identifier {name, loc}: {
+    // The hole literal `_` has type `never`.
+    if (name == "_") { return new NeverType(); }
+
+    // Resolve through the scope pass's ReferenceMap → SymbolInfo → binding type.
+    let resolved = ctx.resolveIdentifier(expr);
+    if (resolved == null) {
+      ctx.error(
+        "Variable '" + name + "' not found.",
+        new DiagnosticCode.SymbolNotFound(),
+        loc
+      );
+      return new UnknownType();
+    }
+    resolved as Type
+  }
+
+  // --- Binary Expressions ---
+
+  case BinaryExpression {operator, left, right, loc}: {
+    checkBinaryExpression(ctx, operator, left, right, loc)
+  }
+
+  // --- Unary Expressions ---
+
+  case UnaryExpression {operator, argument, loc}: {
+    let argType = checkExpression(ctx, argument, null);
+
+    if (operator == "-") {
+      if (isNumericType(argType)) {
+        return argType;
+      }
+      ctx.error(
+        "Unary '-' requires a numeric type, got '" + typeToString(argType) + "'.",
+        new DiagnosticCode.InvalidOperator(),
+        loc
+      );
+      return new UnknownType();
+    }
+    if (operator == "!") {
+      if (isBooleanLike(argType)) {
+        return new BooleanType();
+      }
+      ctx.error(
+        "Unary '!' requires a boolean type, got '" + typeToString(argType) + "'.",
+        new DiagnosticCode.InvalidOperator(),
+        loc
+      );
+      return new BooleanType();
+    }
+    new UnknownType()
+  }
+
+  // --- Assignment ---
+
+  case AssignmentExpression {left, value, operator, loc}: {
+    let leftType = checkExpression(ctx, left, null);
+    let rightType = checkExpression(ctx, value, leftType);
+
+    if (!isAssignableTo(ctx, rightType, leftType)) {
+      ctx.error(
+        "Type mismatch: '" + typeToString(rightType) +
+        "' is not assignable to '" + typeToString(leftType) + "'.",
+        new DiagnosticCode.TypeMismatch(),
+        loc
+      );
+    }
+
+    leftType
+  }
+
+  // --- Functions ---
+
+  case FunctionExpression {typeParameters, params, returnType, body, loc}: {
+    checkFunctionExpression(ctx, typeParameters, params, returnType, body, loc, expectedType)
+  }
+
+  case CallExpression {callee, args, loc}: {
+    checkCallExpression(ctx, callee, args, loc)
+  }
+
+  // --- If Expression ---
+
+  case IfExpression {test, consequent, alternate, loc}: {
+    let testExpr = test as Expression;
+    let testType = checkExpression(ctx, testExpr, null);
+    validateConditionType(ctx, testType, testExpr);
+
+    let consType = match (consequent) {
+      case Expression as e: checkExpression(ctx, e, expectedType)
+      case BlockStatement as b: {
+        ctx.enterScope();
+        var blockType: Type = new VoidType();
+        var i = 0;
+        while (i < b.body.length) {
+          checkStatement(ctx, b.body[i]);
+          i = i + 1;
+        }
+        ctx.exitScope();
+        blockType
+      }
+      case _: new VoidType()
+    };
+
+    let altType = match (alternate) {
+      case Expression as e: checkExpression(ctx, e, expectedType)
+      case BlockStatement as b: {
+        ctx.enterScope();
+        var blockType: Type = new VoidType();
+        var i = 0;
+        while (i < b.body.length) {
+          checkStatement(ctx, b.body[i]);
+          i = i + 1;
+        }
+        ctx.exitScope();
+        blockType
+      }
+      case _: new VoidType()
+    };
+
+    // Result type is the union of both branches.
+    let branches = new Array<Type>();
+    branches.push(consType);
+    branches.push(altType);
+    createUnionType(branches)
+  }
+
+  // --- TODO: Other expression types ---
+
+  case MemberExpression {loc}: new UnknownType()    // TODO: Milestone 3b
+  case IndexExpression {loc}: new UnknownType()      // TODO
+  case ThisExpression {loc}: new UnknownType()       // TODO: Milestone 3b
+  case SuperExpression {loc}: new UnknownType()      // TODO
+  case NewExpression {loc}: new UnknownType()        // TODO: Milestone 3b
+  case AsExpression {loc}: new UnknownType()         // TODO
+  case IsExpression {loc}: new BooleanType()
+  case ArrayLiteral {loc}: new UnknownType()         // TODO
+  case RecordLiteral {loc}: new UnknownType()        // TODO
+  case TupleLiteral {loc}: new UnknownType()         // TODO
+  case MapLiteral {loc}: new UnknownType()           // TODO
+  case TemplateLiteral {loc}: {
+    let stringType = ctx.resolveTypeName("String");
+    if (stringType != null) { return stringType as Type; }
+    new UnknownType()
+  }
+  case TaggedTemplateExpression {loc}: new UnknownType()  // TODO
+  case MatchExpression {loc}: new UnknownType()      // TODO: Milestone 3d
+  case ThrowExpression {argument, loc}: {
+    checkExpression(ctx, argument, null);
+    new NeverType()
+  }
+  case TryExpression {loc}: new UnknownType()        // TODO
+  case RangeExpression {loc}: new UnknownType()      // TODO
+  case PipelineExpression {loc}: new UnknownType()   // TODO
+  case PipePlaceholder {loc}: new UnknownType()      // TODO
+};
+
+let checkBinaryExpression = (
+  ctx: CheckerContext,
+  operator: String,
+  left: Expression,
+  right: Expression,
+  loc: SourceLocation | null
+): Type => {
+  // For && and ||, handle short-circuit evaluation and narrowing.
+  if (operator == "&&") {
+    let leftType = checkExpression(ctx, left, null);
+    // TODO: Extract narrowings from left, apply to right.
+    let rightType = checkExpression(ctx, right, null);
+    // && returns the type of the right operand (if left is truthy).
+    return rightType;
+  }
+  if (operator == "||") {
+    let leftType = checkExpression(ctx, left, null);
+    let rightType = checkExpression(ctx, right, null);
+    // || returns union of both types.
+    let types = new Array<Type>();
+    types.push(leftType);
+    types.push(rightType);
+    return createUnionType(types);
+  }
+
+  // Arithmetic operators: +, -, *, /, %
+  if (operator == "+" || operator == "-" || operator == "*" ||
+      operator == "/" || operator == "%") {
+    // Check right first for contextual typing.
+    let rightType = checkExpression(ctx, right, null);
+    // Use right's type to give context to the left.
+    let contextualType: Type | null = null;
+    if (isNumericType(rightType)) { contextualType = rightType; }
+    let leftType = checkExpression(ctx, left, contextualType);
+
+    // If left is numeric and right was checked without context, re-check
+    // right with left's type as context.
+    if (isNumericType(leftType) && !isNumericType(rightType)) {
+      // Right wasn't numeric — error.
+      ctx.error(
+        "Operator '" + operator + "' cannot be applied to '" +
+        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        new DiagnosticCode.InvalidOperator(),
+        loc
+      );
+      return new UnknownType();
+    }
+
+    if (!isNumericType(leftType)) {
+      // TODO: Check for operator overloading on classes.
+      ctx.error(
+        "Operator '" + operator + "' cannot be applied to '" +
+        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        new DiagnosticCode.InvalidOperator(),
+        loc
+      );
+      return new UnknownType();
+    }
+
+    let promoted = promoteNumeric(leftType, rightType);
+    if (promoted == null) {
+      ctx.error(
+        "Operator '" + operator + "' cannot be applied to '" +
+        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        new DiagnosticCode.InvalidOperator(),
+        loc
+      );
+      return new UnknownType();
+    }
+    return promoted as Type;
+  }
+
+  // Comparison operators: <, <=, >, >=
+  if (operator == "<" || operator == "<=" || operator == ">" || operator == ">=") {
+    let rightType = checkExpression(ctx, right, null);
+    let contextualType: Type | null = null;
+    if (isNumericType(rightType)) { contextualType = rightType; }
+    let leftType = checkExpression(ctx, left, contextualType);
+
+    if (!isNumericType(leftType) || !isNumericType(rightType)) {
+      ctx.error(
+        "Operator '" + operator + "' requires numeric types, got '" +
+        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        new DiagnosticCode.InvalidOperator(),
+        loc
+      );
+    }
+    return new BooleanType();
+  }
+
+  // Equality operators: ==, !=, ===, !==
+  if (operator == "==" || operator == "!=" || operator == "===" || operator == "!==") {
+    let leftType = checkExpression(ctx, left, null);
+    let rightType = checkExpression(ctx, right, leftType);
+    // TODO: Validate that types are comparable.
+    return new BooleanType();
+  }
+
+  // Bitwise operators: &, |, ^, <<, >>
+  if (operator == "&" || operator == "|" || operator == "^" ||
+      operator == "<<" || operator == ">>") {
+    let leftType = checkExpression(ctx, left, null);
+    let rightType = checkExpression(ctx, right, leftType);
+
+    if (!isIntegerType(leftType) || !isIntegerType(rightType)) {
+      ctx.error(
+        "Bitwise operator '" + operator + "' requires integer types, got '" +
+        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        new DiagnosticCode.InvalidOperator(),
+        loc
+      );
+    }
+
+    let promoted = promoteNumeric(leftType, rightType);
+    if (promoted != null) { return promoted as Type; }
+    return leftType;
+  }
+
+  ctx.error(
+    "Unknown operator '" + operator + "'.",
+    new DiagnosticCode.InvalidOperator(),
+    loc
+  );
+  new UnknownType()
+};
+
+let checkFunctionExpression = (
+  ctx: CheckerContext,
+  typeParameters: Array<TypeParameter> | null,
+  params: Array<Parameter>,
+  returnTypeAnn: TypeAnnotation | null,
+  body: Node,
+  loc: SourceLocation | null,
+  expectedType: Type | null
+): Type => {
+  ctx.enterScope();
+
+  // Resolve parameter types.
+  let paramTypes = new Array<Type>();
+  let paramNames = new Array<String>();
+
+  // If there's a contextual function type, use it for parameter inference.
+  let contextualFn: FunctionType | null = null;
+  if (expectedType != null) {
+    match (expectedType as Type) {
+      case FunctionType as ft: { contextualFn = ft; }
+      case _: {}
+    }
+  }
+
+  var i = 0;
+  while (i < params.length) {
+    let param = params[i];
+    let paramName = param.name.name;
+    paramNames.push(paramName);
+
+    var paramType: Type = new UnknownType();
+    if (param.typeAnnotation != null) {
+      paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
+    } else if (contextualFn != null) {
+      let cfn = contextualFn as FunctionType;
+      if (i < cfn.parameters.length) {
+        paramType = cfn.parameters[i];
+      }
+    }
+
+    paramTypes.push(paramType);
+    // Store the parameter's type via its SymbolInfo (from the DeclarationMap).
+    let paramInfo = ctx.model.resolveDeclaration(param);
+    if (paramInfo != null) {
+      ctx.declareBinding(paramInfo as SymbolInfo, paramType);
+    }
+    i = i + 1;
+  }
+
+  // Resolve return type annotation.
+  var retType: Type = new VoidType();
+  if (returnTypeAnn != null) {
+    retType = resolveTypeAnnotation(ctx, returnTypeAnn as TypeAnnotation);
+  } else if (contextualFn != null) {
+    retType = (contextualFn as FunctionType).returnType;
+  }
+
+  // Set expected return type for return statements.
+  let prevReturnType = ctx.returnType;
+  ctx.setReturnType(retType);
+
+  // Check the body.
+  match (body) {
+    case BlockStatement as block: {
+      var j = 0;
+      while (j < block.body.length) {
+        checkStatement(ctx, block.body[j]);
+        j = j + 1;
+      }
+    }
+    case Expression as bodyExpr: {
+      let bodyType = checkExpression(ctx, bodyExpr, retType);
+      // Expression body: validate return type if annotated.
+      if (returnTypeAnn != null) {
+        if (!isAssignableTo(ctx, bodyType, retType)) {
+          ctx.error(
+            "Type mismatch: expression body returns '" + typeToString(bodyType) +
+            "' but function expects '" + typeToString(retType) + "'.",
+            new DiagnosticCode.TypeMismatch(),
+            loc
+          );
+        }
+      } else if (contextualFn == null) {
+        // Infer return type from expression body.
+        retType = bodyType;
+      }
+    }
+    case _: {}
+  }
+
+  ctx.setReturnType(prevReturnType);
+  ctx.exitScope();
+
+  new FunctionType(paramTypes, paramNames, retType)
+};
+
+let checkCallExpression = (
+  ctx: CheckerContext,
+  callee: Expression,
+  args: Array<Expression>,
+  loc: SourceLocation | null
+): Type => {
+  let calleeType = checkExpression(ctx, callee, null);
+
+  match (calleeType) {
+    case FunctionType as ft: {
+      // Check argument count.
+      let expectedCount = ft.parameters.length;
+      let actualCount = args.length;
+
+      // Count required parameters (not optional).
+      var requiredCount = expectedCount;
+      if (ft.optionalParameters != null) {
+        let optionals = ft.optionalParameters as Array<boolean>;
+        requiredCount = 0;
+        var i = 0;
+        while (i < optionals.length) {
+          if (!optionals[i]) { requiredCount = requiredCount + 1; }
+          i = i + 1;
+        }
+      }
+
+      if (actualCount < requiredCount || actualCount > expectedCount) {
+        ctx.error(
+          "Expected " + requiredCount + " arguments, got " + actualCount + ".",
+          new DiagnosticCode.ArgumentCountMismatch(),
+          loc
+        );
+      }
+
+      // Check argument types.
+      var j = 0;
+      while (j < actualCount && j < expectedCount) {
+        let expectedParamType = ft.parameters[j];
+        let argType = checkExpression(ctx, args[j], expectedParamType);
+        if (!isAssignableTo(ctx, argType, expectedParamType)) {
+          ctx.error(
+            "Type mismatch: argument '" + typeToString(argType) +
+            "' is not assignable to parameter '" + typeToString(expectedParamType) + "'.",
+            new DiagnosticCode.TypeMismatch(),
+            loc
+          );
+        }
+        j = j + 1;
+      }
+
+      return ft.returnType;
+    }
+    case UnknownType: return new UnknownType()
+    case _: {
+      ctx.error(
+        "Type '" + typeToString(calleeType) + "' is not callable.",
+        new DiagnosticCode.NotCallable(),
+        loc
+      );
+      return new UnknownType();
+    }
+  }
+};
+
+/**
+ * Validate that a condition expression has a boolean-compatible type.
+ */
+let validateConditionType = (ctx: CheckerContext, t: Type, expr: Expression): void => {
+  if (!isBooleanLike(t)) {
+    ctx.error(
+      "Condition must be a boolean type, got '" + typeToString(t) + "'.",
+      new DiagnosticCode.TypeMismatch(),
+      expr.loc
+    );
+  }
+};

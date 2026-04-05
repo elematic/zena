@@ -649,39 +649,81 @@ class LibraryLoader { load(path), computeGraph(entry): LibraryGraph }
 **Deliverable:** `compiler.compile(entryPoint): CompilationResult` with all
 modules in dependency order, scopes built, imports validated ✅
 
-### Milestone 3: Type Checker (Core) ← Next
+### Milestone 3: Type Checker (Core) ← In Progress
 
 **Depends on:** Milestone 2 ✅
 
 **Scope:** Type inference and validation for the core language. Port the
-checking logic from the TypeScript compiler, but with the new data structure
-design.
+checking logic from the TypeScript compiler, with three key improvements:
+
+1. **No AST mutation** — all type info stored in `SemanticModel` side tables
+2. **No string-based type lookups** — use AST node references and interned types
+3. **Prelude always available** — no fallbacks for missing stdlib types
+
+**Architecture:**
+
+The checker uses its own type scope stack (separate from `ScopeBuilder`'s
+name-resolution scopes). It maps value names → `Type` objects and type
+names → `Type` objects. The `SemanticModel` records per-node types by source
+offset, keyed the same way as `ReferenceMap`. The AST is read-only.
 
 **Sub-milestones:**
 
-**3a: Primitive types and expressions**
+**3a: Type infrastructure + primitives (✅ Foundations built)**
 
-- Infer types for literals, binary ops, comparisons
-- Check assignments and variable declarations
-- Function parameter and return type checking
+- `types.zena` — Sealed `Type` hierarchy with all variants
+- `diagnostics.zena` — `Diagnostic`, `DiagnosticBag`, `DiagnosticCode`
+- `semantic-model.zena` — `SemanticModel` (node offset → Type, ResolvedBinding)
+- `checker.zena` — `CheckerContext` (type scope stack, narrowings, diagnostics)
+- Resolve `NamedTypeAnnotation` → Type (i32, boolean, void, etc.)
+- Resolve `UnionTypeAnnotation`, `FunctionTypeAnnotation`
+- Check literal expressions (Number→i32/f32, String→String, Boolean→literal, Null→null)
+- Check identifier expressions (scope lookup → return type)
+- Check variable declarations (infer type, validate annotation, bind pattern)
+- `var` bindings widen literal types (true → boolean)
+- Check expression statements
 
-**3b: Classes and interfaces**
+**3b: Operators + control flow**
 
-- Class type creation and member resolution
+- Binary expressions (arithmetic, comparison, logical, bitwise)
+  - Contextual typing: `0 < x` where x is i64 makes 0 → i64
+  - Numeric promotion: f64 > f32 > i64 > i32
+- Unary expressions (-, !)
+- Assignment expressions (type compatibility check)
+- `if`/`while`/`for` statements (boolean condition validation)
+- `break`/`continue` (loop depth validation)
+- Block scoping (`enterScope`/`exitScope`)
+
+**3c: Functions + calls**
+
+- Function expressions → `FunctionType`
+- Contextual typing for closures (infer param types from expected type)
+- Call expressions (check callee, arg count, arg types, return type)
+- Return statements (validate against expected return type)
+- If expressions (union of branch types)
+
+**3d: Classes and interfaces**
+
+- Class type creation from `ClassDeclaration`
+- Case class constructors
+- Field types and member resolution
+- `new` expressions
+- Member expressions (field access, method access)
 - Interface conformance checking
 - Inheritance and override validation
 - Mixin application
 
-**3c: Generics**
+**3e: Generics**
 
 - Type parameter resolution and constraint checking
 - Generic instantiation with interning
 - Type argument inference
+- `substituteTypeParams` via `TypeContext`
 
-**3d: Advanced features**
+**3f: Advanced features**
 
 - Pattern matching exhaustiveness
-- Type narrowing
+- Type narrowing (null checks, `is` expressions)
 - Closure capture analysis (semantic, not codegen-specific)
 - Overload resolution
 

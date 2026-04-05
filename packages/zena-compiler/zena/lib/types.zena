@@ -1,0 +1,363 @@
+/**
+ * Type system for the Zena compiler.
+ *
+ * Types are the semantic representation of Zena's type system. They are
+ * produced by the checker and consumed by codegen and analysis passes.
+ *
+ * Design:
+ * - Sealed hierarchy enables exhaustive pattern matching.
+ * - Primitive types are singletons (created once in TypeContext).
+ * - Complex types (Class, Interface) are mutable classes built incrementally.
+ * - Type identity is used for equality (interned generic instantiations).
+ * - The AST is never mutated — types live in the SemanticModel side table.
+ */
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+
+export sealed class Type {
+  // Numeric primitives
+  case I32Type
+  case U32Type
+  case I64Type
+  case U64Type
+  case F32Type
+  case F64Type
+
+  // Other primitives
+  case BooleanType
+  case VoidType
+  case NullType
+  case NeverType
+  case UnknownType
+  case AnyType
+  case AnyRefType
+  case EqRefType
+  case ByteArrayType
+
+  // Literal types (narrower than their base type)
+  case BoolLiteralType(value: boolean)
+  case StringLiteralType(value: String)
+
+  // Compound types
+  case ArrayType(elementType: Type)
+  case TupleType(elementTypes: Array<Type>)
+  case InlineTupleType(elementTypes: Array<Type>)
+  case UnionType(types: Array<Type>)
+  case RecordType, FunctionType, ClassType, InterfaceType
+  case MixinType, TypeParameterType, TypeAliasType
+  case SymbolType, ThisType
+}
+
+export class RecordType(
+  properties: HashMap<String, Type>,
+  optionalProperties: HashMap<String, boolean> | null
+) extends Type
+
+export class FunctionType extends Type {
+  parameters: Array<Type>;
+  parameterNames: Array<String> | null = null;
+  returnType: Type;
+  typeParameters: Array<TypeParameterType> | null = null;
+  typeArguments: Array<Type> | null = null;
+  genericSource: FunctionType | null = null;
+  optionalParameters: Array<boolean> | null = null;
+  isFinal: boolean = false;
+  isAbstract: boolean = false;
+  overloads: Array<FunctionType> | null = null;
+
+  new(
+    parameters: Array<Type>,
+    parameterNames: Array<String> | null,
+    returnType: Type
+  ) : parameters = parameters,
+      parameterNames = parameterNames,
+      returnType = returnType;
+}
+
+export class ClassType extends Type {
+  id: i32;
+  name: String;
+  typeParameters: Array<TypeParameterType> | null = null;
+  typeArguments: Array<Type> | null = null;
+  superType: ClassType | null = null;
+  implementsList = new Array<InterfaceType>();
+  fields = new HashMap<String, Type>();
+  fieldMutability = new HashMap<String, boolean>();
+  methods = new HashMap<String, FunctionType>();
+  statics = new HashMap<String, Type>();
+  constructorType: FunctionType | null = null;
+  vtable = new Array<String>();
+  isFinal = false;
+  isCaseClass = false;
+  isAbstract = false;
+  isExtension = false;
+  isSealed = false;
+  isMixinIntermediate = false;
+  onType: Type | null = null;
+  genericSource: ClassType | null = null;
+  declaredFields: HashMap<String, boolean> | null = null;
+  fieldsWithInitializers: HashMap<String, boolean> | null = null;
+  sealedVariants: Array<ClassType> | null = null;
+
+  new(id: i32, name: String) : id = id, name = name;
+}
+
+export class InterfaceType extends Type {
+  id: i32;
+  name: String;
+  typeParameters: Array<TypeParameterType> | null = null;
+  typeArguments: Array<Type> | null = null;
+  extendsList = new Array<InterfaceType>();
+  fields = new HashMap<String, Type>();
+  methods = new HashMap<String, FunctionType>();
+  genericSource: InterfaceType | null = null;
+
+  new(id: i32, name: String) : id = id, name = name;
+}
+
+export class MixinType extends Type {
+  name: String;
+  typeParameters: Array<TypeParameterType> | null = null;
+  typeArguments: Array<Type> | null = null;
+  onType: ClassType | null = null;
+  fields = new HashMap<String, Type>();
+  fieldMutability = new HashMap<String, boolean>();
+  methods = new HashMap<String, FunctionType>();
+  genericSource: MixinType | null = null;
+
+  new(name: String) : name = name;
+}
+
+export class TypeParameterType(
+  name: String,
+  constraint: Type | null,
+  defaultType: Type | null
+) extends Type
+
+export class TypeAliasType(
+  name: String,
+  typeParameters: Array<TypeParameterType> | null,
+  target: Type,
+  isDistinct: boolean
+) extends Type
+
+export class SymbolType(
+  id: i32,
+  debugName: String | null
+) extends Type
+
+export class ThisType extends Type {
+  new() {}
+}
+
+/**
+ * Check if a type is a numeric primitive.
+ */
+export let isNumericType = (t: Type): boolean => match (t) {
+  case I32Type: true
+  case U32Type: true
+  case I64Type: true
+  case U64Type: true
+  case F32Type: true
+  case F64Type: true
+  case _: false
+};
+
+/**
+ * Check if a type is an integer type.
+ */
+export let isIntegerType = (t: Type): boolean => match (t) {
+  case I32Type: true
+  case U32Type: true
+  case I64Type: true
+  case U64Type: true
+  case _: false
+};
+
+/**
+ * Check if a type is a floating point type.
+ */
+export let isFloatType = (t: Type): boolean => match (t) {
+  case F32Type: true
+  case F64Type: true
+  case _: false
+};
+
+/**
+ * Check if a type is a 64-bit type.
+ */
+export let is64BitType = (t: Type): boolean => match (t) {
+  case I64Type: true
+  case U64Type: true
+  case F64Type: true
+  case _: false
+};
+
+/**
+ * Get the name of a numeric type.
+ */
+export let numericTypeName = (t: Type): String => match (t) {
+  case I32Type: "i32"
+  case U32Type: "u32"
+  case I64Type: "i64"
+  case U64Type: "u64"
+  case F32Type: "f32"
+  case F64Type: "f64"
+  case _: "unknown"
+};
+
+/**
+ * Check if a type is a boolean or boolean literal.
+ */
+export let isBooleanLike = (t: Type): boolean => match (t) {
+  case BooleanType: true
+  case BoolLiteralType {}: true
+  case _: false
+};
+
+/**
+ * Widen a literal type to its base type.
+ * Used for `var` bindings: `var x = true` → x: boolean (not x: true).
+ */
+export let widenType = (t: Type): Type => match (t) {
+  case BoolLiteralType {}: new BooleanType()
+  case StringLiteralType {}: t  // String literals stay as String class type
+  case _: t
+};
+
+/**
+ * Get the base type of a literal type, or the type itself if not literal.
+ */
+export let baseType = (t: Type): Type => match (t) {
+  case BoolLiteralType {}: new BooleanType()
+  case _: t
+};
+
+/**
+ * Compute the promoted numeric type for a binary operation.
+ * Returns null if the types are incompatible.
+ */
+export let promoteNumeric = (left: Type, right: Type): Type | null => {
+  // f64 dominates everything
+  if (left is F64Type || right is F64Type) {
+    return new F64Type();
+  }
+  // f32 + 64-bit → f64
+  if (left is F32Type && is64BitType(right)) {
+    return new F64Type();
+  }
+  if (right is F32Type && is64BitType(left)) {
+    return new F64Type();
+  }
+  // f32 dominates remaining
+  if (left is F32Type || right is F32Type) {
+    return new F32Type();
+  }
+  // u64 dominates integers
+  if (left is U64Type || right is U64Type) {
+    return new U64Type();
+  }
+  // i64 dominates remaining integers
+  if (left is I64Type || right is I64Type) {
+    return new I64Type();
+  }
+  // u32 + i32 → i32
+  if (isIntegerType(left) && isIntegerType(right)) {
+    return new I32Type();
+  }
+  return null;
+};
+
+/**
+ * Format a type as a human-readable string for diagnostics.
+ */
+export let typeToString = (t: Type): String => match (t) {
+  case I32Type: "i32"
+  case U32Type: "u32"
+  case I64Type: "i64"
+  case U64Type: "u64"
+  case F32Type: "f32"
+  case F64Type: "f64"
+  case BooleanType: "boolean"
+  case VoidType: "void"
+  case NullType: "null"
+  case NeverType: "never"
+  case UnknownType: "unknown"
+  case AnyType: "any"
+  case AnyRefType: "anyref"
+  case EqRefType: "eqref"
+  case ByteArrayType: "ByteArray"
+  case BoolLiteralType {value}: if (value) "true" else "false"
+  case StringLiteralType {value}: "'" + value + "'"
+  case ArrayType {elementType}: "Array<" + typeToString(elementType) + ">"
+  case TupleType {elementTypes}: {
+    var s = "[";
+    var i = 0;
+    while (i < elementTypes.length) {
+      if (i > 0) { s = s + ", "; }
+      s = s + typeToString(elementTypes[i]);
+      i = i + 1;
+    }
+    s + "]"
+  }
+  case InlineTupleType {elementTypes}: {
+    var s = "(";
+    var i = 0;
+    while (i < elementTypes.length) {
+      if (i > 0) { s = s + ", "; }
+      s = s + typeToString(elementTypes[i]);
+      i = i + 1;
+    }
+    s + ")"
+  }
+  case UnionType {types}: {
+    var s = "";
+    var i = 0;
+    while (i < types.length) {
+      if (i > 0) { s = s + " | "; }
+      s = s + typeToString(types[i]);
+      i = i + 1;
+    }
+    s
+  }
+  case RecordType {properties}: {
+    var s = "{ ";
+    let keys = properties.keys();
+    var first = true;
+    while (let (true, key) = keys.next()) {
+      if (!first) { s = s + ", "; }
+      s = s + key + ": " + typeToString(properties[key]);
+      first = false;
+    }
+    s + " }"
+  }
+  case FunctionType as ft: {
+    var s = "(";
+    var i = 0;
+    while (i < ft.parameters.length) {
+      if (i > 0) { s = s + ", "; }
+      if (ft.parameterNames != null) {
+        let names = ft.parameterNames as Array<String>;
+        if (i < names.length) {
+          s = s + names[i] + ": ";
+        }
+      }
+      s = s + typeToString(ft.parameters[i]);
+      i = i + 1;
+    }
+    s + ") => " + typeToString(ft.returnType)
+  }
+  case ClassType as ct: ct.name
+  case InterfaceType as it: it.name
+  case MixinType as mt: mt.name
+  case TypeParameterType as tp: tp.name
+  case TypeAliasType as ta: ta.name
+  case SymbolType as sym: {
+    if (sym.debugName != null) {
+      "symbol(" + (sym.debugName as String) + ")"
+    } else {
+      "symbol"
+    }
+  }
+  case ThisType: "this"
+};

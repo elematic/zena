@@ -53,15 +53,31 @@ export enum ScopeKind {
   Class     // Class body (for `this`, type parameters)
 }
 
+// Auto-incrementing counter for SymbolInfo.id.
+var _nextSymbolId: i32 = 0;
+let _allocSymbolId = (): i32 => {
+  let id = _nextSymbolId;
+  _nextSymbolId = _nextSymbolId + 1;
+  return id;
+};
+
 /**
  * Information about a declared name in a scope.
  *
  * Stored in scope bindings. The `declaration` field references the
- * AST node that introduced this name (VariableDeclaration, ClassDeclaration,
- * Parameter, etc.). We use Node references directly — no IDs needed
- * while we're in a single heap.
+ * AST node that introduced this name.
+ *
+ * Each SymbolInfo has a unique `id` that can be used as a HashMap key
+ * by downstream passes (e.g., the type checker maps id → Type).
  */
 export class SymbolInfo {
+  /**
+   * Unique numeric identity for this binding. Auto-incremented at
+   * construction time. Enables identity-keyed maps (HashMap<i32, T>)
+   * without requiring object-identity hashing.
+   */
+  id: i32;
+
   /**
    * The kind of declaration: 'let', 'var', or 'type'.
    * 'let' and 'var' both go in the value namespace.
@@ -72,13 +88,26 @@ export class SymbolInfo {
   kind: String;
 
   /**
-   * The AST node that declared this name, or null for built-in types.
-   * For variables: VariableDeclaration
-   * For functions: VariableDeclaration (containing FunctionExpression)
-   * For classes: ClassDeclaration
-   * For parameters: Parameter
-   * For imports: ImportSpecifier
-   * For built-ins (i32, boolean, etc.): null
+   * The AST node at the binding site, or null for built-in types.
+   *
+   * Points to the most specific node that introduces the name:
+   *   - Simple variables (`let x = 5`): IdentifierPattern
+   *   - Destructured variables (`let {x, y} = p`): each IdentifierPattern
+   *   - Functions (annotated, predeclared): IdentifierPattern
+   *   - Parameters: Parameter
+   *   - Classes: ClassDeclaration
+   *   - Interfaces: InterfaceDeclaration
+   *   - Enums: EnumDeclaration
+   *   - Mixins: MixinDeclaration
+   *   - Type aliases: TypeAliasDeclaration
+   *   - Imports: ImportSpecifier
+   *   - Pattern bindings (match): the leaf pattern node
+   *   - Built-ins (i32, boolean, etc.): null
+   *
+   * The checker stores each binding's type on this node via
+   * SemanticModel.setNodeType(declaration, type). Reference sites
+   * follow ReferenceMap → SymbolInfo → declaration → getNodeType
+   * to recover the type.
    */
   declaration: Node | null;
 
@@ -89,7 +118,7 @@ export class SymbolInfo {
   modulePath: String;
 
   new(kind: String, declaration: Node | null, modulePath: String)
-    : kind = kind, declaration = declaration, modulePath = modulePath;
+    : id = _allocSymbolId(), kind = kind, declaration = declaration, modulePath = modulePath;
 }
 
 /**
@@ -310,6 +339,41 @@ export class ReferenceMap {
 }
 
 /**
+ * Maps declaration-site nodes to their SymbolInfo.
+ *
+ * The ReferenceMap handles *reference* identifiers (use sites).
+ * The DeclarationMap handles *binding* nodes (declaration sites):
+ * IdentifierPattern for variables, Parameter for params, etc.
+ *
+ * The checker uses this at declaration-processing time to find the
+ * SymbolInfo for a binding and store its type.
+ */
+export class DeclarationMap {
+  #byOffset = new HashMap<i32, SymbolInfo>();
+
+  /**
+   * Record a declaration binding.
+   */
+  record(node: Node, info: SymbolInfo): void {
+    if (node.loc != null) {
+      let loc = node.loc as SourceLocation;
+      this.#byOffset.set(loc.start, info);
+    }
+  }
+
+  /**
+   * Look up the SymbolInfo for a declaration node.
+   */
+  getByNode(node: Node): SymbolInfo | null {
+    if (node.loc == null) { return null; }
+    let loc = node.loc as SourceLocation;
+    let (info, found) = this.#byOffset.get(loc.start);
+    if (found) { return info; }
+    return null;
+  }
+}
+
+/**
  * The result of scope building for a single module.
  */
 export class ScopeResult(
@@ -339,7 +403,15 @@ export class ScopeResult(
    * All successfully resolved references in this module.
    * Maps reference nodes to the symbols they refer to.
    */
-  references: ReferenceMap
+  references: ReferenceMap,
+
+  /**
+   * All declaration bindings in this module.
+   * Maps binding-site nodes (IdentifierPattern, Parameter, etc.)
+   * to their SymbolInfo. Used by the checker at declaration-processing
+   * time to find the SymbolInfo and store the binding's type.
+   */
+  declarations: DeclarationMap
 )
 
 /**
@@ -365,6 +437,7 @@ export class ScopeBuilder {
   #unresolvedValues = new Array<UnresolvedName>();
   #unresolvedTypes = new Array<UnresolvedName>();
   #references = new ReferenceMap();
+  #declarations = new DeclarationMap();
 
   new(modulePath: String) : #modulePath = modulePath;
 
@@ -385,7 +458,8 @@ export class ScopeBuilder {
       this.#exports,
       this.#unresolvedValues,
       this.#unresolvedTypes,
-      this.#references
+      this.#references,
+      this.#declarations
     );
   }
 
@@ -440,6 +514,7 @@ export class ScopeBuilder {
         // Classes go in BOTH namespaces.
         this.#current.declareType(name.name, stmt, this.#modulePath);
         this.#current.declareValue(name.name, "let", stmt, this.#modulePath);
+        this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
           let info = new SymbolInfo("type", stmt, this.#modulePath);
           this.#exports.setType(name.name, info);
@@ -450,6 +525,7 @@ export class ScopeBuilder {
       case InterfaceDeclaration {name, exported}: {
         this.#current.declareType(name.name, stmt, this.#modulePath);
         this.#current.declareValue(name.name, "let", stmt, this.#modulePath);
+        this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
           let info = new SymbolInfo("type", stmt, this.#modulePath);
           this.#exports.setType(name.name, info);
@@ -460,6 +536,7 @@ export class ScopeBuilder {
       case EnumDeclaration {name, exported}: {
         this.#current.declareType(name.name, stmt, this.#modulePath);
         this.#current.declareValue(name.name, "let", stmt, this.#modulePath);
+        this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
           let info = new SymbolInfo("type", stmt, this.#modulePath);
           this.#exports.setType(name.name, info);
@@ -470,6 +547,7 @@ export class ScopeBuilder {
       case MixinDeclaration {name, exported}: {
         this.#current.declareType(name.name, stmt, this.#modulePath);
         this.#current.declareValue(name.name, "let", stmt, this.#modulePath);
+        this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
           let info = new SymbolInfo("type", stmt, this.#modulePath);
           this.#exports.setType(name.name, info);
@@ -487,13 +565,14 @@ export class ScopeBuilder {
       case VariableDeclaration {kind, pattern, init, exported}: {
         // Pre-declare annotated functions for mutual recursion.
         match (pattern) {
-          case IdentifierPattern {name}: {
+          case IdentifierPattern {name} as pat: {
             match (init) {
               case FunctionExpression {returnType}: {
                 if (returnType != null) {
-                  this.#current.declareValue(name, kind, stmt, this.#modulePath);
+                  this.#current.declareValue(name, kind, pat, this.#modulePath);
+                  this.#declarations.record(pat, this.#current.getLocalValue(name) as SymbolInfo);
                   if (exported) {
-                    let info = new SymbolInfo(kind, stmt, this.#modulePath);
+                    let info = new SymbolInfo(kind, pat, this.#modulePath);
                     this.#exports.setValue(name, info);
                   }
                 }
@@ -506,6 +585,7 @@ export class ScopeBuilder {
       }
       case DeclareFunction {name, exported}: {
         this.#current.declareValue(name.name, "let", stmt, this.#modulePath);
+        this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
           let info = new SymbolInfo("let", stmt, this.#modulePath);
           this.#exports.setValue(name.name, info);
@@ -513,6 +593,7 @@ export class ScopeBuilder {
       }
       case SymbolDeclaration {name, exported}: {
         this.#current.declareValue(name.name, "let", stmt, this.#modulePath);
+        this.#declarations.record(stmt, this.#current.getLocalValue(name.name) as SymbolInfo);
         if (exported) {
           let info = new SymbolInfo("let", stmt, this.#modulePath);
           this.#exports.setValue(name.name, info);
@@ -532,12 +613,13 @@ export class ScopeBuilder {
 
         // Declare the variable name(s).
         match (pattern) {
-          case IdentifierPattern {name}: {
+          case IdentifierPattern {name} as pat: {
             // May already be declared by predeclare (annotated functions).
             if (!this.#current.hasValue(name)) {
-              this.#current.declareValue(name, kind, stmt, this.#modulePath);
+              this.#current.declareValue(name, kind, pat, this.#modulePath);
+              this.#declarations.record(pat, this.#current.getLocalValue(name) as SymbolInfo);
               if (exported) {
-                let info = new SymbolInfo(kind, stmt, this.#modulePath);
+                let info = new SymbolInfo(kind, pat, this.#modulePath);
                 this.#exports.setValue(name, info);
               }
             }
@@ -616,7 +698,6 @@ export class ScopeBuilder {
       }
       case ImportDeclaration {imports}: {
         // Declare imported names into the current scope.
-        // The actual types come from the imported module's exports
         // The actual bindings come from the imported module's exports.
         var j = 0;
         while (j < imports.length) {
@@ -626,6 +707,7 @@ export class ScopeBuilder {
           // a type or value — that's resolved during import wiring).
           this.#current.declareValue(localName, "let", spec, this.#modulePath);
           this.#current.declareType(localName, spec, this.#modulePath);
+          this.#declarations.record(spec, this.#current.getLocalValue(localName) as SymbolInfo);
           j = j + 1;
         }
       }
@@ -872,8 +954,12 @@ export class ScopeBuilder {
    */
   #declarePattern(pat: Pattern, kind: String, declaration: Node): void {
     match (pat) {
-      case IdentifierPattern {name}: {
-        this.#current.declareValue(name, kind, declaration, this.#modulePath);
+      case IdentifierPattern {name} as ip: {
+        // Use the leaf IdentifierPattern as declaration (not the parent
+        // statement). Each binding gets a unique declaration node, which
+        // the checker uses as the key for storing per-binding types.
+        this.#current.declareValue(name, kind, ip, this.#modulePath);
+        this.#declarations.record(ip, this.#current.getLocalValue(name) as SymbolInfo);
       }
       case RecordPattern {properties}: {
         var i = 0;
@@ -893,7 +979,9 @@ export class ScopeBuilder {
         }
       }
       case AsPattern {pattern, name}: {
-        this.#current.declareValue(name.name, kind, declaration, this.#modulePath);
+        // Use the `name` Identifier as the declaration for the alias binding.
+        this.#current.declareValue(name.name, kind, name, this.#modulePath);
+        this.#declarations.record(name, this.#current.getLocalValue(name.name) as SymbolInfo);
         this.#declarePatternNode(pattern, kind, declaration);
       }
       case ClassPattern {properties}: {
@@ -930,6 +1018,7 @@ export class ScopeBuilder {
 
   #declareParameter(param: Parameter): void {
     this.#current.declareValue(param.name.name, "let", param, this.#modulePath);
+    this.#declarations.record(param, this.#current.getLocalValue(param.name.name) as SymbolInfo);
   }
 
   #declareTypeParameters(tps: Array<TypeParameter>): void {

@@ -1,0 +1,169 @@
+/**
+ * Semantic Model for the Zena compiler.
+ *
+ * The SemanticModel is a single query surface for all semantic
+ * information about a module. It combines:
+ *
+ *   1. Node types — the inferred type for any AST node (expression,
+ *      declaration pattern, parameter, etc.).
+ *   2. Binding types — the type carried by a named binding, keyed by
+ *      SymbolInfo.id so each destructured name gets its own entry.
+ *   3. Name resolution — delegates to the ReferenceMap from scope
+ *      analysis to find the SymbolInfo for any identifier reference.
+ *   4. Diagnostics collected during type checking.
+ *
+ * Two kinds of "type" live here, both accessible via getNodeType():
+ *
+ *   - **Binding type**: Stored on a declaration node (IdentifierPattern,
+ *     Parameter, ClassDeclaration). This is the type the name carries —
+ *     either from an explicit annotation or inferred from the initializer.
+ *     Query: `getNodeType(symbolInfo.declaration)`.
+ *
+ *   - **Expression type**: Stored on an expression node (NumberLiteral,
+ *     BinaryExpression, Identifier, etc.). This is the fully resolved
+ *     type at that use site, including control-flow narrowing.
+ *     Query: `getNodeType(someExpr)`.
+ *
+ * These share the same map keyed by source offset, since declaration
+ * nodes and expression nodes have disjoint offsets. There is no separate
+ * "declared vs inferred" API — the AST's TypeAnnotation tells you
+ * whether the type was explicit; the SemanticModel just gives you the
+ * resolved result.
+ *
+ * A future global analysis pass (e.g., monomorphization) would produce
+ * its own result, not overwrite this model. No third type level is
+ * needed for single-module checking.
+ */
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import {
+  Type, ClassType, InterfaceType, FunctionType, TypeParameterType
+} from './types.zena';
+import { Diagnostic } from './diagnostics.zena';
+import { Node, SourceLocation } from './ast.zena';
+import { SymbolInfo, ReferenceMap, DeclarationMap } from './scope.zena';
+
+export class SemanticModel {
+  /**
+   * Map from node source offset → inferred Type.
+   * Used for both expression types and declaration/binding types.
+   */
+  #nodeTypes = new HashMap<i32, Type>();
+
+  /**
+   * Map from SymbolInfo.id → Type for named bindings.
+   * Parallel to #nodeTypes but keyed by binding identity, which is
+   * stable across reference sites. The checker populates this when
+   * processing declarations; identifier resolution looks up here.
+   */
+  #bindingTypes = new HashMap<i32, Type>();
+
+  /**
+   * Scope analysis reference map (identifier → SymbolInfo).
+   * Owned by the SemanticModel so consumers have a single object to query.
+   */
+  #references: ReferenceMap | null = null;
+
+  /**
+   * Scope analysis declaration map (binding-site node → SymbolInfo).
+   * Used at declaration-processing time to find the SymbolInfo.
+   */
+  #declarations: DeclarationMap | null = null;
+
+  /**
+   * All diagnostics from type checking.
+   */
+  #diagnostics = new Array<Diagnostic>();
+
+  // --- Reference and declaration maps ---
+
+  /**
+   * Attach the scope analysis maps.
+   */
+  setReferences(refs: ReferenceMap): void {
+    this.#references = refs;
+  }
+
+  setDeclarations(decls: DeclarationMap): void {
+    this.#declarations = decls;
+  }
+
+  /**
+   * Resolve an identifier node to its SymbolInfo (from scope analysis).
+   * Returns null if the identifier was unresolved or no ReferenceMap is set.
+   */
+  resolve(node: Node): SymbolInfo | null {
+    if (this.#references == null) { return null; }
+    let refs = this.#references as ReferenceMap;
+    return refs.getByNode(node);
+  }
+
+  /**
+   * Find the SymbolInfo for a declaration-site node.
+   * Used at declaration-processing time (e.g., when the checker processes
+   * a VariableDeclaration and needs to store the type for its binding).
+   */
+  resolveDeclaration(node: Node): SymbolInfo | null {
+    if (this.#declarations == null) { return null; }
+    let decls = this.#declarations as DeclarationMap;
+    return decls.getByNode(node);
+  }
+
+  // --- Node types (expressions and declaration nodes) ---
+
+  /**
+   * Record the inferred type for an AST node.
+   */
+  setNodeType(node: Node, type: Type): void {
+    if (node.loc != null) {
+      let loc = node.loc as SourceLocation;
+      this.#nodeTypes.set(loc.start, type);
+    }
+  }
+
+  /**
+   * Get the inferred type for an AST node, or null if not recorded.
+   */
+  getNodeType(node: Node): Type | null {
+    if (node.loc != null) {
+      let loc = node.loc as SourceLocation;
+      if (this.#nodeTypes.has(loc.start)) {
+        return this.#nodeTypes[loc.start];
+      }
+    }
+    return null;
+  }
+
+  // --- Binding types (keyed by SymbolInfo.id) ---
+
+  /**
+   * Store the type for a named binding.
+   */
+  setBindingType(info: SymbolInfo, type: Type): void {
+    this.#bindingTypes.set(info.id, type);
+  }
+
+  /**
+   * Get the type for a named binding, or null if not yet checked.
+   */
+  getBindingType(info: SymbolInfo): Type | null {
+    if (this.#bindingTypes.has(info.id)) {
+      return this.#bindingTypes[info.id];
+    }
+    return null;
+  }
+
+  // --- Diagnostics ---
+
+  addDiagnostic(diagnostic: Diagnostic): void {
+    this.#diagnostics.push(diagnostic);
+  }
+
+  diagnostics: Array<Diagnostic> {
+    get { return this.#diagnostics; }
+  }
+
+  nodeTypes: HashMap<i32, Type> {
+    get { return this.#nodeTypes; }
+  }
+}
