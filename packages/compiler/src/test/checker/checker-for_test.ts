@@ -34,10 +34,7 @@ suite('TypeChecker - For Loops', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(
-      errors[0].message,
-      /Expected boolean condition in for statement/,
-    );
+    assert.match(errors[0].message, /Condition must be a boolean type/);
   });
 
   test('should scope loop variable to for block', () => {

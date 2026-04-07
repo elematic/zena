@@ -36,7 +36,7 @@ suite('TypeChecker - Inheritance', () => {
     const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /Unknown type 'Animal'/);
+    assert.match(errors[0].message, /Type 'Animal' not found/);
   });
 
   test('should detect non-class superclass', () => {
@@ -49,7 +49,7 @@ suite('TypeChecker - Inheritance', () => {
     const checker = TypeChecker.forModule(ast);
     const errors = checker.check();
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /Unknown type 'Animal'/);
+    assert.match(errors[0].message, /Type 'Animal' not found/);
   });
 
   test('should detect field redeclaration with incompatible type', () => {

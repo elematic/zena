@@ -105,29 +105,35 @@ export class DiagnosticBag {
 
   // Report an error with a message and optional source location.
   reportError(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
-    let location: DiagnosticLocation | null = null;
+    var location: DiagnosticLocation | null = null;
     if (loc != null) {
       let sl = loc as SourceLocation;
       location = new DiagnosticLocation(
         this.#file, sl.start, sl.end - sl.start, sl.line, sl.column
       );
+    } else {
+      // Even without a source location, include the file for context.
+      location = new DiagnosticLocation(this.#file, 0, 0, 0, 0);
     }
     this.#diagnostics.push(new Diagnostic(
-      code, message, new DiagnosticSeverity.Error(), location
+      code, message, DiagnosticSeverity.Error, location
     ));
   }
 
   // Report a warning with a message and optional source location.
   reportWarning(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
-    let location: DiagnosticLocation | null = null;
+    var location: DiagnosticLocation | null = null;
     if (loc != null) {
       let sl = loc as SourceLocation;
       location = new DiagnosticLocation(
         this.#file, sl.start, sl.end - sl.start, sl.line, sl.column
       );
+    } else {
+      // Even without a source location, include the file for context.
+      location = new DiagnosticLocation(this.#file, 0, 0, 0, 0);
     }
     this.#diagnostics.push(new Diagnostic(
-      code, message, new DiagnosticSeverity.Warning(), location
+      code, message, DiagnosticSeverity.Warning, location
     ));
   }
 
@@ -135,8 +141,9 @@ export class DiagnosticBag {
   hasErrors(): boolean {
     var i = 0;
     while (i < this.#diagnostics.length) {
-      if (this.#diagnostics[i].severity is DiagnosticSeverity.Error) {
-        return true;
+      match (this.#diagnostics[i].severity) {
+        case DiagnosticSeverity.Error: { return true; }
+        case _: {}
       }
       i = i + 1;
     }
@@ -161,7 +168,12 @@ export let formatDiagnostic = (d: Diagnostic, source: String): String => {
   }
   if (d.location != null) {
     let loc = d.location as DiagnosticLocation;
-    result = result + " [" + loc.file + ":" + loc.line + ":" + loc.column + "]";
+    // If line/column are 0, only show the file name (no precise location).
+    if (loc.line == 0 && loc.column == 0) {
+      result = `${result} [${loc.file}]`;
+    } else {
+      result = `${result} [${loc.file}:${loc.line}:${loc.column}]`;
+    }
   }
   result = result + ": " + d.message;
   return result;

@@ -11351,7 +11351,7 @@ function generateBlockAsStatements(
 }
 
 // Helper to check if a type is void-like
-function isVoidType(wasmType: number[]): boolean {
+export function isVoidType(wasmType: number[]): boolean {
   return wasmType.length === 0;
 }
 
@@ -12028,21 +12028,44 @@ function generateMatchPatternBindings(
 ) {
   if ((pattern as any).type === NodeType.AsPattern) {
     const asPattern = pattern as AsPattern;
+
+    // Check if the inner pattern has a narrowed type (e.g., ClassPattern or sealed variant)
+    const innerInferredType = (asPattern.pattern as any).inferredType;
+    let bindingType = discriminantType;
+    let needsCast = false;
+    let castStructIndex = -1;
+
+    if (innerInferredType?.kind === TypeKind.Class) {
+      const classInfo = ctx.getClassInfo(innerInferredType as ClassType);
+      if (classInfo) {
+        bindingType = [
+          ValType.ref_null,
+          ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
+        ];
+        needsCast = true;
+        castStructIndex = classInfo.structTypeIndex;
+      }
+    }
+
     let localIndex: number;
     const existing = ctx.getLocal(asPattern.name.name);
-    if (
-      existing !== undefined &&
-      typesAreEqual(existing.type, discriminantType)
-    ) {
+    if (existing !== undefined && typesAreEqual(existing.type, bindingType)) {
       localIndex = existing.index;
     } else {
-      localIndex = ctx.declareLocal(asPattern.name.name, discriminantType);
+      localIndex = ctx.declareLocal(asPattern.name.name, bindingType);
     }
 
     body.push(
       Opcode.local_get,
       ...WasmModule.encodeSignedLEB128(discriminantLocal),
     );
+
+    // Cast the value if narrowed to a subtype
+    if (needsCast) {
+      body.push(0xfb, GcOpcode.ref_cast_null);
+      body.push(...WasmModule.encodeSignedLEB128(castStructIndex));
+    }
+
     body.push(Opcode.local_set, ...WasmModule.encodeSignedLEB128(localIndex));
 
     generateMatchPatternBindings(

@@ -759,8 +759,8 @@ function resolveTypeAnnotationInternal(
   if (!type) {
     const message =
       name === 'string'
-        ? `Unknown type 'string'. Did you mean 'String'?`
-        : `Unknown type '${name}'.`;
+        ? `Type 'string' not found. Did you mean 'String'?`
+        : `Type '${name}' not found.`;
     ctx.diagnostics.reportError(message, DiagnosticCode.SymbolNotFound);
     return Types.Unknown;
   }

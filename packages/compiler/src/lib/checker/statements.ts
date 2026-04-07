@@ -1616,7 +1616,7 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
   const testType = checkExpression(ctx, stmt.test);
   if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
     ctx.diagnostics.reportError(
-      `Expected boolean condition in if statement, got ${typeToString(testType)}`,
+      `Condition must be a boolean type, got '${typeToString(testType)}'.`,
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(stmt.test.loc),
     );
@@ -1667,7 +1667,7 @@ function checkWhileStatement(ctx: CheckerContext, stmt: WhileStatement) {
   const testType = checkExpression(ctx, stmt.test);
   if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
     ctx.diagnostics.reportError(
-      `Expected boolean condition in while statement, got ${typeToString(testType)}`,
+      `Condition must be a boolean type, got '${typeToString(testType)}'.`,
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(stmt.test.loc),
     );
@@ -1695,7 +1695,7 @@ function checkForStatement(ctx: CheckerContext, stmt: ForStatement) {
     const testType = checkExpression(ctx, stmt.test);
     if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
       ctx.diagnostics.reportError(
-        `Expected boolean condition in for statement, got ${typeToString(testType)}`,
+        `Condition must be a boolean type, got '${typeToString(testType)}'.`,
         DiagnosticCode.TypeMismatch,
         ctx.getLocation(stmt.test.loc),
       );
@@ -4420,12 +4420,19 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
 
   // Helper to check if the superType chain requires super() to be called.
   // If the superType is only mixin intermediate classes (no user-defined base), super() is not required.
+  // If the superType is a sealed class with no constructor, super() is not required.
   const requiresSuperCall = (): boolean => {
     if (!ctx.currentClass?.superType) return false;
     let current: ClassType | undefined = ctx.currentClass.superType;
     while (current) {
-      // If we find a non-mixin-intermediate class, super() is required
-      if (!current.isMixinIntermediate) return true;
+      // If we find a non-mixin-intermediate class, super() may be required
+      if (!current.isMixinIntermediate) {
+        // Sealed classes with no constructor don't require super()
+        if (current.isSealed && !current.constructorType) {
+          return false;
+        }
+        return true;
+      }
       current = current.superType;
     }
     return false;
@@ -4606,12 +4613,13 @@ function checkMethodDefinition(ctx: CheckerContext, method: MethodDefinition) {
   if (
     methodName === CONSTRUCTOR_NAME &&
     (requiresSuperCall() || ctx.currentClass?.isExtension) &&
-    !ctx.isThisInitialized
+    !ctx.isThisInitialized &&
+    !ctx.currentClass?.isCaseClass // Case class constructors are auto-generated, no explicit super needed
   ) {
     ctx.diagnostics.reportError(
-      `Constructors in derived classes and extensions must call 'super()'.`,
+      `Constructors in derived classes and extensions must call 'super()'. Class: ${ctx.currentClass?.name ?? 'unknown'}`,
       DiagnosticCode.UnknownError,
-      undefined /* TODO fix location */,
+      ctx.getLocation(method.name.loc),
     );
   }
 
@@ -4777,7 +4785,7 @@ function checkMixinDeclaration(ctx: CheckerContext, decl: MixinDeclaration) {
     const type = ctx.resolveType(decl.on.name);
     if (!type) {
       ctx.diagnostics.reportError(
-        `Unknown type '${decl.on.name}' in 'on' clause.`,
+        `Type '${decl.on.name}' not found in 'on' clause.`,
         DiagnosticCode.SymbolNotFound,
         undefined /* TODO fix location */,
       );

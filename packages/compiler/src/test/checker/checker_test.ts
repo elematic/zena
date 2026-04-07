@@ -111,10 +111,7 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(
-      errors[0].message,
-      /Expected boolean condition in while statement/,
-    );
+    assert.match(errors[0].message, /Condition must be a boolean type/);
   });
 
   test('should detect non-boolean condition in if statement', () => {
@@ -125,10 +122,7 @@ suite('TypeChecker', () => {
     const errors = checker.check();
 
     assert.strictEqual(errors.length, 1);
-    assert.match(
-      errors[0].message,
-      /Expected boolean condition in if statement/,
-    );
+    assert.match(errors[0].message, /Condition must be a boolean type/);
   });
 
   test('should check valid function call', () => {

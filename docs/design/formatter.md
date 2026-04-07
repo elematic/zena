@@ -709,7 +709,7 @@ Track each Prettier source function and its Zena equivalent.
 | `indent(contents)`                           | `indent`             | Done                         |
 | `dedent(contents)`                           | `dedent`             | Done                         |
 | `align(widthOrString, contents)`             | `align`              | Done (int-only)              |
-| `fill(parts)`                            | `fill`               | Done                         |
+| `fill(parts)`                                | `fill`               | Done                         |
 | `ifBreak(breakContents, flatContents, opts)` | `ifBreak`            | Done                         |
 | `indentIfBreak(contents, opts)`              | `indentIfBreak`      | Done                         |
 | `lineSuffix(contents)`                       | `lineSuffix`         | Done                         |

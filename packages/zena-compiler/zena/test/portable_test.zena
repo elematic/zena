@@ -1,14 +1,20 @@
-// Portable syntax tests — auto-discovers .zena files under tests/language/syntax/
-// and compares parsed AST JSON against .ast.json snapshots.
+// Portable tests — auto-discovers .zena files under tests/language/
+//   syntax/    → parsed AST JSON compared against .ast.json snapshots
+//   semantics/ → parsed, scope-analysed, type-checked; @error directives validated
 // Requires WASI (run with wasmtime via npm run test:wasmtime)
 
 import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
 import { jsonEqual } from 'zena:assert';
 import { readFile, listDir, exists, DirEntry, FileType } from 'zena:fs';
 import { parseJson, JsonValue, JsonOptions } from 'zena:json';
+import { Array } from 'zena:array';
 import { parse } from '../lib/parser.zena';
 import { nodeToJson } from '../lib/ast-json.zena';
 import { ExpressionStatement } from '../lib/ast.zena';
+import { ScopeBuilder } from '../lib/scope.zena';
+import { checkModule, CheckResult } from '../lib/checker.zena';
+import { Diagnostic, DiagnosticSeverity, formatDiagnostic } from '../lib/diagnostics.zena';
 
 // ============================================================================
 // Skip list — tests that the self-hosted parser cannot yet match
@@ -26,6 +32,13 @@ let skipList = [
 // ============================================================================
 // String helpers (Zena has no endsWith/startsWith builtins yet)
 // ============================================================================
+
+let startsWith = (s: String, prefix: String): boolean => {
+  if (prefix.length > s.length) {
+    return false;
+  }
+  return s.sliceBytes(0, prefix.length) == prefix;
+};
 
 let endsWith = (s: String, suffix: String): boolean => {
   if (suffix.length > s.length) {
@@ -110,7 +123,8 @@ let parseTarget = (source: String): String => {
 let isSkipped = (relPath: String, skips: FixedArray<SkipEntry>): String | null => {
   var i = 0;
   while (i < skips.length) {
-    if (skips[i].path == relPath) {
+    // Match exact path OR prefix (for directory patterns like "optional-chaining/")
+    if (skips[i].path == relPath || startsWith(relPath, skips[i].path)) {
       return skips[i].reason;
     }
     i = i + 1;
@@ -241,9 +255,257 @@ let discoverTests = (dirPath: String, relPrefix: String, skips: FixedArray<SkipE
 };
 
 // ============================================================================
+// Semantic test infrastructure
+// ============================================================================
+
+type ExpectedError = { line: i32, pattern: String };
+
+/**
+ * Extract // @error: <pattern> directives from source, returning
+ * the line number (1-based) and the pattern string for each.
+ */
+let parseExpectedErrors = (source: String): Array<ExpectedError> => {
+  let errors = new Array<ExpectedError>(4);
+  let marker = "// @error: ";
+  var pos = 0;
+  var lineNum = 1;
+
+  while (pos < source.length) {
+    // Find end of current line.
+    var eol = pos;
+    while (eol < source.length && source.sliceBytes(eol, eol + 1) != "\n") {
+      eol = eol + 1;
+    }
+
+    // Check if this line contains the marker.
+    let line = source.sliceBytes(pos, eol);
+    var mi = 0;
+    var found = false;
+    while (mi <= line.length - marker.length) {
+      if (line.sliceBytes(mi, mi + marker.length) == marker) {
+        // Extract the pattern (rest of line after marker, trimmed).
+        var patEnd = line.length;
+        while (patEnd > mi + marker.length) {
+          let ch = line.sliceBytes(patEnd - 1, patEnd);
+          if (ch == " " || ch == "\r") {
+            patEnd = patEnd - 1;
+          } else {
+            break;
+          }
+        }
+        let pattern = line.sliceBytes(mi + marker.length, patEnd);
+        errors.push({ line: lineNum, pattern: pattern });
+        found = true;
+        break;
+      }
+      mi = mi + 1;
+    }
+
+    // Advance past newline.
+    if (eol < source.length) {
+      pos = eol + 1;
+    } else {
+      pos = eol;
+    }
+    lineNum = lineNum + 1;
+  }
+
+  return errors;
+};
+
+/**
+ * Check if a diagnostic message contains a pattern string (case-sensitive).
+ */
+let messageContains = (message: String, pattern: String): boolean => {
+  if (pattern.length > message.length) {
+    return false;
+  }
+  var i = 0;
+  while (i <= message.length - pattern.length) {
+    if (message.sliceBytes(i, i + pattern.length) == pattern) {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+};
+
+/**
+ * Run a semantic check test: parse → scope → check, then match diagnostics.
+ */
+let runSemanticCheck = (source: String, filePath: String): void => {
+  let expectedErrors = parseExpectedErrors(source);
+
+  // Parse.
+  let ast = parse(source, filePath);
+
+  // Scope analysis.
+  let scopeBuilder = new ScopeBuilder(filePath);
+  let scopeResult = scopeBuilder.build(ast);
+
+  // Type check.
+  let result = checkModule(ast, scopeResult);
+  let diagnostics = result.diagnostics;
+
+  // Collect only errors (not warnings).
+  let errors = new Array<Diagnostic>(4);
+  var ei = 0;
+  while (ei < diagnostics.length) {
+    match (diagnostics[ei].severity) {
+      case DiagnosticSeverity.Error: {
+        errors.push(diagnostics[ei]);
+      }
+      case _: {}
+    }
+    ei = ei + 1;
+  }
+
+  // Match expected errors against actual diagnostics.
+  var xi = 0;
+  while (xi < expectedErrors.length) {
+    let expected = expectedErrors[xi];
+    var matched = false;
+    var di = 0;
+    while (di < errors.length) {
+      if (messageContains(errors[di].message, expected.pattern)) {
+        matched = true;
+        break;
+      }
+      di = di + 1;
+    }
+    if (!matched) {
+      var actualStr = "(none)";
+      if (errors.length > 0) {
+        actualStr = "";
+        var ai = 0;
+        while (ai < errors.length) {
+          if (ai > 0) { actualStr = actualStr + "\n"; }
+          actualStr = actualStr + formatDiagnostic(errors[ai], source);
+          ai = ai + 1;
+        }
+      }
+      throw new Error(
+        `Expected error matching '${expected.pattern}' on line ${expected.line} but found none.\nActual errors:\n${actualStr}\nFile: ${filePath}`
+      );
+    }
+    xi = xi + 1;
+  }
+
+  // If no expected errors, fail on any unexpected errors.
+  if (expectedErrors.length == 0 && errors.length > 0) {
+    var errStr = "";
+    var ui = 0;
+    while (ui < errors.length) {
+      if (ui > 0) { errStr = errStr + "\n"; }
+      errStr = errStr + formatDiagnostic(errors[ui], source);
+      ui = ui + 1;
+    }
+    throw new Error(
+      "Unexpected errors:\n" + errStr + "\nFile: " + filePath
+    );
+  }
+};
+
+/**
+ * Discovers and registers semantic tests for all .zena files in a directory.
+ */
+let discoverSemanticTests = (dirPath: String, relPrefix: String, skips: FixedArray<SkipEntry>): void => {
+  let entries = listDir(dirPath);
+
+  let subdirs = new Array<DirEntry>(4);
+  let files = new Array<DirEntry>(8);
+
+  var i = 0;
+  while (i < entries.length) {
+    let entry = entries[i];
+    if (entry.fileType == FileType.Directory) {
+      if (entry.name != "." && entry.name != "..") {
+        subdirs.push(entry);
+      }
+    } else if (entry.fileType == FileType.RegularFile) {
+      if (entry.name.endsWith(".zena")) {
+        files.push(entry);
+      }
+    }
+    i = i + 1;
+  }
+
+  var fi = 0;
+  while (fi < files.length) {
+    let fileName = files[fi].name;
+    let filePath = dirPath + "/" + fileName;
+    let relPath = if (relPrefix.length > 0) {
+      relPrefix + "/" + fileName
+    } else {
+      fileName
+    };
+
+    let reason = isSkipped(relPath, skips);
+    // TODO: this causes a "failed to instantiate" error
+    // console.log(`Test: ${relPath} skipped: ${reason != null}`);
+    if (reason == null) {
+      let capturedFilePath = filePath;
+      let capturedFileName = fileName;
+
+      test(capturedFileName, (ctx: TestContext): void => {
+        let source = readFile(capturedFilePath);
+        runSemanticCheck(source, capturedFilePath);
+      });
+    }
+    fi = fi + 1;
+  }
+
+  var si = 0;
+  while (si < subdirs.length) {
+    let subName = subdirs[si].name;
+    let subPath = dirPath + "/" + subName;
+    let subRel = if (relPrefix.length > 0) {
+      relPrefix + "/" + subName
+    } else {
+      subName
+    };
+
+    let capturedSubPath = subPath;
+    let capturedSubRel = subRel;
+    let capturedSkips = skips;
+
+    suite(subName, (): void => {
+      discoverSemanticTests(capturedSubPath, capturedSubRel, capturedSkips);
+    });
+    si = si + 1;
+  }
+};
+
+// ============================================================================
 // Main test registration
 // ============================================================================
 
-export let tests = suite('Portable Syntax Tests', (): void => {
-  discoverTests("tests/language/syntax", "", skipList);
+// Skip tests for features not yet implemented in the self-hosted checker
+let semanticSkipList: FixedArray<SkipEntry> = [
+  // TemplateStringsArray type needs full definition
+  {path: "template_strings_array_", reason: "TemplateStringsArray type not fully implemented"},
+  // Optional chaining not implemented
+  {path: "optional-chaining/", reason: "optional chaining not implemented"},
+  // Sealed class validation not implemented
+  {path: "sealed-classes/", reason: "sealed class validation not implemented"},
+  // Null coalescing tests need Box constructor
+  {path: "null-coalescing/", reason: "Box constructor not in prelude stub"},
+  // Generic case class type params need work
+  {path: "case-classes/generic.zena", reason: "generic type params in case classes"},
+  // Duplicate constructor detection not implemented
+  {path: "case-classes/duplicate_constructor.zena", reason: "duplicate constructor check not implemented"},
+  // Tuple method resolution not implemented
+  {path: "tuple_not_array.zena", reason: "tuple method resolution not implemented"},
+  // Optional field primitive check not implemented
+  {path: "optional-field-primitive.zena", reason: "optional field primitive check not implemented"}
+];
+
+export let tests = suite('Portable Tests', (): void => {
+  suite('Syntax', (): void => {
+    discoverTests("tests/language/syntax", "", skipList);
+  });
+  // Re-enabling to debug the null reference error
+  suite('Semantics', (): void => {
+    discoverSemanticTests("tests/language/semantics", "", semanticSkipList);
+  });
 });

@@ -476,7 +476,7 @@ function checkIfExpression(ctx: CheckerContext, expr: IfExpression): Type {
   const testType = checkExpression(ctx, expr.test);
   if (!isBooleanType(testType) && testType.kind !== TypeKind.Unknown) {
     ctx.diagnostics.reportError(
-      `Expected boolean condition in if expression, got ${typeToString(testType)}`,
+      `Condition must be a boolean type, got '${typeToString(testType)}'.`,
       DiagnosticCode.TypeMismatch,
       ctx.getLocation(expr.loc),
     );
@@ -602,6 +602,13 @@ export function checkMatchPattern(
             (pattern as any).inferredType = variantType;
             break;
           }
+          // Non-sealed class match: set inferredType for narrowing in `as` patterns
+          if (
+            isAssignableTo(ctx, resolvedType, discriminantType) ||
+            isAssignableTo(ctx, discriminantType, resolvedType)
+          ) {
+            (pattern as any).inferredType = resolvedType;
+          }
         }
         ctx.declare(pattern.name, discriminantType, 'let', pattern);
       }
@@ -609,8 +616,11 @@ export function checkMatchPattern(
     }
     case NodeType.AsPattern: {
       const asPattern = pattern as AsPattern;
-      ctx.declare(asPattern.name.name, discriminantType, 'let', asPattern.name);
       checkMatchPattern(ctx, asPattern.pattern, discriminantType);
+      // Use the narrowed type from the inner pattern if available
+      const narrowedType =
+        (asPattern.pattern as any).inferredType ?? discriminantType;
+      ctx.declare(asPattern.name.name, narrowedType, 'let', asPattern.name);
       break;
     }
     case NodeType.NumberLiteral: {

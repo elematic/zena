@@ -24,7 +24,12 @@ import {
 } from './classes.js';
 import {analyzeCaptures} from './captures.js';
 import type {CodegenContext} from './context.js';
-import {generateAdaptedArgument, generateExpression} from './expressions.js';
+import {
+  generateAdaptedArgument,
+  generateExpression,
+  inferType,
+  isVoidType,
+} from './expressions.js';
 import {
   generateBlockStatement,
   generateFunctionStatement,
@@ -296,7 +301,15 @@ export function generateFunctionBody(
       const lastStmt = blockBody.body[blockBody.body.length - 1];
       if (lastStmt.type === NodeType.ExpressionStatement) {
         // Generate just the expression, don't drop - this is the implicit return value
-        generateExpression(ctx, (lastStmt as any).expression, body);
+        const expr = (lastStmt as any).expression;
+        generateExpression(ctx, expr, body);
+
+        // If the expression has void type (e.g., match where all arms return),
+        // no value is left on the stack. Add unreachable to satisfy validator.
+        const exprType = inferType(ctx, expr);
+        if (exprType.length === 0 || isVoidType(exprType)) {
+          body.push(Opcode.unreachable);
+        }
       } else {
         // For other statements (return, if, etc.), generate normally
         generateFunctionStatement(ctx, lastStmt, body);
