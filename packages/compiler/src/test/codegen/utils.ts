@@ -118,6 +118,8 @@ export interface CompileToWasmOptions {
   dce?: boolean;
   /** Emit debug names in the WASM binary (default: true for better stack traces in tests) */
   debug?: boolean;
+  /** Compilation target: 'host' (default) or 'wasi' */
+  target?: 'host' | 'wasi';
 }
 
 /**
@@ -137,7 +139,7 @@ export const compileToWasm = (
     path,
     compiler.semanticContext,
     compiler.checkerContext,
-    {dce: options.dce, debug: options.debug ?? true}, // Enable debug mode for better stack traces in tests
+    {dce: options.dce, debug: options.debug ?? true, target: options.target}, // Enable debug mode for better stack traces in tests
   );
   return generator.generate();
 };

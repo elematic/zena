@@ -4232,85 +4232,22 @@ export function generateClassMethods(
             member.body &&
             member.body.type === NodeType.BlockStatement
           ) {
-            // Existing pattern: super() in body
-            let superCalled = false;
-            for (const stmt of member.body.body) {
-              generateFunctionStatement(ctx, stmt, body);
-
-              if (
+            // Constructor with body - check if super() is called anywhere
+            const hasSuperCall = member.body.body.some(
+              (stmt) =>
                 stmt.type === NodeType.ExpressionStatement &&
                 stmt.expression.type === NodeType.CallExpression &&
                 (stmt.expression as any).callee.type ===
-                  NodeType.SuperExpression
-              ) {
-                superCalled = true;
-                const initializedFields = new Set<string>();
-                for (const m of decl.body) {
-                  if (m.type === NodeType.FieldDefinition && m.value) {
-                    if (m.isStatic) continue;
-                    const fieldName = manglePrivateName(
-                      decl.name.name,
-                      getMemberName(m.name),
-                    );
-                    const fieldInfo = classInfo.fields.get(fieldName)!;
-                    body.push(Opcode.local_get, 0);
-                    generateExpression(ctx, m.value, body);
-                    body.push(0xfb, GcOpcode.struct_set);
-                    body.push(
-                      ...WasmModule.encodeSignedLEB128(
-                        classInfo.structTypeIndex,
-                      ),
-                    );
-                    body.push(
-                      ...WasmModule.encodeSignedLEB128(fieldInfo.index),
-                    );
-                  }
-                }
-                // Also generate mixin field initializers
-                generateMixinFieldInitializers(
-                  ctx,
-                  decl,
-                  classInfo,
-                  initializedFields,
-                  body,
-                );
+                  NodeType.SuperExpression,
+            );
 
-                // For case class constructors with superclass, initialize case param fields
-                if ((member as any)._caseClassCtor && decl.caseParams) {
-                  for (let i = 0; i < decl.caseParams.length; i++) {
-                    const paramName = decl.caseParams[i].name.name;
-                    const fieldName = manglePrivateName(
-                      decl.name.name,
-                      paramName,
-                    );
-                    const fieldInfo = classInfo.fields.get(fieldName);
-                    if (fieldInfo) {
-                      body.push(Opcode.local_get, 0); // this
-                      body.push(Opcode.local_get);
-                      body.push(...WasmModule.encodeSignedLEB128(i + 1)); // params start at 1 (after this)
-                      body.push(0xfb, GcOpcode.struct_set);
-                      body.push(
-                        ...WasmModule.encodeSignedLEB128(
-                          classInfo.structTypeIndex,
-                        ),
-                      );
-                      body.push(
-                        ...WasmModule.encodeSignedLEB128(fieldInfo.index),
-                      );
-                    }
-                  }
-                }
-              }
-            }
-
-            // If no super() was called but class has mixin intermediate as superclass,
-            // still generate field initializers (mixin intermediates have no ctor)
-            if (!superCalled && decl.mixins && decl.mixins.length > 0) {
+            if (!hasSuperCall) {
+              // No super() in body - generate field initializers FIRST, then body
               const initializedFields = new Set(
                 member.initializerList?.map((init) => init.field.name) ?? [],
               );
 
-              // Generate field initializers from initializerList FIRST
+              // Generate field initializers from initializerList
               if (member.initializerList) {
                 for (const init of member.initializerList) {
                   const memberName = init.field.name;
@@ -4335,7 +4272,7 @@ export function generateClassMethods(
                 }
               }
 
-              // Generate class field initializers (for fields not in initializerList)
+              // Generate inline field initializers (for fields not in initializerList)
               for (const m of decl.body) {
                 if (m.type === NodeType.FieldDefinition && m.value) {
                   if (m.isStatic) continue;
@@ -4355,6 +4292,7 @@ export function generateClassMethods(
                   body.push(...WasmModule.encodeSignedLEB128(fieldInfo.index));
                 }
               }
+
               // Generate mixin field initializers
               generateMixinFieldInitializers(
                 ctx,
@@ -4363,6 +4301,78 @@ export function generateClassMethods(
                 initializedFields,
                 body,
               );
+
+              // NOW generate the constructor body
+              generateBlockStatement(ctx, member.body, body);
+            } else {
+              // Has super() in body - generate statements until super(), then field inits
+              for (const stmt of member.body.body) {
+                generateFunctionStatement(ctx, stmt, body);
+
+                if (
+                  stmt.type === NodeType.ExpressionStatement &&
+                  stmt.expression.type === NodeType.CallExpression &&
+                  (stmt.expression as any).callee.type ===
+                    NodeType.SuperExpression
+                ) {
+                  const initializedFields = new Set<string>();
+                  for (const m of decl.body) {
+                    if (m.type === NodeType.FieldDefinition && m.value) {
+                      if (m.isStatic) continue;
+                      const fieldName = manglePrivateName(
+                        decl.name.name,
+                        getMemberName(m.name),
+                      );
+                      const fieldInfo = classInfo.fields.get(fieldName)!;
+                      body.push(Opcode.local_get, 0);
+                      generateExpression(ctx, m.value, body);
+                      body.push(0xfb, GcOpcode.struct_set);
+                      body.push(
+                        ...WasmModule.encodeSignedLEB128(
+                          classInfo.structTypeIndex,
+                        ),
+                      );
+                      body.push(
+                        ...WasmModule.encodeSignedLEB128(fieldInfo.index),
+                      );
+                    }
+                  }
+                  // Also generate mixin field initializers
+                  generateMixinFieldInitializers(
+                    ctx,
+                    decl,
+                    classInfo,
+                    initializedFields,
+                    body,
+                  );
+
+                  // For case class constructors with superclass, initialize case param fields
+                  if ((member as any)._caseClassCtor && decl.caseParams) {
+                    for (let i = 0; i < decl.caseParams.length; i++) {
+                      const paramName = decl.caseParams[i].name.name;
+                      const fieldName = manglePrivateName(
+                        decl.name.name,
+                        paramName,
+                      );
+                      const fieldInfo = classInfo.fields.get(fieldName);
+                      if (fieldInfo) {
+                        body.push(Opcode.local_get, 0); // this
+                        body.push(Opcode.local_get);
+                        body.push(...WasmModule.encodeSignedLEB128(i + 1)); // params start at 1 (after this)
+                        body.push(0xfb, GcOpcode.struct_set);
+                        body.push(
+                          ...WasmModule.encodeSignedLEB128(
+                            classInfo.structTypeIndex,
+                          ),
+                        );
+                        body.push(
+                          ...WasmModule.encodeSignedLEB128(fieldInfo.index),
+                        );
+                      }
+                    }
+                  }
+                }
+              }
             }
           } else if (decl.mixins && decl.mixins.length > 0) {
             // No body but has mixins - still generate field initializers
