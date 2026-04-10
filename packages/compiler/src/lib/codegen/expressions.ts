@@ -41,7 +41,12 @@ import {
   type InlineTupleLiteral,
 } from '../ast.js';
 import {CompilerError, DiagnosticCode} from '../diagnostics.js';
-import {getGetterName, getSetterName, getSignatureKey} from '../names.js';
+import {
+  getGetterName,
+  getPropertyNameFromAccessor,
+  getSetterName,
+  getSignatureKey,
+} from '../names.js';
 import {WasmModule} from '../emitter.js';
 import {
   Decorators,
@@ -2995,7 +3000,7 @@ function generateMemberExpression(
     // assignment (e.g., `this.count += 1`). Derive the corresponding getter/field read.
     if (memberBinding.kind === 'setter') {
       const setterBinding = memberBinding as SetterBinding;
-      const fieldName = setterBinding.methodName.replace('set#', '');
+      const fieldName = getPropertyNameFromAccessor(setterBinding.methodName);
       // Construct a getter binding and try that first
       const getterMethodName = getGetterName(fieldName);
       const getterBinding: GetterBinding = {
@@ -3009,10 +3014,14 @@ function generateMemberExpression(
         return;
       }
       // If getter didn't work, try a direct field binding
+      // For private fields (starting with #), use the mangled name format: ClassName::#fieldName
+      const mangledFieldName = fieldName.startsWith('#')
+        ? `${setterBinding.classType.name}::${fieldName}`
+        : fieldName;
       const fieldBinding: FieldBinding = {
         kind: 'field',
         classType: setterBinding.classType,
-        fieldName,
+        fieldName: mangledFieldName,
         type: expr.inferredType!,
       };
       if (generateMemberFromBinding(ctx, fieldBinding, expr.object, body)) {
