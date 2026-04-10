@@ -320,7 +320,7 @@ let SCRATCH_PTR: i32 = allocAlignedOrPanic(SCRATCH_SIZE, 8);
 let __stringToLinear = (s: String): (i32, i32) => {
   let len = s.length;
   let ptr = allocOrPanic(len);
-  for (var i = 0; i < len; i = i + 1) {
+  for (var i = 0; i < len; i += 1) {
     mem[ptr + i] = s.getByteAt(i);
   }
   return (ptr, len);
@@ -330,7 +330,7 @@ let __stringToLinear = (s: String): (i32, i32) => {
 let __linearToString = (ptr: i32, len: i32): String => {
   // Build a GC byte array from linear memory
   let bytes = newByteArray(len);
-  for (var i = 0; i < len; i = i + 1) {
+  for (var i = 0; i < len; i += 1) {
     __byte_array_set(bytes, i, mem[ptr + i]);
   }
   // Create string from the byte array
@@ -448,7 +448,7 @@ export class Descriptor {
       
       if (nread > 0) {
         chunks.push((bufPtr, nread));
-        totalLen = totalLen + nread;
+        totalLen += nread;
       }
       
       if (nread < chunkSize) {
@@ -459,11 +459,11 @@ export class Descriptor {
     // Combine chunks into ByteArray
     let result = newByteArray(totalLen);
     var pos = 0;
-    for (var c = 0; c < chunks.length; c = c + 1) {
+    for (var c = 0; c < chunks.length; c += 1) {
       let (bufPtr, len) = chunks[c];
-      for (var i = 0; i < len; i = i + 1) {
+      for (var i = 0; i < len; i += 1) {
         __byte_array_set(result, pos, mem[bufPtr + i]);
-        pos = pos + 1;
+        pos += 1;
       }
     }
     
@@ -486,7 +486,7 @@ export class Descriptor {
     let ptr = allocOrPanic(len);
     
     // Copy data to linear memory
-    for (var i = 0; i < len; i = i + 1) {
+    for (var i = 0; i < len; i += 1) {
       mem[ptr + i] = __byte_array_get(data, i);
     }
     
@@ -779,7 +779,7 @@ export let getPreopens = (): Array<(Descriptor, String)> => {
     // Check tag - 0 means directory
     let tag = mem[SCRATCH_PTR];
     if (tag != 0) {
-      fd = fd + 1;
+      fd += 1;
       continue;
     }
     
@@ -788,14 +788,14 @@ export let getPreopens = (): Array<(Descriptor, String)> => {
     
     let nameErrno = __wasi_fd_prestat_dir_name(fd, namePtr, nameLen);
     if (nameErrno != 0) {
-      fd = fd + 1;
+      fd += 1;
       continue;
     }
     
     let path = __linearToString(namePtr, nameLen);
     result.push((new Descriptor(fd), path));
     
-    fd = fd + 1;
+    fd += 1;
   }
   
   __preopensCache = result;

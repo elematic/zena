@@ -140,7 +140,7 @@ class PackageRegistry {
     while (i < ast.nestedPackages.length) {
       let pkg = ast.nestedPackages[i];
       registry.#registerPackage(pkg.name, pkg.items);
-      i = i + 1;
+      i += 1;
     }
 
     return registry;
@@ -168,7 +168,7 @@ class PackageRegistry {
         let world = item.worldDef as WorldDef;
         content.worlds.set(world.name.name, world);
       }
-      i = i + 1;
+      i += 1;
     }
 
     this.#packages.set(key, content);
@@ -285,7 +285,7 @@ let toLower = (s: String): String => {
     } else {
       sb.appendByte(b);
     }
-    i = i + 1;
+    i += 1;
   }
   return sb.toString();
 };
@@ -299,7 +299,7 @@ let findSymbolInList = (symbols: Array<SymbolEntry>, name: String): SymbolEntry 
     if (toLower(sym.name) == lower) {
       return sym;
     }
-    i = i + 1;
+    i += 1;
   }
   return null;
 };
@@ -333,7 +333,7 @@ let isGated = (docs: Docs): boolean => {
     if (attrs[i].tag == AttributeTag.Unstable) {
       return true;
     }
-    i = i + 1;
+    i += 1;
   }
   return false;
 };
@@ -374,7 +374,7 @@ class Scope {
       if (toLower(sym.name) == lower) {
         return sym;
       }
-      i = i + 1;
+      i += 1;
     }
     return null;
   }
@@ -406,7 +406,7 @@ class Scope {
       if (td.name.name == name) {
         return td;
       }
-      i = i + 1;
+      i += 1;
     }
     return null;
   }
@@ -419,7 +419,7 @@ class Scope {
       if (wd.name.name == name) {
         return wd;
       }
-      i = i + 1;
+      i += 1;
     }
     return null;
   }
@@ -432,7 +432,7 @@ class Scope {
       if (iface.name.name == name) {
         return iface;
       }
-      i = i + 1;
+      i += 1;
     }
     return null;
   }
@@ -571,7 +571,7 @@ export class Resolver {
         // Store the world definition for include cycle detection
         this.#currentScope().worlds.push(world);
       }
-      i = i + 1;
+      i += 1;
     }
 
     // Second mini-pass: collect top-level use aliases
@@ -609,7 +609,7 @@ export class Resolver {
           this.#define(name, SymbolKind.Interface, span);
         }
       }
-      i = i + 1;
+      i += 1;
     }
 
     // Second pass: resolve each item
@@ -617,7 +617,7 @@ export class Resolver {
     while (i < ast.items.length) {
       let item = ast.items[i];
       this.#resolveAstItem(item);
-      i = i + 1;
+      i += 1;
     }
 
     // Check for duplicate nested package names
@@ -628,7 +628,7 @@ export class Resolver {
     while (i < ast.nestedPackages.length) {
       let pkg = ast.nestedPackages[i];
       this.#resolveNestedPackage(pkg);
-      i = i + 1;
+      i += 1;
     }
 
     this.#popScope();
@@ -652,7 +652,7 @@ export class Resolver {
         }
         j = j + 1;
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -726,14 +726,14 @@ export class Resolver {
         }
         // else: silently shadow - will resolve in second pass
       }
-      i = i + 1;
+      i += 1;
     }
 
     // Second pass: resolve each item
     i = 0;
     while (i < pkg.items.length) {
       this.#resolveAstItem(pkg.items[i]);
-      i = i + 1;
+      i += 1;
     }
 
     this.#popScope();
@@ -787,7 +787,7 @@ export class Resolver {
         let itemGated = isGated(f.docs);
         this.#defineWithGating(f.name.name, SymbolKind.Func, f.name.span, itemGated);
       }
-      i = i + 1;
+      i += 1;
     }
 
     // Second pass: resolve types and validate
@@ -795,7 +795,7 @@ export class Resolver {
     while (i < iface.items.length) {
       let item = iface.items[i];
       this.#resolveInterfaceItem(item);
-      i = i + 1;
+      i += 1;
     }
 
     this.#popScope();
@@ -851,7 +851,7 @@ export class Resolver {
         this.#define(td.name.name, SymbolKind.Type, td.name.span);
         this.#currentScope().types.push(td);
       }
-      i = i + 1;
+      i += 1;
     }
 
     // Second pass: resolve items and check import/export conflicts
@@ -859,7 +859,7 @@ export class Resolver {
     while (i < world.items.length) {
       let item = world.items[i];
       this.#resolveWorldItem(item, imports, exports, world.name.name);
-      i = i + 1;
+      i += 1;
     }
 
     // Third pass: check for transitive dependency conflicts
@@ -934,7 +934,7 @@ export class Resolver {
         let imp = item.importItem as Import;
         // Skip gated imports - they don't really exist in the active feature set
         if (isGated(imp.docs)) {
-          i = i + 1;
+          i += 1;
           continue;
         }
         let impName = this.#getExternKindName(imp.kind);
@@ -952,13 +952,13 @@ export class Resolver {
             if (!e.isGated) {
               if (e.source != null && (e.source as String) == worldName) {
                 // Same source - this is a duplicate include, skip without error
-                i = i + 1;
+                i += 1;
                 continue;
               }
               // Path imports of the same interface from different worlds can be deduplicated
               if (isPath && e.isPathImport) {
                 // Both are path imports to the same interface - deduplicate
-                i = i + 1;
+                i += 1;
                 continue;
               }
               throw new ResolveError(
@@ -978,7 +978,7 @@ export class Resolver {
         let exp = item.exportItem as Export;
         // Skip gated exports
         if (isGated(exp.docs)) {
-          i = i + 1;
+          i += 1;
           continue;
         }
         let expName = this.#getExternKindName(exp.kind);
@@ -992,13 +992,13 @@ export class Resolver {
             if (!e.isGated) {
               if (e.source != null && (e.source as String) == worldName) {
                 // Same source - duplicate include, skip without error
-                i = i + 1;
+                i += 1;
                 continue;
               }
               // Path exports of the same interface from different worlds can be deduplicated
               if (isPath && e.isPathImport) {
                 // Both are path exports to the same interface - deduplicate
-                i = i + 1;
+                i += 1;
                 continue;
               }
               throw new ResolveError(
@@ -1014,7 +1014,7 @@ export class Resolver {
           }
         }
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -1040,7 +1040,7 @@ export class Resolver {
       if (n.name.name == name) {
         return n.asName.name;
       }
-      i = i + 1;
+      i += 1;
     }
     return name;
   }
@@ -1192,7 +1192,7 @@ export class Resolver {
         if (c.type != null) {
           this.#resolveType(c.type as Type, false);
         }
-        i = i + 1;
+        i += 1;
       }
     }
 
@@ -1212,7 +1212,7 @@ export class Resolver {
       var i = 0;
       while (i < fields.length) {
         this.#resolveType(fields[i].type, false);
-        i = i + 1;
+        i += 1;
       }
     }
 
@@ -1252,7 +1252,7 @@ export class Resolver {
         this.#resolveNamedFunc(rf.func);
         this.#inGatedContext = prevGatedContext;
 
-        i = i + 1;
+        i += 1;
       }
     }
 
@@ -1326,7 +1326,7 @@ export class Resolver {
         }
         methodNames.push(new SymbolEntry(name, SymbolKind.Func, rf.func.name.span));
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -1343,7 +1343,7 @@ export class Resolver {
         }
         j = j + 1;
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -1360,7 +1360,7 @@ export class Resolver {
         }
         j = j + 1;
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -1377,7 +1377,7 @@ export class Resolver {
         }
         j = j + 1;
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -1394,7 +1394,7 @@ export class Resolver {
         }
         j = j + 1;
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -1495,7 +1495,7 @@ export class Resolver {
           while (i < fields.length) {
             // Propagate inReturnPosition to catch borrow<T> in record fields
             this.#resolveType(fields[i].type, inReturnPosition);
-            i = i + 1;
+            i += 1;
           }
           this.#resolving.pop();
         }
@@ -1545,7 +1545,7 @@ export class Resolver {
       var i = 0;
       while (i < types.length) {
         this.#resolveType(types[i], inReturnPosition);
-        i = i + 1;
+        i += 1;
       }
     }
   }
@@ -1556,7 +1556,7 @@ export class Resolver {
       if (this.#resolving[i] == name) {
         return true;
       }
-      i = i + 1;
+      i += 1;
     }
     return false;
   }
@@ -1656,7 +1656,7 @@ export class Resolver {
           j = j + 1;
         }
       }
-      i = i + 1;
+      i += 1;
     }
     return false;
   }
@@ -1679,7 +1679,7 @@ export class Resolver {
           return this.#typeDefContainsBorrow(td, ifaceDef);
         }
       }
-      i = i + 1;
+      i += 1;
     }
     return false;
   }
@@ -1693,7 +1693,7 @@ export class Resolver {
         if (this.#typeContainsBorrow(fields[i].type, sourceIface)) {
           return true;
         }
-        i = i + 1;
+        i += 1;
       }
     } else if (td.tag == TypeDefTag.Variant) {
       let cases = td.cases as Array<Case>;
@@ -1704,7 +1704,7 @@ export class Resolver {
             return true;
           }
         }
-        i = i + 1;
+        i += 1;
       }
     } else if (td.tag == TypeDefTag.Alias) {
       return this.#typeContainsBorrow(td.aliasType as Type, sourceIface);
@@ -1724,7 +1724,7 @@ export class Resolver {
         if (this.#typeContainsBorrow(types[i], sourceIface)) {
           return true;
         }
-        i = i + 1;
+        i += 1;
       }
     }
     if (t.tag == TypeTag.List || t.tag == TypeTag.Option ||
@@ -1754,7 +1754,7 @@ export class Resolver {
             return this.#typeDefContainsBorrow(innerTd, sourceIface);
           }
         }
-        i = i + 1;
+        i += 1;
       }
     }
     return false;
@@ -1790,7 +1790,7 @@ export class Resolver {
     var i = 0;
     while (i < f.params.length) {
       this.#resolveType(f.params[i].type, false);
-      i = i + 1;
+      i += 1;
     }
 
     // Resolve return type
@@ -1812,7 +1812,7 @@ export class Resolver {
         }
         j = j + 1;
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -1827,7 +1827,7 @@ export class Resolver {
       if (this.#resolvingInterfaces[i] == name) {
         return true;
       }
-      i = i + 1;
+      i += 1;
     }
     return false;
   }
@@ -1913,7 +1913,7 @@ export class Resolver {
       let name = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
       let kind = this.#getUseNameKind(use, useName.name.name);
       this.#define(name, kind, useName.name.span);
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -1991,7 +1991,7 @@ export class Resolver {
           useName.name.span
         );
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -2026,7 +2026,7 @@ export class Resolver {
           j = j + 1;
         }
       }
-      i = i + 1;
+      i += 1;
     }
     return null;
   }
@@ -2152,7 +2152,7 @@ export class Resolver {
       if (i < known.length - 1) {
         sb.appendByte(10);  // newline
       }
-      i = i + 1;
+      i += 1;
     }
     return sb.toString();
   }
@@ -2170,7 +2170,7 @@ export class Resolver {
       if (name.getByteAt(i) == 45) {  // 45 is '-'
         return true;
       }
-      i = i + 1;
+      i += 1;
     }
     return false;
   }
@@ -2232,7 +2232,7 @@ export class Resolver {
           include.from.getName().span
         );
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -2265,7 +2265,7 @@ export class Resolver {
           return true;
         }
       }
-      i = i + 1;
+      i += 1;
     }
     return false;
   }
@@ -2289,7 +2289,7 @@ export class Resolver {
         this.#resolveInclude(inc);
         this.#inGatedContext = prevGatedContext;
       }
-      i = i + 1;
+      i += 1;
     }
 
     this.#includingWorlds.pop();
@@ -2302,7 +2302,7 @@ export class Resolver {
       if (this.#includingWorlds[i] == name) {
         return true;
       }
-      i = i + 1;
+      i += 1;
     }
     return false;
   }
@@ -2374,7 +2374,7 @@ export class Resolver {
           inlineExports.push(name.name);
         }
       }
-      i = i + 1;
+      i += 1;
     }
 
     // Check 1: Path exports with dependencies on inline imports
@@ -2402,7 +2402,7 @@ export class Resolver {
           j = j + 1;
         }
       }
-      i = i + 1;
+      i += 1;
     }
 
     // Check 2: Path imports with dependencies on path exports (or vice versa)
@@ -2436,7 +2436,7 @@ export class Resolver {
           j = j + 1;
         }
       }
-      i = i + 1;
+      i += 1;
     }
 
     // Check 3: Inline exports with dependencies on inline imports or dependencies that conflict with exports
@@ -2493,7 +2493,7 @@ export class Resolver {
         }
         j = j + 1;
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -2532,7 +2532,7 @@ export class Resolver {
           }
         }
       }
-      i = i + 1;
+      i += 1;
     }
   }
 
@@ -2558,7 +2558,7 @@ export class Resolver {
           }
         }
       }
-      i = i + 1;
+      i += 1;
     }
     return result;
   }
@@ -2570,7 +2570,7 @@ export class Resolver {
       if (arr[i] == val) {
         return true;
       }
-      i = i + 1;
+      i += 1;
     }
     return false;
   }
