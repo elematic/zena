@@ -2027,11 +2027,9 @@ class Point {
 
 ### Field Mutability
 
-Fields are currently **mutable by default**. Use `let` for immutable fields.
-
-> **Future Direction**: The goal is to make fields **immutable by default**,
-> requiring `var` for mutable fields. See the [classes design doc](design/classes.md#migration-to-immutable-by-default)
-> for the migration plan.
+Fields are **immutable by default**. Use `var` to make a field mutable. The
+`let` modifier is accepted but redundant — bare fields are already immutable.
+Field types can be inferred from their initializer expression.
 
 ### Optional Fields
 
@@ -2137,16 +2135,16 @@ The class body is optional when there are no additional members.
 
 ```zena
 class User {
-  id: i32;                    // Mutable (default)
-  let created: i64;           // Immutable (constructor only)
-  var email: String;          // Explicit mutable (same as bare)
+  id: i32;                    // Immutable (default)
+  let created: i64;           // Immutable (explicit, same as bare)
+  var email: String;          // Mutable
   var(#phone) phone: String;  // Mutable with private setter
 }
 ```
 
 | Syntax                  | Getter | Setter                  | Mutability |
 | ----------------------- | ------ | ----------------------- | ---------- |
-| `name: Type`            | Public | Public                  | Mutable    |
+| `name: Type`            | Public | None (constructor only) | Immutable  |
 | `let name: Type`        | Public | None (constructor only) | Immutable  |
 | `var name: Type`        | Public | Public                  | Mutable    |
 | `var(#name) name: Type` | Public | Private (`#name`)       | Mutable    |
@@ -2613,7 +2611,7 @@ Subclasses can also add new overloads not present in the base class.
 
 ````
 
-- **Fields**: Currently mutable by default. Use `let` for immutable fields, `var` for explicit mutable. See [Field Mutability](#field-mutability).
+- **Fields**: Immutable by default. Use `var` for mutable fields. See [Field Mutability](#field-mutability).
 - **Constructor**: Named `new`.
 - **Methods**: Functions defined within the class.
 

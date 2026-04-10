@@ -120,6 +120,22 @@ and coding standards, see [AGENTS.md](./AGENTS.md).
 - [x] Multi-Return Values & Zero-Allocation Iteration (completed)
 - [x] For-In Loops
 - [x] `if (let pattern = expr)` and `while (let pattern = expr)`
+- [x] Contextual typing for closures (infer parameter types from expected function type)
+- [x] Immutable-by-default class fields (`var` for mutable, bare/`let` for immutable)
+- [x] Dart-style initializer lists (`: field = expr` in constructors)
+- [x] `this.field` constructor parameters
+- [x] `var(#name)` private setter syntax
+- [x] Sealed class hierarchies with exhaustive pattern matching
+- [x] Case classes with auto-generated `==`, `hashCode`, constructor
+- [x] Compound assignment operators (`+=`, `-=`, `*=`, `/=`, `%=`)
+- [x] Trailing commas in all delimited lists
+- [x] Optional case class parameters (`name?: Type`)
+- [x] Abstract fields for abstract and sealed classes
+- [x] Field type inference from initializer expressions
+- [x] Pipeline operator (`|>`) with `$` placeholder
+- [x] Destructured parameters in function signatures
+- [x] `export { X } from` re-export syntax
+- [x] Self-hosted compiler: lexer, parser, scope analysis, early type checker
 
 ## Planned
 
@@ -149,7 +165,7 @@ and coding standards, see [AGENTS.md](./AGENTS.md).
       - The inverse of `@external` - exposes Zena methods to hosts instead of importing host functions.
 
 4.  **Data Structures**:
-    - **Maps**: Implement map literal syntax (`#{ key: value }`).
+    - ~~**Maps**: Map literals (`{key => value}`) implemented. `Map` is unordered; `OrderedMap` available when insertion order is needed.~~
     - **Sets**: Implement mutable sets.
 
 5.  **Top-Level Statement Execution**:
@@ -169,10 +185,12 @@ and coding standards, see [AGENTS.md](./AGENTS.md).
 
 ### Long-Term (Self-Hosting Path)
 
-8.  **Self-Hosting**:
-    - Rewrite the compiler in Zena.
+8.  **Self-Hosting** (in progress):
+    - Self-hosted compiler (`packages/zena-compiler`) written in Zena.
+    - See `docs/design/self-hosted-compiler.md` for architecture.
+    - Current status: lexer, parser, scope analysis, and early type checker implemented.
+    - Both compilers should pass the same portable tests in `tests/language/`.
     - Write new tests as portable tests (in `tests/language/`) when possible.
-    - These tests can be run by both the TypeScript compiler and a future Zena compiler.
 
 9.  **Standard Library for Self-Hosting**:
 
@@ -194,28 +212,19 @@ and coding standards, see [AGENTS.md](./AGENTS.md).
     - [ ] `StringPool` / interning - Fast identifier comparison
 
     **Language Features** (requires compiler work):
-    - [ ] Tagged enums (enums with associated data) - Clean AST representation
-      ```zena
-      enum Token {
-        Number(value: f64),
-        Identifier(name: string),
-        Operator(op: string),
-      }
-      ```
+    - ~~Tagged enums~~ — Sealed classes with case classes fill this role
     - [ ] Exhaustive match on enums - Compiler error if case missing
-    - [ ] `EnumSet<E>` - Efficient set of enum values (once tagged enums exist)
+    - [ ] `EnumSet<E>` - Efficient set of enum values
 
 ### Future Features
 
 - **Syntax**:
-  - Pipeline operator (`|>`) with `$` placeholder. See [`docs/design/pipelines.md`](./docs/design/pipelines.md).
   - Tuple indexing (`expr[0]` for inline tuples).
   - Block expressions (blocks that return their last expression).
   - JSX-like builder syntax.
 - **Type System**:
   - Numeric unit types.
   - Intersection types.
-  - Contextual typing for closures: Infer parameter types from context (e.g., `arr.map(x => x * 2)`). Requires parser support for `(a, b) =>` without type annotations, and checker support to propagate expected function type.
 - **OOP & Functions**:
   - Extension methods.
   - Operator overloading.

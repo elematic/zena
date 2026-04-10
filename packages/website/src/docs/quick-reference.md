@@ -368,6 +368,20 @@ let d = 10 / 3; // Division (integer: 3)
 let e = 10 % 3; // Modulo (1)
 ```
 
+### Compound Assignment
+
+```ts
+var x = 10;
+x += 5; // x is now 15
+x -= 3; // x is now 12
+x *= 2; // x is now 24
+x /= 4; // x is now 6
+x %= 4; // x is now 2
+```
+
+Compound assignment works with variables, class fields, and array indices.
+There are no `++` or `--` operators — use `+= 1` and `-= 1` instead.
+
 ### Comparison
 
 Equality (`==`) uses value comparison for primitives and strings, and reference
@@ -501,6 +515,7 @@ let x = $; // ❌ Error: '$' can only be used inside a pipeline expression
 12. Logical AND: `&&`
 13. Logical OR / Nullish Coalescing: `||`, `??`
 14. Pipeline: `|>`
+15. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`
 
 > **Note**: `as` currently binds looser than arithmetic, so `a + b as i64` means
 > `(a + b) as i64`. We may change this in the future to match other languages
@@ -1076,19 +1091,19 @@ p.move(1, 1);
 
 ### Fields
 
-Fields are public and mutable by default. Public fields are _virtual_—they're
+Fields are public and immutable by default. Public fields are _virtual_—they're
 inherited by subclasses and can be overridden with accessors. This means field
 access may involve a virtual call.
 
-> **Tip**: Prefer immutable fields (`let`) when possible—they work with type
-> narrowing and make code easier to reason about. Use private fields (`#`) or
+> **Tip**: Immutable fields work with type narrowing and make code easier to
+> reason about. Use `var` when mutability is needed. Use private fields (`#`) or
 > `final` classes to avoid virtual dispatch overhead. See [Field
 > Mutability](#field-mutability) and [Private Fields](#private-fields).
 
 ```ts
 class Rectangle {
-  width: i32;   // Public, virtual, mutable
-  height: i32;  // Public, virtual, mutable
+  var width: i32;   // Public, virtual, mutable
+  var height: i32;  // Public, virtual, mutable
 }
 
 class Square extends Rectangle {
@@ -1125,21 +1140,22 @@ class Counter {
 
 ### Field Mutability
 
-Fields are currently **mutable by default**. Use `let` for immutable fields that
-can only be set in the constructor.
+Fields are **immutable by default**. Use `var` to make a field mutable. The
+`let` modifier is accepted but redundant — bare fields are already immutable.
+Field types can be inferred from their initializer expression.
 
 ```ts
 class User {
-  id: i32;                    // Mutable (default)
-  let created: i64;           // Immutable (constructor only)
-  var email: String;          // Explicit mutable (same as bare)
+  id: i32;                    // Immutable (default)
+  let created: i64;           // Immutable (explicit, same as bare)
+  var email: String;          // Mutable
   var(#phone) phone: String;  // Mutable with private setter
 }
 ```
 
 | Syntax                  | Getter | Setter                  | Mutability |
 | ----------------------- | ------ | ----------------------- | ---------- |
-| `name: Type`            | Public | Public                  | Mutable    |
+| `name: Type`            | Public | None (constructor only) | Immutable  |
 | `let name: Type`        | Public | None (constructor only) | Immutable  |
 | `var name: Type`        | Public | Public                  | Mutable    |
 | `var(#name) name: Type` | Public | Private (`#name`)       | Mutable    |

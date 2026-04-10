@@ -201,7 +201,7 @@ type NullableId = Option<i32>; // ✅ Also OK
 
 ### Enums
 
-Untagged enums map to i32 or String as distinct types. Tagged enums are planned.
+Untagged enums map to i32 or String as distinct types. Sealed classes with case classes serve the role of tagged enums (enums with associated data).
 
 ```typescript
 enum Direction {
@@ -314,18 +314,29 @@ let result = data |> parse($) |> transform($) |> validate($);
 - [x] Primitive types: `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `boolean`
 - [x] Strings (UTF-8, built-in class)
 - [x] Arrow functions, closures, first-class functions
-- [x] Classes, inheritance, abstract classes, `final` modifier
-- [x] Private `#` fields, accessors (getters/setters)
-- [x] Interfaces (nominal typing, fat-pointer vtables)
+- [x] Classes with inheritance
+- [x] Abstract classes
+- [x] `final` modifier
+- [x] Interfaces
 - [x] Mixins with composition and constraints
+- [x] Constructors initializer lists
+- [x] `var` field modifier for mutable fields
+- [x] `var(#name)` for private setters
+- [x] Field type inference from initializers
+- [x] Optional class fields (`name?: Type`)
+- [x] Private `#` fields
+- [x] Accessors (getters/setters)
+- [x] Sealed class hierarchies with exhaustive pattern matching
+- [x] Case classes (auto-generated `==`, `hashCode`, constructor)
+- [x] Symbol-keyed field and method names
 - [x] Generics with constraints, defaults, and monomorphization
+- [x] Type aliases and function types
+- [x] Distinct types (zero-cost newtypes)
 - [x] Union types with control-flow narrowing (`is`, null checks)
 - [x] Pattern matching (literals, records, classes, guards, exhaustiveness)
 - [x] Multi-value returns and inline tuples
 - [x] Pipeline operator (`|>` with `$` placeholder)
 - [x] Enums (integer-backed and string-backed, nominal)
-- [x] Distinct types (zero-cost newtypes)
-- [x] Type aliases and function types
 - [x] Records and tuples (structural types)
 - [x] For loops, for-in loops, while loops
 - [x] Iterators and `Sequence` protocol
@@ -334,20 +345,26 @@ let result = data |> parse($) |> transform($) |> validate($);
 - [x] Arrays and array literals (`[...]`)
 - [x] Index operator overloading (`[]`, `[]=`)
 - [x] Operator overloading (`==`, custom operators)
+- [x] Compound assignment operators (`+=`, `-=`, `*=`, `/=`, `%=`)
+- [x] Optional chaining (`?.`, `?[]`, `?()`)
+- [x] Null coalescing (`??`)
 - [x] Tagged template literals
-- [x] Modules, imports, and exports
+- [x] Modules, imports, exports, and re-exports (`export { X } from`)
 - [x] Boolean literal types (`true` / `false` as types)
 - [x] Let-pattern conditions (`if let`, `while let`)
+- [x] Destructured parameters in function signatures
+- [x] Trailing commas in all delimited lists
 - [x] Regexes
 - [x] `any` type with auto-boxing
 - [x] Contextual typing for closures
+- [x] Map literals (`{a => b}`)
+- [x] Range syntax `a..b` and slices
+- [ ] Tear-off methods
 - [ ] Block expressions
-- [ ] Map literals (`#{...}`)
 - [ ] Extension methods
 - [ ] SIMD
 - [ ] Async functions
 - [ ] Intersection types
-- [ ] Tagged enums (enums with associated data)
 - [ ] Decorators and macros
 - [ ] Numeric unit types
 - [ ] Context parameters
@@ -380,8 +397,9 @@ let result = data |> parse($) |> transform($) |> validate($);
 - [x] `console.log`
 - [x] File I/O (WASI)
 - [x] Math functions
+- [x] `Set<T>`
+- [x] `OrderedMap<K, V>`
 - [ ] Extended math: trig, random, etc.
-- [ ] `Set<T>`
 - [ ] `DataView` for binary data
 - [ ] Built-in WASI P2 interfaces
 
