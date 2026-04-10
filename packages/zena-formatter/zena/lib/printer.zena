@@ -5,6 +5,7 @@
 // converts to a string.
 
 import { Array } from 'zena:array';
+import { StringBuilder } from 'zena:string-builder';
 import { parse } from 'zena-compiler:parser';
 import {
   Node, Module,
@@ -846,14 +847,70 @@ let printExpression = (expr: Expression): Doc => match (expr) {
 };
 
 // ============================================================================
-// String Literals — normalize to single quotes
+// String Literals — normalize to single quotes with proper escaping
 // ============================================================================
+
+// Re-escape a decoded string value for single-quoted output.
+// The value has already been unescaped by the lexer, so literal characters
+// like ' and \ and control characters need to be escaped back.
+let escapeForSingleQuote = (value: String): String => {
+  let len = value.length;
+  // Fast path: if no characters need escaping, return as-is
+  var needsEscape = false;
+  var i = 0;
+  while (i < len) {
+    let b = value.getByteAt(i);
+    // 39=', 92=\, 10=\n, 13=\r, 9=\t, 0=\0
+    if (b == 39 || b == 92 || b == 10 || b == 13 || b == 9 || b == 0) {
+      needsEscape = true;
+      i = len; // break
+    }
+    i += 1;
+  }
+  if (!needsEscape) {
+    return value;
+  }
+
+  let sb = new StringBuilder(len + 8);
+  i = 0;
+  while (i < len) {
+    let b = value.getByteAt(i);
+    if (b == 92) {
+      // backslash → \\
+      sb.appendByte(92);
+      sb.appendByte(92);
+    } else if (b == 39) {
+      // single quote → \'
+      sb.appendByte(92);
+      sb.appendByte(39);
+    } else if (b == 10) {
+      // newline → \n
+      sb.appendByte(92);
+      sb.appendByte(110);
+    } else if (b == 13) {
+      // carriage return → \r
+      sb.appendByte(92);
+      sb.appendByte(114);
+    } else if (b == 9) {
+      // tab → \t
+      sb.appendByte(92);
+      sb.appendByte(116);
+    } else if (b == 0) {
+      // null → \0
+      sb.appendByte(92);
+      sb.appendByte(48);
+    } else {
+      sb.appendByte(b);
+    }
+    i += 1;
+  }
+  return sb.toString();
+};
 
 let printStringLiteral = (lit: StringLiteral): Doc => {
   let parts = new Array<Doc>();
   parts.push(text("'"));
-  // TODO: escape single quotes inside the string
-  parts.push(text(lit.value));
+  parts.push(text(escapeForSingleQuote(lit.value)));
   parts.push(text("'"));
   return concat(parts);
 };
