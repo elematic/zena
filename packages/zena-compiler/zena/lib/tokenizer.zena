@@ -1,10 +1,8 @@
-// Tokenizer for the Zena programming language
-// Self-hosted compiler implementation
-
 import { Array } from 'zena:array';
 import { Map } from 'zena:map';
 import { StringReader } from 'zena:string-reader';
 import { StringBuilder } from 'zena:string-builder';
+import { Comment } from './ast.zena';
 
 // ============================================================================
 // Token Types
@@ -239,6 +237,7 @@ let isIdentifierPart = (c: i32): boolean => {
 export class Tokenizer {
   let #reader: StringReader;
   let #tokens: Array<Token>;
+  let #comments: Array<Comment>;
   let #templateStack: Array<i32>;
   var #line: i32;
   var #column: i32;
@@ -247,11 +246,17 @@ export class Tokenizer {
   new(source: String)
     : #reader = new StringReader(source),
       #tokens = new Array<Token>(64),
+      #comments = new Array<Comment>(8),
       #templateStack = new Array<i32>(8),
       #line = 1,
       #column = 1,
       #lineStart = 0
   { }
+
+  /** Returns all comments collected during tokenization. */
+  getComments(): Array<Comment> {
+    return this.#comments;
+  }
 
   // ============================================================================
   // Cursor helpers
@@ -650,13 +655,23 @@ export class Tokenizer {
     // '/'=47
     if (c == 47) {
       if (this.#peek() == 47) {
-        // Single-line comment
+        // Single-line comment — collect text after //
+        let commentStart = startPos;
+        let commentLine = this.#line;
+        let commentCol = startCol;
         while (!this.#reader.isAtEnd && this.#peek() != 10) {
           this.#advance();
         }
+        let commentEnd = this.#reader.position;
+        // Extract text after '//' (startPos is at first '/', startPos+2 skips '//')
+        let value = this.#reader.source.sliceBytes(startPos + 2, commentEnd);
+        this.#comments.push(new Comment(value, false, commentStart, commentEnd, commentLine, commentCol));
         return;
       } else if (this.#peek() == 42) {
-        // Multi-line comment
+        // Multi-line comment — collect text between /* and */
+        let commentStart = startPos;
+        let commentLine = this.#line;
+        let commentCol = startCol;
         this.#advance(); // consume '*'
         while (!this.#reader.isAtEnd) {
           if (this.#peek() == 42 && this.#peekNext() == 47) {
@@ -666,6 +681,12 @@ export class Tokenizer {
           }
           this.#advance();
         }
+        let commentEnd = this.#reader.position;
+        // Extract text between '/*' and '*/' (startPos+2 to commentEnd-2)
+        var innerEnd = commentEnd - 2;
+        if (innerEnd < startPos + 2) { innerEnd = startPos + 2; }
+        let value = this.#reader.source.sliceBytes(startPos + 2, innerEnd);
+        this.#comments.push(new Comment(value, true, commentStart, commentEnd, commentLine, commentCol));
         return;
       } else if (this.#peek() == 61) {
         this.#advance();

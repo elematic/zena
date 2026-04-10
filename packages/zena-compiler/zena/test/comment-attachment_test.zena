@@ -1,0 +1,348 @@
+/**
+ * Comment attachment tests — verifies that comments are attached to the
+ * correct AST nodes.
+ *
+ * These tests exercise the CommentMap API directly, showing how to get
+ * JSDoc-style comments for declarations, class members, interfaces, etc.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { Array } from 'zena:array';
+import { parse } from '../lib/parser.zena';
+import {
+  Comment,
+  Module,
+  VariableDeclaration,
+  ClassDeclaration,
+  InterfaceDeclaration,
+  EnumDeclaration,
+  FieldDefinition,
+  MethodDefinition,
+  MethodSignature
+} from '../lib/ast.zena';
+import { CommentMap, attachComments } from '../lib/comment-attachment.zena';
+
+export let tests = suite('comment-attachment', () => {
+
+  suite('Leading comments on declarations', () => {
+    test('doc comment on variable declaration', (t: TestContext) => {
+      let mod = parse('/** Docs for x */\nlet x = 1;', 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as VariableDeclaration;
+      let leading = map.getLeading(decl);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].isBlock, true);
+      equal(comments[0].value, '* Docs for x ');
+    });
+
+    test('line comment on variable declaration', (t: TestContext) => {
+      let mod = parse('// Docs for x\nlet x = 1;', 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as VariableDeclaration;
+      let leading = map.getLeading(decl);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].isBlock, false);
+      equal(comments[0].value, ' Docs for x');
+    });
+
+    test('doc comment on class declaration', (t: TestContext) => {
+      let mod = parse('/** The Foo class */\nclass Foo {}', 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as ClassDeclaration;
+      let leading = map.getLeading(decl);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, '* The Foo class ');
+    });
+
+    test('doc comment on interface declaration', (t: TestContext) => {
+      let source = '/** Drawable things */\ninterface Drawable {\n  draw(): void;\n}';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as InterfaceDeclaration;
+      let leading = map.getLeading(decl);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, '* Drawable things ');
+    });
+
+    test('doc comment on enum declaration', (t: TestContext) => {
+      let mod = parse('/** Color options */\nenum Color { Red, Green, Blue }', 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as EnumDeclaration;
+      let leading = map.getLeading(decl);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, '* Color options ');
+    });
+
+    test('multiple doc comments on separate declarations', (t: TestContext) => {
+      let source = '/** Docs for a */\nlet a = 1;\n/** Docs for b */\nlet b = 2;';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let declA = mod.body[0] as VariableDeclaration;
+      let declB = mod.body[1] as VariableDeclaration;
+
+      let leadingA = map.getLeading(declA);
+      isTrue(leadingA != null);
+      equal((leadingA as Array<Comment>)[0].value, '* Docs for a ');
+
+      let leadingB = map.getLeading(declB);
+      isTrue(leadingB != null);
+      equal((leadingB as Array<Comment>)[0].value, '* Docs for b ');
+    });
+
+    test('multiple leading comments without blank line group on declaration', (t: TestContext) => {
+      let source = '// Copyright header\n/** Docs for x */\nlet x = 1;';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      // No blank line separating, so both attach to the declaration
+      let decl = mod.body[0] as VariableDeclaration;
+      let leading = map.getLeading(decl);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 2);
+      equal(comments[0].value, ' Copyright header');
+      equal(comments[1].value, '* Docs for x ');
+    });
+  });
+
+  suite('Leading comments on class members', () => {
+    test('doc comment on field', (t: TestContext) => {
+      let source = "class Foo {\n  /** The x field */\n  x: i32;\n}";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let cls = mod.body[0] as ClassDeclaration;
+      let field = cls.body[0] as FieldDefinition;
+      let leading = map.getLeading(field);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, '* The x field ');
+    });
+
+    test('doc comment on method', (t: TestContext) => {
+      let source = "class Foo {\n  /** Gets the value */\n  getValue(): i32 {\n    return 0;\n  }\n}";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let cls = mod.body[0] as ClassDeclaration;
+      let method = cls.body[0] as MethodDefinition;
+      let leading = map.getLeading(method);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, '* Gets the value ');
+    });
+
+    test('doc comments on separate members', (t: TestContext) => {
+      let source = "class Foo {\n  /** The x field */\n  x: i32;\n  /** Gets x */\n  getX(): i32 {\n    return 0;\n  }\n}";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let cls = mod.body[0] as ClassDeclaration;
+      let field = cls.body[0] as FieldDefinition;
+      let method = cls.body[1] as MethodDefinition;
+
+      let fieldLeading = map.getLeading(field);
+      isTrue(fieldLeading != null);
+      equal((fieldLeading as Array<Comment>)[0].value, '* The x field ');
+
+      let methodLeading = map.getLeading(method);
+      isTrue(methodLeading != null);
+      equal((methodLeading as Array<Comment>)[0].value, '* Gets x ');
+    });
+
+    test('doc comment on interface method signature', (t: TestContext) => {
+      let source = "interface Drawable {\n  /** Render to screen */\n  draw(): void;\n}";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let iface = mod.body[0] as InterfaceDeclaration;
+      let method = iface.body[0] as MethodSignature;
+      let leading = map.getLeading(method);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, '* Render to screen ');
+    });
+  });
+
+  suite('Trailing comments', () => {
+    test('trailing comment on variable declaration', (t: TestContext) => {
+      let mod = parse('let x = 1; // inline note', 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as VariableDeclaration;
+      let trailing = map.getTrailing(decl);
+
+      isTrue(trailing != null);
+      let comments = trailing as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' inline note');
+    });
+
+    test('trailing comment after class member', (t: TestContext) => {
+      let source = "class Foo {\n  x: i32; // the x coordinate\n}";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let cls = mod.body[0] as ClassDeclaration;
+      let field = cls.body[0] as FieldDefinition;
+      let trailing = map.getTrailing(field);
+
+      isTrue(trailing != null);
+      let comments = trailing as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' the x coordinate');
+    });
+  });
+
+  suite('Inner comments', () => {
+    test('comment in empty class body', (t: TestContext) => {
+      let source = "class Empty {\n  // TODO: add members\n}";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let cls = mod.body[0] as ClassDeclaration;
+      let inner = map.getInner(cls);
+
+      isTrue(inner != null);
+      let comments = inner as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' TODO: add members');
+    });
+  });
+
+  suite('File-level comments', () => {
+    test('comment in empty module is file-level', (t: TestContext) => {
+      let mod = parse('// file header', 'test.zena');
+      let map = attachComments(mod);
+
+      // No declarations — comment is file-level (leading on module)
+      let leading = map.getLeading(mod);
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' file header');
+    });
+
+    test('blank line separates file-level from declaration', (t: TestContext) => {
+      let source = '// Copyright 2026\n\n/** Docs */\nlet x = 1;';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      // "Copyright" is file-level (blank line after it)
+      let fileComments = map.getLeading(mod);
+      isTrue(fileComments != null);
+      equal((fileComments as Array<Comment>).length, 1);
+      equal((fileComments as Array<Comment>)[0].value, ' Copyright 2026');
+
+      // "Docs" is leading on the declaration
+      let decl = mod.body[0] as VariableDeclaration;
+      let declComments = map.getLeading(decl);
+      isTrue(declComments != null);
+      equal((declComments as Array<Comment>).length, 1);
+      equal((declComments as Array<Comment>)[0].value, '* Docs ');
+    });
+
+    test('multiple file-level comments before blank line', (t: TestContext) => {
+      let source = '// Copyright 2026\n// MIT License\n\nlet x = 1;';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let fileComments = map.getLeading(mod);
+      isTrue(fileComments != null);
+      let comments = fileComments as Array<Comment>;
+      equal(comments.length, 2);
+      equal(comments[0].value, ' Copyright 2026');
+      equal(comments[1].value, ' MIT License');
+
+      // No leading comments on the declaration itself
+      let decl = mod.body[0] as VariableDeclaration;
+      let declComments = map.getLeading(decl);
+      equal(declComments, null);
+    });
+
+    test('no blank line means all comments attach to first declaration', (t: TestContext) => {
+      let source = '// Copyright 2026\n// Docs for x\nlet x = 1;';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      // No file-level comments (no blank line)
+      let fileComments = map.getLeading(mod);
+      equal(fileComments, null);
+
+      // Both comments attach to the declaration
+      let decl = mod.body[0] as VariableDeclaration;
+      let declComments = map.getLeading(decl);
+      isTrue(declComments != null);
+      let comments = declComments as Array<Comment>;
+      equal(comments.length, 2);
+      equal(comments[0].value, ' Copyright 2026');
+      equal(comments[1].value, ' Docs for x');
+    });
+
+    test('blank line between file-level and doc comment on class', (t: TestContext) => {
+      let source = '// Module: shapes\n\n/** A 2D point */\nclass Point {}';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let fileComments = map.getLeading(mod);
+      isTrue(fileComments != null);
+      equal((fileComments as Array<Comment>)[0].value, ' Module: shapes');
+
+      let cls = mod.body[0] as ClassDeclaration;
+      let clsComments = map.getLeading(cls);
+      isTrue(clsComments != null);
+      equal((clsComments as Array<Comment>)[0].value, '* A 2D point ');
+    });
+  });
+
+  suite('No comments', () => {
+    test('getLeading returns null when no comments exist', (t: TestContext) => {
+      let mod = parse('let x = 1;', 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as VariableDeclaration;
+      let leading = map.getLeading(decl);
+
+      equal(leading, null);
+    });
+
+    test('getTrailing returns null when no trailing comment', (t: TestContext) => {
+      let mod = parse('// leading\nlet x = 1;', 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as VariableDeclaration;
+      let trailing = map.getTrailing(decl);
+
+      equal(trailing, null);
+    });
+  });
+});

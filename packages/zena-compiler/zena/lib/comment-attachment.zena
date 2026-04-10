@@ -1,0 +1,303 @@
+/**
+ * Comment Attachment — assigns each comment to the nearest AST node.
+ *
+ * Implements Babel-style comment attachment: for every comment we find the
+ * enclosing node list (module body, class body, block body) and decide:
+ *   - Leading:   comment before the following node
+ *   - Trailing:  comment on the same line as the preceding node's end
+ *   - Inner:     comment inside an empty body (no preceding/following node)
+ *
+ * File-level comments: comments at the start of a file that are followed by
+ * a blank line are attached as leading on the Module, not on the first
+ * declaration. Comments without a blank line separator are leading on the
+ * first declaration.
+ *
+ * The result is a CommentMap keyed by Node reference that any tool can query.
+ */
+
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import {
+  Comment, SourceLocation, Node, Module,
+  Statement, Expression,
+  BlockStatement, ClassDeclaration, InterfaceDeclaration,
+  MixinDeclaration, EnumDeclaration
+} from './ast.zena';
+
+/**
+ * A collection of comments that maps AST nodes to their attached comments
+ */
+export class CommentMap {
+  #leading = new HashMap<Node, Array<Comment>>();
+  #trailing = new HashMap<Node, Array<Comment>>();
+  #inner = new HashMap<Node, Array<Comment>>();
+
+  addLeading(node: Node, comment: Comment) {
+    if (!this.#leading.has(node)) {
+      this.#leading.set(node, new Array<Comment>(2));
+    }
+    let (arr, _) = this.#leading.get(node);
+    arr.push(comment);
+  }
+
+  addTrailing(node: Node, comment: Comment) {
+    if (!this.#trailing.has(node)) {
+      this.#trailing.set(node, new Array<Comment>(2));
+    }
+    let (arr, _) = this.#trailing.get(node);
+    arr.push(comment);
+  }
+
+  addInner(node: Node, comment: Comment) {
+    if (!this.#inner.has(node)) {
+      this.#inner.set(node, new Array<Comment>(2));
+    }
+    let (arr, _) = this.#inner.get(node);
+    arr.push(comment);
+  }
+
+  getLeading(node: Node): Array<Comment> | null {
+    if (this.#leading.has(node)) {
+      let (arr, _) = this.#leading.get(node);
+      return arr;
+    }
+    return null;
+  }
+
+  getTrailing(node: Node): Array<Comment> | null {
+    if (this.#trailing.has(node)) {
+      let (arr, _) = this.#trailing.get(node);
+      return arr;
+    }
+    return null;
+  }
+
+  getInner(node: Node): Array<Comment> | null {
+    if (this.#inner.has(node)) {
+      let (arr, _) = this.#inner.get(node);
+      return arr;
+    }
+    return null;
+  }
+}
+
+let getNodeStart = (node: Node): i32 => {
+  let loc = node.loc;
+  if (loc != null) {
+    return (loc as SourceLocation).start;
+  }
+  return 0 - 1;
+};
+
+let getNodeEnd = (node: Node): i32 => {
+  let loc = node.loc;
+  if (loc != null) {
+    return (loc as SourceLocation).end;
+  }
+  return 0 - 1;
+};
+
+let getNodeEndLine = (source: String, node: Node): i32 => {
+  let loc = node.loc;
+  if (loc == null) { return 0 - 1; }
+  let end = (loc as SourceLocation).end;
+  var line: i32 = 1;
+  var i: i32 = 0;
+  while (i < end && i < source.length) {
+    if (source.getByteAt(i) == 10) {
+      line += 1;
+    }
+    i += 1;
+  }
+  return line;
+};
+
+/**
+ * Check if there is a blank line (two newlines with only whitespace between)
+ * in the source text between positions `from` (exclusive) and `to` (exclusive).
+ */
+let hasBlankLineBetween = (source: String, from: i32, to: i32): boolean => {
+  var newlineCount: i32 = 0;
+  var i = from;
+  while (i < to && i < source.length) {
+    let ch = source.getByteAt(i);
+    if (ch == 10) { // \n
+      newlineCount += 1;
+      if (newlineCount >= 2) { return true; }
+    } else if (ch != 13 && ch != 32 && ch != 9) { // not \r, space, tab
+      // Non-whitespace resets the counter
+      newlineCount = 0;
+    }
+    i += 1;
+  }
+  return false;
+};
+
+/** Convert Array<Statement> to Array<Node> (WASM-GC arrays are invariant). */
+let statementsToNodes = (stmts: Array<Statement>): Array<Node> => {
+  let result = new Array<Node>(stmts.length);
+  var i: i32 = 0;
+  while (i < stmts.length) {
+    result.push(stmts[i]);
+    i += 1;
+  }
+  return result;
+};
+
+/**
+ * Attach all comments from the module to their nearest AST nodes.
+ * Returns a CommentMap keyed by Node reference.
+ */
+export let attachComments = (module: Module): CommentMap => {
+  let map = new CommentMap();
+  let comments = module.comments;
+  if (comments.length == 0) {
+    return map;
+  }
+  let source = module.source;
+  let nodes = statementsToNodes(module.body);
+
+  // Empty module: all comments are file-level (leading on Module)
+  if (nodes.length == 0) {
+    var ei: i32 = 0;
+    while (ei < comments.length) {
+      map.addLeading(module, comments[ei]);
+      ei += 1;
+    }
+    return map;
+  }
+
+  // Comments at the top of the file separated from the first declaration
+  // (or the next comment group) by a blank line are file-level: leading on Module.
+  let firstNodeStart = getNodeStart(nodes[0]);
+
+  // Collect comments that appear before the first statement
+  var prefixEnd: i32 = 0;
+  while (prefixEnd < comments.length && comments[prefixEnd].start < firstNodeStart) {
+    prefixEnd += 1;
+  }
+
+  // Find the split point: the last comment before a blank line gap
+  var fileLevelEnd: i32 = 0;
+  if (prefixEnd > 0) {
+    var ci: i32 = 0;
+    while (ci < prefixEnd) {
+      let commentEnd = comments[ci].end;
+      // What comes after this comment?
+      let nextStart = if (ci + 1 < prefixEnd) {
+        comments[ci + 1].start;
+      } else {
+        firstNodeStart;
+      };
+      if (hasBlankLineBetween(source, commentEnd, nextStart)) {
+        fileLevelEnd = ci + 1;
+      }
+      ci += 1;
+    }
+  }
+
+  // Attach file-level comments as leading on the Module node
+  var fi: i32 = 0;
+  while (fi < fileLevelEnd) {
+    map.addLeading(module, comments[fi]);
+    fi += 1;
+  }
+
+  // Build the remaining comments array (skip file-level ones)
+  let remaining = new Array<Comment>(comments.length - fileLevelEnd);
+  var ri: i32 = fileLevelEnd;
+  while (ri < comments.length) {
+    remaining.push(comments[ri]);
+    ri += 1;
+  }
+
+  // Attach remaining comments to nodes in the body
+  attachToNodeList(remaining, nodes, source, map);
+
+  return map;
+};
+
+/**
+ * Attach comments to nodes in a list. Recurses into sub-bodies.
+ */
+let attachToNodeList = (
+  comments: Array<Comment>,
+  nodes: Array<Node>,
+  source: String,
+  map: CommentMap
+) => {
+  if (comments.length == 0) { return; }
+
+  // For each comment, find where it belongs
+  var ci: i32 = 0;
+  while (ci < comments.length) {
+    let comment = comments[ci];
+    var attached = false;
+
+    // Check if comment belongs inside a child node's body — if so, recurse
+    var ni: i32 = 0;
+    while (ni < nodes.length) {
+      let node = nodes[ni];
+      let childBody = getChildBody(node);
+      if (childBody != null) {
+        let body = childBody as Array<Node>;
+        let nStart = getNodeStart(node);
+        let nEnd = getNodeEnd(node);
+        if (nStart >= 0 && nEnd >= 0 && comment.start > nStart && comment.end < nEnd) {
+          let singleComment = new Array<Comment>(1);
+          singleComment.push(comment);
+          attachToNodeList(singleComment, body, source, map);
+          // If the body was empty, the comment dangles — attach as inner
+          if (body.length == 0) {
+            map.addInner(node, comment);
+          }
+          attached = true;
+          break;
+        }
+      }
+      ni += 1;
+    }
+
+    if (!attached) {
+      // Find preceding and following nodes
+      var preceding: Node | null = null;
+      var following: Node | null = null;
+
+      var ni2: i32 = 0;
+      while (ni2 < nodes.length) {
+        let node = nodes[ni2];
+        let nEnd = getNodeEnd(node);
+        let nStart = getNodeStart(node);
+        if (nEnd >= 0 && nEnd <= comment.start) {
+          preceding = node;
+        }
+        if (nStart >= 0 && nStart >= comment.end && following == null) {
+          following = node;
+        }
+        ni2 += 1;
+      }
+
+      if (preceding != null && comment.line == getNodeEndLine(source, preceding as Node)) {
+        map.addTrailing(preceding as Node, comment);
+      } else if (following != null) {
+        map.addLeading(following as Node, comment);
+      } else if (preceding != null) {
+        map.addTrailing(preceding as Node, comment);
+      }
+      // Note: inner comments on empty containers are handled above in the recurse branch
+    }
+
+    ci += 1;
+  }
+};
+
+/**
+ * Extract the child body (Array<Node>) from nodes that contain bodies.
+ */
+let getChildBody = (node: Node): Array<Node> | null => match (node) {
+  case BlockStatement {body}: statementsToNodes(body)
+  case ClassDeclaration {body}: body
+  case InterfaceDeclaration {body}: body
+  case MixinDeclaration {body}: body
+  case _: null
+};

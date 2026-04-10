@@ -1,10 +1,8 @@
-// Tokenizer tests
-// Ported from packages/compiler/src/test/lexer/
-
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { Array } from 'zena:array';
-import { tokenize, Token, TokenType } from '../lib/tokenizer.zena';
+import { tokenize, Token, TokenType, Tokenizer } from '../lib/tokenizer.zena';
+import { Comment } from '../lib/ast.zena';
 
 // ============================================================================
 // Test Helpers
@@ -468,6 +466,106 @@ let y';
       // 'foo' spans positions 4-7
       equal(tokens[1].start, 4);
       equal(tokens[1].end, 7);
+    });
+  });
+
+  // ==========================================================================
+  // Comment Collection
+  // ==========================================================================
+
+  suite('Comment Collection', (): void => {
+    test('should collect single-line comment', (ctx: TestContext): void => {
+      let t = new Tokenizer('// hello\nlet x = 1;');
+      let tokens = t.tokenize();
+      let comments = t.getComments();
+
+      equal(comments.length, 1);
+      equal(comments[0].value, ' hello');
+      equal(comments[0].isBlock, false);
+      equal(comments[0].start, 0);
+      equal(comments[0].end, 8);
+      equal(comments[0].line, 1);
+      equal(comments[0].column, 1);
+
+      // Tokens should not include the comment
+      assertTokenType(tokens[0], TokenType.Let);
+    });
+
+    test('should collect block comment', (ctx: TestContext): void => {
+      let t = new Tokenizer('/* block */\nlet x = 1;');
+      let tokens = t.tokenize();
+      let comments = t.getComments();
+
+      equal(comments.length, 1);
+      equal(comments[0].value, ' block ');
+      equal(comments[0].isBlock, true);
+      equal(comments[0].start, 0);
+      equal(comments[0].end, 11);
+      equal(comments[0].line, 1);
+    });
+
+    test('should collect multiple comments', (ctx: TestContext): void => {
+      let t = new Tokenizer('// first\n// second\nlet x = 1;');
+      let tokens = t.tokenize();
+      let comments = t.getComments();
+
+      equal(comments.length, 2);
+      equal(comments[0].value, ' first');
+      equal(comments[1].value, ' second');
+    });
+
+    test('should collect trailing comment', (ctx: TestContext): void => {
+      let t = new Tokenizer('let x = 1; // trailing');
+      let tokens = t.tokenize();
+      let comments = t.getComments();
+
+      equal(comments.length, 1);
+      equal(comments[0].value, ' trailing');
+      equal(comments[0].isBlock, false);
+      equal(comments[0].line, 1);
+    });
+
+    test('should collect inline block comment', (ctx: TestContext): void => {
+      let t = new Tokenizer('let /* mid */ x = 1;');
+      let tokens = t.tokenize();
+      let comments = t.getComments();
+
+      equal(comments.length, 1);
+      equal(comments[0].value, ' mid ');
+      equal(comments[0].isBlock, true);
+      // Tokens skip the comment
+      assertTokenType(tokens[0], TokenType.Let);
+      assertToken(tokens[1], TokenType.Identifier, 'x');
+    });
+
+    test('should handle empty block comment', (ctx: TestContext): void => {
+      let t = new Tokenizer('/**/let x = 1;');
+      let tokens = t.tokenize();
+      let comments = t.getComments();
+
+      equal(comments.length, 1);
+      equal(comments[0].value, '');
+      equal(comments[0].isBlock, true);
+    });
+
+    test('should collect no comments when none present', (ctx: TestContext): void => {
+      let t = new Tokenizer('let x = 1;');
+      let tokens = t.tokenize();
+      let comments = t.getComments();
+
+      equal(comments.length, 0);
+    });
+
+    test('should track comment positions correctly', (ctx: TestContext): void => {
+      let t = new Tokenizer('let a = 1;\n// comment\nlet b = 2;');
+      let tokens = t.tokenize();
+      let comments = t.getComments();
+
+      equal(comments.length, 1);
+      equal(comments[0].start, 11);
+      equal(comments[0].end, 21);
+      equal(comments[0].line, 2);
+      equal(comments[0].column, 1);
     });
   });
 });
