@@ -61,6 +61,7 @@ import {
   UnionType as UnionT, RecordType as RecordT,
   FunctionType, ClassType, InterfaceType, MixinType,
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
+  instantiateClassType,
   isNumericType, isIntegerType, isFloatType, is64BitType,
   numericTypeName, isBooleanLike, widenType, baseType,
   promoteNumeric, typeToString
@@ -635,6 +636,150 @@ let createUnionType = (types: Array<Type>): Type => {
 };
 
 /**
+ * Substitute type parameters with their corresponding type arguments.
+ * typeParams: the type parameter names/types from the generic class
+ * typeArgs: the actual type arguments
+ * t: the type to substitute within
+ */
+let substituteTypeParams = (
+  typeParams: Array<TypeParameterType> | null,
+  typeArgs: Array<Type> | null,
+  t: Type
+): Type => {
+  if (typeParams == null || typeArgs == null) { return t; }
+  let params = typeParams as Array<TypeParameterType>;
+  let args = typeArgs as Array<Type>;
+
+  match (t) {
+    case TypeParameterType {name}: {
+      // Find the matching type parameter and substitute.
+      var i = 0;
+      while (i < params.length && i < args.length) {
+        if (params[i].name == name) {
+          return args[i];
+        }
+        i += 1;
+      }
+      // No match found, return original.
+      return t;
+    }
+    case UnionT {types}: {
+      let substituted = new Array<Type>();
+      var i = 0;
+      while (i < types.length) {
+        substituted.push(substituteTypeParams(typeParams, typeArgs, types[i]));
+        i += 1;
+      }
+      return createUnionType(substituted);
+    }
+    case ArrayType {elementType}: {
+      let subElem = substituteTypeParams(typeParams, typeArgs, elementType);
+      return new ArrayType(subElem);
+    }
+    case TupleT {elementTypes}: {
+      let subElems = new Array<Type>();
+      var i = 0;
+      while (i < elementTypes.length) {
+        subElems.push(substituteTypeParams(typeParams, typeArgs, elementTypes[i]));
+        i += 1;
+      }
+      return new TupleT(subElems);
+    }
+    case FunctionType as ft: {
+      let subParams = new Array<Type>();
+      var i = 0;
+      while (i < ft.parameters.length) {
+        subParams.push(substituteTypeParams(typeParams, typeArgs, ft.parameters[i]));
+        i += 1;
+      }
+      let subRet = substituteTypeParams(typeParams, typeArgs, ft.returnType);
+      return new FunctionType(subParams, ft.parameterNames, subRet);
+    }
+    case _: t
+  }
+};
+
+/**
+ * Infer type arguments from constructor arguments for a generic class.
+ * Returns a new ClassType with typeArguments set, or the original if not generic.
+ */
+let instantiateGenericClass = (
+  ctx: CheckerContext,
+  ct: ClassType,
+  explicitTypeArgs: Array<TypeAnnotation> | null,
+  args: Array<Expression>,
+  loc: SourceLocation | null
+): ClassType => {
+  let typeParams = ct.typeParameters;
+  if (typeParams == null) { return ct; }
+  let params = typeParams as Array<TypeParameterType>;
+  if (params.length == 0) { return ct; }
+
+  // If explicit type arguments provided, use those.
+  if (explicitTypeArgs != null) {
+    let explicit = explicitTypeArgs as Array<TypeAnnotation>;
+    let typeArgs = new Array<Type>();
+    var i = 0;
+    while (i < explicit.length) {
+      typeArgs.push(resolveTypeAnnotation(ctx, explicit[i]));
+      i += 1;
+    }
+    return instantiateClassType(ct, typeArgs);
+  }
+
+  // Infer type arguments from constructor arguments.
+  let ctorOpt = ct.constructorType;
+  if (ctorOpt == null) { return ct; }
+  let ctor = ctorOpt as FunctionType;
+
+  // Build a map from type param names to inferred types.
+  let inferred = new HashMap<String, Type>();
+  var ai = 0;
+  while (ai < args.length && ai < ctor.parameters.length) {
+    let paramType = ctor.parameters[ai];
+    let argType = checkExpression(ctx, args[ai], null);
+    inferTypeArg(paramType, argType, inferred);
+    ai += 1;
+  }
+
+  // Build typeArguments array from inferred map.
+  let typeArgs = new Array<Type>();
+  var pi = 0;
+  while (pi < params.length) {
+    let paramName = params[pi].name;
+    if (inferred.has(paramName)) {
+      typeArgs.push(inferred[paramName]);
+    } else {
+      // No inference possible; use unknown.
+      typeArgs.push(new UnknownType());
+    }
+    pi += 1;
+  }
+
+  // Create instantiated class type using factory function.
+  return instantiateClassType(ct, typeArgs);
+};
+
+/**
+ * Infer a type argument by matching a parameter type against an argument type.
+ * paramType: the expected param type (may be TypeParameterType)
+ * argType: the actual argument type
+ * inferred: map to store inferred type params
+ */
+let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Type>): void => {
+  match (paramType) {
+    case TypeParameterType {name}: {
+      // Direct type parameter — infer from arg type.
+      if (!inferred.has(name)) {
+        inferred.set(name, argType);
+      }
+    }
+    // TODO: Handle more complex inference (e.g., Array<T> against Array<i32>).
+    case _: {}
+  }
+};
+
+/**
  * Check if `source` is assignable to `target`.
  */
 let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean => {
@@ -1198,8 +1343,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     checkFunctionExpression(ctx, typeParameters, params, returnType, body, loc, expectedType)
   }
 
-  case CallExpression {callee, args, loc}: {
-    checkCallExpression(ctx, callee, args, loc)
+  case CallExpression {callee, args, optional, loc}: {
+    checkCallExpression(ctx, callee, args, optional, loc)
   }
 
   // --- If Expression ---
@@ -1253,7 +1398,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case MemberExpression {object, property, optional, loc}: {
     checkMemberExpression(ctx, object, property, optional, loc)
   }
-  case IndexExpression {loc}: new UnknownType()      // TODO
+  case IndexExpression {object, index, optional, loc}: {
+    checkIndexExpression(ctx, object, index, optional, loc)
+  }
   case ThisExpression {loc}: {
     let cc = ctx.currentClass;
     if (cc == null) {
@@ -1271,7 +1418,17 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case IsExpression {loc}: new BooleanType()
   case ArrayLiteral {loc}: new UnknownType()         // TODO
   case RecordLiteral {loc}: new UnknownType()        // TODO
-  case TupleLiteral {loc}: new UnknownType()         // TODO
+  case TupleLiteral {elements, loc}: {
+    // Check each element and collect their types.
+    let elementTypes = new Array<Type>();
+    var i = 0;
+    while (i < elements.length) {
+      let elemType = checkExpression(ctx, elements[i], null);
+      elementTypes.push(elemType);
+      i += 1;
+    }
+    new TupleT(elementTypes)
+  }
   case MapLiteral {loc}: new UnknownType()           // TODO
   case TemplateLiteral {loc}: {
     let stringType = ctx.resolveTypeName("String");
@@ -1322,6 +1479,11 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
   classType.isExtension = cd.isExtension;
   classType.isSealed = cd.isSealed;
 
+  // Sealed classes are implicitly abstract (cannot be instantiated directly).
+  if (cd.isSealed) {
+    classType.isAbstract = true;
+  }
+
   // Case class: implicitly final (unless sealed).
   if (cd.caseParams != null && !cd.isSealed) {
     classType.isFinal = true;
@@ -1364,6 +1526,15 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           ctx.error(
             "Cannot extend final class '" + st.name + "'." +
             if (st.isCaseClass) " Case classes are implicitly final." else "",
+            DiagnosticCode.IncompatibleTypes,
+            cd.loc
+          );
+        }
+        // Sealed classes can only be extended by their inline variants.
+        if (st.isSealed) {
+          ctx.error(
+            "cannot extend sealed class '" + st.name + "'. " +
+            "Sealed classes can only be extended by their declared variants.",
             DiagnosticCode.IncompatibleTypes,
             cd.loc
           );
@@ -1450,6 +1621,30 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           case _: "<unknown>"
         };
         let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation);
+
+        // Abstract fields can only appear in abstract or sealed classes.
+        if (fd.isAbstract) {
+          if (!cd.isAbstract && !cd.isSealed) {
+            ctx.error(
+              "Abstract field '" + fieldName + "' can only appear within an abstract or sealed class.",
+              DiagnosticCode.IncompatibleTypes,
+              fd.loc
+            );
+          }
+        }
+
+        // Optional fields cannot have primitive types (primitives are not nullable).
+        if (fd.isOptional) {
+          let isPrimitive = isNumericType(fieldType) || fieldType is BooleanType;
+          if (isPrimitive) {
+            ctx.error(
+              "Optional field '" + fieldName + "' cannot have primitive type '" +
+              typeToString(fieldType) + "'. Primitives are not nullable.",
+              DiagnosticCode.IncompatibleTypes,
+              fd.loc
+            );
+          }
+        }
 
         if (classType.fields.has(fieldName)) {
           ctx.error(
@@ -1538,7 +1733,20 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
     var vi = 0;
     while (vi < variants.length) {
       let variant = variants[vi];
-      let variantType = new ClassType(ctx.freshTypeId(), variant.name.name);
+      let variantName = variant.name.name;
+
+      // Check for duplicate declaration of inline variant name.
+      let existingType = ctx.resolveTypeName(variantName);
+      if (existingType != null) {
+        ctx.error(
+          "Duplicate declaration of '" + variantName + "' as inline variant. " +
+          "The name conflicts with an existing type.",
+          DiagnosticCode.DuplicateDeclaration,
+          variant.name.loc
+        );
+      }
+
+      let variantType = new ClassType(ctx.freshTypeId(), variantName);
       variantType.superType = classType;
       variantType.isCaseClass = true;
       variantType.isFinal = true;
@@ -1825,24 +2033,27 @@ let checkNewExpression = (
       // Cannot instantiate abstract classes.
       if (ct.isAbstract) {
         ctx.error(
-          "Cannot create an instance of abstract class '" + ct.name + "'.",
+          "Cannot instantiate abstract class '" + ct.name + "'.",
           DiagnosticCode.CannotInstantiateAbstractClass,
           loc
         );
       }
 
+      // Instantiate generic class (infers type arguments if not explicit).
+      let instantiated = instantiateGenericClass(ctx, ct, typeArguments, args, loc);
+
       // Resolve constructor.
-      let ctorType = ct.constructorType;
+      let ctorType = instantiated.constructorType;
       if (ctorType == null) {
         // No explicit constructor — must have zero args.
         if (args.length > 0) {
           ctx.error(
-            `Class '${ct.name}' has no constructor, but ${args.length} arguments were provided.`,
+            `Class '${instantiated.name}' has no constructor, but ${args.length} arguments were provided.`,
             DiagnosticCode.ArgumentCountMismatch,
             loc
           );
         }
-        return ct;
+        return instantiated;
       }
 
       let ctor = ctorType as FunctionType;
@@ -1857,10 +2068,15 @@ let checkNewExpression = (
         );
       }
 
-      // Check argument types.
+      // Check argument types with substituted parameter types.
       var ai = 0;
       while (ai < args.length && ai < expectedCount) {
-        let expectedParamType = ctor.parameters[ai];
+        let paramType = ctor.parameters[ai];
+        // Substitute type parameters with type arguments.
+        let expectedParamType = substituteTypeParams(
+          instantiated.typeParameters, instantiated.typeArguments, paramType
+        );
+        // Args were already checked during inference; just validate here.
         let argType = checkExpression(ctx, args[ai], expectedParamType);
         if (!isAssignableTo(ctx, argType, expectedParamType)) {
           ctx.error(
@@ -1874,7 +2090,7 @@ let checkNewExpression = (
         ai = ai + 1;
       }
 
-      return ct;
+      return instantiated;
     }
     case _: {
       ctx.error(
@@ -1954,11 +2170,14 @@ let resolveMemberType = (
     case ClassType as ct: {
       // Check fields first.
       if (ct.fields.has(propName)) {
-        return ct.fields[propName];
+        let fieldType = ct.fields[propName];
+        // Substitute type parameters if this is an instantiated generic class.
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, fieldType);
       }
       // Check methods.
       if (ct.methods.has(propName)) {
-        return ct.methods[propName];
+        let methodType = ct.methods[propName];
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, methodType);
       }
       ctx.error(
         "Property '" + propName + "' does not exist on type '" + ct.name + "'.",
@@ -1995,7 +2214,108 @@ let resolveMemberType = (
     case UnknownType: { return new UnknownType(); }
     case _: {
       ctx.error(
-        "Property access on non-object type '" + typeToString(objectType) + "'.",
+        "Property access not supported on type '" + typeToString(objectType) + "'.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new UnknownType();
+    }
+  }
+};
+
+let checkIndexExpression = (
+  ctx: CheckerContext,
+  object: Expression,
+  index: Expression,
+  optional: boolean,
+  loc: SourceLocation | null
+): Type => {
+  let objectType = checkExpression(ctx, object, null);
+
+  // Handle optional chaining on nullable object.
+  var baseType_: Type = objectType;
+  var isNullable = false;
+  match (objectType) {
+    case UnionT {types}: {
+      let nonNull = new Array<Type>();
+      var ui = 0;
+      while (ui < types.length) {
+        if (types[ui] is NullType) {
+          isNullable = true;
+        } else {
+          nonNull.push(types[ui]);
+        }
+        ui = ui + 1;
+      }
+      if (nonNull.length == 1) {
+        baseType_ = nonNull[0];
+      } else if (nonNull.length > 1) {
+        baseType_ = new UnionT(nonNull);
+      }
+    }
+    case NullType: { isNullable = true; }
+    case _: {}
+  }
+
+  let resultType = resolveIndexType(ctx, baseType_, index, loc);
+
+  if (isNullable && optional) {
+    let types = new Array<Type>();
+    types.push(resultType);
+    types.push(new NullType());
+    return createUnionType(types);
+  }
+
+  return resultType;
+};
+
+/**
+ * Resolve the result type of an index operation.
+ */
+let resolveIndexType = (
+  ctx: CheckerContext,
+  objectType: Type,
+  index: Expression,
+  loc: SourceLocation | null
+): Type => {
+  // Check the index.
+  let indexType = checkExpression(ctx, index, null);
+
+  match (objectType) {
+    case ArrayType {elementType}: {
+      // Array indexing — index must be i32.
+      if (!isIntegerType(indexType)) {
+        ctx.error(
+          "Array index must be an integer, got '" + typeToString(indexType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+      return elementType;
+    }
+    case TupleT {elementTypes}: {
+      // Tuple indexing — for now, return union of all element types.
+      // TODO: If index is a literal, return specific element type.
+      return createUnionType(elementTypes);
+    }
+    case ClassType as ct: {
+      // Check for operator [] method.
+      if (ct.methods.has("operator []")) {
+        let opMethod = ct.methods["operator []"];
+        // The return type is the element type.
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, opMethod.returnType);
+      }
+      ctx.error(
+        "Type '" + ct.name + "' does not support indexing (no 'operator []' method).",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new UnknownType();
+    }
+    case UnknownType: { return new UnknownType(); }
+    case _: {
+      ctx.error(
+        "Index access not supported on type '" + typeToString(objectType) + "'.",
         DiagnosticCode.PropertyNotFound,
         loc
       );
@@ -2422,10 +2742,56 @@ let checkCallExpression = (
   ctx: CheckerContext,
   callee: Expression,
   args: Array<Expression>,
+  optional: boolean,
   loc: SourceLocation | null
 ): Type => {
   let calleeType = checkExpression(ctx, callee, null);
 
+  // Handle optional chaining on nullable callee.
+  var baseCalleeType: Type = calleeType;
+  var isNullable = false;
+  match (calleeType) {
+    case UnionT {types}: {
+      let nonNull = new Array<Type>();
+      var ui = 0;
+      while (ui < types.length) {
+        if (types[ui] is NullType) {
+          isNullable = true;
+        } else {
+          nonNull.push(types[ui]);
+        }
+        ui = ui + 1;
+      }
+      if (nonNull.length == 1) {
+        baseCalleeType = nonNull[0];
+      } else if (nonNull.length > 1) {
+        baseCalleeType = new UnionT(nonNull);
+      }
+    }
+    case NullType: { isNullable = true; }
+    case _: {}
+  }
+
+  // If optional and not nullable, proceed normally.
+  // If optional and nullable, wrap result in union with null.
+  let resultType = checkCallExpressionInner(ctx, baseCalleeType, args, loc);
+
+  if (isNullable && optional) {
+    let types = new Array<Type>();
+    types.push(resultType);
+    types.push(new NullType());
+    return createUnionType(types);
+  }
+
+  return resultType;
+};
+
+let checkCallExpressionInner = (
+  ctx: CheckerContext,
+  calleeType: Type,
+  args: Array<Expression>,
+  loc: SourceLocation | null
+): Type => {
   match (calleeType) {
     case FunctionType as ft: {
       // Check argument count.

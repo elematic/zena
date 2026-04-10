@@ -78,12 +78,12 @@ export class ClassType extends Type {
   id: i32;
   name: String;
   var typeParameters: Array<TypeParameterType> | null = null;
-  typeArguments: Array<Type> | null = null;
+  var typeArguments: Array<Type> | null = null;
   var superType: ClassType | null = null;
   implementsList = new Array<InterfaceType>();
-  fields = new HashMap<String, Type>();
-  fieldMutability = new HashMap<String, boolean>();
-  methods = new HashMap<String, FunctionType>();
+  var fields = new HashMap<String, Type>();
+  var fieldMutability = new HashMap<String, boolean>();
+  var methods = new HashMap<String, FunctionType>();
   statics = new HashMap<String, Type>();
   var constructorType: FunctionType | null = null;
   vtable = new Array<String>();
@@ -94,13 +94,38 @@ export class ClassType extends Type {
   var isSealed = false;
   isMixinIntermediate = false;
   onType: Type | null = null;
-  genericSource: ClassType | null = null;
+  var genericSource: ClassType | null = null;
   declaredFields: HashMap<String, boolean> | null = null;
   fieldsWithInitializers: HashMap<String, boolean> | null = null;
   var sealedVariants: Array<ClassType> | null = null;
 
   new(id: i32, name: String) : id = id, name = name;
 }
+
+/**
+ * Create an instantiated copy of a generic ClassType with concrete type arguments.
+ * This is a factory function that properly initializes all fields from the source.
+ */
+export let instantiateClassType = (
+  source: ClassType,
+  typeArguments: Array<Type>,
+): ClassType => {
+  let result = new ClassType(source.id, source.name);
+  result.typeParameters = source.typeParameters;
+  result.typeArguments = typeArguments;
+  result.genericSource = source;
+  result.superType = source.superType;
+  result.fields = source.fields;
+  result.fieldMutability = source.fieldMutability;
+  result.methods = source.methods;
+  result.constructorType = source.constructorType;
+  result.isFinal = source.isFinal;
+  result.isCaseClass = source.isCaseClass;
+  result.isAbstract = source.isAbstract;
+  result.isExtension = source.isExtension;
+  result.isSealed = source.isSealed;
+  return result;
+};
 
 export class InterfaceType extends Type {
   id: i32;

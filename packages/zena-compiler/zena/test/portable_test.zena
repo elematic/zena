@@ -441,7 +441,7 @@ let discoverSemanticTests = (dirPath: String, relPrefix: String, skips: FixedArr
     };
 
     let reason = isSkipped(relPath, skips);
-    console.log(`Test: ${relPath} skipped: ${reason != null}`);
+    // console.log(`Test: ${relPath} skipped: ${reason != null}`);
     if (reason == null) {
       let capturedFilePath = filePath;
       let capturedFileName = fileName;
@@ -483,20 +483,29 @@ let discoverSemanticTests = (dirPath: String, relPrefix: String, skips: FixedArr
 let semanticSkipList: FixedArray<SkipEntry> = [
   // TemplateStringsArray type needs full definition
   {path: "template_strings_array_", reason: "TemplateStringsArray type not fully implemented"},
-  // Optional chaining not implemented
-  {path: "optional-chaining/", reason: "optional chaining not implemented"},
-  // Sealed class validation not implemented
-  {path: "sealed-classes/", reason: "sealed class validation not implemented"},
-  // Null coalescing tests need Box constructor
-  {path: "null-coalescing/", reason: "Box constructor not in prelude stub"},
-  // Generic case class type params need work
-  {path: "case-classes/generic.zena", reason: "generic type params in case classes"},
-  // Duplicate constructor detection not implemented
-  {path: "case-classes/duplicate_constructor.zena", reason: "duplicate constructor check not implemented"},
-  // Tuple method resolution not implemented
-  {path: "tuple_not_array.zena", reason: "tuple method resolution not implemented"},
-  // Optional field primitive check not implemented
-  {path: "optional-field-primitive.zena", reason: "optional field primitive check not implemented"}
+  // Null-coalescing tests define local Box class that should shadow prelude stub
+  {path: "null-coalescing/", reason: "local class not shadowing prelude stub correctly"},
+  // Optional chaining with null coalescing has union/callable issues
+  {path: "optional-chaining/member_with_coalescing", reason: "optional member without proper narrowing"},
+  {path: "optional-chaining/call_with_coalescing", reason: "optional call union type not callable"},
+  {path: "optional-chaining/index_with_coalescing", reason: "optional index union type not indexable"},
+  {path: "optional-chaining/member_null_result", reason: "result type handling for optional member"},
+  {path: "optional-chaining/call_null_result", reason: "result type handling for optional call"},
+  {path: "optional-chaining/index_null_result", reason: "result type handling for optional index"},
+  // Duplicate constructor detection needs method signature support
+  {path: "case-classes/duplicate_constructor.zena", reason: "method signature not parsed as constructor"},
+  // Exhaustiveness checking not implemented
+  {path: "sealed-classes/exhaustive", reason: "pattern exhaustiveness checking not implemented"},
+  {path: "sealed-classes/non_exhaustive", reason: "pattern exhaustiveness checking not implemented"},
+  {path: "sealed-classes/wildcard_exhaustive", reason: "pattern exhaustiveness checking not implemented"},
+  {path: "sealed-classes/transitive_exhaustive", reason: "pattern exhaustiveness checking not implemented"},
+  // Abstract field subclass validation not implemented
+  {path: "sealed-classes/abstract_field_unimplemented", reason: "abstract field subclass validation not implemented"},
+  {path: "sealed-classes/abstract_field_valid", reason: "abstract field access not implemented"},
+  // Distributed variants require listing validation
+  {path: "sealed-classes/distributed_variants", reason: "distributed variant listing not implemented"},
+  // Sum of sums (nested sealed classes)
+  {path: "sealed-classes/sum_of_sums", reason: "nested sealed classes not implemented"}
 ];
 
 export let tests = suite('Portable Tests', (): void => {
