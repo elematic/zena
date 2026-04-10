@@ -657,9 +657,9 @@ Prettier has two categories of tests we can leverage:
 ## Current Status
 
 The formatter compiles as self-hosted Zena code and runs on wasmtime via
-WASM-GC. All four tiers of AST printer coverage are implemented. The doc
-printer has the core algorithm working but several Prettier features remain
-simplified or stubbed.
+WASM-GC. All five tiers of AST printer coverage are implemented. The doc
+printer's core algorithm — `printDocToString`, `fits` (with `restCmds`
+lookahead), and `propagateBreaks` — is fully working and well-tested.
 
 **What works today:**
 
@@ -668,29 +668,39 @@ simplified or stubbed.
 - String quote normalization (double → single quotes)
 - Trailing newline insertion
 - All AST node types covered (expressions, statements, classes, patterns, etc.)
+- All type annotations covered (named, union, function, record, tuple, literal, this)
 - `group`/`indent`/`line`/`softline`/`hardline`/`ifBreak` line-breaking
+- `fill` algorithm (greedy line wrapping)
+- `propagateBreaks` pre-pass (hardline/breakParent propagation through groups)
+- `fits` with `restCmds` lookahead optimization
+- Group ID tracking for conditional breaks (`ifBreak` with `groupId`)
 - `lineSuffix` / `lineSuffixBoundary` for trailing comments (infrastructure)
 - Idempotent formatting verified by tests
 
 **Known gaps (doc printer):**
 
 1. Indent model — flat `i32` counter, not Prettier's linked-list indent/align stack
-2. `trim` — not implemented
-3. `useTabs` / `tabWidth` — declared but not wired
+2. `trim` — IR defined, printer stub only
+3. `align` — approximated as indent+1 (not true column alignment)
 
 **Known gaps (printer):**
 
 1. Comment attachment — not started (parser needs comment collection)
-2. Method chain grouping — not implemented
-3. Binary expression chain breaking — basic only (no operator-first style)
-4. Long argument list wrapping — `group`/`indent` is set up but untested for
-   real overflow scenarios
+2. String literal escaping — not implemented (can't safely normalize strings containing quotes)
+3. Method chain grouping — not implemented
+4. Binary expression chain breaking — basic only (no operator-first style)
+
+**Parser limitations affecting formatter:**
+
+1. Can't parse typed arrow functions with return type annotation (e.g., `(a: i32): i32 => a + b`)
+2. Can't parse arrow functions with block bodies
 
 **Test coverage:**
 
-- 15 formatter tests (10 round-trip identity, 5 transformation)
-- Doc printer unit tests (separate test file)
-- Idempotency test
+- ~20 integration tests (round-trip identity, transformations, idempotency)
+- ~250 doc printer unit tests (groups, fill, ifBreak, propagateBreaks, restCmds, etc.)
+- 3 minimal smoke tests
+- All tests passing
 
 ---
 
@@ -843,14 +853,14 @@ Track each AST node type and its print function.
 
 | AST Node                    | Print function         | Status |
 | --------------------------- | ---------------------- | ------ |
-| `NamedTypeAnnotation`       | `printNamedType`       | —      |
-| `UnionTypeAnnotation`       | `printUnionType`       | —      |
-| `FunctionTypeAnnotation`    | `printFunctionType`    | —      |
-| `RecordTypeAnnotation`      | `printRecordType`      | —      |
-| `TupleTypeAnnotation`       | `printTupleType`       | —      |
-| `InlineTupleTypeAnnotation` | `printInlineTupleType` | —      |
-| `LiteralTypeAnnotation`     | `printLiteralType`     | —      |
-| `ThisTypeAnnotation`        | `printThisType`        | —      |
+| `NamedTypeAnnotation`       | `printNamedType`       | Done   |
+| `UnionTypeAnnotation`       | `printUnionType`       | Done   |
+| `FunctionTypeAnnotation`    | `printFunctionType`    | Done   |
+| `RecordTypeAnnotation`      | `printRecordType`      | Done   |
+| `TupleTypeAnnotation`       | `printTupleType`       | Done   |
+| `InlineTupleTypeAnnotation` | `printInlineTupleType` | Done   |
+| `LiteralTypeAnnotation`     | `printLiteralType`     | Done   |
+| `ThisTypeAnnotation`        | `printThisType`        | Done   |
 
 ---
 
