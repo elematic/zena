@@ -676,8 +676,7 @@ simplified or stubbed.
 
 1. Indent model — flat `i32` counter, not Prettier's linked-list indent/align stack
 2. `trim` — not implemented
-3. `fits` — simplified; no `hasLineSuffix` check, no `restCmds` scan
-4. `useTabs` / `tabWidth` — declared but not wired
+3. `useTabs` / `tabWidth` — declared but not wired
 
 **Known gaps (printer):**
 
@@ -730,7 +729,7 @@ Track each Prettier source function and its Zena equivalent.
 | Prettier function                      | Zena function      | Status            |
 | -------------------------------------- | ------------------ | ----------------- |
 | `printDocToString(doc, opts)`          | `printDocToString` | Done              |
-| `fits(next, restCommands, width, ...)` | `fits`             | Done (simplified) |
+| `fits(next, restCommands, width, ...)` | `fits`             | Done              |
 | `propagateBreaks(doc)`                 | `propagateBreaks`  | Done              |
 | `generateIndent(ind, newPart, opts)`   | `generateIndent`   | Done (flat i32)   |
 | `makeIndent(ind, opts)`                | `makeIndent`       | Done (flat i32)   |

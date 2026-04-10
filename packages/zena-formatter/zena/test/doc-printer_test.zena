@@ -332,6 +332,36 @@ let tests = suite('doc-printer', () => {
       check('no breakParent stays flat', print80(doc), 'a, b');
     });
   });
+
+  // ========================================================================
+  // fits with restCmds — group considers rest of line
+  // ========================================================================
+
+  suite('restCmds', () => {
+    test('group considers rest of line in fits check', (t: TestContext) => {
+      // Group alone = "a b" = 3 chars, fits at width 10.
+      // But rest of line has "XXXXXXXXXXX" (11 chars), total 14 > 10.
+      // With restCmds scan, group correctly breaks.
+      let inner = group(concat([text('a'), line, text('b')]));
+      let doc = concat([inner, text('XXXXXXXXXXX')]);
+      check('restCmds basic', print(doc, 10), 'a\nbXXXXXXXXXXX');
+    });
+
+    test('nested group considers rest of line', (t: TestContext) => {
+      // Inner group "aaa bbb" = 7 chars. Outer has inner + " cccccccccc" (11).
+      // Width 15: outer breaks (18 > 15). Inner with restCmds also breaks (18 > 15).
+      let inner = group(concat([text('aaa'), line, text('bbb')]));
+      let outer = group(concat([inner, text(' cccccccccc')]));
+      check('restCmds nested', print(outer, 15), 'aaa\nbbb cccccccccc');
+    });
+
+    test('group fits when rest of line is short', (t: TestContext) => {
+      // Group "a b" = 3 chars + rest "XX" = 2 chars, total 5 < 10. Stays flat.
+      let inner = group(concat([text('a'), line, text('b')]));
+      let doc = concat([inner, text('XX')]);
+      check('restCmds fits', print(doc, 10), 'a bXX');
+    });
+  });
 });
 
 // Entry point
