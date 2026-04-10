@@ -410,12 +410,34 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
   ctx.registerPreludeType("Array", arrayType);
   ctx.registerPreludeValue("Array", arrayType);
 
-  // ImmutableArray<T>
+  // ImmutableArray<T> - immutable array with read-only indexer
   let immArrayType = new ClassType(ctx.freshTypeId(), "ImmutableArray");
+  // Add read-only indexer ([] but no []=)
+  let iaIndexerParams = new Array<Type>();
+  iaIndexerParams.push(new I32Type());
+  let iaIndexer = new FunctionType(iaIndexerParams, null, stringType);
+  immArrayType.methods["[]"] = iaIndexer;
+  // Add length getter
+  let iaLengthGetter = new FunctionType(new Array<Type>(), null, new I32Type());
+  immArrayType.methods["get#length"] = iaLengthGetter;
   ctx.registerPreludeType("ImmutableArray", immArrayType);
 
-  // TemplateStringsArray - for tagged template literals
+  // TemplateStringsArray - for tagged template literals (immutable)
   let tsArrayType = new ClassType(ctx.freshTypeId(), "TemplateStringsArray");
+  // Private fields (stored for private access validation)
+  tsArrayType.fields["#strings"] = immArrayType;
+  tsArrayType.fields["#raw"] = immArrayType;
+  // Add read-only indexer ([] but no []=)
+  let tsIndexerParams = new Array<Type>();
+  tsIndexerParams.push(new I32Type());
+  let tsIndexer = new FunctionType(tsIndexerParams, null, stringType);
+  tsArrayType.methods["[]"] = tsIndexer;
+  // Add length getter (no setter)
+  let tsLengthGetter = new FunctionType(new Array<Type>(), null, new I32Type());
+  tsArrayType.methods["get#length"] = tsLengthGetter;
+  // Add raw getter (returns ImmutableArray<String>, no setter)
+  let tsRawGetter = new FunctionType(new Array<Type>(), null, immArrayType);
+  tsArrayType.methods["get#raw"] = tsRawGetter;
   ctx.registerPreludeType("TemplateStringsArray", tsArrayType);
 
   // Box<T> - optional wrapper
@@ -1370,6 +1392,79 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   // --- Assignment ---
 
   case AssignmentExpression {left, value, operator, loc}: {
+    // Check for read-only indexer assignment: arr[i] = x
+    match (left) {
+      case IndexExpression {object, index}: {
+        let objectType = checkExpression(ctx, object, null);
+        match (objectType) {
+          case ClassType as ct: {
+            // Check for setter []=
+            if (!ct.methods.has("[]=")) {
+              // Check if there's a getter only (read-only indexer)
+              if (ct.methods.has("[]")) {
+                ctx.error(
+                  "Cannot assign to read-only indexer.",
+                  DiagnosticCode.InvalidAssignment,
+                  loc
+                );
+                return new UnknownType();
+              }
+            }
+          }
+          case _: {}
+        }
+      }
+      case MemberExpression {object, property}: {
+        let propName = property.name;
+        // Handle private field assignment outside class
+        if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
+          if (ctx.currentClass == null) {
+            ctx.error(
+              "Private field '" + propName + "' can only be accessed within a class.",
+              DiagnosticCode.PrivateAccess,
+              loc
+            );
+            return new UnknownType();
+          }
+        }
+        // Check for read-only property assignment
+        let objectType = checkExpression(ctx, object, null);
+        match (objectType) {
+          case ClassType as ct: {
+            // Check if it's a field
+            if (ct.fields.has(propName)) {
+              // Check if field is mutable
+              if (!ct.fieldMutability.has(propName) || !ct.fieldMutability[propName]) {
+                ctx.error(
+                  "Cannot assign to read-only property '" + propName + "'.",
+                  DiagnosticCode.InvalidAssignment,
+                  loc
+                );
+                return new UnknownType();
+              }
+            } else {
+              // Check for setter method (set#propName)
+              let setterName = "set#" + propName;
+              if (!ct.methods.has(setterName)) {
+                // Check if there's a getter only (read-only property)
+                let getterName = "get#" + propName;
+                if (ct.methods.has(getterName)) {
+                  ctx.error(
+                    "Cannot assign to read-only property '" + propName + "'.",
+                    DiagnosticCode.InvalidAssignment,
+                    loc
+                  );
+                  return new UnknownType();
+                }
+              }
+            }
+          }
+          case _: {}
+        }
+      }
+      case _: {}
+    }
+
     let leftType = checkExpression(ctx, left, null);
     let rightType = checkExpression(ctx, value, leftType);
 
@@ -2305,6 +2400,18 @@ let checkMemberExpression = (
   let objectType = checkExpression(ctx, object, null);
   let propName = property.name;
 
+  // Check for private field access outside class
+  if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
+    if (ctx.currentClass == null) {
+      ctx.error(
+        "Private field '" + propName + "' can only be accessed within a class.",
+        DiagnosticCode.PrivateAccess,
+        loc
+      );
+      return new UnknownType();
+    }
+  }
+
   // Unwrap union types for optional chaining.
   var baseType_: Type = objectType;
   var isNullable = false;
@@ -2367,6 +2474,13 @@ let resolveMemberType = (
         let methodType = ct.methods[propName];
         return substituteTypeParams(ct.typeParameters, ct.typeArguments, methodType);
       }
+      // Check for getter method (get#propName)
+      let getterName = "get#" + propName;
+      if (ct.methods.has(getterName)) {
+        let getterType = ct.methods[getterName];
+        // Return the return type of the getter
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, getterType.returnType);
+      }
       ctx.error(
         "Property '" + propName + "' does not exist on type '" + ct.name + "'.",
         DiagnosticCode.PropertyNotFound,
@@ -2380,6 +2494,12 @@ let resolveMemberType = (
       }
       if (it.methods.has(propName)) {
         return it.methods[propName];
+      }
+      // Check for getter method
+      let getterName = "get#" + propName;
+      if (it.methods.has(getterName)) {
+        let getterType = it.methods[getterName];
+        return getterType.returnType;
       }
       ctx.error(
         "Property '" + propName + "' does not exist on interface '" + it.name + "'.",

@@ -1272,6 +1272,11 @@ export class Parser {
             (symbolPath as MemberExpression).property
           };
           expr = new MemberExpression(expr, property, false, true, symbolPath, null);
+        } else if (this.#match(TokenType.Hash)) {
+          // Private field access: obj.#field
+          let fieldId = this.#parseIdentifier();
+          let name = new Identifier("#" + fieldId.name, fieldId.loc);
+          expr = new MemberExpression(expr, name, false, false, null, null);
         } else {
           let name = this.#parseIdentifier();
           expr = new MemberExpression(expr, name, false, false, null, null);
@@ -1281,8 +1286,16 @@ export class Parser {
         this.#consume(TokenType.RBracket, "Expected ']' after index");
         expr = new IndexExpression(expr, index, false, null);
       } else if (this.#match(TokenType.QuestionDot)) {
-        let name = this.#parseIdentifier();
-        expr = new MemberExpression(expr, name, true, false, null, null);
+        // Optional chaining
+        if (this.#match(TokenType.Hash)) {
+          // Private field access with optional chaining: obj?.#field
+          let fieldId = this.#parseIdentifier();
+          let name = new Identifier("#" + fieldId.name, fieldId.loc);
+          expr = new MemberExpression(expr, name, true, false, null, null);
+        } else {
+          let name = this.#parseIdentifier();
+          expr = new MemberExpression(expr, name, true, false, null, null);
+        }
       } else if (this.#match(TokenType.QuestionLBracket)) {
         let index = this.#parseExpression();
         this.#consume(TokenType.RBracket, "Expected ']' after index");
