@@ -2105,12 +2105,18 @@ export class Parser {
     }
     
     // Tuple type: (Type1, Type2)
+    // Or parenthesized type: (Type)
     let elementTypes = new Array<TypeAnnotation>(4);
     elementTypes.push(this.#parseTypeAnnotation());
     while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen)) {
       elementTypes.push(this.#parseTypeAnnotation());
     }
     this.#consume(TokenType.RParen, "Expected ')' after tuple type elements");
+    
+    // Single element is just a parenthesized type, not a tuple
+    if (elementTypes.length == 1) {
+      return elementTypes[0];
+    }
     
     return new TupleTypeAnnotation(elementTypes, this.#makeLocation(startToken));
   }

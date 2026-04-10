@@ -122,6 +122,12 @@ class CheckerContext {
   var #returnType?: Type = null;
 
   /**
+   * Inferred return types collected from return statements.
+   * Used when a function has no explicit return type annotation.
+   */
+  var #inferredReturnTypes = new Array<Type>();
+
+  /**
    * Stack of class types being checked. The top is the innermost class.
    * Used by ThisExpression, super resolution, and member access validation.
    */
@@ -312,6 +318,20 @@ class CheckerContext {
 
   setReturnType(t: Type | null): void {
     this.#returnType = t;
+  }
+
+  // --- Inferred return types ---
+
+  inferredReturnTypes: Array<Type> {
+    get { return this.#inferredReturnTypes; }
+  }
+
+  setInferredReturnTypes(a: Array<Type>): void {
+    this.#inferredReturnTypes = a;
+  }
+
+  addInferredReturnType(t: Type): void {
+    this.#inferredReturnTypes.push(t);
   }
 
   // --- Loop depth ---
@@ -937,7 +957,10 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
         let argType = checkExpression(ctx, argExpr, expectedReturn);
         if (expectedReturn != null) {
           let expected = expectedReturn as Type;
-          if (!isAssignableTo(ctx, argType, expected)) {
+          if (expected is VoidType) {
+            // No explicit return type - infer from return statements
+            ctx.addInferredReturnType(argType);
+          } else if (!isAssignableTo(ctx, argType, expected)) {
             ctx.error(
               "Type mismatch: cannot return '" + typeToString(argType) +
               "' from function expecting '" + typeToString(expected) + "'.",
@@ -945,6 +968,9 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
               loc
             );
           }
+        } else {
+          // No expected return type at all (shouldn't happen in a function, but collect anyway)
+          ctx.addInferredReturnType(argType);
         }
       } else {
         // return; — function should return void.
@@ -1678,8 +1704,8 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           case _: "<unknown>"
         };
 
-        // Constructor: "new"
-        if (methodName == "new") {
+        // Constructor: parsed from 'new(...)' syntax as "<constructor>"
+        if (methodName == "<constructor>") {
           // If case class already generated a constructor, error.
           if (cd.caseParams != null && classType.constructorType != null) {
             ctx.error(
@@ -1719,6 +1745,57 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         if (acc.getter != null) {
           let getterType = new FunctionType(new Array<Type>(), null, accType);
           classType.methods.set(accName, getterType);
+        }
+      }
+      case MethodSignature as ms: {
+        // MethodSignature is used for abstract method declarations (no body)
+        // or interface-like signatures in classes (e.g., `new(x: f64, y: f64);`)
+        let methodName = ms.name.name;
+        
+        // Constructor signature: check for duplicate
+        if (methodName == "new") {
+          // If case class already generated a constructor, error.
+          if (cd.caseParams != null && classType.constructorType != null) {
+            ctx.error(
+              "Duplicate constructor in case class '" + className +
+              "'. Case classes auto-generate a constructor from their parameters.",
+              DiagnosticCode.DuplicateMethod,
+              ms.loc
+            );
+          } else {
+            // Build constructor type from signature
+            let paramTypes = new Array<Type>();
+            var pi = 0;
+            while (pi < ms.params.length) {
+              let param = ms.params[pi];
+              var paramType: Type = new UnknownType();
+              if (param.typeAnnotation != null) {
+                paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
+              }
+              paramTypes.push(paramType);
+              pi = pi + 1;
+            }
+            let ctorType = new FunctionType(paramTypes, null, classType);
+            classType.constructorType = ctorType;
+          }
+        } else {
+          // Abstract method signature
+          let paramTypes = new Array<Type>();
+          var pi = 0;
+          while (pi < ms.params.length) {
+            let param = ms.params[pi];
+            var paramType: Type = new UnknownType();
+            if (param.typeAnnotation != null) {
+              paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
+            }
+            paramTypes.push(paramType);
+            pi = pi + 1;
+          }
+          var retType: Type = new VoidType();
+          if (ms.returnType != null) {
+            retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation);
+          }
+          classType.methods.set(methodName, new FunctionType(paramTypes, null, retType));
         }
       }
       case _: {}
@@ -2300,8 +2377,8 @@ let resolveIndexType = (
     }
     case ClassType as ct: {
       // Check for operator [] method.
-      if (ct.methods.has("operator []")) {
-        let opMethod = ct.methods["operator []"];
+      if (ct.methods.has("[]")) {
+        let opMethod = ct.methods["[]"];
         // The return type is the element type.
         return substituteTypeParams(ct.typeParameters, ct.typeArguments, opMethod.returnType);
       }
@@ -2693,15 +2770,22 @@ let checkFunctionExpression = (
 
   // Resolve return type annotation.
   var retType: Type = new VoidType();
+  var needsInference = false;
   if (returnTypeAnn != null) {
     retType = resolveTypeAnnotation(ctx, returnTypeAnn as TypeAnnotation);
   } else if (contextualFn != null) {
     retType = (contextualFn as FunctionType).returnType;
+  } else {
+    // No explicit return type - will infer from return statements
+    needsInference = true;
   }
 
   // Set expected return type for return statements.
+  // Save and reset inferred return types for this function.
   let prevReturnType = ctx.returnType;
+  let prevInferredReturns = ctx.inferredReturnTypes;
   ctx.setReturnType(retType);
+  ctx.setInferredReturnTypes(new Array<Type>());
 
   // Check the body.
   match (body) {
@@ -2710,6 +2794,19 @@ let checkFunctionExpression = (
       while (j < block.body.length) {
         checkStatement(ctx, block.body[j]);
         j = j + 1;
+      }
+      // After checking block body, infer return type from collected types.
+      if (needsInference) {
+        let inferred = ctx.inferredReturnTypes;
+        if (inferred.length == 0) {
+          retType = new VoidType();
+        } else if (inferred.length == 1) {
+          retType = inferred[0];
+        } else {
+          // Multiple return types - create union (or use first as approximation)
+          // For now, just use the first type as a simple heuristic
+          retType = inferred[0];
+        }
       }
     }
     case Expression as bodyExpr: {
@@ -2733,6 +2830,7 @@ let checkFunctionExpression = (
   }
 
   ctx.setReturnType(prevReturnType);
+  ctx.setInferredReturnTypes(prevInferredReturns);
   ctx.exitScope();
 
   return new FunctionType(paramTypes, paramNames, retType);
