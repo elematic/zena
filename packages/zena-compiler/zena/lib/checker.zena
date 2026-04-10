@@ -491,14 +491,36 @@ export let checkModule = (ast: Module, scopeResult: ScopeResult | null): CheckRe
   var pre = 0;
   while (pre < ast.body.length) {
     match (ast.body[pre]) {
-      case ClassDeclaration {name, loc}: {
+      case ClassDeclaration as clsDecl: {
         // Create a placeholder ClassType that will be filled in during the main pass.
-        let ct = new ClassType(ctx.freshTypeId(), name.name);
-        ctx.declareTypeName(name.name, ct);
+        let ct = new ClassType(ctx.freshTypeId(), clsDecl.name.name);
+        ctx.declareTypeName(clsDecl.name.name, ct);
         // Also bind in value namespace.
         let info = ctx.model.resolveDeclaration(ast.body[pre]);
         if (info != null) {
           ctx.declareBinding(info as SymbolInfo, ct);
+        }
+        // Pre-register forward variant names for sealed classes.
+        if (clsDecl.isSealed && clsDecl.sealedVariants != null) {
+          let variants = clsDecl.sealedVariants as Array<SealedVariant>;
+          var vi = 0;
+          while (vi < variants.length) {
+            let variant = variants[vi];
+            // Forward variants have null params (just a name declaration)
+            if (variant.params != null) {
+              vi = vi + 1;
+              continue;
+            }
+            // Register as forward variant name
+            if (ct.forwardVariantNames != null) {
+              (ct.forwardVariantNames as HashMap<String, boolean>).set(variant.name.name, true);
+            } else {
+              let map = new HashMap<String, boolean>();
+              map.set(variant.name.name, true);
+              ct.forwardVariantNames = map;
+            }
+            vi = vi + 1;
+          }
         }
       }
       case InterfaceDeclaration {name, loc}: {
@@ -1556,27 +1578,67 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
             cd.loc
           );
         }
-        // Sealed classes can only be extended by their inline variants.
+        // Sealed classes can only be extended by their declared variants.
         if (st.isSealed) {
-          ctx.error(
-            "cannot extend sealed class '" + st.name + "'. " +
-            "Sealed classes can only be extended by their declared variants.",
-            DiagnosticCode.IncompatibleTypes,
-            cd.loc
-          );
+          // Check if this class is a forward-declared variant
+          var isForwardVariant = false;
+          if (st.forwardVariantNames != null) {
+            let fwdNames = st.forwardVariantNames as HashMap<String, boolean>;
+            if (fwdNames.has(className)) {
+              isForwardVariant = true;
+            }
+          }
+          if (!isForwardVariant) {
+            ctx.error(
+              "cannot extend sealed class '" + st.name + "'. " +
+              "Sealed classes can only be extended by their declared variants.",
+              DiagnosticCode.IncompatibleTypes,
+              cd.loc
+            );
+          }
         }
         classType.superType = st;
         // Inherit fields and methods from superclass.
+        // Skip abstract fields - they need to be implemented, not inherited.
         let fieldKeys = st.fields.keys();
         while (let (true, key) = fieldKeys.next()) {
-          classType.fields.set(key, st.fields[key]);
-          if (st.fieldMutability.has(key)) {
-            classType.fieldMutability.set(key, st.fieldMutability[key]);
+          // Check if this is an abstract field
+          var isAbstractInSuper = false;
+          if (st.abstractFields != null) {
+            let stAbs = st.abstractFields as HashMap<String, boolean>;
+            if (stAbs.has(key)) {
+              isAbstractInSuper = true;
+            }
+          }
+          if (!isAbstractInSuper) {
+            classType.fields.set(key, st.fields[key]);
+            if (st.fieldMutability.has(key)) {
+              classType.fieldMutability.set(key, st.fieldMutability[key]);
+            }
           }
         }
         let methodKeys = st.methods.keys();
         while (let (true, key) = methodKeys.next()) {
           classType.methods.set(key, st.methods[key]);
+        }
+        // Inherit abstract fields from superclass.
+        if (st.abstractFields != null) {
+          let stAbstract = st.abstractFields as HashMap<String, boolean>;
+          var targetAbsFields = classType.abstractFields;
+          if (targetAbsFields != null) {
+            let target = targetAbsFields as HashMap<String, boolean>;
+            let absKeys = stAbstract.keys();
+            while (let (true, absKey) = absKeys.next()) {
+              target.set(absKey, true);
+            }
+          } else {
+            let newMap = new HashMap<String, boolean>();
+            let absKeys = stAbstract.keys();
+            while (let (true, absKey) = absKeys.next()) {
+              newMap.set(absKey, true);
+            }
+            classType.abstractFields = newMap;
+          }
         }
       }
       case _: {
@@ -1601,7 +1663,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
       let fieldName = cp.name.name;
       let fieldType = resolveTypeAnnotation(ctx, cp.typeAnnotation);
 
-      // Check for duplicate fields.
+      // Check for duplicate fields (but allow implementing abstract fields).
       if (classType.fields.has(fieldName)) {
         ctx.error(
           "Duplicate field '" + fieldName + "' in class '" + className + "'.",
@@ -1613,6 +1675,14 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
       classType.fields.set(fieldName, fieldType);
       let isMutable = cp.mutability != null && cp.mutability == "var";
       classType.fieldMutability.set(fieldName, isMutable);
+
+      // Case param may satisfy an inherited abstract field.
+      if (classType.abstractFields != null) {
+        let absFields = classType.abstractFields as HashMap<String, boolean>;
+        if (absFields.has(fieldName)) {
+          absFields.delete(fieldName);
+        }
+      }
 
       ctorParamTypes.push(fieldType);
       ctorParamNames.push(fieldName);
@@ -1656,6 +1726,23 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
               DiagnosticCode.IncompatibleTypes,
               fd.loc
             );
+          }
+          // Track abstract field.
+          var absFields = classType.abstractFields;
+          if (absFields != null) {
+            (absFields as HashMap<String, boolean>).set(fieldName, true);
+          } else {
+            let newMap = new HashMap<String, boolean>();
+            newMap.set(fieldName, true);
+            classType.abstractFields = newMap;
+          }
+        } else {
+          // Concrete field may satisfy an inherited abstract field.
+          if (classType.abstractFields != null) {
+            let absFields = classType.abstractFields as HashMap<String, boolean>;
+            if (absFields.has(fieldName)) {
+              absFields.delete(fieldName);
+            }
           }
         }
 
@@ -1812,33 +1899,35 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
       let variant = variants[vi];
       let variantName = variant.name.name;
 
-      // Check for duplicate declaration of inline variant name.
-      let existingType = ctx.resolveTypeName(variantName);
-      if (existingType != null) {
-        ctx.error(
-          "Duplicate declaration of '" + variantName + "' as inline variant. " +
-          "The name conflicts with an existing type.",
-          DiagnosticCode.DuplicateDeclaration,
-          variant.name.loc
-        );
-      }
-
-      let variantType = new ClassType(ctx.freshTypeId(), variantName);
-      variantType.superType = classType;
-      variantType.isCaseClass = true;
-      variantType.isFinal = true;
-
-      // Inherit fields from parent.
-      let parentFieldKeys = classType.fields.keys();
-      while (let (true, key) = parentFieldKeys.next()) {
-        variantType.fields.set(key, classType.fields[key]);
-        if (classType.fieldMutability.has(key)) {
-          variantType.fieldMutability.set(key, classType.fieldMutability[key]);
-        }
-      }
-
-      // Process variant parameters as fields + constructor.
+      // Forward-declared variants (null params, like `case Circle, Rect`)
+      // are defined as separate classes - skip creating inline types.
       if (variant.params != null) {
+        // Check for duplicate declaration of inline variant name.
+        let existingType = ctx.resolveTypeName(variantName);
+        if (existingType != null) {
+          ctx.error(
+            "Duplicate declaration of '" + variantName + "' as inline variant. " +
+            "The name conflicts with an existing type.",
+            DiagnosticCode.DuplicateDeclaration,
+            variant.name.loc
+          );
+        }
+
+        let variantType = new ClassType(ctx.freshTypeId(), variantName);
+        variantType.superType = classType;
+        variantType.isCaseClass = true;
+        variantType.isFinal = true;
+
+        // Inherit fields from parent.
+        let parentFieldKeys = classType.fields.keys();
+        while (let (true, key) = parentFieldKeys.next()) {
+          variantType.fields.set(key, classType.fields[key]);
+          if (classType.fieldMutability.has(key)) {
+            variantType.fieldMutability.set(key, classType.fieldMutability[key]);
+          }
+        }
+
+        // Process variant parameters as fields + constructor.
         let vParams = variant.params as Array<CaseClassParam>;
         let vCtorParams = new Array<Type>();
         let vCtorNames = new Array<String>();
@@ -1856,19 +1945,41 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
         variantType.constructorType = new FunctionType(
           vCtorParams, vCtorNames, variantType
         );
+
+        (classType.sealedVariants as Array<ClassType>).push(variantType);
+
+        // Register variant in type and value namespaces.
+        ctx.declareTypeName(variant.name.name, variantType);
       } else {
-        // Unit variant — no-arg constructor.
-        variantType.constructorType = new FunctionType(
-          new Array<Type>(), new Array<String>(), variantType
-        );
+        // Forward-declared variant - look up the existing class type
+        // and add it to sealedVariants if found.
+        let existingType = ctx.resolveTypeName(variantName);
+        if (existingType != null) {
+          match (existingType as Type) {
+            case ClassType as ct: {
+              (classType.sealedVariants as Array<ClassType>).push(ct);
+            }
+            case _: {}
+          }
+        }
       }
 
-      (classType.sealedVariants as Array<ClassType>).push(variantType);
-
-      // Register variant in type and value namespaces.
-      ctx.declareTypeName(variant.name.name, variantType);
-
       vi = vi + 1;
+    }
+  }
+
+  // Check for unimplemented abstract fields in non-abstract classes.
+  if (!cd.isAbstract && !cd.isSealed) {
+    if (classType.abstractFields != null) {
+      let absFields = classType.abstractFields as HashMap<String, boolean>;
+      let absKeys = absFields.keys();
+      while (let (true, absName) = absKeys.next()) {
+        ctx.error(
+          "Non-abstract class '" + className + "' does not implement abstract field '" + absName + "'.",
+          DiagnosticCode.AbstractMethodNotImplemented,
+          cd.loc
+        );
+      }
     }
   }
 
