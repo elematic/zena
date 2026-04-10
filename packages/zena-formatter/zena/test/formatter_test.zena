@@ -52,6 +52,29 @@ let tests = suite('formatter', () => {
     check('string literal', result, "let s = 'hello';\n");
   });
 
+  test('escapes single quote in double-quoted string', (t: TestContext) => {
+    // Input: let s = "it's";  (double-quoted, contains single quote)
+    // The lexer decodes this to: it's  (literal single quote in value)
+    // The formatter must re-escape: let s = 'it\'s';
+    let result = format('let s = "it\'s";');
+    check('escape single quote', result, "let s = 'it\\'s';\n");
+  });
+
+  test('escapes backslash in string', (t: TestContext) => {
+    // Input: let s = "a\\b";  (contains escaped backslash)
+    // The lexer decodes this to: a\b  (literal backslash in value)
+    // The formatter must re-escape: let s = 'a\\b';
+    let result = format('let s = "a\\\\b";');
+    check('escape backslash', result, "let s = 'a\\\\b';\n");
+  });
+
+  test('preserves escape sequences in single-quoted string', (t: TestContext) => {
+    // Input already single-quoted with escape: let s = 'hello\nworld';
+    // Lexer decodes \n to literal newline, formatter re-escapes
+    let result = format("let s = 'hello\\nworld';");
+    check('preserve escapes', result, "let s = 'hello\\nworld';\n");
+  });
+
   test('formats boolean literals', (t: TestContext) => {
     let result = format('let a = true;');
     check('boolean', result, 'let a = true;\n');
