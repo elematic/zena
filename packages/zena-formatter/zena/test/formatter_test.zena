@@ -1,5 +1,3 @@
-// Formatter test — verifies basic formatting via parse + print round-trip
-
 import { suite, test, TestContext } from 'zena:test';
 import { equal } from 'zena:assert';
 import { format } from '../lib/printer.zena';
@@ -170,6 +168,86 @@ let tests = suite('formatter', () => {
     let input = "class Foo {}\n\nlet x = 1;\n";
     let result = format(input);
     check('blank between class and var', result, input);
+  });
+
+  // ========================================================================
+  // Comment preservation tests
+  // ========================================================================
+
+  test('preserves line comment before statement', (t: TestContext) => {
+    let input = "// hello\nlet x = 1;\n";
+    let result = format(input);
+    check('leading line comment', result, "// hello\nlet x = 1;\n");
+  });
+
+  test('preserves trailing line comment', (t: TestContext) => {
+    let input = "let x = 1; // a comment\n";
+    let result = format(input);
+    check('trailing line comment', result, "let x = 1; // a comment\n");
+  });
+
+  test('preserves block comment before statement', (t: TestContext) => {
+    let input = "/* block */\nlet x = 1;\n";
+    let result = format(input);
+    check('leading block comment', result, "/* block */\nlet x = 1;\n");
+  });
+
+  test('preserves comment between statements', (t: TestContext) => {
+    let input = "let a = 1;\n// between\nlet b = 2;\n";
+    let result = format(input);
+    check('comment between stmts', result, "let a = 1;\n// between\nlet b = 2;\n");
+  });
+
+  test('preserves multiple leading comments', (t: TestContext) => {
+    let input = "// first\n// second\nlet x = 1;\n";
+    let result = format(input);
+    check('multiple leading', result, "// first\n// second\nlet x = 1;\n");
+  });
+
+  test('preserves comment in empty module', (t: TestContext) => {
+    let input = "// only a comment\n";
+    let result = format(input);
+    check('comment-only module', result, "// only a comment\n");
+  });
+
+  // ========================================================================
+  // JSDoc-style comment preservation
+  // ========================================================================
+
+  test('preserves jsdoc comment on variable', (t: TestContext) => {
+    let input = "/** Docs for x */\nlet x = 1;\n";
+    let result = format(input);
+    check('jsdoc on var', result, "/** Docs for x */\nlet x = 1;\n");
+  });
+
+  test('preserves jsdoc comment on class', (t: TestContext) => {
+    let input = "/** The Foo class */\nclass Foo {}\n";
+    let result = format(input);
+    check('jsdoc on class', result, "/** The Foo class */\nclass Foo {}\n");
+  });
+
+  test('preserves jsdoc comment on interface', (t: TestContext) => {
+    let input = "/** Drawable things */\ninterface Drawable {\n  draw(): void;\n}\n";
+    let result = format(input);
+    check('jsdoc on interface', result, "/** Drawable things */\ninterface Drawable {\n  draw(): void;\n}\n");
+  });
+
+  test('preserves jsdoc comment on enum', (t: TestContext) => {
+    let input = "/** Color options */\nenum Color {\n  Red,\n  Green,\n  Blue\n}\n";
+    let result = format(input);
+    check('jsdoc on enum', result, "/** Color options */\nenum Color {\n  Red,\n  Green,\n  Blue\n}\n");
+  });
+
+  test('preserves jsdoc on each of multiple declarations', (t: TestContext) => {
+    let input = "/** Docs for a */\nlet a = 1;\n/** Docs for b */\nlet b = 2;\n";
+    let result = format(input);
+    check('jsdoc on multiple decls', result, "/** Docs for a */\nlet a = 1;\n/** Docs for b */\nlet b = 2;\n");
+  });
+
+  test('preserves copyright header with jsdoc', (t: TestContext) => {
+    let input = "// Copyright 2026\n/** Main entry */\nlet main = 0;\n";
+    let result = format(input);
+    check('header + jsdoc', result, "// Copyright 2026\n/** Main entry */\nlet main = 0;\n");
   });
 });
 

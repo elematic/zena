@@ -1,13 +1,10 @@
-// Parser for the Zena programming language
-// Ported from packages/compiler/src/lib/parser.ts
-// Self-hosted compiler implementation
-
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 import { StringReader } from 'zena:string-reader';
-import { Token, TokenType, tokenize } from './tokenizer.zena';
+import { Token, TokenType, Tokenizer } from './tokenizer.zena';
 import { 
   SourceLocation,
+  Comment,
   Node,
   Module,
   Statement,
@@ -106,12 +103,9 @@ import {
   SymbolPropertyName
 } from './ast.zena';
 
-// ============================================================================
-// Parser
-// ============================================================================
-
 export class Parser {
-  #tokens: Array<Token>;
+  var #tokens: Array<Token>;
+  var #comments: Array<Comment>;
   var #current: i32;
   var #extraGreaters: i32;
   var #destructParamCounter: i32;
@@ -120,13 +114,13 @@ export class Parser {
   #path: String;
   
   new(source: String, path: String)
-    : #source = source, #path = path, #tokens = tokenize(source), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null
-  { }
-  
-  // ==========================================================================
-  // Main Entry Point
-  // ==========================================================================
-  
+    : #source = source, #path = path, #tokens = new Array<Token>(0), #comments = new Array<Comment>(0), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null
+  {
+    let tokenizer = new Tokenizer(source);
+    this.#tokens = tokenizer.tokenize();
+    this.#comments = tokenizer.getComments();
+  }
+    
   parse(): Module {
     let body = new Array<Statement>(16);
     
@@ -143,7 +137,7 @@ export class Parser {
       body.push(stmt);
     }
     
-    return new Module(body, this.#path, this.#source, null);
+    return new Module(body, this.#path, this.#source, this.#comments, null);
   }
   
   // ==========================================================================

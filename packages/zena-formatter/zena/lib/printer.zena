@@ -1,13 +1,16 @@
-// Printer — converts Zena AST nodes into Doc IR
-//
-// This is the language-specific component. Each AST node type has a
-// printing function that produces Doc IR, which the doc-printer then
-// converts to a string.
+/**
+ * Printer — converts Zena AST nodes into Doc IR.
+ *
+ * This is the language-specific component. Each AST node type has a
+ * printing function that produces Doc IR, which the doc-printer then
+ * converts to a string.
+ */
 
 import { Array } from 'zena:array';
 import { StringBuilder } from 'zena:string-builder';
 import { parse } from 'zena-compiler:parser';
 import {
+  Comment,
   Node, Module,
   // Expressions
   Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral,
@@ -50,9 +53,13 @@ import {
   softline,
   hardline,
   join,
-  ifBreak
+  ifBreak,
+  lineSuffix
 } from './doc.zena';
 import { printDocToString, PrintOptions } from './doc-printer.zena';
+import { CommentMap, attachComments } from 'zena-compiler:comment-attachment';
+
+var currentCommentMap = new CommentMap();
 
 // ============================================================================
 // Array helpers
@@ -74,11 +81,67 @@ let docs3 = (a: Doc, b: Doc, c: Doc): Array<Doc> => {
 };
 
 // ============================================================================
+// Comment Printing Helpers
+// ============================================================================
+
+/**
+ * Print a single comment as a Doc.
+ */ 
+let printComment = (c: Comment): Doc => {
+  if (c.isBlock) {
+    return text('/*' + c.value + '*/');
+  }
+  return text('//' + c.value);
+};
+
+/**
+ * Wrap a node's doc with its leading and trailing comments.
+ * Leading comments appear before the doc (each on its own line).
+ * Trailing comments appear after the doc on the same line (via lineSuffix).
+ */
+let withComments = (node: Node, doc: Doc): Doc => {
+  let leading = currentCommentMap.getLeading(node);
+  let trailing = currentCommentMap.getTrailing(node);
+
+  if (leading == null && trailing == null) {
+    return doc;
+  }
+
+  let parts = new Array<Doc>();
+
+  // Leading comments
+  if (leading != null) {
+    let arr = leading as Array<Comment>;
+    var i: i32 = 0;
+    while (i < arr.length) {
+      parts.push(printComment(arr[i]));
+      parts.push(hardline);
+      i += 1;
+    }
+  }
+
+  parts.push(doc);
+
+  // Trailing comments (use lineSuffix so they stick to end of line)
+  if (trailing != null) {
+    let arr = trailing as Array<Comment>;
+    var j: i32 = 0;
+    while (j < arr.length) {
+      parts.push(lineSuffix(concat(docs2(text(' '), printComment(arr[j])))));
+      j += 1;
+    }
+  }
+
+  return concat(parts);
+};
+
+// ============================================================================
 // Main entry point
 // ============================================================================
 
 export let format = (source: String): String => {
   let module = parse(source, '<input>');
+  currentCommentMap = attachComments(module);
   let doc = printModule(module);
   let options = new PrintOptions(80);
   return printDocToString(doc, options);
@@ -90,6 +153,36 @@ export let format = (source: String): String => {
 
 let printModule = (module: Module): Doc => {
   let parts = new Array<Doc>();
+
+  // File-level leading comments (attached to Module by blank-line heuristic)
+  let fileComments = currentCommentMap.getLeading(module);
+  if (fileComments != null) {
+    let arr = fileComments as Array<Comment>;
+    var fi: i32 = 0;
+    while (fi < arr.length) {
+      parts.push(printComment(arr[fi]));
+      parts.push(hardline);
+      fi += 1;
+    }
+    if (module.body.length > 0) {
+      parts.push(hardline);
+    }
+  }
+
+  // Inner comments in empty modules
+  if (module.body.length == 0) {
+    let inner = currentCommentMap.getInner(module);
+    if (inner != null) {
+      let arr = inner as Array<Comment>;
+      var di: i32 = 0;
+      while (di < arr.length) {
+        parts.push(printComment(arr[di]));
+        parts.push(hardline);
+        di += 1;
+      }
+    }
+  }
+
   var i = 0;
   while (i < module.body.length) {
     let stmt = module.body[i];
@@ -143,7 +236,12 @@ let needsBlankLineBetween = (a: Statement, b: Statement): boolean => {
 // Statements
 // ============================================================================
 
-let printStatement = (stmt: Statement): Doc => match (stmt) {
+let printStatement = (stmt: Statement): Doc => {
+  let doc = printStatementInner(stmt);
+  return withComments(stmt, doc);
+};
+
+let printStatementInner = (stmt: Statement): Doc => match (stmt) {
   case VariableDeclaration {}: printVariableDeclaration(stmt as VariableDeclaration)
   case ExpressionStatement {expression}: concat(docs2(printExpression(expression), text(';')))
   case BlockStatement {}: printBlockStatement(stmt as BlockStatement)
