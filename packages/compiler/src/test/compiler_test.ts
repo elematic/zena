@@ -181,4 +181,41 @@ describe('Compiler', () => {
     const main = modules.find((m) => m.path === 'main.zena');
     assert.strictEqual(main?.diagnostics!.length, 0);
   });
+
+  it('orders prelude modules before user modules', () => {
+    // This test ensures that prelude modules (like console) are initialized
+    // before user modules. This is critical because user code may use prelude
+    // symbols in immediately-executed callbacks (e.g., suite callbacks that
+    // call console.log during registration).
+    const host = new MockHost();
+    host.files.set(
+      'main.zena',
+      `
+      // This uses console from prelude in top-level code
+      let x = 1;
+      export let main = () => x;
+    `,
+    );
+
+    const compiler = new Compiler(host);
+    const modules = compiler.compile('main.zena');
+
+    // Find indices of prelude console module and user module
+    const consoleIndex = modules.findIndex(
+      (m) => m.path === 'zena:console-host',
+    );
+    const userIndex = modules.findIndex((m) => m.path === 'main.zena');
+
+    // Prelude modules must come before user modules in the module array
+    // because CodeGenerator processes them in order for global initialization
+    assert.ok(
+      consoleIndex !== -1,
+      'console-host module should be in modules list',
+    );
+    assert.ok(userIndex !== -1, 'user module should be in modules list');
+    assert.ok(
+      consoleIndex < userIndex,
+      `console-host (index ${consoleIndex}) should come before main.zena (index ${userIndex})`,
+    );
+  });
 });

@@ -84,6 +84,10 @@ export class Compiler {
   public compile(entryPoint: string): Module[] {
     this.#entryPoint = entryPoint;
 
+    // Load prelude first - this ensures prelude modules come before user modules
+    // in the module map iteration order, which is critical for global initialization.
+    this.#loadPrelude();
+
     // Load entry point and all dependencies via LibraryLoader
     this.#loader.load(entryPoint);
 
