@@ -563,18 +563,16 @@ export class ScopeBuilder {
         }
       }
       case VariableDeclaration {kind, pattern, init, exported}: {
-        // Pre-declare annotated functions for mutual recursion.
+        // Pre-declare all function bindings for forward references / mutual recursion.
         match (pattern) {
           case IdentifierPattern {name} as pat: {
             match (init) {
-              case FunctionExpression {returnType}: {
-                if (returnType != null) {
-                  this.#current.declareValue(name, kind, pat, this.#modulePath);
-                  this.#declarations.record(pat, this.#current.getLocalValue(name) as SymbolInfo);
-                  if (exported) {
-                    let info = new SymbolInfo(kind, pat, this.#modulePath);
-                    this.#exports.setValue(name, info);
-                  }
+              case FunctionExpression {}: {
+                this.#current.declareValue(name, kind, pat, this.#modulePath);
+                this.#declarations.record(pat, this.#current.getLocalValue(name) as SymbolInfo);
+                if (exported) {
+                  let info = new SymbolInfo(kind, pat, this.#modulePath);
+                  this.#exports.setValue(name, info);
                 }
               }
               case _: {}

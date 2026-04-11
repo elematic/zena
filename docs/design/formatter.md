@@ -675,6 +675,11 @@ lookahead), and `propagateBreaks` — is fully working and well-tested.
 - `fits` with `restCmds` lookahead optimization
 - Group ID tracking for conditional breaks (`ifBreak` with `groupId`)
 - `lineSuffix` / `lineSuffixBoundary` for trailing comments (infrastructure)
+- Comment attachment — Babel-style algorithm in `comment-attachment.zena`
+  - Tokenizer collects comments → parser passes to Module → attachment pass
+  - CommentMap with leading/trailing/inner comments keyed by Node reference
+  - `withComments` wrapping for top-level statements, class members, interface members, enum members
+  - `getChildBody` recurses into BlockStatement, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration
 - Idempotent formatting verified by tests
 
 **Known gaps (doc printer):**
@@ -685,7 +690,7 @@ lookahead), and `propagateBreaks` — is fully working and well-tested.
 
 **Known gaps (printer):**
 
-1. Comment attachment — not started (parser needs comment collection)
+1. Comment attachment for expression-level nodes — only top-level statements and body members have `withComments` wrappers
 2. String literal escaping — not implemented (can't safely normalize strings containing quotes)
 3. Method chain grouping — not implemented
 4. Binary expression chain breaking — basic only (no operator-first style)
@@ -697,7 +702,7 @@ lookahead), and `propagateBreaks` — is fully working and well-tested.
 
 **Test coverage:**
 
-- ~20 integration tests (round-trip identity, transformations, idempotency)
+- ~26 integration tests (round-trip identity, transformations, idempotency, comments)
 - ~250 doc printer unit tests (groups, fill, ifBreak, propagateBreaks, restCmds, etc.)
 - 3 minimal smoke tests
 - All tests passing

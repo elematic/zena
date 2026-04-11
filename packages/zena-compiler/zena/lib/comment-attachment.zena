@@ -21,7 +21,7 @@ import {
   Comment, SourceLocation, Node, Module,
   Statement, Expression,
   BlockStatement, ClassDeclaration, InterfaceDeclaration,
-  MixinDeclaration, EnumDeclaration
+  MixinDeclaration, EnumDeclaration, EnumMember
 } from './ast.zena';
 
 /**
@@ -144,77 +144,27 @@ let statementsToNodes = (stmts: Array<Statement>): Array<Node> => {
   return result;
 };
 
+/** Convert Array<EnumMember> to Array<Node> (WASM-GC arrays are invariant). */
+let enumMembersToNodes = (members: Array<EnumMember>): Array<Node> => {
+  let result = new Array<Node>(members.length);
+  var i: i32 = 0;
+  while (i < members.length) {
+    result.push(members[i]);
+    i += 1;
+  }
+  return result;
+};
+
 /**
- * Attach all comments from the module to their nearest AST nodes.
- * Returns a CommentMap keyed by Node reference.
+ * Extract the child body (Array<Node>) from nodes that contain bodies.
  */
-export let attachComments = (module: Module): CommentMap => {
-  let map = new CommentMap();
-  let comments = module.comments;
-  if (comments.length == 0) {
-    return map;
-  }
-  let source = module.source;
-  let nodes = statementsToNodes(module.body);
-
-  // Empty module: all comments are file-level (leading on Module)
-  if (nodes.length == 0) {
-    var ei: i32 = 0;
-    while (ei < comments.length) {
-      map.addLeading(module, comments[ei]);
-      ei += 1;
-    }
-    return map;
-  }
-
-  // Comments at the top of the file separated from the first declaration
-  // (or the next comment group) by a blank line are file-level: leading on Module.
-  let firstNodeStart = getNodeStart(nodes[0]);
-
-  // Collect comments that appear before the first statement
-  var prefixEnd: i32 = 0;
-  while (prefixEnd < comments.length && comments[prefixEnd].start < firstNodeStart) {
-    prefixEnd += 1;
-  }
-
-  // Find the split point: the last comment before a blank line gap
-  var fileLevelEnd: i32 = 0;
-  if (prefixEnd > 0) {
-    var ci: i32 = 0;
-    while (ci < prefixEnd) {
-      let commentEnd = comments[ci].end;
-      // What comes after this comment?
-      let nextStart = if (ci + 1 < prefixEnd) {
-        comments[ci + 1].start;
-      } else {
-        firstNodeStart;
-      };
-      if (hasBlankLineBetween(source, commentEnd, nextStart)) {
-        fileLevelEnd = ci + 1;
-      }
-      ci += 1;
-    }
-  }
-
-  // Attach file-level comments as leading on the Module node
-  var fi: i32 = 0;
-  while (fi < fileLevelEnd) {
-    map.addLeading(module, comments[fi]);
-    fi += 1;
-  }
-
-  // Build the remaining comments array (skip file-level ones)
-  let remaining = new Array<Comment>(comments.length - fileLevelEnd);
-  var ri: i32 = fileLevelEnd;
-  while (ri < comments.length) {
-    remaining.push(comments[ri]);
-    ri += 1;
-  }
-
-  // Attach remaining comments to nodes in the body
-  attachToNodeList(remaining, nodes, source, map);
-
-  return map;
+let getChildBody = (node: Node): Array<Node> | null => match (node) {
+  case BlockStatement {body}: statementsToNodes(body)
+  case ClassDeclaration {body}: body
+  case InterfaceDeclaration {body}: body
+  case MixinDeclaration {body}: body
+  case EnumDeclaration {members}: enumMembersToNodes(members)
+  case _: null
 };
 
 /**
@@ -292,12 +242,74 @@ let attachToNodeList = (
 };
 
 /**
- * Extract the child body (Array<Node>) from nodes that contain bodies.
+ * Attach all comments from the module to their nearest AST nodes.
+ * Returns a CommentMap keyed by Node reference.
  */
-let getChildBody = (node: Node): Array<Node> | null => match (node) {
-  case BlockStatement {body}: statementsToNodes(body)
-  case ClassDeclaration {body}: body
-  case InterfaceDeclaration {body}: body
-  case MixinDeclaration {body}: body
-  case _: null
+export let attachComments = (module: Module): CommentMap => {
+  let map = new CommentMap();
+  let comments = module.comments;
+  if (comments.length == 0) {
+    return map;
+  }
+  let source = module.source;
+  let nodes = statementsToNodes(module.body);
+
+  // Empty module: all comments are file-level (leading on Module)
+  if (nodes.length == 0) {
+    var ei: i32 = 0;
+    while (ei < comments.length) {
+      map.addLeading(module, comments[ei]);
+      ei += 1;
+    }
+    return map;
+  }
+
+  // Comments at the top of the file separated from the first declaration
+  // (or the next comment group) by a blank line are file-level: leading on Module.
+  let firstNodeStart = getNodeStart(nodes[0]);
+
+  // Collect comments that appear before the first statement
+  var prefixEnd: i32 = 0;
+  while (prefixEnd < comments.length && comments[prefixEnd].start < firstNodeStart) {
+    prefixEnd += 1;
+  }
+
+  // Find the split point: the last comment before a blank line gap
+  var fileLevelEnd: i32 = 0;
+  if (prefixEnd > 0) {
+    var ci: i32 = 0;
+    while (ci < prefixEnd) {
+      let commentEnd = comments[ci].end;
+      // What comes after this comment?
+      let nextStart = if (ci + 1 < prefixEnd) {
+        comments[ci + 1].start;
+      } else {
+        firstNodeStart;
+      };
+      if (hasBlankLineBetween(source, commentEnd, nextStart)) {
+        fileLevelEnd = ci + 1;
+      }
+      ci += 1;
+    }
+  }
+
+  // Attach file-level comments as leading on the Module node
+  var fi: i32 = 0;
+  while (fi < fileLevelEnd) {
+    map.addLeading(module, comments[fi]);
+    fi += 1;
+  }
+
+  // Build the remaining comments array (skip file-level ones)
+  let remaining = new Array<Comment>(comments.length - fileLevelEnd);
+  var ri: i32 = fileLevelEnd;
+  while (ri < comments.length) {
+    remaining.push(comments[ri]);
+    ri += 1;
+  }
+
+  // Attach remaining comments to nodes in the body
+  attachToNodeList(remaining, nodes, source, map);
+
+  return map;
 };

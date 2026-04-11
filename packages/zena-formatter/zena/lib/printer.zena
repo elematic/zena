@@ -535,11 +535,14 @@ let printCaseClassParam = (param: CaseClassParam): Doc => {
   return concat(parts);
 };
 
-let printClassMember = (member: Node): Doc => match (member) {
-  case FieldDefinition {}: printFieldDefinition(member as FieldDefinition)
-  case MethodDefinition {}: printMethodDefinition(member as MethodDefinition)
-  case AccessorDeclaration {}: printAccessorDeclaration(member as AccessorDeclaration)
-  case _: text('/* unknown member */')
+let printClassMember = (member: Node): Doc => {
+  let doc = match (member) {
+    case FieldDefinition {}: printFieldDefinition(member as FieldDefinition)
+    case MethodDefinition {}: printMethodDefinition(member as MethodDefinition)
+    case AccessorDeclaration {}: printAccessorDeclaration(member as AccessorDeclaration)
+    case _: text('/* unknown member */')
+  };
+  return withComments(member, doc);
 };
 
 let printFieldDefinition = (field: FieldDefinition): Doc => {
@@ -709,40 +712,43 @@ let printInterfaceDeclaration = (decl: InterfaceDeclaration): Doc => {
   return concat(parts);
 };
 
-let printInterfaceMember = (member: Node): Doc => match (member) {
-  case MethodSignature {name, typeParameters, params, returnType}: {
-    let parts = new Array<Doc>();
-    parts.push(text(name.name));
-    if (typeParameters != null) {
-      parts.push(printTypeParams(typeParameters as Array<TypeParameter>));
+let printInterfaceMember = (member: Node): Doc => {
+  let doc = match (member) {
+    case MethodSignature {name, typeParameters, params, returnType}: {
+      let parts = new Array<Doc>();
+      parts.push(text(name.name));
+      if (typeParameters != null) {
+        parts.push(printTypeParams(typeParameters as Array<TypeParameter>));
+      }
+      parts.push(text('('));
+      parts.push(printParams(params));
+      parts.push(text(')'));
+      if (returnType != null) {
+        parts.push(text(': '));
+        parts.push(printTypeAnnotation(returnType as TypeAnnotation));
+      }
+      parts.push(text(';'));
+      concat(parts)
     }
-    parts.push(text('('));
-    parts.push(printParams(params));
-    parts.push(text(')'));
-    if (returnType != null) {
+    case AccessorSignature {name, typeAnnotation}: {
+      let parts = new Array<Doc>();
+      parts.push(text(name.name));
       parts.push(text(': '));
-      parts.push(printTypeAnnotation(returnType as TypeAnnotation));
+      parts.push(printTypeAnnotation(typeAnnotation));
+      parts.push(text(';'));
+      concat(parts)
     }
-    parts.push(text(';'));
-    concat(parts)
-  }
-  case AccessorSignature {name, typeAnnotation}: {
-    let parts = new Array<Doc>();
-    parts.push(text(name.name));
-    parts.push(text(': '));
-    parts.push(printTypeAnnotation(typeAnnotation));
-    parts.push(text(';'));
-    concat(parts)
-  }
-  case PropertySignature {name, typeAnnotation}: {
-    let parts = new Array<Doc>();
-    parts.push(text(name.name));
-    parts.push(text(': '));
-    parts.push(printTypeAnnotation(typeAnnotation));
-    parts.push(text(';'));
-    concat(parts)
-  }
-  case _: text('/* unknown interface member */')
+    case PropertySignature {name, typeAnnotation}: {
+      let parts = new Array<Doc>();
+      parts.push(text(name.name));
+      parts.push(text(': '));
+      parts.push(printTypeAnnotation(typeAnnotation));
+      parts.push(text(';'));
+      concat(parts)
+    }
+    case _: text('/* unknown interface member */')
+  };
+  return withComments(member, doc);
 };
 
 // ============================================================================
@@ -759,11 +765,12 @@ let printEnumDeclaration = (decl: EnumDeclaration): Doc => {
   var i = 0;
   while (i < decl.members.length) {
     let m = decl.members[i];
-    if (m.initializer != null) {
-      memberDocs.push(concat(docs3(text(m.name.name), text(' = '), printExpression(m.initializer as Expression))));
+    let memberDoc = if (m.initializer != null) {
+      concat(docs3(text(m.name.name), text(' = '), printExpression(m.initializer as Expression)));
     } else {
-      memberDocs.push(text(m.name.name));
-    }
+      text(m.name.name);
+    };
+    memberDocs.push(withComments(m, memberDoc));
     i += 1;
   }
   parts.push(indent(concat(docs2(hardline, join(concat(docs2(text(','), hardline)), memberDocs)))));
