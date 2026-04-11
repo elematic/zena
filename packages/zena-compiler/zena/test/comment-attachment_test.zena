@@ -17,6 +17,9 @@ import {
   ClassDeclaration,
   InterfaceDeclaration,
   EnumDeclaration,
+  MixinDeclaration,
+  BlockStatement,
+  FunctionExpression,
   FieldDefinition,
   MethodDefinition,
   MethodSignature
@@ -236,6 +239,96 @@ export let tests = suite('comment-attachment', () => {
       let comments = inner as Array<Comment>;
       equal(comments.length, 1);
       equal(comments[0].value, ' TODO: add members');
+    });
+
+    test('comment in empty interface body', (t: TestContext) => {
+      let source = "interface Foo {\n  // TODO\n}";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let iface = mod.body[0] as InterfaceDeclaration;
+      let inner = map.getInner(iface);
+
+      isTrue(inner != null);
+      let comments = inner as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' TODO');
+    });
+
+    test('comment in empty enum body', (t: TestContext) => {
+      let source = "enum Color {\n  // TODO\n}";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as EnumDeclaration;
+      let inner = map.getInner(decl);
+
+      isTrue(inner != null);
+      let comments = inner as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' TODO');
+    });
+
+    test('comment in empty mixin body', (t: TestContext) => {
+      let source = "mixin Foo {\n  // TODO\n}";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as MixinDeclaration;
+      let inner = map.getInner(decl);
+
+      isTrue(inner != null);
+      let comments = inner as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' TODO');
+    });
+
+    test('comment in empty block inside function', (t: TestContext) => {
+      let source = "let f = () => {\n  // todo\n};";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as VariableDeclaration;
+      let func = decl.init as FunctionExpression;
+      let block = func.body as BlockStatement;
+      let inner = map.getInner(block);
+
+      isTrue(inner != null);
+      let comments = inner as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' todo');
+    });
+
+    test('multiple inner comments in empty block', (t: TestContext) => {
+      let source = "let f = () => {\n  // first\n  // second\n};";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as VariableDeclaration;
+      let func = decl.init as FunctionExpression;
+      let block = func.body as BlockStatement;
+      let inner = map.getInner(block);
+
+      isTrue(inner != null);
+      let comments = inner as Array<Comment>;
+      equal(comments.length, 2);
+      equal(comments[0].value, ' first');
+      equal(comments[1].value, ' second');
+    });
+
+    test('block comment in empty class body', (t: TestContext) => {
+      let source = "class Foo {\n  /* placeholder */\n}";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let cls = mod.body[0] as ClassDeclaration;
+      let inner = map.getInner(cls);
+
+      isTrue(inner != null);
+      let comments = inner as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].isBlock, true);
+      equal(comments[0].value, ' placeholder ');
     });
   });
 

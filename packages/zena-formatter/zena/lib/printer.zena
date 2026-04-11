@@ -135,6 +135,34 @@ let withComments = (node: Node, doc: Doc): Doc => {
   return concat(parts);
 };
 
+/**
+ * Print braces with inner comments for an empty body.
+ * Returns `{ <comment> }` if the node has inner comments, otherwise `{}`.
+ * The `spaceBeforeOpen` flag prepends a space (for `class Foo {}` vs `{}`).
+ */
+let printEmptyBody = (node: Node, spaceBeforeOpen: boolean): Doc => {
+  let inner = currentCommentMap.getInner(node);
+  if (inner == null) {
+    if (spaceBeforeOpen) { return text(' {}'); }
+    return text('{}');
+  }
+  let arr = inner as Array<Comment>;
+  let commentDocs = new Array<Doc>();
+  var i: i32 = 0;
+  while (i < arr.length) {
+    commentDocs.push(printComment(arr[i]));
+    if (i < arr.length - 1) { commentDocs.push(hardline); }
+    i += 1;
+  }
+  let parts = new Array<Doc>();
+  if (spaceBeforeOpen) { parts.push(text(' ')); }
+  parts.push(text('{'));
+  parts.push(indent(concat(docs2(hardline, concat(commentDocs)))));
+  parts.push(hardline);
+  parts.push(text('}'));
+  return concat(parts);
+};
+
 // ============================================================================
 // Main entry point
 // ============================================================================
@@ -311,7 +339,7 @@ let printReturnStatement = (stmt: ReturnStatement): Doc => {
 // ============================================================================
 
 let printBlockStatement = (block: BlockStatement): Doc => {
-  if (block.body.length == 0) { return text('{}'); }
+  if (block.body.length == 0) { return printEmptyBody(block, false); }
   let stmts = new Array<Doc>();
   var i = 0;
   while (i < block.body.length) {
@@ -470,7 +498,7 @@ let printClassDeclaration = (decl: ClassDeclaration): Doc => {
     if (decl.caseParams != null) {
       // Concise case class — no braces
     } else {
-      parts.push(text(' {}'));
+      parts.push(printEmptyBody(decl, true));
     }
   } else {
     parts.push(text(' '));
@@ -696,7 +724,7 @@ let printInterfaceDeclaration = (decl: InterfaceDeclaration): Doc => {
     }
   }
   if (decl.body.length == 0) {
-    parts.push(text(' {}'));
+    parts.push(printEmptyBody(decl, true));
   } else {
     parts.push(text(' {'));
     let memberDocs = new Array<Doc>();
@@ -760,6 +788,10 @@ let printEnumDeclaration = (decl: EnumDeclaration): Doc => {
   if (decl.exported) { parts.push(text('export ')); }
   parts.push(text('enum '));
   parts.push(text(decl.name.name));
+  if (decl.members.length == 0) {
+    parts.push(printEmptyBody(decl, true));
+    return concat(parts);
+  }
   parts.push(text(' {'));
   let memberDocs = new Array<Doc>();
   var i = 0;
@@ -796,7 +828,7 @@ let printMixinDeclaration = (decl: MixinDeclaration): Doc => {
     parts.push(text((decl.on as Identifier).name));
   }
   if (decl.body.length == 0) {
-    parts.push(text(' {}'));
+    parts.push(printEmptyBody(decl, true));
   } else {
     parts.push(text(' {'));
     let memberDocs = new Array<Doc>();

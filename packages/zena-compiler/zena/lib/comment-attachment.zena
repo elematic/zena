@@ -21,7 +21,8 @@ import {
   Comment, SourceLocation, Node, Module,
   Statement, Expression,
   BlockStatement, ClassDeclaration, InterfaceDeclaration,
-  MixinDeclaration, EnumDeclaration, EnumMember
+  MixinDeclaration, EnumDeclaration, EnumMember,
+  VariableDeclaration, FunctionExpression
 } from './ast.zena';
 
 /**
@@ -156,7 +157,19 @@ let enumMembersToNodes = (members: Array<EnumMember>): Array<Node> => {
 };
 
 /**
+ * Wrap a single node as a one-element Array<Node>.
+ */
+let singleNode = (node: Node): Array<Node> => {
+  let arr = new Array<Node>();
+  arr.push(node);
+  return arr;
+};
+
+/**
  * Extract the child body (Array<Node>) from nodes that contain bodies.
+ * Also handles variable declarations and function expressions so that
+ * comments inside nested blocks (e.g. `let f = () => { ... };`)
+ * are correctly attached.
  */
 let getChildBody = (node: Node): Array<Node> | null => match (node) {
   case BlockStatement {body}: statementsToNodes(body)
@@ -164,6 +177,8 @@ let getChildBody = (node: Node): Array<Node> | null => match (node) {
   case InterfaceDeclaration {body}: body
   case MixinDeclaration {body}: body
   case EnumDeclaration {members}: enumMembersToNodes(members)
+  case VariableDeclaration {init}: singleNode(init as Node)
+  case FunctionExpression {body}: singleNode(body)
   case _: null
 };
 
