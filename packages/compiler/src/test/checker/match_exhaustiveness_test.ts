@@ -270,4 +270,46 @@ suite('TypeChecker - Match Exhaustiveness', () => {
       assert.match(errors[0].message, /Non-exhaustive match/);
     },
   );
+
+  test('should pass for class pattern match on X | null with wildcard', () => {
+    const input = `
+      class Box { x: i32; new(x: i32) : x = x {} }
+      let unwrap = (b: Box | null): i32 => match (b) {
+        case Box {x}: x
+        case _: 0
+      };
+    `;
+    const errors = check(input);
+    assert.strictEqual(errors.length, 0);
+  });
+
+  test('should pass for sealed variant match on sealed | null with wildcard', () => {
+    const input = `
+      sealed class Shape {
+        case Circle(radius: f64)
+        case Rect(w: f64, h: f64)
+      }
+      let describe = (s: Shape | null): i32 => match (s) {
+        case Circle {}: 1
+        case Rect {}: 2
+        case _: 0
+      };
+    `;
+    const errors = check(input);
+    assert.strictEqual(errors.length, 0);
+  });
+
+  test('should pass for class pattern match on X | Y | null with wildcard', () => {
+    const input = `
+      class A { x: i32; new(x: i32) : x = x {} }
+      class B { y: i32; new(y: i32) : y = y {} }
+      let process = (obj: A | B | null): i32 => match (obj) {
+        case A {x}: x
+        case B {y}: y
+        case _: 0
+      };
+    `;
+    const errors = check(input);
+    assert.strictEqual(errors.length, 0);
+  });
 });

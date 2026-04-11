@@ -11410,7 +11410,7 @@ function generateMatchPatternCheck(
             Opcode.local_get,
             ...WasmModule.encodeSignedLEB128(discriminantLocal),
           );
-          body.push(0xfb, GcOpcode.ref_test_null);
+          body.push(0xfb, GcOpcode.ref_test);
           body.push(
             ...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex),
           );
@@ -11596,7 +11596,7 @@ function generateMatchPatternCheck(
         Opcode.local_get,
         ...WasmModule.encodeSignedLEB128(discriminantLocal),
       );
-      body.push(0xfb, GcOpcode.ref_test_null);
+      body.push(0xfb, GcOpcode.ref_test);
       body.push(...WasmModule.encodeSignedLEB128(classInfo.structTypeIndex));
 
       // 2. Check properties

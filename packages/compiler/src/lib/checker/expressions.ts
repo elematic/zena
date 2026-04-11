@@ -538,6 +538,25 @@ function checkBlockExpressionType(
   return resultType;
 }
 
+/**
+ * Extract the class type from a type that may be a union (e.g., `Type | null`).
+ * Returns the ClassType member if found, otherwise null.
+ */
+function extractClassType(type: Type): ClassType | null {
+  if (type.kind === TypeKind.Class) {
+    return type as ClassType;
+  }
+  if (type.kind === TypeKind.Union) {
+    const ut = type as UnionType;
+    for (const t of ut.types) {
+      if (t.kind === TypeKind.Class) {
+        return t as ClassType;
+      }
+    }
+  }
+  return null;
+}
+
 export function checkMatchPattern(
   ctx: CheckerContext,
   pattern:
@@ -556,12 +575,11 @@ export function checkMatchPattern(
       if (pattern.name !== '_') {
         // Check if identifier refers to a sealed variant (unit variant pattern)
         const resolvedType = ctx.resolveType(pattern.name);
-        if (
-          resolvedType &&
-          resolvedType.kind === TypeKind.Class &&
-          discriminantType.kind === TypeKind.Class
-        ) {
-          const discClass = discriminantType as ClassType;
+        const discClass =
+          resolvedType?.kind === TypeKind.Class
+            ? extractClassType(discriminantType)
+            : null;
+        if (resolvedType && resolvedType.kind === TypeKind.Class && discClass) {
           const discSource = discClass.genericSource || discClass;
           if (
             discSource.isSealed &&
@@ -698,12 +716,13 @@ export function checkMatchPattern(
       // For generic sealed variant matching: if the pattern class is a generic
       // variant (e.g., Ok<T>) and the discriminant is an instantiated sealed class
       // (e.g., Result<i32>), instantiate the variant's type parameters.
+      const extractedDiscClass = extractClassType(discriminantType);
       if (
         classType.typeParameters &&
         classType.typeParameters.length > 0 &&
-        discriminantType.kind === TypeKind.Class
+        extractedDiscClass
       ) {
-        const discClass = discriminantType as ClassType;
+        const discClass = extractedDiscClass;
         const sealedSource = discClass.genericSource || discClass;
         if (
           sealedSource.isSealed &&
@@ -4311,8 +4330,13 @@ function subtractType(
   // But check if this is a sealed variant pattern first
   if (pattern.type === NodeType.Identifier) {
     if ((pattern as any).inferredType) {
-      // This is a sealed variant pattern - treat like a class pattern
+      // This is a sealed variant pattern - treat like a class pattern.
+      // It only matches class instances, never null.
       const patType = (pattern as any).inferredType as Type;
+
+      if (type.kind === TypeKind.Null) {
+        return type;
+      }
 
       if (patType && isAssignableTo(ctx, type, patType)) {
         return Types.Never;
