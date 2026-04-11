@@ -1667,6 +1667,14 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
 
   let funcType = calleeType as FunctionType;
 
+  // Placeholder types from forward-reference pre-declaration have no real
+  // param/return types. Accept the call (the main pass will re-check) and
+  // use the placeholder's return type (Void) so codegen handles it correctly.
+  if (funcType.isPlaceholder) {
+    expr.inferredType = funcType.returnType;
+    return funcType.returnType;
+  }
+
   // Overload resolution
   if (funcType.overloads && funcType.overloads.length > 0) {
     const candidates = [funcType, ...funcType.overloads];

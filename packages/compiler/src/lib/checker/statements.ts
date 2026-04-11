@@ -744,59 +744,80 @@ export function predeclareFunction(
     return false;
   }
 
-  // We need explicit type annotations on all parameters and return type
-  // to pre-declare the function type
-  if (!funcExpr.returnType) {
-    return false;
-  }
-
-  for (const param of funcExpr.params) {
-    if (!param.typeAnnotation) {
-      return false;
+  // Check if fully annotated (all params + return type).
+  // Only fully-annotated functions get an exact pre-declared type.
+  let fullyAnnotated = !!funcExpr.returnType;
+  if (fullyAnnotated) {
+    for (const param of funcExpr.params) {
+      if (!param.typeAnnotation) {
+        fullyAnnotated = false;
+        break;
+      }
     }
   }
 
-  // Enter a temporary scope for type parameters
-  ctx.enterScope();
+  if (fullyAnnotated) {
+    // Fully annotated: build the exact function type from annotations
+    ctx.enterScope();
+    const typeParameters = createTypeParameters(ctx, funcExpr.typeParameters);
 
-  // Build the function type from annotations
-  // Use createTypeParameters to properly handle constraints
-  const typeParameters = createTypeParameters(ctx, funcExpr.typeParameters);
+    const paramTypes: Type[] = [];
+    const parameterNames: string[] = [];
+    const optionalParameters: boolean[] = [];
+    const parameterInitializers: (Expression | undefined)[] = [];
 
-  // Now imports have been processed, so all types should be resolvable
-  const paramTypes: Type[] = [];
-  const parameterNames: string[] = [];
-  const optionalParameters: boolean[] = [];
-  const parameterInitializers: (Expression | undefined)[] = [];
+    for (const param of funcExpr.params) {
+      const type = resolveTypeAnnotation(ctx, param.typeAnnotation!);
+      paramTypes.push(type);
+      parameterNames.push(param.name.name);
+      optionalParameters.push(param.optional);
+      parameterInitializers.push(param.initializer);
+    }
 
-  for (const param of funcExpr.params) {
-    const type = resolveTypeAnnotation(ctx, param.typeAnnotation!);
-    paramTypes.push(type);
-    parameterNames.push(param.name.name);
-    optionalParameters.push(param.optional);
-    parameterInitializers.push(param.initializer);
+    const returnType = resolveTypeAnnotation(ctx, funcExpr.returnType!);
+
+    ctx.exitScope();
+
+    const funcType: FunctionType = {
+      kind: TypeKind.Function,
+      typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
+      parameters: paramTypes,
+      parameterNames,
+      returnType,
+      optionalParameters,
+      parameterInitializers,
+    };
+
+    ctx.declare(funcName, funcType, decl.kind, decl);
+    (decl as any).isPredeclared = true;
+  } else {
+    // All params annotated but no return type: pre-declare with a placeholder
+    // function type so the name is callable for forward/self references.
+    // We use Unknown params and Void return to avoid resolving annotations
+    // (which could produce side-effect diagnostics). The main pass will
+    // update with the real type.
+    const paramTypes: Type[] = funcExpr.params.map(() => Types.Unknown);
+    const parameterNames: string[] = funcExpr.params.map((p) => p.name.name);
+    const optionalParameters: boolean[] = funcExpr.params.map(
+      (p) => p.optional,
+    );
+    const parameterInitializers: (Expression | undefined)[] =
+      funcExpr.params.map((p) => p.initializer);
+
+    const funcType: FunctionType = {
+      kind: TypeKind.Function,
+      parameters: paramTypes,
+      parameterNames,
+      returnType: Types.Void,
+      optionalParameters,
+      parameterInitializers,
+      isPlaceholder: true,
+    };
+
+    ctx.declare(funcName, funcType, decl.kind, decl);
+    (decl as any).isPredeclared = true;
+    (decl as any).needsTypeUpdate = true;
   }
-
-  const returnType = resolveTypeAnnotation(ctx, funcExpr.returnType);
-
-  // Exit the temporary scope (removes type parameters)
-  ctx.exitScope();
-
-  const funcType: FunctionType = {
-    kind: TypeKind.Function,
-    typeParameters: typeParameters.length > 0 ? typeParameters : undefined,
-    parameters: paramTypes,
-    parameterNames,
-    returnType,
-    optionalParameters,
-    parameterInitializers,
-  };
-
-  // Pre-declare the function
-  ctx.declare(funcName, funcType, decl.kind, decl);
-
-  // Mark as pre-declared so checkVariableDeclaration knows to update, not error
-  (decl as any).isPredeclared = true;
 
   return true;
 }
@@ -2127,6 +2148,15 @@ function checkVariableDeclaration(
     // If this function was pre-declared (for mutual recursion), don't re-declare it
     if (!(decl as any).isPredeclared) {
       ctx.declare(decl.pattern.name, type, decl.kind, decl);
+    } else if ((decl as any).needsTypeUpdate) {
+      // Return type was inferred during pre-declaration — update the scope entry
+      const existing = ctx.resolveValueLocal(decl.pattern.name);
+      if (existing) {
+        const info = ctx.resolveValueInfo(decl.pattern.name);
+        if (info) {
+          info.type = type;
+        }
+      }
     }
 
     if (decl.exported && ctx.module) {

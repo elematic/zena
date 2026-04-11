@@ -1590,6 +1590,9 @@ export function typeToString(type: Type): string {
     }
     case TypeKind.Function: {
       const fn = type as FunctionType;
+      if (fn.isPlaceholder) {
+        return `<placeholder function>`;
+      }
       const params = fn.parameters.map((p) => typeToString(p)).join(', ');
       return `(${params}) => ${typeToString(fn.returnType)}`;
     }

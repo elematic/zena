@@ -129,6 +129,14 @@ export interface FunctionType extends Type {
   overloads?: FunctionType[];
   optionalParameters?: boolean[];
   parameterInitializers?: any[]; // Expression[]
+  /**
+   * True when this is a placeholder for forward-reference pre-declaration.
+   * Param/return types are not resolved — do not use for type checking.
+   *
+   * TODO: We should encode placeholders in a separate type to avoid
+   * accidentally using them for type checking.
+   */
+  isPlaceholder?: boolean;
 }
 
 export interface InterfaceType extends Type {
