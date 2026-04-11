@@ -32,6 +32,17 @@ The extension is automatically activated for files with the `.zena` extension.
 4. Run "Extensions: Install from VSIX..."
 5. Select the downloaded file
 
+### Development
+
+1. Open the `zena-2` monorepo root in VS Code
+2. Press **F5** (or **Run → Start Debugging**) and select **"Run Zena Extension"**
+3. This will build the extension via Wireit and launch a new VS Code window
+   (Extension Development Host) with the extension loaded
+4. Open any `.zena` file in the new window to activate the extension
+5. Changes to `packages/vscode-zena/src/` are rebuilt automatically by the
+   watch task — reload the Extension Development Host (`Ctrl+R` / `Cmd+R`)
+   to pick them up
+
 ### From Source
 
 1. Clone this repository
