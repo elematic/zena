@@ -22,7 +22,11 @@ import {
   Statement, Expression,
   BlockStatement, ClassDeclaration, InterfaceDeclaration,
   MixinDeclaration, EnumDeclaration, EnumMember,
-  VariableDeclaration, FunctionExpression
+  VariableDeclaration, FunctionExpression,
+  BinaryExpression, UnaryExpression, AssignmentExpression,
+  CallExpression, MemberExpression, IndexExpression,
+  NewExpression, ArrayLiteral, IfExpression, MatchExpression,
+  AsExpression, IsExpression, SpreadElement
 } from './ast.zena';
 
 /**
@@ -165,6 +169,25 @@ let singleNode = (node: Node): Array<Node> => {
   return arr;
 };
 
+/** Convert Array<Expression> to Array<Node>. */
+let expressionsToNodes = (exprs: Array<Expression>): Array<Node> => {
+  let result = new Array<Node>(exprs.length);
+  var i: i32 = 0;
+  while (i < exprs.length) {
+    result.push(exprs[i]);
+    i += 1;
+  }
+  return result;
+};
+
+/** Build a two-element Array<Node>. */
+let twoNodes = (a: Node, b: Node): Array<Node> => {
+  let arr = new Array<Node>(2);
+  arr.push(a);
+  arr.push(b);
+  return arr;
+};
+
 /**
  * Extract the child body (Array<Node>) from nodes that contain bodies.
  * Also handles variable declarations and function expressions so that
@@ -179,6 +202,43 @@ let getChildBody = (node: Node): Array<Node> | null => match (node) {
   case EnumDeclaration {members}: enumMembersToNodes(members)
   case VariableDeclaration {init}: singleNode(init as Node)
   case FunctionExpression {body}: singleNode(body)
+  case BinaryExpression {left, right}: twoNodes(left, right)
+  case AssignmentExpression {left, value}: twoNodes(left, value)
+  case UnaryExpression {argument}: singleNode(argument)
+  case CallExpression {callee, args}: {
+    let result = new Array<Node>(args.length + 1);
+    result.push(callee);
+    var i: i32 = 0;
+    while (i < args.length) {
+      result.push(args[i]);
+      i += 1;
+    }
+    result
+  }
+  case NewExpression {callee, args}: {
+    let result = new Array<Node>(args.length + 1);
+    result.push(callee);
+    var i: i32 = 0;
+    while (i < args.length) {
+      result.push(args[i]);
+      i += 1;
+    }
+    result
+  }
+  case MemberExpression {object}: singleNode(object)
+  case IndexExpression {object, index}: twoNodes(object, index)
+  case ArrayLiteral {elements}: expressionsToNodes(elements)
+  case IfExpression {test, consequent, alternate}: {
+    let result = new Array<Node>(3);
+    result.push(test);
+    result.push(consequent);
+    result.push(alternate);
+    result
+  }
+  case MatchExpression {discriminant}: singleNode(discriminant)
+  case AsExpression {expression}: singleNode(expression)
+  case IsExpression {expression}: singleNode(expression)
+  case SpreadElement {argument}: singleNode(argument)
   case _: null
 };
 

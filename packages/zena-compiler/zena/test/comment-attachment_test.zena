@@ -22,7 +22,12 @@ import {
   FunctionExpression,
   FieldDefinition,
   MethodDefinition,
-  MethodSignature
+  MethodSignature,
+  BinaryExpression,
+  CallExpression,
+  MemberExpression,
+  ArrayLiteral,
+  NumberLiteral
 } from '../lib/ast.zena';
 import { CommentMap, attachComments } from '../lib/comment-attachment.zena';
 
@@ -437,5 +442,87 @@ export let tests = suite('comment-attachment', () => {
 
       equal(trailing, null);
     });
+  });
+
+  suite('Expression-level comments', () => {
+    test('comment between binary operands attaches to right operand', (t: TestContext) => {
+      let source = 'let x = 1 +\n  // the second\n  2;';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as VariableDeclaration;
+      let binary = decl.init as BinaryExpression;
+      let right = binary.right as NumberLiteral;
+      let leading = map.getLeading(right);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' the second');
+    });
+
+    test('trailing comment on binary expression', (t: TestContext) => {
+      let source = 'let x = 1 + 2; // sum';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      // Trailing comment on the statement
+      let decl = mod.body[0] as VariableDeclaration;
+      let trailing = map.getTrailing(decl);
+
+      isTrue(trailing != null);
+      let comments = trailing as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' sum');
+    });
+
+    test('comment before call argument attaches to argument', (t: TestContext) => {
+      let source = 'let x = foo(\n  // first arg\n  1,\n  2\n);';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as VariableDeclaration;
+      let call = decl.init as CallExpression;
+      let firstArg = call.args[0] as NumberLiteral;
+      let leading = map.getLeading(firstArg);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' first arg');
+    });
+
+    test('comment between call arguments', (t: TestContext) => {
+      let source = 'let x = foo(\n  1,\n  // second arg\n  2\n);';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as VariableDeclaration;
+      let call = decl.init as CallExpression;
+      let secondArg = call.args[1] as NumberLiteral;
+      let leading = map.getLeading(secondArg);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' second arg');
+    });
+
+    test('comment before array element', (t: TestContext) => {
+      let source = 'let x = [\n  // first\n  1,\n  2\n];';
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let decl = mod.body[0] as VariableDeclaration;
+      let arr = decl.init as ArrayLiteral;
+      let firstElem = arr.elements[0] as NumberLiteral;
+      let leading = map.getLeading(firstElem);
+
+      isTrue(leading != null);
+      let comments = leading as Array<Comment>;
+      equal(comments.length, 1);
+      equal(comments[0].value, ' first');
+    });
+
   });
 });
