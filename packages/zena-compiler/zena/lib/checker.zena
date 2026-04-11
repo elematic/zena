@@ -48,7 +48,7 @@ import {
   // Helpers
   TypeParameter, Parameter, FieldDefinition, MethodDefinition,
   AccessorDeclaration, MatchCase, PropertyAssignment, SpreadElement,
-  LetPatternCondition, BindingProperty, PropertySignature,
+  LetPatternCondition, BindingProperty, PropertySignature, CatchClause,
   CaseClassParam, FieldInitializer, SuperInitializer,
   MethodSignature, AccessorSignature, SetterInfo, SealedVariant
 } from './ast.zena';
@@ -410,16 +410,28 @@ let registerStandardPrelude = (ctx: CheckerContext): void => {
 
   // FixedArray<T> - fixed-size array
   let fixedArrayType = new ClassType(ctx.freshTypeId(), "FixedArray");
+  let fixedArrayTParam = new TypeParameterType("T", null, null);
+  let fixedArrayTParams = new Array<TypeParameterType>();
+  fixedArrayTParams.push(fixedArrayTParam);
+  fixedArrayType.typeParameters = fixedArrayTParams;
   ctx.registerPreludeType("FixedArray", fixedArrayType);
   ctx.registerPreludeValue("FixedArray", fixedArrayType);
 
   // Array<T> - growable array
   let arrayType = new ClassType(ctx.freshTypeId(), "Array");
+  let arrayTParam = new TypeParameterType("T", null, null);
+  let arrayTParams = new Array<TypeParameterType>();
+  arrayTParams.push(arrayTParam);
+  arrayType.typeParameters = arrayTParams;
   ctx.registerPreludeType("Array", arrayType);
   ctx.registerPreludeValue("Array", arrayType);
 
   // ImmutableArray<T> - immutable array with read-only indexer
   let immArrayType = new ClassType(ctx.freshTypeId(), "ImmutableArray");
+  let immArrayTParam = new TypeParameterType("T", null, null);
+  let immArrayTParams = new Array<TypeParameterType>();
+  immArrayTParams.push(immArrayTParam);
+  immArrayType.typeParameters = immArrayTParams;
   // Add read-only indexer ([] but no []=)
   let iaIndexerParams = new Array<Type>();
   iaIndexerParams.push(new I32Type());
@@ -599,7 +611,24 @@ let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation): Type => 
       );
       return new UnknownType();
     }
-    // TODO: Handle generic type arguments.
+    // Handle generic type arguments: Array<i32> → instantiate Array with [i32].
+    if (typeArguments != null) {
+      let typeArgs = typeArguments as Array<TypeAnnotation>;
+      if (typeArgs.length > 0) {
+        let resolvedArgs = new Array<Type>();
+        var tai = 0;
+        while (tai < typeArgs.length) {
+          resolvedArgs.push(resolveTypeAnnotation(ctx, typeArgs[tai]));
+          tai += 1;
+        }
+        match (resolved as Type) {
+          case ClassType as ct: {
+            return instantiateClassType(ct, resolvedArgs);
+          }
+          case _: {}
+        }
+      }
+    }
     resolved as Type
   }
   case UnionTypeAnnotation {types}: {
@@ -705,6 +734,118 @@ let createUnionType = (types: Array<Type>): Type => {
   if (deduped.length == 0) { return new NeverType(); }
   if (deduped.length == 1) { return deduped[0]; }
   return new UnionT(deduped);
+};
+
+/**
+ * Extract the element type from an iterable type for for-in loops.
+ * Handles Array<T>, FixedArray<T>, and Sequence<T> (by name + type arguments).
+ * Reports an error if the type is not iterable.
+ */
+let getElementType = (
+  ctx: CheckerContext,
+  iterableType: Type,
+  iterableExpr: Expression
+): Type => {
+  match (iterableType) {
+    case ArrayType {elementType}: {
+      return elementType;
+    }
+    case ClassType as ct: {
+      return getElementTypeFromClass(ctx, ct, iterableExpr);
+    }
+    case InterfaceType as it: {
+      let elemType = getSequenceElementType(it);
+      if (elemType != null) {
+        return elemType as Type;
+      }
+      ctx.error(
+        "Type '" + it.name + "' is not iterable.",
+        DiagnosticCode.TypeMismatch,
+        iterableExpr.loc
+      );
+      return new UnknownType();
+    }
+    case UnknownType: {
+      return new UnknownType();
+    }
+    case _: {
+      ctx.error(
+        "Type is not iterable.",
+        DiagnosticCode.TypeMismatch,
+        iterableExpr.loc
+      );
+      return new UnknownType();
+    }
+  }
+  return new UnknownType();
+};
+
+let getElementTypeFromClass = (
+  ctx: CheckerContext,
+  ct: ClassType,
+  iterableExpr: Expression
+): Type => {
+  let name = ct.name;
+  if (name == "Array" || name == "FixedArray" || name == "ImmutableArray") {
+    if (ct.typeArguments != null) {
+      let args = ct.typeArguments as Array<Type>;
+      if (args.length > 0) {
+        return args[0];
+      }
+    }
+    return new UnknownType();
+  }
+  // Check if the class implements Sequence<T> (walk implementsList).
+  var i = 0;
+  while (i < ct.implementsList.length) {
+    let iface = ct.implementsList[i];
+    let elemType = getSequenceElementType(iface);
+    if (elemType != null) {
+      let result = elemType as Type;
+      return substituteTypeParams(ct.typeParameters, ct.typeArguments, result);
+    }
+    i += 1;
+  }
+  // Walk superclass chain.
+  if (ct.superType != null) {
+    return getElementType(ctx, ct.superType as Type, iterableExpr);
+  }
+  ctx.error(
+    "Type '" + ct.name + "' is not iterable.",
+    DiagnosticCode.TypeMismatch,
+    iterableExpr.loc
+  );
+  return new UnknownType();
+};
+
+/**
+ * Check if an interface type is Sequence<T> or extends Sequence<T>.
+ * Returns the element type T if found, null otherwise.
+ */
+let getSequenceElementType = (iface: InterfaceType): Type | null => {
+  let name = iface.name;
+  let sourceName = if (iface.genericSource != null) {
+    (iface.genericSource as InterfaceType).name
+  } else {
+    name
+  };
+  if (sourceName == "Sequence" || sourceName == "MutableSequence" || sourceName == "Iterable") {
+    if (iface.typeArguments != null) {
+      let args = iface.typeArguments as Array<Type>;
+      if (args.length > 0) {
+        return args[0];
+      }
+    }
+    return null;
+  }
+  // Walk extends list.
+  var i = 0;
+  while (i < iface.extendsList.length) {
+    let result = getSequenceElementType(iface.extendsList[i]);
+    if (result != null) { return result; }
+    i += 1;
+  }
+  return null;
 };
 
 /**
@@ -931,6 +1072,25 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case _: {}
   }
 
+  // Record structural assignability: all target properties must exist in source
+  // with assignable types.
+  match (source) {
+    case RecordT {properties as srcProps}: {
+      match (target) {
+        case RecordT {properties as tgtProps}: {
+          let keys = tgtProps.keys();
+          while (let (true, key) = keys.next()) {
+            if (!srcProps.has(key)) { return false; }
+            if (!isAssignableTo(ctx, srcProps[key], tgtProps[key])) { return false; }
+          }
+          return true;
+        }
+        case _: {}
+      }
+    }
+    case _: {}
+  }
+
   return false;
 };
 
@@ -1041,11 +1201,16 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     case IfStatement {test, consequent, alternate, loc}: {
       // Check condition.
       match (test) {
-        case LetPatternCondition {}: {
-          // TODO: if-let patterns
+        case LetPatternCondition as lpc: {
+          let initType = checkExpression(ctx, lpc.init, null);
+          ctx.enterScope();
+          checkPattern(ctx, lpc.pattern, initType);
           checkStatement(ctx, consequent);
+          ctx.exitScope();
           if (alternate != null) {
+            ctx.enterScope();
             checkStatement(ctx, alternate as Statement);
+            ctx.exitScope();
           }
         }
         case _: {
@@ -1061,10 +1226,13 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     }
     case WhileStatement {test, body, loc}: {
       match (test) {
-        case LetPatternCondition {}: {
-          // TODO: while-let patterns
+        case LetPatternCondition as lpc: {
+          let initType = checkExpression(ctx, lpc.init, null);
           ctx.enterLoop();
+          ctx.enterScope();
+          checkPattern(ctx, lpc.pattern, initType);
           checkStatement(ctx, body);
+          ctx.exitScope();
           ctx.exitLoop();
         }
         case _: {
@@ -1132,7 +1300,16 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     }
     case DeclareFunction {}: {}       // TODO: External function declarations
     case SymbolDeclaration {}: {}     // TODO: Symbol declarations
-    case ForInStatement {}: {}        // TODO: For-in loops
+    case ForInStatement {pattern, iterable, body, loc}: {
+      let iterableType = checkExpression(ctx, iterable, null);
+      let elementType = getElementType(ctx, iterableType, iterable);
+      ctx.enterScope();
+      ctx.enterLoop();
+      bindPattern(ctx, pattern, elementType);
+      checkStatement(ctx, body);
+      ctx.exitLoop();
+      ctx.exitScope();
+    }
   }
 };
 
@@ -1273,8 +1450,34 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       // `name = default` — bind the name; the default provides the type.
       bindPattern(ctx, left as Pattern, t);
     }
-    case ClassPattern {}: {}        // TODO: Milestone 3b
-    case LogicalPattern {}: {}      // TODO
+    case ClassPattern as cp: {
+      // Look up the class type.
+      let clsName = cp.name.name;
+      let classType = ctx.resolveTypeName(clsName);
+      if (classType == null) {
+        ctx.error(
+          "Unknown class '" + clsName + "' in pattern.",
+          DiagnosticCode.SymbolNotFound,
+          cp.loc
+        );
+        return;
+      }
+      // Bind property patterns with field types from the class.
+      let props = cp.properties;
+      var pi = 0;
+      while (pi < props.length) {
+        let prop = props[pi];
+        let propName = prop.name.name;
+        let propType = resolveClassFieldType(ctx, classType as Type, propName, prop.loc);
+        bindPattern(ctx, prop.value as Pattern, propType);
+        pi += 1;
+      }
+    }
+    case LogicalPattern {operator, left, right}: {
+      // For | (or) and & (and) patterns, bind variables from both sides.
+      bindPattern(ctx, left as Pattern, t);
+      bindPattern(ctx, right as Pattern, t);
+    }
   }
 };
 
@@ -1561,14 +1764,90 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       cc as Type
     }
   }
-  case SuperExpression {loc}: new UnknownType()      // TODO
+  case SuperExpression {loc}: {
+    let cc = ctx.currentClass;
+    if (cc == null) {
+      ctx.error("'super' can only be used inside a class.", DiagnosticCode.SymbolNotFound, loc);
+      new UnknownType()
+    } else {
+      let cls = cc as ClassType;
+      let st = cls.superType;
+      if (st == null) {
+        ctx.error("Class '" + cls.name + "' does not have a superclass.", DiagnosticCode.SymbolNotFound, loc);
+        new UnknownType()
+      } else {
+        st as Type
+      }
+    }
+  }
   case NewExpression {callee, typeArguments, args, loc}: {
     checkNewExpression(ctx, callee, typeArguments, args, loc)
   }
-  case AsExpression {loc}: new UnknownType()         // TODO
+  case AsExpression {expression, typeAnnotation, loc}: {
+    checkExpression(ctx, expression, null);
+    resolveTypeAnnotation(ctx, typeAnnotation)
+  }
   case IsExpression {loc}: new BooleanType()
-  case ArrayLiteral {loc}: new UnknownType()         // TODO
-  case RecordLiteral {loc}: new UnknownType()        // TODO
+  case ArrayLiteral {elements, loc}: {
+    if (elements.length == 0) {
+      // Empty array — need contextual type or return unknown element type.
+      if (expectedType != null) {
+        match (expectedType as Type) {
+          case ClassType as ct: {
+            if ((ct.name == "Array" || ct.name == "FixedArray") && ct.typeArguments != null) {
+              return expectedType as Type;
+            }
+          }
+          case _: {}
+        }
+      }
+      new ArrayType(new UnknownType())
+    } else {
+      // Infer element type from first element.
+      let firstType = checkExpression(ctx, elements[0], null);
+      var i = 1;
+      while (i < elements.length) {
+        let elemType = checkExpression(ctx, elements[i], null);
+        if (!isAssignableTo(ctx, elemType, firstType)) {
+          ctx.error(
+            "Array element type mismatch: '" + typeToString(elemType) + "' is not assignable to '" + typeToString(firstType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            elements[i].loc
+          );
+        }
+        i += 1;
+      }
+      new ArrayType(firstType)
+    }
+  }
+  case RecordLiteral {properties, loc}: {
+    let propTypes = new HashMap<String, Type>();
+    var i = 0;
+    while (i < properties.length) {
+      match (properties[i]) {
+        case PropertyAssignment {name, value}: {
+          let valType = checkExpression(ctx, value, null);
+          propTypes.set(name.name, valType);
+        }
+        case SpreadElement {argument}: {
+          // Spread: merge properties from the argument's record type.
+          let spreadType = checkExpression(ctx, argument, null);
+          match (spreadType) {
+            case RecordT {properties as spreadProps}: {
+              let keys = spreadProps.keys();
+              while (let (true, key) = keys.next()) {
+                propTypes.set(key, spreadProps[key]);
+              }
+            }
+            case _: {}
+          }
+        }
+        case _: {}
+      }
+      i += 1;
+    }
+    new RecordT(propTypes, null)
+  }
   case TupleLiteral {elements, loc}: {
     // Check each element and collect their types.
     let elementTypes = new Array<Type>();
@@ -1594,7 +1873,34 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     checkExpression(ctx, argument, null);
     new NeverType()
   }
-  case TryExpression {loc}: new UnknownType()        // TODO
+  case TryExpression {body, handler, finalizer, loc}: {
+    let tryType = checkMatchCaseBody(ctx, body as Node, expectedType);
+    var catchType: Type | null = null;
+    if (handler != null) {
+      let clause = handler as CatchClause;
+      ctx.enterScope();
+      if (clause.param != null) {
+        let paramId = clause.param as Identifier;
+        let info = ctx.model.resolveDeclaration(paramId);
+        if (info != null) {
+          ctx.declareBinding(info as SymbolInfo, new UnknownType());
+        }
+      }
+      catchType = checkMatchCaseBody(ctx, clause.body as Node, expectedType);
+      ctx.exitScope();
+    }
+    if (finalizer != null) {
+      checkMatchCaseBody(ctx, finalizer as Node, null);
+    }
+    if (catchType != null) {
+      let types = new Array<Type>();
+      types.push(tryType);
+      types.push(catchType as Type);
+      createUnionType(types)
+    } else {
+      tryType
+    }
+  }
   case RangeExpression {loc}: new UnknownType()      // TODO
   case PipelineExpression {loc}: new UnknownType()   // TODO
   case PipePlaceholder {loc}: new UnknownType()      // TODO
@@ -2986,6 +3292,44 @@ let subtractClassFromType = (ctx: CheckerContext, t: Type, patClass: ClassType):
 };
 
 /**
+ * Look up a field type on a class or interface type for pattern destructuring.
+ * Returns UnknownType if the field is not found.
+ */
+let resolveClassFieldType = (
+  ctx: CheckerContext,
+  classType: Type,
+  propName: String,
+  loc: SourceLocation | null
+): Type => {
+  match (classType) {
+    case ClassType as ct: {
+      if (ct.fields.has(propName)) {
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, ct.fields[propName]);
+      }
+      // Check for getter.
+      let getterName = "get#" + propName;
+      if (ct.methods.has(getterName)) {
+        let getter = ct.methods[getterName];
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, getter.returnType);
+      }
+      // Walk superclass.
+      if (ct.superType != null) {
+        return resolveClassFieldType(ctx, ct.superType as Type, propName, loc);
+      }
+      ctx.error(
+        "Property '" + propName + "' does not exist on type '" + ct.name + "'.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new UnknownType();
+    }
+    case _: {
+      return new UnknownType();
+    }
+  }
+};
+
+/**
  * Check a match expression: discriminant against patterns, return union of case body types.
  * Also checks exhaustiveness for sealed class discriminants.
  */
@@ -3101,16 +3445,20 @@ let checkMatchCaseBody = (ctx: CheckerContext, body: Node, expectedType: Type | 
 
 /**
  * Check a pattern against an expected type and bind pattern variables.
+ * Uses bindPattern for identifier bindings through the DeclarationMap → SymbolInfo path.
  */
 let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): void => {
   match (pattern) {
-    case IdentifierPattern {name, loc}: {
-      // Wildcard _ doesn't bind.
-      if (name != "_") {
-        // Bind the identifier to the expected type.
-        // We need to create a SymbolInfo for this pattern binding.
-        // For now, just register it in the type scope as a value.
-        ctx.declareTypeName(name, expectedType);
+    case IdentifierPattern as pat: {
+      if (pat.name != "_") {
+        // Use the same binding mechanism as variable declarations.
+        let info = ctx.model.resolveDeclaration(pat);
+        if (info != null) {
+          ctx.declareBinding(info as SymbolInfo, expectedType);
+        } else {
+          // Fallback: register in type scope.
+          ctx.declareTypeName(pat.name, expectedType);
+        }
       }
     }
     case ClassPattern as cp: {
@@ -3125,19 +3473,18 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         );
         return;
       }
-      // Check property patterns against fields (simplified for now).
+      // Resolve field types from the class.
       let props = cp.properties;
       var pi = 0;
       while (pi < props.length) {
         let prop = props[pi];
-        // For each property, try to find the field type.
-        // Simplified: just bind property names to unknown for now.
-        checkPattern(ctx, prop.value, new UnknownType());
+        let propName = prop.name.name;
+        let propType = resolveClassFieldType(ctx, classType as Type, propName, prop.loc);
+        checkPattern(ctx, prop.value, propType);
         pi = pi + 1;
       }
     }
     case RecordPattern {properties, loc}: {
-      // Check each property pattern.
       var pi = 0;
       while (pi < properties.length) {
         let prop = properties[pi];
@@ -3146,13 +3493,15 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       }
     }
     case AsPattern as ap: {
-      // Check inner pattern.
       checkPattern(ctx, ap.pattern, expectedType);
-      // Bind the 'as' name to the expected type.
-      ctx.declareTypeName(ap.name.name, expectedType);
+      let info = ctx.model.resolveDeclaration(ap.name);
+      if (info != null) {
+        ctx.declareBinding(info as SymbolInfo, expectedType);
+      } else {
+        ctx.declareTypeName(ap.name.name, expectedType);
+      }
     }
     case LogicalPattern {operator, left, right, loc}: {
-      // For | (or) patterns, both sides should match the same type.
       checkPattern(ctx, left, expectedType);
       checkPattern(ctx, right, expectedType);
     }
