@@ -8118,6 +8118,190 @@ export function generateStringGetLengthFunction(ctx: CodegenContext): number {
 }
 
 /**
+ * Generates a helper function to create a new Zena String of a given byte length.
+ * Returns an externref that JS can then populate byte-by-byte via $stringSetByte.
+ *
+ * $stringCreate(len: i32) -> externref
+ *
+ * Creates a String with:
+ * - A new ByteArray of the given length (zero-initialized)
+ * - #start = 0
+ * - #end = len
+ * - #encoding = 0 (WTF-8)
+ *
+ * String class struct layout (view-based design):
+ *   0: __vtable (eqref)
+ *   1: __brand_String (ref null $brandType)
+ *   2: String#data (ref $ByteArray)
+ *   3: String#start (i32)
+ *   4: String#end (i32)
+ *   5: String#encoding (i32)
+ */
+export function generateStringCreateFunction(ctx: CodegenContext): number {
+  // Type: (i32) -> externref
+  const typeIndex = ctx.module.addType([[ValType.i32]], [[ValType.externref]]);
+
+  const funcIndex = ctx.module.addFunction(typeIndex);
+
+  // Export the function as "$stringCreate"
+  ctx.module.addExport('$stringCreate', ExportDesc.Func, funcIndex);
+
+  ctx.pendingHelperFunctions.push(() => {
+    const locals: number[][] = [];
+    const body: number[] = [];
+
+    const stringClassInfo = ctx.getClassInfoByStructIndex(ctx.stringTypeIndex);
+    if (!stringClassInfo) {
+      throw new Error('String class info not found for $stringCreate');
+    }
+
+    // Create struct with defaults first
+    body.push(0xfb, GcOpcode.struct_new_default);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+
+    // Store in temp local
+    const tempLocal = 1; // local 0 is the len param
+    locals.push([
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+    ]);
+    body.push(Opcode.local_tee, tempLocal);
+
+    // Set vtable (field 0)
+    if (stringClassInfo.vtableGlobalIndex !== undefined) {
+      body.push(Opcode.global_get);
+      body.push(
+        ...WasmModule.encodeUnsignedLEB128(stringClassInfo.vtableGlobalIndex),
+      );
+      body.push(0xfb, GcOpcode.struct_set);
+      body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+      body.push(0); // vtable at field 0
+
+      body.push(Opcode.local_get, tempLocal);
+    }
+
+    // Set #data (field 2): new ByteArray of given length
+    body.push(Opcode.local_get, 0); // len param
+    body.push(0xfb, GcOpcode.array_new_default);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
+    body.push(0xfb, GcOpcode.struct_set);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(2); // #data at field 2
+
+    // Set #start (field 3) = 0
+    body.push(Opcode.local_get, tempLocal);
+    body.push(Opcode.i32_const, 0);
+    body.push(0xfb, GcOpcode.struct_set);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(3); // #start at field 3
+
+    // Set #end (field 4) = len
+    body.push(Opcode.local_get, tempLocal);
+    body.push(Opcode.local_get, 0); // len param
+    body.push(0xfb, GcOpcode.struct_set);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(4); // #end at field 4
+
+    // Set #encoding (field 5) = 0 (WTF-8)
+    body.push(Opcode.local_get, tempLocal);
+    body.push(Opcode.i32_const, 0);
+    body.push(0xfb, GcOpcode.struct_set);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(5); // #encoding at field 5
+
+    // Return the string as externref
+    body.push(Opcode.local_get, tempLocal);
+    body.push(0xfb, GcOpcode.extern_convert_any);
+
+    body.push(Opcode.end);
+
+    ctx.module.addCode(funcIndex, locals, body);
+  });
+
+  return funcIndex;
+}
+
+/**
+ * Generates a helper function to set a byte in a Zena String's backing array.
+ * This is the inverse of $stringGetByte — used by JS to populate a string
+ * created via $stringCreate.
+ *
+ * $stringSetByte(str: externref, index: i32, value: i32) -> void
+ *
+ * Sets the byte at (#start + index) in the String's backing ByteArray.
+ *
+ * String class struct layout (view-based design):
+ *   0: __vtable (eqref)
+ *   1: __brand_String (ref null $brandType)
+ *   2: String#data (ref $ByteArray)
+ *   3: String#start (i32)
+ *   4: String#end (i32)
+ *   5: String#encoding (i32)
+ */
+export function generateStringSetByteFunction(ctx: CodegenContext): number {
+  const STRING_DATA_FIELD = 2;
+  const STRING_START_FIELD = 3;
+
+  // Type: (externref, i32, i32) -> void
+  const typeIndex = ctx.module.addType(
+    [[ValType.externref], [ValType.i32], [ValType.i32]],
+    [],
+  );
+
+  const funcIndex = ctx.module.addFunction(typeIndex);
+
+  // Export the function as "$stringSetByte"
+  ctx.module.addExport('$stringSetByte', ExportDesc.Func, funcIndex);
+
+  ctx.pendingHelperFunctions.push(() => {
+    const locals: number[][] = [];
+    const body: number[] = [];
+
+    // Cast externref to String
+    // local.get 0 (externref param)
+    body.push(Opcode.local_get, 0);
+    body.push(0xfb, GcOpcode.any_convert_extern);
+    body.push(0xfb, GcOpcode.ref_cast);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+
+    // Store typed string ref in a local for reuse
+    const strLocal = 3;
+    locals.push([
+      ValType.ref_null,
+      ...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex),
+    ]);
+    body.push(Opcode.local_set, strLocal);
+
+    // Get the #data ByteArray
+    body.push(Opcode.local_get, strLocal);
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(STRING_DATA_FIELD);
+
+    // Compute index: #start + index
+    body.push(Opcode.local_get, strLocal);
+    body.push(0xfb, GcOpcode.struct_get);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.stringTypeIndex));
+    body.push(STRING_START_FIELD);
+    body.push(Opcode.local_get, 1); // index param
+    body.push(Opcode.i32_add);
+
+    // Push the value
+    body.push(Opcode.local_get, 2); // value param
+
+    // array.set $ByteArray
+    body.push(0xfb, GcOpcode.array_set);
+    body.push(...WasmModule.encodeSignedLEB128(ctx.byteArrayTypeIndex));
+
+    body.push(Opcode.end);
+
+    ctx.module.addCode(funcIndex, locals, body);
+  });
+
+  return funcIndex;
+}
+
+/**
  * Memory layout for WASI I/O (first 64 bytes):
  * 0-3:   iovec.buf (pointer to string data)
  * 4-7:   iovec.len (length of string)

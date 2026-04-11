@@ -37,6 +37,8 @@ import {
   generateExpression,
   generateStringGetByteFunction,
   generateStringGetLengthFunction,
+  generateStringCreateFunction,
+  generateStringSetByteFunction,
   inferType,
 } from './expressions.js';
 import {HeapType, Opcode, ValType, ExportDesc, GcOpcode} from '../wasm.js';
@@ -469,6 +471,8 @@ export class CodeGenerator {
     if (this.#ctx.stringTypeIndex >= 0) {
       generateStringGetByteFunction(this.#ctx);
       generateStringGetLengthFunction(this.#ctx);
+      generateStringCreateFunction(this.#ctx);
+      generateStringSetByteFunction(this.#ctx);
       // Execute any newly added pending helper functions
       while (this.#ctx.pendingHelperFunctions.length > 0) {
         const gen = this.#ctx.pendingHelperFunctions.shift()!;

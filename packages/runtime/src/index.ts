@@ -108,6 +108,45 @@ export function createStringReader(exports: WebAssembly.Exports) {
 }
 
 /**
+ * Create a string writer that uses exported create/set functions.
+ *
+ * This is the inverse of createStringReader — it creates a Zena String
+ * from a JavaScript string by:
+ * 1. Encoding the JS string to UTF-8 bytes
+ * 2. Calling $stringCreate(len) to allocate an empty String of that length
+ * 3. Calling $stringSetByte(str, i, byte) for each byte
+ *
+ * @param exports - The WASM instance exports containing $stringCreate and $stringSetByte
+ * @returns A function that converts a JS string to a Zena String externref
+ */
+export function createStringWriter(exports: WebAssembly.Exports) {
+  const create = exports.$stringCreate as
+    | ((len: number) => unknown)
+    | undefined;
+  const setByte = exports.$stringSetByte as
+    | ((str: unknown, index: number, value: number) => void)
+    | undefined;
+
+  const encoder = new TextEncoder();
+
+  return (jsString: string): unknown => {
+    if (!create || !setByte) {
+      throw new Error(
+        '$stringCreate or $stringSetByte export not found. ' +
+          'Make sure the WASM module exports the string creation functions.',
+      );
+    }
+
+    const bytes = encoder.encode(jsString);
+    const strRef = create(bytes.length);
+    for (let i = 0; i < bytes.length; i++) {
+      setByte(strRef, i, bytes[i]);
+    }
+    return strRef;
+  };
+}
+
+/**
  * Create default console imports that handle Zena types.
  *
  * String logging uses the V8-recommended pattern:
