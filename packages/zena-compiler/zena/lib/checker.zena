@@ -268,6 +268,14 @@ class CheckerContext {
   }
 
   /**
+   * Declare a type name in the module (outermost) scope. Used for sealed
+   * variant types that need to be visible outside the class scope.
+   */
+  declareModuleTypeName(name: String, t: Type): void {
+    this.#typeScopes[0].set(name, t);
+  }
+
+  /**
    * Resolve a type name by walking the scope chain outward, then prelude.
    */
   resolveTypeName(name: String): Type | null {
@@ -2043,18 +2051,38 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
 
         (classType.sealedVariants as Array<ClassType>).push(variantType);
 
-        // Register variant in type and value namespaces.
-        ctx.declareTypeName(variant.name.name, variantType);
+        // Register variant in type and value namespaces (module scope
+        // so the name is visible in match patterns outside the class).
+        ctx.declareModuleTypeName(variant.name.name, variantType);
       } else {
-        // Forward-declared variant - look up the existing class type
-        // and add it to sealedVariants if found.
-        let existingType = ctx.resolveTypeName(variantName);
-        if (existingType != null) {
-          match (existingType as Type) {
-            case ClassType as ct: {
-              (classType.sealedVariants as Array<ClassType>).push(ct);
+        // Forward-declared variant or unit variant (no params).
+        // Look up an existing class type (distributed variant pattern),
+        // otherwise create an inline unit variant.
+        match (ctx.resolveTypeName(variantName)) {
+          case ClassType as ct: {
+            (classType.sealedVariants as Array<ClassType>).push(ct);
+          }
+          case _: {
+            let unitType = new ClassType(ctx.freshTypeId(), variantName);
+            unitType.superType = classType;
+            unitType.isCaseClass = true;
+            unitType.isFinal = true;
+
+            // Inherit fields from parent.
+            let parentFieldKeys2 = classType.fields.keys();
+            while (let (true, key2) = parentFieldKeys2.next()) {
+              unitType.fields.set(key2, classType.fields[key2]);
+              if (classType.fieldMutability.has(key2)) {
+                unitType.fieldMutability.set(key2, classType.fieldMutability[key2]);
+              }
             }
-            case _: {}
+            // Unit variant: zero-arg constructor.
+            unitType.constructorType = new FunctionType(
+              new Array<Type>(), new Array<String>(), unitType
+            );
+
+            (classType.sealedVariants as Array<ClassType>).push(unitType);
+            ctx.declareModuleTypeName(variantName, unitType);
           }
         }
       }
@@ -2797,7 +2825,169 @@ let checkBinaryExpression = (
 };
 
 /**
+ * Collect all concrete (non-sealed) leaf variants of a sealed class type,
+ * recursing into sub-sealed variants (sum of sums).
+ */
+let collectLeafVariants = (ct: ClassType): Array<ClassType> => {
+  let result = new Array<ClassType>();
+  if (ct.sealedVariants == null) { return result; }
+  let variants = ct.sealedVariants as Array<ClassType>;
+  var i = 0;
+  while (i < variants.length) {
+    let v = variants[i];
+    if (v.isSealed && v.sealedVariants != null) {
+      // Recurse: this variant is itself sealed
+      let leaves = collectLeafVariants(v);
+      var li = 0;
+      while (li < leaves.length) {
+        result.push(leaves[li]);
+        li += 1;
+      }
+    } else {
+      result.push(v);
+    }
+    i += 1;
+  }
+  return result;
+};
+
+/**
+ * Subtract a pattern from a type, returning the remaining uncovered type.
+ * Returns NeverType when the pattern fully covers the type.
+ */
+let subtractPatternFromType = (ctx: CheckerContext, t: Type, pattern: Node): Type => {
+  // Wildcard or variable pattern covers everything.
+  match (pattern) {
+    case IdentifierPattern {name}: {
+      if (name == "_") {
+        return new NeverType();
+      }
+      // Check if this identifier names a sealed variant (unit variant pattern).
+      let resolved = ctx.resolveTypeName(name);
+      if (resolved != null) {
+        match (resolved as Type) {
+          case ClassType as patClass: {
+            return subtractClassFromType(ctx, t, patClass);
+          }
+          case _: {}
+        }
+      }
+      // Regular variable binding — covers everything.
+      return new NeverType();
+    }
+    case Identifier {name}: {
+      // Plain identifier in match pattern (e.g., case _, case Red).
+      if (name == "_") {
+        return new NeverType();
+      }
+      // Check if this identifier names a sealed variant (unit variant pattern).
+      let resolved = ctx.resolveTypeName(name);
+      if (resolved != null) {
+        match (resolved as Type) {
+          case ClassType as patClass: {
+            return subtractClassFromType(ctx, t, patClass);
+          }
+          case _: {}
+        }
+      }
+      // Regular variable binding — covers everything.
+      return new NeverType();
+    }
+    case ClassPattern as cp: {
+      let clsName = cp.name.name;
+      let resolved = ctx.resolveTypeName(clsName);
+      if (resolved != null) {
+        match (resolved as Type) {
+          case ClassType as patClass: {
+            return subtractClassFromType(ctx, t, patClass);
+          }
+          case _: {}
+        }
+      }
+      return t;
+    }
+    case AsPattern as ap: {
+      return subtractPatternFromType(ctx, t, ap.pattern);
+    }
+    case _: {
+      // Literal patterns, etc. — don't subtract from sealed types for now.
+      return t;
+    }
+  }
+};
+
+/**
+ * Subtract a class type (from a pattern) from the scrutinee type.
+ * Handles sealed class variant tracking and transitive hierarchies.
+ */
+let subtractClassFromType = (ctx: CheckerContext, t: Type, patClass: ClassType): Type => {
+  match (t) {
+    case ClassType as scrutClass: {
+      // If the pattern class IS the scrutinee class (or a supertype), covers it.
+      if (scrutClass.id == patClass.id) {
+        return new NeverType();
+      }
+      // If the scrutinee is a sealed class, subtract the variant from its set.
+      if (scrutClass.isSealed && scrutClass.sealedVariants != null) {
+        let variants = scrutClass.sealedVariants as Array<ClassType>;
+        let remaining = new Array<ClassType>();
+        var i = 0;
+        while (i < variants.length) {
+          let v = variants[i];
+          if (v.id == patClass.id) {
+            // Directly matched — don't add to remaining.
+          } else if (v.isSealed && v.sealedVariants != null) {
+            // Variant is itself sealed — recurse into its sub-variants.
+            let subResult = subtractClassFromType(ctx, v, patClass);
+            match (subResult) {
+              case NeverType: {
+                // Fully covered — don't add to remaining.
+              }
+              case ClassType as remainingVariant: {
+                remaining.push(remainingVariant);
+              }
+              case _: {
+                remaining.push(v);
+              }
+            }
+          } else {
+            // Check if patClass is a subtype of this variant.
+            var isSubtype = false;
+            var current: ClassType | null = patClass.superType;
+            while (current != null) {
+              let cur = current as ClassType;
+              if (cur.id == v.id) {
+                isSubtype = true;
+                break;
+              }
+              current = cur.superType;
+            }
+            if (!isSubtype) {
+              remaining.push(v);
+            }
+          }
+          i += 1;
+        }
+        if (remaining.length == 0) {
+          return new NeverType();
+        }
+        // Return a synthetic sealed type with remaining variants.
+        let remainingType = new ClassType(scrutClass.id, scrutClass.name);
+        remainingType.isSealed = true;
+        remainingType.isAbstract = true;
+        remainingType.superType = scrutClass.superType;
+        remainingType.sealedVariants = remaining;
+        return remainingType;
+      }
+    }
+    case _: {}
+  }
+  return t;
+};
+
+/**
  * Check a match expression: discriminant against patterns, return union of case body types.
+ * Also checks exhaustiveness for sealed class discriminants.
  */
 let checkMatchExpr = (
   ctx: CheckerContext,
@@ -2808,6 +2998,9 @@ let checkMatchExpr = (
 ): Type => {
   // Check the discriminant expression.
   let scrutineeType = checkExpression(ctx, discriminant, null);
+
+  // Track remaining type for exhaustiveness checking.
+  var remainingType: Type = scrutineeType;
 
   // Collect result types from each case.
   let resultTypes = new Array<Type>();
@@ -2821,6 +3014,11 @@ let checkMatchExpr = (
 
     // Check the pattern and bind variables.
     checkPattern(ctx, matchCase.pattern, scrutineeType);
+
+    // Update remaining type (only if no guard — guards prevent exhaustiveness).
+    if (matchCase.guard == null) {
+      remainingType = subtractPatternFromType(ctx, remainingType, matchCase.pattern);
+    }
 
     // Check the guard if present.
     if (matchCase.guard != null) {
@@ -2840,6 +3038,20 @@ let checkMatchExpr = (
 
     ctx.exitScope();
     i += 1;
+  }
+
+  // Check exhaustiveness: if the scrutinee is a sealed class and
+  // remainingType is not Never, report non-exhaustive match.
+  let isSealed = match (scrutineeType) {
+    case ClassType as ct: ct.isSealed
+    case _: false
+  };
+  if (isSealed && !(remainingType is NeverType)) {
+    ctx.error(
+      "Non-exhaustive match. Not all variants are covered.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
   }
 
   // Result is union of all case body types.
