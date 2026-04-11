@@ -279,6 +279,7 @@ export class CodegenContext {
   public closureTypes = new Map<string, number>(); // signature -> structTypeIndex
   public closureStructs = new Map<number, {funcTypeIndex: number}>(); // structTypeIndex -> info
   public closureCellTypes = new Map<number, number>(); // closureStructIndex -> cellStructIndex
+  public refCellTypes = new Map<string, number>(); // wasmTypeKey -> cellStructIndex
   public enums = new Map<number, {members: Map<string, number>}>(); // structTypeIndex -> info
   // Cache for function-to-closure wrappers: "funcIndex:closureTypeIndex" -> wrapperFuncIndex
   public functionWrapperCache = new Map<string, number>();
@@ -1653,6 +1654,40 @@ export class CodegenContext {
 
     const cellIndex = this.module.addStructType(cellFields);
     this.closureCellTypes.set(closureStructIndex, cellIndex);
+    return cellIndex;
+  }
+
+  /**
+   * Get or create a "ref cell" struct type for a mutable capture of a reference type.
+   * Unlike Box<T> (which is a named class for primitives), a ref cell is an anonymous
+   * struct with a single mutable field holding the reference value.
+   * The field always uses a nullable type (ref null $T) for WASM GC compatibility.
+   * Structure: (struct (field $value (ref null $heapType) mutable))
+   */
+  public getRefCellTypeIndex(wasmType: number[]): number {
+    const key = wasmType.join(',');
+    if (this.refCellTypes.has(key)) {
+      return this.refCellTypes.get(key)!;
+    }
+
+    // Always use nullable ref for the cell field.
+    // Non-nullable ref types (ValType.ref) are converted to nullable (ValType.ref_null).
+    let cellFieldType: number[];
+    if (wasmType[0] === ValType.ref) {
+      cellFieldType = [ValType.ref_null, ...wasmType.slice(1)];
+    } else {
+      cellFieldType = wasmType;
+    }
+
+    const cellFields = [
+      {
+        type: cellFieldType,
+        mutable: true,
+      },
+    ];
+
+    const cellIndex = this.module.addStructType(cellFields);
+    this.refCellTypes.set(key, cellIndex);
     return cellIndex;
   }
 

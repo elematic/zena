@@ -1107,6 +1107,26 @@ function wasmTypeToCheckerType(type: number[]): Type {
   throw new Error(`Unsupported type for boxing: ${type}`);
 }
 
+/**
+ * Check if a WASM type is a reference type (ref or ref null with a heap type index,
+ * or a single-byte abstract ref type like eqref/anyref/externref/funcref).
+ * Reference types need ref cells instead of primitive Box<T> for mutable captures.
+ */
+function isWasmRefType(type: number[]): boolean {
+  if (type.length === 0) return false;
+  if (type[0] === ValType.ref || type[0] === ValType.ref_null) return true;
+  if (
+    type.length === 1 &&
+    (type[0] === ValType.eqref ||
+      type[0] === ValType.anyref ||
+      type[0] === ValType.externref ||
+      type[0] === ValType.funcref)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function inferType(ctx: CodegenContext, expr: Expression): number[] {
   // 1. Check CodegenContext for 'this' and Identifiers.
   // The CodegenContext reflects the *actual* storage types in the generated WASM,
@@ -1141,6 +1161,11 @@ export function inferType(ctx: CodegenContext, expr: Expression): number[] {
       // For celled locals (mutual recursion), the actual value type is
       // unboxedType because generateFromBinding reads from the cell
       if (local.isCelled && local.unboxedType) {
+        return local.unboxedType;
+      }
+      // For boxed locals (mutable closure captures), generateFromBinding reads
+      // through the box/cell and produces the value type on the stack
+      if (local.isBoxed && local.unboxedType) {
         return local.unboxedType;
       }
       return local.type;
@@ -5080,7 +5105,7 @@ function generateAssignmentExpressionInner(
       const index = local.index;
 
       if (local.isBoxed && local.unboxedType) {
-        // For boxed mutable captures, we need to write through the box
+        // For boxed mutable captures, we need to write through the box/cell
         // Generate the value first and save it
         generateExpression(ctx, expr.value, body);
         // Stack: [value]
@@ -5091,7 +5116,7 @@ function generateAssignmentExpressionInner(
         body.push(...WasmModule.encodeSignedLEB128(tempVal));
         // Stack: [value]
 
-        // Load the box
+        // Load the box/cell
         body.push(Opcode.local_get);
         body.push(...WasmModule.encodeSignedLEB128(index));
         // Stack: [value, box]
@@ -5101,17 +5126,25 @@ function generateAssignmentExpressionInner(
         body.push(...WasmModule.encodeSignedLEB128(tempVal));
         // Stack: [value, box, value]
 
-        // Write the value into the box
-        const boxClass = getBoxClassInfo(
-          ctx,
-          wasmTypeToCheckerType(local.unboxedType),
-        );
-        const valueField = boxClass.fields.get(BOX_VALUE_FIELD);
-        if (!valueField) throw new Error("Box class missing 'value' field");
+        if (isWasmRefType(local.unboxedType)) {
+          // Ref cell: write field 0
+          const cellTypeIndex = ctx.getRefCellTypeIndex(local.unboxedType);
+          body.push(0xfb, GcOpcode.struct_set);
+          body.push(...WasmModule.encodeSignedLEB128(cellTypeIndex));
+          body.push(0); // field index 0
+        } else {
+          // Primitive Box<T>: write the 'value' field
+          const boxClass = getBoxClassInfo(
+            ctx,
+            wasmTypeToCheckerType(local.unboxedType),
+          );
+          const valueField = boxClass.fields.get(BOX_VALUE_FIELD);
+          if (!valueField) throw new Error("Box class missing 'value' field");
 
-        body.push(0xfb, GcOpcode.struct_set);
-        body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
-        body.push(...WasmModule.encodeSignedLEB128(valueField.index));
+          body.push(0xfb, GcOpcode.struct_set);
+          body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
+          body.push(...WasmModule.encodeSignedLEB128(valueField.index));
+        }
         // Stack: [value] (from the original local.tee)
       } else {
         // Normal local assignment
@@ -6104,18 +6137,33 @@ function generateFromBinding(
           body.push(...WasmModule.encodeSignedLEB128(cellTypeIndex));
           body.push(0); // field index 0
         }
-        // If this is a boxed mutable capture (Box<T>), unbox it
+        // If this is a boxed mutable capture, unbox it
         else if (local.isBoxed && local.unboxedType) {
-          const boxClass = getBoxClassInfo(
-            ctx,
-            wasmTypeToCheckerType(local.unboxedType),
-          );
-          const valueField = boxClass.fields.get(BOX_VALUE_FIELD);
-          if (!valueField) throw new Error("Box class missing 'value' field");
+          if (isWasmRefType(local.unboxedType)) {
+            // Ref cell: read field 0 (stored as nullable, may need cast back)
+            const cellTypeIndex = ctx.getRefCellTypeIndex(local.unboxedType);
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(...WasmModule.encodeSignedLEB128(cellTypeIndex));
+            body.push(0); // field index 0
+            // Cell field is nullable; if original type was non-nullable, assert non-null
+            if (local.unboxedType[0] === ValType.ref) {
+              body.push(Opcode.ref_as_non_null);
+            }
+          } else {
+            // Primitive Box<T>: read the 'value' field
+            const boxClass = getBoxClassInfo(
+              ctx,
+              wasmTypeToCheckerType(local.unboxedType),
+            );
+            const valueField = boxClass.fields.get(BOX_VALUE_FIELD);
+            if (!valueField) throw new Error("Box class missing 'value' field");
 
-          body.push(0xfb, GcOpcode.struct_get);
-          body.push(...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex));
-          body.push(...WasmModule.encodeSignedLEB128(valueField.index));
+            body.push(0xfb, GcOpcode.struct_get);
+            body.push(
+              ...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex),
+            );
+            body.push(...WasmModule.encodeSignedLEB128(valueField.index));
+          }
         }
 
         return true;
@@ -8957,24 +9005,42 @@ function generateFunctionExpression(
   for (const name of mutableCaptures) {
     const local = ctx.getLocal(name);
     if (local && !local.isBoxed) {
-      // TODO(primitive-boxing): We use wasmTypeToCheckerType here because we only have
-      // the WASM type of the captured variable, not its checker Type. To fix this properly,
-      // we'd need to track semantic types in LocalInfo. This causes boolean vs i32 confusion.
-      // See docs/design/primitive-boxing-semantic-types.md for details.
-      const checkerType = wasmTypeToCheckerType(local.type);
-      const boxClass = getBoxClassInfo(ctx, checkerType);
-      const boxedType = [
-        ValType.ref,
-        ...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex),
-      ];
+      let boxedType: number[];
 
-      // Create a new box with the current value
-      body.push(Opcode.local_get);
-      body.push(...WasmModule.encodeSignedLEB128(local.index));
-      // TODO(primitive-boxing): Pass semantic type once LocalInfo tracks checker types
-      boxPrimitive(ctx, local.type, body);
+      if (isWasmRefType(local.type)) {
+        // Reference types: use a ref cell (anonymous struct with one mutable field)
+        const cellTypeIndex = ctx.getRefCellTypeIndex(local.type);
+        boxedType = [
+          ValType.ref,
+          ...WasmModule.encodeSignedLEB128(cellTypeIndex),
+        ];
 
-      // Create a new local for the box and update the scope
+        // Create cell: struct.new with current value
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(local.index));
+        body.push(0xfb, GcOpcode.struct_new);
+        body.push(...WasmModule.encodeSignedLEB128(cellTypeIndex));
+      } else {
+        // Primitive types: use Box<T> class
+        // TODO(primitive-boxing): We use wasmTypeToCheckerType here because we only have
+        // the WASM type of the captured variable, not its checker Type. To fix this properly,
+        // we'd need to track semantic types in LocalInfo. This causes boolean vs i32 confusion.
+        // See docs/design/primitive-boxing-semantic-types.md for details.
+        const checkerType = wasmTypeToCheckerType(local.type);
+        const boxClass = getBoxClassInfo(ctx, checkerType);
+        boxedType = [
+          ValType.ref,
+          ...WasmModule.encodeSignedLEB128(boxClass.structTypeIndex),
+        ];
+
+        // Create a new box with the current value
+        body.push(Opcode.local_get);
+        body.push(...WasmModule.encodeSignedLEB128(local.index));
+        // TODO(primitive-boxing): Pass semantic type once LocalInfo tracks checker types
+        boxPrimitive(ctx, local.type, body);
+      }
+
+      // Create a new local for the box/cell and update the scope
       const newBoxLocal = ctx.declareLocal(
         `$$boxed_${name}`,
         boxedType,
@@ -8985,8 +9051,7 @@ function generateFunctionExpression(
       body.push(Opcode.local_set);
       body.push(...WasmModule.encodeSignedLEB128(newBoxLocal));
 
-      // Update the original variable's local info to point to the box
-      // We do this by updating the scope entry
+      // Update the original variable's local info to point to the box/cell
       const scope = ctx.scopes[ctx.scopes.length - 1];
       scope.set(name, {
         index: newBoxLocal,
@@ -9032,6 +9097,18 @@ function generateFunctionExpression(
           mutable: false,
           isCelled: true,
           unboxedType: local.unboxedType, // The closure type inside the cell
+        });
+      } else if (local.isBoxed && local.unboxedType) {
+        // Non-mutable capture of an already-boxed variable (e.g., read-only closure
+        // capturing a var that another closure mutates). The cell was already created
+        // by the mutable closure's boxing loop. We pass the cell through and mark it
+        // as boxed so the closure body reads through the cell.
+        captureList.push({
+          name,
+          type: local.type, // Cell type
+          mutable: true, // Mark as mutable so the closure body treats it as boxed
+          boxedType: local.type,
+          unboxedType: local.unboxedType,
         });
       } else {
         // Immutable captures are passed by value
@@ -9243,10 +9320,18 @@ function generateFunctionExpression(
 
         // Box it if not already boxed
         if (!local.isBoxed) {
-          // TODO(primitive-boxing): Pass semantic type once capture analysis tracks checker types.
-          // Currently we only have WASM type (c.type), causing boolean vs i32 confusion.
-          // See docs/design/primitive-boxing-semantic-types.md for details.
-          boxPrimitive(ctx, c.type, body);
+          if (isWasmRefType(c.type)) {
+            // Reference type: wrap in a ref cell
+            const cellTypeIndex = ctx.getRefCellTypeIndex(c.type);
+            body.push(0xfb, GcOpcode.struct_new);
+            body.push(...WasmModule.encodeSignedLEB128(cellTypeIndex));
+          } else {
+            // Primitive type: use Box<T>
+            // TODO(primitive-boxing): Pass semantic type once capture analysis tracks checker types.
+            // Currently we only have WASM type (c.type), causing boolean vs i32 confusion.
+            // See docs/design/primitive-boxing-semantic-types.md for details.
+            boxPrimitive(ctx, c.type, body);
+          }
         }
         // If already boxed, the local.get above loaded the box directly
       } else {

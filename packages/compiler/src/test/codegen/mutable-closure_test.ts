@@ -147,4 +147,61 @@ suite('Codegen: Mutable Closures', () => {
     const result = await compileAndRun(source, 'test');
     assert.strictEqual(result, 3);
   });
+
+  test('mutable capture of reference type (class instance)', async () => {
+    const source = `
+      class Box(value: i32)
+
+      export let test = () => {
+        var b = new Box(5);
+        let f = () => {
+          b = new Box(10);
+          return b.value;
+        };
+        return f(); // should return 10
+      };
+    `;
+    const result = await compileAndRun(source, 'test');
+    assert.strictEqual(result, 10);
+  });
+
+  test('mutable capture of reference type shared between closures', async () => {
+    const source = `
+      class Counter {
+        var count: i32 = 0;
+        increment(): void { this.count += 1; }
+      }
+
+      export let test = () => {
+        var c = new Counter();
+        let inc = () => { c.increment(); };
+        let read = () => c.count;
+        inc();
+        inc();
+        inc();
+        return read(); // should return 3
+      };
+    `;
+    const result = await compileAndRun(source, 'test');
+    assert.strictEqual(result, 3);
+  });
+
+  test('mutable capture of nullable reference type', async () => {
+    const source = `
+      class Wrapper(value: i32)
+
+      export let test = () => {
+        var w: Wrapper | null = null;
+        let set = () => { w = new Wrapper(42); };
+        let get = () => {
+          if (w != null) { return (w as Wrapper).value; }
+          return 0;
+        };
+        set();
+        return get(); // should return 42
+      };
+    `;
+    const result = await compileAndRun(source, 'test');
+    assert.strictEqual(result, 42);
+  });
 });
