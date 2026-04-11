@@ -1,0 +1,423 @@
+/**
+ * Checker API tests — validates the programmatic API surface of the checker.
+ *
+ * These tests verify that:
+ * 1. checkModule() can be called and returns a CheckResult
+ * 2. The SemanticModel contains expected type information
+ * 3. Diagnostics are collected for invalid code
+ * 4. The checker integrates with scope analysis correctly
+ *
+ * Behavioral correctness (does the checker accept/reject the right code?) is
+ * tested via portable tests in tests/language/semantics/. This file focuses on
+ * the API contract.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { Array } from 'zena:array';
+import { parse } from '../lib/parser.zena';
+import { ScopeBuilder, ScopeResult, SymbolInfo } from '../lib/scope.zena';
+import { checkModule, CheckResult } from '../lib/checker.zena';
+import { SemanticModel } from '../lib/semantic-model.zena';
+import { Diagnostic, DiagnosticSeverity, DiagnosticLocation } from '../lib/diagnostics.zena';
+import {
+  Type, I32Type, F64Type, BooleanType, VoidType, NullType, NeverType,
+  BoolLiteralType, ClassType, FunctionType, UnionType, TupleType,
+  typeToString
+} from '../lib/types.zena';
+import {
+  Module, Statement, VariableDeclaration, ExpressionStatement,
+  IdentifierPattern, Identifier, Node
+} from '../lib/ast.zena';
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/**
+ * Parse, scope-analyse, and type-check a source string.
+ */
+let check = (source: String): CheckResult => {
+  let ast = parse(source, "<test>");
+  let scopeBuilder = new ScopeBuilder("<test>");
+  let scopeResult = scopeBuilder.build(ast);
+  return checkModule(ast, scopeResult);
+};
+
+/**
+ * Assert that checking produces no errors.
+ */
+let checkOk = (source: String): CheckResult => {
+  let result = check(source);
+  let errors = errorDiagnostics(result.diagnostics);
+  if (errors.length > 0) {
+    var msg = "Expected no errors, got:\n";
+    var i = 0;
+    while (i < errors.length) {
+      msg = msg + "  - " + errors[i].message + "\n";
+      i += 1;
+    }
+    throw new Error(msg);
+  }
+  return result;
+};
+
+/**
+ * Assert that checking produces at least one error matching the pattern.
+ */
+let checkError = (source: String, pattern: String): void => {
+  let result = check(source);
+  let errors = errorDiagnostics(result.diagnostics);
+  var found = false;
+  var i = 0;
+  while (i < errors.length) {
+    if (contains(errors[i].message, pattern)) {
+      found = true;
+      break;
+    }
+    i += 1;
+  }
+  if (!found) {
+    var msg = "Expected error containing '" + pattern + "', got:\n";
+    if (errors.length == 0) {
+      msg = msg + "  (none)\n";
+    } else {
+      var j = 0;
+      while (j < errors.length) {
+        msg = msg + "  - " + errors[j].message + "\n";
+        j += 1;
+      }
+    }
+    throw new Error(msg);
+  }
+};
+
+/**
+ * Filter diagnostics to only error severity.
+ */
+let errorDiagnostics = (diags: Array<Diagnostic>): Array<Diagnostic> => {
+  let errors = new Array<Diagnostic>(4);
+  var i = 0;
+  while (i < diags.length) {
+    match (diags[i].severity) {
+      case DiagnosticSeverity.Error: errors.push(diags[i])
+      case _: {}
+    }
+    i += 1;
+  }
+  return errors;
+};
+
+/**
+ * Substring check (no builtins yet).
+ */
+let contains = (s: String, sub: String): boolean => {
+  if (sub.length > s.length) { return false; }
+  var i = 0;
+  while (i <= s.length - sub.length) {
+    if (s.sliceBytes(i, i + sub.length) == sub) {
+      return true;
+    }
+    i += 1;
+  }
+  return false;
+};
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+export let tests = suite('Checker API', (): void => {
+
+  // ==========================================================================
+  // Basic API surface
+  // ==========================================================================
+
+  suite('checkModule returns a CheckResult', (): void => {
+
+    test('valid source produces CheckResult with no errors', (ctx: TestContext): void => {
+      let result = checkOk("let x = 42;");
+      // CheckResult has a model and diagnostics
+      isTrue(result.diagnostics.length == 0);
+    });
+
+    test('invalid source produces diagnostics', (ctx: TestContext): void => {
+      let result = check("let x: i32 = true;");
+      let errors = errorDiagnostics(result.diagnostics);
+      isTrue(errors.length > 0);
+    });
+
+    test('checkModule works without scope result', (ctx: TestContext): void => {
+      let ast = parse("let x = 1;", "<test>");
+      // Pass null for scopeResult — checker should still work
+      let result = checkModule(ast, null);
+      // It might have warnings about unresolved names, but shouldn't crash
+      isTrue(result.model != null);
+    });
+
+    test('multiple statements checked', (ctx: TestContext): void => {
+      let result = checkOk(
+        "let x = 1;\nlet y = 2;\nlet z = x;"
+      );
+      isTrue(result.diagnostics.length == 0);
+    });
+  });
+
+  // ==========================================================================
+  // SemanticModel: node types
+  // ==========================================================================
+
+  suite('SemanticModel records node types', (): void => {
+
+    test('integer literal has i32 type', (ctx: TestContext): void => {
+      let source = "let x = 42;";
+      let ast = parse(source, "<test>");
+      let scopeBuilder = new ScopeBuilder("<test>");
+      let scopeResult = scopeBuilder.build(ast);
+      let result = checkModule(ast, scopeResult);
+
+      // Navigate AST: body[0] is VariableDeclaration, its init is NumberLiteral
+      let decl = ast.body[0] as VariableDeclaration;
+      let initType = result.model.getNodeType(decl.init);
+      isTrue(initType != null);
+      equal(typeToString(initType as Type), "i32");
+    });
+
+    test('string literal has String type', (ctx: TestContext): void => {
+      let source = "let x = 'hello';";
+      let ast = parse(source, "<test>");
+      let scopeBuilder = new ScopeBuilder("<test>");
+      let scopeResult = scopeBuilder.build(ast);
+      let result = checkModule(ast, scopeResult);
+
+      let decl = ast.body[0] as VariableDeclaration;
+      let initType = result.model.getNodeType(decl.init);
+      isTrue(initType != null);
+      equal(typeToString(initType as Type), "String");
+    });
+
+    test('boolean literal has literal type', (ctx: TestContext): void => {
+      let source = "let x = true;";
+      let ast = parse(source, "<test>");
+      let scopeBuilder = new ScopeBuilder("<test>");
+      let scopeResult = scopeBuilder.build(ast);
+      let result = checkModule(ast, scopeResult);
+
+      let decl = ast.body[0] as VariableDeclaration;
+      let initType = result.model.getNodeType(decl.init);
+      isTrue(initType != null);
+      equal(typeToString(initType as Type), "true");
+    });
+
+    test('binary expression has inferred type', (ctx: TestContext): void => {
+      let source = "let x = 1 + 2;";
+      let ast = parse(source, "<test>");
+      let scopeBuilder = new ScopeBuilder("<test>");
+      let scopeResult = scopeBuilder.build(ast);
+      let result = checkModule(ast, scopeResult);
+
+      let decl = ast.body[0] as VariableDeclaration;
+      let initType = result.model.getNodeType(decl.init);
+      isTrue(initType != null);
+      equal(typeToString(initType as Type), "i32");
+    });
+
+    test('function expression has function type', (ctx: TestContext): void => {
+      let source = "let f = (x: i32): i32 => x;";
+      let ast = parse(source, "<test>");
+      let scopeBuilder = new ScopeBuilder("<test>");
+      let scopeResult = scopeBuilder.build(ast);
+      let result = checkModule(ast, scopeResult);
+
+      let decl = ast.body[0] as VariableDeclaration;
+      let initType = result.model.getNodeType(decl.init);
+      isTrue(initType != null);
+      let typeStr = typeToString(initType as Type);
+      // Should be something like "(x: i32) => i32"
+      isTrue(contains(typeStr, "i32"));
+    });
+  });
+
+  // ==========================================================================
+  // SemanticModel: binding types
+  // ==========================================================================
+
+  suite('SemanticModel records binding types', (): void => {
+
+    test('let binding has correct type via scope lookup', (ctx: TestContext): void => {
+      let source = "let x = 42;";
+      let ast = parse(source, "<test>");
+      let scopeBuilder = new ScopeBuilder("<test>");
+      let scopeResult = scopeBuilder.build(ast);
+      let result = checkModule(ast, scopeResult);
+
+      // Look up x in scope, then get its binding type
+      let info = scopeResult.rootScope.resolveValue("x");
+      isTrue(info != null);
+      let bindingType = result.model.getBindingType(info as SymbolInfo);
+      isTrue(bindingType != null);
+      equal(typeToString(bindingType as Type), "i32");
+    });
+
+    test('annotated binding has annotation type', (ctx: TestContext): void => {
+      let source = "let x: i32 = 42;";
+      let ast = parse(source, "<test>");
+      let scopeBuilder = new ScopeBuilder("<test>");
+      let scopeResult = scopeBuilder.build(ast);
+      let result = checkModule(ast, scopeResult);
+
+      let info = scopeResult.rootScope.resolveValue("x");
+      isTrue(info != null);
+      let bindingType = result.model.getBindingType(info as SymbolInfo);
+      isTrue(bindingType != null);
+      equal(typeToString(bindingType as Type), "i32");
+    });
+
+    test('var binding widens literal type', (ctx: TestContext): void => {
+      let source = "var x = true;";
+      let ast = parse(source, "<test>");
+      let scopeBuilder = new ScopeBuilder("<test>");
+      let scopeResult = scopeBuilder.build(ast);
+      let result = checkModule(ast, scopeResult);
+
+      let info = scopeResult.rootScope.resolveValue("x");
+      isTrue(info != null);
+      let bindingType = result.model.getBindingType(info as SymbolInfo);
+      isTrue(bindingType != null);
+      // var should widen true → boolean
+      equal(typeToString(bindingType as Type), "boolean");
+    });
+  });
+
+  // ==========================================================================
+  // Diagnostics
+  // ==========================================================================
+
+  suite('diagnostics', (): void => {
+
+    test('type mismatch produces error', (ctx: TestContext): void => {
+      checkError("let x: i32 = true;", "Type mismatch");
+    });
+
+    test('undeclared variable produces error', (ctx: TestContext): void => {
+      checkError("let x = y;", "not found");
+    });
+
+    test('error has location info', (ctx: TestContext): void => {
+      let result = check("let x: i32 = true;");
+      let errors = errorDiagnostics(result.diagnostics);
+      isTrue(errors.length > 0);
+      isTrue(errors[0].location != null);
+    });
+
+    test('multiple errors collected', (ctx: TestContext): void => {
+      let result = check("let x: i32 = true;\nlet y: String = 42;");
+      let errors = errorDiagnostics(result.diagnostics);
+      isTrue(errors.length >= 2);
+    });
+
+    test('valid code produces zero errors', (ctx: TestContext): void => {
+      let result = check("let x = 1;\nlet y = x + 2;");
+      let errors = errorDiagnostics(result.diagnostics);
+      equal(errors.length, 0);
+    });
+  });
+
+  // ==========================================================================
+  // Class declarations
+  // ==========================================================================
+
+  suite('class type creation', (): void => {
+
+    test('class creates a ClassType', (ctx: TestContext): void => {
+      let source = "class Point {\n  x: i32;\n  y: i32;\n  new(this.x, this.y);\n}";
+      let ast = parse(source, "<test>");
+      let scopeBuilder = new ScopeBuilder("<test>");
+      let scopeResult = scopeBuilder.build(ast);
+      let result = checkModule(ast, scopeResult);
+
+      let errors = errorDiagnostics(result.diagnostics);
+      equal(errors.length, 0);
+
+      // Point should be resolvable as a type
+      let info = scopeResult.rootScope.resolveType("Point");
+      isTrue(info != null);
+    });
+
+    test('class instantiation works', (ctx: TestContext): void => {
+      let result = checkOk(
+        "class Point {\n  x: i32;\n  y: i32;\n  new(this.x, this.y);\n}\nlet p = new Point(1, 2);"
+      );
+      isTrue(result.diagnostics.length == 0);
+    });
+
+    test('sealed class with variants', (ctx: TestContext): void => {
+      let result = checkOk(
+        "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(width: f64, height: f64)\n}"
+      );
+      isTrue(result.diagnostics.length == 0);
+    });
+
+    test('case class creates type', (ctx: TestContext): void => {
+      let result = checkOk(
+        "class Pair(first: i32, second: String)"
+      );
+      isTrue(result.diagnostics.length == 0);
+    });
+  });
+
+  // ==========================================================================
+  // Integration: scope + checker pipeline
+  // ==========================================================================
+
+  suite('scope integration', (): void => {
+
+    test('identifier resolves through scope', (ctx: TestContext): void => {
+      let result = checkOk("let x = 1;\nlet y = x;");
+      isTrue(result.diagnostics.length == 0);
+    });
+
+    test('function parameter types resolve', (ctx: TestContext): void => {
+      let result = checkOk(
+        "let add = (a: i32, b: i32): i32 => a + b;\nlet r = add(1, 2);"
+      );
+      isTrue(result.diagnostics.length == 0);
+    });
+
+    test('class members resolve from scope', (ctx: TestContext): void => {
+      let result = checkOk(
+        "class Foo {\n  value: i32;\n  new(this.value);\n  getValue(): i32 { return this.value; }\n}\nlet f = new Foo(42);\nlet v = f.getValue();"
+      );
+      isTrue(result.diagnostics.length == 0);
+    });
+
+    test('block scope isolates variables', (ctx: TestContext): void => {
+      // The inner x should not conflict with the outer x
+      let result = checkOk(
+        "let x = 1;\n{\n  let x = 2;\n}"
+      );
+      isTrue(result.diagnostics.length == 0);
+    });
+  });
+
+  // ==========================================================================
+  // Type checking: patterns and match
+  // ==========================================================================
+
+  suite('pattern matching', (): void => {
+
+    test('exhaustive match on sealed class passes', (ctx: TestContext): void => {
+      let result = checkOk(
+        "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(w: f64, h: f64)\n}\nlet describe = (s: Shape): String => match (s) {\n  case Circle {}: 'circle'\n  case Rect {}: 'rect'\n};"
+      );
+      isTrue(result.diagnostics.length == 0);
+    });
+
+    test('non-exhaustive match produces error', (ctx: TestContext): void => {
+      checkError(
+        "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(w: f64, h: f64)\n}\nlet describe = (s: Shape): String => match (s) {\n  case Circle {}: 'circle'\n};",
+        "Non-exhaustive"
+      );
+    });
+  });
+});

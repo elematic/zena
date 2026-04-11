@@ -746,6 +746,17 @@ self-hosted compiler, the checker should track which instantiations exist
 (it already does via interning), and codegen should consume that list rather
 than discovering instantiations on its own.
 
+**Testing:** The checker is validated at two levels:
+
+- **Portable semantics tests** (`tests/language/semantics/`) — compiler-agnostic
+  `.zena` files with `// @error:` directives, run by both bootstrap and
+  self-hosted compilers. A comprehensive porting plan maps ~278 tests from the
+  bootstrap checker's unit tests to portable format. See
+  `tests/language/semantics/PLAN.md`.
+- **Checker API tests** (`packages/zena-compiler/zena/test/checker_test.zena`) —
+  self-hosted unit tests that exercise the `checkModule()` API, `SemanticModel`
+  queries, and `Diagnostic` output directly.
+
 **Deliverable:** `check(modules: Array<Module>): SemanticModel`
 
 ### Milestone 4: LSP Foundation
