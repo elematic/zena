@@ -49,7 +49,7 @@ import {
   TypeParameter, Parameter, FieldDefinition, MethodDefinition,
   AccessorDeclaration, MatchCase, PropertyAssignment, SpreadElement,
   LetPatternCondition, BindingProperty, PropertySignature, CatchClause,
-  CaseClassParam, FieldInitializer, SuperInitializer,
+  CaseClassParam, FieldInitializer, SuperInitializer, EnumMember,
   MethodSignature, AccessorSignature, SetterInfo, SealedVariant
 } from './ast.zena';
 import {
@@ -736,6 +736,29 @@ export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExpor
         let info = ctx.model.resolveDeclaration(ast.body[pre]);
         if (info != null) {
           ctx.declareBinding(info as SymbolInfo, it);
+        }
+      }
+      case EnumDeclaration as enumDecl: {
+        // Pre-register enum as a distinct type alias for forward references.
+        let enumType = new TypeAliasType(enumDecl.name.name, null, new I32Type(), true);
+        ctx.declareTypeName(enumDecl.name.name, enumType);
+        // Value binding will be set during the main pass.
+      }
+      case MixinDeclaration as mixDecl: {
+        // Pre-register mixin type for forward references.
+        let mt = new MixinType(mixDecl.name.name);
+        ctx.declareTypeName(mixDecl.name.name, mt);
+        let info = ctx.model.resolveDeclaration(ast.body[pre]);
+        if (info != null) {
+          ctx.declareBinding(info as SymbolInfo, mt);
+        }
+      }
+      case DeclareFunction as declFunc: {
+        // Pre-register declared function for forward references.
+        // The full type will be resolved during the main pass.
+        let info = ctx.model.resolveDeclaration(ast.body[pre]);
+        if (info != null) {
+          ctx.declareBinding(info as SymbolInfo, new UnknownType());
         }
       }
       case _: {}
@@ -1545,14 +1568,22 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     case InterfaceDeclaration as id: {
       checkInterfaceDeclaration(ctx, id);
     }
-    case EnumDeclaration {}: {}       // TODO: Milestone 3d
-    case MixinDeclaration {}: {}      // TODO: Milestone 3b
+    case EnumDeclaration as ed: {
+      checkEnumDeclaration(ctx, ed);
+    }
+    case MixinDeclaration as md: {
+      checkMixinDeclaration(ctx, md);
+    }
     case TypeAliasDeclaration {name, typeAnnotation, loc}: {
       let aliasType = resolveTypeAnnotation(ctx, typeAnnotation);
       ctx.declareTypeName(name.name, aliasType);
     }
-    case DeclareFunction {}: {}       // TODO: External function declarations
-    case SymbolDeclaration {}: {}     // TODO: Symbol declarations
+    case DeclareFunction as df: {
+      checkDeclareFunction(ctx, df);
+    }
+    case SymbolDeclaration as sd: {
+      checkSymbolDeclaration(ctx, sd);
+    }
     case ForInStatement {pattern, iterable, body, loc}: {
       let iterableType = checkExpression(ctx, iterable, null);
       let elementType = getElementType(ctx, iterableType, iterable);
@@ -2865,6 +2896,363 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   }
 
   ctx.exitScope();
+};
+
+// ============================================================================
+// Enum Declaration
+// ============================================================================
+
+let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
+  let name = ed.name.name;
+  let members = ed.members;
+
+  // Determine backing type: string or i32.
+  var isStringEnum = false;
+  var mi = 0;
+  while (mi < members.length) {
+    let member = members[mi];
+    if (member.initializer != null) {
+      if (member.initializer is StringLiteral) {
+        isStringEnum = true;
+      }
+      // If NumberLiteral, stays as i32 (default).
+      mi = members.length; // break
+    }
+    mi += 1;
+  }
+
+  // Validate members and collect values.
+  var nextValue: i32 = 0;
+  var vi = 0;
+  while (vi < members.length) {
+    let member = members[vi];
+    if (member.initializer != null) {
+      let initType = checkExpression(ctx, member.initializer as Expression, null);
+      if (isStringEnum) {
+        let stringType = ctx.resolveTypeName("String");
+        if (stringType != null && !isAssignableTo(ctx, initType, stringType as Type)) {
+          ctx.error(
+            "Enum member initializer must be assignable to 'String'.",
+            DiagnosticCode.TypeMismatch,
+            member.loc
+          );
+        }
+      } else {
+        if (!isAssignableTo(ctx, initType, new I32Type())) {
+          ctx.error(
+            "Enum member initializer must be assignable to 'i32'.",
+            DiagnosticCode.TypeMismatch,
+            member.loc
+          );
+        }
+      }
+    } else {
+      if (isStringEnum) {
+        ctx.error(
+          "String enum member '" + member.name.name + "' must have an initializer.",
+          DiagnosticCode.TypeMismatch,
+          member.loc
+        );
+      }
+      nextValue += 1;
+    }
+    vi += 1;
+  }
+
+  // Create the enum type as a distinct type alias over the backing type.
+  var backingType: Type = new I32Type();
+  if (isStringEnum) {
+    let st = ctx.resolveTypeName("String");
+    if (st != null) { backingType = st as Type; }
+    else { backingType = new UnknownType(); }
+  }
+  let enumType = new TypeAliasType(name, null, backingType, true);
+
+  // Register the enum in the type namespace.
+  ctx.declareTypeName(name, enumType);
+
+  // Create a record type for the value namespace (e.g., Color.Red).
+  let fields = new HashMap<String, Type>();
+  var fi = 0;
+  while (fi < members.length) {
+    fields.set(members[fi].name.name, enumType);
+    fi += 1;
+  }
+  let enumValueType = new RecordT(fields, null);
+
+  // Register the enum value in the value namespace.
+  let info = ctx.model.resolveDeclaration(ed);
+  if (info != null) {
+    ctx.declareBinding(info as SymbolInfo, enumValueType);
+  }
+};
+
+// ============================================================================
+// Mixin Declaration
+// ============================================================================
+
+let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void => {
+  let mixinName = md.name.name;
+
+  // Look up pre-registered MixinType, or create one.
+  var mixinType: MixinType = new MixinType(mixinName);
+  let preRegistered = ctx.resolveTypeName(mixinName);
+  if (preRegistered != null) {
+    match (preRegistered as Type) {
+      case MixinType as existing: { mixinType = existing; }
+      case _: {}
+    }
+  }
+
+  // Type parameters.
+  ctx.enterScope();
+  if (md.typeParameters != null) {
+    let tps = md.typeParameters as Array<TypeParameter>;
+    var resolvedTps = new Array<TypeParameterType>();
+    var tpi = 0;
+    while (tpi < tps.length) {
+      let tp = tps[tpi];
+      var constraint: Type | null = null;
+      if (tp.constraint != null) {
+        constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+      }
+      let tpType = new TypeParameterType(tp.name, constraint, null);
+      ctx.declareTypeName(tp.name, tpType);
+      resolvedTps.push(tpType);
+      tpi += 1;
+    }
+    mixinType.typeParameters = resolvedTps;
+  }
+
+  // Resolve 'on' type.
+  if (md.on != null) {
+    let onId = md.on as Identifier;
+    let onResolved = ctx.resolveTypeName(onId.name);
+    if (onResolved != null) {
+      match (onResolved as Type) {
+        case ClassType as onClass: {
+          mixinType.onType = onClass;
+        }
+        case _: {
+          ctx.error(
+            "Mixin 'on' type must be a class, got '" + typeToString(onResolved as Type) + "'.",
+            DiagnosticCode.TypeMismatch,
+            md.loc
+          );
+        }
+      }
+    } else {
+      ctx.error(
+        "Type '" + onId.name + "' not found in 'on' clause.",
+        DiagnosticCode.SymbolNotFound,
+        md.loc
+      );
+    }
+  }
+
+  // Resolve composed mixins.
+  if (md.mixins != null) {
+    let mixinAnns = md.mixins as Array<TypeAnnotation>;
+    var ci = 0;
+    while (ci < mixinAnns.length) {
+      let composedType = resolveTypeAnnotation(ctx, mixinAnns[ci]);
+      match (composedType) {
+        case MixinType as composedMixin: {
+          // Copy fields and methods from composed mixin.
+          let fieldKeys = composedMixin.fields.keys();
+          while (let (true, key) = fieldKeys.next()) {
+            mixinType.fields.set(key, composedMixin.fields[key]);
+            if (composedMixin.fieldMutability.has(key)) {
+              mixinType.fieldMutability.set(key, composedMixin.fieldMutability[key]);
+            }
+          }
+          let methodKeys = composedMixin.methods.keys();
+          while (let (true, key) = methodKeys.next()) {
+            mixinType.methods.set(key, composedMixin.methods[key]);
+          }
+        }
+        case _: {
+          if (!(composedType is UnknownType)) {
+            ctx.error(
+              "'" + typeToString(composedType) + "' is not a mixin.",
+              DiagnosticCode.TypeMismatch,
+              md.loc
+            );
+          }
+        }
+      }
+      ci += 1;
+    }
+  }
+
+  // Process body members.
+  var bi = 0;
+  while (bi < md.body.length) {
+    let member = md.body[bi];
+    match (member) {
+      case FieldDefinition as fd: {
+        let fieldName = match (fd.name) {
+          case Identifier {name}: name
+          case _: "<unknown>"
+        };
+        let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation);
+        mixinType.fields.set(fieldName, fieldType);
+        let isMutable = fd.mutability != null && fd.mutability == "var";
+        mixinType.fieldMutability.set(fieldName, isMutable);
+
+        // Check initializer if present.
+        if (fd.value != null) {
+          let initType = checkExpression(ctx, fd.value as Expression, fieldType);
+          if (!isAssignableTo(ctx, initType, fieldType)) {
+            ctx.error(
+              "Type mismatch: field '" + fieldName + "' has type '" +
+              typeToString(fieldType) + "' but initializer has type '" +
+              typeToString(initType) + "'.",
+              DiagnosticCode.TypeMismatch,
+              fd.loc
+            );
+          }
+        }
+      }
+      case MethodDefinition as methDef: {
+        let methodName = match (methDef.name) {
+          case Identifier {name}: name
+          case _: "<unknown>"
+        };
+
+        // Reject constructors in mixins.
+        if (methodName == "<constructor>") {
+          ctx.error(
+            "Mixins cannot define constructors.",
+            DiagnosticCode.IncompatibleTypes,
+            methDef.loc
+          );
+        } else {
+          // Build FunctionType from annotations.
+          let paramTypes = new Array<Type>();
+          let paramNames = new Array<String>();
+          var mpi = 0;
+          while (mpi < methDef.params.length) {
+            let param = methDef.params[mpi];
+            var paramType: Type = new UnknownType();
+            if (param.typeAnnotation != null) {
+              paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
+            }
+            paramTypes.push(paramType);
+            paramNames.push(param.name.name);
+            mpi += 1;
+          }
+          var retType: Type = new VoidType();
+          if (methDef.returnType != null) {
+            retType = resolveTypeAnnotation(ctx, methDef.returnType as TypeAnnotation);
+          }
+          let ft = new FunctionType(paramTypes, paramNames, retType);
+          ft.isFinal = methDef.isFinal;
+          ft.isAbstract = methDef.isAbstract;
+          mixinType.methods.set(methodName, ft);
+        }
+      }
+      case AccessorDeclaration as acc: {
+        let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
+        let accName = match (acc.name) {
+          case Identifier {name}: name
+          case _: "<unknown>"
+        };
+        mixinType.fields.set(accName, accType);
+        if (acc.getter != null) {
+          mixinType.methods.set(accName, new FunctionType(new Array<Type>(), null, accType));
+        }
+      }
+      case _: {}
+    }
+    bi += 1;
+  }
+
+  // Register mixin type.
+  ctx.declareTypeName(mixinName, mixinType);
+  let info = ctx.model.resolveDeclaration(md);
+  if (info != null) {
+    ctx.declareBinding(info as SymbolInfo, mixinType);
+  }
+
+  ctx.exitScope();
+};
+
+// ============================================================================
+// Declare Function (External Declarations)
+// ============================================================================
+
+let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
+  // Resolve from annotations (type params, params, return type).
+  // DeclareFunction always has full annotations — no body to check.
+  ctx.enterScope();
+
+  // Type parameters.
+  var resolvedTypeParams: Array<TypeParameterType> | null = null;
+  if (df.typeParameters != null) {
+    let tps = df.typeParameters as Array<TypeParameter>;
+    resolvedTypeParams = new Array<TypeParameterType>();
+    var tpi = 0;
+    while (tpi < tps.length) {
+      let tp = tps[tpi];
+      var constraint: Type | null = null;
+      if (tp.constraint != null) {
+        constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+      }
+      let tpType = new TypeParameterType(tp.name, constraint, null);
+      ctx.declareTypeName(tp.name, tpType);
+      (resolvedTypeParams as Array<TypeParameterType>).push(tpType);
+      tpi += 1;
+    }
+  }
+
+  // Parameter types.
+  let paramTypes = new Array<Type>();
+  let paramNames = new Array<String>();
+  var pi = 0;
+  while (pi < df.params.length) {
+    let param = df.params[pi];
+    paramNames.push(param.name.name);
+    if (param.typeAnnotation != null) {
+      paramTypes.push(resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation));
+    } else {
+      paramTypes.push(new UnknownType());
+    }
+    pi += 1;
+  }
+
+  // Return type.
+  let retType = resolveTypeAnnotation(ctx, df.returnType);
+
+  ctx.exitScope();
+
+  // Build function type.
+  let funcType = new FunctionType(paramTypes, paramNames, retType);
+  if (resolvedTypeParams != null) {
+    funcType.typeParameters = resolvedTypeParams;
+  }
+
+  // Declare in value namespace.
+  let info = ctx.model.resolveDeclaration(df);
+  if (info != null) {
+    ctx.declareBinding(info as SymbolInfo, funcType);
+  }
+};
+
+// ============================================================================
+// Symbol Declaration
+// ============================================================================
+
+let checkSymbolDeclaration = (ctx: CheckerContext, sd: SymbolDeclaration): void => {
+  let name = sd.name.name;
+
+  let symbolType = new SymbolType(ctx.freshTypeId(), name);
+
+  // Declare in value namespace.
+  let info = ctx.model.resolveDeclaration(sd);
+  if (info != null) {
+    ctx.declareBinding(info as SymbolInfo, symbolType);
+  }
 };
 
 // ============================================================================
