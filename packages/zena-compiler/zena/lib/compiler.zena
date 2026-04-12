@@ -37,7 +37,13 @@ import {
   SymbolInfo,
   UnresolvedName
 } from './scope.zena';
-import { ImportDeclaration, ImportSpecifier, ExportFromDeclaration } from './ast.zena';
+import { ImportDeclaration, ImportSpecifier, ExportFromDeclaration, Node, Module, SourceLocation } from './ast.zena';
+import { parse } from './parser.zena';
+import { checkModule, CheckResult } from './checker.zena';
+import { walk } from './visitor.zena';
+import { Diagnostic } from './diagnostics.zena';
+import { SemanticModel } from './semantic-model.zena';
+import { typeToString } from './types.zena';
 
 // Re-export types used by consumers.
 export { CompilerHost } from './library-loader.zena';
@@ -45,6 +51,10 @@ export { PackageConfig, ModuleExport, ResolvedModule } from './module-resolver.z
 export { LibraryRecord, LibraryGraph } from './library-loader.zena';
 export { loadPackageMap, buildStdlibConfig } from './package-manifest.zena';
 export { ScopeResult, SymbolInfo, UnresolvedName } from './scope.zena';
+export { CheckResult } from './checker.zena';
+export { SemanticModel } from './semantic-model.zena';
+export { Diagnostic, DiagnosticSeverity, DiagnosticCode, DiagnosticLocation } from './diagnostics.zena';
+export { typeToString } from './types.zena';
 
 // ============================================================================
 // Compiler Options
@@ -313,4 +323,52 @@ export let createCompiler = (host: CompilerHost, options: CompilerOptions): Comp
   let resolver = buildResolver(options);
   let loader = new LibraryLoader(host, resolver);
   return new Compiler(host, options, resolver, loader);
+};
+
+// ============================================================================
+// Single-File API (for LSP and quick checks)
+// ============================================================================
+
+// Parse, scope-analyze, and type-check a single source string.
+//
+// This is the simplest way to get diagnostics and type information for
+// one file without setting up a full Compiler with module resolution.
+// Cross-module imports won't resolve, but parse errors, scope errors,
+// and single-file type errors will all be reported.
+//
+// Returns a CheckResult containing the SemanticModel (node types,
+// binding types, name resolution) and diagnostics.
+export let checkSource = (source: String, path: String): CheckResult => {
+  let ast = parse(source, path);
+  let builder = new ScopeBuilder(path);
+  let scopeResult = builder.build(ast);
+  return checkModule(ast, scopeResult);
+};
+
+// ============================================================================
+// AST Query Utilities
+// ============================================================================
+
+// Find the innermost AST node whose span contains the given byte offset.
+//
+// Walks the tree depth-first. When a node's loc contains `offset`, we
+// record it and descend into children. The last (deepest) match wins,
+// giving the most specific node at that position.
+//
+// Useful for LSP features that map a cursor position to an AST node
+// (hover, go-to-definition, etc.).
+export let findNodeAtOffset = (root: Node, offset: i32): Node | null => {
+  var found: Node | null = null;
+  walk(root, (node: Node): boolean => {
+    if (node.loc != null) {
+      let loc = node.loc as SourceLocation;
+      if (offset >= loc.start && offset < loc.end) {
+        found = node;
+        return true;  // descend — a child may be more specific
+      }
+      return false;  // outside this node's span, skip subtree
+    }
+    return true;  // no loc info, descend anyway
+  }, (node: Node): void => {});
+  return found;
 };

@@ -1,0 +1,198 @@
+// Tests for compiler single-file API: checkSource and findNodeAtOffset.
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { Array } from 'zena:array';
+import { checkSource, findNodeAtOffset, CheckResult } from '../lib/compiler.zena';
+import { SemanticModel } from '../lib/semantic-model.zena';
+import { Diagnostic, DiagnosticSeverity, DiagnosticLocation } from '../lib/diagnostics.zena';
+import {
+  Type, I32Type, typeToString
+} from '../lib/types.zena';
+import {
+  Node, Module, SourceLocation,
+  VariableDeclaration, ExpressionStatement,
+  Identifier, NumberLiteral, StringLiteral, BooleanLiteral,
+  BinaryExpression, FunctionExpression, CallExpression,
+  IdentifierPattern
+} from '../lib/ast.zena';
+import { parse } from '../lib/parser.zena';
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+let errorDiagnostics = (diags: Array<Diagnostic>): Array<Diagnostic> => {
+  let errors = new Array<Diagnostic>(4);
+  var i = 0;
+  while (i < diags.length) {
+    match (diags[i].severity) {
+      case DiagnosticSeverity.Error: errors.push(diags[i])
+      case _: {}
+    }
+    i += 1;
+  }
+  return errors;
+};
+
+let contains = (s: String, sub: String): boolean => {
+  if (sub.length > s.length) { return false; }
+  var i = 0;
+  while (i <= s.length - sub.length) {
+    if (s.sliceBytes(i, i + sub.length) == sub) {
+      return true;
+    }
+    i += 1;
+  }
+  return false;
+};
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+export let tests = suite('Compiler Single-File API', (): void => {
+
+  // ==========================================================================
+  // checkSource
+  // ==========================================================================
+
+  suite('checkSource', (): void => {
+
+    test('valid code returns no errors', (ctx: TestContext): void => {
+      let result = checkSource("let x = 42;", "<test>");
+      let errors = errorDiagnostics(result.diagnostics);
+      equal(errors.length, 0);
+    });
+
+    test('returns SemanticModel with node types', (ctx: TestContext): void => {
+      let result = checkSource("let x = 42;", "<test>");
+      // The model should have recorded types
+      isTrue(result.model.nodeTypes.size > 0);
+    });
+
+    test('type mismatch produces diagnostic', (ctx: TestContext): void => {
+      let result = checkSource("let x: i32 = 'hello';", "<test>");
+      let errors = errorDiagnostics(result.diagnostics);
+      isTrue(errors.length > 0);
+    });
+
+    test('diagnostics have location info', (ctx: TestContext): void => {
+      let result = checkSource("let x: i32 = 'hello';", "<test>");
+      let errors = errorDiagnostics(result.diagnostics);
+      isTrue(errors.length > 0);
+      isTrue(errors[0].location != null);
+      let loc = errors[0].location as DiagnosticLocation;
+      isTrue(loc.line > 0);
+      isTrue(loc.column > 0);
+    });
+
+    test('path is recorded in diagnostic location', (ctx: TestContext): void => {
+      let result = checkSource("let x: i32 = 'hello';", "my-file.zena");
+      let errors = errorDiagnostics(result.diagnostics);
+      isTrue(errors.length > 0);
+      isTrue(errors[0].location != null);
+      let loc = errors[0].location as DiagnosticLocation;
+      equal(loc.file, "my-file.zena");
+    });
+
+    test('multiple errors are collected', (ctx: TestContext): void => {
+      let source = "let x: i32 = 'hello';\nlet y: boolean = 42;";
+      let result = checkSource(source, "<test>");
+      let errors = errorDiagnostics(result.diagnostics);
+      isTrue(errors.length >= 2);
+    });
+
+    test('scope errors are reported', (ctx: TestContext): void => {
+      let result = checkSource("let x = unknownVar;", "<test>");
+      let errors = errorDiagnostics(result.diagnostics);
+      isTrue(errors.length > 0);
+      isTrue(contains(errors[0].message, "unknown"));
+    });
+  });
+
+  // ==========================================================================
+  // findNodeAtOffset
+  // ==========================================================================
+
+  suite('findNodeAtOffset', (): void => {
+
+    test('returns null for offset outside root', (ctx: TestContext): void => {
+      // "let x = 42;" is 12 bytes (indices 0..11)
+      let ast = parse("let x = 42;", "<test>");
+      let result = findNodeAtOffset(ast, 1000);
+      isTrue(result == null);
+    });
+
+    test('finds number literal at its offset', (ctx: TestContext): void => {
+      // "let x = 42;"
+      //  0123456789...
+      //          ^^ 42 starts at offset 8
+      let ast = parse("let x = 42;", "<test>");
+      let result = findNodeAtOffset(ast, 8);
+      isTrue(result != null);
+      let node = result as Node;
+      isTrue(node is NumberLiteral);
+    });
+
+    test('finds identifier at its offset', (ctx: TestContext): void => {
+      // "let x = 42;"
+      //  01234
+      //      ^ x is at offset 4
+      let ast = parse("let x = 42;", "<test>");
+      let result = findNodeAtOffset(ast, 4);
+      isTrue(result != null);
+      let node = result as Node;
+      // At offset 4, x is the IdentifierPattern in the declaration
+      isTrue(node is IdentifierPattern);
+    });
+
+    test('finds string literal', (ctx: TestContext): void => {
+      // "let s = 'hello';"
+      //  01234567890123456
+      //          ^ quote starts at 8
+      let ast = parse("let s = 'hello';", "<test>");
+      let result = findNodeAtOffset(ast, 9);
+      isTrue(result != null);
+      let node = result as Node;
+      isTrue(node is StringLiteral);
+    });
+
+    test('finds deepest node in nested expression', (ctx: TestContext): void => {
+      // "let x = 1 + 2;"
+      //  0123456789012345
+      //              ^ 2 at offset 12
+      let ast = parse("let x = 1 + 2;", "<test>");
+      let result = findNodeAtOffset(ast, 12);
+      isTrue(result != null);
+      let node = result as Node;
+      // Should find the NumberLiteral 2, not the BinaryExpression
+      isTrue(node is NumberLiteral);
+    });
+
+    test('finds binary expression between operands', (ctx: TestContext): void => {
+      // "let x = 1 + 2;"
+      //  0123456789012345
+      //            ^ + at offset 10
+      let ast = parse("let x = 1 + 2;", "<test>");
+      let result = findNodeAtOffset(ast, 10);
+      isTrue(result != null);
+      let node = result as Node;
+      // The + itself is not a node — at this offset we should get the
+      // BinaryExpression (parent of both operands)
+      isTrue(node is BinaryExpression);
+    });
+
+    test('works on multi-line source', (ctx: TestContext): void => {
+      let source = "let x = 1;\nlet y = 2;";
+      //             0123456789 0 1234567890
+      //                        ^ offset 11 = start of 'let y ...'
+      let ast = parse(source, "<test>");
+      // offset 19 is at the '2' in the second line
+      let result = findNodeAtOffset(ast, 19);
+      isTrue(result != null);
+      let node = result as Node;
+      isTrue(node is NumberLiteral);
+    });
+  });
+});
