@@ -692,7 +692,7 @@ lookahead), and `propagateBreaks` — is fully working and well-tested.
 
 1. ~~Comment attachment for expression-level nodes~~ — done (expression-level `withComments` + `getChildBody` for all expression types)
 2. String literal escaping — not implemented (can't safely normalize strings containing quotes)
-3. Method chain grouping — not implemented
+3. ~~Method chain grouping~~ — done (chains of 2+ method calls group/indent with softline breaks)
 4. Binary expression chain breaking — basic only (no operator-first style)
 
 **Test coverage:**

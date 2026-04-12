@@ -341,6 +341,34 @@ let tests = suite('formatter', () => {
     let result = format(input);
     check('comment before arg', result, "let x = foo(\n  // first arg\n  1,\n  2\n);\n");
   });
+
+  // ========================================================================
+  // Method chain grouping
+  // ========================================================================
+
+  test('short method chain stays on one line', (t: TestContext) => {
+    let input = "let x = foo.bar().baz();";
+    let result = format(input);
+    check('short chain', result, "let x = foo.bar().baz();\n");
+  });
+
+  test('long method chain breaks with indentation', (t: TestContext) => {
+    let input = "let x = something.veryLongMethodName().anotherLongMethodName().yetAnotherMethod();";
+    let result = format(input);
+    check('long chain', result, "let x = something\n  .veryLongMethodName()\n  .anotherLongMethodName()\n  .yetAnotherMethod();\n");
+  });
+
+  test('method chain with arguments', (t: TestContext) => {
+    let input = "let x = arr.map(transform).filter(predicate).reduce(accumulator, initial);";
+    let result = format(input);
+    check('chain with args', result, "let x = arr.map(transform).filter(predicate).reduce(accumulator, initial);\n");
+  });
+
+  test('single method call is not grouped as chain', (t: TestContext) => {
+    let input = "let x = foo.bar();";
+    let result = format(input);
+    check('single call', result, "let x = foo.bar();\n");
+  });
 });
 
 // Entry point - returns number of failed tests (0 = success)

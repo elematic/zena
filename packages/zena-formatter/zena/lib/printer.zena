@@ -1098,6 +1098,109 @@ let printAssignmentExpression = (expr: AssignmentExpression): Doc => {
 // Member / Index Expression
 // ============================================================================
 
+/**
+ * Check if an expression is the head of a method chain (2+ method calls).
+ * e.g., foo.bar().baz() is a chain of length 2.
+ */
+let isMethodChain = (expr: Expression): boolean => match (expr) {
+  case CallExpression {callee}: match (callee) {
+    case MemberExpression {object}: isChainLink(object)
+    case _: false
+  }
+  case _: false
+};
+
+/**
+ * Check if an expression is a call with a member callee (one link in a chain).
+ */
+let isChainLink = (expr: Expression): boolean => match (expr) {
+  case CallExpression {callee}: match (callee) {
+    case MemberExpression {}: true
+    case _: false
+  }
+  case _: false
+};
+
+/**
+ * Represents one segment of a method chain: .method(args)
+ */
+class ChainSegment {
+  var dot: Doc;
+  var property: Doc;
+  var args: Doc;
+  new(this.dot, this.property, this.args);
+}
+
+/**
+ * Print a method chain with grouped line-breaking.
+ *
+ * Flattens foo.bar(a).baz(b).qux(c) into:
+ *   [head] [.bar(a), .baz(b), .qux(c)]
+ *
+ * When it fits: foo.bar(a).baz(b).qux(c)
+ * When it breaks:
+ *   foo
+ *     .bar(a)
+ *     .baz(b)
+ *     .qux(c)
+ */
+let printMethodChain = (expr: CallExpression): Doc => {
+  // Collect chain segments in reverse order (innermost first)
+  let segments = new Array<ChainSegment>();
+  var current: Expression = expr;
+  var collecting = true;
+
+  while (collecting) {
+    collecting = isChainLink(current);
+    if (collecting) {
+      let callExpr = current as CallExpression;
+      let memberExpr = callExpr.callee as MemberExpression;
+
+      let dot = if (memberExpr.optional) { text('?.') } else { text('.') };
+      let prop = text(memberExpr.property.name);
+
+      // Build args doc
+      let argParts = new Array<Doc>();
+      if (callExpr.typeArguments != null) {
+        let tas = callExpr.typeArguments as Array<TypeAnnotation>;
+        if (tas.length > 0) {
+          argParts.push(text('<'));
+          argParts.push(join(text(', '), mapTypeAnnotations(tas)));
+          argParts.push(text('>'));
+        }
+      }
+      argParts.push(group(concat(printArgList(callExpr.args))));
+      let argDoc = concat(argParts);
+
+      segments.push(new ChainSegment(dot, prop, argDoc));
+      current = memberExpr.object;
+    }
+  }
+
+  // Print the head (non-chain part)
+  let head = printExpression(current);
+
+  // Reverse segments to get correct order (outermost first)
+  let ordered = new Array<Doc>(segments.length);
+  var i = segments.length - 1;
+  while (i >= 0) {
+    let seg = segments[i];
+    ordered.push(concat(docs3(seg.dot, seg.property, seg.args)));
+    i -= 1;
+  }
+
+  // Build: group(head, indent(softline, .a(), softline, .b(), ...))
+  let chainParts = new Array<Doc>(ordered.length * 2);
+  var j: i32 = 0;
+  while (j < ordered.length) {
+    chainParts.push(softline);
+    chainParts.push(ordered[j]);
+    j += 1;
+  }
+
+  return group(concat(docs2(head, indent(concat(chainParts)))));
+};
+
 let printMemberExpression = (expr: MemberExpression): Doc => {
   let parts = new Array<Doc>();
   parts.push(printExpression(expr.object));
@@ -1120,6 +1223,11 @@ let printIndexExpression = (expr: IndexExpression): Doc => {
 // ============================================================================
 
 let printCallExpression = (expr: CallExpression): Doc => {
+  // Check for method chain (2+ chained method calls)
+  if (isMethodChain(expr)) {
+    return printMethodChain(expr);
+  }
+
   let parts = new Array<Doc>();
   parts.push(printExpression(expr.callee));
   if (expr.typeArguments != null) {
