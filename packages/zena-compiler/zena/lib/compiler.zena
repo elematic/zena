@@ -342,7 +342,40 @@ export let checkSource = (source: String, path: String): CheckResult => {
   let ast = parse(source, path);
   let builder = new ScopeBuilder(path);
   let scopeResult = builder.build(ast);
-  return checkModule(ast, scopeResult);
+  return checkModule(ast, scopeResult, null);
+};
+
+// ============================================================================
+// Compilation-Level Checking
+// ============================================================================
+
+// Type-check the entry module of a compilation result with full
+// cross-module import resolution.
+//
+// Builds a dependency exports map from the entry's import specifiers
+// and the resolved dependency scope results, then passes it to the
+// checker so imported type and value names are recognized.
+export let checkCompilation = (result: CompilationResult): CheckResult => {
+  let entry = result.entry;
+  let depExports = new HashMap<String, ScopeModuleExports>();
+
+  // Build the map: import specifier → dependency's ModuleExports.
+  let specIter = entry.imports.keys();
+  while (let (true, specifier) = specIter.next()) {
+    let depPath = entry.imports[specifier];
+    // Search the libraries array for the dependency.
+    var li = 0;
+    while (li < result.libraries.length) {
+      let lib = result.libraries[li];
+      if (lib.path == depPath && lib.scopeResult != null) {
+        let sr = lib.scopeResult as ScopeResult;
+        depExports.set(specifier, sr.exports);
+      }
+      li = li + 1;
+    }
+  }
+
+  return checkModule(entry.ast, entry.scopeResult, depExports);
 };
 
 // ============================================================================

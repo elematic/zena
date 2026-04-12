@@ -23,10 +23,9 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { Error } from 'zena:error';
 import {
-  createCompiler, CompilerOptions, CompilerHost
+  createCompiler, checkCompilation, CompilerOptions, CompilerHost
 } from './lib/compiler.zena';
 import { PackageConfig } from './lib/module-resolver.zena';
-import { checkModule } from './lib/checker.zena';
 import {
   Diagnostic, DiagnosticCode, DiagnosticLocation, DiagnosticSeverity
 } from './lib/diagnostics.zena';
@@ -114,8 +113,8 @@ export let check = (source: String, path: String): Array<Diagnostic> => {
   let diagnostics = try {
     let result = compiler.compile(path);
 
-    // Type-check the entry module with cross-module scope info.
-    let checkResult = checkModule(result.entry.ast, result.entry.scopeResult);
+    // Type-check the entry module with cross-module import resolution.
+    let checkResult = checkCompilation(result);
     checkResult.diagnostics
   } catch (e) {
     // If the compiler threw, return the error as a single diagnostic.

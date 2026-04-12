@@ -71,7 +71,7 @@ import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity,
   DiagnosticLocation
 } from './diagnostics.zena';
-import { ScopeResult, SymbolInfo } from './scope.zena';
+import { ScopeResult, SymbolInfo, ModuleExports } from './scope.zena';
 
 // ============================================================================
 // Checker Context
@@ -175,9 +175,16 @@ class CheckerContext {
    */
   #preludeValues = new HashMap<String, Type>();
 
-  new(file: String, scopeResult: ScopeResult | null)
+  /**
+   * Dependency exports map: import specifier → ModuleExports.
+   * Populated by the compiler so the checker can resolve imported types.
+   */
+  var #depExports?: HashMap<String, ModuleExports> | null = null;
+
+  new(file: String, scopeResult: ScopeResult | null, depExports: HashMap<String, ModuleExports> | null)
     : diagnostics = new DiagnosticBag(file),
-      #scopeResult = scopeResult {
+      #scopeResult = scopeResult,
+      #depExports = depExports {
     
     // Initialize with module-level scope.
     this.#typeScopes.push(new HashMap<String, Type>());
@@ -463,6 +470,15 @@ class CheckerContext {
     return null;
   }
 
+  // --- Dependency exports ---
+
+  /**
+   * Get the dependency exports map (import specifier → ModuleExports).
+   */
+  depExports: HashMap<String, ModuleExports> | null {
+    get { return this.#depExports; }
+  }
+
   // --- Return type ---
 
   returnType: Type | null {
@@ -664,11 +680,15 @@ export class CheckResult(
  * `scopeResult` is the output of scope analysis for this module.
  * If null, the checker will work without cross-module import info.
  *
+ * `depExports` maps import specifiers (as written in source) to the
+ * ModuleExports of the resolved dependency module. When provided, the
+ * checker resolves imported type and value names from these exports.
+ *
  * This version loads the standard prelude types (String, Array, etc.)
  * automatically.
  */
-export let checkModule = (ast: Module, scopeResult: ScopeResult | null): CheckResult => {
-  let ctx = new CheckerContext(ast.path, scopeResult);
+export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExports: HashMap<String, ModuleExports> | null): CheckResult => {
+  let ctx = new CheckerContext(ast.path, scopeResult, depExports);
 
   // Register standard prelude types.
   registerStandardPrelude(ctx);
@@ -1454,7 +1474,69 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       }
     }
     // Declarations that are handled during pre-pass or skipped for now.
-    case ImportDeclaration {}: {}
+    case ImportDeclaration {moduleSpecifier, imports}: {
+      let deps = ctx.depExports;
+      if (deps != null) {
+        let depsMap = deps as HashMap<String, ModuleExports>;
+        let specifier = moduleSpecifier.value;
+        if (depsMap.has(specifier)) {
+          let depMod = depsMap[specifier];
+          var impIdx = 0;
+          while (impIdx < imports.length) {
+            let spec = imports[impIdx];
+            let importedName = spec.imported.name;
+            let localName = spec.local.name;
+
+            // Register type imports (classes, interfaces, etc.)
+            let typeExport = depMod.getType(importedName);
+            if (typeExport != null) {
+              let si = typeExport as SymbolInfo;
+              let decl = si.declaration;
+              if (decl != null) {
+                match (decl as Node) {
+                  case ClassDeclaration {name}: {
+                    let ct = new ClassType(ctx.freshTypeId(), name.name);
+                    ctx.declareTypeName(localName, ct);
+                    // Also bind in value namespace so constructors resolve.
+                    let localInfo = ctx.model.resolveDeclaration(spec);
+                    if (localInfo != null) {
+                      ctx.declareBinding(localInfo as SymbolInfo, ct);
+                    }
+                  }
+                  case InterfaceDeclaration {name}: {
+                    let it = new InterfaceType(ctx.freshTypeId(), name.name);
+                    ctx.declareTypeName(localName, it);
+                    let localInfo = ctx.model.resolveDeclaration(spec);
+                    if (localInfo != null) {
+                      ctx.declareBinding(localInfo as SymbolInfo, it);
+                    }
+                  }
+                  case _: {
+                    // Type alias, enum, etc. — register as unknown for now.
+                    ctx.declareTypeName(localName, new UnknownType());
+                  }
+                }
+              } else {
+                // Built-in type with no declaration node.
+                ctx.declareTypeName(localName, new UnknownType());
+              }
+            }
+
+            // Register value imports (functions, variables).
+            let valueExport = depMod.getValue(importedName);
+            if (valueExport != null && typeExport == null) {
+              // Pure value import (not also a type).
+              let localInfo = ctx.model.resolveDeclaration(spec);
+              if (localInfo != null) {
+                ctx.declareBinding(localInfo as SymbolInfo, new UnknownType());
+              }
+            }
+
+            impIdx = impIdx + 1;
+          }
+        }
+      }
+    }
     case ExportAllDeclaration {}: {}
     case ExportFromDeclaration {}: {}
     case ClassDeclaration as cd: {

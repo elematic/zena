@@ -266,4 +266,21 @@ export final class MyString {
     assert.ok(d.line > 0, `Expected line > 0, got ${d.line}`);
     assert.ok(d.column > 0, `Expected column > 0, got ${d.column}`);
   });
+
+  test('imported types resolve in type annotations', () => {
+    // A file that imports Array (a class) from stdlib and uses it as a type.
+    const source = `
+      import { Array } from 'zena:array';
+      let describe = (arr: Array<i32>): i32 => 0;
+    `;
+    const diags = checkSource(lsp, source);
+    const errors = diags.filter((d) => d.severity === 0);
+    // "Array" should be recognized as a type — no "Type 'Array' not found".
+    const typeNotFound = errors.filter((d) => d.message.includes('not found'));
+    assert.strictEqual(
+      typeNotFound.length,
+      0,
+      `Imported type should resolve, got: ${JSON.stringify(typeNotFound)}`,
+    );
+  });
 });
