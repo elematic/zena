@@ -13,25 +13,118 @@
  * String parameters (source, path) are passed as externref via the
  * $stringCreate/$stringSetByte exports. String results (messages) are
  * returned as externref and read via $stringGetByte/$stringGetLength.
+ *
+ * Cross-module imports are resolved via the full Compiler pipeline.
+ * The host provides a read_file import so the compiler can load
+ * dependency sources from the filesystem.
  */
 
 import { Array } from 'zena:array';
-import { checkSource, CheckResult } from './lib/compiler.zena';
+import { HashMap } from 'zena:map';
+import { Error } from 'zena:error';
 import {
-  Diagnostic, DiagnosticLocation, DiagnosticSeverity
+  createCompiler, CompilerOptions, CompilerHost
+} from './lib/compiler.zena';
+import { PackageConfig } from './lib/module-resolver.zena';
+import { checkModule } from './lib/checker.zena';
+import {
+  Diagnostic, DiagnosticCode, DiagnosticLocation, DiagnosticSeverity
 } from './lib/diagnostics.zena';
+
+// ============================================================================
+// Host imports
+// ============================================================================
+
+/**
+ * Read a file from the host filesystem by absolute path.
+ * The JS side provides this import at instantiation time.
+ */
+@external("compiler", "read_file")
+declare function __read_file(path: String, len: i32): String;
+
+// ============================================================================
+// Compiler host implementation
+// ============================================================================
+
+/**
+ * CompilerHost that delegates file reads to the JS host,
+ * except for the entry file which uses the in-memory source.
+ */
+class LspHost implements CompilerHost {
+  #entryPath: String;
+  #entrySource: String;
+  #stdlibRoot: String;
+
+  new(entryPath: String, entrySource: String, stdlibRoot: String)
+    : #entryPath = entryPath,
+      #entrySource = entrySource,
+      #stdlibRoot = stdlibRoot;
+
+  readFile(path: String): String {
+    // Entry file: use the in-memory source from the editor.
+    if (path == this.#entryPath) {
+      return this.#entrySource;
+    }
+    // Stdlib: map canonical "zena:module" to filesystem path.
+    if (path.startsWith("zena:")) {
+      let moduleName = path.sliceBytes(5, path.length);
+      let fsPath = this.#stdlibRoot + "/" + moduleName + ".zena";
+      return __read_file(fsPath, fsPath.length);
+    }
+    // Regular file: read by absolute path.
+    return __read_file(path, path.length);
+  }
+}
+
+// ============================================================================
+// State
+// ============================================================================
+
+/** Stdlib root path, set once by init(). */
+var __stdlibRoot: String = "";
+
+// ============================================================================
+// Init API
+// ============================================================================
+
+/**
+ * Initialize the LSP with the path to the stdlib sources.
+ * Must be called once before check().
+ */
+export let init = (stdlibRoot: String): void => {
+  __stdlibRoot = stdlibRoot;
+};
 
 // ============================================================================
 // Check API
 // ============================================================================
 
 /**
- * Parse, scope-analyze, and type-check a source string.
+ * Parse, scope-analyze, and type-check a source string with full
+ * cross-module import resolution.
+ *
  * Returns an opaque result handle (externref) for use with the getter functions.
  */
 export let check = (source: String, path: String): Array<Diagnostic> => {
-  let result = checkSource(source, path);
-  return result.diagnostics;
+  let host = new LspHost(path, source, __stdlibRoot);
+  let packages = new HashMap<String, PackageConfig>();
+  let options = new CompilerOptions("host", __stdlibRoot, packages, null);
+  let compiler = createCompiler(host, options);
+
+  let diagnostics = try {
+    let result = compiler.compile(path);
+
+    // Type-check the entry module with cross-module scope info.
+    let checkResult = checkModule(result.entry.ast, result.entry.scopeResult);
+    checkResult.diagnostics
+  } catch (e) {
+    // If the compiler threw, return the error as a single diagnostic.
+    let msg = "Compiler error: " + (e as Error).message;
+    let arr = new Array<Diagnostic>();
+    arr.push(new Diagnostic(DiagnosticCode.ModuleNotFound, msg, DiagnosticSeverity.Error, null));
+    arr
+  };
+  return diagnostics;
 };
 
 /**

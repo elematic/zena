@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import {readFile} from 'node:fs/promises';
-import {join} from 'node:path';
+import {readFileSync} from 'node:fs';
+import {join, resolve} from 'node:path';
 import {
   createStringReader,
   createStringWriter,
@@ -15,6 +16,7 @@ import {
  * When the JS side drops the reference, WASM GC collects it.
  */
 interface LspExports extends WebAssembly.Exports {
+  init(stdlibRoot: unknown): void;
   check(source: unknown, path: unknown): unknown;
   getDiagnosticCount(diagnostics: unknown): number;
   getDiagnosticLine(diagnostics: unknown, index: number): number;
@@ -49,10 +51,32 @@ export class ZenaCompilerService {
     const wasmBuffer = await readFile(wasmPath);
 
     let exports: LspExports | undefined;
+    let writeString: ((s: string) => unknown) | undefined;
+    let readString: ((ref: unknown, len: number) => string) | undefined;
+
     const consoleImports = createConsoleImports(() => exports);
+
+    // Host import: read a file by absolute path and return a WASM String.
+    const compilerImports = {
+      read_file: (pathRef: unknown, pathLen: number): unknown => {
+        const reader = readString!;
+        const writer = writeString!;
+        const filePath = reader(pathRef, pathLen);
+        try {
+          const content = readFileSync(filePath, 'utf8');
+          return writer(content);
+        } catch {
+          this.#outputChannel.appendLine(
+            `Warning: could not read file: ${filePath}`,
+          );
+          return writer('');
+        }
+      },
+    };
 
     const result = await WebAssembly.instantiate(wasmBuffer, {
       console: consoleImports,
+      compiler: compilerImports,
     });
 
     const instance =
@@ -60,10 +84,18 @@ export class ZenaCompilerService {
       result;
     exports = instance.exports as LspExports;
     this.#exports = exports;
-    this.#writeString = createStringWriter(exports);
-    this.#readString = createStringReader(exports);
+    writeString = createStringWriter(exports);
+    readString = createStringReader(exports);
+    this.#writeString = writeString;
+    this.#readString = readString;
+
+    // Initialize the compiler with the stdlib source path.
+    const stdlibRoot = resolve(extensionPath, '../stdlib/zena');
+    const stdlibRootRef = writeString(stdlibRoot);
+    exports.init(stdlibRootRef);
 
     this.#outputChannel.appendLine('Zena compiler WASM loaded');
+    this.#outputChannel.appendLine(`Stdlib root: ${stdlibRoot}`);
   }
 
   get isReady(): boolean {
