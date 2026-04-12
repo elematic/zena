@@ -21,6 +21,7 @@ import {
   type Module,
   type SourceLocation,
   type SymbolInfo,
+  type VariableDeclaration,
 } from '../ast.js';
 import type {Compiler} from '../compiler.js';
 import {SemanticContext} from './semantic-context.js';
@@ -50,6 +51,8 @@ interface LibraryState {
   usedPreludeSymbols: Map<string, {modulePath: string; exportName: string}>;
   /** Stack of pipeline value types for nested pipelines */
   pipelineValueTypes: Type[];
+  /** Functions currently being checked (for recursion detection) */
+  resolvingFunctions: Set<VariableDeclaration>;
 }
 
 /**
@@ -72,6 +75,7 @@ const createLibraryState = (): LibraryState => ({
   inferredReturnTypes: [],
   usedPreludeSymbols: new Map(),
   pipelineValueTypes: [],
+  resolvingFunctions: new Set(),
 });
 
 export class CheckerContext {
@@ -304,6 +308,27 @@ export class CheckerContext {
   getPipelineValueType(): Type | undefined {
     const stack = this.#lib.pipelineValueTypes;
     return stack.length > 0 ? stack[stack.length - 1] : undefined;
+  }
+
+  /**
+   * Check if a function is currently being resolved (for recursion detection).
+   */
+  isFunctionResolving(decl: VariableDeclaration): boolean {
+    return this.#lib.resolvingFunctions.has(decl);
+  }
+
+  /**
+   * Mark a function as being resolved.
+   */
+  startResolvingFunction(decl: VariableDeclaration) {
+    this.#lib.resolvingFunctions.add(decl);
+  }
+
+  /**
+   * Mark a function as done resolving.
+   */
+  stopResolvingFunction(decl: VariableDeclaration) {
+    this.#lib.resolvingFunctions.delete(decl);
   }
 
   /**

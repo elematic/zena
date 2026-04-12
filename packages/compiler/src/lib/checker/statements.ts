@@ -2062,7 +2062,25 @@ function checkVariableDeclaration(
   ctx: CheckerContext,
   decl: VariableDeclaration,
 ) {
-  let type = checkExpression(ctx, decl.init);
+  // Track function declarations for recursion detection.
+  // This allows us to detect when a function without return type annotation
+  // calls itself (directly or indirectly).
+  const isFunctionDecl =
+    decl.pattern.type === NodeType.Identifier &&
+    decl.init &&
+    decl.init.type === NodeType.FunctionExpression;
+  if (isFunctionDecl) {
+    ctx.startResolvingFunction(decl);
+  }
+
+  let type: Type;
+  try {
+    type = checkExpression(ctx, decl.init);
+  } finally {
+    if (isFunctionDecl) {
+      ctx.stopResolvingFunction(decl);
+    }
+  }
 
   // For mutable variables (var), widen literal types to their base types
   // This allows reassignment like: var x = true; x = false;

@@ -57,9 +57,10 @@ for (const zenaFile of files) {
   writeFileSync(wrapperPath, generateWrapper(testFileName));
 
   // Compile wrapper (which imports the actual test) with wasi target
+  // Use --stack-size=4096 to handle large programs (like checker.zena at ~4000 LOC)
   try {
     execSync(
-      `node "${cliPath}" build "${wrapperPath}" --target wasi -g -o "${wasmFile}"`,
+      `node --stack-size=4096 "${cliPath}" build "${wrapperPath}" --target wasi -g -o "${wasmFile}"`,
       {
         stdio: 'pipe',
         cwd: repoRoot,

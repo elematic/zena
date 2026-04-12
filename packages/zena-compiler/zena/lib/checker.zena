@@ -139,6 +139,21 @@ class CheckerContext {
   var #loopDepth = 0;
 
   /**
+   * Pending function declarations indexed by SymbolInfo.id.
+   * Populated by a pre-scan in checkModule so that resolveIdentifier
+   * can lazily resolve forward-referenced function types from their
+   * annotations without waiting for the main pass to reach them.
+   */
+  #pendingFunctions = new HashMap<i32, Node>();
+
+  /**
+   * SymbolInfo IDs currently being lazily resolved.
+   * Used for cycle detection: if we re-enter resolution for an ID
+   * already in this set, we've found a recursive reference.
+   */
+  #resolving = new HashMap<i32, boolean>();
+
+  /**
    * The scope result from name resolution (for reference lookups).
    */
   #scopeResult?: ScopeResult | null;
@@ -238,6 +253,8 @@ class CheckerContext {
   /**
    * Resolve an identifier's type via the ReferenceMap.
    * Checks narrowings first, then falls back to the binding type.
+   * If no type is stored yet, attempts lazy resolution for function
+   * declarations (enabling forward references and self-recursion).
    */
   resolveIdentifier(node: Node): Type | null {
     let info = this.model.resolve(node);
@@ -254,7 +271,135 @@ class CheckerContext {
     }
 
     // Fall back to the binding type stored by the checker.
-    return this.model.getBindingType(si);
+    let bt = this.model.getBindingType(si);
+    if (bt != null) { return bt as Type; }
+
+    // No type stored yet — attempt lazy resolution for pending functions.
+    if (this.#pendingFunctions.has(si.id)) {
+      return this.lazyResolveFunction(si, this.#pendingFunctions[si.id]);
+    }
+    return null;
+  }
+
+  /**
+   * Register a function declaration for lazy resolution.
+   * Called during the checkModule pre-scan.
+   */
+  registerPendingFunction(id: i32, funcExpr: Node): void {
+    this.#pendingFunctions.set(id, funcExpr);
+  }
+
+  /**
+   * Lazily resolve a function's type from its annotations or body.
+   *
+   * If the function is fully annotated (all params + return type),
+   * resolves the exact FunctionType from annotations. If it has no
+   * return type but is a pure forward reference (no cycle), eagerly
+   * checks the function body to infer the type. If it's in a recursive
+   * cycle without a return type annotation, reports an error.
+   */
+  lazyResolveFunction(si: SymbolInfo, funcNode: Node): Type | null {
+    match (funcNode) {
+      case FunctionExpression {typeParameters, params, returnType, body, loc}: {
+        // Check for cycle — if we're already resolving this symbol,
+        // it's a recursive reference.
+        if (this.#resolving.has(si.id)) {
+          // Recursive call. If fully annotated, we can resolve from annotations.
+          if (returnType != null) {
+            // Resolve from annotations only (no body check needed).
+            return this.resolveFunctionFromAnnotations(typeParameters, params, returnType as TypeAnnotation, si);
+          } else {
+            // Recursive without return type annotation — error.
+            this.error(
+              "Recursive function requires an explicit return type annotation.",
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+            return new UnknownType();
+          }
+        }
+
+        // Not a cycle. Mark as resolving.
+        this.#resolving.set(si.id, true);
+
+        let funcType = if (returnType != null) {
+          // Fully annotated — resolve from annotations.
+          this.resolveFunctionFromAnnotations(typeParameters, params, returnType as TypeAnnotation, si)
+        } else {
+          // No return type annotation — eagerly check the function body.
+          // This is a pure forward reference (entrypoint at top, helper below).
+          checkFunctionExpression(this, typeParameters, params, null, body, loc, null)
+        };
+
+        // Store result so subsequent references find it immediately.
+        this.declareBinding(si, funcType);
+
+        // Clean up resolving state.
+        this.#resolving.delete(si.id);
+
+        return funcType;
+      }
+      case _: { return null; }
+    }
+  }
+
+  /**
+   * Resolve a function type from its annotations only (no body check).
+   * Used for fully-annotated functions and recursive references.
+   */
+  resolveFunctionFromAnnotations(
+    typeParameters: Array<TypeParameter> | null,
+    params: Array<Parameter>,
+    returnTypeAnn: TypeAnnotation,
+    si: SymbolInfo
+  ): Type {
+    // Enter a temporary scope for type parameter names.
+    this.enterScope();
+    var resolvedTypeParams: Array<TypeParameterType> | null = null;
+    if (typeParameters != null) {
+      let tps = typeParameters as Array<TypeParameter>;
+      resolvedTypeParams = new Array<TypeParameterType>();
+      var tpi = 0;
+      while (tpi < tps.length) {
+        let tp = tps[tpi];
+        var constraint: Type | null = null;
+        if (tp.constraint != null) {
+          constraint = resolveTypeAnnotation(this, tp.constraint as TypeAnnotation);
+        }
+        let tpType = new TypeParameterType(tp.name, constraint, null);
+        this.declareTypeName(tp.name, tpType);
+        (resolvedTypeParams as Array<TypeParameterType>).push(tpType);
+        tpi += 1;
+      }
+    }
+
+    // Resolve parameter types.
+    let paramTypes = new Array<Type>();
+    let paramNames = new Array<String>();
+    var pi = 0;
+    while (pi < params.length) {
+      let param = params[pi];
+      paramNames.push(param.name.name);
+      if (param.typeAnnotation != null) {
+        paramTypes.push(resolveTypeAnnotation(this, param.typeAnnotation as TypeAnnotation));
+      } else {
+        paramTypes.push(new UnknownType());
+      }
+      pi += 1;
+    }
+
+    // Resolve return type.
+    let retType = resolveTypeAnnotation(this, returnTypeAnn);
+
+    this.exitScope();
+
+    // Build the FunctionType.
+    let funcType = new FunctionType(paramTypes, paramNames, retType);
+    if (resolvedTypeParams != null) {
+      funcType.typeParameters = resolvedTypeParams;
+    }
+
+    return funcType as Type;
   }
 
   // --- Type name resolution ---
@@ -576,6 +721,32 @@ export let checkModule = (ast: Module, scopeResult: ScopeResult | null): CheckRe
       case _: {}
     }
     pre = pre + 1;
+  }
+
+  // Pre-pass 2: index function declarations for lazy resolution.
+  // This enables forward references and mutual recursion for annotated functions.
+  var fi = 0;
+  while (fi < ast.body.length) {
+    match (ast.body[fi]) {
+      case VariableDeclaration {pattern, init}: {
+        match (pattern) {
+          case IdentifierPattern as pat: {
+            match (init) {
+              case FunctionExpression as fe: {
+                let info = ctx.model.resolveDeclaration(pat);
+                if (info != null) {
+                  ctx.registerPendingFunction((info as SymbolInfo).id, fe as Node);
+                }
+              }
+              case _: {}
+            }
+          }
+          case _: {}
+        }
+      }
+      case _: {}
+    }
+    fi += 1;
   }
 
   // Process top-level statements.

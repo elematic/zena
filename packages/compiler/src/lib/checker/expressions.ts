@@ -1668,11 +1668,64 @@ function checkCallExpression(ctx: CheckerContext, expr: CallExpression): Type {
   let funcType = calleeType as FunctionType;
 
   // Placeholder types from forward-reference pre-declaration have no real
-  // param/return types. Accept the call (the main pass will re-check) and
-  // use the placeholder's return type (Void) so codegen handles it correctly.
+  // param/return types. We need to distinguish between:
+  // 1. Recursive/mutually recursive calls → require return type annotation
+  // 2. Pure forward references → eagerly check the function to infer its type
   if (funcType.isPlaceholder) {
-    expr.inferredType = funcType.returnType;
-    return funcType.returnType;
+    // Try to get the declaration of the callee
+    let calleeDecl: VariableDeclaration | null = null;
+    if (expr.callee.type === NodeType.Identifier) {
+      const symbolInfo = ctx.resolveValueInfo((expr.callee as Identifier).name);
+      if (
+        symbolInfo?.declaration &&
+        symbolInfo.declaration.type === NodeType.VariableDeclaration
+      ) {
+        calleeDecl = symbolInfo.declaration as VariableDeclaration;
+      }
+    }
+
+    if (calleeDecl) {
+      if (ctx.isFunctionResolving(calleeDecl)) {
+        // Recursive call to a function that's being resolved
+        // This requires a return type annotation - report at the function definition
+        ctx.diagnostics.reportError(
+          `Recursive function requires an explicit return type annotation`,
+          DiagnosticCode.UnknownError,
+          ctx.getLocation(calleeDecl.loc),
+        );
+        expr.inferredType = Types.Unknown;
+        return Types.Unknown;
+      } else {
+        // Pure forward reference - eagerly check the function.
+        // checkStatement will add it to the resolving set internally.
+        checkStatement(ctx, calleeDecl);
+
+        // After checking, the declaration should have its real type
+        if (
+          calleeDecl.inferredType &&
+          calleeDecl.inferredType.kind === TypeKind.Function
+        ) {
+          funcType = calleeDecl.inferredType as FunctionType;
+          // Also update the symbol info so future lookups get the real type
+          if (expr.callee.type === NodeType.Identifier) {
+            const symbolInfo = ctx.resolveValueInfo(
+              (expr.callee as Identifier).name,
+            );
+            if (symbolInfo) {
+              symbolInfo.type = funcType;
+            }
+          }
+        } else {
+          // Failed to infer, use placeholder return
+          expr.inferredType = funcType.returnType;
+          return funcType.returnType;
+        }
+      }
+    } else {
+      // Can't determine declaration, use placeholder return
+      expr.inferredType = funcType.returnType;
+      return funcType.returnType;
+    }
   }
 
   // Overload resolution
