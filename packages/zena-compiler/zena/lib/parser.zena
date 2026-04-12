@@ -2401,12 +2401,23 @@ export class Parser {
     // Check for member-level modifiers
     var isFinal = false;
     var isAbstract = false;
+    var isDeclare = false;
+    var isStatic = false;
     
     if (this.#check(TokenType.Final) && this.#peek2().kind != TokenType.Colon) {
       isFinal = true;
       this.#advance();
     } else if (this.#check(TokenType.Abstract) && this.#peek2().kind != TokenType.Colon) {
       isAbstract = true;
+      this.#advance();
+    } else if (this.#check(TokenType.Declare) && this.#peek2().kind != TokenType.Colon && this.#peek2().kind != TokenType.LParen && this.#peek2().kind != TokenType.Less) {
+      isDeclare = true;
+      this.#advance();
+    }
+    
+    // Static can combine with declare/abstract/final, so check separately
+    if (this.#check(TokenType.Static) && this.#peek2().kind != TokenType.Colon && this.#peek2().kind != TokenType.Symbol) {
+      isStatic = true;
       this.#advance();
     }
     
@@ -2423,7 +2434,7 @@ export class Parser {
     // Constructor: new(...)
     if (this.#check(TokenType.New)) {
       this.#advance();
-      return this.#parseMethodBody(new Identifier('<constructor>', this.#makeLocation(startToken)), null, isFinal, isAbstract, false, decorators, startToken);
+      return this.#parseMethodBody(new Identifier('<constructor>', this.#makeLocation(startToken)), null, isFinal, isAbstract, isDeclare, isStatic, decorators, startToken);
     }
     
     // Operator method: operator ==(other), operator [](index), operator +(other)
@@ -2449,7 +2460,7 @@ export class Parser {
         }
       }
       let operatorName = new Identifier(opName, this.#makeLocation(startToken));
-      return this.#parseMethodBody(operatorName, null, isFinal, isAbstract, false, decorators, startToken);
+      return this.#parseMethodBody(operatorName, null, isFinal, isAbstract, isDeclare, isStatic, decorators, startToken);
     }
     
     // Private field/method: #name
@@ -2460,16 +2471,21 @@ export class Parser {
       
       // Private method: #name(params) { ... }
       if (this.#check(TokenType.LParen)) {
-        return this.#parseMethodBody(hashName, null, isFinal, isAbstract, false, decorators, startToken);
+        return this.#parseMethodBody(hashName, null, isFinal, isAbstract, isDeclare, isStatic, decorators, startToken);
       }
       
-      // Private field: #name: Type; or #name?: Type;
+      // Private field: #name: Type; or #name?: Type; or #name = value;
       let isOptional = this.#match(TokenType.Question);
-      this.#consume(TokenType.Colon, "Expected ':' after private field name");
-      let typeAnnotation = this.#parseTypeAnnotation();
+      var typeAnnotation: TypeAnnotation | null = null;
+      if (this.#match(TokenType.Colon)) {
+        typeAnnotation = this.#parseTypeAnnotation();
+      }
       var value: Expression | null = null;
       if (this.#match(TokenType.Equals)) {
         value = this.#parseExpression();
+      }
+      if (typeAnnotation == null && value == null) {
+        throw new Error("Private field must have a type annotation or initializer");
       }
       this.#consume(TokenType.Semi, "Expected ';' after field declaration");
       return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, isOptional, false, false, mutability, decorators, this.#makeLocation(startToken));
@@ -2497,7 +2513,7 @@ export class Parser {
       
       // Symbol-keyed method: :name(params) { ... }
       if (this.#check(TokenType.LParen)) {
-        return this.#parseMethodBody(symPropName, null, isFinal, isAbstract, false, decorators, startToken);
+        return this.#parseMethodBody(symPropName, null, isFinal, isAbstract, isDeclare, isStatic, decorators, startToken);
       }
       
       // Symbol-keyed field: :name: Type;
@@ -2523,12 +2539,12 @@ export class Parser {
     if (this.#check(TokenType.Less) && this.#isGenericMethodStart()) {
       this.#advance(); // consume '<'
       let typeParams = this.#parseTypeParameterList();
-      return this.#parseMethodBody(name, typeParams, isFinal, isAbstract, false, decorators, startToken);
+      return this.#parseMethodBody(name, typeParams, isFinal, isAbstract, isDeclare, isStatic, decorators, startToken);
     }
     
     // Method: name(params) { ... }
     if (this.#check(TokenType.LParen)) {
-      return this.#parseMethodBody(name, null, isFinal, isAbstract, false, decorators, startToken);
+      return this.#parseMethodBody(name, null, isFinal, isAbstract, isDeclare, isStatic, decorators, startToken);
     }
     
     // Abstract field: abstract name: Type; or abstract name?: Type;
@@ -2538,6 +2554,15 @@ export class Parser {
       let typeAnnotation = this.#parseTypeAnnotation();
       this.#consume(TokenType.Semi, "Expected ';' after abstract field declaration.");
       return new FieldDefinition(name, typeAnnotation, null, false, true, isOptional, false, false, mutability, decorators, this.#makeLocation(startToken));
+    }
+    
+    // Declare field: declare name: Type;
+    if (isDeclare) {
+      let isOptional = this.#match(TokenType.Question);
+      this.#consume(TokenType.Colon, "Expected ':' after declared field name.");
+      let typeAnnotation = this.#parseTypeAnnotation();
+      this.#consume(TokenType.Semi, "Expected ';' after declared field.");
+      return new FieldDefinition(name, typeAnnotation, null, false, false, isOptional, false, true, mutability, decorators, this.#makeLocation(startToken));
     }
     
     // Field: name: Type; or name?: Type; -OR- Accessor: name: Type { get { } set(v) { } }
@@ -2626,7 +2651,7 @@ export class Parser {
     return new AccessorDeclaration(name, typeAnnotation, getter, setter, isFinal, false, decorators, this.#makeLocation(startToken));
   }
   
-  #parseMethodBody(name: Node, typeParameters: Array<TypeParameter> | null, isFinal: boolean, isAbstract: boolean, isStatic: boolean, decorators: Array<Decorator>, startToken: Token): MethodDefinition {
+  #parseMethodBody(name: Node, typeParameters: Array<TypeParameter> | null, isFinal: boolean, isAbstract: boolean, isDeclare: boolean, isStatic: boolean, decorators: Array<Decorator>, startToken: Token): MethodDefinition {
     this.#consume(TokenType.LParen, "Expected '(' after method name");
     let params = this.#parseParameters();
     this.#consume(TokenType.RParen, "Expected ')' after parameters");
@@ -2701,7 +2726,7 @@ export class Parser {
           initListResult = combined;
         }
         
-        return new MethodDefinition(name, typeParameters, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, false, decorators, this.#makeLocation(startToken));
+        return new MethodDefinition(name, typeParameters, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, isDeclare, decorators, this.#makeLocation(startToken));
       } else {
         returnType = this.#parseTypeAnnotation();
       }
@@ -2713,8 +2738,8 @@ export class Parser {
       let blockStart = this.#advance();
       body = this.#parseBlockStatement(blockStart);
     } else if (this.#match(TokenType.Semi)) {
-      // Abstract method or semicolon body — treated as empty block
-      if (!isAbstract) {
+      // Abstract/declare method or semicolon body — treated as empty block
+      if (!isAbstract && !isDeclare) {
         body = new BlockStatement(new Array<Statement>(0), this.#makeLocation(startToken));
       }
     }
@@ -2725,7 +2750,7 @@ export class Parser {
       thisInitResult = thisInits;
     }
     
-    return new MethodDefinition(name, typeParameters, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, false, decorators, this.#makeLocation(startToken));
+    return new MethodDefinition(name, typeParameters, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, isDeclare, decorators, this.#makeLocation(startToken));
   }
   
   #parseFieldInitializer(): FieldInitializer {
@@ -2891,6 +2916,58 @@ export class Parser {
     if (this.#check(TokenType.Var)) {
       mutableField = true;
       this.#advance();
+    }
+    
+    // Operator signature: operator [](index: i32): T;  or  operator []=(index: i32, value: T): void;
+    if (this.#check(TokenType.Operator)) {
+      this.#advance();
+      var opName = "";
+      if (this.#match(TokenType.LBracket)) {
+        this.#consume(TokenType.RBracket, "Expected ']' after operator '['");
+        if (this.#match(TokenType.Equals)) {
+          opName = "[]=";
+        } else {
+          opName = "[]";
+        }
+      } else {
+        let opToken = this.#advance();
+        opName = opToken.value;
+        if (opName == "=" && this.#check(TokenType.Equals)) {
+          this.#advance();
+          opName = "==";
+        }
+      }
+      let operatorName = new Identifier(opName, this.#makeLocation(startToken));
+      this.#consume(TokenType.LParen, "Expected '(' after operator name");
+      let params = this.#parseParameters();
+      this.#consume(TokenType.RParen, "Expected ')' after parameters");
+      var returnType: TypeAnnotation | null = null;
+      if (this.#match(TokenType.Colon)) {
+        returnType = this.#parseTypeAnnotation();
+      }
+      this.#consume(TokenType.Semi, "Expected ';' after operator signature");
+      return new MethodSignature(operatorName, null, params, returnType, this.#makeLocation(startToken));
+    }
+    
+    // Symbol-keyed method: :symbolName(params): ReturnType;
+    if (this.#check(TokenType.Colon) && this.#peek2().kind == TokenType.Identifier) {
+      this.#advance(); // consume ':'
+      let symStart = this.#previous();
+      var symbolExpr: Expression = this.#parseIdentifier();
+      while (this.#match(TokenType.Dot)) {
+        let prop = this.#parseIdentifier();
+        symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, this.#makeLocation(symStart));
+      }
+      let symPropName = new SymbolPropertyName(symbolExpr, this.#makeLocation(symStart));
+      this.#consume(TokenType.LParen, "Expected '(' after symbol method name");
+      let symParams = this.#parseParameters();
+      this.#consume(TokenType.RParen, "Expected ')' after parameters");
+      var symReturnType: TypeAnnotation | null = null;
+      if (this.#match(TokenType.Colon)) {
+        symReturnType = this.#parseTypeAnnotation();
+      }
+      this.#consume(TokenType.Semi, "Expected ';' after method signature");
+      return new MethodSignature(symPropName, null, symParams, symReturnType, this.#makeLocation(startToken));
     }
     
     let name = this.#parseIdentifier();

@@ -2296,7 +2296,11 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           case Identifier {name}: name
           case _: "<unknown>"
         };
-        let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation);
+        let fieldType = if (fd.typeAnnotation != null) {
+          resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation)
+        } else {
+          new UnknownType() as Type
+        };
 
         // Abstract fields can only appear in abstract or sealed classes.
         if (fd.isAbstract) {
@@ -2417,7 +2421,7 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
       case MethodSignature as ms: {
         // MethodSignature is used for abstract method declarations (no body)
         // or interface-like signatures in classes (e.g., `new(x: f64, y: f64);`)
-        let methodName = ms.name.name;
+        let methodName = (ms.name as Identifier).name;
         
         // Constructor signature: check for duplicate
         if (methodName == "new") {
@@ -2754,7 +2758,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         if (ms.returnType != null) {
           retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation);
         }
-        ifaceType.methods.set(ms.name.name, new FunctionType(paramTypes, null, retType));
+        ifaceType.methods.set((ms.name as Identifier).name, new FunctionType(paramTypes, null, retType));
       }
       case PropertySignature as ps: {
         let propType = resolveTypeAnnotation(ctx, ps.typeAnnotation);
