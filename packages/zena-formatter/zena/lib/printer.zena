@@ -1061,13 +1061,76 @@ let printStringLiteral = (lit: StringLiteral): Doc => {
 // Binary Expression
 // ============================================================================
 
+/**
+ * Check if two binary expressions have the same operator (for chain flattening).
+ */
+let isSameOpChain = (expr: Expression, op: String): boolean => match (expr) {
+  case BinaryExpression {operator}: operator == op
+  case _: false
+};
+
+/**
+ * Flatten a left-associative chain of same-operator binary expressions.
+ * ((a + b) + c) + d → [a, b, c, d] with operator "+"
+ */
+let flattenBinaryChain = (expr: BinaryExpression): Array<Expression> => {
+  let parts = new Array<Expression>();
+  let op = expr.operator;
+
+  // Walk left spine collecting operands
+  var current: Expression = expr;
+  while (isSameOpChain(current, op)) {
+    let bin = current as BinaryExpression;
+    parts.push(bin.right);
+    current = bin.left;
+  }
+  // current is the leftmost non-matching operand
+  parts.push(current);
+
+  // Reverse to get left-to-right order
+  let result = new Array<Expression>(parts.length);
+  var i = parts.length - 1;
+  while (i >= 0) {
+    result.push(parts[i]);
+    i -= 1;
+  }
+  return result;
+};
+
 let printBinaryExpression = (expr: BinaryExpression): Doc => {
+  let operands = flattenBinaryChain(expr);
+
+  // Short chain (single binary op) — simple flat output
+  if (operands.length <= 2) {
+    let parts = new Array<Doc>();
+    parts.push(printExpression(expr.left));
+    parts.push(text(' '));
+    parts.push(text(expr.operator));
+    parts.push(text(' '));
+    parts.push(printExpression(expr.right));
+    return group(concat(parts));
+  }
+
+  // Chain of 3+ operands: group with indent and line breaks before operators
+  // Flat:   a + b + c + d
+  // Broken: a
+  //           + b
+  //           + c
+  //           + d
+  let op = expr.operator;
   let parts = new Array<Doc>();
-  parts.push(printExpression(expr.left));
-  parts.push(text(' '));
-  parts.push(text(expr.operator));
-  parts.push(text(' '));
-  parts.push(printExpression(expr.right));
+  parts.push(printExpression(operands[0]));
+
+  let rest = new Array<Doc>(operands.length * 3);
+  var j: i32 = 1;
+  while (j < operands.length) {
+    rest.push(line);
+    rest.push(text(op));
+    rest.push(text(' '));
+    rest.push(printExpression(operands[j]));
+    j += 1;
+  }
+  parts.push(indent(concat(rest)));
   return group(concat(parts));
 };
 

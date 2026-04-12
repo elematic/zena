@@ -369,6 +369,34 @@ let tests = suite('formatter', () => {
     let result = format(input);
     check('single call', result, "let x = foo.bar();\n");
   });
+
+  // ========================================================================
+  // Binary expression chain breaking
+  // ========================================================================
+
+  test('short binary chain stays on one line', (t: TestContext) => {
+    let input = "let x = a + b + c;";
+    let result = format(input);
+    check('short binary chain', result, "let x = a + b + c;\n");
+  });
+
+  test('long binary chain breaks before operators', (t: TestContext) => {
+    let input = "let x = someLongVariable + anotherLongVariable + yetAnotherVariable + oneMoreVariable;";
+    let result = format(input);
+    check('long binary chain', result, "let x = someLongVariable\n  + anotherLongVariable\n  + yetAnotherVariable\n  + oneMoreVariable;\n");
+  });
+
+  test('simple binary expression stays flat', (t: TestContext) => {
+    let input = "let x = 1 + 2;";
+    let result = format(input);
+    check('simple binary', result, "let x = 1 + 2;\n");
+  });
+
+  test('mixed operators are not flattened', (t: TestContext) => {
+    let input = "let x = a + b * c;";
+    let result = format(input);
+    check('mixed ops', result, "let x = a + b * c;\n");
+  });
 });
 
 // Entry point - returns number of failed tests (0 = success)
