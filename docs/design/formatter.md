@@ -684,16 +684,22 @@ lookahead), and `propagateBreaks` — is fully working and well-tested.
 
 **Known gaps (doc printer):**
 
-1. Indent model — flat `i32` counter, not Prettier's linked-list indent/align stack
-2. `trim` — IR defined, printer stub only
-3. `align` — approximated as indent+1 (not true column alignment)
+None of these are currently exercised — `trim` and `align` are not used by the
+printer, and the flat indent model works for all current formatting needs. These
+would only need addressing if future printer rules require them.
+
+1. Indent model — flat `i32` counter, not Prettier's linked-list indent/align stack (would only matter for `align`-based indentation)
+2. `trim` — IR defined, printer stub only (not used by any printer rule)
+3. `align` — approximated as indent+1, ignores `n` parameter (not used by any printer rule)
 
 **Known gaps (printer):**
 
-1. ~~Comment attachment for expression-level nodes~~ — done (expression-level `withComments` + `getChildBody` for all expression types)
-2. String literal escaping — not implemented (can't safely normalize strings containing quotes)
-3. ~~Method chain grouping~~ — done (chains of 2+ method calls group/indent with softline breaks)
-4. ~~Binary expression chain breaking~~ — done (chains of 3+ same-operator expressions break before operators)
+All resolved:
+
+1. ~~Comment attachment for expression-level nodes~~ — done
+2. ~~String literal escaping~~ — done
+3. ~~Method chain grouping~~ — done
+4. ~~Binary expression chain breaking~~ — done
 
 **Test coverage:**
 
