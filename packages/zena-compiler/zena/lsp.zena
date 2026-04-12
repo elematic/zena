@@ -1,0 +1,115 @@
+/**
+ * LSP API entry point for the Zena self-hosted compiler.
+ *
+ * This module is compiled to WASM and loaded by the VS Code extension.
+ * It exports functions that the JS host calls to check source files and
+ * read back diagnostics.
+ *
+ * The API is handle-based: check() returns an opaque result reference
+ * (a WASM GC object passed as externref). The host passes this handle
+ * back to getter functions to read individual diagnostic fields. When
+ * the JS side drops the reference, the WASM GC collects the result.
+ *
+ * String parameters (source, path) are passed as externref via the
+ * $stringCreate/$stringSetByte exports. String results (messages) are
+ * returned as externref and read via $stringGetByte/$stringGetLength.
+ */
+
+import { Array } from 'zena:array';
+import { checkSource, CheckResult } from './lib/compiler.zena';
+import {
+  Diagnostic, DiagnosticLocation, DiagnosticSeverity
+} from './lib/diagnostics.zena';
+
+// ============================================================================
+// Check API
+// ============================================================================
+
+/**
+ * Parse, scope-analyze, and type-check a source string.
+ * Returns an opaque result handle (externref) for use with the getter functions.
+ */
+export let check = (source: String, path: String): Array<Diagnostic> => {
+  let result = checkSource(source, path);
+  return result.diagnostics;
+};
+
+/**
+ * Get the number of diagnostics in a result.
+ */
+export let getDiagnosticCount = (diagnostics: Array<Diagnostic>): i32 => {
+  return diagnostics.length;
+};
+
+// ============================================================================
+// Diagnostic Getters
+// ============================================================================
+
+/**
+ * Get the 1-based line number of the i-th diagnostic.
+ * Returns 0 if the diagnostic has no location.
+ */
+export let getDiagnosticLine = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
+  let diag = diagnostics[index];
+  if (diag.location != null) {
+    return (diag.location as DiagnosticLocation).line;
+  }
+  return 0;
+};
+
+/**
+ * Get the 1-based column number of the i-th diagnostic.
+ * Returns 0 if the diagnostic has no location.
+ */
+export let getDiagnosticColumn = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
+  let diag = diagnostics[index];
+  if (diag.location != null) {
+    return (diag.location as DiagnosticLocation).column;
+  }
+  return 0;
+};
+
+/**
+ * Get the 0-based start byte offset of the i-th diagnostic.
+ * Returns -1 if the diagnostic has no location.
+ */
+export let getDiagnosticStart = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
+  let diag = diagnostics[index];
+  if (diag.location != null) {
+    return (diag.location as DiagnosticLocation).start;
+  }
+  return -1;
+};
+
+/**
+ * Get the byte length of the span of the i-th diagnostic.
+ * Returns 0 if the diagnostic has no location.
+ */
+export let getDiagnosticLength = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
+  let diag = diagnostics[index];
+  if (diag.location != null) {
+    return (diag.location as DiagnosticLocation).length;
+  }
+  return 0;
+};
+
+/**
+ * Get the severity of the i-th diagnostic as an i32.
+ * 0 = Error, 1 = Warning, 2 = Information.
+ */
+export let getDiagnosticSeverity = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
+  let diag = diagnostics[index];
+  match (diag.severity) {
+    case DiagnosticSeverity.Error: 0
+    case DiagnosticSeverity.Warning: 1
+    case DiagnosticSeverity.Information: 2
+  }
+};
+
+/**
+ * Get the message string of the i-th diagnostic.
+ * Returns a String (externref) — read via $stringGetByte/$stringGetLength.
+ */
+export let getDiagnosticMessage = (diagnostics: Array<Diagnostic>, index: i32): String => {
+  return diagnostics[index].message;
+};
