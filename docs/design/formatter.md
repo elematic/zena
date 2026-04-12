@@ -690,15 +690,10 @@ lookahead), and `propagateBreaks` — is fully working and well-tested.
 
 **Known gaps (printer):**
 
-1. Comment attachment for expression-level nodes — only top-level statements and body members have `withComments` wrappers
+1. ~~Comment attachment for expression-level nodes~~ — done (expression-level `withComments` + `getChildBody` for all expression types)
 2. String literal escaping — not implemented (can't safely normalize strings containing quotes)
 3. Method chain grouping — not implemented
 4. Binary expression chain breaking — basic only (no operator-first style)
-
-**Parser limitations affecting formatter:**
-
-1. Can't parse typed arrow functions with return type annotation (e.g., `(a: i32): i32 => a + b`)
-2. Can't parse arrow functions with block bodies
 
 **Test coverage:**
 
