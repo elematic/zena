@@ -140,6 +140,25 @@ zena build main.zena -o main.wasm --target wasi
 wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main.wasm
 ```
 
+### Debugging WASM Crashes
+
+When a WASM module crashes with `RuntimeError: illegal cast` or similar traps,
+stack traces show anonymous function indices by default. Use the **`-g` flag**
+to emit a WASM name section with readable function names:
+
+```bash
+zena build main.zena -o main.wasm --target host -g
+```
+
+This produces stack traces like `ScopeBuilder.#processClassBody → Compiler.compile`
+instead of `wasm-function[2621]`. Use `wasm-tools dump -d main.wasm` to inspect
+specific bytecode offsets from the trace.
+
+When using the `CodeGenerator` API directly, pass `{debug: true}` in
+`CodegenOptions`. The test helpers (`compileAndInstantiate`, `compileAndRun`,
+`compileToWasm`) in `test/codegen/utils.ts` already enable `debug: true` by
+default, so test stack traces are always readable.
+
 ### Node Version
 
 The project uses Node.js **v25+** for built-in WASM exnref support. Run
