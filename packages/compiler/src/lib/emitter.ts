@@ -18,6 +18,10 @@ export class WasmModule {
   #functionNames = new Map<number, string>();
 
   #importedFunctionCount = 0;
+  // Map from global function index → defined function index (position in #codes/#functions).
+  // Needed because addFunction may be called before all imports are registered,
+  // making the simple `globalIndex - #importedFunctionCount` calculation wrong in addCode.
+  #funcGlobalToDefinedIndex = new Map<number, number>();
   #startFunctionIndex: number | undefined;
 
   #preRecTypes: number[][] = []; // Types to emit before the rec block (for WASI imports)
@@ -175,7 +179,9 @@ export class WasmModule {
   public addFunction(typeIndex: number): number {
     this.#functions.push(typeIndex);
     this.#codes.push([]);
-    const index = this.#importedFunctionCount + this.#functions.length - 1;
+    const definedIndex = this.#functions.length - 1;
+    const index = this.#importedFunctionCount + definedIndex;
+    this.#funcGlobalToDefinedIndex.set(index, definedIndex);
     return index;
   }
 
@@ -190,7 +196,9 @@ export class WasmModule {
     // locals: vec(local)
     // local: n (u32) + type (valtype)
 
-    const definedIndex = index - this.#importedFunctionCount;
+    const definedIndex =
+      this.#funcGlobalToDefinedIndex.get(index) ??
+      index - this.#importedFunctionCount;
     if (definedIndex < 0 || definedIndex >= this.#codes.length) {
       throw new Error(`Invalid function index for code: ${index}`);
     }
@@ -904,7 +912,9 @@ export class WasmModule {
   }
 
   public getFunctionTypeIndex(funcIndex: number): number {
-    const definedIndex = funcIndex - this.#importedFunctionCount;
+    const definedIndex =
+      this.#funcGlobalToDefinedIndex.get(funcIndex) ??
+      funcIndex - this.#importedFunctionCount;
     if (definedIndex < 0) {
       // Imported function
       // We need to find the import.

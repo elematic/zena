@@ -488,18 +488,70 @@ export function registerDeclaredFunction(
     // Use preRec: true for WASI imports so their types are outside the rec block.
     // WASI expects standalone function types, not types inside a rec group.
     const isWasi = moduleName === 'wasi_snapshot_preview1';
-    const typeIndex = ctx.module.addType(
-      params,
-      results,
-      isWasi ? {preRec: true} : undefined,
-    );
 
-    funcIndex = ctx.module.addImport(
-      moduleName,
-      functionName,
-      ExportDesc.Func,
-      typeIndex,
-    );
+    // Check if any result type is a GC reference (not a primitive).
+    // JS can only return externref at the boundary, so we need a wrapper
+    // that internalizes the externref back to the expected GC struct ref.
+    const hasRefResult =
+      results.length === 1 &&
+      results[0].length >= 2 &&
+      (results[0][0] === ValType.ref_null || results[0][0] === ValType.ref);
+
+    if (hasRefResult && !isWasi) {
+      // Build the import with externref result type.
+      const importResults: number[][] = [[ValType.externref]];
+      const importTypeIndex = ctx.module.addType(params, importResults);
+      const importFuncIndex = ctx.module.addImport(
+        moduleName,
+        functionName,
+        ExportDesc.Func,
+        importTypeIndex,
+      );
+
+      // Build a wrapper function with the real GC result type.
+      // The wrapper calls the import, then does any_convert_extern + ref_cast.
+      const wrapperTypeIndex = ctx.module.addType(params, results);
+      funcIndex = ctx.module.addFunction(wrapperTypeIndex);
+
+      // Extract the target type index from the result encoding.
+      // results[0] is [ValType.ref_null, ...LEB128(typeIdx)]
+      const targetTypeIdx = decodeTypeIndex(results[0]);
+
+      ctx.pendingHelperFunctions.push(() => {
+        const locals: number[][] = [];
+        const body: number[] = [];
+
+        // Forward all params to the import.
+        for (let i = 0; i < params.length; i++) {
+          body.push(Opcode.local_get, ...WasmModule.encodeUnsignedLEB128(i));
+        }
+
+        // Call the import (returns externref).
+        body.push(Opcode.call);
+        body.push(...WasmModule.encodeSignedLEB128(importFuncIndex));
+
+        // Internalize: externref -> anyref -> (ref null $TargetType)
+        body.push(0xfb, GcOpcode.any_convert_extern);
+        body.push(0xfb, GcOpcode.ref_cast_null);
+        body.push(...WasmModule.encodeSignedLEB128(targetTypeIdx));
+
+        body.push(Opcode.end);
+        ctx.module.addCode(funcIndex, locals, body);
+      });
+    } else {
+      const typeIndex = ctx.module.addType(
+        params,
+        results,
+        isWasi ? {preRec: true} : undefined,
+      );
+
+      funcIndex = ctx.module.addImport(
+        moduleName,
+        functionName,
+        ExportDesc.Func,
+        typeIndex,
+      );
+    }
 
     if (shouldExport) {
       const exportName = (decl as any).exportName || decl.name.name;
