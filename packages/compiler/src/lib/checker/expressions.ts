@@ -803,7 +803,11 @@ export function checkMatchPattern(
 
         let propType: Type = Types.Unknown;
         if (classType.fields.has(propName)) {
-          propType = classType.fields.get(propName)!;
+          propType = resolveMemberType(
+            classType,
+            classType.fields.get(propName)!,
+            ctx,
+          );
         } else if (classType.methods.has(propName)) {
           // If it's a getter?
           // Methods map stores FunctionType.
