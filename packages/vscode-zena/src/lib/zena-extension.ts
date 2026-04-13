@@ -3,6 +3,20 @@ import {ZenaCompilerService} from './compiler-service.js';
 
 export const outputChannel = vscode.window.createOutputChannel('Zena');
 
+/** Format an unknown caught value for logging. */
+const formatError = (e: unknown): string => {
+  if (e instanceof Error) return e.stack ?? e.message;
+  if (e != null && typeof e === 'object') {
+    const name = e.constructor?.name ?? 'unknown';
+    // WebAssembly.Exception has a .stack in V8
+    const stack = 'stack' in e ? String((e as {stack: unknown}).stack) : '';
+    const message =
+      'message' in e ? String((e as {message: unknown}).message) : '';
+    return stack || message || `[${name}]`;
+  }
+  return String(e);
+};
+
 /**
  * Holds the shared state of the Zena extension and manages its lifecycle.
  */
@@ -10,20 +24,50 @@ export class ZenaExtension {
   context: vscode.ExtensionContext;
   #compiler: ZenaCompilerService;
   #diagnosticCollection: vscode.DiagnosticCollection;
+  #statusBarItem: vscode.StatusBarItem;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
     this.#compiler = new ZenaCompilerService(outputChannel);
     this.#diagnosticCollection =
       vscode.languages.createDiagnosticCollection('zena');
+    this.#statusBarItem = vscode.window.createStatusBarItem(
+      vscode.StatusBarAlignment.Right,
+      100,
+    );
+    this.#statusBarItem.command = 'zena.showOutput';
+    this.#statusBarItem.text = '$(zap) Zena';
+    this.#statusBarItem.tooltip = 'Zena Language Service';
   }
 
   async activate() {
-    outputChannel.appendLine('Activating Zena language extension');
+    outputChannel.appendLine('Activating Zena language extension (v2-format)');
 
     const {context} = this;
 
     context.subscriptions.push(this.#diagnosticCollection);
+    context.subscriptions.push(this.#statusBarItem);
+
+    context.subscriptions.push(
+      vscode.commands.registerCommand('zena.showOutput', () => {
+        outputChannel.show();
+      }),
+    );
+
+    // Show status bar when a Zena file is active.
+    const updateStatusBarVisibility = () => {
+      if (vscode.window.activeTextEditor?.document.languageId === 'zena') {
+        this.#statusBarItem.show();
+      } else {
+        this.#statusBarItem.hide();
+      }
+    };
+    updateStatusBarVisibility();
+    context.subscriptions.push(
+      vscode.window.onDidChangeActiveTextEditor(() =>
+        updateStatusBarVisibility(),
+      ),
+    );
 
     // Initialize the WASM compiler.
     try {
@@ -71,6 +115,47 @@ export class ZenaExtension {
         vscode.window.showInformationMessage('Hello from Zena!');
       }),
     );
+
+    // Document formatting.
+    context.subscriptions.push(
+      vscode.languages.registerDocumentFormattingEditProvider('zena', {
+        provideDocumentFormattingEdits: (document) => {
+          outputChannel.appendLine(
+            `Format requested for ${document.uri.fsPath}`,
+          );
+          if (!this.#compiler.isReady) {
+            outputChannel.appendLine('Format skipped: compiler not ready');
+            return [];
+          }
+          try {
+            const source = document.getText();
+            const formatted = this.#compiler.formatDocument(source);
+            if (formatted === null) {
+              this.#setStatusBarError('Format error');
+              return [];
+            }
+            if (formatted === source) {
+              this.#setStatusBarOk();
+              return [];
+            }
+            outputChannel.appendLine(
+              `Format: applying changes (${source.length} → ${formatted.length} bytes)`,
+            );
+            this.#setStatusBarOk();
+            const fullRange = new vscode.Range(
+              document.positionAt(0),
+              document.positionAt(source.length),
+            );
+            return [vscode.TextEdit.replace(fullRange, formatted)];
+          } catch (e) {
+            const msg = formatError(e);
+            outputChannel.appendLine(`Format failed: ${msg}`);
+            this.#setStatusBarError('Format error');
+            return [];
+          }
+        },
+      }),
+    );
   }
 
   #checkDocument(document: vscode.TextDocument) {
@@ -82,8 +167,25 @@ export class ZenaExtension {
       const diagnostics = this.#compiler.checkDocument(source, path);
       this.#diagnosticCollection.set(document.uri, diagnostics);
     } catch (e) {
-      outputChannel.appendLine(`Check failed for ${document.uri.fsPath}: ${e}`);
+      const msg = formatError(e);
+      outputChannel.appendLine(
+        `Check failed for ${document.uri.fsPath}: ${msg}`,
+      );
     }
+  }
+
+  #setStatusBarOk() {
+    this.#statusBarItem.text = '$(zap) Zena';
+    this.#statusBarItem.backgroundColor = undefined;
+    this.#statusBarItem.tooltip = 'Zena Language Service';
+  }
+
+  #setStatusBarError(tooltip: string) {
+    this.#statusBarItem.text = '$(zap) Zena';
+    this.#statusBarItem.backgroundColor = new vscode.ThemeColor(
+      'statusBarItem.errorBackground',
+    );
+    this.#statusBarItem.tooltip = `${tooltip} — click to view logs`;
   }
 
   async deactivate() {

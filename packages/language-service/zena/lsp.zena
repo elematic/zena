@@ -1,9 +1,9 @@
 /**
- * LSP API entry point for the Zena self-hosted compiler.
+ * Language service entry point.
  *
  * This module is compiled to WASM and loaded by the VS Code extension.
- * It exports functions that the JS host calls to check source files and
- * read back diagnostics.
+ * It exports functions that the JS host calls to check source files,
+ * format documents, and read back diagnostics.
  *
  * The API is handle-based: check() returns an opaque result reference
  * (a WASM GC object passed as externref). The host passes this handle
@@ -24,11 +24,12 @@ import { HashMap } from 'zena:map';
 import { Error } from 'zena:error';
 import {
   createCompiler, checkCompilation, CompilerOptions, CompilerHost
-} from './lib/compiler.zena';
-import { PackageConfig } from './lib/module-resolver.zena';
+} from 'zena-compiler:compiler';
+import { PackageConfig } from 'zena-compiler:module-resolver';
 import {
   Diagnostic, DiagnosticCode, DiagnosticLocation, DiagnosticSeverity
-} from './lib/diagnostics.zena';
+} from 'zena-compiler:diagnostics';
+import { format as formatSource } from 'zena-formatter:printer';
 
 // ============================================================================
 // Host imports
@@ -87,7 +88,7 @@ var __stdlibRoot: String = "";
 // ============================================================================
 
 /**
- * Initialize the LSP with the path to the stdlib sources.
+ * Initialize the language service with the path to the stdlib sources.
  * Must be called once before check().
  */
 export let init = (stdlibRoot: String): void => {
@@ -126,16 +127,27 @@ export let check = (source: String, path: String): Array<Diagnostic> => {
   return diagnostics;
 };
 
+// ============================================================================
+// Format API
+// ============================================================================
+
+/**
+ * Format a Zena source string and return the formatted result.
+ */
+export let format = (source: String): String => {
+  return formatSource(source);
+};
+
+// ============================================================================
+// Diagnostic Getters
+// ============================================================================
+
 /**
  * Get the number of diagnostics in a result.
  */
 export let getDiagnosticCount = (diagnostics: Array<Diagnostic>): i32 => {
   return diagnostics.length;
 };
-
-// ============================================================================
-// Diagnostic Getters
-// ============================================================================
 
 /**
  * Get the 1-based line number of the i-th diagnostic.
@@ -199,8 +211,7 @@ export let getDiagnosticSeverity = (diagnostics: Array<Diagnostic>, index: i32):
 };
 
 /**
- * Get the message string of the i-th diagnostic.
- * Returns a String (externref) — read via $stringGetByte/$stringGetLength.
+ * Get the message of the i-th diagnostic.
  */
 export let getDiagnosticMessage = (diagnostics: Array<Diagnostic>, index: i32): String => {
   return diagnostics[index].message;

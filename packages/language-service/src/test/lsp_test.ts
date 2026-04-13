@@ -1,8 +1,8 @@
 /**
- * Integration tests for lsp.wasm — the self-hosted compiler's LSP entry point.
+ * Integration tests for lsp.wasm — the language service entry point.
  *
  * These tests load lsp.wasm directly in Node.js (no VS Code needed),
- * provide mock host imports, and exercise the check/diagnostic API.
+ * provide mock host imports, and exercise the check/diagnostic/format API.
  */
 
 import {suite, test} from 'node:test';
@@ -45,7 +45,7 @@ interface LspHandle {
 
 /** Load lsp.wasm and wire up imports. */
 async function loadLsp(): Promise<LspHandle> {
-  // lsp.wasm lives at packages/vscode-zena/lsp.wasm after build
+  // lsp.wasm lives at packages/language-service/lsp.wasm after build
   const wasmPath = resolve(__dirname, '../lsp.wasm');
   const wasmBuffer = await readFile(wasmPath);
 
@@ -84,7 +84,7 @@ async function loadLsp(): Promise<LspHandle> {
   readString = createStringReader(exports);
 
   // Init with stdlib root.
-  const stdlibRoot = resolve(__dirname, '../..', 'stdlib/zena');
+  const stdlibRoot = resolve(__dirname, '..', '../stdlib/zena');
   exports.init(writeString(stdlibRoot));
 
   return {exports, writeString, readString};

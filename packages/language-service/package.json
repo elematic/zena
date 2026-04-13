@@ -1,0 +1,65 @@
+{
+  "name": "@zena-lang/language-service",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./zena/*": "./zena/*.zena"
+  },
+  "files": [
+    "zena"
+  ],
+  "scripts": {
+    "build": "wireit",
+    "test": "wireit"
+  },
+  "wireit": {
+    "build": {
+      "dependencies": [
+        "build:ts",
+        "build:wasm"
+      ]
+    },
+    "build:ts": {
+      "command": "tsc",
+      "files": [
+        "src/**/*.ts",
+        "tsconfig.json"
+      ],
+      "output": [
+        "test/"
+      ],
+      "clean": "if-file-deleted"
+    },
+    "build:wasm": {
+      "command": "node --stack-size=4096 ../cli/lib/cli.js build zena/lsp.zena --target host -g -o lsp.wasm",
+      "files": [
+        "zena/**/*.zena",
+        "../zena-compiler/zena/**/*.zena",
+        "../zena-formatter/zena/**/*.zena",
+        "../stdlib/zena/**/*.zena"
+      ],
+      "output": [
+        "lsp.wasm"
+      ],
+      "dependencies": [
+        "../cli:build"
+      ]
+    },
+    "test": {
+      "command": "node --test test/lsp_test.js",
+      "dependencies": [
+        "build"
+      ],
+      "files": [],
+      "output": []
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@zena-lang/compiler": "*",
+    "@zena-lang/runtime": "*",
+    "typescript": "~5.9.3",
+    "wireit": "^0.14.4"
+  }
+}

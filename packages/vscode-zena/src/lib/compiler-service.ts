@@ -25,6 +25,7 @@ interface LspExports extends WebAssembly.Exports {
   getDiagnosticLength(diagnostics: unknown, index: number): number;
   getDiagnosticSeverity(diagnostics: unknown, index: number): number;
   getDiagnosticMessage(diagnostics: unknown, index: number): unknown;
+  format(source: unknown): unknown;
   $stringGetByte(str: unknown, index: number): number;
   $stringGetLength(str: unknown): number;
   $stringCreate(len: number): unknown;
@@ -179,5 +180,31 @@ export class ZenaCompilerService {
     }
 
     return diagnostics;
+  }
+
+  /**
+   * Format a source string and return the formatted result.
+   * Returns null if formatting fails (e.g. parse error).
+   */
+  formatDocument(source: string): string | null {
+    const exports = this.#exports!;
+    const writeString = this.#writeString!;
+    const readString = this.#readString!;
+
+    try {
+      const sourceRef = writeString(source);
+      const resultRef = exports.format(sourceRef);
+      const resultLen = exports.$stringGetLength(resultRef);
+      return readString(resultRef, resultLen);
+    } catch (e) {
+      const msg =
+        e instanceof Error
+          ? (e.stack ?? e.message)
+          : e != null && typeof e === 'object' && 'stack' in e
+            ? String((e as {stack: unknown}).stack)
+            : String(e);
+      this.#outputChannel.appendLine(`Format failed: ${msg}`);
+      return null;
+    }
   }
 }
