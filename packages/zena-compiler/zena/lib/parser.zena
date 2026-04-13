@@ -1,6 +1,7 @@
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 import { StringReader } from 'zena:string-reader';
+import { i32ToString } from 'zena:string-convert';
 import { Token, TokenType, Tokenizer } from './tokenizer.zena';
 import { 
   SourceLocation,
@@ -162,7 +163,7 @@ export class Parser {
       return new ImportDeclaration(moduleSpecifier, imports, this.#makeLocation(startToken));
     }
     
-    throw new Error('Expected import declaration.');
+    throw this.#error('Expected import declaration.');
   }
   
   #parseImportSpecifiers(): Array<ImportSpecifier> {
@@ -239,8 +240,37 @@ export class Parser {
     if (this.#check(type)) {
       return this.#advance();
     }
-    // TODO: Better error handling
-    throw new Error(message);
+    throw this.#error(message);
+  }
+  
+  #error(message: String): Error {
+    let token = this.#peek();
+    let line = token.line;
+    let col = token.column;
+    let header = this.#path + ":" + i32ToString(line) + ":" + i32ToString(col) + ": ";
+    
+    // Extract the source line for context
+    let src = this.#source;
+    var lineStart = token.start;
+    while (lineStart > 0 && src.sliceBytes(lineStart - 1, lineStart) != "\n") {
+      lineStart -= 1;
+    }
+    var lineEnd = token.start;
+    while (lineEnd < src.length && src.sliceBytes(lineEnd, lineEnd + 1) != "\n") {
+      lineEnd += 1;
+    }
+    let sourceLine = src.sliceBytes(lineStart, lineEnd);
+    
+    // Build caret line
+    var caretPad = "";
+    var ci = 1;
+    while (ci < col) {
+      caretPad = caretPad + " ";
+      ci += 1;
+    }
+    let caret = caretPad + "^";
+    
+    return new Error(header + message + " (got '" + token.value + "')\n" + sourceLine + "\n" + caret);
   }
   
   #makeLocation(startToken: Token): SourceLocation {
@@ -273,7 +303,7 @@ export class Parser {
       if (this.#match(TokenType.Declare)) {
         return this.#parseDeclareFunction(decorators, decExported, startToken);
       }
-      throw new Error("Expected 'declare' after decorator");
+      throw this.#error("Expected 'declare' after decorator");
     }
     
     // Export prefix
@@ -299,10 +329,10 @@ export class Parser {
     
     // Reject late imports
     if (this.#check(TokenType.Import)) {
-      throw new Error('Imports must appear at the top of the file.');
+      throw this.#error('Imports must appear at the top of the file.');
     }
     if (this.#check(TokenType.From) && this.#peek2().kind == TokenType.String) {
-      throw new Error('Imports must appear at the top of the file.');
+      throw this.#error('Imports must appear at the top of the file.');
     }
     
     // Declare function (without decorators)
@@ -545,14 +575,14 @@ export class Parser {
     
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       // Check for keywords that definitely start statements
-      if (this.#check(TokenType.Let) || this.#check(TokenType.Var) || this.#check(TokenType.Return) || this.#check(TokenType.While) || this.#check(TokenType.If) || this.#check(TokenType.For) || this.#check(TokenType.Break) || this.#check(TokenType.Continue) || this.#check(TokenType.Class)) {
+      if (this.#check(TokenType.Let) || this.#check(TokenType.Var) || this.#check(TokenType.Return) || this.#check(TokenType.While) || this.#check(TokenType.For) || this.#check(TokenType.Break) || this.#check(TokenType.Continue) || this.#check(TokenType.Class)) {
         body.push(this.#parseStatement());
         continue;
       }
       
-      // If we're at a semicolon, parse the statement
+      // If we're at a semicolon, skip it (e.g. empty statement or trailing ; after block-ended stmt)
       if (this.#check(TokenType.Semi)) {
-        body.push(this.#parseStatement());
+        this.#advance();
         continue;
       }
       
@@ -565,8 +595,12 @@ export class Parser {
         break;
       }
       
-      // Otherwise, we expect a semicolon (it's a regular expression statement)
-      this.#consume(TokenType.Semi, "Expected ';' after expression");
+      // Block-ended expressions (if, match, try with block body) don't require semicolons
+      if (!this.#isBlockEndedExpression(expr)) {
+        this.#consume(TokenType.Semi, "Expected ';' after expression");
+      } else if (this.#check(TokenType.Semi)) {
+        this.#advance();
+      }
       body.push(new ExpressionStatement(expr, expr.loc));
     }
     
@@ -698,6 +732,9 @@ export class Parser {
           var value: Node = new IdentifierPattern(name.name, name.loc);
           if (this.#match(TokenType.Colon)) {
             value = this.#parseMatchPattern();
+          } else if (this.#match(TokenType.As)) {
+            let newName = this.#parseIdentifier();
+            value = new IdentifierPattern(newName.name, newName.loc);
           }
           properties.push(new BindingProperty(name, value, this.#makeLocation(propStart)));
           if (!this.#check(TokenType.RBrace)) {
@@ -722,7 +759,7 @@ export class Parser {
       return ident;
     }
     
-    throw new Error("Unexpected token in pattern");
+    throw this.#error("Unexpected token in pattern");
   }
   
   #parseMatchTuplePattern(startToken: Token): TuplePattern {
@@ -756,19 +793,20 @@ export class Parser {
       e
     };
     
-    this.#consume(TokenType.Else, "Expected 'else' after consequent in if expression");
-    
-    var alternate: Node = if (this.#match(TokenType.LBrace)) {
-      let b: Node = this.#parseBlockAsExpression(this.#previous());
-      b
-    } else if (this.#check(TokenType.If)) {
-      this.#advance();
-      let e: Node = this.#parseIfExpression(this.#previous());
-      e
-    } else {
-      let e: Node = this.#parseExpression();
-      e
-    };
+    var alternate: Node | null = null;
+    if (this.#match(TokenType.Else)) {
+      alternate = if (this.#match(TokenType.LBrace)) {
+        let b: Node = this.#parseBlockAsExpression(this.#previous());
+        b
+      } else if (this.#check(TokenType.If)) {
+        this.#advance();
+        let e: Node = this.#parseIfExpression(this.#previous());
+        e
+      } else {
+        let e: Node = this.#parseExpression();
+        e
+      };
+    }
     
     return new IfExpression(test, consequent, alternate, this.#makeLocation(startToken));
   }
@@ -801,7 +839,7 @@ export class Parser {
     }
     
     if (handler == null && finalizer == null) {
-      throw new Error("Expected 'catch' or 'finally' after try block");
+      throw this.#error("Expected 'catch' or 'finally' after try block");
     }
     
     return new TryExpression(body, handler, finalizer, this.#makeLocation(startToken));
@@ -825,6 +863,9 @@ export class Parser {
     if (expr is TryExpression) { return true; }
     if (expr is IfExpression) {
       let ifExpr = expr as IfExpression;
+      if (ifExpr.alternate == null) {
+        return ifExpr.consequent is BlockStatement;
+      }
       if (ifExpr.alternate is BlockStatement) { return true; }
       if (ifExpr.alternate is IfExpression) {
         return this.#isBlockEndedExpression(ifExpr.alternate as Expression);
@@ -866,7 +907,7 @@ export class Parser {
       let token = this.#advance();
       return new IdentifierPattern(token.value, this.#makeLocation(startToken));
     }
-    throw new Error("Expected identifier");
+    throw this.#error("Expected identifier");
   }
   
   #parseRecordPattern(startToken: Token, matchContext: boolean): RecordPattern {
@@ -1479,7 +1520,7 @@ export class Parser {
       return this.#parseIdentifier();
     }
     
-    throw new Error("Unexpected token in expression");
+    throw this.#error("Unexpected token in expression");
   }
   
   #parseTemplateLiteral(startToken: Token): TemplateLiteral {
@@ -2060,7 +2101,7 @@ export class Parser {
       return new NamedTypeAnnotation(name, typeArgs, this.#makeLocation(startToken));
     }
     
-    throw new Error("Expected type annotation");
+    throw this.#error("Expected type annotation");
   }
   
   #parseFunctionOrTupleType(startToken: Token): TypeAnnotation {
@@ -2183,7 +2224,7 @@ export class Parser {
       return this.#advance();
     }
     
-    throw new Error(message);
+    throw this.#error(message);
   }
   
   #checkGreater(): boolean {
@@ -2193,6 +2234,16 @@ export class Parser {
   // ==========================================================================
   // Helper Methods
   // ==========================================================================
+  
+  // Check if `:` after let/var starts a symbol property name.
+  // `var :sym: Type` → Var(+0), Colon(+1), Ident(+2), Colon(+3) → symbol field
+  // `var: Type`      → Var(+0), Colon(+1), Ident(+2), Semi(+3)  → field named 'var'
+  #isSymbolFieldAfterKeyword(): boolean {
+    let t1 = this.#tokens[this.#current + 1].kind;
+    let t2 = this.#tokens[this.#current + 2].kind;
+    let t3 = this.#tokens[this.#current + 3].kind;
+    return t1 == TokenType.Colon && t2 == TokenType.Identifier && (t3 == TokenType.Colon || t3 == TokenType.Dot);
+  }
   
   #isIdentifier(): boolean {
     let t = this.#peek().kind;
@@ -2225,7 +2276,7 @@ export class Parser {
       let token = this.#advance();
       return new Identifier(token.value, this.#makeLocation(startToken));
     }
-    throw new Error("Expected identifier");
+    throw this.#error("Expected identifier");
   }
   
   // ==========================================================================
@@ -2296,7 +2347,7 @@ export class Parser {
     var superClass: TypeAnnotation | null = null;
     if (this.#match(TokenType.Extends)) {
       if (isExtension) {
-        throw new Error("Extension classes cannot use 'extends'");
+        throw this.#error("Extension classes cannot use 'extends'");
       }
       superClass = this.#parseTypeAnnotation();
     }
@@ -2422,11 +2473,14 @@ export class Parser {
     }
     
     // Check for field mutability prefix
+    // Disambiguate: `let name: Type` vs field named `let` (when followed by `:`)
+    // Exception: `let :sym: Type` or `var :sym: Type` is a symbol field with mutability
+    // Pattern: Keyword, Colon, Ident, (Colon|Dot) → symbol field after keyword
     var mutability: String | null = null;
-    if (this.#check(TokenType.Let) && this.#peek2().kind != TokenType.Colon && this.#peek2().kind != TokenType.LParen) {
+    if (this.#check(TokenType.Let) && (this.#peek2().kind != TokenType.Colon || this.#isSymbolFieldAfterKeyword()) && this.#peek2().kind != TokenType.LParen) {
       this.#advance();
       mutability = 'let';
-    } else if (this.#check(TokenType.Var) && this.#peek2().kind != TokenType.Colon && this.#peek2().kind != TokenType.LParen) {
+    } else if (this.#check(TokenType.Var) && (this.#peek2().kind != TokenType.Colon || this.#isSymbolFieldAfterKeyword()) && this.#peek2().kind != TokenType.LParen) {
       this.#advance();
       mutability = 'var';
     }
@@ -2485,7 +2539,7 @@ export class Parser {
         value = this.#parseExpression();
       }
       if (typeAnnotation == null && value == null) {
-        throw new Error("Private field must have a type annotation or initializer");
+        throw this.#error("Private field must have a type annotation or initializer");
       }
       this.#consume(TokenType.Semi, "Expected ';' after field declaration");
       return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, isOptional, false, false, mutability, decorators, this.#makeLocation(startToken));
@@ -2565,19 +2619,26 @@ export class Parser {
       return new FieldDefinition(name, typeAnnotation, null, false, false, isOptional, false, true, mutability, decorators, this.#makeLocation(startToken));
     }
     
-    // Field: name: Type; or name?: Type; -OR- Accessor: name: Type { get { } set(v) { } }
+    // Field: name: Type; or name?: Type; or name: Type = value; or name = value;
+    // -OR- Accessor: name: Type { get { } set(v) { } }
     let isOptional = this.#match(TokenType.Question);
-    this.#consume(TokenType.Colon, "Expected ':' after field name");
-    let typeAnnotation = this.#parseTypeAnnotation();
+    var typeAnnotation: TypeAnnotation | null = null;
+    if (this.#match(TokenType.Colon)) {
+      typeAnnotation = this.#parseTypeAnnotation();
+    }
     
     // Check for accessor block
-    if (this.#check(TokenType.LBrace)) {
+    if (typeAnnotation != null && this.#check(TokenType.LBrace)) {
       return this.#parseAccessorBlock(name, typeAnnotation, isFinal, decorators, startToken);
     }
     
     var fieldValue: Expression | null = null;
     if (this.#match(TokenType.Equals)) {
       fieldValue = this.#parseExpression();
+    }
+    
+    if (typeAnnotation == null && fieldValue == null) {
+      throw this.#error("Expected ':' for type annotation or '=' for initializer after field name");
     }
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
@@ -2620,7 +2681,7 @@ export class Parser {
       let keyword = this.#peek();
       if (keyword.value == "get") {
         if (getter != null) {
-          throw new Error("Duplicate getter");
+          throw this.#error("Duplicate getter");
         }
         this.#advance();
         let blockStart = this.#peek();
@@ -2628,7 +2689,7 @@ export class Parser {
         getter = this.#parseBlockStatement(blockStart);
       } else if (keyword.value == "set") {
         if (setter != null) {
-          throw new Error("Duplicate setter");
+          throw this.#error("Duplicate setter");
         }
         this.#advance();
         this.#consume(TokenType.LParen, "Expected '(' after set");
@@ -2639,12 +2700,12 @@ export class Parser {
         let body = this.#parseBlockStatement(blockStart);
         setter = new SetterInfo(param, body, this.#makeLocation(keyword));
       } else {
-        throw new Error("Expected 'get' or 'set' in accessor block");
+        throw this.#error("Expected 'get' or 'set' in accessor block");
       }
     }
     
     if (getter == null && setter == null) {
-      throw new Error("Accessor must have at least a getter or a setter");
+      throw this.#error("Accessor must have at least a getter or a setter");
     }
     
     this.#consume(TokenType.RBrace, "Expected '}' after accessor block");
@@ -2800,7 +2861,7 @@ export class Parser {
             args.push(arg as StringLiteral);
           }
           case _: {
-            throw new Error('Decorator arguments must be string literals');
+            throw this.#error('Decorator arguments must be string literals');
           }
         }
         while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen)) {
@@ -2810,7 +2871,7 @@ export class Parser {
               args.push(nextArg as StringLiteral);
             }
             case _: {
-              throw new Error('Decorator arguments must be string literals');
+              throw this.#error('Decorator arguments must be string literals');
             }
           }
         }
@@ -2852,7 +2913,7 @@ export class Parser {
       let d = decorators[i];
       if (d.name == "external") {
         if (d.args.length != 2) {
-          throw new Error("@external expects 2 arguments");
+          throw this.#error("@external expects 2 arguments");
         }
         externalModule = d.args[0].value;
         externalName = d.args[1].value;
@@ -2981,7 +3042,7 @@ export class Parser {
     // Method: name(params): ReturnType;
     if (this.#match(TokenType.LParen)) {
       if (mutableField) {
-        throw new Error("'var' modifier is not allowed on methods.");
+        throw this.#error("'var' modifier is not allowed on methods.");
       }
       let params = this.#parseParameters();
       this.#consume(TokenType.RParen, "Expected ')' after parameters");
@@ -2997,7 +3058,7 @@ export class Parser {
     }
     
     if (typeParameters != null) {
-      throw new Error("Fields cannot have type parameters.");
+      throw this.#error("Fields cannot have type parameters.");
     }
     
     // Field: name: Type; or name?: Type;  or  Accessor: name: Type { get; set; }
@@ -3008,7 +3069,7 @@ export class Parser {
     // Check for accessor signature: { get; set; }
     if (this.#match(TokenType.LBrace)) {
       if (mutableField) {
-        throw new Error("'var' modifier is not allowed on accessor signatures.");
+        throw this.#error("'var' modifier is not allowed on accessor signatures.");
       }
       var hasGetter = false;
       var hasSetter = false;
@@ -3020,7 +3081,7 @@ export class Parser {
         } else if (id.name == "set") {
           hasSetter = true;
         } else {
-          throw new Error("Expected 'get' or 'set' in accessor signature, got '" + id.name + "'");
+          throw this.#error("Expected 'get' or 'set' in accessor signature, got '" + id.name + "'");
         }
         this.#consume(TokenType.Semi, "Expected ';' after accessor specifier");
       }

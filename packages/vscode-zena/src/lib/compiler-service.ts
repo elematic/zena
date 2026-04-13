@@ -127,6 +127,15 @@ export class ZenaCompilerService {
       const msgLen = exports.$stringGetLength(msgRef);
       const message = readString(msgRef, msgLen);
 
+      // Skip diagnostics without a source location — these are typically
+      // errors from dependency files (e.g. stdlib parse errors) whose
+      // location doesn't correspond to the current document. The error
+      // message already contains the file path and line/column info.
+      if (line === 0 && start < 0) {
+        this.#outputChannel.appendLine(`[diagnostic] ${message}`);
+        continue;
+      }
+
       // Convert 1-based line/column to 0-based for VS Code
       const startPos = new vscode.Position(
         Math.max(0, line - 1),
