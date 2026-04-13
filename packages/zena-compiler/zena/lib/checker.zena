@@ -49,7 +49,7 @@ import {
   TypeParameter, Parameter, FieldDefinition, MethodDefinition,
   AccessorDeclaration, MatchCase, PropertyAssignment, SpreadElement,
   LetPatternCondition, BindingProperty, PropertySignature, CatchClause,
-  CaseClassParam, FieldInitializer, SuperInitializer, EnumMember,
+  CaseClassParam, FieldInitializer, SuperInitializer, EnumMember, MapEntry,
   MethodSignature, AccessorSignature, SetterInfo, SealedVariant
 } from './ast.zena';
 import {
@@ -152,6 +152,12 @@ class CheckerContext {
    * already in this set, we've found a recursive reference.
    */
   #resolving = new HashMap<i32, boolean>();
+
+  /**
+   * Pipeline value stack for `|>` operator.
+   * `$` placeholder resolves to the top of this stack.
+   */
+  #pipelineStack = new Array<Type>();
 
   /**
    * The scope result from name resolution (for reference lookups).
@@ -468,6 +474,17 @@ class CheckerContext {
       return this.#preludeValues[name];
     }
     return null;
+  }
+
+  // --- Pipeline ---
+
+  pushPipelineValue(t: Type): void { this.#pipelineStack.push(t); }
+  popPipelineValue(): void { this.#pipelineStack.pop(); }
+  pipelineValueType: Type | null {
+    get {
+      if (this.#pipelineStack.length == 0) { return null; }
+      return this.#pipelineStack[this.#pipelineStack.length - 1];
+    }
   }
 
   // --- Dependency exports ---
@@ -2143,13 +2160,74 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     }
     new TupleT(elementTypes)
   }
-  case MapLiteral {loc}: new UnknownType()           // TODO
+  case MapLiteral {entries, loc}: {
+    if (entries.length == 0) {
+      ctx.error("Empty map literal requires type annotation. Use 'new HashMap<K, V>()' instead.", DiagnosticCode.TypeMismatch, loc);
+      new UnknownType()
+    } else {
+      // Check all entries and unify key/value types.
+      let firstKeyType = checkExpression(ctx, entries[0].key, null);
+      let firstValType = checkExpression(ctx, entries[0].value, null);
+      var ei = 1;
+      while (ei < entries.length) {
+        let kt = checkExpression(ctx, entries[ei].key, null);
+        if (!isAssignableTo(ctx, kt, firstKeyType)) {
+          ctx.error(
+            "Map key type mismatch: expected '" + typeToString(firstKeyType) + "', got '" + typeToString(kt) + "'.",
+            DiagnosticCode.TypeMismatch, entries[ei].key.loc
+          );
+        }
+        let vt = checkExpression(ctx, entries[ei].value, null);
+        if (!isAssignableTo(ctx, vt, firstValType)) {
+          ctx.error(
+            "Map value type mismatch: expected '" + typeToString(firstValType) + "', got '" + typeToString(vt) + "'.",
+            DiagnosticCode.TypeMismatch, entries[ei].value.loc
+          );
+        }
+        ei += 1;
+      }
+      // Return HashMap<K, V> if available, otherwise UnknownType.
+      let hashMapType = ctx.resolveTypeName("HashMap");
+      if (hashMapType != null) {
+        match (hashMapType as Type) {
+          case ClassType as hm: {
+            let typeArgs = new Array<Type>();
+            typeArgs.push(firstKeyType);
+            typeArgs.push(firstValType);
+            instantiateClassType(hm, typeArgs) as Type
+          }
+          case _: new UnknownType()
+        }
+      } else {
+        new UnknownType()
+      }
+    }
+  }
   case TemplateLiteral {loc}: {
     let stringType = ctx.resolveTypeName("String");
     if (stringType != null) { return stringType as Type; }
     new UnknownType()
   }
-  case TaggedTemplateExpression {loc}: new UnknownType()  // TODO
+  case TaggedTemplateExpression {tag, quasi, loc}: {
+    // Check the interpolated expressions.
+    var qi = 0;
+    while (qi < quasi.expressions.length) {
+      checkExpression(ctx, quasi.expressions[qi], null);
+      qi += 1;
+    }
+    // Check the tag function and return its return type.
+    let tagType = checkExpression(ctx, tag, null);
+    match (tagType) {
+      case FunctionType as ft: ft.returnType
+      case _: {
+        ctx.error(
+          "Tagged template tag must be a function, got '" + typeToString(tagType) + "'.",
+          DiagnosticCode.TypeMismatch, loc
+        );
+        new UnknownType()
+      }
+    }
+  }
   case MatchExpression {discriminant, cases, loc}: {
     checkMatchExpr(ctx, discriminant, cases, loc, expectedType)
   }
@@ -2185,9 +2263,51 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       tryType
     }
   }
-  case RangeExpression {loc}: new UnknownType()      // TODO
-  case PipelineExpression {loc}: new UnknownType()   // TODO
-  case PipePlaceholder {loc}: new UnknownType()      // TODO
+  case RangeExpression {start, end, loc}: {
+    // Check start/end are i32.
+    if (start != null) {
+      let startType = checkExpression(ctx, start as Expression, null);
+      if (!isAssignableTo(ctx, startType, new I32Type())) {
+        ctx.error(
+          "Range start must be i32, got '" + typeToString(startType) + "'.",
+          DiagnosticCode.TypeMismatch, loc
+        );
+      }
+    }
+    if (end != null) {
+      let endType = checkExpression(ctx, end as Expression, null);
+      if (!isAssignableTo(ctx, endType, new I32Type())) {
+        ctx.error(
+          "Range end must be i32, got '" + typeToString(endType) + "'.",
+          DiagnosticCode.TypeMismatch, loc
+        );
+      }
+    }
+    // Determine which range variant to return.
+    let rangeTypeName = if (start != null && end != null) { "BoundedRange" }
+      else if (start != null) { "FromRange" }
+      else if (end != null) { "ToRange" }
+      else { "FullRange" };
+    let rangeType = ctx.resolveTypeName(rangeTypeName);
+    if (rangeType != null) { rangeType as Type }
+    else { new UnknownType() }
+  }
+  case PipelineExpression {left, right, loc}: {
+    let leftType = checkExpression(ctx, left, null);
+    ctx.pushPipelineValue(leftType);
+    let resultType = checkExpression(ctx, right, null);
+    ctx.popPipelineValue();
+    resultType
+  }
+  case PipePlaceholder {loc}: {
+    let pipeType = ctx.pipelineValueType;
+    if (pipeType == null) {
+      ctx.error("'$' can only be used inside a pipeline expression (|>).", DiagnosticCode.SymbolNotFound, loc);
+      new UnknownType()
+    } else {
+      pipeType as Type
+    }
+  }
 };
 
 // ============================================================================
