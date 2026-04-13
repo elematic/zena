@@ -1292,7 +1292,11 @@ export class Parser {
     
     while (true) {
       if (this.#match(TokenType.LParen)) {
-        expr = this.#finishCall(expr, false);
+        expr = this.#finishCall(expr, null, false);
+      } else if (this.#check(TokenType.Less) && this.#isGenericCall()) {
+        let typeArguments = this.#parseTypeArguments();
+        this.#consume(TokenType.LParen, "Expected '(' after type arguments");
+        expr = this.#finishCall(expr, typeArguments, false);
       } else if (this.#match(TokenType.Dot)) {
         if (this.#match(TokenType.Colon)) {
           // Symbol member access: obj.:sym or obj.:Iface.sym
@@ -1336,7 +1340,7 @@ export class Parser {
         this.#consume(TokenType.RBracket, "Expected ']' after index");
         expr = new IndexExpression(expr, index, true, null);
       } else if (this.#match(TokenType.QuestionLParen)) {
-        expr = this.#finishCall(expr, true);
+        expr = this.#finishCall(expr, null, true);
       } else if (this.#check(TokenType.NoSubstitutionTemplate) || this.#check(TokenType.TemplateHead)) {
         let tagStartToken = this.#peek();
         let quasi = this.#parsePrimary();
@@ -1349,7 +1353,7 @@ export class Parser {
     return expr;
   }
   
-  #finishCall(callee: Expression, optional: boolean): CallExpression {
+  #finishCall(callee: Expression, typeArguments: Array<TypeAnnotation> | null, optional: boolean): CallExpression {
     let startToken = this.#previous();
     let args = new Array<Expression>(4);
     
@@ -1362,7 +1366,7 @@ export class Parser {
     
     this.#consume(TokenType.RParen, "Expected ')' after arguments");
     
-    return new CallExpression(callee, args, null, optional, this.#makeLocation(startToken));
+    return new CallExpression(callee, args, typeArguments, optional, this.#makeLocation(startToken));
   }
   
   #parsePrimary(): Expression {
@@ -1745,6 +1749,43 @@ export class Parser {
     // After > should be (
     let nextToken = this.#tokens[this.#current + i];
     return nextToken.kind == TokenType.LParen;
+  }
+  
+  #isGenericCall(): boolean {
+    // Scan <...> tracking depth. If balanced > is followed by (, it's a generic call.
+    var depth = 1;
+    var i = 1; // skip the <
+    
+    while (depth > 0) {
+      let token = this.#tokens[this.#current + i];
+      if (token.kind == TokenType.EOF) { return false; }
+      if (token.kind == TokenType.Less) {
+        depth = depth + 1;
+      } else if (token.kind == TokenType.Greater) {
+        depth = depth - 1;
+      } else if (token.kind == TokenType.GreaterGreater) {
+        depth = depth - 2;
+      } else if (token.kind == TokenType.GreaterGreaterGreater) {
+        depth = depth - 3;
+      } else if (token.kind == TokenType.GreaterEquals) {
+        return false;
+      }
+      i += 1;
+    }
+    
+    let nextToken = this.#tokens[this.#current + i];
+    return nextToken.kind == TokenType.LParen;
+  }
+  
+  #parseTypeArguments(): Array<TypeAnnotation> {
+    this.#consume(TokenType.Less, "Expected '<' before type arguments");
+    let args = new Array<TypeAnnotation>(4);
+    args.push(this.#parseTypeAnnotation());
+    while (this.#match(TokenType.Comma) && !this.#checkGreater()) {
+      args.push(this.#parseTypeAnnotation());
+    }
+    this.#consumeGreater("Expected '>' after type arguments");
+    return args;
   }
   
   #parseTypeParameterList(): Array<TypeParameter> {
