@@ -1048,7 +1048,7 @@ offset, keyed the same way as `ReferenceMap`. The AST is read-only.
 
 **Sub-milestones:**
 
-**3a: Type infrastructure + primitives (✅ Foundations built)**
+**3a: Type infrastructure + primitives ✅**
 
 - `types.zena` — Sealed `Type` hierarchy with all variants
 - `diagnostics.zena` — `Diagnostic`, `DiagnosticBag`, `DiagnosticCode`
@@ -1062,18 +1062,18 @@ offset, keyed the same way as `ReferenceMap`. The AST is read-only.
 - `var` bindings widen literal types (true → boolean)
 - Check expression statements
 
-**3b: Operators + control flow**
+**3b: Operators + control flow ✅**
 
 - Binary expressions (arithmetic, comparison, logical, bitwise)
   - Contextual typing: `0 < x` where x is i64 makes 0 → i64
   - Numeric promotion: f64 > f32 > i64 > i32
 - Unary expressions (-, !)
 - Assignment expressions (type compatibility check)
-- `if`/`while`/`for` statements (boolean condition validation)
+- `if`/`while`/`for`/`for-in` statements (boolean condition validation)
 - `break`/`continue` (loop depth validation)
 - Block scoping (`enterScope`/`exitScope`)
 
-**3c: Functions + calls**
+**3c: Functions + calls ✅**
 
 - Function expressions → `FunctionType`
 - Contextual typing for closures (infer param types from expected type)
@@ -1081,7 +1081,7 @@ offset, keyed the same way as `ReferenceMap`. The AST is read-only.
 - Return statements (validate against expected return type)
 - If expressions (union of branch types)
 
-**3d: Classes and interfaces**
+**3d: Classes and interfaces ✅**
 
 - Class type creation from `ClassDeclaration`
 - Case class constructors
@@ -1092,19 +1092,50 @@ offset, keyed the same way as `ReferenceMap`. The AST is read-only.
 - Inheritance and override validation
 - Mixin application
 
-**3e: Generics**
+**3e: Generics ✅**
 
 - Type parameter resolution and constraint checking
 - Generic instantiation with interning
-- Type argument inference
+- Type argument inference (simple: `TypeParameterType` → arg type)
 - `substituteTypeParams` via `TypeContext`
 
-**3f: Advanced features**
+**3f: Declarations ✅**
 
-- Pattern matching exhaustiveness
-- Type narrowing (null checks, `is` expressions)
-- Closure capture analysis (semantic, not codegen-specific)
-- Overload resolution
+- Enum declarations (distinct TypeAliasType + record value binding)
+- Mixin declarations (type params, on clause, composed mixins, fields/methods)
+- Declare function (annotation-only FunctionType)
+- Symbol declarations (SymbolType with unique ID)
+- Pre-pass registration for forward/recursive references
+
+**3g: Patterns + expressions ✅**
+
+- Pattern matching: class patterns, logical patterns, record/tuple destructuring
+- `if-let` / `while-let`
+- `match` expressions with exhaustiveness checking (basic)
+- `as` expressions (type casts)
+- `super` expressions
+- `try` / `catch` expressions
+- Array literals, record literals, map literals
+- Template literals and tagged template expressions
+- Range expressions (bounded, from, to, full)
+- Pipeline expressions with `#` placeholder
+- Index expressions (arrays, tuples, operator `[]`)
+
+**3h: Remaining improvements (not yet started)**
+
+- [ ] Identity-based type deduplication in `createUnionType` (currently uses
+      `typeToString` for dedup — should use type identity)
+- [ ] Complex generic type argument inference (e.g., `Array<T>` against
+      `Array<i32>` — currently only handles bare `TypeParameterType`)
+- [ ] Tuple literal index with specific element type (currently returns union
+      of all element types when index is a literal)
+- [ ] Logical expression narrowing (extract narrowings from `&&` left side,
+      apply to right side)
+- [ ] Operator overloading on non-numeric classes (arithmetic operators
+      currently only work on numeric types)
+- [ ] Equality type validation (ensure `==`/`!=` operands are comparable)
+- [ ] Diagnostic for unresolved `String` type (fallback to `UnknownType`
+      when `String` not in scope — should be a hard error)
 
 **Important design note:** The checker should produce information that is
 backend-agnostic. It should NOT make decisions specific to WASM (like "this

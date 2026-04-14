@@ -1107,12 +1107,14 @@ let substituteTypeParams = (
   if (typeParams == null || typeArgs == null) { return t; }
   let params = typeParams as Array<TypeParameterType>;
   let args = typeArgs as Array<Type>;
+  let tpLen = params.length;
+  let taLen = args.length;
 
   match (t) {
     case TypeParameterType {name}: {
       // Find the matching type parameter and substitute.
       var i = 0;
-      while (i < params.length && i < args.length) {
+      while (i < tpLen && i < taLen) {
         if (params[i].name == name) {
           return args[i];
         }
@@ -1153,7 +1155,26 @@ let substituteTypeParams = (
       let subRet = substituteTypeParams(typeParams, typeArgs, ft.returnType);
       return new FunctionType(subParams, ft.parameterNames, subRet);
     }
-    case _: t
+    case ClassType as ct: {
+      // Recurse into type arguments of generic class types.
+      if (ct.typeArguments != null) {
+        let srcArgs = ct.typeArguments as Array<Type>;
+        let subArgs = new Array<Type>();
+        var changed = false;
+        var i = 0;
+        while (i < srcArgs.length) {
+          let sub = substituteTypeParams(typeParams, typeArgs, srcArgs[i]);
+          subArgs.push(sub);
+          if (!typesEqual(sub, srcArgs[i])) { changed = true; }
+          i += 1;
+        }
+        if (changed) {
+          return instantiateClassType(ct.genericSource ?? ct, subArgs);
+        }
+      }
+      return t;
+    }
+    case _: { return t; }
   }
 };
 
@@ -1232,7 +1253,46 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
         inferred.set(name, argType);
       }
     }
-    // TODO: Handle more complex inference (e.g., Array<T> against Array<i32>).
+    case ArrayType {elementType}: {
+      // Array<T> against Array<i32> → infer T = i32.
+      match (argType) {
+        case ArrayType as argArr: {
+          inferTypeArg(elementType, argArr.elementType, inferred);
+        }
+        case _: {}
+      }
+    }
+    case ClassType as pt: {
+      // Box<T> against Box<i32> → infer T = i32.
+      match (argType) {
+        case ClassType as at: {
+          if (pt.name == at.name && pt.typeArguments != null && at.typeArguments != null) {
+            let ptArgs = pt.typeArguments as Array<Type>;
+            let atArgs = at.typeArguments as Array<Type>;
+            var i = 0;
+            while (i < ptArgs.length && i < atArgs.length) {
+              inferTypeArg(ptArgs[i], atArgs[i], inferred);
+              i += 1;
+            }
+          }
+        }
+        case _: {}
+      }
+    }
+    case FunctionType as pt: {
+      // (T) => U against (i32) => String → infer T = i32, U = String.
+      match (argType) {
+        case FunctionType as at: {
+          var i = 0;
+          while (i < pt.parameters.length && i < at.parameters.length) {
+            inferTypeArg(pt.parameters[i], at.parameters[i], inferred);
+            i += 1;
+          }
+          inferTypeArg(pt.returnType, at.returnType, inferred);
+        }
+        case _: {}
+      }
+    }
     case _: {}
   }
 };
@@ -1383,6 +1443,18 @@ let typesEqual = (a: Type, b: Type): boolean => {
     case InterfaceType as ia: {
       match (b) {
         case InterfaceType as ib: ia.id == ib.id
+        case _: false
+      }
+    }
+    case TypeParameterType {name as na}: {
+      match (b) {
+        case TypeParameterType {name as nb}: na == nb
+        case _: false
+      }
+    }
+    case ArrayType {elementType as ea}: {
+      match (b) {
+        case ArrayType {elementType as eb}: typesEqual(ea, eb)
         case _: false
       }
     }
@@ -2239,8 +2311,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     checkFunctionExpression(ctx, typeParameters, params, returnType, body, loc, expectedType)
   }
 
-  case CallExpression {callee, args, optional, loc}: {
-    checkCallExpression(ctx, callee, args, optional, loc)
+  case CallExpression {callee, args, typeArguments, optional, loc}: {
+    checkCallExpression(ctx, callee, args, typeArguments, optional, loc)
   }
 
   // --- If Expression ---
@@ -2910,17 +2982,23 @@ let checkClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void =>
           } else {
             // Build constructor type from signature
             let paramTypes = new Array<Type>();
+            let paramNames = new Array<String>();
             var pi = 0;
             while (pi < ms.params.length) {
               let param = ms.params[pi];
+              let paramName = param.name.name;
               var paramType: Type = new UnknownType();
-              if (param.typeAnnotation != null) {
+              if (param.isThisParam && classType.fields.has(paramName)) {
+                // this.-style param inherits type from the class field.
+                paramType = classType.fields[paramName];
+              } else if (param.typeAnnotation != null) {
                 paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
               }
               paramTypes.push(paramType);
+              paramNames.push(paramName);
               pi = pi + 1;
             }
-            let ctorType = new FunctionType(paramTypes, null, classType);
+            let ctorType = new FunctionType(paramTypes, paramNames, classType);
             classType.constructorType = ctorType;
           }
         } else {
@@ -3079,12 +3157,16 @@ let checkMethodSignature = (
   var i = 0;
   while (i < md.params.length) {
     let param = md.params[i];
+    let paramName = param.name.name;
     var paramType: Type = new UnknownType();
-    if (param.typeAnnotation != null) {
+    if (param.isThisParam && classType.fields.has(paramName)) {
+      // this.-style param inherits type from the class field.
+      paramType = classType.fields[paramName];
+    } else if (param.typeAnnotation != null) {
       paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
     }
     paramTypes.push(paramType);
-    paramNames.push(param.name.name);
+    paramNames.push(paramName);
     i += 1;
   }
 
@@ -4528,6 +4610,24 @@ let checkFunctionExpression = (
 ): Type => {
   ctx.enterScope();
 
+  // Register type parameters in the type scope.
+  var resolvedTypeParams: Array<TypeParameterType> | null = null;
+  if (typeParameters != null) {
+    let tps = typeParameters as Array<TypeParameter>;
+    if (tps.length > 0) {
+      let tpTypes = new Array<TypeParameterType>();
+      var tpi = 0;
+      while (tpi < tps.length) {
+        let tp = tps[tpi];
+        let tpType = new TypeParameterType(tp.name, null, null);
+        ctx.declareTypeName(tp.name, tpType);
+        tpTypes.push(tpType);
+        tpi += 1;
+      }
+      resolvedTypeParams = tpTypes;
+    }
+  }
+
   // Resolve parameter types.
   let paramTypes = new Array<Type>();
   let paramNames = new Array<String>();
@@ -4631,13 +4731,16 @@ let checkFunctionExpression = (
   ctx.setInferredReturnTypes(prevInferredReturns);
   ctx.exitScope();
 
-  return new FunctionType(paramTypes, paramNames, retType);
+  let fnType = new FunctionType(paramTypes, paramNames, retType);
+  fnType.typeParameters = resolvedTypeParams;
+  return fnType;
 };
 
 let checkCallExpression = (
   ctx: CheckerContext,
   callee: Expression,
   args: Array<Expression>,
+  typeArguments: Array<TypeAnnotation> | null,
   optional: boolean,
   loc: SourceLocation | null
 ): Type => {
@@ -4670,7 +4773,7 @@ let checkCallExpression = (
 
   // If optional and not nullable, proceed normally.
   // If optional and nullable, wrap result in union with null.
-  let resultType = checkCallExpressionInner(ctx, baseCalleeType, args, loc);
+  let resultType = checkCallExpressionInner(ctx, baseCalleeType, args, typeArguments, loc);
 
   if (isNullable && optional) {
     let types = new Array<Type>();
@@ -4686,18 +4789,76 @@ let checkCallExpressionInner = (
   ctx: CheckerContext,
   calleeType: Type,
   args: Array<Expression>,
+  typeArguments: Array<TypeAnnotation> | null,
   loc: SourceLocation | null
 ): Type => {
   match (calleeType) {
     case FunctionType as ft: {
+      // Handle generic function calls.
+      var effectiveFt = ft;
+      if (ft.typeParameters != null) {
+        let typeParams = ft.typeParameters as Array<TypeParameterType>;
+        if (typeParams.length > 0) {
+          if (typeArguments != null) {
+            // Explicit type arguments provided.
+            let explicit = typeArguments as Array<TypeAnnotation>;
+            let typeArgs = new Array<Type>();
+            var ti = 0;
+            while (ti < explicit.length) {
+              typeArgs.push(resolveTypeAnnotation(ctx, explicit[ti]));
+              ti += 1;
+            }
+            // Substitute type parameters in params and return type.
+            let subParams = new Array<Type>();
+            var si = 0;
+            while (si < ft.parameters.length) {
+              subParams.push(substituteTypeParams(ft.typeParameters, typeArgs, ft.parameters[si]));
+              si += 1;
+            }
+            let subRet = substituteTypeParams(ft.typeParameters, typeArgs, ft.returnType);
+            effectiveFt = new FunctionType(subParams, ft.parameterNames, subRet);
+          } else {
+            // Infer type arguments from argument types.
+            let inferred = new HashMap<String, Type>();
+            var ai = 0;
+            while (ai < args.length && ai < ft.parameters.length) {
+              let argType = checkExpression(ctx, args[ai], null);
+              inferTypeArg(ft.parameters[ai], argType, inferred);
+              ai += 1;
+            }
+            // Build type args array from inferred map.
+            let typeArgs = new Array<Type>();
+            var pi = 0;
+            while (pi < typeParams.length) {
+              let paramName = typeParams[pi].name;
+              if (inferred.has(paramName)) {
+                typeArgs.push(inferred[paramName]);
+              } else {
+                typeArgs.push(new UnknownType());
+              }
+              pi += 1;
+            }
+            // Substitute type parameters in params and return type.
+            let subParams = new Array<Type>();
+            var si = 0;
+            while (si < ft.parameters.length) {
+              subParams.push(substituteTypeParams(ft.typeParameters, typeArgs, ft.parameters[si]));
+              si += 1;
+            }
+            let subRet = substituteTypeParams(ft.typeParameters, typeArgs, ft.returnType);
+            effectiveFt = new FunctionType(subParams, ft.parameterNames, subRet);
+          }
+        }
+      }
+
       // Check argument count.
-      let expectedCount = ft.parameters.length;
+      let expectedCount = effectiveFt.parameters.length;
       let actualCount = args.length;
 
       // Count required parameters (not optional).
       var requiredCount = expectedCount;
-      if (ft.optionalParameters != null) {
-        let optionals = ft.optionalParameters as Array<boolean>;
+      if (effectiveFt.optionalParameters != null) {
+        let optionals = effectiveFt.optionalParameters as Array<boolean>;
         requiredCount = 0;
         var i = 0;
         while (i < optionals.length) {
@@ -4723,7 +4884,7 @@ let checkCallExpressionInner = (
       // Check argument types.
       var j = 0;
       while (j < actualCount && j < expectedCount) {
-        let expectedParamType = ft.parameters[j];
+        let expectedParamType = effectiveFt.parameters[j];
         let argType = checkExpression(ctx, args[j], expectedParamType);
         if (!isAssignableTo(ctx, argType, expectedParamType)) {
           ctx.error(
@@ -4736,7 +4897,7 @@ let checkCallExpressionInner = (
         j = j + 1;
       }
 
-      return ft.returnType;
+      return effectiveFt.returnType;
     }
     case UnknownType: { return new UnknownType(); }
     case _: {
