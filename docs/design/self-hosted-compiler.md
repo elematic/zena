@@ -560,6 +560,164 @@ sooner by building tools that don't require codegen:
 
 These also serve as excellent tests of the parser and checker in isolation.
 
+### 9. Program: Persistent Compilation State
+
+**Problem:** The current architecture creates a fresh `Compiler` + `LibraryLoader`
+on every `check()` call. Every keystroke re-reads, re-parses, and re-checks the
+entry file and all its transitive dependencies — including the entire stdlib. This
+is wasteful. The stdlib doesn't change between keystrokes, and neither do most
+dependencies.
+
+**Current state (what we do today):**
+
+The `LibraryLoader` conflates two responsibilities:
+
+1. **Loading** — reading files via `CompilerHost`, parsing, resolving imports
+   (stateless operation)
+2. **Caching** — the `#cache: HashMap<String, LibraryRecord>` that accumulates
+   the module graph (stateful)
+
+The `CompilationResult` is a snapshot of a single compilation — `libraries` in
+topological order, the `entry` module, and a `hasCycle` flag. `checkCompilation`
+type-checks only the entry module, passing dependency `ModuleExports` as a flat
+map. The `SemanticModel` covers one module.
+
+In `lsp.zena`, we currently cache only the `ScopeResult` from the last
+`check()` call (for `getDefinition()` queries). Everything else is thrown away
+and rebuilt from scratch on the next edit.
+
+**Design:** Introduce a `Program` that owns the persistent compilation state.
+`LibraryLoader` shrinks back to its natural role — a stateless utility that
+reads a file and returns a parsed `LibraryRecord`.
+
+```zena
+// Persistent compilation state, surviving across edits.
+// Analogous to TypeScript's Program + LanguageService.
+class Program {
+  // All loaded modules, keyed by canonical path.
+  #modules: HashMap<String, LibraryRecord>
+
+  // File version tracking for cache invalidation.
+  // The host provides version numbers (e.g., from LSP TextDocument.version).
+  #versions: HashMap<String, i32>
+
+  // Per-module check results, invalidated when the module or any
+  // transitive dependency changes.
+  #checkResults: HashMap<String, CheckResult>
+
+  // The dependency graph (which modules import which).
+  // Used for invalidation: when module A changes, find all modules
+  // that transitively depend on A and invalidate their check results.
+  #dependents: HashMap<String, Array<String>>
+
+  // Update a file's source. Invalidates this module's AST and
+  // the check results of all transitive dependents.
+  // Returns the set of invalidated paths (for re-checking).
+  updateFile(path: String, source: String, version: i32): Array<String>
+
+  // Get or compute the check result for a module.
+  // Reuses cached results for modules whose version hasn't changed
+  // and whose dependencies haven't changed.
+  getCheckResult(path: String): CheckResult
+
+  // Get diagnostics for a module (delegates to getCheckResult).
+  getDiagnostics(path: String): Array<Diagnostic>
+
+  // Get the semantic model for a module (delegates to getCheckResult).
+  getSemanticModel(path: String): SemanticModel
+
+  // Get the scope result for a module (from the cached LibraryRecord).
+  getScopeResult(path: String): ScopeResult
+}
+```
+
+**Key design points:**
+
+- **Stdlib is not special.** It uses the same versioning and caching as any
+  other dependency. The stdlib happens to never change during a session, so its
+  version stays at 0 and its cached results are always reused. But the mechanism
+  is the same — if you're editing the stdlib itself, it invalidates normally.
+  The JS host can use the same `CompilerHost.readFile` path for stdlib and user
+  files.
+
+- **Version numbers come from the host.** The LSP protocol provides
+  `TextDocument.version` (an integer that increments on every edit) in both VS
+  Code's API and the standalone LSP protocol (`DidOpenTextDocumentParams`,
+  `DidChangeTextDocumentParams`). The JS glue layer tracks these and passes them
+  to the WASM side. For files read from disk (dependencies not open in the
+  editor), the version can be a hash or timestamp — the host decides.
+
+- **Invalidation is transitive.** When module A changes, we invalidate A's
+  parse cache (AST), A's scope result, A's check result, and the check results
+  of every module that transitively imports A. The `#dependents` map makes this
+  a simple graph walk. We do NOT invalidate the ASTs or scope results of
+  dependents — only their check results, since those depend on A's exports.
+
+- **Parse and scope analysis are per-module.** Parsing depends only on the
+  source text. Scope analysis (`ScopeBuilder.build`) depends only on the AST.
+  Neither depends on other modules. So these can be cached purely by
+  `(path, version)` with no dependency tracking.
+
+- **Check results depend on imports.** `checkModule(ast, scopeResult, depExports)`
+  takes dependency exports as input. If any dependency's exports change, the
+  check result is stale. The cache key is effectively
+  `(path, version, hash(depExportVersions))` — but in practice we just
+  invalidate transitively rather than computing hashes.
+
+**What changes from current code:**
+
+| Current | With Program |
+|---------|-------------|
+| `lsp.zena` creates a fresh `Compiler` per `check()` | `lsp.zena` holds a persistent `Program` |
+| `LibraryLoader` owns the cache + loading logic | `LibraryLoader` is stateless; `Program` owns the cache |
+| `CompilationResult` is a one-shot snapshot | `Program` is a living, mutable compilation state |
+| Stdlib is re-parsed on every call | Stdlib is parsed once, cached until session ends |
+| Only `ScopeResult` is cached for queries | `CheckResult` (including `SemanticModel`) is cached per module |
+
+**Incremental workflow:**
+
+```
+1. User opens foo.zena
+   → Program.updateFile("foo.zena", source, version=1)
+   → Parse foo.zena, load dependencies (stdlib cached from init)
+   → Check foo.zena, cache CheckResult
+   → Return diagnostics
+
+2. User edits foo.zena (adds a line)
+   → Program.updateFile("foo.zena", source, version=2)
+   → Re-parse foo.zena (version changed), scope analysis
+   → Dependencies unchanged → reuse cached dep CheckResults
+   → Re-check foo.zena with cached dep exports
+   → Return diagnostics
+
+3. User opens bar.zena (imports foo.zena)
+   → Program sees foo.zena already cached at version=2
+   → Parse bar.zena, check it using foo.zena's cached exports
+   → Return diagnostics
+
+4. User edits foo.zena again
+   → Re-parse foo.zena, re-check foo.zena
+   → bar.zena's CheckResult invalidated (depends on foo.zena)
+   → If bar.zena is open, re-check it too
+```
+
+**Implementation plan:**
+
+1. **Near term:** Make the `Compiler` and `LibraryLoader` persistent in
+   `lsp.zena` (don't recreate them per call). The `LibraryLoader` already
+   caches by path — we just need to stop throwing it away. Add version
+   tracking on the JS side to skip `check()` when the document hasn't changed.
+
+2. **Medium term:** Extract `Program` as a proper class. Add `updateFile()`
+   with transitive invalidation. Move per-module `CheckResult` caching into
+   `Program`. The `LibraryLoader` becomes a construction helper that `Program`
+   delegates to for initial loading.
+
+3. **Long term:** Per-module `SemanticModel` (currently there's one per
+   `checkModule` call on the entry file only). Check all open files
+   independently, sharing cached dependency results. This enables diagnostics
+   across the whole project, not just the focused file.
+
 ---
 
 ## Milestone Plan
@@ -773,16 +931,31 @@ than discovering instantiations on its own.
 
 This doesn't need codegen at all. It exercises the parser and checker in an
 incremental context, which will flush out any design issues with immutability
-and incrementality.
+and incrementality. See **Section 9** for the `Program` design that underpins
+incrementality.
 
 **Key work:**
 
-- Wire up parser + checker to LSP protocol
-- Implement incremental re-parsing (reparse only changed files)
-- Implement incremental re-checking (invalidate dependents of changed modules)
+- **Implement `Program` class** (Section 9) — persistent compilation state
+  with version-based cache invalidation and transitive dependency tracking
+- **Make `LibraryLoader` stateless** — extract caching into `Program`, loader
+  becomes a pure read-parse-resolve utility
+- Wire up parser + checker to LSP protocol via the existing `lsp.zena` exports
 - Source position mapping (AST node IDs → source locations)
+- Implement LSP features using `ScopeResult` + `SemanticModel` from cached
+  `Program.getCheckResult()`
 
-**Deliverable:** A working LSP server that provides IDE features for Zena.
+**Incremental strategy (from Section 9):**
+
+1. Near term: persist `Compiler` + `LibraryLoader` across `check()` calls;
+   add version tracking on JS side to skip redundant checks
+2. Medium term: extract `Program` with `updateFile()` and transitive
+   invalidation; per-module `CheckResult` caching
+3. Long term: check all open files independently, sharing cached dependency
+   results; project-wide diagnostics
+
+**Deliverable:** A working LSP server that provides IDE features for Zena,
+backed by the `Program` abstraction for efficient incremental recompilation.
 
 ### Milestone 5: Analysis Passes
 
