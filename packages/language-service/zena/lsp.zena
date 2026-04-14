@@ -29,7 +29,7 @@ import { PackageConfig } from 'zena-compiler:module-resolver';
 import {
   Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity
 } from 'zena-compiler:diagnostics';
-import { SymbolInfo, ReferenceMap, ScopeResult } from 'zena-compiler:scope';
+import { SymbolInfo, ReferenceMap, DeclarationMap, ScopeResult } from 'zena-compiler:scope';
 import { Node, SourceLocation } from 'zena-compiler:ast';
 import { format as formatSource } from 'zena-formatter:printer';
 
@@ -168,8 +168,17 @@ export let format = (source: String): String => {
 export let getDefinition = (offset: i32): SourceSpan | null => {
   if (__cachedScopeResult == null) { return null; }
   let scopeResult = __cachedScopeResult as ScopeResult;
+
+  // Try reference map first (use-site identifiers → their definitions).
   let refs = scopeResult.references;
-  let maybeInfo = refs.getByOffset(offset);
+  var maybeInfo = refs.getByOffset(offset);
+
+  // Fall back to declaration map (clicking on a declaration itself).
+  if (maybeInfo == null) {
+    let decls = scopeResult.declarations;
+    maybeInfo = decls.getByOffset(offset);
+  }
+
   if (maybeInfo == null) { return null; }
   let sym = maybeInfo as SymbolInfo;
 

@@ -32,6 +32,12 @@ interface LspExports extends WebAssembly.Exports {
   getDiagnosticMessage(diagnostics: unknown, index: number): unknown;
   getDiagnosticFile(diagnostics: unknown, index: number): unknown;
   format(source: unknown): unknown;
+  getDefinition(offset: number): unknown;
+  getDefinitionFile(result: unknown): unknown;
+  getDefinitionLine(result: unknown): number;
+  getDefinitionColumn(result: unknown): number;
+  getDefinitionStart(result: unknown): number;
+  getDefinitionLength(result: unknown): number;
   $stringGetByte(str: unknown, index: number): number;
   $stringGetLength(str: unknown): number;
   $stringCreate(len: number): unknown;
@@ -303,5 +309,116 @@ export final class MyString {
     );
     // Should be cleaner than the input
     assert.notStrictEqual(formatted, source, 'Format should change the source');
+  });
+
+  // ========================================================================
+  // Go to Definition Tests
+  // ========================================================================
+
+  /**
+   * Helper: check source, then call getDefinition at a byte offset.
+   * Returns {file, line, column, start, length} or null.
+   */
+  function getDefinitionAt(
+    lsp: LspHandle,
+    source: string,
+    offset: number,
+    path = '/test/main.zena',
+  ) {
+    const {exports, writeString, readString} = lsp;
+    // check() must run first to populate the cached scope result.
+    checkSource(lsp, source, path);
+    const resultRef = exports.getDefinition(offset);
+    if (resultRef === null || resultRef === undefined || resultRef === 0)
+      return null;
+    const fileRef = exports.getDefinitionFile(resultRef);
+    const fileLen = exports.$stringGetLength(fileRef);
+    return {
+      file: readString(fileRef, fileLen),
+      line: exports.getDefinitionLine(resultRef),
+      column: exports.getDefinitionColumn(resultRef),
+      start: exports.getDefinitionStart(resultRef),
+      length: exports.getDefinitionLength(resultRef),
+    };
+  }
+
+  /** Find the byte offset of a substring in source. */
+  function offsetOf(source: string, needle: string, occurrence = 1): number {
+    let idx = -1;
+    for (let i = 0; i < occurrence; i++) {
+      idx = source.indexOf(needle, idx + 1);
+      if (idx === -1)
+        throw new Error(`"${needle}" occurrence ${i + 1} not found`);
+    }
+    return idx;
+  }
+
+  test('getDefinition: variable reference → declaration', () => {
+    //        0123456789...
+    const src = 'let x = 42;\nlet y = x;';
+    // "x" in "let y = x" is at the second occurrence of "x"
+    const offset = offsetOf(src, 'x', 2);
+    const def = getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition result');
+    // Should point to "x" in "let x = 42" (offset 4)
+    assert.strictEqual(def!.start, offsetOf(src, 'x', 1));
+    assert.strictEqual(def!.line, 1);
+  });
+
+  test('getDefinition: type annotation → class declaration', () => {
+    const src =
+      'class Foo { x: i32; new(this.x); }\nlet f = (a: Foo): i32 => 0;';
+    // "Foo" in parameter type annotation "a: Foo"
+    const offset = offsetOf(src, 'Foo', 2);
+    const def = getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition for type name Foo');
+    // Should point to the ClassDeclaration (start of "class Foo")
+    assert.strictEqual(def!.line, 1);
+  });
+
+  test('getDefinition: constructor reference → class declaration', () => {
+    const src = 'class Foo { x: i32; new(this.x); }\nlet f = new Foo(1);';
+    // "Foo" in "new Foo(1)"
+    const offset = offsetOf(src, 'Foo', 2);
+    const def = getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition for constructor Foo');
+    assert.strictEqual(def!.line, 1);
+  });
+
+  test('getDefinition: parameter declaration → itself', () => {
+    const src = 'let f = (x: i32): i32 => x;';
+    // Click on "x" in the parameter "(x: i32)"
+    const offset = offsetOf(src, 'x', 1);
+    const def = getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition for parameter declaration');
+    // Should point to the parameter itself.
+    assert.strictEqual(def!.start, offset);
+  });
+
+  test('getDefinition: return type annotation resolves', () => {
+    const src =
+      'class Bar { x: i32; new(this.x); }\nlet f = (a: i32): Bar => new Bar(a);';
+    // "Bar" in return type ": Bar"
+    const offset = offsetOf(src, 'Bar', 2);
+    const def = getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition for return type Bar');
+    assert.strictEqual(def!.line, 1);
+  });
+
+  test('getDefinition: no result at non-symbol position', () => {
+    const src = 'let x = 42;';
+    // Offset 0 is at 'l' of 'let' — a keyword, not a symbol reference.
+    const def = getDefinitionAt(lsp, src, 0);
+    assert.strictEqual(def, null);
+  });
+
+  test('getDefinition: field type annotation resolves', () => {
+    const src =
+      'class A { x: i32; new(this.x); }\nclass B { a: A; new(this.a); }';
+    // "A" in field type "a: A" inside class B
+    const offset = offsetOf(src, 'A', 2);
+    const def = getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition for field type A');
+    assert.strictEqual(def!.line, 1);
   });
 });

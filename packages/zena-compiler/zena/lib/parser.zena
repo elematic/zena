@@ -170,19 +170,21 @@ export class Parser {
     this.#consume(TokenType.LBrace, "Expected '{'");
     let imports = new Array<ImportSpecifier>(4);
     if (!this.#check(TokenType.RBrace)) {
+      let startToken = this.#peek();
       let imported = this.#parseIdentifier();
       var local = imported;
       if (this.#match(TokenType.As)) {
         local = this.#parseIdentifier();
       }
-      imports.push(new ImportSpecifier(imported, local, null));
+      imports.push(new ImportSpecifier(imported, local, this.#makeLocation(startToken)));
       while (this.#match(TokenType.Comma) && !this.#check(TokenType.RBrace)) {
+        let startToken2 = this.#peek();
         let imported2 = this.#parseIdentifier();
         var local2 = imported2;
         if (this.#match(TokenType.As)) {
           local2 = this.#parseIdentifier();
         }
-        imports.push(new ImportSpecifier(imported2, local2, null));
+        imports.push(new ImportSpecifier(imported2, local2, this.#makeLocation(startToken2)));
       }
     }
     this.#consume(TokenType.RBrace, "Expected '}'");
@@ -485,7 +487,16 @@ export class Parser {
   
   #parseLetPatternCondition(): LetPatternCondition {
     let startToken = this.#previous();
-    let pattern = this.#parsePattern();
+    // Use match-context parsing for tuple patterns so that
+    // literal elements like `true` in `let (true, x) = ...` are handled.
+    let pattern: Pattern = if (this.#check(TokenType.LParen)) {
+      let parenToken = this.#advance();
+      let p: Pattern = this.#parseParenTuplePattern(parenToken, true);
+      p
+    } else {
+      let p: Pattern = this.#parsePattern();
+      p
+    };
     this.#consume(TokenType.Equals, "Expected '=' after pattern in let condition");
     let init = this.#parseExpression();
     return new LetPatternCondition(pattern, init, this.#makeLocation(startToken));
@@ -894,7 +905,7 @@ export class Parser {
     
     // Tuple pattern with parens: (a, b)
     if (this.#match(TokenType.LParen)) {
-      return this.#parseParenTuplePattern(startToken);
+      return this.#parseParenTuplePattern(startToken, false);
     }
     
     // Identifier pattern (most common case)
@@ -1018,13 +1029,13 @@ export class Parser {
     return new TuplePattern(elements, this.#makeLocation(startToken));
   }
   
-  #parseParenTuplePattern(startToken: Token): TuplePattern {
+  #parseParenTuplePattern(startToken: Token, matchContext: boolean): TuplePattern {
     let elements = new Array<Node | null>(4);
     
     if (!this.#check(TokenType.RParen)) {
-      elements.push(this.#parseMatchPattern());
+      elements.push(if (matchContext) { this.#parseMatchPattern() } else { this.#parsePattern() });
       while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen)) {
-        elements.push(this.#parseMatchPattern());
+        elements.push(if (matchContext) { this.#parseMatchPattern() } else { this.#parsePattern() });
       }
     }
     
@@ -1899,7 +1910,7 @@ export class Parser {
     // Destructured tuple parameter: (a, b): Type or (a, b)
     if (this.#check(TokenType.LParen)) {
       let parenToken = this.#advance(); // consume '('
-      let pattern = this.#parseParenTuplePattern(parenToken);
+      let pattern = this.#parseParenTuplePattern(parenToken, false);
       
       // Type annotation (optional - contextual typing)
       var typeAnnotation2: TypeAnnotation | null = null;

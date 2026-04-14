@@ -34,12 +34,17 @@ import {
   // Patterns
   IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
   ClassPattern, LogicalPattern, AssignmentPattern,
+  // Type annotations
+  NamedTypeAnnotation, UnionTypeAnnotation, FunctionTypeAnnotation,
+  RecordTypeAnnotation, TupleTypeAnnotation, InlineTupleTypeAnnotation,
   // Helper types
   TypeParameter, Parameter, MethodDefinition,
   AccessorDeclaration, FieldDefinition, FieldInitializer,
   MatchCase, PropertyAssignment, SpreadElement,
-  MapEntry, LetPatternCondition, SetterInfo,
-  BindingProperty, ImportSpecifier
+  MapEntry, LetPatternCondition, SetterInfo, SuperInitializer,
+  BindingProperty, ImportSpecifier,
+  CaseClassParam, SealedVariant, PropertySignature,
+  MethodSignature, AccessorSignature
 } from './ast.zena';
 
 /**
@@ -371,6 +376,13 @@ export class DeclarationMap {
     if (found) { return info; }
     return null;
   }
+
+  /** Look up by source offset (0-based). For LSP position-based queries. */
+  getByOffset(offset: i32): SymbolInfo | null {
+    let (info, found) = this.#byOffset.get(offset);
+    if (found) { return info; }
+    return null;
+  }
 }
 
 /**
@@ -604,10 +616,15 @@ export class ScopeBuilder {
   /** Process a single statement, creating nested scopes as needed. */
   #processStatement(stmt: Statement): void {
     match (stmt) {
-      case VariableDeclaration {kind, pattern, init, exported}: {
+      case VariableDeclaration {kind, pattern, typeAnnotation, init, exported}: {
         // Process the initializer first (before declaring the name,
         // so the name isn't visible in its own initializer).
         this.#processExpression(init);
+
+        // Process the type annotation for type reference recording.
+        if (typeAnnotation != null) {
+          this.#processTypeAnnotation(typeAnnotation as TypeAnnotation);
+        }
 
         // Declare the variable name(s).
         match (pattern) {
@@ -666,23 +683,77 @@ export class ScopeBuilder {
           this.#processExpression(argument as Expression);
         }
       }
-      case ClassDeclaration {name, typeParameters, body}: {
+      case ClassDeclaration {name, typeParameters, caseParams, superClass, mixins, implementsList, body, sealedVariants}: {
         // Class body gets its own scope for `this`, type params, members.
         this.#enterScope(ScopeKind.Class);
         if (typeParameters != null) {
           let tps = typeParameters as Array<TypeParameter>;
           this.#declareTypeParameters(tps);
         }
+        // Process superclass and interface type annotations.
+        if (superClass != null) {
+          this.#processTypeAnnotation(superClass as TypeAnnotation);
+        }
+        if (mixins != null) {
+          let ms = mixins as Array<TypeAnnotation>;
+          var mi = 0;
+          while (mi < ms.length) {
+            this.#processTypeAnnotation(ms[mi]);
+            mi += 1;
+          }
+        }
+        if (implementsList != null) {
+          let impls = implementsList as Array<TypeAnnotation>;
+          var ii = 0;
+          while (ii < impls.length) {
+            this.#processTypeAnnotation(impls[ii]);
+            ii += 1;
+          }
+        }
+        // Process case class parameter type annotations.
+        if (caseParams != null) {
+          let cps = caseParams as Array<CaseClassParam>;
+          var ci = 0;
+          while (ci < cps.length) {
+            this.#processTypeAnnotation(cps[ci].typeAnnotation);
+            ci += 1;
+          }
+        }
+        // Process sealed variant parameter type annotations.
+        if (sealedVariants != null) {
+          let svs = sealedVariants as Array<SealedVariant>;
+          var si = 0;
+          while (si < svs.length) {
+            if (svs[si].params != null) {
+              let vparams = svs[si].params as Array<CaseClassParam>;
+              var vi = 0;
+              while (vi < vparams.length) {
+                this.#processTypeAnnotation(vparams[vi].typeAnnotation);
+                vi += 1;
+              }
+            }
+            si += 1;
+          }
+        }
         this.#processClassBody(body);
         this.#exitScope();
       }
-      case InterfaceDeclaration {name, typeParameters, body}: {
+      case InterfaceDeclaration {name, typeParameters, extendsList, body}: {
         this.#enterScope(ScopeKind.Class);
         if (typeParameters != null) {
           let tps = typeParameters as Array<TypeParameter>;
           this.#declareTypeParameters(tps);
         }
-        // Interface body is method/property signatures — no expressions.
+        if (extendsList != null) {
+          let exts = extendsList as Array<TypeAnnotation>;
+          var ei = 0;
+          while (ei < exts.length) {
+            this.#processTypeAnnotation(exts[ei]);
+            ei += 1;
+          }
+        }
+        // Process interface body for method/property type annotations.
+        this.#processInterfaceBody(body);
         this.#exitScope();
       }
       case MixinDeclaration {name, typeParameters, body}: {
@@ -742,7 +813,13 @@ export class ScopeBuilder {
         var k = 0;
         while (k < params.length) {
           this.#declareParameter(params[k]);
+          if (params[k].typeAnnotation != null) {
+            this.#processTypeAnnotation(params[k].typeAnnotation as TypeAnnotation);
+          }
           k = k + 1;
+        }
+        if (returnType != null) {
+          this.#processTypeAnnotation(returnType as TypeAnnotation);
         }
         this.#processNode(body);
         this.#exitScope();
@@ -758,20 +835,36 @@ export class ScopeBuilder {
         this.#processExpression(left);
         this.#processExpression(value);
       }
-      case CallExpression {callee, args}: {
+      case CallExpression {callee, args, typeArguments}: {
         this.#processExpression(callee);
+        if (typeArguments != null) {
+          let tas = typeArguments as Array<TypeAnnotation>;
+          var ta = 0;
+          while (ta < tas.length) {
+            this.#processTypeAnnotation(tas[ta]);
+            ta += 1;
+          }
+        }
         var a = 0;
         while (a < args.length) {
           this.#processExpression(args[a]);
           a = a + 1;
         }
       }
-      case NewExpression {callee, args}: {
+      case NewExpression {callee, typeArguments, args}: {
         let info = this.#current.resolveValue(callee.name);
         if (info == null) {
           this.#unresolvedValues.push(new UnresolvedName(callee.name, callee));
         } else {
           this.#references.record(callee, info);
+        }
+        if (typeArguments != null) {
+          let tas = typeArguments as Array<TypeAnnotation>;
+          var ta = 0;
+          while (ta < tas.length) {
+            this.#processTypeAnnotation(tas[ta]);
+            ta += 1;
+          }
         }
         var a = 0;
         while (a < args.length) {
@@ -828,11 +921,13 @@ export class ScopeBuilder {
         this.#processExpression(tag);
         this.#processExpression(quasi);
       }
-      case AsExpression {expression}: {
+      case AsExpression {expression, typeAnnotation}: {
         this.#processExpression(expression);
+        this.#processTypeAnnotation(typeAnnotation);
       }
-      case IsExpression {expression}: {
+      case IsExpression {expression, typeAnnotation}: {
         this.#processExpression(expression);
+        this.#processTypeAnnotation(typeAnnotation);
       }
       case MatchExpression {discriminant, cases}: {
         this.#processExpression(discriminant);
@@ -900,32 +995,125 @@ export class ScopeBuilder {
     var i = 0;
     while (i < members.length) {
       match (members[i]) {
-        case MethodDefinition {name, body}: {
-          if (body != null) {
-            this.#processNode(body as Node);
+        case MethodDefinition as md: {
+          // Process method parameter and return type annotations.
+          this.#enterScope(ScopeKind.Function);
+          if (md.typeParameters != null) {
+            let tps = md.typeParameters as Array<TypeParameter>;
+            this.#declareTypeParameters(tps);
           }
+          var pk = 0;
+          while (pk < md.params.length) {
+            this.#declareParameter(md.params[pk]);
+            if (md.params[pk].typeAnnotation != null) {
+              this.#processTypeAnnotation(md.params[pk].typeAnnotation as TypeAnnotation);
+            }
+            pk += 1;
+          }
+          if (md.returnType != null) {
+            this.#processTypeAnnotation(md.returnType as TypeAnnotation);
+          }
+          if (md.initializerList != null) {
+            let inits = md.initializerList as Array<Node>;
+            var il = 0;
+            while (il < inits.length) {
+              match (inits[il]) {
+                case FieldInitializer {value}: {
+                  this.#processExpression(value);
+                }
+                case _: {}
+              }
+              il += 1;
+            }
+          }
+          if (md.superInitializer != null) {
+            match (md.superInitializer as Node) {
+              case SuperInitializer {args}: {
+                var sa = 0;
+                while (sa < args.length) {
+                  this.#processExpression(args[sa]);
+                  sa += 1;
+                }
+              }
+              case _: {}
+            }
+          }
+          if (md.body != null) {
+            this.#processNode(md.body as Node);
+          }
+          this.#exitScope();
         }
-        case AccessorDeclaration {getter, setter}: {
-          if (getter != null) {
+        case AccessorDeclaration as acc: {
+          // Process accessor type annotation.
+          this.#processTypeAnnotation(acc.typeAnnotation);
+          if (acc.getter != null) {
             this.#enterScope(ScopeKind.Function);
-            this.#processNode(getter as Node);
+            this.#processNode(acc.getter as Node);
             this.#exitScope();
           }
-          if (setter != null) {
-            let s = setter as SetterInfo;
+          if (acc.setter != null) {
+            let s = acc.setter as SetterInfo;
             this.#enterScope(ScopeKind.Function);
             this.#current.declareValue(s.param.name, "let", s.param, this.#modulePath);
             this.#processNode(s.body);
             this.#exitScope();
           }
         }
-        case FieldDefinition {value}: {
+        case FieldDefinition {typeAnnotation, value}: {
+          if (typeAnnotation != null) {
+            this.#processTypeAnnotation(typeAnnotation as TypeAnnotation);
+          }
           if (value != null) {
             this.#processExpression(value as Expression);
           }
         }
         case FieldInitializer {value}: {
           this.#processExpression(value);
+        }
+        case _: {}
+      }
+      i += 1;
+    }
+  }
+
+  /**
+   * Process interface body members for type annotation references.
+   */
+  #processInterfaceBody(members: Array<Node>): void {
+    var i = 0;
+    while (i < members.length) {
+      match (members[i]) {
+        case MethodSignature as ms: {
+          this.#enterScope(ScopeKind.Function);
+          if (ms.typeParameters != null) {
+            let tps = ms.typeParameters as Array<TypeParameter>;
+            this.#declareTypeParameters(tps);
+          }
+          var pk = 0;
+          while (pk < ms.params.length) {
+            if (ms.params[pk].typeAnnotation != null) {
+              this.#processTypeAnnotation(ms.params[pk].typeAnnotation as TypeAnnotation);
+            }
+            pk += 1;
+          }
+          if (ms.returnType != null) {
+            this.#processTypeAnnotation(ms.returnType as TypeAnnotation);
+          }
+          this.#exitScope();
+        }
+        case AccessorSignature as as_: {
+          this.#processTypeAnnotation(as_.typeAnnotation);
+        }
+        case PropertySignature as ps: {
+          this.#processTypeAnnotation(ps.typeAnnotation);
+        }
+        case FieldDefinition {typeAnnotation, value}: {
+          if (typeAnnotation != null) {
+            this.#processTypeAnnotation(typeAnnotation as TypeAnnotation);
+          }
+          if (value != null) {
+            this.#processExpression(value as Expression);
+          }
         }
         case _: {}
       }
@@ -1023,6 +1211,65 @@ export class ScopeBuilder {
     while (i < tps.length) {
       this.#current.declareType(tps[i].name, tps[i], this.#modulePath);
       i += 1;
+    }
+  }
+
+  /**
+   * Walk a type annotation and record type name references.
+   */
+  #processTypeAnnotation(ann: TypeAnnotation): void {
+    match (ann) {
+      case NamedTypeAnnotation {name, typeArguments, loc}: {
+        let info = this.#current.resolveType(name);
+        if (info != null) {
+          this.#references.record(ann, info);
+        }
+        if (typeArguments != null) {
+          let args = typeArguments as Array<TypeAnnotation>;
+          var i = 0;
+          while (i < args.length) {
+            this.#processTypeAnnotation(args[i]);
+            i += 1;
+          }
+        }
+      }
+      case UnionTypeAnnotation {types}: {
+        var i = 0;
+        while (i < types.length) {
+          this.#processTypeAnnotation(types[i]);
+          i += 1;
+        }
+      }
+      case FunctionTypeAnnotation {params, returnType}: {
+        var i = 0;
+        while (i < params.length) {
+          this.#processTypeAnnotation(params[i]);
+          i += 1;
+        }
+        this.#processTypeAnnotation(returnType);
+      }
+      case RecordTypeAnnotation {properties}: {
+        var i = 0;
+        while (i < properties.length) {
+          this.#processTypeAnnotation(properties[i].typeAnnotation);
+          i += 1;
+        }
+      }
+      case TupleTypeAnnotation {elementTypes}: {
+        var i = 0;
+        while (i < elementTypes.length) {
+          this.#processTypeAnnotation(elementTypes[i]);
+          i += 1;
+        }
+      }
+      case InlineTupleTypeAnnotation {elementTypes}: {
+        var i = 0;
+        while (i < elementTypes.length) {
+          this.#processTypeAnnotation(elementTypes[i]);
+          i += 1;
+        }
+      }
+      case _: {}
     }
   }
 
