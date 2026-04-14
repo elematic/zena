@@ -1,18 +1,20 @@
-// Compiler entry point for the self-hosted Zena compiler.
-//
-// The Compiler orchestrates the full compilation pipeline:
-// 1. Module resolution (via ModuleResolver)
-// 2. Source loading and parsing (via LibraryLoader)
-// 3. Dependency graph computation
-// 4. [Future] Type checking
-// 5. [Future] Code generation
-//
-// Usage:
-//   let compiler = createCompiler(host, options);
-//   let result = compiler.compile("/path/to/main.zena");
-//   for (let file in result.files) {
-//     // process each library in dependency order
-//   }
+/**
+ * Compiler entry point for the self-hosted Zena compiler.
+ *
+ * The Compiler orchestrates the full compilation pipeline:
+ * 1. Module resolution (via ModuleResolver)
+ * 2. Source loading and parsing (via LibraryLoader)
+ * 3. Dependency graph computation
+ * 4. [Future] Type checking
+ * 5. [Future] Code generation
+ *
+ * Usage:
+ *   let compiler = createCompiler(host, options);
+ *   let result = compiler.compile("/path/to/main.zena");
+ *   for (let file in result.files) {
+ *     // process each library in dependency order
+ *   }
+ */
 
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
@@ -45,7 +47,7 @@ import { Diagnostic } from './diagnostics.zena';
 import { SemanticModel } from './semantic-model.zena';
 import { typeToString } from './types.zena';
 
-// Re-export types used by consumers.
+/** Re-export types used by consumers. */
 export { CompilerHost } from './library-loader.zena';
 export { PackageConfig, ModuleExport, ResolvedModule } from './module-resolver.zena';
 export { SourceFile, SourceFileGraph } from './library-loader.zena';
@@ -61,32 +63,40 @@ export { typeToString } from './types.zena';
 // Compiler Options
 // ============================================================================
 
-// Options for configuring the compiler.
-//
-// The stdlib ("zena" package) is always included automatically. The caller
-// must provide `stdlibRoot` so the compiler knows where to find stdlib
-// source files. User packages come from `packages` (typically loaded from
-// `zena-packages.json` via `loadPackageMap()`).
+/**
+ * Options for configuring the compiler.
+ *
+ * The stdlib ("zena" package) is always included automatically. The caller
+ * must provide `stdlibRoot` so the compiler knows where to find stdlib
+ * source files. User packages come from `packages` (typically loaded from
+ * `zena-packages.json` via `loadPackageMap()`).
+ */
 export class CompilerOptions {
-  // Compilation target: "host" (JavaScript) or "wasi".
+  /** Compilation target: "host" (JavaScript) or "wasi". */
   target: String;
 
-  // Absolute path to the stdlib's zena source directory.
-  // E.g., "/path/to/packages/stdlib/zena"
-  //
-  // This is required because the self-hosted compiler doesn't yet embed
-  // the stdlib sources. Eventually this won't be needed.
+  /**
+   * Absolute path to the stdlib's zena source directory.
+   * E.g., "/path/to/packages/stdlib/zena"
+   *
+   * This is required because the self-hosted compiler doesn't yet embed
+   * the stdlib sources. Eventually this won't be needed.
+   */
   stdlibRoot: String;
 
-  // User package map: name → PackageConfig.
-  // The "zena" package should NOT be included here — it's added
-  // automatically from `stdlibRoot`.
-  // Loaded from zena-packages.json via `loadPackageMap()`.
+  /**
+   * User package map: name → PackageConfig.
+   * The "zena" package should NOT be included here — it's added
+   * automatically from `stdlibRoot`.
+   * Loaded from zena-packages.json via `loadPackageMap()`.
+   */
   packages: HashMap<String, PackageConfig>;
 
-  // Modules to inject as implicit imports in every source file (the prelude).
-  // Each entry is a specifier (e.g., "zena:string").
-  // If null, no prelude is injected.
+  /**
+   * Modules to inject as implicit imports in every source file (the prelude).
+   * Each entry is a specifier (e.g., "zena:string").
+   * If null, no prelude is injected.
+   */
   prelude: Array<String> | null;
 
   new(
@@ -101,32 +111,34 @@ export class CompilerOptions {
 // Compilation Result
 // ============================================================================
 
-// The result of a compilation.
+/** The result of a compilation. */
 export class CompilationResult(
-  // All source files in topological order (dependencies before dependents).
+  /** All source files in topological order (dependencies before dependents). */
   files: Array<SourceFile>,
 
-  // The entry point source file.
+  /** The entry point source file. */
   entry: SourceFile,
 
-  // Whether a circular dependency was detected.
+  /** Whether a circular dependency was detected. */
   hasCycle: boolean
 )
 
-// The result of type-checking an entire program.
-//
-// Contains per-module CheckResults keyed by file path, plus an aggregated
-// diagnostics array for convenience. The `results` map mirrors the module
-// graph: each module's CheckResult was produced independently from its own
-// AST, ScopeResult, and dependency scope exports.
+/**
+ * The result of type-checking an entire program.
+ *
+ * Contains per-module CheckResults keyed by file path, plus an aggregated
+ * diagnostics array for convenience. The `results` map mirrors the module
+ * graph: each module's CheckResult was produced independently from its own
+ * AST, ScopeResult, and dependency scope exports.
+ */
 export class ProgramCheckResult {
-  // Per-module check results, keyed by file path.
+  /** Per-module check results, keyed by file path. */
   results: HashMap<String, CheckResult>;
 
-  // Aggregated diagnostics from all modules.
+  /** Aggregated diagnostics from all modules. */
   diagnostics: Array<Diagnostic>;
 
-  // The entry module's check result (convenience accessor).
+  /** The entry module's check result (convenience accessor). */
   entry: CheckResult;
 
   new(results: HashMap<String, CheckResult>, entry: CheckResult)
@@ -149,11 +161,13 @@ export class ProgramCheckResult {
 // Compiler
 // ============================================================================
 
-// The main compiler entry point.
-//
-// Manages module resolution, loading, and (in the future) type checking
-// and code generation. The stdlib is always available — callers only need
-// to configure user packages and provide the stdlib root path.
+/**
+ * The main compiler entry point.
+ *
+ * Manages module resolution, loading, and (in the future) type checking
+ * and code generation. The stdlib is always available — callers only need
+ * to configure user packages and provide the stdlib root path.
+ */
 let buildResolver = (options: CompilerOptions): ModuleResolver => {
   let allPackages = new HashMap<String, PackageConfig>();
   let stdlibConfig = buildStdlibConfig(options.stdlibRoot);
@@ -177,24 +191,26 @@ export class Compiler {
       #resolver = resolver,
       #loader = loader;
 
-  // The module resolver used by this compiler.
+  /** The module resolver used by this compiler. */
   resolver: ModuleResolver {
     get { return this.#resolver; }
   }
 
-  // Compile a program starting from an entry point.
-  //
-  // The entry point should be a canonical path (absolute file path or
-  // "package:module" specifier). The compiler will:
-  // 1. Load and parse the entry point and all transitive dependencies.
-  // 2. Compute the dependency graph in topological order.
-  // 3. Run scope analysis and wire up cross-module imports.
-  // 4. [Future] Type-check all modules.
-  // 5. Return the compilation result.
-  //
-  // If `version` is provided, it is associated with the entry file in
-  // the loader cache. A cached entry with a different version is
-  // re-loaded automatically.
+  /**
+   * Compile a program starting from an entry point.
+   *
+   * The entry point should be a canonical path (absolute file path or
+   * "package:module" specifier). The compiler will:
+   * 1. Load and parse the entry point and all transitive dependencies.
+   * 2. Compute the dependency graph in topological order.
+   * 3. Run scope analysis and wire up cross-module imports.
+   * 4. [Future] Type-check all modules.
+   * 5. Return the compilation result.
+   *
+   * If `version` is provided, it is associated with the entry file in
+   * the loader cache. A cached entry with a different version is
+   * re-loaded automatically.
+   */
   compile(entryPoint: String, version: String | null = null): CompilationResult {
     // Load prelude modules first (if configured).
     if (this.#options.prelude != null) {
@@ -220,25 +236,29 @@ export class Compiler {
     return new CompilationResult(graph.files, entry, graph.hasCycle);
   }
 
-  // Resolve a specifier relative to a referrer.
-  // Convenience wrapper around the resolver.
+  /**
+   * Resolve a specifier relative to a referrer.
+   * Convenience wrapper around the resolver.
+   */
   resolve(specifier: String, referrer: String): ResolvedModule {
     return this.#resolver.resolve(specifier, referrer);
   }
 
-  // Get a previously loaded source file by canonical path.
+  /** Get a previously loaded source file by canonical path. */
   getSourceFile(path: String): SourceFile | null {
     return this.#loader.get(path);
   }
 
-  // Run scope analysis on all source files in topological order.
-  //
-  // For each file:
-  // 1. Build the file-local scope tree (declarations, references).
-  // 2. Wire up imports by copying exported symbols from dependencies.
-  //
-  // Because files are in dependency order, when we process file F,
-  // all of F's dependencies already have their scopeResult populated.
+  /**
+   * Run scope analysis on all source files in topological order.
+   *
+   * For each file:
+   * 1. Build the file-local scope tree (declarations, references).
+   * 2. Wire up imports by copying exported symbols from dependencies.
+   *
+   * Because files are in dependency order, when we process file F,
+   * all of F's dependencies already have their scopeResult populated.
+   */
   #resolveScopes(files: Array<SourceFile>): void {
     var i = 0;
     while (i < files.length) {
@@ -256,16 +276,18 @@ export class Compiler {
     }
   }
 
-  // Wire up import specifiers to their resolved symbols from dependency modules.
-  //
-  // For each import in this library:
-  //   import { Foo } from './other';
-  //
-  // We look up './other' → canonical path → dependency SourceFile → its
-  // ModuleExports, then find 'Foo' and update the importing scope's bindings.
-  //
-  // After wiring, previously-unresolved references that were due to imports
-  // are now resolvable through the import specifier's declaration.
+  /**
+   * Wire up import specifiers to their resolved symbols from dependency modules.
+   *
+   * For each import in this library:
+   *   import { Foo } from './other';
+   *
+   * We look up './other' → canonical path → dependency SourceFile → its
+   * ModuleExports, then find 'Foo' and update the importing scope's bindings.
+   *
+   * After wiring, previously-unresolved references that were due to imports
+   * are now resolvable through the import specifier's declaration.
+   */
   #wireImports(lib: SourceFile, result: ScopeResult): void {
     let ast = lib.ast;
     var j = 0;
@@ -352,10 +374,12 @@ export class Compiler {
   }
 }
 
-// Create a Compiler with the standard pipeline.
-//
-// Builds the module resolver from options and wires it into the loader.
-// Prefer this over calling `new Compiler(...)` directly.
+/**
+ * Create a Compiler with the standard pipeline.
+ *
+ * Builds the module resolver from options and wires it into the loader.
+ * Prefer this over calling `new Compiler(...)` directly.
+ */
 export let createCompiler = (host: CompilerHost, options: CompilerOptions): Compiler => {
   let resolver = buildResolver(options);
   let loader = new LibraryLoader(host, resolver);
@@ -366,15 +390,17 @@ export let createCompiler = (host: CompilerHost, options: CompilerOptions): Comp
 // Single-File API (for LSP and quick checks)
 // ============================================================================
 
-// Parse, scope-analyze, and type-check a single source string.
-//
-// This is the simplest way to get diagnostics and type information for
-// one file without setting up a full Compiler with module resolution.
-// Cross-module imports won't resolve, but parse errors, scope errors,
-// and single-file type errors will all be reported.
-//
-// Returns a CheckResult containing the SemanticModel (node types,
-// binding types, name resolution) and diagnostics.
+/**
+ * Parse, scope-analyze, and type-check a single source string.
+ *
+ * This is the simplest way to get diagnostics and type information for
+ * one file without setting up a full Compiler with module resolution.
+ * Cross-module imports won't resolve, but parse errors, scope errors,
+ * and single-file type errors will all be reported.
+ *
+ * Returns a CheckResult containing the SemanticModel (node types,
+ * binding types, name resolution) and diagnostics.
+ */
 export let checkSource = (source: String, path: String): CheckResult => {
   let ast = parse(source, path);
   let builder = new ScopeBuilder(path);
@@ -386,14 +412,16 @@ export let checkSource = (source: String, path: String): CheckResult => {
 // Compilation-Level Checking
 // ============================================================================
 
-// Type-check all modules in a compilation result in dependency order.
-//
-// Iterates through all source files in topological order (dependencies
-// before dependents). For each file, builds a depExports map from the
-// dependency scope results, runs checkModule, and collects the results.
-//
-// Returns a ProgramCheckResult containing per-module CheckResults and
-// aggregated diagnostics.
+/**
+ * Type-check all modules in a compilation result in dependency order.
+ *
+ * Iterates through all source files in topological order (dependencies
+ * before dependents). For each file, builds a depExports map from the
+ * dependency scope results, runs checkModule, and collects the results.
+ *
+ * Returns a ProgramCheckResult containing per-module CheckResults and
+ * aggregated diagnostics.
+ */
 export let checkCompilation = (result: CompilationResult): ProgramCheckResult => {
   let allResults = new HashMap<String, CheckResult>();
 
@@ -443,14 +471,16 @@ export let checkCompilation = (result: CompilationResult): ProgramCheckResult =>
 // AST Query Utilities
 // ============================================================================
 
-// Find the innermost AST node whose span contains the given byte offset.
-//
-// Walks the tree depth-first. When a node's loc contains `offset`, we
-// record it and descend into children. The last (deepest) match wins,
-// giving the most specific node at that position.
-//
-// Useful for LSP features that map a cursor position to an AST node
-// (hover, go-to-definition, etc.).
+/**
+ * Find the innermost AST node whose span contains the given byte offset.
+ *
+ * Walks the tree depth-first. When a node's loc contains `offset`, we
+ * record it and descend into children. The last (deepest) match wins,
+ * giving the most specific node at that position.
+ *
+ * Useful for LSP features that map a cursor position to an AST node
+ * (hover, go-to-definition, etc.).
+ */
 export let findNodeAtOffset = (root: Node, offset: i32): Node | null => {
   var found: Node | null = null;
   walk(root, (node: Node): boolean => {

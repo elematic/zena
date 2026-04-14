@@ -1,12 +1,14 @@
-// Library loading and caching for the Zena compiler.
-//
-// The LibraryLoader manages source loading, parsing, and caching. Each source
-// file is loaded exactly once and cached by its canonical path. This
-// guarantees identity: types from the same library source are always the
-// same object.
-//
-// The loader uses a ModuleResolver for import resolution and a CompilerHost
-// for file I/O.
+/**
+ * Library loading and caching for the Zena compiler.
+ *
+ * The LibraryLoader manages source loading, parsing, and caching. Each source
+ * file is loaded exactly once and cached by its canonical path. This
+ * guarantees identity: types from the same library source are always the
+ * same object.
+ *
+ * The loader uses a ModuleResolver for import resolution and a CompilerHost
+ * for file I/O.
+ */
 
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
@@ -20,17 +22,21 @@ import { ScopeResult } from './scope.zena';
 // Compiler Host
 // ============================================================================
 
-// Abstract interface for file I/O.
-//
-// The compiler host is the only point of contact between the compiler and
-// the outside world. Different implementations provide different backends:
-// - Filesystem (Node.js, WASI)
-// - In-memory (testing, browser playground)
-// - Network (future)
+/**
+ * Abstract interface for file I/O.
+ *
+ * The compiler host is the only point of contact between the compiler and
+ * the outside world. Different implementations provide different backends:
+ * - Filesystem (Node.js, WASI)
+ * - In-memory (testing, browser playground)
+ * - Network (future)
+ */
 export interface CompilerHost {
-  // Read the source code of a file by its canonical path.
-  // For stdlib modules, the path has the form "zena:module-name".
-  // For file modules, the path is an absolute filesystem path.
+  /**
+   * Read the source code of a file by its canonical path.
+   * For stdlib modules, the path has the form "zena:module-name".
+   * For file modules, the path is an absolute filesystem path.
+   */
   readFile(path: String): String;
 }
 
@@ -38,40 +44,49 @@ export interface CompilerHost {
 // Source File
 // ============================================================================
 
-// A loaded and parsed source file.
-//
-// SourceFiles are cached by canonical path. Requesting the same path
-// twice always returns the same instance.
+/**
+ * A loaded and parsed source file.
+ *
+ * SourceFiles are cached by canonical path. Requesting the same path
+ * twice always returns the same instance.
+ */
 export class SourceFile {
-  // Canonical path identifying this library.
+  /** Canonical path identifying this library. */
   path: String;
 
-  // Whether this library is part of the standard library.
+  /** Whether this library is part of the standard library. */
   isStdlib: boolean;
 
-  // The package this library belongs to (empty string if none).
+  /** The package this library belongs to (empty string if none). */
   packageName: String;
 
-  // The original source code.
+  /** The original source code. */
   source: String;
 
-  // Parsed AST.
+  /** Parsed AST. */
   ast: Module;
 
-  // Opaque version tag for cache invalidation.
-  // The compiler itself does not interpret this value. It is set by
-  // the host (e.g., the language service passes the editor document
-  // version) and compared by the loader to decide whether a cached
-  // file is still fresh.
+  /**
+   * Opaque version tag for cache invalidation.
+   *
+   * The compiler itself does not interpret this value. It is set by
+   * the host (e.g., the language service passes the editor document
+   * version) and compared by the loader to decide whether a cached
+   * file is still fresh.
+   */
   version: String;
 
-  // Resolved import mappings.
-  // Key: import specifier as written in source (e.g., "./utils", "zena:string")
-  // Value: canonical resolved path
+  /**
+   * Resolved import mappings.
+   * Key: import specifier as written in source (e.g., "./utils", "zena:string")
+   * Value: canonical resolved path
+   */
   imports = new HashMap<String, String>();
 
-  // Scope analysis result (populated after scope building).
-  // Contains the scope tree, exports, unresolved names, and references.
+  /**
+   * Scope analysis result (populated after scope building).
+   * Contains the scope tree, exports, unresolved names, and references.
+   */
   var scopeResult: ScopeResult | null = null;
 
   new(
@@ -88,12 +103,12 @@ export class SourceFile {
 // Library Graph
 // ============================================================================
 
-// Result of topologically sorting source files by their dependencies.
+/** Result of topologically sorting source files by their dependencies. */
 export class SourceFileGraph(
-  // Source files in topological order (dependencies before dependents).
+  /** Source files in topological order (dependencies before dependents). */
   files: Array<SourceFile>,
 
-  // True if a cycle was detected (libraries still returned, best-effort order).
+  /** True if a cycle was detected (libraries still returned, best-effort order). */
   hasCycle: boolean
 )
 
@@ -101,18 +116,20 @@ export class SourceFileGraph(
 // Library Loader
 // ============================================================================
 
-// Loads, parses, and caches Zena libraries.
-//
-// The LibraryLoader is responsible for:
-// - Loading library source code (via CompilerHost)
-// - Parsing source into ASTs
-// - Caching loaded libraries by path (ensuring identity)
-// - Recursively loading dependencies (via import resolution)
-//
-// Usage:
-//   let loader = new LibraryLoader(host, resolver);
-//   let entry = loader.load("/path/to/main.zena");
-//   let graph = loader.computeGraph(entry);
+/**
+ * Loads, parses, and caches Zena libraries.
+ *
+ * The LibraryLoader is responsible for:
+ * - Loading library source code (via CompilerHost)
+ * - Parsing source into ASTs
+ * - Caching loaded libraries by path (ensuring identity)
+ * - Recursively loading dependencies (via import resolution)
+ *
+ * Usage:
+ *   let loader = new LibraryLoader(host, resolver);
+ *   let entry = loader.load("/path/to/main.zena");
+ *   let graph = loader.computeGraph(entry);
+ */
 export class LibraryLoader {
   #host: CompilerHost;
   #resolver: ModuleResolver;
@@ -121,14 +138,16 @@ export class LibraryLoader {
   new(host: CompilerHost, resolver: ModuleResolver)
     : #host = host, #resolver = resolver, #cache = new HashMap<String, SourceFile>();
 
-  // Load a library by its canonical path.
-  //
-  // If the library has already been loaded, returns the cached record.
-  // Otherwise: loads source → parses → caches → recursively loads imports.
-  //
-  // If `version` is provided, the cache is checked for a matching version.
-  // A cached file with a different version is invalidated and re-loaded.
-  // When omitted (or null), the cache is trusted unconditionally.
+  /**
+   * Load a library by its canonical path.
+   *
+   * If the library has already been loaded, returns the cached record.
+   * Otherwise: loads source → parses → caches → recursively loads imports.
+   *
+   * If `version` is provided, the cache is checked for a matching version.
+   * A cached file with a different version is invalidated and re-loaded.
+   * When omitted (or null), the cache is trusted unconditionally.
+   */
   load(path: String, version: String | null = null): SourceFile {
     if (this.#cache.has(path)) {
       // Version check: if a version was provided and it matches, use cache.
@@ -181,12 +200,12 @@ export class LibraryLoader {
     return record;
   }
 
-  // Check if a library has already been loaded.
+  /** Check if a library has already been loaded. */
   has(path: String): boolean {
     return this.#cache.has(path);
   }
 
-  // Get a previously loaded library without triggering a load.
+  /** Get a previously loaded library without triggering a load. */
   get(path: String): SourceFile | null {
     if (this.#cache.has(path)) {
       return this.#cache[path];
@@ -194,11 +213,13 @@ export class LibraryLoader {
     return null;
   }
 
-  // Compute the topological order of libraries starting from a root.
-  //
-  // Returns libraries in dependency order: if A imports B, then B appears
-  // before A. This ordering is required for correct type checking (a module's
-  // dependencies must be checked before the module itself).
+  /**
+   * Compute the topological order of libraries starting from a root.
+   *
+   * Returns libraries in dependency order: if A imports B, then B appears
+   * before A. This ordering is required for correct type checking (a module's
+   * dependencies must be checked before the module itself).
+   */
   computeGraph(entry: SourceFile): SourceFileGraph {
     let visited = new HashMap<String, i32>();
     let stack = new HashMap<String, i32>();
