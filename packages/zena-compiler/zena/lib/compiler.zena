@@ -477,6 +477,7 @@ export let checkCompilation = (
 
     // Build depExports for this file from its import specifiers.
     let depExports = new HashMap<String, ScopeModuleExports>();
+    let depModels = new HashMap<String, SemanticModel>();
     let specIter = file.imports.keys();
     while (let (true, specifier) = specIter.next()) {
       let depPath = file.imports[specifier];
@@ -487,12 +488,17 @@ export let checkCompilation = (
         if (dep.path == depPath && dep.scopeResult != null) {
           let sr = dep.scopeResult as ScopeResult;
           depExports.set(specifier, sr.exports);
+          // If we already checked this dependency, carry its SemanticModel
+          // so the downstream checker can resolve actual types.
+          if (allResults.has(dep.path)) {
+            depModels.set(specifier, allResults[dep.path].model);
+          }
         }
         li = li + 1;
       }
     }
 
-    let checkResult = checkModule(file.ast, file.scopeResult, depExports);
+    let checkResult = checkModule(file.ast, file.scopeResult, depExports, depModels);
     allResults.set(file.path, checkResult);
     allSources.set(file.path, file.source);
 

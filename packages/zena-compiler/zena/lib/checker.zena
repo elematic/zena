@@ -186,10 +186,18 @@ class CheckerContext {
    */
   var #depExports?: HashMap<String, ModuleExports> | null = null;
 
-  new(file: String, scopeResult: ScopeResult | null, depExports: HashMap<String, ModuleExports> | null)
+  /**
+   * Dependency semantic models: import specifier → SemanticModel.
+   * When provided, the checker can look up actual resolved types from
+   * already-checked dependency modules instead of creating empty stubs.
+   */
+  var #depModels?: HashMap<String, SemanticModel> | null = null;
+
+  new(file: String, scopeResult: ScopeResult | null, depExports: HashMap<String, ModuleExports> | null, depModels: HashMap<String, SemanticModel> | null)
     : diagnostics = new DiagnosticBag(file),
       #scopeResult = scopeResult,
-      #depExports = depExports {
+      #depExports = depExports,
+      #depModels = depModels {
     
     // Initialize with module-level scope.
     this.#typeScopes.push(new HashMap<String, Type>());
@@ -495,6 +503,13 @@ class CheckerContext {
     get { return this.#depExports; }
   }
 
+  /**
+   * Get the dependency semantic models (import specifier → SemanticModel).
+   */
+  depModels: HashMap<String, SemanticModel> | null {
+    get { return this.#depModels; }
+  }
+
   // --- Return type ---
 
   returnType: Type | null {
@@ -703,8 +718,8 @@ export class CheckResult(
  * This version loads the standard prelude types (String, Array, etc.)
  * automatically.
  */
-export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExports: HashMap<String, ModuleExports> | null): CheckResult => {
-  let ctx = new CheckerContext(ast.path, scopeResult, depExports);
+export let checkModule = (ast: Module, scopeResult: ScopeResult | null, depExports: HashMap<String, ModuleExports> | null, depModels: HashMap<String, SemanticModel> | null = null): CheckResult => {
+  let ctx = new CheckerContext(ast.path, scopeResult, depExports, depModels);
 
   // Register standard prelude types.
   registerStandardPrelude(ctx);
@@ -1695,6 +1710,17 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
         let specifier = moduleSpecifier.value;
         if (depsMap.has(specifier)) {
           let depMod = depsMap[specifier];
+
+          // Look up the dependency's SemanticModel for resolved types.
+          var depModel: SemanticModel | null = null;
+          let models = ctx.depModels;
+          if (models != null) {
+            let modelsMap = models as HashMap<String, SemanticModel>;
+            if (modelsMap.has(specifier)) {
+              depModel = modelsMap[specifier];
+            }
+          }
+
           var impIdx = 0;
           while (impIdx < imports.length) {
             let spec = imports[impIdx];
@@ -1705,34 +1731,59 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
             let typeExport = depMod.getType(importedName);
             if (typeExport != null) {
               let si = typeExport as SymbolInfo;
-              let decl = si.declaration;
-              if (decl != null) {
-                match (decl as Node) {
-                  case ClassDeclaration {name}: {
-                    let ct = new ClassType(ctx.freshTypeId(), name.name);
-                    ctx.declareTypeName(localName, ct);
-                    // Also bind in value namespace so constructors resolve.
-                    let localInfo = ctx.model.resolveDeclaration(spec);
-                    if (localInfo != null) {
-                      ctx.declareBinding(localInfo as SymbolInfo, ct);
-                    }
-                  }
-                  case InterfaceDeclaration {name}: {
-                    let it = new InterfaceType(ctx.freshTypeId(), name.name);
-                    ctx.declareTypeName(localName, it);
-                    let localInfo = ctx.model.resolveDeclaration(spec);
-                    if (localInfo != null) {
-                      ctx.declareBinding(localInfo as SymbolInfo, it);
-                    }
-                  }
-                  case _: {
-                    // Type alias, enum, etc. — register as unknown for now.
-                    ctx.declareTypeName(localName, new UnknownType());
+
+              // Try to get the fully resolved type from the dependency's checker.
+              // The export SymbolInfo has a different id than the local
+              // declaration SymbolInfo, so we bridge through the declaration
+              // node to find the local SymbolInfo used during checking.
+              var resolvedType: Type | null = null;
+              if (depModel != null) {
+                let dm = depModel as SemanticModel;
+                let declNode = si.declaration;
+                if (declNode != null) {
+                  let localSi = dm.resolveDeclaration(declNode as Node);
+                  if (localSi != null) {
+                    resolvedType = dm.getBindingType(localSi as SymbolInfo);
                   }
                 }
+              }
+
+              if (resolvedType != null) {
+                // Use the actual resolved type from the dependency.
+                let rt = resolvedType as Type;
+                ctx.declareTypeName(localName, rt);
+                let localInfo = ctx.model.resolveDeclaration(spec);
+                if (localInfo != null) {
+                  ctx.declareBinding(localInfo as SymbolInfo, rt);
+                }
               } else {
-                // Built-in type with no declaration node.
-                ctx.declareTypeName(localName, new UnknownType());
+                // Fallback: create stub types from the declaration AST node.
+                let decl = si.declaration;
+                if (decl != null) {
+                  match (decl as Node) {
+                    case ClassDeclaration {name}: {
+                      let ct = new ClassType(ctx.freshTypeId(), name.name);
+                      ctx.declareTypeName(localName, ct);
+                      let localInfo = ctx.model.resolveDeclaration(spec);
+                      if (localInfo != null) {
+                        ctx.declareBinding(localInfo as SymbolInfo, ct);
+                      }
+                    }
+                    case InterfaceDeclaration {name}: {
+                      let it = new InterfaceType(ctx.freshTypeId(), name.name);
+                      ctx.declareTypeName(localName, it);
+                      let localInfo = ctx.model.resolveDeclaration(spec);
+                      if (localInfo != null) {
+                        ctx.declareBinding(localInfo as SymbolInfo, it);
+                      }
+                    }
+                    case _: {
+                      ctx.declareTypeName(localName, new UnknownType());
+                    }
+                  }
+                } else {
+                  ctx.declareTypeName(localName, new UnknownType());
+                }
               }
             }
 
@@ -1742,7 +1793,23 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
               // Pure value import (not also a type).
               let localInfo = ctx.model.resolveDeclaration(spec);
               if (localInfo != null) {
-                ctx.declareBinding(localInfo as SymbolInfo, new UnknownType());
+                var resolvedValType: Type | null = null;
+                if (depModel != null) {
+                  let dm = depModel as SemanticModel;
+                  let valSi = valueExport as SymbolInfo;
+                  let declNode = valSi.declaration;
+                  if (declNode != null) {
+                    let localSi = dm.resolveDeclaration(declNode as Node);
+                    if (localSi != null) {
+                      resolvedValType = dm.getBindingType(localSi as SymbolInfo);
+                    }
+                  }
+                }
+                if (resolvedValType != null) {
+                  ctx.declareBinding(localInfo as SymbolInfo, resolvedValType as Type);
+                } else {
+                  ctx.declareBinding(localInfo as SymbolInfo, new UnknownType());
+                }
               }
             }
 
