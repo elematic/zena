@@ -110,6 +110,7 @@ export class LanguageService {
   var #version: i32 = 0;
   var #cachedScopeResult: ScopeResult | null = null;
   var #cachedPath: String = "";
+  var #cachedCheckResult: ProgramCheckResult | null = null;
 
   new(host: LspHost, compiler: Compiler)
     : #host = host, #compiler = compiler;
@@ -137,8 +138,9 @@ export class LanguageService {
       // Cache the scope result for getDefinition().
       this.#cachedScopeResult = result.entry.scopeResult;
 
-      // Type-check all modules with cross-module import resolution.
-      let checkResult = checkCompilation(result);
+      // Type-check all modules, carrying forward unchanged results.
+      let checkResult = checkCompilation(result, this.#cachedCheckResult);
+      this.#cachedCheckResult = checkResult;
       checkResult.diagnostics
     } catch (e) {
       let msg = "Compiler error: " + (e as Error).message;

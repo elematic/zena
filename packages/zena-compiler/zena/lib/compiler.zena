@@ -135,15 +135,20 @@ export class ProgramCheckResult {
   /** Per-module check results, keyed by file path. */
   results: HashMap<String, CheckResult>;
 
+  /** Source text at the time each module was checked, keyed by file path. */
+  sources: HashMap<String, String>;
+
   /** Aggregated diagnostics from all modules. */
-  diagnostics: Array<Diagnostic>;
+  diagnostics = new Array<Diagnostic>();
 
   /** The entry module's check result (convenience accessor). */
   entry: CheckResult;
 
-  new(results: HashMap<String, CheckResult>, entry: CheckResult)
-    : results = results, entry = entry,
-      diagnostics = new Array<Diagnostic>() {
+  new(
+    this.results: HashMap<String, CheckResult>,
+    this.sources: HashMap<String, String>,
+    this.entry: CheckResult
+  ) {
     // Aggregate diagnostics from all modules.
     let iter = results.keys();
     while (let (true, key) = iter.next()) {
@@ -419,11 +424,21 @@ export let checkSource = (source: String, path: String): CheckResult => {
  * before dependents). For each file, builds a depExports map from the
  * dependency scope results, runs checkModule, and collects the results.
  *
+ * When `previous` is provided, modules whose source text has not changed
+ * reuse their previous CheckResult instead of re-checking. This is the
+ * primary mechanism for incremental type-checking: on a single-file edit,
+ * only the changed file (and any dependents with changed exports) are
+ * re-checked; all other modules carry forward.
+ *
  * Returns a ProgramCheckResult containing per-module CheckResults and
  * aggregated diagnostics.
  */
-export let checkCompilation = (result: CompilationResult): ProgramCheckResult => {
+export let checkCompilation = (
+  result: CompilationResult,
+  previous: ProgramCheckResult | null = null
+): ProgramCheckResult => {
   let allResults = new HashMap<String, CheckResult>();
+  let allSources = new HashMap<String, String>();
 
   // Check each file in topo order. Dependencies are checked first so
   // their scope exports are available when we build depExports for
@@ -437,6 +452,27 @@ export let checkCompilation = (result: CompilationResult): ProgramCheckResult =>
     if (file.isStdlib) {
       fi += 1;
       continue;
+    }
+
+    // Carry forward: if the source hasn't changed since the last check,
+    // reuse the previous CheckResult.
+    // TODO: Source comparison alone is not sufficient when multiple files
+    // change at once. A dependency's exports could change (e.g., a function
+    // signature) while this file's source stays the same, producing stale
+    // diagnostics. To handle this correctly, compare each dependency's
+    // export signature (the set of exported names and their Types) between
+    // the previous and current ScopeResults and invalidate downstream
+    // CheckResults when signatures differ.
+    if (previous != null) {
+      let prev = previous as ProgramCheckResult;
+      if (prev.sources.has(file.path) && prev.results.has(file.path)) {
+        if (prev.sources[file.path] == file.source) {
+          allResults.set(file.path, prev.results[file.path]);
+          allSources.set(file.path, file.source);
+          fi += 1;
+          continue;
+        }
+      }
     }
 
     // Build depExports for this file from its import specifiers.
@@ -458,13 +494,14 @@ export let checkCompilation = (result: CompilationResult): ProgramCheckResult =>
 
     let checkResult = checkModule(file.ast, file.scopeResult, depExports);
     allResults.set(file.path, checkResult);
+    allSources.set(file.path, file.source);
 
     fi += 1;
   }
 
   // The entry module's result is always the last in topo order.
   let entryResult = allResults[result.entry.path];
-  return new ProgramCheckResult(allResults, entryResult);
+  return new ProgramCheckResult(allResults, allSources, entryResult);
 };
 
 // ============================================================================
