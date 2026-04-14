@@ -106,6 +106,42 @@ export interface TypeNarrowing {
 }
 
 /**
+ * Check if a statement always exits the current control flow
+ * (return, throw, break, continue).
+ *
+ * This is used to propagate narrowing past null-guard patterns like:
+ *   if (x == null) { return; }
+ *   // x is now non-null here
+ */
+const branchDefinitelyExits = (stmt: Statement): boolean => {
+  switch (stmt.type) {
+    case NodeType.ReturnStatement:
+    case NodeType.BreakStatement:
+    case NodeType.ContinueStatement:
+      return true;
+    case NodeType.ExpressionStatement:
+      // A throw expression as a statement always exits
+      return stmt.expression.type === NodeType.ThrowExpression;
+    case NodeType.BlockStatement: {
+      // A block definitely exits if its last statement definitely exits
+      const body = (stmt as {body: Statement[]}).body;
+      return body.length > 0 && branchDefinitelyExits(body[body.length - 1]);
+    }
+    case NodeType.IfStatement: {
+      // An if-else definitely exits if both branches definitely exit
+      const ifStmt = stmt as IfStatement;
+      if (!ifStmt.alternate) return false;
+      return (
+        branchDefinitelyExits(ifStmt.consequent) &&
+        branchDefinitelyExits(ifStmt.alternate)
+      );
+    }
+    default:
+      return false;
+  }
+};
+
+/**
  * Convert an expression to a narrowing path string.
  * Returns null if the expression cannot be narrowed.
  *
@@ -1669,6 +1705,29 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
     }
     checkStatement(ctx, stmt.alternate);
     ctx.exitScope();
+  }
+
+  // Narrowing past definite exits:
+  // If the consequent always exits (return/throw/break/continue) and
+  // there is no else branch, the inverse narrowing holds for subsequent
+  // code in the same scope.
+  if (!stmt.alternate && branchDefinitelyExits(stmt.consequent)) {
+    const allInverse = extractAllInverseNarrowingsFromCondition(
+      ctx,
+      stmt.test,
+    );
+    for (const n of allInverse) {
+      ctx.narrowType(n.variableName, n.narrowedType);
+    }
+  }
+
+  // If the alternate always exits, the regular narrowing holds for
+  // subsequent code.
+  if (stmt.alternate && branchDefinitelyExits(stmt.alternate)) {
+    const allNarrowings = extractAllNarrowingsFromCondition(ctx, stmt.test);
+    for (const n of allNarrowings) {
+      ctx.narrowType(n.variableName, n.narrowedType);
+    }
   }
 }
 
