@@ -164,8 +164,16 @@ export class ZenaExtension {
     try {
       const source = document.getText();
       const path = document.uri.fsPath;
-      const diagnostics = this.#compiler.checkDocument(source, path);
-      this.#diagnosticCollection.set(document.uri, diagnostics);
+      const byFile = this.#compiler.checkDocument(source, path);
+
+      // Clear previous diagnostics for the entry file (always present).
+      this.#diagnosticCollection.set(document.uri, []);
+
+      // Set diagnostics per file.
+      for (const [filePath, diagnostics] of byFile) {
+        const uri = vscode.Uri.file(filePath);
+        this.#diagnosticCollection.set(uri, diagnostics);
+      }
     } catch (e) {
       const msg = formatError(e);
       outputChannel.appendLine(

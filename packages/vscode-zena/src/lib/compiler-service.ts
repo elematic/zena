@@ -25,6 +25,7 @@ interface LspExports extends WebAssembly.Exports {
   getDiagnosticLength(diagnostics: unknown, index: number): number;
   getDiagnosticSeverity(diagnostics: unknown, index: number): number;
   getDiagnosticMessage(diagnostics: unknown, index: number): unknown;
+  getDiagnosticFile(diagnostics: unknown, index: number): unknown;
   format(source: unknown): unknown;
   $stringGetByte(str: unknown, index: number): number;
   $stringGetLength(str: unknown): number;
@@ -104,9 +105,15 @@ export class ZenaCompilerService {
   }
 
   /**
-   * Check a source string and return VS Code diagnostics.
+   * Check a source string and return VS Code diagnostics grouped by file.
+   *
+   * The returned map keys are file paths. Diagnostics from dependency
+   * files are keyed under the dependency's path rather than the entry.
    */
-  checkDocument(source: string, path: string): vscode.Diagnostic[] {
+  checkDocument(
+    source: string,
+    path: string,
+  ): Map<string, vscode.Diagnostic[]> {
     const exports = this.#exports!;
     const writeString = this.#writeString!;
     const readString = this.#readString!;
@@ -116,7 +123,8 @@ export class ZenaCompilerService {
     const diagnosticsHandle = exports.check(sourceRef, pathRef);
     const count = exports.getDiagnosticCount(diagnosticsHandle);
 
-    const diagnostics: vscode.Diagnostic[] = [];
+    const byFile = new Map<string, vscode.Diagnostic[]>();
+
     for (let i = 0; i < count; i++) {
       const line = exports.getDiagnosticLine(diagnosticsHandle, i);
       const column = exports.getDiagnosticColumn(diagnosticsHandle, i);
@@ -126,15 +134,23 @@ export class ZenaCompilerService {
       const msgRef = exports.getDiagnosticMessage(diagnosticsHandle, i);
       const msgLen = exports.$stringGetLength(msgRef);
       const message = readString(msgRef, msgLen);
+      const fileRef = exports.getDiagnosticFile(diagnosticsHandle, i);
+      const fileLen = exports.$stringGetLength(fileRef);
+      const file = readString(fileRef, fileLen);
 
-      // Skip diagnostics without a source location — these are typically
-      // errors from dependency files (e.g. stdlib parse errors) whose
-      // location doesn't correspond to the current document. The error
-      // message already contains the file path and line/column info.
+      // Skip diagnostics without a source location.
       if (line === 0 && start < 0) {
         this.#outputChannel.appendLine(`[diagnostic] ${message}`);
         continue;
       }
+
+      // Determine which file this diagnostic belongs to.
+      const diagPath = file.length > 0 ? file : path;
+
+      // For diagnostics in the entry file we can compute precise end
+      // positions from the in-memory source. For other files we fall
+      // back to the byte-length span reported by the compiler.
+      const diagSource = diagPath === path ? source : undefined;
 
       // Convert 1-based line/column to 0-based for VS Code
       const startPos = new vscode.Position(
@@ -144,13 +160,13 @@ export class ZenaCompilerService {
 
       // Use byte offset + length to compute end position from source
       let endPos: vscode.Position;
-      if (start >= 0 && length > 0) {
+      if (start >= 0 && length > 0 && diagSource !== undefined) {
         // Find end position by counting through source characters
         const endOffset = start + length;
         let endLine = 0;
         let endCol = 0;
         let offset = 0;
-        for (const ch of source) {
+        for (const ch of diagSource) {
           if (offset >= endOffset) break;
           if (ch === '\n') {
             endLine++;
@@ -161,6 +177,9 @@ export class ZenaCompilerService {
           offset += Buffer.byteLength(ch, 'utf8');
         }
         endPos = new vscode.Position(endLine, endCol);
+      } else if (start >= 0 && length > 0) {
+        // No source text available — approximate end from start + length columns
+        endPos = startPos.translate(0, length);
       } else {
         // No span info — underline just the start position
         endPos = startPos.translate(0, 1);
@@ -185,10 +204,16 @@ export class ZenaCompilerService {
 
       const diagnostic = new vscode.Diagnostic(range, message, vsSeverity);
       diagnostic.source = 'zena';
-      diagnostics.push(diagnostic);
+
+      let arr = byFile.get(diagPath);
+      if (arr === undefined) {
+        arr = [];
+        byFile.set(diagPath, arr);
+      }
+      arr.push(diagnostic);
     }
 
-    return diagnostics;
+    return byFile;
   }
 
   /**

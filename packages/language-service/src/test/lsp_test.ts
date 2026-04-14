@@ -30,6 +30,7 @@ interface LspExports extends WebAssembly.Exports {
   getDiagnosticLength(diagnostics: unknown, index: number): number;
   getDiagnosticSeverity(diagnostics: unknown, index: number): number;
   getDiagnosticMessage(diagnostics: unknown, index: number): unknown;
+  getDiagnosticFile(diagnostics: unknown, index: number): unknown;
   format(source: unknown): unknown;
   $stringGetByte(str: unknown, index: number): number;
   $stringGetLength(str: unknown): number;
@@ -105,11 +106,14 @@ function checkSource(lsp: LspHandle, source: string, path = '/test/main.zena') {
     length: number;
     severity: number;
     message: string;
+    file: string;
   }[] = [];
 
   for (let i = 0; i < count; i++) {
     const msgRef = exports.getDiagnosticMessage(handle, i);
     const msgLen = exports.$stringGetLength(msgRef);
+    const fileRef = exports.getDiagnosticFile(handle, i);
+    const fileLen = exports.$stringGetLength(fileRef);
     diagnostics.push({
       line: exports.getDiagnosticLine(handle, i),
       column: exports.getDiagnosticColumn(handle, i),
@@ -117,6 +121,7 @@ function checkSource(lsp: LspHandle, source: string, path = '/test/main.zena') {
       length: exports.getDiagnosticLength(handle, i),
       severity: exports.getDiagnosticSeverity(handle, i),
       message: readString(msgRef, msgLen),
+      file: readString(fileRef, fileLen),
     });
   }
 
