@@ -27,6 +27,12 @@ interface LspExports extends WebAssembly.Exports {
   getDiagnosticMessage(diagnostics: unknown, index: number): unknown;
   getDiagnosticFile(diagnostics: unknown, index: number): unknown;
   format(source: unknown): unknown;
+  getDefinition(offset: number): unknown;
+  getDefinitionFile(result: unknown): unknown;
+  getDefinitionLine(result: unknown): number;
+  getDefinitionColumn(result: unknown): number;
+  getDefinitionStart(result: unknown): number;
+  getDefinitionLength(result: unknown): number;
   $stringGetByte(str: unknown, index: number): number;
   $stringGetLength(str: unknown): number;
   $stringCreate(len: number): unknown;
@@ -214,6 +220,48 @@ export class ZenaCompilerService {
     }
 
     return byFile;
+  }
+
+  /**
+   * Find the definition of the symbol at the given byte offset.
+   * Uses the cached scope result from the last checkDocument() call.
+   * Returns {file, line, column} or null if no definition was found.
+   */
+  getDefinition(
+    offset: number,
+  ): {file: string; line: number; column: number; start: number; length: number} | null {
+    const exports = this.#exports!;
+    const readString = this.#readString!;
+
+    try {
+      const resultRef = exports.getDefinition(offset);
+      if (resultRef === null || resultRef === undefined) {
+        this.#outputChannel.appendLine(
+          `getDefinition(${offset}): no result`,
+        );
+        return null;
+      }
+
+      const fileRef = exports.getDefinitionFile(resultRef);
+      const fileLen = exports.$stringGetLength(fileRef);
+      const file = readString(fileRef, fileLen);
+      const line = exports.getDefinitionLine(resultRef);
+      const column = exports.getDefinitionColumn(resultRef);
+      const start = exports.getDefinitionStart(resultRef);
+      const length = exports.getDefinitionLength(resultRef);
+
+      this.#outputChannel.appendLine(
+        `getDefinition(${offset}): ${file}:${line}:${column}`,
+      );
+      return {file, line, column, start, length};
+    } catch (e) {
+      const msg =
+        e instanceof Error
+          ? (e.stack ?? e.message)
+          : String(e);
+      this.#outputChannel.appendLine(`getDefinition failed: ${msg}`);
+      return null;
+    }
   }
 
   /**

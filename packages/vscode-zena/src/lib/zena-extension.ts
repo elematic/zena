@@ -116,6 +116,44 @@ export class ZenaExtension {
       }),
     );
 
+    // Go to Definition.
+    context.subscriptions.push(
+      vscode.languages.registerDefinitionProvider('zena', {
+        provideDefinition: (document, position) => {
+          if (!this.#compiler.isReady) return null;
+          try {
+            const source = document.getText();
+            // Use the start of the word under the cursor so we hit
+            // the exact byte offset stored in the ReferenceMap.
+            const wordRange = document.getWordRangeAtPosition(position);
+            const wordStart = wordRange ? wordRange.start : position;
+            const offset = Buffer.byteLength(
+              source.slice(0, document.offsetAt(wordStart)),
+              'utf8',
+            );
+            outputChannel.appendLine(
+              `Go to definition: offset=${offset} pos=${position.line}:${position.character}`,
+            );
+            const result = this.#compiler.getDefinition(offset);
+            if (!result) return null;
+            const uri = vscode.Uri.file(result.file);
+            // Convert 1-based line/column to 0-based for VS Code.
+            const pos = new vscode.Position(
+              Math.max(0, result.line - 1),
+              Math.max(0, result.column - 1),
+            );
+            return new vscode.Location(uri, pos);
+          } catch (e) {
+            const msg = formatError(e);
+            outputChannel.appendLine(
+              `Go to definition failed: ${msg}`,
+            );
+            return null;
+          }
+        },
+      }),
+    );
+
     // Document formatting.
     context.subscriptions.push(
       vscode.languages.registerDocumentFormattingEditProvider('zena', {

@@ -27,8 +27,10 @@ import {
 } from 'zena-compiler:compiler';
 import { PackageConfig } from 'zena-compiler:module-resolver';
 import {
-  Diagnostic, DiagnosticCode, DiagnosticLocation, DiagnosticSeverity
+  Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity
 } from 'zena-compiler:diagnostics';
+import { SymbolInfo, ReferenceMap, ScopeResult } from 'zena-compiler:scope';
+import { Node, SourceLocation } from 'zena-compiler:ast';
 import { format as formatSource } from 'zena-formatter:printer';
 
 // ============================================================================
@@ -83,6 +85,12 @@ class LspHost implements CompilerHost {
 /** Stdlib root path, set once by init(). */
 var __stdlibRoot: String = "";
 
+/** Cached scope result from the last successful check(). */
+var __cachedScopeResult: ScopeResult | null = null;
+
+/** Path of the file that produced __cachedScopeResult. */
+var __cachedPath: String = "";
+
 // ============================================================================
 // Init API
 // ============================================================================
@@ -111,8 +119,15 @@ export let check = (source: String, path: String): Array<Diagnostic> => {
   let options = new CompilerOptions("host", __stdlibRoot, packages, null);
   let compiler = createCompiler(host, options);
 
+  // Reset the cache for this path; we'll populate it on success.
+  __cachedScopeResult = null;
+  __cachedPath = path;
+
   let diagnostics = try {
     let result = compiler.compile(path);
+
+    // Cache the scope result for getDefinition().
+    __cachedScopeResult = result.entry.scopeResult;
 
     // Type-check the entry module with cross-module import resolution.
     let checkResult = checkCompilation(result);
@@ -139,6 +154,80 @@ export let format = (source: String): String => {
 };
 
 // ============================================================================
+// Definition API
+// ============================================================================
+
+/**
+ * Find the definition of the symbol at the given byte offset.
+ *
+ * Uses the cached ScopeResult from the last check() call. If the cache
+ * is empty (check() hasn't been called or failed), returns null.
+ *
+ * Returns a DefinitionResult handle, or null if no definition was found.
+ */
+export let getDefinition = (offset: i32): SourceSpan | null => {
+  if (__cachedScopeResult == null) { return null; }
+  let scopeResult = __cachedScopeResult as ScopeResult;
+  let refs = scopeResult.references;
+  let maybeInfo = refs.getByOffset(offset);
+  if (maybeInfo == null) { return null; }
+  let sym = maybeInfo as SymbolInfo;
+
+  let decl = sym.declaration;
+  if (decl == null) { return null; }
+  let declNode = decl as Node;
+
+  if (declNode.loc == null) { return null; }
+  let loc = declNode.loc as SourceLocation;
+
+  var defFile = __cachedPath;
+  if (sym.modulePath.length > 0) {
+    defFile = sym.modulePath;
+  }
+
+  return new SourceSpan(defFile, loc.start, loc.end - loc.start, loc.line, loc.column);
+};
+
+// ============================================================================
+// Definition Getters
+// ============================================================================
+
+/**
+ * Get the file path of a definition result.
+ */
+export let getDefinitionFile = (result: SourceSpan): String => {
+  return result.file;
+};
+
+/**
+ * Get the 1-based line number of a definition result.
+ */
+export let getDefinitionLine = (result: SourceSpan): i32 => {
+  return result.line;
+};
+
+/**
+ * Get the 1-based column number of a definition result.
+ */
+export let getDefinitionColumn = (result: SourceSpan): i32 => {
+  return result.column;
+};
+
+/**
+ * Get the 0-based start byte offset of a definition result.
+ */
+export let getDefinitionStart = (result: SourceSpan): i32 => {
+  return result.start;
+};
+
+/**
+ * Get the byte length of the definition span.
+ */
+export let getDefinitionLength = (result: SourceSpan): i32 => {
+  return result.length;
+};
+
+// ============================================================================
 // Diagnostic Getters
 // ============================================================================
 
@@ -156,7 +245,7 @@ export let getDiagnosticCount = (diagnostics: Array<Diagnostic>): i32 => {
 export let getDiagnosticLine = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
   let diag = diagnostics[index];
   if (diag.location != null) {
-    return (diag.location as DiagnosticLocation).line;
+    return (diag.location as SourceSpan).line;
   }
   return 0;
 };
@@ -168,7 +257,7 @@ export let getDiagnosticLine = (diagnostics: Array<Diagnostic>, index: i32): i32
 export let getDiagnosticColumn = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
   let diag = diagnostics[index];
   if (diag.location != null) {
-    return (diag.location as DiagnosticLocation).column;
+    return (diag.location as SourceSpan).column;
   }
   return 0;
 };
@@ -180,7 +269,7 @@ export let getDiagnosticColumn = (diagnostics: Array<Diagnostic>, index: i32): i
 export let getDiagnosticStart = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
   let diag = diagnostics[index];
   if (diag.location != null) {
-    return (diag.location as DiagnosticLocation).start;
+    return (diag.location as SourceSpan).start;
   }
   return -1;
 };
@@ -192,7 +281,7 @@ export let getDiagnosticStart = (diagnostics: Array<Diagnostic>, index: i32): i3
 export let getDiagnosticLength = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
   let diag = diagnostics[index];
   if (diag.location != null) {
-    return (diag.location as DiagnosticLocation).length;
+    return (diag.location as SourceSpan).length;
   }
   return 0;
 };
@@ -224,7 +313,7 @@ export let getDiagnosticMessage = (diagnostics: Array<Diagnostic>, index: i32): 
 export let getDiagnosticFile = (diagnostics: Array<Diagnostic>, index: i32): String => {
   let diag = diagnostics[index];
   if (diag.location != null) {
-    return (diag.location as DiagnosticLocation).file;
+    return (diag.location as SourceSpan).file;
   }
   return "";
 };
