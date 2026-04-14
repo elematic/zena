@@ -58,29 +58,30 @@ export class SourceFile {
   // Parsed AST.
   ast: Module;
 
+  // Opaque version tag for cache invalidation.
+  // The compiler itself does not interpret this value. It is set by
+  // the host (e.g., the language service passes the editor document
+  // version) and compared by the loader to decide whether a cached
+  // file is still fresh.
+  version: String;
+
   // Resolved import mappings.
   // Key: import specifier as written in source (e.g., "./utils", "zena:string")
   // Value: canonical resolved path
-  imports: HashMap<String, String>;
+  imports = new HashMap<String, String>();
 
   // Scope analysis result (populated after scope building).
   // Contains the scope tree, exports, unresolved names, and references.
-  var scopeResult: ScopeResult | null;
+  var scopeResult: ScopeResult | null = null;
 
   new(
-    path: String,
-    isStdlib: boolean,
-    packageName: String,
-    source: String,
-    ast: Module
-  )
-    : path = path,
-      isStdlib = isStdlib,
-      packageName = packageName,
-      source = source,
-      ast = ast,
-      imports = new HashMap<String, String>(),
-      scopeResult = null;
+    this.path: String,
+    this.isStdlib: boolean,
+    this.packageName: String,
+    this.source: String,
+    this.ast: Module,
+    this.version: String
+  );
 }
 
 // ============================================================================
@@ -124,9 +125,19 @@ export class LibraryLoader {
   //
   // If the library has already been loaded, returns the cached record.
   // Otherwise: loads source → parses → caches → recursively loads imports.
-  load(path: String): SourceFile {
+  //
+  // If `version` is provided, the cache is checked for a matching version.
+  // A cached file with a different version is invalidated and re-loaded.
+  // When omitted (or null), the cache is trusted unconditionally.
+  load(path: String, version: String | null = null): SourceFile {
     if (this.#cache.has(path)) {
-      return this.#cache[path];
+      // Version check: if a version was provided and it matches, use cache.
+      // If no version was provided, always trust the cache.
+      if (version == null || this.#cache[path].version == (version as String)) {
+        return this.#cache[path];
+      }
+      // Version mismatch — invalidate and re-load below.
+      this.#cache.delete(path);
     }
 
     let isStdlib = path.startsWith("zena:");
@@ -136,7 +147,7 @@ export class LibraryLoader {
     let ast = parse(source, path);
 
     // Cache the record BEFORE resolving imports to handle circular imports.
-    let record = new SourceFile(path, isStdlib, packageName, source, ast);
+    let record = new SourceFile(path, isStdlib, packageName, source, ast, version ?? "");
     this.#cache.set(path, record);
 
     // Resolve and recursively load imports.

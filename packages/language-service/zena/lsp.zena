@@ -23,7 +23,7 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { Error } from 'zena:error';
 import {
-  createCompiler, checkCompilation, CompilerOptions, CompilerHost, ProgramCheckResult
+  Compiler, createCompiler, checkCompilation, CompilerOptions, CompilerHost, ProgramCheckResult
 } from 'zena-compiler:compiler';
 import { PackageConfig } from 'zena-compiler:module-resolver';
 import {
@@ -31,6 +31,7 @@ import {
 } from 'zena-compiler:diagnostics';
 import { SymbolInfo, ReferenceMap, DeclarationMap, ScopeResult } from 'zena-compiler:scope';
 import { Node, SourceLocation } from 'zena-compiler:ast';
+import { i32ToString } from 'zena:string-convert';
 import { format as formatSource } from 'zena-formatter:printer';
 
 // ============================================================================
@@ -49,23 +50,37 @@ declare function __read_file(path: String, len: i32): String;
 // ============================================================================
 
 /**
- * CompilerHost that delegates file reads to the JS host,
- * except for the entry file which uses the in-memory source.
+ * CompilerHost that tracks open editor documents.
+ *
+ * When the compiler requests a file, this host checks the open documents
+ * map first (to serve unsaved editor buffers), then falls back to the
+ * JS host's filesystem read.
  */
 class LspHost implements CompilerHost {
-  #entryPath: String;
-  #entrySource: String;
+  #openDocuments = new HashMap<String, String>();
   #stdlibRoot: String;
 
-  new(entryPath: String, entrySource: String, stdlibRoot: String)
-    : #entryPath = entryPath,
-      #entrySource = entrySource,
-      #stdlibRoot = stdlibRoot;
+  new(stdlibRoot: String) : #stdlibRoot = stdlibRoot;
+
+  /**
+   * Register or update an open document's source.
+   */
+  setDocument(path: String, source: String): void {
+    this.#openDocuments.set(path, source);
+  }
+
+  /**
+   * Remove a document from the open set (e.g., on editor close).
+   * Subsequent readFile calls for this path will hit the filesystem.
+   */
+  closeDocument(path: String): void {
+    this.#openDocuments.delete(path);
+  }
 
   readFile(path: String): String {
-    // Entry file: use the in-memory source from the editor.
-    if (path == this.#entryPath) {
-      return this.#entrySource;
+    // Open editor buffer takes priority.
+    if (this.#openDocuments.has(path)) {
+      return this.#openDocuments[path];
     }
     // Stdlib: map canonical "zena:module" to filesystem path.
     if (path.startsWith("zena:")) {
@@ -79,72 +94,129 @@ class LspHost implements CompilerHost {
 }
 
 // ============================================================================
-// State
+// Language Service
 // ============================================================================
 
-/** Stdlib root path, set once by init(). */
-var __stdlibRoot: String = "";
+/**
+ * Stateful language service backed by a persistent Compiler.
+ *
+ * Owns the compiler host, compiler instance, and cached analysis
+ * results. The compiler's LibraryLoader caches parsed stdlib files
+ * across calls so they aren't re-parsed on every keystroke.
+ */
+export class LanguageService {
+  #host: LspHost;
+  #compiler: Compiler;
+  var #version: i32 = 0;
+  var #cachedScopeResult: ScopeResult | null = null;
+  var #cachedPath: String = "";
 
-/** Cached scope result from the last successful check(). */
-var __cachedScopeResult: ScopeResult | null = null;
+  new(host: LspHost, compiler: Compiler)
+    : #host = host, #compiler = compiler;
 
-/** Path of the file that produced __cachedScopeResult. */
-var __cachedPath: String = "";
+  /**
+   * Parse, scope-analyze, and type-check a source string with full
+   * cross-module import resolution.
+   *
+   * Updates the open documents map for `path` so that any module
+   * importing this file sees the editor's version, then compiles
+   * starting from `path` as the root of the dependency tree.
+   */
+  check(source: String, path: String): Array<Diagnostic> {
+    this.#host.setDocument(path, source);
+
+    this.#cachedScopeResult = null;
+    this.#cachedPath = path;
+
+    let diagnostics = try {
+      // Bump the version so the loader detects that this file
+      // has changed and re-reads it from the host.
+      this.#version += 1;
+      let result = this.#compiler.compile(path, i32ToString(this.#version));
+
+      // Cache the scope result for getDefinition().
+      this.#cachedScopeResult = result.entry.scopeResult;
+
+      // Type-check all modules with cross-module import resolution.
+      let checkResult = checkCompilation(result);
+      checkResult.diagnostics
+    } catch (e) {
+      let msg = "Compiler error: " + (e as Error).message;
+      let arr = new Array<Diagnostic>();
+      arr.push(new Diagnostic(DiagnosticCode.ModuleNotFound, msg, DiagnosticSeverity.Error, null));
+      arr
+    };
+    return diagnostics;
+  }
+
+  /**
+   * Find the definition of the symbol at the given byte offset.
+   *
+   * Uses the cached ScopeResult from the last check() call.
+   */
+  getDefinition(offset: i32): SourceSpan | null {
+    if (this.#cachedScopeResult == null) { return null; }
+    let scopeResult = this.#cachedScopeResult as ScopeResult;
+
+    let refs = scopeResult.references;
+    var maybeInfo = refs.getByOffset(offset);
+
+    if (maybeInfo == null) {
+      let decls = scopeResult.declarations;
+      maybeInfo = decls.getByOffset(offset);
+    }
+
+    if (maybeInfo == null) { return null; }
+    let sym = maybeInfo as SymbolInfo;
+
+    let decl = sym.declaration;
+    if (decl == null) { return null; }
+    let declNode = decl as Node;
+
+    if (declNode.loc == null) { return null; }
+    let loc = declNode.loc as SourceLocation;
+
+    var defFile = this.#cachedPath;
+    if (sym.modulePath.length > 0) {
+      defFile = sym.modulePath;
+    }
+
+    return new SourceSpan(defFile, loc.start, loc.end - loc.start, loc.line, loc.column);
+  }
+}
+
+/**
+ * Create a LanguageService with the standard pipeline.
+ */
+export let createLanguageService = (stdlibRoot: String): LanguageService => {
+  let host = new LspHost(stdlibRoot);
+  let packages = new HashMap<String, PackageConfig>();
+  let options = new CompilerOptions("host", stdlibRoot, packages, null);
+  let compiler = createCompiler(host, options);
+  return new LanguageService(host, compiler);
+};
 
 // ============================================================================
-// Init API
+// WASM Exports — flat function API for the JS host
 // ============================================================================
+
+/** Singleton LanguageService, created by init(). */
+var __ls: LanguageService | null = null;
 
 /**
  * Initialize the language service with the path to the stdlib sources.
  * Must be called once before check().
  */
 export let init = (stdlibRoot: String): void => {
-  __stdlibRoot = stdlibRoot;
+  __ls = createLanguageService(stdlibRoot);
 };
-
-// ============================================================================
-// Check API
-// ============================================================================
 
 /**
- * Parse, scope-analyze, and type-check a source string with full
- * cross-module import resolution.
- *
- * Returns an opaque result handle (externref) for use with the getter functions.
+ * Check a source file. See LanguageService.check().
  */
 export let check = (source: String, path: String): Array<Diagnostic> => {
-  let host = new LspHost(path, source, __stdlibRoot);
-  let packages = new HashMap<String, PackageConfig>();
-  let options = new CompilerOptions("host", __stdlibRoot, packages, null);
-  let compiler = createCompiler(host, options);
-
-  // Reset the cache for this path; we'll populate it on success.
-  __cachedScopeResult = null;
-  __cachedPath = path;
-
-  let diagnostics = try {
-    let result = compiler.compile(path);
-
-    // Cache the scope result for getDefinition().
-    __cachedScopeResult = result.entry.scopeResult;
-
-    // Type-check all modules with cross-module import resolution.
-    let checkResult = checkCompilation(result);
-    checkResult.diagnostics
-  } catch (e) {
-    // If the compiler threw, return the error as a single diagnostic.
-    let msg = "Compiler error: " + (e as Error).message;
-    let arr = new Array<Diagnostic>();
-    arr.push(new Diagnostic(DiagnosticCode.ModuleNotFound, msg, DiagnosticSeverity.Error, null));
-    arr
-  };
-  return diagnostics;
+  return (__ls as LanguageService).check(source, path);
 };
-
-// ============================================================================
-// Format API
-// ============================================================================
 
 /**
  * Format a Zena source string and return the formatted result.
@@ -153,48 +225,11 @@ export let format = (source: String): String => {
   return formatSource(source);
 };
 
-// ============================================================================
-// Definition API
-// ============================================================================
-
 /**
- * Find the definition of the symbol at the given byte offset.
- *
- * Uses the cached ScopeResult from the last check() call. If the cache
- * is empty (check() hasn't been called or failed), returns null.
- *
- * Returns a DefinitionResult handle, or null if no definition was found.
+ * Find the definition at a byte offset. See LanguageService.getDefinition().
  */
 export let getDefinition = (offset: i32): SourceSpan | null => {
-  if (__cachedScopeResult == null) { return null; }
-  let scopeResult = __cachedScopeResult as ScopeResult;
-
-  // Try reference map first (use-site identifiers → their definitions).
-  let refs = scopeResult.references;
-  var maybeInfo = refs.getByOffset(offset);
-
-  // Fall back to declaration map (clicking on a declaration itself).
-  if (maybeInfo == null) {
-    let decls = scopeResult.declarations;
-    maybeInfo = decls.getByOffset(offset);
-  }
-
-  if (maybeInfo == null) { return null; }
-  let sym = maybeInfo as SymbolInfo;
-
-  let decl = sym.declaration;
-  if (decl == null) { return null; }
-  let declNode = decl as Node;
-
-  if (declNode.loc == null) { return null; }
-  let loc = declNode.loc as SourceLocation;
-
-  var defFile = __cachedPath;
-  if (sym.modulePath.length > 0) {
-    defFile = sym.modulePath;
-  }
-
-  return new SourceSpan(defFile, loc.start, loc.end - loc.start, loc.line, loc.column);
+  return (__ls as LanguageService).getDefinition(offset);
 };
 
 // ============================================================================

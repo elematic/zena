@@ -191,7 +191,11 @@ export class Compiler {
   // 3. Run scope analysis and wire up cross-module imports.
   // 4. [Future] Type-check all modules.
   // 5. Return the compilation result.
-  compile(entryPoint: String): CompilationResult {
+  //
+  // If `version` is provided, it is associated with the entry file in
+  // the loader cache. A cached entry with a different version is
+  // re-loaded automatically.
+  compile(entryPoint: String, version: String | null = null): CompilationResult {
     // Load prelude modules first (if configured).
     if (this.#options.prelude != null) {
       let prelude = this.#options.prelude as Array<String>;
@@ -205,7 +209,7 @@ export class Compiler {
     }
 
     // Load the entry point and all transitive dependencies.
-    let entry = this.#loader.load(entryPoint);
+    let entry = this.#loader.load(entryPoint, version);
 
     // Compute topological order.
     let graph = this.#loader.computeGraph(entry);
