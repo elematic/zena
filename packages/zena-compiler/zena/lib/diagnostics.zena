@@ -69,7 +69,7 @@ export enum DiagnosticCode {
 /**
  * Points to a specific location in source code.
  */
-export class DiagnosticLocation(
+export class SourceSpan(
   file: String,
   start: i32,
   length: i32,
@@ -84,7 +84,7 @@ export class Diagnostic(
   code: DiagnosticCode,
   message: String,
   severity: DiagnosticSeverity,
-  location: DiagnosticLocation | null
+  location: SourceSpan | null
 )
 
 /**
@@ -105,15 +105,15 @@ export class DiagnosticBag {
 
   // Report an error with a message and optional source location.
   reportError(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
-    var location: DiagnosticLocation | null = null;
+    var location: SourceSpan | null = null;
     if (loc != null) {
       let sl = loc as SourceLocation;
-      location = new DiagnosticLocation(
+      location = new SourceSpan(
         this.#file, sl.start, sl.end - sl.start, sl.line, sl.column
       );
     } else {
       // Even without a source location, include the file for context.
-      location = new DiagnosticLocation(this.#file, 0, 0, 0, 0);
+      location = new SourceSpan(this.#file, 0, 0, 0, 0);
     }
     this.#diagnostics.push(new Diagnostic(
       code, message, DiagnosticSeverity.Error, location
@@ -122,15 +122,15 @@ export class DiagnosticBag {
 
   // Report a warning with a message and optional source location.
   reportWarning(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
-    var location: DiagnosticLocation | null = null;
+    var location: SourceSpan | null = null;
     if (loc != null) {
       let sl = loc as SourceLocation;
-      location = new DiagnosticLocation(
+      location = new SourceSpan(
         this.#file, sl.start, sl.end - sl.start, sl.line, sl.column
       );
     } else {
       // Even without a source location, include the file for context.
-      location = new DiagnosticLocation(this.#file, 0, 0, 0, 0);
+      location = new SourceSpan(this.#file, 0, 0, 0, 0);
     }
     this.#diagnostics.push(new Diagnostic(
       code, message, DiagnosticSeverity.Warning, location
@@ -167,7 +167,7 @@ export let formatDiagnostic = (d: Diagnostic, source: String): String => {
     case DiagnosticSeverity.Information: { result = "info"; }
   }
   if (d.location != null) {
-    let loc = d.location as DiagnosticLocation;
+    let loc = d.location as SourceSpan;
     // If line/column are 0, only show the file name (no precise location).
     if (loc.line == 0 && loc.column == 0) {
       result = `${result} [${loc.file}]`;
