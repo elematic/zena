@@ -35,14 +35,14 @@ export interface CompilerHost {
 }
 
 // ============================================================================
-// Library Record
+// Source File
 // ============================================================================
 
-// A loaded and parsed library (source file).
+// A loaded and parsed source file.
 //
-// LibraryRecords are cached by canonical path. Requesting the same path
-// twice always returns the same record instance.
-export class LibraryRecord {
+// SourceFiles are cached by canonical path. Requesting the same path
+// twice always returns the same instance.
+export class SourceFile {
   // Canonical path identifying this library.
   path: String;
 
@@ -87,10 +87,10 @@ export class LibraryRecord {
 // Library Graph
 // ============================================================================
 
-// Result of topologically sorting libraries by their dependencies.
-export class LibraryGraph(
-  // Libraries in topological order (dependencies before dependents).
-  libraries: Array<LibraryRecord>,
+// Result of topologically sorting source files by their dependencies.
+export class SourceFileGraph(
+  // Source files in topological order (dependencies before dependents).
+  files: Array<SourceFile>,
 
   // True if a cycle was detected (libraries still returned, best-effort order).
   hasCycle: boolean
@@ -115,16 +115,16 @@ export class LibraryGraph(
 export class LibraryLoader {
   #host: CompilerHost;
   #resolver: ModuleResolver;
-  #cache: HashMap<String, LibraryRecord>;
+  #cache: HashMap<String, SourceFile>;
 
   new(host: CompilerHost, resolver: ModuleResolver)
-    : #host = host, #resolver = resolver, #cache = new HashMap<String, LibraryRecord>();
+    : #host = host, #resolver = resolver, #cache = new HashMap<String, SourceFile>();
 
   // Load a library by its canonical path.
   //
   // If the library has already been loaded, returns the cached record.
   // Otherwise: loads source → parses → caches → recursively loads imports.
-  load(path: String): LibraryRecord {
+  load(path: String): SourceFile {
     if (this.#cache.has(path)) {
       return this.#cache[path];
     }
@@ -136,7 +136,7 @@ export class LibraryLoader {
     let ast = parse(source, path);
 
     // Cache the record BEFORE resolving imports to handle circular imports.
-    let record = new LibraryRecord(path, isStdlib, packageName, source, ast);
+    let record = new SourceFile(path, isStdlib, packageName, source, ast);
     this.#cache.set(path, record);
 
     // Resolve and recursively load imports.
@@ -176,7 +176,7 @@ export class LibraryLoader {
   }
 
   // Get a previously loaded library without triggering a load.
-  get(path: String): LibraryRecord | null {
+  get(path: String): SourceFile | null {
     if (this.#cache.has(path)) {
       return this.#cache[path];
     }
@@ -188,19 +188,19 @@ export class LibraryLoader {
   // Returns libraries in dependency order: if A imports B, then B appears
   // before A. This ordering is required for correct type checking (a module's
   // dependencies must be checked before the module itself).
-  computeGraph(entry: LibraryRecord): LibraryGraph {
+  computeGraph(entry: SourceFile): SourceFileGraph {
     let visited = new HashMap<String, i32>();
     let stack = new HashMap<String, i32>();
-    let sorted = new Array<LibraryRecord>();
+    let sorted = new Array<SourceFile>();
     let hasCycle = this.#topoVisit(entry, visited, stack, sorted);
-    return new LibraryGraph(sorted, hasCycle);
+    return new SourceFileGraph(sorted, hasCycle);
   }
 
   #topoVisit(
-    lib: LibraryRecord,
+    lib: SourceFile,
     visited: HashMap<String, i32>,
     stack: HashMap<String, i32>,
-    sorted: Array<LibraryRecord>
+    sorted: Array<SourceFile>
   ): boolean {
     if (visited.has(lib.path)) {
       return false;

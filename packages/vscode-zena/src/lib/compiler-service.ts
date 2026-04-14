@@ -229,16 +229,20 @@ export class ZenaCompilerService {
    */
   getDefinition(
     offset: number,
-  ): {file: string; line: number; column: number; start: number; length: number} | null {
+  ): {
+    file: string;
+    line: number;
+    column: number;
+    start: number;
+    length: number;
+  } | null {
     const exports = this.#exports!;
     const readString = this.#readString!;
 
     try {
       const resultRef = exports.getDefinition(offset);
       if (resultRef === null || resultRef === undefined) {
-        this.#outputChannel.appendLine(
-          `getDefinition(${offset}): no result`,
-        );
+        this.#outputChannel.appendLine(`getDefinition(${offset}): no result`);
         return null;
       }
 
@@ -255,10 +259,7 @@ export class ZenaCompilerService {
       );
       return {file, line, column, start, length};
     } catch (e) {
-      const msg =
-        e instanceof Error
-          ? (e.stack ?? e.message)
-          : String(e);
+      const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
       this.#outputChannel.appendLine(`getDefinition failed: ${msg}`);
       return null;
     }

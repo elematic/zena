@@ -1,55 +1,57 @@
 # Zena Language Server / VS Code Integration
 
-## Status: Design
+## Status: In Progress
 
 ## Goals
 
 Provide IDE features for Zena in VS Code, starting with:
 
 1. **Diagnostics** — show type errors and parse errors inline
-2. **Hover** — show the type of an identifier on hover
-3. **Go to Definition** — jump to where a symbol is declared
+2. **Go to Definition** — jump to where a symbol is declared
+3. **Formatting** — auto-format Zena source files
+4. **Hover** — show the type of an identifier on hover
 
-These three features are the minimum viable starting point. They exercise the
-core compiler pipeline (parse → check → query) and the full VS Code
-integration path.
+These features exercise the core compiler pipeline (parse → check → query) and
+the full VS Code integration path.
 
 ## Architecture
 
-### Phase 1: Self-Hosted Compiler via WASM (Current Plan)
+### Phase 1: Self-Hosted Compiler via WASM (Current)
 
-Run the **self-hosted compiler compiled to WASM** inside the VS Code extension
+The **self-hosted compiler compiled to WASM** runs inside the VS Code extension
 host. The bootstrap compiler compiles the self-hosted compiler to a `.wasm`
 module; the extension loads and calls it from JavaScript. No separate process,
 no LSP protocol overhead.
 
 ```
-┌─────────────────────────────────────────────┐
-│  VS Code Extension (vscode-zena)            │
-│                                             │
-│  ┌───────────────────────────────────────┐  │
-│  │  Extension Host (TypeScript/Node.js)  │  │
-│  │                                       │  │
-│  │  ┌─────────────────────────────────┐  │  │
-│  │  │  Self-hosted compiler (.wasm)   │  │  │
-│  │  │  (@zena-lang/zena-compiler)     │  │  │
-│  │  │                                 │  │  │
-│  │  │  Parser → Scope Analysis        │  │  │
-│  │  │       → SemanticModel           │  │  │
-│  │  │       → Diagnostics             │  │  │
-│  │  │       → Types                   │  │  │
-│  │  └─────────────────────────────────┘  │  │
-│  │                                       │  │
-│  │  ┌─────────────────────────────────┐  │  │
-│  │  │  JS Glue / Language Service     │  │  │
-│  │  │  (thin adapter layer)           │  │  │
-│  │  │                                 │  │  │
-│  │  │  • WASM instantiation           │  │  │
-│  │  │  • CompilerHost (file I/O)      │  │  │
-│  │  │  • VS Code providers            │  │  │
-│  │  └─────────────────────────────────┘  │  │
-│  └───────────────────────────────────────┘  │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  VS Code Extension (vscode-zena)                    │
+│                                                     │
+│  ┌───────────────────────────────────────────────┐  │
+│  │  Extension Host (TypeScript/Node.js)          │  │
+│  │                                               │  │
+│  │  ┌─────────────────────────────────────────┐  │
+│  │  │  lsp.wasm (from @zena-lang/language-     │  │
+│  │  │           service)                       │  │
+│  │  │                                          │  │
+│  │  │  LanguageService                         │  │
+│  │  │    ├─ SourceFileCache (parse/scope)      │  │
+│  │  │    ├─ Program (immutable snapshot)       │  │
+│  │  │    │    ├─ SourceFiles (shared)          │  │
+│  │  │    │    ├─ ScopeResults (cached)         │  │
+│  │  │    │    └─ CheckResults (on demand)      │  │
+│  │  │    └─ Queries (diagnostics, types, defs) │  │
+│  │  └─────────────────────────────────────────┘  │
+│  │                                               │  │
+│  │  ┌─────────────────────────────────────────┐  │
+│  │  │  JS Glue (compiler-service.ts)          │  │
+│  │  │  • WASM instantiation + string marshal  │  │
+│  │  │  • CompilerHost (read_file import)       │  │
+│  │  │  • VS Code providers (diagnostics,       │  │
+│  │  │    definition, hover, formatting)        │  │
+│  │  └─────────────────────────────────────────┘  │
+│  └───────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
 ```
 
 **Why this approach:**
@@ -60,17 +62,14 @@ no LSP protocol overhead.
   JSON-RPC overhead
 - The self-hosted compiler already has parser, scope analysis, and
   SemanticModel with diagnostics, node types, and name resolution
-- LSP-like query capabilities can be added directly to the self-hosted
-  compiler as needed
 - VS Code's extension API is simpler than implementing the full LSP protocol
 
-**What needs to happen in the self-hosted compiler:**
-
-- Expose an API that can be called from JS via WASM imports/exports
-- The CompilerHost interface (file resolution and loading) is provided by the
-  JS side as WASM imports
-- Query results (diagnostics, types, resolved bindings) are returned to JS
-  via exports or shared memory
+**WASM ↔ JS interface:** Strings (source code, file paths, type descriptions)
+are passed as WASM GC `externref` values via `$stringCreate`, `$stringSetByte`,
+`$stringGetByte`, `$stringGetLength` exports. The `@zena-lang/runtime` package
+provides `createStringReader`/`createStringWriter` helpers that wrap these into
+ergonomic JS functions. The host provides a `read_file` import so the WASM
+compiler can load dependency sources from the filesystem.
 
 ### Phase 2: Standalone LSP Server
 
@@ -78,112 +77,201 @@ When the CLI is separated from Node/TypeScript, add a `zena lsp` command that
 speaks LSP over stdio. The VS Code extension becomes a thin client. Other
 editors (Neovim, Helix, Zed) get support for free.
 
+---
+
+## Current Implementation
+
+### What's Built ✅
+
+**Extension infrastructure** (`packages/vscode-zena/`):
+
+- `extension.cts` — CJS entry point with dynamic ESM import
+- `compiler-service.ts` — WASM compiler wrapper: loads `lsp.wasm`,
+  marshals strings, exposes `checkDocument()`, `getDefinition()`,
+  `formatDocument()`
+- `zena-extension.ts` — Extension lifecycle, VS Code event wiring,
+  diagnostic collection, definition provider, formatting provider
+- Status bar with Zena indicator, output channel for logging
+
+**Language service** (`packages/language-service/`):
+
+- `zena/lsp.zena` — WASM entry point compiled from Zena. Exports `init()`,
+  `check()`, `format()`, `getDefinition()`, and diagnostic getter functions.
+  Uses the full Compiler pipeline for cross-module import resolution.
+- Integration tests exercising diagnostics, formatting, and definition lookup
+
+**Working features:**
+
+- Diagnostics (parse errors, type errors, unresolved names) with source
+  locations on document open/change
+- Go to definition (identifiers, type annotations, constructors, fields)
+  including cross-module jumps
+- Document formatting via the zena-formatter
+- Multi-file diagnostics (errors in dependencies shown under the dep's URI)
+
+### Current Limitations
+
+The current `lsp.zena` creates a **fresh `Compiler` + `LibraryLoader` on every
+`check()` call**. This means:
+
+1. Every keystroke re-reads, re-parses, and re-scope-analyzes the entire
+   stdlib (~20+ modules)
+2. Only one file can be "active" — `__cachedScopeResult` stores exactly one
+   result for `getDefinition()` queries
+3. Only the entry module is type-checked, not its dependents
+4. No version tracking — redundant work even when nothing changed
+
+---
+
+## Incremental Architecture: Program + SourceFileCache
+
+See `docs/design/self-hosted-compiler.md` **Section 9** for the full design.
+Summary of the three key abstractions:
+
+### SourceFileCache
+
+Long-lived, mutable cache of parsed source files. Shared across `Program`
+snapshots. Stores `(path, version) → SourceFile` plus the file-local
+`ScopeResult` (which depends only on the AST, not on other modules).
+
+Eviction policy: after each edit cycle, entries not in the current `Program`'s
+file set are dropped (except stdlib, which is always retained).
+
+### Program (Immutable Snapshot)
+
+An immutable snapshot of the compilation state at a point in time. Created
+fresh on each edit; shares `SourceFile`s and `ScopeResult`s via the cache.
+`CheckResult`s for unchanged subgraphs are carried forward from the previous
+`Program`.
+
+Key properties:
+
+- **On-demand checking** — type-checking is lazy, triggered only when
+  `getDiagnostics()` or `getSemanticModel()` is called for a specific file.
+- **Export signature comparison** — if a file's exports haven't changed
+  (e.g., editing inside a function body), dependents' `CheckResult`s are
+  still valid and don't need re-checking.
+- **Immutable** — queries always see a consistent snapshot. No interleaved
+  mutation issues.
+
+### LanguageService
+
+The stateful orchestrator. Replaces the current module-level globals in
+`lsp.zena`. Tracks open files, creates new `Program` snapshots on edits,
+delegates queries.
+
+---
+
 ## Implementation Plan
 
-### Step 1: Extension Infrastructure ✅
+### Step 1: Extension Infrastructure ✅ Complete
 
-Convert vscode-zena from a pure grammar extension to a programmatic extension:
+- CJS entry point, WASM loading, string marshaling, VS Code providers
 
-- Add `src/extension.cts` CJS entry point with dynamic ESM import
-- Add `src/lib/zena-extension.ts` with `activate()` / `deactivate()`
-- Add `main` field to `package.json` pointing to `./extension.cjs`
-- Add Wireit build, tsconfig, VS Code launch config
+### Step 2: WASM Entry Point ✅ Complete
 
-### Step 2: WASM Compilation Target for Self-Hosted Compiler
+- `lsp.zena` compiled to `lsp.wasm` with `init()`, `check()`, `format()`,
+  `getDefinition()` exports
+- Host `read_file` import for filesystem access
 
-Build the self-hosted compiler to a `.wasm` module that exposes an API
-callable from JS:
+### Step 3: Basic Diagnostics ✅ Complete
 
-- Define WASM exports for: parse, check, query diagnostics, query types
-- Define WASM imports for CompilerHost (resolve, load) provided by JS
-- Build script that produces the `.wasm` artifact
+- Parse errors, type errors, unresolved names reported with source locations
+- Multi-file diagnostics (dependency errors mapped to their file URI)
 
-### Step 3: JS Glue Layer
+### Step 4: Go to Definition ✅ Complete
 
-Wire the WASM compiler into the extension:
+- Byte-offset-based lookup via `ScopeResult.references` and
+  `ScopeResult.declarations`
+- Cross-module definition jumps (identifiers resolved to dependency symbols)
 
-- Load and instantiate the `.wasm` module in the extension host
-- Implement CompilerHost as WASM imports (reading from VS Code's document
-  model for open files, disk for others)
-- Stdlib resolution (bundled or from workspace `node_modules`)
+### Step 5: Document Formatting ✅ Complete
 
-### Step 4: Diagnostics
+- `format()` export calls zena-formatter, returns formatted source
+- VS Code `DocumentFormattingEditProvider` wired up
 
-The simplest feature — direct mapping from compiler diagnostics to VS Code:
+### Step 6: Persistent LanguageService ← Next
 
-- After parse/check, read diagnostics from the self-hosted compiler
-- Map `DiagnosticLocation` → `vscode.Range` (1-based → 0-based)
-- Map `DiagnosticSeverity` → `vscode.DiagnosticSeverity`
-- Publish via `vscode.languages.createDiagnosticCollection('zena')`
-- Re-run on document open/change (debounced)
+Replace the stateless per-call architecture with persistent state:
 
-### Step 5: Hover Types
+1. **Keep `LibraryLoader` alive across calls.** The loader already caches
+   `SourceFile`s by path — stop throwing it away between `check()` calls.
+   This alone avoids re-parsing the stdlib on every keystroke.
 
-1. Map cursor position to a source offset
-2. Call into the WASM compiler to find the node at that offset and its type
-3. Format the type as a string
-4. Return as `vscode.Hover` with markdown code block
+2. **Add version tracking on the JS side.** Track `TextDocument.version` for
+   open files. Skip `check()` entirely when the version hasn't changed (e.g.,
+   switching tabs back to an already-checked file).
 
-The self-hosted compiler's `SemanticModel` already has `getNodeType()` keyed
-by source offset — this maps naturally to hover queries.
+3. **Support multiple open files.** Track all open files instead of caching
+   one `ScopeResult`. Each open file gets its own cached results. Closing a
+   file clears its entry.
 
-### Step 6: Go to Definition
+### Step 7: SourceFileCache + Program
 
-1. Map cursor position to a source offset
-2. Call into the WASM compiler to resolve the identifier at that offset
-3. `SemanticModel.resolve(node)` returns a `SymbolInfo` with the declaration
-4. The declaration node has `loc` (file, line, column)
-5. Return as `vscode.Location`
+Extract the full incremental architecture:
 
-### Step 7: Document Management
+1. **`SourceFileCache`** — extract `LibraryLoader`'s cache into a standalone
+   cache keyed by `(path, version)`. Include `ScopeResult` in cache entries.
 
-For performance, maintain a per-workspace compiler state and recompile
-incrementally:
+2. **`Program`** — immutable snapshot with lazy `getCheckResult()`. Carry
+   forward `CheckResult`s from the previous `Program` for unchanged files
+   whose dependencies haven't changed.
 
-- On file open/change: re-parse the changed module, re-check
-- Cache modules that haven't changed
-- Debounce recompilation (e.g., 300ms after last keystroke)
+3. **Export signature comparison** — detect when a file's exports are
+   identical despite a source change (function body edits). Skip re-checking
+   dependents when exports are stable.
+
+### Step 8: Hover Types
+
+1. Map cursor position to a source byte offset
+2. `Program.getSemanticModel(path).getNodeType(offset)` → Type
+3. `typeToString(type)` → formatted type string
+4. Return as `vscode.Hover` with ` ```zena ` code block
+
+### Step 9: Additional Features (Future)
+
+- Find All References
+- Document Symbols / Outline
+- Completions / IntelliSense
+- Rename Symbol
+- Code Actions (quick fixes)
+- Signature Help
+- Semantic Tokens (richer highlighting than TextMate)
+
+---
 
 ## File Structure
 
 ```
+packages/language-service/
+  package.json              # Wireit build: TS tests + WASM compilation
+  zena/
+    lsp.zena                # WASM entry point (LanguageService, exports)
+  src/test/
+    lsp_test.ts             # Integration tests (load lsp.wasm in Node)
+  lsp.wasm                  # Built artifact
+
 packages/vscode-zena/
-  package.json            # Updated with main, activationEvents, wireit build
-  tsconfig.json           # CTS → CJS entry point + ESM lib
+  package.json              # Extension manifest, Wireit build
   src/
-    extension.cts         # CJS entry point (dynamic imports ESM)
+    extension.cts           # CJS entry point (dynamic imports ESM)
     lib/
-      zena-extension.ts   # Extension lifecycle
-      # Future:
-      # wasm-compiler.ts  # WASM loading and instantiation
-      # providers.ts      # VS Code HoverProvider, DefinitionProvider, etc.
-  syntaxes/               # Existing grammar files
-  language-configuration.json  # Existing
+      compiler-service.ts   # WASM loading, string marshaling, host imports
+      zena-extension.ts     # Extension lifecycle, VS Code providers
+  lsp.wasm                  # Copied from language-service at build time
+  syntaxes/                 # TextMate grammar files
+  language-configuration.json
 ```
+
+---
 
 ## Open Questions
 
-- **WASM ↔ JS interface**: How to efficiently pass strings (source code,
-  file paths, type descriptions) between JS and the WASM compiler. Options:
-  shared linear memory with string encoding, or component model.
-- **Incremental checking**: For large projects, we'll want to only re-check
-  changed modules and their dependents. Start with full recompilation.
 - **Multi-root workspaces**: How to handle multiple `zena-packages.json`
   roots? Start with single-root.
-- **Stdlib bundling**: The extension needs access to stdlib source files.
-  Bundle them or rely on the npm package. Since the self-hosted compiler
-  already handles stdlib loading, this may be straightforward.
+- **Stdlib bundling**: Currently resolved via `../stdlib/zena` relative to
+  the extension path. Works for development; need a strategy for published
+  extension (bundle stdlib sources or rely on npm).
 - **Web extension**: Running in VS Code for the Web (vscode.dev) is natural
-  since the compiler is already WASM — but WASI imports may need shimming.
-
-## Future Features (Not in Scope Now)
-
-- Completions / IntelliSense
-- Find All References
-- Rename Symbol
-- Code Actions (quick fixes)
-- Signature Help
-- Document Symbols / Outline
-- Semantic Tokens (richer highlighting than TextMate)
-- Workspace Symbols
-- Formatting (via zena-formatter)
+  since the compiler is already WASM — but the `read_file` host import
+  needs shimming for a virtual filesystem.

@@ -1712,10 +1712,7 @@ function checkIfStatement(ctx: CheckerContext, stmt: IfStatement) {
   // there is no else branch, the inverse narrowing holds for subsequent
   // code in the same scope.
   if (!stmt.alternate && branchDefinitelyExits(stmt.consequent)) {
-    const allInverse = extractAllInverseNarrowingsFromCondition(
-      ctx,
-      stmt.test,
-    );
+    const allInverse = extractAllInverseNarrowingsFromCondition(ctx, stmt.test);
     for (const n of allInverse) {
       ctx.narrowType(n.variableName, n.narrowedType);
     }

@@ -1,13 +1,13 @@
 // Integration tests: Compiler + Scope Analysis
 //
-// Tests that the Compiler correctly runs scope analysis on loaded libraries
+// Tests that the Compiler correctly runs scope analysis on loaded source files
 // and wires up cross-module imports.
 
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
-import { CompilerHost, LibraryRecord } from '../lib/library-loader.zena';
+import { CompilerHost, SourceFile } from '../lib/library-loader.zena';
 import { PackageConfig, ModuleExport } from '../lib/module-resolver.zena';
 import { createCompiler, Compiler, CompilerOptions } from '../lib/compiler.zena';
 import { ScopeResult, SymbolInfo, UnresolvedName } from '../lib/scope.zena';
@@ -86,10 +86,10 @@ export let tests = suite('Compiler Scope Integration', (): void => {
       let compiler = makeCompiler(host);
       let result = compiler.compile("/project/main.zena");
 
-      // All libraries should have scope results.
+      // All source files should have scope results.
       var i = 0;
-      while (i < result.libraries.length) {
-        isTrue(result.libraries[i].scopeResult != null);
+      while (i < result.files.length) {
+        isTrue(result.files[i].scopeResult != null);
         i += 1;
       }
     });
@@ -102,9 +102,9 @@ export let tests = suite('Compiler Scope Integration', (): void => {
       let result = compiler.compile("/project/main.zena");
 
       // Check util.zena's exports.
-      let utilLibMaybe = compiler.getLibrary("/project/util.zena");
+      let utilLibMaybe = compiler.getSourceFile("/project/util.zena");
       isTrue(utilLibMaybe != null);
-      let utilLib = utilLibMaybe as LibraryRecord;
+      let utilLib = utilLibMaybe as SourceFile;
       let utilScope = utilLib.scopeResult as ScopeResult;
       isTrue(utilScope.exports.hasValue("helper"));
     });
@@ -151,9 +151,9 @@ export let tests = suite('Compiler Scope Integration', (): void => {
       let result = compiler.compile("/project/main.zena");
 
       // Point should be exported as both type and value.
-      let pointLibMaybe = compiler.getLibrary("/project/point.zena");
+      let pointLibMaybe = compiler.getSourceFile("/project/point.zena");
       isTrue(pointLibMaybe != null);
-      let pointLib = pointLibMaybe as LibraryRecord;
+      let pointLib = pointLibMaybe as SourceFile;
       let pointScope = pointLib.scopeResult as ScopeResult;
       isTrue(pointScope.exports.hasValue("Point"));
       isTrue(pointScope.exports.hasType("Point"));
@@ -178,17 +178,17 @@ export let tests = suite('Compiler Scope Integration', (): void => {
       let compiler = makeCompiler(host);
       let result = compiler.compile("/project/main.zena");
 
-      // All three libraries should have scope results (dependency order).
-      equal(result.libraries.length, 3);
+      // All three source files should have scope results (dependency order).
+      equal(result.files.length, 3);
       var i = 0;
-      while (i < result.libraries.length) {
-        isTrue(result.libraries[i].scopeResult != null);
+      while (i < result.files.length) {
+        isTrue(result.files[i].scopeResult != null);
         i += 1;
       }
 
       // a.zena should come before b.zena in the ordering.
-      let first = result.libraries[0];
-      let second = result.libraries[1];
+      let first = result.files[0];
+      let second = result.files[1];
       equal(first.path, "/project/a.zena");
       equal(second.path, "/project/b.zena");
     });
@@ -207,9 +207,9 @@ export let tests = suite('Compiler Scope Integration', (): void => {
       let result = compiler.compile("/project/main.zena");
 
       // The stdlib array module should be loaded and scoped.
-      let arrayLibMaybe = compiler.getLibrary("zena:array");
+      let arrayLibMaybe = compiler.getSourceFile("zena:array");
       isTrue(arrayLibMaybe != null);
-      let arrayLib = arrayLibMaybe as LibraryRecord;
+      let arrayLib = arrayLibMaybe as SourceFile;
       isTrue(arrayLib.scopeResult != null);
     });
 

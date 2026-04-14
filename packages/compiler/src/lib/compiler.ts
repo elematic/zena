@@ -8,7 +8,7 @@ import {Parser} from './parser.js';
 import {prelude} from './prelude.js';
 import {CheckerContext} from './checker/context.js';
 import {TypeChecker} from './checker/index.js';
-import {LibraryLoader, type LibraryRecord} from './loader/index.js';
+import {LibraryLoader, type SourceFile} from './loader/index.js';
 import type {Target} from './types.js';
 
 export interface CompilerHost {
@@ -101,8 +101,8 @@ export class Compiler {
     // This is required for correct cross-module class inheritance
     const graph = this.#loader.computeGraph(entryLib);
 
-    // Populate Module metadata from LibraryRecords in topological order
-    for (const lib of graph.libraries) {
+    // Populate Module metadata from SourceFiles in topological order
+    for (const lib of graph.files) {
       if (!this.#modules.has(lib.path)) {
         this.#modules.set(lib.path, this.#getModule(lib));
       }
@@ -128,10 +128,10 @@ export class Compiler {
   }
 
   /**
-   * Get the Module from a LibraryRecord.
+   * Get the Module from a SourceFile.
    * The Module already has all metadata set by the parser.
    */
-  #getModule(lib: LibraryRecord): Module {
+  #getModule(lib: SourceFile): Module {
     return lib.ast;
   }
 
@@ -154,7 +154,7 @@ export class Compiler {
         // Use computeGraph to get proper topological order for this module
         // and all its transitive dependencies
         const graph = this.#loader.computeGraph(lib);
-        for (const dep of graph.libraries) {
+        for (const dep of graph.files) {
           if (!this.#modules.has(dep.path)) {
             this.#modules.set(dep.path, this.#getModule(dep));
           }

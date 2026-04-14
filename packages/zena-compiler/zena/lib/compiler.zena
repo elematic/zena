@@ -10,7 +10,7 @@
 // Usage:
 //   let compiler = createCompiler(host, options);
 //   let result = compiler.compile("/path/to/main.zena");
-//   for (let lib in result.libraries) {
+//   for (let file in result.files) {
 //     // process each library in dependency order
 //   }
 
@@ -26,8 +26,8 @@ import {
 import {
   CompilerHost,
   LibraryLoader,
-  LibraryRecord,
-  LibraryGraph
+  SourceFile,
+  SourceFileGraph
 } from './library-loader.zena';
 import { buildStdlibConfig, loadPackageMap } from './package-manifest.zena';
 import {
@@ -48,7 +48,7 @@ import { typeToString } from './types.zena';
 // Re-export types used by consumers.
 export { CompilerHost } from './library-loader.zena';
 export { PackageConfig, ModuleExport, ResolvedModule } from './module-resolver.zena';
-export { LibraryRecord, LibraryGraph } from './library-loader.zena';
+export { SourceFile, SourceFileGraph } from './library-loader.zena';
 export { loadPackageMap, buildStdlibConfig } from './package-manifest.zena';
 export { ScopeResult, SymbolInfo, UnresolvedName } from './scope.zena';
 export { CheckResult } from './checker.zena';
@@ -102,11 +102,11 @@ export class CompilerOptions {
 
 // The result of a compilation.
 export class CompilationResult(
-  // All libraries in topological order (dependencies before dependents).
-  libraries: Array<LibraryRecord>,
+  // All source files in topological order (dependencies before dependents).
+  files: Array<SourceFile>,
 
-  // The entry point library.
-  entry: LibraryRecord,
+  // The entry point source file.
+  entry: SourceFile,
 
   // Whether a circular dependency was detected.
   hasCycle: boolean
@@ -177,10 +177,10 @@ export class Compiler {
     // Compute topological order.
     let graph = this.#loader.computeGraph(entry);
 
-    // Run scope analysis on all libraries in dependency order.
-    this.#resolveScopes(graph.libraries);
+    // Run scope analysis on all source files in dependency order.
+    this.#resolveScopes(graph.files);
 
-    return new CompilationResult(graph.libraries, entry, graph.hasCycle);
+    return new CompilationResult(graph.files, entry, graph.hasCycle);
   }
 
   // Resolve a specifier relative to a referrer.
@@ -189,23 +189,23 @@ export class Compiler {
     return this.#resolver.resolve(specifier, referrer);
   }
 
-  // Get a previously loaded library by canonical path.
-  getLibrary(path: String): LibraryRecord | null {
+  // Get a previously loaded source file by canonical path.
+  getSourceFile(path: String): SourceFile | null {
     return this.#loader.get(path);
   }
 
-  // Run scope analysis on all libraries in topological order.
+  // Run scope analysis on all source files in topological order.
   //
-  // For each library:
+  // For each file:
   // 1. Build the file-local scope tree (declarations, references).
   // 2. Wire up imports by copying exported symbols from dependencies.
   //
-  // Because libraries are in dependency order, when we process library L,
-  // all of L's dependencies already have their scopeResult populated.
-  #resolveScopes(libraries: Array<LibraryRecord>): void {
+  // Because files are in dependency order, when we process file F,
+  // all of F's dependencies already have their scopeResult populated.
+  #resolveScopes(files: Array<SourceFile>): void {
     var i = 0;
-    while (i < libraries.length) {
-      let lib = libraries[i];
+    while (i < files.length) {
+      let lib = files[i];
 
       // Phase 1: Build file-local scopes.
       let builder = new ScopeBuilder(lib.path);
@@ -224,12 +224,12 @@ export class Compiler {
   // For each import in this library:
   //   import { Foo } from './other';
   //
-  // We look up './other' → canonical path → dependency LibraryRecord → its
+  // We look up './other' → canonical path → dependency SourceFile → its
   // ModuleExports, then find 'Foo' and update the importing scope's bindings.
   //
   // After wiring, previously-unresolved references that were due to imports
   // are now resolvable through the import specifier's declaration.
-  #wireImports(lib: LibraryRecord, result: ScopeResult): void {
+  #wireImports(lib: SourceFile, result: ScopeResult): void {
     let ast = lib.ast;
     var j = 0;
     while (j < ast.body.length) {
@@ -241,10 +241,10 @@ export class Compiler {
           if (lib.imports.has(specifier)) {
             let depPath = lib.imports[specifier];
 
-            // Get the dependency's library record and scope result.
+            // Get the dependency's source file and scope result.
             let depLib = this.#loader.get(depPath);
             if (depLib != null) {
-              let dep = depLib as LibraryRecord;
+              let dep = depLib as SourceFile;
               if (dep.scopeResult != null) {
                 let depScope = dep.scopeResult as ScopeResult;
                 let depExports = depScope.exports;
@@ -278,7 +278,7 @@ export class Compiler {
             let depPath = lib.imports[specifier];
             let depLib = this.#loader.get(depPath);
             if (depLib != null) {
-              let dep = depLib as LibraryRecord;
+              let dep = depLib as SourceFile;
               if (dep.scopeResult != null) {
                 let depScope = dep.scopeResult as ScopeResult;
                 let depExports = depScope.exports;
@@ -363,10 +363,10 @@ export let checkCompilation = (result: CompilationResult): CheckResult => {
   let specIter = entry.imports.keys();
   while (let (true, specifier) = specIter.next()) {
     let depPath = entry.imports[specifier];
-    // Search the libraries array for the dependency.
+    // Search the files array for the dependency.
     var li = 0;
-    while (li < result.libraries.length) {
-      let lib = result.libraries[li];
+    while (li < result.files.length) {
+      let lib = result.files[li];
       if (lib.path == depPath && lib.scopeResult != null) {
         let sr = lib.scopeResult as ScopeResult;
         depExports.set(specifier, sr.exports);

@@ -124,7 +124,7 @@ suite('LibraryLoader', () => {
       const loader = new LibraryLoader(host);
       loader.load('/a.zena');
 
-      const paths = Array.from(loader.libraries()).map(
+      const paths = Array.from(loader.sourceFiles()).map(
         (lib: {path: string}) => lib.path,
       );
       assert.deepEqual(paths.sort(), ['/a.zena', '/b.zena']);
@@ -141,8 +141,8 @@ suite('LibraryLoader', () => {
       const main = loader.load('/main.zena');
       const graph = loader.computeGraph(main);
 
-      assert.equal(graph.libraries.length, 1);
-      assert.equal(graph.libraries[0].path, '/main.zena');
+      assert.equal(graph.files.length, 1);
+      assert.equal(graph.files[0].path, '/main.zena');
       assert.equal(graph.hasCycle, false);
     });
 
@@ -157,7 +157,7 @@ suite('LibraryLoader', () => {
       const main = loader.load('/main.zena');
       const graph = loader.computeGraph(main);
 
-      const paths = graph.libraries.map((lib: {path: string}) => lib.path);
+      const paths = graph.files.map((lib: {path: string}) => lib.path);
       assert.deepEqual(paths, ['/core.zena', '/utils.zena', '/main.zena']);
       assert.equal(graph.hasCycle, false);
     });
@@ -173,7 +173,7 @@ suite('LibraryLoader', () => {
       const graph = loader.computeGraph(a);
 
       assert.equal(graph.hasCycle, true);
-      assert.ok(graph.cycleLibraries.length > 0);
+      assert.ok(graph.cycleFiles.length > 0);
     });
 
     test('handles diamond dependencies', () => {
@@ -193,7 +193,7 @@ suite('LibraryLoader', () => {
       const graph = loader.computeGraph(main);
 
       // c should appear exactly once and before a, b, main
-      const paths = graph.libraries.map((lib: {path: string}) => lib.path);
+      const paths = graph.files.map((lib: {path: string}) => lib.path);
       assert.equal(graph.hasCycle, false);
       assert.equal(paths.filter((p: string) => p === '/c.zena').length, 1);
       assert.ok(paths.indexOf('/c.zena') < paths.indexOf('/a.zena'));
@@ -204,7 +204,7 @@ suite('LibraryLoader', () => {
   });
 
   suite('Library Identity', () => {
-    test('same library path returns same LibraryRecord', () => {
+    test('same library path returns same SourceFile', () => {
       const host = createMockHost({
         '/shared.zena': 'export class Shared {}',
         '/a.zena': 'import { Shared } from "./shared";',

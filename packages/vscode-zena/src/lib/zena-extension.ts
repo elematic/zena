@@ -145,9 +145,7 @@ export class ZenaExtension {
             return new vscode.Location(uri, pos);
           } catch (e) {
             const msg = formatError(e);
-            outputChannel.appendLine(
-              `Go to definition failed: ${msg}`,
-            );
+            outputChannel.appendLine(`Go to definition failed: ${msg}`);
             return null;
           }
         },

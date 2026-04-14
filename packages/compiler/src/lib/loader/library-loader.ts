@@ -1,5 +1,5 @@
 /**
- * LibraryLoader - Manages library resolution, loading, and caching for the Zena compiler.
+ * LibraryLoader - Manages source file resolution, loading, and caching for the Zena compiler.
  *
  * In Zena, individual .zena files are called "libraries" (not "modules") to avoid
  * confusion with WASM modules. WASM modules are separate compilation units, while
@@ -18,7 +18,7 @@
  * Each library is uniquely identified by its canonical path (e.g., "zena:string",
  * "/path/to/file.zena"). The loader guarantees that:
  * 1. The same specifier from the same referrer always resolves to the same path
- * 2. Loading the same path always returns the same LibraryRecord
+ * 2. Loading the same path always returns the same SourceFile
  *
  * This enables identity-based type checking where types from the same library
  * source are compared by identity, not by name.
@@ -39,12 +39,12 @@ import {Parser} from '../parser.js';
 import type {CompilerHost} from '../compiler.js';
 
 /**
- * A loaded library with its parsed AST and metadata.
+ * A loaded source file with its parsed AST and metadata.
  *
- * LibraryRecords are cached by the loader - requesting the same path twice
- * returns the same LibraryRecord instance.
+ * SourceFiles are cached by the loader - requesting the same path twice
+ * returns the same SourceFile instance.
  */
-export interface LibraryRecord {
+export interface SourceFile {
   /** Canonical path identifying this library (e.g., "zena:string", "/abs/path.zena") */
   readonly path: string;
 
@@ -69,17 +69,17 @@ export interface LibraryRecord {
 }
 
 /**
- * Result of topologically sorting libraries by their dependencies.
+ * Result of topologically sorting source files by their dependencies.
  */
-export interface LibraryGraph {
-  /** Libraries in topological order (dependencies before dependents) */
-  readonly libraries: readonly LibraryRecord[];
+export interface SourceFileGraph {
+  /** Source files in topological order (dependencies before dependents) */
+  readonly files: readonly SourceFile[];
 
-  /** True if a cycle was detected (libraries still returned, but order is best-effort) */
+  /** True if a cycle was detected (files still returned, but order is best-effort) */
   readonly hasCycle: boolean;
 
-  /** Libraries involved in cycles, if any */
-  readonly cycleLibraries: readonly LibraryRecord[];
+  /** Source files involved in cycles, if any */
+  readonly cycleFiles: readonly SourceFile[];
 }
 
 /**
@@ -99,11 +99,11 @@ export interface LibraryLoaderOptions {
  * - Caching loaded libraries by path (ensuring identity)
  * - Recursively loading dependencies
  *
- * Use `computeLibraryGraph()` to get libraries in topological order.
+ * Use `computeGraph()` to get source files in topological order.
  */
 export class LibraryLoader {
   readonly #host: CompilerHost;
-  readonly #cache = new Map<string, LibraryRecord>();
+  readonly #cache = new Map<string, SourceFile>();
   readonly #stdlibPaths: Set<string>;
 
   constructor(host: CompilerHost, options: LibraryLoaderOptions = {}) {
@@ -119,10 +119,10 @@ export class LibraryLoader {
   /**
    * Load a library by its canonical path.
    *
-   * If the library has already been loaded, returns the cached LibraryRecord.
+   * If the library has already been loaded, returns the cached SourceFile.
    * Otherwise, loads the source, parses it, and caches the result.
    */
-  load(path: string): LibraryRecord {
+  load(path: string): SourceFile {
     const existing = this.#cache.get(path);
     if (existing) {
       return existing;
@@ -137,7 +137,7 @@ export class LibraryLoader {
     // Create record first and add to cache
     // This prevents infinite recursion on circular imports
     // Note: ast.imports is the same Map we'll populate below
-    const record: LibraryRecord = {
+    const record: SourceFile = {
       path,
       isStdlib,
       source,
@@ -173,32 +173,32 @@ export class LibraryLoader {
   }
 
   /** Get a previously loaded library without triggering a load. */
-  get(path: string): LibraryRecord | undefined {
+  get(path: string): SourceFile | undefined {
     return this.#cache.get(path);
   }
 
-  /** Get all loaded libraries. */
-  libraries(): IterableIterator<LibraryRecord> {
+  /** Get all loaded source files. */
+  sourceFiles(): IterableIterator<SourceFile> {
     return this.#cache.values();
   }
 
   /**
-   * Compute the topological order of libraries starting from an entry point.
+   * Compute the topological order of source files starting from an entry point.
    */
-  computeGraph(entryLibrary: LibraryRecord): LibraryGraph {
+  computeGraph(entryFile: SourceFile): SourceFileGraph {
     const visited = new Set<string>();
     const stack = new Set<string>();
-    const sorted: LibraryRecord[] = [];
-    const cycleLibraries: LibraryRecord[] = [];
+    const sorted: SourceFile[] = [];
+    const cycleFiles: SourceFile[] = [];
     let hasCycle = false;
 
-    const visit = (lib: LibraryRecord): void => {
+    const visit = (lib: SourceFile): void => {
       if (visited.has(lib.path)) return;
 
       if (stack.has(lib.path)) {
         // Cycle detected
         hasCycle = true;
-        cycleLibraries.push(lib);
+        cycleFiles.push(lib);
         return;
       }
 
@@ -217,12 +217,12 @@ export class LibraryLoader {
       sorted.push(lib);
     };
 
-    visit(entryLibrary);
+    visit(entryFile);
 
     return {
-      libraries: sorted,
+      files: sorted,
       hasCycle,
-      cycleLibraries,
+      cycleFiles,
     };
   }
 }

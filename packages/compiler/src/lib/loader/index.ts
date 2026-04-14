@@ -7,8 +7,8 @@
  * @module
  */
 export {
-  type LibraryRecord,
-  type LibraryGraph,
+  type SourceFile,
+  type SourceFileGraph,
   type LibraryLoaderOptions,
   LibraryLoader,
 } from './library-loader.js';
