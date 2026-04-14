@@ -53,6 +53,7 @@ export { loadPackageMap, buildStdlibConfig } from './package-manifest.zena';
 export { ScopeResult, SymbolInfo, UnresolvedName } from './scope.zena';
 export { CheckResult } from './checker.zena';
 export { SemanticModel } from './semantic-model.zena';
+export { ProgramCheckResult } from './compiler.zena';
 export { Diagnostic, DiagnosticSeverity, DiagnosticCode, SourceSpan } from './diagnostics.zena';
 export { typeToString } from './types.zena';
 
@@ -111,6 +112,38 @@ export class CompilationResult(
   // Whether a circular dependency was detected.
   hasCycle: boolean
 )
+
+// The result of type-checking an entire program.
+//
+// Contains per-module CheckResults keyed by file path, plus an aggregated
+// diagnostics array for convenience. The `results` map mirrors the module
+// graph: each module's CheckResult was produced independently from its own
+// AST, ScopeResult, and dependency scope exports.
+export class ProgramCheckResult {
+  // Per-module check results, keyed by file path.
+  results: HashMap<String, CheckResult>;
+
+  // Aggregated diagnostics from all modules.
+  diagnostics: Array<Diagnostic>;
+
+  // The entry module's check result (convenience accessor).
+  entry: CheckResult;
+
+  new(results: HashMap<String, CheckResult>, entry: CheckResult)
+    : results = results, entry = entry,
+      diagnostics = new Array<Diagnostic>() {
+    // Aggregate diagnostics from all modules.
+    let iter = results.keys();
+    while (let (true, key) = iter.next()) {
+      let cr = results[key];
+      var i = 0;
+      while (i < cr.diagnostics.length) {
+        this.diagnostics.push(cr.diagnostics[i]);
+        i += 1;
+      }
+    }
+  }
+}
 
 // ============================================================================
 // Compiler
@@ -349,33 +382,57 @@ export let checkSource = (source: String, path: String): CheckResult => {
 // Compilation-Level Checking
 // ============================================================================
 
-// Type-check the entry module of a compilation result with full
-// cross-module import resolution.
+// Type-check all modules in a compilation result in dependency order.
 //
-// Builds a dependency exports map from the entry's import specifiers
-// and the resolved dependency scope results, then passes it to the
-// checker so imported type and value names are recognized.
-export let checkCompilation = (result: CompilationResult): CheckResult => {
-  let entry = result.entry;
-  let depExports = new HashMap<String, ScopeModuleExports>();
+// Iterates through all source files in topological order (dependencies
+// before dependents). For each file, builds a depExports map from the
+// dependency scope results, runs checkModule, and collects the results.
+//
+// Returns a ProgramCheckResult containing per-module CheckResults and
+// aggregated diagnostics.
+export let checkCompilation = (result: CompilationResult): ProgramCheckResult => {
+  let allResults = new HashMap<String, CheckResult>();
 
-  // Build the map: import specifier → dependency's ModuleExports.
-  let specIter = entry.imports.keys();
-  while (let (true, specifier) = specIter.next()) {
-    let depPath = entry.imports[specifier];
-    // Search the files array for the dependency.
-    var li = 0;
-    while (li < result.files.length) {
-      let lib = result.files[li];
-      if (lib.path == depPath && lib.scopeResult != null) {
-        let sr = lib.scopeResult as ScopeResult;
-        depExports.set(specifier, sr.exports);
-      }
-      li = li + 1;
+  // Check each file in topo order. Dependencies are checked first so
+  // their scope exports are available when we build depExports for
+  // downstream modules. Skip stdlib files — they are scope-analyzed
+  // but not yet type-checked (the self-hosted checker doesn't support
+  // all stdlib features yet).
+  var fi = 0;
+  while (fi < result.files.length) {
+    let file = result.files[fi];
+
+    if (file.isStdlib) {
+      fi += 1;
+      continue;
     }
+
+    // Build depExports for this file from its import specifiers.
+    let depExports = new HashMap<String, ScopeModuleExports>();
+    let specIter = file.imports.keys();
+    while (let (true, specifier) = specIter.next()) {
+      let depPath = file.imports[specifier];
+      // Find the dependency in the topo-sorted files list.
+      var li = 0;
+      while (li < result.files.length) {
+        let dep = result.files[li];
+        if (dep.path == depPath && dep.scopeResult != null) {
+          let sr = dep.scopeResult as ScopeResult;
+          depExports.set(specifier, sr.exports);
+        }
+        li = li + 1;
+      }
+    }
+
+    let checkResult = checkModule(file.ast, file.scopeResult, depExports);
+    allResults.set(file.path, checkResult);
+
+    fi += 1;
   }
 
-  return checkModule(entry.ast, entry.scopeResult, depExports);
+  // The entry module's result is always the last in topo order.
+  let entryResult = allResults[result.entry.path];
+  return new ProgramCheckResult(allResults, entryResult);
 };
 
 // ============================================================================
